@@ -48,6 +48,10 @@ pub fn router(gw: AppState, secret: String) -> Router {
         )
         .route("/admin/v1/users/{name}/players/{mac}", delete(ungrant))
         .route("/admin/v1/devices", get(list_devices))
+        .route(
+            "/admin/v1/devices/{id}/diagnostics",
+            get(device_diagnostics),
+        )
         .route("/admin/v1/devices/{id}", delete(revoke_device))
         .route("/admin/v1/audit", get(audit))
         .fallback(|| async { StatusCode::NOT_FOUND })
@@ -227,6 +231,22 @@ async fn ungrant(
 async fn list_devices(State(st): State<AdminState>) -> Response {
     match st.gw.accounts().list_devices() {
         Ok(d) => Json(json!({ "devices": d })).into_response(),
+        Err(e) => err(e),
+    }
+}
+
+async fn device_diagnostics(State(st): State<AdminState>, Path(id): Path<i64>) -> Response {
+    match st.gw.accounts().diagnostics(id) {
+        Ok(Some((at, report))) => {
+            let report: serde_json::Value =
+                serde_json::from_str(&report).unwrap_or(serde_json::Value::Null);
+            Json(json!({ "updated_at": at, "report": report })).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no diagnostics for this device" })),
+        )
+            .into_response(),
         Err(e) => err(e),
     }
 }

@@ -32,6 +32,7 @@ pub mod accounts;
 pub mod admin;
 pub mod art;
 mod auth;
+pub mod diagnostics;
 pub mod events;
 pub mod menu_actions;
 mod relay;
@@ -118,6 +119,7 @@ pub struct Gateway {
     apps_refreshed: Mutex<Option<std::time::Instant>>,
     /// Menu actions LMS offered, per device (see [`menu_actions`]).
     menu_actions: Mutex<HashMap<i64, menu_actions::DeviceActions>>,
+    diagnostics_throttle: diagnostics::Throttle,
     /// Image URLs LMS has handed out (the only ones its image proxy may fetch for clients).
     known_images: Mutex<art::KnownImages>,
     events: Arc<events::Hub>,
@@ -141,6 +143,7 @@ impl Gateway {
             apps: Mutex::new(Default::default()),
             apps_refreshed: Mutex::new(None),
             menu_actions: Mutex::new(HashMap::new()),
+            diagnostics_throttle: diagnostics::Throttle::default(),
             known_images: Mutex::new(Default::default()),
             events: Arc::new(events::Hub::default()),
         })
@@ -199,6 +202,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/account/totp/confirm", post(auth::totp_confirm))
         .route("/v1/account/totp/disable", post(auth::totp_disable))
         .route("/v1/rpc", post(rpc::rpc))
+        .route("/v1/diagnostics", post(diagnostics::report))
         .route("/v1/art/{*path}", get(art::art))
         .route("/v1/events", get(events::events_upgrade))
         .route("/v1/player", get(tunnel::player_upgrade))

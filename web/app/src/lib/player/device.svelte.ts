@@ -6,6 +6,8 @@ import { KeepAlive, PersistentLog, describeLifecycle } from './background';
 import { detect } from './capabilities';
 import { MediaOutput, Timeline } from './media-output';
 import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
+import { Reporter, buildReport } from './diagnostics';
+import { CLIENT_HEADER, bearer } from '$lib/api/http';
 
 export type DeviceState = 'off' | 'starting' | 'connected' | 'reconnecting' | 'stopped' | 'error';
 
@@ -49,9 +51,47 @@ class DevicePlayer {
 	#advancedAt = 0;
 	#drainedSent = false;
 	#drainedAtEnd = 0; // buffered end when "drained" was last sent
+	/** Diagnostics for the admin: batched, and sent at once when the page is hidden. */
+	#reporter = new Reporter(
+		(body, urgent) =>
+			session.authed(async (token) => {
+				await fetch('/v1/diagnostics', {
+					method: 'POST',
+					headers: { ...CLIENT_HEADER, ...bearer(token), 'Content-Type': 'application/json' },
+					body,
+					keepalive: urgent,
+				});
+			}),
+		() => this.#diagnostics(),
+	);
 
 	#note(msg: string) {
 		this.log = this.#history.add(msg);
+		if (session.current) this.#reporter.schedule();
+	}
+
+	#diagnostics() {
+		const caps = detect();
+		const environment = detectEnvironment();
+		const preference = loadPreference();
+		return buildReport({
+			capabilities: caps,
+			environment,
+			preference,
+			planned: chooseMode(caps, environment, preference),
+			active: this.#worker ? this.choice : null,
+			device: { state: this.state, mac: this.mac, name: this.name, detail: { ...this.detail } as Record<string, unknown> },
+			log: this.log,
+			page: {
+				visibility: document.visibilityState,
+				standalone: typeof matchMedia === 'function' && matchMedia('(display-mode: standalone)').matches,
+			},
+		});
+	}
+
+	/** Report this browser's diagnostics now (e.g. after signing in). */
+	report() {
+		if (session.current) this.#reporter.urgent();
 	}
 
 	/** Log page lifecycle changes, and recover audio when the page comes back. */
@@ -60,6 +100,7 @@ class DevicePlayer {
 		this.#lifecycleBound = true;
 		const active = () => !!this.#worker;
 		document.addEventListener('visibilitychange', () => {
+			if (document.visibilityState === 'hidden' && session.current) this.#reporter.urgent();
 			if (!active()) return;
 			this.#note(describeLifecycle('visibilitychange', { visibility: document.visibilityState }));
 			if (document.visibilityState === 'visible') void this.#recover();

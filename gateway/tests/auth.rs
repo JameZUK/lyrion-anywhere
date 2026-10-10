@@ -886,3 +886,170 @@ async fn admin_post_forms_of_deletes_work() {
         .unwrap();
     assert_eq!(anon.status(), S::FORBIDDEN);
 }
+
+// --- device diagnostics ----------------------------------------------------------------
+
+async fn post_diagnostics(h: &Harness, token: Option<&str>, body: String) -> reqwest::Response {
+    let mut r = reqwest::Client::new()
+        .post(h.url("/v1/diagnostics"))
+        .header("content-type", "application/json")
+        .body(body);
+    if let Some(t) = token {
+        r = r.bearer_auth(t);
+    }
+    r.send().await.unwrap()
+}
+
+async fn device_id(admin: &str, secret: &str, user: &str) -> i64 {
+    let devices: Value = reqwest::Client::new()
+        .get(format!("{admin}/admin/v1/devices"))
+        .bearer_auth(secret)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    devices["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["username"] == user)
+        .unwrap()["id"]
+        .as_i64()
+        .unwrap()
+}
+
+async fn read_diagnostics(admin: &str, secret: &str, id: i64) -> reqwest::Response {
+    reqwest::Client::new()
+        .get(format!("{admin}/admin/v1/devices/{id}/diagnostics"))
+        .bearer_auth(secret)
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn devices_report_diagnostics_that_admins_can_read() {
+    let h = harness().await;
+    let (admin, secret) = h.admin().await;
+    let report = json!({
+        "playback": {"mode": "media", "mime": "audio/mp4; codecs=\"fLaC\"", "reason": "iPad"},
+        "capabilities": {"managedMediaSource": true},
+        "log": ["16:00:01  connected", "16:00:05  page hidden"]
+    });
+    let r = post_diagnostics(&h, Some(&h.tok_a), report.to_string()).await;
+    assert_eq!(r.status(), S::NO_CONTENT);
+    let id = device_id(&admin, &secret, "alice").await;
+    let got: Value = read_diagnostics(&admin, &secret, id)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(got["report"], report);
+    assert!(got["updated_at"].as_i64().unwrap() > 0);
+    // Bob has none, and can't see Alice's (no such public endpoint at all).
+    let bob = device_id(&admin, &secret, "bob").await;
+    assert_eq!(
+        read_diagnostics(&admin, &secret, bob).await.status(),
+        S::NOT_FOUND
+    );
+    let public = reqwest::Client::new()
+        .get(h.url(&format!("/admin/v1/devices/{id}/diagnostics")))
+        .bearer_auth(&h.tok_b)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(public.status(), S::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn diagnostics_reports_are_authenticated_bounded_and_sanitised() {
+    let h = harness().await;
+    let (admin, secret) = h.admin().await;
+    assert_eq!(
+        post_diagnostics(&h, None, "{}".into()).await.status(),
+        S::UNAUTHORIZED
+    );
+    assert_eq!(
+        post_diagnostics(&h, Some("forged"), "{}".into())
+            .await
+            .status(),
+        S::UNAUTHORIZED
+    );
+    let big = json!({ "x": "y".repeat(40 * 1024) }).to_string();
+    assert_eq!(
+        post_diagnostics(&h, Some(&h.tok_a), big).await.status(),
+        S::PAYLOAD_TOO_LARGE
+    );
+    for bad in ["not json", "[1,2]", "\"string\""] {
+        assert_eq!(
+            post_diagnostics(&h, Some(&h.tok_a), bad.into())
+                .await
+                .status(),
+            S::BAD_REQUEST,
+            "{bad}"
+        );
+    }
+    let hostile = json!({
+        "<img src=x onerror=alert(1)>": 1,
+        "log": ["ok", "a\u{1b}[31mred\u{0}"],
+        "deep": {"a": {"b": {"c": {"d": {"e": 1}}}}}
+    });
+    assert_eq!(
+        post_diagnostics(&h, Some(&h.tok_a), hostile.to_string())
+            .await
+            .status(),
+        S::NO_CONTENT
+    );
+    let id = device_id(&admin, &secret, "alice").await;
+    let got: Value = read_diagnostics(&admin, &secret, id)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let s = got["report"].to_string();
+    assert!(
+        !s.contains("<img") && !s.contains('\u{1b}') && !s.contains('\u{0}'),
+        "{s}"
+    );
+    assert_eq!(got["report"]["deep"]["a"]["b"]["c"]["d"], Value::Null);
+}
+
+#[tokio::test]
+async fn diagnostics_are_rate_limited_and_removed_with_the_device() {
+    let h = harness().await;
+    let (admin, secret) = h.admin().await;
+    assert_eq!(
+        post_diagnostics(&h, Some(&h.tok_a), r#"{"n":1}"#.into())
+            .await
+            .status(),
+        S::NO_CONTENT
+    );
+    // Too soon: accepted, not stored.
+    assert_eq!(
+        post_diagnostics(&h, Some(&h.tok_a), r#"{"n":2}"#.into())
+            .await
+            .status(),
+        S::ACCEPTED
+    );
+    let id = device_id(&admin, &secret, "alice").await;
+    let got: Value = read_diagnostics(&admin, &secret, id)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(got["report"]["n"], 1);
+    // Revoking the device deletes its diagnostics.
+    let r = reqwest::Client::new()
+        .post(format!("{admin}/admin/v1/devices/{id}/revoke"))
+        .bearer_auth(&secret)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::NO_CONTENT);
+    assert_eq!(
+        read_diagnostics(&admin, &secret, id).await.status(),
+        S::NOT_FOUND
+    );
+}

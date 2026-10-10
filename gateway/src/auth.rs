@@ -285,7 +285,7 @@ pub async fn me(State(gw): State<AppState>, headers: HeaderMap) -> Response {
 // Account self-service: two-step verification
 // ---------------------------------------------------------------------------
 
-fn principal(gw: &AppState, headers: &HeaderMap) -> Option<crate::accounts::Principal> {
+pub(crate) fn principal(gw: &AppState, headers: &HeaderMap) -> Option<crate::accounts::Principal> {
     bearer(headers).and_then(|t| gw.accounts().authenticate(t))
 }
 

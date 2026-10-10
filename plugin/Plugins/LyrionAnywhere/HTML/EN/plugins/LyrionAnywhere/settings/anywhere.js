@@ -49,7 +49,13 @@
     return e;
   }
 
-  const api = { command, validUsername, validPassword, formatTime, formatUptime };
+  /** Plain-text view of a diagnostics report (shown with textContent, never as HTML). */
+  function diagnosticsText(r) {
+    const when = r && r.updated_at ? `Reported ${formatTime(r.updated_at)}\n\n` : '';
+    return when + JSON.stringify(r && r.report !== undefined ? r.report : r, null, 2);
+  }
+
+  const api = { command, validUsername, validPassword, formatTime, formatUptime, diagnosticsText };
   if (typeof globalThis.__anywhereTest === 'object') {
     Object.assign(globalThis.__anywhereTest, api);
     return;
@@ -240,10 +246,36 @@
         el('td', { text: d.username }),
         el('td', { text: d.mac, className: 'aw-mono' }),
         el('td', { text: formatTime(d.last_seen) }),
-        el('td', {}, [confirmButton('Sign out', 'Confirm sign-out', () => run(() => admin('revoke', { id: d.id }), 'Device signed out'))]),
+        el('td', {}, [
+          diagnosticsButton(d),
+          confirmButton('Sign out', 'Confirm sign-out', () => run(() => admin('revoke', { id: d.id }), 'Device signed out')),
+        ]),
       ]));
     }
     box.replaceChildren(table);
+  }
+
+  /** Diagnostics the device reported (playback mode, browser capabilities, recent log). */
+  function diagnosticsButton(d) {
+    const out = el('pre', { className: 'aw-diag', hidden: '' });
+    const b = el('button', {
+      type: 'button',
+      text: 'Diagnostics',
+      onclick: async () => {
+        if (!out.hasAttribute('hidden')) {
+          out.setAttribute('hidden', '');
+          return;
+        }
+        try {
+          const r = await admin('diagnostics', { id: d.id });
+          out.textContent = diagnosticsText(r);
+        } catch (e) {
+          out.textContent = e.message;
+        }
+        out.removeAttribute('hidden');
+      },
+    });
+    return el('div', { className: 'aw-diag-wrap' }, [b, out]);
   }
 
   async function showAudit() {

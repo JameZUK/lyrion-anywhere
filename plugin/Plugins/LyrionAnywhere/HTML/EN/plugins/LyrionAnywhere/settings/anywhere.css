@@ -13,3 +13,6 @@
 .aw-message { min-height: 1.4em; font-weight: bold; }
 .aw-error { color: #c62828; }
 #aw-create label { display: inline-flex; gap: 0.4em; align-items: center; margin-right: 1em; }
+
+.aw-diag-wrap { display: inline-block; margin-right: 0.5em; }
+.aw-diag { max-width: 60em; max-height: 30em; overflow: auto; white-space: pre-wrap; font-size: 0.85em; background: #f4f4f4; padding: 0.6em; border-radius: 4px; }

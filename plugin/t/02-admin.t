@@ -15,6 +15,7 @@ is_deeply(req('user_create', { username => 'alice', password => 'correct horse',
 is_deeply(req('ungrant', { username => 'alice', player => 'AA:BB:CC:DD:EE:01' }),
 	['POST', '/admin/v1/users/alice/players/aa:bb:cc:dd:ee:01/remove', undef]);
 is_deeply(req('revoke', { id => 12 }), ['POST', '/admin/v1/devices/12/revoke', undef]);
+is_deeply(req('diagnostics', { id => 12 }), ['GET', '/admin/v1/devices/12/diagnostics', undef]);
 is_deeply(req('audit', { limit => 50 }), ['GET', '/admin/v1/audit?limit=50', undef]);
 my ($m, $p, $b) = Plugins::LyrionAnywhere::Admin::request_for('user_disable', { username => 'bob', disabled => 1 });
 is(JSON::PP->new->canonical->encode($b), '{"disabled":true}', 'disabled is a JSON boolean');
@@ -30,6 +31,7 @@ my %attacks = (
 	'unknown role'               => ['user_create', { username => 'a', password => 'abcdefghijk', role => 'root' }],
 	'mac with path'              => ['ungrant',     { username => 'a', player => '../../users' }],
 	'non-numeric device'         => ['revoke',      { id => '1/../2' }],
+	'non-numeric diagnostics id' => ['diagnostics', { id => '../audit' }],
 	'huge limit'                 => ['audit',       { limit => 100000 }],
 	'unknown operation'          => ['restart_lms', {}],
 	'missing username'           => ['pairing',     {}],

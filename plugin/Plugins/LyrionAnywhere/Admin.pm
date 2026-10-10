@@ -49,6 +49,7 @@ my %OPS = (
 	ungrant      => ['POST', '/admin/v1/users/{username}/players/{player}/remove', [qw(username player)]],
 	devices      => ['GET',  '/admin/v1/devices'],
 	revoke       => ['POST', '/admin/v1/devices/{id}/revoke', [qw(id)]],
+	diagnostics  => ['GET',  '/admin/v1/devices/{id}/diagnostics', [qw(id)]],
 	audit        => ['GET',  '/admin/v1/audit?limit={limit}', [qw(limit)]],
 );
 

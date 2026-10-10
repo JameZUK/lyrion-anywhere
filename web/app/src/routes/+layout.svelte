@@ -13,6 +13,11 @@
 	// A returning browser signs in silently through its refresh cookie.
 	void session.restore();
 
+	// Diagnostics for troubleshooting: report once signed in (capabilities, playback choice).
+	$effect(() => {
+		if (app.status === 'signed-in') setTimeout(() => device.report(), 3000);
+	});
+
 	// When this browser becomes a player, control it.
 	device.onConnected = async (mac) => {
 		await app.loadPlayers();

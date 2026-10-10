@@ -119,3 +119,10 @@ test('renders remote-controlled names as text, never as markup', async () => {
   }
   assert.equal(dom.byId.get('aw-message').textContent, '', 'no error reported');
 });
+
+test('diagnostics are shown as plain JSON text', () => {
+  const text = t.diagnosticsText({ updated_at: 0, report: { playback: { mode: 'media' }, log: ['<img src=x onerror=alert(1)>'] } });
+  assert.ok(text.includes('"mode": "media"'));
+  assert.ok(text.includes('<img src=x'), 'kept as text (the page sets it with textContent)');
+  assert.equal(t.diagnosticsText(null), 'null');
+});

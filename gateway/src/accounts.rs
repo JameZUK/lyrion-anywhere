@@ -862,6 +862,41 @@ impl Accounts {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    #[cfg(test)]
+    fn devices_for_test(&self) -> i64 {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO devices (user_id, name, mac, created_at)
+             VALUES ((SELECT id FROM users ORDER BY id LIMIT 1), 'test', '02:4c:41:00:00:99', 0)",
+            [],
+        )
+        .unwrap();
+        db.last_insert_rowid()
+    }
+
+    /// Store a device's latest diagnostics report (already sanitised JSON).
+    pub fn save_diagnostics(&self, device_id: i64, report: &str) -> Result<(), AuthError> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO device_diagnostics (device_id, updated_at, report) VALUES (?1, ?2, ?3)
+             ON CONFLICT(device_id) DO UPDATE SET updated_at = excluded.updated_at, report = excluded.report",
+            rusqlite::params![device_id, unix_now() as i64, report],
+        )?;
+        Ok(())
+    }
+
+    /// A device's latest diagnostics: (updated_at, report JSON).
+    pub fn diagnostics(&self, device_id: i64) -> Result<Option<(i64, String)>, AuthError> {
+        let db = self.db.lock().unwrap();
+        let mut st =
+            db.prepare("SELECT updated_at, report FROM device_diagnostics WHERE device_id = ?1")?;
+        let mut rows = st.query([device_id])?;
+        Ok(match rows.next()? {
+            Some(r) => Some((r.get(0)?, r.get(1)?)),
+            None => None,
+        })
+    }
+
     /// Revoke a device: its refresh tokens are deleted and its access tokens dropped.
     pub fn revoke_device(&self, device_id: i64) -> Result<bool, AuthError> {
         let n = {
@@ -872,6 +907,10 @@ impl Accounts {
             )?;
             db.execute(
                 "DELETE FROM refresh_tokens WHERE device_id = ?1",
+                [device_id],
+            )?;
+            db.execute(
+                "DELETE FROM device_diagnostics WHERE device_id = ?1",
                 [device_id],
             )?;
             n
@@ -1108,6 +1147,15 @@ fn migrate(db: &Connection) -> Result<(), AuthError> {
                mac TEXT NOT NULL,
                PRIMARY KEY (user_id, mac));
              PRAGMA user_version = 2;",
+        )?;
+    }
+    if version < 3 {
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS device_diagnostics (
+               device_id INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+               updated_at INTEGER NOT NULL,
+               report TEXT NOT NULL);
+             PRAGMA user_version = 3;",
         )?;
     }
     Ok(())
@@ -1643,7 +1691,11 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
+        // Version 3 added per-device diagnostics.
+        let d = a.devices_for_test();
+        a.save_diagnostics(d, r#"{"ok":true}"#).unwrap();
+        assert_eq!(a.diagnostics(d).unwrap().unwrap().1, r#"{"ok":true}"#);
     }
 
     // -- player permissions --------------------------------------------------

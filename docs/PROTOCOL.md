@@ -63,6 +63,7 @@ Endpoints:
 - `POST /admin/v1/users/{name}/totp/reset` (removes two-step for a user who lost their authenticator)
 - `GET/POST /admin/v1/users/{name}/players`, `DELETE /admin/v1/users/{name}/players/{mac}` (home players a listener may control)
 - `GET /admin/v1/devices`
+- `GET /admin/v1/devices/{id}/diagnostics` (the device's latest diagnostics report)
 - `DELETE /admin/v1/devices/{id}`
 - `GET /admin/v1/audit`
 
@@ -198,6 +199,14 @@ Everything else is refused, notably:
 - removed everywhere by key: `ip`, `uuid`, `httpport`, `url` (file paths and stream credentials), `mac`, `seq_no`, `remote_url`, `favorites_url` and `path`;
 - removed everywhere by value, whatever the key: `file:` URLs, and URLs whose host is private, loopback, link-local or a local name (`.local`, `.lan`, `.home.arpa`, …);
 - player lists show only players the caller may control, with counts adjusted, and other-server counts removed.
+
+## Diagnostics (`POST /v1/diagnostics`)
+
+A device reports how it plays, for troubleshooting by an admin: browser capabilities, the chosen playback mode and why, player status, and its recent connection log. Bearer token required.
+- **Limits:** bodies over 32 KiB get 413, and anything not a JSON object gets 400.
+- **Sanitising:** the gateway keeps only a sanitised copy: depth ≤ 4, ≤ 200 keys or items per level, strings ≤ 600 characters with control characters removed, simple keys only.
+- **Storage:** the latest report per device, with at most one stored update every 10 s (`202` when skipped). It is deleted when the device is revoked.
+- **Reading:** admins use `GET /admin/v1/devices/{id}/diagnostics` (the LMS plugin shows it per device).
 
 ## Artwork (`GET /v1/art/<path>`)
 
