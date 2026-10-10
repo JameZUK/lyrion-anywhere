@@ -6,6 +6,7 @@ import { EventsClient, type EventsState } from '$lib/api/events';
 import type { Session } from '$lib/api/auth';
 import * as cmd from '$lib/lms/commands';
 import type { PlayerInfo, PlayersResult, PlayerStatus } from '$lib/lms/types';
+import { loadResume } from '$lib/player/resume';
 
 const PLAYER_KEY = 'anywhere.player';
 const POLL_MS = 2000;
@@ -84,6 +85,9 @@ class AppState {
 		} catch {
 			/* storage blocked */
 		}
+		// This device was the player before a reload: LMS lists it again only once it has
+		// reconnected, so hold the choice rather than switching to another player meanwhile.
+		if (this.playerId && loadResume()?.mac === this.playerId) this.#preferred = this.playerId;
 		this.#events.start();
 		await this.loadPlayers();
 		this.#poll = setInterval(() => {
@@ -116,7 +120,7 @@ class AppState {
 				this.#preferred = '';
 				if (want !== this.playerId) this.select(want);
 				else this.soon();
-			} else if (!this.current) {
+			} else if (!this.current && !this.#preferred) {
 				// Keep the remembered player if it's still there; else the first one playing,
 				// else the first one.
 				const pick = this.players.find((p) => p.isplaying) ?? this.players[0];
@@ -141,6 +145,9 @@ class AppState {
 			if (this.playerId === id && this.current) return true;
 			await new Promise((r) => setTimeout(r, gapMs));
 		}
+		// It never appeared: stop holding out for it, and pick another player as usual.
+		if (this.#preferred === id) this.#preferred = '';
+		await this.loadPlayers();
 		return false;
 	}
 

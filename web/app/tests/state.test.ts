@@ -88,3 +88,30 @@ test('waiting gives up quietly if the player never appears', async () => {
 	players = [];
 	expect(await app.waitForPlayer('02:4c:41:00:00:08', 3, 1)).toBe(false);
 });
+
+// After a reload, this device's player is gone from LMS until it reconnects: the app must hold
+// the remembered choice meanwhile, not jump to another player and stay there.
+test('a player being waited for is held, not swapped for another meanwhile', async () => {
+	const kitchen = { playerid: 'aa:bb:cc:dd:ee:01', name: 'Kitchen' };
+	const mine = { playerid: '02:4c:41:00:00:07', name: 'This device' };
+	players = [kitchen];
+	app.playerId = mine.playerid;
+	const seen = new Set<string>();
+	let looks = 0;
+	const timer = setInterval(() => {
+		seen.add(app.playerId);
+		if (++looks === 3) players = [kitchen, mine];
+	}, 1);
+	expect(await app.waitForPlayer(mine.playerid, 20, 2)).toBe(true);
+	clearInterval(timer);
+	expect(app.playerId).toBe(mine.playerid);
+	expect(seen.has(kitchen.playerid)).toBe(false);
+});
+
+test('if the awaited player never appears, another one is chosen as usual', async () => {
+	const kitchen = { playerid: 'aa:bb:cc:dd:ee:01', name: 'Kitchen' };
+	players = [kitchen];
+	app.playerId = '02:4c:41:00:00:07';
+	expect(await app.waitForPlayer('02:4c:41:00:00:07', 3, 1)).toBe(false);
+	expect(app.playerId).toBe(kitchen.playerid);
+});

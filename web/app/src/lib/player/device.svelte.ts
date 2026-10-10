@@ -32,8 +32,10 @@ class DevicePlayer {
 	detail = $state<DeviceStatus>({});
 	#history = new PersistentLog();
 	log = $state<string[]>(this.#history.lines);
-	/** This tab was playing before a reload: offer to resume (audio needs a tap to start). */
+	/** This tab was playing before a reload: it resumes by itself (see `resumeAfterReload`). */
 	wasActive = $state(this.#history.active);
+	/** Playing, but the browser holds the sound back until the user taps the page. */
+	needsTap = $state(false);
 	/** How this device plays, and why (chosen at start). */
 	choice = $state<ModeChoice | null>(null);
 	/** Which media-element variants this browser really plays (see selftest.ts). */
@@ -41,6 +43,8 @@ class DevicePlayer {
 	#selftestRunning: Promise<void> | null = null;
 	/** The media element failed in this session: use Web Audio until the page reloads. */
 	#mediaBroken = false;
+	/** Started without a tap (after a reload, or switching output). */
+	#auto = false;
 	/** Called when the player is connected (the app selects it). */
 	onConnected: ((mac: string) => void) | null = null;
 
@@ -200,9 +204,13 @@ class DevicePlayer {
 		return output && typeof Worker !== 'undefined' && typeof WebAssembly !== 'undefined';
 	}
 
-	/** Start playing on this device. Must be called from a click (browsers require it). */
-	async start() {
+	/**
+	 * Start playing on this device. Call it from a tap: browsers only let sound start inside
+	 * one. `auto` (after a reload, no tap): start anyway, and let the next tap unmute.
+	 */
+	async start(opts: { auto?: boolean } = {}) {
 		if (this.#worker || !session.current) return;
+		this.#auto = !!opts.auto;
 		this.state = 'starting';
 		this.wasActive = false;
 		this.#watchLifecycle();
@@ -228,6 +236,7 @@ class DevicePlayer {
 				};
 				this.#media = out;
 				await out.start();
+				if (out.audio.paused) this.#resumeOnNextTap();
 				this.#lastPos = 0;
 				this.#timeline = new Timeline();
 				this.#posTimer = setInterval(() => this.#reportPosition(), 250);
@@ -235,6 +244,7 @@ class DevicePlayer {
 				// Inside the tap: a playing media element helps keep the page alive in the background.
 				if (!(await this.#keepAlive.start())) this.#note('background keep-alive refused by the browser');
 				port = await this.#createAudio(44100);
+				if (this.#ctx?.state !== 'running') this.#resumeOnNextTap();
 			}
 			const w = new Worker(asset('player-worker.js'), { type: 'module' });
 			this.#worker = w;
@@ -264,18 +274,37 @@ class DevicePlayer {
 		this.#mediaBroken = true;
 		this.#note(`media element failed (${why}); switching to Web Audio`);
 		this.stop();
-		await this.start();
-		// Without a fresh tap the browser may hold audio back: resume on the next one.
-		if (this.#ctx && this.#ctx.state !== 'running') {
-			this.#note('tap anywhere to resume audio');
-			const resume = () => void this.#ctx?.resume().then(() => this.#note('audio resumed'));
-			document.addEventListener('pointerdown', resume, { once: true });
-		}
+		await this.start({ auto: true }); // not inside a tap any more
+	}
+
+	/** Restart after a reload, if this device was playing before it. */
+	async resumeAfterReload() {
+		if (!this.wasActive || this.#worker) return;
+		this.#note('resuming after the page reloaded');
+		await this.start({ auto: true });
+	}
+
+	/** The browser held the sound back (no tap): unmute on the next tap or key press. */
+	#resumeOnNextTap() {
+		if (this.needsTap) return;
+		this.needsTap = true;
+		this.#note('the browser held the sound back: tap anywhere to resume');
+		const resume = () => {
+			document.removeEventListener('pointerdown', resume, true);
+			document.removeEventListener('keydown', resume, true);
+			this.needsTap = false;
+			void this.#keepAlive.start();
+			this.#media?.resume();
+			void this.#ctx?.resume().then(() => this.#note(`audio resumed (${this.#ctx?.state})`));
+		};
+		document.addEventListener('pointerdown', resume, true);
+		document.addEventListener('keydown', resume, true);
 	}
 
 	stop(final: DeviceState = 'stopped') {
 		this.#history.active = false;
 		this.wasActive = false;
+		this.needsTap = false;
 		this.#keepAlive.stop();
 		clearInterval(this.#posTimer);
 		this.#media?.stop();
@@ -312,7 +341,10 @@ class DevicePlayer {
 		node.connect(ctx.destination);
 		const channel = new MessageChannel();
 		node.port.postMessage({ port: channel.port1 }, [channel.port1]);
-		await ctx.resume();
+		// Without a tap, resume() waits for one: don't let that hold up starting.
+		const resumed = ctx.resume();
+		if (this.#auto) await Promise.race([resumed, new Promise((r) => setTimeout(r, 500))]);
+		else await resumed;
 		return channel.port2;
 	}
 
@@ -382,8 +414,9 @@ class DevicePlayer {
 		}
 		if (typeof m.rate === 'number' && this.#worker && !this.#media) {
 			const port = await this.#createAudio(m.rate);
-			this.#worker.postMessage({ cmd: 'start-sink', port }, [port]);
-			this.#worker.postMessage({ cmd: 'rate-ready', rate: m.rate });
+			if (this.#ctx?.state !== 'running') this.#resumeOnNextTap();
+			this.#worker?.postMessage({ cmd: 'start-sink', port }, [port]);
+			this.#worker?.postMessage({ cmd: 'rate-ready', rate: m.rate });
 		}
 		// The worker reports status every 20 ms; the UI only needs a few updates a second.
 		if (m.status && typeof m.status === 'object' && performance.now() - this.#detailAt > 500) {

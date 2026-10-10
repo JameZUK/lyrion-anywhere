@@ -1,8 +1,9 @@
 <script lang="ts">
 	import '../app.css';
 	import { page } from '$app/state';
-	import { app, session } from '$lib/state/app.svelte';
+	import { api, app, session } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
+	import { clearResume, loadResume, resumeCommands, saveResume } from '$lib/player/resume';
 	import Login from '$lib/components/Login.svelte';
 	import PlayerBar from '$lib/components/PlayerBar.svelte';
 	import MediaSession from '$lib/components/MediaSession.svelte';
@@ -17,14 +18,48 @@
 	$effect(() => {
 		if (app.status === 'signed-in') {
 			// Test the media-element path quietly, so "Play on this device" can use it at once.
-			void device.prepare().then(() => device.report());
+			// Then, if this device was playing before a reload, carry on by itself.
+			void device.prepare().then(() => {
+				device.report();
+				void device.resumeAfterReload();
+			});
 		}
+	});
+
+	// Note where this device is in the queue when the page goes away, to carry on after a reload.
+	function rememberPosition() {
+		const now = app.now;
+		const index = Number(now?.playlist_cur_index);
+		if (!device.mac || app.playerId !== device.mac || !now || !Number.isFinite(index)) return;
+		saveResume({ mac: device.mac, playing: now.mode === 'play', index, time: app.elapsed, at: Date.now() });
+	}
+	$effect(() => {
+		addEventListener('pagehide', rememberPosition);
+		const hidden = () => document.visibilityState === 'hidden' && rememberPosition();
+		document.addEventListener('visibilitychange', hidden);
+		return () => {
+			removeEventListener('pagehide', rememberPosition);
+			document.removeEventListener('visibilitychange', hidden);
+		};
 	});
 
 	// When this browser becomes a player, control it.
 	device.onConnected = async (mac) => {
+		const point = loadResume();
+		clearResume();
 		// LMS may not list the new player for a moment: wait for it, then select it.
-		await app.waitForPlayer(mac);
+		if (!(await app.waitForPlayer(mac)) || point?.mac !== mac) return;
+		// After a reload: if LMS hasn't carried on playing by itself, go back to where it was.
+		await new Promise((r) => setTimeout(r, 1500));
+		await app.refresh();
+		for (const c of resumeCommands(point, app.now)) {
+			try {
+				await api.rpc(mac, c);
+			} catch {
+				break; // the user can still press play
+			}
+		}
+		app.soon();
 	};
 
 	const NAV = [
@@ -69,7 +104,11 @@
 			{/if}
 		</nav>
 		<main class="content">
-			{#if device.wasActive && (device.state === 'off' || device.state === 'stopped')}
+			{#if device.needsTap}
+				<button class="banner resume tap" onclick={() => {}}>
+					<Icon name="play" size={16} /><span>Playing on this device. Tap here (or anywhere) to turn the sound on.</span>
+				</button>
+			{:else if device.wasActive && (device.state === 'off' || device.state === 'stopped' || device.state === 'error')}
 				<div class="banner resume" role="status">
 					<span>This device was playing before the page reloaded.</span>
 					<button class="btn primary" onclick={() => device.start()}><Icon name="play" size={16} />Resume playing here</button>
@@ -181,6 +220,13 @@
 	}
 	.resume span {
 		flex: 1 1 14rem;
+	}
+	.tap {
+		width: calc(100% - 2 * clamp(1rem, 3vw, 2.5rem));
+		font: inherit;
+		color: inherit;
+		text-align: left;
+		cursor: pointer;
 	}
 	.tabs {
 		display: none;

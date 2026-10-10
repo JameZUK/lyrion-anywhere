@@ -4,6 +4,15 @@ Dated entries, newest first.
 
 ## 2026-10-10
 
+### Carry on playing after a reload
+- **Before:** after a reload the app offered a "Resume playing here" button, and could switch to another player while this device's player was briefly gone from LMS.
+- **Now:**
+  - this device restarts by itself after a reload, on the same track and at about the same time. If LMS has stopped meanwhile, the app jumps back to where it was; the point is kept for 10 minutes;
+  - the app holds on to this device as the selected player while it reconnects;
+  - browsers only let sound start after a tap: if the sound is held back, a banner says so, and any tap or key press turns it on;
+  - starting without a tap no longer waits for one (Web Audio).
+- **Tests:** the resume point is checked, including hostile or stale saved values, and only the commands that are needed are sent; the selection is held while waiting (a regression test that fails without the fix). End to end in Chromium, in both playback modes: reload mid-track, carry on at the same track and time, still selected, a tap turns the sound on.
+
 ### Plugins that add themselves to My Music (AudioMuse-AI and others)
 - **Bug:** AudioMuse-AI didn't appear. It adds itself to LMS's My Music menu, not to the apps list, as do Custom Browse, Library Views, Random Mix and many others; the app only read the apps and radio lists.
 - **Fix:** Apps & Radio now also lists plugins from the player's home menu, with nothing hard-coded: whatever LMS offers there shows up. Groups such as Random Mix open as a list of their entries.
