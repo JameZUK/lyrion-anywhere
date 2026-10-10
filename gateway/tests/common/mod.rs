@@ -46,6 +46,8 @@ pub struct Recorded {
     pub rpc: Vec<serde_json::Value>,
     /// What clients sent to the CLI port.
     pub cli_in: Vec<String>,
+    /// Every Slimproto frame received (opcode, payload), in order.
+    pub payloads: Vec<([u8; 4], Vec<u8>)>,
 }
 
 /// Canned LMS JSON-RPC results, deliberately full of things that must not leak.
@@ -98,6 +100,8 @@ pub struct FakeLms {
     pub rec: Arc<Mutex<Recorded>>,
     pub conns: mpsc::Receiver<OwnedWriteHalf>,
     pub audio: Arc<Vec<u8>>,
+    /// When set, `/stream.mp3` sends its first 1000 bytes and then stalls for ever.
+    pub stall_stream: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl FakeLms {
@@ -125,6 +129,7 @@ impl FakeLms {
                         while let Ok(Some((op, payload))) = reader.next_frame() {
                             let mut rec = r.lock().unwrap();
                             rec.frames.push(op);
+                            rec.payloads.push((op, payload.clone()));
                             if &op == b"STAT" {
                                 rec.stats.push(payload);
                             }
@@ -137,9 +142,10 @@ impl FakeLms {
 
         let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let http_addr = http.local_addr().unwrap();
-        let (r, a) = (rec.clone(), audio.clone());
+        let stall_stream: Arc<std::sync::atomic::AtomicBool> = Default::default();
+        let (r, a, stall) = (rec.clone(), audio.clone(), stall_stream.clone());
         let app = Router::new().fallback(any(move |req: Request| {
-            let (r, a) = (r.clone(), a.clone());
+            let (r, a, stall) = (r.clone(), a.clone(), stall.clone());
             async move {
                 let path = req
                     .uri()
@@ -164,6 +170,15 @@ impl FakeLms {
                 if p.starts_with("/music/") || p.starts_with("/imageproxy/") || p.starts_with("/html/images/") || p.starts_with("/plugins/") {
                     let ct = if p.ends_with(".svg") { "image/svg+xml" } else { "image/jpeg" };
                     return ([("content-type", ct)], Body::from(b"IMAGEDATA".to_vec())).into_response_parts();
+                }
+                if req.uri().path() == "/stream.mp3"
+                    && stall.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    let first = bytes::Bytes::copy_from_slice(&a[..1000]);
+                    let body = futures_util::stream::iter([Ok::<_, std::io::Error>(first)])
+                        .chain(futures_util::stream::pending());
+                    return ([("content-type", "audio/flac")], Body::from_stream(body))
+                        .into_response_parts();
                 }
                 if req.uri().path() == "/stream.mp3" {
                     (
@@ -214,6 +229,7 @@ impl FakeLms {
             rec,
             conns,
             audio,
+            stall_stream,
         }
     }
 
@@ -266,6 +282,18 @@ impl FakeLms {
 
     pub fn closed(&self) -> usize {
         self.rec.lock().unwrap().closed
+    }
+
+    /// Payloads of every frame received with this opcode.
+    pub fn payloads(&self, op: &[u8; 4]) -> Vec<Vec<u8>> {
+        self.rec
+            .lock()
+            .unwrap()
+            .payloads
+            .iter()
+            .filter(|(o, _)| o == op)
+            .map(|(_, p)| p.clone())
+            .collect()
     }
 
     pub fn http_paths(&self) -> Vec<String> {

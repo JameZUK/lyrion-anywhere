@@ -1,6 +1,7 @@
 //! `/v1/player`: authenticate a socket and attach it to a new or resumed session.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code};
@@ -8,13 +9,13 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 
 use anywhere_core::proto::ClientFrameReader;
 
 use crate::accounts::Principal;
-use crate::session::{AttachError, ClientInput, EndReason, Outbound, Session};
+use crate::session::{AttachError, ClientInput, EndReason, Kick, Outbound, Session};
 use crate::{AppState, origin_allowed};
 
 /// Bound on a single WebSocket message from a client.
@@ -130,7 +131,7 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
         }
     };
 
-    let (generation, rx) = match session.attach(received) {
+    let attached = match session.attach(received) {
         Ok(a) => a,
         Err(AttachError::Gap) => {
             warn!(mac = %session.device.mac_string(), "resume gap too old; ending session");
@@ -143,6 +144,7 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
         }
         Err(AttachError::Gone) => return close(ws, 4404, "no such session").await,
     };
+    let generation = attached.generation;
     let greeting = serde_json::json!({
         "session": session.id,
         "secret": session.secret(),
@@ -159,8 +161,8 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
     info!(device = %session.device.device_name, user = %session.device.username, mac = %session.device.mac_string(), resumed, "player attached");
 
     let (sink, stream) = ws.split();
-    let writer = tokio::spawn(write_loop(sink, rx));
-    let outcome = read_loop(&session, stream).await;
+    let mut writer = tokio::spawn(write_loop(sink, attached.rx, attached.kick.clone()));
+    let outcome = read_loop(&session, generation, stream, attached.kick).await;
     match outcome {
         ReadEnd::Policy(why) => {
             warn!(mac = %session.device.mac_string(), reason = %why, "player closed for policy violation");
@@ -169,22 +171,57 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
         }
         ReadEnd::LmsGone => session.end(&gw, EndReason::LmsClosed).await,
         ReadEnd::SocketGone => session.detach(&gw, generation),
+        // Replaced, too slow, or the session ended: the session has already dealt with it.
+        ReadEnd::Kicked => {}
     }
-    // The writer ends once its queue is closed or after sending a close frame.
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), writer).await;
+    // The writer ends once its queue is closed or after sending a close frame. A writer
+    // stuck on a client that has stopped reading is abandoned, which closes the socket.
+    if tokio::time::timeout(WRITER_GRACE, &mut writer)
+        .await
+        .is_err()
+    {
+        writer.abort();
+    }
 }
+
+/// How long a closing socket's writer may take to flush its close frame.
+const WRITER_GRACE: Duration = Duration::from_secs(6);
+const CLOSE_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 enum ReadEnd {
     Policy(String),
     LmsGone,
     SocketGone,
+    Kicked,
+}
+
+/// Resolves when the session asks this socket to close, with the close code and reason.
+async fn kicked(kick: &mut watch::Receiver<Kick>) -> (u16, &'static str) {
+    let k = match kick.wait_for(|k| k.is_some()).await {
+        Ok(k) => *k,
+        Err(_) => None,
+    };
+    match k {
+        Some(k) => k,
+        // The session dropped this socket without a reason: its queue closes too.
+        None => std::future::pending().await,
+    }
 }
 
 async fn read_loop(
     session: &Arc<Session>,
+    generation: u64,
     mut stream: futures_util::stream::SplitStream<WebSocket>,
+    mut kick: watch::Receiver<Kick>,
 ) -> ReadEnd {
-    while let Some(msg) = stream.next().await {
+    loop {
+        let msg = tokio::select! {
+            m = stream.next() => m,
+            _ = kicked(&mut kick) => return ReadEnd::Kicked,
+        };
+        let Some(msg) = msg else {
+            return ReadEnd::SocketGone;
+        };
         let data = match msg {
             Ok(Message::Binary(b)) => b,
             Ok(Message::Ping(_) | Message::Pong(_)) => continue,
@@ -194,7 +231,7 @@ async fn read_loop(
                     .flatten();
                 match ack {
                     Some(m) => {
-                        session.ack(m.ack.stream, m.ack.bytes).await;
+                        session.ack(generation, m.ack.stream, m.ack.bytes);
                         continue;
                     }
                     None => return ReadEnd::Policy("unexpected text message".into()),
@@ -205,35 +242,61 @@ async fn read_loop(
         if session.is_ended() {
             return ReadEnd::SocketGone;
         }
-        match session.client_bytes(&data).await {
+        match session.client_bytes(generation, &data).await {
             ClientInput::Ok => {}
             ClientInput::Policy(why) => return ReadEnd::Policy(why),
             ClientInput::LmsGone => return ReadEnd::LmsGone,
+            // Replaced or detached meanwhile: this socket no longer speaks for the player.
+            ClientInput::Stale => return ReadEnd::Kicked,
         }
     }
-    ReadEnd::SocketGone
+}
+
+enum WriteStep {
+    Send(Outbound),
+    Kicked((u16, &'static str)),
+    Done,
 }
 
 async fn write_loop(
     mut sink: futures_util::stream::SplitSink<WebSocket, Message>,
     mut rx: mpsc::Receiver<Outbound>,
+    mut kick: watch::Receiver<Kick>,
 ) {
-    while let Some(out) = rx.recv().await {
-        match out {
-            Outbound::Frame(f) => {
-                if sink.send(Message::Binary(f.into())).await.is_err() {
-                    return;
+    loop {
+        let step = tokio::select! {
+            biased;
+            out = rx.recv() => match out {
+                Some(out) => WriteStep::Send(out),
+                // The queue is dropped along with a kick: still say why.
+                None => match *kick.borrow() {
+                    Some(k) => WriteStep::Kicked(k),
+                    None => WriteStep::Done,
+                },
+            },
+            k = kicked(&mut kick) => WriteStep::Kicked(k),
+        };
+        let (code, reason) = match step {
+            WriteStep::Done => return,
+            WriteStep::Kicked(k) => k,
+            WriteStep::Send(Outbound::Close(code, reason)) => (code, reason),
+            WriteStep::Send(Outbound::Frame(f)) => {
+                let sent = tokio::select! {
+                    r = sink.send(Message::Binary(f.into())) => Ok(r),
+                    k = kicked(&mut kick) => Err(k),
+                };
+                match sent {
+                    Ok(Ok(())) => continue,
+                    Ok(Err(_)) => return,
+                    Err(k) => k,
                 }
             }
-            Outbound::Close(code, reason) => {
-                let _ = sink
-                    .send(Message::Close(Some(CloseFrame {
-                        code,
-                        reason: reason.into(),
-                    })))
-                    .await;
-                return;
-            }
-        }
+        };
+        let close = Message::Close(Some(CloseFrame {
+            code,
+            reason: reason.into(),
+        }));
+        let _ = tokio::time::timeout(CLOSE_SEND_TIMEOUT, sink.send(close)).await;
+        return;
     }
 }

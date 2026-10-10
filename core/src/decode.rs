@@ -23,6 +23,12 @@ use symphonia::core::meta::MetadataOptions;
 /// block plus the largest realistic compressed frame, with headroom.
 pub const DECODE_MARGIN: usize = 128 * 1024;
 
+/// Most bytes buffered while probing a stream's headers. Embedded artwork can make the
+/// headers several MiB long, so the player keeps reading past its usual input limit while
+/// probing; a stream whose headers still haven't been parsed at this size fails cleanly
+/// instead of waiting for ever.
+pub const PROBE_MAX_BYTES: usize = 32 * 1024 * 1024;
+
 #[derive(Default)]
 struct BufInner {
     data: VecDeque<u8>,
@@ -156,6 +162,11 @@ impl StreamDecoder {
         matches!(self.state, State::Done)
     }
 
+    /// Still looking for the stream's headers (input may grow up to [`PROBE_MAX_BYTES`]).
+    pub fn is_probing(&self) -> bool {
+        matches!(self.state, State::Probing { .. })
+    }
+
     /// Decode up to `max_packets`, passing each block of PCM to `sink(sample_rate, samples)`.
     pub fn work(&mut self, max_packets: usize, sink: &mut dyn FnMut(u32, &[f32])) -> DecodeStatus {
         // Once probed, fall through to decoding.
@@ -274,11 +285,17 @@ impl StreamDecoder {
                 }
             },
             Err(SymError::IoError(e)) if e.kind() == io::ErrorKind::UnexpectedEof && !eof => {
-                // Headers not all here yet (e.g. large embedded artwork): retry with more data.
+                // Headers not all here yet (e.g. large embedded artwork): retry with more data,
+                // up to a hard cap so an unparseable stream can't hold the track for ever.
                 self.input.rewind();
                 let have = self.input.unread();
+                if have >= PROBE_MAX_BYTES {
+                    let msg = format!("probe: no playable headers in the first {have} bytes");
+                    self.state = State::Failed(msg.clone());
+                    return Some(DecodeStatus::Failed(msg));
+                }
                 self.state = State::Probing {
-                    min_bytes: (have * 2).max(min_bytes),
+                    min_bytes: (have * 2).max(min_bytes).min(PROBE_MAX_BYTES),
                 };
                 Some(DecodeStatus::NeedData)
             }

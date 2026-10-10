@@ -19,7 +19,7 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -125,14 +125,27 @@ impl Default for Hub {
 
 impl Hub {
     fn subscribe(self: &Arc<Self>, cli_addr: String) -> broadcast::Receiver<Event> {
-        let rx = self.tx.subscribe();
+        // Subscribing and the listener's idle check happen under the same lock, so a new
+        // subscriber is never left without a listener.
         let mut running = self.running.lock().unwrap();
+        let rx = self.tx.subscribe();
         if !*running {
             *running = true;
             let hub = self.clone();
             tokio::spawn(async move { hub.listen(cli_addr).await });
         }
         rx
+    }
+
+    /// Called by the listener: stop (and say so) if nobody is subscribed.
+    fn stop_if_idle(&self) -> bool {
+        let mut running = self.running.lock().unwrap();
+        if self.tx.receiver_count() == 0 {
+            *running = false;
+            true
+        } else {
+            false
+        }
     }
 
     async fn listen(self: Arc<Self>, addr: String) {
@@ -142,8 +155,7 @@ impl Hub {
                 Ok(()) => info!("LMS CLI connection closed"),
                 Err(e) => warn!(error = %e, "LMS CLI connection failed"),
             }
-            if self.tx.receiver_count() == 0 {
-                *self.running.lock().unwrap() = false;
+            if self.stop_if_idle() {
                 return;
             }
             tokio::time::sleep(backoff).await;
@@ -158,24 +170,58 @@ impl Hub {
         let (rd, mut wr) = stream.into_split();
         wr.write_all(b"listen 1\n").await?;
         let mut lines = BufReader::new(rd);
-        let mut line = String::new();
+        let mut line = Vec::new();
         loop {
-            line.clear();
-            let n = (&mut lines)
-                .take(MAX_LINE as u64)
-                .read_line(&mut line)
-                .await?;
-            if n == 0 {
+            let Some(complete) = read_line_capped(&mut lines, &mut line, MAX_LINE).await? else {
                 return Ok(());
-            }
+            };
             if self.tx.receiver_count() == 0 {
                 return Ok(()); // nobody listening: drop the connection
             }
-            if let Some(ev) = parse_line(&line) {
+            if !complete {
+                warn!("dropped oversize LMS CLI line");
+                continue;
+            }
+            if let Some(ev) = parse_line(&String::from_utf8_lossy(&line)) {
                 let _ = self.tx.send(ev);
             }
         }
     }
+}
+
+/// Read one line of at most `max` bytes into `buf`. Returns `None` at end of input,
+/// `Some(true)` for a whole line and `Some(false)` for an oversize one, whose remainder
+/// (up to and including its newline) is discarded so it can't be mistaken for a new line.
+async fn read_line_capped<R: AsyncBufRead + Unpin>(
+    r: &mut R,
+    buf: &mut Vec<u8>,
+    max: usize,
+) -> std::io::Result<Option<bool>> {
+    buf.clear();
+    let n = (&mut *r).take(max as u64).read_until(b'\n', buf).await?;
+    if n == 0 {
+        return Ok(None);
+    }
+    if buf.ends_with(b"\n") || n < max {
+        return Ok(Some(true));
+    }
+    loop {
+        let available = r.fill_buf().await?;
+        if available.is_empty() {
+            break;
+        }
+        match available.iter().position(|b| *b == b'\n') {
+            Some(i) => {
+                r.consume(i + 1);
+                break;
+            }
+            None => {
+                let len = available.len();
+                r.consume(len);
+            }
+        }
+    }
+    Ok(Some(false))
 }
 
 use tokio::io::AsyncReadExt as _;
@@ -327,5 +373,64 @@ mod tests {
         ] {
             let _ = parse_line(line);
         }
+    }
+
+    /// Regression: the remainder of an oversize CLI line was parsed as a line of its own,
+    /// so an attacker-influenced string (e.g. a track title) could forge an event.
+    #[tokio::test]
+    async fn oversize_lines_are_dropped_whole() {
+        let forged = "aa%3Abb%3Acc%3Add%3Aee%3A01 playlist newsong forged";
+        let input = format!(
+            "{}{forged}\nrescan done\n{}\n",
+            "x".repeat(MAX_LINE),
+            "y".repeat(3 * MAX_LINE)
+        );
+        let mut r = BufReader::with_capacity(4096, input.as_bytes());
+        let mut buf = Vec::new();
+        let mut lines = Vec::new();
+        while let Some(complete) = read_line_capped(&mut r, &mut buf, MAX_LINE).await.unwrap() {
+            if complete {
+                lines.push(String::from_utf8_lossy(&buf).into_owned());
+            }
+        }
+        assert_eq!(lines, vec!["rescan done\n".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn short_lines_and_a_final_unterminated_line_are_read() {
+        let mut r = BufReader::new(&b"rescan done\nlast"[..]);
+        let mut buf = Vec::new();
+        assert_eq!(
+            read_line_capped(&mut r, &mut buf, 64).await.unwrap(),
+            Some(true)
+        );
+        assert_eq!(buf, b"rescan done\n");
+        assert_eq!(
+            read_line_capped(&mut r, &mut buf, 64).await.unwrap(),
+            Some(true)
+        );
+        assert_eq!(buf, b"last");
+        assert_eq!(read_line_capped(&mut r, &mut buf, 64).await.unwrap(), None);
+    }
+
+    /// The listener's idle check and a new subscription can't interleave: either the
+    /// listener sees the subscriber and carries on, or it stops first and the subscriber
+    /// starts a new one.
+    #[tokio::test]
+    async fn listener_only_stops_when_nobody_is_subscribed() {
+        let hub = Arc::new(Hub::default());
+        // Nothing listens on port 9 here; the listener just retries.
+        let rx = hub.subscribe("127.0.0.1:9".into());
+        assert!(*hub.running.lock().unwrap());
+        assert!(!hub.stop_if_idle(), "a subscriber is waiting");
+        assert!(*hub.running.lock().unwrap());
+        drop(rx);
+        assert!(hub.stop_if_idle());
+        assert!(!*hub.running.lock().unwrap());
+        let _rx = hub.subscribe("127.0.0.1:9".into());
+        assert!(
+            *hub.running.lock().unwrap(),
+            "a new subscriber restarts the listener"
+        );
     }
 }
