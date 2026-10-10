@@ -1,5 +1,7 @@
 # Deploying Lyrion Anywhere
 
+This is the deployment reference. For a step-by-step walkthrough, see [`INSTALL.md`](INSTALL.md).
+
 The gateway is the only part reachable from the internet. Put it behind a TLS reverse proxy and never expose LMS's own ports (3483, 9000, 9090).
 
 ```
