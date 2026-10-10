@@ -823,15 +823,18 @@ async fn original(
             let (a, b, total) = parse_content_range(resp.headers().get(header::CONTENT_RANGE))
                 .ok_or_else(|| unusable(track.id, "bad Content-Range"))?;
             let (want_a, want_b) = asked.unwrap_or((a, b));
-            if (a, b) != (want_a, want_b) || resp.content_length() != Some(b - a + 1) {
+            // LMS may send more than asked: it answers `bytes=0-0` with the whole file (an end
+            // of 0 reads as "no end"). A superset of the request is fine: relay only the part
+            // asked for. Anything else (a different or shorter span) is refused.
+            if a > want_a || b < want_b || resp.content_length() != Some(b - a + 1) {
                 return Err(unusable(track.id, "wrong range"));
             }
-            let len = b - a + 1;
-            let body = guarded(io_stream(resp), 0, len, watch);
+            let len = want_b - want_a + 1;
+            let body = guarded(io_stream(resp), want_a - a, len, watch);
             Ok(audio_response(
                 body,
                 content_type,
-                Some((a, b, total)),
+                Some((want_a, want_b, total)),
                 len,
                 &disposition,
             ))

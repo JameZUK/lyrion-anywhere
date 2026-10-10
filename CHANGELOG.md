@@ -32,7 +32,7 @@ Live black-box testing of the deployment (110 checks) and an aggressive local pe
   - request headers and bodies time out after 15 s, and idle connections close;
   - connections are capped with `--max-connections`;
   - streams and WebSockets are unaffected.
-- **Downloads:** a failed LMS request is retried once, and every upstream failure is logged.
+- **Downloads:** a failed LMS request is retried once, and every upstream failure is logged. LMS answers a request for just the first byte (`bytes=0-0`) with the whole file; the gateway used to refuse that (502) and now relays only the part asked for. Found by the live test.
 
 **Info**
 - **Headers:**

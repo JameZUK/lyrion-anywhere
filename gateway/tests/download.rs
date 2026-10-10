@@ -538,6 +538,23 @@ async fn ranges_resume_downloads() {
     );
 }
 
+/// Regression: LMS answers `bytes=0-0` with the whole file (206, Content-Range 0-end). The
+/// gateway refused that as a wrong range (502); it now relays just the byte asked for.
+#[tokio::test]
+async fn a_range_wider_than_asked_is_trimmed_to_the_request() {
+    let h = harness().await;
+    let a = audio(&h);
+    let r = h
+        .get_dl("/v1/download/track/1", Some(&h.tok_a), Some("bytes=0-0"))
+        .await;
+    assert_eq!(r.status(), S::PARTIAL_CONTENT);
+    assert_eq!(header(&r, "content-range"), format!("bytes 0-0/{AUDIO_LEN}"));
+    assert_eq!(header(&r, "content-length"), "1");
+    assert_eq!(r.bytes().await.unwrap().as_ref(), &a[0..=0]);
+    let (_, sent) = h.lms.downloads().pop().unwrap();
+    assert_eq!(sent.unwrap(), "bytes=0-0", "LMS was asked for exactly one byte");
+}
+
 /// An LMS that ignores `Range` (and gives no size up front) still gives a correct 206.
 #[tokio::test]
 async fn ranges_work_even_if_lms_ignores_them() {

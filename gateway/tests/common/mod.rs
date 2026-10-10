@@ -131,7 +131,9 @@ fn fake_download(audio: &[u8], id: &str, range: Option<&str>) -> axum::response:
     let span = range.and_then(|r| {
         let (a, b) = r.strip_prefix("bytes=")?.split_once('-')?;
         let a: usize = a.parse().ok()?;
-        let b: usize = if b.is_empty() {
+        // Like real LMS (Perl): an end of 0 reads as "no end", so `bytes=0-0` gets the
+        // whole file back (labelled as such in Content-Range).
+        let b: usize = if b.is_empty() || b == "0" {
             total - 1
         } else {
             b.parse().ok()?
