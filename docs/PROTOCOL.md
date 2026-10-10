@@ -22,18 +22,22 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
 | `POST /v1/auth/login` | `{"username","password","device_name","device_id"?,"refresh"?: "cookie"\|"body"}` | `{access_token, expires_in, user, device}`, plus the refresh token (see below) |
 | `POST /v1/auth/pair` | `{"code","device_name"}` | Same, with `refresh_token` in the body (native apps) |
 | `POST /v1/auth/refresh` | none (cookie), or `{"refresh_token"}` | A new access token and a **rotated** refresh token |
-| `POST /v1/auth/logout` | bearer access token | 204; revokes this device and ends its sessions |
+| `POST /v1/auth/logout` | bearer access token | 204; revokes this device and ends its sessions. Sends `Clear-Site-Data: "cache"` |
 | `GET /v1/me` | bearer access token | `{user, device}` |
 | `GET /v1/account` | bearer access token | `{username, role, totp_enabled, downloads: {enabled, formats}}` (`formats`: what this user may download that this server can produce; see [Downloads](#downloads)) |
-| `POST /v1/account/totp/setup` | `{"password"}` | `{secret, uri, qr_svg}`: a new secret, active once confirmed. A wrong password is 401 and counts towards the lockout |
+| `POST /v1/account/totp/setup` | `{"password"}` | `{secret, uri, qr_svg}`: a new secret, active once confirmed. A wrong password is 401 and counts towards a lockout of its own (per user), separate from sign-in |
 | `POST /v1/account/totp/confirm` | `{"code"}` | 204; two-step is now on |
 | `POST /v1/account/totp/disable` | `{"password","code"}` | 204; two-step is now off |
 
 - **Access tokens:** random, valid for 15 minutes. Use them as `Authorization: Bearer …` for streams and `/v1/me`, and as the first message on the player socket. Keep them in memory only.
 - **Refresh tokens:**
   - single use; each refresh returns a new one, valid for the sign-in lifetime (30 days by default, 1–365 set by the admin in the plugin settings). A device in use therefore stays signed in; one unused for the whole lifetime must sign in again;
-  - presenting a used one revokes the whole device, because the token has been copied. One exception: within 60 seconds of its use, while the token that replaced it is still unused, the response was lost (a phone suspended mid-request). The unused replacement is then discarded and a fresh one issued (audit event `refresh.retried`). The discarded replacement is remembered: if it is presented later, two parties held tokens for the device, so it is revoked as for any reuse;
+  - presenting a used one revokes the whole device, because the token has been copied (audit event `refresh.reused`, and the 401 carries `Clear-Site-Data: "cache"`);
+  - **grace:** within 60 seconds of a token's use, while none of its replacements has been used, presenting it again is a lost response (a phone suspended mid-request) or a concurrent refresh (two tabs restoring at once). Another replacement is issued *alongside* the first, which stays valid (audit event `refresh.retried`), so whichever one the client keeps works. At most 8 replacements per token; beyond that the refresh is refused (401) without revoking;
+  - **siblings:** the first replacement to be used wins. Its unused siblings are superseded at once: their access tokens stop working, and presenting one later is reuse, so the device is revoked. Presenting the original after any of its replacements was used is reuse too;
+  - **trade-off:** a thief who copied a refresh token and replays it within 60 seconds of the owner's refresh also gets a valid replacement. They can't both keep the device: whichever side uses its replacement first cuts off the other's access token immediately, and when the other side next refreshes, the device is revoked for both. Before this change, the second refresh discarded the first replacement, which signed out (and revoked) legitimate browsers whose tabs refreshed together. The window is 60 seconds and the thief needs the refresh token itself;
   - rotation is a single database transaction, so two simultaneous refreshes of one token never look like reuse: one rotates it, the other is served by the grace rule;
+  - the web app also takes a cross-tab Web Lock (`anywhere-refresh`, where supported) around each refresh, so its tabs don't present the same cookie at once;
   - clients sign out only when a refresh is refused (4xx). If the server can't be reached, they keep the sign-in and retry with backoff;
   - browsers get them in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/v1/auth`;
   - native apps get them in the body and keep them in the Keystore/Keychain.
@@ -44,13 +48,23 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
   - **Turning it off** needs the password and a current code.
   - **Lost authenticator:** the admin can reset two-step for a user.
   - **Not affected:** refresh and pairing, because the device was verified when it signed in.
-- **Devices:** each login (or pairing) is a device with its own player MAC. A browser can pass its previous `device_id` to keep the same LMS player, as long as the device belongs to the same user. A user has at most 20 active devices: signing in (or pairing) another revokes the least recently seen one and ends its live session (audit event `device.evicted`).
+- **Devices:** each login (or pairing) is a device with its own player MAC. A browser can pass its previous `device_id` to keep the same LMS player, as long as the device belongs to the same user (the web app always does). A user has at most 20 active devices: signing in (or pairing) another revokes the least recently seen one and ends its live session (audit event `device.evicted`).
+  - At most 10 **new** devices per user per hour (reusing one doesn't count); beyond that, 429 with `Retry-After` (audit event `device.rate_limited`).
+  - **Device names** are cleaned rather than refused: letters of any script, digits, spaces and `. , - _ ' ’ ( ) &` are kept, everything else (markup, control, bidi and other format characters such as U+202E or U+200B) is removed, runs of whitespace become one space, and the result is cut to 64 characters. Nothing left: `Browser`. The name a player reports to LMS (`SETD`) is cleaned the same way, and replaced by the device name if nothing usable is left.
+  - When a device is revoked (any of the ways under **Revocation**), the gateway asks LMS to forget its player (`client forget`), after ending the session; best effort, failures are logged. Revoked devices are deleted after 30 days.
 - **Errors:**
   - wrong credentials always return the same 401;
-  - repeated failures per username or per client address return 429 with `Retry-After`, with escalating lockouts. An attempt counts from the moment it starts, so parallel guesses can't get past the limit. IPv6 clients are counted per /64, and usernames that can't exist get no entry of their own;
+  - repeated failures return 429 with `Retry-After`, with escalating lockouts (5 failures in 15 minutes; 15 minutes, doubling up to a day). An attempt counts from the moment it starts, so parallel guesses can't get past the limit:
+    - **per client address**, a hard lock: that address may not try again until it ends. IPv6 clients are counted per /64;
+    - **per username**, a soft one, so nobody can lock someone else out: once tripped, the addresses that failed for that username are refused, and all others share 2 attempts a minute. The right password (and code) from an address that hasn't failed therefore still signs in, while spreading guesses over many addresses buys no more than that budget. Usernames that can't exist get no entry of their own;
+    - **pairing codes** have the same soft limit across all clients, as well as the per-address one;
   - at most 4 password checks run at once; beyond that, requests wait briefly and then get 503 with `Retry-After: 1`;
   - malformed or unknown fields return 400, and bodies over 4 KiB return 413.
-- **Revocation:** revoking a device, disabling or deleting a user, an admin password reset, logging out, or detecting refresh-token reuse closes that device's live player session immediately (1008, "access revoked").
+- **Revocation:** revoking a device, disabling or deleting a user, an admin password reset, logging out, the device limit, or detecting refresh-token reuse closes that device's live player session immediately (1008, "access revoked"), then removes its LMS player.
+- **Client address:** for lockouts and audit, the gateway uses the TCP peer, unless the peer is a trusted proxy (loopback or `--trusted-proxy`). Then, if `--client-ip-header` names a header (e.g. `CF-Connecting-IP`) and it holds one valid address, that; otherwise `X-Forwarded-For` read from the right, skipping trusted proxies: the first address no trusted proxy vouches beyond. Entries further left are written by the client and ignored, so proxies may append to the header.
+- **Response headers:** every `/v1/` response except artwork (and downloads, which set `private, no-store`) carries `Cache-Control: no-store`. All responses, the "TLS required" 403 included, carry the security headers: CSP, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Cross-Origin-Opener-Policy` and a `Permissions-Policy` that turns off camera, microphone, geolocation, payment, USB and other features the app doesn't use.
+- **Origins:** an `Origin` is accepted if it is the request's own host over HTTPS, or listed with `--allowed-origin`. `http://` same-origin is accepted only on plain-HTTP requests, which the gateway serves only on loopback without proxy headers (local development).
+- **`Clear-Site-Data: "cache"`** on sign-out (and on the reuse refusal) clears cached artwork and responses from the browser. It leaves IndexedDB alone, so offline downloads stay; browsers may also empty the service worker's caches, which it refills.
 
 ### Admin API
 

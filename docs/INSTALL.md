@@ -116,6 +116,7 @@ The main `serve` options:
 | `--lms-http-port`, `--lms-cli-port`, `--lms-slimproto-port` | 9000, 9090, 3483 | LMS's ports, if you changed them. |
 | `--allowed-origin` | | Your public URL, e.g. `https://music.example.com`. |
 | `--trusted-proxy` | | The proxy's address, if it isn't on the same machine (repeatable). |
+| `--client-ip-header` | | Behind a CDN, the header carrying the visitor's address, e.g. `CF-Connecting-IP` (see §4.3). |
 | `--admin-listen` | `127.0.0.1:9445` | The admin API, for the plugin and the `admin` commands. Never expose it. |
 | `--ffmpeg` | `ffmpeg` on `PATH` | ffmpeg for MP3/Opus downloads (an absolute path). |
 | `--no-transcode` | | Offer downloads in their original format only, even with ffmpeg installed. |
@@ -140,6 +141,7 @@ Open *Settings › Plugins › Lyrion Anywhere* in LMS. (Docker users: the same 
 | **Listen address** | `127.0.0.1:9443` if the reverse proxy runs on the LMS machine. Otherwise the LMS machine's LAN address, e.g. `10.0.0.20:9443`; then firewall that port so only the proxy can reach it. |
 | **Public URL** | `https://music.example.com`, exactly as people will type it. |
 | **Trusted proxies** | The proxy's LAN address (e.g. `10.0.0.10`) if it runs on another machine; otherwise leave empty. |
+| **Client address header** | Leave empty, unless you're behind Cloudflare or another CDN: see §4.3. |
 | **Gateway path** | Leave empty. It's for development and ignored unless LMS is started with `ANYWHERE_ALLOW_GATEWAY_PATH=1`. |
 | **Transcoded downloads** | Ticked (the default) to offer MP3 and Opus downloads as well as the original. Needs ffmpeg (§1). |
 | **ffmpeg path** | Leave empty to use `ffmpeg` from the system path. Otherwise the absolute path to a program named `ffmpeg`, e.g. `/usr/local/bin/ffmpeg`. |
@@ -160,7 +162,7 @@ The same page has these sections:
 
 The proxy terminates HTTPS and passes requests, including WebSockets, to the gateway. Whatever proxy you use, it must:
 
-- **Replace `X-Forwarded-For` with the client's address, never append to it.** The gateway uses that address for sign-in lockouts, and an appended header would let a client choose its own.
+- **Set `X-Forwarded-For` to the client's address** (replacing or appending both work). The gateway uses it for sign-in lockouts, reading from the right, so a client can't choose its own by sending the header itself.
 - **Pass WebSocket upgrades** and allow long-lived connections (players and audio streams stay open for hours).
 - **Add no Content-Security-Policy of its own.** The gateway sets its own strict headers. Adding HSTS is good.
 
@@ -203,6 +205,8 @@ This works, with two points to watch:
   real_ip_header CF-Connecting-IP;
   set_real_ip_from 173.245.48.0/20;   # …and the rest of Cloudflare's published IPv4/IPv6 ranges
   ```
+
+  Or, simpler, tell the gateway which header holds the visitor's address: *Client address header* `CF-Connecting-IP` in the plugin settings (Docker: `--client-ip-header CF-Connecting-IP`). The gateway believes it only on requests from your proxy (loopback, or a *Trusted proxy*), so use it only if that proxy accepts connections from Cloudflare alone, such as a Cloudflare Tunnel (`cloudflared`) or a firewall limited to Cloudflare's ranges. Otherwise anyone reaching the proxy directly could pick their own address.
 
 - **Idle timeouts:** Cloudflare closes idle WebSockets after 100 seconds. The gateway pings every 30 seconds, so no change is needed.
 
@@ -266,7 +270,7 @@ From a phone **off your Wi-Fi** (on mobile data):
 |---|---|
 | The settings page shows **gateway exited: …** | The message after the colon is the gateway's own reason: usually a port already in use, or a bad *Listen address*. Fix it, then click **Restart gateway**. |
 | **502 Bad Gateway** from the proxy | The gateway isn't running, or the proxy points to the wrong address. Check the *Status* panel and the proxy's `upstream`/`reverse_proxy` address. |
-| **Sign-in fails with "too many attempts"** | The lockout is working (5 failures in 15 minutes). Wait 15 minutes; repeated lockouts last longer, up to a day. If it happens to everyone, the proxy isn't passing the real client address (see §4 and §4.3). |
+| **Sign-in fails with "too many attempts"** | The lockout is working (5 failures in 15 minutes). It applies to the address that failed: wait 15 minutes, or sign in from another network (mobile data); repeated lockouts last longer, up to a day. Someone guessing your password from elsewhere can slow sign-ins for your username to a couple a minute, but can't lock you out. Signing in on more than 10 new devices in an hour is also refused for an hour. If it happens to everyone, the proxy isn't passing the real client address (see §4 and §4.3). |
 | **Two-step codes are always wrong** | The device's clock, or the server's, is wrong. Both need the correct time (NTP). |
 | **"Can't reach the music server. Trying again…"** | The phone is offline, or the gateway is down. The app keeps your sign-in and reconnects by itself. |
 | **No sound after reloading the page** | Browsers only start sound after a tap. Tap anywhere on the page (a banner says so). |

@@ -66,6 +66,9 @@ is_deeply($argv, [
 	is_deeply($tail->($cl->(ffmpeg => '/usr/bin/ffmpeg', download_cache_mb => 4096)),
 		['--ffmpeg', '/usr/bin/ffmpeg', '--download-cache-mb', 4096], 'ffmpeg path and cache size');
 	is_deeply($tail->($cl->(download_cache_mb => '')), [], 'empty cache size: the default');
+	is_deeply($tail->($cl->(client_ip_header => 'CF-Connecting-IP')),
+		['--client-ip-header', 'CF-Connecting-IP'], 'CDN client address header');
+	is_deeply($tail->($cl->(client_ip_header => '')), [], 'no CDN header by default');
 }
 
 my %bad = (
@@ -89,6 +92,10 @@ my %bad = (
 	'origin with path'            => { allowed_origins => ['https://music.example.com/x'] },
 	'origin javascript:'          => { allowed_origins => ['javascript:alert(1)'] },
 	'bad http port'               => { http_port => '90a0' },
+	'client header with a space'  => { client_ip_header => 'CF Connecting IP' },
+	'client header injection'     => { client_ip_header => "CF-Connecting-IP\r\n--trusted-proxy" },
+	'client header reserved'      => { client_ip_header => 'x-forwarded-for' },
+	'client header as option'     => { client_ip_header => ['--x'] },
 );
 for my $name (sort keys %bad) {
 	my ($a, $e) = Plugins::LyrionAnywhere::Gateway::command_line(%ok, %{ $bad{$name} });

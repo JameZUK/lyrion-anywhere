@@ -3,7 +3,7 @@ import { RETRY_MS, SIGNED_OUT_KEY, SessionManager, refused, type AuthApi } from 
 import { Api, artUrl } from '$lib/api/rpc';
 import { ApiError, callJson, CLIENT_HEADER } from '$lib/api/http';
 import { EventsClient, eventsBackoff, parseEventMessage } from '$lib/api/events';
-import { defaultDeviceName, groupKey, rememberedDevice, totpSetup } from '$lib/api/auth';
+import { defaultDeviceName, groupKey, refresh, REFRESH_LOCK, rememberedDevice, totpSetup, withRefreshLock, type LockManagerLike } from '$lib/api/auth';
 import type { Session } from '$lib/api/auth';
 
 const sess = (token: string): Session => ({
@@ -608,6 +608,89 @@ describe('auth helpers', () => {
 
 	test('keys are grouped for reading', () => {
 		expect(groupKey('ABCDEFGHIJ')).toBe('ABCD EFGH IJ');
+	});
+});
+
+/** A fake `navigator.locks`: grants each named lock to one holder at a time, in order. */
+function fakeLocks() {
+	const tails = new Map<string, Promise<unknown>>();
+	const names: string[] = [];
+	return {
+		names,
+		request<T>(name: string, cb: () => Promise<T>): Promise<T> {
+			names.push(name);
+			const prev = tails.get(name) ?? Promise.resolve();
+			const run = prev.then(cb, cb);
+			tails.set(
+				name,
+				run.catch(() => {}),
+			);
+			return run;
+		},
+	};
+}
+
+describe('cross-tab refresh lock', () => {
+	/** A fetch whose refresh responses are released by hand, tracking concurrency. */
+	function fakeRefreshServer() {
+		let active = 0;
+		let maxActive = 0;
+		let n = 0;
+		const pending: ReturnType<typeof deferred<void>>[] = [];
+		const f = vi.fn(async () => {
+			active++;
+			maxActive = Math.max(maxActive, active);
+			const gate = deferred<void>();
+			pending.push(gate);
+			await gate.promise;
+			active--;
+			n++;
+			return json(200, { ...sess(`t${n}`), device: { id: 7, name: 'x' } });
+		});
+		return { f, pending, max: () => maxActive };
+	}
+
+	test('refreshes from two tabs run one after the other under the named lock', async () => {
+		const server = fakeRefreshServer();
+		vi.stubGlobal('fetch', server.f);
+		const locks = fakeLocks();
+		vi.stubGlobal('navigator', { locks, userAgent: '' });
+		const a = refresh();
+		const b = refresh();
+		await vi.waitFor(() => expect(server.pending.length).toBe(1));
+		// The second tab waits for the first to finish before presenting the cookie.
+		await new Promise((r) => setTimeout(r, 10));
+		expect(server.f).toHaveBeenCalledTimes(1);
+		server.pending[0]!.resolve();
+		expect((await a).access_token).toBe('t1');
+		await vi.waitFor(() => expect(server.pending.length).toBe(2));
+		server.pending[1]!.resolve();
+		expect((await b).access_token).toBe('t2');
+		expect(server.max()).toBe(1);
+		expect(locks.names).toEqual([REFRESH_LOCK, REFRESH_LOCK]);
+		expect(REFRESH_LOCK).toBe('anywhere-refresh');
+	});
+
+	test('a failed refresh releases the lock for the next one', async () => {
+		const locks = fakeLocks();
+		const first = withRefreshLock(async () => {
+			throw new ApiError(401, 'expired');
+		}, locks);
+		await expect(first).rejects.toThrow();
+		await expect(withRefreshLock(async () => 'ok', locks)).resolves.toBe('ok');
+	});
+
+	test('without Web Locks, refresh simply runs', async () => {
+		const server = fakeRefreshServer();
+		vi.stubGlobal('fetch', server.f);
+		vi.stubGlobal('navigator', { userAgent: '' });
+		const p = refresh();
+		await vi.waitFor(() => expect(server.pending.length).toBe(1));
+		server.pending[0]!.resolve();
+		expect((await p).access_token).toBe('t1');
+		// A broken lock manager is ignored too.
+		expect(await withRefreshLock(async () => 5, { request: undefined } as unknown as LockManagerLike)).toBe(5);
+		expect(await withRefreshLock(async () => 6, undefined)).toBe(6);
 	});
 });
 

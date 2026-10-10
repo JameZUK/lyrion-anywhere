@@ -23,6 +23,11 @@ use crate::{AppState, origin_allowed};
 pub const REFRESH_COOKIE: &str = "anywhere_refresh";
 pub const CLIENT_HEADER: &str = "x-anywhere-client";
 const MAX_BODY: usize = 4096;
+/// Sent when this browser's device is signed out, so cached artwork and other responses
+/// go with it. "cache" leaves IndexedDB (offline downloads) alone; browsers may also clear
+/// the service worker's caches, which it refills.
+const CLEAR_SITE_DATA: &str = "clear-site-data";
+const CLEAR_CACHE: &str = "\"cache\"";
 
 fn error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
@@ -256,7 +261,10 @@ pub async fn refresh(
         Err(AuthError::Reused(device)) => {
             // A stolen refresh token: the device is revoked, so end its live session too.
             gw.end_sessions_for(&[device]).await;
-            auth_error(AuthError::Reused(device))
+            let mut r = auth_error(AuthError::Reused(device));
+            r.headers_mut()
+                .insert(CLEAR_SITE_DATA, HeaderValue::from_static(CLEAR_CACHE));
+            r
         }
         Err(e) => auth_error(e),
     }
@@ -275,6 +283,7 @@ pub async fn logout(State(gw): State<AppState>, headers: HeaderMap) -> Response 
             gw.end_sessions_for(&[device]).await;
             let mut h = HeaderMap::new();
             h.insert(header::SET_COOKIE, refresh_cookie("", 0));
+            h.insert(CLEAR_SITE_DATA, HeaderValue::from_static(CLEAR_CACHE));
             (StatusCode::NO_CONTENT, h).into_response()
         }
         Ok(None) => error(StatusCode::UNAUTHORIZED, "invalid credentials"),

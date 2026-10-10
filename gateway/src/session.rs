@@ -634,6 +634,8 @@ fn capability_ok(tok: &str) -> bool {
 /// The SETD id-0 payload to forward for a client's name reply (`data` excludes the id).
 /// A name that is empty, too long, has control characters, or looks like a URL or path is
 /// replaced by the device's name, so a player can't give itself a name LMS might fetch.
+/// Whatever is kept goes through the same cleaning as device names
+/// ([`crate::accounts::clean_device_name`]): no markup, bidi or other format characters.
 fn name_reply(data: &[u8], fallback: &str) -> Vec<u8> {
     let end = data.iter().position(|b| *b == 0).unwrap_or(data.len());
     let acceptable = |n: &str| {
@@ -647,14 +649,14 @@ fn name_reply(data: &[u8], fallback: &str) -> Vec<u8> {
             && !n.starts_with('\\')
             && !lower.starts_with("file:")
     };
-    let name = match std::str::from_utf8(&data[..end]) {
-        Ok(n) if acceptable(n) => n.to_string(),
-        _ => fallback
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(MAX_NAME)
-            .collect(),
-    };
+    let name = std::str::from_utf8(&data[..end])
+        .ok()
+        .filter(|n| acceptable(n))
+        .and_then(crate::accounts::clean_name)
+        .unwrap_or_else(|| crate::accounts::clean_device_name(fallback))
+        .chars()
+        .take(MAX_NAME)
+        .collect::<String>();
     let mut out = vec![0];
     out.extend_from_slice(name.as_bytes());
     out.push(0);
@@ -806,8 +808,28 @@ mod tests {
             d.push(0);
             assert_eq!(name_reply(&d, "Fallback"), b"\0Fallback\0", "{bad:?}");
         }
-        assert_eq!(name_reply(b"Kitchen: left\0", "F"), b"\0Kitchen: left\0");
+        // Kept names are cleaned like device names: markup and punctuation beyond the basic
+        // set go (the colon here), as do bidi and zero-width characters.
+        assert_eq!(name_reply(b"Kitchen: left\0", "F"), b"\0Kitchen left\0");
         assert_eq!(name_reply(b"Caf\xc3\xa9", "F"), "\0Café\0".as_bytes());
+        for (raw, want) in [
+            ("<b>Den</b>", "bDenb"),
+            ("Kid\u{202e}s room", "Kids room"),
+            ("Zero\u{200b}width\u{2066}", "Zerowidth"),
+            ("Bob's (spare) & co.", "Bob's (spare) & co."),
+            ("Kanji 台所", "Kanji 台所"),
+        ] {
+            let mut d = raw.as_bytes().to_vec();
+            d.push(0);
+            let want = format!("\0{want}\0");
+            assert_eq!(name_reply(&d, "F"), want.as_bytes(), "{raw:?}");
+        }
+        // Nothing left after cleaning: the device's name, itself cleaned.
+        for bad in ["\u{202e}\u{200b}", "<>!?"] {
+            let mut d = bad.as_bytes().to_vec();
+            d.push(0);
+            assert_eq!(name_reply(&d, "Phone\u{202e}"), b"\0Phone\0", "{bad:?}");
+        }
     }
 
     #[tokio::test]

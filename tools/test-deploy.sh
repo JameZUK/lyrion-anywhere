@@ -107,8 +107,9 @@ check "player socket upgrades through nginx" "$($C $WS -H "Origin: https://$NAME
 check "cross-origin socket refused" "$($C $WS -H 'Origin: https://evil.example' "$BASE/v1/events" || true)" 403
 
 echo "# client address can't be spoofed"
-# Six failures from one client, each claiming a different address and user. If nginx
-# appended to X-Forwarded-For, the gateway would see six clients and never lock out.
+# Six failures from one client, each claiming a different address and user. The gateway
+# must see one client (nginx overwrites X-Forwarded-For, and the gateway reads it from the
+# right in any case), or it would never lock out.
 codes=""
 for i in 1 2 3 4 5 6; do
 	codes="$codes $($C -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -H 'X-Anywhere-Client: 1' \

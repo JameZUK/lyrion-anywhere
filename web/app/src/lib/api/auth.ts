@@ -89,11 +89,40 @@ export async function login(username: string, password: string, totp?: string, d
 	return session;
 }
 
+/** The Web Locks lock that refreshes run under, across all of this site's tabs. */
+export const REFRESH_LOCK = 'anywhere-refresh';
+
+/** The part of `navigator.locks` used here. */
+export interface LockManagerLike {
+	request<T>(name: string, callback: () => Promise<T>): Promise<T>;
+}
+
+function browserLocks(): LockManagerLike | undefined {
+	try {
+		return (globalThis.navigator as { locks?: LockManagerLike } | undefined)?.locks;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Run `fn` holding the cross-tab refresh lock, so two tabs (or a tab and the installed app)
+ * never present the same refresh cookie at once: the second waits, then sends the cookie
+ * the first one received. Without Web Locks it simply runs; the gateway tolerates
+ * concurrent refreshes within a short grace window.
+ */
+export function withRefreshLock<T>(fn: () => Promise<T>, locks: LockManagerLike | undefined = browserLocks()): Promise<T> {
+	if (!locks || typeof locks.request !== 'function') return fn();
+	return locks.request(REFRESH_LOCK, fn);
+}
+
 /** Exchange the refresh cookie for a new access token (and a rotated cookie). */
-export async function refresh(): Promise<Session> {
-	const session = await callJson<Session>('/v1/auth/refresh', { method: 'POST' });
-	rememberDevice(session.device.id);
-	return session;
+export async function refresh(locks: LockManagerLike | undefined = browserLocks()): Promise<Session> {
+	return withRefreshLock(async () => {
+		const session = await callJson<Session>('/v1/auth/refresh', { method: 'POST' });
+		rememberDevice(session.device.id);
+		return session;
+	}, locks);
 }
 
 export async function logout(token: string): Promise<void> {

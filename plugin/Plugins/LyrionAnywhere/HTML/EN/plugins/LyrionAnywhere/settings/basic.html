@@ -31,6 +31,10 @@
 	<input type="text" class="stdedit" name="pref_trusted_proxies" value="[% prefs.pref_trusted_proxies | html %]" placeholder="10.0.0.10">
 [% END %]
 
+[% WRAPPER setting title="Client address header" desc="Behind Cloudflare (or another CDN), the header carrying each visitor's real address, e.g. CF-Connecting-IP. It is only believed on requests from your proxy, so use it only if the proxy accepts connections from the CDN alone (such as a Cloudflare Tunnel). Leave empty otherwise." %]
+	<input type="text" class="stdedit" name="pref_client_ip_header" value="[% prefs.pref_client_ip_header | html %]" placeholder="CF-Connecting-IP">
+[% END %]
+
 [% WRAPPER setting title="Gateway path" desc="Development only: an absolute path to a gateway binary. Used only when LMS was started with ANYWHERE_ALLOW_GATEWAY_PATH=1 in its environment; otherwise the bundled, checked binary runs. Leave empty to use the bundled one." %]
 	<input type="text" class="stdedit" name="pref_gateway_path" value="[% prefs.pref_gateway_path | html %]">
 	[% IF prefs.pref_gateway_path AND NOT anywhere_gateway_path_allowed %]<br><span class="aw-note">Ignored: ANYWHERE_ALLOW_GATEWAY_PATH=1 is not set.</span>[% END %]
