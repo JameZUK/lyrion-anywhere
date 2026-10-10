@@ -131,10 +131,12 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
    - **HELO:** the MAC must equal the one assigned to that device (a locally administered `02:…` address). The gateway also enforces the capability policy (codecs, max sample rate, model name).
    - **strm:** when `server_ip` is 0 or LMS's own address, the client fetches audio via `GET /v1/stream/{session}`. The gateway replays the request to `127.0.0.1:9000` only if the path is `/stream.mp3?player=<that session's MAC>`.
    - **serv:** dropped, so a device can't be redirected to another server.
-4. **Resume:**
-   - If the WebSocket drops, the gateway keeps the upstream TCP and the current audio stream open for a grace period (default 60 s), and buffers the audio.
-   - The client reconnects with a resume token and continues from its byte offset.
-   - LMS never sees the player leave.
+4. **Resume** (implemented; full detail in `docs/PROTOCOL.md`):
+   - **Grace period:** if the socket drops, the gateway keeps the session and the LMS connection for a grace period (60 s by default). LMS never sees the player leave.
+   - **Heartbeats:** while the client is away, the gateway reports status to LMS on the player's behalf every second. It replays the client's last STAT with the clock advanced. Without this, LMS drops a silent player after about 15 s, which the live dropout test showed.
+   - **Redelivery:** frames for the client are numbered and kept in a bounded log. On resume, the client says how many it received and everything after that is re-sent, which covers frames lost in flight.
+   - **Stream resume:** downloads resume by byte offset. The client acknowledges received bytes, and the gateway never reads more than one replay window (4 MiB) beyond the last ack. A resume therefore always falls inside the window, and LMS isn't drained ahead of time.
+   - **One session per device:** a new session for a device ends its previous one.
 
 ### 5.2 Control (`POST /v1/rpc`, `WS /v1/events`)
 
@@ -207,8 +209,8 @@ This is the one contract used by the web app now and the native apps later. It i
 | `POST /v1/auth/token` | Refresh token → 15-min access token | Refresh token |
 | `POST /v1/auth/logout` | Revoke current device session | Access token |
 | `GET /v1/me` | User, role, permissions, assigned player MAC | Access token |
-| `WS /v1/player` | Slimproto tunnel (§5.1) | Access token |
-| `GET /v1/stream/{session}` | Audio for a player session | Session stream token |
+| `WS /v1/player` | Slimproto tunnel with resume and stream acks (§5.1, `docs/PROTOCOL.md`) | Access token; resume secret |
+| `GET /v1/stream/{session}/{n}[?offset=k]` | Audio for the session's n-th stream; resumable | Bearer token |
 | `POST /v1/rpc` | Filtered JSON-RPC (§5.2) | Access token |
 | `WS /v1/events` | Filtered event push | Access token |
 | `GET /v1/art/…` | Artwork | Access token or signed URL |
@@ -380,11 +382,16 @@ Android (Kotlin + Jetpack Compose) and iOS (Swift + SwiftUI) are thin native UIs
 
 The **v1 release** is Phases 0–3.
 
-0. **Spike.** The WASM core plays a track as an LMS player in the browser through Caddy via `WS /v1/player`. Desktop squeezelite does the same through a small WSS-to-TCP shim.
-   - **Gate:** gapless playback from a remote network.
-   - **Gate:** the mobile Safari background-audio path is chosen (§7.3).
-1. **Gateway + plugin.** Auth and sessions, the Slimproto tunnel with resume, the RPC allow-list, events, art, the plugin settings page, gateway supervision and the Docker image.
+0. **Spike.** _Closed 2026-10-10; see `docs/phase0-report.md`._ The core played as a real LMS player natively, through the gateway behind a TLS proxy, and in desktop and Android browsers, with gapless transitions. The native test client replaced the planned squeezelite shim. The screen-locked phone test moves to Phase 1.
+1. **Gateway + plugin.** Delivered in this order:
+   1. resume and automatic client reconnect (the first phone test lost the player on a weak-signal dropout);
+   2. accounts, pairing and sessions;
+   3. the RPC allow-list, events and art;
+   4. the plugin settings page and gateway supervision;
+   5. the screen-locked phone tests (Android, iOS);
+   6. nginx config and the Docker image.
    - **Gate:** an external security review, plus scanner tests proving LMS paths are unreachable.
+   - **Gate:** a phone keeps playing through a 30 s network dropout and 4 minutes with the screen locked.
 2. **Web app.** All of §7.2 except offline, as an installable PWA.
    - **Gate:** usability pass on phone and desktop; WCAG AA audit.
 3. **Offline downloads.** Server download/transcode/manifest/events endpoints; the web download manager, offline mode and sync-back.

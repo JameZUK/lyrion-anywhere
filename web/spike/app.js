@@ -75,8 +75,8 @@ $('connect-form').addEventListener('submit', async (e) => {
 async function onWorkerMessage(e) {
   const m = e.data;
   if (m.log) log(m.log);
-  if (m.closed) {
-    $('s-output').textContent = 'disconnected';
+  if (m.connection) {
+    $('s-conn').textContent = m.connection;
   }
   if (m.rate) {
     log(`switching audio output to ${m.rate} Hz`);

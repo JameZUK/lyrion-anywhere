@@ -90,3 +90,14 @@ fn status_is_valid_json_and_pull_is_safe_when_idle() {
     p.played(1e12);
     assert_eq!(p.output_rate(), 0);
 }
+
+#[wasm_bindgen_test]
+fn open_stream_reports_number_and_offset() {
+    let mut p = WasmPlayer::new("02:00:00:00:00:01", "Web", "flc").unwrap();
+    assert!(p.open_stream().is_none());
+    p.on_control(&strm_s(b'f'), 1.0).unwrap();
+    p.on_stream_data(&[0u8; 777], 2.0);
+    assert_eq!(p.open_stream().unwrap(), vec![1.0, 777.0]);
+    p.on_stream_end(3.0);
+    assert!(p.open_stream().is_none());
+}

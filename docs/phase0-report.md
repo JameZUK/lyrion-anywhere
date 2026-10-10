@@ -1,6 +1,6 @@
 # Phase 0 report — tunnel spike
 
-_In progress · started 2026-10-10_
+_Closed 2026-10-10. Screen-locked phone playback is carried into Phase 1._
 
 Phase 0 proves the riskiest assumption: a clean-room Rust core can act as a real LMS player, then do the same through the gateway's WebSocket tunnel and in a browser.
 
@@ -12,7 +12,7 @@ Phase 0 proves the riskiest assumption: a clean-room Rust core can act as a real
 | Gapless track transition | **Passed** at the protocol level and in a sample-exact unit test. A listening test is still to do. |
 | Plays through gateway WSS tunnel behind a reverse proxy | **Passed**: live through Caddy (TLS, HTTP/2) against LMS 9.1.x |
 | Browser player (WASM + AudioWorklet), gapless | **Passed** on desktop Chromium. Playback, seek, gapless transition, pause/resume and stop all worked, under the strict CSP. |
-| Mobile Safari background-audio path chosen | Ready to test: needs an iPhone reaching the gateway over trusted HTTPS |
+| Screen-locked playback on a phone | **Partial** on Android Chrome over VPN: audio continued with the screen locked, but a weak-signal dropout ended the run early. The full test (3–4 min locked on a good signal) is deferred to Phase 1, alongside resume. iOS not yet tested. |
 
 ## Native spike results (LMS 9.1.x)
 
@@ -71,6 +71,21 @@ Known items for Phase 2:
 - SvelteKit's static output uses an inline bootstrap script. The gateway will add SHA-256 hashes of inline scripts to the CSP header for each HTML file, rather than allow `'unsafe-inline'`.
 - Worker ↔ worklet transfer currently uses `postMessage` chunks. If profiling shows GC pressure, a SharedArrayBuffer ring is the alternative (needs COOP/COEP headers).
 
+## Android phone test
+
+Setup:
+- Android Chrome over the user's VPN to a LAN HTTPS endpoint (Caddy `tls internal`, with the test CA installed on the phone).
+- A dedicated throwaway device token, passed in the URL fragment and revoked afterwards.
+
+Results:
+- **Playback:** the phone played as an LMS player through the gateway.
+- **Screen locked:** audio carried on after locking.
+- **Dropout:** about 85 s into playback, a weak-signal dropout reset the connection (WebSocket close 1006). LMS marked the player disconnected and froze its clock. The page had no reconnect logic, so the player was lost even though buffered audio kept playing for a while.
+
+Conclusions:
+- **Resume is essential.** A single dropout on a mobile network loses the player today. Spec §5.1's resume (gateway holds the LMS connection for a grace period, the client reconnects with a resume token and continues from its byte offset) becomes the first Phase 1 item, with automatic client reconnect.
+- **Screen lock:** the decoder and worker kept running with the screen locked. Whether the network connection also stays up while locked still needs a clean run.
+
 ## Test suite at this point
 
 - **57 tests, all passing**:
@@ -108,6 +123,11 @@ Known items for Phase 2:
 
 ## Next
 
-1. iPhone test with the screen locked (needs a trusted HTTPS route to the gateway).
-2. nginx example config for real deployments, tested the same way.
-3. Phase 0 sign-off, then Phase 1 (accounts, pairing, resume, RPC allow-list, plugin).
+Phase 1, in order:
+
+1. Resume and automatic reconnect: gateway grace period, client reconnect, LMS never sees the player leave.
+2. Accounts, device pairing and short-lived access tokens (replacing the Phase 0 devices file).
+3. RPC allow-list, events and artwork, so clients can browse and control.
+4. LMS plugin: settings, accounts UI, gateway supervision.
+5. Repeat the screen-locked phone test (Android, then iOS) on a stable connection.
+6. nginx example config, tested; Docker image.

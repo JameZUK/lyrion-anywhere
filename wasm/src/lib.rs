@@ -70,6 +70,15 @@ impl WasmPlayer {
         self.inner.on_stream_error(now_ms as u64);
     }
 
+    /// The stream being downloaded as `[stream_number, bytes_received]`, or `undefined`.
+    /// After a broken download, refetch with `?offset=<bytes_received>` and do not pass the
+    /// response headers in again.
+    pub fn open_stream(&self) -> Option<Vec<f64>> {
+        self.inner
+            .open_stream()
+            .map(|(n, bytes)| vec![n as f64, bytes as f64])
+    }
+
     pub fn wants_stream_data(&self) -> bool {
         self.inner.wants_stream_data()
     }

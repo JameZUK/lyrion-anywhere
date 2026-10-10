@@ -232,6 +232,16 @@ impl Player {
         }
     }
 
+    /// The stream currently being downloaded, as `(stream_number, bytes_received)`, or
+    /// `None` if none is open. After a reconnect, the host resumes the download at this
+    /// byte offset (without passing the response headers in again).
+    pub fn open_stream(&self) -> Option<(u64, u64)> {
+        self.track
+            .as_ref()
+            .filter(|t| !t.stream_ended)
+            .map(|t| (t.seq as u64 + 1, t.bytes_received))
+    }
+
     /// Whether the host should keep reading the network stream (back-pressure).
     pub fn wants_stream_data(&self) -> bool {
         self.track
@@ -444,6 +454,9 @@ impl Player {
         });
         self.stmu_sent = false;
         if !codec_ok {
+            if let Some(t) = &mut self.track {
+                t.stream_ended = true; // nothing will be fetched
+            }
             self.send_stat(*b"STMn", 0);
             return;
         }
@@ -863,6 +876,24 @@ mod tests {
             })
             .collect();
         assert_eq!(numbers, vec![2]);
+    }
+
+    #[test]
+    fn open_stream_reports_resume_offset() {
+        let mut p = Player::new(cfg());
+        assert_eq!(p.open_stream(), None);
+        p.on_control_data(&strm(b's', b'1', b'w', 0), 0).unwrap(); // refused: #1
+        assert_eq!(
+            p.open_stream(),
+            None,
+            "a refused stream has nothing to resume"
+        );
+        p.on_control_data(&strm(b's', b'1', b'p', 0), 1).unwrap(); // #2
+        p.on_stream_data(&[0u8; 1000], 2);
+        p.on_stream_data(&[0u8; 234], 3);
+        assert_eq!(p.open_stream(), Some((2, 1234)));
+        p.on_stream_end(4);
+        assert_eq!(p.open_stream(), None);
     }
 
     #[test]

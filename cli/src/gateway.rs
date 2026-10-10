@@ -18,12 +18,23 @@ use tungstenite::{Connector, Message};
 
 use crate::{Event, StreamHandle};
 
+/// Messages towards the gateway.
+enum Out {
+    Frames(Vec<u8>),
+    /// Control message, e.g. a stream acknowledgement.
+    Text(String),
+}
+
+/// Acknowledge stream bytes at least this often (the gateway stays within its replay
+/// window of the last acknowledgement).
+const ACK_EVERY: u64 = 256 * 1024;
+
 pub struct GatewayConn {
     pub session: String,
     base: String,
     token: String,
     agent: ureq::Agent,
-    out: Sender<Vec<u8>>,
+    out: Sender<Out>,
 }
 
 struct Endpoint {
@@ -133,11 +144,15 @@ pub fn connect(
     tcp_ctl
         .set_read_timeout(Some(Duration::from_millis(10)))
         .ok();
-    let (out, out_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
+    let (out, out_rx): (Sender<Out>, Receiver<Out>) = mpsc::channel();
     thread::spawn(move || {
         loop {
-            while let Ok(b) = out_rx.try_recv() {
-                if ws.write(Message::Binary(b.into())).is_err() {
+            while let Ok(o) = out_rx.try_recv() {
+                let msg = match o {
+                    Out::Frames(b) => Message::Binary(b.into()),
+                    Out::Text(t) => Message::Text(t.into()),
+                };
+                if ws.write(msg).is_err() {
                     let _ = events.send(Event::ControlClosed);
                     return;
                 }
@@ -200,18 +215,19 @@ pub fn connect(
 impl GatewayConn {
     pub fn send(&self, bytes: Vec<u8>) -> Result<(), String> {
         self.out
-            .send(bytes)
+            .send(Out::Frames(bytes))
             .map_err(|_| "gateway connection closed".to_string())
     }
 
     /// Fetch stream `n` of this session.
-    pub fn spawn_stream(&self, id: u64, n: u64, events: Sender<Event>) -> StreamHandle {
+    pub fn spawn_stream(&self, id: u64, n_stream: u64, events: Sender<Event>) -> StreamHandle {
         let want = Arc::new(AtomicBool::new(true));
         let cancel = Arc::new(AtomicBool::new(false));
         let (w, c) = (want.clone(), cancel.clone());
-        let url = format!("{}/v1/stream/{}/{}", self.base, self.session, n);
+        let url = format!("{}/v1/stream/{}/{}", self.base, self.session, n_stream);
         let auth = format!("Bearer {}", self.token);
         let agent = self.agent.clone();
+        let out = self.out.clone();
         thread::spawn(move || {
             let result = (|| -> Result<(), String> {
                 let resp = agent
@@ -233,6 +249,7 @@ impl GatewayConn {
                 let _ = events.send(Event::StreamHeaders(id, headers.into_bytes()));
                 let mut body = resp.into_body().into_reader();
                 let mut buf = vec![0u8; 64 * 1024];
+                let (mut got, mut acked) = (0u64, 0u64);
                 loop {
                     if c.load(Ordering::Relaxed) {
                         return Ok(());
@@ -251,6 +268,13 @@ impl GatewayConn {
                         .is_err()
                     {
                         return Ok(());
+                    }
+                    got += n as u64;
+                    if got - acked >= ACK_EVERY {
+                        acked = got;
+                        let ack =
+                            serde_json::json!({ "ack": { "stream": n_stream, "bytes": got } });
+                        let _ = out.send(Out::Text(ack.to_string()));
                     }
                 }
             })();
