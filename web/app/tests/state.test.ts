@@ -61,3 +61,30 @@ test('an existing player is selected and polled', async () => {
 	await app.refresh();
 	expect(calls.some((c) => c.player === '02:4c:41:00:00:09' && c.cmd[0] === 'status')).toBe(true);
 });
+
+// Regression (Android): the device connected before LMS listed its player, so the app picked
+// another player, or none, and never selected this device.
+test('a just-connected device is selected once LMS lists it', async () => {
+	players = [{ playerid: 'aa:bb:cc:dd:ee:01', name: 'Kitchen' }];
+	app.playerId = '';
+	const device = { playerid: '02:4c:41:00:00:07', name: 'Firefox on Android' };
+	let loads = 0;
+	const realPlayers = players;
+	// The device appears on the third look.
+	const ok = app.waitForPlayer(device.playerid, 10, 1);
+	const timer = setInterval(() => {
+		loads++;
+		if (loads === 2) players = [...realPlayers, device];
+	}, 1);
+	expect(await ok).toBe(true);
+	clearInterval(timer);
+	expect(app.playerId).toBe(device.playerid);
+	// Later refreshes keep it.
+	await app.loadPlayers();
+	expect(app.playerId).toBe(device.playerid);
+});
+
+test('waiting gives up quietly if the player never appears', async () => {
+	players = [];
+	expect(await app.waitForPlayer('02:4c:41:00:00:08', 3, 1)).toBe(false);
+});

@@ -20,8 +20,8 @@
 
 	// When this browser becomes a player, control it.
 	device.onConnected = async (mac) => {
-		await app.loadPlayers();
-		app.select(mac);
+		// LMS may not list the new player for a moment: wait for it, then select it.
+		await app.waitForPlayer(mac);
 	};
 
 	const NAV = [

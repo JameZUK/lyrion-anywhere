@@ -28,6 +28,8 @@ class AppState {
 	/** Bumped when the queue may have changed. */
 	queueVersion = $state(0);
 
+	/** A player to select as soon as LMS lists it (e.g. this device, just connected). */
+	#preferred = '';
 	#poll: ReturnType<typeof setInterval> | undefined;
 	#tick: ReturnType<typeof setInterval> | undefined;
 	#statusAt = 0;
@@ -109,7 +111,12 @@ class AppState {
 		try {
 			const r = await api.rpc<PlayersResult>('', cmd.players());
 			this.players = (r.players_loop ?? []).filter((p) => typeof p.playerid === 'string');
-			if (!this.current) {
+			if (this.#preferred && this.players.some((p) => p.playerid === this.#preferred)) {
+				const want = this.#preferred;
+				this.#preferred = '';
+				if (want !== this.playerId) this.select(want);
+				else this.soon();
+			} else if (!this.current) {
 				// Keep the remembered player if it's still there; else the first one playing,
 				// else the first one.
 				const pick = this.players.find((p) => p.isplaying) ?? this.players[0];
@@ -121,6 +128,20 @@ class AppState {
 		} catch (e) {
 			this.error = (e as Error).message;
 		}
+	}
+
+	/**
+	 * Select a player that may not be listed yet: LMS registers a new player a moment after it
+	 * connects, so keep checking for a while, and select it the moment it appears.
+	 */
+	async waitForPlayer(id: string, tries = 20, gapMs = 500): Promise<boolean> {
+		this.#preferred = id;
+		for (let i = 0; i < tries; i++) {
+			await this.loadPlayers();
+			if (this.playerId === id && this.current) return true;
+			await new Promise((r) => setTimeout(r, gapMs));
+		}
+		return false;
 	}
 
 	/** No usable player: stop polling a remembered one that has gone (LMS drops the
