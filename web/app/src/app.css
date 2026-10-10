@@ -21,6 +21,14 @@
 	--sidebar-w: 232px;
 	--font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
 	--mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+	/* The visible height. On phones 100vh is the height with the address bar hidden, so a
+	   page of that height scrolls; 100dvh follows the bar. */
+	--app-h: 100vh;
+}
+@supports (height: 100dvh) {
+	:root {
+		--app-h: 100dvh;
+	}
 }
 @media (prefers-color-scheme: dark) {
 	:root:not([data-mode='light']) {

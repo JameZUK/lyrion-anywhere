@@ -37,6 +37,15 @@
 
 	const PAGE = 100;
 
+	/** What a menu source would load: the same key means the same menu. */
+	function menuKey(make: ((from: number, count: number) => Command) | undefined, menu: SBMenu | undefined): string {
+		try {
+			return make ? `cmd:${JSON.stringify(make(0, PAGE))}` : `menu:${JSON.stringify(menu ?? null)}`;
+		} catch {
+			return `x:${Math.random()}`; // can't tell: treat as new
+		}
+	}
+
 	interface Frame {
 		title: string;
 		/** Re-runnable source (for paging), or a fixed menu returned by an action. */
@@ -87,11 +96,21 @@
 		if (!menu) void load(live, 0);
 	}
 
+	// Start over only when what the menu shows really changes. Pages re-render often (the
+	// player's status is refreshed every 2 s), handing over a new but identical source each
+	// time; restarting then made open menus flicker and jump back to the top.
+	let shownKey = '';
 	$effect(() => {
 		const make = start;
 		const menu = initial;
 		const t = title;
 		untrack(() => {
+			const key = menuKey(make, menu);
+			if (key === shownKey && stack.length) {
+				if (stack[0] && t && stack[0].title !== t) stack[0].title = t;
+				return;
+			}
+			shownKey = key;
 			stack = [];
 			if (make) push(t, { make });
 			else push(t, null, menu ?? { item_loop: [] });

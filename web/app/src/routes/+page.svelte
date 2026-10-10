@@ -40,7 +40,9 @@
 
 <section class="np page">
 	<div class="art-wrap">
-		<Art path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 800)} alt={title ? `Cover of ${textOf(track?.album)}` : ''} label={title} rounded="var(--radius)" eager />
+		<div class="art-box">
+			<Art path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 800)} alt={title ? `Cover of ${textOf(track?.album)}` : ''} label={title} rounded="var(--radius)" eager />
+		</div>
 	</div>
 
 	<div class="info">
@@ -129,7 +131,7 @@
 		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 		gap: clamp(1.5rem, 4vw, 4rem);
 		align-items: center;
-		min-height: calc(100vh - var(--bar-h) - 3rem);
+		min-height: calc(var(--app-h) - var(--bar-h) - 3rem);
 	}
 	.art-wrap {
 		max-width: 560px;
@@ -233,18 +235,78 @@
 		gap: 0.6rem;
 		margin-top: 1rem;
 	}
+	/* Phones: the page fills the screen above the tab bar exactly, without scrolling. The
+	   cover takes whatever height the details and controls leave, and shrinks to fit. */
 	@media (max-width: 760px) {
 		.np {
-			grid-template-columns: minmax(0, 1fr);
-			gap: 1.25rem;
+			display: flex;
+			flex-direction: column;
+			gap: 0.9rem;
+			height: calc(var(--app-h) - var(--tabs-h));
 			min-height: 0;
+			padding-top: max(1rem, env(safe-area-inset-top));
+			padding-bottom: 0.75rem;
+			overflow: hidden;
 		}
 		.art-wrap {
-			justify-self: center;
-			max-width: min(100%, 420px);
+			flex: 1 1 0;
+			min-height: 96px;
+			max-width: none;
+			box-shadow: none;
+			display: grid;
+			place-items: center;
+			container-type: size;
+		}
+		.art-box {
+			width: min(100cqw, 100cqh, 420px);
+			box-shadow: 0 24px 48px -20px rgb(0 0 0 / 45%);
+			border-radius: var(--radius);
+		}
+		.info {
+			flex: none;
+			max-width: none;
+			gap: 0.25rem;
 		}
 		.player {
-			order: -1;
+			margin-bottom: 0.5rem;
+		}
+		.title {
+			font-size: clamp(1.3rem, 6vw, 1.7rem);
+			display: -webkit-box;
+			-webkit-line-clamp: 2;
+			line-clamp: 2;
+			-webkit-box-orient: vertical;
+			overflow: hidden;
+		}
+		.artist,
+		.album {
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+		.progress {
+			margin-top: 0.5rem;
+		}
+		.transport {
+			max-width: none;
+			margin: 0.25rem 0;
+		}
+		.volume {
+			max-width: none;
+		}
+		.row-links {
+			margin-top: 0.4rem;
+		}
+	}
+	/* Very short screens (landscape phones): let the page scroll rather than squash. */
+	@media (max-width: 760px) and (max-height: 520px) {
+		.np {
+			height: auto;
+			overflow: visible;
+		}
+		.art-wrap {
+			flex: none;
+			height: 40vh;
 		}
 	}
 </style>

@@ -122,7 +122,7 @@
 				<p class="conn muted">Reconnecting…</p>
 			{/if}
 		</nav>
-		<main class="content">
+		<main class="content" class:on-np={path === '/'}>
 			{#if device.needsTap}
 				<button class="banner resume tap" onclick={() => {}}>
 					<Icon name="play" size={16} /><span>Playing on this device. Tap here (or anywhere) to turn the sound on.</span>
@@ -150,7 +150,7 @@
 
 <style>
 	.splash {
-		min-height: 100vh;
+		min-height: var(--app-h);
 		display: grid;
 		place-items: center;
 	}
@@ -170,12 +170,12 @@
 	.shell {
 		display: grid;
 		grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
-		min-height: 100vh;
+		min-height: var(--app-h);
 	}
 	.side {
 		position: sticky;
 		top: 0;
-		height: calc(100vh - var(--bar-h));
+		height: calc(var(--app-h) - var(--bar-h));
 		display: flex;
 		flex-direction: column;
 		gap: 0.15rem;
@@ -312,6 +312,10 @@
 		/* The Now playing page has its own controls: no mini bar there. */
 		.barwrap.on-np {
 			display: none;
+		}
+		/* …so no room is kept for it either: the page ends at the tab bar. */
+		.content.on-np {
+			padding-bottom: var(--tabs-h);
 		}
 	}
 </style>
