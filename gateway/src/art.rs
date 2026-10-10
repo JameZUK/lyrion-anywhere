@@ -200,8 +200,49 @@ pub(crate) fn proxy_target(s: &str) -> Option<String> {
 }
 
 /// A URL the image proxy must never fetch: one on the home network or the server itself.
+/// The host is judged as written (see `rpc_policy::host_is_local`: private addresses in
+/// any spelling, single-label and local names, wildcard-DNS names such as
+/// `10.0.0.5.nip.io`), and the whole URL must not hold a path or LAN address either.
 fn local_url(url: &str) -> bool {
-    crate::rpc_policy::sensitive_text(url)
+    url_host(url).is_none_or(crate::rpc_policy::host_is_local)
+        || crate::rpc_policy::sensitive_text(url)
+}
+
+/// The host of an http(s) URL, without brackets or port.
+fn url_host(url: &str) -> Option<&str> {
+    let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+    let rest = if lower.starts_with("http://") {
+        &url[7..]
+    } else if lower.starts_with("https://") {
+        &url[8..]
+    } else {
+        return None;
+    };
+    let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or("");
+    Some(crate::rpc_policy::authority_host(authority))
+}
+
+/// How long the image proxy waits for a host name to resolve.
+const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Does the URL's host name resolve (here, on the gateway) to any local address? This
+/// catches names that look public but point into the home network. Limits: LMS resolves
+/// the name again when it fetches, so a name whose answer changes between the two lookups
+/// (DNS rebinding) is not caught, and a name that doesn't resolve here, or not within
+/// [`RESOLVE_TIMEOUT`], is allowed (it is still subject to the checks on the name itself).
+async fn resolves_local(url: &str) -> bool {
+    let Some(host) = url_host(url) else {
+        return true;
+    };
+    if host.parse::<std::net::IpAddr>().is_ok() || host.contains(':') {
+        return false; // an address literal, judged as written by `local_url`
+    }
+    match tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host((host, 80))).await {
+        Ok(Ok(addrs)) => addrs
+            .into_iter()
+            .any(|a| crate::rpc_policy::ip_is_local(a.ip())),
+        _ => false,
+    }
 }
 
 /// Collect image URLs from an (already filtered) LMS response: absolute http(s) URLs and
@@ -280,8 +321,13 @@ pub async fn art(
             format!("/music/current/{name}?player={player}")
         }
         Some(Target::Proxy { url, name, encoded }) => {
-            if local_url(&url) || !gw.known_images.lock().unwrap().contains(&url) {
+            let known = gw.known_images.lock().unwrap().contains(&url);
+            if local_url(&url) || !known {
                 tracing::warn!(user = %principal.username, "refused image proxy for an unknown URL");
+                return status(StatusCode::NOT_FOUND);
+            }
+            if resolves_local(&url).await {
+                tracing::warn!(user = %principal.username, "refused image proxy for a URL that resolves locally");
                 return status(StatusCode::NOT_FOUND);
             }
             format!("/imageproxy/{encoded}/{name}")
@@ -488,5 +534,126 @@ mod tests {
         assert!(!k.contains("https://x/0"));
         assert!(k.contains(&format!("https://x/{}", KNOWN_PROXY_CAP + 9)));
         assert!(k.set.len() <= KNOWN_PROXY_CAP);
+    }
+
+    /// Regression: the local-host check was textual, so single-label names, wildcard DNS
+    /// services that resolve to any address named in the hostname, and numeric IPv4
+    /// spellings were learned, and LMS would fetch them on the home network.
+    #[test]
+    fn disguised_local_image_urls_are_never_learned() {
+        let bad = [
+            "http://nas/cover.jpg",
+            "http://nas:9000/cover.jpg",
+            "http://10.0.0.5.nip.io/x.png",
+            "http://app.10.0.0.5.example.com/x.png",
+            "http://10-0-0-5.sslip.io/x.png",
+            "http://ip-192-168-1-2.example.com/x.png",
+            "http://0a000005.nip.io/x.png",
+            "http://xip.io/x.png",
+            "http://localtest.me/a.png",
+            "http://a.lvh.me/a.png",
+            "http://foo.localhost/a.png",
+            "http://2130706433/a.png",
+            "http://0x7f.1/a.png",
+            "http://[fe80::1%25eth0]/a.png",
+            "http://100.64.0.9/a.png",
+        ];
+        let mut items: Vec<Value> = bad
+            .iter()
+            .map(|u| serde_json::json!({"image": u}))
+            .collect();
+        for u in bad {
+            let enc = u.replace(':', "%3A").replace('/', "%2F");
+            items.push(serde_json::json!({"icon": format!("/imageproxy/{enc}/image.png")}));
+            assert!(local_url(u), "{u}");
+        }
+        items.push(serde_json::json!({"image": "https://cdn.example.com/ok.jpg"}));
+        items.push(serde_json::json!({"image": "https://ec2-54-1-2-3.example.com/ok.png"}));
+        let mut out = vec![];
+        learn_images(&serde_json::json!({ "loop_loop": items }), &mut out);
+        assert_eq!(
+            out,
+            vec![
+                "https://cdn.example.com/ok.jpg",
+                "https://ec2-54-1-2-3.example.com/ok.png"
+            ]
+        );
+    }
+
+    #[test]
+    fn url_hosts_are_extracted() {
+        assert_eq!(
+            url_host("https://cdn.example.com/a.jpg"),
+            Some("cdn.example.com")
+        );
+        assert_eq!(url_host("HTTP://u:p@nas:9000/a"), Some("nas"));
+        assert_eq!(
+            url_host("http://[fe80::1%25eth0]:80/"),
+            Some("fe80::1%25eth0")
+        );
+        assert_eq!(
+            url_host("http://cdn.example.com\\@10.0.0.1/"),
+            Some("cdn.example.com")
+        );
+        assert_eq!(url_host("ftp://x/"), None);
+        assert_eq!(url_host("é"), None);
+        assert!(local_url("ftp://cdn.example.com/a.jpg"));
+        assert!(local_url("http:///a.jpg"));
+        assert!(!local_url("https://cdn.example.com/a.jpg"));
+    }
+
+    /// A name that looks public but resolves to a local address is refused. `localhost`
+    /// resolves locally without any network access, via the hosts file.
+    #[tokio::test]
+    async fn names_resolving_to_local_addresses_are_refused() {
+        assert!(resolves_local("http://localhost/a.png").await);
+        assert!(resolves_local("ftp://cdn.example.com/a.png").await);
+        // Literals are judged as written; unresolvable names are left to the name checks.
+        assert!(!resolves_local("http://8.8.8.8/a.png").await);
+        assert!(!resolves_local("http://[2001:db8::1]/a.png").await);
+        assert!(!resolves_local("http://no-such-host.invalid/a.png").await);
+    }
+
+    #[test]
+    fn hostile_image_urls_never_panic() {
+        let mut x: u64 = 0x51a7_e5b1_0c4d_2f09;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let atoms = [
+            "http://",
+            "https://",
+            "HTTP://",
+            "[",
+            "]",
+            "@",
+            ":",
+            "/",
+            "%2",
+            "%25",
+            "é",
+            "10",
+            ".",
+            "nip.io",
+            "-",
+            "\\",
+            "?",
+            "#",
+            "0x",
+            "imageproxy/",
+        ];
+        for _ in 0..20_000 {
+            let n = (next() % 10) as usize;
+            let s: String = (0..n)
+                .map(|_| atoms[(next() % atoms.len() as u64) as usize])
+                .collect();
+            let _ = local_url(&s);
+            let _ = url_host(&s);
+            let mut out = vec![];
+            learn_images(&serde_json::json!({"image": s, "icon": s}), &mut out);
+        }
     }
 }

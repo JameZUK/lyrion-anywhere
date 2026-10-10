@@ -183,7 +183,8 @@ Response: `{"result": {...}}`, or `{"error": "<reason>"}` with one of these stat
 - numbers or printable strings of at most 256 characters;
 - at most 16 arguments;
 - paging `start count` with `count` ≤ 500;
-- `key:value` parameters restricted to known keys per command, each given at most once, with typed values.
+- `key:value` parameters restricted to known keys per command, each given at most once, with typed values;
+- free-text values (`search:`, `term:`, `role_id:`, playlist names, an app's `search:`, text typed into a learned search box) refused if they hold an absolute or Windows path, a `file:` URL, a URL to a local host (see below), a bare LAN address such as `10.0.0.5:9000`, or any URL other than http(s). Public http(s) URLs pass (some apps search by feed URL), as does ordinary text such as "AC/DC" or "Live 1990/91".
 
 | Group | Allowed |
 |---|---|
@@ -218,10 +219,19 @@ Everything else is refused, notably:
 
 **Response filtering:**
 - removed everywhere by key: `ip`, `uuid`, `httpport`, `url` (file paths and stream credentials), `mac`, `seq_no`, `remote_url`, `favorites_url` and `path`;
-- removed everywhere by value, whatever the key, when the text contains (anywhere, not only at the start): a `file:` URL; a URL whose host is private, loopback, link-local or a local name (`.local`, `.lan`, `.home.arpa`, …), directly or as an `imageproxy/` target; an absolute filesystem path of two or more segments (LMS's own artwork and icon paths excepted); or a Windows drive or UNC path. Slashes inside words ("AC/DC", "1990/91") don't count;
+- removed everywhere by value, whatever the key, when the text contains (anywhere, not only at the start):
+  - a `file:` URL;
+  - a URL of any scheme (`http`, `smb`, `nfs`, `ftp`, `rtmp`, …) whose host is local, directly or as an `imageproxy/` target;
+  - a bare local IPv4 address in dotted-quad form or a local IPv6 address, with or without a port (`10.0.0.5:9000`, `[fe80::1]:9000`, `fe80::1%eth0`);
+  - an absolute filesystem path of two or more segments (LMS's own artwork and icon paths excepted);
+  - a Windows drive or UNC path.
+
+  Slashes inside words ("AC/DC", "1990/91") don't count, nor do numbers such as "1999", "10.5", "v1.2.3", "10:30" or a player's MAC address. Bare addresses in text are matched only as four dotted decimal parts (so "127.1" in a title is left alone), and `0.x.x.x` is ignored there as version-like;
+- **local hosts** are: private, loopback, link-local, CGNAT (100.64/10), benchmarking (198.18/15), multicast and reserved IPv4, and `0.0.0.0/8`; IPv6 loopback, unique-local, link-local, site-local and multicast, IPv4-mapped/compatible/NAT64 forms of a local IPv4 address, and zone ids; IPv4 hosts in any form a URL parser or `inet_aton` accepts (`2130706433`, `0x7f000001`, `127.1`, `0177.0.0.1`, percent-encoded dots); a host ending in a number that isn't a valid address; single-label names (`nas`, `localhost`); names ending `.local`, `.lan`, `.home`, `.internal`, `.intranet`, `.localdomain`, `.localhost` or `.home.arpa`; wildcard-DNS services that resolve to an address named in the host (`nip.io`, `sslip.io`, `xip.io`, `localtest.me`, `lvh.me`, `vcap.me`, `traefik.me`, `local.gd`, `localhost.direct`, `lacolhost.com`); and names embedding a private IPv4 address as four labels or four dashed parts (`10.0.0.5.example.com`, `ip-10-0-0-5.example.com`);
 - menu entries (`item_loop`) whose text is such a value, like track info's `Location: …` and `URL: …` lines, are dropped whole;
 - sync information (`syncgroups ?`, `sync ?`, and `sync_*` fields in `status`) lists only players the caller may control; groups with none are dropped;
-- player lists show only players the caller may control, with counts adjusted, and other-server counts removed.
+- players on other servers (`other_players_loop`, `sn_players_loop`, `other player count`, `sn player count`, and any key starting `other_player`, `sn_player`, `other player` or `sn player`) are removed from every response;
+- player lists (`players`, `serverstatus`) show only players the caller may control, with counts adjusted, and lose the server's `version` and `lastscan` (the web app uses neither).
 
 ## Diagnostics (`POST /v1/diagnostics`)
 
@@ -241,7 +251,7 @@ Allowed paths (validated on the raw, still-encoded path):
 |---|---|
 | `music/<id>/cover[_WxH[_m]][.ext]`, `music/<id>/thumb…` | Numeric or hex track id |
 | `music/current/cover…?player=<mac>` | Only for players the caller may control; not cached |
-| `imageproxy/<url-encoded http(s) URL>/image[_WxH[_m]][.ext]` | Only for image URLs LMS itself returned in an image field (`image`, `icon`, `icon-id`, `artwork_url`, `coverart`, `cover`) of an earlier, filtered `/v1/rpc` response, and never for a URL on the home network or the server itself. Anything else would let a user make LMS fetch arbitrary URLs on the home network (SSRF): text such as track titles and player names can be set by users, so it never counts. |
+| `imageproxy/<url-encoded http(s) URL>/image[_WxH[_m]][.ext]` | Only for image URLs LMS itself returned in an image field (`image`, `icon`, `icon-id`, `artwork_url`, `coverart`, `cover`) of an earlier, filtered `/v1/rpc` response, and never for a URL on the home network or the server itself: the host must not be a local host (as defined under response filtering, which covers single-label names and wildcard-DNS names such as `10.0.0.5.nip.io`), and must not resolve, from the gateway within 2 s, to any local address. The lookup can't stop DNS rebinding (LMS resolves the name again when it fetches), and a name that doesn't resolve is judged by the name alone. Anything else would let a user make LMS fetch arbitrary URLs on the home network (SSRF): text such as track titles and player names can be set by users, so it never counts. |
 | `plugins/<Name>/html/…`, `plugins/cache/icons/…`, `html/images/…` | Image files only (`png`, `jpg`, `gif`, `svg`); no `..`, `//` or `%` encodings |
 
 Rules for what is relayed:
@@ -309,7 +319,7 @@ Headers: `Content-Type`, `Content-Length`, `Accept-Ranges: bytes`, `Cache-Contro
 
 **Connecting:** the first message is the access token, as text. The gateway replies `{"subscribed":true}`, then sends `{"player":"<mac>","event":[...]}` for the caller's permitted players and `{"player":null,"event":["rescan",...]}` for library rescans. `{"resync":true}` means some events were missed, so re-query state.
 
-**What is forwarded:** only `playlist`, `mixer`, `power`, `client`, `sync`, `pause`, `play`, `stop`, `time` and `newmetadata` events. Any token that looks like a URL or path is blanked. Preference changes (`prefset`) and everything else are never forwarded.
+**What is forwarded:** only `playlist`, `mixer`, `power`, `client`, `sync`, `pause`, `play`, `stop`, `time` and `newmetadata` events. Any token that looks like a URL or path, or that response filtering would remove (such as a bare LAN address like `10.0.0.5:9000`), is blanked. Preference changes (`prefset`) and everything else are never forwarded.
 
 **Rules:**
 - Clients may send nothing after the token. Any message closes the socket (1008).

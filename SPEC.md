@@ -166,10 +166,12 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
   - listeners control their own signed-in devices plus home players an admin explicitly grants (least privilege, so an account given to a friend can't take over the house's speakers).
 - **Always denied:**
   - `readdirectory`, `pref`, `restartserver`, `debug`/`logging`;
-  - `serverstatus` fields beyond player list and version;
-  - any `playlist play/add/insert` with a `file://` or non-library URL.
+  - `serverstatus` fields beyond the permitted players and library totals (no server version, last scan, address or identity, and no players on other servers);
+  - any `playlist play/add/insert` with a `file://` or non-library URL;
+  - free text (search terms, playlist names, typed input) holding a path, a `file:` URL, a URL to a local host, a bare LAN address, or any URL other than http(s). Public http(s) URLs are allowed, since some apps search by feed URL.
+- **Local hosts:** one check, shared by response filtering, request validation, events and the image proxy, decides what is "on the home network": private, loopback, link-local, CGNAT and benchmarking addresses in any spelling a URL parser or `inet_aton` accepts (`2130706433`, `0x7f000001`, `127.1`, IPv6 zone ids, IPv4-mapped IPv6), single-label names, local suffixes (`.lan`, `.local`, `.localhost`, `.home.arpa`, …), wildcard-DNS services that answer with an address taken from the name (`nip.io`, `sslip.io`, `localtest.me`, …), and names embedding a private IPv4 address as labels (`10.0.0.5.example`, `ip-10-0-0-5`).
 - **Events:** the gateway subscribes to LMS locally (CometD) and forwards only events for permitted players. It pushes them over `WS /v1/events`.
-- **Artwork:** `GET /v1/art/…` proxies only fixed patterns (`/music/{id}/cover…`, `/imageproxy/…`, plugin icons).
+- **Artwork:** `GET /v1/art/…` proxies only fixed patterns (`/music/{id}/cover…`, `/imageproxy/…`, plugin icons). An image-proxy URL must have been handed out by LMS in an image field, must not name a local host, and must not resolve (from the gateway, with a 2 s limit) to a local address. That last check can't stop DNS rebinding between the gateway's lookup and LMS's own, and a name that doesn't resolve is judged by its name alone.
 
 ### 5.3 Downloads (§8)
 

@@ -18,6 +18,9 @@ use serde_json::Value;
 
 use crate::accounts::Role;
 
+mod hosts;
+pub(crate) use hosts::{authority_host, host_is_local, ip_is_local};
+
 /// Largest page a client may request.
 pub const MAX_PAGE: u64 = 500;
 const MAX_ARGS: usize = 16;
@@ -109,7 +112,7 @@ enum V {
     Ids,
     Uint,
     Bool,
-    /// Free text (search terms, names), already bounded and printable.
+    /// Free text (search terms, names), already bounded and printable; see [`text_ok`].
     Text,
     /// LMS response tags: letters only.
     Tags,
@@ -126,7 +129,7 @@ fn value_ok(v: V, s: &str) -> bool {
         V::Ids => is_ids(s),
         V::Uint => is_uint(s),
         V::Bool => s == "0" || s == "1",
-        V::Text => !s.is_empty(),
+        V::Text => !s.is_empty() && text_ok(s),
         V::Tags => !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric()),
         V::Sort => matches!(
             s,
@@ -150,6 +153,24 @@ fn value_ok(v: V, s: &str) -> bool {
         }
         V::OneOf(set) => set.contains(&s),
     }
+}
+
+/// Free text a client sends (search terms, names, typed input): never something LMS or a
+/// plugin could take for a location on the server or the home network. Refused: anything
+/// [`sensitive_text`] recognises (a `file:` URL, a URL to a local host, a bare LAN address,
+/// an absolute or Windows path), control characters, and any URL other than http(s).
+/// Public http(s) URLs pass, since some apps search by feed URL; ordinary text ("AC/DC",
+/// "Live 1990/91") passes too.
+pub(crate) fn text_ok(s: &str) -> bool {
+    !s.chars().any(char::is_control) && !sensitive_value(s) && !has_non_web_url(s)
+}
+
+/// A `scheme://` other than http or https.
+fn has_non_web_url(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower
+        .match_indices("://")
+        .any(|(i, _)| !matches!(url_scheme(&lower, i), "http" | "https"))
 }
 
 /// Check the `key:value` parameters after the positional ones.
@@ -590,17 +611,23 @@ pub(crate) fn sensitive_text(s: &str) -> bool {
 /// Does this text contain (anywhere, not only at the start, so LMS's `Location: /srv/…` and
 /// `URL: http://…` info lines count):
 /// - a `file:` URL;
-/// - a URL whose host is private, loopback, link-local or a local name, directly or as the
-///   target of an `imageproxy/` path;
+/// - a URL of any scheme (`http`, `smb`, `nfs`, …) whose host is local (see
+///   [`host_is_local`]: private, loopback, link-local or CGNAT addresses in any spelling,
+///   single-label and local names, wildcard-DNS names), directly or as the target of an
+///   `imageproxy/` path;
+/// - a bare local IPv4 address in dotted-quad form, or local IPv6 address (`10.0.0.5:9000`,
+///   `fe80::1%eth0`);
 /// - an absolute filesystem path of two or more segments, other than LMS's own web paths;
 /// - a Windows drive or UNC path?
 ///
-/// Slashes inside words ("AC/DC", "1990/91", "Song / Other") are not paths.
+/// Slashes inside words ("AC/DC", "1990/91", "Song / Other") are not paths, and numbers
+/// such as "10.5", "v1.2.3" or "10:30" are not addresses.
 fn sensitive_value(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
     has_file_url(&lower)
         || has_local_url(&lower)
         || has_local_proxy_target(s)
+        || hosts::has_local_ip_literal(s)
         || has_abs_path(s)
         || has_windows_path(s)
 }
@@ -616,20 +643,25 @@ fn has_file_url(lower: &str) -> bool {
         .any(|(i, _)| starts_token(i.checked_sub(1).map(|j| lower.as_bytes()[j])))
 }
 
+/// The scheme in front of the `://` at byte `i` (empty if there is none).
+fn url_scheme(lower: &str, i: usize) -> &str {
+    let start = lower[..i]
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !(c.is_ascii_alphanumeric() || "+.-".contains(*c)))
+        .map_or(0, |(j, c)| j + c.len_utf8());
+    &lower[start..i]
+}
+
+/// A `scheme://authority` URL, of any scheme, whose host is local.
 fn has_local_url(lower: &str) -> bool {
     lower.match_indices("://").any(|(i, _)| {
-        let scheme_start = lower[..i]
-            .char_indices()
-            .rev()
-            .find(|(_, c)| !(c.is_ascii_alphanumeric() || "+.-".contains(*c)))
-            .map_or(0, |(j, c)| j + c.len_utf8());
-        let scheme = &lower[scheme_start..i];
-        if !matches!(scheme, "http" | "https" | "ws" | "wss" | "rtsp" | "mms") {
+        if !url_scheme(lower, i).starts_with(|c: char| c.is_ascii_alphabetic()) {
             return false;
         }
         let rest = &lower[i + 3..];
         let end = rest
-            .find(|c: char| c.is_whitespace() || "/?#\"'<>()".contains(c))
+            .find(|c: char| c.is_whitespace() || "/?#\"'<>()\\".contains(c))
             .unwrap_or(rest.len());
         url_host_local(&rest[..end])
     })
@@ -637,14 +669,7 @@ fn has_local_url(lower: &str) -> bool {
 
 /// Is the host of a URL authority (`user@host:port`) a local one?
 fn url_host_local(authority: &str) -> bool {
-    let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = if let Some(v6) = hostport.strip_prefix('[') {
-        v6.split(']').next().unwrap_or("")
-    } else {
-        hostport.split(':').next().unwrap_or("")
-    };
-    let host = host.trim_end_matches(['.', ',', ';']);
-    local_host(host)
+    host_is_local(hosts::authority_host(authority).trim_end_matches([',', ';']))
 }
 
 /// `imageproxy/<url-encoded URL>/…` whose URL is local (LMS would fetch it for us).
@@ -701,42 +726,19 @@ fn has_windows_path(s: &str) -> bool {
     })
 }
 
-fn local_host(host: &str) -> bool {
-    use std::net::IpAddr;
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return match ip {
-            IpAddr::V4(v4) => {
-                v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()
-            }
-            IpAddr::V6(v6) => {
-                let seg0 = v6.segments()[0];
-                v6.is_loopback()
-                    || v6.is_unspecified()
-                    || (seg0 & 0xfe00) == 0xfc00 // unique local (fc00::/7)
-                    || (seg0 & 0xffc0) == 0xfe80 // link local
-                    || v6.to_ipv4_mapped().is_some_and(|v4| local_host(&v4.to_string()))
-            }
-        };
-    }
-    host == "localhost"
-        || [
-            ".local",
-            ".lan",
-            ".home",
-            ".internal",
-            ".localdomain",
-            ".home.arpa",
-        ]
-        .iter()
-        .any(|suffix| host.ends_with(suffix))
-}
-
 /// Filter a response. `may_control` hides players the caller can't use.
 pub fn filter_response(kind: Kind, mut v: Value, may_control: &dyn Fn(&str) -> bool) -> Value {
     strip(&mut v);
     sync_info(&mut v, may_control);
     if kind == Kind::HomeMenu {
         home_menu(&mut v);
+    }
+    if kind == Kind::PlayerList
+        && let Some(obj) = v.as_object_mut()
+    {
+        // The server's identity and history: of no use to the app, and a fingerprint for
+        // anyone else. (`ip`, `uuid`, `httpport` and `mac` are stripped everywhere already.)
+        obj.retain(|k, _| !SERVER_DETAILS.contains(&k.as_str()));
     }
     if kind == Kind::PlayerList
         && let Some(players) = v.get_mut("players_loop").and_then(Value::as_array_mut)
@@ -753,11 +755,21 @@ pub fn filter_response(kind: Kind, mut v: Value, may_control: &dyn Fn(&str) -> b
                     obj.insert(k.to_string(), Value::from(count));
                 }
             }
-            // Players on other servers or the network are none of a remote user's business.
-            obj.retain(|k, _| !k.starts_with("other player") && !k.starts_with("sn player"));
         }
     }
     v
+}
+
+/// `serverstatus` fields about the server itself, dropped from player lists.
+const SERVER_DETAILS: &[&str] = &["lastscan", "version"];
+
+/// Players on other servers or on mysqueezebox.com (`other_players_loop`,
+/// `sn_players_loop`, and their counts) are none of a remote user's business: dropped from
+/// every response, whatever else it holds.
+fn other_server_key(k: &str) -> bool {
+    ["other_player", "sn_player", "other player", "sn player"]
+        .iter()
+        .any(|p| k.starts_with(p))
 }
 
 /// Keep only permitted players in a comma-separated list of player ids.
@@ -974,6 +986,7 @@ fn strip(v: &mut Value) {
         Value::Object(map) => {
             map.retain(|k, x| {
                 !STRIPPED.contains(&k.as_str())
+                    && !other_server_key(k)
                     && !x.as_str().is_some_and(sensitive_value)
                     && !poisoned_action(x)
             });
@@ -1931,6 +1944,231 @@ mod tests {
                 .collect();
             let player = [MINE, OTHER, "", "zz"][(next() % 4) as usize];
             let _ = check(&Who(Role::Listener), player, &raw, &apps());
+        }
+    }
+
+    /// Regression: only http/https/ws/wss/rtsp/mms URLs were checked, so a share or feed on
+    /// the home network under any other scheme leaked.
+    #[test]
+    fn urls_of_any_scheme_to_a_local_host_are_sensitive() {
+        for yes in [
+            "smb://10.0.0.5/music",
+            "SMB://10.0.0.5/music",
+            "nfs://nas.example.lan/export",
+            "ftp://192.168.1.2/pub",
+            "sftp://user@[fd00::1]:22/x",
+            "rtmp://127.0.0.1/live",
+            "afp://nas.local/Music",
+            "Source: smb://10.0.0.5/music",
+        ] {
+            assert!(sensitive_value(yes), "{yes}");
+        }
+        for no in ["ftp://ftp.example.com/pub", "rtmp://live.example.com/x"] {
+            assert!(!sensitive_value(no), "{no}");
+        }
+    }
+
+    /// Regression: single-label hosts (`http://nas:9000/`) and alternative IPv4 spellings
+    /// (`http://2130706433/`, `http://127.1/`, …) were not recognised as local.
+    #[test]
+    fn dotless_hosts_and_odd_ipv4_spellings_are_local() {
+        for yes in [
+            "http://nas:9000/x",
+            "http://nas/",
+            "https://router./admin",
+            "http://2130706433/",
+            "http://0x7f000001/",
+            "http://0X7F.1/",
+            "http://127.1/",
+            "http://0/",
+            "http://0177.0.0.1/",
+            "http://012.0.0.1/",
+            "http://0x0a.0.0.1/",
+            "http://10.0.1/",
+            "http://167772161/",
+            "http://100.64.0.1/",
+            "http://100.127.255.254/",
+            "http://198.18.0.1/",
+            "http://0.0.0.0:9000/",
+            "http://10%2e0%2e0%2e5/",
+            "http://127.0.0.1./",
+            "http://[fe80::1%25eth0]/",
+            "http://[::ffff:7f00:1]/",
+            "http://[::ffff:192.168.0.1]/",
+            "http://[64:ff9b::a00:5]/",
+            "http://99999999999/",
+            "http://a.nip.io/",
+        ] {
+            assert!(sensitive_value(yes), "{yes}");
+        }
+        for no in [
+            "http://100.128.0.1/",
+            "http://8.8.8.8/x",
+            "http://134744072/",
+            "https://example.com/",
+            "https://images.example.com:8443/a.jpg",
+        ] {
+            assert!(!sensitive_value(no), "{no}");
+        }
+    }
+
+    /// Regression: bare LAN addresses (`10.0.0.5:9000`, `fe80::1%eth0`) anywhere in a value
+    /// leaked: only URLs were checked.
+    #[test]
+    fn bare_private_addresses_in_text_are_sensitive() {
+        for yes in [
+            "10.0.0.5:9000",
+            "Server at 192.168.1.20",
+            "(172.16.0.9)",
+            "listening on 127.0.0.1",
+            "100.64.1.2",
+            "169.254.3.4:80",
+            "[fe80::1]:9000",
+            "fe80::1%eth0",
+            "::1",
+            "fd12:3456::7",
+            "::ffff:10.0.0.1",
+        ] {
+            assert!(sensitive_value(yes), "{yes}");
+        }
+    }
+
+    /// Titles, versions, times and ratings that merely look numeric are left alone.
+    #[test]
+    fn ordinary_text_is_not_mistaken_for_an_address() {
+        for no in [
+            "1999",
+            "10.5",
+            "AC/DC",
+            "Live 1990/91",
+            "v1.2.3",
+            "8.5.2",
+            "10.0.19041.1",
+            "10:30",
+            "12:34:56",
+            "Side A 10:30",
+            "4.5/5",
+            "Track 10.0",
+            "1.2.3.4",
+            "8.8.8.8",
+            "2001: A Space Odyssey",
+            "Rock'n'Roll",
+            "http",
+            "Höhner – Viva Colonia",
+            "Ποτάμι",
+            "02:4c:41:00:00:01",
+            "aa:bb:cc:dd:ee:ff",
+            "0.9.1.2",
+            "1:10:00:5",
+            "spotify:track:1",
+            "https://[2001:db8::1]/",
+            "https://ec2-54-1-2-3.example.com/a.jpg",
+        ] {
+            assert!(!sensitive_value(no), "{no}");
+        }
+    }
+
+    /// Regression: `serverstatus` listed players on other servers (`other_players_loop`,
+    /// `sn_players_loop`, with their ids and names) unless `players_loop` happened to be
+    /// present, plus the server's version and last scan time.
+    #[test]
+    fn other_servers_players_and_server_details_never_leak() {
+        let other =
+            json!({"playerid": "02:4c:41:00:00:09", "name": "Neighbour", "server": "Elsewhere"});
+        for raw in [
+            json!({"other_players_loop": [other], "sn_players_loop": [other],
+                   "other player count": 1, "sn player count": 1,
+                   "lastscan": "1700000000", "version": "9.1.1", "info total albums": 12}),
+            json!({"players_loop": [], "other_players_loop": [other], "sn_players_loop": [other],
+                   "lastscan": "1700000000", "version": "9.1.1"}),
+        ] {
+            let out = filter_response(Kind::PlayerList, raw, &|_| true);
+            let s = out.to_string();
+            for leaked in [
+                "Neighbour",
+                "Elsewhere",
+                "02:4c:41:00:00:09",
+                "other",
+                "sn_",
+                "sn player",
+                "lastscan",
+                "9.1.1",
+            ] {
+                assert!(!s.contains(leaked), "{leaked} leaked: {s}");
+            }
+        }
+        // Other-server lists are dropped from any response, not only player lists.
+        let out = filter_response(
+            Kind::Plain,
+            json!({"x": {"other_players_loop": [other]}, "y": 1}),
+            &|_| true,
+        );
+        assert_eq!(out, json!({"x": {}, "y": 1}));
+    }
+
+    /// Regression: events forwarded `10.0.0.5:9000` and other LAN addresses that are not URLs.
+    #[test]
+    fn events_drop_lan_addresses_too() {
+        for token in [
+            "10.0.0.5%3A9000",
+            "smb%3A%2F%2F10.0.0.5%2Fmusic",
+            "fe80%3A%3A1%25eth0",
+            "Kitchen%20192.168.1.5",
+        ] {
+            let line = format!("aa%3Abb%3Acc%3Add%3Aee%3A01 client new {token}");
+            let e = crate::events::parse_line(&line).unwrap();
+            assert_eq!(e.tokens[2], "", "{token}");
+        }
+        let e = crate::events::parse_line("aa%3Abb%3Acc%3Add%3Aee%3A01 playlist newsong 10.5 3")
+            .unwrap();
+        assert_eq!(e.tokens, vec!["playlist", "newsong", "10.5", "3"]);
+    }
+
+    /// Regression: an app's `search:` took URLs and paths (`search:http://10.0.0.1/`,
+    /// `search:/etc/passwd`), and so did every free-text parameter of the allow-list.
+    #[test]
+    fn free_text_parameters_refuse_local_urls_and_paths() {
+        for bad in [
+            "http://10.0.0.1/",
+            "http://nas:9000/x",
+            "/etc/passwd",
+            "file:///etc/passwd",
+            "smb://10.0.0.5/music",
+            "nfs://music.example.com/x",
+            "C:\\Windows\\win.ini",
+            "10.0.0.5:9000",
+        ] {
+            denied(
+                MINE,
+                json!(["spotty", "items", 0, 10, format!("search:{bad}")]),
+            );
+            denied("", json!(["albums", 0, 10, format!("search:{bad}")]));
+            denied("", json!(["artists", 0, 10, format!("role_id:{bad}")]));
+            denied("", json!(["search", 0, 10, format!("term:{bad}")]));
+            denied("", json!(["playlists", 0, 10, format!("search:{bad}")]));
+            admin_denied(json!(["playlists", "new", format!("name:{bad}")]));
+            admin_denied(json!([
+                "playlists",
+                "rename",
+                "playlist_id:1",
+                format!("newname:{bad}")
+            ]));
+        }
+        for good in [
+            "AC/DC",
+            "Live 1990/91",
+            "http",
+            "Sigur Rós",
+            "4.5/5",
+            "10:30",
+            "https://feeds.example.com/podcast.xml",
+        ] {
+            ok(
+                MINE,
+                json!(["spotty", "items", 0, 10, format!("search:{good}")]),
+            );
+            ok("", json!(["albums", 0, 10, format!("search:{good}")]));
+            ok("", json!(["search", 0, 10, format!("term:{good}")]));
         }
     }
 }

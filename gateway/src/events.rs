@@ -70,13 +70,14 @@ fn unescape(t: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Anything that could reveal a file path or a stream URL becomes empty.
+/// Anything that could reveal a file path, a stream URL or a LAN address becomes empty.
 fn redact(t: String) -> String {
     let lower = t.to_ascii_lowercase();
     if lower.contains("://")
         || lower.starts_with('/')
         || lower.starts_with("file:")
         || lower.contains(":\\")
+        || crate::rpc_policy::sensitive_text(&t)
     {
         String::new()
     } else {

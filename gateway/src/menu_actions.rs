@@ -117,9 +117,10 @@ fn key_ok(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
 }
 
-/// Text from the user or from LMS menus: printable, bounded, and not a URL or path.
+/// Text from the user or from LMS menus: bounded, and passing the same check as the fixed
+/// allow-list's free text (printable; no path, local URL, LAN address or non-http(s) URL).
 fn value_ok(s: &str) -> bool {
-    s.len() <= 256 && !s.chars().any(|c| c.is_control()) && !crate::rpc_policy::sensitive_text(s)
+    s.len() <= 256 && crate::rpc_policy::text_ok(s)
 }
 
 fn scalar(v: &Value) -> Option<String> {
@@ -572,6 +573,24 @@ mod tests {
         assert_eq!(run("http://192.168.250.1/admin"), Err(Refusal::Malformed));
         assert_eq!(run(&"x".repeat(300)), Err(Refusal::Malformed));
         assert_eq!(run("a\nb"), Err(Refusal::Malformed));
+        // Regression: single-label hosts, bare LAN addresses and other schemes got through.
+        for bad in [
+            "http://nas:9000/x",
+            "10.0.0.5:9000",
+            "smb://10.0.0.5/music",
+            "http://2130706433/",
+            "/etc/passwd",
+        ] {
+            assert_eq!(run(bad), Err(Refusal::Malformed), "{bad}");
+        }
+        for good in [
+            "AC/DC",
+            "Live 1990/91",
+            "http",
+            "https://feeds.example.com/a.xml",
+        ] {
+            assert_eq!(run(good), Ok(()), "{good}");
+        }
     }
 
     #[test]
