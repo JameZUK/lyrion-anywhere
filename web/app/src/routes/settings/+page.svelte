@@ -5,6 +5,7 @@
 	import { ApiError } from '$lib/api/http';
 	import Icon from '$lib/components/Icon.svelte';
 	import AppearancePicker from '$lib/components/AppearancePicker.svelte';
+	import { install } from '$lib/pwa/install.svelte';
 	import { detect } from '$lib/player/capabilities';
 	import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, savePreference, type ModePreference } from '$lib/player/mode';
 
@@ -172,6 +173,22 @@
 		{/if}
 	</div>
 
+	{#if install.way === 'prompt' || install.way === 'ios'}
+		<div class="card">
+			<h2>Install the app</h2>
+			<p>Add Lyrion Anywhere to your home screen: it opens full screen like any other app, and remembers your settings.</p>
+			{#if install.way === 'prompt'}
+				<button class="btn primary" onclick={() => void install.install()}><Icon name="plus" size={18} />Install</button>
+			{:else}
+				<ol class="steps">
+					<li>Tap the <strong>Share</strong> button (the square with an arrow).</li>
+					<li>Choose <strong>Add to Home Screen</strong>.</li>
+					<li>Tap <strong>Add</strong>.</li>
+				</ol>
+			{/if}
+		</div>
+	{/if}
+
 	<div class="card">
 		<h2>Appearance</h2>
 		<AppearancePicker />
@@ -293,5 +310,11 @@
 	.small {
 		font-size: 0.85rem;
 		margin: 0.5rem 0 0;
+	}
+	.steps {
+		margin: 0;
+		padding-left: 1.3rem;
+		display: grid;
+		gap: 0.3rem;
 	}
 </style>

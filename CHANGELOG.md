@@ -4,6 +4,16 @@ Dated entries, newest first.
 
 ## 2026-10-10
 
+### Installable app (iPhone, iPad, Android, desktop)
+- **Install:** a web app manifest, with an app icon (standard and maskable versions, and an Apple touch icon). The app opens full screen from the home screen and keeps its settings. Settings shows "Install the app": an Install button where the browser offers one (Android, desktop Chromium), and Share › Add to Home Screen steps on iPhone and iPad.
+- **Service worker:** the app opens quickly and offline. Offline, it says it can't reach the server instead of showing the sign-in form. It only stores the app's own files (hashed files kept, the rest refreshed on each load); API calls, audio, artwork and the player's files always go to the network and are never stored.
+- **Tests:** the caching policy, which refuses the API (including under a sub-path), queries, other origins and non-GET requests, and stores only complete answers; install detection, including iPadOS presenting itself as a Mac. End to end in Chromium:
+  - the worker runs under the strict CSP with no violations;
+  - the manifest and icons are served;
+  - the app opens offline;
+  - the cache holds no API or player data;
+  - playback and reload-resume still pass with the worker active.
+
 ### Themes, with Material Design as the default
 - **Themes:**
   - **Material** (new default): Material Design 3 colour roles generated from an accent colour, with tonal surfaces instead of outlines, pill-shaped navigation indicators and large rounded shapes;

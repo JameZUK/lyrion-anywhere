@@ -4,6 +4,7 @@
 	import { api, app, session } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
 	import { appearance } from '$lib/theme/appearance.svelte';
+	import { install } from '$lib/pwa/install.svelte';
 	import { clearResume, loadResume, resumeCommands, saveResume } from '$lib/player/resume';
 	import Login from '$lib/components/Login.svelte';
 	import PlayerBar from '$lib/components/PlayerBar.svelte';
@@ -14,6 +15,7 @@
 
 	// The chosen theme, before anything is drawn (also on the sign-in page).
 	appearance.start();
+	install.start();
 
 	// A returning browser signs in silently through its refresh cookie.
 	void session.restore();
