@@ -5,9 +5,9 @@ import { session } from '$lib/state/app.svelte';
 import { KeepAlive, PersistentLog, describeLifecycle } from './background';
 import { detect } from './capabilities';
 import { MediaOutput, Timeline } from './media-output';
-import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
+import { MEDIA_TYPE, MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
 import { Reporter, buildReport } from './diagnostics';
-import { chooseVariant, loadCached, mediaFormatFor, runSelfTest, saveCached, type SelfTest } from './selftest';
+import { chooseVariant, loadCached, mediaFormatFor, mimeFor, runSelfTest, saveCached, type SelfTest } from './selftest';
 import { CLIENT_HEADER, bearer } from '$lib/api/http';
 
 export type DeviceState = 'off' | 'starting' | 'connected' | 'reconnecting' | 'stopped' | 'error';
@@ -146,7 +146,8 @@ class DevicePlayer {
 		if (!v.highRates) {
 			return { choice: { mode: 'worklet', source: null, reason: 'This browser plays the media element only up to 48 kHz; using Web Audio so every track plays.' }, variant: 0 };
 		}
-		return { choice, variant: v.code };
+		// The variant decides the codec: Apple Lossless is appended under its own type.
+		return { choice: { ...choice, mime: mimeFor(v.code, choice.mime ?? MEDIA_TYPE) }, variant: v.code };
 	}
 
 	/** Report this browser's diagnostics now (e.g. after signing in). */

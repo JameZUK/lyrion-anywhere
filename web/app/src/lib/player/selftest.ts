@@ -7,7 +7,7 @@
 // these results, and they are reported in diagnostics.
 
 import type { Capabilities } from './capabilities';
-import { mediaFormat } from './mode';
+import { ALAC_BIT, ALAC_TYPE, mediaFormat } from './mode';
 
 /** The Media Source API and MIME spelling to self-test, if the browser advertises any. */
 export const mediaFormatFor = (caps: Capabilities) => mediaFormat(caps);
@@ -16,7 +16,7 @@ export interface Probe {
 	rate: number;
 	/**
 	 * Variant code for the core's segmenter: brand bits 0–3, high-rate style bits 4–7, fixed
-	 * FLAC block size bit 8, 16-bit samples bit 9.
+	 * FLAC block size bit 8, 16-bit samples bit 9, ALAC bit 10.
 	 */
 	code: number;
 }
@@ -35,10 +35,16 @@ export interface SelfTest {
 }
 
 /** Bump when the probes or the segmenter change, so cached results are redone. */
-export const SELFTEST_VERSION = 3;
+export const SELFTEST_VERSION = 4;
 
-/** FLAC frame styles, best first: 24-bit variable blocks, then fixed blocks, then 16-bit. */
-const FRAME_STYLES = [0x000, 0x100, 0x200, 0x300];
+/**
+ * Frame styles, best first: FLAC 24-bit variable blocks, fixed blocks, 16-bit; then Apple
+ * Lossless (24-bit, 16-bit) for browsers that refuse all of those.
+ */
+const FRAME_STYLES = [0x000, 0x100, 0x200, 0x300, ALAC_BIT, ALAC_BIT | 0x200];
+
+/** The MIME type a variant is appended as. */
+export const mimeFor = (code: number, flacMime: string) => (code & ALAC_BIT ? ALAC_TYPE : flacMime);
 
 /**
  * Low rate first (every track needs it), then ways to write rates above 65,535 Hz; then the
@@ -124,7 +130,7 @@ export async function probe(p: Probe, source: 'managed' | 'classic', mime: strin
 	try {
 		audio.src = url;
 		await wait(new Promise<void>((r) => ms.addEventListener('sourceopen', () => r(), { once: true })), 3000, 'sourceopen');
-		const sb = ms.addSourceBuffer(mime);
+		const sb = ms.addSourceBuffer(mimeFor(p.code, mime));
 		const append = (b: Uint8Array) =>
 			wait(
 				new Promise<void>((resolve, reject) => {

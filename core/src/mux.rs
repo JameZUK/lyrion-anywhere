@@ -2,9 +2,10 @@
 //!
 //! Some browsers (iOS Safari) keep a page running in the background only while a media
 //! element plays. This turns the player's decoded PCM into fragmented MP4 with FLAC audio
-//! (`audio/mp4; codecs="flac"`): an init segment per sample rate, then media segments of
-//! whole FLAC frames. The FLAC frames use VERBATIM subframes (uncompressed 24-bit), so the
-//! encoding is exact and cheap; the data never leaves the device.
+//! (`audio/mp4; codecs="flac"`), or ALAC (`codecs="alac"`) for browsers that refuse our FLAC:
+//! an init segment per sample rate, then media segments of whole frames. Both are written
+//! uncompressed (FLAC VERBATIM subframes, ALAC escape frames), so the encoding is exact and
+//! cheap; the data never leaves the device.
 //!
 //! No I/O: the host appends the bytes to a `SourceBuffer`.
 
@@ -26,6 +27,8 @@ pub struct Variant {
     pub fixed_blocks: bool,
     /// 16-bit samples instead of 24-bit.
     pub bits16: bool,
+    /// Apple Lossless (ALAC) instead of FLAC.
+    pub alac: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -55,7 +58,7 @@ impl Variant {
     }
 
     /// Compact code for hosts: brand in bits 0–3, high-rate style in bits 4–7, fixed block
-    /// size in bit 8, 16-bit samples in bit 9.
+    /// size in bit 8 (FLAC only), 16-bit samples in bit 9, ALAC in bit 10.
     pub fn from_code(code: u32) -> Variant {
         Variant {
             brand: match code & 0xf {
@@ -70,6 +73,7 @@ impl Variant {
             },
             fixed_blocks: code & 0x100 != 0,
             bits16: code & 0x200 != 0,
+            alac: code & 0x400 != 0,
         }
     }
 
@@ -84,7 +88,10 @@ impl Variant {
             HighRate::Srat => 1,
             HighRate::Divisor => 2,
         };
-        b | (h << 4) | (u32::from(self.fixed_blocks) << 8) | (u32::from(self.bits16) << 9)
+        b | (h << 4)
+            | (u32::from(self.fixed_blocks) << 8)
+            | (u32::from(self.bits16) << 9)
+            | (u32::from(self.alac) << 10)
     }
 }
 
@@ -194,6 +201,11 @@ impl Segmenter {
         while taken < frames {
             let n = (frames - taken).min(BLOCK);
             let block = &self.pending[taken * 2..(taken + n) * 2];
+            if v.alac {
+                samples.push((n as u32, alac_frame(block, n, v.bits())));
+                taken += n;
+                continue;
+            }
             // Fixed strategy: every frame is a full block (silence pads a short last one).
             let len = if v.fixed_blocks {
                 BLOCK
@@ -357,6 +369,88 @@ fn streaminfo(rate: u32, v: Variant) -> [u8; 34] {
     s
 }
 
+// --- ALAC ----------------------------------------------------------------------------------
+
+/// Writes bits most significant first.
+struct Bits {
+    out: Vec<u8>,
+    acc: u64,
+    n: u32,
+}
+
+impl Bits {
+    fn with_capacity(bytes: usize) -> Bits {
+        Bits {
+            out: Vec::with_capacity(bytes),
+            acc: 0,
+            n: 0,
+        }
+    }
+
+    fn put(&mut self, value: u32, bits: u32) {
+        self.acc = (self.acc << bits) | (u64::from(value) & ((1u64 << bits) - 1));
+        self.n += bits;
+        while self.n >= 8 {
+            self.n -= 8;
+            self.out.push((self.acc >> self.n) as u8);
+        }
+    }
+
+    /// Pad to a whole byte with zero bits.
+    fn finish(mut self) -> Vec<u8> {
+        if self.n > 0 {
+            let pad = 8 - self.n;
+            self.put(0, pad);
+        }
+        self.out
+    }
+}
+
+/// Largest ALAC frame we write (uncompressed, partial-frame size included), in bytes.
+fn alac_max_frame(bits: u32) -> u32 {
+    (3 + 4 + 12 + 4 + 32 + BLOCK as u32 * CHANNELS * bits + 3).div_ceil(8)
+}
+
+/// One ALAC frame: a channel-pair element sent uncompressed ("escape"), then the end tag.
+/// `n` frames (a short final frame says its own length).
+fn alac_frame(interleaved: &[f32], n: usize, bits: u32) -> Vec<u8> {
+    let mut w = Bits::with_capacity(alac_max_frame(bits) as usize);
+    w.put(1, 3); // element: channel pair
+    w.put(0, 4); // element instance
+    w.put(0, 12); // unused, must be zero
+    let partial = n != BLOCK;
+    w.put(u32::from(partial), 1);
+    w.put(0, 2); // no bytes shifted out
+    w.put(1, 1); // escape: uncompressed samples follow
+    if partial {
+        w.put(n as u32, 32);
+    }
+    for i in 0..n {
+        for ch in 0..2 {
+            let x = interleaved.get(i * 2 + ch).copied().unwrap_or(0.0);
+            let v = if bits == 16 { to_i16(x) } else { to_i24(x) };
+            w.put(v as u32, bits);
+        }
+    }
+    w.put(7, 3); // end of frame
+    w.finish()
+}
+
+/// The `alac` box: ALACSpecificConfig (frame length, depth, tuning defaults, rate).
+fn alac_config(rate: u32, bits: u32) -> Vec<u8> {
+    let mut c = Vec::with_capacity(24);
+    c.extend((BLOCK as u32).to_be_bytes()); // frame length
+    c.push(0); // compatible version
+    c.push(bits as u8);
+    c.extend([40, 10, 14]); // pb, mb, kb: the standard defaults
+    c.push(CHANNELS as u8);
+    c.extend(255u16.to_be_bytes()); // max run
+    c.extend(alac_max_frame(bits).to_be_bytes());
+    c.extend((rate.saturating_mul(CHANNELS * bits)).to_be_bytes()); // average bit rate
+    c.extend(rate.to_be_bytes());
+    full(b"alac", 0, 0, &c)
+}
+
 // --- MP4 -----------------------------------------------------------------------------------
 
 fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
@@ -471,9 +565,14 @@ fn init_segment(rate: u32, variant: Variant) -> Vec<u8> {
     if v1 {
         entry.extend(full(b"srat", 0, 0, &rate.to_be_bytes()));
     }
-    entry.extend(dfla);
-    let flac_entry = bx(b"fLaC", &entry);
-    let stsd = full(b"stsd", 0, 0, &cat(&[&1u32.to_be_bytes(), &flac_entry]));
+    let audio_entry = if variant.alac {
+        entry.extend(alac_config(rate, variant.bits()));
+        bx(b"alac", &entry)
+    } else {
+        entry.extend(dfla);
+        bx(b"fLaC", &entry)
+    };
+    let stsd = full(b"stsd", 0, 0, &cat(&[&1u32.to_be_bytes(), &audio_entry]));
     let empty = 0u32.to_be_bytes();
     let stbl = bx(
         b"stbl",
@@ -691,6 +790,8 @@ mod tests {
             .chain(0x100..0x140)
             .chain(0x200..0x240)
             .chain(0x300..0x340)
+            .chain(0x400..0x440)
+            .chain(0x600..0x640)
         {
             let v = Variant::from_code(code);
             assert_eq!(Variant::from_code(v.code()), v);
@@ -702,7 +803,8 @@ mod tests {
     #[test]
     fn every_variant_still_decodes_bit_exactly() {
         for code in [
-            0x00, 0x01, 0x02, 0x10, 0x11, 0x20, 0x100, 0x200, 0x300, 0x311,
+            0x00, 0x01, 0x02, 0x10, 0x11, 0x20, 0x100, 0x200, 0x300, 0x311, 0x400, 0x600, 0x411,
+            0x621,
         ] {
             let rate = 96_000;
             let mut s = Segmenter::new(rate);
@@ -728,6 +830,46 @@ mod tests {
             assert_eq!(got.len(), frames * 2, "variant {code:#x}");
             assert!(got[pcm.len()..].iter().all(|&x| x == 0));
         }
+    }
+
+    #[test]
+    fn alac_init_segments_describe_the_stream() {
+        for (code, bits) in [(0x400, 24u8), (0x600, 16)] {
+            let mut s = Segmenter::new(44_100);
+            s.set_variant(Variant::from_code(code));
+            let init = s.init_segment();
+            assert!(!init.windows(4).any(|w| w == b"fLaC"));
+            let entry = init
+                .windows(4)
+                .position(|w| w == b"alac")
+                .expect("alac entry")
+                + 4;
+            assert_eq!(
+                u16::from_be_bytes([init[entry + 18], init[entry + 19]]),
+                u16::from(bits),
+                "entry sample size"
+            );
+            // The nested `alac` box: version/flags, then the 24-byte config.
+            let cfg = init[entry..].windows(4).position(|w| w == b"alac").unwrap() + entry + 8;
+            assert_eq!(&init[cfg..cfg + 4], &(BLOCK as u32).to_be_bytes());
+            assert_eq!(init[cfg + 5], bits);
+            assert_eq!(init[cfg + 9], 2, "channels");
+            assert_eq!(&init[cfg + 20..cfg + 24], &44_100u32.to_be_bytes());
+        }
+    }
+
+    #[test]
+    fn alac_frames_are_well_formed() {
+        // A full frame has no length field; a short one says its length.
+        let full = alac_frame(&vec![0.0; BLOCK * 2], BLOCK, 16);
+        assert_eq!(full.len(), (23 + BLOCK * 2 * 16 + 3).div_ceil(8));
+        assert_eq!(full[0] >> 5, 1, "channel pair element");
+        let short = alac_frame(&[0.5, -0.5, 0.25, -0.25], 2, 24);
+        assert_eq!(short.len(), (23usize + 32 + 2 * 2 * 24 + 3).div_ceil(8));
+        // Everything fits the advertised maximum.
+        assert!(
+            alac_frame(&vec![1.0; BLOCK * 2], BLOCK - 1, 24).len() <= alac_max_frame(24) as usize
+        );
     }
 
     #[test]

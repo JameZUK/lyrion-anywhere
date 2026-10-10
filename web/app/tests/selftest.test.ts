@@ -1,4 +1,4 @@
-import { PROBES, SELFTEST_VERSION, chooseVariant, loadCached, saveCached, type SelfTest } from '$lib/player/selftest';
+import { PROBES, SELFTEST_VERSION, chooseVariant, loadCached, mimeFor, saveCached, type SelfTest } from '$lib/player/selftest';
 
 const result = (ok: (rate: number, code: number) => boolean): SelfTest => ({
 	version: SELFTEST_VERSION,
@@ -49,9 +49,21 @@ test('other FLAC frame styles are used when the default one is refused', () => {
 });
 
 test('every frame style is probed at both rates', () => {
-	for (const style of [0x000, 0x100, 0x200, 0x300]) {
-		const mine = PROBES.filter((p) => (p.code & 0x300) === style);
+	for (const style of [0x000, 0x100, 0x200, 0x300, 0x400, 0x600]) {
+		const mine = PROBES.filter((p) => (p.code & 0x700) === style);
 		expect(new Set(mine.map((p) => p.rate))).toEqual(new Set([44_100, 96_000]));
 	}
 	expect(new Set(PROBES.map((p) => `${p.rate}:${p.code}`)).size).toBe(PROBES.length);
+});
+
+test('Apple Lossless is the last resort, and is appended under its own type', () => {
+	// Like iPadOS Safari might: every FLAC style refused, ALAC accepted at all rates.
+	expect(chooseVariant(result((_, code) => (code & 0x400) !== 0))).toEqual({ media: true, code: 0x400, highRates: true });
+	// Only 16-bit ALAC.
+	expect(chooseVariant(result((_, code) => (code & 0x600) === 0x600))).toEqual({ media: true, code: 0x600, highRates: true });
+	// FLAC still wins when it plays.
+	expect(chooseVariant(result(() => true)).code).toBe(0x00);
+	expect(mimeFor(0x400, 'audio/mp4; codecs="fLaC"')).toBe('audio/mp4; codecs="alac"');
+	expect(mimeFor(0x611, 'audio/mp4; codecs="fLaC"')).toBe('audio/mp4; codecs="alac"');
+	expect(mimeFor(0x311, 'audio/mp4; codecs="fLaC"')).toBe('audio/mp4; codecs="fLaC"');
 });

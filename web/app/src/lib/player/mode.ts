@@ -16,6 +16,10 @@ export type ModePreference = 'auto' | PlaybackMode;
 export const MEDIA_TYPES = ['audio/mp4; codecs="flac"', 'audio/mp4; codecs="fLaC"'] as const;
 /** The first spelling (kept for callers that only need one). */
 export const MEDIA_TYPE = MEDIA_TYPES[0];
+/** Apple Lossless in fragmented MP4: the fallback for browsers that refuse our FLAC. */
+export const ALAC_TYPE = 'audio/mp4; codecs="alac"';
+/** Segmenter variant bit for ALAC (see core/src/mux.rs). */
+export const ALAC_BIT = 0x400;
 
 export interface Environment {
 	/** iPhone, iPod or iPad (iPadOS reports itself as a Mac, so touch support decides). */
