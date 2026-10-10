@@ -423,6 +423,7 @@ The **v1 release** is Phases 0–3.
    - Now playing (art, transport, seek, volume, shuffle/repeat); the queue (jump, reorder, remove, clear);
    - albums, artists, album and artist pages, and search, with play now, play next and add everywhere;
    - Media Session controls; light/dark theme; phone and desktop layouts.
+   - Favourites (folders, play/next/add) and saved playlists: play, filter, and for admins create, rename, delete, reorder and remove tracks. Listeners can't change shared playlists (enforced by the gateway).
    - **Gate:** usability pass on phone and desktop; WCAG AA audit.
 3. **Offline downloads.** Server download/transcode/manifest/events endpoints; the web download manager, offline mode and sync-back.
    - **Gate:** a pinned 500-track playlist downloads, survives a restart, plays offline, and syncs plays back. **→ v1 release.**

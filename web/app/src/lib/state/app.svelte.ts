@@ -67,6 +67,11 @@ class AppState {
 		return this.players.find((p) => p.playerid === this.playerId);
 	}
 
+	/** Admins may change shared data (playlists); listeners only play it. */
+	get isAdmin(): boolean {
+		return this.session?.user.role === 'admin';
+	}
+
 	get playing(): boolean {
 		return this.now?.mode === 'play';
 	}
@@ -109,12 +114,24 @@ class AppState {
 				// else the first one.
 				const pick = this.players.find((p) => p.isplaying) ?? this.players[0];
 				if (pick) this.select(pick.playerid);
-				else this.now = null;
+				else this.forget();
 			} else {
 				this.soon();
 			}
 		} catch (e) {
 			this.error = (e as Error).message;
+		}
+	}
+
+	/** No usable player: stop polling a remembered one that has gone (LMS drops the
+	 *  connection for commands to unknown players, which would show as errors every poll). */
+	forget() {
+		this.playerId = '';
+		this.now = null;
+		try {
+			localStorage.removeItem(PLAYER_KEY);
+		} catch {
+			/* not essential */
 		}
 	}
 
@@ -138,7 +155,7 @@ class AppState {
 
 	async refresh() {
 		const id = this.playerId;
-		if (!id) return;
+		if (!id || !this.current) return;
 		try {
 			const s = await api.rpc<PlayerStatus>(id, cmd.status());
 			if (id !== this.playerId) return; // switched meanwhile
@@ -161,7 +178,7 @@ class AppState {
 	/** Send a command to the selected player, then refresh its status. */
 	async send(c: (string | number)[]) {
 		const id = this.playerId;
-		if (!id) return;
+		if (!id || !this.current) return;
 		try {
 			await api.rpc(id, c);
 		} catch (e) {

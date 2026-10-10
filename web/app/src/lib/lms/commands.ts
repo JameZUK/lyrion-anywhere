@@ -44,6 +44,34 @@ export const artists = (from: number, n: number, search?: string): Command => [
 export const albumTracks = (album: number): Command => ['titles', 0, 500, TRACK_TAGS, 'sort:tracknum', `album_id:${id(album)}`];
 export const search = (term: string, n = 20): Command => ['search', 0, count(n), `term:${text(term)}`];
 
+/** LMS favourite / menu item ids, e.g. "f047f379.3". */
+export function itemId(v: unknown): string {
+	if (typeof v !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(v)) throw new RangeError('bad item id');
+	return v;
+}
+
+export const favourites = (from: number, n: number, item?: string): Command => [
+	'favorites', 'items', start(from), count(n), ...(item ? [`item_id:${itemId(item)}`] : []),
+];
+export const playlists = (from: number, n: number): Command => ['playlists', start(from), count(n)];
+export const playlistTracks = (playlist: number): Command => [
+	'playlists', 'tracks', 0, 500, `playlist_id:${id(playlist)}`, TRACK_TAGS,
+];
+export const newPlaylist = (name: string): Command => ['playlists', 'new', `name:${text(name) || 'New playlist'}`];
+export const renamePlaylist = (playlist: number, name: string): Command => [
+	'playlists', 'rename', `playlist_id:${id(playlist)}`, `newname:${text(name) || 'Playlist'}`,
+];
+export const deletePlaylist = (playlist: number): Command => ['playlists', 'delete', `playlist_id:${id(playlist)}`];
+export const addToPlaylist = (playlist: number, track: number): Command => [
+	'playlists', 'edit', `playlist_id:${id(playlist)}`, 'cmd:add', `track_id:${id(track)}`,
+];
+export const removeFromPlaylist = (playlist: number, index: number): Command => [
+	'playlists', 'edit', `playlist_id:${id(playlist)}`, 'cmd:delete', `index:${start(index)}`,
+];
+export const moveInPlaylist = (playlist: number, from: number, to: number): Command => [
+	'playlists', 'edit', `playlist_id:${id(playlist)}`, 'cmd:move', `index:${start(from)}`, `toindex:${start(to)}`,
+];
+
 // --- playback (player commands) ----------------------------------------------------------
 
 export const status = (): Command => ['status', '-', 1, STATUS_TAGS];
@@ -67,11 +95,17 @@ export const repeat = (mode: 0 | 1 | 2): Command => ['playlist', 'repeat', mode]
 export type Placement = 'play' | 'next' | 'add';
 const PLACEMENT = { play: 'load', next: 'insert', add: 'add' } as const;
 
-export type Selection = { album: number } | { track: number } | { artist: number };
+export type Selection = { album: number } | { track: number } | { artist: number } | { playlist: number };
 
 export function enqueue(sel: Selection, placement: Placement, playIndex?: number): Command {
 	const [key, value] =
-		'album' in sel ? ['album_id', sel.album] : 'track' in sel ? ['track_id', sel.track] : ['artist_id', sel.artist];
+		'album' in sel
+			? ['album_id', sel.album]
+			: 'track' in sel
+				? ['track_id', sel.track]
+				: 'playlist' in sel
+					? ['playlist_id', sel.playlist]
+					: ['artist_id', sel.artist];
 	const cmd: Command = ['playlistcontrol', `cmd:${PLACEMENT[placement]}`, `${key}:${id(value)}`];
 	if (placement === 'play' && playIndex !== undefined) cmd.push(`play_index:${start(playIndex)}`);
 	return cmd;
@@ -80,7 +114,7 @@ export function enqueue(sel: Selection, placement: Placement, playIndex?: number
 // --- links -------------------------------------------------------------------------------
 
 /** In-app link to an album or artist, or null if LMS gave no usable id (e.g. "12,34" → 12). */
-export function link(kind: 'album' | 'artist', v: unknown): string | null {
+export function link(kind: 'album' | 'artist' | 'playlist', v: unknown): string | null {
 	const first = typeof v === 'string' ? v.split(',')[0] : v;
 	try {
 		return `#/${kind}/${id(first)}`;
@@ -89,7 +123,28 @@ export function link(kind: 'album' | 'artist', v: unknown): string | null {
 	}
 }
 
+/** Play, play next or add a favourite (radio stations, tracks, app items). */
+export function playFavourite(item: string, placement: Placement): Command {
+	const verb = { play: 'play', next: 'insert', add: 'add' }[placement];
+	return ['favorites', 'playlist', verb, `item_id:${itemId(item)}`];
+}
+
 // --- artwork -----------------------------------------------------------------------------
+
+/**
+ * Path (for Api.art) of an icon or image LMS named in a menu (favourites, apps), or null.
+ * Only the forms the gateway relays: its own icons, plugin icons and image-proxy URLs.
+ */
+export function imagePath(image: unknown, size = 300): string | null {
+	if (typeof image !== 'string' || image.length > 2048) return null;
+	const px = Math.max(50, Math.min(1000, Math.round(size)));
+	if (/^https?:\/\//i.test(image)) return `imageproxy/${encodeURIComponent(image)}/image_${px}x${px}`;
+	const p = image.replace(/^\/+/, '');
+	if (p.includes('..') || p.includes('//') || p.includes('%2e') || p.includes('\\')) return null;
+	if (/^imageproxy\/[^/]+\/image/.test(p)) return p;
+	if (/^(html\/images|plugins\/cache\/icons|plugins\/[A-Za-z0-9_]+\/html)\/[A-Za-z0-9._\/-]+\.(png|jpe?g|gif|svg)$/i.test(p)) return p;
+	return null;
+}
 
 /** Path (for Api.art) of a cover by LMS cover id or track id; null if there is none. */
 export function coverPath(cover: unknown, size = 300): string | null {

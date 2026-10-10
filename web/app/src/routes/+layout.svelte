@@ -23,8 +23,19 @@
 		{ href: '#/', label: 'Now playing', icon: 'home', match: (p: string) => p === '/' },
 		{ href: '#/albums', label: 'Albums', icon: 'album', match: (p: string) => p.startsWith('/album') },
 		{ href: '#/artists', label: 'Artists', icon: 'artist', match: (p: string) => p.startsWith('/artist') },
+		{ href: '#/playlists', label: 'Playlists', icon: 'queue', match: (p: string) => p.startsWith('/playlist') },
+		{ href: '#/favourites', label: 'Favourites', icon: 'heart', match: (p: string) => p.startsWith('/favourites') },
 		{ href: '#/search', label: 'Search', icon: 'search', match: (p: string) => p.startsWith('/search') },
-		{ href: '#/queue', label: 'Queue', icon: 'queue', match: (p: string) => p.startsWith('/queue') },
+		{ href: '#/queue', label: 'Queue', icon: 'playnext', match: (p: string) => p.startsWith('/queue') },
+		{ href: '#/settings', label: 'Settings', icon: 'settings', match: (p: string) => p.startsWith('/settings') },
+	];
+	// Phones: five tabs; the library sections are one tap away on the Library page.
+	const LIBRARY = ['/album', '/artist', '/playlist', '/favourites', '/library'];
+	const TABS = [
+		{ href: '#/', label: 'Playing', icon: 'home', match: (p: string) => p === '/' },
+		{ href: '#/library', label: 'Library', icon: 'library', match: (p: string) => LIBRARY.some((l) => p.startsWith(l)) },
+		{ href: '#/search', label: 'Search', icon: 'search', match: (p: string) => p.startsWith('/search') },
+		{ href: '#/queue', label: 'Queue', icon: 'playnext', match: (p: string) => p.startsWith('/queue') },
 		{ href: '#/settings', label: 'Settings', icon: 'settings', match: (p: string) => p.startsWith('/settings') },
 	];
 	const path = $derived(page.url.hash.replace(/^#/, '') || '/');
@@ -62,9 +73,9 @@
 	</div>
 	<div class="barwrap" class:on-np={path === '/'}><PlayerBar /></div>
 	<nav class="tabs" aria-label="Main">
-		{#each NAV.filter((n) => n.href !== '#/queue') as n (n.href)}
+		{#each TABS as n (n.href)}
 			<a href={n.href} class:active={n.match(path)} aria-current={n.match(path) ? 'page' : undefined}>
-				<Icon name={n.icon} size={22} /><span>{n.label === 'Now playing' ? 'Playing' : n.label}</span>
+				<Icon name={n.icon} size={22} /><span>{n.label}</span>
 			</a>
 		{/each}
 	</nav>

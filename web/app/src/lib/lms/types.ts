@@ -85,3 +85,29 @@ export interface SearchResult {
 	albums_loop?: { album?: string; album_id?: number }[];
 	tracks_loop?: { track?: string; track_id?: number }[];
 }
+
+export interface MenuItem {
+	id?: string;
+	name?: string;
+	type?: string;
+	image?: string;
+	isaudio?: number | string;
+	hasitems?: number | string;
+}
+export interface FavouritesResult {
+	count?: number;
+	title?: string;
+	loop_loop?: MenuItem[];
+}
+export interface Playlist {
+	id: number;
+	playlist?: string;
+}
+export interface PlaylistsResult {
+	count?: number;
+	playlists_loop?: Playlist[];
+}
+export interface PlaylistTracksResult {
+	count?: number;
+	playlisttracks_loop?: Track[];
+}

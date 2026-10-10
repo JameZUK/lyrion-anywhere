@@ -303,5 +303,149 @@
    "cmd:add",
    "artist_id:12"
   ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:load",
+   "playlist_id:5",
+   "play_index:2"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:insert",
+   "playlist_id:5"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "favorites",
+   "items",
+   0,
+   500
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "favorites",
+   "items",
+   0,
+   500,
+   "item_id:f047f379.0"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "favorites",
+   "playlist",
+   "play",
+   "item_id:f047f379.3"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "favorites",
+   "playlist",
+   "insert",
+   "item_id:f047f379.3"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "favorites",
+   "playlist",
+   "add",
+   "item_id:f047f379.3"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "playlists",
+   0,
+   500
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "playlists",
+   "tracks",
+   0,
+   500,
+   "playlist_id:5",
+   "tags:adtlcJKj"
+  ]
+ },
+ {
+  "player": false,
+  "admin": true,
+  "cmd": [
+   "playlists",
+   "new",
+   "name:Road trip"
+  ]
+ },
+ {
+  "player": false,
+  "admin": true,
+  "cmd": [
+   "playlists",
+   "rename",
+   "playlist_id:5",
+   "newname:Road trip 2"
+  ]
+ },
+ {
+  "player": false,
+  "admin": true,
+  "cmd": [
+   "playlists",
+   "delete",
+   "playlist_id:5"
+  ]
+ },
+ {
+  "player": false,
+  "admin": true,
+  "cmd": [
+   "playlists",
+   "edit",
+   "playlist_id:5",
+   "cmd:add",
+   "track_id:99"
+  ]
+ },
+ {
+  "player": false,
+  "admin": true,
+  "cmd": [
+   "playlists",
+   "edit",
+   "playlist_id:5",
+   "cmd:delete",
+   "index:3"
+  ]
+ },
+ {
+  "player": false,
+  "admin": true,
+  "cmd": [
+   "playlists",
+   "edit",
+   "playlist_id:5",
+   "cmd:move",
+   "index:3",
+   "toindex:0"
+  ]
  }
 ]

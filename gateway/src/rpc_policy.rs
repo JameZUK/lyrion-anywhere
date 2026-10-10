@@ -331,6 +331,10 @@ pub fn check(
             Some(Kind::Plain)
         }
         "playlists" if matches!(c.get(1), Some(&"new" | &"rename" | &"delete" | &"edit")) => {
+            // Saved playlists are shared household data: listeners may play them, not change them.
+            if caller.role() != Role::Admin {
+                return deny("changing playlists needs the admin role");
+            }
             playlists_edit(&cmd[1..])?;
             Some(Kind::Plain)
         }
@@ -738,6 +742,21 @@ mod tests {
             .unwrap_or_else(|e| panic!("{cmd} denied: {e:?}"))
     }
 
+    fn admin_ok(cmd: Value) {
+        let raw = cmd.as_array().unwrap().clone();
+        check(&Who(Role::Admin), "", &raw, &apps())
+            .unwrap_or_else(|e| panic!("{cmd} denied: {e:?}"));
+    }
+
+    /// Refused even for an admin: the arguments themselves are invalid.
+    fn admin_denied(cmd: Value) {
+        let raw = cmd.as_array().unwrap().clone();
+        assert!(
+            check(&Who(Role::Admin), "", &raw, &apps()).is_err(),
+            "{cmd} was allowed"
+        );
+    }
+
     fn denied(player: &str, cmd: Value) {
         let raw = cmd.as_array().unwrap().clone();
         assert!(
@@ -761,8 +780,60 @@ mod tests {
             } else {
                 ""
             };
-            ok(player, e["cmd"].clone());
+            let raw = e["cmd"].as_array().unwrap().clone();
+            if e["admin"].as_bool() == Some(true) {
+                // Admin-only in the app too: refused for listeners, allowed for admins.
+                assert!(
+                    check(&Who(Role::Listener), player, &raw, &apps()).is_err(),
+                    "{e}"
+                );
+                check(&Who(Role::Admin), player, &raw, &apps())
+                    .unwrap_or_else(|err| panic!("{e} denied for admin: {err:?}"));
+            } else {
+                ok(player, e["cmd"].clone());
+            }
         }
+    }
+
+    #[test]
+    fn only_admins_change_saved_playlists() {
+        let changes = [
+            json!(["playlists", "new", "name:Road trip"]),
+            json!(["playlists", "rename", "playlist_id:5", "newname:X"]),
+            json!(["playlists", "delete", "playlist_id:5"]),
+            json!([
+                "playlists",
+                "edit",
+                "playlist_id:5",
+                "cmd:delete",
+                "index:0"
+            ]),
+            json!([
+                "playlists",
+                "edit",
+                "playlist_id:5",
+                "cmd:add",
+                "track_id:9"
+            ]),
+        ];
+        for cmd in &changes {
+            let raw = cmd.as_array().unwrap().clone();
+            assert!(
+                check(&Who(Role::Listener), "", &raw, &apps()).is_err(),
+                "listener could run {cmd}"
+            );
+            assert!(
+                check(&Who(Role::Admin), "", &raw, &apps()).is_ok(),
+                "admin refused {cmd}"
+            );
+        }
+        // Listing and playing stay open to listeners.
+        ok("", json!(["playlists", 0, 50]));
+        ok("", json!(["playlists", "tracks", 0, 50, "playlist_id:5"]));
+        ok(
+            MINE,
+            json!(["playlistcontrol", "cmd:load", "playlist_id:5"]),
+        );
     }
 
     #[test]
@@ -979,20 +1050,17 @@ mod tests {
                 "toindex:0"
             ]),
         ] {
-            ok("", cmd);
+            admin_ok(cmd);
         }
-        denied("", json!(["playlists", "new"]));
-        denied(
-            "",
-            json!([
-                "playlists",
-                "edit",
-                "playlist_id:3",
-                "cmd:add",
-                "url:file:///x"
-            ]),
-        );
-        denied("", json!(["playlists", "edit", "cmd:delete"]));
+        admin_denied(json!(["playlists", "new"]));
+        admin_denied(json!([
+            "playlists",
+            "edit",
+            "playlist_id:3",
+            "cmd:add",
+            "url:file:///x"
+        ]));
+        admin_denied(json!(["playlists", "edit", "cmd:delete"]));
     }
 
     #[test]
@@ -1057,7 +1125,7 @@ mod tests {
             "file:///srv/a.flac",
             " FILE:/x",
             "http://10.1.2.3/x",
-            "https://192.168.1.5:9000",
+            "https://192.168.250.7:9000",
             "http://172.20.0.1/",
             "http://127.0.0.1:9000/",
             "http://169.254.1.1/",

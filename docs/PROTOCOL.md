@@ -170,10 +170,10 @@ Response: `{"result": {...}}`, or `{"error": "<reason>"}` with one of these stat
 
 | Group | Allowed |
 |---|---|
-| Library (no player) | `artists`, `albums`, `titles`/`tracks`, `genres`, `years`, `search`, `musicfolder`, `playlists` (list, tracks, new/rename/delete/edit by id), `favorites items`, `apps`, `radios`, `players`, `serverstatus`, `syncgroups ?` |
+| Library (no player) | `artists`, `albums`, `titles`/`tracks`, `genres`, `years`, `search`, `musicfolder`, `playlists` (list, tracks), `favorites items`, `apps`, `radios`, `players`, `serverstatus`, `syncgroups ?` |
 | Player (permitted players only) | `status`, `play`, `pause`, `stop`, `mode ?`, `time`, `power`, `sleep`, `mixer volume/muting`, `playlist index/jump/move/delete/clear/shuffle/repeat/tracks ?`, `playlistcontrol cmd:load/add/insert/delete` with exactly one id selector, `sync` with another permitted player, `favorites playlist play/add/insert item_id:…` |
 | Apps and radio | `<app> items …` and `<app> playlist play/add/insert item_id:…`, only for app commands LMS lists in its `apps`/`radios` menus. Core command names can never be learned as apps. An unknown app triggers at most one menu refresh a minute. |
-| Admin role only | `rescan` |
+| Admin role only | `rescan`; changing saved playlists (`playlists new/rename/delete/edit`) |
 
 Everything else is refused, notably:
 - `readdirectory`, `pref`, `playerpref`;
