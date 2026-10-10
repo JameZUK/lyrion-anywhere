@@ -101,3 +101,19 @@ fn open_stream_reports_number_and_offset() {
     p.on_stream_end(3.0);
     assert!(p.open_stream().is_none());
 }
+
+#[wasm_bindgen_test]
+fn segmenter_produces_init_and_media_segments() {
+    let mut s = anywhere_wasm::WasmSegmenter::new(44_100);
+    let init = s.init_segment();
+    assert_eq!(&init[4..8], b"ftyp");
+    assert!(s.segment().is_none(), "nothing queued yet");
+    s.push(&vec![0.25f32; 4096 * 2 * 2 + 10]);
+    let seg = s.segment().expect("two whole frames");
+    assert_eq!(&seg[4..8], b"moof");
+    assert_eq!(s.pending_frames(), 5);
+    assert!(s.flush().is_some());
+    assert!(s.emitted_seconds() > 0.18);
+    s.set_rate(96_000);
+    assert_eq!(s.rate(), 96_000);
+}

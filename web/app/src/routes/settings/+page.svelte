@@ -4,9 +4,19 @@
 	import * as auth from '$lib/api/auth';
 	import { ApiError } from '$lib/api/http';
 	import Icon from '$lib/components/Icon.svelte';
-	import { detect, type Capabilities } from '$lib/player/capabilities';
+	import { detect } from '$lib/player/capabilities';
+	import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, savePreference, type ModePreference } from '$lib/player/mode';
 
-	let caps = $state<Capabilities | null>(null);
+	// Built in: every browser is checked, and the best playback mode chosen automatically.
+	const caps = detect();
+	const env = detectEnvironment();
+	let pref = $state<ModePreference>(loadPreference());
+	const planned = $derived(chooseMode(caps, env, pref));
+	const active = $derived(device.state === 'connected' || device.state === 'reconnecting' || device.state === 'starting');
+	function setPref(p: ModePreference) {
+		pref = p;
+		savePreference(p);
+	}
 
 	let account = $state<auth.Account | null>(null);
 	let setup = $state<auth.TotpSetup | null>(null);
@@ -97,8 +107,26 @@
 				<button class="btn primary" onclick={() => device.start()} disabled={!device.supported}><Icon name="device" size={18} />Play on this device</button>
 			{/if}
 		</div>
+		<div class="mode">
+			<p>
+				<strong>Playback: {MODE_LABELS[(active && device.choice ? device.choice : planned).mode]}</strong>
+				<span class="muted"> — {(active && device.choice ? device.choice : planned).reason}</span>
+			</p>
+			<div class="row" role="radiogroup" aria-label="Playback mode">
+				{#each [['auto', 'Automatic'], ['worklet', 'Web Audio'], ['media', 'Media element']] as const as [value, label] (value)}
+					<label class="pill choice" class:on={pref === value}>
+						<input type="radio" name="playmode" {value} checked={pref === value} onchange={() => setPref(value)} class="sr-only" />{label}
+					</label>
+				{/each}
+			</div>
+			{#if active && device.choice && planned.mode !== device.choice.mode}
+				<p class="muted small">Takes effect the next time you start playing here.
+					<button class="btn" onclick={async () => { device.stop(); await device.start(); }}>Restart player now</button></p>
+			{/if}
+		</div>
 		{#if device.state !== 'off'}
 			<dl class="diag" aria-label="Player diagnostics">
+				<dt>Output</dt><dd data-diag="mode">{device.detail.mode === 'media' ? 'Media element' : device.detail.mode === 'worklet' ? 'Web Audio' : '–'}</dd>
 				<dt>State</dt><dd data-diag="output">{device.detail.output ?? '–'}</dd>
 				<dt>Buffered audio</dt><dd data-diag="buffered">{((device.detail.buffered_ms ?? 0) / 1000).toFixed(1)} s</dd>
 				<dt>Downloaded, not yet decoded</dt><dd data-diag="input">{mb(device.detail.input_bytes)}</dd>
@@ -140,10 +168,8 @@
 
 	<div class="card">
 		<h2>Playback capabilities</h2>
-		<p class="muted">What this browser supports for playing in the background. Useful when reporting a problem.</p>
-		{#if !caps}
-			<button class="btn" onclick={() => (caps = detect())}>Check this browser</button>
-		{:else}
+		<p class="muted">What this browser supports; the automatic playback choice is based on this.</p>
+		{#if caps}
 			<dl class="diag">
 				<dt>Managed Media Source</dt><dd>{caps.managedMediaSource ? 'yes' : 'no'}</dd>
 				<dt>Media Source</dt><dd>{caps.mediaSource ? 'yes' : 'no'}</dd>
@@ -253,6 +279,14 @@
 	.diag dd {
 		margin: 0;
 		font-variant-numeric: tabular-nums;
+	}
+	.mode {
+		margin: 1rem 0 0;
+		display: grid;
+		gap: 0.6rem;
+	}
+	.mode p {
+		margin: 0;
 	}
 	.caps {
 		width: 100%;

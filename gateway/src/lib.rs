@@ -239,7 +239,8 @@ async fn security_headers(req: Request, next: Next) -> Response {
         "content-security-policy",
         HeaderValue::from_static(
             "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; \
-             connect-src 'self'; img-src 'self' data: blob:; style-src 'self'; \
+             connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; \
+             style-src 'self'; \
              style-src-attr 'unsafe-inline'; \
              frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         ),

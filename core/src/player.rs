@@ -330,6 +330,14 @@ impl Player {
         written
     }
 
+    /// Nothing more to pull until LMS starts another track: the current track is fully
+    /// decoded and every frame has been pulled. (A pull returning nothing on its own does not
+    /// mean this: decoding runs a slice at a time.)
+    pub fn audio_exhausted(&self) -> bool {
+        let decoding = self.track.as_ref().is_some_and(|t| !t.decode_done);
+        !decoding && self.pcm.is_empty()
+    }
+
     /// Report that `frames` previously pulled have now been played.
     pub fn played(&mut self, mut frames: u64) {
         while frames > 0 {
@@ -743,6 +751,21 @@ mod tests {
         assert_eq!(events(&p.take_actions()), vec!["HELO", "SETD"]);
     }
 
+    /// A pull that returns nothing while decoding is still under way is not the end
+    /// (decoding runs a slice per tick): hosts must not treat it as one.
+    #[test]
+    fn audio_is_not_exhausted_while_a_track_is_still_decoding() {
+        let mut p = Player::new(cfg());
+        p.connected(0);
+        assert!(p.audio_exhausted(), "idle: nothing to pull");
+        p.on_control_data(&strm(b's', b'1', b'p', 0), 10).unwrap();
+        p.on_stream_headers(b"HTTP/1.0 200 OK\r\n\r\n", 11);
+        p.on_stream_data(&wav(44100, 44100 * 5), 12); // 5 s, stream still open
+        let mut buf = vec![0f32; 4096 * 2];
+        while p.pull_audio(&mut buf) > 0 {}
+        assert!(!p.audio_exhausted(), "track not fully decoded yet");
+    }
+
     #[test]
     fn plays_two_tracks_gaplessly_with_correct_events() {
         let mut p = Player::new(cfg());
@@ -787,9 +810,14 @@ mod tests {
         }
         p.take_actions();
 
+        // Audio is still coming (track 2 decoded, not yet pulled): not exhausted.
+        assert!(!p.audio_exhausted());
+
         // The rest of track 1 and all of track 2 come out contiguously: no gap.
         let total = drain(&mut p);
         assert_eq!(total, 22050 + 44100);
+        // Everything decoded and pulled: nothing more until LMS sends another track.
+        assert!(p.audio_exhausted());
         let ev = events(&p.take_actions());
         assert_eq!(
             ev.iter().filter(|e| *e == "STMs").count(),

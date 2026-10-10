@@ -119,6 +119,11 @@ impl WasmPlayer {
         self.inner.pull_audio(out)
     }
 
+    /// True once the current track is fully decoded and pulled (see the core's docs).
+    pub fn audio_exhausted(&self) -> bool {
+        self.inner.audio_exhausted()
+    }
+
     /// Frames the AudioWorklet has actually played.
     pub fn played(&mut self, frames: f64) {
         self.inner.played(frames.max(0.0) as u64);
@@ -137,5 +142,66 @@ impl WasmPlayer {
             "last_error": s.last_error,
         })
         .to_string()
+    }
+}
+
+/// Lossless fMP4/FLAC segments for the media-element output path (see `anywhere_core::mux`).
+#[wasm_bindgen]
+pub struct WasmSegmenter {
+    inner: anywhere_core::mux::Segmenter,
+}
+
+#[wasm_bindgen]
+impl WasmSegmenter {
+    #[wasm_bindgen(constructor)]
+    pub fn new(rate: u32) -> WasmSegmenter {
+        WasmSegmenter {
+            inner: anywhere_core::mux::Segmenter::new(rate),
+        }
+    }
+
+    pub fn rate(&self) -> u32 {
+        self.inner.rate()
+    }
+
+    /// `ftyp`+`moov` for the current rate; append before media segments (and after a rate change).
+    pub fn init_segment(&self) -> Vec<u8> {
+        self.inner.init_segment()
+    }
+
+    pub fn set_rate(&mut self, rate: u32) {
+        self.inner.set_rate(rate);
+    }
+
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    /// Continue the timeline at `seconds` (after clearing the buffer ahead of playback).
+    pub fn set_time(&mut self, seconds: f64) {
+        self.inner.set_time(seconds);
+    }
+
+    /// Queue interleaved stereo PCM.
+    pub fn push(&mut self, pcm: &[f32]) {
+        self.inner.push(pcm);
+    }
+
+    /// A media segment of the whole FLAC frames queued, or `undefined`.
+    pub fn segment(&mut self) -> Option<Vec<u8>> {
+        self.inner.segment()
+    }
+
+    /// A media segment of everything queued (end of stream), or `undefined`.
+    pub fn flush(&mut self) -> Option<Vec<u8>> {
+        self.inner.flush()
+    }
+
+    pub fn emitted_seconds(&self) -> f64 {
+        self.inner.emitted_seconds()
+    }
+
+    pub fn pending_frames(&self) -> u32 {
+        self.inner.pending_frames() as u32
     }
 }

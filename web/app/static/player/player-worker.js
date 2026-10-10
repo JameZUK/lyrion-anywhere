@@ -5,7 +5,7 @@
 // Reconnects automatically: a dropped socket resumes the same gateway session (LMS never
 // sees the player leave), and a broken stream download resumes from its byte offset.
 
-import init, { WasmPlayer } from './pkg/anywhere_wasm.js';
+import init, { WasmPlayer, WasmSegmenter } from './pkg/anywhere_wasm.js';
 import { CLOSE, Outbox, backoffMs, closeAction, streamFailureAction } from './reconnect.js';
 
 const TICK_MS = 20;
@@ -40,6 +40,15 @@ let disconnectedAt = 0;
 let received = 0;
 const outbox = new Outbox(2000);
 
+// Output mode: 'worklet' (PCM to an AudioWorklet) or 'media' (fMP4/FLAC segments for an
+// <audio> element on the main thread, which keeps playing in the background on iOS).
+let outputMode = 'worklet';
+// Seconds of audio to keep queued in the media element: enough to ride out timer throttling
+// while the page is in the background, small enough that buffers stay modest.
+const MEDIA_AHEAD_SECS = 8;
+let segmenter = null;
+let mediaWaiting = false; // flushed; waiting for the main thread's new timeline position
+
 const now = () => performance.now();
 const log = (msg) => postMessage({ log: msg });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -59,7 +68,8 @@ onmessage = async (e) => {
   const msg = e.data;
   if (msg.cmd === 'start') {
     token = msg.token;
-    attachSink(msg.port);
+    outputMode = msg.mode === 'media' ? 'media' : 'worklet';
+    if (msg.port) attachSink(msg.port);
     const wasm = await init();
     wasmMemory = wasm.memory ?? null;
     connect(false);
@@ -67,6 +77,33 @@ onmessage = async (e) => {
     attachSink(msg.port);
   } else if (msg.cmd === 'rate-ready') {
     readyRate = msg.rate;
+  } else if (msg.cmd === 'played') {
+    // Media mode: frames the <audio> element has actually played.
+    if (player && msg.frames > 0) {
+      played += msg.frames;
+      player.played(msg.frames);
+    }
+  } else if (msg.cmd === 'media-drained') {
+    // Media mode: the element played everything appended (it is waiting for more). Count
+    // it all, so the core sees the end of the playlist and LMS stops ("played out").
+    if (player && segmenter) {
+      if (segmenter.pending_frames() > 0) {
+        // Something is still held back (a partial frame): send it; the element plays on.
+        postSegment(segmenter.flush());
+      } else {
+        // Everything pulled has been played. The core caps this at what was pulled, so it
+        // can't over-count; the worker's own estimate catches up too.
+        player.played(Number.MAX_SAFE_INTEGER);
+        played = pulled;
+      }
+    }
+  } else if (msg.cmd === 'media-time') {
+    // Media mode, after a flush: continue the timeline where the element now is.
+    if (segmenter) {
+      segmenter.set_time(msg.at);
+      postMessage({ media: { span: { at: segmenter.emitted_seconds(), rate: segmenter.rate() } } });
+    }
+    mediaWaiting = false;
   } else if (msg.cmd === 'token') {
     // A renewed access token from the page; reconnect if we were waiting for it.
     token = msg.token;
@@ -250,12 +287,25 @@ function tick() {
   runActions();
 
   const status = JSON.parse(player.status_json());
+  if (outputMode === 'media') {
+    mediaTick(status.output);
+  } else {
+    workletTick(status.output);
+  }
+  lastOutput = status.output;
+  status.connection = open ? 'connected' : 'reconnecting';
+  // Memory diagnostics: iOS reloads a page whose process uses too much memory.
+  status.wasm_bytes = wasmMemory ? wasmMemory.buffer.byteLength : 0;
+  status.mode = outputMode;
+  postMessage({ status });
+}
+
+function workletTick(output) {
   // After stop/flush, drop audio already queued in the worklet.
-  if (status.output === 'Stopped' && lastOutput !== 'Stopped') {
+  if (output === 'Stopped' && lastOutput !== 'Stopped') {
     sink.postMessage({ flush: true });
     pulled = played = 0;
   }
-  lastOutput = status.output;
 
   const rate = player.output_rate();
   if (rate && rate !== readyRate) {
@@ -271,8 +321,57 @@ function tick() {
       pulled += frames;
     }
   }
-  status.connection = open ? 'connected' : 'reconnecting';
-  // Memory diagnostics: iOS reloads a page whose process uses too much memory.
-  status.wasm_bytes = wasmMemory ? wasmMemory.buffer.byteLength : 0;
-  postMessage({ status });
+}
+
+function postSegment(bytes) {
+  if (bytes) postMessage({ media: { segment: bytes } }, [bytes.buffer]);
+}
+
+function mediaTick(output) {
+  // Stop/flush: the main thread empties the element's buffer and tells us where to resume.
+  if (output === 'Stopped' && lastOutput !== 'Stopped') {
+    pulled = played = 0;
+    if (segmenter) {
+      mediaWaiting = true;
+      postMessage({ media: { flush: true } });
+    }
+  }
+  // The core reports e.g. "Paused { until: None }": compare by prefix.
+  const paused = output.startsWith('Paused');
+  const wasPaused = String(lastOutput).startsWith('Paused');
+  if (paused && !wasPaused) postMessage({ media: { pause: true } });
+  if (output === 'Playing' && lastOutput !== 'Playing') postMessage({ media: { play: true } });
+  if (mediaWaiting) return;
+
+  const rate = player.output_rate();
+  if (!rate) return;
+  if (!segmenter || segmenter.rate() !== rate) {
+    if (segmenter) {
+      postSegment(segmenter.flush()); // the rest of the old rate first
+      segmenter.set_rate(rate);
+    } else {
+      segmenter = new WasmSegmenter(rate);
+    }
+    postMessage({ media: { init: segmenter.init_segment(), span: { at: segmenter.emitted_seconds(), rate } } });
+  }
+  let exhausted = false;
+  while (pulled - played < rate * MEDIA_AHEAD_SECS) {
+    const buf = new Float32Array(4096 * 2);
+    const frames = player.pull(buf);
+    if (!frames) {
+      exhausted = player.audio_exhausted();
+      break;
+    }
+    segmenter.push(buf.subarray(0, frames * 2));
+    pulled += frames;
+  }
+  postSegment(segmenter.segment());
+  // The core has nothing more to give (end of the playlist, or waiting for the network):
+  // send the partial frame too, so the element can play every last frame. Only then: a
+  // flush mid-stream would pad the frame with silence.
+  if (exhausted && segmenter.pending_frames() > 0) {
+    const n = segmenter.pending_frames();
+    postSegment(segmenter.flush());
+    log(`media: sent the last ${n} frames`);
+  }
 }

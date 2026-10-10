@@ -1,7 +1,11 @@
 // "This device": the browser as an LMS player. The WASM core runs in a worker, which owns
-// the gateway socket and stream downloads; audio plays through an AudioWorklet.
+// the gateway socket and stream downloads. Audio plays through an AudioWorklet, or through an
+// <audio> element (Media Source) where only that keeps playing in the background (iOS).
 import { session } from '$lib/state/app.svelte';
 import { KeepAlive, PersistentLog, describeLifecycle } from './background';
+import { detect } from './capabilities';
+import { MediaOutput, Timeline } from './media-output';
+import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
 
 export type DeviceState = 'off' | 'starting' | 'connected' | 'reconnecting' | 'stopped' | 'error';
 
@@ -13,6 +17,7 @@ export interface DeviceStatus {
 	last_error?: string;
 	input_bytes?: number;
 	wasm_bytes?: number;
+	mode?: string;
 }
 
 const asset = (p: string) => new URL(`player/${p}`, document.baseURI).toString();
@@ -26,6 +31,8 @@ class DevicePlayer {
 	log = $state<string[]>(this.#history.lines);
 	/** This tab was playing before a reload: offer to resume (audio needs a tap to start). */
 	wasActive = $state(this.#history.active);
+	/** How this device plays, and why (chosen at start). */
+	choice = $state<ModeChoice | null>(null);
 	/** Called when the player is connected (the app selects it). */
 	onConnected: ((mac: string) => void) | null = null;
 
@@ -35,6 +42,13 @@ class DevicePlayer {
 	#detailAt = 0;
 	#keepAlive = new KeepAlive(asset('silence.wav'));
 	#lifecycleBound = false;
+	#media: MediaOutput | null = null;
+	#timeline = new Timeline();
+	#lastPos = 0;
+	#posTimer: ReturnType<typeof setInterval> | undefined;
+	#advancedAt = 0;
+	#drainedSent = false;
+	#drainedAtEnd = 0; // buffered end when "drained" was last sent
 
 	#note(msg: string) {
 		this.log = this.#history.add(msg);
@@ -61,8 +75,16 @@ class DevicePlayer {
 		}
 	}
 
-	/** After the system suspended us: restart the keep-alive and the audio context. */
+	/** After the system suspended us: restart the keep-alive and the audio output. */
 	async #recover() {
+		const media = this.#media;
+		if (media) {
+			if (media.audio.paused && this.detail.output === 'Playing') {
+				media.resume();
+				this.#note('media element resumed');
+			}
+			return;
+		}
 		await this.#keepAlive.nudge();
 		const ctx = this.#ctx;
 		if (ctx && ctx.state !== 'running' && ctx.state !== 'closed') {
@@ -76,7 +98,9 @@ class DevicePlayer {
 	}
 
 	get supported(): boolean {
-		return typeof AudioWorkletNode !== 'undefined' && typeof Worker !== 'undefined' && typeof WebAssembly !== 'undefined';
+		const g = globalThis as Record<string, unknown>;
+		const output = typeof AudioWorkletNode !== 'undefined' || !!g.ManagedMediaSource || !!g.MediaSource;
+		return output && typeof Worker !== 'undefined' && typeof WebAssembly !== 'undefined';
 	}
 
 	/** Start playing on this device. Must be called from a click (browsers require it). */
@@ -86,10 +110,30 @@ class DevicePlayer {
 		this.wasActive = false;
 		this.#watchLifecycle();
 		try {
+			const choice = chooseMode(detect(), detectEnvironment(), loadPreference());
+			this.choice = choice;
+			this.#note(`playback: ${MODE_LABELS[choice.mode]}. ${choice.reason}`);
 			this.#configureAudioSession();
-			// Inside the tap: a playing media element keeps iOS from suspending the page.
-			if (!(await this.#keepAlive.start())) this.#note('background keep-alive refused by the browser');
-			const port = await this.#createAudio(44100);
+			let port: MessagePort | undefined;
+			if (choice.mode === 'media' && choice.source) {
+				// The element's play() runs first, inside the tap.
+				const out = new MediaOutput({ source: choice.source, note: (m) => this.#note(m) });
+				out.onDrained = () => {
+					this.#reportPosition();
+					if (!this.#drainedSent) this.#worker?.postMessage({ cmd: 'media-drained' });
+					this.#drainedSent = true;
+					this.#drainedAtEnd = out.bufferedEnd;
+				};
+				this.#media = out;
+				await out.start();
+				this.#lastPos = 0;
+				this.#timeline = new Timeline();
+				this.#posTimer = setInterval(() => this.#reportPosition(), 250);
+			} else {
+				// Inside the tap: a playing media element helps keep the page alive in the background.
+				if (!(await this.#keepAlive.start())) this.#note('background keep-alive refused by the browser');
+				port = await this.#createAudio(44100);
+			}
 			const w = new Worker(asset('player-worker.js'), { type: 'module' });
 			this.#worker = w;
 			w.onmessage = (e) => void this.#onMessage(e.data);
@@ -97,9 +141,9 @@ class DevicePlayer {
 				this.#note(`worker error: ${e.message}`);
 				this.state = 'error';
 			};
-			w.postMessage({ cmd: 'start', token: session.token, port }, [port]);
+			w.postMessage({ cmd: 'start', token: session.token, port, mode: choice.mode }, port ? [port] : []);
 			this.#history.active = true;
-			w.postMessage({ cmd: 'rate-ready', rate: 44100 });
+			if (port) w.postMessage({ cmd: 'rate-ready', rate: 44100 });
 			// Pass renewed access tokens to the worker; stop if signed out.
 			this.#unsubscribe = session.subscribe((s) => {
 				if (!s) this.stop();
@@ -116,6 +160,9 @@ class DevicePlayer {
 		this.#history.active = false;
 		this.wasActive = false;
 		this.#keepAlive.stop();
+		clearInterval(this.#posTimer);
+		this.#media?.stop();
+		this.#media = null;
 		this.#unsubscribe?.();
 		this.#unsubscribe = null;
 		this.#worker?.terminate();
@@ -152,8 +199,53 @@ class DevicePlayer {
 		return channel.port2;
 	}
 
+	/** Media mode: tell the core how much the element has played. */
+	#reportPosition() {
+		const media = this.#media;
+		if (!media || !this.#worker) return;
+		const t = media.position;
+		const now = performance.now();
+		if (t > this.#lastPos) {
+			const frames = this.#timeline.frames(this.#lastPos, t);
+			this.#lastPos = t;
+			this.#advancedAt = now;
+			this.#drainedSent = false;
+			if (frames > 0) this.#worker.postMessage({ cmd: 'played', frames });
+		} else {
+			// Re-arm once more audio has been appended (e.g. the final partial frame).
+			if (this.#drainedSent && media.bufferedEnd > this.#drainedAtEnd + 1e-3) this.#drainedSent = false;
+			if (!this.#drainedSent && !media.audio.paused && media.ahead < 0.1 && now - this.#advancedAt > 1000) {
+				// Stalled with (almost) nothing buffered: everything appended has played, or the
+				// browser won't play a tiny tail without an end of stream. Browsers don't always
+				// fire "waiting" again, so this is detected here.
+				this.#drainedSent = true;
+				this.#drainedAtEnd = media.bufferedEnd;
+				this.#advancedAt = now;
+				this.#worker.postMessage({ cmd: 'media-drained' });
+			}
+		}
+	}
+
+	async #onMedia(m: Record<string, unknown>) {
+		const media = this.#media;
+		if (!media) return;
+		const span = m.span as { at?: number; rate?: number } | undefined;
+		if (span && typeof span.at === 'number' && typeof span.rate === 'number') this.#timeline.mark(span.at, span.rate);
+		if (m.init instanceof Uint8Array) media.append(m.init);
+		if (m.segment instanceof Uint8Array) media.append(m.segment);
+		if (m.pause) media.pause();
+		if (m.play) media.resume();
+		if (m.flush) {
+			this.#reportPosition();
+			const at = await media.flush();
+			this.#lastPos = at;
+			this.#worker?.postMessage({ cmd: 'media-time', at });
+		}
+	}
+
 	async #onMessage(m: Record<string, unknown>) {
 		if (typeof m.log === 'string') this.#note(m.log);
+		if (m.media && typeof m.media === 'object') await this.#onMedia(m.media as Record<string, unknown>);
 		if (m.connection === 'connected') {
 			this.state = 'connected';
 			const p = m.player as { mac?: string; name?: string } | undefined;
@@ -171,7 +263,7 @@ class DevicePlayer {
 			// The access token was refused (expired): renew it and let the worker carry on.
 			if (await session.renew()) this.#worker?.postMessage({ cmd: 'token', token: session.token, reconnect: true });
 		}
-		if (typeof m.rate === 'number' && this.#worker) {
+		if (typeof m.rate === 'number' && this.#worker && !this.#media) {
 			const port = await this.#createAudio(m.rate);
 			this.#worker.postMessage({ cmd: 'start-sink', port }, [port]);
 			this.#worker.postMessage({ cmd: 'rate-ready', rate: m.rate });

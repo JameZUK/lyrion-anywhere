@@ -410,6 +410,11 @@ async fn security_headers_are_set() {
             Some("frame-ancestors 'none'")
         );
         assert_eq!(directive("base-uri").as_deref(), Some("base-uri 'none'"));
+        // The media-element player plays Media Source object URLs (blob:), nothing remote.
+        assert_eq!(
+            directive("media-src").as_deref(),
+            Some("media-src 'self' blob:")
+        );
         // No inline or eval'd script, and no inline style sheets; only style attributes.
         let script = directive("script-src").expect("script-src set");
         assert!(
