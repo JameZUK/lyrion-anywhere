@@ -438,6 +438,20 @@ describe('rpc and art', () => {
 		expect(u === null || u.startsWith('/v1/art/music/')).toBe(true);
 	});
 
+	// Covers kept with offline downloads use the same checks as on-screen art.
+	test('art as a Blob (for downloads): same path checks, images only', async () => {
+		const f = vi.fn(async () => new Response(new TextEncoder().encode('png'), { headers: { 'content-type': 'image/png' } }));
+		vi.stubGlobal('fetch', f);
+		const a = await api();
+		const b = await a.artBlob('music/12/cover_300x300');
+		expect(b.type).toBe('image/png');
+		expect((f.mock.calls[0] as unknown as [string])[0]).toBe('/v1/art/music/12/cover_300x300');
+		for (const p of ['..', 'music/1/cover/../../../../me', '//evil.example.com/x']) await expect(a.artBlob(p), p).rejects.toMatchObject({ status: 400 });
+		expect(f).toHaveBeenCalledTimes(1);
+		vi.stubGlobal('fetch', async () => new Response('<svg onload=x>', { headers: { 'content-type': 'text/html' } }));
+		await expect(a.artBlob('music/1/cover')).rejects.toMatchObject({ status: 415 });
+	});
+
 	test('non-image art responses are refused', async () => {
 		vi.stubGlobal('fetch', async () => new Response('<svg onload=x>', { headers: { 'content-type': 'text/html' } }));
 		await expect((await api()).art('music/1/cover')).rejects.toMatchObject({ status: 415 });

@@ -11,6 +11,10 @@
 	import PlayerBar from '$lib/components/PlayerBar.svelte';
 	import MediaSession from '$lib/components/MediaSession.svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import OfflineBar from '$lib/components/OfflineBar.svelte';
+	import OfflineMode from '$lib/components/OfflineMode.svelte';
+	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
+	import { forgetOwner, rememberOwner } from '$lib/offline/settings';
 
 	let { children } = $props();
 
@@ -30,6 +34,20 @@
 				device.report();
 				void device.resumeAfterReload();
 			});
+		}
+	});
+
+	// Downloads belong to the signed-in user. Remember who that is, so offline mode can offer
+	// their downloads when the server can't be reached; forget it once signed out.
+	$effect(() => {
+		const user = app.session?.user.username ?? null;
+		if (app.status === 'signed-in' && user) {
+			rememberOwner(user);
+			void downloads.setUser(user, true);
+		} else if (app.status === 'signed-out') {
+			offlinePlayer.stop();
+			forgetOwner();
+			void downloads.setUser(null);
 		}
 	});
 
@@ -86,10 +104,11 @@
 		{ href: '#/apps', label: 'Apps & Radio', icon: 'radio', match: (p: string) => p.startsWith('/apps') || p.startsWith('/browse') },
 		{ href: '#/search', label: 'Search', icon: 'search', match: (p: string) => p.startsWith('/search') },
 		{ href: '#/queue', label: 'Queue', icon: 'playnext', match: (p: string) => p.startsWith('/queue') },
+		{ href: '#/downloads', label: 'Downloads', icon: 'download', match: (p: string) => p.startsWith('/downloads') },
 		{ href: '#/settings', label: 'Settings', icon: 'settings', match: (p: string) => p.startsWith('/settings') },
 	];
 	// Phones: five tabs; the library sections are one tap away on the Library page.
-	const LIBRARY = ['/album', '/artist', '/playlist', '/favourites', '/library', '/apps', '/browse'];
+	const LIBRARY = ['/album', '/artist', '/playlist', '/favourites', '/library', '/apps', '/browse', '/downloads'];
 	const TABS = [
 		{ href: '#/', label: 'Playing', icon: 'home', match: (p: string) => p === '/' },
 		{ href: '#/library', label: 'Library', icon: 'library', match: (p: string) => LIBRARY.some((l) => p.startsWith(l)) },
@@ -103,9 +122,7 @@
 {#if app.status === 'unknown'}
 	<div class="splash" aria-busy="true"><span class="dot"></span></div>
 {:else if app.status === 'offline'}
-	<div class="splash" role="status">
-		<p class="muted">Can’t reach the music server. Trying again…</p>
-	</div>
+	<OfflineMode />
 {:else if app.status === 'signed-out'}
 	<Login />
 {:else}
@@ -122,7 +139,7 @@
 				<p class="conn muted">Reconnecting…</p>
 			{/if}
 		</nav>
-		<main class="content" class:on-np={path === '/'}>
+		<main class="content" class:on-np={path === '/' && !offlinePlayer.active}>
 			{#if device.needsTap}
 				<button class="banner resume tap" onclick={() => {}}>
 					<Icon name="play" size={16} /><span>Playing on this device. Tap here (or anywhere) to turn the sound on.</span>
@@ -138,7 +155,11 @@
 			{@render children()}
 		</main>
 	</div>
-	<div class="barwrap" class:on-np={path === '/'}><PlayerBar /></div>
+	{#if offlinePlayer.active}
+		<div class="barwrap"><OfflineBar /></div>
+	{:else}
+		<div class="barwrap" class:on-np={path === '/'}><PlayerBar /></div>
+	{/if}
 	<nav class="tabs" aria-label="Main">
 		{#each TABS as n (n.href)}
 			<a href={n.href} class:active={n.match(path)} aria-current={n.match(path) ? 'page' : undefined}>

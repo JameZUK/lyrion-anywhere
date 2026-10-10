@@ -1,15 +1,19 @@
 <script lang="ts">
 	// Lock-screen / notification metadata and hardware media keys (Media Session API),
-	// controlling the selected player.
+	// controlling the selected player. While downloads play on this device, the offline
+	// player has the lock screen instead.
 	import { app, api } from '$lib/state/app.svelte';
+	import { offlinePlayer } from '$lib/offline/index.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
 
 	const ms = typeof navigator !== 'undefined' && 'mediaSession' in navigator ? navigator.mediaSession : null;
 	const track = $derived(app.now?.playlist_loop?.[0]);
 
+	const mine = $derived(!offlinePlayer.active);
+
 	$effect(() => {
-		if (!ms) return;
+		if (!ms || !mine) return;
 		const actions: [MediaSessionAction, () => void][] = [
 			['play', () => app.send(cmd.play())],
 			['pause', () => app.send(cmd.pause(true))],
@@ -27,12 +31,13 @@
 			if (typeof d.seekTime === 'number') void app.seek(d.seekTime);
 		});
 		return () => {
-			for (const [a] of actions) ms.setActionHandler(a, null);
+			// The offline player may have taken the controls over already: leave its handlers.
+			if (!offlinePlayer.active) for (const [a] of actions) ms.setActionHandler(a, null);
 		};
 	});
 
 	$effect(() => {
-		if (!ms || typeof MediaMetadata === 'undefined') return;
+		if (!ms || !mine || typeof MediaMetadata === 'undefined') return;
 		const title = textOf(track?.title ?? app.now?.current_title);
 		const artist = textOf(track?.artist);
 		const album = textOf(track?.album);
@@ -47,6 +52,6 @@
 	});
 
 	$effect(() => {
-		if (ms) ms.playbackState = app.now?.mode === 'play' ? 'playing' : app.now?.mode === 'pause' ? 'paused' : 'none';
+		if (ms && mine) ms.playbackState = app.now?.mode === 'play' ? 'playing' : app.now?.mode === 'pause' ? 'paused' : 'none';
 	});
 </script>

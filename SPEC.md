@@ -254,7 +254,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 - The Rust core is compiled to WebAssembly. It handles Slimproto, buffering, resume, and decoding with Symphonia (FLAC, ALAC, MP3, AAC-LC, Vorbis, WAV/AIFF) plus Opus.
 - Audio output goes through an `AudioWorklet`.
 - The Media Session API gives lock-screen/notification controls and hardware media keys.
-- A service worker serves the app shell offline. Offline audio is stored in OPFS, with metadata in IndexedDB.
+- A service worker serves the app shell offline. Offline audio and its metadata (and album covers) are stored in IndexedDB, partitioned per user, never in the service worker's caches. _Changed 2026-10-10 from OPFS:_ Safari 17 can't write OPFS files from the page, and the service worker deletes old caches on every update, so IndexedDB Blobs (stored in ~1 MiB pieces, so downloads resume) are the one store that works on every target.
 - **Sign-out holds:** token renewals or restores started before a sign-out are discarded. If the logout call can't reach the gateway, a flag in local storage stops the next page load from restoring the session from the refresh cookie; that load shows the sign-in form and finishes the logout (refresh, then logout) in the background. A successful sign-in clears the flag.
 
 ### 7.2 Features
@@ -344,11 +344,14 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 - Plays (track ID, start time, seconds played, completed) and rating changes are logged locally, each with a UUID.
 - On reconnect they go to `POST /v1/offline/events`. The plugin applies them to LMS play count, last played and rating. Duplicates are ignored by UUID.
 - Back online, the app offers to send the offline queue to an LMS player ("continue on <player>").
+- _Web app, first slice (2026-10-10):_ the local player (an `<audio>` element on blob: URLs, with Media Session controls) and offline mode are in; play-event logging and sync-back are not yet.
 
 ### 8.5 Security
 
 - Downloads need a per-user `can_download` permission.
-- Files live in the app's private storage (OPFS in the browser; app sandbox later on native).
+- Files live in the app's private storage (IndexedDB in the browser; app sandbox later on native).
+- In the browser, downloads are kept per user: another account signing in on the same browser doesn't see them. On sign-out the app asks whether to remove them (keeping is the default; removal is one tap).
+- Offline mode before sign-in (server unreachable) offers only the downloads of the account last signed in on this device; signing out forgets that account, so after a sign-out downloads are shown again only after signing in.
 - Revoking a device stops further downloads. Files already on a device can't be remotely wiped in the browser; the native apps will delete them on their next connection.
 
 ---

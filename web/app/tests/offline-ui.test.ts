@@ -1,0 +1,217 @@
+// Download UI: album page button states, track marks, the Downloads page (hostile metadata
+// shown as text), offline mode from the "can't reach the server" screen, and the sign-out
+// prompt about downloads.
+import { fireEvent, render, screen } from '@testing-library/svelte';
+import { tick } from 'svelte';
+import * as offline from '$lib/offline/index.svelte';
+import type { DownloadManager } from '$lib/offline/manager.svelte';
+import type { OfflineStore } from '$lib/offline/store';
+import { key, stored } from './helpers/fake-downloads';
+
+vi.mock('$lib/offline/index.svelte', async () => {
+	const { DownloadManager } = await import('$lib/offline/manager.svelte');
+	const { OfflinePlayer } = await import('$lib/offline/player.svelte');
+	const { MemoryBackend, OfflineStore } = await import('$lib/offline/store');
+	const offlineStore = new OfflineStore(new MemoryBackend());
+	// The server never answers (until aborted), so downloads stay in progress.
+	const hang = ((_u: unknown, init?: RequestInit) =>
+		new Promise((_r, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))))) as typeof fetch;
+	const control = { fetch: hang, hang };
+	const downloads = new DownloadManager({ store: offlineStore, authed: (fn) => fn('t'), fetch: (...a) => control.fetch(...a), sleep: async () => {} });
+	const offlinePlayer = new OfflinePlayer({ store: offlineStore, mediaSession: null });
+	return { offlineStore, downloads, offlinePlayer, control };
+});
+
+const ALBUM = { id: 7, album: 'An <b>Album</b>', artist: 'Band', artwork_track_id: '11' };
+const TRACKS = [
+	{ id: 11, title: 'One', tracknum: 1, duration: 100, artist: 'Band' },
+	{ id: 12, title: 'Two', tracknum: 2, duration: 100, artist: 'Band' },
+	{ id: 99, title: 'Radio', remote: 1 },
+];
+vi.mock('$lib/state/app.svelte', () => ({
+	api: {
+		rpc: async (_p: string, c: unknown[]) => (c[0] === 'albums' ? { albums_loop: [ALBUM] } : { titles_loop: TRACKS }),
+		art: () => Promise.reject(new Error('offline')),
+	},
+	app: { queueUp: vi.fn() },
+	session: { current: null },
+}));
+vi.mock('$app/state', () => ({ page: { params: { id: '7' }, url: new URL('http://app.example/#/album/7') } }));
+
+const downloads = offline.downloads as DownloadManager;
+const store = offline.offlineStore as OfflineStore;
+const control = (offline as unknown as { control: { fetch: typeof fetch; hang: typeof fetch } }).control;
+
+const HOSTILE = ['<img src=x onerror=alert(1)>', '<script>alert(1)</script>', '"><svg onload=alert(1)>', "javascript:alert('x')"];
+
+beforeAll(() => {
+	globalThis.IntersectionObserver = class {
+		observe() {}
+		disconnect() {}
+		unobserve() {}
+		takeRecords() {
+			return [];
+		}
+		root = null;
+		rootMargin = '';
+		thresholds = [];
+	} as unknown as typeof IntersectionObserver;
+	HTMLDialogElement.prototype.showModal ??= function () {};
+});
+
+beforeEach(async () => {
+	await downloads.setUser(null);
+	for (const u of ['alice', 'bob']) await store.deleteUser(u);
+	localStorage.clear();
+	control.fetch = control.hang;
+});
+
+async function saveTracks(user: string, list: Partial<ReturnType<typeof stored>>[]) {
+	for (const t of list) {
+		const s = stored({ user, ...t });
+		await store.putTrack(s);
+		await store.putChunk(user, s.key, 0, new Blob(['x']));
+	}
+}
+
+async function albumPage() {
+	const { default: Page } = await import('../src/routes/album/[id]/+page.svelte');
+	const r = render(Page);
+	await screen.findByRole('heading', { name: ALBUM.album });
+	return r;
+}
+
+test('album page: Download, with a format choice, when nothing is downloaded', async () => {
+	await downloads.setUser('alice', true);
+	await albumPage();
+	const btn = screen.getByRole('button', { name: 'Download' });
+	expect(btn).not.toHaveProperty('disabled', true);
+	const select = screen.getByLabelText('Download format') as HTMLSelectElement;
+	expect([...select.options].map((o) => o.value)).toEqual(['auto', 'original', 'mp3', 'opus']);
+	expect(screen.queryByText('Downloaded')).toBeNull();
+});
+
+test('album page: progress while downloading, then pause', async () => {
+	await downloads.setUser('alice', true);
+	await albumPage();
+	await fireEvent.change(screen.getByLabelText('Download format'), { target: { value: 'mp3' } });
+	await fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+	await tick();
+	// Library tracks only: the radio track is never queued.
+	expect(downloads.items.map((i) => [i.id, i.choice, i.albumId])).toEqual([
+		[11, 'mp3', 7],
+		[12, 'mp3', 7],
+	]);
+	expect(screen.getByRole('status').textContent).toContain('Downloading 0 of 2');
+	expect(screen.getByRole('progressbar', { name: 'Download progress' })).toBeTruthy();
+	expect(screen.getAllByLabelText('Waiting to download').length).toBe(2);
+	await fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+	expect(screen.getByRole('status').textContent).toContain('Download paused');
+	expect(screen.getByRole('button', { name: 'Resume' })).toBeTruthy();
+	await downloads.cancelAll(7);
+});
+
+test('album page: Downloaded ✓ and Remove download once every track is here', async () => {
+	await saveTracks('alice', [
+		{ key: key(11), id: 11, albumId: 7 },
+		{ key: key(12), id: 12, albumId: 7 },
+	]);
+	await downloads.setUser('alice', true);
+	await albumPage();
+	expect(screen.getByRole('status').textContent).toContain('Downloaded');
+	expect(screen.getAllByLabelText('Downloaded').length).toBe(2); // the track marks
+	expect(screen.queryByRole('button', { name: 'Download' })).toBeNull();
+	await fireEvent.click(screen.getByRole('button', { name: 'Remove download' }));
+	await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy());
+	expect(await store.listTracks('alice')).toEqual([]);
+});
+
+test('album page: some tracks here offers the rest; offline the button is off', async () => {
+	await saveTracks('alice', [{ key: key(11), id: 11, albumId: 7 }]);
+	await downloads.setUser('alice', false);
+	await albumPage();
+	expect(screen.getByText('1 of 2 downloaded')).toBeTruthy();
+	expect((screen.getByRole('button', { name: 'Download the rest' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test('Downloads page shows hostile titles as text, with sizes, and removes', async () => {
+	await saveTracks(
+		'alice',
+		HOSTILE.map((h, i) => ({ key: key(i + 1), id: i + 1, title: h, artist: h, album: h, albumId: 7, size: 1024 * 1024 })),
+	);
+	await downloads.setUser('alice', true);
+	const { default: View } = await import('$lib/components/DownloadsView.svelte');
+	const { container } = render(View);
+	await tick();
+	expect(container.querySelectorAll('script, img, iframe, object, embed').length).toBe(0);
+	for (const el of container.querySelectorAll('*')) for (const a of el.attributes) expect(a.name.startsWith('on'), a.name).toBe(false);
+	expect(container.textContent).toContain('4 tracks, 4.0 MB');
+	expect(container.textContent).toContain(HOSTILE[0]);
+	await fireEvent.click(screen.getByRole('button', { name: `Show tracks of ${HOSTILE[0]}` }));
+	for (const h of HOSTILE) expect(screen.getAllByRole('button', { name: `Play ${h}` }).length).toBeGreaterThan(0);
+	await fireEvent.click(screen.getByRole('button', { name: 'Remove all…' }));
+	await fireEvent.click(screen.getByRole('button', { name: 'Remove all' }));
+	await vi.waitFor(() => expect(container.textContent).toContain('Nothing downloaded yet'));
+	expect(await store.listTracks('alice')).toEqual([]);
+});
+
+test('Downloads page only lists the signed-in user’s downloads', async () => {
+	await saveTracks('alice', [{ key: key(1), title: 'Alice song', album: 'Alice album' }]);
+	await saveTracks('bob', [{ key: key(2), title: 'Bob song', album: 'Bob album' }]);
+	await downloads.setUser('bob', true);
+	const { default: View } = await import('$lib/components/DownloadsView.svelte');
+	const { container } = render(View);
+	await tick();
+	expect(container.textContent).toContain('Bob album');
+	expect(container.textContent).not.toContain('Alice album');
+});
+
+test('offline splash offers “Play your downloads” for the account last signed in here', async () => {
+	await saveTracks('alice', [{ key: key(1), title: 'Offline song', album: 'Offline album' }]);
+	localStorage.setItem('anywhere.offlineUser', 'alice');
+	const { default: OfflineMode } = await import('$lib/components/OfflineMode.svelte');
+	render(OfflineMode);
+	expect(screen.getByText('Can’t reach the music server. Trying again…')).toBeTruthy();
+	const play = await screen.findByRole('button', { name: 'Play your downloads' });
+	await fireEvent.click(play);
+	expect(await screen.findByText('Offline album')).toBeTruthy();
+	expect(screen.getByText(/You’re offline/)).toBeTruthy();
+	expect(downloads.online).toBe(false);
+});
+
+test('offline splash offers nothing without a remembered account (e.g. after signing out)', async () => {
+	await saveTracks('alice', [{ key: key(1) }]);
+	const { default: OfflineMode } = await import('$lib/components/OfflineMode.svelte');
+	render(OfflineMode);
+	await tick();
+	await new Promise((r) => setTimeout(r, 20));
+	expect(screen.queryByRole('button', { name: 'Play your downloads' })).toBeNull();
+});
+
+test('sign-out asks about downloads; keeping is the default and removal one tap', async () => {
+	const { default: SignOut } = await import('$lib/components/SignOut.svelte');
+	const onsignout = vi.fn();
+	const r = render(SignOut, { count: 3, bytes: 3 * 1024 * 1024, onsignout });
+	await fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+	expect(onsignout).not.toHaveBeenCalled();
+	expect(screen.getByText(/Downloads stay on this device until/)).toBeTruthy();
+	const keep = screen.getByRole('button', { name: 'Keep downloads and sign out' });
+	expect(keep.className).toContain('primary');
+	await fireEvent.click(screen.getByRole('button', { name: 'Remove downloads and sign out' }));
+	expect(onsignout).toHaveBeenCalledWith(true);
+	r.unmount();
+
+	const again = vi.fn();
+	render(SignOut, { count: 3, onsignout: again });
+	await fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+	await fireEvent.click(screen.getByRole('button', { name: 'Keep downloads and sign out' }));
+	expect(again).toHaveBeenCalledWith(false);
+});
+
+test('sign-out with nothing downloaded does not ask', async () => {
+	const { default: SignOut } = await import('$lib/components/SignOut.svelte');
+	const onsignout = vi.fn();
+	render(SignOut, { count: 0, onsignout });
+	await fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+	expect(onsignout).toHaveBeenCalledWith(false);
+});

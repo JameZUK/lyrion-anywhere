@@ -65,3 +65,19 @@ test('over-long names are cut, not rendered in full', () => {
 	const { container } = render(TrackList, { tracks: [{ id: 1, title: 'x'.repeat(10_000) }], onplay: () => {} });
 	expect(container.textContent!.length).toBeLessThan(1000);
 });
+
+test('track list: download marks are optional, labelled, and plain text', () => {
+	const tracks: Track[] = [{ id: 1, title: 'One' }, { id: 2, title: 'Two' }, { id: 3, title: HOSTILE[0] }];
+	const plain = render(TrackList, { tracks, onplay: () => {} });
+	expect(plain.container.querySelectorAll('.badge').length).toBe(0);
+	plain.unmount();
+	const { container, getByLabelText } = render(TrackList, {
+		tracks,
+		onplay: () => {},
+		badge: (t: Track) => (t.id === 1 ? { kind: 'done', label: 'Downloaded' } : t.id === 3 ? { kind: 'failed', label: HOSTILE[0]! } : undefined),
+	});
+	assertInert(container);
+	expect(container.querySelectorAll('.badge').length).toBe(2);
+	expect(getByLabelText('Downloaded')).toBeTruthy();
+	expect(getByLabelText(HOSTILE[0]!)).toBeTruthy();
+});

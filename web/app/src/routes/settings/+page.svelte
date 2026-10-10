@@ -8,6 +8,10 @@
 	import { install } from '$lib/pwa/install.svelte';
 	import { detect } from '$lib/player/capabilities';
 	import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, savePreference, type ModePreference } from '$lib/player/mode';
+	import SignOut from '$lib/components/SignOut.svelte';
+	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
+	import { forgetOwner, formatBytes, loadPrefs, networkType, requestPersist, savePrefs, storageInfo, type DownloadPrefs, type StorageInfo } from '$lib/offline/settings';
+	import { FORMATS, FORMAT_LABELS } from '$lib/offline/types';
 
 	// Built in: every browser is checked, and the best playback mode chosen automatically.
 	const caps = detect();
@@ -75,6 +79,42 @@
 			offCode = '';
 		}
 	}
+	// Downloads (SPEC D5): a default format for each network type, and storage use.
+	let prefs = $state<DownloadPrefs>(loadPrefs());
+	function setPrefs(p: Partial<DownloadPrefs>) {
+		prefs = { ...prefs, ...p };
+		savePrefs(prefs);
+	}
+	const network = networkType();
+	let storage = $state<StorageInfo>({});
+	$effect(() => {
+		void downloads.saved.length;
+		let live = true;
+		storageInfo().then((i) => live && (storage = i));
+		return () => (live = false);
+	});
+	let confirmRemove = $state(false);
+	async function removeAllDownloads() {
+		confirmRemove = false;
+		offlinePlayer.stop();
+		await downloads.removeAll();
+		msg = 'Downloads removed from this device.';
+	}
+	async function keepDownloads() {
+		await requestPersist();
+		storage = await storageInfo();
+	}
+
+	async function signOut(removeDownloads: boolean) {
+		device.stop();
+		offlinePlayer.stop();
+		if (removeDownloads) await downloads.removeAll().catch(() => {});
+		// Offline mode no longer offers this account's downloads without signing in.
+		forgetOwner();
+		await downloads.setUser(null);
+		await session.signOut();
+	}
+
 	const mb = (b?: number) => (b ? `${(b / 1048576).toFixed(1)} MB` : '–');
 
 	// The QR code is an SVG the gateway generates; shown as an image, never inserted as markup.
@@ -202,7 +242,45 @@
 	</div>
 
 	<div class="card">
-		<button class="btn" onclick={() => { device.stop(); void session.signOut(); }}><Icon name="power" size={18} />Sign out</button>
+		<h2>Downloads</h2>
+		<p class="muted">Download albums to play them without a connection. Downloads stay on this device until you remove them, and are kept apart for each account.</p>
+		<div class="formats">
+			<label class="field">
+				<span>On Wi-Fi{network === 'wifi' ? ' (now)' : ''}</span>
+				<select value={prefs.wifi} onchange={(e) => setPrefs({ wifi: e.currentTarget.value as DownloadPrefs['wifi'] })}>
+					{#each FORMATS as f (f)}<option value={f}>{FORMAT_LABELS[f]}</option>{/each}
+				</select>
+			</label>
+			<label class="field">
+				<span>On mobile data{network === 'cellular' ? ' (now)' : ''}</span>
+				<select value={prefs.cellular} onchange={(e) => setPrefs({ cellular: e.currentTarget.value as DownloadPrefs['cellular'] })}>
+					{#each FORMATS as f (f)}<option value={f}>{FORMAT_LABELS[f]}</option>{/each}
+				</select>
+			</label>
+		</div>
+		<p class="muted small">Original is the file as it is in your library (largest). Opus is about 1 MB a minute. MP3 plays everywhere. If the server can’t convert, Original is used.</p>
+		<p data-testid="download-usage">
+			<strong>{downloads.saved.length} downloaded {downloads.saved.length === 1 ? 'track' : 'tracks'}, {formatBytes(downloads.usedBytes)}</strong>
+			{#if storage.quota}<span class="muted"> · this app uses {formatBytes(storage.usage ?? 0)} of {formatBytes(storage.quota)}</span>{/if}
+		</p>
+		<div class="row">
+			<a class="btn" href="#/downloads"><Icon name="download" size={18} />Open downloads</a>
+			{#if storage.persisted === false}
+				<button class="btn" onclick={keepDownloads}>Ask the browser to keep downloads</button>
+			{/if}
+			{#if downloads.saved.length || downloads.items.length}
+				{#if confirmRemove}
+					<button class="btn" onclick={removeAllDownloads}><Icon name="trash" size={18} />Yes, remove all downloads</button>
+					<button class="btn" onclick={() => (confirmRemove = false)}>Cancel</button>
+				{:else}
+					<button class="btn" onclick={() => (confirmRemove = true)}><Icon name="trash" size={18} />Remove all downloads…</button>
+				{/if}
+			{/if}
+		</div>
+	</div>
+
+	<div class="card">
+		<SignOut count={downloads.saved.length} bytes={downloads.usedBytes} onsignout={signOut} />
 		<p class="muted small">Signing out removes this device and its player.</p>
 	</div>
 	<p class="muted small">Connection: {app.events}</p>
@@ -317,6 +395,12 @@
 	.small {
 		font-size: 0.85rem;
 		margin: 0.5rem 0 0;
+	}
+	.formats {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.75rem 1.5rem;
+		margin: 0.75rem 0;
 	}
 	.steps {
 		margin: 0;

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Track } from '$lib/lms/types';
+	import type { TrackBadge } from './track-badge';
 	import { duration, textOf } from '$lib/lms/format';
 	import Icon from './Icon.svelte';
 
@@ -10,6 +11,7 @@
 		onadd,
 		onmore,
 		showArtist = false,
+		badge,
 	}: {
 		tracks: Track[];
 		onplay: (t: Track, index: number) => void;
@@ -18,6 +20,8 @@
 		/** "More…": the track's context menu (info, plugin actions). */
 		onmore?: (t: Track) => void;
 		showArtist?: boolean;
+		/** A per-track status mark, e.g. whether it is downloaded to this device. */
+		badge?: (t: Track) => TrackBadge | undefined;
 	} = $props();
 
 	let open = $state<number | null>(null);
@@ -32,6 +36,10 @@
 					<span class="title ellipsis">{textOf(t.title)}</span>
 					{#if showArtist && t.artist}<span class="artist ellipsis muted">{textOf(t.artist)}</span>{/if}
 				</span>
+				{#if badge}
+					{@const b = badge(t)}
+					{#if b}<span class="badge" class:done={b.kind === 'done'} class:failed={b.kind === 'failed'} title={b.label}><Icon name={b.kind === 'failed' ? 'close' : b.kind === 'done' ? 'check' : 'download'} size={16} label={b.label} /></span>{/if}
+				{/if}
 				<span class="dur muted">{duration(t.duration)}</span>
 			</button>
 			{#if onnext || onadd || onmore}
@@ -89,6 +97,17 @@
 	}
 	.artist {
 		font-size: 0.85rem;
+	}
+	.badge {
+		display: grid;
+		place-items: center;
+		color: var(--fg-muted);
+	}
+	.badge.done {
+		color: var(--accent);
+	}
+	.badge.failed {
+		color: var(--danger);
 	}
 	.dur {
 		font-variant-numeric: tabular-nums;
