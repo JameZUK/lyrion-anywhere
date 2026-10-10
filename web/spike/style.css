@@ -42,3 +42,9 @@ dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; m
 dt { color: var(--muted); }
 dd { margin: 0; font-variant-numeric: tabular-nums; }
 #log { font-size: 0.8rem; color: var(--muted); white-space: pre-wrap; max-height: 14rem; overflow: auto; }
+.stack { display: grid; gap: 0.5rem; }
+#security { flex-basis: 100%; margin-top: 1rem; border-top: 1px solid var(--border); padding-top: 0.75rem; }
+#security summary { cursor: pointer; }
+#security > * + * { margin-top: 0.75rem; }
+#totp-qr { background: #fff; border-radius: 8px; padding: 8px; }
+#totp-secret { font-size: 1rem; letter-spacing: 0.08em; word-break: break-all; }

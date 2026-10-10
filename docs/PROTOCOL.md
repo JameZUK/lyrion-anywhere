@@ -24,6 +24,10 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
 | `POST /v1/auth/refresh` | none (cookie), or `{"refresh_token"}` | A new access token and a **rotated** refresh token |
 | `POST /v1/auth/logout` | bearer access token | 204; revokes this device and ends its sessions |
 | `GET /v1/me` | bearer access token | `{user, device}` |
+| `GET /v1/account` | bearer access token | `{username, role, totp_enabled}` |
+| `POST /v1/account/totp/setup` | bearer access token | `{secret, uri, qr_svg}`: a new secret, active once confirmed |
+| `POST /v1/account/totp/confirm` | `{"code"}` | 204; two-step is now on |
+| `POST /v1/account/totp/disable` | `{"password","code"}` | 204; two-step is now off |
 
 - **Access tokens:** random, valid for 15 minutes. Use them as `Authorization: Bearer …` for streams and `/v1/me`, and as the first message on the player socket. Keep them in memory only.
 - **Refresh tokens:**
@@ -31,6 +35,12 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
   - presenting a used one revokes the whole device, because the token has been copied;
   - browsers get them in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/v1/auth`;
   - native apps get them in the body and keep them in the Keystore/Keychain.
+- **Two-step verification (optional, per user):** TOTP per RFC 6238 (HMAC-SHA1, 30 s, 6 digits), compatible with standard authenticator apps.
+  - **Login:** once a user turns it on, a login with only the right password returns 401 `{"totp_required":true}`. The client then repeats the login with `"totp":"123456"`. A wrong password never reveals whether two-step is on.
+  - **Codes:** each code works once; ±1 step is accepted for clock drift. Wrong codes count towards the same lockouts as wrong passwords.
+  - **Turning it off** needs the password and a current code.
+  - **Lost authenticator:** the admin can reset two-step for a user.
+  - **Not affected:** refresh and pairing, because the device was verified when it signed in.
 - **Devices:** each login (or pairing) is a device with its own player MAC. A browser can pass its previous `device_id` to keep the same LMS player, as long as the device belongs to the same user.
 - **Errors:**
   - wrong credentials always return the same 401;
@@ -50,6 +60,7 @@ Endpoints:
 - `POST /admin/v1/users/{name}/password`
 - `POST /admin/v1/users/{name}/disabled`
 - `POST /admin/v1/users/{name}/pairing` (returns a one-time code, valid 10 minutes)
+- `POST /admin/v1/users/{name}/totp/reset` (removes two-step for a user who lost their authenticator)
 - `GET /admin/v1/devices`
 - `DELETE /admin/v1/devices/{id}`
 - `GET /admin/v1/audit`

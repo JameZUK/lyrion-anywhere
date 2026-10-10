@@ -37,6 +37,7 @@ pub fn router(gw: AppState, secret: String) -> Router {
         .route("/admin/v1/users/{name}/password", post(set_password))
         .route("/admin/v1/users/{name}/disabled", post(set_disabled))
         .route("/admin/v1/users/{name}/pairing", post(pairing_code))
+        .route("/admin/v1/users/{name}/totp/reset", post(reset_totp))
         .route("/admin/v1/devices", get(list_devices))
         .route("/admin/v1/devices/{id}", delete(revoke_device))
         .route("/admin/v1/audit", get(audit))
@@ -167,6 +168,14 @@ async fn pairing_code(State(st): State<AdminState>, Path(name): Path<String>) ->
             "expires_in": crate::accounts::PAIRING_TTL.as_secs(),
         }))
         .into_response(),
+        Err(e) => err(e),
+    }
+}
+
+/// Remove a user's two-step verification (e.g. they lost their phone).
+async fn reset_totp(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
+    match st.gw.accounts().totp_reset(&name) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(e),
     }
 }

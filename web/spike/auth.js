@@ -8,9 +8,11 @@ const CLIENT = { 'X-Anywhere-Client': '1' };
 const DEVICE_KEY = 'anywhere.device';
 
 export class AuthError extends Error {
-  constructor(status, message) {
+  constructor(status, message, totpRequired = false) {
     super(message);
     this.status = status;
+    /** The password was right; ask for a two-step code and sign in again. */
+    this.totpRequired = totpRequired;
   }
 }
 
@@ -61,18 +63,19 @@ async function call(path, init) {
   const resp = await fetch(path, { credentials: 'same-origin', cache: 'no-store', ...init });
   if (resp.status === 204) return null;
   const body = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new AuthError(resp.status, body.error || `HTTP ${resp.status}`);
+  if (!resp.ok) throw new AuthError(resp.status, body.error || `HTTP ${resp.status}`, body.totp_required === true);
   return body;
 }
 
 /** Log in; returns the session ({access_token, expires_in, user, device}). */
-export async function login(username, password) {
+export async function login(username, password, totp) {
   const session = await call('/v1/auth/login', {
     method: 'POST',
     headers: { ...CLIENT, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       username,
       password,
+      ...(totp ? { totp } : {}),
       device_name: defaultDeviceName(),
       device_id: rememberedDevice(),
     }),
@@ -93,4 +96,37 @@ export async function logout(accessToken) {
     method: 'POST',
     headers: { ...CLIENT, Authorization: `Bearer ${accessToken}` },
   });
+}
+
+const bearer = (token) => ({ ...CLIENT, Authorization: `Bearer ${token}` });
+
+/** The signed-in user's settings: {username, role, totp_enabled}. */
+export async function account(token) {
+  return call('/v1/account', { headers: { Authorization: `Bearer ${token}` } });
+}
+
+/** Start two-step setup: {secret, uri, qr_svg}. */
+export async function totpSetup(token) {
+  return call('/v1/account/totp/setup', { method: 'POST', headers: bearer(token) });
+}
+
+export async function totpConfirm(token, code) {
+  await call('/v1/account/totp/confirm', {
+    method: 'POST',
+    headers: { ...bearer(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+}
+
+export async function totpDisable(token, password, code) {
+  await call('/v1/account/totp/disable', {
+    method: 'POST',
+    headers: { ...bearer(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password, code }),
+  });
+}
+
+/** Group a base32 key in fours for reading aloud or typing. */
+export function groupKey(secret) {
+  return secret.replace(/(.{4})(?=.)/g, '$1 ');
 }

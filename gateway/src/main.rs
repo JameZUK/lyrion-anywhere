@@ -73,6 +73,8 @@ enum AdminCmd {
     ListDevices,
     /// Create a one-time pairing code for a user's new app.
     Pair { username: String },
+    /// Remove a user's two-step verification (e.g. a lost phone).
+    ResetTotp { username: String },
 }
 
 fn main() {
@@ -247,6 +249,9 @@ fn admin_command(dir: &Path, cmd: AdminCmd) {
                 println!("{}\t{}\t{}\t{}", d.id, d.username, d.mac, d.name);
             }
         }),
+        AdminCmd::ResetTotp { username } => accounts
+            .totp_reset(&username)
+            .map(|_| println!("two-step verification removed for {username}")),
         AdminCmd::Pair { username } => accounts.create_pairing_code(&username).map(|code| {
             println!("pairing code for {username}: {code} (valid 10 minutes, single use)");
         }),

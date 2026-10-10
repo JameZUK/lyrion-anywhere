@@ -17,6 +17,10 @@
       <input id="username" autocomplete="username" required spellcheck="false" autocapitalize="none">
       <label for="password">Password</label>
       <input id="password" type="password" autocomplete="current-password" required>
+      <div id="totp-row" class="stack" hidden>
+        <label for="totp">Code from your authenticator app</label>
+        <input id="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6">
+      </div>
       <button id="login" type="submit">Sign in</button>
     </form>
 
@@ -24,6 +28,31 @@
       <p>Signed in as <strong id="who">–</strong>.</p>
       <button id="start" type="button">Start player</button>
       <button id="logout" type="button" class="secondary">Sign out</button>
+
+      <details id="security">
+        <summary>Two-step verification: <span id="totp-status">–</span></summary>
+        <div id="totp-off" class="stack" hidden>
+          <p class="note">Add a one-time code from an authenticator app to every sign-in.</p>
+          <button id="totp-begin" type="button">Turn on</button>
+        </div>
+        <div id="totp-setup" class="stack" hidden>
+          <p>Scan this with your authenticator app, or enter the key by hand:</p>
+          <img id="totp-qr" alt="QR code for your authenticator app" width="200" height="200">
+          <code id="totp-secret"></code>
+          <form id="totp-confirm-form" class="stack">
+            <label for="totp-confirm-code">Then enter the code it shows</label>
+            <input id="totp-confirm-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+            <button type="submit">Confirm</button>
+          </form>
+        </div>
+        <form id="totp-disable-form" class="stack" hidden>
+          <label for="totp-off-password">Password</label>
+          <input id="totp-off-password" type="password" autocomplete="current-password" required>
+          <label for="totp-off-code">Current code</label>
+          <input id="totp-off-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+          <button type="submit" class="secondary">Turn off</button>
+        </form>
+      </details>
     </section>
 
     <section id="player" hidden>

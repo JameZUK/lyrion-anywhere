@@ -4,6 +4,18 @@ Dated entries, newest first.
 
 ## 2026-10-10
 
+### Phase 1: optional two-step verification
+- **TOTP, opt-in per user** (RFC 6238, verified against the RFC test vectors).
+  - Users turn it on from the account panel by scanning a QR code (rendered by the gateway as SVG) or typing the key, then confirming a code.
+  - Login then needs a code as well as the password.
+  - Codes are single use. Wrong codes count towards lockouts.
+  - A wrong password never reveals whether two-step is on.
+  - Turning it off needs the password and a code.
+  - Admins can reset it for a lost authenticator (admin API and `anywhere-gateway admin reset-totp`).
+- **Schema:** migrations are tracked with `PRAGMA user_version`.
+- **Tests:** 22 new two-step tests (RFC vectors, enrolment, login, replay, lockout, disable, reset, migration, endpoints, browser helpers). Mutation checks cover every two-step protection.
+- **Live:** enrolment by QR, login challenge, replay rejected, fresh code accepted.
+
 ### Phase 1: accounts
 - **Account store:** the gateway now owns accounts (spec D12), in SQLite:
   - users, with argon2id passwords;

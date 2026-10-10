@@ -334,7 +334,12 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 
 ### 9.1 Identities and tokens
 
-- **Users:** created by the admin (D7), each with a role and permitted players. Passwords use argon2id. TOTP is optional; the admin can require it. Passkeys (WebAuthn) come in a later phase.
+- **Users:** created by the admin (D7), each with a role and permitted players. Passwords use argon2id. Passkeys (WebAuthn) come in a later phase.
+- **Two-step verification (implemented):**
+  - **Opt-in per user:** TOTP (RFC 6238) that users turn on themselves by scanning a QR code into an authenticator app, then confirming a code.
+  - **Codes:** single use, with ±30 s tolerance. Wrong codes count towards lockouts.
+  - **Turning it off** needs the password and a current code.
+  - **Admin:** can reset it for a user. Requiring it for all users is a possible later policy option.
 - **Device sessions:** every browser login or app pairing creates a device record with its own assigned player MAC.
 - **Refresh tokens:**
   - long-lived and rotated on every use; reusing an old one revokes the device (theft detection);

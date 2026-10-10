@@ -44,6 +44,11 @@ fn auth_error(e: AuthError) -> Response {
             }
             r
         }
+        AuthError::TotpRequired => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "two-step code required", "totp_required": true })),
+        )
+            .into_response(),
         AuthError::BadInput(m) => error(StatusCode::BAD_REQUEST, m),
         AuthError::Storage(e) => {
             tracing::error!(error = %e, "account store error");
@@ -132,6 +137,8 @@ fn parse<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, (StatusCode, &'
 struct LoginRequest {
     username: String,
     password: String,
+    /// Two-step code, for users who have it turned on.
+    totp: Option<String>,
     device_name: String,
     /// Reuse this (own) device, e.g. a browser logging in again.
     device_id: Option<i64>,
@@ -160,6 +167,7 @@ pub async fn login(
             .login(
                 &req.username,
                 &req.password,
+                req.totp.as_deref(),
                 &req.device_name,
                 req.device_id,
                 &client,
@@ -271,4 +279,113 @@ pub async fn me(State(gw): State<AppState>, headers: HeaderMap) -> Response {
         "device": { "id": p.device_id, "name": p.device_name, "mac": p.mac_string() },
     }))
     .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Account self-service: two-step verification
+// ---------------------------------------------------------------------------
+
+fn principal(gw: &AppState, headers: &HeaderMap) -> Option<crate::accounts::Principal> {
+    bearer(headers).and_then(|t| gw.accounts().authenticate(t))
+}
+
+/// The signed-in user's account settings.
+pub async fn account(State(gw): State<AppState>, headers: HeaderMap) -> Response {
+    let Some(p) = principal(&gw, &headers) else {
+        return error(StatusCode::UNAUTHORIZED, "invalid credentials");
+    };
+    match gw.accounts().totp_enabled(p.user_id) {
+        Ok(on) => Json(json!({
+            "username": p.username,
+            "role": p.role.as_str(),
+            "totp_enabled": on,
+        }))
+        .into_response(),
+        Err(e) => auth_error(e),
+    }
+}
+
+/// Start two-step setup: returns the secret and `otpauth://` URI for the app.
+pub async fn totp_setup(State(gw): State<AppState>, headers: HeaderMap) -> Response {
+    if !csrf_ok(&gw, &headers) {
+        return error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Some(p) = principal(&gw, &headers) else {
+        return error(StatusCode::UNAUTHORIZED, "invalid credentials");
+    };
+    match gw.accounts().totp_begin(p.user_id, &p.username) {
+        Ok(setup) => {
+            let mut r = Json(setup).into_response();
+            r.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            r
+        }
+        Err(e) => auth_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CodeRequest {
+    code: String,
+}
+
+/// Finish setup with a code from the app.
+pub async fn totp_confirm(
+    State(gw): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if !csrf_ok(&gw, &headers) {
+        return error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Some(p) = principal(&gw, &headers) else {
+        return error(StatusCode::UNAUTHORIZED, "invalid credentials");
+    };
+    let req: CodeRequest = match parse(&body) {
+        Ok(r) => r,
+        Err((status, msg)) => return error(status, msg),
+    };
+    match gw
+        .accounts()
+        .totp_confirm(p.user_id, &p.username, &req.code)
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => auth_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DisableRequest {
+    password: String,
+    code: String,
+}
+
+/// Turn two-step off: needs the password and a current code.
+pub async fn totp_disable(
+    State(gw): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if !csrf_ok(&gw, &headers) {
+        return error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Some(p) = principal(&gw, &headers) else {
+        return error(StatusCode::UNAUTHORIZED, "invalid credentials");
+    };
+    let req: DisableRequest = match parse(&body) {
+        Ok(r) => r,
+        Err((status, msg)) => return error(status, msg),
+    };
+    let accounts = gw.accounts().clone();
+    let result = tokio::task::spawn_blocking(move || {
+        accounts.totp_disable(p.user_id, &p.username, &req.password, &req.code)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(e)) => auth_error(e),
+        Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+    }
 }

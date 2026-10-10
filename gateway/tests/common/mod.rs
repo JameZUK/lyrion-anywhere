@@ -205,9 +205,11 @@ pub async fn harness_with(mutate: impl FnOnce(&mut Config)) -> Harness {
     accounts.create_user("alice", PW, Role::Listener).unwrap();
     accounts.create_user("bob", PW, Role::Listener).unwrap();
     let a = accounts
-        .login("alice", PW, "device-a", None, "test")
+        .login("alice", PW, None, "device-a", None, "test")
         .unwrap();
-    let b = accounts.login("bob", PW, "device-b", None, "test").unwrap();
+    let b = accounts
+        .login("bob", PW, None, "device-b", None, "test")
+        .unwrap();
     let gw = Gateway::new(cfg, accounts.clone());
     let app = router(gw.clone());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

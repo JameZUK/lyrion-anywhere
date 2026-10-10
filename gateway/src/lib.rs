@@ -33,6 +33,7 @@ pub mod admin;
 mod auth;
 mod relay;
 mod session;
+pub mod totp;
 mod tunnel;
 
 use std::collections::HashMap;
@@ -160,6 +161,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/auth/refresh", post(auth::refresh))
         .route("/v1/auth/logout", post(auth::logout))
         .route("/v1/me", get(auth::me))
+        .route("/v1/account", get(auth::account))
+        .route("/v1/account/totp/setup", post(auth::totp_setup))
+        .route("/v1/account/totp/confirm", post(auth::totp_confirm))
+        .route("/v1/account/totp/disable", post(auth::totp_disable))
         .route("/v1/player", get(tunnel::player_upgrade))
         .route("/v1/stream/{session}/{n}", get(relay::stream));
     app = match &state.cfg.static_dir {

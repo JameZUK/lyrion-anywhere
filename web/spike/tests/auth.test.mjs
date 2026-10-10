@@ -83,3 +83,34 @@ test('default device names are readable', () => {
   assert.equal(defaultDeviceName('Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36'), 'Chrome on Android');
   assert.equal(defaultDeviceName('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1'), 'Safari on iOS');
 });
+
+test('a two-step challenge is flagged, and the code is only sent when given', async () => {
+  globalThis.localStorage = memoryStorage();
+  stubFetch(() => ({ status: 401, body: { error: 'two-step code required', totp_required: true } }));
+  await assert.rejects(login('u', 'p'), (e) => e instanceof AuthError && e.totpRequired === true);
+  stubFetch(() => ({ status: 401, body: { error: 'invalid credentials' } }));
+  await assert.rejects(login('u', 'p'), (e) => e.totpRequired === false);
+  const calls = stubFetch(() => ({ status: 200, body: SESSION }));
+  await login('u', 'p');
+  await login('u', 'p', '123456');
+  assert.equal(JSON.parse(calls[0].init.body).totp, undefined);
+  assert.equal(JSON.parse(calls[1].init.body).totp, '123456');
+});
+
+test('account calls send the bearer token and CSRF header', async () => {
+  const { totpSetup, totpConfirm, totpDisable } = await import('../auth.js');
+  const calls = stubFetch(() => ({ status: 200, body: {} }));
+  await totpSetup('tok');
+  await totpConfirm('tok', '123456');
+  await totpDisable('tok', 'pw', '123456');
+  for (const c of calls) {
+    assert.equal(c.init.headers.Authorization, 'Bearer tok');
+    assert.equal(c.init.headers['X-Anywhere-Client'], '1');
+  }
+});
+
+test('keys are grouped for reading', async () => {
+  const { groupKey } = await import('../auth.js');
+  assert.equal(groupKey('ABCDEFGHIJKLMNOP'), 'ABCD EFGH IJKL MNOP');
+  assert.equal(groupKey('ABCDE'), 'ABCD E');
+});

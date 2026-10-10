@@ -25,6 +25,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 argon2 = "0.6"
+hmac = "0.13"
+sha1 = "0.11"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [dev-dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["stream", "json"] }

@@ -1,6 +1,6 @@
 // Main thread: sign-in, AudioContext lifecycle, and wiring the worker to the AudioWorklet.
 
-import { AuthError, login, logout, refresh } from './auth.js';
+import { AuthError, account, groupKey, login, logout, refresh, totpConfirm, totpDisable, totpSetup } from './auth.js';
 
 const $ = (id) => document.getElementById(id);
 const logEl = $('log');
@@ -85,13 +85,79 @@ $('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('login').disabled = true;
   try {
-    signedIn(await login($('username').value.trim(), $('password').value));
+    const code = $('totp-row').hidden ? undefined : $('totp').value.trim();
+    signedIn(await login($('username').value.trim(), $('password').value, code));
     $('password').value = '';
+    $('totp').value = '';
+    $('totp-row').hidden = true;
     show('start-panel');
+    refreshSecurity();
   } catch (err) {
-    log(err instanceof AuthError && err.status === 429 ? 'too many attempts: wait and try again' : `sign-in failed: ${err.message}`);
+    if (err instanceof AuthError && err.totpRequired) {
+      $('totp-row').hidden = false;
+      $('totp').focus();
+      log('enter the code from your authenticator app');
+    } else {
+      log(err instanceof AuthError && err.status === 429 ? 'too many attempts: wait and try again' : `sign-in failed: ${err.message}`);
+    }
   } finally {
     $('login').disabled = false;
+  }
+});
+
+// --- two-step verification ---------------------------------------------------
+
+async function refreshSecurity() {
+  if (!session) return;
+  try {
+    const a = await account(session.access_token);
+    $('totp-status').textContent = a.totp_enabled ? 'on' : 'off';
+    $('totp-off').hidden = a.totp_enabled;
+    $('totp-disable-form').hidden = !a.totp_enabled;
+    $('totp-setup').hidden = true;
+  } catch (err) {
+    log(`could not load account: ${err.message}`);
+  }
+}
+
+$('totp-begin').addEventListener('click', async () => {
+  try {
+    const setup = await totpSetup(session.access_token);
+    $('totp-qr').src = `data:image/svg+xml;base64,${btoa(setup.qr_svg)}`;
+    $('totp-secret').textContent = groupKey(setup.secret);
+    $('totp-off').hidden = true;
+    $('totp-setup').hidden = false;
+    $('totp-confirm-code').focus();
+  } catch (err) {
+    log(`could not start setup: ${err.message}`);
+  }
+});
+
+$('totp-confirm-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await totpConfirm(session.access_token, $('totp-confirm-code').value.trim());
+    $('totp-confirm-code').value = '';
+    $('totp-qr').removeAttribute('src');
+    $('totp-secret').textContent = '';
+    log('two-step verification is on');
+    refreshSecurity();
+  } catch (err) {
+    log(err.message);
+  }
+});
+
+$('totp-disable-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await totpDisable(session.access_token, $('totp-off-password').value, $('totp-off-code').value.trim());
+    log('two-step verification is off');
+    refreshSecurity();
+  } catch (err) {
+    log(err.status === 401 ? 'password or code not right' : err.message);
+  } finally {
+    $('totp-off-password').value = '';
+    $('totp-off-code').value = '';
   }
 });
 
@@ -156,6 +222,7 @@ async function onWorkerMessage(e) {
   try {
     signedIn(await refresh());
     show('start-panel');
+    refreshSecurity();
   } catch {
     show('login-form');
   }

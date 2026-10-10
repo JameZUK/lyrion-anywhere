@@ -8,6 +8,9 @@
 //!   already-used refresh token means it was copied, so the whole device is revoked.
 //! - Each device has its own player MAC (locally administered, `02:4c:41:…`).
 //! - Failed logins and pairing attempts are rate-limited per key with escalating lockouts.
+//! - Optional two-step verification (TOTP, RFC 6238) per user: once enabled, a login needs a
+//!   current code as well as the password. Codes are single use, and wrong codes count
+//!   towards the same lockouts as wrong passwords.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -79,6 +82,18 @@ pub struct UserInfo {
     pub username: String,
     pub role: &'static str,
     pub disabled: bool,
+    pub totp_enabled: bool,
+}
+
+/// What a user needs to add two-step verification to an authenticator app.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TotpSetup {
+    /// Base32 secret, for manual entry.
+    pub secret: String,
+    /// `otpauth://` URI, for a QR code.
+    pub uri: String,
+    /// The URI as an SVG QR code.
+    pub qr_svg: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -108,6 +123,8 @@ pub enum AuthError {
     Locked(Duration),
     /// A used refresh token was replayed; this device has been revoked.
     Reused(i64),
+    /// The password was right; this user also needs a two-step code.
+    TotpRequired,
     /// Input rejected (bad username, weak password, …).
     BadInput(&'static str),
     Storage(String),
@@ -231,6 +248,7 @@ impl Accounts {
                device_id INTEGER,
                detail TEXT NOT NULL);",
         )?;
+        migrate(&db)?;
         Ok(Accounts {
             db: Mutex::new(db),
             access: Mutex::new(HashMap::new()),
@@ -334,8 +352,9 @@ impl Accounts {
 
     pub fn list_users(&self) -> Result<Vec<UserInfo>, AuthError> {
         let db = self.db.lock().unwrap();
-        let mut st =
-            db.prepare("SELECT id, username, role, disabled FROM users ORDER BY username")?;
+        let mut st = db.prepare(
+            "SELECT id, username, role, disabled, totp_enabled FROM users ORDER BY username",
+        )?;
         let rows = st.query_map([], |r| {
             let role: String = r.get(2)?;
             Ok(UserInfo {
@@ -343,6 +362,7 @@ impl Accounts {
                 username: r.get(1)?,
                 role: Role::parse(&role).unwrap_or(Role::Listener).as_str(),
                 disabled: r.get::<_, i64>(3)? != 0,
+                totp_enabled: r.get::<_, i64>(4)? != 0,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -367,6 +387,7 @@ impl Accounts {
         &self,
         username: &str,
         password: &str,
+        totp: Option<&str>,
         device_name: &str,
         device_id: Option<i64>,
         client: &str,
@@ -410,6 +431,7 @@ impl Accounts {
                 return Err(AuthError::Invalid);
             }
         };
+        self.check_second_factor(user.0, username, totp, &keys, client)?;
         for k in &keys {
             self.limits.lock().unwrap().remove(k);
         }
@@ -562,6 +584,174 @@ impl Accounts {
             }
             None => Ok(None),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Two-step verification
+    // -----------------------------------------------------------------------
+
+    fn totp_state(&self, user: i64) -> Result<(Option<Vec<u8>>, bool, u64), AuthError> {
+        Ok(self.db.lock().unwrap().query_row(
+            "SELECT totp_secret, totp_enabled, totp_last_step FROM users WHERE id = ?1",
+            [user],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get::<_, i64>(1)? != 0,
+                    r.get::<_, i64>(2)? as u64,
+                ))
+            },
+        )?)
+    }
+
+    /// Accept a code (single use) and record its step. Returns false if it was wrong.
+    fn consume_code(
+        &self,
+        user: i64,
+        secret: &[u8],
+        code: &str,
+        last_step: u64,
+    ) -> Result<bool, AuthError> {
+        match crate::totp::verify(secret, code, unix_now(), last_step) {
+            Some(step) => {
+                self.db.lock().unwrap().execute(
+                    "UPDATE users SET totp_last_step = ?1 WHERE id = ?2",
+                    params![step as i64, user],
+                )?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    fn check_second_factor(
+        &self,
+        user: i64,
+        username: &str,
+        code: Option<&str>,
+        keys: &[String],
+        client: &str,
+    ) -> Result<(), AuthError> {
+        let (secret, enabled, last_step) = self.totp_state(user)?;
+        let Some(secret) = secret.filter(|_| enabled) else {
+            return Ok(());
+        };
+        let Some(code) = code else {
+            return Err(AuthError::TotpRequired);
+        };
+        if self.consume_code(user, &secret, code, last_step)? {
+            return Ok(());
+        }
+        for k in keys {
+            self.record_failure(k);
+        }
+        self.audit("login.totp_failed", Some(username), None, client);
+        Err(AuthError::Invalid)
+    }
+
+    /// Start enrolment: a new secret for the user's authenticator app. Not active until
+    /// confirmed with a code from the app.
+    pub fn totp_begin(&self, user: i64, username: &str) -> Result<TotpSetup, AuthError> {
+        let (_, enabled, _) = self.totp_state(user)?;
+        if enabled {
+            return Err(AuthError::BadInput("two-step verification is already on"));
+        }
+        let secret = crate::totp::new_secret();
+        self.db.lock().unwrap().execute(
+            "UPDATE users SET totp_secret = ?1, totp_enabled = 0, totp_last_step = 0 WHERE id = ?2",
+            params![secret.to_vec(), user],
+        )?;
+        let uri = crate::totp::otpauth_uri(&secret, "Lyrion Anywhere", username);
+        Ok(TotpSetup {
+            secret: crate::totp::base32(&secret),
+            qr_svg: crate::totp::qr_svg(&uri),
+            uri,
+        })
+    }
+
+    /// Finish enrolment with a code from the app.
+    pub fn totp_confirm(&self, user: i64, username: &str, code: &str) -> Result<(), AuthError> {
+        let (secret, enabled, _) = self.totp_state(user)?;
+        let secret = match (secret, enabled) {
+            (_, true) => return Err(AuthError::BadInput("two-step verification is already on")),
+            (Some(s), false) => s,
+            (None, false) => return Err(AuthError::BadInput("start two-step setup first")),
+        };
+        if !self.consume_code(user, &secret, code, 0)? {
+            return Err(AuthError::BadInput(
+                "that code is not right; check the app and try again",
+            ));
+        }
+        self.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE users SET totp_enabled = 1 WHERE id = ?1", [user])?;
+        self.audit("totp.enabled", Some(username), None, "");
+        Ok(())
+    }
+
+    /// Turn two-step verification off: needs the password and a current code.
+    pub fn totp_disable(
+        &self,
+        user: i64,
+        username: &str,
+        password: &str,
+        code: &str,
+    ) -> Result<(), AuthError> {
+        let key = format!("user:{username}");
+        self.check_lock(&key)?;
+        let hash: String = self.db.lock().unwrap().query_row(
+            "SELECT password_hash FROM users WHERE id = ?1",
+            [user],
+            |r| r.get(0),
+        )?;
+        let password_ok = password.len() <= MAX_PASSWORD
+            && Argon2::default()
+                .verify_password(password.as_bytes(), hash.as_str())
+                .is_ok();
+        let (secret, enabled, last_step) = self.totp_state(user)?;
+        let code_ok = match (secret, enabled) {
+            (Some(s), true) => password_ok && self.consume_code(user, &s, code, last_step)?,
+            _ => return Err(AuthError::BadInput("two-step verification is not on")),
+        };
+        if !code_ok {
+            self.record_failure(&key);
+            self.audit("totp.disable_failed", Some(username), None, "");
+            return Err(AuthError::Invalid);
+        }
+        self.clear_totp(user)?;
+        self.audit("totp.disabled", Some(username), None, "");
+        Ok(())
+    }
+
+    /// Admin: remove a user's two-step verification (e.g. a lost phone).
+    pub fn totp_reset(&self, username: &str) -> Result<(), AuthError> {
+        let user: Option<i64> = self
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM users WHERE username = ?1",
+                [username],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let user = user.ok_or(AuthError::BadInput("no such user"))?;
+        self.clear_totp(user)?;
+        self.audit("totp.reset", Some(username), None, "by admin");
+        Ok(())
+    }
+
+    pub fn totp_enabled(&self, user: i64) -> Result<bool, AuthError> {
+        Ok(self.totp_state(user)?.1)
+    }
+
+    fn clear_totp(&self, user: i64) -> Result<(), AuthError> {
+        self.db.lock().unwrap().execute(
+            "UPDATE users SET totp_secret = NULL, totp_enabled = 0, totp_last_step = 0 WHERE id = ?1",
+            [user],
+        )?;
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -801,6 +991,26 @@ impl Accounts {
     }
 }
 
+/// Schema upgrades, tracked with `PRAGMA user_version`.
+fn migrate(db: &Connection) -> Result<(), AuthError> {
+    let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version < 1 {
+        db.execute_batch(
+            "ALTER TABLE users ADD COLUMN totp_secret BLOB;
+             ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE users ADD COLUMN totp_last_step INTEGER NOT NULL DEFAULT 0;
+             PRAGMA user_version = 1;",
+        )?;
+    }
+    Ok(())
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 fn check_password(p: &str) -> Result<(), AuthError> {
     if p.chars().count() < MIN_PASSWORD {
         return Err(AuthError::BadInput(
@@ -829,11 +1039,15 @@ mod tests {
     #[test]
     fn login_issues_tokens_for_a_new_device_with_its_own_mac() {
         let a = store();
-        let t = a.login("alice", PW, "Laptop", None, "10.0.0.1").unwrap();
+        let t = a
+            .login("alice", PW, None, "Laptop", None, "10.0.0.1")
+            .unwrap();
         assert_eq!(t.principal.username, "alice");
         assert_eq!(&t.principal.mac[..3], &[0x02, 0x4c, 0x41]);
         assert_eq!(a.authenticate(&t.access).unwrap(), t.principal);
-        let t2 = a.login("alice", PW, "Phone", None, "10.0.0.1").unwrap();
+        let t2 = a
+            .login("alice", PW, None, "Phone", None, "10.0.0.1")
+            .unwrap();
         assert_ne!(
             t.principal.mac, t2.principal.mac,
             "each device gets its own player"
@@ -843,6 +1057,7 @@ mod tests {
             .login(
                 "alice",
                 PW,
+                None,
                 "Laptop",
                 Some(t.principal.device_id),
                 "10.0.0.1",
@@ -855,9 +1070,16 @@ mod tests {
     #[test]
     fn device_reuse_is_limited_to_the_users_own_devices() {
         let a = store();
-        let admins = a.login("admin", PW, "Desk", None, "c").unwrap();
+        let admins = a.login("admin", PW, None, "Desk", None, "c").unwrap();
         let t = a
-            .login("alice", PW, "Laptop", Some(admins.principal.device_id), "c")
+            .login(
+                "alice",
+                PW,
+                None,
+                "Laptop",
+                Some(admins.principal.device_id),
+                "c",
+            )
             .unwrap();
         assert_ne!(t.principal.device_id, admins.principal.device_id);
     }
@@ -866,15 +1088,15 @@ mod tests {
     fn wrong_credentials_are_indistinguishable() {
         let a = store();
         assert_eq!(
-            a.login("alice", "wrong password!", "x", None, "c1"),
+            a.login("alice", "wrong password!", None, "x", None, "c1"),
             Err(AuthError::Invalid)
         );
         assert_eq!(
-            a.login("nobody", PW, "x", None, "c2"),
+            a.login("nobody", PW, None, "x", None, "c2"),
             Err(AuthError::Invalid)
         );
         assert_eq!(
-            a.login("alice", &"x".repeat(5000), "x", None, "c3"),
+            a.login("alice", &"x".repeat(5000), None, "x", None, "c3"),
             Err(AuthError::Invalid)
         );
     }
@@ -884,27 +1106,41 @@ mod tests {
         let a = store();
         for i in 0..MAX_FAILURES {
             assert_eq!(
-                a.login("alice", "wrong password!", "x", None, &format!("ip{i}")),
+                a.login(
+                    "alice",
+                    "wrong password!",
+                    None,
+                    "x",
+                    None,
+                    &format!("ip{i}")
+                ),
                 Err(AuthError::Invalid)
             );
         }
         // Locked: even the right password from a fresh address is refused for now.
         assert!(matches!(
-            a.login("alice", PW, "x", None, "ip-new"),
+            a.login("alice", PW, None, "x", None, "ip-new"),
             Err(AuthError::Locked(_))
         ));
         // Other users are unaffected.
-        assert!(a.login("admin", PW, "x", None, "ip-other").is_ok());
+        assert!(a.login("admin", PW, None, "x", None, "ip-other").is_ok());
     }
 
     #[test]
     fn repeated_failures_lock_the_client_across_usernames() {
         let a = store();
         for i in 0..MAX_FAILURES {
-            let _ = a.login(&format!("guess{i}"), "whatever!!", "x", None, "attacker");
+            let _ = a.login(
+                &format!("guess{i}"),
+                "whatever!!",
+                None,
+                "x",
+                None,
+                "attacker",
+            );
         }
         assert!(matches!(
-            a.login("alice", PW, "x", None, "attacker"),
+            a.login("alice", PW, None, "x", None, "attacker"),
             Err(AuthError::Locked(_))
         ));
     }
@@ -912,7 +1148,7 @@ mod tests {
     #[test]
     fn disabled_users_cannot_log_in_and_lose_their_devices() {
         let a = store();
-        let t = a.login("alice", PW, "Laptop", None, "c").unwrap();
+        let t = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
         let revoked = a.set_disabled("alice", true).unwrap();
         assert_eq!(revoked, vec![t.principal.device_id]);
         assert!(
@@ -921,7 +1157,7 @@ mod tests {
         );
         assert_eq!(a.refresh(&t.refresh), Err(AuthError::Invalid));
         assert_eq!(
-            a.login("alice", PW, "Laptop", None, "c"),
+            a.login("alice", PW, None, "Laptop", None, "c"),
             Err(AuthError::Invalid)
         );
         assert!(
@@ -936,7 +1172,7 @@ mod tests {
     #[test]
     fn refresh_rotates_and_detects_reuse() {
         let a = store();
-        let t = a.login("alice", PW, "Laptop", None, "c").unwrap();
+        let t = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
         let t2 = a.refresh(&t.refresh).unwrap();
         assert_ne!(t2.refresh, t.refresh);
         assert_ne!(t2.access, t.access);
@@ -954,7 +1190,7 @@ mod tests {
     #[test]
     fn access_tokens_expire() {
         let a = store();
-        let t = a.login("alice", PW, "Laptop", None, "c").unwrap();
+        let t = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
         a.expire_access_tokens();
         assert!(a.authenticate(&t.access).is_none());
         // The refresh token still works to get a new one.
@@ -973,7 +1209,7 @@ mod tests {
     #[test]
     fn logout_revokes_the_device() {
         let a = store();
-        let t = a.login("alice", PW, "Laptop", None, "c").unwrap();
+        let t = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
         assert_eq!(a.logout(&t.access).unwrap(), Some(t.principal.device_id));
         assert!(a.authenticate(&t.access).is_none());
         assert_eq!(a.refresh(&t.refresh), Err(AuthError::Invalid));
@@ -1045,7 +1281,7 @@ mod tests {
         for bad in ["", "   ", "bad\nname", &"x".repeat(65)] {
             assert!(
                 matches!(
-                    a.login("alice", PW, bad, None, "c"),
+                    a.login("alice", PW, None, bad, None, "c"),
                     Err(AuthError::BadInput(_))
                 ),
                 "{bad:?}"
@@ -1072,7 +1308,7 @@ mod tests {
     #[test]
     fn tokens_are_stored_only_as_hashes() {
         let a = store();
-        let t = a.login("alice", PW, "Laptop", None, "c").unwrap();
+        let t = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
         let stored: Vec<u8> =
             a.db.lock()
                 .unwrap()
@@ -1091,8 +1327,10 @@ mod tests {
     #[test]
     fn audit_log_records_security_events() {
         let a = store();
-        let _ = a.login("alice", "wrong password!", "x", None, "10.0.0.9");
-        let t = a.login("alice", PW, "Laptop", None, "10.0.0.9").unwrap();
+        let _ = a.login("alice", "wrong password!", None, "x", None, "10.0.0.9");
+        let t = a
+            .login("alice", PW, None, "Laptop", None, "10.0.0.9")
+            .unwrap();
         let _ = a.refresh(&t.refresh);
         let _ = a.refresh(&t.refresh); // reuse
         let events: Vec<String> = a
@@ -1109,5 +1347,194 @@ mod tests {
         ] {
             assert!(events.contains(&e.to_string()), "missing {e}: {events:?}");
         }
+    }
+
+    // -- two-step verification --------------------------------------------
+
+    /// The current code for a user's (pending or active) secret.
+    fn current_code(a: &Accounts, username: &str, steps_ahead: u64) -> String {
+        let secret: Vec<u8> =
+            a.db.lock()
+                .unwrap()
+                .query_row(
+                    "SELECT totp_secret FROM users WHERE username = ?1",
+                    [username],
+                    |r| r.get(0),
+                )
+                .unwrap();
+        let step = unix_now() / crate::totp::STEP_SECS + steps_ahead;
+        format!("{:06}", crate::totp::code_at(&secret, step))
+    }
+
+    fn user_id(a: &Accounts, username: &str) -> i64 {
+        a.db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM users WHERE username = ?1",
+                [username],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn enrol(a: &Accounts, username: &str) {
+        let id = user_id(a, username);
+        let setup = a.totp_begin(id, username).unwrap();
+        assert_eq!(setup.secret.len(), 32, "160-bit secret in base32");
+        assert!(setup.uri.starts_with("otpauth://totp/Lyrion%20Anywhere:"));
+        a.totp_confirm(id, username, &current_code(a, username, 0))
+            .unwrap();
+    }
+
+    #[test]
+    fn enrolment_needs_a_correct_code_from_the_app() {
+        let a = store();
+        let id = user_id(&a, "alice");
+        assert!(
+            matches!(
+                a.totp_confirm(id, "alice", "123456"),
+                Err(AuthError::BadInput(_))
+            ),
+            "nothing pending"
+        );
+        a.totp_begin(id, "alice").unwrap();
+        assert!(matches!(
+            a.totp_confirm(id, "alice", "000000"),
+            Err(AuthError::BadInput(_))
+        ));
+        assert!(
+            !a.totp_enabled(id).unwrap(),
+            "a wrong code must not enable it"
+        );
+        // Until confirmed, logging in still needs only the password.
+        assert!(a.login("alice", PW, None, "x", None, "c").is_ok());
+        a.totp_confirm(id, "alice", &current_code(&a, "alice", 0))
+            .unwrap();
+        assert!(a.totp_enabled(id).unwrap());
+        assert!(
+            matches!(a.totp_begin(id, "alice"), Err(AuthError::BadInput(_))),
+            "already on"
+        );
+    }
+
+    #[test]
+    fn login_needs_a_fresh_code_once_enabled() {
+        let a = store();
+        enrol(&a, "alice");
+        assert_eq!(
+            a.login("alice", PW, None, "x", None, "c"),
+            Err(AuthError::TotpRequired)
+        );
+        assert_eq!(
+            a.login("alice", PW, Some("000000"), "x", None, "c"),
+            Err(AuthError::Invalid)
+        );
+        // The enrolment code was consumed; the next step's code is fresh.
+        let code = current_code(&a, "alice", 1);
+        assert!(a.login("alice", PW, Some(&code), "x", None, "c").is_ok());
+        assert_eq!(
+            a.login("alice", PW, Some(&code), "x", None, "c"),
+            Err(AuthError::Invalid),
+            "a code works once"
+        );
+    }
+
+    #[test]
+    fn totp_status_is_not_revealed_without_the_password() {
+        let a = store();
+        enrol(&a, "alice");
+        // A wrong password must look the same whether or not two-step is on.
+        assert_eq!(
+            a.login("alice", "wrong password!", None, "x", None, "c"),
+            Err(AuthError::Invalid)
+        );
+        assert_eq!(
+            a.login("admin", "wrong password!", None, "x", None, "c"),
+            Err(AuthError::Invalid)
+        );
+    }
+
+    #[test]
+    fn wrong_codes_count_towards_lockout() {
+        let a = store();
+        enrol(&a, "alice");
+        for _ in 0..MAX_FAILURES {
+            assert_eq!(
+                a.login("alice", PW, Some("000000"), "x", None, "c"),
+                Err(AuthError::Invalid)
+            );
+        }
+        let code = current_code(&a, "alice", 1);
+        assert!(matches!(
+            a.login("alice", PW, Some(&code), "x", None, "c2"),
+            Err(AuthError::Locked(_))
+        ));
+    }
+
+    #[test]
+    fn turning_it_off_needs_password_and_code() {
+        let a = store();
+        enrol(&a, "alice");
+        let id = user_id(&a, "alice");
+        let code = current_code(&a, "alice", 1);
+        assert_eq!(
+            a.totp_disable(id, "alice", "wrong password!", &code),
+            Err(AuthError::Invalid)
+        );
+        assert_eq!(
+            a.totp_disable(id, "alice", PW, "000000"),
+            Err(AuthError::Invalid)
+        );
+        assert!(a.totp_enabled(id).unwrap());
+        a.totp_disable(id, "alice", PW, &code).unwrap();
+        assert!(!a.totp_enabled(id).unwrap());
+        assert!(a.login("alice", PW, None, "x", None, "c").is_ok());
+        assert!(matches!(
+            a.totp_disable(id, "alice", PW, &code),
+            Err(AuthError::BadInput(_))
+        ));
+    }
+
+    #[test]
+    fn admin_reset_removes_two_step() {
+        let a = store();
+        enrol(&a, "alice");
+        a.totp_reset("alice").unwrap();
+        assert!(a.login("alice", PW, None, "x", None, "c").is_ok());
+        assert!(matches!(
+            a.totp_reset("nobody"),
+            Err(AuthError::BadInput(_))
+        ));
+        let users = a.list_users().unwrap();
+        assert!(users.iter().all(|u| !u.totp_enabled));
+        let events: Vec<String> = a
+            .audit_log(50)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.event)
+            .collect();
+        for e in ["totp.enabled", "totp.reset"] {
+            assert!(events.contains(&e.to_string()), "{e}");
+        }
+    }
+
+    #[test]
+    fn migration_adds_totp_columns_to_an_existing_database() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE,
+               password_hash TEXT NOT NULL, role TEXT NOT NULL,
+               disabled INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+        let a = Accounts::with_connection(db).unwrap();
+        a.create_user("alice", PW, Role::Listener).unwrap();
+        enrol(&a, "alice");
+        let version: i64 =
+            a.db.lock()
+                .unwrap()
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(version, 1);
     }
 }

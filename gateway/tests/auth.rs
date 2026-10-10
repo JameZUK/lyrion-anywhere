@@ -550,3 +550,209 @@ async fn rate_limit_key_uses_forwarded_address_only_from_trusted_proxies() {
         .await;
     assert_eq!(other.status(), S::OK);
 }
+
+// ---------------------------------------------------------------------------
+// Two-step verification (TOTP)
+// ---------------------------------------------------------------------------
+
+fn base32_decode(s: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let (mut buffer, mut bits) = (0u64, 0);
+    for c in s.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'2'..=b'7' => c - b'2' + 26,
+            _ => panic!("bad base32"),
+        } as u64;
+        buffer = (buffer << 5) | v;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+        }
+    }
+    out
+}
+
+fn code_for(secret_b32: &str, steps_ahead: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let step = now / anywhere_gateway::totp::STEP_SECS + steps_ahead;
+    format!(
+        "{:06}",
+        anywhere_gateway::totp::code_at(&base32_decode(secret_b32), step)
+    )
+}
+
+async fn bearer_post(
+    h: &Harness,
+    path: &str,
+    token: &str,
+    body: Option<Value>,
+) -> reqwest::Response {
+    let mut req = reqwest::Client::new()
+        .post(h.url(path))
+        .header(CLIENT.0, CLIENT.1)
+        .bearer_auth(token);
+    if let Some(b) = body {
+        req = req.json(&b);
+    }
+    req.send().await.unwrap()
+}
+
+/// Turn two-step on for alice through the API; returns the base32 secret.
+async fn enrol_alice(h: &Harness) -> String {
+    let token = h.tok_a.clone();
+    let setup = bearer_post(h, "/v1/account/totp/setup", &token, None).await;
+    assert_eq!(setup.status(), S::OK);
+    assert_eq!(setup.headers()["cache-control"], "no-store");
+    let setup = json_of(setup).await;
+    let secret = setup["secret"].as_str().unwrap().to_string();
+    assert!(setup["uri"].as_str().unwrap().contains(&secret));
+    let wrong = bearer_post(
+        h,
+        "/v1/account/totp/confirm",
+        &token,
+        Some(json!({ "code": "000000" })),
+    )
+    .await;
+    assert_eq!(wrong.status(), S::BAD_REQUEST);
+    let ok = bearer_post(
+        h,
+        "/v1/account/totp/confirm",
+        &token,
+        Some(json!({ "code": code_for(&secret, 0) })),
+    )
+    .await;
+    assert_eq!(ok.status(), S::NO_CONTENT);
+    secret
+}
+
+#[tokio::test]
+async fn totp_login_flow() {
+    let h = harness().await;
+    let secret = enrol_alice(&h).await;
+    let account = reqwest::Client::new()
+        .get(h.url("/v1/account"))
+        .bearer_auth(&h.tok_a)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(json_of(account).await["totp_enabled"], true);
+
+    // Password alone: the client is told to ask for the code.
+    let r = h.login("alice", PW, &[CLIENT]).await;
+    assert_eq!(r.status(), S::UNAUTHORIZED);
+    assert_eq!(json_of(r).await["totp_required"], true);
+
+    // A wrong password never mentions two-step.
+    let r = h.login("alice", "wrong password!", &[CLIENT]).await;
+    assert!(json_of(r).await.get("totp_required").is_none());
+
+    let with_code = |code: String| json!({ "username": "alice", "password": PW, "totp": code, "device_name": "Test browser" });
+    let r = h
+        .post("/v1/auth/login", with_code("000000".into()), &[CLIENT])
+        .await;
+    assert_eq!(r.status(), S::UNAUTHORIZED);
+    let code = code_for(&secret, 1);
+    let r = h
+        .post("/v1/auth/login", with_code(code.clone()), &[CLIENT])
+        .await;
+    assert_eq!(r.status(), S::OK);
+    let r = h.post("/v1/auth/login", with_code(code), &[CLIENT]).await;
+    assert_eq!(r.status(), S::UNAUTHORIZED, "codes are single use");
+}
+
+#[tokio::test]
+async fn totp_endpoints_require_auth_and_csrf_header() {
+    let h = harness().await;
+    for path in [
+        "/v1/account/totp/setup",
+        "/v1/account/totp/confirm",
+        "/v1/account/totp/disable",
+    ] {
+        let no_auth = reqwest::Client::new()
+            .post(h.url(path))
+            .header(CLIENT.0, CLIENT.1)
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(no_auth.status(), S::UNAUTHORIZED, "{path} without token");
+        let no_header = reqwest::Client::new()
+            .post(h.url(path))
+            .bearer_auth(&h.tok_a)
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            no_header.status(),
+            S::FORBIDDEN,
+            "{path} without client header"
+        );
+    }
+    let r = reqwest::Client::new()
+        .get(h.url("/v1/account"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn totp_disable_needs_password_and_code() {
+    let h = harness().await;
+    let secret = enrol_alice(&h).await;
+    let token = h.tok_a.clone();
+    let bad = bearer_post(
+        &h,
+        "/v1/account/totp/disable",
+        &token,
+        Some(json!({ "password": "wrong password!", "code": code_for(&secret, 1) })),
+    )
+    .await;
+    assert_eq!(bad.status(), S::UNAUTHORIZED);
+    let ok = bearer_post(
+        &h,
+        "/v1/account/totp/disable",
+        &token,
+        Some(json!({ "password": PW, "code": code_for(&secret, 1) })),
+    )
+    .await;
+    assert_eq!(ok.status(), S::NO_CONTENT);
+    assert_eq!(h.login("alice", PW, &[CLIENT]).await.status(), S::OK);
+}
+
+#[tokio::test]
+async fn admin_can_reset_a_lost_authenticator() {
+    let h = harness().await;
+    enrol_alice(&h).await;
+    let (base, secret) = h.admin().await;
+    let r = reqwest::Client::new()
+        .post(format!("{base}/admin/v1/users/alice/totp/reset"))
+        .bearer_auth(&secret)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::NO_CONTENT);
+    assert_eq!(h.login("alice", PW, &[CLIENT]).await.status(), S::OK);
+    let users = json_of(
+        reqwest::Client::new()
+            .get(format!("{base}/admin/v1/users"))
+            .bearer_auth(&secret)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        users["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|u| u["totp_enabled"] == false)
+    );
+}
