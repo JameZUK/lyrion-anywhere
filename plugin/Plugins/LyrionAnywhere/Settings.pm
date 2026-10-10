@@ -8,11 +8,10 @@ use strict;
 use warnings;
 use base qw(Slim::Web::Settings);
 
-use File::Spec::Functions qw(file_name_is_absolute);
-
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 
+use Plugins::LyrionAnywhere::Commands;
 use Plugins::LyrionAnywhere::Gateway;
 
 my $log   = logger('plugin.lyrionanywhere');
@@ -77,7 +76,7 @@ sub clean {
 			$v = join ', ', @ips;
 		}
 		elsif ($k eq 'gateway_path') {
-			if (length $v && !(file_name_is_absolute($v) && -f $v && -x $v)) {
+			unless (Plugins::LyrionAnywhere::Gateway::valid_gateway_path($v)) {
 				push @errors, 'Gateway path must be an absolute path to an executable file (or empty)';
 				next;
 			}
@@ -92,6 +91,11 @@ sub clean {
 
 sub handler {
 	my ($class, $client, $params) = @_;
+	# The page's script needs this to change accounts (see Commands.pm). Only this page,
+	# which other web sites cannot read, carries it.
+	$params->{anywhere_csrf} = Plugins::LyrionAnywhere::Commands::csrf_token();
+	$params->{anywhere_gateway_path_allowed} =
+		($ENV{ Plugins::LyrionAnywhere::Gateway::ALLOW_GATEWAY_PATH_ENV() } // '') eq '1' ? 1 : 0;
 	if ($params->{saveSettings}) {
 		my %before = map { $_ => $prefs->get($_) } qw(enabled listen public_url trusted_proxies gateway_path);
 		my ($clean, $errors) = clean($params);

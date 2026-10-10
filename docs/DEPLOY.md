@@ -12,7 +12,7 @@ There are two ways to run the gateway.
 
 Install the plugin from a release: in LMS, *Settings › Plugins › Additional repositories*, add the release's `repo.xml` URL, then install **Lyrion Anywhere**. Or unzip `LyrionAnywhere-<version>.zip` into a folder named `LyrionAnywhere` in LMS's plugin directory (e.g. `/var/lib/squeezeboxserver/Plugins/` on Debian). Don't leave a second copy of the plugin anywhere in that directory. Restart LMS.
 
-The release bundles static gateways for x86_64, aarch64 and armhf Linux, with a `Bin/SHA256SUMS` list. The plugin refuses to run a bundled gateway that doesn't match it. The release also bundles the browser player, which the gateway serves at `/`.
+The release bundles static gateways for x86_64, aarch64 and armhf Linux, with a `Bin/SHA256SUMS` list. The plugin refuses to run a bundled gateway that doesn't match it. That catches a corrupt, truncated or accidentally replaced binary. It is not a signature: the list ships in the same zip, so it can't detect a maliciously altered release. The release also bundles the browser player, which the gateway serves at `/`.
 
 Then open *Settings › Plugins › Lyrion Anywhere*:
 
@@ -23,7 +23,9 @@ Then open *Settings › Plugins › Lyrion Anywhere*:
 
 Add users on the same page. The gateway refuses plain-HTTP requests from anything except loopback, so the LAN port can't be used to bypass TLS. Still, firewall it to the proxy.
 
-Anyone who can open LMS settings can manage remote accounts. If others use your network, turn on LMS password protection (*Settings › Advanced › Security*).
+LMS's own web and control ports (9000 and 9090) need no password on the local network by default, so anyone on your network can use LMS and open its settings. Remote accounts can only be changed from the Lyrion Anywhere settings page: the plugin's account commands need a token that only that page carries, so other web sites can't change accounts through LMS. Anyone who can open the page can, though. If others use your network, turn on LMS password protection (*Settings › Advanced › Security*).
+
+**Gateway path (development only).** The settings page has a field for running your own gateway build instead of the bundled, checked one. The plugin ignores it (and logs a warning) unless LMS itself was started with `ANYWHERE_ALLOW_GATEWAY_PATH=1` in its environment, so a changed setting alone can't make LMS run an arbitrary program. Don't set the variable on a server you use day to day.
 
 ## 2. Docker
 
@@ -46,7 +48,7 @@ docker run -d --name lyrion-anywhere --restart unless-stopped --network host \
 
 - Manage accounts with `docker exec lyrion-anywhere anywhere-gateway admin --data-dir /data …` (`list-users`, `list-devices`, `pair`, `reset-totp`, `set-password`).
 - The image is static, contains no shell and runs as a non-root user. It includes the browser player page at `/`.
-- Host networking keeps the client address real. With a bridge network, publish to `127.0.0.1:9443` only, and pass the bridge gateway address as `--trusted-proxy`.
+- Host networking keeps the client address real. With a bridge network, the gateway must listen on all interfaces inside the container (`--listen 0.0.0.0:9443`; `127.0.0.1` there is unreachable from the host). Publish the port to `127.0.0.1:9443` only (`-p 127.0.0.1:9443:9443`), and pass the bridge gateway address as `--trusted-proxy`.
 
 ## Reverse proxy
 

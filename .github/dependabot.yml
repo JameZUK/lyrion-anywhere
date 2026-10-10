@@ -1,0 +1,15 @@
+# Keeps the pinned CI actions and Docker base images current. Actions and images are
+# pinned to full commit SHAs and digests; Dependabot updates the pin and its version comment.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directories:
+      - /
+      - /tools/release
+    schedule:
+      interval: weekly

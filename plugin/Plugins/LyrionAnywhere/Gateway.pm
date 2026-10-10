@@ -13,6 +13,7 @@ use warnings;
 use Config;
 use Digest::SHA;
 use File::Spec::Functions qw(abs2rel catdir catfile file_name_is_absolute);
+use Socket qw(inet_pton AF_INET AF_INET6);
 
 use Slim::Utils::Log;
 use Slim::Utils::OSDetect;
@@ -24,6 +25,13 @@ my $prefs = preferences('plugin.lyrionanywhere');
 
 use constant CHECK_INTERVAL => 10;      # seconds between liveness checks
 use constant STABLE_AFTER   => 300;     # a run this long resets the backoff
+use constant ADMIN_PORT     => 9445;    # default loopback port of the admin API
+use constant STDERR_FILE    => 'gateway.stderr';   # the gateway's stderr, in the data dir
+use constant STDERR_LINES   => 5;       # how many of its last lines the status shows
+
+# The development "Gateway path" pref runs any binary as the LMS user, so it is honoured
+# only when LMS itself was started with this variable set to 1.
+use constant ALLOW_GATEWAY_PATH_ENV => 'ANYWHERE_ALLOW_GATEWAY_PATH';
 
 my $proc;            # Proc::Background object while running
 my $wanted = 0;      # should the gateway be running?
@@ -31,6 +39,10 @@ my $attempt = 0;     # consecutive failed starts
 my $started_at = 0;
 my $last_error = '';
 my $basedir = '';
+my $restart_pending = 0;   # a restart timer is set: never more than one at a time
+my $warned_override = '';  # the ignored gateway path last warned about
+
+sub _now { time() }        # the clock (tests replace it)
 
 # --- pure helpers -------------------------------------------------------------------
 
@@ -61,19 +73,28 @@ sub binary_path {
 	return catfile($o{basedir}, 'Bin', $plat, $exe);
 }
 
-my $IPV4 = qr/^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\z/;
+# Strict: dotted-quad IPv4 without leading zeros (which some parsers read as octal), or
+# IPv6 as the system's inet_pton parses it (no zone ids). Anything else is refused.
+my $IPV4 = qr/^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\z/;
 
 sub valid_ip {
 	my $ip = shift // return 0;
-	return 1 if $ip =~ $IPV4;
-	return 1 if $ip =~ /^[0-9a-f:]+\z/i && $ip =~ /:/ && length($ip) <= 39;
+	return 0 if ref $ip || length($ip) > 45;
+	if ($ip =~ /^[0-9.]+\z/) {
+		return ($ip =~ $IPV4 && defined eval { inet_pton(AF_INET, $ip) }) ? 1 : 0;
+	}
+	if ($ip =~ /^[0-9a-f:.]+\z/i && $ip =~ /:/) {
+		# An embedded IPv4 tail (::ffff:10.0.0.1) must itself be strict.
+		if ($ip =~ /([^:]*\.[^:]*)\z/) { return 0 unless $1 =~ $IPV4 }
+		return defined(eval { inet_pton(AF_INET6, $ip) }) ? 1 : 0;
+	}
 	return 0;
 }
 
 sub valid_hostport {
 	my $hp = shift // return 0;
 	my ($host, $port);
-	if ($hp =~ /^\[([0-9a-f:]+)\]:(\d{1,5})\z/i) { ($host, $port) = ($1, $2) }
+	if ($hp =~ /^\[([0-9a-f:.]+)\]:(\d{1,5})\z/i) { ($host, $port) = ($1, $2) }
 	elsif ($hp =~ /^([0-9.]+):(\d{1,5})\z/)      { ($host, $port) = ($1, $2) }
 	else { return 0 }
 	return valid_ip($host) && $port >= 1 && $port <= 65535;
@@ -81,7 +102,28 @@ sub valid_hostport {
 
 sub is_loopback {
 	my $hp = shift // return 0;
+	return 0 unless valid_hostport($hp);
 	return $hp =~ /^127\.\d+\.\d+\.\d+:\d+\z/ || $hp =~ /^\[::1\]:\d+\z/;
+}
+
+sub valid_port {
+	my $p = shift // return 0;
+	return $p =~ /^\d{1,5}\z/ && $p >= 1 && $p <= 65535 ? 1 : 0;
+}
+
+# A comma/space separated list of proxy addresses (empty is fine).
+sub valid_proxy_list {
+	my $s = shift // '';
+	return 0 if ref $s || $s =~ /[\r\n\x00]/;
+	return (grep { !valid_ip($_) } split_list($s)) ? 0 : 1;
+}
+
+# A development gateway binary: an absolute path to an executable regular file (or empty).
+sub valid_gateway_path {
+	my $p = shift // '';
+	return 1 if $p eq '';
+	return 0 if ref $p || $p =~ /[\r\n\x00]/;
+	return file_name_is_absolute($p) && -f $p && -x _ ? 1 : 0;
 }
 
 sub valid_origin {
@@ -98,7 +140,7 @@ sub command_line {
 	return (undef, 'data directory must be an absolute path')      unless $o{data_dir} && file_name_is_absolute($o{data_dir});
 	return (undef, 'web directory must be an absolute path')       if $o{static_dir} && !file_name_is_absolute($o{static_dir});
 	for my $p (qw(http_port cli_port)) {
-		return (undef, "bad $p") unless defined $o{$p} && $o{$p} =~ /^\d{1,5}\z/ && $o{$p} > 0 && $o{$p} <= 65535;
+		return (undef, "bad $p") unless valid_port($o{$p});
 	}
 	my @proxies = @{ $o{trusted_proxies} || [] };
 	my @origins = @{ $o{allowed_origins} || [] };
@@ -129,8 +171,10 @@ sub backoff {
 }
 
 # Check a bundled binary against Bin/SHA256SUMS (written by tools/build-release.sh), so a
-# corrupt, partial or swapped binary is never run. Returns an error message, or undef if
-# the binary matches. Binaries outside Bin/ (the development "Gateway path") are not checked.
+# corrupt, truncated or accidentally replaced binary is never run. This is an integrity
+# check, not an authenticity one: the list ships in the same zip, so it cannot detect a
+# maliciously altered release. Returns an error message, or undef if the binary matches.
+# Binaries outside Bin/ (the development "Gateway path") are not checked.
 sub verify_binary {
 	my ($bin, $base) = @_;
 	return 'no gateway binary' unless $bin && -f $bin;
@@ -171,8 +215,71 @@ sub data_dir {
 	return catdir(Slim::Utils::Prefs::dir(), 'lyrion-anywhere');
 }
 
+# The admin API address. Only a plain port number is ever used: the admin secret is sent
+# here, so a crafted pref (e.g. "1@evil.example.com:80") must never redirect it.
 sub admin_listen {
-	return '127.0.0.1:' . ($prefs->get('admin_port') || 9445);
+	my $port = $prefs->get('admin_port');
+	if (defined $port && $port ne '' && !valid_port($port)) {
+		$log->warn('ignoring invalid admin_port pref; using ' . ADMIN_PORT);
+		$port = undef;
+	}
+	return '127.0.0.1:' . ($port || ADMIN_PORT);
+}
+
+# The development gateway path, if it is set and allowed; otherwise undef (the bundled,
+# checksum-verified binary is used).
+sub gateway_override {
+	my $p = $prefs->get('gateway_path');
+	return undef unless defined $p && $p ne '';
+	if (($ENV{+ALLOW_GATEWAY_PATH_ENV} // '') ne '1') {
+		if ($warned_override ne $p) {
+			$log->warn('ignoring the Gateway path setting: start LMS with '
+				. ALLOW_GATEWAY_PATH_ENV . '=1 to use a development gateway');
+			$warned_override = $p;
+		}
+		return undef;
+	}
+	return $p;
+}
+
+sub stderr_file { catfile(data_dir(), STDERR_FILE) }
+
+# The last few lines the gateway wrote to stderr (control characters removed), or ''.
+sub stderr_tail {
+	my $file = shift // stderr_file();
+	open my $fh, '<', $file or return '';
+	my $size = -s $fh || 0;
+	seek $fh, ($size > 4096 ? $size - 4096 : 0), 0;
+	local $/;
+	my $text = <$fh> // '';
+	close $fh;
+	my @lines = grep { /\S/ } split /\r?\n/, $text;
+	@lines = @lines[-STDERR_LINES() .. -1] if @lines > STDERR_LINES;
+	s/[\x00-\x08\x0b-\x1f\x7f]//g for @lines;
+	return join "\n", @lines;
+}
+
+# Validators for every pref, so changes through LMS's `pref` command get the same checks
+# as the settings page.
+my %VALIDATE = (
+	listen          => \&valid_hostport,
+	public_url      => sub { my $v = shift // ''; $v eq '' || valid_origin($v) },
+	trusted_proxies => \&valid_proxy_list,
+	admin_port      => \&valid_port,
+	gateway_path    => \&valid_gateway_path,
+);
+
+sub valid_pref {
+	my ($name, $value) = @_;
+	my $check = $VALIDATE{$name // ''} or return 1;
+	return $check->($value) ? 1 : 0;
+}
+
+sub register_validators {
+	for my $name (sort keys %VALIDATE) {
+		my $check = $VALIDATE{$name};
+		$prefs->setValidate({ validator => sub { my (undef, $new) = @_; $check->($new) ? 1 : 0 } }, $name);
+	}
 }
 
 sub _options {
@@ -181,7 +288,7 @@ sub _options {
 	my ($logdir) = Slim::Utils::OSDetect::dirsFor('log');
 	my $public = $prefs->get('public_url') || '';
 	return (
-		binary          => binary_path(basedir => $basedir, override => $prefs->get('gateway_path')),
+		binary          => binary_path(basedir => $basedir, override => gateway_override()),
 		listen          => $prefs->get('listen') || '127.0.0.1:9443',
 		admin_listen    => admin_listen(),
 		data_dir        => data_dir(),
@@ -211,7 +318,7 @@ sub start {
 	$wanted = 1;
 	_launch();
 	Slim::Utils::Timers::killTimers(undef, \&_check);
-	Slim::Utils::Timers::setTimer(undef, time() + CHECK_INTERVAL, \&_check);
+	Slim::Utils::Timers::setTimer(undef, _now() + CHECK_INTERVAL, \&_check);
 }
 
 sub stop {
@@ -219,6 +326,7 @@ sub stop {
 	$wanted = 0;
 	Slim::Utils::Timers::killTimers(undef, \&_check);
 	Slim::Utils::Timers::killTimers(undef, \&_launch);
+	$restart_pending = 0;
 	if ($proc) {
 		$log->info('stopping gateway');
 		eval { $proc->die };
@@ -244,11 +352,12 @@ sub state {
 		data_dir  => $o{data_dir},
 		listen    => $o{listen},
 		error     => $last_error,
-		uptime    => ($proc && $started_at) ? time() - $started_at : 0,
+		uptime    => ($proc && $started_at) ? _now() - $started_at : 0,
 	};
 }
 
 sub _launch {
+	$restart_pending = 0;
 	return unless $wanted;
 	return if $proc && eval { $proc->alive };
 	my %o = _options();
@@ -263,7 +372,7 @@ sub _launch {
 		$log->error($last_error);
 		return;
 	}
-	if (!$prefs->get('gateway_path')) {
+	if (!gateway_override()) {
 		if (my $bad = verify_binary($argv->[0], $basedir)) {
 			$last_error = $bad;
 			$log->error($last_error);
@@ -279,9 +388,9 @@ sub _launch {
 	}
 	mkdir $o{data_dir}, 0700 unless -d $o{data_dir};
 	require Proc::Background;
-	$proc = eval { Proc::Background->new({ die_upon_destroy => 1 }, @$argv) };
+	$proc = _spawn($argv, stderr_file());
 	if ($proc) {
-		$started_at = time();
+		$started_at = _now();
 		$last_error = '';
 		$log->info('gateway started (pid ' . ($proc->pid // '?') . ")");
 	} else {
@@ -290,18 +399,40 @@ sub _launch {
 	}
 }
 
+# Start the gateway with its stderr going to a file, so the reason for an early exit (a
+# bad flag, a port in use) can be shown in the status. The child inherits the handle; the
+# plugin's own stderr is put back straight away.
+sub _spawn {
+	my ($argv, $errfile) = @_;
+	my ($saved, $redirected);
+	if ($errfile && open($saved, '>&', \*STDERR)) {
+		$redirected = open(STDERR, '>', $errfile);
+		open(STDERR, '>&', $saved) unless $redirected;
+	}
+	my $p = eval { Proc::Background->new({ die_upon_destroy => 1 }, @$argv) };
+	my $err = $@;
+	open(STDERR, '>&', $saved) if $redirected;
+	$@ = $err;
+	return $p;
+}
+
 sub _check {
 	return unless $wanted;
-	if (!$proc || !eval { $proc->alive }) {
-		$attempt = 0 if $started_at && time() - $started_at >= STABLE_AFTER;
+	if ((!$proc || !eval { $proc->alive }) && !$restart_pending) {
+		$attempt = 0 if $started_at && _now() - $started_at >= STABLE_AFTER;
 		$attempt++;
 		my $wait = backoff($attempt);
+		if ($proc) {
+			my $tail = stderr_tail();
+			$last_error = 'gateway exited' . (length $tail ? ": $tail" : '');
+		}
 		$last_error ||= 'gateway exited';
 		$log->warn("gateway not running; restarting in ${wait}s (attempt $attempt)");
 		undef $proc;
-		Slim::Utils::Timers::setTimer(undef, time() + $wait, \&_launch);
+		$restart_pending = 1;
+		Slim::Utils::Timers::setTimer(undef, _now() + $wait, \&_launch);
 	}
-	Slim::Utils::Timers::setTimer(undef, time() + CHECK_INTERVAL, \&_check);
+	Slim::Utils::Timers::setTimer(undef, _now() + CHECK_INTERVAL, \&_check);
 }
 
 1;

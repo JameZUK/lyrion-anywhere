@@ -30,6 +30,26 @@ test('builds anywhere commands, skipping empty values', () => {
   assert.deepEqual(Array.from(t.command('users')), ['anywhere', 'users']);
 });
 
+test('adds the CSRF token last, and never a caller-supplied one', () => {
+  const tok = 'ab'.repeat(16);
+  assert.deepEqual(Array.from(t.command('user_delete', { username: 'alice' }, tok)), [
+    'anywhere', 'user_delete', 'username:alice', 'csrf:' + tok,
+  ]);
+  assert.deepEqual(Array.from(t.command('user_delete', { username: 'alice', csrf: 'x' }, tok)), [
+    'anywhere', 'user_delete', 'username:alice', 'csrf:' + tok,
+  ]);
+  assert.deepEqual(Array.from(t.command('restart', {}, '')), ['anywhere', 'restart']);
+});
+
+test('reads the token only from the page, and only if well-formed', () => {
+  const doc = (v) => ({ getElementById: (id) => (id === 'anywhere-app' ? { getAttribute: () => v } : null) });
+  assert.equal(t.pageToken(doc('0123456789abcdef0123456789abcdef')), '0123456789abcdef0123456789abcdef');
+  for (const bad of [null, '', 'x', '0123456789abcdef0123456789abcdef0', '0123456789ABCDEF0123456789ABCDEF', 'a b']) {
+    assert.equal(t.pageToken(doc(bad)), '', String(bad));
+  }
+  assert.equal(t.pageToken({ getElementById: () => null }), '');
+});
+
 test('validates input like the gateway does', () => {
   assert.ok(t.validUsername('alice.b-1'));
   for (const bad of ['', 'Alice', 'a b', 'a/b', 'x'.repeat(65)]) assert.ok(!t.validUsername(bad), bad);
@@ -68,13 +88,14 @@ function fakeDom() {
     set outerHTML(_) { throw new Error('outerHTML used'); }
     insertAdjacentHTML() { throw new Error('insertAdjacentHTML used'); }
     setAttribute(k, v) { this.attrs[k] = String(v); }
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
     addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
     append(...c) { this.children.push(...c); }
     replaceChildren(...c) { this._text = ''; this.children = c; }
     focus() {}
   }
   const byId = new Map();
-  for (const id of ['aw-status', 'aw-users', 'aw-devices', 'aw-audit', 'aw-message', 'aw-create-btn', 'aw-new-user', 'aw-new-password', 'aw-new-role', 'aw-session-days', 'aw-session-btn']) {
+  for (const id of ['anywhere-app', 'aw-status', 'aw-users', 'aw-devices', 'aw-audit', 'aw-message', 'aw-create-btn', 'aw-new-user', 'aw-new-password', 'aw-new-role', 'aw-session-days', 'aw-session-btn']) {
     byId.set(id, new Node('div'));
   }
   const docListeners = {};
@@ -100,8 +121,12 @@ test('renders remote-controlled names as text, never as markup', async () => {
     audit: { data: { audit: [{ at: 1, event: 'login', username: 'bob', detail: HOSTILE }] } },
     settings: { data: { session_days: 45 } },
   };
+  const TOKEN = 'cd'.repeat(16);
+  dom.byId.get('anywhere-app').setAttribute('data-csrf', TOKEN);
+  const sent = [];
   const fetch = async (_url, opts) => {
     const cmd = JSON.parse(opts.body).params[1];
+    sent.push(cmd);
     const key = cmd[0] === 'players' ? 'players' : cmd[1];
     return { json: async () => ({ result: replies[key] || {} }) };
   };
@@ -120,6 +145,17 @@ test('renders remote-controlled names as text, never as markup', async () => {
   }
   assert.equal(dom.byId.get('aw-message').textContent, '', 'no error reported');
   assert.equal(dom.byId.get('aw-session-days').value, '45', 'the sign-in lifetime is shown');
+
+  // Changing something carries the page's token.
+  dom.byId.get('aw-session-days').value = '60';
+  for (const fn of dom.byId.get('aw-session-btn').listeners.click) fn();
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  const change = sent.find((c) => c[0] === 'anywhere' && c[1] === 'session_days');
+  assert.ok(change, 'session_days sent');
+  assert.deepEqual(change, ['anywhere', 'session_days', 'days:60', 'csrf:' + TOKEN]);
+  for (const c of sent.filter((c) => c[0] === 'anywhere' && c[1] !== 'status')) {
+    assert.equal(c[c.length - 1], 'csrf:' + TOKEN, `token sent with ${c[1]}`);
+  }
 });
 
 test('diagnostics are shown as plain JSON text', () => {

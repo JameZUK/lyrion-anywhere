@@ -58,6 +58,13 @@ my %OPS = (
 
 sub operations { return sort keys %OPS }
 
+# Does the operation change anything? (Every POST does; unknown operations count as yes.)
+sub is_mutating {
+	my $op = shift // '';
+	my $spec = $OPS{$op} or return 1;
+	return $spec->[0] eq 'GET' ? 0 : 1;
+}
+
 my %CHECK = (
 	username => \&valid_username,
 	password => \&valid_password,
@@ -112,6 +119,7 @@ sub call {
 		return $err->($m);
 	}
 	my $secret = secret() or return $err->('the gateway has not started yet (no admin secret)');
+	# admin_listen() is always 127.0.0.1 and a validated port: the secret stays on this host.
 	my $url = 'http://' . Plugins::LyrionAnywhere::Gateway::admin_listen() . $path;
 	my $http = Slim::Networking::SimpleAsyncHTTP->new(
 		sub {

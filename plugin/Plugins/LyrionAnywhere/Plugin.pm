@@ -35,6 +35,8 @@ sub initPlugin {
 		trusted_proxies => '',
 		gateway_path    => '',
 	});
+	# The same checks as the settings page, for changes made with LMS's `pref` command.
+	Plugins::LyrionAnywhere::Gateway::register_validators();
 	$class->SUPER::initPlugin(@_);
 
 	if (main::WEBUI) {

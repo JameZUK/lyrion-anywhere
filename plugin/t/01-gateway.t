@@ -4,6 +4,7 @@ use Test::More;
 use File::Temp ();
 use Plugins::LyrionAnywhere::Gateway;
 my $G = 'Plugins::LyrionAnywhere::Gateway';
+sub show { my $s = $_[0] // 'undef'; $s =~ s/([\x00-\x1f])/sprintf('\\x%02x', ord $1)/ge; $s }
 
 is(Plugins::LyrionAnywhere::Gateway::platform('linux', 'x86_64-linux-thread-multi'), 'x86_64-linux');
 is(Plugins::LyrionAnywhere::Gateway::platform('linux', 'aarch64-linux-gnu'), 'aarch64-linux');
@@ -95,5 +96,71 @@ for my $bad ("127.0.0.1:9443\n", "[::1]:9443\n") {
 }
 ok(!Plugins::LyrionAnywhere::Gateway::valid_origin("https://music.example.com\n"), 'refused: newline after origin');
 ok(Plugins::LyrionAnywhere::Gateway::valid_origin('https://music.example.com'), 'a plain origin is fine');
+
+# --- strict IP parsing (regression: anything of hex digits and colons used to pass) ---
+for my $good ('10.0.0.10', '0.0.0.0', '255.255.255.255', '::1', '::', 'fe80::1', '2001:db8::10',
+              '2001:0db8:0000:0000:0000:0000:0000:0001', '::ffff:10.0.0.1') {
+	ok(Plugins::LyrionAnywhere::Gateway::valid_ip($good), "valid IP: $good");
+}
+for my $bad (':::', '1:2', ':', '1::2::3', '12345::1', 'g::1', '1:2:3:4:5:6:7:8:9', 'fe80::1%eth0',
+             '::ffff:10.0.0.01', '010.0.0.1', '10.0.0', '10.0.0.1.2', '1.2.3.4 ', ' 1.2.3.4', '', '...',
+             ('1:' x 20) . '1', "::1\0", undef) {
+	ok(!Plugins::LyrionAnywhere::Gateway::valid_ip($bad), 'refused IP: ' . show($bad));
+}
+ok(!Plugins::LyrionAnywhere::Gateway::valid_hostport('[:::]:9443'), 'refused: [:::]:port');
+ok(!Plugins::LyrionAnywhere::Gateway::valid_hostport('[1:2]:9443'), 'refused: [1:2]:port');
+ok(!Plugins::LyrionAnywhere::Gateway::is_loopback('127.0.0.1:99999'), 'refused: loopback with a bad port');
+ok(!Plugins::LyrionAnywhere::Gateway::is_loopback('127.999.0.1:9445'), 'refused: loopback with a bad address');
+ok(Plugins::LyrionAnywhere::Gateway::is_loopback('127.0.0.1:9445'), 'loopback');
+{
+	my ($a, $e) = Plugins::LyrionAnywhere::Gateway::command_line(%ok, trusted_proxies => [':::']);
+	ok(!$a, 'refused: malformed IPv6 trusted proxy');
+}
+
+# --- the admin API port: never anything but a number, so the secret stays on loopback ---
+{
+	require Slim::Utils::Prefs;
+	my $prefs = Slim::Utils::Prefs::preferences('plugin.lyrionanywhere');
+	my $listen = \&Plugins::LyrionAnywhere::Gateway::admin_listen;
+	$prefs->set(admin_port => undef);
+	is($listen->(), '127.0.0.1:9445', 'default admin port');
+	$prefs->set(admin_port => 9500);
+	is($listen->(), '127.0.0.1:9500', 'configured admin port');
+	# Regression: "http://127.0.0.1:" . "1@evil.example.com:80" . "/admin/..." sends the
+	# Authorization header (the admin secret) to evil.example.com.
+	for my $bad ('1@evil.example.com:80', '80/x', '9445 ', "9445\n", '0', '65536', '-1', '1e3', 'abc', '9445#', '00000009445') {
+		$prefs->set(admin_port => $bad);
+		is($listen->(), '127.0.0.1:9445', "bad admin port falls back to the default: $bad");
+	}
+	$prefs->set(admin_port => 9445);
+}
+
+# --- pref validators: the same rules as the settings page ------------------------------
+{
+	my $v = \&Plugins::LyrionAnywhere::Gateway::valid_pref;
+	my $exe = File::Temp->new;
+	chmod 0755, $exe->filename;
+	my $plain = File::Temp->new;
+	chmod 0644, $plain->filename;
+	my $tmpdir = File::Temp::tempdir(CLEANUP => 1);
+	my %cases = (
+		listen          => [['127.0.0.1:9443', '[::1]:9443', '10.0.0.20:9443'],
+		                    ['', 'localhost:9443', '0.0.0.0', "127.0.0.1:9443\n", '[:::]:1', '1.2.3.4:0']],
+		public_url      => [['', 'https://music.example.com', 'http://music.example.com:8443'],
+		                    ['javascript:alert(1)', 'https://music.example.com/path', "https://music.example.com\n"]],
+		trusted_proxies => [['', '10.0.0.10', '10.0.0.10, 10.0.0.11', '::1 10.0.0.1'],
+		                    ['proxy.example', '10.0.0.1, evil', "10.0.0.1\n10.0.0.2", ':::']],
+		admin_port      => [['9445', 1, 65535],
+		                    ['1@evil.example.com:80', '', 0, 65536, '9445x', undef]],
+		gateway_path    => [['', $exe->filename],
+		                    ['relative/gw', '/nonexistent/gw', $plain->filename, $tmpdir, $exe->filename . "\n"]],
+	);
+	for my $name (sort keys %cases) {
+		my ($good, $bad) = @{ $cases{$name} };
+		ok($v->($name, $_),  "pref $name accepts " . show($_)) for @$good;
+		ok(!$v->($name, $_), "pref $name refuses " . show($_)) for @$bad;
+	}
+	ok($v->('enabled', 1), 'prefs without a rule are accepted');
+}
 
 done_testing;

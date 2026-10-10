@@ -7,14 +7,26 @@
 
   // --- pure helpers (also used by the tests) ------------------------------------------
 
-  /** The JSON-RPC command for an admin operation: ["anywhere", op, "key:value", …]. */
-  function command(op, args) {
+  /**
+   * The JSON-RPC command for an operation: ["anywhere", op, "key:value", …, "csrf:<token>"].
+   * LMS refuses commands that change anything without the token, which only this page has
+   * (LMS's JSON-RPC is otherwise open to any web page on the local network).
+   */
+  function command(op, args, csrf) {
     const out = ['anywhere', op];
     for (const [k, v] of Object.entries(args || {})) {
-      if (v === undefined || v === null || v === '') continue;
+      if (k === 'csrf' || v === undefined || v === null || v === '') continue;
       out.push(k + ':' + String(v));
     }
+    if (csrf) out.push('csrf:' + csrf);
     return out;
+  }
+
+  /** The token LMS put in the page (data-csrf on #anywhere-app), or ''. */
+  function pageToken(doc) {
+    const app = doc && doc.getElementById('anywhere-app');
+    const t = app && app.getAttribute ? app.getAttribute('data-csrf') || '' : '';
+    return /^[0-9a-f]{32}$/.test(t) ? t : '';
   }
 
   /** A sign-in lifetime in whole days (1–365), or null. */
@@ -63,7 +75,7 @@
     return when + JSON.stringify(r && r.report !== undefined ? r.report : r, null, 2);
   }
 
-  const api = { command, validDays, validUsername, validPassword, formatTime, formatUptime, diagnosticsText };
+  const api = { command, pageToken, validDays, validUsername, validPassword, formatTime, formatUptime, diagnosticsText };
   if (typeof globalThis.__anywhereTest === 'object') {
     Object.assign(globalThis.__anywhereTest, api);
     return;
@@ -81,8 +93,11 @@
     return body.result || {};
   }
 
+  // Sent with every command except status: harmless on read-only ones, required on the rest.
+  let csrf = '';
+
   async function admin(op, args) {
-    const r = await rpc(command(op, args));
+    const r = await rpc(command(op, args, csrf));
     if (r.error) throw new Error(r.error);
     return r.data || {};
   }
@@ -141,7 +156,10 @@
     const box = $('aw-status');
     box.replaceChildren(
       el('dl', {}, rows.flatMap(([k, v]) => [el('dt', { text: k }), el('dd', { text: String(v) })])),
-      el('button', { type: 'button', text: 'Restart gateway', onclick: () => run(() => rpc(['anywhere', 'restart']), 'Gateway restarted') }),
+      el('button', { type: 'button', text: 'Restart gateway', onclick: () => run(async () => {
+        const r = await rpc(command('restart', {}, csrf));
+        if (r.error) throw new Error(r.error);
+      }, 'Gateway restarted') }),
     );
     return s;
   }
@@ -349,6 +367,7 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
+    csrf = pageToken(document);
     wireCreate();
     wireSettings();
     refresh();

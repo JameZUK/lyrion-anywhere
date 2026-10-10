@@ -8,8 +8,10 @@
 	this server's own ports.
 </p>
 <p class="anywhere-intro">
-	Anyone who can open these settings can create remote accounts. If other people use your
-	network, turn on password protection in Settings › Advanced › Security.
+	Out of the box, this server's own web and control ports (9000 and 9090) need no password
+	on your local network, so anyone on it can change these settings. Remote accounts can only
+	be changed from this page, not by other web sites, but if other people use your network,
+	turn on password protection in Settings › Advanced › Security.
 </p>
 
 [% WRAPPER setting title="Gateway" desc="Run the Lyrion Anywhere gateway." %]
@@ -29,11 +31,12 @@
 	<input type="text" class="stdedit" name="pref_trusted_proxies" value="[% prefs.pref_trusted_proxies | html %]" placeholder="10.0.0.10">
 [% END %]
 
-[% WRAPPER setting title="Gateway path" desc="Development only: an absolute path to a gateway binary. Leave empty to use the one bundled with the plugin." %]
+[% WRAPPER setting title="Gateway path" desc="Development only: an absolute path to a gateway binary. Used only when LMS was started with ANYWHERE_ALLOW_GATEWAY_PATH=1 in its environment; otherwise the bundled, checked binary runs. Leave empty to use the bundled one." %]
 	<input type="text" class="stdedit" name="pref_gateway_path" value="[% prefs.pref_gateway_path | html %]">
+	[% IF prefs.pref_gateway_path AND NOT anywhere_gateway_path_allowed %]<br><span class="aw-note">Ignored: ANYWHERE_ALLOW_GATEWAY_PATH=1 is not set.</span>[% END %]
 [% END %]
 
-<div id="anywhere-app" class="anywhere">
+<div id="anywhere-app" class="anywhere" data-csrf="[% anywhere_csrf | html %]">
 	<h3>Status</h3>
 	<div id="aw-status" class="aw-panel">Loading…</div>
 

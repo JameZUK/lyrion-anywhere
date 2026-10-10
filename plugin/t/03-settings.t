@@ -44,4 +44,48 @@ is($prefs->get('listen'), '127.0.0.1:9443', 'invalid listen not saved');
 unlike($params->{warning}, qr/<img|<b>/, 'warning text is escaped');
 like($params->{warning}, qr/&lt;b&gt;/);
 
+# The page gets the CSRF token for its script (and only through the template).
+require Plugins::LyrionAnywhere::Commands;
+my $token = Plugins::LyrionAnywhere::Commands::csrf_token();
+$params = {};
+Plugins::LyrionAnywhere::Settings->handler(undef, $params);
+is($params->{anywhere_csrf}, $token, 'settings page is given the token');
+$params = { saveSettings => 1, pref_listen => '127.0.0.1:9443' };
+Plugins::LyrionAnywhere::Settings->handler(undef, $params);
+is($params->{anywhere_csrf}, $token, 'also after saving');
+{
+	open my $fh, '<', 'Plugins/LyrionAnywhere/HTML/EN/plugins/LyrionAnywhere/settings/basic.html' or die;
+	my $html = do { local $/; <$fh> };
+	like($html, qr/data-csrf="\[% anywhere_csrf \| html %\]"/, 'template puts the token in an escaped data attribute');
+	like($html, qr/9000/, 'page explains that LMS ports are open on the LAN');
+}
+
+# --- prefs changed outside the page (LMS's `pref` command) get the same checks ---------
+{
+	Plugins::LyrionAnywhere::Gateway::register_validators();
+	my $exe = "$Slim::Utils::Prefs::DIR/gw";
+	open my $fh, '>', $exe or die; close $fh; chmod 0755, $exe;
+	my %good = (listen => '10.0.0.20:9443', public_url => 'https://music.example.com',
+	            trusted_proxies => '10.0.0.10, 10.0.0.11', admin_port => 9446, gateway_path => $exe);
+	my %bad = (
+		listen          => ['0.0.0.0', 'localhost:9443'],
+		public_url      => ['javascript:alert(1)', 'https://music.example.com/x'],
+		trusted_proxies => ['evil', ':::'],
+		admin_port      => ['1@evil.example.com:80', 0, 70000],
+		gateway_path    => ['/bin/../nonexistent', 'sh', "$Slim::Utils::Prefs::DIR"],
+	);
+	for my $name (sort keys %good) {
+		$prefs->set($name, $good{$name});
+		is($prefs->get($name), $good{$name}, "pref $name: valid value stored");
+		for my $v (@{ $bad{$name} }) {
+			$prefs->set($name, $v);
+			is($prefs->get($name), $good{$name}, "pref $name: '$v' refused, old value kept");
+		}
+	}
+	for my $name (qw(public_url trusted_proxies gateway_path)) {
+		$prefs->set($name, '');
+		is($prefs->get($name), '', "pref $name can be cleared");
+	}
+}
+
 done_testing;

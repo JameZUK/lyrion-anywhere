@@ -1,8 +1,10 @@
 # Release artefacts: static gateway binaries for each Linux platform, and the web app.
 # Used by tools/build-release.sh:
 #   docker build -f tools/release/Dockerfile --target out --output type=local,dest=dist/build .
+#
+# Base images are pinned by digest (tag kept for reading); Dependabot proposes updates.
 
-FROM rust:1.98-alpine3.22 AS build
+FROM rust:1.98-alpine3.22@sha256:a1796ca6fa216d6727b5f61c69e4c665b120b1a4dcb969639e2f25f1ed309456 AS build
 RUN apk add --no-cache musl-dev zig=0.14.1-r0 \
  && rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
       armv7-unknown-linux-musleabihf wasm32-unknown-unknown \
@@ -26,7 +28,7 @@ RUN cargo build --locked --release -p anywhere-wasm --target wasm32-unknown-unkn
  && wasm-bindgen --target web --no-typescript --out-dir /out/pkg \
       target/wasm32-unknown-unknown/release/anywhere_wasm.wasm
 
-FROM node:24.11.1-alpine3.22 AS web
+FROM node:24.11.1-alpine3.22@sha256:2867d550cf9d8bb50059a0fff528741f11a84d985c732e60e19e8e75c7239c43 AS web
 WORKDIR /src/web/app
 COPY web/app/package.json web/app/package-lock.json ./
 RUN npm ci --no-audit --no-fund
