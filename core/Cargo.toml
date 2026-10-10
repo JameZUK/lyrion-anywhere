@@ -1,0 +1,9 @@
+[package]
+name = "anywhere-core"
+description = "Lyrion Anywhere shared player core: Slimproto, buffering and decoding (no I/O)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+symphonia = { version = "0.6", default-features = false, features = ["flac", "mp3", "aac", "ogg", "vorbis", "isomp4", "alac", "wav", "pcm", "id3v2"] }

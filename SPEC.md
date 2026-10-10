@@ -1,0 +1,446 @@
+# Lyrion Anywhere — Specification
+
+_Draft · 2026-10-10_
+
+Lyrion Anywhere gives secure internet access to a home Lyrion Music Server (LMS) through one authenticated HTTPS/WebSocket endpoint that sits safely behind an ordinary reverse proxy. LMS itself is never exposed.
+
+**v1 includes:**
+- an LMS plugin;
+- a gateway, a small Go binary the plugin runs;
+- a feature-rich web app (an installable PWA) with a built-in browser player and offline downloads.
+
+Native Android and iOS apps come after v1 and use the same documented protocol.
+
+---
+
+## 1. Decisions
+
+| # | Decision | Choice |
+|---|---|---|
+| D1 | How a remote device plays audio | **Real Slimproto player.** The device appears in LMS as a normal player (gapless, sync groups, full LMS behaviour). |
+| D2 | Server build | **Perl LMS plugin + Go gateway sidecar.** |
+| D3 | Client stack | **Shared Rust core.** Compiled to WebAssembly for the web app, with UniFFI bindings for the later native apps. |
+| D4 | Web interface | **Full-featured web app is a v1 goal.** Native apps come later, on the same protocol. |
+| D5 | Offline download format | **Chosen by the user per download:** original, or a transcode (Opus/MP3), with a default for each network type. |
+| D6 | Offline playback | **Local player that syncs back.** Plays from cache when offline; play counts and ratings are queued and sent to LMS on reconnect. |
+| D7 | Accounts | **Admin creates all users.** No self sign-up. |
+| D8 | Minimum LMS | **9.0+** |
+| D9 | Web UI framework | **SvelteKit** (TypeScript, static build served by the gateway) |
+| D10 | Transcoding for downloads | **System `ffmpeg`** if installed (not bundled). Without it, only Original is offered. |
+| D11 | Licence | **GPL-2.0** for all components (matches LMS) |
+
+---
+
+## 2. Goals and non-goals
+
+### Goals (v1)
+
+- **Real player:** a browser tab or installed PWA becomes a real LMS player, and also a full controller for every player the user is allowed to use.
+- **Full-featured web UI:** library, search, apps/radio, queue, multi-player and sync control, all usable on desktop and phone (§7).
+- **Offline downloads:** albums, playlists and tracks can be downloaded to the device and played with no connection (§8).
+- **One endpoint:** everything goes over a single TLS endpoint (port 443) through any reverse proxy (Caddy, nginx, Traefik, Cloudflare Tunnel). No VPN needed.
+- **Own authentication:** users, devices and revocable tokens that don't depend on LMS's password or HTTP server.
+- **Default deny:** only allow-listed LMS commands and URLs are reachable from outside.
+- **Survives mobile networks:** brief drops and Wi-Fi/cellular handovers don't remove the player from LMS.
+- **Easy install:** from the LMS plugin repository, configured in LMS Settings. A Docker image is also provided.
+- **One public API:** the web app uses only the documented public API (§6), so later native apps can do everything it does.
+
+### Non-goals (v1)
+
+- Native Android/iOS apps (post-v1, §10).
+- Replacing LMS's own web UI or authentication on the LAN.
+- Downloading tracks from streaming services (Qobuz, Tidal, Spotify, etc.) or radio. Only local library files can be downloaded.
+- Running without TLS. The gateway refuses non-TLS requests from non-local addresses.
+- A hosted multi-tenant relay service. Every install is self-hosted.
+
+---
+
+## 3. Architecture
+
+```
+ Internet                     Home network (LAN)
+┌─────────────────┐          ┌────────────────────────────────────────────────────────┐
+│ Web app (PWA)   │  HTTPS   │ ┌──────────────┐   ┌───────────────────┐  ┌──────────┐ │
+│  UI + WASM core │──WSS────▶│ │ Reverse proxy│──▶│ Gateway (Go)      │─▶│ LMS      │ │
+│  player+offline │          │ │ Caddy/nginx  │   │ auth · tokens     │  │ 3483 TCP │ │
+├─────────────────┤          │ │ TLS :443     │   │ Slimproto tunnel  │  │ 9000 HTTP│ │
+│ Android / iOS   │          │ └──────────────┘   │ RPC allow-list    │  │ LAN-only │ │
+│ (post-v1, same  │─────────▶│                    │ stream + download │  ├──────────┤ │
+│  protocol)      │          │                    │ serves web app    │◀▶│ Anywhere │ │
+└─────────────────┘          │                    └───────────────────┘  │ plugin   │ │
+                             │                                           └──────────┘ │
+                             └────────────────────────────────────────────────────────┘
+```
+
+- Clients only ever speak HTTPS/WSS to the proxy.
+- The proxy forwards only to the gateway (`127.0.0.1:9443` by default).
+- The gateway is the only thing that talks to LMS's Slimproto (3483), HTTP/JSON-RPC (9000) and CometD.
+- The gateway talks to the plugin over a local, shared-secret internal API.
+- LMS ports 3483, 9000 and 9090 are never forwarded.
+
+**Why a sidecar (D2).** LMS is a single-threaded Perl event loop. Running WebSockets, password hashing, audio relay and transcoding inside it would slow the whole server. It would also mean bundling CPAN modules for every platform. A separate process keeps bugs in LMS's HTTP server (e.g. the 9.2.0 CVEs, §9) unreachable from outside. The UPnP/Cast bridge plugins already ship helper binaries the same way.
+
+---
+
+## 4. Plugin (`Plugins::LyrionAnywhere`)
+
+### Settings page (in LMS)
+
+- Enable/disable, public URL, a proxy self-test, and a warning if LMS ports are reachable from the public URL.
+- Users: create/disable/delete, role (`listener` / `admin`), permitted players, download permission and allowed formats.
+- Devices: list, rename and revoke. Device pairing via QR code (public URL + one-time code, valid 10 minutes), for the later native apps.
+- Policy: default streaming quality (Wi-Fi/cellular), and the server-side transcode cache size.
+- Audit log viewer.
+
+### Gateway supervision
+
+- Picks the right binary for the OS/architecture and verifies its release signature.
+- Starts, stops, health-checks and restarts it.
+
+### Internal API (127.0.0.1 only, shared secret generated at install)
+
+- User/device lookup, permissions and policy.
+- Resolving a track ID to a library file. Only tracks in the LMS library are resolved; the gateway never sees a path a client supplied.
+- Applying offline play events and ratings to LMS (§8.4).
+- Reporting which track a gateway player is about to stream (used later for cache-served playback, §11).
+
+### Player integration
+
+For players that connect through the gateway, the plugin:
+
+- turns off direct streaming, so LMS always proxies radio and service streams and the device never needs to reach the LAN;
+- applies the user's transcoding/bitrate policy as player prefs;
+- fixes LMS volume at 100% for "this device" players, which use the device's own volume control.
+
+### Storage
+
+- State lives in the LMS prefs directory.
+- Password hashes are argon2id. The gateway computes them and the plugin stores them.
+
+---
+
+## 5. Gateway
+
+A single static Go binary. It is run by the plugin or standalone (Docker), and listens on `127.0.0.1:9443` by default.
+
+### 5.1 Slimproto tunnel (`WS /v1/player`)
+
+1. The client opens the WebSocket and sends an access token as its first message. Unauthenticated sockets are closed after 5 s.
+2. The gateway opens a dedicated TCP connection to `127.0.0.1:3483` for that session. Slimproto frames then pass through unchanged as binary WebSocket messages.
+3. The gateway inspects and enforces three message types:
+   - **HELO:** the MAC must equal the one assigned to that device (a locally administered `02:…` address). The gateway also enforces the capability policy (codecs, max sample rate, model name).
+   - **strm:** when `server_ip` is 0 or LMS's own address, the client fetches audio via `GET /v1/stream/{session}`. The gateway replays the request to `127.0.0.1:9000` only if the path is `/stream.mp3?player=<that session's MAC>`.
+   - **serv:** dropped, so a device can't be redirected to another server.
+4. **Resume:**
+   - If the WebSocket drops, the gateway keeps the upstream TCP and the current audio stream open for a grace period (default 60 s), and buffers the audio.
+   - The client reconnects with a resume token and continues from its byte offset.
+   - LMS never sees the player leave.
+
+### 5.2 Control (`POST /v1/rpc`, `WS /v1/events`)
+
+`/v1/rpc` accepts LMS JSON-RPC requests. Each is checked against an allow-list of commands for the user's role, and against the players the user may address.
+
+- **Listener:**
+  - library browse/search (artists, albums, tracks, genres, years, composers, `musicfolder`);
+  - favorites, and apps/radio menus (SlimBrowse);
+  - `playlistcontrol` by library IDs, saved playlist CRUD;
+  - transport, volume, sleep, `status`, `sync`/`unsync` among permitted players;
+  - track info menus.
+- **Admin (opt-in):** also rescan and per-player settings.
+- **Always denied:**
+  - `readdirectory`, `pref`, `restartserver`, `debug`/`logging`;
+  - `serverstatus` fields beyond player list and version;
+  - any `playlist play/add/insert` with a `file://` or non-library URL.
+- **Events:** the gateway subscribes to LMS locally (CometD) and forwards only events for permitted players. It pushes them over `WS /v1/events`.
+- **Artwork:** `GET /v1/art/…` proxies only fixed patterns (`/music/{id}/cover…`, `/imageproxy/…`, plugin icons).
+
+### 5.3 Downloads (§8)
+
+- **Original format:** after a library and permission check, the gateway streams the original file. It does this by proxying LMS's per-track download handler (`/music/{id}/download`, verified on 9.1.1: returns the original file with `Range`/206 support). Gotcha: a nonexistent track ID makes LMS hang rather than 404, so the gateway checks the ID with the plugin first and applies its own timeouts.
+- **Transcoded:** the gateway runs the system `ffmpeg` (D10; found on `PATH` or at a path set in plugin settings, and shown in the self-test) to Opus/MP3 with tags and cover art embedded. Results are kept in a size-capped LRU cache on disk (default 10 GB), so repeat downloads cost nothing.
+- **Ranges and limits:** all download responses support HTTP `Range`, so interrupted downloads resume. They are rate-limited per user.
+
+### 5.4 Web app hosting
+
+- The gateway serves the built web app (static files) at `/`.
+- It sets strict security headers: CSP with no inline script, `frame-ancestors 'none'`, `Referrer-Policy`, and `Permissions-Policy`. HSTS is set via the proxy.
+
+### 5.5 Deployment
+
+- The gateway trusts `X-Forwarded-For`/`-Proto` only from configured proxy addresses. It rejects non-TLS requests from remote addresses.
+- Example Caddy config: `music.example.com { reverse_proxy 127.0.0.1:9443 }`.
+- nginx is a first-class target and gets a tested example in the docs. The example:
+  - passes `Upgrade`/`Connection` headers for the two WebSocket paths;
+  - turns off `proxy_buffering` for `/v1/stream` and `/v1/download`;
+  - sets long `proxy_read_timeout` values for WebSockets.
+- **Behind Cloudflare:**
+  - The gateway can trust `CF-Connecting-IP` when configured to.
+  - Cloudflare's proxy supports WebSockets but adds per-request latency. The resume buffer (§5.1) absorbs this.
+  - Cloudflare's terms restrict serving large volumes of non-HTML media through its proxy. The docs will advise a DNS-only (unproxied) record for heavy streaming/download use.
+- **Proxy on another host or VLAN:** the gateway listens on a LAN address instead of localhost, with an allow-list of proxy source addresses. The docs describe the firewall rule needed.
+- Docker image: read-only root filesystem, non-root user, no capabilities.
+- **Small hosts:** the gateway targets under 50 MB RSS when idle. Transcode concurrency defaults to 1 so `ffmpeg` can't starve LMS.
+
+### 5.6 LMS integration notes (known gotchas)
+
+- **Startup:** LMS can take over 2 minutes to open JSON-RPC after a restart. The gateway retries with backoff and reports "server starting" rather than failing.
+- **Downloads:** never use `/stream.mp3?Track=<id>` for downloads. For a non-player client the transcoder streams with no length limit, which once turned a 23 MB track into 106 GiB. Use `/music/<id>/download`, which sets `Content-Length`.
+- **Unknown IDs:** a nonexistent track ID on `/music/<id>/download` hangs rather than 404ing. The gateway always applies its own timeouts.
+- **Track IDs are not stable:** LMS renumbers them on rescan. Anything stored long-term (offline downloads, pinned items, queued offline events) uses a stable key (§8.3).
+- **`playlistcontrol`:** it applies asynchronously and silently drops unknown IDs. Clients must not assume an immediately consistent queue.
+- **Plugin:**
+  - It must never block the event loop. Use async HTTP and timers only.
+  - A leftover backup copy of a plugin inside `Plugins/` silently breaks the real one. The docs warn about this.
+  - Settings handlers trim and validate every submitted pref and reject CR/LF.
+  - CLI commands invoked from menus without a player are registered with `needsClient=0`.
+
+---
+
+## 6. Anywhere protocol (public API v1)
+
+This is the one contract used by the web app now and the native apps later. It is versioned under `/v1`, documented as OpenAPI (HTTP) plus a message spec (WebSockets), and covered by conformance tests.
+
+| Endpoint | Purpose | Auth |
+|---|---|---|
+| `POST /v1/auth/login` | Username + password (+ TOTP) → session | Password |
+| `POST /v1/auth/pair` | Pairing code → device refresh token (native apps) | Pairing code |
+| `POST /v1/auth/token` | Refresh token → 15-min access token | Refresh token |
+| `POST /v1/auth/logout` | Revoke current device session | Access token |
+| `GET /v1/me` | User, role, permissions, assigned player MAC | Access token |
+| `WS /v1/player` | Slimproto tunnel (§5.1) | Access token |
+| `GET /v1/stream/{session}` | Audio for a player session | Session stream token |
+| `POST /v1/rpc` | Filtered JSON-RPC (§5.2) | Access token |
+| `WS /v1/events` | Filtered event push | Access token |
+| `GET /v1/art/…` | Artwork | Access token or signed URL |
+| `POST /v1/offline/manifest` | Albums/playlists/tracks → track list with sizes, versions, metadata | Access token + download permission |
+| `GET /v1/download/{track_id}?format=` | One track file (`orig`, `opus128`, `opus160`, `mp3_320`), `Range` supported | Access token or signed URL |
+| `POST /v1/offline/events` | Batched offline plays and ratings (idempotent by event UUID) | Access token |
+| `GET /v1/account/devices`, `DELETE …/{id}` | User's own sessions/devices | Access token |
+| `GET /healthz` | Liveness | None |
+
+Rules:
+- The web app may not use any private endpoint.
+- New capabilities are added to the protocol first, then to clients.
+
+---
+
+## 7. Web app (v1)
+
+An installable PWA served by the gateway, responsive from phone to desktop. It is both a player and a full controller.
+
+### 7.1 Stack
+
+- SvelteKit + TypeScript (D9), built with `adapter-static` and served by the gateway. No server-side rendering; all data comes from the `/v1` API.
+- The Rust core is compiled to WebAssembly. It handles Slimproto, buffering, resume, and decoding with Symphonia (FLAC, ALAC, MP3, AAC-LC, Vorbis, WAV/AIFF) plus Opus.
+- Audio output goes through an `AudioWorklet`.
+- The Media Session API gives lock-screen/notification controls and hardware media keys.
+- A service worker serves the app shell offline. Offline audio is stored in OPFS, with metadata in IndexedDB.
+
+### 7.2 Features
+
+**Playback and players**
+- "This browser" as an LMS player: gapless, seek, and survives network drops via resume.
+- Player switcher: this browser plus every permitted home player. Sync/unsync groups.
+- Per-player volume, mute, power, and sleep timer.
+- Transfer playback between players (move the queue and position).
+
+**Now playing and queue**
+- Large art view, track info (format, bitrate, source) and progress.
+- Queue: drag-to-reorder, remove, clear, and save as playlist. Shuffle/repeat.
+- "Play next", "Add to queue" and "Play now" everywhere.
+
+**Library and discovery**
+- Artists, album artists, composers, albums (grid/list, sort, filter), tracks, genres, years, folders, new music, random mix.
+- Global search with instant results grouped by type.
+- Saved playlists: create, edit, reorder, delete.
+- Favorites, including adding to and removing from them.
+- Apps and radio: LMS SlimBrowse menus are rendered generically, so installed LMS plugins work without web-app changes.
+- Track/album/artist info menus from LMS plugins (bios, reviews, lyrics where available).
+
+**Offline (§8)**
+- Download buttons on track/album/playlist, a downloads page with progress, and storage usage.
+- Offline mode with a local queue and browse of downloaded content.
+
+**Account and admin**
+- Change password, enable TOTP, and list/revoke own devices and sessions.
+- Admins can manage users, devices and the audit log (the same functions as the LMS settings page).
+
+**Quality of life**
+- Light/dark/system theme and keyboard shortcuts.
+- Accessible (WCAG 2.2 AA target) and keyboard-navigable.
+- Streaming quality per network type, where the browser exposes it (Network Information API); otherwise a manual setting.
+
+### 7.3 Browser constraints (known risks)
+
+- **Mobile Safari:** may suspend `AudioWorklet` playback when the screen locks.
+  - **Mitigation:** a fallback output path that feeds decoded audio to an `<audio>` element via Managed Media Source (iOS 17.1+), which iOS keeps playing in the background.
+  - A spike in Phase 0 settles which path ships.
+- **Storage eviction:**
+  - Browsers may evict offline storage. The app requests `navigator.storage.persist()` and shows quota and persistence status.
+  - On iOS, offline downloads are only reliable when the PWA is installed to the home screen. The app says so.
+
+---
+
+## 8. Offline downloads
+
+### 8.1 What can be downloaded
+
+- Single tracks, albums, playlists, and artists (all albums), from local library files only.
+- **Pinned items:** albums and playlists can be pinned. A pinned playlist re-syncs whenever the device is online: new tracks are downloaded and removed tracks deleted.
+
+### 8.2 Format (D5)
+
+- Per download, the user picks:
+  - **Original**: bit-perfect, largest.
+  - **Opus 128 / Opus 160**: about 1 MB/min.
+  - **MP3 320**: for compatibility.
+- Settings hold separate defaults for Wi-Fi and cellular, and a "download on Wi-Fi only" toggle (on by default).
+- If the server has no `ffmpeg`, only Original is offered.
+- The admin can restrict formats per user.
+
+### 8.3 Download manager (Rust core)
+
+- Persistent queue with 2 concurrent downloads, `Range` resume, retry with backoff, and pause/resume all.
+- Each file is verified against the size/version from the manifest.
+- **Stable identity:** LMS track IDs change on rescan, so downloads are keyed by a stable track key.
+  - The key is the MusicBrainz track ID when present, otherwise the hash of the track's library URL (LMS `urlmd5`).
+  - The manifest returns both the current track ID and the stable key. On reconnect, the client re-resolves keys to current IDs before re-syncing or sending offline events.
+- A track's version is derived from its library modification time and size. When the library file changes, the cached copy is refreshed on the next sync.
+- Optional storage cap per device. Pinned items are never evicted automatically; the user is warned instead.
+- Metadata and artwork are stored alongside the audio, so offline browse works fully.
+
+### 8.4 Offline playback and sync-back (D6)
+
+- When the gateway is unreachable, or the user turns on Offline mode, the app switches to a local player:
+  - It uses the same decoder pipeline, with gapless playback, its own queue, and browse of downloaded content.
+- Plays (track ID, start time, seconds played, completed) and rating changes are logged locally, each with a UUID.
+- On reconnect they go to `POST /v1/offline/events`. The plugin applies them to LMS play count, last played and rating. Duplicates are ignored by UUID.
+- Back online, the app offers to send the offline queue to an LMS player ("continue on <player>").
+
+### 8.5 Security
+
+- Downloads need a per-user `can_download` permission.
+- Files live in the app's private storage (OPFS in the browser; app sandbox later on native).
+- Revoking a device stops further downloads. Files already on a device can't be remotely wiped in the browser; the native apps will delete them on their next connection.
+
+---
+
+## 9. Authentication and security
+
+### 9.1 Identities and tokens
+
+- **Users:** created by the admin (D7), each with a role and permitted players. Passwords use argon2id. TOTP is optional; the admin can require it. Passkeys (WebAuthn) come in a later phase.
+- **Device sessions:** every browser login or app pairing creates a device record with its own assigned player MAC.
+- **Refresh tokens:**
+  - long-lived and rotated on every use; reusing an old one revokes the device (theft detection);
+  - in the browser, held in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/v1/auth`;
+  - in native apps, held in the Keystore/Keychain.
+- **Access tokens:** last 15 minutes, signed with Ed25519, held in memory only, and carry user, device, role and MAC.
+- **Stream, art and download tokens:** short-lived signed URLs bound to session/track, used where a header can't be set.
+- **CSRF:**
+  - Only `/v1/auth/*` reads the cookie, and it requires a custom header plus an `Origin` check.
+  - All other APIs use bearer tokens, so they can't be triggered cross-site.
+- **Revocation:** revoking a device or user in settings closes its sockets immediately and rejects its tokens.
+
+### 9.2 Threat model
+
+| Threat | Mitigation |
+|---|---|
+| Internet scanner hits LMS bugs (9.2.0 path traversal, `readdirectory`, XSS: CVE-2026-50230…50235) | LMS ports never exposed; gateway forwards only allow-listed commands and path patterns |
+| Password guessing | Per-IP and per-user rate limits; exponential lockout; TOTP; generic error messages |
+| Stolen device / token | Per-device revocation; refresh-token rotation with reuse detection; 15-min access tokens |
+| Impersonating another player | HELO MAC must match device's assigned MAC; stream path must match session's MAC |
+| Reading arbitrary files | Track IDs resolved only through the library by the plugin; `file://` URLs rejected in control commands |
+| XSS in the web app (e.g. hostile tag metadata) | Framework escaping; strict CSP, no inline script; metadata never rendered as HTML |
+| Sniffing on hostile Wi-Fi | TLS via the proxy; gateway rejects non-TLS remote requests |
+| Resource exhaustion | Caps on sessions per device, frame/body size, concurrent streams and downloads, transcode jobs |
+| Misconfigured proxy exposing the LAN | Gateway binds to localhost by default; plugin self-test checks LMS ports aren't publicly reachable |
+
+### 9.3 Hardening
+
+- Structured audit log of logins, pairings, revocations, denied commands and downloads.
+- Pinned dependencies. Signed releases; the plugin verifies the gateway signature.
+- An external security review is a release gate for v1 (§11).
+
+---
+
+## 10. Native apps (post-v1)
+
+Android (Kotlin + Jetpack Compose) and iOS (Swift + SwiftUI) are thin native UIs over the same Rust core (UniFFI) and the same protocol (§6). They reach feature parity with the web app, and add:
+
+- device pairing by QR code;
+- system background playback (Media3 `MediaSessionService` on Android, audio background mode + `MPNowPlayingInfoCenter` on iOS);
+- Android Auto and CarPlay;
+- downloads in the app sandbox, removed automatically when the device is revoked;
+- true network-type detection for quality switching.
+
+---
+
+## 11. Milestones
+
+The **v1 release** is Phases 0–3.
+
+0. **Spike.** The WASM core plays a track as an LMS player in the browser through Caddy via `WS /v1/player`. Desktop squeezelite does the same through a small WSS-to-TCP shim.
+   - **Gate:** gapless playback from a remote network.
+   - **Gate:** the mobile Safari background-audio path is chosen (§7.3).
+1. **Gateway + plugin.** Auth and sessions, the Slimproto tunnel with resume, the RPC allow-list, events, art, the plugin settings page, gateway supervision and the Docker image.
+   - **Gate:** an external security review, plus scanner tests proving LMS paths are unreachable.
+2. **Web app.** All of §7.2 except offline, as an installable PWA.
+   - **Gate:** usability pass on phone and desktop; WCAG AA audit.
+3. **Offline downloads.** Server download/transcode/manifest/events endpoints; the web download manager, offline mode and sync-back.
+   - **Gate:** a pinned 500-track playlist downloads, survives a restart, plays offline, and syncs plays back. **→ v1 release.**
+4. **Android app.**
+5. **iOS app.**
+6. **Later:**
+   - Cache-served streaming: when LMS plays a track the device already has cached, play it from the cache to save data. Needs a spike on keeping LMS's stream state consistent.
+   - Smart auto-cache of recently played tracks.
+   - Passkeys.
+
+---
+
+## 12. Open questions
+
+- [ ] **Downloads:** confirm streaming-service tracks are excluded. Proposed: yes, for licensing/ToS reasons.
+- [ ] **Name:** "Lyrion Anywhere". Check with the Lyrion project before listing in the plugin repository.
+- [ ] **Native app distribution (post-v1):** free vs paid. App Store review of a bring-your-own-server app needs a demo server.
+
+---
+
+## 13. Testing strategy (standing rule)
+
+Every component is tested for security, stability and reliability, and security comes first. No change lands without tests, and CI runs the whole suite on every push. A release is blocked by any failing or skipped test.
+
+| Layer | Security | Stability | Reliability |
+|---|---|---|---|
+| Rust core | Fuzzing (`cargo-fuzz`) and arbitrary-input tests for the Slimproto parser and decoder; must never panic or allocate unbounded memory | Unit tests for the player state machine, framing edge cases and rate changes | Gapless/resume/back-pressure scenario tests; WASM build tested in a headless browser |
+| Gateway (Go) | Negative tests per endpoint: no/expired/forged/revoked tokens, wrong-MAC HELO, forged stream paths, `serv`, every denied RPC command, `file://` URLs, path traversal in art/download routes, oversize frames, rate limits, CSRF/Origin, header spoofing from untrusted sources. A scanner suite proves LMS paths are unreachable. Go native fuzzing on frame and request parsers | Unit tests with race detector | Integration tests against a fake LMS (Slimproto + HTTP + CometD): resume within grace, reconnect, timeouts, LMS restart during play |
+| Plugin (Perl) | Settings input validation (CR/LF, ranges, enums); internal API secret enforcement; track resolution only from library | `prove` tests with stubbed `Slim::*` modules | Sidecar supervision (crash, restart, signature failure) |
+| Web app | CSP compliance; XSS tests with hostile tag metadata; auth flows (login, TOTP, logout, revoked session) | Component tests (Vitest) | Playwright end-to-end tests against gateway + fake LMS; offline mode and sync-back |
+| Live (opt-in) | Proxy self-test against a real deployment | — | Muted dedicated test player on a real LMS, config from gitignored `dev/local.env` |
+
+Other rules:
+- Security fixes get a regression test that fails before the fix.
+- Dependency audits (`cargo audit`, `govulncheck`, `npm audit`) run in CI.
+
+## 14. Project conventions
+
+- **Language:** British English in all docs and UI strings.
+- **Repo layout:**
+  - `core/` (Rust), `cli/` (native test player), `gateway/` (Go), `plugin/` (Perl), `web/` (SvelteKit), `docs/`
+  - `docs/` holds `USAGE.md`, `SETTINGS.md`, `PROTOCOL.md`, `TROUBLESHOOTING.md`, and runbooks, each runbook with a "Gotchas" section.
+- **Changelog:** `CHANGELOG.md` with dated entries, newest first.
+- **Plugin release:**
+  - tag `vX.Y.Z`; `tools/build-release.sh` builds the plugin zip, gateway binaries and `repo.xml`, and is run by GitHub Actions
+  - the version is single-sourced and stamped into `install.xml`, the plugin's VERSION constant and the manifest
+- **No homelab details in the repo:** real hostnames, IPs and credentials live in gitignored local files (`.env.local`, `dev/local.*`). Committed examples use placeholders.
+- **Clean-room reimplementation:** squeezelite (GPL-3.0) and Material Skin are references for behaviour only. Their code is not copied, and they are credited in the README.
+- **Plugin tests:** Perl tests use stubbed `Slim::*` modules (`prove`). Live end-to-end tests drive a muted test player and restore its state afterwards.
+
+## 15. References
+
+- [Lyrion: Slimproto protocol](https://lyrion.org/reference/slimproto-protocol/)
+- [Lyrion: CLI / JSON-RPC commands](https://lyrion.org/reference/cli/general/)
+- [Lyrion wiki: Remote streaming](https://wiki.lyrion.org/index.php/Remote_streaming.html)
+- [LMS remote access with Tailscale (forum)](https://forums.lyrion.org/forum/user-forums/logitech-media-server/113997-lms-remote-access-safe-secure-and-free-with-tailscale-mesh-vpn)
+- [OpenCVE: Lyrion Music Server CVEs](https://app.opencve.io/cve/?product=lyrion_music_server&vendor=lyrion)
+- [GHSA-rxf9-fjjc-h697 / CVE-2026-50230](https://github.com/advisories/GHSA-rxf9-fjjc-h697)

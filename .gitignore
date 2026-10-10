@@ -1,0 +1,14 @@
+# build output
+/target/
+node_modules/
+/web/build/
+/web/.svelte-kit/
+/gateway/bin/
+*.zip
+
+# local, never committed (homelab-specific values, secrets)
+.env
+.env.*
+!.env.example
+dev/local.*
+*.token

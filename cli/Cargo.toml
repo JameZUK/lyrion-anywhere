@@ -1,0 +1,11 @@
+[package]
+name = "anywhere-cli"
+description = "Native test player for the Lyrion Anywhere core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anywhere-core = { path = "../core" }
+cpal = "0.18"
