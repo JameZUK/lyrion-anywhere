@@ -188,4 +188,9 @@ test('admin-only plugins: only ticked, well-formed commands, sorted', () => {
     { command: 'x,y', checked: true },
   ]), 'audiomuseai,custombrowse');
   assert.equal(t.adminOnlyArg([]), '');
+  // A plugin with several commands is reserved as a whole.
+  assert.equal(t.adminOnlyArg([
+    { commands: ['randomplay', 'randomplaygenrelist', 'randomplaylibrarylist'], checked: true },
+    { commands: ['spotty'], checked: false },
+  ]), 'randomplay,randomplaygenrelist,randomplaylibrarylist');
 });

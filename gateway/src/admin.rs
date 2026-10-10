@@ -295,9 +295,18 @@ async fn plugins(State(st): State<AdminState>) -> Response {
             .entry(c.clone())
             .or_insert((c.clone(), "not installed"));
     }
-    let list: Vec<_> = found
+    // One entry per plugin: commands shown under the same name (e.g. Random Mix's mixes and
+    // its genre and library choosers) are one plugin, reserved or opened together.
+    let mut groups: BTreeMap<(String, &'static str), Vec<String>> = BTreeMap::new();
+    for (c, (name, kind)) in found {
+        groups.entry((name, kind)).or_default().push(c);
+    }
+    let list: Vec<_> = groups
         .into_iter()
-        .map(|(c, (name, kind))| json!({ "command": c, "name": name, "kind": kind, "admin_only": admin_only.contains(&c) }))
+        .map(|((name, kind), commands)| {
+            let reserved = commands.iter().all(|c| admin_only.contains(c));
+            json!({ "command": commands[0], "commands": commands, "name": name, "kind": kind, "admin_only": reserved })
+        })
         .collect();
     Json(json!({ "plugins": list })).into_response()
 }

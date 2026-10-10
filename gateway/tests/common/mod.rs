@@ -98,6 +98,9 @@ pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
         // The home menu: a plugin entry in My Music, and a settings entry.
         "menu" => json!({"count": 3, "item_loop": [
             {"id": "pluginSomePlugin", "node": "myMusic", "text": "Some Plugin", "actions": {"go": {"cmd": ["someplugin", "menu"], "player": 0}}},
+            {"id": "somegroup", "node": "myMusic", "text": "Some Group", "isANode": 1},
+            {"id": "somegroupa", "node": "somegroup", "text": "Mix A", "nextWindow": "nowPlaying", "actions": {"go": {"cmd": ["groupmix", "a"]}}},
+            {"id": "somegroupb", "node": "somegroup", "text": "Choose", "actions": {"go": {"cmd": ["groupchooser"]}}},
             {"id": "settingsXfade", "node": "settingsAudio", "actions": {"go": {"cmd": ["crossfadesettings"], "player": 0}}},
             {"id": "playerpower", "node": "home", "actions": {"do": {"cmd": ["power", "0"]}}}
         ]}),

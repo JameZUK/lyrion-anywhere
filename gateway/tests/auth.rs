@@ -498,6 +498,19 @@ async fn admin_lists_plugins_and_reserves_them_for_admins() {
         find("crossfadesettings").is_none(),
         "settings entries are not plugins"
     );
+    let group = plugins
+        .iter()
+        .find(|p| p["name"] == "Some Group")
+        .expect("grouped plugin");
+    assert_eq!(
+        group["commands"],
+        json!(["groupchooser", "groupmix"]),
+        "one entry for the group's commands"
+    );
+    assert_eq!(
+        plugins.iter().filter(|p| p["name"] == "Some Group").count(),
+        1
+    );
     assert!(plugins.iter().all(|p| {
         !["favorites", "browselibrary", "anywhere"].contains(&p["command"].as_str().unwrap())
     }));

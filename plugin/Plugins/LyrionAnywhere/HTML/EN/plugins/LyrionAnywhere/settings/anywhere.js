@@ -31,11 +31,14 @@
 
   /** The `commands` argument for the plugins whose boxes are ticked: "a,b" (sorted), or ''. */
   function adminOnlyArg(rows) {
-    return rows
-      .filter((r) => r.checked && /^[A-Za-z0-9_-]{1,64}$/.test(r.command))
-      .map((r) => r.command)
-      .sort()
-      .join(',');
+    const out = new Set();
+    for (const r of rows) {
+      if (!r.checked) continue;
+      for (const c of Array.isArray(r.commands) ? r.commands : [r.command]) {
+        if (typeof c === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(c)) out.add(c);
+      }
+    }
+    return [...out].sort().join(',');
   }
 
   /** A sign-in lifetime in whole days (1–365), or null. */
@@ -362,11 +365,12 @@
     const rows = list.map((p) => {
       const box = el('input', { type: 'checkbox' });
       box.checked = p.admin_only === true;
-      pluginBoxes.push({ box, command: String(p.command) });
+      const commands = Array.isArray(p.commands) ? p.commands.map(String) : [String(p.command)];
+      pluginBoxes.push({ box, commands });
       return el('label', { className: 'aw-plugin' }, [
         box,
         el('span', { text: ` ${String(p.name)} ` }),
-        el('span', { className: 'aw-note', text: `(${KIND[p.kind] || 'Plugin'} · ${String(p.command)})` }),
+        el('span', { className: 'aw-note', text: `(${KIND[p.kind] || 'Plugin'} · ${commands.join(', ')})` }),
       ]);
     });
     $('aw-plugins').replaceChildren(...(rows.length ? rows : [el('p', { className: 'aw-note', text: 'No plugins found (the gateway asks LMS; a player must be connected for My Music plugins).' })]));
@@ -374,7 +378,7 @@
 
   function wirePlugins() {
     $('aw-plugins-btn').addEventListener('click', () => {
-      const commands = adminOnlyArg(pluginBoxes.map((p) => ({ command: p.command, checked: p.box.checked })));
+      const commands = adminOnlyArg(pluginBoxes.map((p) => ({ commands: p.commands, checked: p.box.checked })));
       const n = commands ? commands.split(',').length : 0;
       run(() => admin('plugins_admin_only', { commands }), n ? `${n} plugin${n === 1 ? ' is' : 's are'} now for admins only` : 'All plugins are open to listeners');
     });
