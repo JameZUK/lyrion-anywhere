@@ -103,7 +103,18 @@ export class OfflinePlayer {
 
 	#el(): AudioLike {
 		if (this.#audio) return this.#audio;
-		const a = this.deps.createAudio?.() ?? (document.createElement('audio') as unknown as AudioLike);
+		let a: AudioLike;
+		if (this.deps.createAudio) a = this.deps.createAudio();
+		else {
+			// In the document (hidden), so mobile browsers treat it as the page's media: that is
+			// what keeps it playing in the background with lock-screen controls.
+			const el = document.createElement('audio');
+			el.hidden = true;
+			el.setAttribute('playsinline', '');
+			el.setAttribute('aria-hidden', 'true');
+			document.body.append(el);
+			a = el as unknown as AudioLike;
+		}
 		a.preload = 'auto';
 		a.addEventListener('timeupdate', () => (this.position = a.currentTime || 0));
 		a.addEventListener('durationchange', () => {

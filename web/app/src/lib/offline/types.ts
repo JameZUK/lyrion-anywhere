@@ -71,8 +71,10 @@ export function parseInfo(raw: unknown, expectId: number): TrackInfo {
 	const o = r.original;
 	if (!o || typeof o !== 'object' || Array.isArray(o)) throw new BadInfo('original');
 	const orig = o as Record<string, unknown>;
-	const size = count(orig.size);
-	if (size === null) throw new BadInfo('size');
+	// LMS doesn't always know a file's size (the server then sends null): 0 means unknown,
+	// and the download's Content-Length is used instead. Anything else odd is refused.
+	if (orig.size !== null && orig.size !== undefined && count(orig.size) === null) throw new BadInfo('size');
+	const size = count(orig.size) ?? 0;
 	const formats = Array.isArray(r.formats) ? [...new Set(r.formats.filter(isFormat))] : [];
 	if (!formats.length) throw new BadInfo('formats');
 	const duration = typeof r.duration === 'number' && Number.isFinite(r.duration) && r.duration > 0 ? r.duration : 0;

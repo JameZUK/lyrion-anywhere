@@ -90,3 +90,24 @@ test('Content-Range and Retry-After are parsed strictly', () => {
 	expect(retryAfter('soon')).toBeUndefined();
 	expect(retryAfter(null)).toBeUndefined();
 });
+
+// The server sends null for fields LMS doesn't report (size, album id, track number, duration).
+test('unknown sizes and missing details are accepted as unknown', () => {
+	const g = {
+		id: 123,
+		key: 'a'.repeat(64),
+		title: 'T',
+		artist: null,
+		album: null,
+		album_id: null,
+		tracknum: null,
+		duration: null,
+		original: { format: 'flc', content_type: 'audio/flac', size: null, ext: 'flac' },
+		formats: ['original'],
+	};
+	const i = parseInfo(g, 123);
+	expect(i.original.size).toBe(0);
+	expect(i.albumId).toBeNull();
+	expect(i.tracknum).toBeNull();
+	expect(i.duration).toBe(0);
+});

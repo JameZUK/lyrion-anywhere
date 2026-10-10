@@ -4,6 +4,29 @@ Dated entries, newest first.
 
 ## 2026-10-10
 
+### Offline downloads, queue editing and sync groups
+- **Offline downloads:**
+  - **Downloading:** download albums (or the rest of one) to the device, as the original files or converted to MP3 (320 kb/s) or Opus (160 kb/s) when the server has `ffmpeg`. Default formats differ for Wi-Fi and mobile data. Downloads resume after interruptions, even after a reload.
+  - **Downloads page:** shows storage use and lets you remove albums or everything.
+  - **Offline playback:** downloads play through the browser's own audio element, with lock-screen controls, and also with no connection. When the server can't be reached, the app offers "Play your downloads".
+  - **Privacy:** downloads are kept separately for each user. Signing out asks whether to remove them.
+- **Gateway:**
+  - **Endpoints:** `/v1/download/track/{id}` and `/info`. Only library files can be downloaded. Downloads support Range requests, and each track gets a stable key that never reveals file paths.
+  - **Limits:** each user can download in at most 3 parallel streams, and a running download ends if its device is revoked. Each user has a download permission and a set of allowed formats, set on the plugin settings page.
+  - **Conversion:** `ffmpeg` runs hardened (fixed arguments, no shell, input limited to files, temporary files only), into a size-capped cache (default 2 GiB).
+  - **New options:** `--ffmpeg`, `--no-transcode` and `--download-cache-mb`.
+- **Queue editing:**
+  - drag to reorder (or Alt+Arrow keys);
+  - swipe left to remove, with Undo;
+  - changes show at once and are undone if LMS refuses them.
+- **Sync groups:** in the player menu, group players to play in sync, or ungroup them. The player button shows the group, e.g. "Lounge + Study".
+- **Fix:** the offline player's audio element is now part of the page, as mobile browsers require for background playback.
+- **Tests:**
+  - **Gateway:** 24 end-to-end download tests (garbage ids, Range, hostile file names, permissions, limits, timeouts, a fake ffmpeg, the cache), with unit and robustness tests for the parsers.
+  - **Web app:** about 100 new tests for downloads, the offline player, queue gestures and sync groups.
+  - **Plugin:** new tests, plus deployment checks.
+  - **Checked end to end:** download and offline playback in Chromium against a real LMS, in all three formats.
+
 ### Now playing on phones: redesigned to fit without squashing
 - **Why:** fitting the old layout to the screen made the cover small and crammed the details together.
 - **New phone layout:**
