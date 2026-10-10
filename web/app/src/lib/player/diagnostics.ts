@@ -4,6 +4,27 @@
 // connection log. Sent batched, and at once when the page goes into the background.
 import type { Capabilities } from './capabilities';
 import type { Environment, ModeChoice, ModePreference } from './mode';
+import { ApiError, CLIENT_HEADER, bearer } from '$lib/api/http';
+
+/**
+ * Sends a report to the gateway through `authed`: a refused (expired) token surfaces as an
+ * ApiError 401, so `authed` renews it and tries once more; any other failure is an error too.
+ */
+export function diagnosticsSender(
+	authed: <T>(fn: (token: string) => Promise<T>) => Promise<T>,
+	doFetch: typeof fetch = (...a) => fetch(...a),
+) {
+	return (body: string, urgent: boolean) =>
+		authed(async (token) => {
+			const resp = await doFetch('/v1/diagnostics', {
+				method: 'POST',
+				headers: { ...CLIENT_HEADER, ...bearer(token), 'Content-Type': 'application/json' },
+				body,
+				keepalive: urgent,
+			});
+			if (!resp.ok) throw new ApiError(resp.status, `diagnostics HTTP ${resp.status}`);
+		});
+}
 
 export interface ReportInput {
 	capabilities: Capabilities;

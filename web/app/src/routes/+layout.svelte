@@ -5,7 +5,8 @@
 	import { device } from '$lib/player/device.svelte';
 	import { appearance } from '$lib/theme/appearance.svelte';
 	import { install } from '$lib/pwa/install.svelte';
-	import { clearResume, loadResume, resumeCommands, saveResume } from '$lib/player/resume';
+	import { clearResume, loadResume, planResume, saveResume, trackId } from '$lib/player/resume';
+	import type { Command } from '$lib/api/rpc';
 	import Login from '$lib/components/Login.svelte';
 	import PlayerBar from '$lib/components/PlayerBar.svelte';
 	import MediaSession from '$lib/components/MediaSession.svelte';
@@ -37,7 +38,9 @@
 		const now = app.now;
 		const index = Number(now?.playlist_cur_index);
 		if (!device.mac || app.playerId !== device.mac || !now || !Number.isFinite(index)) return;
-		saveResume({ mac: device.mac, playing: now.mode === 'play', index, time: app.elapsed, at: Date.now() });
+		// `status - 1` lists just the current track: its id identifies it in the queue.
+		const track = trackId(now.playlist_loop?.[0]?.id);
+		saveResume({ mac: device.mac, playing: now.mode === 'play', index, time: app.elapsed, at: Date.now(), ...(track !== undefined ? { track } : {}) });
 	}
 	$effect(() => {
 		addEventListener('pagehide', rememberPosition);
@@ -57,8 +60,14 @@
 		if (!(await app.waitForPlayer(mac)) || point?.mac !== mac) return;
 		// After a reload: if LMS hasn't carried on playing by itself, go back to where it was.
 		await new Promise((r) => setTimeout(r, 1500));
-		await app.refresh();
-		for (const c of resumeCommands(point, app.now)) {
+		// Ask about this device's own player: the user may have selected another meanwhile.
+		let commands: Command[];
+		try {
+			commands = await planResume(point, (player, c) => api.rpc(player, c));
+		} catch {
+			return; // the user can still press play
+		}
+		for (const c of commands) {
 			try {
 				await api.rpc(mac, c);
 			} catch {

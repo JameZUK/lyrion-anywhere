@@ -6,7 +6,7 @@
 // sees the player leave), and a broken stream download resumes from its byte offset.
 
 import init, { WasmPlayer, WasmSegmenter } from './pkg/anywhere_wasm.js';
-import { CLOSE, Outbox, backoffMs, closeAction, streamFailureAction } from './reconnect.js';
+import { AuthWait, CLOSE, Outbox, RateRequest, backoffMs, closeAction, streamFailureAction } from './reconnect.js';
 
 const TICK_MS = 20;
 // PCM queued in the worklet ahead of playback. Small, so pause/stop feel immediate.
@@ -39,6 +39,8 @@ let disconnectedAt = 0;
 // Frames received in this session; on resume the gateway resends anything after this.
 let received = 0;
 const outbox = new Outbox(2000);
+const rateRequest = new RateRequest();
+const authWait = new AuthWait();
 
 // Output mode: 'worklet' (PCM to an AudioWorklet) or 'media' (fMP4/FLAC segments for an
 // <audio> element on the main thread, which keeps playing in the background on iOS).
@@ -107,9 +109,11 @@ onmessage = async (e) => {
     }
     mediaWaiting = false;
   } else if (msg.cmd === 'token') {
-    // A renewed access token from the page; reconnect if we were waiting for it.
+    // A renewed access token from the page; reconnect if we were waiting for it, whether
+    // it came with the page's reply to authFailed or later (a renewal retried after being
+    // offline arrives as a plain token update).
     token = msg.token;
-    if (msg.reconnect && !open) connect(session !== '');
+    if (authWait.token(open)) connect(session !== '');
   }
 };
 
@@ -169,6 +173,7 @@ function onClose(code, reason) {
   log(`gateway connection closed (${code}${reason ? `: ${reason}` : ''})`);
   if (code === CLOSE.POLICY && reason === 'unauthorised') {
     // Most likely an expired access token: the page renews it and sends it back.
+    authWait.refused();
     postMessage({ connection: 'reauthenticating', authFailed: true });
     return;
   }
@@ -311,7 +316,8 @@ function workletTick(output) {
 
   const rate = player.output_rate();
   if (rate && rate !== readyRate) {
-    postMessage({ rate }); // main thread (re)creates the AudioContext at this rate
+    // The main thread (re)creates the AudioContext at this rate: ask once, then wait.
+    if (rateRequest.want(rate, readyRate)) postMessage({ rate });
   } else if (rate) {
     const target = rate * WORKLET_AHEAD_SECS;
     while (pulled - played < target) {

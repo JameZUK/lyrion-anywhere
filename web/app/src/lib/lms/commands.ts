@@ -155,6 +155,22 @@ export function playFavourite(item: string, placement: Placement): Command {
 
 // --- artwork -----------------------------------------------------------------------------
 
+/** `image`, `image_300x300`, `image_300x300_o`, optionally with an image extension. */
+const PROXY_NAME = /^image(?:_\d{1,4}x\d{1,4}(?:_[a-z])?)?(?:\.(?:jpe?g|png|gif|webp))?$/;
+
+/** A well-formed percent-encoded segment that decodes to an http(s) URL (as the gateway requires). */
+function proxySegment(seg: string): boolean {
+	if (!/^(?:[A-Za-z0-9._~!$&'()*+,;=:@-]|%[0-9A-Fa-f]{2})+$/.test(seg)) return false;
+	let url: string;
+	try {
+		url = decodeURIComponent(seg);
+	} catch {
+		return false;
+	}
+	// Control characters or spaces in the URL: refuse (the gateway does too).
+	return /^https?:\/\/[^\s\\]+$/.test(url) && !/[\u0000-\u001f\u007f]/.test(url);
+}
+
 /**
  * Path (for Api.art) of an icon or image LMS named in a menu (favourites, apps), or null.
  * Only the forms the gateway relays: its own icons, plugin icons and image-proxy URLs.
@@ -164,8 +180,12 @@ export function imagePath(image: unknown, size = 300): string | null {
 	const px = Math.max(50, Math.min(1000, Math.round(size)));
 	if (/^https?:\/\//i.test(image)) return `imageproxy/${encodeURIComponent(image)}/image_${px}x${px}`;
 	const p = image.replace(/^\/+/, '');
-	if (p.includes('..') || p.includes('//') || p.includes('%2e') || p.includes('\\')) return null;
-	if (/^imageproxy\/[^/]+\/image/.test(p)) return p;
+	if (p.includes('\\') || p.includes('//') || /[?#\s]/.test(p)) return null;
+	// Image proxy: exactly one percent-encoded http(s) URL segment, then the image name.
+	// That segment is the only place a '%' may appear.
+	const proxy = p.match(/^imageproxy\/([^/]+)\/([^/]+)$/);
+	if (proxy) return proxySegment(proxy[1]!) && PROXY_NAME.test(proxy[2]!) ? p : null;
+	if (p.includes('%') || p.includes('..') || p.split('/').some((s) => s === '.')) return null;
 	if (/^(html\/images|plugins\/cache\/icons|plugins\/[A-Za-z0-9_]+\/html)\/[A-Za-z0-9._\/-]+\.(png|jpe?g|gif|svg)$/i.test(p)) return p;
 	return null;
 }

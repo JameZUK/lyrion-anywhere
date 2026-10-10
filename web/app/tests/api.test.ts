@@ -1,6 +1,6 @@
 // Session renewal, the RPC/artwork client and the events stream, against fakes.
-import { RETRY_MS, SessionManager, refused, type AuthApi } from '$lib/api/session';
-import { Api } from '$lib/api/rpc';
+import { RETRY_MS, SIGNED_OUT_KEY, SessionManager, refused, type AuthApi } from '$lib/api/session';
+import { Api, artUrl } from '$lib/api/rpc';
 import { ApiError, callJson, CLIENT_HEADER } from '$lib/api/http';
 import { EventsClient, eventsBackoff, parseEventMessage } from '$lib/api/events';
 import { defaultDeviceName, groupKey, rememberedDevice } from '$lib/api/auth';
@@ -38,7 +38,19 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
 afterEach(() => {
 	vi.unstubAllGlobals();
 	vi.useRealTimers();
+	localStorage.clear();
 });
+
+/** A promise to settle by hand. */
+function deferred<T>() {
+	let resolve!: (v: T) => void;
+	let reject!: (e: unknown) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
 
 describe('http', () => {
 	test('every call carries the CSRF header and same-origin credentials only', async () => {
@@ -216,6 +228,131 @@ describe('session', () => {
 	});
 });
 
+describe('sign-out holds', () => {
+	// Regression: a renewal in flight when the user signed out applied its new token
+	// afterwards, silently signing them back in.
+	test('a renewal in flight at sign-out does not sign back in', async () => {
+		const auth = fakeAuth(['t1']);
+		const s = new SessionManager(auth);
+		await s.restore();
+		const pending = deferred<Session>();
+		auth.refresh = vi.fn(() => pending.promise);
+		const renewing = s.renew();
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(auth.refresh).toHaveBeenCalledTimes(1);
+		await s.signOut();
+		pending.resolve(sess('t-late'));
+		expect(await renewing).toBe(false);
+		expect(s.status).toBe('signed-out');
+		expect(s.token).toBe('');
+	});
+
+	test('a renewal failing offline after sign-out schedules no retries', async () => {
+		vi.useFakeTimers();
+		const auth = fakeAuth(['t1']);
+		const s = new SessionManager(auth);
+		await s.restore();
+		const pending = deferred<Session>();
+		auth.refresh = vi.fn(() => pending.promise);
+		const renewing = s.renew();
+		await Promise.resolve();
+		await s.signOut();
+		pending.reject(new TypeError('Failed to fetch'));
+		expect(await renewing).toBe(false);
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(auth.refresh).toHaveBeenCalledTimes(1);
+		expect(s.status).toBe('signed-out');
+	});
+
+	test('a restore in flight at sign-out does not sign in', async () => {
+		const auth = fakeAuth([]);
+		const pending = deferred<Session>();
+		auth.refresh = vi.fn(() => pending.promise);
+		const s = new SessionManager(auth);
+		const restoring = s.restore();
+		await s.signOut();
+		pending.resolve(sess('t-late'));
+		expect(await restoring).toBe(false);
+		expect(s.status).toBe('signed-out');
+	});
+
+	test('a retry pending from before sign-out is cancelled', async () => {
+		vi.useFakeTimers();
+		const auth = fakeAuth(['t1']);
+		const s = new SessionManager(auth);
+		await s.restore();
+		auth.refresh = vi.fn(async () => Promise.reject(new TypeError('offline')));
+		expect(await s.renew()).toBe(false); // schedules a retry
+		await s.signOut();
+		auth.refresh = vi.fn(async () => sess('t2'));
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(auth.refresh).not.toHaveBeenCalled();
+		expect(s.status).toBe('signed-out');
+	});
+
+	test('a sign-out that reached the server leaves no flag', async () => {
+		const s = new SessionManager(fakeAuth(['t1']));
+		await s.restore();
+		await s.signOut();
+		expect(localStorage.getItem(SIGNED_OUT_KEY)).toBeNull();
+	});
+
+	// Regression: signing out offline, then reloading, restored the session from the cookie.
+	test('a sign-out that could not reach the server holds after a reload, and is finished then', async () => {
+		const auth = fakeAuth(['t1']);
+		auth.logout = vi.fn(async () => Promise.reject(new TypeError('offline')));
+		const s = new SessionManager(auth);
+		await s.restore();
+		await s.signOut();
+		expect(localStorage.getItem(SIGNED_OUT_KEY)).toBe('1');
+
+		// The next page load: the cookie still works, but the user must not be signed in.
+		const auth2 = fakeAuth(['t-cookie']);
+		const s2 = new SessionManager(auth2);
+		const states: string[] = [];
+		s2.subscribe((_, st) => states.push(st));
+		expect(await s2.restore()).toBe(false);
+		expect(s2.status).toBe('signed-out');
+		await vi.waitFor(() => expect(auth2.logout).toHaveBeenCalledWith('t-cookie'));
+		await vi.waitFor(() => expect(localStorage.getItem(SIGNED_OUT_KEY)).toBeNull());
+		expect(states).not.toContain('signed-in');
+		expect(s2.token).toBe('');
+	});
+
+	test('if finishing the sign-out fails offline, the flag stays for the next load', async () => {
+		localStorage.setItem(SIGNED_OUT_KEY, '1');
+		const auth = fakeAuth([]);
+		auth.refresh = vi.fn(async () => Promise.reject(new TypeError('offline')));
+		const s = new SessionManager(auth);
+		expect(await s.restore()).toBe(false);
+		expect(s.status).toBe('signed-out');
+		await vi.waitFor(() => expect(auth.refresh).toHaveBeenCalled());
+		await Promise.resolve();
+		expect(localStorage.getItem(SIGNED_OUT_KEY)).toBe('1');
+	});
+
+	test('a refused cookie finishes the pending sign-out (nothing left to revoke)', async () => {
+		localStorage.setItem(SIGNED_OUT_KEY, '1');
+		const auth = fakeAuth([]); // refresh: 401
+		const s = new SessionManager(auth);
+		await s.restore();
+		await vi.waitFor(() => expect(localStorage.getItem(SIGNED_OUT_KEY)).toBeNull());
+		expect(auth.logout).not.toHaveBeenCalled();
+	});
+
+	test('signing in explicitly clears the flag', async () => {
+		localStorage.setItem(SIGNED_OUT_KEY, '1');
+		const auth = fakeAuth([]);
+		auth.refresh = vi.fn(() => new Promise<Session>(() => {})); // the background clean-up hangs
+		const s = new SessionManager(auth);
+		await s.restore();
+		await s.signIn('alice', 'pw');
+		expect(s.status).toBe('signed-in');
+		expect(localStorage.getItem(SIGNED_OUT_KEY)).toBeNull();
+	});
+});
+
 describe('rpc and art', () => {
 	async function api(tokens = ['t1', 't2']) {
 		const s = new SessionManager(fakeAuth(tokens));
@@ -250,6 +387,44 @@ describe('rpc and art', () => {
 		expect(url).toBe('/v1/art/music/12/cover_300x300');
 		expect(url).not.toContain('t1');
 		expect(init.headers).toMatchObject({ Authorization: 'Bearer t1' });
+	});
+
+	// Regression: Api.art trusted its path, so "imageproxy/x/image/.%2E/.%2E/.%2E/.%2E/me"
+	// fetched /v1/me with the bearer token.
+	test('art never fetches outside /v1/art/, whatever the encoding', async () => {
+		const f = vi.fn(async () => new Response('x', { headers: { 'content-type': 'image/png' } }));
+		vi.stubGlobal('fetch', f);
+		const a = await api();
+		const bad = [
+			'imageproxy/x/image/.%2E/.%2E/.%2E/.%2E/me',
+			'imageproxy/x/image/.%2e/.%2e/.%2e/.%2e/me',
+			'imageproxy/x/image/%2E%2E/%2e%2E/%2E%2e/%2e%2e/me',
+			'imageproxy/x/image/../../../../me',
+			'music/1/cover/../../../../me',
+			'music\\..\\..\\..\\me',
+			'music/1/%5C..%5C..%5Cme',
+			'..',
+			'.%2E',
+			'%2E%2E/%2E%2E/me',
+			'music/1/cover?x=/../../me',
+			'music/1/cover#../../me',
+			'//evil.example.com/x',
+			'',
+		];
+		for (const p of bad) {
+			await expect(a.art(p), p).rejects.toMatchObject({ status: 400 });
+		}
+		expect(f).not.toHaveBeenCalled();
+		// Encoded slashes inside a segment are not traversal: they stay under /v1/art/.
+		expect(artUrl('imageproxy/https%3A%2F%2Fcdn.example.com%2Fa.jpg/image_300x300')).toBe(
+			'/v1/art/imageproxy/https%3A%2F%2Fcdn.example.com%2Fa.jpg/image_300x300',
+		);
+		expect(artUrl('music/12/cover_300x300')).toBe('/v1/art/music/12/cover_300x300');
+	});
+
+	test('double-encoded dots are left encoded (no second decoding), so stay under /v1/art/', () => {
+		const u = artUrl('music/%252E%252E/%252E%252E/me');
+		expect(u === null || u.startsWith('/v1/art/music/')).toBe(true);
 	});
 
 	test('non-image art responses are refused', async () => {
@@ -341,6 +516,53 @@ describe('events', () => {
 		await FakeWs.all[1]!.onclose!({ code: 1008, reason: 'access revoked' });
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(FakeWs.all).toHaveLength(2);
+		expect(states.at(-1)).toBe('stopped');
+	});
+
+	// Regression: a renewal that failed because the server was unreachable stopped the events
+	// stream for good, though the user stayed signed in.
+	test('a renewal that fails offline keeps retrying; the stream resumes once it succeeds', async () => {
+		vi.useFakeTimers();
+		FakeWs.all = [];
+		const outcomes: (string | Error)[] = ['t1', new TypeError('Failed to fetch'), 't2'];
+		const auth = fakeAuth([]);
+		auth.refresh = vi.fn(async () => {
+			const o = outcomes.shift();
+			if (o instanceof Error) throw o;
+			if (!o) throw new TypeError('offline');
+			return sess(o);
+		});
+		const s = new SessionManager(auth);
+		await s.restore();
+		const states: string[] = [];
+		let resyncs = 0;
+		const c = new EventsClient(s, { onEvent: () => {}, onResync: () => resyncs++, onState: (x) => states.push(x) }, (u) => new FakeWs(u) as unknown as WebSocket);
+		c.start();
+		await FakeWs.all[0]!.onclose!({ code: 1008, reason: 'unauthorised' });
+		expect(s.status).toBe('signed-in');
+		expect(states.at(-1)).toBe('retrying');
+		// The session retries the renewal; the events client reconnects meanwhile.
+		await vi.advanceTimersByTimeAsync(RETRY_MS[0]! + 2000);
+		expect(s.token).toBe('t2');
+		const last = FakeWs.all.at(-1)!;
+		expect(FakeWs.all.length).toBeGreaterThan(1);
+		last.onopen!();
+		expect(last.sent).toEqual(['t2']);
+		last.onmessage!({ data: '{"subscribed":true}' });
+		expect(states.at(-1)).toBe('live');
+		expect(resyncs).toBe(1);
+		c.stop();
+	});
+
+	test('an unauthorised close after the session was signed out stops', async () => {
+		FakeWs.all = [];
+		const s = new SessionManager(fakeAuth(['t1'])); // the renewal is refused
+		await s.restore();
+		const states: string[] = [];
+		const c = new EventsClient(s, { onEvent: () => {}, onResync: () => {}, onState: (x) => states.push(x) }, (u) => new FakeWs(u) as unknown as WebSocket);
+		c.start();
+		await FakeWs.all[0]!.onclose!({ code: 1008, reason: 'unauthorised' });
+		expect(s.status).toBe('signed-out');
 		expect(states.at(-1)).toBe('stopped');
 	});
 });

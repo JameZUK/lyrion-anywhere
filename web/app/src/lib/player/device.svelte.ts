@@ -6,9 +6,8 @@ import { KeepAlive, PersistentLog, describeLifecycle } from './background';
 import { detect } from './capabilities';
 import { MediaOutput, Timeline } from './media-output';
 import { MEDIA_TYPE, MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
-import { Reporter, buildReport } from './diagnostics';
+import { Reporter, buildReport, diagnosticsSender } from './diagnostics';
 import { chooseVariant, loadCached, mediaFormatFor, mimeFor, runSelfTest, saveCached, type SelfTest } from './selftest';
-import { CLIENT_HEADER, bearer } from '$lib/api/http';
 
 export type DeviceState = 'off' | 'starting' | 'connected' | 'reconnecting' | 'stopped' | 'error';
 
@@ -63,17 +62,15 @@ class DevicePlayer {
 	#drainedAtEnd = 0; // buffered end when "drained" was last sent
 	/** Diagnostics for the admin: batched, and sent at once when the page is hidden. */
 	#reporter = new Reporter(
-		(body, urgent) =>
-			session.authed(async (token) => {
-				await fetch('/v1/diagnostics', {
-					method: 'POST',
-					headers: { ...CLIENT_HEADER, ...bearer(token), 'Content-Type': 'application/json' },
-					body,
-					keepalive: urgent,
-				});
-			}),
+		diagnosticsSender((fn) => session.authed(fn)),
 		() => this.#diagnostics(),
 	);
+	/** Bumped by every start and stop: work a stopped start was still doing is dropped. */
+	#gen = 0;
+	/** The rate of the AudioContext in use or being built (0: none). */
+	#audioRate = 0;
+	/** AudioContexts are built one at a time, in order. */
+	#audioQueue: Promise<void> = Promise.resolve();
 
 	#note(msg: string) {
 		this.log = this.#history.add(msg);
@@ -210,7 +207,11 @@ class DevicePlayer {
 	 * one. `auto` (after a reload, no tap): start anyway, and let the next tap unmute.
 	 */
 	async start(opts: { auto?: boolean } = {}) {
-		if (this.#worker || !session.current) return;
+		if (this.#worker || this.state === 'starting' || !session.current) return;
+		// Stop may be pressed while this is still starting: after every wait, check that this
+		// start is still the current one, and if not, drop what it built and go no further.
+		const gen = ++this.#gen;
+		const live = () => gen === this.#gen;
 		this.#auto = !!opts.auto;
 		this.state = 'starting';
 		this.wasActive = false;
@@ -237,22 +238,36 @@ class DevicePlayer {
 				};
 				this.#media = out;
 				await out.start();
+				if (!live()) {
+					out.stop(); // stop() has stopped it already; this is harmless
+					return;
+				}
 				if (out.audio.paused) this.#resumeOnNextTap();
 				this.#lastPos = 0;
 				this.#timeline = new Timeline();
 				this.#posTimer = setInterval(() => this.#reportPosition(), 250);
 			} else {
 				// Inside the tap: a playing media element helps keep the page alive in the background.
-				if (!(await this.#keepAlive.start())) this.#note('background keep-alive refused by the browser');
-				port = await this.#createAudio(44100);
+				const kept = await this.#keepAlive.start();
+				if (!live()) return;
+				if (!kept) this.#note('background keep-alive refused by the browser');
+				this.#audioRate = 44100;
+				const p = await this.#createAudio(44100, gen);
+				if (!p || !live()) return; // #createAudio closes its context when stopped
+				port = p;
 				if (this.#ctx?.state !== 'running') this.#resumeOnNextTap();
 			}
 			const w = new Worker(asset('player-worker.js'), { type: 'module' });
 			this.#worker = w;
-			w.onmessage = (e) => void this.#onMessage(e.data);
+			w.onmessage = (e) => {
+				if (this.#worker === w) void this.#onMessage(e.data);
+			};
 			w.onerror = (e) => {
+				if (this.#worker !== w) return;
+				// The worker is gone (e.g. its script failed to load): release everything, so
+				// "Play on this device" can start afresh. The log keeps the reason.
 				this.#note(`worker error: ${e.message}`);
-				this.state = 'error';
+				this.stop('error');
 			};
 			w.postMessage({ cmd: 'start', token: session.token, port, mode: choice.mode, variant }, port ? [port] : []);
 			this.#history.active = true;
@@ -263,8 +278,8 @@ class DevicePlayer {
 				else this.#worker?.postMessage({ cmd: 'token', token: s.access_token });
 			});
 		} catch (e) {
+			if (!live()) return; // stopped meanwhile: not an error
 			this.#note(`could not start: ${(e as Error).message}`);
-			this.state = 'error';
 			this.stop('error');
 		}
 	}
@@ -303,6 +318,8 @@ class DevicePlayer {
 	}
 
 	stop(final: DeviceState = 'stopped') {
+		this.#gen++;
+		this.#audioRate = 0;
 		this.#history.active = false;
 		this.wasActive = false;
 		this.needsTap = false;
@@ -314,7 +331,7 @@ class DevicePlayer {
 		this.#unsubscribe = null;
 		this.#worker?.terminate();
 		this.#worker = null;
-		void this.#ctx?.close();
+		this.#ctx?.close().catch(() => {});
 		this.#ctx = null;
 		this.state = final === 'error' ? 'error' : this.state === 'off' ? 'off' : 'stopped';
 	}
@@ -332,12 +349,32 @@ class DevicePlayer {
 		}
 	}
 
-	async #createAudio(rate: number): Promise<MessagePort> {
-		if (this.#ctx) await this.#ctx.close();
+	/**
+	 * A new AudioContext at `rate`, replacing (and first closing) the current one. Returns
+	 * null, with the new context closed again, if the device was stopped meanwhile.
+	 * Callers run one at a time (see #onRate).
+	 */
+	async #createAudio(rate: number, gen: number): Promise<MessagePort | null> {
+		const live = () => gen === this.#gen;
+		const old = this.#ctx;
+		this.#ctx = null;
+		if (old) await old.close().catch(() => {});
+		if (!live()) return null;
 		// The core outputs at the track's own rate; the browser resamples to the hardware.
 		const ctx = new AudioContext({ sampleRate: rate, latencyHint: 'playback' });
 		this.#ctx = ctx;
-		await ctx.audioWorklet.addModule(asset('worklet.js'));
+		const abandon = () => {
+			if (this.#ctx === ctx) this.#ctx = null;
+			ctx.close().catch(() => {});
+			return null;
+		};
+		try {
+			await ctx.audioWorklet.addModule(asset('worklet.js'));
+		} catch (e) {
+			abandon();
+			throw e;
+		}
+		if (!live()) return abandon();
 		const node = new AudioWorkletNode(ctx, 'anywhere-sink', { outputChannelCount: [2] });
 		node.connect(ctx.destination);
 		const channel = new MessageChannel();
@@ -346,7 +383,37 @@ class DevicePlayer {
 		const resumed = ctx.resume();
 		if (this.#auto) await Promise.race([resumed, new Promise((r) => setTimeout(r, 500))]);
 		else await resumed;
+		if (!live()) return abandon();
 		return channel.port2;
+	}
+
+	/**
+	 * The core's output rate changed: build an AudioContext at that rate. Requests are
+	 * handled one at a time; a repeat of the rate already in use (or being built) is
+	 * ignored, and a request overtaken by a newer one is dropped before it builds anything.
+	 */
+	#onRate(rate: number): Promise<void> {
+		if (rate === this.#audioRate || !this.#worker || this.#media) return this.#audioQueue;
+		this.#audioRate = rate;
+		const gen = this.#gen;
+		const job = this.#audioQueue.then(async () => {
+			if (gen !== this.#gen || rate !== this.#audioRate) return; // stopped, or overtaken
+			const port = await this.#createAudio(rate, gen);
+			if (!port || gen !== this.#gen) return;
+			if (rate !== this.#audioRate) {
+				port.close(); // overtaken while building: the next request replaces it
+				return;
+			}
+			if (this.#ctx?.state !== 'running') this.#resumeOnNextTap();
+			this.#worker?.postMessage({ cmd: 'start-sink', port }, [port]);
+			this.#worker?.postMessage({ cmd: 'rate-ready', rate });
+		});
+		this.#audioQueue = job.catch((e) => {
+			if (gen !== this.#gen) return;
+			this.#audioRate = 0; // let the worker's next request try again
+			this.#note(`audio output failed at ${rate} Hz: ${(e as Error).message}`);
+		});
+		return this.#audioQueue;
 	}
 
 	/** Media mode: tell the core how much the element has played. */
@@ -407,18 +474,22 @@ class DevicePlayer {
 		} else if (m.connection === 'reconnecting' || m.connection === 'restarting' || m.connection === 'reauthenticating') {
 			this.state = 'reconnecting';
 		} else if (m.connection === 'closed') {
-			this.state = 'stopped';
+			// The gateway ended this player for good (e.g. it was replaced elsewhere): release
+			// the worker and audio, so "Play on this device" can start again.
+			this.#note('the gateway closed this player');
+			this.stop();
+			return;
 		}
 		if (m.authFailed) {
-			// The access token was refused (expired): renew it and let the worker carry on.
-			if (await session.renew()) this.#worker?.postMessage({ cmd: 'token', token: session.token, reconnect: true });
+			// The access token was refused (expired): renew it and let the worker carry on. If
+			// the server can't be reached, the session retries, and the worker reconnects on
+			// the token that brings (it waits for any new token).
+			const worker = this.#worker;
+			if ((await session.renew()) && worker && this.#worker === worker) {
+				worker.postMessage({ cmd: 'token', token: session.token, reconnect: true });
+			}
 		}
-		if (typeof m.rate === 'number' && this.#worker && !this.#media) {
-			const port = await this.#createAudio(m.rate);
-			if (this.#ctx?.state !== 'running') this.#resumeOnNextTap();
-			this.#worker?.postMessage({ cmd: 'start-sink', port }, [port]);
-			this.#worker?.postMessage({ cmd: 'rate-ready', rate: m.rate });
-		}
+		if (typeof m.rate === 'number' && Number.isFinite(m.rate) && m.rate > 0) await this.#onRate(m.rate);
 		// The worker reports status every 20 ms; the UI only needs a few updates a second.
 		if (m.status && typeof m.status === 'object' && performance.now() - this.#detailAt > 500) {
 			this.#detailAt = performance.now();

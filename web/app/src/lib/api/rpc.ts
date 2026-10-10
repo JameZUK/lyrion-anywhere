@@ -22,6 +22,29 @@ export class Limiter {
 	}
 }
 
+const ART_PREFIX = '/v1/art/';
+
+/**
+ * The same-origin URL (path only) for an artwork path, or null if the path would resolve
+ * anywhere outside /v1/art/ (dot segments, encoded dots, backslashes, a query or fragment).
+ * The browser's own URL parser decides, so whatever it would fetch is what is checked.
+ */
+export function artUrl(path: string): string | null {
+	if (typeof path !== 'string' || !path || path.length > 4096 || /[?#\\\s]|%5c|\/\/|^\//i.test(path)) return null;
+	const base = globalThis.location?.origin && globalThis.location.origin !== 'null' ? globalThis.location.origin : 'http://localhost';
+	let u: URL;
+	try {
+		u = new URL(ART_PREFIX + path, base);
+	} catch {
+		return null;
+	}
+	if (u.origin !== new URL(base).origin || u.search || u.hash) return null;
+	if (!u.pathname.startsWith(ART_PREFIX) || u.pathname.length === ART_PREFIX.length) return null;
+	// Normalisation must not have changed the path (e.g. resolved "a/../b" or ".%2E").
+	if (u.pathname !== ART_PREFIX + path) return null;
+	return u.pathname;
+}
+
 export class Api {
 	#art = new Map<string, Promise<string>>();
 	// LMS resizes artwork on its single thread: don't flood it (HTTP/2 has no per-host cap).
@@ -55,8 +78,11 @@ export class Api {
 			this.#art.set(path, hit); // most recently used last
 			return hit;
 		}
+		const url = artUrl(path);
+		// The bearer token goes with this request: never let a path step out of /v1/art/.
+		if (!url) return Promise.reject(new ApiError(400, 'bad art path'));
 		const p = this.session.authed((token) => this.#artLimit.run(async () => {
-			const resp = await fetch(`/v1/art/${path}`, { headers: bearer(token), cache: 'force-cache' });
+			const resp = await fetch(url, { headers: bearer(token), cache: 'force-cache' });
 			if (!resp.ok) throw new ApiError(resp.status, `art HTTP ${resp.status}`);
 			const type = resp.headers.get('content-type') ?? '';
 			if (!/^image\//.test(type)) throw new ApiError(415, 'not an image');

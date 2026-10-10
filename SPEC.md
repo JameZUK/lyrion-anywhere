@@ -251,6 +251,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 - Audio output goes through an `AudioWorklet`.
 - The Media Session API gives lock-screen/notification controls and hardware media keys.
 - A service worker serves the app shell offline. Offline audio is stored in OPFS, with metadata in IndexedDB.
+- **Sign-out holds:** token renewals or restores started before a sign-out are discarded. If the logout call can't reach the gateway, a flag in local storage stops the next page load from restoring the session from the refresh cookie; that load shows the sign-in form and finishes the logout (refresh, then logout) in the background. A successful sign-in clears the flag.
 
 ### 7.2 Features
 
