@@ -85,6 +85,10 @@ Native Android and iOS apps come after v1 and use the same documented protocol.
 
 ## 4. Plugin (`Plugins::LyrionAnywhere`)
 
+**Built (0.1.0, 2026-10-10):** settings (enable, listen address, public URL, trusted proxies, development gateway path), user/role/two-step/grant/device/audit management, `anywhere …` LMS commands, gateway supervision with restart backoff. **Still to come:** release-signature check, proxy self-test, device rename, streaming policy, player integration, packaging.
+
+**Trust boundary.** Account management runs through LMS's own JSON-RPC/CLI (`anywhere …` commands) and its settings page. So anyone who can use LMS on the LAN can create remote accounts, just as they can already control LMS. The settings page says to turn on LMS's password protection. Remote users can never reach these commands: the gateway's RPC allow-list reserves `anywhere`.
+
 ### Settings page (in LMS)
 
 - Enable/disable, public URL, a proxy self-test, and a warning if LMS ports are reachable from the public URL.
@@ -367,6 +371,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 | XSS in the web app (e.g. hostile tag metadata) | Framework escaping; strict CSP, no inline script; metadata never rendered as HTML |
 | Sniffing on hostile Wi-Fi | TLS via the proxy; gateway rejects non-TLS remote requests |
 | Resource exhaustion | Caps on sessions per device, frame/body size, concurrent streams and downloads, transcode jobs |
+| LAN user creating remote accounts | Plugin commands are reachable only through LMS itself (LAN, LMS password protection); `anywhere` is reserved in the gateway allow-list so remote users can't call it; admin API on loopback with a secret |
 | Misconfigured proxy exposing the LAN | Gateway binds to localhost by default; plugin self-test checks LMS ports aren't publicly reachable |
 
 ### 9.3 Hardening
@@ -398,7 +403,7 @@ The **v1 release** is Phases 0–3.
    1. resume and automatic client reconnect (the first phone test lost the player on a weak-signal dropout);
    2. accounts, pairing and sessions;
    3. the RPC allow-list, events and art;
-   4. the plugin settings page and gateway supervision;
+   4. the plugin settings page and gateway supervision (_done 2026-10-10; signature check and packaging remain_);
    5. the screen-locked phone tests (Android, iOS);
    6. nginx config and the Docker image.
    - **Gate:** an external security review, plus scanner tests proving LMS paths are unreachable.

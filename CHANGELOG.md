@@ -4,6 +4,29 @@ Dated entries, newest first.
 
 ## 2026-10-10
 
+### Phase 1: LMS plugin
+- **`Plugins::LyrionAnywhere` 0.1.0** (LMS 9.0+):
+  - settings for the gateway (enable, listen address, public URL, trusted proxies), each validated before it is saved;
+  - users, roles, two-step reset, pairing codes, home-player grants, devices and the audit log, all through the gateway's admin API;
+  - matching `anywhere …` LMS commands.
+- **Gateway supervision:** picks the binary for the platform and runs it directly (no shell), with the admin API on loopback only. It restarts after crashes with backoff (5, 10, 30, 60 s) and stops when disabled.
+- **Gateway:**
+  - `POST` forms of the admin deletes, for LMS's HTTP client;
+  - `--log-file`;
+  - `anywhere` added to the reserved RPC commands, so remote users can never manage accounts.
+- **Settings page:** every name is set as text, never parsed as HTML, because device names and audit details come from remote users. Validation messages that echo input are escaped. The page warns that anyone who can open LMS settings can manage remote accounts.
+- **Tests:**
+  - 140 Perl tests against stubbed LMS modules, including a contract test that drives the real gateway binary;
+  - 5 settings-page tests, including a full render of the page with hostile names;
+  - a new CI job, in which the contract test may not be skipped.
+- **Bugs found by tests:** a missing `Slim::Utils::OSDetect` import, and an XSS in the settings error echo.
+- **Live, in a throwaway LMS 9 container:**
+  - the plugin loaded and the gateway started from the settings page;
+  - the account commands worked, and sign-in through the gateway worked;
+  - the gateway was restarted about 6 s after `kill -9`;
+  - disabling it in settings stopped it;
+  - a device named with an HTML payload was stored and shown as plain text.
+
 ### Phase 1: artwork and events
 - **`/v1/art/…`:**
   - fixed path patterns for covers, the current cover (permitted players only), and plugin/built-in icons;

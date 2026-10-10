@@ -1,0 +1,64 @@
+[% PROCESS settings/header.html %]
+
+<link rel="stylesheet" href="/plugins/LyrionAnywhere/settings/anywhere.css">
+
+<p class="anywhere-intro">
+	Lyrion Anywhere lets your devices use this server securely over the internet, through the
+	gateway this plugin runs. Put the gateway behind your HTTPS reverse proxy; never expose
+	this server's own ports.
+</p>
+<p class="anywhere-intro">
+	Anyone who can open these settings can create remote accounts. If other people use your
+	network, turn on password protection in Settings › Advanced › Security.
+</p>
+
+[% WRAPPER setting title="Gateway" desc="Run the Lyrion Anywhere gateway." %]
+	<input type="checkbox" name="pref_enabled" id="pref_enabled" value="1" [% IF prefs.pref_enabled %]checked[% END %]>
+	<label for="pref_enabled">Enabled</label>
+[% END %]
+
+[% WRAPPER setting title="Listen address" desc="Where the gateway listens for your reverse proxy (IP:port). Keep it on 127.0.0.1 unless the proxy runs on another machine." %]
+	<input type="text" class="stdedit" name="pref_listen" value="[% prefs.pref_listen | html %]" placeholder="127.0.0.1:9443">
+[% END %]
+
+[% WRAPPER setting title="Public URL" desc="The HTTPS address people use, e.g. https://music.example.com." %]
+	<input type="text" class="stdedit" name="pref_public_url" value="[% prefs.pref_public_url | html %]" placeholder="https://music.example.com">
+[% END %]
+
+[% WRAPPER setting title="Trusted proxies" desc="IP addresses of reverse proxies on other machines (comma-separated). Leave empty if the proxy runs on this machine." %]
+	<input type="text" class="stdedit" name="pref_trusted_proxies" value="[% prefs.pref_trusted_proxies | html %]" placeholder="10.0.0.10">
+[% END %]
+
+[% WRAPPER setting title="Gateway path" desc="Development only: an absolute path to a gateway binary. Leave empty to use the one bundled with the plugin." %]
+	<input type="text" class="stdedit" name="pref_gateway_path" value="[% prefs.pref_gateway_path | html %]">
+[% END %]
+
+<div id="anywhere-app" class="anywhere">
+	<h3>Status</h3>
+	<div id="aw-status" class="aw-panel">Loading…</div>
+
+	<h3>Users</h3>
+	<p class="aw-note">Admins can control every player. Listeners control their own devices plus the home players you grant them.</p>
+	<div id="aw-users" class="aw-panel"></div>
+	<fieldset class="aw-panel" id="aw-create">
+		<legend>Add a user</legend>
+		<label>Username <input id="aw-new-user" autocomplete="off" spellcheck="false"></label>
+		<label>Password <input id="aw-new-password" type="password" autocomplete="new-password"></label>
+		<label>Role
+			<select id="aw-new-role"><option value="listener">Listener</option><option value="admin">Admin</option></select>
+		</label>
+		<button type="button" id="aw-create-btn">Add user</button>
+	</fieldset>
+
+	<h3>Devices</h3>
+	<div id="aw-devices" class="aw-panel"></div>
+
+	<h3>Recent activity</h3>
+	<div id="aw-audit" class="aw-panel"></div>
+
+	<p id="aw-message" class="aw-message" role="status" aria-live="polite"></p>
+</div>
+
+<script src="/plugins/LyrionAnywhere/settings/anywhere.js"></script>
+
+[% PROCESS settings/footer.html %]

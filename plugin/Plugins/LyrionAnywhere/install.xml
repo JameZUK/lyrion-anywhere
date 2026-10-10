@@ -1,0 +1,17 @@
+<?xml version='1.0'?>
+<extension>
+	<id>io.github.jamezuk.lyrionanywhere</id>
+	<name>PLUGIN_LYRIONANYWHERE</name>
+	<module>Plugins::LyrionAnywhere::Plugin</module>
+	<version>0.1.0</version>
+	<description>PLUGIN_LYRIONANYWHERE_DESC</description>
+	<creator>JameZUK</creator>
+	<optionsURL>plugins/LyrionAnywhere/settings/basic.html</optionsURL>
+	<homepageURL>https://github.com/JameZUK/lyrion-anywhere</homepageURL>
+	<defaultState>enabled</defaultState>
+	<targetApplication>
+		<id>Lyrion Music Server</id>
+		<minVersion>9.0</minVersion>
+		<maxVersion>*</maxVersion>
+	</targetApplication>
+</extension>

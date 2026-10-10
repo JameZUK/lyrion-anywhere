@@ -1,0 +1,15 @@
+/* Theme-neutral: inherits colours so it works with the Default and Material skins. */
+.anywhere h3 { margin: 1.5em 0 0.4em; }
+.anywhere-intro, .aw-note { opacity: 0.8; max-width: 48em; }
+.aw-panel { margin: 0.25em 0 0.75em; }
+.aw-panel dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.2em 1em; margin: 0 0 0.5em; }
+.aw-panel dt { opacity: 0.7; }
+.aw-panel dd { margin: 0; }
+.aw-table { border-collapse: collapse; width: 100%; max-width: 64em; }
+.aw-table th, .aw-table td { text-align: left; padding: 0.3em 0.6em; border-bottom: 1px solid rgba(128, 128, 128, 0.3); vertical-align: top; }
+.aw-actions, .aw-grant { display: flex; flex-wrap: wrap; gap: 0.3em; align-items: center; }
+.aw-mono { font-family: monospace; }
+.aw-danger { outline: 2px solid currentColor; }
+.aw-message { min-height: 1.4em; font-weight: bold; }
+.aw-error { color: #c62828; }
+#aw-create label { display: inline-flex; gap: 0.4em; align-items: center; margin-right: 1em; }

@@ -50,6 +50,9 @@ enum Cmd {
         /// Web app directory to serve at /.
         #[arg(long)]
         static_dir: Option<PathBuf>,
+        /// Append logs to this file instead of standard output (used by the LMS plugin).
+        #[arg(long)]
+        log_file: Option<PathBuf>,
     },
     /// Administer accounts directly (before the LMS plugin is set up).
     Admin {
@@ -81,12 +84,28 @@ enum AdminCmd {
 }
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
-    match Cli::parse().cmd {
+    let cli = Cli::parse();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let log_file = match &cli.cmd {
+        Cmd::Serve { log_file, .. } => log_file.clone(),
+        _ => None,
+    };
+    match log_file {
+        Some(path) => {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .unwrap_or_else(|e| fail(format!("{}: {e}", path.display())));
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file))
+                .init();
+        }
+        None => tracing_subscriber::fmt().with_env_filter(filter).init(),
+    }
+    match cli.cmd {
         Cmd::Admin { data_dir, cmd } => admin_command(&data_dir, cmd),
         Cmd::Serve {
             listen,
@@ -99,6 +118,7 @@ fn main() {
             allowed_origins,
             trusted_proxies,
             static_dir,
+            log_file: _,
         } => {
             if !admin_listen.ip().is_loopback() {
                 fail("--admin-listen must be a loopback address");

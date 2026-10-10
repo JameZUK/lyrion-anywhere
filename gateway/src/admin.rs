@@ -34,6 +34,10 @@ pub fn router(gw: AppState, secret: String) -> Router {
     Router::new()
         .route("/admin/v1/users", get(list_users).post(create_user))
         .route("/admin/v1/users/{name}", delete(delete_user))
+        // POST forms of the deletes, for HTTP clients without DELETE (e.g. LMS's).
+        .route("/admin/v1/users/{name}/delete", post(delete_user))
+        .route("/admin/v1/devices/{id}/revoke", post(revoke_device))
+        .route("/admin/v1/users/{name}/players/{mac}/remove", post(ungrant))
         .route("/admin/v1/users/{name}/password", post(set_password))
         .route("/admin/v1/users/{name}/disabled", post(set_disabled))
         .route("/admin/v1/users/{name}/pairing", post(pairing_code))

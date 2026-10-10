@@ -15,3 +15,6 @@ dev/local.*
 
 # browser automation output
 .playwright-mcp/
+
+# gateway binaries are build artefacts
+plugin/Plugins/LyrionAnywhere/Bin/*/

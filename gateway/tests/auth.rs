@@ -813,3 +813,76 @@ async fn admin_grants_and_removes_home_players() {
         .unwrap();
     assert_eq!(anon.status(), S::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn admin_post_forms_of_deletes_work() {
+    let mut h = harness().await;
+    let (base, secret) = h.admin().await;
+    let c = reqwest::Client::new();
+    let mut ws = h.dial().await;
+    ws.send(Message::Text(h.tok_a.clone().into()))
+        .await
+        .unwrap();
+    next(&mut ws).await;
+    let _lms = h.lms.accept().await;
+    let devices = json_of(
+        c.get(format!("{base}/admin/v1/devices"))
+            .bearer_auth(&secret)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    let id = devices["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["username"] == "alice")
+        .unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let r = c
+        .post(format!("{base}/admin/v1/devices/{id}/revoke"))
+        .bearer_auth(&secret)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::NO_CONTENT);
+    expect_close(&mut ws, CloseCode::Policy).await;
+    c.post(format!("{base}/admin/v1/users/alice/players"))
+        .bearer_auth(&secret)
+        .json(&json!({"player": "aa:bb:cc:dd:ee:01"}))
+        .send()
+        .await
+        .unwrap();
+    let r = c
+        .post(format!(
+            "{base}/admin/v1/users/alice/players/aa:bb:cc:dd:ee:01/remove"
+        ))
+        .bearer_auth(&secret)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::NO_CONTENT);
+    assert!(h.accounts.players_granted("alice").unwrap().is_empty());
+    let r = c
+        .post(format!("{base}/admin/v1/users/bob/delete"))
+        .bearer_auth(&secret)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::NO_CONTENT);
+    assert!(
+        h.accounts
+            .list_users()
+            .unwrap()
+            .iter()
+            .all(|u| u.username != "bob")
+    );
+    let anon = c
+        .post(format!("{base}/admin/v1/users/alice/delete"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anon.status(), S::FORBIDDEN);
+}

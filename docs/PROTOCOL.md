@@ -66,6 +66,8 @@ Endpoints:
 - `DELETE /admin/v1/devices/{id}`
 - `GET /admin/v1/audit`
 
+LMS's HTTP client cannot send `DELETE`, so each delete also has a `POST` form: `/admin/v1/users/{name}/delete`, `/admin/v1/users/{name}/players/{mac}/remove` and `/admin/v1/devices/{id}/revoke`.
+
 ## Player socket
 
 ### Opening

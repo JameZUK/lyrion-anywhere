@@ -61,3 +61,24 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses advisories bans sources
+
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the gateway (for the plugin/gateway contract test)
+        run: cargo build -p anywhere-gateway
+      - name: Plugin tests (Perl, against LMS stubs and the real gateway)
+        working-directory: plugin
+        env:
+          ANYWHERE_REQUIRE_GATEWAY: '1'
+          PERL5LIB: t/stubs:.
+        run: prove -r t/
+      - name: Settings page tests
+        working-directory: plugin
+        run: node --test t/js/*.test.mjs

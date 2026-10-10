@@ -1,0 +1,5 @@
+PLUGIN_LYRIONANYWHERE
+	EN	Lyrion Anywhere
+
+PLUGIN_LYRIONANYWHERE_DESC
+	EN	Secure remote access to this server from the web and mobile apps, through the Lyrion Anywhere gateway.

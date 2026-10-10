@@ -637,6 +637,8 @@ const RESERVED: &[&str] = &[
     "favorites",
     "artwork",
     "setsncredentials",
+    // The LMS plugin's own management commands: never callable remotely.
+    "anywhere",
 ];
 
 #[cfg(test)]
@@ -897,6 +899,17 @@ mod tests {
     #[test]
     fn unknown_apps_are_not_callable() {
         denied(MINE, json!(["evilapp", "items", 0, 10]));
+        // The plugin's management commands are never reachable, even if a menu named them.
+        let mut with_anywhere = apps();
+        with_anywhere.insert("anywhere".into());
+        for cmd in [
+            json!(["anywhere", "users"]),
+            json!(["anywhere", "user_create", "username:x"]),
+        ] {
+            let raw = cmd.as_array().unwrap().clone();
+            assert!(check(&Who(Role::Admin), "", &raw, &with_anywhere).is_err());
+            assert!(check(&Who(Role::Admin), MINE, &raw, &with_anywhere).is_err());
+        }
         denied("", json!(["evilapp", "items", 0, 10]));
     }
 
@@ -905,7 +918,7 @@ mod tests {
         let menu = json!({
             "appss_loop": [
                 {"cmd": "spotty"}, {"cmd": "readdirectory"}, {"cmd": "pref"},
-                {"cmd": "Bad Name"}, {"cmd": "../x"}, {"cmd": ""}
+                {"cmd": "Bad Name"}, {"cmd": "../x"}, {"cmd": ""}, {"cmd": "anywhere"}
             ],
             "radioss_loop": [{"cmd": "bbcsounds"}]
         });
