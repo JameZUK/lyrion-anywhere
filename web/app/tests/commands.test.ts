@@ -144,13 +144,45 @@ test('menu images map only to paths the gateway relays', () => {
 	expect(c.imagePath('https://img.example.com/a.jpg', 100)).toBe(
 		'imageproxy/https%3A%2F%2Fimg.example.com%2Fa.jpg/image_100x100',
 	);
-	expect(c.imagePath('/imageproxy/abc/image.png')).toBe('imageproxy/abc/image.png');
+	expect(c.imagePath('/imageproxy/https%3A%2F%2Fcdn.example.com%2Fb.png/image.png')).toBe(
+		'imageproxy/https%3A%2F%2Fcdn.example.com%2Fb.png/image.png',
+	);
+	expect(c.imagePath('imageproxy/https%3a%2f%2fcdn.example.com%2Fb.png/image_300x300_o')).not.toBeNull();
 	for (const bad of [
 		'html/images/../../etc/passwd.png', 'html//images/x.png', 'html/images/x.php', 'javascript:alert(1)',
 		'file:///etc/x.png', 'C:\\x.png', 'plugins/../x.png', 'html/images/%2e%2e/x.png', 42, null, 'x'.repeat(3000),
+		// The gateway relays only an encoded http(s) URL here.
+		'/imageproxy/abc/image.png', 'imageproxy/file%3A%2F%2F%2Fetc%2Fpasswd/image', 'imageproxy/%ZZ/image',
+		'imageproxy/https%3A%2F%2Fx%0A/image', 'imageproxy/https%3A%2F%2Fx/not-image',
 	]) {
 		expect(c.imagePath(bad), String(bad)).toBeNull();
 	}
+});
+
+// Regression: an upper-case "%2E" slipped past a lower-case-only check, so
+// "imageproxy/x/image/.%2E/.%2E/.%2E/.%2E/me" resolved to /v1/me and carried the bearer token.
+test('art paths cannot climb out of /v1/art with dots in any encoding', () => {
+	const climbs = [
+		'imageproxy/x/image/.%2E/.%2E/.%2E/.%2E/me',
+		'imageproxy/x/image/%2E%2E/%2E%2E/%2E%2E/me',
+		'imageproxy/x/image/%2e%2E/%2E%2e/me',
+		'imageproxy/x/image/.%2e/.%2e/me',
+		'imageproxy/%2E%2E/image',
+		'imageproxy/https%3A%2F%2Fx/image/../../me',
+		'imageproxy/https%3A%2F%2Fx/image/%2E%2E%2F%2E%2E%2Fme',
+		'imageproxy/x%2F..%2F..%2Fme/image',
+		'html/images/%2E%2E/%2E%2E/me.png',
+		'html/images/.%2E/x.png',
+		'html/images/%252E%252E/x.png', // double encoding
+		'html/images/%2F%2E%2E%2Fx.png',
+		'html/images\\..\\..\\me.png',
+		'html/images/..\\x.png',
+		'imageproxy\\https%3A%2F%2Fx\\image',
+		'html/images/./x.png',
+		'html/images/x.png?/../../me',
+		'html/images/x.png#/../../me',
+	];
+	for (const p of climbs) expect(c.imagePath(p), p).toBeNull();
 });
 
 test('app and info menus validate their names and ids', () => {

@@ -75,3 +75,45 @@ export class Outbox {
     return this.items.length;
   }
 }
+
+/**
+ * Asks the page for an AudioContext at the core's output rate once per change, not on every
+ * 20 ms tick: each request makes the page build a new context.
+ */
+export class RateRequest {
+  constructor() {
+    this.requested = 0;
+  }
+
+  /** Ask for `rate`, given the page's context runs at `ready`? */
+  want(rate, ready) {
+    if (!rate || rate === ready || rate === this.requested) return false;
+    this.requested = rate;
+    return true;
+  }
+
+  reset() {
+    this.requested = 0;
+  }
+}
+
+/**
+ * The gateway refused the access token: wait for the page to send a renewed one, then
+ * reconnect once, whichever message brings it.
+ */
+export class AuthWait {
+  constructor() {
+    this.waiting = false;
+  }
+
+  refused() {
+    this.waiting = true;
+  }
+
+  /** A new token arrived: reconnect now? (Not while connected, and only once.) */
+  token(open) {
+    if (!this.waiting || open) return false;
+    this.waiting = false;
+    return true;
+  }
+}

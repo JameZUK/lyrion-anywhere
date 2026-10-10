@@ -85,8 +85,12 @@ export class EventsClient {
 			if (this.#ws !== ws || this.#stopped) return;
 			this.#ws = null;
 			if (e.code === 1008 && e.reason === 'unauthorised') {
-				// Probably an expired token: renew, then reconnect at once.
-				if (!(await this.session.renew())) return this.stop();
+				// Probably an expired token: renew, then reconnect. A renewal that can't reach
+				// the server is retried by the session; keep trying here too (with backoff)
+				// unless it actually signed the user out.
+				const renewed = await this.session.renew();
+				if (this.#ws !== null || this.#stopped) return; // restarted or stopped meanwhile
+				if (!renewed && !this.session.current) return this.stop();
 			} else if (e.code === 1008) {
 				return this.stop(); // revoked: the session listener signs out
 			}

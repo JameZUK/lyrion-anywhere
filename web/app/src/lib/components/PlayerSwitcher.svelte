@@ -7,6 +7,23 @@
 
 	let { onclose }: { onclose: () => void } = $props();
 
+	// Focus moves into the panel when it opens, and back to whatever opened it (the player
+	// button) when it closes; Escape closes it.
+	let sheet = $state<HTMLDivElement>();
+	$effect(() => {
+		const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		sheet?.focus();
+		return () => {
+			if (opener?.isConnected) opener.focus();
+		};
+	});
+	function onkeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape' && !e.defaultPrevented) {
+			e.preventDefault();
+			onclose();
+		}
+	}
+
 	function pick(id: string) {
 		app.select(id);
 		onclose();
@@ -28,7 +45,9 @@
 	);
 </script>
 
-<div class="sheet" role="dialog" aria-label="Choose a player">
+<svelte:window {onkeydown} />
+
+<div class="sheet" role="dialog" aria-label="Choose a player" tabindex="-1" bind:this={sheet}>
 	<header>
 		<h2>Players</h2>
 		<button class="icon-btn" onclick={onclose} aria-label="Close"><Icon name="close" /></button>
@@ -82,6 +101,9 @@
 		max-height: min(70vh, 560px);
 		overflow: auto;
 		padding: 0.5rem;
+	}
+	.sheet:focus {
+		outline: none; /* the panel itself only holds focus for keyboard users to move on from */
 	}
 	header {
 		display: flex;

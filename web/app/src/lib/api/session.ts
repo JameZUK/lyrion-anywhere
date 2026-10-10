@@ -21,6 +21,19 @@ export const RETRY_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
 export const refused = (e: unknown) => e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429;
 type Listener = (s: Session | null, status: SessionStatus) => void;
 
+/** Set while a sign-out has not reached the server yet: the next page load must not restore. */
+export const SIGNED_OUT_KEY = 'anywhere.signedOut';
+
+type Flags = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+
+function safeLocal(): Flags | undefined {
+	try {
+		return globalThis.localStorage;
+	} catch {
+		return undefined;
+	}
+}
+
 export interface AuthApi {
 	login: typeof auth.login;
 	refresh: typeof auth.refresh;
@@ -35,8 +48,34 @@ export class SessionManager {
 	#renewing: Promise<boolean> | null = null;
 	#retry: ReturnType<typeof setTimeout> | undefined;
 	#attempt = 0;
+	/**
+	 * Bumped by every sign-out and sign-in: a refresh started before it must not apply its
+	 * result (it would sign the user back in, or out of the new session).
+	 */
+	#gen = 0;
 
-	constructor(private api: AuthApi = auth) {}
+	constructor(
+		private api: AuthApi = auth,
+		private flags: Flags | undefined = safeLocal(),
+	) {}
+
+	/** A sign-out this browser has not managed to tell the server about yet. */
+	get signOutPending(): boolean {
+		try {
+			return this.flags?.getItem(SIGNED_OUT_KEY) === '1';
+		} catch {
+			return false;
+		}
+	}
+
+	#flag(on: boolean) {
+		try {
+			if (on) this.flags?.setItem(SIGNED_OUT_KEY, '1');
+			else this.flags?.removeItem(SIGNED_OUT_KEY);
+		} catch {
+			/* storage blocked: best effort */
+		}
+	}
 
 	get token(): string {
 		return this.current?.access_token ?? '';
@@ -75,10 +114,20 @@ export class SessionManager {
 
 	/** Sign in silently with the refresh cookie, if this browser has one. */
 	async restore(): Promise<boolean> {
+		if (this.signOutPending) {
+			// Signed out while offline: show the sign-in form, and finish signing out quietly.
+			this.#set(null);
+			void this.#finishSignOut();
+			return false;
+		}
+		const gen = this.#gen;
 		try {
-			this.#set(await this.api.refresh());
+			const s = await this.api.refresh();
+			if (gen !== this.#gen) return false; // signed out (or in) meanwhile
+			this.#set(s);
 			return true;
 		} catch (e) {
+			if (gen !== this.#gen) return false;
 			if (refused(e)) {
 				this.#set(null);
 			} else {
@@ -94,31 +143,71 @@ export class SessionManager {
 	}
 
 	async signIn(username: string, password: string, totp?: string): Promise<void> {
-		this.#set(await this.api.login(username, password, totp));
+		const s = await this.api.login(username, password, totp);
+		this.#gen++;
+		this.#renewing = null;
+		this.#flag(false);
+		this.#set(s);
 	}
 
+	/**
+	 * Sign out. The flag is set first and cleared only once the server has revoked the
+	 * session, so a sign-out that can't reach the server still holds after a reload.
+	 */
 	async signOut(): Promise<void> {
 		const token = this.token;
+		this.#gen++;
+		this.#renewing = null;
+		this.#flag(true);
 		this.#set(null);
-		clearTimeout(this.#retry);
-		if (token) await this.api.logout(token).catch(() => {});
+		if (!token) return; // finished on the next page load (see restore)
+		const gen = this.#gen;
+		try {
+			await this.api.logout(token);
+			if (gen === this.#gen) this.#flag(false);
+		} catch {
+			/* offline: the flag stays, and the next page load finishes it */
+		}
+	}
+
+	/** Revoke the session the refresh cookie still holds, then forget the pending sign-out. */
+	async #finishSignOut(): Promise<void> {
+		const gen = this.#gen;
+		try {
+			const s = await this.api.refresh();
+			if (gen !== this.#gen) return; // signed in meanwhile: leave the new session alone
+			await this.api.logout(s.access_token);
+			if (gen === this.#gen) this.#flag(false);
+		} catch (e) {
+			// Refused: the cookie is no longer valid, so there is nothing left to revoke.
+			if (refused(e) && gen === this.#gen) this.#flag(false);
+		}
 	}
 
 	/** Get a new access token. Concurrent callers share one refresh. */
 	renew(): Promise<boolean> {
-		this.#renewing ??= (async () => {
+		if (!this.current) return Promise.resolve(false);
+		if (this.#renewing) return this.#renewing;
+		const gen = this.#gen;
+		let p: Promise<boolean> | null = null;
+		p = (async () => {
+			await Promise.resolve(); // let `#renewing` be set before anything below runs
 			try {
-				this.#set(await this.api.refresh());
+				const s = await this.api.refresh();
+				if (gen !== this.#gen) return false; // signed out meanwhile: stay signed out
+				this.#set(s);
 				return true;
 			} catch (e) {
+				if (gen !== this.#gen) return false;
 				if (refused(e)) this.#set(null);
 				else this.#later(() => void this.renew()); // stay signed in; try again soon
 				return false;
 			} finally {
-				this.#renewing = null;
+				if (this.#renewing === p) this.#renewing = null;
 			}
 		})();
-		return this.#renewing;
+		this.#renewing = p;
+		return p;
 	}
 
 	/** Run an authenticated call; on 401, renew the token once and retry. */

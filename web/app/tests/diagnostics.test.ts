@@ -1,4 +1,6 @@
-import { Reporter, buildReport } from '$lib/player/diagnostics';
+import { Reporter, buildReport, diagnosticsSender } from '$lib/player/diagnostics';
+import { SessionManager } from '$lib/api/session';
+import { ApiError } from '$lib/api/http';
 
 afterEach(() => vi.useRealTimers());
 
@@ -40,6 +42,46 @@ test('reports are batched, with urgent ones sent at once', async () => {
 	await vi.advanceTimersByTimeAsync(0);
 	expect(sent).toEqual([false, true]);
 	vi.useRealTimers();
+});
+
+describe('diagnosticsSender', () => {
+	const ok = () => new Response(null, { status: 204 });
+	test('posts the report with the bearer token and CSRF header', async () => {
+		const f = vi.fn(async () => ok());
+		const send = diagnosticsSender((fn) => fn('t1'), f as unknown as typeof fetch);
+		await send('{"a":1}', true);
+		const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe('/v1/diagnostics');
+		expect(init).toMatchObject({ method: 'POST', body: '{"a":1}', keepalive: true });
+		expect(init.headers).toMatchObject({ Authorization: 'Bearer t1', 'X-Anywhere-Client': '1' });
+	});
+
+	// Regression: the response was never checked, so a refused (expired) token was neither
+	// renewed nor noticed.
+	test('a 401 goes through the session renewal and is retried with the new token', async () => {
+		const auth = {
+			login: vi.fn(),
+			logout: vi.fn(async () => {}),
+			refresh: vi.fn(async () => ({ access_token: auth.refresh.mock.calls.length === 1 ? 't1' : 't2', expires_in: 900, user: { username: 'u', role: 'listener' as const }, device: { id: 1, name: 'd' } })),
+		};
+		const s = new SessionManager(auth, undefined);
+		await s.restore();
+		const seen: string[] = [];
+		const f = vi.fn(async (_u: unknown, init: RequestInit) => {
+			const t = (init.headers as Record<string, string>).Authorization!;
+			seen.push(t);
+			return t === 'Bearer t1' ? new Response('{}', { status: 401 }) : ok();
+		});
+		await diagnosticsSender((fn) => s.authed(fn), f as unknown as typeof fetch)('{}', false);
+		expect(seen).toEqual(['Bearer t1', 'Bearer t2']);
+	});
+
+	test('other failures are errors, not silent successes', async () => {
+		const send = diagnosticsSender((fn) => fn('t'), (async () => new Response('', { status: 500 })) as unknown as typeof fetch);
+		await expect(send('{}', false)).rejects.toMatchObject({ status: 500 });
+		const s403 = diagnosticsSender((fn) => fn('t'), (async () => new Response('', { status: 403 })) as unknown as typeof fetch);
+		await expect(s403('{}', false)).rejects.toBeInstanceOf(ApiError);
+	});
 });
 
 test('a failing send never throws', async () => {

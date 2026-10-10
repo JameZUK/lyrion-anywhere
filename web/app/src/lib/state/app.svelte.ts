@@ -36,6 +36,8 @@ class AppState {
 	#statusAt = 0;
 	#pending: ReturnType<typeof setTimeout> | undefined;
 	#events: EventsClient;
+	/** Bumped by every start and stop of the signed-in session. */
+	#run = 0;
 
 	constructor() {
 		this.#events = new EventsClient(session, {
@@ -88,8 +90,14 @@ class AppState {
 		// This device was the player before a reload: LMS lists it again only once it has
 		// reconnected, so hold the choice rather than switching to another player meanwhile.
 		if (this.playerId && loadResume()?.mac === this.playerId) this.#preferred = this.playerId;
+		const run = ++this.#run;
 		this.#events.start();
 		await this.loadPlayers();
+		// Signed out (or out and in again) while the players loaded: that sign-out already
+		// stopped everything, and a newer start owns the timers.
+		if (run !== this.#run || this.status !== 'signed-in') return;
+		clearInterval(this.#poll);
+		clearInterval(this.#tick);
 		this.#poll = setInterval(() => {
 			if (document.visibilityState === 'visible') void this.refresh();
 		}, POLL_MS);
@@ -98,7 +106,9 @@ class AppState {
 	}
 
 	#stopped() {
+		this.#run++;
 		this.#events.stop();
+		clearTimeout(this.#pending);
 		clearInterval(this.#poll);
 		clearInterval(this.#tick);
 		document.removeEventListener('visibilitychange', this.#onVisible);
