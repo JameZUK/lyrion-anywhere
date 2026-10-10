@@ -8,3 +8,4 @@ dev/local.*
 web/spike/pkg
 web/spike/tests
 plugin
+dist

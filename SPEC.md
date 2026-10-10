@@ -85,7 +85,7 @@ Native Android and iOS apps come after v1 and use the same documented protocol.
 
 ## 4. Plugin (`Plugins::LyrionAnywhere`)
 
-**Built (0.1.0, 2026-10-10):** settings (enable, listen address, public URL, trusted proxies, development gateway path), user/role/two-step/grant/device/audit management, `anywhere …` LMS commands, gateway supervision with restart backoff. **Still to come:** release-signature check, proxy self-test, device rename, streaming policy, player integration, packaging.
+**Built (0.1.0, 2026-10-10):** settings (enable, listen address, public URL, trusted proxies, development gateway path), user/role/two-step/grant/device/audit management, `anywhere …` LMS commands, gateway supervision with restart backoff. **Release (2026-10-10):** `tools/build-release.sh` builds the zip and `repo.xml`. It includes static gateways for x86_64/aarch64/armhf Linux, which the plugin checks against `Bin/SHA256SUMS` before running, and the browser player. **Still to come:** a cryptographic release signature (the checksums catch corruption and partial updates, not a malicious repository), macOS/Windows gateways, proxy self-test, device rename, streaming policy, player integration, packaging.
 
 **Trust boundary.** Account management runs through LMS's own JSON-RPC/CLI (`anywhere …` commands) and its settings page. So anyone who can use LMS on the LAN can create remote accounts, just as they can already control LMS. The settings page says to turn on LMS's password protection. Remote users can never reach these commands: the gateway's RPC allow-list reserves `anywhere`.
 

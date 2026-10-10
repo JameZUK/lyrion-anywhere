@@ -1,0 +1,54 @@
+#!/bin/bash
+# Checks a built release (tools/build-release.sh): layout, checksums, binaries, repo.xml.
+#   tools/test-release.sh [dist-dir]
+set -eu
+DIST=${1:-dist}
+PASS=0 FAIL=0
+ok()  { PASS=$((PASS + 1)); echo "ok   - $1"; }
+bad() { FAIL=$((FAIL + 1)); echo "FAIL - $1"; }
+t()   { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+
+ZIP=$(ls "$DIST"/LyrionAnywhere-*.zip | head -1)
+VERSION=$(basename "$ZIP" .zip | sed 's/^LyrionAnywhere-//')
+X=$(mktemp -d); trap 'rm -rf "$X"' EXIT
+unzip -q "$ZIP" -d "$X"
+
+echo "# layout"
+t "install.xml at the zip root" '[ -f "$X/install.xml" ]'
+t "install.xml version matches the zip name" 'grep -q "<version>$VERSION</version>" "$X/install.xml"'
+t "plugin module present" '[ -f "$X/Plugin.pm" ] && [ -f "$X/Gateway.pm" ]'
+t "settings page present" '[ -f "$X/HTML/EN/plugins/LyrionAnywhere/settings/basic.html" ]'
+t "browser player present" '[ -f "$X/web/index.html" ] && [ -f "$X/web/pkg/anywhere_wasm_bg.wasm" ] && [ -f "$X/web/player-worker.js" ]'
+t "no tests, dotfiles, or local config in the zip" '[ -z "$(cd "$X" && find . \( -name "*.t" -o -name ".*" -o -name "*.bak" -o -name "local.*" -o -name "*.env" \) ! -name . | head -1)" ]'
+t "no web player tests in the zip" '[ ! -d "$X/web/tests" ]'
+
+echo "# gateways"
+t "checksum list present" '[ -f "$X/Bin/SHA256SUMS" ]'
+t "every binary matches its checksum" '(cd "$X/Bin" && sha256sum --quiet -c SHA256SUMS)'
+t "every binary is listed" '[ "$(find "$X/Bin" -name anywhere-gateway -type f | wc -l)" = "$(wc -l < "$X/Bin/SHA256SUMS")" ]'
+for pair in x86_64-linux:x86-64 aarch64-linux:aarch64 armhf-linux:ARM; do
+	plat=${pair%%:*} arch=${pair##*:}
+	f="$X/Bin/$plat/anywhere-gateway"
+	t "$plat gateway is a static $arch executable" '[ -f "$f" ] && file -b "$f" | grep -q "$arch" && file -b "$f" | grep -q -E "statically linked|static-pie linked"'
+done
+if [ "$(uname -m)" = x86_64 ]; then
+	t "x86_64 gateway runs" '"$X/Bin/x86_64-linux/anywhere-gateway" --version >/dev/null'
+fi
+
+if [ "${ANYWHERE_RUN_ARM:-}" = 1 ]; then
+	# CI registers QEMU emulation, so the ARM builds can be run, not just inspected.
+	for pair in arm64:aarch64 arm/v7:armhf; do
+		p=${pair%%:*} d=${pair##*:}
+		t "$d gateway runs (emulated)" 'docker run --rm --platform "linux/$p" -v "$X/Bin/$d-linux:/b:ro" alpine:3.22 /b/anywhere-gateway --version >/dev/null 2>&1'
+	done
+fi
+
+echo "# repo.xml"
+SHA1=$(sha1sum "$ZIP" | cut -c1-40)
+t "repo.xml is well-formed" 'python3 -c "import sys,xml.dom.minidom; xml.dom.minidom.parse(sys.argv[1])" "$DIST/repo.xml"'
+t "repo.xml sha1 matches the zip" 'grep -q "<sha>$SHA1</sha>" "$DIST/repo.xml"'
+t "repo.xml version and URL match" 'grep -q "version=\"$VERSION\"" "$DIST/repo.xml" && grep -q "<url>https://[^<]*/LyrionAnywhere-$VERSION.zip</url>" "$DIST/repo.xml"'
+
+echo
+echo "$PASS passed, $FAIL failed"
+[ "$FAIL" = 0 ]

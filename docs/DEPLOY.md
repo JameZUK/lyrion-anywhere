@@ -10,7 +10,11 @@ There are two ways to run the gateway.
 
 ## 1. LMS plugin (recommended)
 
-Install the plugin and open *Settings › Plugins › Lyrion Anywhere*:
+Install the plugin from a release: in LMS, *Settings › Plugins › Additional repositories*, add the release's `repo.xml` URL, then install **Lyrion Anywhere**. Or unzip `LyrionAnywhere-<version>.zip` into a folder named `LyrionAnywhere` in LMS's plugin directory (e.g. `/var/lib/squeezeboxserver/Plugins/` on Debian). Don't leave a second copy of the plugin anywhere in that directory. Restart LMS.
+
+The release bundles static gateways for x86_64, aarch64 and armhf Linux, with a `Bin/SHA256SUMS` list. The plugin refuses to run a bundled gateway that doesn't match it. The release also bundles the browser player, which the gateway serves at `/`.
+
+Then open *Settings › Plugins › Lyrion Anywhere*:
 
 - **Enabled:** ticked.
 - **Listen address:** `127.0.0.1:9443` if the proxy runs on the LMS machine. Otherwise use the LMS machine's LAN address (e.g. `10.0.0.20:9443`), and allow only the proxy to reach that port.

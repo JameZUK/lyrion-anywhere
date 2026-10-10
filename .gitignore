@@ -18,3 +18,5 @@ dev/local.*
 
 # gateway binaries are build artefacts
 plugin/Plugins/LyrionAnywhere/Bin/*/
+plugin/Plugins/LyrionAnywhere/web/
+dist/

@@ -91,3 +91,25 @@ jobs:
         run: docker build -t lyrion-anywhere:test .
       - name: Image behind nginx with the example config
         run: tools/test-deploy.sh lyrion-anywhere:test
+
+  release:
+    # The full cross-build takes a while: run it on main and on tags, not on every branch.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the plugin release (three gateways, browser player)
+        run: tools/build-release.sh
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64,arm
+      - name: Check the release
+        env:
+          ANYWHERE_RUN_ARM: '1'
+        run: tools/test-release.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-release
+          path: |
+            dist/*.zip
+            dist/repo.xml

@@ -11,7 +11,8 @@ use strict;
 use warnings;
 
 use Config;
-use File::Spec::Functions qw(catdir catfile file_name_is_absolute);
+use Digest::SHA;
+use File::Spec::Functions qw(abs2rel catdir catfile file_name_is_absolute);
 
 use Slim::Utils::Log;
 use Slim::Utils::OSDetect;
@@ -95,6 +96,7 @@ sub command_line {
 	return (undef, 'listen address must be IP:port')              unless valid_hostport($o{listen});
 	return (undef, 'admin API must listen on loopback')            unless is_loopback($o{admin_listen});
 	return (undef, 'data directory must be an absolute path')      unless $o{data_dir} && file_name_is_absolute($o{data_dir});
+	return (undef, 'web directory must be an absolute path')       if $o{static_dir} && !file_name_is_absolute($o{static_dir});
 	for my $p (qw(http_port cli_port)) {
 		return (undef, "bad $p") unless defined $o{$p} && $o{$p} =~ /^\d{1,5}$/ && $o{$p} > 0 && $o{$p} <= 65535;
 	}
@@ -113,6 +115,7 @@ sub command_line {
 		'--lms-cli-port',  $o{cli_port},
 	);
 	push @argv, '--log-file', $o{log_file} if $o{log_file};
+	push @argv, '--static-dir', $o{static_dir} if $o{static_dir};
 	push @argv, map { ('--trusted-proxy', $_) } @proxies;
 	push @argv, map { ('--allowed-origin', $_) } @origins;
 	return (\@argv);
@@ -123,6 +126,37 @@ sub backoff {
 	my $n = shift;
 	my @steps = (5, 10, 30, 60);
 	return $steps[ $n <= 0 ? 0 : ($n > @steps ? $#steps : $n - 1) ];
+}
+
+# Check a bundled binary against Bin/SHA256SUMS (written by tools/build-release.sh), so a
+# corrupt, partial or swapped binary is never run. Returns an error message, or undef if
+# the binary matches. Binaries outside Bin/ (the development "Gateway path") are not checked.
+sub verify_binary {
+	my ($bin, $base) = @_;
+	return 'no gateway binary' unless $bin && -f $bin;
+	my $bindir = catdir($base // '', 'Bin');
+	my $rel = abs2rel($bin, $bindir);
+	return undef if !$base || $rel =~ m{^\.\.} || file_name_is_absolute($rel);
+	$rel =~ s{\\}{/}g;
+	my $sums = catfile($bindir, 'SHA256SUMS');
+	open my $fh, '<', $sums or return 'gateway checksum list missing (reinstall the plugin)';
+	my $want;
+	while (my $line = <$fh>) {
+		next unless $line =~ /^([0-9a-f]{64})\s+\*?(\S+)\s*$/;
+		$want = $1 if $2 eq $rel;
+	}
+	close $fh;
+	return "no checksum for $rel (reinstall the plugin)" unless $want;
+	my $got = eval { Digest::SHA->new(256)->addfile($bin, 'b')->hexdigest } // '';
+	return "gateway binary $rel failed its checksum (reinstall the plugin)" unless $got eq $want;
+	return undef;
+}
+
+# The browser player bundled with the plugin (release builds), if present.
+sub web_dir {
+	my $base = shift or return undef;
+	my $dir = catdir($base, 'web');
+	return -f catfile($dir, 'index.html') ? $dir : undef;
 }
 
 # Split a comma/space separated list.
@@ -154,6 +188,7 @@ sub _options {
 		http_port       => $server->get('httpport') || 9000,
 		cli_port        => ($cli && $cli->get('cliport')) || 9090,
 		log_file        => $logdir ? catfile($logdir, 'lyrion-anywhere.log') : undef,
+		static_dir      => web_dir($basedir),
 		trusted_proxies => [ split_list($prefs->get('trusted_proxies')) ],
 		allowed_origins => [ $public ? $public : () ],
 	);
@@ -223,8 +258,22 @@ sub _launch {
 		$log->error("cannot start gateway: $err");
 		return;
 	}
-	if (!-x $argv->[0]) {
+	if (!-f $argv->[0]) {
 		$last_error = "gateway binary not found: $argv->[0]";
+		$log->error($last_error);
+		return;
+	}
+	if (!$prefs->get('gateway_path')) {
+		if (my $bad = verify_binary($argv->[0], $basedir)) {
+			$last_error = $bad;
+			$log->error($last_error);
+			return;
+		}
+		# Zip extraction can drop the executable bit.
+		chmod 0755, $argv->[0] unless -x $argv->[0];
+	}
+	if (!-x $argv->[0]) {
+		$last_error = "gateway binary is not executable: $argv->[0]";
 		$log->error($last_error);
 		return;
 	}

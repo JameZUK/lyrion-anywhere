@@ -1,6 +1,7 @@
 # Gateway supervisor: platform detection, binary selection, command line, backoff.
 use strict; use warnings;
 use Test::More;
+use File::Temp ();
 use Plugins::LyrionAnywhere::Gateway;
 my $G = 'Plugins::LyrionAnywhere::Gateway';
 
@@ -35,7 +36,26 @@ is_deeply($argv, [
 	'--trusted-proxy', '10.0.0.10', '--allowed-origin', 'https://music.example.com',
 ], 'argument list (each value its own argument: no shell)');
 
+{
+	my ($a) = Plugins::LyrionAnywhere::Gateway::command_line(%ok, static_dir => '/p/web');
+	my ($i) = grep { $a->[$_] eq '--static-dir' } 0 .. $#$a;
+	ok(defined $i && $a->[$i + 1] eq '/p/web', 'web player directory passed when bundled')
+		or diag explain $a;
+	ok(!grep({ $_ eq '--static-dir' } @$argv), 'no web directory flag when none is bundled');
+}
+
+{
+	my $base = File::Temp::tempdir(CLEANUP => 1);
+	is(Plugins::LyrionAnywhere::Gateway::web_dir($base), undef, 'no web directory: nothing served');
+	mkdir "$base/web";
+	is(Plugins::LyrionAnywhere::Gateway::web_dir($base), undef, 'empty web directory: nothing served');
+	open my $fh, '>', "$base/web/index.html" or die; close $fh;
+	is(Plugins::LyrionAnywhere::Gateway::web_dir($base), "$base/web", 'bundled player found');
+	is(Plugins::LyrionAnywhere::Gateway::web_dir(undef), undef, 'no plugin directory yet');
+}
+
 my %bad = (
+	'relative web dir'            => { static_dir => 'web' },
 	'admin API on all interfaces' => { admin_listen => '0.0.0.0:9445' },
 	'admin API on a LAN address'  => { admin_listen => '10.0.0.5:9445' },
 	'listen not IP:port'          => { listen => 'localhost:9443' },
