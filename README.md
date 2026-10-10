@@ -15,7 +15,8 @@ Secure internet access to a [Lyrion Music Server](https://lyrion.org) through on
 | `web/spike/` | Phase 0 browser player page (`tools/build-web-spike.sh`) |
 | `plugin/` | LMS plugin: settings, accounts and gateway supervision |
 | `web/` | SvelteKit web app (planned) |
-| `docs/` | Documentation and reports |
+| `deploy/` | Example reverse-proxy config (nginx) |
+| `docs/` | Documentation and reports; deployment in [`docs/DEPLOY.md`](docs/DEPLOY.md) |
 
 ## Development
 

@@ -4,6 +4,20 @@ Dated entries, newest first.
 
 ## 2026-10-10
 
+### Phase 1: nginx and Docker
+- **Docker image:**
+  - a static gateway binary plus the browser player;
+  - distroless base, with no shell; runs as non-root; private `/data` volume.
+- **`deploy/nginx/lyrion-anywhere.conf`:**
+  - TLS, HSTS, WebSocket upgrades, unbuffered streams, a 64 KiB body cap;
+  - `X-Forwarded-For` overwritten, never appended.
+- **`docs/DEPLOY.md`:** the plugin and Docker set-ups, notes for running behind a CDN, and a checklist.
+- **Gateway:** the events socket now sends a ping every 30 s, so proxies with idle timeouts (Cloudflare closes after 100 s) don't drop quiet sockets.
+- **Tests:**
+  - `tools/test-deploy.sh` runs the image behind nginx with the example config, as a new CI job. 24 checks cover: TLS redirect, a single CSP, LMS/admin/traversal paths unreachable, sign-in, cookie flags, origin checks, WebSocket upgrades, private data files, and lockouts that hold against spoofed `X-Forwarded-For`. A mutation check confirmed the spoofing check fails with the common `$proxy_add_x_forwarded_for`.
+  - A keepalive test, mutation-checked.
+- **Fixed:** a flaky events test that checked the LMS subscription before it was sent.
+
 ### Phase 1: LMS plugin
 - **`Plugins::LyrionAnywhere` 0.1.0** (LMS 9.0+):
   - settings for the gateway (enable, listen address, public URL, trusted proxies), each validated before it is saved;

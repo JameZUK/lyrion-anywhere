@@ -221,6 +221,8 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
         .await;
     let mut recheck = tokio::time::interval(RECHECK);
     recheck.tick().await;
+    let mut keepalive = tokio::time::interval(gw.cfg.ws_keepalive);
+    keepalive.tick().await;
     loop {
         tokio::select! {
             ev = rx.recv() => match ev {
@@ -248,6 +250,11 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
                 Some(Ok(_)) => return close(ws, close_code::POLICY, "unexpected message").await,
             },
+            _ = keepalive.tick() => {
+                if ws.send(Message::Ping(Default::default())).await.is_err() {
+                    return;
+                }
+            }
             _ = recheck.tick() => {
                 // Revocation and permission changes take effect without reconnecting.
                 if !gw.accounts().device_active(principal.device_id) {

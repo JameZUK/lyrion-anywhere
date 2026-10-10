@@ -405,7 +405,7 @@ The **v1 release** is Phases 0–3.
    3. the RPC allow-list, events and art;
    4. the plugin settings page and gateway supervision (_done 2026-10-10; signature check and packaging remain_);
    5. the screen-locked phone tests (Android, iOS);
-   6. nginx config and the Docker image.
+   6. nginx config and the Docker image (_done 2026-10-10: `deploy/`, `Dockerfile`, `docs/DEPLOY.md`_).
    - **Gate:** an external security review, plus scanner tests proving LMS paths are unreachable.
    - **Gate:** a phone keeps playing through a 30 s network dropout and 4 minutes with the screen locked.
 2. **Web app.** All of §7.2 except offline, as an installable PWA.

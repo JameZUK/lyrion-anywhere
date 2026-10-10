@@ -82,6 +82,9 @@ pub struct Config {
     pub replay_window: usize,
     /// Web app directory served at `/`, if any.
     pub static_dir: Option<PathBuf>,
+    /// Ping interval on quiet WebSockets, so proxies with idle timeouts (Cloudflare drops
+    /// after 100 s) keep them open.
+    pub ws_keepalive: Duration,
 }
 
 impl Default for Config {
@@ -99,6 +102,7 @@ impl Default for Config {
             detached_queue_limit: 1024 * 1024,
             replay_window: 4 * 1024 * 1024,
             static_dir: None,
+            ws_keepalive: Duration::from_secs(30),
         }
     }
 }

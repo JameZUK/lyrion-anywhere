@@ -172,7 +172,8 @@ async fn events_are_filtered_to_permitted_players_and_redacted() {
     let theirs = anywhere_core::proto::format_mac(&h.mac_b);
     let mut ws = h.events(&h.tok_a).await;
     wait_for_async(|| async { h.lms.cli_listener_count().await == 1 }).await;
-    assert!(
+    // The listener connects before it subscribes; wait for the subscription itself.
+    wait_for_async(|| async {
         h.lms
             .rec
             .lock()
@@ -180,7 +181,8 @@ async fn events_are_filtered_to_permitted_players_and_redacted() {
             .cli_in
             .concat()
             .contains("listen 1")
-    );
+    })
+    .await;
 
     let esc = |m: &str| m.replace(':', "%3A");
     h.lms
@@ -211,6 +213,25 @@ async fn events_are_filtered_to_permitted_players_and_redacted() {
     assert_eq!(
         second,
         json!({ "player": null, "event": ["rescan", "done"] })
+    );
+}
+
+#[tokio::test]
+async fn quiet_events_socket_is_kept_alive_with_pings() {
+    // Proxies close idle sockets (Cloudflare after 100 s); the gateway must ping.
+    let h = harness_with(|c| c.ws_keepalive = std::time::Duration::from_millis(100)).await;
+    let mut ws = h.events(&h.tok_a).await;
+    for _ in 0..2 {
+        match next(&mut ws).await {
+            Message::Ping(_) => {}
+            m => panic!("expected a keepalive ping, got {m:?}"),
+        }
+    }
+    // Pongs from the client are accepted, not treated as unexpected messages.
+    ws.send(Message::Pong(Default::default())).await.unwrap();
+    assert!(
+        matches!(next(&mut ws).await, Message::Ping(_)),
+        "socket still open"
     );
 }
 

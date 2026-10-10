@@ -1,0 +1,10 @@
+target
+.git
+.github
+.env*
+dev/local.*
+*.token
+.playwright-mcp
+web/spike/pkg
+web/spike/tests
+plugin
