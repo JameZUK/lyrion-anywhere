@@ -28,7 +28,7 @@ RUN cargo build --locked --release -p anywhere-wasm --target wasm32-unknown-unkn
  && wasm-bindgen --target web --no-typescript --out-dir /out/pkg \
       target/wasm32-unknown-unknown/release/anywhere_wasm.wasm
 
-FROM node:24.11.1-alpine3.22@sha256:2867d550cf9d8bb50059a0fff528741f11a84d985c732e60e19e8e75c7239c43 AS web
+FROM node:26.3.0-alpine3.22@sha256:c7932b9e5e337b0e733d6e16abc1b0e104759e8b05e59ed56586cce967d26dfe AS web
 WORKDIR /src/web/app
 COPY web/app/package.json web/app/package-lock.json ./
 RUN npm ci --no-audit --no-fund
