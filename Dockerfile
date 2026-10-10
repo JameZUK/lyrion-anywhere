@@ -9,7 +9,7 @@
 # Base images are pinned by digest (tag kept for reading); Dependabot proposes updates.
 
 # --- gateway: a static musl binary -------------------------------------------------------
-FROM rust:1.98-alpine3.22@sha256:a1796ca6fa216d6727b5f61c69e4c665b120b1a4dcb969639e2f25f1ed309456 AS gateway
+FROM rust:1.99-alpine3.22@sha256:c3a5ad77ff2e5ec99fffaf62cb518e61a9dcbd9e1d7526d281a380db0be3bb3b AS gateway
 RUN apk add --no-cache musl-dev
 WORKDIR /src
 COPY . .
@@ -18,7 +18,7 @@ RUN cargo build --locked --release -p anywhere-gateway \
  && install -d -m 0700 /out/data
 
 # --- web app: the core compiled to WebAssembly, then the SvelteKit app ---------------------
-FROM rust:1.98-alpine3.22@sha256:a1796ca6fa216d6727b5f61c69e4c665b120b1a4dcb969639e2f25f1ed309456 AS wasm
+FROM rust:1.99-alpine3.22@sha256:c3a5ad77ff2e5ec99fffaf62cb518e61a9dcbd9e1d7526d281a380db0be3bb3b AS wasm
 RUN apk add --no-cache musl-dev \
  && rustup target add wasm32-unknown-unknown \
  && cargo install --locked wasm-bindgen-cli --version 0.2.129
