@@ -62,7 +62,7 @@ def track_rows():
 
 
 TRACKS = track_rows()
-NOW = [t for t in TRACKS if t["album_id"] == 1]  # the Living Room is playing "Night Ferry"
+NOW = [t for t in TRACKS if t["album_id"] == 1]  # the Lounge is playing "Night Ferry"
 STATE = {"index": 2, "time": 83.4, "volume": 42, "mode": "play", "shuffle": 0, "repeat": 0}
 
 
