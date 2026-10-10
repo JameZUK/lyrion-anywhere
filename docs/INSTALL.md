@@ -35,6 +35,7 @@ You need:
 - **A domain name** you can point at your home, e.g. `music.example.com`. A free dynamic-DNS name works, as does a subdomain of a domain you own.
 - **A reverse proxy with an HTTPS certificate** for that name: nginx, Caddy, Traefik or similar. Let's Encrypt certificates are free. If you have nothing yet, [Caddy](https://caddyserver.com) is the quickest (§4.2): it gets and renews certificates by itself.
 - **Port 443 forwarded** from your router to the reverse proxy (and port 80, if your certificate tool uses HTTP validation).
+- **Optional: `ffmpeg`** on the machine running the gateway, for offline downloads as MP3 or Opus (e.g. `sudo apt install ffmpeg`; it needs the `libmp3lame` and `libopus` encoders, which distribution packages include). Without it, downloads are offered in their original format only. Lyrion Anywhere doesn't bundle ffmpeg.
 
 What you must **not** do: forward or expose LMS's own ports (3483, 9000, 9090) to the internet. Lyrion Anywhere exists so that you never have to.
 
@@ -109,6 +110,11 @@ The main `serve` options:
 | `--allowed-origin` | | Your public URL, e.g. `https://music.example.com`. |
 | `--trusted-proxy` | | The proxy's address, if it isn't on the same machine (repeatable). |
 | `--admin-listen` | `127.0.0.1:9445` | The admin API, for the plugin and the `admin` commands. Never expose it. |
+| `--ffmpeg` | `ffmpeg` on `PATH` | ffmpeg for MP3/Opus downloads (an absolute path). |
+| `--no-transcode` | | Offer downloads in their original format only, even with ffmpeg installed. |
+| `--download-cache-mb` | 2048 | Disk space (MiB, 16–1048576) for transcoded downloads, kept in `<data-dir>/download-cache`. The least recently used are removed first. |
+
+The Docker image has no ffmpeg, so downloads from it are original-format only.
 
 Account commands: `docker exec lyrion-anywhere anywhere-gateway admin --data-dir /data <command>`, where `<command>` is `list-users`, `list-devices`, `create-user NAME --role admin|listener`, `set-password NAME`, `pair NAME` or `reset-totp NAME`.
 
@@ -128,11 +134,14 @@ Open *Settings › Plugins › Lyrion Anywhere* in LMS. (Docker users: the same 
 | **Public URL** | `https://music.example.com`, exactly as people will type it. |
 | **Trusted proxies** | The proxy's LAN address (e.g. `10.0.0.10`) if it runs on another machine; otherwise leave empty. |
 | **Gateway path** | Leave empty. It's for development and ignored unless LMS is started with `ANYWHERE_ALLOW_GATEWAY_PATH=1`. |
+| **Transcoded downloads** | Ticked (the default) to offer MP3 and Opus downloads as well as the original. Needs ffmpeg (§1). |
+| **ffmpeg path** | Leave empty to use `ffmpeg` from the system path. Otherwise the absolute path to a program named `ffmpeg`, e.g. `/usr/local/bin/ffmpeg`. |
+| **Download cache (MiB)** | Disk space for transcoded downloads (default 2048), so repeat downloads cost nothing. |
 
 Click *Apply*. The **Status** panel should show the gateway as running. If it shows an error, see [Troubleshooting](#9-troubleshooting).
 
 The same page has these sections:
-- **Users:** add users; for each one, *Disable*/*Enable*, *Delete*, set a *New password*, *Add a player…* (grant a home player), *Reset two-step* and *Pairing code*.
+- **Users:** add users; for each one, *Disable*/*Enable*, *Delete*, set a *New password*, *Add a player…* (grant a home player), *Reset two-step*, *Pairing code*, and *Turn off downloads*/*Allow downloads* (offline downloads are allowed for every user by default; the *Downloads* column shows the formats each may use).
 - **Sign-in › Stay signed in:** how many days an unused device stays signed in (1–365, default 30). Every use renews it.
 - **Plugins › Admins only:** the plugins LMS offers remote devices. Tick one to hide it from listeners and refuse its use, e.g. a plugin with server maintenance actions.
 - **Devices:** every signed-in device, when it was last seen, its *Diagnostics*, and *Sign out* (e.g. for a lost phone).

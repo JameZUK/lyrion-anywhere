@@ -269,11 +269,21 @@ impl crate::Gateway {
     }
 
     pub(crate) async fn lms_command(&self, player: &str, cmd: &[String]) -> Result<Value, String> {
+        self.lms_command_within(player, cmd, LMS_TIMEOUT).await
+    }
+
+    /// [`Self::lms_command`] with its own time limit for the whole exchange.
+    pub(crate) async fn lms_command_within(
+        &self,
+        player: &str,
+        cmd: &[String],
+        limit: Duration,
+    ) -> Result<Value, String> {
         let body = json!({ "id": 1, "method": "slim.request", "params": [player, cmd] });
         let resp = self
             .http
             .post(format!("http://{}/jsonrpc.js", self.cfg.lms_http))
-            .timeout(LMS_TIMEOUT)
+            .timeout(limit)
             .header(header::CONTENT_TYPE, "application/json")
             .body(body.to_string())
             .send()

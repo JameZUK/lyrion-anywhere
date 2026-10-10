@@ -24,6 +24,16 @@ is_deeply(req('plugins_admin_only', { commands => 'audiomuseai,custombrowse' }),
 is_deeply(req('plugins_admin_only', {}), ['POST', '/admin/v1/plugins', { admin_only => [] }], 'none: an empty list');
 my (undef, undef, $days) = Plugins::LyrionAnywhere::Admin::request_for('session_days', { days => '90' });
 is(JSON::PP->new->canonical->encode($days), '{"session_days":90}', 'the lifetime is a JSON number');
+{
+	my $json = JSON::PP->new->canonical;
+	my ($m, $p, $b) = Plugins::LyrionAnywhere::Admin::request_for('user_downloads', { username => 'bob', enabled => 0 });
+	is("$m $p", 'POST /admin/v1/users/bob/downloads', 'downloads: path');
+	is($json->encode($b), '{"enabled":false}', 'downloads off: a JSON boolean, formats left alone');
+	(undef, undef, $b) = Plugins::LyrionAnywhere::Admin::request_for('user_downloads',
+		{ username => 'bob', enabled => 1, formats => 'original,opus' });
+	is($json->encode($b), '{"enabled":true,"formats":["original","opus"]}', 'downloads with formats: a list');
+	ok(Plugins::LyrionAnywhere::Admin::is_mutating('user_downloads'), 'changing downloads is mutating');
+}
 my ($m, $p, $b) = Plugins::LyrionAnywhere::Admin::request_for('user_disable', { username => 'bob', disabled => 1 });
 is(JSON::PP->new->canonical->encode($b), '{"disabled":true}', 'disabled is a JSON boolean');
 
@@ -62,6 +72,21 @@ my %attacks = (
 	'newline after limit'        => ['audit',       { limit => "50\n" }],
 	'unknown operation'          => ['restart_lms', {}],
 	'missing username'           => ['pairing',     {}],
+	# Downloads: strict booleans and a known, non-repeating format list.
+	'downloads without enabled'  => ['user_downloads', { username => 'a' }],
+	'downloads enabled=yes'      => ['user_downloads', { username => 'a', enabled => 'yes' }],
+	'downloads enabled=2'        => ['user_downloads', { username => 'a', enabled => 2 }],
+	'newline after enabled'      => ['user_downloads', { username => 'a', enabled => "1\n" }],
+	'unknown format'             => ['user_downloads', { username => 'a', enabled => 1, formats => 'flac' }],
+	'empty formats'              => ['user_downloads', { username => 'a', enabled => 1, formats => '' }],
+	'repeated format'            => ['user_downloads', { username => 'a', enabled => 1, formats => 'mp3,mp3' }],
+	'too many formats'           => ['user_downloads', { username => 'a', enabled => 1, formats => 'original,mp3,opus,mp3' }],
+	'formats with a space'       => ['user_downloads', { username => 'a', enabled => 1, formats => 'mp3, opus' }],
+	'upper-case format'          => ['user_downloads', { username => 'a', enabled => 1, formats => 'MP3' }],
+	'newline after formats'      => ['user_downloads', { username => 'a', enabled => 1, formats => "mp3\n" }],
+	'formats as a list'          => ['user_downloads', { username => 'a', enabled => 1, formats => ['mp3'] }],
+	'trailing comma in formats'  => ['user_downloads', { username => 'a', enabled => 1, formats => 'mp3,' }],
+	'downloads path traversal'   => ['user_downloads', { username => '../users', enabled => 1 }],
 );
 for my $name (sort keys %attacks) {
 	my ($op, $args) = @{ $attacks{$name} };

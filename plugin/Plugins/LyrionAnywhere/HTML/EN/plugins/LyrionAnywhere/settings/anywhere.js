@@ -87,7 +87,18 @@
     return when + JSON.stringify(r && r.report !== undefined ? r.report : r, null, 2);
   }
 
-  const api = { command, adminOnlyArg, pageToken, validDays, validUsername, validPassword, formatTime, formatUptime, diagnosticsText };
+  const FORMAT_NAMES = { original: 'original', mp3: 'MP3', opus: 'Opus' };
+
+  /** A user's download permission as text: "off", or "on (original, MP3, Opus)". */
+  function downloadsText(u) {
+    if (!u || u.downloads !== true) return 'off';
+    const formats = (Array.isArray(u.download_formats) ? u.download_formats : [])
+      .filter((f) => Object.prototype.hasOwnProperty.call(FORMAT_NAMES, f))
+      .map((f) => FORMAT_NAMES[f]);
+    return formats.length ? `on (${formats.join(', ')})` : 'on';
+  }
+
+  const api = { command, adminOnlyArg, pageToken, validDays, validUsername, validPassword, formatTime, formatUptime, diagnosticsText, downloadsText };
   if (typeof globalThis.__anywhereTest === 'object') {
     Object.assign(globalThis.__anywhereTest, api);
     return;
@@ -191,7 +202,7 @@
       return;
     }
     const table = el('table', { className: 'aw-table' }, [
-      el('tr', {}, ['User', 'Role', 'Two-step', 'Status', 'Home players', ''].map((h) => el('th', { text: h }))),
+      el('tr', {}, ['User', 'Role', 'Two-step', 'Status', 'Downloads', 'Home players', ''].map((h) => el('th', { text: h }))),
     ]);
     for (const u of users) {
       const grants = el('div', { className: 'aw-grants', text: '…' });
@@ -200,6 +211,14 @@
           type: 'button',
           text: u.disabled ? 'Enable' : 'Disable',
           onclick: () => run(() => admin('user_disable', { username: u.username, disabled: u.disabled ? 0 : 1 }), u.disabled ? 'User enabled' : 'User disabled and signed out'),
+        }),
+        el('button', {
+          type: 'button',
+          text: u.downloads ? 'Turn off downloads' : 'Allow downloads',
+          onclick: () => run(
+            () => admin('user_downloads', { username: u.username, enabled: u.downloads ? 0 : 1 }),
+            u.downloads ? `Downloads turned off for ${u.username}` : `Downloads allowed for ${u.username}`,
+          ),
         }),
         el('button', {
           type: 'button',
@@ -236,6 +255,7 @@
         el('td', { text: u.role }),
         el('td', { text: u.totp_enabled ? 'on' : 'off' }),
         el('td', { text: u.disabled ? 'disabled' : 'active' }),
+        el('td', { text: downloadsText(u) }),
         el('td', {}, [grants]),
         el('td', {}, [actions]),
       ]));

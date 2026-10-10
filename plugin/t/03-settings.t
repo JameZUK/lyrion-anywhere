@@ -25,9 +25,26 @@ for my $case (
 	[pref_trusted_proxies => '10.0.0.1, evil'],
 	[pref_gateway_path => 'relative/gw'],
 	[pref_gateway_path => '/nonexistent/gw'],
+	[pref_ffmpeg_path => 'ffmpeg'],
+	[pref_ffmpeg_path => '/bin/sh'],
+	[pref_ffmpeg_path => '/nonexistent/ffmpeg'],
+	[pref_download_cache_mb => '8'],
+	[pref_download_cache_mb => '2048; x'],
+	[pref_download_cache_mb => "2048\nx"],
 ) {
 	my ($o, $e) = $clean->({ @$case });
 	ok(!exists $o->{ $case->[0] } && @$e, "rejected $case->[0] = $case->[1]");
+}
+
+{
+	my ($o, $e) = $clean->({ pref_ffmpeg_path => '', pref_download_cache_mb => ' 4096 ', pref_transcode => 'on' });
+	is_deeply($e, [], 'download options: valid');
+	is($o->{pref_ffmpeg_path}, '', 'empty ffmpeg path: look on PATH');
+	is($o->{pref_download_cache_mb}, 4096, 'cache size trimmed');
+	is($o->{pref_transcode}, 1, 'transcoding ticked');
+	($o, $e) = $clean->({ pref_download_cache_mb => '', pref_transcode => '' });
+	is($o->{pref_download_cache_mb}, 2048, 'empty cache size: the default');
+	is($o->{pref_transcode}, 0, 'transcoding unticked');
 }
 
 is(Plugins::LyrionAnywhere::Settings::escape_html(q{<script>"x"&'y'</script>}),

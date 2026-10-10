@@ -12,7 +12,7 @@ use warnings;
 
 use Config;
 use Digest::SHA;
-use File::Spec::Functions qw(abs2rel catdir catfile file_name_is_absolute);
+use File::Spec::Functions qw(abs2rel catdir catfile file_name_is_absolute splitpath);
 use Socket qw(inet_pton AF_INET AF_INET6);
 use POSIX ();
 
@@ -127,6 +127,27 @@ sub valid_gateway_path {
 	return file_name_is_absolute($p) && -f $p && -x _ ? 1 : 0;
 }
 
+# ffmpeg for transcoded downloads (or empty: the gateway looks on PATH). The gateway runs
+# this program, so it must be an absolute path to an executable regular file actually
+# named ffmpeg: a changed pref can't make it run some other program.
+sub valid_ffmpeg_path {
+	my $p = shift // '';
+	return 1 if $p eq '';
+	return 0 if ref $p || $p =~ /[\r\n\x00]/ || length($p) > 4096;
+	return 0 unless file_name_is_absolute($p);
+	my (undef, undef, $name) = splitpath($p);
+	return 0 unless $name =~ /^ffmpeg(?:\.exe)?\z/i;
+	return -f $p && -x _ ? 1 : 0;
+}
+
+# Disk space for transcoded downloads, in MiB (or empty: the default).
+sub valid_cache_mb {
+	my $v = shift // '';
+	return 1 if $v eq '';
+	return 0 if ref $v;
+	return $v =~ /^\d{1,7}\z/ && $v >= 16 && $v <= 1048576 ? 1 : 0;
+}
+
 sub valid_origin {
 	my $o = shift // return 0;
 	return $o =~ m{^https?://[a-z0-9.-]+(?::\d{1,5})?\z}i && length($o) <= 255;
@@ -147,6 +168,12 @@ sub command_line {
 	my @origins = @{ $o{allowed_origins} || [] };
 	for (@proxies) { return (undef, "bad trusted proxy address: $_") unless valid_ip($_) }
 	for (@origins) { return (undef, "bad public URL: $_") unless valid_origin($_) }
+	my $transcode = $o{transcode} // 1;
+	my $ffmpeg = $o{ffmpeg} // '';
+	return (undef, 'ffmpeg must be an absolute path')
+		if $ffmpeg ne '' && (ref $ffmpeg || $ffmpeg =~ /[\r\n\x00]/ || !file_name_is_absolute($ffmpeg));
+	return (undef, 'download cache size must be 16-1048576 MiB')
+		unless valid_cache_mb($o{download_cache_mb});
 
 	my @argv = (
 		$o{binary}, 'serve',
@@ -161,6 +188,10 @@ sub command_line {
 	push @argv, '--static-dir', $o{static_dir} if $o{static_dir};
 	push @argv, map { ('--trusted-proxy', $_) } @proxies;
 	push @argv, map { ('--allowed-origin', $_) } @origins;
+	if (!$transcode)         { push @argv, '--no-transcode' }
+	elsif ($ffmpeg ne '')    { push @argv, '--ffmpeg', $ffmpeg }
+	push @argv, '--download-cache-mb', 0 + $o{download_cache_mb}
+		if defined $o{download_cache_mb} && $o{download_cache_mb} ne '';
 	return (\@argv);
 }
 
@@ -268,6 +299,9 @@ my %VALIDATE = (
 	trusted_proxies => \&valid_proxy_list,
 	admin_port      => \&valid_port,
 	gateway_path    => \&valid_gateway_path,
+	ffmpeg_path     => \&valid_ffmpeg_path,
+	download_cache_mb => \&valid_cache_mb,
+	transcode       => sub { my $v = shift // ''; !ref $v && $v =~ /^[01]?\z/ },
 );
 
 sub valid_pref {
@@ -288,7 +322,17 @@ sub _options {
 	my $cli    = preferences('plugin.cli');
 	my ($logdir) = Slim::Utils::OSDetect::dirsFor('log');
 	my $public = $prefs->get('public_url') || '';
+	# Stored values are checked again: one that is no longer valid (e.g. ffmpeg removed) is
+	# left out rather than stopping the gateway from starting.
+	my $ffmpeg = $prefs->get('ffmpeg_path') // '';
+	$ffmpeg = '' unless valid_ffmpeg_path($ffmpeg);
+	my $cache = $prefs->get('download_cache_mb') // '';
+	$cache = '' unless valid_cache_mb($cache);
+	my $transcode = $prefs->get('transcode');
 	return (
+		ffmpeg            => $ffmpeg,
+		transcode         => (defined $transcode && $transcode eq '0') ? 0 : 1,
+		download_cache_mb => $cache,
 		binary          => binary_path(basedir => $basedir, override => gateway_override()),
 		listen          => $prefs->get('listen') || '127.0.0.1:9443',
 		admin_listen    => admin_listen(),

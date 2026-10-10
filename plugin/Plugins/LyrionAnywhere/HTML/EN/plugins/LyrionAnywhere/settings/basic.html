@@ -36,6 +36,19 @@
 	[% IF prefs.pref_gateway_path AND NOT anywhere_gateway_path_allowed %]<br><span class="aw-note">Ignored: ANYWHERE_ALLOW_GATEWAY_PATH=1 is not set.</span>[% END %]
 [% END %]
 
+[% WRAPPER setting title="Transcoded downloads" desc="Let people download tracks as MP3 or Opus as well as in their original format. Needs ffmpeg installed on this server; without it, only the original is offered." %]
+	<input type="checkbox" name="pref_transcode" id="pref_transcode" value="1" [% IF prefs.pref_transcode %]checked[% END %]>
+	<label for="pref_transcode">Offer MP3 and Opus</label>
+[% END %]
+
+[% WRAPPER setting title="ffmpeg path" desc="Leave empty to use ffmpeg from the system path. Otherwise the absolute path to a program named ffmpeg, e.g. /usr/local/bin/ffmpeg." %]
+	<input type="text" class="stdedit" name="pref_ffmpeg_path" value="[% prefs.pref_ffmpeg_path | html %]" placeholder="/usr/bin/ffmpeg">
+[% END %]
+
+[% WRAPPER setting title="Download cache (MiB)" desc="Disk space for transcoded downloads, so repeat downloads cost nothing. The least recently used are removed first. 16 to 1048576; default 2048." %]
+	<input type="number" class="stdedit" name="pref_download_cache_mb" value="[% prefs.pref_download_cache_mb | html %]" min="16" max="1048576" step="1">
+[% END %]
+
 <div id="anywhere-app" class="anywhere" data-csrf="[% anywhere_csrf | html %]">
 	<h3>Status</h3>
 	<div id="aw-status" class="aw-panel">Loading…</div>

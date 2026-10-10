@@ -55,7 +55,27 @@ is_deeply($argv, [
 	is(Plugins::LyrionAnywhere::Gateway::web_dir(undef), undef, 'no plugin directory yet');
 }
 
+# Downloads: transcoding options.
+{
+	my $cl = sub { my ($a, $e) = Plugins::LyrionAnywhere::Gateway::command_line(%ok, @_); $a };
+	my $tail = sub { my $a = shift; [ @$a[ scalar(@$argv) .. $#$a ] ] };
+	is_deeply($tail->($cl->()), [], 'defaults: no transcoding flags (the gateway looks for ffmpeg on PATH)');
+	is_deeply($tail->($cl->(transcode => 0)), ['--no-transcode'], 'transcoding off');
+	is_deeply($tail->($cl->(transcode => 0, ffmpeg => '/usr/bin/ffmpeg')), ['--no-transcode'],
+		'transcoding off: no ffmpeg path passed (the flags conflict)');
+	is_deeply($tail->($cl->(ffmpeg => '/usr/bin/ffmpeg', download_cache_mb => 4096)),
+		['--ffmpeg', '/usr/bin/ffmpeg', '--download-cache-mb', 4096], 'ffmpeg path and cache size');
+	is_deeply($tail->($cl->(download_cache_mb => '')), [], 'empty cache size: the default');
+}
+
 my %bad = (
+	'relative ffmpeg'             => { ffmpeg => 'bin/ffmpeg' },
+	'ffmpeg with a newline'       => { ffmpeg => "/usr/bin/ffmpeg\n--no-transcode" },
+	'cache too small'             => { download_cache_mb => 15 },
+	'cache too big'               => { download_cache_mb => 1048577 },
+	'cache not a number'          => { download_cache_mb => '2048; rm -rf /' },
+	'cache with a newline'        => { download_cache_mb => "2048\n" },
+	'cache in exponent form'      => { download_cache_mb => '2e3' },
 	'relative web dir'            => { static_dir => 'web' },
 	'admin API on all interfaces' => { admin_listen => '0.0.0.0:9445' },
 	'admin API on a LAN address'  => { admin_listen => '10.0.0.5:9445' },
@@ -143,6 +163,15 @@ ok(Plugins::LyrionAnywhere::Gateway::is_loopback('127.0.0.1:9445'), 'loopback');
 	my $plain = File::Temp->new;
 	chmod 0644, $plain->filename;
 	my $tmpdir = File::Temp::tempdir(CLEANUP => 1);
+	# ffmpeg candidates: only an executable file actually named ffmpeg is accepted.
+	my $ffdir = File::Temp::tempdir(CLEANUP => 1);
+	my $mk = sub { my ($name, $mode) = @_; my $p = "$ffdir/$name"; open my $fh, '>', $p or die; close $fh; chmod $mode, $p; $p };
+	my $ffmpeg       = $mk->('ffmpeg', 0755);
+	my $ffmpeg_exe   = $mk->('ffmpeg.exe', 0755);
+	$mk->('ffmpeg-evil', 0755);
+	$mk->('sh', 0755);
+	mkdir "$ffdir/plain";
+	my $plain_ffmpeg = do { my $p = "$ffdir/plain/ffmpeg"; open my $fh, '>', $p or die; close $fh; chmod 0644, $p; $p };
 	my %cases = (
 		listen          => [['127.0.0.1:9443', '[::1]:9443', '10.0.0.20:9443'],
 		                    ['', 'localhost:9443', '0.0.0.0', "127.0.0.1:9443\n", '[:::]:1', '1.2.3.4:0']],
@@ -154,6 +183,12 @@ ok(Plugins::LyrionAnywhere::Gateway::is_loopback('127.0.0.1:9445'), 'loopback');
 		                    ['1@evil.example.com:80', '', 0, 65536, '9445x', undef]],
 		gateway_path    => [['', $exe->filename],
 		                    ['relative/gw', '/nonexistent/gw', $plain->filename, $tmpdir, $exe->filename . "\n"]],
+		ffmpeg_path     => [['', $ffmpeg, $ffmpeg_exe],
+		                    ['ffmpeg', 'bin/ffmpeg', $exe->filename, $plain_ffmpeg, "$ffdir/nonexistent/ffmpeg",
+		                     $ffmpeg . "\n", "$ffdir/ffmpeg-evil", "$ffdir/sh", ['x']]],
+		download_cache_mb => [['', 16, 2048, '1048576'],
+		                    [0, 15, 1048577, '2048 ', "2048\n", '-1', '1e3', '2048MB', 'abc']],
+		transcode       => [['', 0, 1, '0', '1'], ['2', 'yes', "1\n", ['1']]],
 	);
 	for my $name (sort keys %cases) {
 		my ($good, $bad) = @{ $cases{$name} };

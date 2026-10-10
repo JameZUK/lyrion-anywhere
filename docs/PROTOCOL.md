@@ -24,7 +24,7 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
 | `POST /v1/auth/refresh` | none (cookie), or `{"refresh_token"}` | A new access token and a **rotated** refresh token |
 | `POST /v1/auth/logout` | bearer access token | 204; revokes this device and ends its sessions |
 | `GET /v1/me` | bearer access token | `{user, device}` |
-| `GET /v1/account` | bearer access token | `{username, role, totp_enabled}` |
+| `GET /v1/account` | bearer access token | `{username, role, totp_enabled, downloads: {enabled, formats}}` (`formats`: what this user may download that this server can produce; see [Downloads](#downloads)) |
 | `POST /v1/account/totp/setup` | `{"password"}` | `{secret, uri, qr_svg}`: a new secret, active once confirmed. A wrong password is 401 and counts towards the lockout |
 | `POST /v1/account/totp/confirm` | `{"code"}` | 204; two-step is now on |
 | `POST /v1/account/totp/disable` | `{"password","code"}` | 204; two-step is now off |
@@ -65,6 +65,7 @@ Endpoints:
 - `POST /admin/v1/users/{name}/disabled`
 - `POST /admin/v1/users/{name}/pairing` (returns a one-time code, valid 10 minutes)
 - `POST /admin/v1/users/{name}/totp/reset` (removes two-step for a user who lost their authenticator)
+- `POST /admin/v1/users/{name}/downloads` `{"enabled": bool, "formats"?: ["original","mp3","opus"]}` (download permission; `formats` must name one to three of these and is kept as it was when left out). `GET /admin/v1/users` lists `downloads` and `download_formats` per user, and `GET /admin/v1/settings` lists the `download_formats` this server can produce
 - `GET/POST /admin/v1/users/{name}/players`, `DELETE /admin/v1/users/{name}/players/{mac}` (home players a listener may control)
 - `GET /admin/v1/devices`
 - `GET /admin/v1/devices/{id}/diagnostics` (the device's latest diagnostics report)
@@ -246,6 +247,63 @@ Allowed paths (validated on the raw, still-encoded path):
 Rules for what is relayed:
 - only JPEG/PNG/GIF/WebP/SVG responses, at most 20 MiB;
 - every response carries `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`, so an SVG can't run script on the gateway's origin.
+
+## Downloads
+
+Offline downloads of library tracks (spec §5.3, §8). Bearer access token required (401 without a valid one: missing, expired, logged out or revoked). Unlike `/v1/auth/*`, no `X-Anywhere-Client` header is needed: like `/v1/rpc` and `/v1/art`, these take no cookies, so there is nothing to forge cross-site.
+
+### `GET /v1/download/track/{id}/info`
+
+```json
+{"id": 123, "key": "<64 hex>", "title": "…", "artist": "…", "album": "…", "album_id": 7,
+ "tracknum": 3, "duration": 241.2,
+ "original": {"format": "flc", "content_type": "audio/flac", "size": 23456789, "ext": "flac"},
+ "formats": ["original", "mp3", "opus"]}
+```
+
+- `key`: a stable identifier that survives LMS rescans (which renumber track ids): the hex SHA-256 of a random gateway secret and the track's library URL. It never reveals the file's path. Store downloads by `key`, and re-resolve keys to current ids after a rescan.
+- `original.format` is LMS's file type (`flc`, `mp3`, `mp4`, `alc`, `ops`, …). `album_id`, `tracknum`, `duration` and `original.size` are `null` when LMS doesn't know them.
+- `formats`: what this user may download this track as. `original` (when permitted) is always offered; `mp3` and `opus` only when the server has `ffmpeg` with the encoder, the user's permission includes them, and the file is of a type the gateway transcodes.
+- Responses carry `Cache-Control: private, no-store`.
+
+### `GET /v1/download/track/{id}?format=original|mp3|opus`
+
+The audio (`format` defaults to `original`; any other query is 400).
+
+| Format | What | Content type, extension |
+|---|---|---|
+| `original` | The library file, relayed from LMS's `/music/<id>/download` (never `/stream.mp3`, which can stream for ever) | From LMS's type, e.g. `audio/flac`, `.flac` |
+| `mp3` | MP3, 320 kb/s CBR, ID3v2.3 tags, embedded cover art kept | `audio/mpeg`, `.mp3` |
+| `opus` | Opus, 160 kb/s, in Ogg, with tags | `audio/ogg`, `.opus` |
+
+Headers: `Content-Type`, `Content-Length`, `Accept-Ranges: bytes`, `Cache-Control: private, no-store`, and `Content-Disposition: attachment; filename="03 Artist - Title.flac"`. The quoted name is ASCII only (quotes, slashes, backslashes and control characters replaced); when the real name has other characters, an RFC 5987 `filename*=UTF-8''…` follows with the percent-encoded Unicode name (bidi controls removed).
+
+**Ranges:** one `Range: bytes=a-b`, `bytes=a-` or `bytes=-n` gets 206 with `Content-Range: bytes a-b/total`. A malformed range, several ranges, or one past the end gets 416 (with `Content-Range: bytes */total` when the size is known). Resume an interrupted download from the bytes you have.
+
+**Transcodes** are made on first request (the response starts once ffmpeg has finished, which can take a while for a long track), then kept in an LRU cache on disk and served from it, `Range` included. A transcode that fails is 502; one that runs too long (10 minutes) is 504.
+
+### Refusals
+
+| Status | `error` | When |
+|---|---|---|
+| 401 | `invalid credentials` | No valid access token |
+| 403 | `downloads are not allowed for this account` | The admin turned this user's downloads off |
+| 403 | `this format is not allowed for this account` | The format isn't among the user's permitted ones |
+| 404 | `not found` | The id isn't a positive integer of at most 12 digits, or LMS doesn't know it |
+| 404 | `not downloadable` | Not a local library file (a streaming-service or radio track) |
+| 404 | `format not available` | No ffmpeg (or no encoder) for this format, or a file type that isn't transcoded |
+| 400 | `unknown format` | Any query other than `format=original\|mp3\|opus` |
+| 416 | `bad range` | See Ranges |
+| 429 | `too many downloads at once` | The user already has 3 downloads running; `Retry-After: 5` |
+| 502 / 504 | `music server unavailable` / `music server timed out` | LMS failed or didn't answer in time |
+
+**Safety:**
+- An id is checked to be a positive integer and looked up with LMS JSON-RPC (`titles 0 1 track_id:<id>`, 10 s limit) before `/music/<id>/download` is ever requested: for an unknown id, that handler hangs rather than answering.
+- LMS must answer a download within 20 s and never pause for more than 30 s mid-file; an original is relayed without buffering, never beyond its `Content-Length`, and a body cut short fails rather than looking complete.
+- A running download re-checks every 5 s that its device is still signed in, so revoking a device (or disabling its user) ends it.
+- The permission is read on every request, so an admin's change applies at once.
+- Each download is logged in the audit log (event `download`, detail `track <id> <format>`), at most once per track and device an hour, so resumes and retries don't flood it.
+- ffmpeg is run with a fixed argument list (no shell) and an empty environment, its input demuxer forced from a fixed table of LMS file types, `-protocol_whitelist file`, MOV external references off, and input and output files the gateway itself named in its cache directory. At most one transcode runs at once, each output is capped in size, and leftovers are removed.
 
 ## Events (`WS /v1/events`)
 

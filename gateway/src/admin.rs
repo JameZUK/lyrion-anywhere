@@ -42,6 +42,7 @@ pub fn router(gw: AppState, secret: String) -> Router {
         .route("/admin/v1/users/{name}/disabled", post(set_disabled))
         .route("/admin/v1/users/{name}/pairing", post(pairing_code))
         .route("/admin/v1/users/{name}/totp/reset", post(reset_totp))
+        .route("/admin/v1/users/{name}/downloads", post(set_downloads))
         .route(
             "/admin/v1/users/{name}/players",
             get(list_grants).post(grant),
@@ -186,12 +187,20 @@ struct Settings {
     session_days: u32,
 }
 
-/// Gateway settings: the sign-in lifetime (days an unused device stays signed in).
+/// Gateway settings: the sign-in lifetime (days an unused device stays signed in), and the
+/// download formats this server can produce (transcodes need ffmpeg).
 async fn settings(State(st): State<AdminState>) -> Response {
+    let formats: Vec<&str> = st
+        .gw
+        .server_formats()
+        .into_iter()
+        .map(crate::transcode::Format::as_str)
+        .collect();
     Json(json!({
         "session_days": st.gw.accounts().session_days(),
         "session_days_min": crate::accounts::SESSION_DAYS.start(),
         "session_days_max": crate::accounts::SESSION_DAYS.end(),
+        "download_formats": formats,
     }))
     .into_response()
 }
@@ -325,6 +334,30 @@ async fn pairing_code(State(st): State<AdminState>, Path(name): Path<String>) ->
             "expires_in": crate::accounts::PAIRING_TTL.as_secs(),
         }))
         .into_response(),
+        Err(e) => err(e),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Downloads {
+    enabled: bool,
+    #[serde(default)]
+    formats: Option<Vec<String>>,
+}
+
+/// Turn a user's downloads on or off, optionally with the formats they may use.
+async fn set_downloads(
+    State(st): State<AdminState>,
+    Path(name): Path<String>,
+    Json(d): Json<Downloads>,
+) -> Response {
+    match st
+        .gw
+        .accounts()
+        .set_downloads(&name, d.enabled, d.formats.as_deref())
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(e),
     }
 }

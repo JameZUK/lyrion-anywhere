@@ -48,6 +48,112 @@ pub struct Recorded {
     pub cli_in: Vec<String>,
     /// Every Slimproto frame received (opcode, payload), in order.
     pub payloads: Vec<([u8; 4], Vec<u8>)>,
+    /// `/music/<id>/download` requests: (path, Range header).
+    pub downloads: Vec<(String, Option<String>)>,
+}
+
+/// The library URL of fake track 1 (and of track 7, the same file renumbered by a rescan).
+pub const TRACK_URL: &str = "file:///srv/music/Artist/Album/01%20Track.flac";
+
+/// Fake library tracks for `titles … track_id:<id>`. `size` is the fake audio's length.
+/// - 1: a local FLAC; 7: the same file under a new id (after a rescan)
+/// - 2: a radio stream (remote)
+/// - 3: a local file with hostile tags
+/// - 4: a local file whose download never answers
+/// - 5: a local file of a type that is never transcoded
+/// - 6: a local file without a size, whose download ignores `Range`
+/// - 8: a local file whose download stalls after the first bytes
+///
+/// Any other id is unknown (and its download hangs, as on a real LMS).
+pub fn fake_track(id: u64, size: usize) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let local = |url: &str, kind: &str| {
+        json!({"id": id, "title": "Track", "artist": "Artist", "album": "Album", "album_id": "7",
+               "tracknum": "3", "duration": "241.2", "type": kind, "url": url, "filesize": size,
+               "modificationTime": "Tuesday, 1 January 2030"})
+    };
+    Some(match id {
+        1 | 7 => local(TRACK_URL, "flc"),
+        2 => json!({"id": 2, "title": "Radio", "type": "mp3", "remote": 1,
+                    "url": "http://stream.example.com/live.mp3"}),
+        3 => {
+            let mut t = local("file:///srv/music/3.flac", "flc");
+            t["title"] = json!("a\"b\r\nX-Evil: 1/../\u{202e}gpj.exe \u{e9}\u{1f3b5}");
+            t["artist"] = json!("..\\..\\x/y");
+            t["tracknum"] = json!(1);
+            t
+        }
+        4 => local("file:///srv/music/4.flac", "flc"),
+        5 => local("file:///srv/music/5.xyz", "xyz"),
+        6 => {
+            let mut t = local("file:///srv/music/6.flac", "flc");
+            t.as_object_mut().unwrap().remove("filesize");
+            t
+        }
+        8 => local("file:///srv/music/8.flac", "flc"),
+        _ => return None,
+    })
+}
+
+/// The fake `/music/<id>/download`: the audio with `Range` support (206), except as noted
+/// in [`fake_track`].
+fn fake_download(audio: &[u8], id: &str, range: Option<&str>) -> axum::response::Response {
+    let hang = || {
+        Body::from_stream(futures_util::stream::pending::<
+            Result<bytes::Bytes, std::io::Error>,
+        >())
+    };
+    match id {
+        "1" | "3" | "5" | "7" => {}
+        "6" => {
+            return ([("content-type", "audio/flac")], Body::from(audio.to_vec()))
+                .into_response_parts();
+        }
+        "8" => {
+            let first = bytes::Bytes::copy_from_slice(&audio[..1000]);
+            let body = futures_util::stream::iter([Ok::<_, std::io::Error>(first)])
+                .chain(futures_util::stream::pending());
+            return axum::response::Response::builder()
+                .header("content-type", "audio/flac")
+                .header("content-length", audio.len())
+                .body(Body::from_stream(body))
+                .unwrap();
+        }
+        // Unknown ids (and 4): LMS never answers.
+        _ => {
+            return axum::response::Response::builder()
+                .header("content-type", "audio/flac")
+                .body(hang())
+                .unwrap();
+        }
+    }
+    let total = audio.len();
+    let span = range.and_then(|r| {
+        let (a, b) = r.strip_prefix("bytes=")?.split_once('-')?;
+        let a: usize = a.parse().ok()?;
+        let b: usize = if b.is_empty() {
+            total - 1
+        } else {
+            b.parse().ok()?
+        };
+        Some((a, b.min(total - 1)))
+    });
+    match span {
+        Some((a, _)) if a >= total => axum::response::Response::builder()
+            .status(416)
+            .header("content-range", format!("bytes */{total}"))
+            .body(Body::empty())
+            .unwrap(),
+        Some((a, b)) => axum::response::Response::builder()
+            .status(206)
+            .header("content-type", "audio/flac")
+            .header("content-range", format!("bytes {a}-{b}/{total}"))
+            .body(Body::from(audio[a..=b].to_vec()))
+            .unwrap(),
+        None => {
+            ([("content-type", "audio/flac")], Body::from(audio.to_vec())).into_response_parts()
+        }
+    }
 }
 
 /// Canned LMS JSON-RPC results, deliberately full of things that must not leak.
@@ -171,22 +277,72 @@ impl FakeLms {
                     .unwrap_or_default();
                 r.lock().unwrap().http_paths.push(path);
                 if req.uri().path() == "/jsonrpc.js" {
-                    let body = axum::body::to_bytes(req.into_body(), 1 << 20).await.unwrap_or_default();
+                    let body = axum::body::to_bytes(req.into_body(), 1 << 20)
+                        .await
+                        .unwrap_or_default();
                     let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
                     let params = v["params"].clone();
                     let cmd = params[1][0].as_str().unwrap_or("").to_string();
+                    let track_id = params[1]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|p| p.as_str()?.strip_prefix("track_id:"))
+                        .next()
+                        .map(|id| id.parse::<u64>().unwrap_or(0));
                     r.lock().unwrap().rpc.push(params);
-                    let reply = serde_json::json!({"id": 1, "method": "slim.request", "result": fake_rpc_result(&cmd)});
-                    return ([("content-type", "application/json")], Body::from(reply.to_string())).into_response_parts();
+                    let result = match track_id {
+                        Some(id) if cmd == "titles" => match fake_track(id, a.len()) {
+                            Some(t) => serde_json::json!({"count": 1, "titles_loop": [t]}),
+                            None => serde_json::json!({"count": 0}),
+                        },
+                        _ => fake_rpc_result(&cmd),
+                    };
+                    let reply =
+                        serde_json::json!({"id": 1, "method": "slim.request", "result": result});
+                    return (
+                        [("content-type", "application/json")],
+                        Body::from(reply.to_string()),
+                    )
+                        .into_response_parts();
                 }
                 let p = req.uri().path().to_string();
+                if let Some(id) = p
+                    .strip_prefix("/music/")
+                    .and_then(|x| x.strip_suffix("/download"))
+                {
+                    let range = req
+                        .headers()
+                        .get("range")
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                    r.lock().unwrap().downloads.push((p.clone(), range.clone()));
+                    if !matches!(id, "1" | "3" | "5" | "6" | "7" | "8") {
+                        // Unknown ids (and 4): a real LMS never answers at all.
+                        futures_util::future::pending::<()>().await;
+                    }
+                    return fake_download(&a, id, range.as_deref());
+                }
                 if p.starts_with("/music/666/") {
                     // A "cover" that isn't an image: must not be relayed.
-                    return ([("content-type", "text/html")], Body::from("<script>alert(1)</script>")).into_response_parts();
+                    return (
+                        [("content-type", "text/html")],
+                        Body::from("<script>alert(1)</script>"),
+                    )
+                        .into_response_parts();
                 }
-                if p.starts_with("/music/") || p.starts_with("/imageproxy/") || p.starts_with("/html/images/") || p.starts_with("/plugins/") {
-                    let ct = if p.ends_with(".svg") { "image/svg+xml" } else { "image/jpeg" };
-                    return ([("content-type", ct)], Body::from(b"IMAGEDATA".to_vec())).into_response_parts();
+                if p.starts_with("/music/")
+                    || p.starts_with("/imageproxy/")
+                    || p.starts_with("/html/images/")
+                    || p.starts_with("/plugins/")
+                {
+                    let ct = if p.ends_with(".svg") {
+                        "image/svg+xml"
+                    } else {
+                        "image/jpeg"
+                    };
+                    return ([("content-type", ct)], Body::from(b"IMAGEDATA".to_vec()))
+                        .into_response_parts();
                 }
                 if req.uri().path() == "/stream.mp3"
                     && stall.load(std::sync::atomic::Ordering::SeqCst)
@@ -315,6 +471,11 @@ impl FakeLms {
 
     pub fn http_paths(&self) -> Vec<String> {
         self.rec.lock().unwrap().http_paths.clone()
+    }
+
+    /// `/music/<id>/download` requests received: (path, Range header).
+    pub fn downloads(&self) -> Vec<(String, Option<String>)> {
+        self.rec.lock().unwrap().downloads.clone()
     }
 }
 
