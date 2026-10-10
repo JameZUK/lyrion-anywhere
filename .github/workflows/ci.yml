@@ -52,7 +52,7 @@ jobs:
       - name: Build browser player
         run: tools/build-web-spike.sh
       - name: AudioWorklet tests
-        run: node --test web/spike/tests/
+        run: node --test web/spike/tests/*.test.mjs
 
   supply-chain:
     runs-on: ubuntu-latest

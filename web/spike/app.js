@@ -40,6 +40,16 @@ async function createAudio(rate) {
   return channel.port2;
 }
 
+// A token may arrive in the URL fragment (#token=…), e.g. from a link sent to a phone.
+// Fragments are never sent to the server; clear it from the address bar and history.
+{
+  const m = /^#token=([A-Za-z0-9_-]{16,256})$/.exec(location.hash);
+  if (m) {
+    $('token').value = m[1];
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+}
+
 $('connect-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('connect').disabled = true;

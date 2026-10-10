@@ -76,7 +76,7 @@ Known items for Phase 2:
 - **57 tests, all passing**:
   - `cargo test --workspace`: 47;
   - `wasm-pack test --node wasm`: 5;
-  - `node --test web/spike/tests/`: 5 AudioWorklet tests.
+  - `node --test web/spike/tests/*.test.mjs`: 5 AudioWorklet tests.
 - **The worklet tests found a bug:** on a mono output the worklet played only the right channel. It now mixes down. All three suites run in CI. Clippy is clean with `-D warnings`.
 - **Gateway: 16 integration tests against a fake LMS** that records every frame and HTTP path it receives. They cover:
   - missing, wrong, near-miss, oversize and binary tokens;
