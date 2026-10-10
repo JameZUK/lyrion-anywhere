@@ -1179,3 +1179,33 @@ async fn malformed_control_messages_are_policy_violations() {
         wait_for(|| h.lms.closed() == 1).await;
     }
 }
+
+async fn cache_control(h: &Harness, path: &str) -> String {
+    let r = reqwest::get(h.url(path)).await.unwrap();
+    assert_eq!(r.status(), reqwest::StatusCode::OK, "{path}");
+    r.headers()["cache-control"].to_str().unwrap().to_string()
+}
+
+/// Regression: a phone kept running an old cached player engine after an update, because the
+/// worker and WebAssembly files keep their names. Only content-hashed files may be cached.
+#[tokio::test]
+async fn app_files_are_revalidated_except_hashed_ones() {
+    let dir = std::env::temp_dir().join(format!("anywhere-static-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("_app/immutable")).unwrap();
+    std::fs::create_dir_all(dir.join("player/pkg")).unwrap();
+    std::fs::write(dir.join("index.html"), "<!doctype html>").unwrap();
+    std::fs::write(dir.join("_app/immutable/start.abc123.js"), "x").unwrap();
+    std::fs::write(dir.join("player/pkg/anywhere_wasm.js"), "x").unwrap();
+    let d = dir.clone();
+    let h = harness_with(move |c| c.static_dir = Some(d)).await;
+    assert_eq!(
+        cache_control(&h, "/_app/immutable/start.abc123.js").await,
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(
+        cache_control(&h, "/player/pkg/anywhere_wasm.js").await,
+        "no-cache"
+    );
+    assert_eq!(cache_control(&h, "/").await, "no-cache");
+    let _ = std::fs::remove_dir_all(dir);
+}

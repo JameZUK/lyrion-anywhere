@@ -224,8 +224,20 @@ pub fn router(state: AppState) -> Router {
 // ---------------------------------------------------------------------------
 
 async fn security_headers(req: Request, next: Next) -> Response {
+    let path = req.uri().path().to_owned();
     let mut resp = next.run(req).await;
     let h = resp.headers_mut();
+    // Web app files: content-hashed ones never change; everything else (the page, the player
+    // worker, worklet and WebAssembly, which keep their names) must be revalidated, or
+    // browsers keep running an old player after an update.
+    if !path.starts_with("/v1/") && !h.contains_key(header::CACHE_CONTROL) {
+        let policy = if path.starts_with("/_app/immutable/") {
+            "public, max-age=31536000, immutable"
+        } else {
+            "no-cache"
+        };
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static(policy));
+    }
     h.insert(
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
