@@ -261,13 +261,13 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 
 **Playback and players**
 - "This browser" as an LMS player: gapless, seek, and survives network drops via resume.
-- Player switcher: this browser plus every permitted home player. Sync/unsync groups.
+- Player switcher: this browser plus every permitted home player. Sync/unsync groups (`sync <player>` for the player that joins, `sync -` to leave); the player button names the group ("Lounge + Study"). Only permitted players are listed or targeted.
 - Per-player volume, mute, power, and sleep timer.
 - Transfer playback between players (move the queue and position).
 
 **Now playing and queue**
 - Large art view, track info (format, bitrate, source) and progress.
-- Queue: drag-to-reorder, remove, clear, and save as playlist. Shuffle/repeat.
+- Queue: drag-to-reorder (from a handle; Alt+Up/Down and move buttons for keyboard and screen readers), swipe left or tap to remove with Undo (re-added by track id, then moved back), clear, and save as playlist. Shuffle/repeat. Edits show at once, are sent in order, and are reverted if LMS refuses them; status refreshes are held back mid-gesture.
 - "Play next", "Add to queue" and "Play now" everywhere.
 
 **Library and discovery**

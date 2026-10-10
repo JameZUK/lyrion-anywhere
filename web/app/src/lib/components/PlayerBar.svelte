@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { app } from '$lib/state/app.svelte';
+	import { playerLabel } from '$lib/lms/sync';
 	import * as cmd from '$lib/lms/commands';
 	import { coverPath } from '$lib/lms/commands';
 	import { duration, textOf } from '$lib/lms/format';
@@ -86,7 +87,7 @@
 		<div class="switch">
 			<button class="btn player-btn" onclick={() => (switcher = !switcher)} aria-expanded={switcher}>
 				<Icon name="speaker" size={18} />
-				<span class="ellipsis">{textOf(app.current?.name) || 'Choose player'}</span>
+				<span class="ellipsis">{playerLabel(app.playerId, app.now, app.players) || 'Choose player'}</span>
 			</button>
 			{#if switcher}
 				<div class="pop"><PlayerSwitcher onclose={() => (switcher = false)} /></div>

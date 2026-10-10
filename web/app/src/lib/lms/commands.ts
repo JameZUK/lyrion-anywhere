@@ -115,6 +115,15 @@ export const clearQueue = (): Command => ['playlist', 'clear'];
 export const shuffle = (mode: 0 | 1 | 2): Command => ['playlist', 'shuffle', mode];
 export const repeat = (mode: 0 | 1 | 2): Command => ['playlist', 'repeat', mode];
 
+// --- synchronisation (player groups) -----------------------------------------------------
+
+/** All sync groups (server query; the gateway keeps only players the caller may control). */
+export const syncGroups = (): Command => ['syncgroups', '?'];
+/** Sent for the player that joins: it joins `other`'s group. */
+export const syncWith = (other: string): Command => ['sync', playerId(other)];
+/** Sent for the player that leaves its group. */
+export const unsync = (): Command => ['sync', '-'];
+
 /** What to do with a selection: replace the queue and play, play next, or append. */
 export type Placement = 'play' | 'next' | 'add';
 const PLACEMENT = { play: 'load', next: 'insert', add: 'add' } as const;

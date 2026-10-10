@@ -1,8 +1,12 @@
 <script lang="ts">
 	// Pick which player to control; start or stop this browser as a player.
-	import { app } from '$lib/state/app.svelte';
+	import { untrack } from 'svelte';
+	import { api, app } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
+	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
+	import { groupFromStatus, groupLabel, groupOf, syncGroupsFrom, syncToggle } from '$lib/lms/sync';
+	import type { SyncGroupsResult } from '$lib/lms/types';
 	import Icon from './Icon.svelte';
 
 	let { onclose }: { onclose: () => void } = $props();
@@ -38,6 +42,74 @@
 
 	async function startHere() {
 		await device.start();
+	}
+
+	// --- sync groups ----------------------------------------------------------------------
+	// Only players listed in app.players (the ones this user may control) appear or are sent.
+
+	let groups = $state<string[][]>([]);
+	let syncBusy = $state(false);
+	let syncError = $state('');
+
+	async function loadGroups() {
+		if (app.players.length < 2) return;
+		try {
+			const r = await api.rpc<SyncGroupsResult>('', cmd.syncGroups());
+			groups = syncGroupsFrom(r, app.players);
+			syncError = '';
+		} catch (e) {
+			syncError = (e as Error).message;
+		}
+	}
+	$effect(() => {
+		void app.players;
+		untrack(() => void loadGroups());
+	});
+
+	const selected = $derived(app.playerId.toLowerCase());
+	/** The selected player's group: from `syncgroups ?`, else from its own status. */
+	const myGroup = $derived.by(() => {
+		const g = groupOf(selected, groups);
+		return g.length ? g : groupFromStatus(selected, app.now, app.players);
+	});
+	const others = $derived(app.players.filter((p) => p.playerid.toLowerCase() !== selected));
+	const nameOf = (id: string) => textOf(app.players.find((p) => p.playerid.toLowerCase() === id)?.name);
+
+	/** "With Study", for a player in a group, naming the others. */
+	function groupNote(id: string): string {
+		const g = groupOf(id, groups);
+		const rest = g.filter((x) => x !== id.toLowerCase());
+		return rest.length ? `with ${groupLabel(rest, app.players)}` : '';
+	}
+
+	async function runSync(player: string, c: (string | number)[]) {
+		syncBusy = true;
+		try {
+			await api.rpc(player, c);
+			syncError = '';
+		} catch (e) {
+			syncError = `Couldn't change the group: ${(e as Error).message}`;
+		} finally {
+			syncBusy = false;
+			await loadGroups();
+			app.soon();
+		}
+	}
+
+	function toggle(other: string, on: boolean) {
+		if (!selected || syncBusy) return;
+		let t;
+		try {
+			t = syncToggle(selected, other.toLowerCase(), groups.length ? groups : myGroup.length ? [myGroup] : [], on);
+		} catch {
+			return; // not a well-formed player id: never sent
+		}
+		void runSync(t.player, t.cmd);
+	}
+
+	function leave() {
+		if (!selected || syncBusy) return;
+		void runSync(selected, cmd.unsync());
 	}
 
 	const deviceLabel = $derived(
@@ -86,7 +158,7 @@
 					<span class="grow">
 						<span class="name ellipsis">{textOf(p.name)}</span>
 						<span class="sub muted">
-							{p.isplaying ? 'Playing' : p.power ? 'On' : 'Off'}{p.playerid === device.mac ? ' · this device' : ''}
+							{p.isplaying ? 'Playing' : p.power ? 'On' : 'Off'}{p.playerid === device.mac ? ' · this device' : ''}{groupNote(p.playerid) ? ` · ${groupNote(p.playerid)}` : ''}
 						</span>
 					</span>
 					{#if p.isplaying}<span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>{/if}
@@ -96,6 +168,38 @@
 			<li class="muted empty">No players you can control yet.</li>
 		{/each}
 	</ul>
+
+	{#if selected && others.length}
+		<section class="sync" aria-labelledby="sync-h">
+			<h3 id="sync-h">Play {nameOf(selected) || 'this player'} in sync with…</h3>
+			{#if syncError}<p class="error" role="alert">{syncError}</p>{/if}
+			<ul>
+				{#each others as p (p.playerid)}
+					{@const on = myGroup.includes(p.playerid.toLowerCase())}
+					<li>
+						<button
+							class="row choice toggle"
+							role="switch"
+							aria-checked={on}
+							aria-label={`Sync with ${textOf(p.name)}`}
+							disabled={syncBusy}
+							onclick={() => toggle(p.playerid, !on)}
+						>
+							<Icon name="speaker" size={18} />
+							<span class="grow">
+								<span class="name ellipsis">{textOf(p.name)}</span>
+								{#if !on && groupNote(p.playerid)}<span class="sub muted ellipsis">Grouped {groupNote(p.playerid)}</span>{/if}
+							</span>
+							<span class="track" class:on aria-hidden="true"><span class="knob"></span></span>
+						</button>
+					</li>
+				{/each}
+			</ul>
+			{#if myGroup.length > 1}
+				<button class="btn leave" disabled={syncBusy} onclick={leave}>Play {nameOf(selected) || 'this player'} on its own</button>
+			{/if}
+		</section>
+	{/if}
 </div>
 
 <style>
@@ -172,6 +276,51 @@
 	.empty {
 		padding: 0.75rem;
 	}
+	.sync {
+		border-top: 1px solid var(--line);
+		margin-top: 0.4rem;
+		padding-top: 0.4rem;
+	}
+	h3 {
+		margin: 0.25rem 0.75rem 0.4rem;
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--fg-muted);
+	}
+	.sync .error {
+		margin: 0.25rem 0.75rem;
+	}
+	.toggle {
+		min-height: 48px;
+	}
+	.track {
+		flex: none;
+		position: relative;
+		width: 38px;
+		height: 22px;
+		border-radius: 11px;
+		background: var(--line);
+		transition: background 0.15s;
+	}
+	.track.on {
+		background: var(--accent);
+	}
+	.knob {
+		position: absolute;
+		top: 3px;
+		left: 3px;
+		width: 16px;
+		height: 16px;
+		border-radius: 50%;
+		background: var(--bg-raised);
+		transition: transform 0.15s;
+	}
+	.track.on .knob {
+		transform: translateX(16px);
+	}
+	.leave {
+		margin: 0.4rem 0.75rem 0.25rem;
+	}
 	.eq {
 		display: inline-flex;
 		gap: 2px;
@@ -199,6 +348,10 @@
 		}
 	}
 	@media (prefers-reduced-motion: reduce) {
+		.track,
+		.knob {
+			transition: none;
+		}
 		.eq i {
 			animation: none;
 			height: 70%;

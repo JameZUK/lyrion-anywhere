@@ -1,6 +1,7 @@
 <script lang="ts">
 	// Now playing: large art, track details, full transport.
 	import { app } from '$lib/state/app.svelte';
+	import { playerLabel } from '$lib/lms/sync';
 	import * as cmd from '$lib/lms/commands';
 	import { duration, formatDetails, textOf } from '$lib/lms/format';
 	import Art from '$lib/components/Art.svelte';
@@ -41,7 +42,7 @@
 <section class="np page">
 	<div class="bar">
 		<button class="btn player" onclick={() => (switcher = !switcher)} aria-expanded={switcher}>
-			<Icon name="speaker" size={18} /><span class="ellipsis">{textOf(app.current?.name) || 'Choose a player'}</span>
+			<Icon name="speaker" size={18} /><span class="ellipsis">{playerLabel(app.playerId, app.now, app.players) || 'Choose a player'}</span>
 			<Icon name="chevron" size={16} />
 		</button>
 		{#if switcher}<div class="pop"><PlayerSwitcher onclose={() => (switcher = false)} /></div>{/if}

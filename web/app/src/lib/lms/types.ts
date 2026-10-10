@@ -53,6 +53,17 @@ export interface PlayerStatus {
 	remote?: number;
 	current_title?: string;
 	playlist_loop?: Track[];
+	/** Set while the player is in a sync group (only players the caller may control). */
+	sync_master?: string;
+	sync_slaves?: string;
+}
+
+export interface SyncGroup {
+	sync_members?: string;
+	sync_member_names?: string;
+}
+export interface SyncGroupsResult {
+	syncgroups_loop?: SyncGroup[];
 }
 
 export interface Album {

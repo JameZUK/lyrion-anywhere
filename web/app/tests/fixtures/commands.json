@@ -248,6 +248,27 @@
   ]
  },
  {
+  "player": false,
+  "cmd": [
+   "syncgroups",
+   "?"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "sync",
+   "aa:bb:cc:dd:ee:01"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "sync",
+   "-"
+  ]
+ },
+ {
   "player": true,
   "cmd": [
    "playlistcontrol",

@@ -39,6 +39,9 @@ const examples = [
 	{ player: true, cmd: c.clearQueue() },
 	{ player: true, cmd: c.shuffle(1) },
 	{ player: true, cmd: c.repeat(2) },
+	{ player: false, cmd: c.syncGroups() },
+	{ player: true, cmd: c.syncWith('AA:BB:CC:DD:EE:01') },
+	{ player: true, cmd: c.unsync() },
 	{ player: true, cmd: c.enqueue({ album: 7 }, 'play') },
 	{ player: true, cmd: c.enqueue({ album: 7 }, 'play', 3) },
 	{ player: true, cmd: c.enqueue({ album: 7 }, 'next') },
@@ -183,6 +186,15 @@ test('art paths cannot climb out of /v1/art with dots in any encoding', () => {
 		'html/images/x.png#/../../me',
 	];
 	for (const p of climbs) expect(c.imagePath(p), p).toBeNull();
+});
+
+test('sync builders take only well-formed player ids', () => {
+	expect(c.syncWith('AA:BB:CC:DD:EE:01')).toEqual(['sync', 'aa:bb:cc:dd:ee:01']);
+	expect(c.unsync()).toEqual(['sync', '-']);
+	expect(c.syncGroups()).toEqual(['syncgroups', '?']);
+	for (const bad of ['', '-', '?', 'aa:bb:cc:dd:ee', 'aa:bb:cc:dd:ee:01 x', 'aa:bb:cc:dd:ee:zz', '../x']) {
+		expect(() => c.syncWith(bad), bad).toThrow(RangeError);
+	}
 });
 
 test('app and info menus validate their names and ids', () => {
