@@ -20,3 +20,4 @@ dev/local.*
 plugin/Plugins/LyrionAnywhere/Bin/*/
 plugin/Plugins/LyrionAnywhere/web/
 dist/
+.claude/

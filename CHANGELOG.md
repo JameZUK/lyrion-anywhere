@@ -4,6 +4,65 @@ Dated entries, newest first.
 
 ## 2026-10-10
 
+### Security and reliability review: fixes
+A full review covered the gateway's remote-access surface, the player and streaming path, the web app, the LMS plugin and the build. Every fix has tests; the security fixes' regression tests fail on the code before the fix.
+
+**Remote access (the gateway's public port)**
+- **Player connections:** only the Slimproto messages a software player needs reach LMS (HELO, STAT, RESP, META, DSCO, BYE!, and a name reply only when LMS asked). Everything else is refused, including IR/BUTN/KNOB remote-control input, which got round the command allow-list, and unsolicited renames. HELO must claim the software-player id; capabilities and names are sanitised.
+- **Artwork SSRF:** image URLs are learned only from image fields of filtered responses, never from free text (e.g. a player name or track title holding an `imageproxy/` URL), and never for LAN hosts. Fetches are refused for them too.
+- **Logins:**
+  - at most 4 password checks run at once;
+  - attempts count before the check, so parallel guesses can't beat the 5-try lockout;
+  - IPv6 clients are limited per /64;
+  - the lockout table is bounded.
+- **Sign-in tokens:**
+  - refresh rotation is one atomic transaction;
+  - a token discarded by the 60-second lost-response rule is remembered, so a thief replaying within the window is caught when the owner returns;
+  - two-step setup needs the password;
+  - an admin password reset signs the user out everywhere;
+  - two-step codes can't be reused by racing requests;
+  - at most 20 devices per user (the least recently used is signed out).
+- **Leaks:** track-info lines holding file paths or LAN URLs (e.g. "Location: /…") are dropped, and sync information shows only players you may control.
+- **Streams:** ending or revoking a session stops its audio stream at once. A stalled stream times out, and can no longer hold up the player's control connection.
+
+**Stability**
+- A FLAC with very large embedded artwork no longer stalls playback.
+- A slow client is closed cleanly and can resume.
+- Overlong LMS event lines are dropped whole.
+- A replaced connection can no longer feed the session.
+- Fixed a race that could leave the events stream without a listener.
+
+**Web app**
+- **Audio:**
+  - a sample-rate change creates one audio context, not dozens;
+  - "Play on this device" works again after a disconnect or error;
+  - Stop while starting really stops.
+- **Signing out:**
+  - sign-out holds even with a renewal in flight;
+  - if offline, the app finishes signing out on the next load instead of signing back in.
+- **Recovering after a failed renewal:** events and the player reconnect after a renewal that failed offline.
+- **Artwork:** artwork paths can't be redirected to other API paths by encoded dots.
+- **Resume after a reload:**
+  - asks about this device's own player;
+  - checks the track is still the same.
+- **Smaller fixes:**
+  - diagnostics retry after renewal;
+  - the player picker supports Escape and focus;
+  - no timers are left behind by a fast sign-out.
+
+**LMS plugin and build (LAN side)**
+- **Account commands:** commands that change accounts need a token that only the settings page has. A web page visited by someone on your network can no longer create a remote admin account through LMS's unauthenticated JSON-RPC.
+- **Plugin settings:**
+  - settings are validated however they are set, including LMS's `pref` command;
+  - the admin port can't redirect the admin secret elsewhere;
+  - a custom gateway binary is honoured only with `ANYWHERE_ALLOW_GATEWAY_PATH=1`.
+- **Gateway supervision:**
+  - crash restarts back off properly (capped at 60 s);
+  - IP addresses are checked strictly;
+  - the gateway's exit reason is shown.
+- **Fix:** the sign-in lifetime could not be saved from the settings page.
+- **CI:** actions are pinned to commit SHAs and base images to digests, with Dependabot keeping them current.
+
 ### Media element: Apple Lossless (ALAC) as the last resort
 - **Why:** if Safari refuses every FLAC frame style, the next candidate is ALAC, which the iPad reports it supports through Media Source.
 - **Core:** the segmenter can write ALAC (variant bit 10): uncompressed ("escape") frames, 16 or 24 bit, in an `alac` sample entry with its configuration. It's written from the published format description, and decodes bit-exactly (Symphonia), including a short final frame.
