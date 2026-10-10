@@ -54,6 +54,7 @@ pub fn router(gw: AppState, secret: String) -> Router {
         )
         .route("/admin/v1/devices/{id}", delete(revoke_device))
         .route("/admin/v1/audit", get(audit))
+        .route("/admin/v1/settings", get(settings).post(set_settings))
         .fallback(|| async { StatusCode::NOT_FOUND })
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
@@ -170,6 +171,29 @@ async fn set_disabled(
             st.gw.end_sessions_for(&devices).await;
             StatusCode::NO_CONTENT.into_response()
         }
+        Err(e) => err(e),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Settings {
+    session_days: u32,
+}
+
+/// Gateway settings: the sign-in lifetime (days an unused device stays signed in).
+async fn settings(State(st): State<AdminState>) -> Response {
+    Json(json!({
+        "session_days": st.gw.accounts().session_days(),
+        "session_days_min": crate::accounts::SESSION_DAYS.start(),
+        "session_days_max": crate::accounts::SESSION_DAYS.end(),
+    }))
+    .into_response()
+}
+
+async fn set_settings(State(st): State<AdminState>, Json(s): Json<Settings>) -> Response {
+    match st.gw.accounts().set_session_days(s.session_days) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(e),
     }
 }

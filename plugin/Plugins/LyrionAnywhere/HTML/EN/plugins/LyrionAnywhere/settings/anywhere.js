@@ -17,6 +17,14 @@
     return out;
   }
 
+  /** A sign-in lifetime in whole days (1–365), or null. */
+  function validDays(v) {
+    const s = String(v ?? '').trim();
+    if (!/^\d{1,3}$/.test(s)) return null;
+    const n = Number(s);
+    return n >= 1 && n <= 365 ? n : null;
+  }
+
   function validUsername(u) {
     return /^[a-z0-9._-]{1,64}$/.test(u);
   }
@@ -55,7 +63,7 @@
     return when + JSON.stringify(r && r.report !== undefined ? r.report : r, null, 2);
   }
 
-  const api = { command, validUsername, validPassword, formatTime, formatUptime, diagnosticsText };
+  const api = { command, validDays, validUsername, validPassword, formatTime, formatUptime, diagnosticsText };
   if (typeof globalThis.__anywhereTest === 'object') {
     Object.assign(globalThis.__anywhereTest, api);
     return;
@@ -305,10 +313,24 @@
     }
     try {
       const players = await playerNames();
-      await Promise.all([showUsers(players), showDevices(), showAudit()]);
+      await Promise.all([showUsers(players), showDevices(), showAudit(), showSettings()]);
     } catch (e) {
       say(e.message, true);
     }
+  }
+
+  async function showSettings() {
+    const s = await admin('settings');
+    const input = $('aw-session-days');
+    if (document.activeElement !== input && Number.isInteger(s.session_days)) input.value = String(s.session_days);
+  }
+
+  function wireSettings() {
+    $('aw-session-btn').addEventListener('click', () => {
+      const days = validDays($('aw-session-days').value);
+      if (days === null) return say('Enter a number of days from 1 to 365.', true);
+      run(() => admin('session_days', { days }), `Devices now stay signed in for ${days} day${days === 1 ? '' : 's'} without use`);
+    });
   }
 
   function wireCreate() {
@@ -328,6 +350,7 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     wireCreate();
+    wireSettings();
     refresh();
     setInterval(() => showStatus().catch(() => {}), 10000);
   });

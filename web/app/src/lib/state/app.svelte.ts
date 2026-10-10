@@ -1,6 +1,6 @@
 // App-wide state: the session, the players the user may control, the selected player's
 // status (polled, and refreshed at once on events), and smooth progress between polls.
-import { SessionManager } from '$lib/api/session';
+import { SessionManager, type SessionStatus } from '$lib/api/session';
 import { Api } from '$lib/api/rpc';
 import { EventsClient, type EventsState } from '$lib/api/events';
 import type { Session } from '$lib/api/auth';
@@ -16,7 +16,7 @@ export const api = new Api(session);
 
 class AppState {
 	session = $state<Session | null>(null);
-	status = $state<'unknown' | 'signed-out' | 'signed-in'>('unknown');
+	status = $state<SessionStatus>('unknown');
 	players = $state<PlayerInfo[]>([]);
 	playerId = $state<string>('');
 	now = $state<PlayerStatus | null>(null);

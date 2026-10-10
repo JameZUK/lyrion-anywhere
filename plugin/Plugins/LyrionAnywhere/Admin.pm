@@ -22,9 +22,9 @@ my $log = logger('plugin.lyrionanywhere');
 
 use constant TIMEOUT => 15;
 
-sub valid_username { my $u = shift // ''; return $u =~ /^[a-z0-9._-]{1,64}$/ }
-sub valid_mac      { my $m = shift // ''; return $m =~ /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/i }
-sub valid_id       { my $i = shift // ''; return $i =~ /^\d{1,18}$/ }
+sub valid_username { my $u = shift // ''; return $u =~ /^[a-z0-9._-]{1,64}\z/ }
+sub valid_mac      { my $m = shift // ''; return $m =~ /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\z/i }
+sub valid_id       { my $i = shift // ''; return $i =~ /^\d{1,18}\z/ }
 
 sub valid_password {
 	my $p = shift;
@@ -51,6 +51,9 @@ my %OPS = (
 	revoke       => ['POST', '/admin/v1/devices/{id}/revoke', [qw(id)]],
 	diagnostics  => ['GET',  '/admin/v1/devices/{id}/diagnostics', [qw(id)]],
 	audit        => ['GET',  '/admin/v1/audit?limit={limit}', [qw(limit)]],
+	settings     => ['GET',  '/admin/v1/settings'],
+	session_days => ['POST', '/admin/v1/settings', [qw(days)],
+	                 sub { { session_days => 0 + $_[0]{days} } }],
 );
 
 sub operations { return sort keys %OPS }
@@ -58,11 +61,12 @@ sub operations { return sort keys %OPS }
 my %CHECK = (
 	username => \&valid_username,
 	password => \&valid_password,
-	role     => sub { ($_[0] // '') =~ /^(?:listener|admin)$/ },
-	disabled => sub { ($_[0] // '') =~ /^[01]$/ },
+	role     => sub { ($_[0] // '') =~ /^(?:listener|admin)\z/ },
+	disabled => sub { ($_[0] // '') =~ /^[01]\z/ },
 	player   => \&valid_mac,
 	id       => \&valid_id,
-	limit    => sub { ($_[0] // '') =~ /^\d{1,4}$/ && $_[0] >= 1 && $_[0] <= 1000 },
+	limit    => sub { ($_[0] // '') =~ /^\d{1,4}\z/ && $_[0] >= 1 && $_[0] <= 1000 },
+	days     => sub { ($_[0] // '') =~ /^\d{1,3}\z/ && $_[0] >= 1 && $_[0] <= 365 },
 );
 
 my %MESSAGE = (
@@ -73,6 +77,7 @@ my %MESSAGE = (
 	player   => 'player must be a MAC address like aa:bb:cc:dd:ee:ff',
 	id       => 'bad device id',
 	limit    => 'limit must be 1-1000',
+	days     => 'the sign-in lifetime must be 1-365 days',
 );
 
 # Returns ($method, $path, $body_or_undef) or dies with a user-readable message.
@@ -94,7 +99,7 @@ sub secret {
 	close $fh;
 	return undef unless defined $s;
 	$s =~ s/\s+//g;
-	return ($s =~ /^[0-9a-f]{32,128}$/) ? $s : undef;
+	return ($s =~ /^[0-9a-f]{32,128}\z/) ? $s : undef;
 }
 
 # Send an operation. $ok->($data) on success; $err->($message) on failure.

@@ -24,7 +24,14 @@ use sha2::{Digest, Sha256};
 use anywhere_core::proto::format_mac;
 
 pub const ACCESS_TTL: Duration = Duration::from_secs(15 * 60);
+/// Default sign-in lifetime: unused this long, a device must sign in again. Every use
+/// renews it (refresh tokens rotate, each with a fresh lifetime). Admins can change it.
 pub const REFRESH_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
+/// Bounds for the configurable sign-in lifetime, in days.
+pub const SESSION_DAYS: std::ops::RangeInclusive<u32> = 1..=365;
+/// A refresh token presented again this soon after it was used is a lost response (a phone
+/// suspended mid-request), not theft, provided its replacement hasn't been used either.
+pub const REUSE_GRACE_SECS: i64 = 60;
 pub const PAIRING_TTL: Duration = Duration::from_secs(10 * 60);
 pub const MIN_PASSWORD: usize = 10;
 pub const MAX_PASSWORD: usize = 1024;
@@ -73,6 +80,8 @@ pub struct Tokens {
     pub access: String,
     pub access_expires_in: u64,
     pub refresh: String,
+    /// Seconds until the refresh token expires (the sign-in lifetime).
+    pub refresh_expires_in: u64,
     pub principal: Principal,
 }
 
@@ -547,35 +556,100 @@ impl Accounts {
         self.issue(device)
     }
 
-    /// Rotate a refresh token. Replaying a used one revokes the device.
+    /// Rotate a refresh token. Replaying a used one revokes the device, except straight after
+    /// its use while its replacement is still unused (see `REUSE_GRACE_SECS`).
     pub fn refresh(&self, refresh_token: &str) -> Result<Tokens, AuthError> {
+        self.refresh_at(refresh_token, now_secs())
+    }
+
+    fn refresh_at(&self, refresh_token: &str, now: i64) -> Result<Tokens, AuthError> {
         let h = sha256(refresh_token).to_vec();
-        let row: Option<(i64, i64, i64)> = self
+        type Row = (i64, i64, i64, Option<i64>, Option<Vec<u8>>);
+        let row: Option<Row> = self
             .db
             .lock()
             .unwrap()
             .query_row(
-                "SELECT device_id, expires_at, used FROM refresh_tokens WHERE token_hash = ?1",
+                "SELECT device_id, expires_at, used, used_at, successor
+                 FROM refresh_tokens WHERE token_hash = ?1",
                 [&h],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()?;
-        let Some((device, expires, used)) = row else {
+        let Some((device, expires, used, used_at, successor)) = row else {
             return Err(AuthError::Invalid);
         };
         if used != 0 {
+            // The response with the new token never arrived: the client still has this one.
+            // Swap the unused replacement for a fresh one. If the replacement has been used,
+            // two parties hold tokens for this device: theft.
+            if let (Some(at), Some(next)) = (used_at, successor)
+                && (0..=REUSE_GRACE_SECS).contains(&(now - at))
+            {
+                let dropped = self.db.lock().unwrap().execute(
+                    "DELETE FROM refresh_tokens WHERE token_hash = ?1 AND used = 0",
+                    [&next],
+                )?;
+                if dropped == 1 {
+                    let t = self.issue(device)?;
+                    self.db.lock().unwrap().execute(
+                        "UPDATE refresh_tokens SET successor = ?1 WHERE token_hash = ?2",
+                        params![sha256(&t.refresh).to_vec(), h],
+                    )?;
+                    self.audit("refresh.retried", None, Some(device), "lost response");
+                    return Ok(t);
+                }
+            }
             self.revoke_device(device)?;
             self.audit("refresh.reused", None, Some(device), "device revoked");
             return Err(AuthError::Reused(device));
         }
-        if expires <= now_secs() {
+        if expires <= now {
             return Err(AuthError::Invalid);
         }
-        self.db.lock().unwrap().execute(
-            "UPDATE refresh_tokens SET used = 1 WHERE token_hash = ?1",
-            [&h],
+        let n = self.db.lock().unwrap().execute(
+            "UPDATE refresh_tokens SET used = 1, used_at = ?2 WHERE token_hash = ?1 AND used = 0",
+            params![h, now],
         )?;
-        self.issue(device)
+        if n == 0 {
+            return Err(AuthError::Invalid); // a concurrent request won the race
+        }
+        let t = self.issue(device)?;
+        self.db.lock().unwrap().execute(
+            "UPDATE refresh_tokens SET successor = ?1 WHERE token_hash = ?2",
+            params![sha256(&t.refresh).to_vec(), h],
+        )?;
+        Ok(t)
+    }
+
+    /// The sign-in lifetime in days (how long an unused device stays signed in).
+    pub fn session_days(&self) -> u32 {
+        self.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'session_days'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|d| SESSION_DAYS.contains(d))
+            .unwrap_or((REFRESH_TTL.as_secs() / 86_400) as u32)
+    }
+
+    /// Change the sign-in lifetime. It applies from each device's next sign-in or renewal.
+    pub fn set_session_days(&self, days: u32) -> Result<(), AuthError> {
+        if !SESSION_DAYS.contains(&days) {
+            return Err(AuthError::BadInput("session lifetime must be 1–365 days"));
+        }
+        self.db.lock().unwrap().execute(
+            "INSERT INTO settings (key, value) VALUES ('session_days', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [days.to_string()],
+        )?;
+        self.audit("settings.session_days", None, None, &days.to_string());
+        Ok(())
     }
 
     /// The principal for a valid, unexpired access token.
@@ -1030,12 +1104,13 @@ impl Accounts {
         };
         let access = new_secret();
         let refresh = new_secret();
+        let refresh_ttl = u64::from(self.session_days()) * 86_400;
         self.db.lock().unwrap().execute(
             "INSERT INTO refresh_tokens (token_hash, device_id, expires_at) VALUES (?1, ?2, ?3)",
             params![
                 sha256(&refresh).to_vec(),
                 device,
-                now_secs() + REFRESH_TTL.as_secs() as i64
+                now_secs() + refresh_ttl as i64
             ],
         )?;
         let mut map = self.access.lock().unwrap();
@@ -1052,6 +1127,7 @@ impl Accounts {
             access,
             access_expires_in: ACCESS_TTL.as_secs(),
             refresh,
+            refresh_expires_in: refresh_ttl,
             principal,
         })
     }
@@ -1156,6 +1232,18 @@ fn migrate(db: &Connection) -> Result<(), AuthError> {
                updated_at INTEGER NOT NULL,
                report TEXT NOT NULL);
              PRAGMA user_version = 3;",
+        )?;
+    }
+    if version < 4 {
+        // Refresh tokens remember when they were used and what replaced them (for the
+        // lost-response grace); settings hold admin choices such as the sign-in lifetime.
+        db.execute_batch(
+            "ALTER TABLE refresh_tokens ADD COLUMN used_at INTEGER;
+             ALTER TABLE refresh_tokens ADD COLUMN successor BLOB;
+             CREATE TABLE IF NOT EXISTS settings (
+               key TEXT PRIMARY KEY,
+               value TEXT NOT NULL);
+             PRAGMA user_version = 4;",
         )?;
     }
     Ok(())
@@ -1333,14 +1421,105 @@ mod tests {
         assert_ne!(t2.refresh, t.refresh);
         assert_ne!(t2.access, t.access);
         assert_eq!(t2.principal.device_id, t.principal.device_id);
-        // The old refresh token was stolen and replayed: revoke the device entirely.
+        // Someone else used the new token (t2 → t3), and the old one comes back: two parties
+        // hold tokens for this device, so it was stolen. Revoke the device entirely.
+        let t3 = a.refresh(&t2.refresh).unwrap();
         assert_eq!(
             a.refresh(&t.refresh),
             Err(AuthError::Reused(t.principal.device_id))
         );
-        assert!(a.authenticate(&t2.access).is_none());
-        assert_eq!(a.refresh(&t2.refresh), Err(AuthError::Invalid));
+        assert!(a.authenticate(&t3.access).is_none());
+        assert_eq!(a.refresh(&t3.refresh), Err(AuthError::Invalid));
         assert!(a.list_devices().unwrap().is_empty());
+    }
+
+    /// A phone suspended mid-refresh never got the new token, and tries the old one again.
+    #[test]
+    fn a_lost_refresh_response_can_be_retried_once_quickly() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let now = now_secs();
+        let lost = a.refresh_at(&t.refresh, now).unwrap(); // the response is lost
+        let retry = a.refresh_at(&t.refresh, now + 5).unwrap();
+        assert_eq!(retry.principal.device_id, t.principal.device_id);
+        // The lost token is dead, so a thief who caught it gets nothing.
+        assert_eq!(a.refresh(&lost.refresh), Err(AuthError::Invalid));
+        // The device carries on with the retried token.
+        let next = a.refresh(&retry.refresh).unwrap();
+        assert!(a.authenticate(&next.access).is_some());
+        assert_eq!(a.list_devices().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn replays_outside_the_grace_window_still_revoke() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let now = now_secs();
+        a.refresh_at(&t.refresh, now).unwrap();
+        assert_eq!(
+            a.refresh_at(&t.refresh, now + REUSE_GRACE_SECS + 1),
+            Err(AuthError::Reused(t.principal.device_id))
+        );
+        assert!(a.list_devices().unwrap().is_empty());
+        // A clock running backwards doesn't open the window either.
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        a.refresh_at(&t.refresh, now).unwrap();
+        assert!(matches!(
+            a.refresh_at(&t.refresh, now - 10),
+            Err(AuthError::Reused(_))
+        ));
+    }
+
+    #[test]
+    fn a_retried_token_cannot_be_retried_again_after_its_replacement_is_used() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let now = now_secs();
+        a.refresh_at(&t.refresh, now).unwrap();
+        let retry = a.refresh_at(&t.refresh, now + 1).unwrap();
+        a.refresh_at(&retry.refresh, now + 2).unwrap(); // the retried token is used
+        assert!(matches!(
+            a.refresh_at(&t.refresh, now + 3),
+            Err(AuthError::Reused(_))
+        ));
+        assert!(a.list_devices().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_sign_in_lifetime_is_configurable_and_bounded() {
+        let a = store();
+        assert_eq!(a.session_days(), 30);
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        assert_eq!(t.refresh_expires_in, 30 * 86_400);
+        a.set_session_days(90).unwrap();
+        assert_eq!(a.session_days(), 90);
+        // Applies from the next renewal: the lifetime slides with use.
+        let t = a.refresh(&t.refresh).unwrap();
+        assert_eq!(t.refresh_expires_in, 90 * 86_400);
+        for bad in [0, 366, u32::MAX] {
+            assert!(a.set_session_days(bad).is_err());
+        }
+        assert_eq!(a.session_days(), 90);
+        // A bad stored value falls back to the default.
+        a.db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE settings SET value = 'x' WHERE key = 'session_days'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(a.session_days(), 30);
+    }
+
+    #[test]
+    fn expired_refresh_tokens_are_refused() {
+        let a = store();
+        a.set_session_days(1).unwrap();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        assert_eq!(
+            a.refresh_at(&t.refresh, now_secs() + 86_400 + 1),
+            Err(AuthError::Invalid)
+        );
     }
 
     #[test]
@@ -1487,8 +1666,16 @@ mod tests {
         let t = a
             .login("alice", PW, None, "Laptop", None, "10.0.0.9")
             .unwrap();
-        let _ = a.refresh(&t.refresh);
-        let _ = a.refresh(&t.refresh); // reuse
+        let t2 = a.refresh(&t.refresh).unwrap();
+        let _ = a.refresh(&t.refresh); // a lost response, retried
+        let _ = a.refresh(&t2.refresh); // the lost token: dead
+        let _ = a.refresh(&t.refresh); // and again, still inside the window
+        let t3 = a
+            .login("alice", PW, None, "Phone", None, "10.0.0.9")
+            .unwrap();
+        let t4 = a.refresh(&t3.refresh).unwrap();
+        let _ = a.refresh(&t4.refresh); // the replacement is used…
+        let _ = a.refresh(&t3.refresh); // …then the old one comes back: theft
         let events: Vec<String> = a
             .audit_log(50)
             .unwrap()
@@ -1498,6 +1685,7 @@ mod tests {
         for e in [
             "login.failed",
             "login.ok",
+            "refresh.retried",
             "refresh.reused",
             "device.revoked",
         ] {
@@ -1691,11 +1879,16 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         // Version 3 added per-device diagnostics.
         let d = a.devices_for_test();
         a.save_diagnostics(d, r#"{"ok":true}"#).unwrap();
         assert_eq!(a.diagnostics(d).unwrap().unwrap().1, r#"{"ok":true}"#);
+        // Version 4: refresh-token history and settings.
+        a.set_session_days(7).unwrap();
+        assert_eq!(a.session_days(), 7);
+        let t = a.login("alice", PW, None, "Phone", None, "c");
+        assert!(t.is_err() || a.refresh(&t.unwrap().refresh).is_ok());
     }
 
     // -- player permissions --------------------------------------------------

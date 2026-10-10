@@ -87,6 +87,10 @@
 
 {#if app.status === 'unknown'}
 	<div class="splash" aria-busy="true"><span class="dot"></span></div>
+{:else if app.status === 'offline'}
+	<div class="splash" role="status">
+		<p class="muted">Can’t reach the music server. Trying again…</p>
+	</div>
 {:else if app.status === 'signed-out'}
 	<Login />
 {:else}

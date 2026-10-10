@@ -221,8 +221,25 @@ async fn refresh_rotates_the_cookie_and_reuse_revokes_the_device() {
     assert_eq!(r.status(), S::OK);
     let cookie2 = cookie_value(&cookie_from(&r).unwrap());
     assert_ne!(cookie1, cookie2);
+    // The new token is used (by whoever holds it)…
+    let refresh = |c: String| {
+        let url = h.url("/v1/auth/refresh");
+        async move {
+            reqwest::Client::new()
+                .post(url)
+                .header(CLIENT.0, CLIENT.1)
+                .header("cookie", c)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let r = refresh(cookie2.clone()).await;
+    assert_eq!(r.status(), S::OK);
+    let cookie3 = cookie_value(&cookie_from(&r).unwrap());
 
-    // Replaying the old cookie: theft detected, device revoked, session ended.
+    // …and the old cookie comes back: two parties hold tokens, so it was stolen. The device
+    // is revoked and its session ended.
     let replay = reqwest::Client::new()
         .post(h.url("/v1/auth/refresh"))
         .header(CLIENT.0, CLIENT.1)
@@ -235,7 +252,7 @@ async fn refresh_rotates_the_cookie_and_reuse_revokes_the_device() {
     let again = reqwest::Client::new()
         .post(h.url("/v1/auth/refresh"))
         .header(CLIENT.0, CLIENT.1)
-        .header("cookie", &cookie2)
+        .header("cookie", &cookie3)
         .send()
         .await
         .unwrap();
@@ -243,6 +260,52 @@ async fn refresh_rotates_the_cookie_and_reuse_revokes_the_device() {
         again.status(),
         S::UNAUTHORIZED,
         "the whole device is revoked"
+    );
+}
+
+/// Regression: a phone suspended mid-refresh never received the new cookie and presented the
+/// old one again. That looked like theft, so the device was revoked and the user signed out.
+#[tokio::test]
+async fn a_lost_refresh_response_does_not_sign_the_device_out() {
+    let mut h = harness().await;
+    let resp = h.login("alice", PW, &[CLIENT]).await;
+    let cookie1 = cookie_value(&cookie_from(&resp).unwrap());
+    let token = json_of(resp).await["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut ws = h.dial().await;
+    ws.send(Message::Text(token.into())).await.unwrap();
+    next(&mut ws).await;
+    let _lms = h.lms.accept().await;
+
+    let refresh = |c: String| {
+        let url = h.url("/v1/auth/refresh");
+        async move {
+            reqwest::Client::new()
+                .post(url)
+                .header(CLIENT.0, CLIENT.1)
+                .header("cookie", c)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let lost = refresh(cookie1.clone()).await; // the browser never sees this response
+    assert_eq!(lost.status(), S::OK);
+    let lost_cookie = cookie_value(&cookie_from(&lost).unwrap());
+    let retry = refresh(cookie1.clone()).await;
+    assert_eq!(retry.status(), S::OK, "the retry is accepted");
+    let cookie2 = cookie_value(&cookie_from(&retry).unwrap());
+    assert!(cookie_from(&retry).unwrap().contains("Max-Age=2592000"));
+    // The lost token is dead; the device and its player session carry on.
+    assert_eq!(refresh(lost_cookie).await.status(), S::UNAUTHORIZED);
+    assert_eq!(refresh(cookie2).await.status(), S::OK);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), ws.next())
+            .await
+            .is_err(),
+        "the player session stays open"
     );
 }
 
@@ -367,6 +430,73 @@ async fn admin_api_refuses_non_loopback_peers() {
         app.oneshot(req).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
+}
+
+#[tokio::test]
+async fn admin_sets_the_sign_in_lifetime() {
+    let h = harness().await;
+    let (base, secret) = h.admin().await;
+    let c = reqwest::Client::new();
+    let get = || {
+        c.get(format!("{base}/admin/v1/settings"))
+            .bearer_auth(&secret)
+    };
+    let set = |body: Value| {
+        c.post(format!("{base}/admin/v1/settings"))
+            .bearer_auth(&secret)
+            .json(&body)
+    };
+    let s = json_of(get().send().await.unwrap()).await;
+    assert_eq!(s["session_days"], 30);
+    assert_eq!(
+        set(json!({"session_days": 120}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        S::NO_CONTENT
+    );
+    assert_eq!(
+        json_of(get().send().await.unwrap()).await["session_days"],
+        120
+    );
+    // New sign-ins get the new lifetime in their cookie.
+    let resp = h.login("alice", PW, &[CLIENT]).await;
+    assert!(cookie_from(&resp).unwrap().contains("Max-Age=10368000"));
+    // Out of range, wrong types and unknown fields are refused, and change nothing.
+    for bad in [
+        json!({"session_days": 0}),
+        json!({"session_days": 366}),
+        json!({"session_days": -1}),
+        json!({"session_days": "30"}),
+        json!({"session_days": 30, "admin": true}),
+        json!({}),
+    ] {
+        let st = set(bad.clone()).send().await.unwrap().status();
+        assert!(st.is_client_error(), "{bad} gave {st}");
+    }
+    assert_eq!(
+        json_of(get().send().await.unwrap()).await["session_days"],
+        120
+    );
+    // Without the admin secret: refused.
+    let r = c
+        .get(format!("{base}/admin/v1/settings"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::FORBIDDEN);
+    let r = c
+        .post(format!("{base}/admin/v1/settings"))
+        .bearer_auth("not-the-secret")
+        .json(&json!({"session_days": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::FORBIDDEN);
+    // The public listener doesn't serve it at all.
+    let r = c.get(h.url("/admin/v1/settings")).send().await.unwrap();
+    assert_ne!(r.status(), S::OK);
 }
 
 #[tokio::test]

@@ -56,6 +56,9 @@ my @steps = (
 	[totp_reset    => { username => 'alice' }, 204],
 	[devices       => {}, 200],
 	[audit         => { limit => 20 }, 200],
+	[settings      => {}, 200],
+	[session_days  => { days => 90 }, 204],
+	[session_days  => { days => '7' }, 204],
 	[user_delete   => { username => 'alice' }, 204],
 );
 for my $s (@steps) {
@@ -65,7 +68,9 @@ for my $s (@steps) {
 	if ($op eq 'pairing') { like($data->{code}, qr/^[A-Z2-9]{10}$/, 'pairing code returned') }
 	if ($op eq 'grants')  { is_deeply($data->{players}, ['aa:bb:cc:dd:ee:01'], 'grant visible') }
 	if ($op eq 'users')   { is($data->{users}[0]{username}, 'alice') }
+	if ($op eq 'settings') { is($data->{session_days}, 30, 'default sign-in lifetime') }
 }
+is((send_op('settings', {}))[1]{session_days}, 7, 'sign-in lifetime saved');
 my ($status) = send_op('users', {});
 my ($users_after) = (send_op('users', {}))[1];
 is_deeply($users_after->{users}, [], 'user deleted');

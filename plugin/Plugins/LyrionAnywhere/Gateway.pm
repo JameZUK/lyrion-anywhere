@@ -61,32 +61,32 @@ sub binary_path {
 	return catfile($o{basedir}, 'Bin', $plat, $exe);
 }
 
-my $IPV4 = qr/^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
+my $IPV4 = qr/^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\z/;
 
 sub valid_ip {
 	my $ip = shift // return 0;
 	return 1 if $ip =~ $IPV4;
-	return 1 if $ip =~ /^[0-9a-f:]+$/i && $ip =~ /:/ && length($ip) <= 39;
+	return 1 if $ip =~ /^[0-9a-f:]+\z/i && $ip =~ /:/ && length($ip) <= 39;
 	return 0;
 }
 
 sub valid_hostport {
 	my $hp = shift // return 0;
 	my ($host, $port);
-	if ($hp =~ /^\[([0-9a-f:]+)\]:(\d{1,5})$/i) { ($host, $port) = ($1, $2) }
-	elsif ($hp =~ /^([0-9.]+):(\d{1,5})$/)      { ($host, $port) = ($1, $2) }
+	if ($hp =~ /^\[([0-9a-f:]+)\]:(\d{1,5})\z/i) { ($host, $port) = ($1, $2) }
+	elsif ($hp =~ /^([0-9.]+):(\d{1,5})\z/)      { ($host, $port) = ($1, $2) }
 	else { return 0 }
 	return valid_ip($host) && $port >= 1 && $port <= 65535;
 }
 
 sub is_loopback {
 	my $hp = shift // return 0;
-	return $hp =~ /^127\.\d+\.\d+\.\d+:\d+$/ || $hp =~ /^\[::1\]:\d+$/;
+	return $hp =~ /^127\.\d+\.\d+\.\d+:\d+\z/ || $hp =~ /^\[::1\]:\d+\z/;
 }
 
 sub valid_origin {
 	my $o = shift // return 0;
-	return $o =~ m{^https?://[a-z0-9.-]+(?::\d{1,5})?$}i && length($o) <= 255;
+	return $o =~ m{^https?://[a-z0-9.-]+(?::\d{1,5})?\z}i && length($o) <= 255;
 }
 
 # The gateway's argument list. Returns (\@argv) or (undef, $error).
@@ -98,7 +98,7 @@ sub command_line {
 	return (undef, 'data directory must be an absolute path')      unless $o{data_dir} && file_name_is_absolute($o{data_dir});
 	return (undef, 'web directory must be an absolute path')       if $o{static_dir} && !file_name_is_absolute($o{static_dir});
 	for my $p (qw(http_port cli_port)) {
-		return (undef, "bad $p") unless defined $o{$p} && $o{$p} =~ /^\d{1,5}$/ && $o{$p} > 0 && $o{$p} <= 65535;
+		return (undef, "bad $p") unless defined $o{$p} && $o{$p} =~ /^\d{1,5}\z/ && $o{$p} > 0 && $o{$p} <= 65535;
 	}
 	my @proxies = @{ $o{trusted_proxies} || [] };
 	my @origins = @{ $o{allowed_origins} || [] };

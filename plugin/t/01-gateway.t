@@ -84,4 +84,16 @@ ok(Plugins::LyrionAnywhere::Gateway::valid_hostport('[::1]:9443'));
 ok(Plugins::LyrionAnywhere::Gateway::is_loopback('[::1]:9445'));
 ok(!Plugins::LyrionAnywhere::Gateway::valid_ip('256.1.1.1'));
 
+# Regression: Perl's $ also matches before a trailing newline, so these used to pass and
+# would have reached the gateway's command line.
+for my $bad ("10.0.0.1\n", "::1\n") {
+	ok(!Plugins::LyrionAnywhere::Gateway::valid_ip($bad), 'refused: newline after an IP');
+}
+for my $bad ("127.0.0.1:9443\n", "[::1]:9443\n") {
+	ok(!Plugins::LyrionAnywhere::Gateway::valid_hostport($bad), 'refused: newline after host:port');
+	ok(!Plugins::LyrionAnywhere::Gateway::is_loopback($bad), 'refused: newline after loopback address');
+}
+ok(!Plugins::LyrionAnywhere::Gateway::valid_origin("https://music.example.com\n"), 'refused: newline after origin');
+ok(Plugins::LyrionAnywhere::Gateway::valid_origin('https://music.example.com'), 'a plain origin is fine');
+
 done_testing;

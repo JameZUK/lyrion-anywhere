@@ -1,5 +1,5 @@
 // Session renewal, the RPC/artwork client and the events stream, against fakes.
-import { SessionManager, type AuthApi } from '$lib/api/session';
+import { RETRY_MS, SessionManager, refused, type AuthApi } from '$lib/api/session';
 import { Api } from '$lib/api/rpc';
 import { ApiError, callJson, CLIENT_HEADER } from '$lib/api/http';
 import { EventsClient, eventsBackoff, parseEventMessage } from '$lib/api/events';
@@ -109,6 +109,66 @@ describe('session', () => {
 		expect(s.status).toBe('signed-out');
 		expect(s.token).toBe('');
 		expect(states.at(-1)).toBe('signed-out');
+	});
+
+	// Regression: a phone waking up offline, or the gateway restarting, signed the user out.
+	test('a renewal that cannot reach the server keeps the sign-in and retries', async () => {
+		vi.useFakeTimers();
+		const outcomes: (string | Error)[] = ['t1', new TypeError('Failed to fetch'), new ApiError(502, 'HTTP 502'), 't2'];
+		const auth = fakeAuth([]);
+		auth.refresh = vi.fn(async () => {
+			const o = outcomes.shift();
+			if (o instanceof Error) throw o;
+			if (!o) throw new ApiError(401, 'expired');
+			return sess(o);
+		});
+		const s = new SessionManager(auth);
+		await s.restore();
+		expect(await s.renew()).toBe(false);
+		expect(s.status).toBe('signed-in');
+		expect(s.token).toBe('t1');
+		await vi.advanceTimersByTimeAsync(RETRY_MS[0]!); // still 502
+		expect(s.status).toBe('signed-in');
+		await vi.advanceTimersByTimeAsync(RETRY_MS[1]!);
+		expect(s.token).toBe('t2');
+	});
+
+	test('restore while offline waits and retries instead of showing the sign-in form', async () => {
+		vi.useFakeTimers();
+		const outcomes: (string | Error)[] = [new TypeError('Failed to fetch'), 't1'];
+		const auth = fakeAuth([]);
+		auth.refresh = vi.fn(async () => {
+			const o = outcomes.shift();
+			if (o instanceof Error) throw o;
+			return sess(o!);
+		});
+		const s = new SessionManager(auth);
+		const states: string[] = [];
+		s.subscribe((_, st) => states.push(st));
+		expect(await s.restore()).toBe(false);
+		expect(s.status).toBe('offline');
+		await vi.advanceTimersByTimeAsync(RETRY_MS[0]!);
+		expect(s.status).toBe('signed-in');
+		expect(states).not.toContain('signed-out');
+	});
+
+	test('only refusals sign out', () => {
+		for (const st of [400, 401, 403]) expect(refused(new ApiError(st, 'x'))).toBe(true);
+		for (const st of [408, 429, 500, 502, 503, 504]) expect(refused(new ApiError(st, 'x'))).toBe(false);
+		expect(refused(new TypeError('Failed to fetch'))).toBe(false);
+		expect(refused(new DOMException('aborted', 'AbortError'))).toBe(false);
+	});
+
+	test('sign-out stops pending retries', async () => {
+		vi.useFakeTimers();
+		const auth = fakeAuth([]);
+		auth.refresh = vi.fn(async () => Promise.reject(new TypeError('offline')));
+		const s = new SessionManager(auth);
+		await s.restore();
+		await s.signOut();
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(auth.refresh).toHaveBeenCalledTimes(1);
+		expect(s.status).toBe('signed-out');
 	});
 
 	test('other errors are not retried', async () => {

@@ -31,8 +31,9 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
 
 - **Access tokens:** random, valid for 15 minutes. Use them as `Authorization: Bearer …` for streams and `/v1/me`, and as the first message on the player socket. Keep them in memory only.
 - **Refresh tokens:**
-  - valid for 30 days and single use; each refresh returns a new one;
-  - presenting a used one revokes the whole device, because the token has been copied;
+  - single use; each refresh returns a new one, valid for the sign-in lifetime (30 days by default, 1–365 set by the admin in the plugin settings). A device in use therefore stays signed in; one unused for the whole lifetime must sign in again;
+  - presenting a used one revokes the whole device, because the token has been copied. One exception: within 60 seconds of its use, while the token that replaced it is still unused, the response was lost (a phone suspended mid-request). The unused replacement is then discarded and a fresh one issued (audit event `refresh.retried`);
+  - clients sign out only when a refresh is refused (4xx). If the server can't be reached, they keep the sign-in and retry with backoff;
   - browsers get them in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/v1/auth`;
   - native apps get them in the body and keep them in the Keystore/Keychain.
 - **Two-step verification (optional, per user):** TOTP per RFC 6238 (HMAC-SHA1, 30 s, 6 digits), compatible with standard authenticator apps.

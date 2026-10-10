@@ -10,7 +10,7 @@ use Slim::Utils::Prefs;
 Plugins::LyrionAnywhere::Commands::register();
 ok($Slim::Control::Request::DISPATCH{'anywhere status'}, 'status registered');
 ok($Slim::Control::Request::DISPATCH{"anywhere $_"}, "$_ registered")
-	for qw(users user_create user_delete grant ungrant revoke audit totp_reset pairing diagnostics);
+	for qw(users user_create user_delete grant ungrant revoke audit totp_reset pairing diagnostics settings session_days);
 is($Slim::Control::Request::DISPATCH{'anywhere users'}[0], 0, 'no player needed');
 
 my $dir = tempdir(CLEANUP => 1);

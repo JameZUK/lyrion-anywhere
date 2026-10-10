@@ -17,6 +17,9 @@ is_deeply(req('ungrant', { username => 'alice', player => 'AA:BB:CC:DD:EE:01' })
 is_deeply(req('revoke', { id => 12 }), ['POST', '/admin/v1/devices/12/revoke', undef]);
 is_deeply(req('diagnostics', { id => 12 }), ['GET', '/admin/v1/devices/12/diagnostics', undef]);
 is_deeply(req('audit', { limit => 50 }), ['GET', '/admin/v1/audit?limit=50', undef]);
+is_deeply(req('settings', {}), ['GET', '/admin/v1/settings', undef]);
+my (undef, undef, $days) = Plugins::LyrionAnywhere::Admin::request_for('session_days', { days => '90' });
+is(JSON::PP->new->canonical->encode($days), '{"session_days":90}', 'the lifetime is a JSON number');
 my ($m, $p, $b) = Plugins::LyrionAnywhere::Admin::request_for('user_disable', { username => 'bob', disabled => 1 });
 is(JSON::PP->new->canonical->encode($b), '{"disabled":true}', 'disabled is a JSON boolean');
 
@@ -33,6 +36,20 @@ my %attacks = (
 	'non-numeric device'         => ['revoke',      { id => '1/../2' }],
 	'non-numeric diagnostics id' => ['diagnostics', { id => '../audit' }],
 	'huge limit'                 => ['audit',       { limit => 100000 }],
+	'zero days'                  => ['session_days', { days => 0 }],
+	'too many days'              => ['session_days', { days => 366 }],
+	'negative days'              => ['session_days', { days => -1 }],
+	'fractional days'            => ['session_days', { days => '1.5' }],
+	'exponent days'              => ['session_days', { days => '1e2' }],
+	'days with junk'             => ['session_days', { days => "30\n" }],
+	'missing days'               => ['session_days', {}],
+	# Regression: Perl's $ also matches before a trailing newline, so these used to pass.
+	'newline after username'     => ['grants',      { username => "alice\n" }],
+	'newline after mac'          => ['ungrant',     { username => 'a', player => "aa:bb:cc:dd:ee:01\n" }],
+	'newline after device id'    => ['revoke',      { id => "12\n" }],
+	'newline after role'         => ['user_create', { username => 'a', password => 'abcdefghijk', role => "admin\n" }],
+	'newline after disabled'     => ['user_disable', { username => 'a', disabled => "1\n" }],
+	'newline after limit'        => ['audit',       { limit => "50\n" }],
 	'unknown operation'          => ['restart_lms', {}],
 	'missing username'           => ['pairing',     {}],
 );

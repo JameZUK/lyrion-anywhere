@@ -17,7 +17,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::accounts::{AuthError, REFRESH_TTL, Tokens};
+use crate::accounts::{AuthError, Tokens};
 use crate::{AppState, origin_allowed};
 
 pub const REFRESH_COOKIE: &str = "anywhere_refresh";
@@ -113,7 +113,7 @@ fn token_response(t: Tokens, refresh_in: RefreshIn) -> Response {
         RefreshIn::Cookie => {
             resp_headers.insert(
                 header::SET_COOKIE,
-                refresh_cookie(&t.refresh, REFRESH_TTL.as_secs()),
+                refresh_cookie(&t.refresh, t.refresh_expires_in),
             );
         }
     }

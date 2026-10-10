@@ -7,7 +7,18 @@ import type { Session } from './auth';
 /** Renew this long before the 15-minute access token expires. */
 const RENEW_BEFORE_MS = 5 * 60 * 1000;
 
-export type SessionStatus = 'unknown' | 'signed-out' | 'signed-in';
+/** `offline`: not signed in yet because the server can't be reached; retrying. */
+export type SessionStatus = 'unknown' | 'offline' | 'signed-out' | 'signed-in';
+
+/** Retry delays when the server can't be reached (then the last one, repeatedly). */
+export const RETRY_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
+
+/**
+ * Did the server refuse the sign-in? Only then is the user signed out. Anything else (no
+ * network, a phone waking up, the gateway restarting behind the proxy) is retried, so a
+ * moment offline never costs the user their sign-in.
+ */
+export const refused = (e: unknown) => e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429;
 type Listener = (s: Session | null, status: SessionStatus) => void;
 
 export interface AuthApi {
@@ -22,6 +33,8 @@ export class SessionManager {
 	#listeners = new Set<Listener>();
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#renewing: Promise<boolean> | null = null;
+	#retry: ReturnType<typeof setTimeout> | undefined;
+	#attempt = 0;
 
 	constructor(private api: AuthApi = auth) {}
 
@@ -41,6 +54,8 @@ export class SessionManager {
 
 	#set(s: Session | null) {
 		clearTimeout(this.#timer);
+		clearTimeout(this.#retry);
+		this.#attempt = 0;
 		this.current = s;
 		this.status = s ? 'signed-in' : 'signed-out';
 		if (s) {
@@ -50,13 +65,30 @@ export class SessionManager {
 		this.#emit();
 	}
 
+	/** Try again later: the server couldn't be reached. */
+	#later(what: () => void) {
+		clearTimeout(this.#retry);
+		const ms = RETRY_MS[Math.min(this.#attempt, RETRY_MS.length - 1)]!;
+		this.#attempt++;
+		this.#retry = setTimeout(what, ms);
+	}
+
 	/** Sign in silently with the refresh cookie, if this browser has one. */
 	async restore(): Promise<boolean> {
 		try {
 			this.#set(await this.api.refresh());
 			return true;
-		} catch {
-			this.#set(null);
+		} catch (e) {
+			if (refused(e)) {
+				this.#set(null);
+			} else {
+				// Can't tell yet: keep the sign-in and try again shortly.
+				if (this.status !== 'offline') {
+					this.status = 'offline';
+					this.#emit();
+				}
+				this.#later(() => void this.restore());
+			}
 			return false;
 		}
 	}
@@ -68,6 +100,7 @@ export class SessionManager {
 	async signOut(): Promise<void> {
 		const token = this.token;
 		this.#set(null);
+		clearTimeout(this.#retry);
 		if (token) await this.api.logout(token).catch(() => {});
 	}
 
@@ -77,8 +110,9 @@ export class SessionManager {
 			try {
 				this.#set(await this.api.refresh());
 				return true;
-			} catch {
-				this.#set(null);
+			} catch (e) {
+				if (refused(e)) this.#set(null);
+				else this.#later(() => void this.renew()); // stay signed in; try again soon
 				return false;
 			} finally {
 				this.#renewing = null;
