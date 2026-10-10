@@ -49,6 +49,13 @@
 			{/if}
 		</nav>
 		<main class="content">
+			{#if device.wasActive && (device.state === 'off' || device.state === 'stopped')}
+				<div class="banner resume" role="status">
+					<span>This device was playing before the page reloaded.</span>
+					<button class="btn primary" onclick={() => device.start()}><Icon name="play" size={16} />Resume playing here</button>
+					<button class="btn" onclick={() => device.stop()}>Dismiss</button>
+				</div>
+			{/if}
 			{#if app.error}<p class="banner error" role="alert">{app.error}</p>{/if}
 			{@render children()}
 		</main>
@@ -143,6 +150,17 @@
 		padding: 0.6rem 0.9rem;
 		border: 1px solid currentColor;
 		border-radius: var(--radius-sm);
+	}
+	.resume {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.6rem;
+		border-color: var(--accent);
+		background: var(--accent-soft);
+	}
+	.resume span {
+		flex: 1 1 14rem;
 	}
 	.tabs {
 		display: none;

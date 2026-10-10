@@ -111,3 +111,23 @@ test('single-channel output is mixed down, not right-channel-only', () => {
   assert.equal(mono[63], 0.375);
   assert.equal(mono[64], 0, 'silence after underrun');
 });
+
+// Regression: frames were reported in batches of 1024, so the last partial batch of a
+// playlist was never reported. The core then never saw the end, never sent STMu, and LMS
+// showed the player as playing forever.
+test('reports every played frame once the queue runs dry', () => {
+  const { send, render, reports } = loadProcessor();
+  send({ pcm: stereo(1500) });
+  for (let i = 0; i < 20; i++) render(128); // 2560 frames rendered: queue drains part-way
+  const played = reports.filter((r) => r.played).reduce((n, r) => n + r.played, 0);
+  assert.equal(played, 1500, 'all 1500 frames reported, including the final partial batch');
+});
+
+test('still batches reports while audio is flowing', () => {
+  const { send, render, reports } = loadProcessor();
+  send({ pcm: stereo(48000) });
+  for (let i = 0; i < 100; i++) render(128); // 12800 frames, queue never empties
+  const msgs = reports.filter((r) => r.played);
+  assert.ok(msgs.every((r) => r.played >= 1024), 'no tiny reports mid-stream');
+  assert.ok(msgs.length <= 12800 / 1024 + 1);
+});

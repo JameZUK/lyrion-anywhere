@@ -180,7 +180,7 @@ describe('rpc and art', () => {
 	});
 
 	test('art becomes a blob URL; tokens never go in the URL', async () => {
-		const f = vi.fn(async () => new Response(new Blob(['png']), { headers: { 'content-type': 'image/png' } }));
+		const f = vi.fn(async () => new Response(new TextEncoder().encode('png'), { headers: { 'content-type': 'image/png' } }));
 		vi.stubGlobal('fetch', f);
 		const created: string[] = [];
 		vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: () => (created.push('blob:x'), 'blob:x'), revokeObjectURL: vi.fn() }));
@@ -198,7 +198,7 @@ describe('rpc and art', () => {
 	});
 
 	test('the art cache is bounded and revokes evicted URLs', async () => {
-		vi.stubGlobal('fetch', async () => new Response(new Blob(['x']), { headers: { 'content-type': 'image/jpeg' } }));
+		vi.stubGlobal('fetch', async () => new Response(new TextEncoder().encode('x'), { headers: { 'content-type': 'image/jpeg' } }));
 		let n = 0;
 		const revoke = vi.fn();
 		vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: () => `blob:${++n}`, revokeObjectURL: revoke }));

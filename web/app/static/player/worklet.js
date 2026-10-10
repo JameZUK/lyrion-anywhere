@@ -57,7 +57,9 @@ class AnywhereSink extends AudioWorkletProcessor {
       left[i] = 0;
       if (right) right[i] = 0;
     }
-    if (this.worker && this.playedSinceReport >= 1024) {
+    // Report in batches while audio flows, and everything once the queue runs dry: the
+    // final frames of a playlist must be counted, or the player never reports "played out".
+    if (this.worker && (this.playedSinceReport >= 1024 || (this.playedSinceReport > 0 && !this.queue.length))) {
       this.worker.postMessage({ played: this.playedSinceReport });
       this.playedSinceReport = 0;
     }

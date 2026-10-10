@@ -20,6 +20,7 @@ const STREAM_RETRIES = 12;
 const ACK_EVERY = 256 * 1024;
 
 let player = null;
+let wasmMemory = null; // the core's linear memory (it only ever grows)
 let ws = null;
 let token = '';
 let session = '';
@@ -59,7 +60,8 @@ onmessage = async (e) => {
   if (msg.cmd === 'start') {
     token = msg.token;
     attachSink(msg.port);
-    await init();
+    const wasm = await init();
+    wasmMemory = wasm.memory ?? null;
     connect(false);
   } else if (msg.cmd === 'start-sink') {
     attachSink(msg.port);
@@ -270,5 +272,7 @@ function tick() {
     }
   }
   status.connection = open ? 'connected' : 'reconnecting';
+  // Memory diagnostics: iOS reloads a page whose process uses too much memory.
+  status.wasm_bytes = wasmMemory ? wasmMemory.buffer.byteLength : 0;
   postMessage({ status });
 }

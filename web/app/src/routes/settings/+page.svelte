@@ -73,6 +73,8 @@
 			offCode = '';
 		}
 	}
+	const mb = (b?: number) => (b ? `${(b / 1048576).toFixed(1)} MB` : '–');
+
 	// The QR code is an SVG the gateway generates; shown as an image, never inserted as markup.
 	const qr = $derived(setup ? `data:image/svg+xml;base64,${btoa(setup.qr_svg)}` : '');
 </script>
@@ -92,6 +94,15 @@
 				<button class="btn primary" onclick={() => device.start()} disabled={!device.supported}><Icon name="device" size={18} />Play on this device</button>
 			{/if}
 		</div>
+		{#if device.state !== 'off'}
+			<dl class="diag" aria-label="Player diagnostics">
+				<dt>State</dt><dd data-diag="output">{device.detail.output ?? '–'}</dd>
+				<dt>Buffered audio</dt><dd data-diag="buffered">{((device.detail.buffered_ms ?? 0) / 1000).toFixed(1)} s</dd>
+				<dt>Downloaded, not yet decoded</dt><dd data-diag="input">{mb(device.detail.input_bytes)}</dd>
+				<dt>Player memory</dt><dd data-diag="memory">{mb(device.detail.wasm_bytes)}</dd>
+				<dt>Sample rate</dt><dd>{device.detail.sample_rate ? `${device.detail.sample_rate / 1000} kHz` : '–'}</dd>
+			</dl>
+		{/if}
 		{#if device.log.length}
 			<details>
 				<summary>Connection log</summary>
@@ -201,6 +212,20 @@
 		background: var(--bg-sunken);
 		padding: 0.75rem;
 		border-radius: var(--radius-sm);
+	}
+	.diag {
+		display: grid;
+		grid-template-columns: max-content 1fr;
+		gap: 0.2rem 1rem;
+		margin: 1rem 0 0;
+		font-size: 0.9rem;
+	}
+	.diag dt {
+		color: var(--fg-muted);
+	}
+	.diag dd {
+		margin: 0;
+		font-variant-numeric: tabular-nums;
 	}
 	.note {
 		padding: 0.6rem 0.9rem;

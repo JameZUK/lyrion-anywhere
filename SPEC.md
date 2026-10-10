@@ -290,6 +290,13 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 - **Mobile Safari:** may suspend `AudioWorklet` playback when the screen locks.
   - **Mitigation:** a fallback output path that feeds decoded audio to an `<audio>` element via Managed Media Source (iOS 17.1+), which iOS keeps playing in the background.
   - A spike in Phase 0 settles which path ships.
+  - **Seen live (2026-10-10):** on iPad Safari the whole page stopped when backgrounded (no reconnect attempt at all), and was sometimes reloaded on return. Android resumed within 10 s.
+  - **First mitigation (shipped):**
+    - a silent looping `<audio>` element runs alongside the AudioWorklet while this device plays, started in the same tap;
+    - the AudioContext is resumed when the page returns;
+    - page lifecycle events are logged in a log that survives reloads;
+    - after a reload, the app offers "Resume playing here".
+  - Managed Media Source stays the fallback if real-device tests show this isn't enough.
 - **Storage eviction:**
   - Browsers may evict offline storage. The app requests `navigator.storage.persist()` and shows quota and persistence status.
   - On iOS, offline downloads are only reliable when the PWA is installed to the home screen. The app says so.
