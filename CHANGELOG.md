@@ -4,6 +4,11 @@ Dated entries, newest first.
 
 ## 2026-10-10
 
+### iPad background playback: solved
+- **Cause:** iPadOS Safari's Managed Media Source refuses FLAC frames that use the *variable* block-size strategy.
+- **What plays:** the self-test (version 5) showed fixed-block FLAC playing at every sample rate, as 24-bit or 16-bit, and Apple Lossless (ALAC) too.
+- **What the iPad uses now:** the iPad picks fixed-block 24-bit FLAC (variant 0x100), so it plays through the media element, which iOS keeps running with the screen locked. Confirmed on the device, and still bit-exact.
+
 ### Offline downloads, queue editing and sync groups
 - **Offline downloads:**
   - **Downloading:** download albums (or the rest of one) to the device, as the original files or converted to MP3 (320 kb/s) or Opus (160 kb/s) when the server has `ffmpeg`. Default formats differ for Wi-Fi and mobile data. Downloads resume after interruptions, even after a reload.
