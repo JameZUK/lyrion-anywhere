@@ -15,10 +15,44 @@ Requirements for both endpoints:
 
 ## Authentication
 
-Phase 0/1 interim: the device token is a 256-bit random value. The gateway stores only its SHA-256 and compares in constant time. (Phase 1 replaces this with accounts, pairing and short-lived access tokens; see the spec, §9.)
+Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `X-Anywhere-Client: 1`, and any `Origin` must be same-origin or explicitly allowed. That's the CSRF defence for the cookie-carrying endpoints.
 
-- **Player socket:** the token is the first message.
-- **Streams:** the token goes in `Authorization: Bearer <token>`. Query-string and Basic credentials are refused.
+| Endpoint | Body | Result |
+|---|---|---|
+| `POST /v1/auth/login` | `{"username","password","device_name","device_id"?,"refresh"?: "cookie"\|"body"}` | `{access_token, expires_in, user, device}`, plus the refresh token (see below) |
+| `POST /v1/auth/pair` | `{"code","device_name"}` | Same, with `refresh_token` in the body (native apps) |
+| `POST /v1/auth/refresh` | none (cookie), or `{"refresh_token"}` | A new access token and a **rotated** refresh token |
+| `POST /v1/auth/logout` | bearer access token | 204; revokes this device and ends its sessions |
+| `GET /v1/me` | bearer access token | `{user, device}` |
+
+- **Access tokens:** random, valid for 15 minutes. Use them as `Authorization: Bearer …` for streams and `/v1/me`, and as the first message on the player socket. Keep them in memory only.
+- **Refresh tokens:**
+  - valid for 30 days and single use; each refresh returns a new one;
+  - presenting a used one revokes the whole device, because the token has been copied;
+  - browsers get them in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/v1/auth`;
+  - native apps get them in the body and keep them in the Keystore/Keychain.
+- **Devices:** each login (or pairing) is a device with its own player MAC. A browser can pass its previous `device_id` to keep the same LMS player, as long as the device belongs to the same user.
+- **Errors:**
+  - wrong credentials always return the same 401;
+  - repeated failures per username or per client address return 429 with `Retry-After`, with escalating lockouts;
+  - malformed or unknown fields return 400, and bodies over 4 KiB return 413.
+- **Revocation:** revoking a device, disabling or deleting a user, logging out, or detecting refresh-token reuse closes that device's live player session immediately (1008, "access revoked").
+
+### Admin API
+
+The admin API is served on a separate listener (default `127.0.0.1:9445`) that must never be put behind the proxy. It is used by the LMS plugin's settings page.
+
+Requests are refused unless they come from loopback, carry no `X-Forwarded-*`/`Forwarded`/`X-Real-IP` headers, and present the admin secret (`<data-dir>/admin.secret`, mode 0600) as a bearer token.
+
+Endpoints:
+- `GET/POST /admin/v1/users`
+- `DELETE /admin/v1/users/{name}`
+- `POST /admin/v1/users/{name}/password`
+- `POST /admin/v1/users/{name}/disabled`
+- `POST /admin/v1/users/{name}/pairing` (returns a one-time code, valid 10 minutes)
+- `GET /admin/v1/devices`
+- `DELETE /admin/v1/devices/{id}`
+- `GET /admin/v1/audit`
 
 ## Player socket
 
@@ -26,7 +60,7 @@ Phase 0/1 interim: the device token is a 256-bit random value. The gateway store
 
 The client's first message is text, sent within 5 s:
 
-- **New session:** the bare token.
+- **New session:** the bare access token.
 - **Resume:** `{"token":"…","resume":{"session":"…","secret":"…","received":N}}`. `N` is the number of binary messages the client received in this session before the drop.
 
 The gateway replies with a text greeting:

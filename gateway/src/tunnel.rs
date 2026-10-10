@@ -13,7 +13,7 @@ use tracing::{info, warn};
 
 use anywhere_core::proto::ClientFrameReader;
 
-use crate::devices::Device;
+use crate::accounts::Principal;
 use crate::session::{AttachError, ClientInput, EndReason, Outbound, Session};
 use crate::{AppState, origin_allowed};
 
@@ -66,8 +66,8 @@ struct ResumeRequest {
 }
 
 enum Auth {
-    New(Arc<Device>),
-    Resume(Arc<Device>, ResumeRequest),
+    New(Principal),
+    Resume(Principal, ResumeRequest),
 }
 
 fn parse_auth(gw: &AppState, text: &str) -> Option<Auth> {
@@ -76,13 +76,13 @@ fn parse_auth(gw: &AppState, text: &str) -> Option<Auth> {
     }
     if text.starts_with('{') {
         let m: AuthMessage = serde_json::from_str(text).ok()?;
-        let dev = gw.devices.authenticate(&m.token)?;
+        let dev = gw.accounts.authenticate(&m.token)?;
         Some(match m.resume {
             Some(r) => Auth::Resume(dev, r),
             None => Auth::New(dev),
         })
     } else {
-        gw.devices.authenticate(text).map(Auth::New)
+        gw.accounts.authenticate(text).map(Auth::New)
     }
 }
 
@@ -119,7 +119,7 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
             // are indistinguishable to the client.
             let s = gw
                 .session(&r.session)
-                .filter(|s| Arc::ptr_eq(&s.device, &device) && s.secret_matches(&r.secret));
+                .filter(|s| s.device.device_id == device.device_id && s.secret_matches(&r.secret));
             match s {
                 Some(s) => (s, true, r.received),
                 None => {
@@ -147,7 +147,7 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
         "session": session.id,
         "secret": session.secret(),
         "mac": session.device.mac_string(),
-        "name": session.device.name,
+        "name": session.device.device_name,
         "resumed": resumed,
     })
     .to_string();
@@ -155,7 +155,8 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
         session.detach(&gw, generation);
         return;
     }
-    info!(device = %session.device.name, mac = %session.device.mac_string(), resumed, "player attached");
+    gw.accounts.touch_device(session.device.device_id);
+    info!(device = %session.device.device_name, user = %session.device.username, mac = %session.device.mac_string(), resumed, "player attached");
 
     let (sink, stream) = ws.split();
     let writer = tokio::spawn(write_loop(sink, rx));

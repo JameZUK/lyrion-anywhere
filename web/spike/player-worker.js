@@ -6,7 +6,7 @@
 // sees the player leave), and a broken stream download resumes from its byte offset.
 
 import init, { WasmPlayer } from './pkg/anywhere_wasm.js';
-import { Outbox, backoffMs, closeAction, streamFailureAction } from './reconnect.js';
+import { CLOSE, Outbox, backoffMs, closeAction, streamFailureAction } from './reconnect.js';
 
 const TICK_MS = 20;
 // PCM queued in the worklet ahead of playback. Small, so pause/stop feel immediate.
@@ -65,6 +65,10 @@ onmessage = async (e) => {
     attachSink(msg.port);
   } else if (msg.cmd === 'rate-ready') {
     readyRate = msg.rate;
+  } else if (msg.cmd === 'token') {
+    // A renewed access token from the page; reconnect if we were waiting for it.
+    token = msg.token;
+    if (msg.reconnect && !open) connect(session !== '');
   }
 };
 
@@ -122,6 +126,11 @@ function onClose(code, reason) {
   if (wasOpen) disconnectedAt = now();
   const action = closeAction(code);
   log(`gateway connection closed (${code}${reason ? `: ${reason}` : ''})`);
+  if (code === CLOSE.POLICY && reason === 'unauthorised') {
+    // Most likely an expired access token: the page renews it and sends it back.
+    postMessage({ connection: 'reauthenticating', authFailed: true });
+    return;
+  }
   if (action === 'stop') {
     postMessage({ connection: 'closed' });
     return;

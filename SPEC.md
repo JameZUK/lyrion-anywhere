@@ -28,6 +28,7 @@ Native Android and iOS apps come after v1 and use the same documented protocol.
 | D9 | Web UI framework | **SvelteKit** (TypeScript, static build served by the gateway) |
 | D10 | Transcoding for downloads | **System `ffmpeg`** if installed (not bundled). Without it, only Original is offered. |
 | D11 | Licence | **GPL-2.0-or-later** for all components. Compatible with LMS (GPL-2.0) for the plugin; lets Rust binaries include Apache-2.0-only dependencies (e.g. `sync_wrapper` in the axum/tower stack), which are then distributed under GPLv3 terms. Changed from GPL-2.0-only on 2026-10-10. |
+| D12 | Account database | **Owned by the gateway** (SQLite; argon2id passwords). The plugin manages accounts through the gateway's loopback-only admin API. Security-critical code stays in one memory-safe, tested component. Decided 2026-10-10. |
 
 ---
 
@@ -87,7 +88,7 @@ Native Android and iOS apps come after v1 and use the same documented protocol.
 ### Settings page (in LMS)
 
 - Enable/disable, public URL, a proxy self-test, and a warning if LMS ports are reachable from the public URL.
-- Users: create/disable/delete, role (`listener` / `admin`), permitted players, download permission and allowed formats.
+- Users: create/disable/delete, role (`listener` / `admin`), permitted players, download permission and allowed formats. These are managed through the gateway's admin API (D12); the plugin stores no account data itself.
 - Devices: list, rename and revoke. Device pairing via QR code (public URL + one-time code, valid 10 minutes), for the later native apps.
 - Policy: default streaming quality (Wi-Fi/cellular), and the server-side transcode cache size.
 - Audit log viewer.
@@ -97,7 +98,9 @@ Native Android and iOS apps come after v1 and use the same documented protocol.
 - Picks the right binary for the OS/architecture and verifies its release signature.
 - Starts, stops, health-checks and restarts it.
 
-### Internal API (127.0.0.1 only, shared secret generated at install)
+### Gateway admin API and LMS-side helpers (127.0.0.1 only, shared secret generated at install)
+
+The plugin calls the gateway's **admin API**, which listens on a separate loopback-only port that's never proxied, for account and device management. The gateway calls back into the plugin only for LMS-side work:
 
 - User/device lookup, permissions and policy.
 - Resolving a track ID to a library file. Only tracks in the LMS library are resolved; the gateway never sees a path a client supplied.
@@ -115,7 +118,7 @@ For players that connect through the gateway, the plugin:
 ### Storage
 
 - State lives in the LMS prefs directory.
-- Password hashes are argon2id. The gateway computes them and the plugin stores them.
+- Account data (users, devices, tokens, audit log) lives in the gateway's SQLite database (D12), not in LMS prefs.
 
 ---
 
@@ -205,9 +208,9 @@ This is the one contract used by the web app now and the native apps later. It i
 | Endpoint | Purpose | Auth |
 |---|---|---|
 | `POST /v1/auth/login` | Username + password (+ TOTP) → session | Password |
-| `POST /v1/auth/pair` | Pairing code → device refresh token (native apps) | Pairing code |
+| `POST /v1/auth/pair` | Pairing code → device tokens (native apps) | Pairing code |
 | `POST /v1/auth/token` | Refresh token → 15-min access token | Refresh token |
-| `POST /v1/auth/logout` | Revoke current device session | Access token |
+| `POST /v1/auth/logout` | Revoke this device and end its sessions | Access token |
 | `GET /v1/me` | User, role, permissions, assigned player MAC | Access token |
 | `WS /v1/player` | Slimproto tunnel with resume and stream acks (§5.1, `docs/PROTOCOL.md`) | Access token; resume secret |
 | `GET /v1/stream/{session}/{n}[?offset=k]` | Audio for the session's n-th stream; resumable | Bearer token |
@@ -337,7 +340,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
   - long-lived and rotated on every use; reusing an old one revokes the device (theft detection);
   - in the browser, held in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/v1/auth`;
   - in native apps, held in the Keystore/Keychain.
-- **Access tokens:** last 15 minutes, signed with Ed25519, held in memory only, and carry user, device, role and MAC.
+- **Access tokens:** last 15 minutes. They are opaque random values: the gateway keeps them in memory (hashed) mapped to user, device, role and MAC, and clients keep them in memory only. The gateway is the only verifier, so signed tokens would add a format to get wrong and gain nothing. Revocation is instant.
 - **Stream, art and download tokens:** short-lived signed URLs bound to session/track, used where a header can't be set.
 - **CSRF:**
   - Only `/v1/auth/*` reads the cookie, and it requires a custom header plus an `Origin` check.

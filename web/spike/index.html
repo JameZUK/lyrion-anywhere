@@ -10,13 +10,21 @@
 <body>
   <main>
     <h1>Lyrion Anywhere</h1>
-    <p class="note">Phase 0 browser player spike. This browser becomes an LMS player through the gateway.</p>
+    <p class="note">Phase 1 browser player spike. This browser becomes an LMS player through the gateway.</p>
 
-    <form id="connect-form" autocomplete="off">
-      <label for="token">Device token</label>
-      <input id="token" type="password" required spellcheck="false">
-      <button id="connect" type="submit">Connect and enable audio</button>
+    <form id="login-form" autocomplete="on" hidden>
+      <label for="username">Username</label>
+      <input id="username" autocomplete="username" required spellcheck="false" autocapitalize="none">
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" required>
+      <button id="login" type="submit">Sign in</button>
     </form>
+
+    <section id="start-panel" hidden>
+      <p>Signed in as <strong id="who">–</strong>.</p>
+      <button id="start" type="button">Start player</button>
+      <button id="logout" type="button" class="secondary">Sign out</button>
+    </section>
 
     <section id="player" hidden>
       <dl>
@@ -30,6 +38,7 @@
         <dt>Volume</dt><dd id="s-volume">–</dd>
       </dl>
       <p class="note">Control playback from LMS (or any LMS app) by choosing this player.</p>
+      <button id="logout-player" type="button" class="secondary">Sign out</button>
     </section>
 
     <pre id="log" aria-live="polite"></pre>

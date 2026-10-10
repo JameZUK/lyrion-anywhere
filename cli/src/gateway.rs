@@ -6,7 +6,7 @@ use std::io::{ErrorKind, Read};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::Duration;
 
@@ -32,7 +32,8 @@ const ACK_EVERY: u64 = 256 * 1024;
 pub struct GatewayConn {
     pub session: String,
     base: String,
-    token: String,
+    /// Current access token; renewed in the background before it expires.
+    token: Arc<Mutex<String>>,
     agent: ureq::Agent,
     out: Sender<Out>,
 }
@@ -87,9 +88,39 @@ fn install_crypto_provider() {
     });
 }
 
+/// Refresh the access token this often (it lasts 15 minutes).
+const REFRESH_EVERY: Duration = Duration::from_secs(10 * 60);
+
+fn auth_post(
+    agent: &ureq::Agent,
+    url: &str,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut resp = agent
+        .post(url)
+        .header("X-Anywhere-Client", "1")
+        .header("Content-Type", "application/json")
+        .send(body.to_string())
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let text = resp
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    if status != 200 {
+        return Err(format!(
+            "{status}: {}",
+            v["error"].as_str().unwrap_or("refused")
+        ));
+    }
+    Ok(v)
+}
+
 pub fn connect(
     base: &str,
-    token: &str,
+    user: &str,
+    password: &str,
     ca_file: Option<&str>,
     events: Sender<Event>,
 ) -> Result<GatewayConn, String> {
@@ -97,6 +128,72 @@ pub fn connect(
     let ep = parse_base(base)?;
     let base = base.trim_end_matches('/').to_string();
     let roots = root_certs(ca_file)?;
+
+    // HTTPS agent for auth and audio.
+    let ureq_certs: Vec<ureq::tls::Certificate<'static>> = roots
+        .iter()
+        .map(|c| ureq::tls::Certificate::from_der(c.as_ref()).to_owned())
+        .collect();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .provider(ureq::tls::TlsProvider::Rustls)
+                .root_certs(ureq::tls::RootCerts::new_with_certs(&ureq_certs))
+                .build(),
+        )
+        .timeout_connect(Some(Duration::from_secs(5)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+
+    // Sign in; the refresh token is kept in memory only.
+    let login = auth_post(
+        &agent,
+        &format!("{base}/v1/auth/login"),
+        serde_json::json!({
+            "username": user,
+            "password": password,
+            "device_name": "Anywhere CLI",
+            "refresh": "body",
+        }),
+    )
+    .map_err(|e| format!("sign-in failed: {e}"))?;
+    let access = login["access_token"]
+        .as_str()
+        .ok_or("no access token")?
+        .to_string();
+    let refresh = login["refresh_token"]
+        .as_str()
+        .ok_or("no refresh token")?
+        .to_string();
+    let token = Arc::new(Mutex::new(access.clone()));
+    {
+        let (agent, token, base) = (agent.clone(), token.clone(), base.clone());
+        thread::spawn(move || {
+            let mut refresh = refresh;
+            loop {
+                thread::sleep(REFRESH_EVERY);
+                match auth_post(
+                    &agent,
+                    &format!("{base}/v1/auth/refresh"),
+                    serde_json::json!({ "refresh_token": refresh }),
+                ) {
+                    Ok(v) => {
+                        if let (Some(a), Some(r)) =
+                            (v["access_token"].as_str(), v["refresh_token"].as_str())
+                        {
+                            *token.lock().unwrap() = a.to_string();
+                            refresh = r.to_string();
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("token refresh failed: {e}");
+                        return;
+                    }
+                }
+            }
+        });
+    }
 
     // WebSocket control channel.
     let mut store = RootCertStore::empty();
@@ -121,7 +218,7 @@ pub fn connect(
     let (mut ws, _) = tungstenite::client_tls_with_config(req, tcp, None, connector)
         .map_err(|e| format!("websocket handshake: {e}"))?;
 
-    ws.send(Message::Text(token.into()))
+    ws.send(Message::Text(access.into()))
         .map_err(|e| e.to_string())?;
     let session = match ws
         .read()
@@ -186,27 +283,10 @@ pub fn connect(
         }
     });
 
-    // HTTPS agent for audio, with the same trust roots.
-    let ureq_certs: Vec<ureq::tls::Certificate<'static>> = roots
-        .iter()
-        .map(|c| ureq::tls::Certificate::from_der(c.as_ref()).to_owned())
-        .collect();
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .tls_config(
-            ureq::tls::TlsConfig::builder()
-                .provider(ureq::tls::TlsProvider::Rustls)
-                .root_certs(ureq::tls::RootCerts::new_with_certs(&ureq_certs))
-                .build(),
-        )
-        .timeout_connect(Some(Duration::from_secs(5)))
-        .http_status_as_error(false)
-        .build()
-        .into();
-
     Ok(GatewayConn {
         session,
         base,
-        token: token.to_string(),
+        token,
         agent,
         out,
     })
@@ -225,7 +305,7 @@ impl GatewayConn {
         let cancel = Arc::new(AtomicBool::new(false));
         let (w, c) = (want.clone(), cancel.clone());
         let url = format!("{}/v1/stream/{}/{}", self.base, self.session, n_stream);
-        let auth = format!("Bearer {}", self.token);
+        let auth = format!("Bearer {}", self.token.lock().unwrap());
         let agent = self.agent.clone();
         let out = self.out.clone();
         thread::spawn(move || {

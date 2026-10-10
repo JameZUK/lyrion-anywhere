@@ -110,7 +110,7 @@ pub async fn stream(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
-    let Some(device) = token.and_then(|t| gw.devices.authenticate(t)) else {
+    let Some(device) = token.and_then(|t| gw.accounts.authenticate(t)) else {
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Bearer realm=\"lyrion-anywhere\"")],
@@ -121,7 +121,7 @@ pub async fn stream(
     // Another device's session looks exactly like a missing one.
     let Some(sess) = gw
         .session(&session)
-        .filter(|s| Arc::ptr_eq(&s.device, &device))
+        .filter(|s| s.device.device_id == device.device_id)
     else {
         return StatusCode::NOT_FOUND.into_response();
     };

@@ -28,7 +28,9 @@
 //! token as a bearer credential. The gateway replays only the request LMS itself issued,
 //! after checking it is this player's stream. `offset` resumes a broken download.
 
-pub mod devices;
+pub mod accounts;
+pub mod admin;
+mod auth;
 mod relay;
 mod session;
 mod tunnel;
@@ -44,10 +46,10 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use tracing::warn;
 
-use devices::Devices;
+use accounts::Accounts;
 use session::Session;
 
 #[derive(Debug, Clone)]
@@ -95,7 +97,7 @@ impl Default for Config {
 
 pub struct Gateway {
     cfg: Config,
-    devices: Devices,
+    accounts: Arc<Accounts>,
     http: reqwest::Client,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
 }
@@ -103,7 +105,7 @@ pub struct Gateway {
 pub type AppState = Arc<Gateway>;
 
 impl Gateway {
-    pub fn new(cfg: Config, devices: Devices) -> AppState {
+    pub fn new(cfg: Config, accounts: Arc<Accounts>) -> AppState {
         let http = reqwest::Client::builder()
             .connect_timeout(cfg.dial_timeout)
             .redirect(reqwest::redirect::Policy::none())
@@ -112,7 +114,7 @@ impl Gateway {
             .expect("http client");
         Arc::new(Gateway {
             cfg,
-            devices,
+            accounts,
             http,
             sessions: Mutex::new(HashMap::new()),
         })
@@ -129,11 +131,35 @@ impl Gateway {
     fn remove_session(&self, id: &str) {
         self.sessions.lock().unwrap().remove(id);
     }
+
+    pub fn accounts(&self) -> &Arc<Accounts> {
+        &self.accounts
+    }
+
+    /// End any live session for these devices (after revocation).
+    pub async fn end_sessions_for(&self, device_ids: &[i64]) {
+        let doomed: Vec<Arc<Session>> = self
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|s| device_ids.contains(&s.device.device_id))
+            .cloned()
+            .collect();
+        for s in doomed {
+            s.end(self, session::EndReason::Revoked).await;
+        }
+    }
 }
 
 pub fn router(state: AppState) -> Router {
     let mut app = Router::new()
         .route("/healthz", get(|| async { "ok\n" }))
+        .route("/v1/auth/login", post(auth::login))
+        .route("/v1/auth/pair", post(auth::pair))
+        .route("/v1/auth/refresh", post(auth::refresh))
+        .route("/v1/auth/logout", post(auth::logout))
+        .route("/v1/me", get(auth::me))
         .route("/v1/player", get(tunnel::player_upgrade))
         .route("/v1/stream/{session}/{n}", get(relay::stream));
     app = match &state.cfg.static_dir {
@@ -203,6 +229,23 @@ async fn require_secure_transport(
     next.run(req).await
 }
 
+/// The client's address for rate limiting and audit: the proxy-reported address when the
+/// peer is a trusted proxy, otherwise the peer itself.
+fn client_ip(cfg: &Config, peer: SocketAddr, headers: &HeaderMap) -> String {
+    let ip = canonical(peer.ip());
+    let trusted = ip.is_loopback() || cfg.trusted_proxies.iter().any(|p| canonical(*p) == ip);
+    if trusted
+        && let Some(first) = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+        && let Ok(fwd) = first.trim().parse::<IpAddr>()
+    {
+        return fwd.to_string();
+    }
+    ip.to_string()
+}
+
 fn canonical(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V6(v6) => v6
@@ -229,6 +272,13 @@ fn origin_allowed(cfg: &Config, headers: &HeaderMap) -> bool {
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
     !host.is_empty() && (origin == format!("https://{host}") || origin == format!("http://{host}"))
+}
+
+/// A random 128-bit identifier (hex).
+pub fn random_id() -> String {
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b).expect("OS random source");
+    hex::encode(b)
 }
 
 /// Constant-time string comparison for secrets.

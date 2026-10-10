@@ -23,7 +23,10 @@ hex = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+argon2 = "0.6"
 
 [dev-dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["stream", "json"] }
 tokio-tungstenite = "0.30"
 tower = { version = "0.5", features = ["util"] }

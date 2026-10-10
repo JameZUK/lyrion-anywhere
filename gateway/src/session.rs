@@ -21,7 +21,8 @@ use anywhere_core::proto::{
     validate_stream_request,
 };
 
-use crate::devices::{Device, random_id};
+use crate::accounts::Principal;
+use crate::random_id;
 use crate::relay::Relay;
 use crate::{AppState, Gateway};
 
@@ -54,6 +55,7 @@ pub enum EndReason {
     GraceExpired,
     QueueOverflow,
     Policy,
+    Revoked,
 }
 
 struct Attachment {
@@ -93,7 +95,7 @@ const DETACHED_HEARTBEAT: Duration = Duration::from_secs(1);
 
 pub struct Session {
     pub id: String,
-    pub device: Arc<Device>,
+    pub device: Principal,
     secret: String,
     lms_tx: tokio::sync::Mutex<OwnedWriteHalf>,
     state: Mutex<State>,
@@ -110,7 +112,7 @@ pub enum ClientInput {
 
 impl Session {
     /// Connect to LMS and start the session's LMS reader.
-    pub async fn open(gw: &AppState, device: Arc<Device>) -> std::io::Result<Arc<Session>> {
+    pub async fn open(gw: &AppState, device: Principal) -> std::io::Result<Arc<Session>> {
         let lms = tokio::time::timeout(
             gw.cfg.dial_timeout,
             TcpStream::connect(&gw.cfg.lms_slimproto),
@@ -147,7 +149,7 @@ impl Session {
             let mut sessions = gw.sessions.lock().unwrap();
             let prev = sessions
                 .values()
-                .filter(|s| Arc::ptr_eq(&s.device, &session.device))
+                .filter(|s| s.device.device_id == session.device.device_id)
                 .cloned()
                 .collect();
             sessions.insert(session.id.clone(), session.clone());
@@ -393,6 +395,7 @@ impl Session {
                 EndReason::GraceExpired => Outbound::Close(1001, "session expired"),
                 EndReason::QueueOverflow => Outbound::Close(1013, "client too slow"),
                 EndReason::Policy => Outbound::Close(1008, "policy violation"),
+                EndReason::Revoked => Outbound::Close(1008, "access revoked"),
             };
             let _ = a.tx.try_send(msg);
         }

@@ -6,11 +6,11 @@
 //!
 //! ```text
 //! anywhere-cli --server lms.example.lan [--name "Anywhere CLI"] [--mac 02:4c:41:00:00:01] [--null]
-//! ANYWHERE_TOKEN=… anywhere-cli --gateway https://music.example.com [--ca-file ca.pem] [--null]
+//! ANYWHERE_PASSWORD=… anywhere-cli --gateway https://music.example.com --user NAME [--ca-file ca.pem] [--null]
 //! ```
 //!
 //! With `--gateway`, the player connects through a Lyrion Anywhere gateway instead of
-//! directly. The device token comes from `--token-file` or `ANYWHERE_TOKEN`, never argv.
+//! directly. The password comes from `ANYWHERE_PASSWORD` or standard input, never argv.
 
 mod gateway;
 
@@ -38,7 +38,7 @@ enum Event {
 struct Args {
     server: String,
     gateway: Option<String>,
-    token_file: Option<String>,
+    user: Option<String>,
     ca_file: Option<String>,
     name: String,
     mac: [u8; 6],
@@ -51,7 +51,7 @@ fn parse_args() -> Result<Args, String> {
     let mut a = Args {
         server: String::new(),
         gateway: None,
-        token_file: None,
+        user: None,
         ca_file: None,
         name: "Anywhere CLI".into(),
         mac: [0x02, 0x4c, 0x41, 0x00, 0x00, 0x01],
@@ -64,7 +64,7 @@ fn parse_args() -> Result<Args, String> {
         match arg.as_str() {
             "--server" => a.server = it.next().ok_or("--server needs a value")?,
             "--gateway" => a.gateway = Some(it.next().ok_or("--gateway needs a value")?),
-            "--token-file" => a.token_file = Some(it.next().ok_or("--token-file needs a value")?),
+            "--user" => a.user = Some(it.next().ok_or("--user needs a value")?),
             "--ca-file" => a.ca_file = Some(it.next().ok_or("--ca-file needs a value")?),
             "--name" => a.name = it.next().ok_or("--name needs a value")?,
             "--mac" => {
@@ -83,9 +83,9 @@ fn parse_args() -> Result<Args, String> {
             "-v" | "--verbose" => a.verbose = true,
             "-h" | "--help" => {
                 println!(
-                    "anywhere-cli (--server HOST[:PORT] | --gateway URL [--token-file F] [--ca-file F]) \
+                    "anywhere-cli (--server HOST[:PORT] | --gateway URL --user NAME [--ca-file F]) \
                      [--name NAME] [--mac 02:..] [--codecs flc,mp3,ogg] [--null] [-v]\n\
-                     With --gateway the token is read from --token-file or $ANYWHERE_TOKEN."
+                     With --gateway the password is read from $ANYWHERE_PASSWORD or standard input."
                 );
                 std::process::exit(0);
             }
@@ -130,17 +130,16 @@ enum Control {
     Gateway(gateway::GatewayConn),
 }
 
-fn read_token(args: &Args) -> Result<String, String> {
-    let raw = match &args.token_file {
-        Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?,
-        None => std::env::var("ANYWHERE_TOKEN")
-            .map_err(|_| "set ANYWHERE_TOKEN or pass --token-file")?,
-    };
-    let t = raw.trim().to_string();
-    if t.is_empty() {
-        return Err("empty token".into());
+fn read_password() -> Result<String, String> {
+    if let Ok(p) = std::env::var("ANYWHERE_PASSWORD") {
+        return Ok(p);
     }
-    Ok(t)
+    eprint!("password: ");
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }
 
 fn run(args: Args) -> Result<(), String> {
@@ -157,8 +156,14 @@ fn run(args: Args) -> Result<(), String> {
 
     let (tx, rx) = mpsc::channel::<Event>();
     let mut control = if let Some(url) = &args.gateway {
-        let token = read_token(&args)?;
-        let conn = gateway::connect(url, &token, args.ca_file.as_deref(), tx.clone())?;
+        let user = args.user.as_deref().ok_or("--gateway needs --user")?;
+        let conn = gateway::connect(
+            url,
+            user,
+            &read_password()?,
+            args.ca_file.as_deref(),
+            tx.clone(),
+        )?;
         println!(
             "connected via gateway {url} as {} ({})",
             args.name,

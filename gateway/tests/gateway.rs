@@ -1,342 +1,7 @@
-//! Gateway integration tests against a fake LMS that records everything it receives, so
-//! each test can prove what did (and did not) reach LMS.
+//! Gateway integration tests: tunnel, streams, resume, heartbeats, pacing.
 
-use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-use axum::Router;
-use axum::body::Body;
-use axum::extract::Request;
-use axum::http::StatusCode;
-use axum::routing::any;
-use futures_util::{SinkExt, StreamExt};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::OwnedWriteHalf;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
-use tower::ServiceExt;
-
-use anywhere_core::proto::{ClientFrameReader, encode_server_frame, format_mac};
-use anywhere_gateway::devices::Devices;
-use anywhere_gateway::{Config, Gateway, router};
-
-const MAC_A: [u8; 6] = [0x02, 0x4c, 0x41, 0, 0, 0x0a];
-const MAC_B: [u8; 6] = [0x02, 0x4c, 0x41, 0, 0, 0x0b];
-const TOK_A: &str = "token-for-device-a-0123456789abcdef";
-const TOK_B: &str = "token-for-device-b-0123456789abcdef";
-
-type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
-// ---------------------------------------------------------------------------
-// Fake LMS
-// ---------------------------------------------------------------------------
-
-#[derive(Default)]
-struct Recorded {
-    frames: Vec<[u8; 4]>,
-    http_paths: Vec<String>,
-    /// Slimproto connections the gateway has closed.
-    closed: usize,
-    /// STAT payloads received, in order.
-    stats: Vec<Vec<u8>>,
-}
-
-struct FakeLms {
-    slim_addr: SocketAddr,
-    http_addr: SocketAddr,
-    rec: Arc<Mutex<Recorded>>,
-    conns: mpsc::Receiver<OwnedWriteHalf>,
-    audio: Arc<Vec<u8>>,
-}
-
-impl FakeLms {
-    async fn start() -> FakeLms {
-        let rec = Arc::new(Mutex::new(Recorded::default()));
-        let audio = Arc::new(b"fLaCAUDIO".repeat(20_000));
-
-        let slim = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let slim_addr = slim.local_addr().unwrap();
-        let (tx, conns) = mpsc::channel(4);
-        let r = rec.clone();
-        tokio::spawn(async move {
-            while let Ok((sock, _)) = slim.accept().await {
-                let (mut rd, wr) = sock.into_split();
-                let _ = tx.send(wr).await;
-                let r = r.clone();
-                tokio::spawn(async move {
-                    let mut reader = ClientFrameReader::default();
-                    let mut buf = [0u8; 4096];
-                    while let Ok(n) = rd.read(&mut buf).await {
-                        if n == 0 {
-                            break;
-                        }
-                        reader.push(&buf[..n]);
-                        while let Ok(Some((op, payload))) = reader.next_frame() {
-                            let mut rec = r.lock().unwrap();
-                            rec.frames.push(op);
-                            if &op == b"STAT" {
-                                rec.stats.push(payload);
-                            }
-                        }
-                    }
-                    r.lock().unwrap().closed += 1;
-                });
-            }
-        });
-
-        let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let http_addr = http.local_addr().unwrap();
-        let (r, a) = (rec.clone(), audio.clone());
-        let app = Router::new().fallback(any(move |req: Request| {
-            let (r, a) = (r.clone(), a.clone());
-            async move {
-                let path = req
-                    .uri()
-                    .path_and_query()
-                    .map(|p| p.to_string())
-                    .unwrap_or_default();
-                r.lock().unwrap().http_paths.push(path);
-                if req.uri().path() == "/stream.mp3" {
-                    (
-                        [("content-type", "audio/flac")],
-                        Body::from(a.as_ref().clone()),
-                    )
-                        .into_response_parts()
-                } else {
-                    (
-                        [("content-type", "text/plain")],
-                        Body::from("LMS internal page"),
-                    )
-                        .into_response_parts()
-                }
-            }
-        }));
-        tokio::spawn(async move { axum::serve(http, app).await.unwrap() });
-
-        FakeLms {
-            slim_addr,
-            http_addr,
-            rec,
-            conns,
-            audio,
-        }
-    }
-
-    async fn accept(&mut self) -> OwnedWriteHalf {
-        tokio::time::timeout(Duration::from_secs(3), self.conns.recv())
-            .await
-            .expect("gateway never connected to LMS")
-            .unwrap()
-    }
-
-    async fn assert_no_conn(&mut self) {
-        let r = tokio::time::timeout(Duration::from_millis(150), self.conns.recv()).await;
-        assert!(r.is_err(), "gateway connected to LMS but should not have");
-    }
-
-    fn frames(&self) -> Vec<String> {
-        self.rec
-            .lock()
-            .unwrap()
-            .frames
-            .iter()
-            .map(|f| String::from_utf8_lossy(f).into_owned())
-            .collect()
-    }
-
-    fn stats(&self) -> Vec<anywhere_core::proto::Stat> {
-        self.rec
-            .lock()
-            .unwrap()
-            .stats
-            .iter()
-            .map(|p| anywhere_core::proto::Stat::parse(p).unwrap())
-            .collect()
-    }
-
-    fn closed(&self) -> usize {
-        self.rec.lock().unwrap().closed
-    }
-
-    fn http_paths(&self) -> Vec<String> {
-        self.rec.lock().unwrap().http_paths.clone()
-    }
-}
-
-trait IntoParts {
-    fn into_response_parts(self) -> axum::response::Response;
-}
-impl<T: axum::response::IntoResponse> IntoParts for T {
-    fn into_response_parts(self) -> axum::response::Response {
-        self.into_response()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Harness
-// ---------------------------------------------------------------------------
-
-struct Harness {
-    lms: FakeLms,
-    addr: SocketAddr,
-    gw: anywhere_gateway::AppState,
-}
-
-async fn harness_with(mutate: impl FnOnce(&mut Config)) -> Harness {
-    let lms = FakeLms::start().await;
-    let mut cfg = Config {
-        lms_slimproto: lms.slim_addr.to_string(),
-        lms_http: lms.http_addr.to_string(),
-        lms_ips: vec![Ipv4Addr::LOCALHOST],
-        auth_timeout: Duration::from_millis(300),
-        ..Config::default()
-    };
-    mutate(&mut cfg);
-    let devices = Devices::from_tokens(&[(TOK_A, "device-a", MAC_A), (TOK_B, "device-b", MAC_B)]);
-    let gw = Gateway::new(cfg, devices);
-    let app = router(gw.clone());
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        .unwrap()
-    });
-    Harness { lms, addr, gw }
-}
-
-async fn harness() -> Harness {
-    harness_with(|_| {}).await
-}
-
-impl Harness {
-    async fn dial(&self) -> Ws {
-        self.dial_with(&[]).await.expect("websocket dial")
-    }
-
-    async fn dial_with(
-        &self,
-        headers: &[(&str, &str)],
-    ) -> Result<Ws, tokio_tungstenite::tungstenite::Error> {
-        let mut req = format!("ws://{}/v1/player", self.addr)
-            .into_client_request()
-            .unwrap();
-        for (k, v) in headers {
-            let name = axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap();
-            req.headers_mut().insert(name, v.parse().unwrap());
-        }
-        connect_async(req).await.map(|(ws, _)| ws)
-    }
-
-    fn url(&self, path: &str) -> String {
-        format!("http://{}{}", self.addr, path)
-    }
-
-    async fn get_stream(&self, sid: &str, n: u64, token: Option<&str>) -> reqwest::Response {
-        let mut req = reqwest::Client::new().get(self.url(&format!("/v1/stream/{sid}/{n}")));
-        if let Some(t) = token {
-            req = req.bearer_auth(t);
-        }
-        req.send().await.unwrap()
-    }
-}
-
-async fn connect(ws: &mut Ws, token: &str) -> String {
-    ws.send(Message::Text(token.into())).await.unwrap();
-    match next(ws).await {
-        Message::Text(t) => {
-            let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
-            let sid = v["session"].as_str().unwrap().to_string();
-            assert_eq!(sid.len(), 32);
-            let expected_mac = if token == TOK_A { MAC_A } else { MAC_B };
-            assert_eq!(
-                v["mac"].as_str().unwrap(),
-                format_mac(&expected_mac),
-                "assigned MAC"
-            );
-            assert!(v["name"].is_string());
-            sid
-        }
-        other => panic!("expected session message, got {other:?}"),
-    }
-}
-
-async fn next(ws: &mut Ws) -> Message {
-    tokio::time::timeout(Duration::from_secs(3), ws.next())
-        .await
-        .expect("timed out waiting for message")
-        .expect("socket ended")
-        .expect("socket error")
-}
-
-async fn expect_close(ws: &mut Ws, want: CloseCode) {
-    loop {
-        match tokio::time::timeout(Duration::from_secs(3), ws.next())
-            .await
-            .expect("no close in time")
-        {
-            Some(Ok(Message::Close(Some(f)))) => {
-                assert_eq!(f.code, want, "close reason: {}", f.reason);
-                return;
-            }
-            Some(Ok(Message::Close(None))) | None => panic!("closed without code, wanted {want:?}"),
-            Some(Ok(_)) => continue,
-            Some(Err(e)) => panic!("socket error instead of close {want:?}: {e}"),
-        }
-    }
-}
-
-fn helo(mac: [u8; 6]) -> Vec<u8> {
-    let mut p = vec![0u8; 36];
-    p[0] = 12;
-    p[2..8].copy_from_slice(&mac);
-    p[34..36].copy_from_slice(b"en");
-    p.extend_from_slice(b"Model=squeezelite,flc");
-    client_frame(b"HELO", &p)
-}
-
-fn client_frame(op: &[u8; 4], payload: &[u8]) -> Vec<u8> {
-    let mut v = op.to_vec();
-    v.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    v.extend_from_slice(payload);
-    v
-}
-
-fn strm(cmd: u8, ip: Ipv4Addr, request: &str) -> Vec<u8> {
-    let mut p = vec![0u8; 24];
-    p[0] = cmd;
-    p[1] = b'1';
-    p[2] = b'f';
-    p[18..20].copy_from_slice(&9000u16.to_be_bytes());
-    p[20..24].copy_from_slice(&ip.octets());
-    p.extend_from_slice(request.as_bytes());
-    encode_server_frame(*b"strm", &p)
-}
-
-fn stream_req(mac: [u8; 6]) -> String {
-    format!(
-        "GET /stream.mp3?player={} HTTP/1.0\r\n\r\n",
-        format_mac(&mac)
-    )
-}
-
-async fn wait_for(cond: impl Fn() -> bool) {
-    for _ in 0..300 {
-        if cond() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("condition not met in time");
-}
+mod common;
+use common::*;
 
 // ---------------------------------------------------------------------------
 // Reliability: happy path and lifecycle
@@ -346,26 +11,28 @@ async fn wait_for(cond: impl Fn() -> bool) {
 async fn end_to_end_tunnel_and_stream() {
     let mut h = harness().await;
     let mut ws = h.dial().await;
-    let sid = connect(&mut ws, TOK_A).await;
+    let sid = connect(&mut ws, &h.tok_a).await;
     let mut lms = h.lms.accept().await;
 
-    ws.send(Message::Binary(helo(MAC_A).into())).await.unwrap();
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
     wait_for(|| h.lms.frames() == ["HELO"]).await;
 
-    let frame = strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(MAC_A));
+    let frame = strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(h.mac_a));
     lms.write_all(&frame).await.unwrap();
     match next(&mut ws).await {
         Message::Binary(b) => assert_eq!(b.as_ref(), frame.as_slice(), "strm altered in transit"),
         other => panic!("{other:?}"),
     }
 
-    let resp = h.get_stream(&sid, 1, Some(TOK_A)).await;
+    let resp = h.get_stream(&sid, 1, Some(&h.tok_a)).await;
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.headers()["content-type"], "audio/flac");
     assert_eq!(resp.bytes().await.unwrap().as_ref(), h.lms.audio.as_slice());
     assert_eq!(
         h.lms.http_paths(),
-        [format!("/stream.mp3?player={}", format_mac(&MAC_A))]
+        [format!("/stream.mp3?player={}", format_mac(&h.mac_a))]
     );
 
     // Later frames pass through, even when split across WebSocket messages.
@@ -383,7 +50,7 @@ async fn end_to_end_tunnel_and_stream() {
 async fn lms_closing_ends_the_session() {
     let mut h = harness().await;
     let mut ws = h.dial().await;
-    connect(&mut ws, TOK_A).await;
+    connect(&mut ws, &h.tok_a).await;
     let lms = h.lms.accept().await;
     assert_eq!(h.gw.session_count(), 1);
     drop(lms);
@@ -395,7 +62,7 @@ async fn lms_closing_ends_the_session() {
 async fn abandoned_session_is_released_after_the_grace_period() {
     let mut h = harness_with(|c| c.resume_grace = Duration::from_millis(300)).await;
     let mut ws = h.dial().await;
-    connect(&mut ws, TOK_A).await;
+    connect(&mut ws, &h.tok_a).await;
     let _lms = h.lms.accept().await;
     drop(ws);
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -413,7 +80,9 @@ async fn lms_unreachable_closes_with_try_again() {
     })
     .await;
     let mut ws = h.dial().await;
-    ws.send(Message::Text(TOK_A.into())).await.unwrap();
+    ws.send(Message::Text(h.tok_a.clone().into()))
+        .await
+        .unwrap();
     expect_close(&mut ws, CloseCode::Again).await;
 }
 
@@ -431,28 +100,31 @@ async fn socket_without_token_times_out_and_never_reaches_lms() {
 
 #[tokio::test]
 async fn bad_first_messages_are_refused() {
-    let cases: Vec<(&str, Message)> = vec![
-        ("wrong token", Message::Text("nope".into())),
-        ("empty token", Message::Text("".into())),
-        (
-            "token as binary",
-            Message::Binary(TOK_A.as_bytes().to_vec().into()),
-        ),
-        (
-            "near-miss token",
-            Message::Text(format!("{}X", &TOK_A[..TOK_A.len() - 1]).into()),
-        ),
-        ("oversize token", Message::Text("A".repeat(4096).into())),
-        ("HELO instead of token", Message::Binary(helo(MAC_A).into())),
-        (
-            "token with trailing space",
-            Message::Text(format!("{TOK_A} ").into()),
-        ),
+    type Case = (&'static str, fn(&Harness) -> Message);
+    let cases: Vec<Case> = vec![
+        ("wrong token", |_| Message::Text("nope".into())),
+        ("empty token", |_| Message::Text("".into())),
+        ("token as binary", |h| {
+            Message::Binary(h.tok_a.as_bytes().to_vec().into())
+        }),
+        ("near-miss token", |h| {
+            Message::Text(format!("{}X", &h.tok_a[..h.tok_a.len() - 1]).into())
+        }),
+        ("oversize token", |_| Message::Text("A".repeat(4096).into())),
+        ("HELO instead of token", |h| {
+            Message::Binary(helo(h.mac_a).into())
+        }),
+        ("token with trailing space", |h| {
+            Message::Text(format!("{} ", h.tok_a).into())
+        }),
+        ("refresh-style JSON without token", |_| {
+            Message::Text(r#"{"resume":null}"#.into())
+        }),
     ];
-    for (name, msg) in cases {
+    for (name, make) in cases {
         let mut h = harness().await;
         let mut ws = h.dial().await;
-        ws.send(msg).await.unwrap();
+        ws.send(make(&h)).await.unwrap();
         expect_close(&mut ws, CloseCode::Policy).await;
         h.lms.assert_no_conn().await;
         eprintln!("ok: {name}");
@@ -501,29 +173,27 @@ async fn allowed_origin_is_accepted() {
 
 #[tokio::test]
 async fn helo_enforcement() {
-    let cases: Vec<(&str, Vec<Message>)> = vec![
-        (
-            "other device's MAC",
-            vec![Message::Binary(helo(MAC_B).into())],
-        ),
-        (
-            "first frame not HELO",
-            vec![Message::Binary(client_frame(b"STAT", &[0; 53]).into())],
-        ),
-        (
-            "truncated HELO",
-            vec![Message::Binary(client_frame(b"HELO", &[0; 10]).into())],
-        ),
-        (
-            "oversize frame",
-            vec![Message::Binary(b"RESP\x00\x10\x00\x00".to_vec().into())],
-        ),
-        ("text after auth", vec![Message::Text("hello".into())]),
+    type Case = (&'static str, fn(&Harness) -> Vec<Message>);
+    let cases: Vec<Case> = vec![
+        ("other device's MAC", |h| {
+            vec![Message::Binary(helo(h.mac_b).into())]
+        }),
+        ("first frame not HELO", |_| {
+            vec![Message::Binary(client_frame(b"STAT", &[0; 53]).into())]
+        }),
+        ("truncated HELO", |_| {
+            vec![Message::Binary(client_frame(b"HELO", &[0; 10]).into())]
+        }),
+        ("oversize frame", |_| {
+            vec![Message::Binary(b"RESP\x00\x10\x00\x00".to_vec().into())]
+        }),
+        ("text after auth", |_| vec![Message::Text("hello".into())]),
     ];
-    for (name, msgs) in cases {
+    for (name, make) in cases {
         let mut h = harness().await;
+        let msgs = make(&h);
         let mut ws = h.dial().await;
-        connect(&mut ws, TOK_A).await;
+        connect(&mut ws, &h.tok_a).await;
         let _lms = h.lms.accept().await;
         for m in msgs {
             ws.send(m).await.unwrap();
@@ -543,10 +213,14 @@ async fn helo_enforcement() {
 async fn second_helo_cannot_swap_identity() {
     let mut h = harness().await;
     let mut ws = h.dial().await;
-    connect(&mut ws, TOK_A).await;
+    connect(&mut ws, &h.tok_a).await;
     let _lms = h.lms.accept().await;
-    ws.send(Message::Binary(helo(MAC_A).into())).await.unwrap();
-    ws.send(Message::Binary(helo(MAC_B).into())).await.unwrap();
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
+    ws.send(Message::Binary(helo(h.mac_b).into()))
+        .await
+        .unwrap();
     expect_close(&mut ws, CloseCode::Policy).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(h.lms.frames(), ["HELO"]);
@@ -556,7 +230,7 @@ async fn second_helo_cannot_swap_identity() {
 async fn serv_is_never_forwarded() {
     let mut h = harness().await;
     let mut ws = h.dial().await;
-    connect(&mut ws, TOK_A).await;
+    connect(&mut ws, &h.tok_a).await;
     let mut lms = h.lms.accept().await;
     lms.write_all(&encode_server_frame(*b"serv", &[203, 0, 113, 9]))
         .await
@@ -572,36 +246,32 @@ async fn serv_is_never_forwarded() {
 
 #[tokio::test]
 async fn stream_requests_are_locked_down() {
-    let cases = [
-        (
-            "other player's stream",
-            Ipv4Addr::UNSPECIFIED,
-            stream_req(MAC_B),
-        ),
-        (
-            "LMS JSON-RPC",
-            Ipv4Addr::UNSPECIFIED,
-            "GET /jsonrpc.js HTTP/1.0\r\n\r\n".to_string(),
-        ),
-        (
-            "download path",
-            Ipv4Addr::UNSPECIFIED,
-            "GET /music/1/download HTTP/1.0\r\n\r\n".to_string(),
-        ),
+    type Case = (&'static str, Ipv4Addr, fn(&Harness) -> String);
+    let cases: [Case; 4] = [
+        ("other player's stream", Ipv4Addr::UNSPECIFIED, |h| {
+            stream_req(h.mac_b)
+        }),
+        ("LMS JSON-RPC", Ipv4Addr::UNSPECIFIED, |_| {
+            "GET /jsonrpc.js HTTP/1.0\r\n\r\n".to_string()
+        }),
+        ("download path", Ipv4Addr::UNSPECIFIED, |_| {
+            "GET /music/1/download HTTP/1.0\r\n\r\n".to_string()
+        }),
         (
             "direct stream elsewhere",
             Ipv4Addr::new(203, 0, 113, 7),
-            stream_req(MAC_A),
+            |h| stream_req(h.mac_a),
         ),
     ];
-    for (name, ip, req) in cases {
+    for (name, ip, make) in cases {
         let mut h = harness().await;
+        let req = make(&h);
         let mut ws = h.dial().await;
-        let sid = connect(&mut ws, TOK_A).await;
+        let sid = connect(&mut ws, &h.tok_a).await;
         let mut lms = h.lms.accept().await;
         lms.write_all(&strm(b's', ip, &req)).await.unwrap();
         next(&mut ws).await; // still forwarded, so the client stays in step
-        let resp = h.get_stream(&sid, 1, Some(TOK_A)).await;
+        let resp = h.get_stream(&sid, 1, Some(&h.tok_a)).await;
         assert_eq!(resp.status(), 404, "{name}");
         assert!(
             h.lms.http_paths().is_empty(),
@@ -615,9 +285,9 @@ async fn stream_requests_are_locked_down() {
 async fn stream_endpoint_authorisation() {
     let mut h = harness().await;
     let mut ws = h.dial().await;
-    let sid = connect(&mut ws, TOK_A).await;
+    let sid = connect(&mut ws, &h.tok_a).await;
     let mut lms = h.lms.accept().await;
-    lms.write_all(&strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(MAC_A)))
+    lms.write_all(&strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(h.mac_a)))
         .await
         .unwrap();
     next(&mut ws).await;
@@ -631,35 +301,37 @@ async fn stream_endpoint_authorisation() {
         ),
         (
             "other device's token",
-            h.get_stream(&sid, 1, Some(TOK_B)).await.status(),
+            h.get_stream(&sid, 1, Some(&h.tok_b)).await.status(),
             404,
         ),
         (
             "unknown session",
-            h.get_stream(&"0".repeat(32), 1, Some(TOK_A)).await.status(),
+            h.get_stream(&"0".repeat(32), 1, Some(&h.tok_a))
+                .await
+                .status(),
             404,
         ),
         (
             "stale sequence",
-            h.get_stream(&sid, 0, Some(TOK_A)).await.status(),
+            h.get_stream(&sid, 0, Some(&h.tok_a)).await.status(),
             404,
         ),
         (
             "future sequence",
-            h.get_stream(&sid, 2, Some(TOK_A)).await.status(),
+            h.get_stream(&sid, 2, Some(&h.tok_a)).await.status(),
             404,
         ),
     ];
     for (name, got, want) in cases {
         assert_eq!(got.as_u16(), want, "{name}");
     }
-    let q = reqwest::get(h.url(&format!("/v1/stream/{sid}/1?token={TOK_A}")))
+    let q = reqwest::get(h.url(&format!("/v1/stream/{sid}/1?token={}", h.tok_a)))
         .await
         .unwrap();
     assert_eq!(q.status(), 401, "token in query string must not work");
     let basic = reqwest::Client::new()
         .get(h.url(&format!("/v1/stream/{sid}/1")))
-        .basic_auth("x", Some(TOK_A))
+        .basic_auth("x", Some(&h.tok_a))
         .send()
         .await
         .unwrap();
@@ -669,7 +341,7 @@ async fn stream_endpoint_authorisation() {
         "LMS reached by unauthorised requests"
     );
 
-    assert_eq!(h.get_stream(&sid, 1, Some(TOK_A)).await.status(), 200);
+    assert_eq!(h.get_stream(&sid, 1, Some(&h.tok_a)).await.status(), 200);
 }
 
 // ---------------------------------------------------------------------------
@@ -741,7 +413,7 @@ async fn insecure_transport_is_refused() {
             trusted_proxies: vec!["10.0.0.10".parse().unwrap()],
             ..Config::default()
         },
-        Devices::default(),
+        Arc::new(Accounts::in_memory().unwrap()),
     );
     let app = router(gw);
     // (name, peer address, request headers, expected status)
@@ -861,9 +533,11 @@ fn resume_after(token: &str, sid: &str, secret: &str, received: u64) -> Message 
 async fn resume_keeps_lms_connected_and_delivers_queued_frames() {
     let mut h = harness().await;
     let mut ws = h.dial().await;
-    let (sid, secret) = open_session(&mut ws, TOK_A).await;
+    let (sid, secret) = open_session(&mut ws, &h.tok_a).await;
     let mut lms = h.lms.accept().await;
-    ws.send(Message::Binary(helo(MAC_A).into())).await.unwrap();
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
     wait_for(|| h.lms.frames() == ["HELO"]).await;
 
     // Network drops. LMS keeps talking; frames must be queued, not lost.
@@ -872,13 +546,13 @@ async fn resume_keeps_lms_connected_and_delivers_queued_frames() {
     lms.write_all(&encode_server_frame(*b"vers", b"one"))
         .await
         .unwrap();
-    lms.write_all(&strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(MAC_A)))
+    lms.write_all(&strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(h.mac_a)))
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mut ws = h.dial().await;
-    ws.send(resume_msg(TOK_A, &sid, &secret)).await.unwrap();
+    ws.send(resume_msg(&h.tok_a, &sid, &secret)).await.unwrap();
     let g = greeting(&mut ws).await;
     assert_eq!(g["resumed"], true);
     assert_eq!(g["session"], sid.as_str());
@@ -901,26 +575,26 @@ async fn resume_keeps_lms_connected_and_delivers_queued_frames() {
     assert!(matches!(next(&mut ws).await, Message::Binary(_)));
     assert_eq!(h.lms.closed(), 0, "LMS must never see the player leave");
     // The stream announced while detached is fetchable on the resumed session.
-    assert_eq!(h.get_stream(&sid, 1, Some(TOK_A)).await.status(), 200);
+    assert_eq!(h.get_stream(&sid, 1, Some(&h.tok_a)).await.status(), 200);
 }
 
 #[tokio::test]
 async fn resume_is_refused_without_the_right_credentials() {
     let mut h = harness().await;
     let mut ws = h.dial().await;
-    let (sid, secret) = open_session(&mut ws, TOK_A).await;
+    let (sid, secret) = open_session(&mut ws, &h.tok_a).await;
     let _lms = h.lms.accept().await;
     drop(ws);
 
     let mut wrong_secret = secret.clone();
     wrong_secret.replace_range(0..1, if secret.starts_with('0') { "1" } else { "0" });
     let attempts = [
-        ("wrong secret", resume_msg(TOK_A, &sid, &wrong_secret)),
-        ("empty secret", resume_msg(TOK_A, &sid, "")),
-        ("other device's token", resume_msg(TOK_B, &sid, &secret)),
+        ("wrong secret", resume_msg(&h.tok_a, &sid, &wrong_secret)),
+        ("empty secret", resume_msg(&h.tok_a, &sid, "")),
+        ("other device's token", resume_msg(&h.tok_b, &sid, &secret)),
         (
             "unknown session",
-            resume_msg(TOK_A, &"0".repeat(32), &secret),
+            resume_msg(&h.tok_a, &"0".repeat(32), &secret),
         ),
         ("secret as token", resume_msg(&secret, &sid, &secret)),
     ];
@@ -940,7 +614,7 @@ async fn resume_is_refused_without_the_right_credentials() {
     }
     // A wrong guess doesn't destroy the session for its owner.
     let mut ws = h.dial().await;
-    ws.send(resume_msg(TOK_A, &sid, &secret)).await.unwrap();
+    ws.send(resume_msg(&h.tok_a, &sid, &secret)).await.unwrap();
     assert_eq!(greeting(&mut ws).await["resumed"], true);
     // Device B never got a session or an LMS connection out of this.
     h.lms.assert_no_conn().await;
@@ -950,12 +624,12 @@ async fn resume_is_refused_without_the_right_credentials() {
 async fn resume_after_grace_expiry_is_refused() {
     let mut h = harness_with(|c| c.resume_grace = Duration::from_millis(200)).await;
     let mut ws = h.dial().await;
-    let (sid, secret) = open_session(&mut ws, TOK_A).await;
+    let (sid, secret) = open_session(&mut ws, &h.tok_a).await;
     let _lms = h.lms.accept().await;
     drop(ws);
     wait_for(|| h.lms.closed() == 1).await;
     let mut ws = h.dial().await;
-    ws.send(resume_msg(TOK_A, &sid, &secret)).await.unwrap();
+    ws.send(resume_msg(&h.tok_a, &sid, &secret)).await.unwrap();
     expect_close(&mut ws, CloseCode::Library(4404)).await;
 }
 
@@ -964,10 +638,10 @@ async fn resume_takes_over_a_stale_socket() {
     // On mobile the old socket often isn't noticed as dead for minutes.
     let mut h = harness().await;
     let mut old = h.dial().await;
-    let (sid, secret) = open_session(&mut old, TOK_A).await;
+    let (sid, secret) = open_session(&mut old, &h.tok_a).await;
     let mut lms = h.lms.accept().await;
     let mut new = h.dial().await;
-    new.send(resume_msg(TOK_A, &sid, &secret)).await.unwrap();
+    new.send(resume_msg(&h.tok_a, &sid, &secret)).await.unwrap();
     assert_eq!(greeting(&mut new).await["resumed"], true);
     expect_close(&mut old, CloseCode::Library(4000)).await;
     lms.write_all(&encode_server_frame(*b"vers", b"x"))
@@ -981,10 +655,10 @@ async fn resume_takes_over_a_stale_socket() {
 async fn new_session_for_the_same_device_replaces_the_old_one() {
     let mut h = harness().await;
     let mut first = h.dial().await;
-    let (sid1, secret1) = open_session(&mut first, TOK_A).await;
+    let (sid1, secret1) = open_session(&mut first, &h.tok_a).await;
     let _lms1 = h.lms.accept().await;
     let mut second = h.dial().await;
-    let (sid2, _) = open_session(&mut second, TOK_A).await;
+    let (sid2, _) = open_session(&mut second, &h.tok_a).await;
     let _lms2 = h.lms.accept().await;
     assert_ne!(sid1, sid2);
     expect_close(&mut first, CloseCode::Library(4000)).await;
@@ -992,7 +666,7 @@ async fn new_session_for_the_same_device_replaces_the_old_one() {
     assert_eq!(h.gw.session_count(), 1);
     let mut again = h.dial().await;
     again
-        .send(resume_msg(TOK_A, &sid1, &secret1))
+        .send(resume_msg(&h.tok_a, &sid1, &secret1))
         .await
         .unwrap();
     expect_close(&mut again, CloseCode::Library(4404)).await;
@@ -1002,15 +676,19 @@ async fn new_session_for_the_same_device_replaces_the_old_one() {
 async fn resumed_session_rejects_a_second_helo() {
     let mut h = harness().await;
     let mut ws = h.dial().await;
-    let (sid, secret) = open_session(&mut ws, TOK_A).await;
+    let (sid, secret) = open_session(&mut ws, &h.tok_a).await;
     let _lms = h.lms.accept().await;
-    ws.send(Message::Binary(helo(MAC_A).into())).await.unwrap();
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
     wait_for(|| h.lms.frames() == ["HELO"]).await;
     drop(ws);
     let mut ws = h.dial().await;
-    ws.send(resume_msg(TOK_A, &sid, &secret)).await.unwrap();
+    ws.send(resume_msg(&h.tok_a, &sid, &secret)).await.unwrap();
     greeting(&mut ws).await;
-    ws.send(Message::Binary(helo(MAC_A).into())).await.unwrap();
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
     expect_close(&mut ws, CloseCode::Policy).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(h.lms.frames(), ["HELO"]);
@@ -1020,13 +698,15 @@ async fn resumed_session_rejects_a_second_helo() {
 async fn policy_violation_ends_the_whole_session() {
     let mut h = harness().await;
     let mut ws = h.dial().await;
-    let (sid, secret) = open_session(&mut ws, TOK_A).await;
+    let (sid, secret) = open_session(&mut ws, &h.tok_a).await;
     let _lms = h.lms.accept().await;
-    ws.send(Message::Binary(helo(MAC_B).into())).await.unwrap();
+    ws.send(Message::Binary(helo(h.mac_b).into()))
+        .await
+        .unwrap();
     expect_close(&mut ws, CloseCode::Policy).await;
     wait_for(|| h.lms.closed() == 1).await;
     let mut ws = h.dial().await;
-    ws.send(resume_msg(TOK_A, &sid, &secret)).await.unwrap();
+    ws.send(resume_msg(&h.tok_a, &sid, &secret)).await.unwrap();
     expect_close(&mut ws, CloseCode::Library(4404)).await;
 }
 
@@ -1034,7 +714,7 @@ async fn policy_violation_ends_the_whole_session() {
 async fn detached_queue_is_bounded() {
     let mut h = harness_with(|c| c.detached_queue_limit = 4096).await;
     let mut ws = h.dial().await;
-    let (sid, secret) = open_session(&mut ws, TOK_A).await;
+    let (sid, secret) = open_session(&mut ws, &h.tok_a).await;
     let mut lms = h.lms.accept().await;
     drop(ws);
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1045,7 +725,7 @@ async fn detached_queue_is_bounded() {
     }
     wait_for(|| h.lms.closed() == 1).await;
     let mut ws = h.dial().await;
-    ws.send(resume_msg(TOK_A, &sid, &secret)).await.unwrap();
+    ws.send(resume_msg(&h.tok_a, &sid, &secret)).await.unwrap();
     expect_close(&mut ws, CloseCode::Library(4404)).await;
 }
 
@@ -1053,15 +733,15 @@ async fn detached_queue_is_bounded() {
 async fn stream_download_resumes_from_an_offset() {
     let mut h = harness().await;
     let mut ws = h.dial().await;
-    let (sid, _) = open_session(&mut ws, TOK_A).await;
+    let (sid, _) = open_session(&mut ws, &h.tok_a).await;
     let mut lms = h.lms.accept().await;
-    lms.write_all(&strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(MAC_A)))
+    lms.write_all(&strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(h.mac_a)))
         .await
         .unwrap();
     next(&mut ws).await;
 
     // Read part of the stream, then the connection "drops".
-    let mut resp = h.get_stream(&sid, 1, Some(TOK_A)).await;
+    let mut resp = h.get_stream(&sid, 1, Some(&h.tok_a)).await;
     let mut got = Vec::new();
     while got.len() < 50_000 {
         got.extend_from_slice(&resp.chunk().await.unwrap().unwrap());
@@ -1071,7 +751,7 @@ async fn stream_download_resumes_from_an_offset() {
 
     let resumed = reqwest::Client::new()
         .get(h.url(&format!("/v1/stream/{sid}/1?offset={have}")))
-        .bearer_auth(TOK_A)
+        .bearer_auth(&h.tok_a)
         .send()
         .await
         .unwrap();
@@ -1089,7 +769,7 @@ async fn stream_download_resumes_from_an_offset() {
             "/v1/stream/{sid}/1?offset={}",
             h.lms.audio.len() + 1
         )))
-        .bearer_auth(TOK_A)
+        .bearer_auth(&h.tok_a)
         .send()
         .await
         .unwrap();
@@ -1100,13 +780,13 @@ async fn stream_download_resumes_from_an_offset() {
 async fn stream_resume_outside_the_replay_window_is_gone() {
     let mut h = harness_with(|c| c.replay_window = 1000).await;
     let mut ws = h.dial().await;
-    let (sid, _) = open_session(&mut ws, TOK_A).await;
+    let (sid, _) = open_session(&mut ws, &h.tok_a).await;
     let mut lms = h.lms.accept().await;
-    lms.write_all(&strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(MAC_A)))
+    lms.write_all(&strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(h.mac_a)))
         .await
         .unwrap();
     next(&mut ws).await;
-    let mut resp = h.get_stream(&sid, 1, Some(TOK_A)).await;
+    let mut resp = h.get_stream(&sid, 1, Some(&h.tok_a)).await;
     let mut n = 0;
     while n < 50_000 {
         n += resp.chunk().await.unwrap().unwrap().len();
@@ -1115,14 +795,14 @@ async fn stream_resume_outside_the_replay_window_is_gone() {
     drop(resp);
     let old = reqwest::Client::new()
         .get(h.url(&format!("/v1/stream/{sid}/1?offset=10")))
-        .bearer_auth(TOK_A)
+        .bearer_auth(&h.tok_a)
         .send()
         .await
         .unwrap();
     assert_eq!(old.status(), 410);
     let first_without_offset_mid_stream = reqwest::Client::new()
         .get(h.url(&format!("/v1/stream/{sid}/1?offset=abc")))
-        .bearer_auth(TOK_A)
+        .bearer_auth(&h.tok_a)
         .send()
         .await
         .unwrap();
@@ -1155,9 +835,11 @@ async fn attached_with_stat(
     event: &[u8; 4],
 ) -> (Ws, String, String, OwnedWriteHalf) {
     let mut ws = h.dial().await;
-    let (sid, secret) = open_session(&mut ws, TOK_A).await;
+    let (sid, secret) = open_session(&mut ws, &h.tok_a).await;
     let lms = h.lms.accept().await;
-    ws.send(Message::Binary(helo(MAC_A).into())).await.unwrap();
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
     ws.send(Message::Binary(stat_frame(event, 1_000, 5_000).into()))
         .await
         .unwrap();
@@ -1227,7 +909,7 @@ async fn detached_session_answers_status_polls_and_does_not_queue_them() {
     .await;
 
     let mut ws = h.dial().await;
-    ws.send(resume_msg(TOK_A, &sid, &secret)).await.unwrap();
+    ws.send(resume_msg(&h.tok_a, &sid, &secret)).await.unwrap();
     greeting(&mut ws).await;
     lms.write_all(&encode_server_frame(*b"vers", b"after"))
         .await
@@ -1243,7 +925,7 @@ async fn no_heartbeats_before_helo_or_after_resume() {
     let mut h = harness().await;
     // Before HELO the gateway has no player identity to speak for.
     let mut ws = h.dial().await;
-    let (sid, secret) = open_session(&mut ws, TOK_A).await;
+    let (sid, secret) = open_session(&mut ws, &h.tok_a).await;
     let _lms = h.lms.accept().await;
     drop(ws);
     tokio::time::sleep(Duration::from_millis(1600)).await;
@@ -1254,9 +936,11 @@ async fn no_heartbeats_before_helo_or_after_resume() {
 
     // After resume the client reports for itself; the gateway stops.
     let mut ws = h.dial().await;
-    ws.send(resume_msg(TOK_A, &sid, &secret)).await.unwrap();
+    ws.send(resume_msg(&h.tok_a, &sid, &secret)).await.unwrap();
     greeting(&mut ws).await;
-    ws.send(Message::Binary(helo(MAC_A).into())).await.unwrap(); // first HELO: allowed
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap(); // first HELO: allowed
     ws.send(Message::Binary(stat_frame(b"STMs", 1, 1).into()))
         .await
         .unwrap();
@@ -1284,7 +968,7 @@ async fn vers_payload(ws: &mut Ws) -> Vec<u8> {
 async fn frames_lost_in_flight_are_redelivered_on_resume() {
     let mut h = harness().await;
     let mut ws = h.dial().await;
-    let (sid, secret) = open_session(&mut ws, TOK_A).await;
+    let (sid, secret) = open_session(&mut ws, &h.tok_a).await;
     let mut lms = h.lms.accept().await;
     for v in [b"1", b"2", b"3"] {
         lms.write_all(&encode_server_frame(*b"vers", v))
@@ -1301,7 +985,7 @@ async fn frames_lost_in_flight_are_redelivered_on_resume() {
         .await
         .unwrap();
     let mut ws = h.dial().await;
-    ws.send(resume_after(TOK_A, &sid, &secret, 1))
+    ws.send(resume_after(&h.tok_a, &sid, &secret, 1))
         .await
         .unwrap();
     greeting(&mut ws).await;
@@ -1318,7 +1002,7 @@ async fn frames_lost_in_flight_are_redelivered_on_resume() {
 async fn resume_claiming_unsent_frames_is_refused_but_session_survives() {
     let mut h = harness().await;
     let mut ws = h.dial().await;
-    let (sid, secret) = open_session(&mut ws, TOK_A).await;
+    let (sid, secret) = open_session(&mut ws, &h.tok_a).await;
     let mut lms = h.lms.accept().await;
     lms.write_all(&encode_server_frame(*b"vers", b"1"))
         .await
@@ -1326,12 +1010,12 @@ async fn resume_claiming_unsent_frames_is_refused_but_session_survives() {
     vers_payload(&mut ws).await;
     drop(ws);
     let mut bad = h.dial().await;
-    bad.send(resume_after(TOK_A, &sid, &secret, 99))
+    bad.send(resume_after(&h.tok_a, &sid, &secret, 99))
         .await
         .unwrap();
     expect_close(&mut bad, CloseCode::Library(4404)).await;
     let mut ws = h.dial().await;
-    ws.send(resume_after(TOK_A, &sid, &secret, 1))
+    ws.send(resume_after(&h.tok_a, &sid, &secret, 1))
         .await
         .unwrap();
     assert_eq!(greeting(&mut ws).await["resumed"], true);
@@ -1343,7 +1027,7 @@ async fn resume_after_the_redelivery_window_starts_a_new_session() {
     // A tiny log: only the most recent frames are kept once delivered.
     let mut h = harness_with(|c| c.detached_queue_limit = 64).await;
     let mut ws = h.dial().await;
-    let (sid, secret) = open_session(&mut ws, TOK_A).await;
+    let (sid, secret) = open_session(&mut ws, &h.tok_a).await;
     let mut lms = h.lms.accept().await;
     for i in 0..20u8 {
         lms.write_all(&encode_server_frame(*b"vers", &[b'a' + i; 10]))
@@ -1353,7 +1037,7 @@ async fn resume_after_the_redelivery_window_starts_a_new_session() {
     }
     drop(ws);
     let mut ws = h.dial().await;
-    ws.send(resume_after(TOK_A, &sid, &secret, 0))
+    ws.send(resume_after(&h.tok_a, &sid, &secret, 0))
         .await
         .unwrap();
     expect_close(&mut ws, CloseCode::Library(4404)).await;
@@ -1390,14 +1074,14 @@ async fn read_for(resp: &mut reqwest::Response, dur: Duration) -> (usize, bool) 
 async fn relay_stays_within_a_window_of_the_last_ack() {
     let mut h = harness_with(|c| c.replay_window = 8 * 1024).await;
     let mut ws = h.dial().await;
-    let (sid, _) = open_session(&mut ws, TOK_A).await;
+    let (sid, _) = open_session(&mut ws, &h.tok_a).await;
     let mut lms = h.lms.accept().await;
-    lms.write_all(&strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(MAC_A)))
+    lms.write_all(&strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(h.mac_a)))
         .await
         .unwrap();
     next(&mut ws).await;
 
-    let mut resp = h.get_stream(&sid, 1, Some(TOK_A)).await;
+    let mut resp = h.get_stream(&sid, 1, Some(&h.tok_a)).await;
     let (got, done) = read_for(&mut resp, Duration::from_millis(800)).await;
     assert!(!done, "must not run to the end without acknowledgements");
     assert!(
@@ -1422,13 +1106,13 @@ async fn relay_stays_within_a_window_of_the_last_ack() {
 async fn acks_for_another_stream_do_not_release_data() {
     let mut h = harness_with(|c| c.replay_window = 8 * 1024).await;
     let mut ws = h.dial().await;
-    let (sid, _) = open_session(&mut ws, TOK_A).await;
+    let (sid, _) = open_session(&mut ws, &h.tok_a).await;
     let mut lms = h.lms.accept().await;
-    lms.write_all(&strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(MAC_A)))
+    lms.write_all(&strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(h.mac_a)))
         .await
         .unwrap();
     next(&mut ws).await;
-    let mut resp = h.get_stream(&sid, 1, Some(TOK_A)).await;
+    let mut resp = h.get_stream(&sid, 1, Some(&h.tok_a)).await;
     let (first, _) = read_for(&mut resp, Duration::from_millis(500)).await;
     ws.send(ack(7, 10_000_000)).await.unwrap();
     let (more, done) = read_for(&mut resp, Duration::from_millis(500)).await;
@@ -1450,7 +1134,7 @@ async fn malformed_control_messages_are_policy_violations() {
     ] {
         let mut h = harness().await;
         let mut ws = h.dial().await;
-        open_session(&mut ws, TOK_A).await;
+        open_session(&mut ws, &h.tok_a).await;
         let _lms = h.lms.accept().await;
         ws.send(Message::Text(bad.clone().into())).await.unwrap();
         expect_close(&mut ws, CloseCode::Policy).await;

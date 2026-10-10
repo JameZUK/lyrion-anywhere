@@ -32,6 +32,11 @@ input, button { font: inherit; padding: 0.6rem 0.75rem; border-radius: 8px; bord
 input { background: var(--panel); color: var(--fg); }
 button { background: var(--accent); color: #fff; border: none; cursor: pointer; }
 button:disabled { opacity: 0.6; cursor: default; }
+button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--border); }
+#start-panel { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 1.5rem 0; }
+#start-panel p { flex-basis: 100%; margin: 0; }
+[hidden] { display: none !important; }
+#logout-player { margin-top: 1rem; }
 #player { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 1rem 1.25rem; }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; margin: 0; }
 dt { color: var(--muted); }
