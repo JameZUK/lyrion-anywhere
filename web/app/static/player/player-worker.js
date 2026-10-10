@@ -101,7 +101,7 @@ function onGreeting(g) {
     const dropped = outbox.dropped;
     log(`resumed after ${Math.round((now() - disconnectedAt) / 100) / 10} s${dropped ? `, ${dropped} queued messages dropped` : ''}`);
   }
-  postMessage({ connection: 'connected' });
+  postMessage({ connection: 'connected', player: { mac: g.mac, name: g.name } });
   for (const bytes of outbox.drain()) ws.send(bytes);
   const os = player.open_stream();
   if (os) sendAck(os[0], os[1]);

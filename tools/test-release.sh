@@ -18,9 +18,10 @@ t "install.xml at the zip root" '[ -f "$X/install.xml" ]'
 t "install.xml version matches the zip name" 'grep -q "<version>$VERSION</version>" "$X/install.xml"'
 t "plugin module present" '[ -f "$X/Plugin.pm" ] && [ -f "$X/Gateway.pm" ]'
 t "settings page present" '[ -f "$X/HTML/EN/plugins/LyrionAnywhere/settings/basic.html" ]'
-t "browser player present" '[ -f "$X/web/index.html" ] && [ -f "$X/web/pkg/anywhere_wasm_bg.wasm" ] && [ -f "$X/web/player-worker.js" ]'
+t "web app present" '[ -f "$X/web/index.html" ] && [ -d "$X/web/_app/immutable" ] && [ -f "$X/web/player/pkg/anywhere_wasm_bg.wasm" ] && [ -f "$X/web/player/player-worker.js" ]'
+t "web app has no inline script (CSP)" '! grep -q -E "<script>|<script [^>]*>[^<]" "$X/web/index.html"'
 t "no tests, dotfiles, or local config in the zip" '[ -z "$(cd "$X" && find . \( -name "*.t" -o -name ".*" -o -name "*.bak" -o -name "local.*" -o -name "*.env" \) ! -name . | head -1)" ]'
-t "no web player tests in the zip" '[ ! -d "$X/web/tests" ]'
+t "no web sources or tests in the zip" '[ ! -d "$X/web/tests" ] && [ ! -d "$X/web/src" ] && [ ! -d "$X/web/node_modules" ]'
 
 echo "# gateways"
 t "checksum list present" '[ -f "$X/Bin/SHA256SUMS" ]'

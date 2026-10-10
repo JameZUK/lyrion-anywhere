@@ -74,7 +74,9 @@ echo "# image"
 check "runs as non-root" "$(docker inspect -f '{{.Config.User}}' "$IMAGE")" nonroot
 check "data directory and files are private" "$(docker run --rm -v "$VOL:/data:ro" alpine:3.22 sh -c 'stat -c %a /data; find /data -type f ! -perm 600 | wc -l' | tr '\n' ' ')" "700 0 "
 check "web player page served" "$($C -o /dev/null -w '%{http_code}' "$BASE/")" 200
-check "WebAssembly served as application/wasm" "$($C -o /dev/null -w '%{content_type}' "$BASE/pkg/anywhere_wasm_bg.wasm")" application/wasm
+check "WebAssembly served as application/wasm" "$($C -o /dev/null -w '%{content_type}' "$BASE/player/pkg/anywhere_wasm_bg.wasm")" application/wasm
+check "player worker served" "$($C -o /dev/null -w '%{http_code}' "$BASE/player/player-worker.js")" 200
+check "web app page has no inline script" "$($C "$BASE/" | grep -c -E '<script>|<script [^>]*>[^<]' || true)" 0
 
 echo "# nothing else is reachable"
 for p in /jsonrpc.js /settings/index.html /admin/v1/users /music/1/download /plugins/ /stream.mp3 /cometd /..%2f..%2fetc/passwd; do

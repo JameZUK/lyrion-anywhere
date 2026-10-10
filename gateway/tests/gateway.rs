@@ -399,10 +399,43 @@ async fn security_headers_are_set() {
         assert_eq!(hd["x-frame-options"], "DENY");
         assert_eq!(hd["referrer-policy"], "no-referrer");
         let csp = hd["content-security-policy"].to_str().unwrap();
+        let directive = |name: &str| {
+            csp.split(';')
+                .map(str::trim)
+                .find(|d| d.split_whitespace().next() == Some(name))
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            directive("frame-ancestors").as_deref(),
+            Some("frame-ancestors 'none'")
+        );
+        assert_eq!(directive("base-uri").as_deref(), Some("base-uri 'none'"));
+        // No inline or eval'd script, and no inline style sheets; only style attributes.
+        let script = directive("script-src").expect("script-src set");
         assert!(
-            csp.contains("frame-ancestors 'none'") && !csp.contains("unsafe-inline"),
+            !script.contains("unsafe-inline") && !script.contains("'unsafe-eval'"),
             "{csp}"
         );
+        assert_eq!(
+            directive("style-src").as_deref(),
+            Some("style-src 'self'"),
+            "{csp}"
+        );
+        assert!(directive("style-src-elem").is_none(), "{csp}");
+        assert_eq!(
+            directive("style-src-attr").as_deref(),
+            Some("style-src-attr 'unsafe-inline'"),
+            "{csp}"
+        );
+        for d in csp.split(';') {
+            let d = d.trim();
+            if d.contains("unsafe-inline") {
+                assert!(
+                    d.starts_with("style-src-attr "),
+                    "unsafe-inline outside style attributes: {d}"
+                );
+            }
+        }
     }
 }
 

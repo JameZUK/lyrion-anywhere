@@ -1,0 +1,190 @@
+<script lang="ts">
+	import '../app.css';
+	import { page } from '$app/state';
+	import { app, session } from '$lib/state/app.svelte';
+	import { device } from '$lib/player/device.svelte';
+	import Login from '$lib/components/Login.svelte';
+	import PlayerBar from '$lib/components/PlayerBar.svelte';
+	import MediaSession from '$lib/components/MediaSession.svelte';
+	import Icon from '$lib/components/Icon.svelte';
+
+	let { children } = $props();
+
+	// A returning browser signs in silently through its refresh cookie.
+	void session.restore();
+
+	// When this browser becomes a player, control it.
+	device.onConnected = async (mac) => {
+		await app.loadPlayers();
+		app.select(mac);
+	};
+
+	const NAV = [
+		{ href: '#/', label: 'Now playing', icon: 'home', match: (p: string) => p === '/' },
+		{ href: '#/albums', label: 'Albums', icon: 'album', match: (p: string) => p.startsWith('/album') },
+		{ href: '#/artists', label: 'Artists', icon: 'artist', match: (p: string) => p.startsWith('/artist') },
+		{ href: '#/search', label: 'Search', icon: 'search', match: (p: string) => p.startsWith('/search') },
+		{ href: '#/queue', label: 'Queue', icon: 'queue', match: (p: string) => p.startsWith('/queue') },
+		{ href: '#/settings', label: 'Settings', icon: 'settings', match: (p: string) => p.startsWith('/settings') },
+	];
+	const path = $derived(page.url.hash.replace(/^#/, '') || '/');
+</script>
+
+{#if app.status === 'unknown'}
+	<div class="splash" aria-busy="true"><span class="dot"></span></div>
+{:else if app.status === 'signed-out'}
+	<Login />
+{:else}
+	<MediaSession />
+	<div class="shell">
+		<nav class="side" aria-label="Main">
+			<div class="brand"><span class="logo" aria-hidden="true"></span>Lyrion Anywhere</div>
+			{#each NAV as n (n.href)}
+				<a href={n.href} class:active={n.match(path)} aria-current={n.match(path) ? 'page' : undefined}>
+					<Icon name={n.icon} size={20} />{n.label}
+				</a>
+			{/each}
+			{#if app.events !== 'live' && app.events !== 'stopped'}
+				<p class="conn muted">Reconnecting…</p>
+			{/if}
+		</nav>
+		<main class="content">
+			{#if app.error}<p class="banner error" role="alert">{app.error}</p>{/if}
+			{@render children()}
+		</main>
+	</div>
+	<div class="barwrap" class:on-np={path === '/'}><PlayerBar /></div>
+	<nav class="tabs" aria-label="Main">
+		{#each NAV.filter((n) => n.href !== '#/queue') as n (n.href)}
+			<a href={n.href} class:active={n.match(path)} aria-current={n.match(path) ? 'page' : undefined}>
+				<Icon name={n.icon} size={22} /><span>{n.label === 'Now playing' ? 'Playing' : n.label}</span>
+			</a>
+		{/each}
+	</nav>
+{/if}
+
+<style>
+	.splash {
+		min-height: 100vh;
+		display: grid;
+		place-items: center;
+	}
+	.dot {
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		background: var(--accent);
+		animation: pulse 1s ease-in-out infinite alternate;
+	}
+	@keyframes pulse {
+		to {
+			opacity: 0.2;
+			transform: scale(0.7);
+		}
+	}
+	.shell {
+		display: grid;
+		grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+		min-height: 100vh;
+	}
+	.side {
+		position: sticky;
+		top: 0;
+		height: calc(100vh - var(--bar-h));
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		padding: 1.25rem 0.75rem;
+		border-right: 1px solid var(--line);
+		background: var(--bg-raised);
+	}
+	.brand {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		font-weight: 700;
+		padding: 0 0.6rem 1.1rem;
+	}
+	.logo {
+		width: 26px;
+		height: 26px;
+		border-radius: 8px;
+		background: conic-gradient(from 200deg, var(--accent), #f59e0b, var(--accent));
+		box-shadow: inset 0 0 0 7px var(--bg-raised);
+	}
+	.side a {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		padding: 0.55rem 0.7rem;
+		border-radius: var(--radius-sm);
+		color: var(--fg-muted);
+		font-weight: 550;
+	}
+	.side a:hover {
+		background: var(--bg-sunken);
+		color: var(--fg);
+	}
+	.side a.active {
+		background: var(--accent-soft);
+		color: var(--fg);
+	}
+	.conn {
+		margin-top: auto;
+		padding: 0 0.7rem;
+		font-size: 0.85rem;
+	}
+	.content {
+		min-width: 0;
+		padding-bottom: calc(var(--bar-h) + var(--tabs-h) + 1rem);
+	}
+	.banner {
+		margin: 1rem clamp(1rem, 3vw, 2.5rem) 0;
+		padding: 0.6rem 0.9rem;
+		border: 1px solid currentColor;
+		border-radius: var(--radius-sm);
+	}
+	.tabs {
+		display: none;
+	}
+	@media (max-width: 760px) {
+		:global(:root) {
+			--tabs-h: calc(58px + env(safe-area-inset-bottom));
+			--bar-h: 64px;
+		}
+		.shell {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.side {
+			display: none;
+		}
+		.tabs {
+			position: fixed;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			height: var(--tabs-h);
+			padding-bottom: env(safe-area-inset-bottom);
+			display: grid;
+			grid-template-columns: repeat(5, 1fr);
+			background: var(--bg-raised);
+			border-top: 1px solid var(--line);
+			z-index: 21;
+		}
+		.tabs a {
+			display: grid;
+			justify-items: center;
+			align-content: center;
+			gap: 2px;
+			font-size: 0.7rem;
+			color: var(--fg-muted);
+		}
+		.tabs a.active {
+			color: var(--accent);
+		}
+		/* The Now playing page has its own controls: no mini bar there. */
+		.barwrap.on-np {
+			display: none;
+		}
+	}
+</style>

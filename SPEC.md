@@ -242,7 +242,10 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 
 ### 7.1 Stack
 
-- SvelteKit + TypeScript (D9), built with `adapter-static` and served by the gateway. No server-side rendering; all data comes from the `/v1` API.
+- SvelteKit + TypeScript (D9), built with `adapter-static` and served by the gateway. No server-side rendering; all data comes from the `/v1` API. Hash routing, so the gateway serves plain files only.
+- **Strict CSP kept:**
+  - the build moves SvelteKit's inline start-up script into a file, and fails if any inline script, event-handler attribute or `javascript:` URL remains;
+  - the gateway allows inline `style` attributes only (`style-src-attr 'unsafe-inline'`), which the framework needs. Style sheets and `<style>` elements stay `'self'`.
 - The Rust core is compiled to WebAssembly. It handles Slimproto, buffering, resume, and decoding with Symphonia (FLAC, ALAC, MP3, AAC-LC, Vorbis, WAV/AIFF) plus Opus.
 - Audio output goes through an `AudioWorklet`.
 - The Media Session API gives lock-screen/notification controls and hardware media keys.
@@ -408,7 +411,11 @@ The **v1 release** is Phases 0–3.
    6. nginx config and the Docker image (_done 2026-10-10: `deploy/`, `Dockerfile`, `docs/DEPLOY.md`_).
    - **Gate:** an external security review, plus scanner tests proving LMS paths are unreachable.
    - **Gate:** a phone keeps playing through a 30 s network dropout and 4 minutes with the screen locked.
-2. **Web app.** All of §7.2 except offline, as an installable PWA.
+2. **Web app.** All of §7.2 except offline, as an installable PWA. _First slice done 2026-10-10:_
+   - sign-in with two-step verification; the player switcher with "this device" built in;
+   - Now playing (art, transport, seek, volume, shuffle/repeat); the queue (jump, reorder, remove, clear);
+   - albums, artists, album and artist pages, and search, with play now, play next and add everywhere;
+   - Media Session controls; light/dark theme; phone and desktop layouts.
    - **Gate:** usability pass on phone and desktop; WCAG AA audit.
 3. **Offline downloads.** Server download/transcode/manifest/events endpoints; the web download manager, offline mode and sync-back.
    - **Gate:** a pinned 500-track playlist downloads, survives a restart, plays offline, and syncs plays back. **→ v1 release.**

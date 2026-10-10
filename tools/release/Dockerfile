@@ -1,4 +1,4 @@
-# Release artefacts: static gateway binaries for each Linux platform, and the browser player.
+# Release artefacts: static gateway binaries for each Linux platform, and the web app.
 # Used by tools/build-release.sh:
 #   docker build -f tools/release/Dockerfile --target out --output type=local,dest=dist/build .
 
@@ -21,11 +21,19 @@ RUN set -e; \
       install -D -m 0755 "target/$target/release/anywhere-gateway" "/out/Bin/$plat/anywhere-gateway"; \
     done
 
-# Browser player: the core compiled to WebAssembly, plus the page.
+# Web app: the core compiled to WebAssembly (the SvelteKit build runs in the next stage).
 RUN cargo build --locked --release -p anywhere-wasm --target wasm32-unknown-unknown \
- && wasm-bindgen --target web --no-typescript --out-dir /out/web/pkg \
-      target/wasm32-unknown-unknown/release/anywhere_wasm.wasm \
- && cp web/spike/*.html web/spike/*.js web/spike/*.css /out/web/
+ && wasm-bindgen --target web --no-typescript --out-dir /out/pkg \
+      target/wasm32-unknown-unknown/release/anywhere_wasm.wasm
+
+FROM node:24.11.1-alpine3.22 AS web
+WORKDIR /src/web/app
+COPY web/app/package.json web/app/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/app/ ./
+COPY --from=build /out/pkg static/player/pkg
+RUN npm run build
 
 FROM scratch AS out
-COPY --from=build /out /
+COPY --from=build /out/Bin /Bin
+COPY --from=web /src/web/app/build /web

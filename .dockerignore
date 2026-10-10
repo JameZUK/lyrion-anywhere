@@ -5,7 +5,9 @@ target
 dev/local.*
 *.token
 .playwright-mcp
-web/spike/pkg
-web/spike/tests
 plugin
 dist
+web/app/node_modules
+web/app/.svelte-kit
+web/app/build
+web/app/static/player/pkg

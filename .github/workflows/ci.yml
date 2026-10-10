@@ -49,10 +49,14 @@ jobs:
           node-version: 22
       - name: WASM binding tests (Node)
         run: wasm-pack test --node wasm
-      - name: Build browser player
-        run: tools/build-web-spike.sh
-      - name: AudioWorklet tests
-        run: node --test web/spike/tests/*.test.mjs
+      - name: Build the web app (WebAssembly core + SvelteKit)
+        run: tools/build-web.sh
+      - name: Type check (strict, warnings fail)
+        working-directory: web/app
+        run: npm run check
+      - name: Web app tests (Vitest + Node)
+        working-directory: web/app
+        run: npm test
 
   supply-chain:
     runs-on: ubuntu-latest

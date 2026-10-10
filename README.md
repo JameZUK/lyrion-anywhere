@@ -12,9 +12,8 @@ Secure internet access to a [Lyrion Music Server](https://lyrion.org) through on
 | `cli/` | Native test player for the core |
 | `gateway/` | Rust gateway: authenticated Slimproto tunnel and stream relay |
 | `wasm/` | WebAssembly bindings for the core (browser player) |
-| `web/spike/` | Phase 0 browser player page (`tools/build-web-spike.sh`) |
+| `web/app/` | Web app: SvelteKit + the core as WebAssembly (`tools/build-web.sh`) |
 | `plugin/` | LMS plugin: settings, accounts and gateway supervision |
-| `web/` | SvelteKit web app (planned) |
 | `deploy/` | Example reverse-proxy config (nginx) |
 | `docs/` | Documentation and reports; deployment in [`docs/DEPLOY.md`](docs/DEPLOY.md) |
 
@@ -30,6 +29,14 @@ Plugin tests (Perl stubs for LMS, plus the real gateway once built):
 ```sh
 cargo build -p anywhere-gateway
 cd plugin && PERL5LIB=t/stubs:. prove -r t/ && node --test t/js/*.test.mjs
+```
+
+Web app (needs `wasm-pack` and Node 22+):
+
+```sh
+tools/build-web.sh                       # WebAssembly core + SvelteKit build into web/app/build
+cd web/app && npm run check && npm test  # strict type check; Vitest + Node tests
+npm run dev                              # dev server; proxies /v1 to a gateway on 127.0.0.1:9443
 ```
 
 Put local, environment-specific settings in `dev/local.env` (git-ignored). Never commit real hostnames or addresses.

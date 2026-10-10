@@ -1,0 +1,307 @@
+[
+ {
+  "player": false,
+  "cmd": [
+   "players",
+   0,
+   100
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   0,
+   100,
+   "tags:aljyS",
+   "sort:album"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   100,
+   100,
+   "tags:aljyS",
+   "sort:new"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   0,
+   50,
+   "tags:aljyS",
+   "sort:random",
+   "search:abba"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   0,
+   500,
+   "tags:aljyS",
+   "sort:yearalbum",
+   "artist_id:12"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   0,
+   1,
+   "tags:aljyS",
+   "album_id:7"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "artists",
+   0,
+   100
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "artists",
+   0,
+   100,
+   "search:beatles"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "titles",
+   0,
+   500,
+   "tags:adtlcJKj",
+   "sort:tracknum",
+   "album_id:7"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "search",
+   0,
+   20,
+   "term:abba gold"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "status",
+   "-",
+   1,
+   "tags:aAlcdeJKjNoqrsTIyx"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "status",
+   0,
+   100,
+   "tags:alcdJKj"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "play"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "pause"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "pause",
+   1
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "pause",
+   0
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "stop"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlist",
+   "index",
+   "+1"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlist",
+   "index",
+   "-1"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlist",
+   "index",
+   4
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "time",
+   83.3
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "mixer",
+   "volume",
+   55
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "mixer",
+   "muting",
+   "toggle"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "power",
+   1
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "power",
+   0
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlist",
+   "delete",
+   3
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlist",
+   "move",
+   3,
+   0
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlist",
+   "clear"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlist",
+   "shuffle",
+   1
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlist",
+   "repeat",
+   2
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:load",
+   "album_id:7"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:load",
+   "album_id:7",
+   "play_index:3"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:insert",
+   "album_id:7"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:add",
+   "album_id:7"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:load",
+   "track_id:99"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:insert",
+   "track_id:99"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:add",
+   "artist_id:12"
+  ]
+ }
+]

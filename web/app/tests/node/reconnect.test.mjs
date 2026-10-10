@@ -1,7 +1,7 @@
 // Reconnect policy tests (node --test).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CLOSE, Outbox, backoffMs, closeAction, streamFailureAction } from '../reconnect.js';
+import { CLOSE, Outbox, backoffMs, closeAction, streamFailureAction } from '../../static/player/reconnect.js';
 
 test('close codes map to the right recovery', () => {
   // Security-relevant: never retry with credentials the gateway rejected, and never fight

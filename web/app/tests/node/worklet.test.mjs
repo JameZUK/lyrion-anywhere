@@ -17,7 +17,7 @@ function loadProcessor() {
       Registered = cls;
     },
   };
-  vm.runInNewContext(readFileSync(new URL('../worklet.js', import.meta.url), 'utf8'), ctx);
+  vm.runInNewContext(readFileSync(new URL('../../static/player/worklet.js', import.meta.url), 'utf8'), ctx);
   const proc = new Registered();
   const reports = [];
   const workerPort = { onmessage: null, postMessage: (m) => reports.push(m) };
@@ -94,7 +94,7 @@ test('single-channel output is mixed down, not right-channel-only', () => {
       Registered = cls;
     },
   };
-  vm.runInNewContext(readFileSync(new URL('../worklet.js', import.meta.url), 'utf8'), ctx);
+  vm.runInNewContext(readFileSync(new URL('../../static/player/worklet.js', import.meta.url), 'utf8'), ctx);
   const proc = new Registered();
   const port = { onmessage: null, postMessage: () => {} };
   proc.port.onmessage({ data: { port } });

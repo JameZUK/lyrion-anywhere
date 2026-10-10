@@ -232,11 +232,15 @@ async fn security_headers(req: Request, next: Next) -> Response {
     if h.contains_key("content-security-policy") {
         return resp;
     }
+    // Scripts and style sheets come only from this origin. Inline `style` attributes are
+    // allowed (the web app's framework uses them); they hold no selectors, so they can't be
+    // used to read page content the way injected style sheets can.
     h.insert(
         "content-security-policy",
         HeaderValue::from_static(
             "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; \
              connect-src 'self'; img-src 'self' data: blob:; style-src 'self'; \
+             style-src-attr 'unsafe-inline'; \
              frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         ),
     );

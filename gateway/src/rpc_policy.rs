@@ -245,6 +245,7 @@ pub fn check(
                         ("search", V::Text),
                         ("genre_id", V::Ids),
                         ("artist_id", V::Ids),
+                        ("album_id", V::Ids),
                         ("track_id", V::Ids),
                         ("year", V::Uint),
                         ("sort", V::Sort),
@@ -679,6 +680,40 @@ mod tests {
             check(&Who(Role::Listener), player, &raw, &apps()).is_err(),
             "{player} {cmd} was allowed"
         );
+    }
+
+    /// Every command the web app can build (web/app/tests/fixtures/commands.json, kept in
+    /// step with the builders by a Vitest test) must pass the policy as a listener.
+    #[test]
+    fn web_app_commands_are_allowed() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../web/app/tests/fixtures/commands.json"))
+                .unwrap();
+        let examples = fixture.as_array().unwrap();
+        assert!(examples.len() >= 30, "fixture looks truncated");
+        for e in examples {
+            let player = if e["player"].as_bool().unwrap() {
+                MINE
+            } else {
+                ""
+            };
+            ok(player, e["cmd"].clone());
+        }
+    }
+
+    #[test]
+    fn album_id_filter_takes_ids_only() {
+        ok("", json!(["albums", 0, 1, "tags:al", "album_id:7"]));
+        for bad in [
+            "album_id:",
+            "album_id:x",
+            "album_id:7;rescan",
+            "album_id:-1",
+            "album_id:../7",
+        ] {
+            denied("", json!(["albums", 0, 1, bad]));
+        }
+        denied("", json!(["albums", 0, 1, "album_id:7", "album_id:8"]));
     }
 
     #[test]
