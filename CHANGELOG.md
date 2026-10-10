@@ -4,6 +4,9 @@ Dated entries, newest first.
 
 ## 2026-10-10
 
+### Plugin fix from the first real install
+- For 5 s after LMS started, the plugin's status showed a wrong binary path (`/Bin/…`), because the plugin directory was only set when the gateway started. It is now set at load. A regression test drives the real `initPlugin` and fails without the fix.
+
 ### Phase 1: nginx and Docker
 - **Docker image:**
   - a static gateway binary plus the browser player;

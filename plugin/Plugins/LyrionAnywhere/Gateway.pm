@@ -159,9 +159,15 @@ sub _options {
 	);
 }
 
-sub init {
+# Where the plugin lives (for the bundled binary). Set at load, so status is right at once.
+sub set_basedir {
 	my ($class, $dir) = @_;
 	$basedir = $dir;
+}
+
+sub init {
+	my ($class, $dir) = @_;
+	$class->set_basedir($dir);
 	$class->start if $prefs->get('enabled');
 }
 

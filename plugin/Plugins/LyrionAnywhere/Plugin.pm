@@ -45,6 +45,7 @@ sub initPlugin {
 
 	# Give LMS a moment to finish starting before the gateway connects to it.
 	my $basedir = $class->_pluginDataFor('basedir');
+	Plugins::LyrionAnywhere::Gateway->set_basedir($basedir);
 	Slim::Utils::Timers::setTimer(undef, time() + 5, sub {
 		Plugins::LyrionAnywhere::Gateway->init($basedir);
 	});
