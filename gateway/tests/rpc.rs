@@ -416,3 +416,88 @@ async fn context_menus_take_only_library_ids() {
         );
     }
 }
+
+/// Regression: an `imageproxy/<url>` in any text LMS relays (a track title, a player name)
+/// taught the gateway that URL, so a user could make LMS fetch from the home network.
+#[tokio::test]
+async fn image_proxy_urls_in_free_text_never_become_fetchable() {
+    let h = harness().await;
+    let r = h.rpc(&h.tok_a, "", json!(["tracks", 0, 10])).await;
+    assert_eq!(r.status(), S::OK);
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["result"]["titles_loop"][0]["id"], 2);
+    for target in ["x", "y", "z"] {
+        let path = format!("/v1/art/imageproxy/http%3A%2F%2F10.0.0.1%2F{target}/image.png");
+        let r = reqwest::Client::new()
+            .get(h.url(&path))
+            .bearer_auth(&h.tok_a)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), S::NOT_FOUND, "{path}");
+    }
+    assert!(
+        !h.lms
+            .http_paths()
+            .iter()
+            .any(|p| p.starts_with("/imageproxy/")),
+        "LMS was asked to fetch a local URL"
+    );
+}
+
+/// Regression: track info lines such as `Location: /srv/music/…` and `URL: http://10.0.0.10…`
+/// reached clients, revealing the server's filesystem and address.
+#[tokio::test]
+async fn track_info_lines_with_paths_or_lan_urls_are_dropped() {
+    let h = harness().await;
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    let menu = open_track_menu(&h, &h.tok_a, &mine).await;
+    let s = menu.to_string();
+    for leaked in ["/srv/", "10.0.0.10", "Location:", "URL:"] {
+        assert!(!s.contains(leaked), "{leaked} leaked: {s}");
+    }
+    let texts: Vec<&str> = menu["result"]["item_loop"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|x| x["text"].as_str())
+        .collect();
+    assert!(texts.contains(&"Artist: AC/DC"), "{texts:?}");
+    assert!(texts.contains(&"Similar tracks"), "{texts:?}");
+}
+
+/// Regression: `syncgroups ?` and `sync ?` named players the caller may not control.
+#[tokio::test]
+async fn sync_information_names_only_permitted_players() {
+    let h = harness().await;
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    let groups = || async {
+        h.rpc(&h.tok_a, "", json!(["syncgroups", "?"]))
+            .await
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    let none = groups().await;
+    let s = none.to_string();
+    assert!(!s.contains("ee:01") && !s.contains("Home One"), "{s}");
+    assert_eq!(none["result"]["syncgroups_loop"], json!([]));
+
+    h.accounts
+        .grant_player("alice", "aa:bb:cc:dd:ee:01")
+        .unwrap();
+    let one = groups().await;
+    assert_eq!(
+        one["result"]["syncgroups_loop"],
+        json!([{"sync_members": "aa:bb:cc:dd:ee:01", "sync_member_names": "Home One"}])
+    );
+    assert!(!one.to_string().contains("Home Two"));
+
+    let sync: Value = h
+        .rpc(&h.tok_a, &mine, json!(["sync", "?"]))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(sync["result"]["_sync"], "aa:bb:cc:dd:ee:01");
+}

@@ -581,31 +581,124 @@ const STRIPPED: &[&str] = &[
     "path",
 ];
 
-/// A value that reveals the server's filesystem or home network, whatever key it is under:
-/// `file:` URLs, and URLs whose host is private, loopback, link-local or a local name.
+/// A value that reveals the server's filesystem or home network, whatever key it is under.
+/// See [`sensitive_value`].
 pub(crate) fn sensitive_text(s: &str) -> bool {
     sensitive_value(s)
 }
 
+/// Does this text contain (anywhere, not only at the start, so LMS's `Location: /srv/…` and
+/// `URL: http://…` info lines count):
+/// - a `file:` URL;
+/// - a URL whose host is private, loopback, link-local or a local name, directly or as the
+///   target of an `imageproxy/` path;
+/// - an absolute filesystem path of two or more segments, other than LMS's own web paths;
+/// - a Windows drive or UNC path?
+///
+/// Slashes inside words ("AC/DC", "1990/91", "Song / Other") are not paths.
 fn sensitive_value(s: &str) -> bool {
-    let lower = s.trim_start().to_ascii_lowercase();
-    if lower.starts_with("file:") {
-        return true;
-    }
-    let Some((scheme, rest)) = lower.split_once("://") else {
-        return false;
-    };
-    if !matches!(scheme, "http" | "https" | "ws" | "wss" | "rtsp" | "mms") {
-        return false;
-    }
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let lower = s.to_ascii_lowercase();
+    has_file_url(&lower)
+        || has_local_url(&lower)
+        || has_local_proxy_target(s)
+        || has_abs_path(s)
+        || has_windows_path(s)
+}
+
+/// Characters after which something new (a URL or a path) can start.
+fn starts_token(prev: Option<u8>) -> bool {
+    prev.is_none_or(|b| b.is_ascii_whitespace() || b"\"'(<[=,;:".contains(&b))
+}
+
+fn has_file_url(lower: &str) -> bool {
+    lower
+        .match_indices("file:")
+        .any(|(i, _)| starts_token(i.checked_sub(1).map(|j| lower.as_bytes()[j])))
+}
+
+fn has_local_url(lower: &str) -> bool {
+    lower.match_indices("://").any(|(i, _)| {
+        let scheme_start = lower[..i]
+            .char_indices()
+            .rev()
+            .find(|(_, c)| !(c.is_ascii_alphanumeric() || "+.-".contains(*c)))
+            .map_or(0, |(j, c)| j + c.len_utf8());
+        let scheme = &lower[scheme_start..i];
+        if !matches!(scheme, "http" | "https" | "ws" | "wss" | "rtsp" | "mms") {
+            return false;
+        }
+        let rest = &lower[i + 3..];
+        let end = rest
+            .find(|c: char| c.is_whitespace() || "/?#\"'<>()".contains(c))
+            .unwrap_or(rest.len());
+        url_host_local(&rest[..end])
+    })
+}
+
+/// Is the host of a URL authority (`user@host:port`) a local one?
+fn url_host_local(authority: &str) -> bool {
     let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let host = if let Some(v6) = hostport.strip_prefix('[') {
         v6.split(']').next().unwrap_or("")
     } else {
         hostport.split(':').next().unwrap_or("")
     };
+    let host = host.trim_end_matches(['.', ',', ';']);
     local_host(host)
+}
+
+/// `imageproxy/<url-encoded URL>/…` whose URL is local (LMS would fetch it for us).
+fn has_local_proxy_target(s: &str) -> bool {
+    s.match_indices("imageproxy/").any(|(i, _)| {
+        crate::art::proxy_target(&s[i..])
+            .is_some_and(|url| has_local_url(&url.to_ascii_lowercase()))
+    })
+}
+
+fn has_abs_path(s: &str) -> bool {
+    let b = s.as_bytes();
+    s.match_indices('/').any(|(i, _)| {
+        if !starts_token(i.checked_sub(1).map(|j| b[j])) {
+            return false;
+        }
+        let token = &s[i + 1..];
+        let token = &token[..token.find(char::is_whitespace).unwrap_or(token.len())];
+        // `/first/rest…`: a first segment, a slash, then at least one more character.
+        let Some((first, rest)) = token.split_once('/') else {
+            return false;
+        };
+        !first.is_empty() && !rest.is_empty() && !lms_web_path(token)
+    })
+}
+
+/// Paths of LMS's own web server (artwork and icons), which are not filesystem paths.
+fn lms_web_path(p: &str) -> bool {
+    let p = p.split(['?', '#']).next().unwrap_or("");
+    let seg: Vec<&str> = p.split('/').collect();
+    match seg.as_slice() {
+        ["imageproxy", ..] | ["html", ..] => true,
+        ["plugins", "cache", "icons", ..] | ["plugins", _, "html", ..] => true,
+        ["music", id, _] => {
+            *id == "current"
+                || (!id.is_empty() && id.len() <= 16 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+        }
+        _ => false,
+    }
+}
+
+fn has_windows_path(s: &str) -> bool {
+    let b = s.as_bytes();
+    (0..b.len()).any(|i| {
+        let prev = i.checked_sub(1).map(|j| b[j]);
+        let boundary = prev.is_none_or(|p| !p.is_ascii_alphanumeric());
+        let drive = b[i].is_ascii_alphabetic()
+            && b.get(i + 1) == Some(&b':')
+            && matches!(b.get(i + 2), Some(b'\\'));
+        let unc = b[i] == b'\\'
+            && b.get(i + 1) == Some(&b'\\')
+            && b.get(i + 2).is_some_and(u8::is_ascii_alphanumeric);
+        boundary && (drive || unc)
+    })
 }
 
 fn local_host(host: &str) -> bool {
@@ -641,6 +734,7 @@ fn local_host(host: &str) -> bool {
 /// Filter a response. `may_control` hides players the caller can't use.
 pub fn filter_response(kind: Kind, mut v: Value, may_control: &dyn Fn(&str) -> bool) -> Value {
     strip(&mut v);
+    sync_info(&mut v, may_control);
     if kind == Kind::HomeMenu {
         home_menu(&mut v);
     }
@@ -664,6 +758,102 @@ pub fn filter_response(kind: Kind, mut v: Value, may_control: &dyn Fn(&str) -> b
         }
     }
     v
+}
+
+/// Keep only permitted players in a comma-separated list of player ids.
+fn permitted_ids(list: &str, may_control: &dyn Fn(&str) -> bool) -> Vec<String> {
+    list.split(',')
+        .map(str::trim)
+        .filter(|p| may_control(&p.to_ascii_lowercase()))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Sync information (`syncgroups ?`, `sync ?`, `status`) names players: keep only those the
+/// caller may control, so other people's players stay hidden. A group's names are kept in
+/// step with its members, or dropped if they can't be matched up.
+fn sync_info(v: &mut Value, may_control: &dyn Fn(&str) -> bool) {
+    match v {
+        Value::Object(map) => {
+            if let Some(members) = map
+                .get("sync_members")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            {
+                let ids: Vec<&str> = members.split(',').collect();
+                let names: Option<Vec<String>> = map
+                    .get("sync_member_names")
+                    .and_then(Value::as_str)
+                    .map(|n| n.split(',').map(str::to_string).collect());
+                let keep: Vec<bool> = ids
+                    .iter()
+                    .map(|p| may_control(&p.trim().to_ascii_lowercase()))
+                    .collect();
+                let kept_ids: Vec<&str> = ids
+                    .iter()
+                    .zip(&keep)
+                    .filter(|(_, k)| **k)
+                    .map(|(p, _)| *p)
+                    .collect();
+                let kept_names = names.filter(|n| n.len() == ids.len()).map(|n| {
+                    n.into_iter()
+                        .zip(&keep)
+                        .filter(|(_, k)| **k)
+                        .map(|(x, _)| x)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                });
+                map.remove("sync_member_names");
+                if kept_ids.is_empty() {
+                    map.remove("sync_members");
+                } else {
+                    map.insert("sync_members".into(), Value::from(kept_ids.join(",")));
+                    if let Some(n) = kept_names {
+                        map.insert("sync_member_names".into(), Value::from(n));
+                    }
+                }
+            } else {
+                map.remove("sync_member_names");
+            }
+            if let Some(slaves) = map.get("sync_slaves").and_then(Value::as_str) {
+                let kept = permitted_ids(slaves, may_control);
+                if kept.is_empty() {
+                    map.remove("sync_slaves");
+                } else {
+                    map.insert("sync_slaves".into(), Value::from(kept.join(",")));
+                }
+            }
+            if map.get("sync_master").is_some_and(|m| {
+                !m.as_str()
+                    .is_some_and(|m| may_control(&m.to_ascii_lowercase()))
+            }) {
+                map.remove("sync_master");
+            }
+            if let Some(s) = map.get("_sync").and_then(Value::as_str) {
+                let kept = permitted_ids(s, may_control);
+                let out = if kept.is_empty() {
+                    "-".to_string()
+                } else {
+                    kept.join(",")
+                };
+                map.insert("_sync".into(), Value::from(out));
+            }
+            if let Some(groups) = map.get_mut("syncgroups_loop").and_then(Value::as_array_mut) {
+                for g in groups.iter_mut() {
+                    sync_info(g, may_control);
+                }
+                // A group the caller can see none of is no business of theirs.
+                groups.retain(|g| g.get("sync_members").is_some());
+            }
+            for (k, x) in map.iter_mut() {
+                if k != "syncgroups_loop" {
+                    sync_info(x, may_control);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(|x| sync_info(x, may_control)),
+        _ => {}
+    }
 }
 
 /// Home-menu nodes whose entries are kept: the top level, My Music, Radio, Extras and apps.
@@ -740,6 +930,15 @@ fn strip(v: &mut Value) {
                     && !x.as_str().is_some_and(sensitive_value)
                     && !poisoned_action(x)
             });
+            // A menu entry whose text is a path or LAN URL (track info's "Location: …",
+            // "URL: …") is dropped whole: blanking it would leave an empty, clickable entry.
+            if let Some(Value::Array(items)) = map.get_mut("item_loop") {
+                items.retain(|x| {
+                    !x.get("text")
+                        .and_then(Value::as_str)
+                        .is_some_and(sensitive_value)
+                });
+            }
             for x in map.values_mut() {
                 strip(x);
             }
@@ -1412,6 +1611,167 @@ mod tests {
         let art = json!({"artwork_url": "https://images.example.com/a.jpg", "icon": "/imageproxy/x/image.png",
                          "image": "html/images/cover.png"});
         assert_eq!(filter_response(Kind::Plain, art.clone(), &|_| true), art);
+    }
+
+    /// Regression: track info menus carry lines such as `Location: /srv/music/…` and
+    /// `URL: http://10.0.0.10:…`, which passed because only values *starting* with a URL
+    /// were recognised.
+    #[test]
+    fn paths_and_lan_urls_inside_text_are_recognised() {
+        for yes in [
+            "Location: /srv/music/a.flac",
+            "URL: http://10.0.0.10:8200/x",
+            "Stream from http://lms.example.lan:9000/stream.mp3",
+            "Path=/home/someone/Music/x",
+            "(/mnt/media/x.flac)",
+            "/srv/music",
+            "Folder: C:\\Music\\a.flac",
+            "D:\\x",
+            "\\\\nas\\share\\a.flac",
+            "Link: file:///srv/x",
+            "Cover: /imageproxy/http%3A%2F%2F10.0.0.1%2Fx/image.png",
+        ] {
+            assert!(sensitive_value(yes), "{yes}");
+        }
+        for no in [
+            "AC/DC",
+            "Live 1990/91",
+            "Song / Other",
+            "Rock/Pop / Indie",
+            "Profile: Example",
+            "Back in Black (AC/DC)",
+            "1/2",
+            "/",
+            "/single",
+            "/imageproxy/https%3A%2F%2Fcdn.example.com%2Fa.jpg/image.png",
+            "/music/2109213/cover_150x150_o",
+            "/music/current/cover.jpg?player=aa:bb:cc:dd:ee:ff",
+            "/plugins/Spotty/html/images/icon.png",
+            "/plugins/cache/icons/radio.png",
+            "/html/images/favorites.png",
+            "URL: https://music.example.com/x",
+            "Mac:\\ not a drive",
+        ] {
+            assert!(!sensitive_value(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn menu_items_with_paths_or_lan_urls_are_dropped_whole() {
+        let raw = json!({"count": 5, "item_loop": [
+            {"text": "Title: Back in Black", "style": "itemNoAction"},
+            {"text": "Location: /srv/music/AC_DC/a.flac", "style": "itemNoAction"},
+            {"text": "URL: http://10.0.0.10:8200/x", "style": "itemNoAction"},
+            {"text": "Artist: AC/DC", "actions": {"go": {"cmd": ["artistinfo", "items"]}}},
+            {"text": "Year: 1990/91"}
+        ]});
+        let out = filter_response(Kind::Plain, raw, &|_| true);
+        let s = out.to_string();
+        for leaked in ["/srv/", "10.0.0.10", "Location", "URL:"] {
+            assert!(!s.contains(leaked), "{leaked} leaked: {s}");
+        }
+        let texts: Vec<&str> = out["item_loop"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["Title: Back in Black", "Artist: AC/DC", "Year: 1990/91"]
+        );
+        // Outside menus the value alone goes, as before.
+        let out = filter_response(
+            Kind::Plain,
+            json!({"comment": "ripped to /srv/music/x", "title": "Live 1990/91"}),
+            &|_| true,
+        );
+        assert_eq!(out, json!({"title": "Live 1990/91"}));
+    }
+
+    /// Regression: sync information named players the caller may not control.
+    #[test]
+    fn sync_information_shows_only_permitted_players() {
+        let may = |p: &str| p == MINE || p == HOME;
+        let groups = json!({"syncgroups_loop": [
+            {"sync_members": format!("{MINE},{OTHER},{HOME}"), "sync_member_names": "Mine,Theirs,Home"},
+            {"sync_members": format!("{OTHER},aa:bb:cc:dd:ee:77"), "sync_member_names": "Theirs,Secret"},
+            {"sync_members": format!("{MINE},{OTHER}"), "sync_member_names": "Mine,Odd,Extra"}
+        ]});
+        let out = filter_response(Kind::Plain, groups, &may);
+        assert_eq!(
+            out,
+            json!({"syncgroups_loop": [
+                {"sync_members": format!("{MINE},{HOME}"), "sync_member_names": "Mine,Home"},
+                {"sync_members": MINE}
+            ]})
+        );
+        let s = out.to_string();
+        assert!(!s.contains(OTHER) && !s.contains("Theirs") && !s.contains("Secret"));
+
+        let sync = filter_response(
+            Kind::Plain,
+            json!({"_sync": format!("{OTHER},{HOME}")}),
+            &may,
+        );
+        assert_eq!(sync, json!({"_sync": HOME}));
+        let sync = filter_response(Kind::Plain, json!({"_sync": OTHER}), &may);
+        assert_eq!(sync, json!({"_sync": "-"}));
+
+        let status = json!({"mode": "play", "sync_master": OTHER,
+            "sync_slaves": format!("{MINE},{OTHER}"), "sync_members": OTHER,
+            "sync_member_names": "Theirs"});
+        let out = filter_response(Kind::Plain, status, &may);
+        assert_eq!(out, json!({"mode": "play", "sync_slaves": MINE}));
+    }
+
+    #[test]
+    fn text_scanning_never_panics_on_arbitrary_text() {
+        let mut x: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let atoms = [
+            "/",
+            "//",
+            ":",
+            "://",
+            "http",
+            "file:",
+            "é",
+            "ü/",
+            "\\",
+            "C:",
+            "[",
+            "]",
+            "@",
+            "%",
+            "%3A%2F%2F",
+            "imageproxy/",
+            "10.0.0.1",
+            " ",
+            "a",
+            "€://",
+            ".lan",
+            "?",
+            "(",
+        ];
+        for _ in 0..50_000 {
+            let n = (next() % 10) as usize;
+            let s: String = (0..n)
+                .map(|_| atoms[(next() % atoms.len() as u64) as usize])
+                .collect();
+            let _ = sensitive_value(&s);
+            let _ = filter_response(
+                Kind::Plain,
+                json!({"item_loop": [{"text": s.clone()}], "sync_members": s.clone(),
+                       "sync_member_names": s.clone(), "_sync": s}),
+                &|_| false,
+            );
+        }
     }
 
     #[test]

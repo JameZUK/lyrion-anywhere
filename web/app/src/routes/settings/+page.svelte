@@ -23,6 +23,7 @@
 	let account = $state<auth.Account | null>(null);
 	let setup = $state<auth.TotpSetup | null>(null);
 	let code = $state('');
+	let onPassword = $state('');
 	let offPassword = $state('');
 	let offCode = $state('');
 	let msg = $state('');
@@ -38,12 +39,15 @@
 		void loadAccount();
 	});
 
-	async function beginTotp() {
+	async function beginTotp(e: SubmitEvent) {
+		e.preventDefault();
 		msg = '';
 		try {
-			setup = await session.authed((t) => auth.totpSetup(t));
-		} catch (e) {
-			msg = (e as Error).message;
+			setup = await session.authed((t) => auth.totpSetup(t, onPassword));
+		} catch (err) {
+			msg = err instanceof ApiError && err.status === 401 ? 'Password not right.' : (err as Error).message;
+		} finally {
+			onPassword = '';
 		}
 	}
 	async function confirmTotp(e: SubmitEvent) {
@@ -133,7 +137,10 @@
 		<h3>Two-step verification: {account ? (account.totp_enabled ? 'on' : 'off') : '…'}</h3>
 		{#if account && !account.totp_enabled && !setup}
 			<p class="muted">Ask for a code from an authenticator app at every sign-in.</p>
-			<button class="btn" onclick={beginTotp}>Turn on</button>
+			<form onsubmit={beginTotp} class="inline">
+				<label class="field"><span>Password</span><input type="password" bind:value={onPassword} autocomplete="current-password" required /></label>
+				<button class="btn" type="submit">Turn on</button>
+			</form>
 		{:else if setup}
 			<p>Scan this with your authenticator app, or type the key:</p>
 			<img class="qr" src={qr} alt="QR code for your authenticator app" width="200" height="200" />

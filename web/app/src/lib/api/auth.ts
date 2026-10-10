@@ -102,8 +102,13 @@ export async function logout(token: string): Promise<void> {
 
 export const account = (token: string) => callJson<Account>('/v1/account', { headers: bearer(token) });
 
-export const totpSetup = (token: string) =>
-	callJson<TotpSetup>('/v1/account/totp/setup', { method: 'POST', headers: bearer(token) });
+/** Start two-step setup. The gateway asks for the account password first. */
+export const totpSetup = (token: string, password: string) =>
+	callJson<TotpSetup>('/v1/account/totp/setup', {
+		method: 'POST',
+		headers: { ...bearer(token), 'Content-Type': 'application/json' },
+		body: JSON.stringify({ password }),
+	});
 
 export async function totpConfirm(token: string, code: string): Promise<void> {
 	await callJson('/v1/account/totp/confirm', {

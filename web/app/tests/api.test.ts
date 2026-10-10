@@ -3,7 +3,7 @@ import { RETRY_MS, SessionManager, refused, type AuthApi } from '$lib/api/sessio
 import { Api } from '$lib/api/rpc';
 import { ApiError, callJson, CLIENT_HEADER } from '$lib/api/http';
 import { EventsClient, eventsBackoff, parseEventMessage } from '$lib/api/events';
-import { defaultDeviceName, groupKey, rememberedDevice } from '$lib/api/auth';
+import { defaultDeviceName, groupKey, rememberedDevice, totpSetup } from '$lib/api/auth';
 import type { Session } from '$lib/api/auth';
 
 const sess = (token: string): Session => ({
@@ -55,6 +55,17 @@ describe('http', () => {
 		const e = await callJson('/v1/auth/login').catch((x) => x);
 		expect(e).toBeInstanceOf(ApiError);
 		expect(e).toMatchObject({ status: 401, message: 'bad', totpRequired: true });
+	});
+
+	test('two-step setup sends the account password', async () => {
+		const f = vi.fn(async () => json(200, { secret: 'S', uri: 'otpauth://x', qr_svg: '<svg/>' }));
+		vi.stubGlobal('fetch', f);
+		await totpSetup('t', 'my password');
+		const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe('/v1/account/totp/setup');
+		expect(init.method).toBe('POST');
+		expect(JSON.parse(init.body as string)).toEqual({ password: 'my password' });
+		expect(init.headers).toMatchObject({ Authorization: 'Bearer t', 'Content-Type': 'application/json' });
 	});
 
 	test('a non-JSON error body still gives a clean error', async () => {

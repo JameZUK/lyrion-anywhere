@@ -296,7 +296,9 @@ async fn require_secure_transport(
 }
 
 /// The client's address for rate limiting and audit: the proxy-reported address when the
-/// peer is a trusted proxy, otherwise the peer itself.
+/// peer is a trusted proxy, otherwise the peer itself. IPv6 clients are keyed by their /64,
+/// since one subscriber usually holds a whole /64 and could otherwise rotate addresses to
+/// dodge lockouts.
 fn client_ip(cfg: &Config, peer: SocketAddr, headers: &HeaderMap) -> String {
     let ip = canonical(peer.ip());
     let trusted = ip.is_loopback() || cfg.trusted_proxies.iter().any(|p| canonical(*p) == ip);
@@ -307,9 +309,21 @@ fn client_ip(cfg: &Config, peer: SocketAddr, headers: &HeaderMap) -> String {
             .and_then(|v| v.split(',').next())
         && let Ok(fwd) = first.trim().parse::<IpAddr>()
     {
-        return fwd.to_string();
+        return client_key(canonical(fwd));
     }
-    ip.to_string()
+    client_key(ip)
+}
+
+/// An address as a rate-limit key: IPv4 as is, IPv6 as its /64 prefix.
+fn client_key(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            let prefix = std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0);
+            format!("{prefix}/64")
+        }
+    }
 }
 
 fn canonical(ip: IpAddr) -> IpAddr {
@@ -351,4 +365,23 @@ pub fn random_id() -> String {
 fn secret_eq(a: &str, b: &str) -> bool {
     use subtle::ConstantTimeEq;
     a.len() == b.len() && bool::from(a.as_bytes().ct_eq(b.as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipv6_clients_are_keyed_by_their_64() {
+        let a: IpAddr = "2001:db8:1:2:aaaa::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:1:2:ffff:ffff:ffff:ffff".parse().unwrap();
+        let c: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        assert_eq!(client_key(a), "2001:db8:1:2::/64");
+        assert_eq!(client_key(a), client_key(b));
+        assert_ne!(client_key(a), client_key(c));
+        let v4: IpAddr = "198.51.100.7".parse().unwrap();
+        assert_eq!(client_key(v4), "198.51.100.7");
+        let mapped: IpAddr = "::ffff:198.51.100.7".parse().unwrap();
+        assert_eq!(client_key(canonical(mapped)), "198.51.100.7");
+    }
 }

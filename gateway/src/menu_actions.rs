@@ -327,10 +327,21 @@ pub struct DeviceActions {
     by_cmd: HashMap<Vec<String>, Vec<(Action, Instant)>>,
     order: VecDeque<(Vec<String>, Instant)>,
     len: usize,
+    /// When actions were last added or looked up (for evicting idle devices).
+    last_used: Option<Instant>,
 }
 
 impl DeviceActions {
+    pub fn touch(&mut self, now: Instant) {
+        self.last_used = Some(now);
+    }
+
+    pub fn last_used(&self) -> Option<Instant> {
+        self.last_used
+    }
+
     pub fn add(&mut self, actions: Vec<Action>, now: Instant) {
+        self.touch(now);
         for a in actions {
             let list = self.by_cmd.entry(a.cmd.clone()).or_default();
             if let Some(existing) = list.iter_mut().find(|(x, _)| *x == a) {

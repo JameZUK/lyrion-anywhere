@@ -20,6 +20,8 @@ use crate::accounts::{PlayerScope, Principal, Role};
 use crate::rpc_policy::{self, Caller, Checked, Kind};
 
 const MAX_BODY: usize = 8 * 1024;
+/// Devices whose learned menu actions are kept; beyond this the least recently used go.
+pub const MAX_ACTION_DEVICES: usize = 1000;
 const LMS_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Deserialize)]
@@ -104,16 +106,17 @@ pub async fn rpc(
             if checked.kind == Kind::AppMenu {
                 gw.add_apps(rpc_policy::learn_apps(&result));
             }
-            // Remember image URLs LMS handed out, so their artwork can be fetched later.
+            let filtered = rpc_policy::filter_response(checked.kind, result, &|p| scope.allows(p));
+            // Remember image URLs LMS handed out, so their artwork can be fetched later: only
+            // from image fields of what the client actually receives.
             let mut images = Vec::new();
-            crate::art::learn_images(&result, &mut images);
+            crate::art::learn_images(&filtered, &mut images);
             if !images.is_empty() {
                 let mut known = gw.known_images.lock().unwrap();
                 for url in images {
                     known.insert(url);
                 }
             }
-            let filtered = rpc_policy::filter_response(checked.kind, result, &|p| scope.allows(p));
             // Learn the menu actions this device has now been shown (after filtering, so only
             // what the client actually received can ever be run).
             let offered = crate::menu_actions::learn(&filtered);
@@ -173,14 +176,32 @@ impl crate::Gateway {
     ) {
         let now = std::time::Instant::now();
         let mut all = self.menu_actions.lock().unwrap();
-        // Bound the number of devices tracked: drop the emptiest after expiring old entries.
-        if all.len() > 1000 {
+        all.entry(device).or_default().add(actions, now);
+        // Bound the number of devices tracked: expire old entries, then drop the least
+        // recently used devices.
+        if all.len() > MAX_ACTION_DEVICES {
             for d in all.values_mut() {
                 d.expire(now);
             }
             all.retain(|_, d| !d.is_empty());
         }
-        all.entry(device).or_default().add(actions, now);
+        if all.len() > MAX_ACTION_DEVICES {
+            let mut by_use: Vec<(Option<std::time::Instant>, i64)> = all
+                .iter()
+                .filter(|(id, _)| **id != device)
+                .map(|(id, d)| (d.last_used(), *id))
+                .collect();
+            by_use.sort();
+            let excess = all.len() - MAX_ACTION_DEVICES;
+            for (_, id) in by_use.into_iter().take(excess) {
+                all.remove(&id);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn menu_action_devices(&self) -> Vec<i64> {
+        self.menu_actions.lock().unwrap().keys().copied().collect()
     }
 
     /// A command outside the fixed allow-list: allowed if it is a menu action LMS offered this
@@ -210,6 +231,7 @@ impl crate::Gateway {
         let learned = match all.get_mut(&principal.device_id) {
             Some(d) => {
                 d.expire(now);
+                d.touch(now);
                 &*d
             }
             None => &empty,
@@ -268,5 +290,41 @@ impl crate::Gateway {
             .lock()
             .unwrap()
             .is_none_or(|t| t.elapsed() > Duration::from_secs(60))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::menu_actions::{Action, PValue};
+
+    fn action(n: i64) -> Action {
+        Action {
+            cmd: vec!["someplugin".into(), "items".into()],
+            params: [("item_id".to_string(), PValue::Exact(n.to_string()))].into(),
+            nav: true,
+        }
+    }
+
+    /// The learned-actions map is bounded however many devices fill it, even when none of
+    /// their entries has expired yet: the least recently used devices go.
+    #[test]
+    fn learned_actions_keep_at_most_the_most_recently_used_devices() {
+        let gw = crate::Gateway::new(
+            crate::Config::default(),
+            std::sync::Arc::new(crate::accounts::Accounts::in_memory().unwrap()),
+        );
+        let n = MAX_ACTION_DEVICES as i64 + 200;
+        for d in 0..n {
+            gw.remember_menu_actions(d, vec![action(d)]);
+            // Device 1 keeps being used, so it is never the least recently used.
+            gw.remember_menu_actions(1, vec![action(1)]);
+        }
+        let kept = gw.menu_action_devices();
+        assert_eq!(kept.len(), MAX_ACTION_DEVICES);
+        assert!(kept.contains(&1));
+        assert!(kept.contains(&(n - 1)));
+        assert!(!kept.contains(&0));
+        assert!(!kept.contains(&2));
     }
 }

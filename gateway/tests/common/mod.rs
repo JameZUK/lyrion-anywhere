@@ -73,12 +73,26 @@ pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
             {"id": "f.1", "name": "Station", "image": "https://cdn.example.com/a.jpg", "url": "http://stream.example/x?token=secret"}
         ]}),
         // A context menu, shaped like LMS's track info menu (SlimBrowse).
-        "trackinfo" => json!({"count": 4, "base": {"actions": {}}, "item_loop": [
+        "trackinfo" => json!({"count": 7, "base": {"actions": {}}, "item_loop": [
             {"text": "Similar tracks", "type": "redirect", "actions": {"go": {"cmd": ["audiomuse", "similar_track"], "params": {"track_id": "9"}, "player": 0}}},
             {"text": "Save to Favorites", "actions": {"go": {"cmd": ["jivefavorites", "add"], "params": {"url": "file:///srv/music/x/1.flac", "title": "T"}}}},
             {"text": "Server setting", "actions": {"go": {"cmd": ["pref", "audiodir"], "params": {"value": "/x"}}}},
-            {"text": "Stream link", "actions": {"go": {"cmd": ["remote", "items"], "params": {"item_id": "http://10.0.0.50/x"}}}}
+            {"text": "Stream link", "actions": {"go": {"cmd": ["remote", "items"], "params": {"item_id": "http://10.0.0.50/x"}}}},
+            {"text": "Location: /srv/music/x/1.flac", "style": "itemNoAction"},
+            {"text": "URL: http://10.0.0.10:8200/x", "style": "itemNoAction"},
+            {"text": "Artist: AC/DC", "style": "itemNoAction"}
         ]}),
+        // Free text LMS relays from the library and players: user-controlled.
+        "tracks" => json!({"count": 1, "titles_loop": [
+            {"id": 2, "title": "imageproxy/http%3A%2F%2F10.0.0.1%2Fx/image.png",
+             "artist": "x /imageproxy/http%3A%2F%2F10.0.0.1%2Fy/image.png",
+             "remote_title": "Kitchen imageproxy/http%3A%2F%2F10.0.0.1%2Fz/image.png"}
+        ]}),
+        // Sync groups name every player, permitted or not.
+        "syncgroups" => json!({"syncgroups_loop": [
+            {"sync_members": "aa:bb:cc:dd:ee:01,aa:bb:cc:dd:ee:02", "sync_member_names": "Home One,Home Two"}
+        ]}),
+        "sync" => json!({"_sync": "aa:bb:cc:dd:ee:01,aa:bb:cc:dd:ee:02"}),
         // The home menu: a plugin entry in My Music, and a settings entry.
         "menu" => json!({"count": 3, "item_loop": [
             {"id": "pluginSomePlugin", "node": "myMusic", "text": "Some Plugin", "actions": {"go": {"cmd": ["someplugin", "menu"], "player": 0}}},
