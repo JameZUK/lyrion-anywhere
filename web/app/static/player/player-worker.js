@@ -47,6 +47,7 @@ let outputMode = 'worklet';
 // while the page is in the background, small enough that buffers stay modest.
 const MEDIA_AHEAD_SECS = 8;
 let segmenter = null;
+let mediaVariant = 0; // init-segment variant the browser's self-test accepted
 let mediaWaiting = false; // flushed; waiting for the main thread's new timeline position
 
 const now = () => performance.now();
@@ -69,6 +70,7 @@ onmessage = async (e) => {
   if (msg.cmd === 'start') {
     token = msg.token;
     outputMode = msg.mode === 'media' ? 'media' : 'worklet';
+    mediaVariant = Number.isInteger(msg.variant) ? msg.variant : 0;
     if (msg.port) attachSink(msg.port);
     const wasm = await init();
     wasmMemory = wasm.memory ?? null;
@@ -351,6 +353,7 @@ function mediaTick(output) {
       segmenter.set_rate(rate);
     } else {
       segmenter = new WasmSegmenter(rate);
+      segmenter.set_variant(mediaVariant);
     }
     postMessage({ media: { init: segmenter.init_segment(), span: { at: segmenter.emitted_seconds(), rate } } });
   }

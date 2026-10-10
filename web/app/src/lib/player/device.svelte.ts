@@ -7,6 +7,7 @@ import { detect } from './capabilities';
 import { MediaOutput, Timeline } from './media-output';
 import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
 import { Reporter, buildReport } from './diagnostics';
+import { chooseVariant, loadCached, mediaFormatFor, runSelfTest, saveCached, type SelfTest } from './selftest';
 import { CLIENT_HEADER, bearer } from '$lib/api/http';
 
 export type DeviceState = 'off' | 'starting' | 'connected' | 'reconnecting' | 'stopped' | 'error';
@@ -35,6 +36,11 @@ class DevicePlayer {
 	wasActive = $state(this.#history.active);
 	/** How this device plays, and why (chosen at start). */
 	choice = $state<ModeChoice | null>(null);
+	/** Which media-element variants this browser really plays (see selftest.ts). */
+	selftest = $state<SelfTest | null>(null);
+	#selftestRunning: Promise<void> | null = null;
+	/** The media element failed in this session: use Web Audio until the page reloads. */
+	#mediaBroken = false;
 	/** Called when the player is connected (the app selects it). */
 	onConnected: ((mac: string) => void) | null = null;
 
@@ -82,11 +88,61 @@ class DevicePlayer {
 			active: this.#worker ? this.choice : null,
 			device: { state: this.state, mac: this.mac, name: this.name, detail: { ...this.detail } as Record<string, unknown> },
 			log: this.log,
+			selftest: this.selftest,
 			page: {
 				visibility: document.visibilityState,
 				standalone: typeof matchMedia === 'function' && matchMedia('(display-mode: standalone)').matches,
 			},
 		});
+	}
+
+	/** Run (or load) the media-element self-test in the background; no user gesture needed. */
+	prepare(): Promise<void> {
+		this.#selftestRunning ??= (async () => {
+			const caps = detect();
+			const fmt = mediaFormatFor(caps);
+			if (!fmt) return;
+			const cached = loadCached(caps.userAgent);
+			if (cached && cached.source === fmt.source && cached.mime === fmt.mime) {
+				this.selftest = cached;
+				return;
+			}
+			try {
+				const pkg = (await import(/* @vite-ignore */ asset('pkg/anywhere_wasm.js'))) as {
+					default: () => Promise<unknown>;
+					WasmSegmenter: new (rate: number) => never;
+				};
+				await pkg.default();
+				const t = await runSelfTest(fmt.source, fmt.mime, caps.userAgent, (rate) => new pkg.WasmSegmenter(rate));
+				saveCached(t);
+				this.selftest = t;
+				const ok = t.results.filter((r) => r.ok).map((r) => `${r.rate / 1000}k/${r.code.toString(16)}`);
+				this.#note(`media self-test: ${ok.length ? `plays ${ok.join(', ')}` : 'no variant played'}`);
+			} catch (e) {
+				this.#note(`media self-test failed: ${(e as Error).message}`);
+			}
+		})();
+		return this.#selftestRunning;
+	}
+
+	/** The automatic choice, corrected by the self-test and by failures this session. */
+	#decide(): { choice: ModeChoice; variant: number } {
+		const choice = chooseMode(detect(), detectEnvironment(), loadPreference());
+		if (choice.mode !== 'media') return { choice, variant: 0 };
+		if (this.#mediaBroken) {
+			return { choice: { mode: 'worklet', source: null, reason: 'The media element failed earlier in this session; using Web Audio.' }, variant: 0 };
+		}
+		const v = chooseVariant(this.selftest);
+		if (!this.selftest) {
+			return { choice: { mode: 'worklet', source: null, reason: 'Media element not tested yet in this browser; using Web Audio for now.' }, variant: 0 };
+		}
+		if (!v.media) {
+			return { choice: { mode: 'worklet', source: null, reason: 'This browser did not play the media-element test streams; using Web Audio.' }, variant: 0 };
+		}
+		if (!v.highRates) {
+			return { choice: { mode: 'worklet', source: null, reason: 'This browser plays the media element only up to 48 kHz; using Web Audio so every track plays.' }, variant: 0 };
+		}
+		return { choice, variant: v.code };
 	}
 
 	/** Report this browser's diagnostics now (e.g. after signing in). */
@@ -151,14 +207,19 @@ class DevicePlayer {
 		this.wasActive = false;
 		this.#watchLifecycle();
 		try {
-			const choice = chooseMode(detect(), detectEnvironment(), loadPreference());
+			const { choice, variant } = this.#decide();
 			this.choice = choice;
 			this.#note(`playback: ${MODE_LABELS[choice.mode]}. ${choice.reason}`);
 			this.#configureAudioSession();
 			let port: MessagePort | undefined;
 			if (choice.mode === 'media' && choice.source) {
 				// The element's play() runs first, inside the tap.
-				const out = new MediaOutput({ source: choice.source, mime: choice.mime ?? undefined, note: (m) => this.#note(m) });
+				const out = new MediaOutput({
+					source: choice.source,
+					mime: choice.mime ?? undefined,
+					note: (m) => this.#note(m),
+					onFail: (why) => void this.#mediaFailed(why),
+				});
 				out.onDrained = () => {
 					this.#reportPosition();
 					if (!this.#drainedSent) this.#worker?.postMessage({ cmd: 'media-drained' });
@@ -182,7 +243,7 @@ class DevicePlayer {
 				this.#note(`worker error: ${e.message}`);
 				this.state = 'error';
 			};
-			w.postMessage({ cmd: 'start', token: session.token, port, mode: choice.mode }, port ? [port] : []);
+			w.postMessage({ cmd: 'start', token: session.token, port, mode: choice.mode, variant }, port ? [port] : []);
 			this.#history.active = true;
 			if (port) w.postMessage({ cmd: 'rate-ready', rate: 44100 });
 			// Pass renewed access tokens to the worker; stop if signed out.
@@ -194,6 +255,21 @@ class DevicePlayer {
 			this.#note(`could not start: ${(e as Error).message}`);
 			this.state = 'error';
 			this.stop('error');
+		}
+	}
+
+	/** The media element failed: switch this device to Web Audio and carry on. */
+	async #mediaFailed(why: string) {
+		if (this.#mediaBroken || !this.#media) return;
+		this.#mediaBroken = true;
+		this.#note(`media element failed (${why}); switching to Web Audio`);
+		this.stop();
+		await this.start();
+		// Without a fresh tap the browser may hold audio back: resume on the next one.
+		if (this.#ctx && this.#ctx.state !== 'running') {
+			this.#note('tap anywhere to resume audio');
+			const resume = () => void this.#ctx?.resume().then(() => this.#note('audio resumed'));
+			document.addEventListener('pointerdown', resume, { once: true });
 		}
 	}
 

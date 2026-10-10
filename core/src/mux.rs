@@ -14,10 +14,73 @@ const BITS: u32 = 24;
 const CHANNELS: u32 = 2;
 const FULL_SCALE: f32 = 8_388_607.0; // 2^23 - 1
 
+/// How the init segment is written. Browsers' MP4 parsers differ (notably for sample rates
+/// above 65,535 Hz, which don't fit the classic sample entry), so the host can pick the
+/// variant a browser's self-test accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Variant {
+    pub brand: Brand,
+    pub high_rate: HighRate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Brand {
+    #[default]
+    Iso6,
+    Iso5,
+    Mp42,
+}
+
+/// How a sample rate above 65,535 Hz is written in the sample entry (the FLAC
+/// configuration always carries the true rate).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HighRate {
+    /// The rate field is 0.
+    #[default]
+    Zero,
+    /// A version-1 sample entry with an `srat` box holding the true rate (ISO/IEC 14496-12).
+    Srat,
+    /// The largest integer divisor of the rate that fits (e.g. 96 kHz → 48 kHz).
+    Divisor,
+}
+
+impl Variant {
+    /// Compact code for hosts: brand in bits 0–3, high-rate style in bits 4–7.
+    pub fn from_code(code: u32) -> Variant {
+        Variant {
+            brand: match code & 0xf {
+                1 => Brand::Iso5,
+                2 => Brand::Mp42,
+                _ => Brand::Iso6,
+            },
+            high_rate: match (code >> 4) & 0xf {
+                1 => HighRate::Srat,
+                2 => HighRate::Divisor,
+                _ => HighRate::Zero,
+            },
+        }
+    }
+
+    pub fn code(self) -> u32 {
+        let b = match self.brand {
+            Brand::Iso6 => 0,
+            Brand::Iso5 => 1,
+            Brand::Mp42 => 2,
+        };
+        let h = match self.high_rate {
+            HighRate::Zero => 0,
+            HighRate::Srat => 1,
+            HighRate::Divisor => 2,
+        };
+        b | (h << 4)
+    }
+}
+
 /// Builds the init and media segments for one continuous stream of stereo PCM.
 #[derive(Debug, Clone)]
 pub struct Segmenter {
     rate: u32,
+    variant: Variant,
     /// Interleaved stereo samples waiting to fill a whole FLAC frame.
     pending: Vec<f32>,
     /// Media timeline position, in frames at `rate`, of the next segment.
@@ -33,6 +96,7 @@ impl Segmenter {
     pub fn new(rate: u32) -> Self {
         Segmenter {
             rate: rate.clamp(1, 655_350),
+            variant: Variant::default(),
             pending: Vec::new(),
             decode_time: 0,
             sequence: 0,
@@ -131,7 +195,12 @@ impl Segmenter {
 
     /// `ftyp` + `moov` for the current rate.
     pub fn init_segment(&self) -> Vec<u8> {
-        init_segment(self.rate)
+        init_segment(self.rate, self.variant)
+    }
+
+    /// Write future init segments in this variant.
+    pub fn set_variant(&mut self, v: Variant) {
+        self.variant = v;
     }
 }
 
@@ -278,11 +347,13 @@ fn cat(parts: &[&[u8]]) -> Vec<u8> {
 
 const MATRIX: [u32; 9] = [0x0001_0000, 0, 0, 0, 0x0001_0000, 0, 0, 0, 0x4000_0000];
 
-fn init_segment(rate: u32) -> Vec<u8> {
-    let ftyp = bx(
-        b"ftyp",
-        &cat(&[b"iso6", &0u32.to_be_bytes(), b"iso6", b"mp41"]),
-    );
+fn init_segment(rate: u32, variant: Variant) -> Vec<u8> {
+    let brand: &[u8; 4] = match variant.brand {
+        Brand::Iso6 => b"iso6",
+        Brand::Iso5 => b"iso5",
+        Brand::Mp42 => b"mp42",
+    };
+    let ftyp = bx(b"ftyp", &cat(&[brand, &0u32.to_be_bytes(), brand, b"mp41"]));
 
     let mut mvhd = Vec::new();
     mvhd.extend([0u8; 8]); // creation, modification
@@ -340,15 +411,32 @@ fn init_segment(rate: u32) -> Vec<u8> {
     let mut dfla_body = vec![0x80, 0, 0, 34]; // last block, STREAMINFO, length 34
     dfla_body.extend(streaminfo(rate));
     let dfla = full(b"dfLa", 0, 0, &dfla_body);
+    let high = rate > 65_535;
+    let v1 = high && variant.high_rate == HighRate::Srat;
     let mut entry = Vec::new();
     entry.extend([0u8; 6]);
     entry.extend(1u16.to_be_bytes()); // data reference index
-    entry.extend([0u8; 8]);
+    entry.extend((if v1 { 1u16 } else { 0 }).to_be_bytes()); // entry version
+    entry.extend([0u8; 6]);
     entry.extend((CHANNELS as u16).to_be_bytes());
     entry.extend((BITS as u16).to_be_bytes()); // must match STREAMINFO (browsers check)
     entry.extend([0u8; 4]);
-    let rate_fixed = if rate <= 65_535 { rate << 16 } else { 0 };
-    entry.extend(rate_fixed.to_be_bytes());
+    let field_rate = if !high {
+        rate
+    } else {
+        match variant.high_rate {
+            HighRate::Zero => 0,
+            // Largest integer divisor of the rate that fits in 16 bits.
+            HighRate::Srat | HighRate::Divisor => (2..=16)
+                .map(|d| rate / d)
+                .find(|r| *r <= 65_535 && r * (rate / r) == rate)
+                .unwrap_or(0),
+        }
+    };
+    entry.extend((field_rate << 16).to_be_bytes());
+    if v1 {
+        entry.extend(full(b"srat", 0, 0, &rate.to_be_bytes()));
+    }
     entry.extend(dfla);
     let flac_entry = bx(b"fLaC", &entry);
     let stsd = full(b"stsd", 0, 0, &cat(&[&1u32.to_be_bytes(), &flac_entry]));
@@ -504,6 +592,83 @@ mod tests {
         let packed = u64::from_be_bytes(info[10..18].try_into().unwrap());
         assert_eq!(depth as u64, ((packed >> 36) & 0x1f) + 1);
         assert_eq!(depth, 24);
+    }
+
+    #[test]
+    fn variants_write_the_documented_fields() {
+        let entry_at = |init: &[u8]| init.windows(4).position(|w| w == b"fLaC").unwrap() + 4;
+        let rate_field = |init: &[u8]| {
+            let at = entry_at(init) + 24;
+            u32::from_be_bytes(init[at..at + 4].try_into().unwrap()) >> 16
+        };
+        let mut s = Segmenter::new(96_000);
+        assert_eq!(
+            rate_field(&s.init_segment()),
+            0,
+            "default: 0 for high rates"
+        );
+        s.set_variant(Variant {
+            brand: Brand::Iso5,
+            high_rate: HighRate::Srat,
+        });
+        let init = s.init_segment();
+        assert_eq!(&init[8..12], b"iso5");
+        assert_eq!(
+            u16::from_be_bytes([init[entry_at(&init) + 8], init[entry_at(&init) + 9]]),
+            1,
+            "entry version 1"
+        );
+        assert_eq!(rate_field(&init), 48_000);
+        let srat = init
+            .windows(4)
+            .position(|w| w == b"srat")
+            .expect("srat box");
+        assert_eq!(
+            u32::from_be_bytes(init[srat + 8..srat + 12].try_into().unwrap()),
+            96_000
+        );
+        s.set_variant(Variant {
+            brand: Brand::Mp42,
+            high_rate: HighRate::Divisor,
+        });
+        let init = s.init_segment();
+        assert_eq!(&init[8..12], b"mp42");
+        assert_eq!(rate_field(&init), 48_000);
+        assert!(!init.windows(4).any(|w| w == b"srat"));
+        // Rates that fit are always written as they are.
+        let mut s = Segmenter::new(44_100);
+        s.set_variant(Variant {
+            brand: Brand::Iso6,
+            high_rate: HighRate::Srat,
+        });
+        assert_eq!(rate_field(&s.init_segment()), 44_100);
+        assert!(!s.init_segment().windows(4).any(|w| w == b"srat"));
+        for code in 0..64 {
+            let v = Variant::from_code(code);
+            assert_eq!(Variant::from_code(v.code()), v);
+        }
+        assert_eq!(Variant::from_code(0), Variant::default());
+    }
+
+    #[cfg(feature = "player")]
+    #[test]
+    fn every_variant_still_decodes_bit_exactly() {
+        for code in [0x00, 0x01, 0x02, 0x10, 0x11, 0x20] {
+            let rate = 96_000;
+            let mut s = Segmenter::new(rate);
+            s.set_variant(Variant::from_code(code));
+            let pcm = sine(BLOCK * 2, rate, 0);
+            let mut file = s.init_segment();
+            s.push(&pcm);
+            file.extend(s.flush().unwrap());
+            let (got_rate, got) = decode_all(file, "mp4");
+            assert_eq!(got_rate, rate, "variant {code:#x}");
+            assert_eq!(
+                &got[..pcm.len()],
+                &expected_i24(&pcm)[..],
+                "variant {code:#x}"
+            );
+        }
     }
 
     #[test]

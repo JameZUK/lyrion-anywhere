@@ -14,6 +14,8 @@ export interface MediaOutputOptions {
 	mime?: string;
 	/** Called with short status notes for the connection log. */
 	note?: (msg: string) => void;
+	/** Called once if the element can't play the stream (the caller falls back). */
+	onFail?: (why: string) => void;
 	makeAudio?: () => HTMLAudioElement;
 	ctors?: { managed?: SourceCtor; classic?: SourceCtor };
 }
@@ -29,6 +31,7 @@ export class MediaOutput {
 	#queue: Uint8Array[] = [];
 	#closed = false;
 	#note: (m: string) => void;
+	#failed = false;
 	/** Called when the element has played everything appended and is waiting for more. */
 	onDrained: (() => void) | null = null;
 
@@ -61,21 +64,33 @@ export class MediaOutput {
 		a.play().catch((e: Error) => this.#note(`media element did not start: ${e.message}`));
 		await new Promise<void>((resolve, reject) => {
 			ms.addEventListener('sourceopen', () => resolve(), { once: true });
-			setTimeout(() => reject(new Error('media source did not open')), 10_000);
+			setTimeout(() => reject(new Error('media source did not open')), 4_000);
 		});
 		const sb = ms.addSourceBuffer(this.opts.mime ?? MEDIA_TYPE);
 		sb.mode = 'segments';
 		sb.addEventListener('updateend', () => this.#pump());
-		sb.addEventListener('error', () => this.#note('media buffer error'));
+		sb.addEventListener('error', () => {
+			this.#note('media buffer error');
+			this.#fail('the browser rejected the audio');
+		});
 		this.#sb = sb;
 		ms.addEventListener('startstreaming', () => this.#note('media source: start streaming'));
 		ms.addEventListener('endstreaming', () => this.#note('media source: end streaming'));
-		a.addEventListener('error', () => this.#note(`media element error ${a.error?.code ?? ''}: ${a.error?.message ?? ''}`));
+		a.addEventListener('error', () => {
+			this.#note(`media element error ${a.error?.code ?? ''}: ${a.error?.message ?? ''}`);
+			this.#fail(`media error ${a.error?.code ?? ''}`);
+		});
 		ms.addEventListener('sourceclose', () => this.#note('media source closed'));
 		a.addEventListener('waiting', () => {
 			if (this.ahead < 0.1) this.onDrained?.();
 		});
 		this.#pump();
+	}
+
+	#fail(why: string) {
+		if (this.#failed || this.#closed) return;
+		this.#failed = true;
+		this.opts.onFail?.(why);
 	}
 
 	/** Queue a segment (init or media) for appending, in order. */

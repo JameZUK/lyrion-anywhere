@@ -14,6 +14,8 @@ export interface ReportInput {
 	device: { state: string; mac: string; name: string; detail: Record<string, unknown> };
 	log: string[];
 	page: { visibility: string; standalone: boolean };
+	/** Which media-element variants the browser accepted. */
+	selftest?: unknown;
 }
 
 const LOG_LINES = 60;
@@ -34,6 +36,7 @@ export function buildReport(i: ReportInput, now = new Date()) {
 		playback: { preference: i.preference, planned: i.planned, active: i.active },
 		device: i.device,
 		page: i.page,
+		selftest: i.selftest ?? null,
 		log: i.log.slice(0, LOG_LINES),
 	};
 }

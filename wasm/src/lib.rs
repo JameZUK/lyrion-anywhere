@@ -173,6 +173,12 @@ impl WasmSegmenter {
         self.inner.set_rate(rate);
     }
 
+    /// Init segment variant (see `anywhere_core::mux::Variant::from_code`).
+    pub fn set_variant(&mut self, code: u32) {
+        self.inner
+            .set_variant(anywhere_core::mux::Variant::from_code(code));
+    }
+
     pub fn reset(&mut self) {
         self.inner.reset();
     }
