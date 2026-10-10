@@ -203,7 +203,7 @@ fn decoder_survives_random_and_truncated_streams() {
 #[test]
 fn player_input_is_bounded_by_back_pressure_signal() {
     // The host must stop reading when wants_stream_data() is false; verify the signal flips
-    // before memory use grows past the high-water mark.
+    // before memory use grows past its bound.
     let mut p = Player::new(cfg());
     let s = Strm {
         command: b's',
@@ -232,6 +232,7 @@ fn player_input_is_bounded_by_back_pressure_signal() {
     while p.wants_stream_data() {
         p.on_stream_data(&chunk, 1);
         pushed += chunk.len();
-        assert!(pushed <= anywhere_core::player::INPUT_HIGH_WATER + chunk.len());
+        // Unprobed input may grow to the probe cap (headers can be large), never beyond.
+        assert!(pushed <= anywhere_core::decode::PROBE_MAX_BYTES + chunk.len());
     }
 }

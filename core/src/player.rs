@@ -12,7 +12,7 @@
 
 use std::collections::VecDeque;
 
-use crate::decode::{DecodeStatus, InputBuffer, StreamDecoder};
+use crate::decode::{DecodeStatus, InputBuffer, PROBE_MAX_BYTES, StreamDecoder};
 use crate::proto::{ClientMsg, DEVICE_ID_SOFTWARE, Helo, ServerFrameReader, ServerMsg, Stat, Strm};
 
 /// Stop reading the network stream once this many compressed bytes are waiting.
@@ -243,10 +243,19 @@ impl Player {
     }
 
     /// Whether the host should keep reading the network stream (back-pressure).
+    ///
+    /// While the decoder is still probing the stream's headers (which can carry several MiB
+    /// of artwork) it keeps reading up to [`PROBE_MAX_BYTES`], so a probe that needs more
+    /// than [`INPUT_HIGH_WATER`] can't stall; beyond that the track fails cleanly.
     pub fn wants_stream_data(&self) -> bool {
-        self.track
-            .as_ref()
-            .is_some_and(|t| t.input.unread() < INPUT_HIGH_WATER)
+        self.track.as_ref().is_some_and(|t| {
+            let limit = if t.decoder.is_probing() && !t.decode_done {
+                PROBE_MAX_BYTES
+            } else {
+                INPUT_HIGH_WATER
+            };
+            t.input.unread() < limit
+        })
     }
 
     /// Do decode work, autostart, timed resume, heartbeats and underrun detection.
@@ -929,7 +938,21 @@ mod tests {
         let mut p = Player::new(cfg());
         p.on_control_data(&strm(b's', b'1', b'p', 0), 0).unwrap();
         assert!(p.wants_stream_data());
+        p.on_stream_data(&wav(44_100, (INPUT_HIGH_WATER + (2 << 20)) / 4), 1);
+        p.tick(2); // probed: now decoding
+        assert!(!p.wants_stream_data());
+    }
+
+    #[test]
+    fn probing_reads_past_the_input_limit_up_to_a_cap() {
+        let mut p = Player::new(cfg());
+        p.on_control_data(&strm(b's', b'1', b'p', 0), 0).unwrap();
         p.on_stream_data(&vec![0u8; INPUT_HIGH_WATER], 1);
+        assert!(
+            p.wants_stream_data(),
+            "headers may be larger than the input limit"
+        );
+        p.on_stream_data(&vec![0u8; PROBE_MAX_BYTES - INPUT_HIGH_WATER], 2);
         assert!(!p.wants_stream_data());
     }
 }

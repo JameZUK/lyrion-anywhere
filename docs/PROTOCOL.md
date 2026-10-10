@@ -95,8 +95,12 @@ The gateway replies with a text greeting:
 
 **Client → gateway:**
 - **Binary messages:** the client → server Slimproto byte stream, with any chunking.
-  - A new session must start with HELO carrying the assigned MAC.
+  - A new session must start with HELO carrying the assigned MAC and device ID 12 (software player).
   - A resumed session must not send HELO again.
+  - Only the frames a software player sends are accepted: HELO, STAT, RESP, META, DSCO, `BYE!`, and SETD as the answer to an LMS name query (`setd` id 0 with no data), one answer per query.
+  - The gateway rewrites two things before LMS sees them:
+    - HELO capabilities keep only well-formed tokens: printable ASCII, comma-separated, each a bare codec name (`flc`) or `Key=value`, at most 64 tokens and 1 KiB in all;
+    - a SETD name that is empty, longer than 64 characters, has control characters, or looks like a URL or path is replaced by the device's name.
 - **Text messages:** only the stream acknowledgement `{"ack":{"stream":n,"bytes":b}}`. Send one at least every 1 MiB received on stream `n`, and once straight after resuming.
 
 **Gateway → client:**
@@ -109,6 +113,8 @@ Any of these ends the whole session, not just the socket:
 - a first frame other than HELO;
 - a HELO with another MAC;
 - a second HELO;
+- a HELO with a device ID other than 12;
+- any client opcode outside the list above (IR, BUTN, KNOB, BODY, UREQ, SHUT, …), a SETD LMS didn't ask for, or a malformed STAT or DSCO;
 - a frame over 16 KiB;
 - any text message other than a well-formed ack.
 
@@ -131,8 +137,9 @@ When the socket drops (anything other than a policy close):
 2. While detached, the gateway reports to LMS on the player's behalf every second, and answers LMS status polls. It replays the client's last STAT with refreshed timestamps: elapsed time advances by wall time if the client was playing, and stays frozen if it was paused. Without this, LMS drops a silent player after about 15 s.
 3. Frames LMS sends meanwhile are kept in a numbered log, together with recently sent frames, which may have been lost in flight. On resume the gateway re-sends every frame after the client's `received` count, in order.
 4. The log is bounded (default 1 MiB). If frames the client missed have been discarded, or the client claims frames that were never sent, the resume is refused (4404) and the client starts afresh.
-5. A resume while the old socket is still open replaces it. On mobile, dead sockets often linger.
-6. A new (non-resume) session for the same device ends any previous session, so LMS never sees two players with one MAC.
+5. A resume while the old socket is still open replaces it (close 4000). On mobile, dead sockets often linger. From that moment nothing the old socket sends reaches LMS.
+6. A client that can't keep up with LMS's frames (its outgoing queue fills) has its socket closed with 1013 and is treated exactly like a dropped connection: heartbeats and the grace period start, and it can resume.
+7. A new (non-resume) session for the same device ends any previous session, so LMS never sees two players with one MAC.
 
 Recommended client backoff: about 0.5, 1, 2 and 4 s, then every 5 s, with ±20 % jitter. Stop resuming shortly before the grace expires, then start a new session.
 
@@ -144,6 +151,10 @@ Recommended client backoff: about 0.5, 1, 2 and 4 s, then every 5 s, with ±20 %
   - **Resume:** a broken download resumes with `?offset=k`, where `k` is the number of bytes the client has.
   - **Supersede:** a newer request for the same stream supersedes an older one.
 - **Pacing:** the gateway reads from LMS at most one **replay window** (default 4 MiB) beyond the client's last ack. Network buffers therefore can't hold more than the window, and a resume always lands inside it.
+- **Ending:** a response ends (and its LMS connection is dropped) when:
+  - the session ends (for example, the device is revoked);
+  - LMS sends nothing for 60 s (the response fails, so the client sees a network error);
+  - the client has a full window unacknowledged and sends no ack for 60 s. It can fetch again with `?offset=`.
 - **Responses:**
 
   | Status | Meaning |

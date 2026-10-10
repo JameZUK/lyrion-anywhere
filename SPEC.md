@@ -135,8 +135,10 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
 
 1. The client opens the WebSocket and sends an access token as its first message. Unauthenticated sockets are closed after 5 s.
 2. The gateway opens a dedicated TCP connection to `127.0.0.1:3483` for that session. Slimproto frames then pass through unchanged as binary WebSocket messages.
-3. The gateway inspects and enforces three message types:
-   - **HELO:** the MAC must equal the one assigned to that device (a locally administered `02:…` address). The gateway also enforces the capability policy (codecs, max sample rate, model name).
+3. The gateway inspects and enforces these message types:
+   - **Client frames:** only what a software player sends reaches LMS: HELO, STAT, RESP, META, DSCO, `BYE!`, and SETD only as the answer to an LMS name query. IR, BUTN, KNOB, BODY, UREQ, SHUT and anything else end the session as a policy violation.
+   - **HELO:** the MAC must equal the one assigned to that device (a locally administered `02:…` address), and the device ID must be 12 (software player). Capabilities are reduced to well-formed `key=value`/codec tokens (printable ASCII, bounded length).
+   - **SETD (name):** a name that looks like a URL or path, or is too long, is replaced by the device's name.
    - **strm:** when `server_ip` is 0 or LMS's own address, the client fetches audio via `GET /v1/stream/{session}`. The gateway replays the request to `127.0.0.1:9000` only if the path is `/stream.mp3?player=<that session's MAC>`.
    - **serv:** dropped, so a device can't be redirected to another server.
 4. **Resume** (implemented; full detail in `docs/PROTOCOL.md`):
@@ -145,6 +147,8 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
    - **Redelivery:** frames for the client are numbered and kept in a bounded log. On resume, the client says how many it received and everything after that is re-sent, which covers frames lost in flight.
    - **Stream resume:** downloads resume by byte offset. The client acknowledges received bytes, and the gateway never reads more than one replay window (4 MiB) beyond the last ack. A resume therefore always falls inside the window, and LMS isn't drained ahead of time.
    - **One session per device:** a new session for a device ends its previous one.
+   - **Slow clients:** a socket whose outgoing queue fills is closed (1013) and handled like a dropped connection, so the client resumes.
+   - **Stream lifetime:** ending a session stops its stream relay at once. A relay also ends after 60 s without data from LMS, or 60 s without an ack while the client's window is full.
 
 ### 5.2 Control (`POST /v1/rpc`, `WS /v1/events`)
 
