@@ -183,18 +183,20 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
 ### 5.4 Web app hosting
 
 - The gateway serves the built web app (static files) at `/`.
-- It sets strict security headers: CSP with no inline script, `frame-ancestors 'none'`, `Referrer-Policy`, and `Permissions-Policy`. HSTS is set via the proxy.
+- It sets strict security headers on every response (refusals included): CSP with no inline script, `frame-ancestors 'none'`, `Referrer-Policy`, and a `Permissions-Policy` that turns off camera, microphone, geolocation, payment, USB and similar features (fullscreen and autoplay stay available to the app itself). HSTS is set via the proxy.
+- API responses (`/v1/`, except artwork, which has its own policy) carry `Cache-Control: no-store`. Signing out sends `Clear-Site-Data: "cache"`; offline downloads (IndexedDB) are kept.
 
 ### 5.5 Deployment
 
 - The gateway trusts `X-Forwarded-For`/`-Proto` only from configured proxy addresses. It rejects non-TLS requests from remote addresses.
+- It reads `X-Forwarded-For` from the right, skipping trusted proxies, so the client address can't be chosen by the client even when a proxy appends to the header.
 - Example Caddy config: `music.example.com { reverse_proxy 127.0.0.1:9443 }`.
 - nginx is a first-class target and gets a tested example in the docs. The example:
   - passes `Upgrade`/`Connection` headers for the two WebSocket paths;
   - turns off `proxy_buffering` for `/v1/stream` and `/v1/download`;
   - sets long `proxy_read_timeout` values for WebSockets.
 - **Behind Cloudflare:**
-  - The gateway can trust `CF-Connecting-IP` when configured to.
+  - The gateway can trust `CF-Connecting-IP` when configured to (`--client-ip-header CF-Connecting-IP`, or the plugin's *Client address header* setting). It is honoured only on requests from a trusted proxy.
   - Cloudflare's proxy supports WebSockets but adds per-request latency. The resume buffer (§5.1) absorbs this.
   - Cloudflare's terms restrict serving large volumes of non-HTML media through its proxy. The docs will advise a DNS-only (unproxied) record for heavy streaming/download use.
 - **Proxy on another host or VLAN:** the gateway listens on a LAN address instead of localhost, with an allow-list of proxy source addresses. The docs describe the firewall rule needed.
@@ -370,9 +372,9 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
   - **Codes:** single use, with ±30 s tolerance. Wrong codes count towards lockouts.
   - **Turning it off** needs the password and a current code.
   - **Admin:** can reset it for a user. Requiring it for all users is a possible later policy option.
-- **Device sessions:** every browser login or app pairing creates a device record with its own assigned player MAC. At most 20 active devices per user; another sign-in revokes the least recently seen.
+- **Device sessions:** every browser login or app pairing creates a device record with its own assigned player MAC (a browser signing in again reuses its device). At most 20 active devices per user; another sign-in revokes the least recently seen. At most 10 new devices per user an hour. A revoked device's LMS player is removed (`client forget`), and the record is deleted after 30 days. Device names are cleaned (letters, digits, spaces and basic punctuation only; no markup, control or bidi characters; 64 characters at most).
 - **Refresh tokens:**
-  - long-lived and rotated on every use; reusing an old one revokes the device (theft detection);
+  - long-lived and rotated on every use; reusing an old one revokes the device (theft detection). Within 60 s of a use, while no replacement has been used, the old one may be presented again (a lost response, or two tabs refreshing together) and gets a further replacement; the first replacement used supersedes the others. See `docs/PROTOCOL.md` for the trade-off;
   - in the browser, held in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/v1/auth`;
   - in native apps, held in the Keystore/Keychain.
 - **Access tokens:** last 15 minutes. They are opaque random values: the gateway keeps them in memory (hashed) mapped to user, device, role and MAC, and clients keep them in memory only. The gateway is the only verifier, so signed tokens would add a format to get wrong and gain nothing. Revocation is instant.
@@ -387,7 +389,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 | Threat | Mitigation |
 |---|---|
 | Internet scanner hits LMS bugs (9.2.0 path traversal, `readdirectory`, XSS: CVE-2026-50230…50235) | LMS ports never exposed; gateway forwards only allow-listed commands and path patterns |
-| Password guessing | Per-IP (IPv6 per /64) and per-user rate limits, counted before the password is checked; at most 4 concurrent password checks; exponential lockout; TOTP; generic error messages |
+| Password guessing | Per-IP (IPv6 per /64) hard lockout, and a per-user limit that refuses the addresses that failed and holds all others to 2 attempts a minute (so guessing from many addresses gains little, and nobody can lock a user out); counted before the password is checked; at most 4 concurrent password checks; exponential lockout; TOTP; generic error messages |
 | Stolen device / token | Per-device revocation; refresh-token rotation with reuse detection; 15-min access tokens |
 | Impersonating another player | HELO MAC must match device's assigned MAC; stream path must match session's MAC |
 | Reading arbitrary files | Track IDs resolved only through the library by the plugin; `file://` URLs rejected in control commands |

@@ -31,6 +31,12 @@ for my $case (
 	[pref_download_cache_mb => '8'],
 	[pref_download_cache_mb => '2048; x'],
 	[pref_download_cache_mb => "2048\nx"],
+	[pref_client_ip_header => 'CF Connecting IP'],
+	[pref_client_ip_header => 'X-Forwarded-For'],
+	[pref_client_ip_header => 'Host'],
+	[pref_client_ip_header => '<b>x</b>'],
+	[pref_client_ip_header => "CF-Connecting-IP\r\nX-Evil: 1"],
+	[pref_client_ip_header => 'a' x 65],
 ) {
 	my ($o, $e) = $clean->({ @$case });
 	ok(!exists $o->{ $case->[0] } && @$e, "rejected $case->[0] = $case->[1]");
@@ -45,6 +51,15 @@ for my $case (
 	($o, $e) = $clean->({ pref_download_cache_mb => '', pref_transcode => '' });
 	is($o->{pref_download_cache_mb}, 2048, 'empty cache size: the default');
 	is($o->{pref_transcode}, 0, 'transcoding unticked');
+}
+
+{
+	my ($o, $e) = $clean->({ pref_client_ip_header => ' CF-Connecting-IP ' });
+	is_deeply($e, [], 'client address header: valid');
+	is($o->{pref_client_ip_header}, 'CF-Connecting-IP', 'trimmed');
+	($o, $e) = $clean->({ pref_client_ip_header => '' });
+	is_deeply($e, [], 'client address header: empty is fine');
+	is($o->{pref_client_ip_header}, '', 'none');
 }
 
 is(Plugins::LyrionAnywhere::Settings::escape_html(q{<script>"x"&'y'</script>}),
@@ -83,8 +98,10 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 	my $exe = "$Slim::Utils::Prefs::DIR/gw";
 	open my $fh, '>', $exe or die; close $fh; chmod 0755, $exe;
 	my %good = (listen => '10.0.0.20:9443', public_url => 'https://music.example.com',
-	            trusted_proxies => '10.0.0.10, 10.0.0.11', admin_port => 9446, gateway_path => $exe);
+	            trusted_proxies => '10.0.0.10, 10.0.0.11', admin_port => 9446, gateway_path => $exe,
+	            client_ip_header => 'CF-Connecting-IP');
 	my %bad = (
+		client_ip_header => ['X-Forwarded-For', 'a b', "x\ny"],
 		listen          => ['0.0.0.0', 'localhost:9443'],
 		public_url      => ['javascript:alert(1)', 'https://music.example.com/x'],
 		trusted_proxies => ['evil', ':::'],
@@ -99,7 +116,7 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 			is($prefs->get($name), $good{$name}, "pref $name: '$v' refused, old value kept");
 		}
 	}
-	for my $name (qw(public_url trusted_proxies gateway_path)) {
+	for my $name (qw(public_url trusted_proxies gateway_path client_ip_header)) {
 		$prefs->set($name, '');
 		is($prefs->get($name), '', "pref $name can be cleared");
 	}

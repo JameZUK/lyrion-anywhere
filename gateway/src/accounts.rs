@@ -5,13 +5,22 @@
 //! - Access tokens (15 min) are random and held only in memory, hashed; revocation is
 //!   immediate.
 //! - Refresh tokens are random, stored hashed, and rotate on every use. Presenting an
-//!   already-used refresh token means it was copied, so the whole device is revoked.
+//!   already-used refresh token means it was copied, so the whole device is revoked (with
+//!   a short grace for lost responses and concurrent refreshes; see [`Accounts::refresh`]).
 //! - Each device has its own player MAC (locally administered, `02:4c:41:…`).
-//! - Failed logins and pairing attempts are rate-limited per key with escalating lockouts.
+//! - Failed logins and pairing attempts are rate-limited with escalating lockouts:
+//!   - per client address, a hard lock;
+//!   - per username (and for pairing, across all clients), a soft one: once it trips, the
+//!     clients that failed are refused, and the others share a small budget of
+//!     [`THROTTLED_ATTEMPTS`] a minute. So an attacker can't lock a user out from
+//!     elsewhere, and spreading guesses over many addresses doesn't buy more of them.
+//!
 //!   An attempt is counted before its password is checked, so parallel guesses can't get
 //!   past the limit, and at most [`HASH_PERMITS`] password checks run at once.
 //! - Each user has at most [`MAX_DEVICES_PER_USER`] devices; signing in another revokes the
-//!   least recently seen.
+//!   least recently seen. At most [`NEW_DEVICES_PER_HOUR`] new devices a user an hour (a
+//!   browser signing in again reuses its device). Revoked devices' LMS players are
+//!   forgotten, and their rows pruned after [`REVOKED_DEVICE_RETENTION`].
 //! - Optional two-step verification (TOTP, RFC 6238) per user: once enabled, a login needs a
 //!   current code as well as the password. Codes are single use, and wrong codes count
 //!   towards the same lockouts as wrong passwords.
@@ -59,6 +68,23 @@ pub const MAX_DEVICES_PER_USER: usize = 20;
 /// Rate-limit entries kept (per username and per client address). Expired ones go first,
 /// then the oldest unlocked ones.
 pub const LIMITS_CAP: usize = 10_000;
+/// While a username (or pairing) is throttled, attempts allowed per [`THROTTLE_WINDOW`] from
+/// clients that haven't failed for it, across all of them.
+pub const THROTTLED_ATTEMPTS: u32 = 2;
+pub const THROTTLE_WINDOW: Duration = Duration::from_secs(60);
+/// Failing clients remembered per throttled username.
+const FAILED_CLIENTS_CAP: usize = 1000;
+/// New devices (sign-ins without a reusable device, pairings) per user per hour.
+pub const NEW_DEVICES_PER_HOUR: i64 = 10;
+/// Revoked devices are kept this long (for the audit trail), then deleted.
+pub const REVOKED_DEVICE_RETENTION: Duration = Duration::from_secs(30 * 24 * 3600);
+/// Siblings one refresh token may have (lost responses and concurrent refreshes).
+const MAX_REFRESH_RETRIES: i64 = 8;
+/// Revoked devices' players waiting to be forgotten by LMS (beyond this, oldest dropped).
+const FORGET_QUEUE_CAP: usize = 1000;
+/// A device name that has nothing usable left after cleaning.
+pub const DEFAULT_DEVICE_NAME: &str = "Browser";
+pub const MAX_DEVICE_NAME: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -228,6 +254,9 @@ impl From<rusqlite::Error> for AuthError {
 struct AccessEntry {
     principal: Principal,
     expires: Instant,
+    /// The refresh token minted with this access token: if that token is superseded (see
+    /// [`Accounts::refresh`]), this access token dies with it.
+    refresh: [u8; 32],
 }
 
 struct Lock {
@@ -237,6 +266,11 @@ struct Lock {
     lockouts: u32,
     /// Attempts being checked right now: they count towards the limit until they finish.
     in_flight: u32,
+    /// Soft keys (per username, pairing): the clients that failed while counting. They are
+    /// refused while the key is throttled; other clients share [`THROTTLED_ATTEMPTS`].
+    failed_clients: HashSet<String>,
+    budget_start: Instant,
+    budget_used: u32,
 }
 
 impl Lock {
@@ -247,6 +281,9 @@ impl Lock {
             locked_until: None,
             lockouts: 0,
             in_flight: 0,
+            failed_clients: HashSet::new(),
+            budget_start: now,
+            budget_used: 0,
         }
     }
 
@@ -254,11 +291,26 @@ impl Lock {
         if now.duration_since(self.window_start) > FAILURE_WINDOW {
             self.failures = 0;
             self.window_start = now;
+            if !self.locked(now) {
+                self.failed_clients.clear();
+            }
         }
     }
 
     fn locked(&self, now: Instant) -> bool {
         self.locked_until.is_some_and(|u| u > now)
+    }
+
+    /// Too many failures (or attempts in flight) to let just anyone try.
+    fn throttled(&self, now: Instant) -> bool {
+        self.locked(now) || self.failures + self.in_flight >= MAX_FAILURES
+    }
+
+    /// How long until this key stops refusing, for `Retry-After`.
+    fn retry_after(&self, now: Instant) -> Duration {
+        self.locked_until
+            .filter(|u| *u > now)
+            .map_or(Duration::from_secs(1), |u| u - now)
     }
 
     /// Worth keeping: something is pending, locked, or still counting.
@@ -306,28 +358,58 @@ impl Drop for HashPermit<'_> {
 /// busy, storage error), it counts as neither.
 struct Attempt<'a> {
     accounts: &'a Accounts,
+    /// Hard keys: refused outright once locked.
     keys: Vec<String>,
+    /// A soft key and the client making the attempt (see [`Accounts::begin_attempt`]).
+    soft: Option<(String, String)>,
     done: bool,
 }
 
 impl Attempt<'_> {
+    fn all_keys(&self) -> impl Iterator<Item = &String> {
+        self.keys.iter().chain(self.soft.as_ref().map(|(k, _)| k))
+    }
+
+    fn release(&self, limits: &mut HashMap<String, Lock>) {
+        for k in self.all_keys() {
+            if let Some(l) = limits.get_mut(k) {
+                l.in_flight = l.in_flight.saturating_sub(1);
+            }
+        }
+    }
+
     fn failed(mut self) {
         self.done = true;
         let mut limits = self.accounts.limits.lock().unwrap();
         let now = Instant::now();
-        for k in &self.keys {
-            if let Some(l) = limits.get_mut(k) {
-                l.in_flight = l.in_flight.saturating_sub(1);
-            }
+        self.release(&mut limits);
+        for k in self.all_keys() {
             record_failure_in(&mut limits, k, now);
+        }
+        if let Some((k, client)) = &self.soft
+            && let Some(l) = limits.get_mut(k)
+            && l.failed_clients.len() < FAILED_CLIENTS_CAP
+        {
+            l.failed_clients.insert(client.clone());
         }
     }
 
+    /// Clears the client's own record. A soft key stays locked if it is (the attacker's
+    /// failures still count), but this client is no longer one that failed.
     fn succeeded(mut self) {
         self.done = true;
         let mut limits = self.accounts.limits.lock().unwrap();
+        self.release(&mut limits);
         for k in &self.keys {
             limits.remove(k);
+        }
+        if let Some((k, client)) = &self.soft
+            && let Some(l) = limits.get_mut(k)
+        {
+            l.failed_clients.remove(client);
+            if !l.locked(Instant::now()) {
+                l.failures = 0;
+            }
         }
     }
 }
@@ -338,11 +420,7 @@ impl Drop for Attempt<'_> {
             return;
         }
         let mut limits = self.accounts.limits.lock().unwrap();
-        for k in &self.keys {
-            if let Some(l) = limits.get_mut(k) {
-                l.in_flight = l.in_flight.saturating_sub(1);
-            }
-        }
+        self.release(&mut limits);
     }
 }
 
@@ -403,6 +481,8 @@ pub struct Accounts {
     password_checks: AtomicU64,
     /// A real argon2id hash, verified against for unknown usernames.
     dummy_hash: String,
+    /// Player MACs of revoked devices, for the gateway to have LMS forget.
+    forget: Mutex<std::collections::VecDeque<String>>,
 }
 
 fn now_secs() -> i64 {
@@ -439,8 +519,43 @@ fn valid_username(u: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
 }
 
-fn valid_device_name(n: &str) -> bool {
-    !n.trim().is_empty() && n.chars().count() <= 64 && !n.chars().any(char::is_control)
+/// A device (player) name safe to show anywhere and hand to LMS: letters of any script,
+/// digits, spaces and `. , - _ ' ’ ( ) &`, with combining accents after a letter. Anything
+/// else (markup, controls, bidi and other format characters such as U+202E or U+200B,
+/// symbols) is removed, runs of whitespace become one space, and the result is cut to
+/// [`MAX_DEVICE_NAME`] characters. Nothing left: [`DEFAULT_DEVICE_NAME`].
+pub fn clean_device_name(raw: &str) -> String {
+    clean_name(raw).unwrap_or_else(|| DEFAULT_DEVICE_NAME.to_string())
+}
+
+/// [`clean_device_name`] without the default: `None` if nothing usable is left.
+pub fn clean_name(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut count = 0;
+    let mut space = false;
+    for c in raw.chars() {
+        if c.is_whitespace() {
+            space = count > 0;
+            continue;
+        }
+        let combining = ('\u{300}'..='\u{36f}').contains(&c);
+        let ok = c.is_alphanumeric() || ".,-_'’()&".contains(c) || (combining && count > 0);
+        if !ok {
+            continue;
+        }
+        let need = if space && !combining { 2 } else { 1 };
+        if count + need > MAX_DEVICE_NAME {
+            break;
+        }
+        if space && !combining {
+            out.push(' ');
+            count += 1;
+        }
+        space = false;
+        out.push(c);
+        count += 1;
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// Pairing codes: 10 characters from an unambiguous alphabet (~50 bits), easy to type.
@@ -503,6 +618,7 @@ impl Accounts {
             },
             password_checks: AtomicU64::new(0),
             dummy_hash: hash_password(&new_secret())?,
+            forget: Mutex::new(Default::default()),
         })
     }
 
@@ -639,7 +755,8 @@ impl Accounts {
 
     /// Check a username/password and issue tokens for a device: `device_id` reuses one of
     /// the user's own existing devices (a browser logging in again), otherwise a new one is
-    /// created. Rate-limited per username and per `client` (e.g. IP address).
+    /// created (its name cleaned by [`clean_device_name`]). Rate-limited per `client` (e.g.
+    /// IP address, a hard lock) and per username (a soft one: see the module notes).
     pub fn login(
         &self,
         username: &str,
@@ -652,16 +769,9 @@ impl Accounts {
         // A name that can't exist gets no rate-limit entry of its own (it would only grow
         // the table), but still counts against the client.
         let known_form = valid_username(username);
-        let mut keys = vec![format!("client:{client}")];
-        if known_form {
-            keys.push(format!("user:{username}"));
-        }
-        let attempt = self.begin_attempt(keys)?;
-        if !valid_device_name(device_name) {
-            return Err(AuthError::BadInput(
-                "device name must be 1–64 printable characters",
-            ));
-        }
+        let client_key = format!("client:{client}");
+        let soft = known_form.then(|| (format!("user:{username}"), client_key.clone()));
+        let attempt = self.begin_attempt(vec![client_key], soft)?;
         if !known_form {
             attempt.failed();
             self.audit("login.failed", None, None, client);
@@ -743,13 +853,12 @@ impl Accounts {
     }
 
     /// Redeem a pairing code (single use) for a new device's tokens.
+    /// Pairing is rate-limited per client (hard) and across all clients (soft), since codes
+    /// aren't tied to a username an attacker would have to name.
     pub fn pair(&self, code: &str, device_name: &str, client: &str) -> Result<Tokens, AuthError> {
-        let attempt = self.begin_attempt(vec![format!("client:{client}")])?;
-        if !valid_device_name(device_name) {
-            return Err(AuthError::BadInput(
-                "device name must be 1–64 printable characters",
-            ));
-        }
+        let client_key = format!("client:{client}");
+        let soft = Some(("pairing".to_string(), client_key.clone()));
+        let attempt = self.begin_attempt(vec![client_key], soft)?;
         let normalised: String = code
             .chars()
             .filter(|c| !c.is_whitespace() && *c != '-')
@@ -779,7 +888,7 @@ impl Accounts {
                 return Err(AuthError::Invalid);
             }
         };
-        drop(attempt);
+        attempt.succeeded();
         let disabled: i64 = self.db.lock().unwrap().query_row(
             "SELECT disabled FROM users WHERE id = ?1",
             [user],
@@ -795,15 +904,30 @@ impl Accounts {
         Ok(t)
     }
 
-    /// Rotate a refresh token. Replaying a used one revokes the device, except straight after
-    /// its use while its replacement is still unused (see `REUSE_GRACE_SECS`).
+    /// Rotate a refresh token. Every token is used once; each replacement records the token
+    /// it replaced (its parent).
+    ///
+    /// - An unused token is marked used and replaced. Its *siblings* (other replacements of
+    ///   the same parent, from the grace rule below) are superseded: marked used, with no
+    ///   replacement of their own, and their access tokens dropped. Presenting one later is
+    ///   theft.
+    /// - A used token presented again within [`REUSE_GRACE_SECS`] of its use, while none of
+    ///   its replacements has been used: a lost response (a phone suspended mid-request) or
+    ///   a concurrent refresh (two tabs). Another replacement is issued *alongside* the
+    ///   first, which stays valid, so whichever one the client ends up keeping works.
+    /// - Any other used token (too late, or a replacement already used, or superseded): two
+    ///   parties hold tokens for this device, so the device is revoked.
+    ///
+    /// The trade-off: a thief replaying a copied token within the grace window also gets a
+    /// valid replacement. The first of the two to be used supersedes the other, and the
+    /// loser presenting theirs revokes the device for both (see docs/PROTOCOL.md).
     pub fn refresh(&self, refresh_token: &str) -> Result<Tokens, AuthError> {
         self.refresh_at(refresh_token, now_secs())
     }
 
-    /// One transaction under one lock: look up, mark used, mint the replacement and record
-    /// it as the successor. A concurrent refresh of the same token therefore always sees
-    /// either an unused token or a used one with its successor recorded.
+    /// One transaction under one lock: look up, mark used, supersede siblings, mint the
+    /// replacement and record its parent. A concurrent refresh of the same token therefore
+    /// always sees either an unused token or a used one with its replacement recorded.
     fn refresh_at(&self, refresh_token: &str, now: i64) -> Result<Tokens, AuthError> {
         let h = sha256(refresh_token).to_vec();
         type Row = (i64, i64, i64, Option<i64>, Option<Vec<u8>>);
@@ -811,40 +935,41 @@ impl Accounts {
         let tx = db.transaction()?;
         let row: Option<Row> = tx
             .query_row(
-                "SELECT device_id, expires_at, used, used_at, successor
+                "SELECT device_id, expires_at, used, used_at, parent
                  FROM refresh_tokens WHERE token_hash = ?1",
                 [&h],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()?;
-        let Some((device, expires, used, used_at, successor)) = row else {
+        let Some((device, expires, used, used_at, parent)) = row else {
             return Err(AuthError::Invalid);
         };
         if used != 0 {
-            // The response with the new token never arrived: the client still has this one.
-            // Swap the unused replacement for a fresh one. The replacement is kept as a used
-            // token with no successor (a tombstone), so if it turns up later, two parties
-            // held tokens for this device: theft. Likewise if it had been used already.
-            if let (Some(at), Some(next)) = (used_at, successor)
-                && (0..=REUSE_GRACE_SECS).contains(&(now - at))
-            {
-                let dropped = tx.execute(
-                    "UPDATE refresh_tokens SET used = 1, used_at = ?2, successor = NULL
-                     WHERE token_hash = ?1 AND used = 0",
-                    params![next, now],
-                )?;
-                if dropped == 1 {
-                    let minted = mint(&tx, device, now)?;
-                    tx.execute(
-                        "UPDATE refresh_tokens SET successor = ?1 WHERE token_hash = ?2",
-                        params![sha256(&minted.refresh).to_vec(), h],
-                    )?;
-                    tx.commit()?;
-                    let t = self.activate(minted);
-                    drop(db);
-                    self.audit("refresh.retried", None, Some(device), "lost response");
-                    return Ok(t);
+            let (children, children_used): (i64, i64) = tx.query_row(
+                "SELECT COUNT(*), COALESCE(SUM(used), 0) FROM refresh_tokens WHERE parent = ?1",
+                [&h],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let in_grace = used_at.is_some_and(|at| (0..=REUSE_GRACE_SECS).contains(&(now - at)));
+            if in_grace && children > 0 && children_used == 0 {
+                if children >= MAX_REFRESH_RETRIES {
+                    return Err(AuthError::Invalid);
                 }
+                let minted = mint(&tx, device, now)?;
+                tx.execute(
+                    "UPDATE refresh_tokens SET parent = ?1 WHERE token_hash = ?2",
+                    params![h, sha256(&minted.refresh).to_vec()],
+                )?;
+                tx.commit()?;
+                let t = self.activate(minted);
+                drop(db);
+                self.audit(
+                    "refresh.retried",
+                    None,
+                    Some(device),
+                    "lost response or concurrent refresh",
+                );
+                return Ok(t);
             }
             drop(tx);
             drop(db);
@@ -862,12 +987,35 @@ impl Accounts {
         if n == 0 {
             return Err(AuthError::Invalid);
         }
+        // This replacement won: its unused siblings can only be in another party's hands now.
+        let mut superseded: Vec<Vec<u8>> = vec![];
+        if let Some(p) = &parent {
+            let mut st = tx.prepare(
+                "SELECT token_hash FROM refresh_tokens
+                 WHERE parent = ?1 AND token_hash != ?2 AND used = 0",
+            )?;
+            superseded = st
+                .query_map(params![p, h], |r| r.get(0))?
+                .collect::<Result<_, _>>()?;
+            drop(st);
+            tx.execute(
+                "UPDATE refresh_tokens SET used = 1, used_at = ?3
+                 WHERE parent = ?1 AND token_hash != ?2 AND used = 0",
+                params![p, h, now],
+            )?;
+        }
         let minted = mint(&tx, device, now)?;
         tx.execute(
-            "UPDATE refresh_tokens SET successor = ?1 WHERE token_hash = ?2",
-            params![sha256(&minted.refresh).to_vec(), h],
+            "UPDATE refresh_tokens SET parent = ?1 WHERE token_hash = ?2",
+            params![h, sha256(&minted.refresh).to_vec()],
         )?;
         tx.commit()?;
+        if !superseded.is_empty() {
+            self.access
+                .lock()
+                .unwrap()
+                .retain(|_, e| !superseded.iter().any(|s| s[..] == e.refresh[..]));
+        }
         // Still under the database lock, so a revocation can't slip in between.
         Ok(self.activate(minted))
     }
@@ -1106,14 +1254,16 @@ impl Accounts {
         })
     }
 
-    /// Check a signed-in user's own password (for account changes), rate-limited per user.
+    /// Check a signed-in user's own password (for account changes), rate-limited per user
+    /// with a lock of its own: only the user's own devices can trip it, and sign-in failures
+    /// (which anyone can cause) don't block it.
     fn confirm_password(
         &self,
         user: i64,
         username: &str,
         password: &str,
     ) -> Result<Attempt<'_>, AuthError> {
-        let attempt = self.begin_attempt(vec![format!("user:{username}")])?;
+        let attempt = self.begin_attempt(vec![format!("confirm:{username}")], None)?;
         let hash: String = self.db.lock().unwrap().query_row(
             "SELECT password_hash FROM users WHERE id = ?1",
             [user],
@@ -1370,13 +1520,25 @@ impl Accounts {
     }
 
     /// Revoke a device: its refresh tokens are deleted and its access tokens dropped.
+    /// Its player MAC is queued for LMS to forget (see [`Accounts::take_players_to_forget`]).
     pub fn revoke_device(&self, device_id: i64) -> Result<bool, AuthError> {
         let n = {
             let db = self.db.lock().unwrap();
             let n = db.execute(
-                "UPDATE devices SET revoked = 1 WHERE id = ?1 AND revoked = 0",
-                [device_id],
+                "UPDATE devices SET revoked = 1, revoked_at = ?2 WHERE id = ?1 AND revoked = 0",
+                params![device_id, now_secs()],
             )?;
+            if n > 0 {
+                let mac: String =
+                    db.query_row("SELECT mac FROM devices WHERE id = ?1", [device_id], |r| {
+                        r.get(0)
+                    })?;
+                let mut q = self.forget.lock().unwrap();
+                if q.len() >= FORGET_QUEUE_CAP {
+                    q.pop_front();
+                }
+                q.push_back(mac);
+            }
             db.execute(
                 "DELETE FROM refresh_tokens WHERE device_id = ?1",
                 [device_id],
@@ -1447,10 +1609,30 @@ impl Accounts {
     }
 
     /// Create a device for a user, first revoking the least recently seen ones beyond
-    /// [`MAX_DEVICES_PER_USER`]. Returns the new id and the revoked ones.
+    /// [`MAX_DEVICES_PER_USER`]. Returns the new id and the revoked ones. Refused (as
+    /// `Locked`) beyond [`NEW_DEVICES_PER_HOUR`]: each device becomes an LMS player, so
+    /// signing in over and over must not be able to flood LMS with them.
     fn create_device(&self, user: i64, name: &str) -> Result<(i64, Vec<i64>), AuthError> {
+        let now = now_secs();
         let active: Vec<i64> = {
             let db = self.db.lock().unwrap();
+            // Revoked devices are kept a while for the audit trail, then deleted.
+            db.execute(
+                "DELETE FROM devices WHERE revoked = 1 AND revoked_at < ?1",
+                [now - REVOKED_DEVICE_RETENTION.as_secs() as i64],
+            )?;
+            let (recent, oldest): (i64, Option<i64>) = db.query_row(
+                "SELECT COUNT(*), MIN(created_at) FROM devices
+                 WHERE user_id = ?1 AND created_at > ?2",
+                params![user, now - 3600],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            if recent >= NEW_DEVICES_PER_HOUR {
+                drop(db);
+                let wait = oldest.map_or(3600, |t| (t + 3600 - now).clamp(1, 3600));
+                self.audit("device.rate_limited", None, None, &format!("user {user}"));
+                return Err(AuthError::Locked(Duration::from_secs(wait as u64)));
+            }
             let mut st = db.prepare(
                 "SELECT id FROM devices WHERE user_id = ?1 AND revoked = 0
                  ORDER BY COALESCE(last_seen, created_at), id",
@@ -1480,7 +1662,7 @@ impl Accounts {
             if taken.is_none() {
                 db.execute(
                     "INSERT INTO devices (user_id, name, mac, created_at) VALUES (?1, ?2, ?3, ?4)",
-                    params![user, name.trim(), mac, now_secs()],
+                    params![user, clean_device_name(name), mac, now_secs()],
                 )?;
                 return Ok(db.last_insert_rowid());
             }
@@ -1505,6 +1687,7 @@ impl Accounts {
             AccessEntry {
                 principal: m.principal.clone(),
                 expires: now + ACCESS_TTL,
+                refresh: sha256(&m.refresh),
             },
         );
         Tokens {
@@ -1521,25 +1704,47 @@ impl Accounts {
     // Rate limiting and audit
     // -----------------------------------------------------------------------
 
-    /// Start an attempt: refused if any key is locked, or if its failures plus the attempts
-    /// already in flight reach the limit (so parallel guesses can't all be checked).
-    fn begin_attempt(&self, keys: Vec<String>) -> Result<Attempt<'_>, AuthError> {
+    /// Start an attempt. Each hard key refuses it once locked, or once its failures plus the
+    /// attempts already in flight reach the limit (so parallel guesses can't all be
+    /// checked). The soft key `(key, client)`, once throttled the same way, refuses only
+    /// clients that failed for it; other clients share [`THROTTLED_ATTEMPTS`] per
+    /// [`THROTTLE_WINDOW`], so someone else's failures can't lock a user out, and many
+    /// addresses don't buy many guesses.
+    fn begin_attempt(
+        &self,
+        keys: Vec<String>,
+        soft: Option<(String, String)>,
+    ) -> Result<Attempt<'_>, AuthError> {
         let mut limits = self.limits.lock().unwrap();
         let now = Instant::now();
         for k in &keys {
             if let Some(l) = limits.get_mut(k) {
                 l.roll_window(now);
-                if let Some(until) = l.locked_until
-                    && until > now
-                {
-                    return Err(AuthError::Locked(until - now));
-                }
-                if l.failures + l.in_flight >= MAX_FAILURES {
-                    return Err(AuthError::Locked(Duration::from_secs(1)));
+                if l.throttled(now) {
+                    return Err(AuthError::Locked(l.retry_after(now)));
                 }
             }
         }
-        for k in &keys {
+        if let Some((k, client)) = &soft
+            && let Some(l) = limits.get_mut(k)
+        {
+            l.roll_window(now);
+            if l.throttled(now) {
+                if l.failed_clients.contains(client) {
+                    return Err(AuthError::Locked(l.retry_after(now)));
+                }
+                if now.duration_since(l.budget_start) >= THROTTLE_WINDOW {
+                    l.budget_start = now;
+                    l.budget_used = 0;
+                }
+                if l.budget_used >= THROTTLED_ATTEMPTS {
+                    let wait = (l.budget_start + THROTTLE_WINDOW).saturating_duration_since(now);
+                    return Err(AuthError::Locked(wait.max(Duration::from_secs(1))));
+                }
+                l.budget_used += 1;
+            }
+        }
+        for k in keys.iter().chain(soft.as_ref().map(|(k, _)| k)) {
             if !limits.contains_key(k) {
                 make_room(&mut limits, now);
             }
@@ -1551,8 +1756,14 @@ impl Accounts {
         Ok(Attempt {
             accounts: self,
             keys,
+            soft,
             done: false,
         })
+    }
+
+    /// Player MACs of devices revoked since the last call, for LMS to forget.
+    pub fn take_players_to_forget(&self) -> Vec<String> {
+        self.forget.lock().unwrap().drain(..).collect()
     }
 
     /// Verify a password against a stored hash, within the concurrency limit.
@@ -1664,7 +1875,8 @@ fn mint(db: &Connection, device: i64, now: i64) -> Result<Minted, AuthError> {
         username: row.1,
         role: Role::parse(&row.2).unwrap_or(Role::Listener),
         device_id: row.3,
-        device_name: row.4,
+        // Cleaned again: names stored before cleaning existed may hold anything.
+        device_name: clean_device_name(&row.4),
         mac,
     };
     let access = new_secret();
@@ -1732,6 +1944,22 @@ fn migrate(db: &Connection) -> Result<(), AuthError> {
                DEFAULT 'original,mp3,opus';
              PRAGMA user_version = 5;",
         )?;
+    }
+    if version < 6 {
+        // Refresh tokens record their parent, so a token can have several replacements
+        // (lost responses, concurrent refreshes); existing chains carry over. Revoked devices
+        // record when, so they can be pruned (those revoked before now count from now).
+        db.execute_batch(&format!(
+            "ALTER TABLE refresh_tokens ADD COLUMN parent BLOB;
+             UPDATE refresh_tokens SET parent = (
+               SELECT p.token_hash FROM refresh_tokens p
+               WHERE p.successor = refresh_tokens.token_hash);
+             CREATE INDEX IF NOT EXISTS refresh_tokens_parent ON refresh_tokens(parent);
+             ALTER TABLE devices ADD COLUMN revoked_at INTEGER;
+             UPDATE devices SET revoked_at = {} WHERE revoked = 1;
+             PRAGMA user_version = 6;",
+            now_secs()
+        ))?;
     }
     Ok(())
 }
@@ -1832,8 +2060,11 @@ mod tests {
         );
     }
 
+    /// Changed deliberately (finding M3): failures spread over many addresses throttle the
+    /// username, but no longer lock its owner out. The addresses that failed are refused;
+    /// the others share a small budget, which the right password from a clean address uses.
     #[test]
-    fn repeated_failures_lock_the_username_even_from_new_clients() {
+    fn repeated_failures_throttle_the_username_across_clients() {
         let a = store();
         for i in 0..MAX_FAILURES {
             assert_eq!(
@@ -1848,13 +2079,125 @@ mod tests {
                 Err(AuthError::Invalid)
             );
         }
-        // Locked: even the right password from a fresh address is refused for now.
+        // The addresses that failed are refused for this user, even with the right password.
         assert!(matches!(
-            a.login("alice", PW, None, "x", None, "ip-new"),
+            a.login("alice", PW, None, "x", None, "ip0"),
             Err(AuthError::Locked(_))
         ));
+        // A fresh address still gets in with the right password.
+        assert!(a.login("alice", PW, None, "x", None, "ip-new").is_ok());
         // Other users are unaffected.
         assert!(a.login("admin", PW, None, "x", None, "ip-other").is_ok());
+    }
+
+    /// Regression (M3): five failures for a username from one address locked every address
+    /// out of it, the right password included, for up to a day: anyone could lock anyone.
+    #[test]
+    fn an_attacker_cannot_lock_a_user_out_from_elsewhere() {
+        let a = store();
+        // The attacker locks alice from address A, again and again (escalating).
+        for _ in 0..3 * MAX_FAILURES {
+            let _ = a.login("alice", "wrong password!", None, "x", None, "198.51.100.66");
+        }
+        assert!(matches!(
+            a.login("alice", PW, None, "x", None, "198.51.100.66"),
+            Err(AuthError::Locked(_))
+        ));
+        // Alice, from address B, signs in.
+        let t = a.login("alice", PW, None, "Phone", None, "203.0.113.20");
+        assert!(t.is_ok(), "{t:?}");
+        // Pairing codes likewise: one address's wrong guesses don't stop another's code.
+        let code = a.create_pairing_code("alice").unwrap();
+        for _ in 0..3 * MAX_FAILURES {
+            let _ = a.pair("AAAAAAAAAA", "x", "198.51.100.67");
+        }
+        assert!(matches!(
+            a.pair(&code, "x", "198.51.100.67"),
+            Err(AuthError::Locked(_))
+        ));
+        assert!(a.pair(&code, "Tablet", "203.0.113.20").is_ok());
+    }
+
+    /// M3: spreading guesses over many addresses buys no more than the shared budget.
+    #[test]
+    fn many_addresses_cannot_exceed_the_guess_budget() {
+        let a = store();
+        let before = a.password_checks();
+        let mut invalid = 0;
+        for i in 0..200 {
+            if a.login(
+                "alice",
+                "wrong password!",
+                None,
+                "x",
+                None,
+                &format!("bot{i}"),
+            ) == Err(AuthError::Invalid)
+            {
+                invalid += 1;
+            }
+        }
+        let budget = MAX_FAILURES + THROTTLED_ATTEMPTS;
+        assert_eq!(
+            invalid, budget as usize,
+            "guesses checked in the first minute"
+        );
+        assert_eq!(a.password_checks() - before, u64::from(budget));
+        // Within the same minute, even a fresh address waits: the budget is shared.
+        assert!(matches!(
+            a.login("alice", PW, None, "x", None, "fresh"),
+            Err(AuthError::Locked(d)) if d <= THROTTLE_WINDOW && d >= Duration::from_secs(1)
+        ));
+        // A minute later the budget refills (two more checks), and the right password works.
+        {
+            let mut limits = a.limits.lock().unwrap();
+            let l = limits.get_mut("user:alice").unwrap();
+            l.budget_start -= THROTTLE_WINDOW;
+        }
+        assert!(a.login("alice", PW, None, "x", None, "fresh").is_ok());
+        // Pairing: the same shared budget across all addresses.
+        let before = a.password_checks();
+        let mut invalid = 0;
+        for i in 0..200 {
+            if a.pair("AAAAAAAAAA", "x", &format!("pbot{i}")) == Err(AuthError::Invalid) {
+                invalid += 1;
+            }
+        }
+        assert_eq!(invalid, budget as usize);
+        assert_eq!(
+            a.password_checks(),
+            before,
+            "pairing never hashes passwords"
+        );
+    }
+
+    #[test]
+    fn the_soft_lock_still_escalates_and_refuses_failed_clients() {
+        let a = store();
+        for _ in 0..MAX_FAILURES {
+            let _ = a.login("alice", "wrong password!", None, "x", None, "a1");
+        }
+        let first = match a.login("alice", PW, None, "x", None, "a1") {
+            Err(AuthError::Locked(d)) => d,
+            other => panic!("{other:?}"),
+        };
+        assert!(first > Duration::from_secs(60), "{first:?}");
+        // A budgeted failure from another address counts too, and that address is refused
+        // from then on.
+        assert_eq!(
+            a.login("alice", "wrong password!", None, "x", None, "a2"),
+            Err(AuthError::Invalid)
+        );
+        assert!(matches!(
+            a.login("alice", PW, None, "x", None, "a2"),
+            Err(AuthError::Locked(_))
+        ));
+        // A success from a clean address doesn't lift the lock for the failed ones.
+        assert!(a.login("alice", PW, None, "x", None, "a3").is_ok());
+        assert!(matches!(
+            a.login("alice", PW, None, "x", None, "a1"),
+            Err(AuthError::Locked(_))
+        ));
     }
 
     #[test]
@@ -1935,24 +2278,129 @@ mod tests {
         assert_eq!(a.list_devices().unwrap().len(), 1);
     }
 
-    /// Regression: the grace path deleted the replacement it discarded, so when a thief
-    /// replayed a copied token within the grace window and the real client then presented
-    /// its (discarded) replacement, that looked merely invalid and the thief kept the device.
+    /// Regression (L4): a second refresh of the same token within the grace window (two tabs
+    /// restoring at once) discarded the first replacement, so a client that kept that one
+    /// revoked its own device on its next refresh.
     #[test]
-    fn a_discarded_replacement_coming_back_is_theft() {
+    fn concurrent_refreshes_keep_both_replacements_usable() {
+        for keep_first in [true, false] {
+            let a = store();
+            let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+            let now = now_secs();
+            let b = a.refresh_at(&t.refresh, now).unwrap();
+            let c = a.refresh_at(&t.refresh, now + 2).unwrap();
+            let (kept, other) = if keep_first { (b, c) } else { (c, b) };
+            let next = a.refresh_at(&kept.refresh, now + 600);
+            assert!(next.is_ok(), "keep_first={keep_first}: {next:?}");
+            assert!(a.device_active(t.principal.device_id));
+            assert!(a.authenticate(&next.unwrap().access).is_some());
+            // The one not kept is superseded: its access token is dropped at once...
+            assert!(a.authenticate(&other.access).is_none());
+            // ...and presenting it later means another party had it.
+            assert_eq!(
+                a.refresh_at(&other.refresh, now + 700),
+                Err(AuthError::Reused(t.principal.device_id))
+            );
+            assert!(a.list_devices().unwrap().is_empty());
+        }
+    }
+
+    /// The trade-off of the grace rule: a thief replaying a copied token within the window
+    /// gets a replacement too, but as soon as both sides use theirs the device is revoked,
+    /// and the side that uses its replacement first cuts the other's access off at once.
+    #[test]
+    fn a_thief_replaying_within_grace_is_caught_when_both_use_their_tokens() {
         let a = store();
         let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
         let now = now_secs();
         let legit = a.refresh_at(&t.refresh, now).unwrap(); // the client gets S
         let thief = a.refresh_at(&t.refresh, now + 5).unwrap(); // a copy of T, within grace
-        assert_eq!(
-            a.refresh_at(&legit.refresh, now + 10),
-            Err(AuthError::Reused(t.principal.device_id)),
-            "the real client presenting S must revoke the device"
-        );
+        // The owner refreshes with S: the thief's sibling is superseded, access dropped.
+        let owner = a.refresh_at(&legit.refresh, now + 10).unwrap();
         assert!(a.authenticate(&thief.access).is_none());
-        assert_eq!(a.refresh(&thief.refresh), Err(AuthError::Invalid));
+        // The thief tries its token: theft, the device is revoked for everyone.
+        assert_eq!(
+            a.refresh_at(&thief.refresh, now + 20),
+            Err(AuthError::Reused(t.principal.device_id))
+        );
+        assert!(a.authenticate(&owner.access).is_none());
+        assert_eq!(a.refresh(&owner.refresh), Err(AuthError::Invalid));
         assert!(a.list_devices().unwrap().is_empty());
+    }
+
+    /// Presenting the original after one of its replacements was used is theft, whichever.
+    #[test]
+    fn the_parent_after_any_replacement_was_used_is_theft() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let now = now_secs();
+        let _b = a.refresh_at(&t.refresh, now).unwrap();
+        let c = a.refresh_at(&t.refresh, now + 1).unwrap();
+        a.refresh_at(&c.refresh, now + 2).unwrap();
+        assert!(matches!(
+            a.refresh_at(&t.refresh, now + 3),
+            Err(AuthError::Reused(_))
+        ));
+        assert!(a.list_devices().unwrap().is_empty());
+    }
+
+    #[test]
+    fn grace_retries_are_bounded() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let now = now_secs();
+        for i in 0..MAX_REFRESH_RETRIES {
+            a.refresh_at(&t.refresh, now + i).unwrap();
+        }
+        assert_eq!(
+            a.refresh_at(&t.refresh, now + MAX_REFRESH_RETRIES),
+            Err(AuthError::Invalid)
+        );
+        assert!(
+            a.device_active(t.principal.device_id),
+            "not theft, just refused"
+        );
+    }
+
+    #[test]
+    fn migration_carries_refresh_chains_and_dates_revocations() {
+        // The two tables version 6 changes, as version 5 left them.
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE devices (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL,
+               name TEXT NOT NULL, mac TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL,
+               last_seen INTEGER, revoked INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE refresh_tokens (token_hash BLOB PRIMARY KEY,
+               device_id INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+               used INTEGER NOT NULL DEFAULT 0, used_at INTEGER, successor BLOB);
+             PRAGMA user_version = 5;
+             INSERT INTO devices VALUES (1, 1, 'Old', '02:4c:41:00:00:01', 0, NULL, 1);
+             INSERT INTO devices VALUES (2, 1, 'New', '02:4c:41:00:00:02', 0, NULL, 0);
+             INSERT INTO refresh_tokens VALUES (x'01', 2, 9999999999, 1, 5, x'02');
+             INSERT INTO refresh_tokens VALUES (x'02', 2, 9999999999, 0, NULL, NULL);",
+        )
+        .unwrap();
+        migrate(&db).unwrap();
+        let parent: Option<Vec<u8>> = db
+            .query_row(
+                "SELECT parent FROM refresh_tokens WHERE token_hash = x'02'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(parent, Some(vec![1]));
+        let revoked_at: Option<i64> = db
+            .query_row("SELECT revoked_at FROM devices WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(revoked_at.is_some_and(|t| t > 0));
+        let active_revoked_at: Option<i64> = db
+            .query_row("SELECT revoked_at FROM devices WHERE id = 2", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(active_revoked_at, None);
     }
 
     /// Regression: rotation took the lock three times (mark used, issue, record successor),
@@ -1962,6 +2410,11 @@ mod tests {
     fn simultaneous_refreshes_of_one_token_never_revoke() {
         let a = std::sync::Arc::new(store());
         for _ in 0..200 {
+            // Each round makes a device: keep them outside the new-devices-per-hour limit.
+            a.db.lock()
+                .unwrap()
+                .execute("UPDATE devices SET created_at = created_at - 3601", [])
+                .unwrap();
             let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
             let results: Vec<Result<Tokens, AuthError>> = (0..2)
@@ -2206,15 +2659,159 @@ mod tests {
             ),
             "duplicate"
         );
-        for bad in ["", "   ", "bad\nname", &"x".repeat(65)] {
-            assert!(
-                matches!(
-                    a.login("alice", PW, None, bad, None, "c"),
-                    Err(AuthError::BadInput(_))
-                ),
-                "{bad:?}"
-            );
+        // Device names are cleaned rather than refused (see `hostile_device_names_are_cleaned`).
+    }
+
+    /// Regression (L7): names reached LMS (and admin pages) with markup and bidi controls.
+    #[test]
+    fn hostile_device_names_are_cleaned() {
+        for (raw, want) in [
+            ("", DEFAULT_DEVICE_NAME),
+            ("   ", DEFAULT_DEVICE_NAME),
+            ("\u{202e}\u{200b}\u{2066}", DEFAULT_DEVICE_NAME),
+            ("<script>alert(1)</script>", "scriptalert(1)script"),
+            ("bad\nname", "bad name"),
+            ("  Firefox \t on   Linux ", "Firefox on Linux"),
+            ("exe.\u{202e}gpj", "exe.gpj"),
+            ("Zero\u{200b}Width\u{feff}", "ZeroWidth"),
+            (
+                "Bob's (spare) phone & co., v1.2_x-y",
+                "Bob's (spare) phone & co., v1.2_x-y",
+            ),
+            ("James’s iPad", "James’s iPad"),
+            ("Ταμπλέτα 台所 Küche", "Ταμπλέτα 台所 Küche"),
+            ("Cafe\u{301}", "Cafe\u{301}"),
+            ("\u{301}x", "x"),
+            ("a\"b;c|d$e`f%g{h}", "abcdefgh"),
+            ("http://evil.example/x", "httpevil.examplex"),
+        ] {
+            assert_eq!(clean_device_name(raw), want, "{raw:?}");
         }
+        let long = clean_device_name(&"word ".repeat(40));
+        assert!(long.chars().count() <= MAX_DEVICE_NAME, "{long}");
+        assert!(!long.ends_with(' '));
+        assert_eq!(clean_device_name(&"x".repeat(100)).len(), MAX_DEVICE_NAME);
+        // Login and pairing store the cleaned name; refusing nothing.
+        let a = store();
+        let t = a
+            .login("alice", PW, None, "<b>Phone\u{202e}</b>", None, "c")
+            .unwrap();
+        assert_eq!(t.principal.device_name, "bPhoneb");
+        let code = a.create_pairing_code("alice").unwrap();
+        let p = a.pair(&code, "\u{200b}", "c").unwrap();
+        assert_eq!(p.principal.device_name, DEFAULT_DEVICE_NAME);
+        assert!(
+            a.list_devices()
+                .unwrap()
+                .iter()
+                .all(|d| d.name == clean_device_name(&d.name))
+        );
+        // A name stored before cleaning existed is cleaned when it is used.
+        a.db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE devices SET name = 'Old\u{202e}<i>' WHERE id = ?1",
+                [t.principal.device_id],
+            )
+            .unwrap();
+        let r = a.refresh(&t.refresh).unwrap();
+        assert_eq!(r.principal.device_name, "Oldi");
+    }
+
+    /// Regression (L8): every sign-in made a new device (and LMS player), without limit.
+    #[test]
+    fn new_devices_per_user_are_rate_limited_but_reuse_is_not() {
+        let a = store();
+        let first = a.login("alice", PW, None, "D0", None, "c").unwrap();
+        for i in 1..NEW_DEVICES_PER_HOUR {
+            a.login("alice", PW, None, &format!("D{i}"), None, "c")
+                .unwrap();
+        }
+        let over = a.login("alice", PW, None, "One more", None, "c");
+        assert!(
+            matches!(over, Err(AuthError::Locked(d)) if d > Duration::from_secs(60)),
+            "{over:?}"
+        );
+        // Pairing counts too.
+        let code = a.create_pairing_code("alice").unwrap();
+        assert!(matches!(a.pair(&code, "x", "c"), Err(AuthError::Locked(_))));
+        // A browser signing in again with its remembered device is never limited.
+        for _ in 0..5 {
+            let again = a
+                .login(
+                    "alice",
+                    PW,
+                    None,
+                    "D0",
+                    Some(first.principal.device_id),
+                    "c",
+                )
+                .unwrap();
+            assert_eq!(again.principal.device_id, first.principal.device_id);
+        }
+        // Another user is unaffected.
+        assert!(a.login("admin", PW, None, "Desk", None, "c").is_ok());
+        // An hour on, new devices are allowed again.
+        a.db.lock()
+            .unwrap()
+            .execute("UPDATE devices SET created_at = created_at - 3601", [])
+            .unwrap();
+        assert!(a.login("alice", PW, None, "Later", None, "c").is_ok());
+        assert!(
+            a.audit_log(100)
+                .unwrap()
+                .iter()
+                .any(|e| e.event == "device.rate_limited")
+        );
+    }
+
+    #[test]
+    fn revoked_devices_are_queued_for_lms_to_forget_and_pruned_later() {
+        let a = store();
+        let t1 = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+        let t2 = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        assert!(a.take_players_to_forget().is_empty());
+        a.logout(&t1.access).unwrap();
+        assert_eq!(a.take_players_to_forget(), vec![t1.principal.mac_string()]);
+        assert!(a.take_players_to_forget().is_empty(), "drained");
+        // Revoking twice queues once.
+        a.revoke_device(t2.principal.device_id).unwrap();
+        a.revoke_device(t2.principal.device_id).unwrap();
+        assert_eq!(a.take_players_to_forget(), vec![t2.principal.mac_string()]);
+        // Deleting a user queues its devices' players (before the rows go).
+        let t3 = a.login("admin", PW, None, "Desk", None, "c").unwrap();
+        a.delete_user("admin").unwrap();
+        assert_eq!(a.take_players_to_forget(), vec![t3.principal.mac_string()]);
+        // Revoked rows are pruned once they are old enough.
+        let count = |a: &Accounts| -> i64 {
+            a.db.lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM devices", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(count(&a), 2);
+        a.db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE devices SET revoked_at = ?1 WHERE id = ?2",
+                params![
+                    now_secs() - REVOKED_DEVICE_RETENTION.as_secs() as i64 - 1,
+                    t1.principal.device_id
+                ],
+            )
+            .unwrap();
+        a.login("alice", PW, None, "New", None, "c").unwrap();
+        assert_eq!(
+            count(&a),
+            2,
+            "the old revoked row is gone, the new device added"
+        );
+        assert!(
+            !a.list_devices()
+                .unwrap()
+                .iter()
+                .any(|d| d.id == t1.principal.device_id)
+        );
     }
 
     #[test]
@@ -2261,7 +2858,7 @@ mod tests {
             .unwrap();
         let t2 = a.refresh(&t.refresh).unwrap();
         let _ = a.refresh(&t.refresh); // a lost response, retried
-        let _ = a.refresh(&t2.refresh); // the discarded token comes back: theft
+        let _ = a.refresh(&t2.refresh); // the first replacement is still good
         let t3 = a
             .login("alice", PW, None, "Phone", None, "10.0.0.9")
             .unwrap();
@@ -2400,11 +2997,14 @@ mod tests {
                 Err(AuthError::Invalid)
             );
         }
+        // The client that failed is locked out, even with a good code...
         let code = current_code(&a, "alice", 1);
         assert!(matches!(
-            a.login("alice", PW, Some(&code), "x", None, "c2"),
+            a.login("alice", PW, Some(&code), "x", None, "c"),
             Err(AuthError::Locked(_))
         ));
+        // ...but the user, elsewhere, with the password and a good code, gets in.
+        assert!(a.login("alice", PW, Some(&code), "x", None, "c2").is_ok());
     }
 
     #[test]
@@ -2421,7 +3021,7 @@ mod tests {
             a.totp_confirm(id, "alice", "123456"),
             Err(AuthError::BadInput(_))
         ));
-        // Wrong passwords here count towards the user's lockout.
+        // Wrong passwords here count towards a lockout of their own.
         for _ in 0..MAX_FAILURES - 2 {
             let _ = a.totp_begin(id, "alice", "wrong password!");
         }
@@ -2510,7 +3110,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         // Version 3 added per-device diagnostics.
         let d = a.devices_for_test();
         a.save_diagnostics(d, r#"{"ok":true}"#).unwrap();
@@ -2713,11 +3313,16 @@ mod tests {
             )),
             "{results:?}"
         );
-        // And the user is locked out now, even with the right password.
+        // The guessing address is locked out now, even with the right password; the user,
+        // elsewhere, is not (changed deliberately, finding M3).
         assert!(matches!(
-            a.login("alice", PW, None, "x", None, "198.51.100.1"),
+            a.login("alice", PW, None, "x", None, "203.0.113.5"),
             Err(AuthError::Locked(_))
         ));
+        assert!(
+            a.login("alice", PW, None, "x", None, "198.51.100.1")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -2792,9 +3397,17 @@ mod tests {
     #[test]
     fn devices_per_user_are_capped_by_revoking_the_least_recently_seen() {
         let a = store();
+        // Spread over time, as new devices per hour are limited.
+        let age = |a: &Accounts| {
+            a.db.lock()
+                .unwrap()
+                .execute("UPDATE devices SET created_at = created_at - 3601", [])
+                .unwrap();
+        };
         let first = a.login("alice", PW, None, "Old", None, "c").unwrap();
         let mut rest = vec![];
         for i in 1..MAX_DEVICES_PER_USER {
+            age(&a);
             rest.push(
                 a.login("alice", PW, None, &format!("D{i}"), None, "c")
                     .unwrap(),

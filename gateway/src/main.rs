@@ -19,6 +19,8 @@ struct Cli {
     cmd: Cmd,
 }
 
+// Parsed once at start-up; the size difference between commands doesn't matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Cmd {
     /// Run the gateway.
@@ -48,6 +50,11 @@ enum Cmd {
         /// Reverse proxy address allowed to set X-Forwarded-* (repeatable).
         #[arg(long = "trusted-proxy")]
         trusted_proxies: Vec<IpAddr>,
+        /// Header a CDN sets to the client's address (e.g. CF-Connecting-IP), honoured only
+        /// on requests from a trusted proxy. Only use it if the proxy accepts connections
+        /// from the CDN alone.
+        #[arg(long, value_parser = parse_client_ip_header)]
+        client_ip_header: Option<String>,
         /// Web app directory to serve at /.
         #[arg(long)]
         static_dir: Option<PathBuf>,
@@ -130,6 +137,7 @@ fn main() {
             lms_cli_port,
             allowed_origins,
             trusted_proxies,
+            client_ip_header,
             static_dir,
             log_file: _,
             ffmpeg,
@@ -157,6 +165,9 @@ fn main() {
                 lms_ips,
                 allowed_origins,
                 trusted_proxies: trusted_proxies.clone(),
+                client_ip_header: client_ip_header
+                    .as_deref()
+                    .and_then(anywhere_gateway::valid_client_ip_header),
                 static_dir,
                 ffmpeg: transcoder(ffmpeg.as_deref(), no_transcode),
                 download_cache_dir: Some(data_dir.join("download-cache")),
@@ -354,6 +365,14 @@ fn admin_command(dir: &Path, cmd: AdminCmd) {
     if let Err(e) = result {
         fail(format!("{e:?}"));
     }
+}
+
+/// `--client-ip-header`: a plain header name that can't stand in for the headers the gateway
+/// already interprets itself.
+fn parse_client_ip_header(s: &str) -> Result<String, String> {
+    anywhere_gateway::valid_client_ip_header(s)
+        .map(|_| s.to_string())
+        .ok_or_else(|| "must be a header name such as CF-Connecting-IP".to_string())
 }
 
 fn fail(msg: impl std::fmt::Display) -> ! {

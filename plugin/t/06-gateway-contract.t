@@ -23,7 +23,7 @@ if ($pid == 0) {
 	open STDOUT, '>', "$dir/gw.log"; open STDERR, '>&', \*STDOUT;
 	exec $bin, 'serve', '--data-dir', "$dir/data", '--listen', "127.0.0.1:$public",
 		'--admin-listen', "127.0.0.1:$admin", '--lms', '127.0.0.1', '--lms-http-port', 1, '--lms-cli-port', 1,
-		'--no-transcode', '--download-cache-mb', 64;
+		'--no-transcode', '--download-cache-mb', 64, '--client-ip-header', 'CF-Connecting-IP';
 	exit 127;
 }
 END { kill 'TERM', $pid if $pid }

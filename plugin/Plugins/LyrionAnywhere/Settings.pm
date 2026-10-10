@@ -21,7 +21,7 @@ sub name { 'PLUGIN_LYRIONANYWHERE' }
 sub page { 'plugins/LyrionAnywhere/settings/basic.html' }
 
 sub prefs {
-	return ($prefs, qw(enabled listen public_url trusted_proxies gateway_path transcode ffmpeg_path download_cache_mb));
+	return ($prefs, qw(enabled listen public_url trusted_proxies client_ip_header gateway_path transcode ffmpeg_path download_cache_mb));
 }
 
 sub escape_html {
@@ -44,7 +44,7 @@ sub _trim {
 sub clean {
 	my ($params) = @_;
 	my (%out, @errors);
-	for my $k (qw(listen public_url trusted_proxies gateway_path ffmpeg_path download_cache_mb)) {
+	for my $k (qw(listen public_url trusted_proxies client_ip_header gateway_path ffmpeg_path download_cache_mb)) {
 		my $name = "pref_$k";
 		next unless exists $params->{$name};
 		my $v = _trim($params->{$name});
@@ -74,6 +74,12 @@ sub clean {
 				next;
 			}
 			$v = join ', ', @ips;
+		}
+		elsif ($k eq 'client_ip_header') {
+			unless (Plugins::LyrionAnywhere::Gateway::valid_client_ip_header($v)) {
+				push @errors, 'Client address header must be a header name such as CF-Connecting-IP (or empty)';
+				next;
+			}
 		}
 		elsif ($k eq 'gateway_path') {
 			unless (Plugins::LyrionAnywhere::Gateway::valid_gateway_path($v)) {
@@ -113,7 +119,7 @@ sub handler {
 	$params->{anywhere_gateway_path_allowed} =
 		($ENV{ Plugins::LyrionAnywhere::Gateway::ALLOW_GATEWAY_PATH_ENV() } // '') eq '1' ? 1 : 0;
 	if ($params->{saveSettings}) {
-		my %before = map { $_ => $prefs->get($_) } qw(enabled listen public_url trusted_proxies gateway_path transcode ffmpeg_path download_cache_mb);
+		my %before = map { $_ => $prefs->get($_) } qw(enabled listen public_url trusted_proxies client_ip_header gateway_path transcode ffmpeg_path download_cache_mb);
 		my ($clean, $errors) = clean($params);
 		# Invalid values are not saved; the others are.
 		for my $k (keys %$params) {

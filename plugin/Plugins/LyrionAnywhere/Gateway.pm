@@ -148,6 +148,17 @@ sub valid_cache_mb {
 	return $v =~ /^\d{1,7}\z/ && $v >= 16 && $v <= 1048576 ? 1 : 0;
 }
 
+# A CDN's client-address header for --client-ip-header (e.g. CF-Connecting-IP), or empty
+# for none. The gateway refuses headers with another meaning; so do we, to fail early.
+my %RESERVED_HEADER = map { $_ => 1 }
+	qw(host origin cookie authorization x-forwarded-for x-forwarded-proto x-anywhere-client forwarded);
+sub valid_client_ip_header {
+	my $h = shift // '';
+	return 0 if ref $h;
+	return 1 if $h eq '';
+	return $h =~ /^[A-Za-z0-9-]{1,64}\z/ && !$RESERVED_HEADER{lc $h} ? 1 : 0;
+}
+
 sub valid_origin {
 	my $o = shift // return 0;
 	return $o =~ m{^https?://[a-z0-9.-]+(?::\d{1,5})?\z}i && length($o) <= 255;
@@ -168,6 +179,9 @@ sub command_line {
 	my @origins = @{ $o{allowed_origins} || [] };
 	for (@proxies) { return (undef, "bad trusted proxy address: $_") unless valid_ip($_) }
 	for (@origins) { return (undef, "bad public URL: $_") unless valid_origin($_) }
+	my $ip_header = $o{client_ip_header} // '';
+	return (undef, 'client address header must be a header name such as CF-Connecting-IP')
+		unless valid_client_ip_header($ip_header);
 	my $transcode = $o{transcode} // 1;
 	my $ffmpeg = $o{ffmpeg} // '';
 	return (undef, 'ffmpeg must be an absolute path')
@@ -188,6 +202,7 @@ sub command_line {
 	push @argv, '--static-dir', $o{static_dir} if $o{static_dir};
 	push @argv, map { ('--trusted-proxy', $_) } @proxies;
 	push @argv, map { ('--allowed-origin', $_) } @origins;
+	push @argv, '--client-ip-header', $ip_header if $ip_header ne '';
 	if (!$transcode)         { push @argv, '--no-transcode' }
 	elsif ($ffmpeg ne '')    { push @argv, '--ffmpeg', $ffmpeg }
 	push @argv, '--download-cache-mb', 0 + $o{download_cache_mb}
@@ -297,7 +312,8 @@ my %VALIDATE = (
 	listen          => \&valid_hostport,
 	public_url      => sub { my $v = shift // ''; $v eq '' || valid_origin($v) },
 	trusted_proxies => \&valid_proxy_list,
-	admin_port      => \&valid_port,
+	client_ip_header => \&valid_client_ip_header,
+	admin_port     => \&valid_port,
 	gateway_path    => \&valid_gateway_path,
 	ffmpeg_path     => \&valid_ffmpeg_path,
 	download_cache_mb => \&valid_cache_mb,
@@ -329,7 +345,10 @@ sub _options {
 	my $cache = $prefs->get('download_cache_mb') // '';
 	$cache = '' unless valid_cache_mb($cache);
 	my $transcode = $prefs->get('transcode');
+	my $ip_header = $prefs->get('client_ip_header') // '';
+	$ip_header = '' unless valid_client_ip_header($ip_header);
 	return (
+		client_ip_header  => $ip_header,
 		ffmpeg            => $ffmpeg,
 		transcode         => (defined $transcode && $transcode eq '0') ? 0 : 1,
 		download_cache_mb => $cache,

@@ -33,6 +33,7 @@ sub initPlugin {
 		admin_port      => 9445,
 		public_url      => '',
 		trusted_proxies => '',
+		client_ip_header => '',
 		gateway_path    => '',
 		transcode       => 1,
 		ffmpeg_path     => '',

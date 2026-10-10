@@ -76,6 +76,10 @@ pub struct Config {
     pub allowed_origins: Vec<String>,
     /// Reverse proxies allowed to set X-Forwarded-*. Loopback is always trusted.
     pub trusted_proxies: Vec<IpAddr>,
+    /// A header carrying the client's address set by a CDN in front of the proxy (e.g.
+    /// `CF-Connecting-IP`). Honoured only on requests from a trusted proxy; otherwise the
+    /// client address comes from `X-Forwarded-For` (see [`client_ip`]).
+    pub client_ip_header: Option<axum::http::HeaderName>,
     pub auth_timeout: Duration,
     pub dial_timeout: Duration,
     /// How long a session (and its LMS connection) survives without a client socket.
@@ -131,6 +135,7 @@ impl Default for Config {
             lms_ips: vec![],
             allowed_origins: vec![],
             trusted_proxies: vec![],
+            client_ip_header: None,
             auth_timeout: Duration::from_secs(5),
             dial_timeout: Duration::from_secs(5),
             resume_grace: Duration::from_secs(60),
@@ -261,8 +266,9 @@ impl Gateway {
         self.apps.lock().unwrap().extend(names);
     }
 
-    /// End any live session for these devices (after revocation).
-    pub async fn end_sessions_for(&self, device_ids: &[i64]) {
+    /// End any live session for these devices (after revocation), then have LMS forget the
+    /// players of every device revoked so far, so revoked devices don't pile up as players.
+    pub async fn end_sessions_for(self: &Arc<Self>, device_ids: &[i64]) {
         let doomed: Vec<Arc<Session>> = self
             .sessions
             .lock()
@@ -274,8 +280,31 @@ impl Gateway {
         for s in doomed {
             s.end(self, session::EndReason::Revoked).await;
         }
+        let macs = self.accounts.take_players_to_forget();
+        if !macs.is_empty() {
+            let gw = self.clone();
+            tokio::spawn(async move { gw.forget_players(macs).await });
+        }
+    }
+
+    /// Best effort: `client forget` each player in LMS. Failures are only logged.
+    async fn forget_players(&self, macs: Vec<String>) {
+        // Let LMS notice the closed Slimproto connection first.
+        tokio::time::sleep(FORGET_DELAY).await;
+        for mac in macs {
+            let cmd = ["client".to_string(), "forget".to_string()];
+            match self.lms_command(&mac, &cmd).await {
+                Ok(_) => tracing::info!(%mac, "removed a revoked device's LMS player"),
+                Err(e) => {
+                    warn!(%mac, error = %e, "could not remove a revoked device's LMS player")
+                }
+            }
+        }
     }
 }
+
+/// Pause between ending a revoked device's session and asking LMS to forget its player.
+const FORGET_DELAY: Duration = Duration::from_millis(200);
 
 pub fn router(state: AppState) -> Router {
     let mut app = Router::new()
@@ -306,17 +335,28 @@ pub fn router(state: AppState) -> Router {
         state.cfg.body_timeout,
         limits::body_deadline,
     ));
-    app.layer(middleware::from_fn(security_headers))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_secure_transport,
-        ))
-        .with_state(state)
+    // The outermost layer runs last on the way out: security headers go on every response,
+    // the "TLS required" refusal included.
+    app.layer(middleware::from_fn_with_state(
+        state.clone(),
+        require_secure_transport,
+    ))
+    .layer(middleware::from_fn(security_headers))
+    .with_state(state)
 }
 
 // ---------------------------------------------------------------------------
 // Middleware
 // ---------------------------------------------------------------------------
+
+/// Browser features the app never uses are switched off for it and anything it might embed.
+/// Fullscreen and autoplay stay available to the app's own origin.
+const PERMISSIONS_POLICY: &str = "accelerometer=(), ambient-light-sensor=(), autoplay=(self), \
+     bluetooth=(), browsing-topics=(), camera=(), display-capture=(), encrypted-media=(), \
+     fullscreen=(self), geolocation=(), gyroscope=(), hid=(), idle-detection=(), \
+     magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), \
+     publickey-credentials-get=(), screen-wake-lock=(self), serial=(), usb=(), \
+     xr-spatial-tracking=()";
 
 async fn security_headers(req: Request, next: Next) -> Response {
     let path = req.uri().path().to_owned();
@@ -333,6 +373,18 @@ async fn security_headers(req: Request, next: Next) -> Response {
         };
         h.insert(header::CACHE_CONTROL, HeaderValue::from_static(policy));
     }
+    // API responses carry personal data (accounts, libraries, players): never stored by
+    // browsers or shared caches. Artwork keeps its own policy; downloads set theirs.
+    if path.starts_with("/v1/")
+        && !path.starts_with("/v1/art/")
+        && !h.contains_key(header::CACHE_CONTROL)
+    {
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    h.insert(
+        "permissions-policy",
+        HeaderValue::from_static(PERMISSIONS_POLICY),
+    );
     h.insert(
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
@@ -390,23 +442,93 @@ async fn require_secure_transport(
     next.run(req).await
 }
 
-/// The client's address for rate limiting and audit: the proxy-reported address when the
-/// peer is a trusted proxy, otherwise the peer itself. IPv6 clients are keyed by their /64,
-/// since one subscriber usually holds a whole /64 and could otherwise rotate addresses to
-/// dodge lockouts.
+/// The client's address for rate limiting and audit, as a key (see [`client_key`]): IPv6
+/// clients are keyed by their /64, since one subscriber usually holds a whole /64 and could
+/// otherwise rotate addresses to dodge lockouts.
 fn client_ip(cfg: &Config, peer: SocketAddr, headers: &HeaderMap) -> String {
-    let ip = canonical(peer.ip());
-    let trusted = ip.is_loopback() || cfg.trusted_proxies.iter().any(|p| canonical(*p) == ip);
-    if trusted
-        && let Some(first) = headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
-        && let Ok(fwd) = first.trim().parse::<IpAddr>()
-    {
-        return client_key(canonical(fwd));
+    client_key(client_addr(cfg, peer, headers))
+}
+
+/// Loopback and the configured reverse proxies.
+fn is_trusted_proxy(cfg: &Config, ip: IpAddr) -> bool {
+    let ip = canonical(ip);
+    ip.is_loopback() || cfg.trusted_proxies.iter().any(|p| canonical(*p) == ip)
+}
+
+/// The client's address. A request straight from an untrusted peer is that peer. From a
+/// trusted proxy:
+/// - the configured CDN header (`--client-ip-header`, e.g. `CF-Connecting-IP`), if present
+///   and a single valid address;
+/// - otherwise `X-Forwarded-For`, read from the right: each proxy appends the address it
+///   received the request from, so the rightmost entry that isn't itself a trusted proxy
+///   is the first address no trusted party vouches beyond. Everything to its left was
+///   written by the client and is ignored (a client can't pick its own lockout key).
+fn client_addr(cfg: &Config, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
+    let peer_ip = canonical(peer.ip());
+    if !is_trusted_proxy(cfg, peer_ip) {
+        return peer_ip;
     }
-    client_key(ip)
+    if let Some(name) = &cfg.client_ip_header {
+        let mut values = headers.get_all(name).iter();
+        if let (Some(v), None) = (values.next(), values.next())
+            && let Some(ip) = v.to_str().ok().and_then(parse_forwarded)
+        {
+            return ip;
+        }
+    }
+    let mut chosen = peer_ip;
+    let values: Vec<&HeaderValue> = headers.get_all("x-forwarded-for").iter().collect();
+    for value in values.into_iter().rev() {
+        let Ok(value) = value.to_str() else {
+            return chosen;
+        };
+        for entry in value.rsplit(',') {
+            let Some(ip) = parse_forwarded(entry) else {
+                return chosen;
+            };
+            chosen = ip;
+            if !is_trusted_proxy(cfg, ip) {
+                return chosen;
+            }
+        }
+    }
+    chosen
+}
+
+/// A name for `--client-ip-header`: 1–64 of A-Z a-z 0-9 `-`, and not a header with another
+/// meaning to the gateway or browsers.
+pub fn valid_client_ip_header(s: &str) -> Option<axum::http::HeaderName> {
+    const RESERVED: [&str; 8] = [
+        "host",
+        "origin",
+        "cookie",
+        "authorization",
+        "x-forwarded-for",
+        "x-forwarded-proto",
+        "x-anywhere-client",
+        "forwarded",
+    ];
+    let ok = !s.is_empty()
+        && s.len() <= 64
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && !RESERVED.iter().any(|r| r.eq_ignore_ascii_case(s));
+    ok.then(|| axum::http::HeaderName::from_bytes(s.to_ascii_lowercase().as_bytes()).ok())
+        .flatten()
+}
+
+/// One forwarded address:`198.51.100.7`, `2001:db8::1`, `[2001:db8::1]`, or either with a
+/// port.
+fn parse_forwarded(s: &str) -> Option<IpAddr> {
+    let s = s.trim();
+    if let Ok(ip) = s.parse::<IpAddr>() {
+        return Some(canonical(ip));
+    }
+    if let Some(inner) = s.strip_prefix('[').and_then(|r| r.strip_suffix(']'))
+        && let Ok(ip) = inner.parse::<IpAddr>()
+    {
+        return Some(canonical(ip));
+    }
+    s.parse::<SocketAddr>().ok().map(|a| canonical(a.ip()))
 }
 
 /// An address as a rate-limit key: IPv4 as is, IPv6 as its /64 prefix.
@@ -431,7 +553,10 @@ fn canonical(ip: IpAddr) -> IpAddr {
     }
 }
 
-/// Same-origin, an explicitly allowed origin, or no Origin header (non-browser clients).
+/// Same-origin over HTTPS, an explicitly allowed origin, or no Origin header (non-browser
+/// clients). A plain-HTTP same origin is accepted only on a plain-HTTP request, which
+/// [`require_secure_transport`] admits only from loopback without proxy headers (local
+/// development): through a proxy, the page must have been loaded over HTTPS.
 fn origin_allowed(cfg: &Config, headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get(header::ORIGIN) else {
         return true;
@@ -446,7 +571,10 @@ fn origin_allowed(cfg: &Config, headers: &HeaderMap) -> bool {
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
-    !host.is_empty() && (origin == format!("https://{host}") || origin == format!("http://{host}"))
+    let plain_http_request = !headers.contains_key("x-forwarded-proto");
+    !host.is_empty()
+        && (origin == format!("https://{host}")
+            || (plain_http_request && origin == format!("http://{host}")))
 }
 
 /// A random 128-bit identifier (hex).
@@ -478,5 +606,175 @@ mod tests {
         assert_eq!(client_key(v4), "198.51.100.7");
         let mapped: IpAddr = "::ffff:198.51.100.7".parse().unwrap();
         assert_eq!(client_key(canonical(mapped)), "198.51.100.7");
+    }
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.append(
+                axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        h
+    }
+
+    fn proxy_cfg() -> Config {
+        Config {
+            trusted_proxies: vec!["10.0.0.10".parse().unwrap(), "10.0.0.11".parse().unwrap()],
+            ..Config::default()
+        }
+    }
+
+    const LOOPBACK: &str = "127.0.0.1:50000";
+
+    /// Regression: the leftmost `X-Forwarded-For` entry was used, which an appending proxy
+    /// (Cloudflare Tunnel, nginx `$proxy_add_x_forwarded_for`) takes from the client, so a
+    /// client could pick its own lockout key on every request.
+    #[test]
+    fn the_client_cannot_choose_its_address_through_an_appending_proxy() {
+        let cfg = proxy_cfg();
+        let peer: SocketAddr = LOOPBACK.parse().unwrap();
+        for (xff, want) in [
+            ("198.51.100.7", "198.51.100.7"),
+            // The client sent "203.0.113.1"; the proxy appended the real address.
+            ("203.0.113.1, 198.51.100.7", "198.51.100.7"),
+            ("203.0.113.1,198.51.100.7", "198.51.100.7"),
+            // Through two trusted proxies: skip them from the right.
+            ("203.0.113.1, 198.51.100.7, 10.0.0.11", "198.51.100.7"),
+            ("198.51.100.7, 10.0.0.10, 127.0.0.1", "198.51.100.7"),
+            // Garbage the client wrote on the left is never reached.
+            ("not-an-ip, 198.51.100.7", "198.51.100.7"),
+            ("[2001:db8::1]:443", "2001:db8::/64"),
+            ("198.51.100.7:1234", "198.51.100.7"),
+            // Every entry is a trusted proxy: the leftmost of them.
+            ("10.0.0.10, 10.0.0.11", "10.0.0.10"),
+            // An unreadable entry stops the walk at the last trusted hop.
+            ("198.51.100.7, garbage", "127.0.0.1"),
+        ] {
+            let h = headers(&[("x-forwarded-for", xff)]);
+            assert_eq!(client_ip(&cfg, peer, &h), want, "{xff}");
+        }
+        // Several header lines read as one list, in order.
+        let h = headers(&[
+            ("x-forwarded-for", "203.0.113.1"),
+            ("x-forwarded-for", "198.51.100.7"),
+        ]);
+        assert_eq!(client_ip(&cfg, peer, &h), "198.51.100.7");
+        // Spoofing the leftmost entry doesn't change the key.
+        let a = client_ip(
+            &cfg,
+            peer,
+            &headers(&[("x-forwarded-for", "192.0.2.11, 198.51.100.7")]),
+        );
+        let b = client_ip(
+            &cfg,
+            peer,
+            &headers(&[("x-forwarded-for", "192.0.2.22, 198.51.100.7")]),
+        );
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn forwarded_headers_from_untrusted_peers_are_ignored() {
+        let cfg = Config {
+            client_ip_header: Some(axum::http::HeaderName::from_static("cf-connecting-ip")),
+            ..proxy_cfg()
+        };
+        let peer: SocketAddr = "203.0.113.50:4000".parse().unwrap();
+        let h = headers(&[
+            ("x-forwarded-for", "198.51.100.7"),
+            ("cf-connecting-ip", "198.51.100.8"),
+        ]);
+        assert_eq!(client_ip(&cfg, peer, &h), "203.0.113.50");
+    }
+
+    #[test]
+    fn a_cdn_client_header_is_honoured_only_when_configured_and_from_a_trusted_proxy() {
+        let peer: SocketAddr = LOOPBACK.parse().unwrap();
+        let h = headers(&[
+            ("x-forwarded-for", "198.51.100.7"),
+            ("cf-connecting-ip", "198.51.100.8"),
+        ]);
+        // Not configured: ignored.
+        assert_eq!(client_ip(&proxy_cfg(), peer, &h), "198.51.100.7");
+        let cfg = Config {
+            client_ip_header: Some(axum::http::HeaderName::from_static("cf-connecting-ip")),
+            ..proxy_cfg()
+        };
+        assert_eq!(client_ip(&cfg, peer, &h), "198.51.100.8");
+        let via_proxy: SocketAddr = "10.0.0.10:4000".parse().unwrap();
+        assert_eq!(client_ip(&cfg, via_proxy, &h), "198.51.100.8");
+        // Malformed, a list, or repeated: fall back to X-Forwarded-For.
+        for bad in [
+            vec![("cf-connecting-ip", "nonsense")],
+            vec![("cf-connecting-ip", "198.51.100.8, 198.51.100.9")],
+            vec![
+                ("cf-connecting-ip", "198.51.100.8"),
+                ("cf-connecting-ip", "198.51.100.9"),
+            ],
+        ] {
+            let mut pairs = bad.clone();
+            pairs.push(("x-forwarded-for", "198.51.100.7"));
+            assert_eq!(
+                client_ip(&cfg, peer, &headers(&pairs)),
+                "198.51.100.7",
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn client_ip_header_names_are_validated() {
+        for good in ["CF-Connecting-IP", "True-Client-IP", "x-real-ip"] {
+            assert!(valid_client_ip_header(good).is_some(), "{good}");
+        }
+        for bad in [
+            "",
+            "CF Connecting IP",
+            "a:b",
+            "x\r\nevil",
+            "Host",
+            "X-Forwarded-For",
+            "cookie",
+            &"a".repeat(65),
+        ] {
+            assert!(valid_client_ip_header(bad).is_none(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn plain_http_origins_are_only_for_plain_http_requests() {
+        let cfg = Config {
+            allowed_origins: vec!["https://music.example.com".into()],
+            ..Config::default()
+        };
+        let ok = |pairs: &[(&str, &str)]| origin_allowed(&cfg, &headers(pairs));
+        assert!(ok(&[]), "no Origin: native clients");
+        assert!(ok(&[
+            ("host", "127.0.0.1:9443"),
+            ("origin", "http://127.0.0.1:9443")
+        ]));
+        assert!(ok(&[
+            ("host", "lms.example.lan"),
+            ("origin", "https://lms.example.lan")
+        ]));
+        assert!(ok(&[("origin", "https://music.example.com")]));
+        // Behind the TLS proxy, an http:// page of the same host is not the app.
+        assert!(!ok(&[
+            ("host", "music.example.com"),
+            ("x-forwarded-proto", "https"),
+            ("origin", "http://music.example.com"),
+        ]));
+        assert!(ok(&[
+            ("host", "music.example.com"),
+            ("x-forwarded-proto", "https"),
+            ("origin", "https://music.example.com"),
+        ]));
+        assert!(!ok(&[
+            ("host", "lms.example.lan"),
+            ("origin", "https://evil.example")
+        ]));
+        assert!(!ok(&[("origin", "null")]));
     }
 }

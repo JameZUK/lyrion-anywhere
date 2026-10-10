@@ -168,12 +168,27 @@ async fn malformed_login_requests_are_rejected() {
         json!({ "username": "alice", "password": PW }),
         json!({ "username": "alice", "password": PW, "device_name": "x", "admin": true }),
         json!({ "username": "alice", "password": PW, "device_name": "x", "refresh": "url" }),
-        json!({ "username": "alice", "password": PW, "device_name": "line\nbreak" }),
         json!("not an object"),
     ];
     for body in cases {
         let r = h.post("/v1/auth/login", body.clone(), &[CLIENT]).await;
         assert_eq!(r.status(), S::BAD_REQUEST, "{body}");
+    }
+    // Hostile device names are cleaned, not refused (finding L7).
+    for (name, want) in [
+        ("line\nbreak", "line break"),
+        ("<img src=x onerror=alert(1)>", "img srcx onerroralert(1)"),
+        ("\u{202e}\u{200b}", "Browser"),
+    ] {
+        let r = h
+            .post(
+                "/v1/auth/login",
+                json!({ "username": "alice", "password": PW, "device_name": name }),
+                &[CLIENT],
+            )
+            .await;
+        assert_eq!(r.status(), S::OK, "{name:?}");
+        assert_eq!(json_of(r).await["device"]["name"], want, "{name:?}");
     }
     let huge = json!({ "username": "alice", "password": "x".repeat(10_000), "device_name": "x" });
     assert_eq!(
@@ -308,8 +323,11 @@ async fn a_lost_refresh_response_does_not_sign_the_device_out() {
 }
 
 /// Regression: a thief replaying a copied refresh token within the grace window got the
-/// device, and the real client's (discarded) token then looked merely invalid. It must
-/// count as reuse: the device is revoked and its live session ended.
+/// device, and the real client's token then looked merely invalid. Changed deliberately
+/// (finding L4): replacements issued within the grace window are siblings, all valid, so
+/// concurrent refreshes don't revoke the device. The first sibling used supersedes the
+/// others (their access tokens die at once), and a superseded one coming back is reuse:
+/// the device is revoked and its live session ended.
 #[tokio::test]
 async fn a_replay_within_the_grace_window_is_caught_when_the_owner_returns() {
     let mut h = harness().await;
@@ -333,19 +351,25 @@ async fn a_replay_within_the_grace_window_is_caught_when_the_owner_returns() {
     let owner_next = owner["refresh_token"].as_str().unwrap().to_string();
     let thief = refresh(&stolen).await; // a copy of T, inside the grace window
     assert_eq!(thief.status(), S::OK);
-    let thief_access = json_of(thief).await["access_token"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    // The owner comes back with S: two parties hold tokens for this device.
-    assert_eq!(refresh(&owner_next).await.status(), S::UNAUTHORIZED);
+    let thief = json_of(thief).await;
+    let thief_access = thief["access_token"].as_str().unwrap().to_string();
+    let thief_next = thief["refresh_token"].as_str().unwrap().to_string();
+    // The owner comes back with S: it still works, and the thief's access dies.
+    assert_eq!(refresh(&owner_next).await.status(), S::OK);
     let me = reqwest::Client::new()
         .get(h.url("/v1/me"))
         .bearer_auth(&thief_access)
         .send()
         .await
         .unwrap();
-    assert_eq!(me.status(), S::UNAUTHORIZED, "the thief is signed out too");
+    assert_eq!(me.status(), S::UNAUTHORIZED, "the thief is signed out");
+    // The thief tries its (superseded) token: two parties held tokens for this device.
+    let caught = refresh(&thief_next).await;
+    assert_eq!(caught.status(), S::UNAUTHORIZED);
+    assert_eq!(
+        caught.headers().get("clear-site-data").unwrap(),
+        "\"cache\""
+    );
     expect_close(&mut ws, CloseCode::Policy).await;
 }
 
