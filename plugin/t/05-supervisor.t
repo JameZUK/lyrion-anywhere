@@ -1,6 +1,7 @@
 # Supervision: start, restart with backoff after a crash, stop. Proc::Background is stubbed.
 use strict; use warnings;
 use Test::More;
+use POSIX ();
 use File::Temp qw(tempdir);
 use Plugins::LyrionAnywhere::Gateway;
 use Proc::Background;
@@ -114,6 +115,27 @@ $prefs->set(gateway_path => $bin);
 	Plugins::LyrionAnywhere::Gateway->stop;
 }
 
+# Regression: LMS ties STDERR to its log (Slim::Utils::Log::Trapper). Re-opening a tied
+# handle died inside the start-up timer, so the gateway never started after an LMS restart.
+{
+	package Test::Trapper;
+	sub TIEHANDLE { bless {}, shift }
+	sub PRINT { 1 }
+	sub PRINTF { 1 }
+	sub OPEN { die "\n" }
+	package main;
+	@Slim::Utils::Timers::TIMERS = ();
+	my $before = @Proc::Background::OBJECTS;
+	tie *STDERR, 'Test::Trapper';
+	my $ok = eval { Plugins::LyrionAnywhere::Gateway->start; 1 };
+	untie *STDERR;
+	ok($ok, 'starting with a tied STDERR does not die') or diag($@);
+	is(scalar @Proc::Background::OBJECTS, $before + 1, 'the gateway was started');
+	my @st = stat Plugins::LyrionAnywhere::Gateway::stderr_file();
+	is($Proc::Background::OBJECTS[-1]{stderr}, "$st[0]:$st[1]", "its stderr still goes to the file");
+	Plugins::LyrionAnywhere::Gateway->stop;
+}
+
 # --- the gateway's stderr goes to a file; its last lines explain an exit ---------------
 {
 	@Slim::Utils::Timers::TIMERS = ();
@@ -122,7 +144,7 @@ $prefs->set(gateway_path => $bin);
 	is($file, "$dir/lyrion-anywhere/gateway.stderr", 'stderr file in the data dir');
 	my @st = stat $file;
 	is($Proc::Background::OBJECTS[-1]{stderr}, "$st[0]:$st[1]", "the gateway's stderr is that file");
-	my @mine = stat STDERR;
+	my @mine = (POSIX::fstat(2))[0, 1];
 	isnt("$mine[0]:$mine[1]", "$st[0]:$st[1]", "the plugin's own stderr is put back");
 	open my $fh, '>>', $file or die;
 	print $fh "line $_\n" for 1 .. 8;

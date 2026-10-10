@@ -14,6 +14,7 @@ use Config;
 use Digest::SHA;
 use File::Spec::Functions qw(abs2rel catdir catfile file_name_is_absolute);
 use Socket qw(inet_pton AF_INET AF_INET6);
+use POSIX ();
 
 use Slim::Utils::Log;
 use Slim::Utils::OSDetect;
@@ -400,18 +401,31 @@ sub _launch {
 }
 
 # Start the gateway with its stderr going to a file, so the reason for an early exit (a
-# bad flag, a port in use) can be shown in the status. The child inherits the handle; the
-# plugin's own stderr is put back straight away.
+# bad flag, a port in use) can be shown in the status. The child inherits file descriptor
+# 2; the plugin's own is put back straight away. This works on descriptors, not Perl
+# handles: LMS ties STDERR to its log, and re-opening a tied handle dies. If anything here
+# fails, the gateway starts anyway, without the capture.
 sub _spawn {
 	my ($argv, $errfile) = @_;
-	my ($saved, $redirected);
-	if ($errfile && open($saved, '>&', \*STDERR)) {
-		$redirected = open(STDERR, '>', $errfile);
-		open(STDERR, '>&', $saved) unless $redirected;
+	my ($fd, $saved);
+	if ($errfile) {
+		eval {
+			$fd = POSIX::open($errfile, POSIX::O_WRONLY() | POSIX::O_CREAT() | POSIX::O_TRUNC(), 0600);
+			$saved = POSIX::dup(2) if defined $fd;
+			if (!defined $saved || !defined POSIX::dup2($fd, 2)) {
+				POSIX::close($saved) if defined $saved;
+				$saved = undef;
+			}
+			1;
+		};
 	}
 	my $p = eval { Proc::Background->new({ die_upon_destroy => 1 }, @$argv) };
 	my $err = $@;
-	open(STDERR, '>&', $saved) if $redirected;
+	if (defined $saved) {
+		POSIX::dup2($saved, 2);
+		POSIX::close($saved);
+	}
+	POSIX::close($fd) if defined $fd;
 	$@ = $err;
 	return $p;
 }
