@@ -12,6 +12,14 @@ test('the API, audio, artwork and player files are never handled', () => {
 	expect(s('v1/rpc', 'GET', sub)).toBe('bypass');
 });
 
+// Offline downloads live in the app's own storage, never in the service worker's caches.
+test('downloads are never handled by the service worker', () => {
+	for (const p of ['v1/download/track/1/info', 'v1/download/track/1?format=original', 'v1/download/track/1']) {
+		expect(s(p), p).toBe('bypass');
+		expect(s(p, 'GET', sub), p).toBe('bypass');
+	}
+});
+
 test('only GETs within the app, without queries', () => {
 	expect(s('', 'POST')).toBe('bypass');
 	expect(s('https://cdn.example.org/x.js')).toBe('bypass');

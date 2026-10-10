@@ -173,6 +173,13 @@ h2 {
 	border-radius: var(--radius-sm);
 	background: var(--bg-raised);
 }
+.field select {
+	padding: 0.55em 0.7em;
+	border: 1px solid var(--line);
+	border-radius: var(--radius-sm);
+	background: var(--bg-raised);
+	color: var(--fg);
+}
 .field input:focus {
 	border-color: var(--accent);
 	outline: none;

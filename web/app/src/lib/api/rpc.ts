@@ -78,16 +78,7 @@ export class Api {
 			this.#art.set(path, hit); // most recently used last
 			return hit;
 		}
-		const url = artUrl(path);
-		// The bearer token goes with this request: never let a path step out of /v1/art/.
-		if (!url) return Promise.reject(new ApiError(400, 'bad art path'));
-		const p = this.session.authed((token) => this.#artLimit.run(async () => {
-			const resp = await fetch(url, { headers: bearer(token), cache: 'force-cache' });
-			if (!resp.ok) throw new ApiError(resp.status, `art HTTP ${resp.status}`);
-			const type = resp.headers.get('content-type') ?? '';
-			if (!/^image\//.test(type)) throw new ApiError(415, 'not an image');
-			return URL.createObjectURL(await resp.blob());
-		}));
+		const p = this.artBlob(path).then((b) => URL.createObjectURL(b));
 		p.catch(() => this.#art.delete(path)); // don't cache failures
 		this.#art.set(path, p);
 		while (this.#art.size > this.artCacheSize) {
@@ -96,6 +87,23 @@ export class Api {
 			old.then((u) => URL.revokeObjectURL(u), () => {});
 		}
 		return p;
+	}
+
+	/** Artwork as an image Blob (not cached here): e.g. to keep with offline downloads. */
+	artBlob(path: string): Promise<Blob> {
+		const url = artUrl(path);
+		// The bearer token goes with this request: never let a path step out of /v1/art/.
+		if (!url) return Promise.reject(new ApiError(400, 'bad art path'));
+		return this.session.authed((token) =>
+			this.#artLimit.run(async () => {
+				const resp = await fetch(url, { headers: bearer(token), cache: 'force-cache' });
+				if (!resp.ok) throw new ApiError(resp.status, `art HTTP ${resp.status}`);
+				const type = resp.headers.get('content-type') ?? '';
+				if (!/^image\//.test(type)) throw new ApiError(415, 'not an image');
+				const blob = await resp.blob();
+				return blob.type ? blob : new Blob([blob], { type: type.split(';')[0]!.trim() });
+			}),
+		);
 	}
 
 	clearArt() {

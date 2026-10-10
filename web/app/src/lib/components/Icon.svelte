@@ -28,6 +28,9 @@
 		heart: 'M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z',
 		radio: 'M4 9h16v11H4zM8 5l9 4M8.5 14.5a2 2 0 1 0 0 .01M14 13h3M14 16h3',
 		library: 'M5 4v16M10 4v16M14.5 4.5l4.5 15',
+		download: 'M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14',
+		check: 'M5 12.5l4.5 4.5L19 7.5',
+		offline: 'M3 8.5a13 13 0 0 1 18 0M6.5 12a8 8 0 0 1 11 0M10 15.5a3 3 0 0 1 4 0M4 4l16 16',
 	};
 	const SOLID = new Set(['play', 'pause', 'next', 'prev']);
 
