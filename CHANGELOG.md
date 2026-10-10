@@ -4,6 +4,44 @@ Dated entries, newest first.
 
 ## 2026-10-10
 
+### Security testing of the internet-facing product: fixes
+Live black-box testing of the deployment (110 checks) and an aggressive local penetration test (hostile fake LMS, fuzzing, floods) found no critical or high issues. Everything below is fixed, each with a regression test that failed before the fix.
+
+**Medium**
+- **Artwork relay:** images are streamed with a running 20 MiB cap, instead of being held whole in memory. A hostile response no longer drives memory up (measured 593 MiB before, 28 MiB after). Artwork requests are limited to 8 at a time per user and 32 overall.
+- **Sign-in lockouts:**
+  - the client address is taken from the right of `X-Forwarded-For`, skipping trusted proxies, so a client can't pick its own address behind an appending proxy;
+  - an optional `--client-ip-header` (e.g. `CF-Connecting-IP`), also in the plugin settings, is honoured from trusted proxies only.
+- **Account lockout by strangers:** someone else's wrong guesses can no longer lock you out. The lock now applies to the addresses that failed; other addresses share a small budget (2 attempts a minute), so guessing stays capped while the real user can still sign in. Pairing codes are limited the same way.
+- **Event connections:** at most 4 per device and 16 per user; the oldest is closed.
+
+**Low**
+- **Response filtering:**
+  - *Local URLs:* URLs of any scheme pointing at local hosts are caught, including `smb://`, `nfs://` and `ftp://`, numeric and short IP forms, single-label host names, CGNAT and IPv6 link-local addresses, and bare LAN addresses in text. The events stream is filtered the same way.
+  - *Other servers:* their player lists are always removed, as are the server version and last scan time.
+- **Artwork from third-party URLs:** names that point into your LAN (wildcard-DNS services, single-label names) are refused, and the name is also resolved and refused if it points at a local address.
+- **Free text:** search terms and other text refuse local URLs, `file:` and file paths, while ordinary searches and public feed URLs still work.
+- **Token refresh in two tabs:** two tabs or windows refreshing at once no longer revoke your own device. Theft (reuse of a token after its replacement was used) still does. Tabs also take turns refreshing.
+- **Names:** device and player names are cleaned of markup, control characters and bidirectional-text tricks.
+- **Devices:**
+  - new devices are limited to 10 per user an hour;
+  - a revoked device's LMS player is now removed from LMS;
+  - revoked devices are deleted after 30 days.
+- **Limits and timeouts:**
+  - LMS responses are capped at 16 MiB;
+  - request headers and bodies time out after 15 s, and idle connections close;
+  - connections are capped with `--max-connections`;
+  - streams and WebSockets are unaffected.
+- **Downloads:** a failed LMS request is retried once, and every upstream failure is logged.
+
+**Info**
+- **Headers:**
+  - personal `/v1` responses are `no-store`;
+  - signing out clears cached artwork (`Clear-Site-Data`);
+  - a `Permissions-Policy` header is added;
+  - the "TLS required" refusal now carries the security headers.
+- **Origins:** only `https://` origins are accepted, apart from plain-HTTP loopback for development.
+
 ### iPad background playback: solved
 - **Cause:** iPadOS Safari's Managed Media Source refuses FLAC frames that use the *variable* block-size strategy.
 - **What plays:** the self-test (version 5) showed fixed-block FLAC playing at every sample rate, as 24-bit or 16-bit, and Apple Lossless (ALAC) too.
