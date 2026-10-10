@@ -12,3 +12,6 @@ node_modules/
 !.env.example
 dev/local.*
 *.token
+
+# browser automation output
+.playwright-mcp/

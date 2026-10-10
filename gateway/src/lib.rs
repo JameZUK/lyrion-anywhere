@@ -6,7 +6,8 @@
 //! `/v1/player` messages:
 //! - client → gateway: first a text message holding the device token, then binary messages
 //!   carrying the client → server Slimproto byte stream (any chunking).
-//! - gateway → client: a text message `{"session":"<id>"}`, then one binary message per
+//! - gateway → client: a text message `{"session":"<id>","mac":"02:…","name":"…"}` (the
+//!   player identity this device must use in HELO), then one binary message per
 //!   server → client Slimproto frame, length prefix included, exactly as LMS sent it.
 //!
 //! Audio for the n-th `strm s` frame the client receives (counting from 1) is fetched with
@@ -284,7 +285,7 @@ async fn tunnel(gw: AppState, mut ws: WebSocket) {
             stream_path: None,
         },
     );
-    let hello = serde_json::json!({ "session": id }).to_string();
+    let hello = serde_json::json!({ "session": id, "mac": mac, "name": device.name }).to_string();
     if ws.send(Message::Text(hello.into())).await.is_err() {
         gw.sessions.lock().unwrap().remove(&id);
         return;

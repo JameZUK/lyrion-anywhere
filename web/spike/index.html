@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lyrion Anywhere — player spike</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <main>
+    <h1>Lyrion Anywhere</h1>
+    <p class="note">Phase 0 browser player spike. This browser becomes an LMS player through the gateway.</p>
+
+    <form id="connect-form" autocomplete="off">
+      <label for="token">Device token</label>
+      <input id="token" type="password" required spellcheck="false">
+      <button id="connect" type="submit">Connect and enable audio</button>
+    </form>
+
+    <section id="player" hidden>
+      <dl>
+        <dt>Player</dt><dd id="s-name">–</dd>
+        <dt>State</dt><dd id="s-output">–</dd>
+        <dt>Elapsed</dt><dd id="s-elapsed">–</dd>
+        <dt>Buffered</dt><dd id="s-buffered">–</dd>
+        <dt>Sample rate</dt><dd id="s-rate">–</dd>
+        <dt>Audio context</dt><dd id="s-ctx">–</dd>
+        <dt>Volume</dt><dd id="s-volume">–</dd>
+      </dl>
+      <p class="note">Control playback from LMS (or any LMS app) by choosing this player.</p>
+    </section>
+
+    <pre id="log" aria-live="polite"></pre>
+  </main>
+</body>
+</html>

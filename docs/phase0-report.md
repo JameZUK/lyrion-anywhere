@@ -11,8 +11,8 @@ Phase 0 proves the riskiest assumption: a clean-room Rust core can act as a real
 | Core plays as a real LMS player (native, direct TCP) | **Passed** |
 | Gapless track transition | **Passed** at the protocol level and in a sample-exact unit test. A listening test is still to do. |
 | Plays through gateway WSS tunnel behind a reverse proxy | **Passed**: live through Caddy (TLS, HTTP/2) against LMS 9.1.x |
-| Browser player (WASM + AudioWorklet), gapless | Not started |
-| Mobile Safari background-audio path chosen | Not started |
+| Browser player (WASM + AudioWorklet), gapless | **Passed** on desktop Chromium. Playback, seek, gapless transition, pause/resume and stop all worked, under the strict CSP. |
+| Mobile Safari background-audio path chosen | Ready to test: needs an iPhone reaching the gateway over trusted HTTPS |
 
 ## Native spike results (LMS 9.1.x)
 
@@ -48,9 +48,36 @@ Test path: LMS ← `anywhere-gateway` (loopback) ← Caddy (`tls internal`, HTTP
 - **Blocked paths:** through the proxy, `/jsonrpc.js`, `/music/1/download`, `/stream.mp3`, `/settings/index.html` and `/cometd` all returned 404.
 - **Abrupt disconnect:** killing the client released the session and closed the LMS connection, and LMS marked the player disconnected. (Phase 1 adds the resume grace period.)
 
+## Browser player results
+
+Architecture:
+- **Main thread:** UI and the AudioContext.
+- **Module Web Worker:** the WASM core, the gateway WebSocket and the stream `fetch`es, with back-pressure.
+- **AudioWorklet:** plays the PCM and reports frames actually played. Those reports drive `played()`, and so LMS's elapsed time.
+
+The core compiles to a 1.2 MB WASM module (before gzip).
+
+Live results (desktop Chromium, gateway serving the page, dedicated muted test device):
+
+- **Registration:** the browser registered as an LMS player using the MAC and name from the gateway's session greeting.
+- **Playback:** the album played with the AudioContext at 44.1 kHz. The page's elapsed time matched LMS (5.1 s vs 5.0 s).
+- **Gapless transition:** worked across the track boundary.
+- **Transport:** pause froze LMS time (11.7 s), then resume and stop worked.
+- **CSP:** no violations under the gateway's strict policy. That needed no inline scripts or styles, plus `'wasm-unsafe-eval'` for WebAssembly.
+- **Static files:** served with correct MIME types (`application/wasm`). Traversal (`/../Cargo.toml`) returns 404.
+- **iOS:** the page now sets `navigator.audioSession.type = 'playback'` (Safari 16.4+) so audio is meant to keep playing with the screen locked. That's what the iPhone test checks. If it fails, the fallback is Managed Media Source (iOS 17.1+). That needs PCM wrapped in fMP4 (FLAC or ALAC), so it's only worth building if the simple path fails.
+
+Known items for Phase 2:
+- SvelteKit's static output uses an inline bootstrap script. The gateway will add SHA-256 hashes of inline scripts to the CSP header for each HTML file, rather than allow `'unsafe-inline'`.
+- Worker ↔ worklet transfer currently uses `postMessage` chunks. If profiling shows GC pressure, a SharedArrayBuffer ring is the alternative (needs COOP/COEP headers).
+
 ## Test suite at this point
 
-- `cargo test --workspace`: 47 tests, all passing. Clippy is clean with `-D warnings`.
+- **57 tests, all passing**:
+  - `cargo test --workspace`: 47;
+  - `wasm-pack test --node wasm`: 5;
+  - `node --test web/spike/tests/`: 5 AudioWorklet tests.
+- **The worklet tests found a bug:** on a mono output the worklet played only the right channel. It now mixes down. All three suites run in CI. Clippy is clean with `-D warnings`.
 - **Gateway: 16 integration tests against a fake LMS** that records every frame and HTTP path it receives. They cover:
   - missing, wrong, near-miss, oversize and binary tokens;
   - cross-origin upgrades;
@@ -81,6 +108,6 @@ Test path: LMS ← `anywhere-gateway` (loopback) ← Caddy (`tls internal`, HTTP
 
 ## Next
 
-1. WASM build of the core + AudioWorklet output + a minimal SvelteKit page.
+1. iPhone test with the screen locked (needs a trusted HTTPS route to the gateway).
 2. nginx example config for real deployments, tested the same way.
-3. Mobile Safari: AudioWorklet vs Managed Media Source with the screen locked.
+3. Phase 0 sign-off, then Phase 1 (accounts, pairing, resume, RPC allow-list, plugin).

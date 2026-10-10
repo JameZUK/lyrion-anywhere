@@ -233,6 +233,13 @@ async fn connect(ws: &mut Ws, token: &str) -> String {
             let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
             let sid = v["session"].as_str().unwrap().to_string();
             assert_eq!(sid.len(), 32);
+            let expected_mac = if token == TOK_A { MAC_A } else { MAC_B };
+            assert_eq!(
+                v["mac"].as_str().unwrap(),
+                format_mac(&expected_mac),
+                "assigned MAC"
+            );
+            assert!(v["name"].is_string());
             sid
         }
         other => panic!("expected session message, got {other:?}"),

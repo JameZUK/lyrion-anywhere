@@ -11,6 +11,8 @@ Secure internet access to a [Lyrion Music Server](https://lyrion.org) through on
 | `core/` | Rust player core: Slimproto, buffering, decoding (no I/O; native + WASM) |
 | `cli/` | Native test player for the core |
 | `gateway/` | Rust gateway: authenticated Slimproto tunnel and stream relay |
+| `wasm/` | WebAssembly bindings for the core (browser player) |
+| `web/spike/` | Phase 0 browser player page (`tools/build-web-spike.sh`) |
 | `plugin/` | LMS plugin (planned) |
 | `web/` | SvelteKit web app (planned) |
 | `docs/` | Documentation and reports |

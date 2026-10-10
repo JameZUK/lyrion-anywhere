@@ -33,6 +33,27 @@ jobs:
       - name: Core builds for WebAssembly (proto only)
         run: cargo build -p anywhere-core --no-default-features --target wasm32-unknown-unknown
 
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: WASM binding tests (Node)
+        run: wasm-pack test --node wasm
+      - name: Build browser player
+        run: tools/build-web-spike.sh
+      - name: AudioWorklet tests
+        run: node --test web/spike/tests/
+
   supply-chain:
     runs-on: ubuntu-latest
     steps:
