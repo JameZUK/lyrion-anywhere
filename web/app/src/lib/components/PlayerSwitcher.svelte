@@ -17,6 +17,13 @@
 			if (opener?.isConnected) opener.focus();
 		};
 	});
+	// A tap or click anywhere outside the panel closes it, like any menu. Not the button that
+	// opened it (marked aria-expanded): that toggles it itself.
+	function onpointerdown(e: PointerEvent) {
+		const t = e.target as Element | null;
+		if (!sheet || !t || sheet.contains(t) || t.closest?.('[aria-expanded="true"]')) return;
+		onclose();
+	}
 	function onkeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape' && !e.defaultPrevented) {
 			e.preventDefault();
@@ -45,7 +52,7 @@
 	);
 </script>
 
-<svelte:window {onkeydown} />
+<svelte:window {onkeydown} {onpointerdown} />
 
 <div class="sheet" role="dialog" aria-label="Choose a player" tabindex="-1" bind:this={sheet}>
 	<header>
