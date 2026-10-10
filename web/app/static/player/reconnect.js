@@ -117,3 +117,16 @@ export class AuthWait {
     return true;
   }
 }
+
+/**
+ * Load the WebAssembly core, with the app's build version (`?v=`, from the worker's own URL)
+ * on both its files. A browser holding an older copy in its cache then fetches the new one
+ * instead of pairing stale code with a new app. `importer` is `(url) => import(url)`.
+ */
+export async function loadCore(workerUrl, importer) {
+  const v = new URL(workerUrl).searchParams.get('v');
+  const q = v && /^[\w.-]{1,64}$/.test(v) ? `?v=${v}` : '';
+  const mod = await importer(new URL(`./pkg/anywhere_wasm.js${q}`, workerUrl).href);
+  const wasm = await mod.default({ module_or_path: new URL(`./pkg/anywhere_wasm_bg.wasm${q}`, workerUrl).href });
+  return { wasm, WasmPlayer: mod.WasmPlayer, WasmSegmenter: mod.WasmSegmenter };
+}

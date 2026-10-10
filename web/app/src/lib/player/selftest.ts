@@ -24,6 +24,8 @@ export interface Probe {
 export interface ProbeResult extends Probe {
 	ok: boolean;
 	error?: string;
+	/** The test itself couldn't run (our fault, not the browser's): never cached. */
+	setup?: boolean;
 }
 
 export interface SelfTest {
@@ -35,7 +37,7 @@ export interface SelfTest {
 }
 
 /** Bump when the probes or the segmenter change, so cached results are redone. */
-export const SELFTEST_VERSION = 4;
+export const SELFTEST_VERSION = 5;
 
 /**
  * Frame styles, best first: FLAC 24-bit variable blocks, fixed blocks, 16-bit; then Apple
@@ -141,7 +143,13 @@ export async function probe(p: Probe, source: 'managed' | 'classic', mime: strin
 				3000,
 				'append',
 			);
-		const seg = make(p.rate);
+		let seg: Segmenter;
+		try {
+			seg = make(p.rate);
+		} catch (e) {
+			// Our side failed (e.g. a stale cached core), not the browser: not a verdict.
+			return { ...p, ok: false, error: (e as Error).message, setup: true };
+		}
 		seg.set_variant(p.code);
 		await append(seg.init_segment());
 		seg.push(new Float32Array(Math.round(p.rate * 0.2) * 2));

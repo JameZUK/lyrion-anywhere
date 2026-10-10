@@ -54,6 +54,9 @@ my %OPS = (
 	settings     => ['GET',  '/admin/v1/settings'],
 	session_days => ['POST', '/admin/v1/settings', [qw(days)],
 	                 sub { { session_days => 0 + $_[0]{days} } }],
+	plugins      => ['GET',  '/admin/v1/plugins'],
+	plugins_admin_only => ['POST', '/admin/v1/plugins', [qw(commands)],
+	                 sub { { admin_only => [grep { length } split /,/, $_[0]{commands} // ''] } }],
 );
 
 sub operations { return sort keys %OPS }
@@ -74,6 +77,13 @@ my %CHECK = (
 	id       => \&valid_id,
 	limit    => sub { ($_[0] // '') =~ /^\d{1,4}\z/ && $_[0] >= 1 && $_[0] <= 1000 },
 	days     => sub { ($_[0] // '') =~ /^\d{1,3}\z/ && $_[0] >= 1 && $_[0] <= 365 },
+	# Comma-separated plugin command words (none = no plugin is admin-only).
+	commands => sub {
+		my $v = $_[0] // '';
+		return 0 if ref $v || $v !~ /^[A-Za-z0-9_,-]{0,13000}\z/;
+		my @c = grep { length } split /,/, $v;
+		return @c <= 200 && !grep { length > 64 } @c;
+	},
 );
 
 my %MESSAGE = (
@@ -85,6 +95,7 @@ my %MESSAGE = (
 	id       => 'bad device id',
 	limit    => 'limit must be 1-1000',
 	days     => 'the sign-in lifetime must be 1-365 days',
+	commands => 'plugin commands are comma-separated words of A-Z a-z 0-9 _ - (at most 200)',
 );
 
 # Returns ($method, $path, $body_or_undef) or dies with a user-readable message.

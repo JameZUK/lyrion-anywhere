@@ -48,9 +48,11 @@ class FakeWorker {
 }
 
 let addModuleGate: Promise<void> | null = null;
+/** Like a browser without a user gesture yet: contexts start suspended until one. */
+let gesture = { needed: false, given: false };
 class FakeAudioContext {
 	static all: FakeAudioContext[] = [];
-	state: 'running' | 'suspended' | 'closed' = 'running';
+	state: 'running' | 'suspended' | 'closed' = gesture.needed ? 'suspended' : 'running';
 	sampleRate: number;
 	destination = {};
 	audioWorklet = { addModule: async () => addModuleGate ?? undefined };
@@ -58,7 +60,9 @@ class FakeAudioContext {
 		this.sampleRate = o.sampleRate;
 		FakeAudioContext.all.push(this);
 	}
-	async resume() {}
+	async resume() {
+		if (this.state === 'suspended' && (!gesture.needed || gesture.given)) this.state = 'running';
+	}
 	async close() {
 		if (this.state === 'closed') throw new DOMException('already closed', 'InvalidStateError');
 		this.state = 'closed';
@@ -99,6 +103,7 @@ beforeEach(() => {
 	FakeWorker.all = [];
 	FakeAudioContext.all = [];
 	addModuleGate = null;
+	gesture = { needed: false, given: false };
 	session.current = { access_token: 't1' };
 	session.token = 't1';
 	session.renewResult = true;
@@ -253,4 +258,30 @@ test('nothing starts when signed out', async () => {
 	session.current = null;
 	await device.start();
 	expect(FakeWorker.all).toHaveLength(0);
+});
+
+// Regression (Android): after a reload the sound waited for a tap, but the app listened for
+// pointerdown, which browsers don't count as a gesture for touch, and gave up after one try.
+test('a held-back start is unmuted by a real tap, and keeps listening until it works', async () => {
+	gesture = { needed: true, given: false };
+	await device.start({ auto: true });
+	await settle();
+	expect(device.needsTap).toBe(true);
+	const ctx = open()[0]!;
+	expect(ctx.state).toBe('suspended');
+	// Touching down is not a gesture: nothing changes.
+	document.dispatchEvent(new Event('pointerdown'));
+	await settle();
+	expect(ctx.state).toBe('suspended');
+	// A tap the browser still refuses (no activation yet): keep listening.
+	document.dispatchEvent(new Event('pointerup'));
+	await settle();
+	expect(device.needsTap).toBe(true);
+	// The finger lifting with a real gesture turns the sound on.
+	gesture.given = true;
+	document.dispatchEvent(new Event('touchend'));
+	await settle();
+	expect(ctx.state).toBe('running');
+	expect(device.needsTap).toBe(false);
+	expect(device.log.some((l) => l.includes('audio resumed'))).toBe(true);
 });

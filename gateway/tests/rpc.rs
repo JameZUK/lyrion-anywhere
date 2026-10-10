@@ -301,6 +301,83 @@ async fn plugins_in_the_home_menu_can_be_browsed() {
     );
 }
 
+/// Plugins the admin marked admin-only: listeners neither see nor run them; admins still do.
+#[tokio::test]
+async fn admin_only_plugins_are_hidden_from_listeners_and_refused() {
+    let h = harness().await;
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    h.accounts
+        .set_admin_only_plugins(&["someplugin".into(), "spotty".into()])
+        .unwrap();
+
+    let apps: Value = h
+        .rpc(&h.tok_a, "", json!(["apps", 0, 100]))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(!apps.to_string().contains("spotty"), "{apps}");
+    let menu: Value = h
+        .rpc(&h.tok_a, &mine, json!(["menu", 0, 500, "direct:1"]))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(!menu.to_string().contains("someplugin"), "{menu}");
+    for cmd in [
+        json!(["spotty", "items", 0, 20, "menu:1"]),
+        json!(["someplugin", "menu", 0, 100]),
+    ] {
+        let r = h.rpc(&h.tok_a, &mine, cmd.clone()).await;
+        assert_eq!(r.status(), S::FORBIDDEN, "{cmd}");
+    }
+    assert!(
+        !h.lms
+            .rpc_calls()
+            .iter()
+            .any(|c| c[1][0] == "spotty" || c[1][0] == "someplugin"),
+        "LMS never sees a refused plugin command"
+    );
+
+    // An admin sees and runs them.
+    h.accounts
+        .create_user("carol", "correct horse battery", Role::Admin)
+        .unwrap();
+    let admin = h
+        .accounts
+        .login(
+            "carol",
+            "correct horse battery",
+            None,
+            "Laptop",
+            None,
+            "test",
+        )
+        .unwrap();
+    let apps: Value = h
+        .rpc(&admin.access, "", json!(["apps", 0, 100]))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(apps.to_string().contains("spotty"));
+    let r = h
+        .rpc(
+            &admin.access,
+            &mine,
+            json!(["spotty", "items", 0, 20, "menu:1"]),
+        )
+        .await;
+    assert_eq!(r.status(), S::OK);
+
+    // Lifting the restriction applies at once.
+    h.accounts.set_admin_only_plugins(&[]).unwrap();
+    let r = h
+        .rpc(&h.tok_a, &mine, json!(["spotty", "items", 0, 20, "menu:1"]))
+        .await;
+    assert_eq!(r.status(), S::OK);
+}
+
 async fn open_track_menu(h: &Harness, token: &str, player: &str) -> Value {
     let r = h
         .rpc(

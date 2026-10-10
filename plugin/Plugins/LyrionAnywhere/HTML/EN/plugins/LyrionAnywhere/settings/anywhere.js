@@ -29,6 +29,15 @@
     return /^[0-9a-f]{32}$/.test(t) ? t : '';
   }
 
+  /** The `commands` argument for the plugins whose boxes are ticked: "a,b" (sorted), or ''. */
+  function adminOnlyArg(rows) {
+    return rows
+      .filter((r) => r.checked && /^[A-Za-z0-9_-]{1,64}$/.test(r.command))
+      .map((r) => r.command)
+      .sort()
+      .join(',');
+  }
+
   /** A sign-in lifetime in whole days (1–365), or null. */
   function validDays(v) {
     const s = String(v ?? '').trim();
@@ -75,7 +84,7 @@
     return when + JSON.stringify(r && r.report !== undefined ? r.report : r, null, 2);
   }
 
-  const api = { command, pageToken, validDays, validUsername, validPassword, formatTime, formatUptime, diagnosticsText };
+  const api = { command, adminOnlyArg, pageToken, validDays, validUsername, validPassword, formatTime, formatUptime, diagnosticsText };
   if (typeof globalThis.__anywhereTest === 'object') {
     Object.assign(globalThis.__anywhereTest, api);
     return;
@@ -331,7 +340,7 @@
     }
     try {
       const players = await playerNames();
-      await Promise.all([showUsers(players), showDevices(), showAudit(), showSettings()]);
+      await Promise.all([showUsers(players), showDevices(), showAudit(), showSettings(), showPlugins()]);
     } catch (e) {
       say(e.message, true);
     }
@@ -341,6 +350,34 @@
     const s = await admin('settings');
     const input = $('aw-session-days');
     if (document.activeElement !== input && Number.isInteger(s.session_days)) input.value = String(s.session_days);
+  }
+
+  const KIND = { app: 'App', radio: 'Radio', menu: 'Menu', 'not installed': 'Not installed' };
+  let pluginBoxes = [];
+
+  async function showPlugins() {
+    const r = await admin('plugins');
+    const list = Array.isArray(r.plugins) ? r.plugins : [];
+    pluginBoxes = [];
+    const rows = list.map((p) => {
+      const box = el('input', { type: 'checkbox' });
+      box.checked = p.admin_only === true;
+      pluginBoxes.push({ box, command: String(p.command) });
+      return el('label', { className: 'aw-plugin' }, [
+        box,
+        el('span', { text: ` ${String(p.name)} ` }),
+        el('span', { className: 'aw-note', text: `(${KIND[p.kind] || 'Plugin'} · ${String(p.command)})` }),
+      ]);
+    });
+    $('aw-plugins').replaceChildren(...(rows.length ? rows : [el('p', { className: 'aw-note', text: 'No plugins found (the gateway asks LMS; a player must be connected for My Music plugins).' })]));
+  }
+
+  function wirePlugins() {
+    $('aw-plugins-btn').addEventListener('click', () => {
+      const commands = adminOnlyArg(pluginBoxes.map((p) => ({ command: p.command, checked: p.box.checked })));
+      const n = commands ? commands.split(',').length : 0;
+      run(() => admin('plugins_admin_only', { commands }), n ? `${n} plugin${n === 1 ? ' is' : 's are'} now for admins only` : 'All plugins are open to listeners');
+    });
   }
 
   function wireSettings() {
@@ -370,6 +407,7 @@
     csrf = pageToken(document);
     wireCreate();
     wireSettings();
+    wirePlugins();
     refresh();
     setInterval(() => showStatus().catch(() => {}), 10000);
   });

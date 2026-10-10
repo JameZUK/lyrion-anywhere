@@ -92,3 +92,38 @@ test('the worker goes through both guards', () => {
   assert.match(src, /if \(authWait\.token\(open\)\) connect\(/);
   assert.match(src, /authWait\.refused\(\);\s*postMessage\(\{ connection: 'reauthenticating', authFailed: true \}\)/);
 });
+
+test('the core loads with the build version on both of its files', async () => {
+  const { loadCore } = await import('../../static/player/reconnect.js');
+  const asked = [];
+  const fake = {
+    default: async (o) => {
+      asked.push(o.module_or_path);
+      return { memory: 'mem' };
+    },
+    WasmPlayer: class {},
+    WasmSegmenter: class {},
+  };
+  const core = await loadCore('https://music.example.com/player/player-worker.js?v=1791659999', async (u) => {
+    asked.push(u);
+    return fake;
+  });
+  assert.deepEqual(asked, [
+    'https://music.example.com/player/pkg/anywhere_wasm.js?v=1791659999',
+    'https://music.example.com/player/pkg/anywhere_wasm_bg.wasm?v=1791659999',
+  ]);
+  assert.equal(core.wasm.memory, 'mem');
+  assert.equal(core.WasmSegmenter, fake.WasmSegmenter);
+  // A missing or odd version is left out rather than passed through.
+  asked.length = 0;
+  await loadCore('https://music.example.com/player/player-worker.js?v=../../x', async (u) => (asked.push(u), fake));
+  assert.equal(asked[0], 'https://music.example.com/player/pkg/anywhere_wasm.js');
+});
+
+test('the worker loads its helpers with the version and keeps early messages', () => {
+  const src = readFileSync(new URL('../../static/player/player-worker.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(src, /^import .* from '\.\/(pkg|reconnect)/m, 'no unversioned static imports');
+  assert.match(src, /await import\(\s*`\.\/reconnect\.js\$\{/);
+  assert.match(src, /onmessage = \(e\) => early\.push\(e\)/);
+  assert.match(src, /for \(const e of early\.splice\(0\)\) void onmessage\(e\);\s*$/);
+});

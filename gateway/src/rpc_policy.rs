@@ -909,6 +909,53 @@ fn home_menu(v: &mut Value) {
     }
 }
 
+/// The plugin command a menu item or app entry belongs to: an app entry's `cmd`, or the first
+/// word of any of the item's own actions.
+fn item_commands(item: &Value) -> Vec<&str> {
+    let mut out = Vec::new();
+    if let Some(c) = item.get("cmd").and_then(Value::as_str) {
+        out.push(c);
+    }
+    if let Some(actions) = item.get("actions").and_then(Value::as_object) {
+        for a in actions.values() {
+            if let Some(w) = a
+                .get("cmd")
+                .and_then(Value::as_array)
+                .and_then(|c| c.first())
+                .and_then(Value::as_str)
+            {
+                out.push(w);
+            }
+        }
+    }
+    out
+}
+
+/// For listeners: remove admin-only plugins from app lists, the home menu and context menus,
+/// so they are neither shown nor (since actions are learned from what is shown) runnable.
+pub fn hide_plugins(v: &mut Value, hidden: &HashSet<String>) {
+    if hidden.is_empty() {
+        return;
+    }
+    let Some(obj) = v.as_object_mut() else { return };
+    for key in ["appss_loop", "radioss_loop", "item_loop"] {
+        let Some(items) = obj.get_mut(key).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        let before = items.len();
+        items.retain(|item| !item_commands(item).iter().any(|c| hidden.contains(*c)));
+        let removed = before - items.len();
+        if removed > 0
+            && let Some(n) = obj.get("count").and_then(Value::as_u64)
+        {
+            obj.insert(
+                "count".into(),
+                Value::from(n.saturating_sub(removed as u64)),
+            );
+        }
+    }
+}
+
 /// A menu action (`{"cmd": [...], "params": {...}}`) whose parameters carry a URL, path or
 /// LAN address. It is removed whole: without them it would be a broken command.
 fn poisoned_action(x: &Value) -> bool {
@@ -976,6 +1023,24 @@ pub fn learn_apps(v: &Value) -> Vec<String> {
         }
     }
     out
+}
+
+/// Is this an LMS core command rather than a plugin's (never offered as a plugin)?
+pub fn core_command(c: &str) -> bool {
+    RESERVED.contains(&c)
+        || matches!(
+            c,
+            "browselibrary"
+                | "globalsearch"
+                | "radios"
+                | "apps"
+                | "menu"
+                | "trackinfo"
+                | "albuminfo"
+                | "artistinfo"
+                | "jivefavorites"
+                | "jiveplaylists"
+        )
 }
 
 /// Core LMS commands that must never be treated as an app, whatever a menu says.
@@ -1285,6 +1350,52 @@ mod tests {
         // Admins may control any player.
         let raw = json!(["play"]).as_array().unwrap().clone();
         assert!(check(&Who(Role::Admin), OTHER, &raw, &apps()).is_ok());
+    }
+
+    #[test]
+    fn admin_only_plugins_are_hidden_everywhere_they_appear() {
+        let hidden: HashSet<String> = ["someplugin".to_string(), "spotty".into()].into();
+        let mut apps = json!({"count": 2, "appss_loop": [{"cmd": "spotty", "name": "Spotty"}, {"cmd": "qobuz", "name": "Qobuz"}]});
+        hide_plugins(&mut apps, &hidden);
+        assert_eq!(
+            apps,
+            json!({"count": 1, "appss_loop": [{"cmd": "qobuz", "name": "Qobuz"}]})
+        );
+        let mut menu = home_menu_fixture();
+        let before = menu["item_loop"].as_array().unwrap().len();
+        hide_plugins(&mut menu, &hidden);
+        let after = menu["item_loop"].as_array().unwrap();
+        assert_eq!(
+            after.len(),
+            before - 4,
+            "the plugin entry and every someplugin action"
+        );
+        assert!(!menu.to_string().contains("someplugin"));
+        // Context menus: a plugin's item among the library's own.
+        let mut info = json!({"count": 2, "item_loop": [
+            {"text": "Similar", "actions": {"go": {"cmd": ["someplugin", "similar"], "params": {"track_id": "1"}}}},
+            {"text": "Album", "actions": {"go": {"cmd": ["albuminfo", "items"], "params": {"album_id": "2"}}}}
+        ]});
+        hide_plugins(&mut info, &hidden);
+        assert_eq!(info["count"], 1);
+        assert_eq!(info["item_loop"][0]["text"], "Album");
+        // Nothing hidden: untouched; odd shapes never panic.
+        let mut same = home_menu_fixture();
+        hide_plugins(&mut same, &HashSet::new());
+        assert_eq!(same, home_menu_fixture());
+        for mut v in [
+            json!(null),
+            json!([]),
+            json!({"item_loop": 5}),
+            json!({"item_loop": [1, {"actions": {"go": 3}}, {"cmd": 7}]}),
+        ] {
+            hide_plugins(&mut v, &hidden);
+        }
+        assert!(
+            core_command("browselibrary")
+                && core_command("favorites")
+                && !core_command("audiomuseai")
+        );
     }
 
     #[test]

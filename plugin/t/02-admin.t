@@ -18,6 +18,10 @@ is_deeply(req('revoke', { id => 12 }), ['POST', '/admin/v1/devices/12/revoke', u
 is_deeply(req('diagnostics', { id => 12 }), ['GET', '/admin/v1/devices/12/diagnostics', undef]);
 is_deeply(req('audit', { limit => 50 }), ['GET', '/admin/v1/audit?limit=50', undef]);
 is_deeply(req('settings', {}), ['GET', '/admin/v1/settings', undef]);
+is_deeply(req('plugins', {}), ['GET', '/admin/v1/plugins', undef]);
+is_deeply(req('plugins_admin_only', { commands => 'audiomuseai,custombrowse' }),
+	['POST', '/admin/v1/plugins', { admin_only => ['audiomuseai', 'custombrowse'] }]);
+is_deeply(req('plugins_admin_only', {}), ['POST', '/admin/v1/plugins', { admin_only => [] }], 'none: an empty list');
 my (undef, undef, $days) = Plugins::LyrionAnywhere::Admin::request_for('session_days', { days => '90' });
 is(JSON::PP->new->canonical->encode($days), '{"session_days":90}', 'the lifetime is a JSON number');
 my ($m, $p, $b) = Plugins::LyrionAnywhere::Admin::request_for('user_disable', { username => 'bob', disabled => 1 });
@@ -43,6 +47,12 @@ my %attacks = (
 	'exponent days'              => ['session_days', { days => '1e2' }],
 	'days with junk'             => ['session_days', { days => "30\n" }],
 	'missing days'               => ['session_days', {}],
+	'plugin with a space'        => ['plugins_admin_only', { commands => 'audio muse' }],
+	'plugin with a slash'        => ['plugins_admin_only', { commands => 'a/../b' }],
+	'plugin newline'             => ['plugins_admin_only', { commands => "audiomuseai\n" }],
+	'plugin too long'            => ['plugins_admin_only', { commands => 'x' x 65 }],
+	'too many plugins'           => ['plugins_admin_only', { commands => join(',', map { "p$_" } 1 .. 201) }],
+	'plugins as a list'          => ['plugins_admin_only', { commands => ['a'] }],
 	# Regression: Perl's $ also matches before a trailing newline, so these used to pass.
 	'newline after username'     => ['grants',      { username => "alice\n" }],
 	'newline after mac'          => ['ungrant',     { username => 'a', player => "aa:bb:cc:dd:ee:01\n" }],

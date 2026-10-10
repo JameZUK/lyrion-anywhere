@@ -5,8 +5,15 @@
 // Reconnects automatically: a dropped socket resumes the same gateway session (LMS never
 // sees the player leave), and a broken stream download resumes from its byte offset.
 
-import init, { WasmPlayer, WasmSegmenter } from './pkg/anywhere_wasm.js';
-import { AuthWait, CLOSE, Outbox, RateRequest, backoffMs, closeAction, streamFailureAction } from './reconnect.js';
+// Helpers load with the build version (`?v=`, from this worker's own URL), so a browser
+// can't pair an old cached copy with a new app.
+const V = new URL(self.location.href).searchParams.get('v');
+// Messages that arrive while the helpers load wait here, then go to the real handler.
+const early = [];
+onmessage = (e) => early.push(e);
+const { AuthWait, CLOSE, Outbox, RateRequest, backoffMs, closeAction, loadCore, streamFailureAction } = await import(
+  `./reconnect.js${V && /^[\w.-]{1,64}$/.test(V) ? `?v=${V}` : ''}`
+);
 
 const TICK_MS = 20;
 // PCM queued in the worklet ahead of playback. Small, so pause/stop feel immediate.
@@ -20,6 +27,7 @@ const STREAM_RETRIES = 12;
 const ACK_EVERY = 256 * 1024;
 
 let player = null;
+let core = null; // the WebAssembly core's module (classes, and its memory)
 let wasmMemory = null; // the core's linear memory (it only ever grows)
 let ws = null;
 let token = '';
@@ -74,8 +82,9 @@ onmessage = async (e) => {
     outputMode = msg.mode === 'media' ? 'media' : 'worklet';
     mediaVariant = Number.isInteger(msg.variant) ? msg.variant : 0;
     if (msg.port) attachSink(msg.port);
-    const wasm = await init();
-    wasmMemory = wasm.memory ?? null;
+    // The build version in the URLs: a browser can't pair an old cached copy with a new app.
+    core = await loadCore(self.location.href, (u) => import(u));
+    wasmMemory = core.wasm.memory ?? null;
     connect(false);
   } else if (msg.cmd === 'start-sink') {
     attachSink(msg.port);
@@ -139,7 +148,7 @@ function onGreeting(g) {
     closeStream();
     outbox.clear();
     received = 0;
-    player = new WasmPlayer(g.mac, g.name, CODECS);
+    player = new core.WasmPlayer(g.mac, g.name, CODECS);
     player.connected(now());
     log(`connected as ${g.name} (${g.mac})`);
   } else {
@@ -358,7 +367,7 @@ function mediaTick(output) {
       postSegment(segmenter.flush()); // the rest of the old rate first
       segmenter.set_rate(rate);
     } else {
-      segmenter = new WasmSegmenter(rate);
+      segmenter = new core.WasmSegmenter(rate);
       segmenter.set_variant(mediaVariant);
     }
     postMessage({ media: { init: segmenter.init_segment(), span: { at: segmenter.emitted_seconds(), rate } } });
@@ -384,3 +393,6 @@ function mediaTick(output) {
     log(`media: sent the last ${n} frames`);
   }
 }
+
+// Anything the page sent while this worker was still loading.
+for (const e of early.splice(0)) void onmessage(e);

@@ -202,6 +202,8 @@ Response: `{"result": {...}}`, or `{"error": "<reason>"}` with one of these stat
 
 **Plugin entries (home menu).** Plugins also add entries to the player's home menu (My Music, Radio, Extras), not only to `apps`/`radios`. `menu <start> <count> [direct:1]` (permitted players only) returns that menu cut down to library and plugin entries: anything under the settings nodes, player power, and entries the app shows itself (library, favourites, search) are dropped before the device sees them, as are entries not reachable from a top-level node. Their actions are then learned like any menu's.
 
+**Admin-only plugins.** An admin can reserve plugins (by command word, e.g. `audiomuseai`) for admins, on the plugin settings page (`GET/POST /admin/v1/plugins` on the admin API; the GET lists what LMS offers as apps, radio and home-menu entries). For listeners, these plugins are removed from app lists, the home menu and context menus, and their commands are refused (403), however they are reached.
+
 Context menus start from `trackinfo`/`albuminfo`/`artistinfo`/`genreinfo`/`yearinfo`/`playlistinfo`/`folderinfo items` with a library id.
 
 Everything else is refused, notably:

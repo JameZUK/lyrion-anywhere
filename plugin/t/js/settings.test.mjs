@@ -95,7 +95,7 @@ function fakeDom() {
     focus() {}
   }
   const byId = new Map();
-  for (const id of ['anywhere-app', 'aw-status', 'aw-users', 'aw-devices', 'aw-audit', 'aw-message', 'aw-create-btn', 'aw-new-user', 'aw-new-password', 'aw-new-role', 'aw-session-days', 'aw-session-btn']) {
+  for (const id of ['anywhere-app', 'aw-status', 'aw-users', 'aw-devices', 'aw-audit', 'aw-message', 'aw-create-btn', 'aw-new-user', 'aw-new-password', 'aw-new-role', 'aw-session-days', 'aw-session-btn', 'aw-plugins', 'aw-plugins-btn']) {
     byId.set(id, new Node('div'));
   }
   const docListeners = {};
@@ -120,6 +120,10 @@ test('renders remote-controlled names as text, never as markup', async () => {
     devices: { data: { devices: [{ id: 1, name: HOSTILE, username: 'bob', mac: '02:4c:41:00:00:09', last_seen: 1 }] } },
     audit: { data: { audit: [{ at: 1, event: 'login', username: 'bob', detail: HOSTILE }] } },
     settings: { data: { session_days: 45 } },
+    plugins: { data: { plugins: [
+      { command: 'audiomuseai', name: HOSTILE, kind: 'menu', admin_only: true },
+      { command: 'spotty', name: 'Spotty', kind: 'app', admin_only: false },
+    ] } },
   };
   const TOKEN = 'cd'.repeat(16);
   dom.byId.get('anywhere-app').setAttribute('data-csrf', TOKEN);
@@ -145,6 +149,7 @@ test('renders remote-controlled names as text, never as markup', async () => {
   }
   assert.equal(dom.byId.get('aw-message').textContent, '', 'no error reported');
   assert.equal(dom.byId.get('aw-session-days').value, '45', 'the sign-in lifetime is shown');
+  assert.ok(dom.byId.get('aw-plugins').textContent.includes(HOSTILE), 'plugin names shown verbatim as text');
 
   // Changing something carries the page's token.
   dom.byId.get('aw-session-days').value = '60';
@@ -172,4 +177,15 @@ test('sign-in lifetime: whole days from 1 to 365 only', () => {
   for (const bad of ['', '0', '366', '-1', '1.5', '1e2', 'abc', '30x', null, undefined, '0x10']) {
     assert.equal(t.validDays(bad), null, String(bad));
   }
+});
+
+test('admin-only plugins: only ticked, well-formed commands, sorted', () => {
+  assert.equal(t.adminOnlyArg([
+    { command: 'spotty', checked: false },
+    { command: 'audiomuseai', checked: true },
+    { command: 'custombrowse', checked: true },
+    { command: 'bad word', checked: true },
+    { command: 'x,y', checked: true },
+  ]), 'audiomuseai,custombrowse');
+  assert.equal(t.adminOnlyArg([]), '');
 });

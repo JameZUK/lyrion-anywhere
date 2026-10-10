@@ -101,12 +101,26 @@ pub async fn rpc(
         },
     };
 
+    // Plugins the admin reserved for admins: refused for everyone else, whichever way the
+    // command got through (app list or learned menu action).
+    let hidden = if principal.role == Role::Admin {
+        Default::default()
+    } else {
+        gw.accounts().admin_only_plugins()
+    };
+    if checked.cmd.first().is_some_and(|c| hidden.contains(c)) {
+        warn!(user = %principal.username, cmd = %summary(&req.cmd), "admin-only plugin denied");
+        return error(StatusCode::FORBIDDEN, "this plugin is for admins only");
+    }
+
     match gw.lms_rpc(&checked).await {
         Ok(result) => {
             if checked.kind == Kind::AppMenu {
                 gw.add_apps(rpc_policy::learn_apps(&result));
             }
-            let filtered = rpc_policy::filter_response(checked.kind, result, &|p| scope.allows(p));
+            let mut filtered =
+                rpc_policy::filter_response(checked.kind, result, &|p| scope.allows(p));
+            rpc_policy::hide_plugins(&mut filtered, &hidden);
             // Remember image URLs LMS handed out, so their artwork can be fetched later: only
             // from image fields of what the client actually receives.
             let mut images = Vec::new();

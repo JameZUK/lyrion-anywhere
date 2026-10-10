@@ -10,7 +10,7 @@ use Slim::Utils::Prefs;
 Plugins::LyrionAnywhere::Commands::register();
 ok($Slim::Control::Request::DISPATCH{'anywhere status'}, 'status registered');
 ok($Slim::Control::Request::DISPATCH{"anywhere $_"}, "$_ registered")
-	for qw(users user_create user_delete grant ungrant revoke audit totp_reset pairing diagnostics settings session_days);
+	for qw(users user_create user_delete grant ungrant revoke audit totp_reset pairing diagnostics settings session_days plugins plugins_admin_only);
 is($Slim::Control::Request::DISPATCH{'anywhere users'}[0], 0, 'no player needed');
 
 my $dir = tempdir(CLEANUP => 1);
@@ -66,10 +66,11 @@ my %mutating_args = (
 	totp_reset    => { username => 'alice' },
 	pairing       => { username => 'alice' },
 	session_days  => { days => 365 },
+	plugins_admin_only => { commands => 'audiomuseai' },
 );
 my %read_only_args = (
 	users => {}, grants => { username => 'alice' }, devices => {}, audit => {},
-	diagnostics => { id => 1 }, settings => {},
+	diagnostics => { id => 1 }, settings => {}, plugins => {},
 );
 # Every operation is classified, so a new one can't slip through unprotected.
 is_deeply([sort(keys %mutating_args, keys %read_only_args)], [Plugins::LyrionAnywhere::Admin::operations()],
@@ -150,6 +151,20 @@ for my $op (sort keys %read_only_args) {
 	$req = Slim::Control::Request->new(['anywhere', 'session_days'], { days => 0, csrf => $token });
 	Plugins::LyrionAnywhere::Commands::admin($req);
 	like($req->{results}{error}, qr/1-365/, 'session_days: out of range refused');
+}
+
+# Admin-only plugins: the list goes to the gateway as a JSON array; clearing sends [].
+{
+	my $n = @Slim::Networking::SimpleAsyncHTTP::REQUESTS;
+	my $req = Slim::Control::Request->new(['anywhere', 'plugins_admin_only'], { commands => 'audiomuseai,selectVirtualLibrary', csrf => $token });
+	Plugins::LyrionAnywhere::Commands::admin($req);
+	my $sent = $Slim::Networking::SimpleAsyncHTTP::REQUESTS[$n];
+	ok($sent, 'plugins_admin_only sent');
+	like($sent->{url}, qr{/admin/v1/plugins\z}, 'to the plugins endpoint');
+	like($sent->{body}, qr/"admin_only":\["audiomuseai","selectVirtualLibrary"\]/, 'as a list');
+	$req = Slim::Control::Request->new(['anywhere', 'plugins_admin_only'], { csrf => $token });
+	Plugins::LyrionAnywhere::Commands::admin($req);
+	like($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1]{body}, qr/"admin_only":\[\]/, 'no commands: none admin-only');
 }
 
 done_testing;

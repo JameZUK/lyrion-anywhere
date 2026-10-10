@@ -55,6 +55,7 @@ pub fn router(gw: AppState, secret: String) -> Router {
         .route("/admin/v1/devices/{id}", delete(revoke_device))
         .route("/admin/v1/audit", get(audit))
         .route("/admin/v1/settings", get(settings).post(set_settings))
+        .route("/admin/v1/plugins", get(plugins).post(set_plugins))
         .fallback(|| async { StatusCode::NOT_FOUND })
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
@@ -197,6 +198,112 @@ async fn settings(State(st): State<AdminState>) -> Response {
 
 async fn set_settings(State(st): State<AdminState>, Json(s): Json<Settings>) -> Response {
     match st.gw.accounts().set_session_days(s.session_days) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => err(e),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdminOnly {
+    admin_only: Vec<String>,
+}
+
+/// The plugins LMS offers (apps, radio, and entries in the home menu such as My Music), by
+/// command word, each with whether it is reserved for admins.
+async fn plugins(State(st): State<AdminState>) -> Response {
+    use std::collections::BTreeMap;
+    let gw = &st.gw;
+    let cmd = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+    let mut found: BTreeMap<String, (String, &'static str)> = BTreeMap::new();
+    let mut add = |c: &str, name: &str, kind: &'static str| {
+        if crate::accounts::valid_plugin_command(c) && !crate::rpc_policy::core_command(c) {
+            let name: String = name
+                .chars()
+                .filter(|ch| !ch.is_control())
+                .take(100)
+                .collect();
+            found
+                .entry(c.to_string())
+                .or_insert((if name.is_empty() { c.to_string() } else { name }, kind));
+        }
+    };
+    for (menu, key, kind) in [
+        ("apps", "appss_loop", "app"),
+        ("radios", "radioss_loop", "radio"),
+    ] {
+        if let Ok(v) = gw.lms_command("", &cmd(&[menu, "0", "500"])).await {
+            for item in v.get(key).and_then(|x| x.as_array()).into_iter().flatten() {
+                if let Some(c) = item.get("cmd").and_then(|x| x.as_str()) {
+                    add(
+                        c,
+                        item.get("name").and_then(|x| x.as_str()).unwrap_or(""),
+                        kind,
+                    );
+                }
+            }
+        }
+    }
+    // The home menu belongs to a player: any will do, it is the same for all.
+    let player = gw
+        .lms_command("", &cmd(&["players", "0", "50"]))
+        .await
+        .ok()
+        .and_then(|v| {
+            v.get("players_loop")?
+                .as_array()?
+                .iter()
+                .filter_map(|p| p.get("playerid")?.as_str().map(str::to_owned))
+                .find(|p| crate::rpc_policy::is_player_id(p))
+        });
+    if let Some(player) = player
+        && let Ok(v) = gw
+            .lms_command(&player, &cmd(&["menu", "0", "500", "direct:1"]))
+            .await
+    {
+        let menu =
+            crate::rpc_policy::filter_response(crate::rpc_policy::Kind::HomeMenu, v, &|_| true);
+        let items: Vec<&serde_json::Value> = menu
+            .get("item_loop")
+            .and_then(|x| x.as_array())
+            .into_iter()
+            .flatten()
+            .collect();
+        let text = |i: &serde_json::Value| {
+            i.get("text")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        for item in &items {
+            let Some(c) = item.pointer("/actions/go/cmd/0").and_then(|x| x.as_str()) else {
+                continue;
+            };
+            // Entries inside a group (e.g. Random Mix's mixes) take the group's name.
+            let node = item.get("node").and_then(|x| x.as_str()).unwrap_or("");
+            let name = items
+                .iter()
+                .find(|g| g.get("id").and_then(|x| x.as_str()) == Some(node))
+                .map(|g| text(g))
+                .unwrap_or_else(|| text(item));
+            add(c, &name, "menu");
+        }
+    }
+    let admin_only = gw.accounts().admin_only_plugins();
+    for c in &admin_only {
+        found
+            .entry(c.clone())
+            .or_insert((c.clone(), "not installed"));
+    }
+    let list: Vec<_> = found
+        .into_iter()
+        .map(|(c, (name, kind))| json!({ "command": c, "name": name, "kind": kind, "admin_only": admin_only.contains(&c) }))
+        .collect();
+    Json(json!({ "plugins": list })).into_response()
+}
+
+async fn set_plugins(State(st): State<AdminState>, Json(a): Json<AdminOnly>) -> Response {
+    match st.gw.accounts().set_admin_only_plugins(&a.admin_only) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(e),
     }

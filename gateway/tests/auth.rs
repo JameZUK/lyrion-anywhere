@@ -473,6 +473,90 @@ async fn admin_api_refuses_non_loopback_peers() {
 }
 
 #[tokio::test]
+async fn admin_lists_plugins_and_reserves_them_for_admins() {
+    let h = harness().await;
+    let (base, secret) = h.admin().await;
+    let c = reqwest::Client::new();
+    let get = || {
+        c.get(format!("{base}/admin/v1/plugins"))
+            .bearer_auth(&secret)
+    };
+    let set = |body: Value| {
+        c.post(format!("{base}/admin/v1/plugins"))
+            .bearer_auth(&secret)
+            .json(&body)
+    };
+    let list = json_of(get().send().await.unwrap()).await;
+    let plugins = list["plugins"].as_array().unwrap();
+    let find = |cmd: &str| plugins.iter().find(|p| p["command"] == cmd).cloned();
+    assert_eq!(find("spotty").unwrap()["kind"], "app");
+    assert_eq!(find("bbcsounds").unwrap()["kind"], "radio");
+    let sp = find("someplugin").expect("home-menu plugin listed");
+    assert_eq!(sp["name"], "Some Plugin");
+    assert_eq!(sp["admin_only"], false);
+    assert!(
+        find("crossfadesettings").is_none(),
+        "settings entries are not plugins"
+    );
+    assert!(plugins.iter().all(|p| {
+        !["favorites", "browselibrary", "anywhere"].contains(&p["command"].as_str().unwrap())
+    }));
+
+    assert_eq!(
+        set(json!({"admin_only": ["someplugin", "gone"]}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        S::NO_CONTENT
+    );
+    let list = json_of(get().send().await.unwrap()).await;
+    let plugins = list["plugins"].as_array().unwrap();
+    assert_eq!(
+        plugins
+            .iter()
+            .find(|p| p["command"] == "someplugin")
+            .unwrap()["admin_only"],
+        true
+    );
+    let gone = plugins.iter().find(|p| p["command"] == "gone").unwrap();
+    assert_eq!(
+        gone["kind"], "not installed",
+        "a reserved plugin that is no longer installed still shows"
+    );
+    for bad in [
+        json!({"admin_only": ["a b"]}),
+        json!({"admin_only": "x"}),
+        json!({"admin_only": [], "x": 1}),
+        json!({}),
+    ] {
+        assert!(
+            set(bad.clone())
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .is_client_error(),
+            "{bad}"
+        );
+    }
+    let r = c
+        .get(format!("{base}/admin/v1/plugins"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::FORBIDDEN);
+    assert_ne!(
+        c.get(h.url("/admin/v1/plugins"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        S::OK
+    );
+}
+
+#[tokio::test]
 async fn admin_sets_the_sign_in_lifetime() {
     let h = harness().await;
     let (base, secret) = h.admin().await;

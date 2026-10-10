@@ -34,6 +34,16 @@ pub const ACCESS_TTL: Duration = Duration::from_secs(15 * 60);
 pub const REFRESH_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
 /// Bounds for the configurable sign-in lifetime, in days.
 pub const SESSION_DAYS: std::ops::RangeInclusive<u32> = 1..=365;
+/// At most this many plugins can be marked admin-only.
+pub const MAX_ADMIN_ONLY_PLUGINS: usize = 200;
+
+/// A plugin's command word, as LMS menus name it (e.g. `audiomuseai`, `selectVirtualLibrary`).
+pub fn valid_plugin_command(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
 /// A refresh token presented again this soon after it was used is a lost response (a phone
 /// suspended mid-request), not theft, provided its replacement hasn't been used either.
 pub const REUSE_GRACE_SECS: i64 = 60;
@@ -842,6 +852,50 @@ impl Accounts {
             [days.to_string()],
         )?;
         self.audit("settings.session_days", None, None, &days.to_string());
+        Ok(())
+    }
+
+    /// Plugin commands (e.g. `audiomuseai`) only admins may use. Listeners neither see nor
+    /// run them. A stored value that doesn't parse counts as none.
+    pub fn admin_only_plugins(&self) -> HashSet<String> {
+        self.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'admin_only_plugins'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|v| serde_json::from_str::<Vec<String>>(&v).ok())
+            .map(|v| v.into_iter().filter(|c| valid_plugin_command(c)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Replace the set of admin-only plugin commands.
+    pub fn set_admin_only_plugins(&self, commands: &[String]) -> Result<(), AuthError> {
+        if commands.len() > MAX_ADMIN_ONLY_PLUGINS
+            || !commands.iter().all(|c| valid_plugin_command(c))
+        {
+            return Err(AuthError::BadInput(
+                "plugin commands are 1–64 of A-Z a-z 0-9 _ - (at most 200)",
+            ));
+        }
+        let mut list: Vec<&String> = commands.iter().collect();
+        list.sort();
+        list.dedup();
+        let value = serde_json::to_string(&list).map_err(|e| AuthError::Storage(e.to_string()))?;
+        self.db.lock().unwrap().execute(
+            "INSERT INTO settings (key, value) VALUES ('admin_only_plugins', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [&value],
+        )?;
+        let joined = list
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        self.audit("settings.admin_only_plugins", None, None, &joined);
         Ok(())
     }
 
@@ -1830,6 +1884,61 @@ mod tests {
             Err(AuthError::Reused(_))
         ));
         assert!(a.list_devices().unwrap().is_empty());
+    }
+
+    #[test]
+    fn admin_only_plugins_are_stored_checked_and_deduplicated() {
+        let a = store();
+        assert!(a.admin_only_plugins().is_empty());
+        a.set_admin_only_plugins(&[
+            "audiomuseai".into(),
+            "selectVirtualLibrary".into(),
+            "audiomuseai".into(),
+        ])
+        .unwrap();
+        let got = a.admin_only_plugins();
+        assert_eq!(got.len(), 2);
+        assert!(got.contains("audiomuseai") && got.contains("selectVirtualLibrary"));
+        for bad in [
+            vec!["".to_string()],
+            vec!["a b".into()],
+            vec!["x/../y".into()],
+            vec!["a".repeat(65)],
+            vec!["x;rm".into()],
+        ] {
+            assert!(a.set_admin_only_plugins(&bad).is_err(), "{bad:?}");
+        }
+        let many: Vec<String> = (0..=MAX_ADMIN_ONLY_PLUGINS)
+            .map(|i| format!("p{i}"))
+            .collect();
+        assert!(a.set_admin_only_plugins(&many).is_err());
+        assert_eq!(
+            a.admin_only_plugins().len(),
+            2,
+            "a refused change keeps the old set"
+        );
+        a.set_admin_only_plugins(&[]).unwrap();
+        assert!(a.admin_only_plugins().is_empty());
+        // A tampered stored value counts as none, and bad entries in it are skipped.
+        let db = a.db.lock().unwrap();
+        db.execute(
+            "UPDATE settings SET value = '[\"ok\", \"bad word\"]' WHERE key = 'admin_only_plugins'",
+            [],
+        )
+        .unwrap();
+        drop(db);
+        assert_eq!(
+            a.admin_only_plugins(),
+            ["ok".to_string()].into_iter().collect()
+        );
+        a.db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE settings SET value = 'nonsense' WHERE key = 'admin_only_plugins'",
+                [],
+            )
+            .unwrap();
+        assert!(a.admin_only_plugins().is_empty());
     }
 
     #[test]

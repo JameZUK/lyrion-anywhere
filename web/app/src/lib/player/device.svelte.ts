@@ -1,6 +1,7 @@
 // "This device": the browser as an LMS player. The WASM core runs in a worker, which owns
 // the gateway socket and stream downloads. Audio plays through an AudioWorklet, or through an
 // <audio> element (Media Source) where only that keeps playing in the background (iOS).
+import { version } from '$app/environment';
 import { session } from '$lib/state/app.svelte';
 import { KeepAlive, PersistentLog, describeLifecycle } from './background';
 import { detect } from './capabilities';
@@ -22,7 +23,12 @@ export interface DeviceStatus {
 	mode?: string;
 }
 
-const asset = (p: string) => new URL(`player/${p}`, document.baseURI).toString();
+/** A player file, with the build version so a stale cached copy is never used. */
+const asset = (p: string) => {
+	const u = new URL(`player/${p}`, document.baseURI);
+	if (/\.(js|wasm)$/.test(p)) u.searchParams.set('v', version);
+	return u.toString();
+};
 
 class DevicePlayer {
 	state = $state<DeviceState>('off');
@@ -110,12 +116,13 @@ class DevicePlayer {
 			}
 			try {
 				const pkg = (await import(/* @vite-ignore */ asset('pkg/anywhere_wasm.js'))) as {
-					default: () => Promise<unknown>;
+					default: (o: { module_or_path: string }) => Promise<unknown>;
 					WasmSegmenter: new (rate: number) => never;
 				};
-				await pkg.default();
+				await pkg.default({ module_or_path: asset('pkg/anywhere_wasm_bg.wasm') });
 				const t = await runSelfTest(fmt.source, fmt.mime, caps.userAgent, (rate) => new pkg.WasmSegmenter(rate));
-				saveCached(t);
+				// Only a browser's real verdict is worth keeping, not our own setup failing.
+				if (!t.results.some((r) => r.setup)) saveCached(t);
 				this.selftest = t;
 				const ok = t.results.filter((r) => r.ok).map((r) => `${r.rate / 1000}k/${r.code.toString(16)}`);
 				this.#note(`media self-test: ${ok.length ? `plays ${ok.join(', ')}` : 'no variant played'}`);
@@ -305,16 +312,26 @@ class DevicePlayer {
 		if (this.needsTap) return;
 		this.needsTap = true;
 		this.#note('the browser held the sound back: tap anywhere to resume');
-		const resume = () => {
-			document.removeEventListener('pointerdown', resume, true);
-			document.removeEventListener('keydown', resume, true);
-			this.needsTap = false;
+		// Browsers only count some events as a user gesture: for touch, the finger lifting
+		// (pointerup/touchend/click), not touching down. Listen to all of them, and keep
+		// listening until the sound really is on.
+		const events = ['pointerup', 'touchend', 'click', 'keydown'] as const;
+		const resume = async () => {
 			void this.#keepAlive.start();
 			this.#media?.resume();
-			void this.#ctx?.resume().then(() => this.#note(`audio resumed (${this.#ctx?.state})`));
+			await this.#ctx?.resume().catch(() => {});
+			const ctxOk = !this.#ctx || this.#ctx.state === 'running';
+			const mediaOk = !this.#media || !this.#media.audio.paused;
+			if (!ctxOk || !mediaOk || !this.needsTap) {
+				if (!this.needsTap) for (const t of events) document.removeEventListener(t, onTap, true);
+				return;
+			}
+			for (const t of events) document.removeEventListener(t, onTap, true);
+			this.needsTap = false;
+			this.#note(`audio resumed (${this.#ctx?.state ?? 'media'})`);
 		};
-		document.addEventListener('pointerdown', resume, true);
-		document.addEventListener('keydown', resume, true);
+		const onTap = () => void resume();
+		for (const t of events) document.addEventListener(t, onTap, true);
 	}
 
 	stop(final: DeviceState = 'stopped') {

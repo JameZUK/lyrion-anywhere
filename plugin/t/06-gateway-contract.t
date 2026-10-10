@@ -59,6 +59,9 @@ my @steps = (
 	[settings      => {}, 200],
 	[session_days  => { days => 90 }, 204],
 	[session_days  => { days => '7' }, 204],
+	[plugins       => {}, 200],
+	[plugins_admin_only => { commands => 'audiomuseai,custombrowse' }, 204],
+	[plugins_admin_only => {}, 204],
 	[user_delete   => { username => 'alice' }, 204],
 );
 for my $s (@steps) {
