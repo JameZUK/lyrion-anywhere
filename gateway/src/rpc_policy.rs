@@ -540,8 +540,62 @@ const STRIPPED: &[&str] = &[
     "mac",
     "seq_no",
     "remote_url",
+    "favorites_url",
     "path",
 ];
+
+/// A value that reveals the server's filesystem or home network, whatever key it is under:
+/// `file:` URLs, and URLs whose host is private, loopback, link-local or a local name.
+fn sensitive_value(s: &str) -> bool {
+    let lower = s.trim_start().to_ascii_lowercase();
+    if lower.starts_with("file:") {
+        return true;
+    }
+    let Some((scheme, rest)) = lower.split_once("://") else {
+        return false;
+    };
+    if !matches!(scheme, "http" | "https" | "ws" | "wss" | "rtsp" | "mms") {
+        return false;
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = if let Some(v6) = hostport.strip_prefix('[') {
+        v6.split(']').next().unwrap_or("")
+    } else {
+        hostport.split(':').next().unwrap_or("")
+    };
+    local_host(host)
+}
+
+fn local_host(host: &str) -> bool {
+    use std::net::IpAddr;
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return match ip {
+            IpAddr::V4(v4) => {
+                v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()
+            }
+            IpAddr::V6(v6) => {
+                let seg0 = v6.segments()[0];
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || (seg0 & 0xfe00) == 0xfc00 // unique local (fc00::/7)
+                    || (seg0 & 0xffc0) == 0xfe80 // link local
+                    || v6.to_ipv4_mapped().is_some_and(|v4| local_host(&v4.to_string()))
+            }
+        };
+    }
+    host == "localhost"
+        || [
+            ".local",
+            ".lan",
+            ".home",
+            ".internal",
+            ".localdomain",
+            ".home.arpa",
+        ]
+        .iter()
+        .any(|suffix| host.ends_with(suffix))
+}
 
 /// Filter a response. `may_control` hides players the caller can't use.
 pub fn filter_response(kind: Kind, mut v: Value, may_control: &dyn Fn(&str) -> bool) -> Value {
@@ -571,12 +625,22 @@ pub fn filter_response(kind: Kind, mut v: Value, may_control: &dyn Fn(&str) -> b
 fn strip(v: &mut Value) {
     match v {
         Value::Object(map) => {
-            map.retain(|k, _| !STRIPPED.contains(&k.as_str()));
+            map.retain(|k, x| {
+                !STRIPPED.contains(&k.as_str()) && !x.as_str().is_some_and(sensitive_value)
+            });
             for x in map.values_mut() {
                 strip(x);
             }
         }
-        Value::Array(items) => items.iter_mut().for_each(strip),
+        Value::Array(items) => {
+            for x in items.iter_mut() {
+                if x.as_str().is_some_and(sensitive_value) {
+                    *x = Value::String(String::new());
+                } else {
+                    strip(x);
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -985,6 +1049,83 @@ mod tests {
         let out = filter_response(Kind::Plain, tracks, &may);
         assert!(!out.to_string().contains("file://"));
         assert_eq!(out["titles_loop"][0]["title"], "A");
+    }
+
+    #[test]
+    fn sensitive_values_are_recognised() {
+        for yes in [
+            "file:///srv/a.flac",
+            " FILE:/x",
+            "http://10.1.2.3/x",
+            "https://192.168.1.5:9000",
+            "http://172.20.0.1/",
+            "http://127.0.0.1:9000/",
+            "http://169.254.1.1/",
+            "http://[::1]:9000/",
+            "http://[fd12::1]/",
+            "http://[fe80::1]/",
+            "http://[::ffff:10.0.0.1]/",
+            "http://localhost/",
+            "http://user:pw@10.0.0.1/",
+            "rtsp://cam.lan/stream",
+            "http://nas.home.arpa/x",
+            "ws://player.local:80",
+        ] {
+            assert!(sensitive_value(yes), "{yes}");
+        }
+        for no in [
+            "https://images.example.com/a.jpg",
+            "http://8.8.8.8/x",
+            "http://172.32.0.1/",
+            "/imageproxy/x/image.png",
+            "html/images/cover.png",
+            "Local Hero",
+            "spotify:track:1",
+            "https://[2001:db8::1]/",
+            "http://example.com/file:/x",
+        ] {
+            assert!(!sensitive_value(no), "{no}");
+        }
+    }
+
+    /// Regression: `playlists` returned `favorites_url: file:///…`, leaking the server's
+    /// filesystem layout. Local paths and LAN URLs must go whatever key LMS puts them under.
+    #[test]
+    fn local_paths_and_lan_urls_never_leak_under_any_key() {
+        let raw = json!({
+            "playlists_loop": [
+                {"id": 7, "playlist": "Gym", "favorites_url": "file:///srv/music/Playlists/Gym.m3u"},
+                {"id": 8, "playlist": "Road", "some_new_key": "FILE:///srv/x.m3u",
+                 "stream": "http://10.0.0.10:9000/stream.mp3?player=x",
+                 "lan6": "http://[fd00::10]:9000/x", "loop": "http://127.0.0.1:9000/y",
+                 "mdns": "http://lms.local:9000/z", "home": "https://music.example.lan/x"}
+            ],
+            "list": ["file:///etc/passwd", "kept"]
+        });
+        let out = filter_response(Kind::Plain, raw, &|_| true);
+        let s = out.to_string();
+        for leaked in [
+            "file:",
+            "FILE:",
+            "/srv/",
+            "10.0.0.10",
+            "fd00::",
+            "127.0.0.1",
+            "lms.local",
+            ".lan/",
+        ] {
+            assert!(
+                !s.to_lowercase().contains(&leaked.to_lowercase()),
+                "{leaked} leaked: {s}"
+            );
+        }
+        // Everything else survives, including public artwork URLs clients need.
+        assert_eq!(out["playlists_loop"][0]["playlist"], "Gym");
+        assert_eq!(out["playlists_loop"][1]["id"], 8);
+        assert_eq!(out["list"], json!(["", "kept"]));
+        let art = json!({"artwork_url": "https://images.example.com/a.jpg", "icon": "/imageproxy/x/image.png",
+                         "image": "html/images/cover.png"});
+        assert_eq!(filter_response(Kind::Plain, art.clone(), &|_| true), art);
     }
 
     #[test]

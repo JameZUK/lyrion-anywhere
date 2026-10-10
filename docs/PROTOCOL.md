@@ -185,7 +185,8 @@ Everything else is refused, notably:
 - **Listeners** may control their own signed-in devices, plus home players an admin has granted (`/admin/v1/users/{name}/players`).
 
 **Response filtering:**
-- removed everywhere: `ip`, `uuid`, `httpport`, `url` (file paths and stream credentials), `mac`, `seq_no`, `remote_url` and `path`;
+- removed everywhere by key: `ip`, `uuid`, `httpport`, `url` (file paths and stream credentials), `mac`, `seq_no`, `remote_url`, `favorites_url` and `path`;
+- removed everywhere by value, whatever the key: `file:` URLs, and URLs whose host is private, loopback, link-local or a local name (`.local`, `.lan`, `.home.arpa`, …);
 - player lists show only players the caller may control, with counts adjusted, and other-server counts removed.
 
 ## Artwork (`GET /v1/art/<path>`)
