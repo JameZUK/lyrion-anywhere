@@ -46,6 +46,9 @@ const RECHECK: Duration = Duration::from_secs(5);
 const AUDIT_EVERY: Duration = Duration::from_secs(3600);
 const AUDIT_CAP: usize = 10_000;
 const CHUNK: usize = 64 * 1024;
+/// Pause before the one retry of a download request LMS failed at the connection level or
+/// answered with a 5xx.
+const RETRY_PAUSE: Duration = Duration::from_millis(250);
 
 pub const NOT_ALLOWED: &str = "downloads are not allowed for this account";
 pub const FORMAT_NOT_ALLOWED: &str = "this format is not allowed for this account";
@@ -385,7 +388,7 @@ impl crate::Gateway {
             "tags:aelotdufnx".into(),
         ];
         let result = self
-            .lms_command_within("", &cmd, self.cfg.download_lookup_timeout)
+            .lms_query_retrying("", &cmd, self.cfg.download_lookup_timeout)
             .await
             .map_err(|e| {
                 tracing::warn!(error = %e, "track lookup failed");
@@ -743,23 +746,55 @@ fn audio_response(
     r
 }
 
+/// LMS answered a download in a way that can't be relayed: logged with the reason.
+fn unusable(track: u64, why: &str) -> Refusal {
+    tracing::warn!(track, why, "unusable download answer from LMS");
+    Refusal::Unavailable
+}
+
 /// Ask LMS for a track's original file (optionally a byte span).
 async fn fetch_original(
     gw: &AppState,
     id: u64,
     span: Option<(u64, u64)>,
 ) -> Result<reqwest::Response, Refusal> {
-    let mut req = gw
-        .dl_http
-        .get(format!("http://{}/music/{id}/download", gw.cfg.lms_http));
-    if let Some((a, b)) = span {
-        req = req.header(header::RANGE, format!("bytes={a}-{b}"));
-    }
-    match tokio::time::timeout(gw.cfg.download_header_timeout, req.send()).await {
-        Err(_) => Err(Refusal::TimedOut),
-        Ok(Err(e)) if e.is_timeout() => Err(Refusal::TimedOut),
-        Ok(Err(_)) => Err(Refusal::Unavailable),
-        Ok(Ok(r)) => Ok(r),
+    let mut retried = false;
+    loop {
+        let mut req = gw
+            .dl_http
+            .get(format!("http://{}/music/{id}/download", gw.cfg.lms_http));
+        if let Some((a, b)) = span {
+            req = req.header(header::RANGE, format!("bytes={a}-{b}"));
+        }
+        let outcome = tokio::time::timeout(gw.cfg.download_header_timeout, req.send()).await;
+        // A GET of a file is safe to repeat: try once more on a connection-level failure or
+        // a 5xx (LMS sometimes fails a request right after others were aborted).
+        let transient = match &outcome {
+            Ok(Err(e)) => {
+                tracing::warn!(track = id, error = %crate::rpc::LmsFailure::from_reqwest(e).message, "download request to LMS failed");
+                !e.is_timeout()
+            }
+            Ok(Ok(r)) if r.status().is_server_error() => {
+                tracing::warn!(track = id, status = %r.status(), "LMS failed a download request");
+                true
+            }
+            Err(_) => {
+                tracing::warn!(track = id, "LMS did not answer a download request in time");
+                false
+            }
+            Ok(Ok(_)) => false,
+        };
+        if transient && !retried {
+            retried = true;
+            tokio::time::sleep(RETRY_PAUSE).await;
+            continue;
+        }
+        return match outcome {
+            Err(_) => Err(Refusal::TimedOut),
+            Ok(Err(e)) if e.is_timeout() => Err(Refusal::TimedOut),
+            Ok(Err(_)) => Err(Refusal::Unavailable),
+            Ok(Ok(r)) => Ok(r),
+        };
     }
 }
 
@@ -786,10 +821,10 @@ async fn original(
     match status {
         reqwest::StatusCode::PARTIAL_CONTENT if asked.is_some() => {
             let (a, b, total) = parse_content_range(resp.headers().get(header::CONTENT_RANGE))
-                .ok_or(Refusal::Unavailable)?;
+                .ok_or_else(|| unusable(track.id, "bad Content-Range"))?;
             let (want_a, want_b) = asked.unwrap_or((a, b));
             if (a, b) != (want_a, want_b) || resp.content_length() != Some(b - a + 1) {
-                return Err(Refusal::Unavailable);
+                return Err(unusable(track.id, "wrong range"));
             }
             let len = b - a + 1;
             let body = guarded(io_stream(resp), 0, len, watch);
@@ -803,7 +838,9 @@ async fn original(
         }
         reqwest::StatusCode::OK => {
             // Only ever relay a body of known length (D5: never an endless stream).
-            let total = resp.content_length().ok_or(Refusal::Unavailable)?;
+            let total = resp
+                .content_length()
+                .ok_or_else(|| unusable(track.id, "no Content-Length"))?;
             let span = match (asked, range) {
                 (Some(span), _) => Some(span),
                 (None, Some(r)) => Some(resolve(r, total).ok_or(Refusal::Range(Some(total)))?),
@@ -837,7 +874,7 @@ async fn original(
         reqwest::StatusCode::RANGE_NOT_SATISFIABLE => Err(Refusal::Range(track.size)),
         reqwest::StatusCode::NOT_FOUND => Err(Refusal::NotFound),
         _ => {
-            tracing::warn!(%status, "LMS refused a download");
+            tracing::warn!(track = track.id, %status, "LMS refused a download");
             Err(Refusal::Unavailable)
         }
     }
@@ -859,12 +896,13 @@ async fn save_original(gw: &AppState, id: u64, path: &Path) -> Result<(), Refusa
         return Err(Refusal::NotFound);
     }
     if resp.status() != reqwest::StatusCode::OK {
+        tracing::warn!(track = id, status = %resp.status(), "LMS refused a download for transcoding");
         return Err(Refusal::Unavailable);
     }
     let total = resp
         .content_length()
         .filter(|n| *n <= MAX_SOURCE)
-        .ok_or(Refusal::Unavailable)?;
+        .ok_or_else(|| unusable(id, "no Content-Length, or too large"))?;
     let mut file = tokio::fs::File::create(path)
         .await
         .map_err(|_| Refusal::TranscodeFailed)?;
@@ -872,6 +910,7 @@ async fn save_original(gw: &AppState, id: u64, path: &Path) -> Result<(), Refusa
     let mut got = 0u64;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| {
+            tracing::warn!(track = id, error = %crate::rpc::LmsFailure::from_reqwest(&e).message, "download from LMS broke off");
             if e.is_timeout() {
                 Refusal::TimedOut
             } else {
@@ -880,14 +919,14 @@ async fn save_original(gw: &AppState, id: u64, path: &Path) -> Result<(), Refusa
         })?;
         got += chunk.len() as u64;
         if got > total {
-            return Err(Refusal::Unavailable);
+            return Err(unusable(id, "longer than promised"));
         }
         file.write_all(&chunk)
             .await
             .map_err(|_| Refusal::TranscodeFailed)?;
     }
     if got != total {
-        return Err(Refusal::Unavailable);
+        return Err(unusable(id, "shorter than promised"));
     }
     file.flush().await.map_err(|_| Refusal::TranscodeFailed)?;
     Ok(())

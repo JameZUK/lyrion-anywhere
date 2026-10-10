@@ -10,7 +10,14 @@
 //! timeout). The gateway then sends text messages `{"player":"<mac>","event":[...]}`, or
 //! `{"player":null,...}` for server events, and `{"resync":true}` if the client fell behind.
 //! A socket whose device is revoked is closed (1008).
+//!
+//! Each device may hold [`crate::Config::events_per_device`] sockets and each user
+//! [`crate::Config::events_per_user`]; a new socket beyond either closes the caller's oldest
+//! with 1008 "replaced by a newer connection". The web app treats any 1008 other than
+//! "unauthorised" as final and doesn't reconnect, so two tabs can't evict each other in a
+//! loop (the evicted one keeps polling).
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,7 +28,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 use tracing::{info, warn};
 
 use crate::rpc_policy::is_player_id;
@@ -109,10 +116,14 @@ pub fn parse_line(line: &str) -> Option<Event> {
     })
 }
 
+/// Close reason for a socket evicted by a newer one of the same device or user.
+pub const REPLACED: &str = "replaced by a newer connection";
+
 /// The shared LMS CLI listener, started when the first client subscribes.
 pub struct Hub {
     tx: broadcast::Sender<Event>,
     running: std::sync::Mutex<bool>,
+    sockets: std::sync::Mutex<Sockets>,
 }
 
 impl Default for Hub {
@@ -120,11 +131,101 @@ impl Default for Hub {
         Hub {
             tx: broadcast::channel(256).0,
             running: std::sync::Mutex::new(false),
+            sockets: Default::default(),
+        }
+    }
+}
+
+/// Open event sockets, per user, oldest first.
+#[derive(Default)]
+struct Sockets {
+    next: u64,
+    by_user: HashMap<i64, VecDeque<OpenSocket>>,
+}
+
+struct OpenSocket {
+    id: u64,
+    device: i64,
+    /// Tells the socket's handler to close it.
+    evict: oneshot::Sender<()>,
+}
+
+/// An open socket's place in [`Hub`]'s table; removed when dropped.
+pub struct Registration {
+    hub: Arc<Hub>,
+    user: i64,
+    id: u64,
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        let mut t = self.hub.sockets.lock().unwrap();
+        if let Some(list) = t.by_user.get_mut(&self.user) {
+            list.retain(|s| s.id != self.id);
+            if list.is_empty() {
+                t.by_user.remove(&self.user);
+            }
         }
     }
 }
 
 impl Hub {
+    /// Record a new socket for `user`'s `device`, closing that device's (then that user's)
+    /// oldest sockets beyond the limits. The receiver fires if this socket is evicted later.
+    pub fn register(
+        self: &Arc<Self>,
+        user: i64,
+        device: i64,
+        per_device: usize,
+        per_user: usize,
+    ) -> (Registration, oneshot::Receiver<()>) {
+        let (evict, evicted) = oneshot::channel();
+        let mut t = self.sockets.lock().unwrap();
+        t.next += 1;
+        let id = t.next;
+        let list = t.by_user.entry(user).or_default();
+        list.push_back(OpenSocket { id, device, evict });
+        let mut gone = Vec::new();
+        while list.iter().filter(|s| s.device == device).count() > per_device.max(1) {
+            if let Some(i) = list.iter().position(|s| s.device == device) {
+                gone.extend(list.remove(i));
+            }
+        }
+        while list.len() > per_user.max(1) {
+            gone.extend(list.pop_front());
+        }
+        drop(t);
+        if !gone.is_empty() {
+            info!(
+                user,
+                device,
+                closed = gone.len(),
+                "too many event sockets: closing the oldest"
+            );
+        }
+        for s in gone {
+            let _ = s.evict.send(());
+        }
+        (
+            Registration {
+                hub: self.clone(),
+                user,
+                id,
+            },
+            evicted,
+        )
+    }
+
+    /// Event sockets open for a user.
+    fn sockets_for(&self, user: i64) -> usize {
+        self.sockets
+            .lock()
+            .unwrap()
+            .by_user
+            .get(&user)
+            .map_or(0, VecDeque::len)
+    }
+
     fn subscribe(self: &Arc<Self>, cli_addr: String) -> broadcast::Receiver<Event> {
         // Subscribing and the listener's idle check happen under the same lock, so a new
         // subscriber is never left without a listener.
@@ -227,6 +328,13 @@ async fn read_line_capped<R: AsyncBufRead + Unpin>(
 
 use tokio::io::AsyncReadExt as _;
 
+impl crate::Gateway {
+    /// Event sockets a user has open (for tests and diagnostics).
+    pub fn event_sockets(&self, user_id: i64) -> usize {
+        self.events.sockets_for(user_id)
+    }
+}
+
 pub async fn events_upgrade(
     State(gw): State<AppState>,
     headers: HeaderMap,
@@ -260,6 +368,12 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
     let Ok(mut scope) = gw.accounts().player_scope(&principal) else {
         return close(ws, close_code::ERROR, "internal error").await;
     };
+    let (_registration, mut evicted) = gw.events.register(
+        principal.user_id,
+        principal.device_id,
+        gw.cfg.events_per_device,
+        gw.cfg.events_per_user,
+    );
     let mut rx = gw.events.subscribe(gw.cfg.lms_cli.clone());
     let _ = ws
         .send(Message::Text(
@@ -297,6 +411,7 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
                 Some(Ok(_)) => return close(ws, close_code::POLICY, "unexpected message").await,
             },
+            _ = &mut evicted => return close(ws, close_code::POLICY, REPLACED).await,
             _ = keepalive.tick() => {
                 if ws.send(Message::Ping(Default::default())).await.is_err() {
                     return;

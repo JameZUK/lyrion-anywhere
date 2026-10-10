@@ -178,6 +178,7 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
 - **Original format:** after a library and permission check, the gateway streams the original file. It does this by proxying LMS's per-track download handler (`/music/{id}/download`, verified on 9.1.1: returns the original file with `Range`/206 support). Gotcha: a nonexistent track ID makes LMS hang rather than 404, so the gateway first checks that the ID is a positive integer and looks it up with LMS JSON-RPC (`titles 0 1 track_id:<id>`, with a time limit). Only a track LMS knows is ever fetched, with time limits on connecting, on the response headers and on every read.
 - **Transcoded:** the gateway runs the system `ffmpeg` (D10; found on `PATH`, or given with `--ffmpeg` / the plugin's *ffmpeg path* setting) to Opus 160 kb/s (Ogg) or MP3 320 kb/s CBR, with title, artist, album and track number tags (and, for MP3, the file's embedded cover art). ffmpeg gets a fixed argument list with no shell, an empty environment, a demuxer forced from a fixed table of LMS file types, `-protocol_whitelist file`, files the gateway named in its own cache directory, an output size cap and a time limit. Results are kept in a size-capped LRU cache on disk (default 2 GiB, `--download-cache-mb`), so repeat downloads cost nothing.
 - **Ranges and limits:** all download responses support a single HTTP `Range`, so interrupted downloads resume. Each user may run at most 3 downloads at once (429 beyond). Downloads are audited at most once per track and device an hour.
+- **Retries:** LMS sometimes fails the next request right after clients abort large downloads. The track lookup and the download request are both plain reads, so one that fails at the connection level or with a 5xx is tried once more after a short pause, and every upstream failure is logged with its cause.
 
 ### 5.4 Web app hosting
 
@@ -392,7 +393,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 | Reading arbitrary files | Track IDs resolved only through the library by the plugin; `file://` URLs rejected in control commands |
 | XSS in the web app (e.g. hostile tag metadata) | Framework escaping; strict CSP, no inline script; metadata never rendered as HTML |
 | Sniffing on hostile Wi-Fi | TLS via the proxy; gateway rejects non-TLS remote requests |
-| Resource exhaustion | Caps on sessions per device, frame/body size, concurrent streams and downloads, transcode jobs |
+| Resource exhaustion | Caps on sessions per device, frame/body size, concurrent streams and downloads, transcode jobs; event sockets per device (4) and user (16), oldest closed first; artwork requests in flight per user (8) and overall (32), images streamed rather than buffered; LMS JSON-RPC answers read up to 16 MiB; 15 s limits on request heads, idle keep-alive and request bodies; at most 1024 open connections (`--max-connections`) and 64 per non-proxy address |
 | LAN user creating remote accounts | Plugin commands are reachable only through LMS itself (LAN, LMS password protection); `anywhere` is reserved in the gateway allow-list so remote users can't call it; admin API on loopback with a secret |
 | Misconfigured proxy exposing the LAN | Gateway binds to localhost by default; plugin self-test checks LMS ports aren't publicly reachable |
 

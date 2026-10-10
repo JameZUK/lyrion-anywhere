@@ -13,6 +13,14 @@ Requirements for both endpoints:
 - They must be reached over TLS through a trusted reverse proxy. Plain HTTP is accepted only from loopback.
 - WebSocket upgrades must be same-origin or from an explicitly allowed origin. Clients that send no `Origin` (native apps) are accepted.
 
+### Connection limits (all endpoints)
+
+- A request head must arrive within 15 s, and an idle keep-alive connection is closed after 15 s. The connection is closed without a response.
+- A request body (every endpoint takes at most a few KiB of JSON) must arrive whole within 15 s, or the request gets 408 and the connection is closed. Bodies over 1 MiB get 413 whatever the endpoint.
+- At most 1024 connections are open at once (`--max-connections`); beyond that, new connections wait to be accepted. A peer that is neither loopback nor a trusted proxy may hold at most 64. Behind a reverse proxy every connection comes from the proxy, so per-client connection limits belong there.
+- WebSockets and streamed responses (audio, downloads, artwork) are not affected by these time limits.
+- The server speaks HTTP/1.1 (with WebSocket upgrades).
+
 ## Authentication
 
 Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `X-Anywhere-Client: 1`, and any `Origin` must be same-origin or explicitly allowed. That's the CSRF defence for the cookie-carrying endpoints.
@@ -177,7 +185,7 @@ Response: `{"result": {...}}`, or `{"error": "<reason>"}` with one of these stat
 - **401:** bad token;
 - **400:** malformed request;
 - **413:** body over 8 KiB;
-- **502:** LMS unavailable.
+- **502:** LMS unavailable, or its answer is over 16 MiB (the read stops at the limit).
 
 **Default deny.** A command is allowed only if it is in the allow-list and every argument passes validation:
 - numbers or printable strings of at most 256 characters;
@@ -255,7 +263,9 @@ Allowed paths (validated on the raw, still-encoded path):
 | `plugins/<Name>/html/…`, `plugins/cache/icons/…`, `html/images/…` | Image files only (`png`, `jpg`, `gif`, `svg`); no `..`, `//` or `%` encodings |
 
 Rules for what is relayed:
-- only JPEG/PNG/GIF/WebP/SVG responses, at most 20 MiB;
+- only JPEG/PNG/GIF/WebP/SVG responses, at most 20 MiB: a larger declared `Content-Length` gets 502, and a body without one that runs past the limit is cut off (the response fails rather than ending cleanly). Images are streamed, never held in memory whole;
+- each user may have 8 artwork requests in flight, and everyone together 32. Further requests wait up to 10 s for a free slot, then get 429 with `Retry-After: 2`;
+- the whole LMS exchange, body included, has a 20 s limit;
 - every response carries `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`, so an SVG can't run script on the gateway's origin.
 
 ## Downloads
@@ -309,6 +319,7 @@ Headers: `Content-Type`, `Content-Length`, `Accept-Ranges: bytes`, `Cache-Contro
 
 **Safety:**
 - An id is checked to be a positive integer and looked up with LMS JSON-RPC (`titles 0 1 track_id:<id>`, 10 s limit) before `/music/<id>/download` is ever requested: for an unknown id, that handler hangs rather than answering.
+- A track lookup or download request that LMS fails at the connection level, or answers with a 5xx, is tried once more after 250 ms (both are plain reads); a second failure is 502. Every upstream failure is logged with its cause (no tokens or file paths).
 - LMS must answer a download within 20 s and never pause for more than 30 s mid-file; an original is relayed without buffering, never beyond its `Content-Length`, and a body cut short fails rather than looking complete.
 - A running download re-checks every 5 s that its device is still signed in, so revoking a device (or disabling its user) ends it.
 - The permission is read on every request, so an admin's change applies at once.
@@ -324,5 +335,6 @@ Headers: `Content-Type`, `Content-Length`, `Accept-Ranges: bytes`, `Cache-Contro
 **Rules:**
 - Clients may send nothing after the token. Any message closes the socket (1008).
 - Revocation and permission changes are re-checked every 30 s: a revoked device is disconnected, and new grants take effect.
+- A device may hold 4 event sockets and a user 16 across all their devices. A new socket beyond either limit closes the oldest one (of that device first, otherwise of that user) with 1008 `replaced by a newer connection`. Clients must not reconnect after it: the web app treats every 1008 other than `unauthorised` as final (the page keeps polling), so two tabs can't keep evicting each other.
 
 **Upstream:** the gateway keeps one connection to the LMS CLI (`--lms-cli-port`, default 9090) while anyone is subscribed, and reconnects with backoff.

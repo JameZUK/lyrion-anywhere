@@ -9,7 +9,9 @@
 //! - **Icons:** `plugins/<Name>/html/…`, `plugins/cache/icons/…`, `html/images/…` image files.
 //!
 //! Only `image/*` responses are relayed, at most [`MAX_IMAGE`] bytes, with a sandboxing CSP
-//! so an SVG can't run script on the gateway's origin. Browsers fetch art with their bearer
+//! so an SVG can't run script on the gateway's origin. Images are streamed, never held in
+//! memory whole, and each user may have only [`crate::Config::art_per_user`] requests in
+//! flight ([`crate::Config::art_total`] overall); others wait briefly, then get 429. Browsers fetch art with their bearer
 //! token (no credentials in URLs) and show it via blob URLs.
 
 use std::collections::{HashSet, VecDeque};
@@ -275,6 +277,46 @@ pub fn learn_images(v: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// Time limit for the whole LMS exchange, body included (so a slow image can't hold a slot
+/// for long).
+const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// An LMS response body relayed chunk by chunk, holding `permit` until it ends, and failing
+/// (so the client sees a broken download, not a truncated image) once it passes `max`
+/// bytes.
+fn capped_body(resp: reqwest::Response, max: usize, permit: crate::limits::Permit) -> Body {
+    use futures_util::StreamExt;
+    struct St<S> {
+        inner: S,
+        sent: usize,
+        _permit: crate::limits::Permit,
+    }
+    let st = St {
+        inner: resp.bytes_stream(),
+        sent: 0,
+        _permit: permit,
+    };
+    let s = futures_util::stream::unfold(Some(st), move |st| async move {
+        let mut st = st?;
+        match st.inner.next().await {
+            Some(Ok(chunk)) => {
+                st.sent += chunk.len();
+                if st.sent > max {
+                    tracing::warn!("LMS artwork over the size limit; cut off");
+                    return Some((Err(std::io::Error::other("image too large")), None));
+                }
+                Some((Ok(chunk), Some(st)))
+            }
+            Some(Err(e)) => {
+                tracing::warn!(error = %e.without_url(), "artwork from LMS broke off");
+                Some((Err(std::io::Error::other("upstream failed")), None))
+            }
+            None => None,
+        }
+    });
+    Body::from_stream(s)
+}
+
 fn status(code: StatusCode) -> Response {
     code.into_response()
 }
@@ -338,10 +380,23 @@ pub async fn art(
         return status(StatusCode::NOT_FOUND);
     }
 
+    // A slot for this user (and overall), held until the image has been relayed.
+    let Some(permit) = gw
+        .art_limit
+        .acquire(principal.user_id, gw.cfg.art_queue_wait)
+        .await
+    else {
+        tracing::warn!(user = %principal.username, "too many artwork requests at once");
+        let mut r = status(StatusCode::TOO_MANY_REQUESTS);
+        r.headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("2"));
+        return r;
+    };
+
     let resp = match gw
         .http
         .get(format!("http://{}{}", gw.cfg.lms_http, lms_path))
-        .timeout(std::time::Duration::from_secs(20))
+        .timeout(FETCH_TIMEOUT)
         .send()
         .await
     {
@@ -349,7 +404,14 @@ pub async fn art(
         Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => {
             return status(StatusCode::NOT_FOUND);
         }
-        _ => return status(StatusCode::BAD_GATEWAY),
+        Ok(r) => {
+            tracing::warn!(status = %r.status(), "LMS refused an artwork request");
+            return status(StatusCode::BAD_GATEWAY);
+        }
+        Err(e) => {
+            tracing::warn!(error = %e.without_url(), "artwork request to LMS failed");
+            return status(StatusCode::BAD_GATEWAY);
+        }
     };
     let ct = resp
         .headers()
@@ -368,21 +430,18 @@ pub async fn art(
     .find(|t| ct.starts_with(t)) else {
         return status(StatusCode::BAD_GATEWAY);
     };
-    if resp
-        .content_length()
-        .is_some_and(|n| n as usize > MAX_IMAGE)
-    {
+    let declared = resp.content_length();
+    if declared.is_some_and(|n| n > MAX_IMAGE as u64) {
+        tracing::warn!("LMS artwork over the size limit");
         return status(StatusCode::BAD_GATEWAY);
     }
-    let Ok(bytes) = resp.bytes().await else {
-        return status(StatusCode::BAD_GATEWAY);
-    };
-    if bytes.len() > MAX_IMAGE {
-        return status(StatusCode::BAD_GATEWAY);
-    }
-    let mut r = Response::new(Body::from(bytes));
+    // Relayed as it arrives, never buffered whole: past MAX_IMAGE the body is cut off.
+    let mut r = Response::new(capped_body(resp, MAX_IMAGE, permit));
     let h = r.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(ct));
+    if let Some(n) = declared {
+        h.insert(header::CONTENT_LENGTH, HeaderValue::from(n));
+    }
     // An image is inert data: no scripts, no subresources, even if it's an SVG.
     h.insert(
         "content-security-policy",

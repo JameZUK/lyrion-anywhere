@@ -35,6 +35,7 @@ mod auth;
 pub mod diagnostics;
 pub mod download;
 pub mod events;
+pub mod limits;
 pub mod menu_actions;
 mod relay;
 mod rpc;
@@ -107,6 +108,18 @@ pub struct Config {
     pub download_header_timeout: Duration,
     /// Longest LMS may pause mid-download.
     pub download_read_timeout: Duration,
+    /// Event sockets one device may hold open; a newer one closes the oldest.
+    pub events_per_device: usize,
+    /// Event sockets one user may hold open across all their devices.
+    pub events_per_user: usize,
+    /// Artwork requests one user may have in flight at once.
+    pub art_per_user: usize,
+    /// Artwork requests in flight at once, for everyone.
+    pub art_total: usize,
+    /// How long an artwork request waits for a free slot before getting 429.
+    pub art_queue_wait: Duration,
+    /// Longest a request body (JSON, at most a few KiB) may take to arrive.
+    pub body_timeout: Duration,
 }
 
 impl Default for Config {
@@ -134,6 +147,12 @@ impl Default for Config {
             download_lookup_timeout: Duration::from_secs(10),
             download_header_timeout: Duration::from_secs(20),
             download_read_timeout: Duration::from_secs(30),
+            events_per_device: 4,
+            events_per_user: 16,
+            art_per_user: 8,
+            art_total: 32,
+            art_queue_wait: Duration::from_secs(10),
+            body_timeout: Duration::from_secs(15),
         }
     }
 }
@@ -160,6 +179,8 @@ pub struct Gateway {
     active_downloads: Mutex<HashMap<i64, usize>>,
     download_audit: Mutex<download::AuditSeen>,
     download_salt: std::sync::OnceLock<String>,
+    /// Artwork requests in flight, per user and overall.
+    art_limit: Arc<limits::Limiter>,
 }
 
 pub type AppState = Arc<Gateway>;
@@ -197,7 +218,6 @@ impl Gateway {
             _ => None,
         };
         Arc::new(Gateway {
-            cfg,
             accounts,
             http,
             sessions: Mutex::new(HashMap::new()),
@@ -212,6 +232,8 @@ impl Gateway {
             active_downloads: Mutex::new(HashMap::new()),
             download_audit: Mutex::new(HashMap::new()),
             download_salt: std::sync::OnceLock::new(),
+            art_limit: limits::Limiter::new(cfg.art_per_user, cfg.art_total),
+            cfg,
         })
     }
 
@@ -279,6 +301,11 @@ pub fn router(state: AppState) -> Router {
         Some(dir) => app.fallback_service(tower_http::services::ServeDir::new(dir)),
         None => app.fallback(|| async { StatusCode::NOT_FOUND }),
     };
+    // Request bodies must arrive within the time limit (innermost: after the TLS check).
+    let app = app.layer(middleware::from_fn_with_state(
+        state.cfg.body_timeout,
+        limits::body_deadline,
+    ));
     app.layer(middleware::from_fn(security_headers))
         .layer(middleware::from_fn_with_state(
             state.clone(),
