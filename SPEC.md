@@ -355,11 +355,11 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 
 - **Users:** created by the admin (D7), each with a role and permitted players. Passwords use argon2id. Passkeys (WebAuthn) come in a later phase.
 - **Two-step verification (implemented):**
-  - **Opt-in per user:** TOTP (RFC 6238) that users turn on themselves by scanning a QR code into an authenticator app, then confirming a code.
+  - **Opt-in per user:** TOTP (RFC 6238) that users turn on themselves (with their password) by scanning a QR code into an authenticator app, then confirming a code.
   - **Codes:** single use, with ±30 s tolerance. Wrong codes count towards lockouts.
   - **Turning it off** needs the password and a current code.
   - **Admin:** can reset it for a user. Requiring it for all users is a possible later policy option.
-- **Device sessions:** every browser login or app pairing creates a device record with its own assigned player MAC.
+- **Device sessions:** every browser login or app pairing creates a device record with its own assigned player MAC. At most 20 active devices per user; another sign-in revokes the least recently seen.
 - **Refresh tokens:**
   - long-lived and rotated on every use; reusing an old one revokes the device (theft detection);
   - in the browser, held in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/v1/auth`;
@@ -376,7 +376,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 | Threat | Mitigation |
 |---|---|
 | Internet scanner hits LMS bugs (9.2.0 path traversal, `readdirectory`, XSS: CVE-2026-50230…50235) | LMS ports never exposed; gateway forwards only allow-listed commands and path patterns |
-| Password guessing | Per-IP and per-user rate limits; exponential lockout; TOTP; generic error messages |
+| Password guessing | Per-IP (IPv6 per /64) and per-user rate limits, counted before the password is checked; at most 4 concurrent password checks; exponential lockout; TOTP; generic error messages |
 | Stolen device / token | Per-device revocation; refresh-token rotation with reuse detection; 15-min access tokens |
 | Impersonating another player | HELO MAC must match device's assigned MAC; stream path must match session's MAC |
 | Reading arbitrary files | Track IDs resolved only through the library by the plugin; `file://` URLs rejected in control commands |

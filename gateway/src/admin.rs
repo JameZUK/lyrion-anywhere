@@ -149,7 +149,11 @@ async fn set_password(
 ) -> Response {
     let accounts = st.gw.accounts().clone();
     match tokio::task::spawn_blocking(move || accounts.set_password(&name, &p.password)).await {
-        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(devices)) => {
+            // A password reset signs the user out everywhere.
+            st.gw.end_sessions_for(&devices).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(Err(e)) => err(e),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }

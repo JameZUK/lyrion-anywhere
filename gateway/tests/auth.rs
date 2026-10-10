@@ -293,13 +293,11 @@ async fn a_lost_refresh_response_does_not_sign_the_device_out() {
     };
     let lost = refresh(cookie1.clone()).await; // the browser never sees this response
     assert_eq!(lost.status(), S::OK);
-    let lost_cookie = cookie_value(&cookie_from(&lost).unwrap());
     let retry = refresh(cookie1.clone()).await;
     assert_eq!(retry.status(), S::OK, "the retry is accepted");
     let cookie2 = cookie_value(&cookie_from(&retry).unwrap());
     assert!(cookie_from(&retry).unwrap().contains("Max-Age=2592000"));
-    // The lost token is dead; the device and its player session carry on.
-    assert_eq!(refresh(lost_cookie).await.status(), S::UNAUTHORIZED);
+    // The device and its player session carry on.
     assert_eq!(refresh(cookie2).await.status(), S::OK);
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(300), ws.next())
@@ -307,6 +305,48 @@ async fn a_lost_refresh_response_does_not_sign_the_device_out() {
             .is_err(),
         "the player session stays open"
     );
+}
+
+/// Regression: a thief replaying a copied refresh token within the grace window got the
+/// device, and the real client's (discarded) token then looked merely invalid. It must
+/// count as reuse: the device is revoked and its live session ended.
+#[tokio::test]
+async fn a_replay_within_the_grace_window_is_caught_when_the_owner_returns() {
+    let mut h = harness().await;
+    let resp = h
+        .post(
+            "/v1/auth/login",
+            json!({ "username": "alice", "password": PW, "device_name": "Phone", "refresh": "body" }),
+            &[CLIENT],
+        )
+        .await;
+    let body = json_of(resp).await;
+    let stolen = body["refresh_token"].as_str().unwrap().to_string();
+    let access = body["access_token"].as_str().unwrap().to_string();
+    let mut ws = h.dial().await;
+    ws.send(Message::Text(access.into())).await.unwrap();
+    next(&mut ws).await;
+    let _lms = h.lms.accept().await;
+
+    let refresh = |t: &str| h.post("/v1/auth/refresh", json!({ "refresh_token": t }), &[CLIENT]);
+    let owner = json_of(refresh(&stolen).await).await; // the owner refreshes: T → S
+    let owner_next = owner["refresh_token"].as_str().unwrap().to_string();
+    let thief = refresh(&stolen).await; // a copy of T, inside the grace window
+    assert_eq!(thief.status(), S::OK);
+    let thief_access = json_of(thief).await["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The owner comes back with S: two parties hold tokens for this device.
+    assert_eq!(refresh(&owner_next).await.status(), S::UNAUTHORIZED);
+    let me = reqwest::Client::new()
+        .get(h.url("/v1/me"))
+        .bearer_auth(&thief_access)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), S::UNAUTHORIZED, "the thief is signed out too");
+    expect_close(&mut ws, CloseCode::Policy).await;
 }
 
 #[tokio::test]
@@ -681,6 +721,96 @@ async fn rate_limit_key_uses_forwarded_address_only_from_trusted_proxies() {
     assert_eq!(other.status(), S::OK);
 }
 
+/// Regression: one subscriber holds a whole IPv6 /64, so keying by full address let them
+/// rotate addresses past the lockout.
+#[tokio::test]
+async fn ipv6_clients_are_rate_limited_per_64() {
+    let h = harness().await;
+    fn via(ip: &str) -> [(&str, &str); 3] {
+        [
+            CLIENT,
+            ("x-forwarded-proto", "https"),
+            ("x-forwarded-for", ip),
+        ]
+    }
+    for i in 0..5 {
+        let ip = format!("2001:db8:5:6::{:x}", i + 1);
+        h.login("nobody", "wrong password!", &via(&ip)).await;
+    }
+    let same_64 = h.login("alice", PW, &via("2001:db8:5:6:ffff::1")).await;
+    assert_eq!(same_64.status(), S::TOO_MANY_REQUESTS);
+    let other_64 = h.login("alice", PW, &via("2001:db8:5:7::1")).await;
+    assert_eq!(other_64.status(), S::OK);
+}
+
+/// Regression: parallel wrong guesses were all checked before any was counted.
+#[tokio::test]
+async fn parallel_wrong_logins_are_cut_off_at_the_limit() {
+    let h = Arc::new(harness().await);
+    let before = h.accounts.password_checks();
+    let tasks: Vec<_> = (0..30)
+        .map(|_| {
+            let h = h.clone();
+            tokio::spawn(async move {
+                h.login("alice", "wrong password!", &[CLIENT])
+                    .await
+                    .status()
+            })
+        })
+        .collect();
+    let mut statuses = vec![];
+    for t in tasks {
+        statuses.push(t.await.unwrap());
+    }
+    let unauthorised = statuses.iter().filter(|s| **s == S::UNAUTHORIZED).count();
+    assert!(unauthorised <= 5, "{statuses:?}");
+    assert!(
+        statuses.iter().all(|s| matches!(
+            *s,
+            S::UNAUTHORIZED | S::TOO_MANY_REQUESTS | S::SERVICE_UNAVAILABLE
+        )),
+        "{statuses:?}"
+    );
+    assert!(h.accounts.password_checks() - before <= 5);
+    assert_eq!(
+        h.login("alice", PW, &[CLIENT]).await.status(),
+        S::TOO_MANY_REQUESTS
+    );
+}
+
+#[tokio::test]
+async fn an_admin_password_reset_signs_the_user_out() {
+    let mut h = harness().await;
+    let mut ws = h.dial().await;
+    connect(&mut ws, &h.tok_a.clone()).await;
+    let _lms = h.lms.accept().await;
+    let (base, secret) = h.admin().await;
+    let r = reqwest::Client::new()
+        .post(format!("{base}/admin/v1/users/alice/password"))
+        .bearer_auth(&secret)
+        .json(&json!({ "password": "a brand new password" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::NO_CONTENT);
+    expect_close(&mut ws, CloseCode::Policy).await;
+    let me = reqwest::Client::new()
+        .get(h.url("/v1/me"))
+        .bearer_auth(&h.tok_a)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), S::UNAUTHORIZED);
+    // Bob is untouched.
+    let me = reqwest::Client::new()
+        .get(h.url("/v1/me"))
+        .bearer_auth(&h.tok_b)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), S::OK);
+}
+
 // ---------------------------------------------------------------------------
 // Two-step verification (TOTP)
 // ---------------------------------------------------------------------------
@@ -735,7 +865,13 @@ async fn bearer_post(
 /// Turn two-step on for alice through the API; returns the base32 secret.
 async fn enrol_alice(h: &Harness) -> String {
     let token = h.tok_a.clone();
-    let setup = bearer_post(h, "/v1/account/totp/setup", &token, None).await;
+    let setup = bearer_post(
+        h,
+        "/v1/account/totp/setup",
+        &token,
+        Some(json!({ "password": PW })),
+    )
+    .await;
     assert_eq!(setup.status(), S::OK);
     assert_eq!(setup.headers()["cache-control"], "no-store");
     let setup = json_of(setup).await;
@@ -830,6 +966,38 @@ async fn totp_endpoints_require_auth_and_csrf_header() {
         .await
         .unwrap();
     assert_eq!(r.status(), S::UNAUTHORIZED);
+}
+
+/// Regression: an access token alone (e.g. one lifted from a shared browser) could turn on
+/// two-step with the thief's authenticator, locking the owner out.
+#[tokio::test]
+async fn totp_setup_needs_the_password() {
+    let h = harness().await;
+    let token = h.tok_a.clone();
+    for (body, want) in [
+        (None, S::BAD_REQUEST),
+        (Some(json!({})), S::BAD_REQUEST),
+        (
+            Some(json!({ "password": "wrong password!" })),
+            S::UNAUTHORIZED,
+        ),
+        (Some(json!({ "password": PW, "extra": 1 })), S::BAD_REQUEST),
+    ] {
+        let r = bearer_post(&h, "/v1/account/totp/setup", &token, body.clone()).await;
+        assert_eq!(r.status(), want, "{body:?}");
+        let v: Value = r.json().await.unwrap();
+        assert!(v.get("secret").is_none(), "{v}");
+    }
+    // Nothing was started, so there is nothing to confirm.
+    let r = bearer_post(
+        &h,
+        "/v1/account/totp/confirm",
+        &token,
+        Some(json!({ "code": "123456" })),
+    )
+    .await;
+    assert_eq!(r.status(), S::BAD_REQUEST);
+    enrol_alice(&h).await;
 }
 
 #[tokio::test]

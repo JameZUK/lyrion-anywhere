@@ -179,25 +179,50 @@ impl KnownImages {
     }
 }
 
-/// Collect image URLs from an LMS response: absolute http(s) URLs in image-ish fields, and
-/// targets of `imageproxy/…` paths anywhere.
+/// Response fields that hold artwork or icons (LMS and SlimBrowse names).
+pub const IMAGE_KEYS: &[&str] = &[
+    "image",
+    "icon",
+    "icon-id",
+    "artwork_url",
+    "coverart",
+    "cover",
+];
+
+/// The URL in an `…imageproxy/<url-encoded URL>/…` string, if it is http(s).
+pub(crate) fn proxy_target(s: &str) -> Option<String> {
+    let i = s.find("imageproxy/")?;
+    let url = s[i + "imageproxy/".len()..]
+        .split('/')
+        .next()
+        .and_then(percent_decode)?;
+    (url.starts_with("http://") || url.starts_with("https://")).then_some(url)
+}
+
+/// A URL the image proxy must never fetch: one on the home network or the server itself.
+fn local_url(url: &str) -> bool {
+    crate::rpc_policy::sensitive_text(url)
+}
+
+/// Collect image URLs from an (already filtered) LMS response: absolute http(s) URLs and
+/// `imageproxy/…` targets, only in image fields. Any other text (track titles, player
+/// names) is user-controlled and never teaches the proxy a URL, and local URLs are never
+/// learned at all.
 pub fn learn_images(v: &Value, out: &mut Vec<String>) {
     match v {
         Value::Object(map) => {
             for (k, x) in map {
                 if let Value::String(s) = x {
-                    let imageish = matches!(
-                        k.as_str(),
-                        "image" | "icon" | "icon-id" | "artwork_url" | "coverart" | "cover"
-                    );
-                    if imageish && (s.starts_with("http://") || s.starts_with("https://")) {
-                        out.push(s.clone());
+                    if !IMAGE_KEYS.contains(&k.as_str()) {
+                        continue;
                     }
-                    if let Some(i) = s.find("imageproxy/") {
-                        let rest = &s[i + "imageproxy/".len()..];
-                        if let Some(url) = rest.split('/').next().and_then(percent_decode) {
-                            out.push(url);
-                        }
+                    let url = if s.starts_with("http://") || s.starts_with("https://") {
+                        Some(s.clone())
+                    } else {
+                        proxy_target(s)
+                    };
+                    if let Some(url) = url.filter(|u| !local_url(u)) {
+                        out.push(url);
                     }
                 } else {
                     learn_images(x, out);
@@ -255,7 +280,7 @@ pub async fn art(
             format!("/music/current/{name}?player={player}")
         }
         Some(Target::Proxy { url, name, encoded }) => {
-            if !gw.known_images.lock().unwrap().contains(&url) {
+            if local_url(&url) || !gw.known_images.lock().unwrap().contains(&url) {
                 tracing::warn!(user = %principal.username, "refused image proxy for an unknown URL");
                 return status(StatusCode::NOT_FOUND);
             }
@@ -432,6 +457,26 @@ mod tests {
                 "https://cdn.example.com/b.png"
             ]
         );
+    }
+
+    /// Regression: any `imageproxy/<url>` anywhere in a response (a track title, a player
+    /// name) taught the proxy that URL, so a user could make LMS fetch from the home network.
+    #[test]
+    fn images_are_learned_only_from_image_fields_and_never_local() {
+        let evil = "imageproxy/http%3A%2F%2F10.0.0.1%2Fx/image.png";
+        let v = serde_json::json!({
+            "players_loop": [{"name": format!("Kitchen {evil}")}],
+            "titles_loop": [{"title": format!("/{evil}"), "album": evil}],
+            "loop_loop": [
+                {"icon": format!("/{evil}")},
+                {"image": "http://10.0.0.1/admin.png"},
+                {"image": "http://nas.example.lan/a.jpg"},
+                {"artwork_url": "https://cdn.example.com/ok.jpg"}
+            ]
+        });
+        let mut out = vec![];
+        learn_images(&v, &mut out);
+        assert_eq!(out, vec!["https://cdn.example.com/ok.jpg"]);
     }
 
     #[test]

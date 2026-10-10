@@ -50,6 +50,12 @@ fn auth_error(e: AuthError) -> Response {
         )
             .into_response(),
         AuthError::BadInput(m) => error(StatusCode::BAD_REQUEST, m),
+        AuthError::Busy => {
+            let mut r = error(StatusCode::SERVICE_UNAVAILABLE, "busy; try again shortly");
+            r.headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            r
+        }
         AuthError::Storage(e) => {
             tracing::error!(error = %e, "account store error");
             error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
@@ -176,7 +182,11 @@ pub async fn login(
     })
     .await;
     match result {
-        Ok(Ok((t, refresh_in))) => token_response(t, refresh_in),
+        Ok(Ok((t, refresh_in))) => {
+            // Devices signed out to stay within the per-user limit.
+            gw.end_sessions_for(&t.evicted).await;
+            token_response(t, refresh_in)
+        }
         Ok(Err(e)) => auth_error(e),
         Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     }
@@ -205,7 +215,10 @@ pub async fn pair(
     };
     let client = client_id(&gw, peer, &headers);
     match gw.accounts().pair(&req.code, &req.device_name, &client) {
-        Ok(t) => token_response(t, RefreshIn::Body),
+        Ok(t) => {
+            gw.end_sessions_for(&t.evicted).await;
+            token_response(t, RefreshIn::Body)
+        }
         Err(e) => auth_error(e),
     }
 }
@@ -305,22 +318,43 @@ pub async fn account(State(gw): State<AppState>, headers: HeaderMap) -> Response
     }
 }
 
-/// Start two-step setup: returns the secret and `otpauth://` URI for the app.
-pub async fn totp_setup(State(gw): State<AppState>, headers: HeaderMap) -> Response {
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PasswordRequest {
+    password: String,
+}
+
+/// Start two-step setup: needs the account password; returns the secret and `otpauth://`
+/// URI for the app.
+pub async fn totp_setup(
+    State(gw): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
     if !csrf_ok(&gw, &headers) {
         return error(StatusCode::FORBIDDEN, "forbidden");
     }
     let Some(p) = principal(&gw, &headers) else {
         return error(StatusCode::UNAUTHORIZED, "invalid credentials");
     };
-    match gw.accounts().totp_begin(p.user_id, &p.username) {
-        Ok(setup) => {
+    let req: PasswordRequest = match parse(&body) {
+        Ok(r) => r,
+        Err((status, msg)) => return error(status, msg),
+    };
+    let accounts = gw.accounts().clone();
+    let result = tokio::task::spawn_blocking(move || {
+        accounts.totp_begin(p.user_id, &p.username, &req.password)
+    })
+    .await;
+    match result {
+        Ok(Ok(setup)) => {
             let mut r = Json(setup).into_response();
             r.headers_mut()
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             r
         }
-        Err(e) => auth_error(e),
+        Ok(Err(e)) => auth_error(e),
+        Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     }
 }
 

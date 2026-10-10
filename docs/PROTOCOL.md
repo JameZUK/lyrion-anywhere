@@ -25,29 +25,32 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
 | `POST /v1/auth/logout` | bearer access token | 204; revokes this device and ends its sessions |
 | `GET /v1/me` | bearer access token | `{user, device}` |
 | `GET /v1/account` | bearer access token | `{username, role, totp_enabled}` |
-| `POST /v1/account/totp/setup` | bearer access token | `{secret, uri, qr_svg}`: a new secret, active once confirmed |
+| `POST /v1/account/totp/setup` | `{"password"}` | `{secret, uri, qr_svg}`: a new secret, active once confirmed. A wrong password is 401 and counts towards the lockout |
 | `POST /v1/account/totp/confirm` | `{"code"}` | 204; two-step is now on |
 | `POST /v1/account/totp/disable` | `{"password","code"}` | 204; two-step is now off |
 
 - **Access tokens:** random, valid for 15 minutes. Use them as `Authorization: Bearer …` for streams and `/v1/me`, and as the first message on the player socket. Keep them in memory only.
 - **Refresh tokens:**
   - single use; each refresh returns a new one, valid for the sign-in lifetime (30 days by default, 1–365 set by the admin in the plugin settings). A device in use therefore stays signed in; one unused for the whole lifetime must sign in again;
-  - presenting a used one revokes the whole device, because the token has been copied. One exception: within 60 seconds of its use, while the token that replaced it is still unused, the response was lost (a phone suspended mid-request). The unused replacement is then discarded and a fresh one issued (audit event `refresh.retried`);
+  - presenting a used one revokes the whole device, because the token has been copied. One exception: within 60 seconds of its use, while the token that replaced it is still unused, the response was lost (a phone suspended mid-request). The unused replacement is then discarded and a fresh one issued (audit event `refresh.retried`). The discarded replacement is remembered: if it is presented later, two parties held tokens for the device, so it is revoked as for any reuse;
+  - rotation is a single database transaction, so two simultaneous refreshes of one token never look like reuse: one rotates it, the other is served by the grace rule;
   - clients sign out only when a refresh is refused (4xx). If the server can't be reached, they keep the sign-in and retry with backoff;
   - browsers get them in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/v1/auth`;
   - native apps get them in the body and keep them in the Keystore/Keychain.
 - **Two-step verification (optional, per user):** TOTP per RFC 6238 (HMAC-SHA1, 30 s, 6 digits), compatible with standard authenticator apps.
   - **Login:** once a user turns it on, a login with only the right password returns 401 `{"totp_required":true}`. The client then repeats the login with `"totp":"123456"`. A wrong password never reveals whether two-step is on.
   - **Codes:** each code works once; ±1 step is accepted for clock drift. Wrong codes count towards the same lockouts as wrong passwords.
+  - **Turning it on** needs the account password, so a stolen access token alone can't add an authenticator.
   - **Turning it off** needs the password and a current code.
   - **Lost authenticator:** the admin can reset two-step for a user.
   - **Not affected:** refresh and pairing, because the device was verified when it signed in.
-- **Devices:** each login (or pairing) is a device with its own player MAC. A browser can pass its previous `device_id` to keep the same LMS player, as long as the device belongs to the same user.
+- **Devices:** each login (or pairing) is a device with its own player MAC. A browser can pass its previous `device_id` to keep the same LMS player, as long as the device belongs to the same user. A user has at most 20 active devices: signing in (or pairing) another revokes the least recently seen one and ends its live session (audit event `device.evicted`).
 - **Errors:**
   - wrong credentials always return the same 401;
-  - repeated failures per username or per client address return 429 with `Retry-After`, with escalating lockouts;
+  - repeated failures per username or per client address return 429 with `Retry-After`, with escalating lockouts. An attempt counts from the moment it starts, so parallel guesses can't get past the limit. IPv6 clients are counted per /64, and usernames that can't exist get no entry of their own;
+  - at most 4 password checks run at once; beyond that, requests wait briefly and then get 503 with `Retry-After: 1`;
   - malformed or unknown fields return 400, and bodies over 4 KiB return 413.
-- **Revocation:** revoking a device, disabling or deleting a user, logging out, or detecting refresh-token reuse closes that device's live player session immediately (1008, "access revoked").
+- **Revocation:** revoking a device, disabling or deleting a user, an admin password reset, logging out, or detecting refresh-token reuse closes that device's live player session immediately (1008, "access revoked").
 
 ### Admin API
 
@@ -58,7 +61,7 @@ Requests are refused unless they come from loopback, carry no `X-Forwarded-*`/`F
 Endpoints:
 - `GET/POST /admin/v1/users`
 - `DELETE /admin/v1/users/{name}`
-- `POST /admin/v1/users/{name}/password`
+- `POST /admin/v1/users/{name}/password` (also revokes the user's devices, signing them out everywhere)
 - `POST /admin/v1/users/{name}/disabled`
 - `POST /admin/v1/users/{name}/pairing` (returns a one-time code, valid 10 minutes)
 - `POST /admin/v1/users/{name}/totp/reset` (removes two-step for a user who lost their authenticator)
@@ -184,7 +187,7 @@ Response: `{"result": {...}}`, or `{"error": "<reason>"}` with one of these stat
 - server-level commands (preferences, rescan, restart, `client`, display/IR, …) never run this way;
 - actions that change shared data (`favorites`, `jivefavorites`, `playlists`, presets) need the admin role;
 - paging (`start count`) is required for `… items` menus, optional for a navigation (a `go` action without `nextWindow`, which opens a submenu in LMS's own clients), and refused for any other action;
-- at most 4,000 learned actions per device, expiring after an hour.
+- at most 4,000 learned actions per device, expiring after an hour, and learned actions are kept for at most 1,000 devices (the least recently used go first).
 
 **Plugin entries (home menu).** Plugins also add entries to the player's home menu (My Music, Radio, Extras), not only to `apps`/`radios`. `menu <start> <count> [direct:1]` (permitted players only) returns that menu cut down to library and plugin entries: anything under the settings nodes, player power, and entries the app shows itself (library, favourites, search) are dropped before the device sees them, as are entries not reachable from a top-level node. Their actions are then learned like any menu's.
 
@@ -201,7 +204,9 @@ Everything else is refused, notably:
 
 **Response filtering:**
 - removed everywhere by key: `ip`, `uuid`, `httpport`, `url` (file paths and stream credentials), `mac`, `seq_no`, `remote_url`, `favorites_url` and `path`;
-- removed everywhere by value, whatever the key: `file:` URLs, and URLs whose host is private, loopback, link-local or a local name (`.local`, `.lan`, `.home.arpa`, …);
+- removed everywhere by value, whatever the key, when the text contains (anywhere, not only at the start): a `file:` URL; a URL whose host is private, loopback, link-local or a local name (`.local`, `.lan`, `.home.arpa`, …), directly or as an `imageproxy/` target; an absolute filesystem path of two or more segments (LMS's own artwork and icon paths excepted); or a Windows drive or UNC path. Slashes inside words ("AC/DC", "1990/91") don't count;
+- menu entries (`item_loop`) whose text is such a value, like track info's `Location: …` and `URL: …` lines, are dropped whole;
+- sync information (`syncgroups ?`, `sync ?`, and `sync_*` fields in `status`) lists only players the caller may control; groups with none are dropped;
 - player lists show only players the caller may control, with counts adjusted, and other-server counts removed.
 
 ## Diagnostics (`POST /v1/diagnostics`)
@@ -222,7 +227,7 @@ Allowed paths (validated on the raw, still-encoded path):
 |---|---|
 | `music/<id>/cover[_WxH[_m]][.ext]`, `music/<id>/thumb…` | Numeric or hex track id |
 | `music/current/cover…?player=<mac>` | Only for players the caller may control; not cached |
-| `imageproxy/<url-encoded http(s) URL>/image[_WxH[_m]][.ext]` | Only for image URLs LMS itself returned in an earlier `/v1/rpc` response. Anything else would let a user make LMS fetch arbitrary URLs on the home network (SSRF). |
+| `imageproxy/<url-encoded http(s) URL>/image[_WxH[_m]][.ext]` | Only for image URLs LMS itself returned in an image field (`image`, `icon`, `icon-id`, `artwork_url`, `coverart`, `cover`) of an earlier, filtered `/v1/rpc` response, and never for a URL on the home network or the server itself. Anything else would let a user make LMS fetch arbitrary URLs on the home network (SSRF): text such as track titles and player names can be set by users, so it never counts. |
 | `plugins/<Name>/html/…`, `plugins/cache/icons/…`, `html/images/…` | Image files only (`png`, `jpg`, `gif`, `svg`); no `..`, `//` or `%` encodings |
 
 Rules for what is relayed:
