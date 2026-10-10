@@ -50,11 +50,18 @@ What you must **not** do: forward or expose LMS's own ports (3483, 9000, 9090) t
 
 The plugin bundles the gateway for Linux on x86_64, aarch64 (64-bit Raspberry Pi and similar) and armhf (32-bit Raspberry Pi OS), plus the web app. It starts the gateway with LMS, restarts it if it stops, and gives you a settings page for everything.
 
-**From a release** (once releases are published):
+**From a release** (recommended):
 
 1. In LMS, open *Settings › Plugins*.
-2. At the bottom, under *Additional repositories*, add the release's `repo.xml` URL, shown on the project's [Releases](https://github.com/JameZUK/lyrion-anywhere/releases) page. Click *Apply*.
+2. At the bottom, under *Additional repositories*, add this address and click *Apply*:
+
+   ```
+   https://github.com/JameZUK/lyrion-anywhere/releases/latest/download/repo.xml
+   ```
+
 3. Find **Lyrion Anywhere** in the list, tick it, click *Apply*, and restart LMS when asked.
+
+LMS then offers updates automatically. Releases and their notes are on the project's [Releases](https://github.com/JameZUK/lyrion-anywhere/releases) page.
 
 **From source:**
 

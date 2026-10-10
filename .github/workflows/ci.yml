@@ -99,7 +99,12 @@ jobs:
   release:
     # The full cross-build takes a while: run it on main and on tags, not on every branch.
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    # A release is published only when every other check passed.
+    needs: [test, web, plugin, deploy, supply-chain]
     runs-on: ubuntu-latest
+    # Write access only here, and only used by the last step, on version tags.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build the plugin release (three gateways, browser player)
@@ -117,3 +122,17 @@ jobs:
           path: |
             dist/*.zip
             dist/repo.xml
+      - name: Publish the GitHub release (version tags only)
+        # Only after every other job passed for this tag.
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          version=$(sed -n 's:.*<version>\(.*\)</version>.*:\1:p' plugin/Plugins/LyrionAnywhere/install.xml)
+          [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "tag $GITHUB_REF_NAME doesn't match install.xml version $version" >&2; exit 1; }
+          notes="docs/release-notes/$GITHUB_REF_NAME.md"
+          [ -f "$notes" ] || { echo "missing $notes" >&2; exit 1; }
+          (cd dist && sha256sum *.zip repo.xml > SHA256SUMS)
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/repo.xml dist/SHA256SUMS \
+            --verify-tag --title "Lyrion Anywhere $version" --notes-file "$notes"
