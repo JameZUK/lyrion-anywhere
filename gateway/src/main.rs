@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use anywhere_gateway::accounts::{Accounts, Role};
+use anywhere_gateway::limits::{self, ServeLimits};
 use anywhere_gateway::{Config, Gateway, admin, random_id, router, transcode};
 
 #[derive(Parser)]
@@ -62,6 +63,9 @@ enum Cmd {
         /// Disk space for transcoded downloads, in MiB (the least recently used go first).
         #[arg(long, default_value_t = 2048, value_parser = clap::value_parser!(u64).range(16..=1_048_576))]
         download_cache_mb: u64,
+        /// Open client connections at once (beyond this, new ones wait).
+        #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u64).range(16..=65_536))]
+        max_connections: u64,
     },
     /// Administer accounts directly (before the LMS plugin is set up).
     Admin {
@@ -131,6 +135,7 @@ fn main() {
             ffmpeg,
             no_transcode,
             download_cache_mb,
+            max_connections,
         } => {
             if !admin_listen.ip().is_loopback() {
                 fail("--admin-listen must be a loopback address");
@@ -151,13 +156,14 @@ fn main() {
                 lms_cli: format!("{lms}:{lms_cli_port}"),
                 lms_ips,
                 allowed_origins,
-                trusted_proxies,
+                trusted_proxies: trusted_proxies.clone(),
                 static_dir,
                 ffmpeg: transcoder(ffmpeg.as_deref(), no_transcode),
                 download_cache_dir: Some(data_dir.join("download-cache")),
                 download_cache_bytes: download_cache_mb * 1024 * 1024,
                 ..Config::default()
             };
+            let body_timeout = cfg.body_timeout;
             let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| fail(e));
             rt.block_on(async move {
                 let gw = Gateway::new(cfg, accounts.clone());
@@ -173,17 +179,32 @@ fn main() {
                     );
                 }
                 tracing::info!(%listen, %admin_listen, "gateway listening");
-                let admin_app = admin::router(gw.clone(), admin_secret);
+                let admin_app = admin::router(gw.clone(), admin_secret).layer(
+                    axum::middleware::from_fn_with_state(body_timeout, limits::body_deadline),
+                );
                 let public_app = router(gw);
-                let a = tokio::spawn(async move {
-                    axum::serve(adminl, admin_app.into_make_service_with_connect_info::<SocketAddr>()).await
-                });
-                axum::serve(public, public_app.into_make_service_with_connect_info::<SocketAddr>())
-                    .with_graceful_shutdown(async {
+                let a = tokio::spawn(limits::serve(
+                    adminl,
+                    admin_app,
+                    ServeLimits {
+                        max_connections: 64,
+                        ..ServeLimits::default()
+                    },
+                    std::future::pending(),
+                ));
+                limits::serve(
+                    public,
+                    public_app,
+                    ServeLimits {
+                        max_connections: max_connections as usize,
+                        trusted_proxies,
+                        ..ServeLimits::default()
+                    },
+                    async {
                         let _ = tokio::signal::ctrl_c().await;
-                    })
-                    .await
-                    .unwrap_or_else(|e| fail(e.to_string()));
+                    },
+                )
+                .await;
                 a.abort();
             });
         }

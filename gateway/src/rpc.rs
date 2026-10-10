@@ -23,6 +23,85 @@ const MAX_BODY: usize = 8 * 1024;
 /// Devices whose learned menu actions are kept; beyond this the least recently used go.
 pub const MAX_ACTION_DEVICES: usize = 1000;
 const LMS_TIMEOUT: Duration = Duration::from_secs(30);
+/// Largest LMS JSON-RPC answer read (larger ones fail with 502 rather than filling memory).
+pub(crate) const MAX_LMS_RESPONSE: usize = 16 * 1024 * 1024;
+/// Pause before the one retry of an idempotent LMS request.
+const RETRY_PAUSE: Duration = Duration::from_millis(250);
+
+/// A failed LMS exchange.
+#[derive(Debug)]
+pub(crate) struct LmsFailure {
+    /// Worth one more try: a connection-level failure or a 5xx answer (LMS's web server
+    /// sometimes refuses a request just after clients abort large downloads).
+    pub retryable: bool,
+    pub message: String,
+}
+
+impl LmsFailure {
+    fn fatal(message: impl Into<String>) -> Self {
+        LmsFailure {
+            retryable: false,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn from_reqwest(e: &reqwest::Error) -> Self {
+        LmsFailure {
+            retryable: !e.is_timeout() && (e.is_connect() || e.is_request()),
+            // Without the URL: logs carry no LMS addresses, paths or query strings.
+            message: format!("{}", WithoutUrl(e)),
+        }
+    }
+}
+
+/// Display a reqwest error without its URL.
+struct WithoutUrl<'a>(&'a reqwest::Error);
+
+impl std::fmt::Display for WithoutUrl<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::error::Error;
+        let kind = if self.0.is_timeout() {
+            "timed out"
+        } else if self.0.is_connect() {
+            "connection failed"
+        } else if self.0.is_body() || self.0.is_decode() {
+            "response broke off"
+        } else {
+            "request failed"
+        };
+        write!(f, "{kind}")?;
+        // The innermost cause (e.g. "connection reset by peer") names no URL.
+        let mut cause = self.0.source();
+        let mut last = None;
+        while let Some(c) = cause {
+            last = Some(c);
+            cause = c.source();
+        }
+        if let Some(c) = last {
+            write!(f, ": {c}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Read a response body of at most `max` bytes, chunk by chunk: a larger one is refused as
+/// soon as it says so (Content-Length) or passes the limit, never read whole.
+pub(crate) async fn read_capped(resp: reqwest::Response, max: usize) -> Result<Vec<u8>, String> {
+    use futures_util::StreamExt;
+    if resp.content_length().is_some_and(|n| n > max as u64) {
+        return Err("LMS response over the size limit".into());
+    }
+    let mut out = Vec::with_capacity(resp.content_length().unwrap_or(0) as usize);
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| WithoutUrl(&e).to_string())?;
+        if out.len() + chunk.len() > max {
+            return Err("LMS response over the size limit".into());
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -279,21 +358,64 @@ impl crate::Gateway {
         cmd: &[String],
         limit: Duration,
     ) -> Result<Value, String> {
-        let body = json!({ "id": 1, "method": "slim.request", "params": [player, cmd] });
-        let resp = self
-            .http
-            .post(format!("http://{}/jsonrpc.js", self.cfg.lms_http))
-            .timeout(limit)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(body.to_string())
-            .send()
+        self.lms_command_once(player, cmd, limit)
             .await
-            .map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            return Err(format!("LMS status {}", resp.status()));
+            .map_err(|f| f.message)
+    }
+
+    /// [`Self::lms_command_within`] for a query that changes nothing: tried once more after
+    /// a short pause if the first attempt failed at the connection level or with a 5xx.
+    pub(crate) async fn lms_query_retrying(
+        &self,
+        player: &str,
+        cmd: &[String],
+        limit: Duration,
+    ) -> Result<Value, String> {
+        match self.lms_command_once(player, cmd, limit).await {
+            Err(f) if f.retryable => {
+                warn!(error = %f.message, "LMS JSON-RPC failed; retrying once");
+                tokio::time::sleep(RETRY_PAUSE).await;
+                self.lms_command_once(player, cmd, limit)
+                    .await
+                    .map_err(|f| f.message)
+            }
+            r => r.map_err(|f| f.message),
         }
-        let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-        let v: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    }
+
+    async fn lms_command_once(
+        &self,
+        player: &str,
+        cmd: &[String],
+        limit: Duration,
+    ) -> Result<Value, LmsFailure> {
+        let body = json!({ "id": 1, "method": "slim.request", "params": [player, cmd] });
+        let exchange = async {
+            let resp = self
+                .http
+                .post(format!("http://{}/jsonrpc.js", self.cfg.lms_http))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(body.to_string())
+                .send()
+                .await
+                .map_err(|e| LmsFailure::from_reqwest(&e))?;
+            let status = resp.status();
+            if !status.is_success() {
+                return Err(LmsFailure {
+                    retryable: status.is_server_error(),
+                    message: format!("LMS status {status}"),
+                });
+            }
+            read_capped(resp, MAX_LMS_RESPONSE)
+                .await
+                .map_err(LmsFailure::fatal)
+        };
+        // One limit for the whole exchange, body included.
+        let bytes = tokio::time::timeout(limit, exchange)
+            .await
+            .map_err(|_| LmsFailure::fatal("LMS timed out"))??;
+        let v: Value =
+            serde_json::from_slice(&bytes).map_err(|e| LmsFailure::fatal(e.to_string()))?;
         Ok(v.get("result").cloned().unwrap_or_else(|| json!({})))
     }
 
