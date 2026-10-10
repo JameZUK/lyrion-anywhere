@@ -4,6 +4,9 @@
 	import * as auth from '$lib/api/auth';
 	import { ApiError } from '$lib/api/http';
 	import Icon from '$lib/components/Icon.svelte';
+	import { detect, type Capabilities } from '$lib/player/capabilities';
+
+	let caps = $state<Capabilities | null>(null);
 
 	let account = $state<auth.Account | null>(null);
 	let setup = $state<auth.TotpSetup | null>(null);
@@ -136,6 +139,30 @@
 	</div>
 
 	<div class="card">
+		<h2>Playback capabilities</h2>
+		<p class="muted">What this browser supports for playing in the background. Useful when reporting a problem.</p>
+		{#if !caps}
+			<button class="btn" onclick={() => (caps = detect())}>Check this browser</button>
+		{:else}
+			<dl class="diag">
+				<dt>Managed Media Source</dt><dd>{caps.managedMediaSource ? 'yes' : 'no'}</dd>
+				<dt>Media Source</dt><dd>{caps.mediaSource ? 'yes' : 'no'}</dd>
+				<dt>AudioWorklet</dt><dd>{caps.audioWorklet ? 'yes' : 'no'}</dd>
+				<dt>Audio session</dt><dd>{caps.audioSession ? 'yes' : 'no'}</dd>
+			</dl>
+			<table class="caps">
+				<thead><tr><th>Format</th><th>Managed</th><th>Classic</th></tr></thead>
+				<tbody>
+					{#each caps.types as t (t.type)}
+						<tr><td><code>{t.type}</code></td><td>{t.managed ? 'yes' : '–'}</td><td>{t.classic ? 'yes' : '–'}</td></tr>
+					{/each}
+				</tbody>
+			</table>
+			<p class="muted small">{caps.userAgent}</p>
+		{/if}
+	</div>
+
+	<div class="card">
 		<h2>Appearance</h2>
 		<div class="row" role="radiogroup" aria-label="Theme">
 			{#each ['system', 'light', 'dark'] as const as t (t)}
@@ -226,6 +253,23 @@
 	.diag dd {
 		margin: 0;
 		font-variant-numeric: tabular-nums;
+	}
+	.caps {
+		width: 100%;
+		margin-top: 0.75rem;
+		border-collapse: collapse;
+		font-size: 0.85rem;
+	}
+	.caps th,
+	.caps td {
+		text-align: left;
+		padding: 0.25rem 0.5rem;
+		border-bottom: 1px solid var(--line);
+	}
+	.caps code {
+		font-family: var(--mono);
+		font-size: 0.8rem;
+		word-break: break-all;
 	}
 	.note {
 		padding: 0.6rem 0.9rem;
