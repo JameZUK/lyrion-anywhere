@@ -30,7 +30,9 @@
 
 pub mod accounts;
 pub mod admin;
+pub mod art;
 mod auth;
+pub mod events;
 mod relay;
 mod rpc;
 pub mod rpc_policy;
@@ -60,6 +62,8 @@ pub struct Config {
     /// LMS Slimproto and HTTP listeners (host:port).
     pub lms_slimproto: String,
     pub lms_http: String,
+    /// LMS command-line interface (host:port), for notifications.
+    pub lms_cli: String,
     /// Addresses LMS may name in `strm` server_ip (0.0.0.0 is always allowed).
     pub lms_ips: Vec<Ipv4Addr>,
     /// Extra `Origin` values (e.g. `https://music.example.com`) accepted on WebSocket
@@ -85,6 +89,7 @@ impl Default for Config {
         Config {
             lms_slimproto: "127.0.0.1:3483".into(),
             lms_http: "127.0.0.1:9000".into(),
+            lms_cli: "127.0.0.1:9090".into(),
             lms_ips: vec![],
             allowed_origins: vec![],
             trusted_proxies: vec![],
@@ -106,6 +111,9 @@ pub struct Gateway {
     /// App and radio commands LMS lists in its menus (the only plugin commands allowed).
     apps: Mutex<std::collections::HashSet<String>>,
     apps_refreshed: Mutex<Option<std::time::Instant>>,
+    /// Image URLs LMS has handed out (the only ones its image proxy may fetch for clients).
+    known_images: Mutex<art::KnownImages>,
+    events: Arc<events::Hub>,
 }
 
 pub type AppState = Arc<Gateway>;
@@ -125,6 +133,8 @@ impl Gateway {
             sessions: Mutex::new(HashMap::new()),
             apps: Mutex::new(Default::default()),
             apps_refreshed: Mutex::new(None),
+            known_images: Mutex::new(Default::default()),
+            events: Arc::new(events::Hub::default()),
         })
     }
 
@@ -181,6 +191,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/account/totp/confirm", post(auth::totp_confirm))
         .route("/v1/account/totp/disable", post(auth::totp_disable))
         .route("/v1/rpc", post(rpc::rpc))
+        .route("/v1/art/{*path}", get(art::art))
+        .route("/v1/events", get(events::events_upgrade))
         .route("/v1/player", get(tunnel::player_upgrade))
         .route("/v1/stream/{session}/{n}", get(relay::stream));
     app = match &state.cfg.static_dir {
@@ -212,6 +224,10 @@ async fn security_headers(req: Request, next: Next) -> Response {
         "cross-origin-opener-policy",
         HeaderValue::from_static("same-origin"),
     );
+    // A handler may set a stricter policy of its own (e.g. artwork).
+    if h.contains_key("content-security-policy") {
+        return resp;
+    }
     h.insert(
         "content-security-policy",
         HeaderValue::from_static(

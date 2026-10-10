@@ -4,6 +4,22 @@ Dated entries, newest first.
 
 ## 2026-10-10
 
+### Phase 1: artwork and events
+- **`/v1/art/…`:**
+  - fixed path patterns for covers, the current cover (permitted players only), and plugin/built-in icons;
+  - image-proxy URLs only if LMS itself handed them out, so a user can't make LMS fetch arbitrary home-network URLs (SSRF);
+  - only real images are relayed, size-capped, with a sandboxing CSP (inert SVGs).
+- **`WS /v1/events`:**
+  - one LMS CLI listener shared by all subscribers;
+  - events filtered to the caller's permitted players;
+  - only playback-related event types; URLs and paths redacted;
+  - revocation and permission changes applied within 30 s.
+- **Bugs found and fixed:**
+  - Image-proxy art could never load: axum decoded `%2F` in the path. Art paths are now validated raw, which also blocks encoded traversal.
+  - The CLI still sent its old default MAC after the switch to accounts. The gateway correctly refused it; the CLI now uses the gateway-assigned identity.
+- **Tests:** 18 new; all 8 art/events protections confirmed by mutation checks (one test gap found and closed).
+- **Live:** real covers and icons served, LAN-address image proxy refused, unpermitted current-cover refused, events delivered to the right subscribers.
+
 ### Phase 1: browse and control (`/v1/rpc`)
 - **Default-deny allow-list** for LMS JSON-RPC. Every argument is validated; only app commands learned from LMS's own menus are allowed; URLs and file paths are refused in every form; rescan is admin-only.
 - **Player permissions:** admins control everything; listeners control their own devices plus admin-granted home players (admin API for grants).

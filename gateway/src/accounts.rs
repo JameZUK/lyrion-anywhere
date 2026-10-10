@@ -901,6 +901,20 @@ impl Accounts {
         Ok(ids)
     }
 
+    /// The device exists, isn't revoked, and its user isn't disabled.
+    pub fn device_active(&self, device_id: i64) -> bool {
+        self.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT 1 FROM devices d JOIN users u ON u.id = d.user_id
+                 WHERE d.id = ?1 AND d.revoked = 0 AND u.disabled = 0",
+                [device_id],
+                |_| Ok(()),
+            )
+            .is_ok()
+    }
+
     pub fn touch_device(&self, device_id: i64) {
         let _ = self.db.lock().unwrap().execute(
             "UPDATE devices SET last_seen = ?1 WHERE id = ?2",

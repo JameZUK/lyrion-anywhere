@@ -44,6 +44,8 @@ pub struct Recorded {
     pub stats: Vec<Vec<u8>>,
     /// JSON-RPC `params` ([player, [cmd...]]) received, in order.
     pub rpc: Vec<serde_json::Value>,
+    /// What clients sent to the CLI port.
+    pub cli_in: Vec<String>,
 }
 
 /// Canned LMS JSON-RPC results, deliberately full of things that must not leak.
@@ -67,6 +69,9 @@ pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
         }
         "apps" => json!({"count": 1, "appss_loop": [{"cmd": "spotty", "name": "Spotty"}]}),
         "radios" => json!({"count": 1, "radioss_loop": [{"cmd": "bbcsounds", "name": "BBC"}]}),
+        "favorites" => json!({"count": 1, "loop_loop": [
+            {"id": "f.1", "name": "Station", "image": "https://cdn.example.com/a.jpg", "url": "http://stream.example/x?token=secret"}
+        ]}),
         _ => json!({"ok": 1}),
     }
 }
@@ -74,6 +79,9 @@ pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
 pub struct FakeLms {
     pub slim_addr: SocketAddr,
     pub http_addr: SocketAddr,
+    /// Fake CLI (notifications): lines sent with `cli_send` go to every listener.
+    pub cli_addr: SocketAddr,
+    pub cli_clients: Arc<tokio::sync::Mutex<Vec<OwnedWriteHalf>>>,
     pub rec: Arc<Mutex<Recorded>>,
     pub conns: mpsc::Receiver<OwnedWriteHalf>,
     pub audio: Arc<Vec<u8>>,
@@ -135,6 +143,15 @@ impl FakeLms {
                     let reply = serde_json::json!({"id": 1, "method": "slim.request", "result": fake_rpc_result(&cmd)});
                     return ([("content-type", "application/json")], Body::from(reply.to_string())).into_response_parts();
                 }
+                let p = req.uri().path().to_string();
+                if p.starts_with("/music/666/") {
+                    // A "cover" that isn't an image: must not be relayed.
+                    return ([("content-type", "text/html")], Body::from("<script>alert(1)</script>")).into_response_parts();
+                }
+                if p.starts_with("/music/") || p.starts_with("/imageproxy/") || p.starts_with("/html/images/") || p.starts_with("/plugins/") {
+                    let ct = if p.ends_with(".svg") { "image/svg+xml" } else { "image/jpeg" };
+                    return ([("content-type", ct)], Body::from(b"IMAGEDATA".to_vec())).into_response_parts();
+                }
                 if req.uri().path() == "/stream.mp3" {
                     (
                         [("content-type", "audio/flac")],
@@ -152,9 +169,35 @@ impl FakeLms {
         }));
         tokio::spawn(async move { axum::serve(http, app).await.unwrap() });
 
+        let cli = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cli_addr = cli.local_addr().unwrap();
+        let cli_clients: Arc<tokio::sync::Mutex<Vec<OwnedWriteHalf>>> = Default::default();
+        let (cc, r) = (cli_clients.clone(), rec.clone());
+        tokio::spawn(async move {
+            while let Ok((sock, _)) = cli.accept().await {
+                let (mut rd, wr) = sock.into_split();
+                cc.lock().await.push(wr);
+                let r = r.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    while let Ok(n) = rd.read(&mut buf).await {
+                        if n == 0 {
+                            break;
+                        }
+                        r.lock()
+                            .unwrap()
+                            .cli_in
+                            .push(String::from_utf8_lossy(&buf[..n]).into_owned());
+                    }
+                });
+            }
+        });
+
         FakeLms {
             slim_addr,
             http_addr,
+            cli_addr,
+            cli_clients,
             rec,
             conns,
             audio,
@@ -191,6 +234,17 @@ impl FakeLms {
             .iter()
             .map(|p| anywhere_core::proto::Stat::parse(p).unwrap())
             .collect()
+    }
+
+    /// Send a notification line to every CLI listener.
+    pub async fn cli_send(&self, line: &str) {
+        for w in self.cli_clients.lock().await.iter_mut() {
+            let _ = w.write_all(format!("{line}\n").as_bytes()).await;
+        }
+    }
+
+    pub async fn cli_listener_count(&self) -> usize {
+        self.cli_clients.lock().await.len()
     }
 
     pub fn rpc_calls(&self) -> Vec<serde_json::Value> {
@@ -236,6 +290,7 @@ pub async fn harness_with(mutate: impl FnOnce(&mut Config)) -> Harness {
     let mut cfg = Config {
         lms_slimproto: lms.slim_addr.to_string(),
         lms_http: lms.http_addr.to_string(),
+        lms_cli: lms.cli_addr.to_string(),
         lms_ips: vec![Ipv4Addr::LOCALHOST],
         auth_timeout: Duration::from_millis(300),
         ..Config::default()

@@ -185,3 +185,32 @@ Everything else is refused, notably:
 **Response filtering:**
 - removed everywhere: `ip`, `uuid`, `httpport`, `url` (file paths and stream credentials), `mac`, `seq_no`, `remote_url` and `path`;
 - player lists show only players the caller may control, with counts adjusted, and other-server counts removed.
+
+## Artwork (`GET /v1/art/<path>`)
+
+Bearer access token required. Browsers fetch art with `fetch()` and display it through blob URLs, so credentials never appear in image URLs.
+
+Allowed paths (validated on the raw, still-encoded path):
+
+| Path | Notes |
+|---|---|
+| `music/<id>/cover[_WxH[_m]][.ext]`, `music/<id>/thumb…` | Numeric or hex track id |
+| `music/current/cover…?player=<mac>` | Only for players the caller may control; not cached |
+| `imageproxy/<url-encoded http(s) URL>/image[_WxH[_m]][.ext]` | Only for image URLs LMS itself returned in an earlier `/v1/rpc` response. Anything else would let a user make LMS fetch arbitrary URLs on the home network (SSRF). |
+| `plugins/<Name>/html/…`, `plugins/cache/icons/…`, `html/images/…` | Image files only (`png`, `jpg`, `gif`, `svg`); no `..`, `//` or `%` encodings |
+
+Rules for what is relayed:
+- only JPEG/PNG/GIF/WebP/SVG responses, at most 20 MiB;
+- every response carries `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`, so an SVG can't run script on the gateway's origin.
+
+## Events (`WS /v1/events`)
+
+**Connecting:** the first message is the access token, as text. The gateway replies `{"subscribed":true}`, then sends `{"player":"<mac>","event":[...]}` for the caller's permitted players and `{"player":null,"event":["rescan",...]}` for library rescans. `{"resync":true}` means some events were missed, so re-query state.
+
+**What is forwarded:** only `playlist`, `mixer`, `power`, `client`, `sync`, `pause`, `play`, `stop`, `time` and `newmetadata` events. Any token that looks like a URL or path is blanked. Preference changes (`prefset`) and everything else are never forwarded.
+
+**Rules:**
+- Clients may send nothing after the token. Any message closes the socket (1008).
+- Revocation and permission changes are re-checked every 30 s: a revoked device is disconnected, and new grants take effect.
+
+**Upstream:** the gateway keeps one connection to the LMS CLI (`--lms-cli-port`, default 9090) while anyone is subscribed, and reconnects with backoff.

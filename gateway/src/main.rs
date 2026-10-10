@@ -38,6 +38,9 @@ enum Cmd {
         lms_slimproto_port: u16,
         #[arg(long, default_value_t = 9000)]
         lms_http_port: u16,
+        /// LMS command-line interface port (for notifications).
+        #[arg(long, default_value_t = 9090)]
+        lms_cli_port: u16,
         /// Extra Origin accepted for WebSocket upgrades and auth requests (repeatable).
         #[arg(long = "allowed-origin")]
         allowed_origins: Vec<String>,
@@ -92,6 +95,7 @@ fn main() {
             lms,
             lms_slimproto_port,
             lms_http_port,
+            lms_cli_port,
             allowed_origins,
             trusted_proxies,
             static_dir,
@@ -112,6 +116,7 @@ fn main() {
             let cfg = Config {
                 lms_slimproto: format!("{lms}:{lms_slimproto_port}"),
                 lms_http: format!("{lms}:{lms_http_port}"),
+                lms_cli: format!("{lms}:{lms_cli_port}"),
                 lms_ips,
                 allowed_origins,
                 trusted_proxies,

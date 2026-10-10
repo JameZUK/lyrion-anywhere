@@ -143,14 +143,6 @@ fn read_password() -> Result<String, String> {
 }
 
 fn run(args: Args) -> Result<(), String> {
-    let player = Arc::new(Mutex::new(Player::new(PlayerConfig {
-        mac: args.mac,
-        uuid: [0; 16],
-        name: args.name.clone(),
-        codecs: args.codecs.clone(),
-        max_sample_rate: 192_000,
-        firmware: env!("CARGO_PKG_VERSION").into(),
-    })));
     let epoch = Instant::now();
     let now = move || epoch.elapsed().as_millis() as u64;
 
@@ -165,9 +157,9 @@ fn run(args: Args) -> Result<(), String> {
             tx.clone(),
         )?;
         println!(
-            "connected via gateway {url} as {} ({})",
-            args.name,
-            format_mac(&args.mac)
+            "connected via gateway {url} as {} ({}), assigned by the gateway",
+            conn.name,
+            format_mac(&conn.mac)
         );
         Control::Gateway(conn)
     } else {
@@ -184,6 +176,19 @@ fn run(args: Args) -> Result<(), String> {
         Control::Direct { sock, addr }
     };
 
+    // Through the gateway, the player identity is the one it assigned to this device.
+    let (mac, name) = match &control {
+        Control::Gateway(g) => (g.mac, g.name.clone()),
+        Control::Direct { .. } => (args.mac, args.name.clone()),
+    };
+    let player = Arc::new(Mutex::new(Player::new(PlayerConfig {
+        mac,
+        uuid: [0; 16],
+        name,
+        codecs: args.codecs.clone(),
+        max_sample_rate: 192_000,
+        firmware: env!("CARGO_PKG_VERSION").into(),
+    })));
     player.lock().unwrap().connected(now());
 
     let mut audio = Audio::new(player.clone(), args.null);

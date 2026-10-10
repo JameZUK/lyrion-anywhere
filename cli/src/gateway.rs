@@ -31,6 +31,9 @@ const ACK_EVERY: u64 = 256 * 1024;
 
 pub struct GatewayConn {
     pub session: String,
+    /// The player identity the gateway assigned to this device (must be used in HELO).
+    pub mac: [u8; 6],
+    pub name: String,
     base: String,
     /// Current access token; renewed in the background before it expires.
     token: Arc<Mutex<String>>,
@@ -220,14 +223,12 @@ pub fn connect(
 
     ws.send(Message::Text(access.into()))
         .map_err(|e| e.to_string())?;
-    let session = match ws
+    let greeting = match ws
         .read()
         .map_err(|e| format!("gateway refused the connection: {e}"))?
     {
         Message::Text(t) => serde_json::from_str::<serde_json::Value>(t.as_str())
-            .ok()
-            .and_then(|v| v["session"].as_str().map(String::from))
-            .ok_or("bad session message from gateway")?,
+            .map_err(|_| "bad greeting from gateway")?,
         Message::Close(f) => {
             return Err(format!(
                 "gateway closed the connection: {}",
@@ -283,8 +284,22 @@ pub fn connect(
         }
     });
 
+    let session = greeting["session"]
+        .as_str()
+        .ok_or("greeting has no session")?
+        .to_string();
+    let mac = greeting["mac"]
+        .as_str()
+        .and_then(anywhere_core::proto::parse_mac)
+        .ok_or("greeting has no valid player MAC")?;
+    let name = greeting["name"]
+        .as_str()
+        .unwrap_or("Anywhere CLI")
+        .to_string();
     Ok(GatewayConn {
         session,
+        mac,
+        name,
         base,
         token,
         agent,

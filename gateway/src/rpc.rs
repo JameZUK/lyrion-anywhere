@@ -96,6 +96,15 @@ pub async fn rpc(
             if checked.kind == Kind::AppMenu {
                 gw.add_apps(rpc_policy::learn_apps(&result));
             }
+            // Remember image URLs LMS handed out, so their artwork can be fetched later.
+            let mut images = Vec::new();
+            crate::art::learn_images(&result, &mut images);
+            if !images.is_empty() {
+                let mut known = gw.known_images.lock().unwrap();
+                for url in images {
+                    known.insert(url);
+                }
+            }
             let filtered = rpc_policy::filter_response(checked.kind, result, &|p| scope.allows(p));
             Json(json!({ "result": filtered })).into_response()
         }
