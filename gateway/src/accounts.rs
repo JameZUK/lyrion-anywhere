@@ -119,6 +119,36 @@ pub struct UserInfo {
     pub role: &'static str,
     pub disabled: bool,
     pub totp_enabled: bool,
+    /// May this user download tracks for offline use?
+    pub downloads: bool,
+    /// The download formats this user may choose (see [`DOWNLOAD_FORMATS`]).
+    pub download_formats: Vec<String>,
+}
+
+/// Download formats an admin can allow: the original file, or a transcode.
+pub const DOWNLOAD_FORMATS: [&str; 3] = ["original", "mp3", "opus"];
+
+/// A user's download permission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadPolicy {
+    pub enabled: bool,
+    /// Allowed formats, in [`DOWNLOAD_FORMATS`] order.
+    pub formats: Vec<&'static str>,
+}
+
+impl DownloadPolicy {
+    pub fn allows(&self, format: &str) -> bool {
+        self.enabled && self.formats.contains(&format)
+    }
+}
+
+/// Stored formats (comma-separated) as a clean list: unknown words are dropped.
+fn parse_formats(stored: &str) -> Vec<&'static str> {
+    let words: Vec<&str> = stored.split(',').map(str::trim).collect();
+    DOWNLOAD_FORMATS
+        .into_iter()
+        .filter(|f| words.contains(f))
+        .collect()
 }
 
 /// What a user needs to add two-step verification to an authenticator app.
@@ -574,7 +604,8 @@ impl Accounts {
     pub fn list_users(&self) -> Result<Vec<UserInfo>, AuthError> {
         let db = self.db.lock().unwrap();
         let mut st = db.prepare(
-            "SELECT id, username, role, disabled, totp_enabled FROM users ORDER BY username",
+            "SELECT id, username, role, disabled, totp_enabled, downloads, download_formats
+             FROM users ORDER BY username",
         )?;
         let rows = st.query_map([], |r| {
             let role: String = r.get(2)?;
@@ -584,6 +615,11 @@ impl Accounts {
                 role: Role::parse(&role).unwrap_or(Role::Listener).as_str(),
                 disabled: r.get::<_, i64>(3)? != 0,
                 totp_enabled: r.get::<_, i64>(4)? != 0,
+                downloads: r.get::<_, i64>(5)? != 0,
+                download_formats: parse_formats(&r.get::<_, String>(6)?)
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -897,6 +933,97 @@ impl Accounts {
             .join(",");
         self.audit("settings.admin_only_plugins", None, None, &joined);
         Ok(())
+    }
+
+    /// A user's download permission, read afresh each time so an admin's change applies to
+    /// the next request. A disabled or unknown user may download nothing.
+    pub fn download_policy(&self, user_id: i64) -> Result<DownloadPolicy, AuthError> {
+        let row: Option<(i64, String)> = self
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT downloads, download_formats FROM users WHERE id = ?1 AND disabled = 0",
+                [user_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(match row {
+            Some((on, formats)) => DownloadPolicy {
+                enabled: on != 0,
+                formats: parse_formats(&formats),
+            },
+            None => DownloadPolicy {
+                enabled: false,
+                formats: vec![],
+            },
+        })
+    }
+
+    /// Turn downloads on or off for a user, and optionally set the formats they may use
+    /// (one or more of [`DOWNLOAD_FORMATS`]).
+    pub fn set_downloads(
+        &self,
+        username: &str,
+        enabled: bool,
+        formats: Option<&[String]>,
+    ) -> Result<(), AuthError> {
+        let formats = match formats {
+            Some(list) => {
+                if list.is_empty()
+                    || list.len() > DOWNLOAD_FORMATS.len()
+                    || !list.iter().all(|f| DOWNLOAD_FORMATS.contains(&f.as_str()))
+                {
+                    return Err(AuthError::BadInput(
+                        "formats must be one or more of original, mp3, opus",
+                    ));
+                }
+                let set: Vec<&str> = DOWNLOAD_FORMATS
+                    .into_iter()
+                    .filter(|f| list.iter().any(|x| x == f))
+                    .collect();
+                Some(set.join(","))
+            }
+            None => None,
+        };
+        let n = {
+            let db = self.db.lock().unwrap();
+            match &formats {
+                Some(f) => db.execute(
+                    "UPDATE users SET downloads = ?1, download_formats = ?2 WHERE username = ?3",
+                    params![enabled as i64, f, username],
+                )?,
+                None => db.execute(
+                    "UPDATE users SET downloads = ?1 WHERE username = ?2",
+                    params![enabled as i64, username],
+                )?,
+            }
+        };
+        if n == 0 {
+            return Err(AuthError::BadInput("no such user"));
+        }
+        let state = if enabled { "on" } else { "off" };
+        let detail = match &formats {
+            Some(f) => format!("{state} {f}"),
+            None => state.to_string(),
+        };
+        self.audit("user.downloads", Some(username), None, &detail);
+        Ok(())
+    }
+
+    /// A random secret, made once and kept with the accounts, that salts stable download
+    /// keys (so a key never reveals the file path it was derived from).
+    pub fn download_key_salt(&self) -> Result<String, AuthError> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('download_key_salt', ?1)",
+            [new_secret()],
+        )?;
+        Ok(db.query_row(
+            "SELECT value FROM settings WHERE key = 'download_key_salt'",
+            [],
+            |r| r.get(0),
+        )?)
     }
 
     /// The principal for a valid, unexpired access token.
@@ -1594,6 +1721,16 @@ fn migrate(db: &Connection) -> Result<(), AuthError> {
                key TEXT PRIMARY KEY,
                value TEXT NOT NULL);
              PRAGMA user_version = 4;",
+        )?;
+    }
+    if version < 5 {
+        // Offline downloads: on by default for every user, in every format. Admins can turn
+        // them off or limit the formats per user.
+        db.execute_batch(
+            "ALTER TABLE users ADD COLUMN downloads INTEGER NOT NULL DEFAULT 1;
+             ALTER TABLE users ADD COLUMN download_formats TEXT NOT NULL
+               DEFAULT 'original,mp3,opus';
+             PRAGMA user_version = 5;",
         )?;
     }
     Ok(())
@@ -2373,7 +2510,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         // Version 3 added per-device diagnostics.
         let d = a.devices_for_test();
         a.save_diagnostics(d, r#"{"ok":true}"#).unwrap();
@@ -2383,6 +2520,100 @@ mod tests {
         assert_eq!(a.session_days(), 7);
         let t = a.login("alice", PW, None, "Phone", None, "c");
         assert!(t.is_err() || a.refresh(&t.unwrap().refresh).is_ok());
+        // Version 5: download permissions, on by default in every format.
+        let users = a.list_users().unwrap();
+        assert!(users[0].downloads);
+        assert_eq!(users[0].download_formats, ["original", "mp3", "opus"]);
+    }
+
+    // -- downloads -------------------------------------------------------------
+
+    #[test]
+    fn downloads_are_on_by_default_and_can_be_limited() {
+        let a = store();
+        let alice = user_id(&a, "alice");
+        let p = a.download_policy(alice).unwrap();
+        assert!(p.enabled);
+        assert_eq!(p.formats, ["original", "mp3", "opus"]);
+        assert!(p.allows("opus"));
+
+        a.set_downloads("alice", true, Some(&["opus".into(), "original".into()]))
+            .unwrap();
+        let p = a.download_policy(alice).unwrap();
+        assert_eq!(p.formats, ["original", "opus"], "stored in canonical order");
+        assert!(!p.allows("mp3"));
+
+        a.set_downloads("alice", false, None).unwrap();
+        let p = a.download_policy(alice).unwrap();
+        assert!(!p.enabled);
+        assert_eq!(
+            p.formats,
+            ["original", "opus"],
+            "formats kept when only toggled"
+        );
+        assert!(!p.allows("original"), "off means nothing is allowed");
+
+        let listed = a.list_users().unwrap();
+        let al = listed.iter().find(|u| u.username == "alice").unwrap();
+        assert!(!al.downloads);
+        assert_eq!(al.download_formats, ["original", "opus"]);
+        let events: Vec<String> = a
+            .audit_log(10)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.event)
+            .collect();
+        assert!(events.contains(&"user.downloads".to_string()));
+    }
+
+    #[test]
+    fn download_settings_validate_input() {
+        let a = store();
+        let bad: [Vec<String>; 6] = [
+            vec![],
+            vec!["flac".into()],
+            vec!["original".into(), "original,mp3".into()],
+            vec!["MP3".into()],
+            vec!["original".into(), "mp3".into(), "opus".into(), "mp3".into()],
+            vec!["../x".into()],
+        ];
+        for b in bad {
+            assert!(
+                matches!(
+                    a.set_downloads("alice", true, Some(&b)),
+                    Err(AuthError::BadInput(_))
+                ),
+                "{b:?}"
+            );
+        }
+        assert!(matches!(
+            a.set_downloads("nobody", true, None),
+            Err(AuthError::BadInput(_))
+        ));
+        // A disabled or unknown user may download nothing.
+        assert!(!a.download_policy(9999).unwrap().enabled);
+        a.set_disabled("alice", true).unwrap();
+        assert!(!a.download_policy(user_id(&a, "alice")).unwrap().enabled);
+    }
+
+    #[test]
+    fn stored_formats_are_cleaned_when_read() {
+        assert_eq!(
+            parse_formats("original,mp3,opus"),
+            ["original", "mp3", "opus"]
+        );
+        assert_eq!(parse_formats("opus, evil ,original"), ["original", "opus"]);
+        assert!(parse_formats("").is_empty());
+        assert!(parse_formats("flac;mp3").is_empty());
+    }
+
+    #[test]
+    fn the_download_key_salt_is_random_and_stable() {
+        let a = store();
+        let s = a.download_key_salt().unwrap();
+        assert_eq!(s.len(), 64);
+        assert_eq!(a.download_key_salt().unwrap(), s);
+        assert_ne!(store().download_key_salt().unwrap(), s);
     }
 
     // -- player permissions --------------------------------------------------

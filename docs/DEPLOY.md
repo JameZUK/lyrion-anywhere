@@ -58,6 +58,8 @@ docker run -d --name lyrion-anywhere --restart unless-stopped --network host \
 
 - **`X-Forwarded-For $remote_addr`:** overwrite the header, never append to it (`$proxy_add_x_forwarded_for`). The gateway uses the first address for sign-in lockouts, so an appended header would let clients choose their own address. The test proves lockouts still apply when a client spoofs it.
 - **WebSocket upgrade headers,** with `proxy_buffering off` and long read timeouts (audio streams and a paused player are long-lived).
+- **Downloads aren't buffered:** `proxy_buffering off` (and `proxy_max_temp_file_size 0`, in case buffering is turned back on) stream offline downloads straight through, instead of nginx spooling a whole album to its own disk first. A transcoded download starts only once ffmpeg has finished, so keep the long `proxy_read_timeout`.
+- **ffmpeg (optional):** install it where the gateway runs for MP3/Opus downloads (`--ffmpeg`, `--no-transcode`, `--download-cache-mb`; see [`PROTOCOL.md`](PROTOCOL.md#downloads)). The Docker image doesn't include it.
 - **No CSP of your own:** the gateway sets its security headers. The proxy adds only HSTS.
 - **Behind a CDN** (e.g. Cloudflare): use the realip module so `$remote_addr` is the real client, trusting only the CDN's address ranges. The gateway pings quiet WebSockets every 30 s, so a CDN's idle timeout (100 s on Cloudflare) doesn't close them.
 

@@ -33,6 +33,7 @@ pub mod admin;
 pub mod art;
 mod auth;
 pub mod diagnostics;
+pub mod download;
 pub mod events;
 pub mod menu_actions;
 mod relay;
@@ -40,6 +41,7 @@ mod rpc;
 pub mod rpc_policy;
 mod session;
 pub mod totp;
+pub mod transcode;
 mod tunnel;
 
 use std::collections::HashMap;
@@ -87,6 +89,24 @@ pub struct Config {
     /// Ping interval on quiet WebSockets, so proxies with idle timeouts (Cloudflare drops
     /// after 100 s) keep them open.
     pub ws_keepalive: Duration,
+    /// The system ffmpeg for transcoded downloads (`None`: originals only).
+    pub ffmpeg: Option<transcode::Ffmpeg>,
+    /// Where transcodes are cached (`None`: no transcoding).
+    pub download_cache_dir: Option<PathBuf>,
+    /// Most bytes the transcode cache may hold.
+    pub download_cache_bytes: u64,
+    /// ffmpeg jobs at once.
+    pub transcode_jobs: usize,
+    /// Longest a single transcode may run.
+    pub transcode_timeout: Duration,
+    /// Downloads one user may run at once.
+    pub downloads_per_user: usize,
+    /// Time limit for looking a track up before a download.
+    pub download_lookup_timeout: Duration,
+    /// Time limit for LMS to start answering a download request.
+    pub download_header_timeout: Duration,
+    /// Longest LMS may pause mid-download.
+    pub download_read_timeout: Duration,
 }
 
 impl Default for Config {
@@ -105,6 +125,15 @@ impl Default for Config {
             replay_window: 4 * 1024 * 1024,
             static_dir: None,
             ws_keepalive: Duration::from_secs(30),
+            ffmpeg: None,
+            download_cache_dir: None,
+            download_cache_bytes: 2048 * 1024 * 1024,
+            transcode_jobs: 1,
+            transcode_timeout: Duration::from_secs(600),
+            downloads_per_user: 3,
+            download_lookup_timeout: Duration::from_secs(10),
+            download_header_timeout: Duration::from_secs(20),
+            download_read_timeout: Duration::from_secs(30),
         }
     }
 }
@@ -123,6 +152,14 @@ pub struct Gateway {
     /// Image URLs LMS has handed out (the only ones its image proxy may fetch for clients).
     known_images: Mutex<art::KnownImages>,
     events: Arc<events::Hub>,
+    /// HTTP client for downloads from LMS (with a per-read time limit).
+    dl_http: reqwest::Client,
+    /// ffmpeg and the transcode cache, when transcoding is available.
+    transcoder: Option<transcode::Transcoder>,
+    /// Downloads running, per user.
+    active_downloads: Mutex<HashMap<i64, usize>>,
+    download_audit: Mutex<download::AuditSeen>,
+    download_salt: std::sync::OnceLock<String>,
 }
 
 pub type AppState = Arc<Gateway>;
@@ -135,6 +172,30 @@ impl Gateway {
             .no_proxy()
             .build()
             .expect("http client");
+        let dl_http = reqwest::Client::builder()
+            .connect_timeout(cfg.dial_timeout)
+            .read_timeout(cfg.download_read_timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .build()
+            .expect("http client");
+        let transcoder = match (&cfg.ffmpeg, &cfg.download_cache_dir) {
+            (Some(ffmpeg), Some(dir)) => {
+                match transcode::Cache::open(dir, cfg.download_cache_bytes) {
+                    Ok(cache) => Some(transcode::Transcoder::new(
+                        ffmpeg.clone(),
+                        cache,
+                        cfg.transcode_jobs,
+                        cfg.transcode_timeout,
+                    )),
+                    Err(e) => {
+                        warn!(error = %e, dir = %dir.display(), "transcode cache unavailable; originals only");
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
         Arc::new(Gateway {
             cfg,
             accounts,
@@ -146,6 +207,11 @@ impl Gateway {
             diagnostics_throttle: diagnostics::Throttle::default(),
             known_images: Mutex::new(Default::default()),
             events: Arc::new(events::Hub::default()),
+            dl_http,
+            transcoder,
+            active_downloads: Mutex::new(HashMap::new()),
+            download_audit: Mutex::new(HashMap::new()),
+            download_salt: std::sync::OnceLock::new(),
         })
     }
 
@@ -204,6 +270,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/rpc", post(rpc::rpc))
         .route("/v1/diagnostics", post(diagnostics::report))
         .route("/v1/art/{*path}", get(art::art))
+        .route("/v1/download/track/{id}/info", get(download::info))
+        .route("/v1/download/track/{id}", get(download::track))
         .route("/v1/events", get(events::events_upgrade))
         .route("/v1/player", get(tunnel::player_upgrade))
         .route("/v1/stream/{session}/{n}", get(relay::stream));

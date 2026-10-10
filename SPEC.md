@@ -173,9 +173,9 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
 
 ### 5.3 Downloads (§8)
 
-- **Original format:** after a library and permission check, the gateway streams the original file. It does this by proxying LMS's per-track download handler (`/music/{id}/download`, verified on 9.1.1: returns the original file with `Range`/206 support). Gotcha: a nonexistent track ID makes LMS hang rather than 404, so the gateway checks the ID with the plugin first and applies its own timeouts.
-- **Transcoded:** the gateway runs the system `ffmpeg` (D10; found on `PATH` or at a path set in plugin settings, and shown in the self-test) to Opus/MP3 with tags and cover art embedded. Results are kept in a size-capped LRU cache on disk (default 10 GB), so repeat downloads cost nothing.
-- **Ranges and limits:** all download responses support HTTP `Range`, so interrupted downloads resume. They are rate-limited per user.
+- **Original format:** after a library and permission check, the gateway streams the original file. It does this by proxying LMS's per-track download handler (`/music/{id}/download`, verified on 9.1.1: returns the original file with `Range`/206 support). Gotcha: a nonexistent track ID makes LMS hang rather than 404, so the gateway first checks that the ID is a positive integer and looks it up with LMS JSON-RPC (`titles 0 1 track_id:<id>`, with a time limit). Only a track LMS knows is ever fetched, with time limits on connecting, on the response headers and on every read.
+- **Transcoded:** the gateway runs the system `ffmpeg` (D10; found on `PATH`, or given with `--ffmpeg` / the plugin's *ffmpeg path* setting) to Opus 160 kb/s (Ogg) or MP3 320 kb/s CBR, with title, artist, album and track number tags (and, for MP3, the file's embedded cover art). ffmpeg gets a fixed argument list with no shell, an empty environment, a demuxer forced from a fixed table of LMS file types, `-protocol_whitelist file`, files the gateway named in its own cache directory, an output size cap and a time limit. Results are kept in a size-capped LRU cache on disk (default 2 GiB, `--download-cache-mb`), so repeat downloads cost nothing.
+- **Ranges and limits:** all download responses support a single HTTP `Range`, so interrupted downloads resume. Each user may run at most 3 downloads at once (429 beyond). Downloads are audited at most once per track and device an hour.
 
 ### 5.4 Web app hosting
 
@@ -230,7 +230,8 @@ This is the one contract used by the web app now and the native apps later. It i
 | `WS /v1/events` | Filtered event push | Access token |
 | `GET /v1/art/…` | Artwork | Access token or signed URL |
 | `POST /v1/offline/manifest` | Albums/playlists/tracks → track list with sizes, versions, metadata | Access token + download permission |
-| `GET /v1/download/{track_id}?format=` | One track file (`orig`, `opus128`, `opus160`, `mp3_320`), `Range` supported | Access token or signed URL |
+| `GET /v1/download/track/{id}/info` | Track metadata, stable key and the formats this user may download | Access token + download permission |
+| `GET /v1/download/track/{id}?format=` | One track file (`original`, `mp3` = MP3 320, `opus` = Opus 160), `Range` supported | Access token + download permission |
 | `POST /v1/offline/events` | Batched offline plays and ratings (idempotent by event UUID) | Access token |
 | `GET /v1/account/devices`, `DELETE …/{id}` | User's own sessions/devices | Access token |
 | `GET /healthz` | Liveness | None |
@@ -320,8 +321,8 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 
 - Per download, the user picks:
   - **Original**: bit-perfect, largest.
-  - **Opus 128 / Opus 160**: about 1 MB/min.
-  - **MP3 320**: for compatibility.
+  - **Opus 160**: about 1.2 MB/min (an Opus 128 option was dropped: one Opus quality keeps the cache simple).
+  - **MP3 320** (constant bit rate): for compatibility.
 - Settings hold separate defaults for Wi-Fi and cellular, and a "download on Wi-Fi only" toggle (on by default).
 - If the server has no `ffmpeg`, only Original is offered.
 - The admin can restrict formats per user.
@@ -331,8 +332,8 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 - Persistent queue with 2 concurrent downloads, `Range` resume, retry with backoff, and pause/resume all.
 - Each file is verified against the size/version from the manifest.
 - **Stable identity:** LMS track IDs change on rescan, so downloads are keyed by a stable track key.
-  - The key is the MusicBrainz track ID when present, otherwise the hash of the track's library URL (LMS `urlmd5`).
-  - The manifest returns both the current track ID and the stable key. On reconnect, the client re-resolves keys to current IDs before re-syncing or sending offline events.
+  - The key is the hex SHA-256 of a random gateway secret (made once, kept with the accounts) and the track's library URL. It survives rescans and never reveals the file's path; it changes only if the file moves or the account database is recreated.
+  - The manifest (and `GET /v1/download/track/{id}/info`) returns both the current track ID and the stable key. On reconnect, the client re-resolves keys to current IDs before re-syncing or sending offline events.
 - A track's version is derived from its library modification time and size. When the library file changes, the cached copy is refreshed on the next sync.
 - Optional storage cap per device. Pinned items are never evicted automatically; the user is warned instead.
 - Metadata and artwork are stored alongside the audio, so offline browse works fully.
@@ -348,11 +349,11 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 
 ### 8.5 Security
 
-- Downloads need a per-user `can_download` permission.
+- Downloads need the per-user download permission, which also lists the formats the user may choose. It is on, with every format, by default for admins and listeners alike (they can already play the whole library; a download is the same audio kept for later). Admins turn it off or limit the formats per user in the plugin settings. It is read on every request, so a change applies at once.
 - Files live in the app's private storage (IndexedDB in the browser; app sandbox later on native).
 - In the browser, downloads are kept per user: another account signing in on the same browser doesn't see them. On sign-out the app asks whether to remove them (keeping is the default; removal is one tap).
 - Offline mode before sign-in (server unreachable) offers only the downloads of the account last signed in on this device; signing out forgets that account, so after a sign-out downloads are shown again only after signing in.
-- Revoking a device stops further downloads. Files already on a device can't be remotely wiped in the browser; the native apps will delete them on their next connection.
+- Revoking a device stops further downloads and ends running ones within seconds. Files already on a device can't be remotely wiped in the browser; the native apps will delete them on their next connection.
 
 ---
 

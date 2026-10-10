@@ -21,7 +21,7 @@ sub name { 'PLUGIN_LYRIONANYWHERE' }
 sub page { 'plugins/LyrionAnywhere/settings/basic.html' }
 
 sub prefs {
-	return ($prefs, qw(enabled listen public_url trusted_proxies gateway_path));
+	return ($prefs, qw(enabled listen public_url trusted_proxies gateway_path transcode ffmpeg_path download_cache_mb));
 }
 
 sub escape_html {
@@ -44,7 +44,7 @@ sub _trim {
 sub clean {
 	my ($params) = @_;
 	my (%out, @errors);
-	for my $k (qw(listen public_url trusted_proxies gateway_path)) {
+	for my $k (qw(listen public_url trusted_proxies gateway_path ffmpeg_path download_cache_mb)) {
 		my $name = "pref_$k";
 		next unless exists $params->{$name};
 		my $v = _trim($params->{$name});
@@ -81,10 +81,26 @@ sub clean {
 				next;
 			}
 		}
+		elsif ($k eq 'ffmpeg_path') {
+			unless (Plugins::LyrionAnywhere::Gateway::valid_ffmpeg_path($v)) {
+				push @errors, 'ffmpeg must be an absolute path to an executable file named ffmpeg (or empty to look on PATH)';
+				next;
+			}
+		}
+		elsif ($k eq 'download_cache_mb') {
+			$v = 2048 if $v eq '';
+			unless (Plugins::LyrionAnywhere::Gateway::valid_cache_mb($v)) {
+				push @errors, 'Download cache must be a whole number of MiB from 16 to 1048576';
+				next;
+			}
+		}
 		$out{$name} = $v;
 	}
 	if (exists $params->{pref_enabled}) {
 		$out{pref_enabled} = $params->{pref_enabled} ? 1 : 0;
+	}
+	if (exists $params->{pref_transcode}) {
+		$out{pref_transcode} = $params->{pref_transcode} ? 1 : 0;
 	}
 	return (\%out, \@errors);
 }
@@ -97,7 +113,7 @@ sub handler {
 	$params->{anywhere_gateway_path_allowed} =
 		($ENV{ Plugins::LyrionAnywhere::Gateway::ALLOW_GATEWAY_PATH_ENV() } // '') eq '1' ? 1 : 0;
 	if ($params->{saveSettings}) {
-		my %before = map { $_ => $prefs->get($_) } qw(enabled listen public_url trusted_proxies gateway_path);
+		my %before = map { $_ => $prefs->get($_) } qw(enabled listen public_url trusted_proxies gateway_path transcode ffmpeg_path download_cache_mb);
 		my ($clean, $errors) = clean($params);
 		# Invalid values are not saved; the others are.
 		for my $k (keys %$params) {
@@ -105,6 +121,7 @@ sub handler {
 		}
 		$params->{$_} = $clean->{$_} for keys %$clean;
 		$params->{pref_enabled} //= 0;   # an unticked checkbox is not submitted
+		$params->{pref_transcode} //= 0;
 		# Messages can echo submitted text: escape before they reach the page.
 		$params->{warning} = join('<br>', map { escape_html($_) } @$errors) if @$errors;
 		my $result = $class->SUPER::handler($client, $params);

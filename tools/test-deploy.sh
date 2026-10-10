@@ -94,6 +94,12 @@ if [ -n "$TOKEN" ]; then ok "login through nginx"; else bad "login through nginx
 check "refresh cookie is Secure and HttpOnly" "$(grep -i '^set-cookie:' "$WORK/h" | grep -ci 'secure.*httponly\|httponly.*secure')" 1
 check "cross-origin login refused" "$($C -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -H 'X-Anywhere-Client: 1' -H 'Origin: https://evil.example' -d "$LOGIN" "$BASE/v1/auth/login")" 403
 
+echo "# downloads"
+check "download without a token refused" "$($C -o /dev/null -w '%{http_code}' "$BASE/v1/download/track/1")" 401
+check "malformed track id refused" "$($C -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$BASE/v1/download/track/..%2f1/info")" 404
+# No LMS here: a well-formed id is looked up, fails fast, and nothing is buffered by nginx.
+check "download with no LMS fails cleanly" "$($C -o /dev/null -w '%{http_code}' -m 15 -H "Authorization: Bearer $TOKEN" "$BASE/v1/download/track/1")" 502
+
 echo "# WebSockets"
 WS="-o /dev/null -w %{http_code} --http1.1 -m 3 -H Connection:Upgrade -H Upgrade:websocket -H Sec-WebSocket-Version:13 -H Sec-WebSocket-Key:dGhlIHNhbXBsZSBub25jZQ=="
 check "events socket upgrades through nginx" "$($C $WS -H "Origin: https://$NAME" "$BASE/v1/events" || true)" 101

@@ -31,7 +31,7 @@ sub valid_password {
 	return defined $p && length($p) >= 10 && length($p) <= 1024 && $p !~ /[\x00-\x1f\x7f]/;
 }
 
-# Operation => [method, path template, required args, body builder]
+# Operation => [method, path template, required args, body builder, optional args]
 my %OPS = (
 	users        => ['GET',  '/admin/v1/users'],
 	user_create  => ['POST', '/admin/v1/users', [qw(username password role)],
@@ -42,6 +42,13 @@ my %OPS = (
 	                 sub { { disabled => ($_[0]{disabled} ? \1 : \0) } }],
 	user_delete  => ['POST', '/admin/v1/users/{username}/delete', [qw(username)]],
 	totp_reset   => ['POST', '/admin/v1/users/{username}/totp/reset', [qw(username)]],
+	# Downloads on (1) or off (0); `formats` (optional) limits them, e.g. "original,opus".
+	user_downloads => ['POST', '/admin/v1/users/{username}/downloads', [qw(username enabled)],
+	                 sub {
+	                     my %b = (enabled => ($_[0]{enabled} ? \1 : \0));
+	                     $b{formats} = [split /,/, $_[0]{formats}] if defined $_[0]{formats};
+	                     \%b;
+	                 }, [qw(formats)]],
 	pairing      => ['POST', '/admin/v1/users/{username}/pairing', [qw(username)]],
 	grants       => ['GET',  '/admin/v1/users/{username}/players', [qw(username)]],
 	grant        => ['POST', '/admin/v1/users/{username}/players', [qw(username player)],
@@ -73,6 +80,14 @@ my %CHECK = (
 	password => \&valid_password,
 	role     => sub { ($_[0] // '') =~ /^(?:listener|admin)\z/ },
 	disabled => sub { ($_[0] // '') =~ /^[01]\z/ },
+	enabled  => sub { ($_[0] // '') =~ /^[01]\z/ },
+	# Download formats: one to three of original, mp3, opus, comma-separated, no repeats.
+	formats  => sub {
+		my $v = $_[0] // '';
+		return 0 if ref $v || $v !~ /^(?:original|mp3|opus)(?:,(?:original|mp3|opus)){0,2}\z/;
+		my %seen;
+		return !grep { $seen{$_}++ } split /,/, $v;
+	},
 	player   => \&valid_mac,
 	id       => \&valid_id,
 	limit    => sub { ($_[0] // '') =~ /^\d{1,4}\z/ && $_[0] >= 1 && $_[0] <= 1000 },
@@ -91,6 +106,8 @@ my %MESSAGE = (
 	password => 'passwords need at least 10 characters (no line breaks)',
 	role     => 'role must be listener or admin',
 	disabled => 'disabled must be 0 or 1',
+	enabled  => 'enabled must be 0 or 1',
+	formats  => 'formats must be one or more of original, mp3, opus (comma-separated)',
 	player   => 'player must be a MAC address like aa:bb:cc:dd:ee:ff',
 	id       => 'bad device id',
 	limit    => 'limit must be 1-1000',
@@ -102,8 +119,12 @@ my %MESSAGE = (
 sub request_for {
 	my ($op, $args) = @_;
 	my $spec = $OPS{$op // ''} or die "unknown operation\n";
-	my ($method, $path, $required, $body) = @$spec;
+	my ($method, $path, $required, $body, $optional) = @$spec;
 	for my $k (@{ $required || [] }) {
+		die "$MESSAGE{$k}\n" unless $CHECK{$k}->($args->{$k});
+	}
+	for my $k (@{ $optional || [] }) {
+		next unless defined $args->{$k};
 		die "$MESSAGE{$k}\n" unless $CHECK{$k}->($args->{$k});
 	}
 	$path =~ s/\{(\w+)\}/lc $args->{$1}/ge;

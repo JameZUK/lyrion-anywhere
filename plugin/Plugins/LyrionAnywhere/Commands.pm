@@ -28,7 +28,7 @@ my $log = logger('plugin.lyrionanywhere');
 
 # Arguments passed on to the admin API. `csrf` is deliberately absent: it is checked here
 # and never sent to the gateway.
-my @ARG_NAMES = qw(username password role disabled player id limit days commands);
+my @ARG_NAMES = qw(username password role disabled player id limit days commands enabled formats);
 
 # --- CSRF token -----------------------------------------------------------------------
 

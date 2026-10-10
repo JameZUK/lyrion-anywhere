@@ -22,7 +22,8 @@ my $pid = fork // die;
 if ($pid == 0) {
 	open STDOUT, '>', "$dir/gw.log"; open STDERR, '>&', \*STDOUT;
 	exec $bin, 'serve', '--data-dir', "$dir/data", '--listen', "127.0.0.1:$public",
-		'--admin-listen', "127.0.0.1:$admin", '--lms', '127.0.0.1', '--lms-http-port', 1, '--lms-cli-port', 1;
+		'--admin-listen', "127.0.0.1:$admin", '--lms', '127.0.0.1', '--lms-http-port', 1, '--lms-cli-port', 1,
+		'--no-transcode', '--download-cache-mb', 64;
 	exit 127;
 }
 END { kill 'TERM', $pid if $pid }
@@ -54,6 +55,10 @@ my @steps = (
 	[user_disable  => { username => 'alice', disabled => 1 }, 204],
 	[user_disable  => { username => 'alice', disabled => 0 }, 204],
 	[totp_reset    => { username => 'alice' }, 204],
+	[user_downloads => { username => 'alice', enabled => 1, formats => 'original,opus' }, 204],
+	[users         => {}, 200, 'downloads'],
+	[user_downloads => { username => 'alice', enabled => 0 }, 204],
+	[users         => {}, 200, 'downloads off'],
 	[devices       => {}, 200],
 	[audit         => { limit => 20 }, 200],
 	[settings      => {}, 200],
@@ -65,18 +70,41 @@ my @steps = (
 	[user_delete   => { username => 'alice' }, 204],
 );
 for my $s (@steps) {
-	my ($op, $args, $want) = @$s;
+	my ($op, $args, $want, $check) = @$s;
 	my ($status, $data) = send_op($op, $args);
 	is($status, $want, "$op accepted by the gateway");
 	if ($op eq 'pairing') { like($data->{code}, qr/^[A-Z2-9]{10}$/, 'pairing code returned') }
 	if ($op eq 'grants')  { is_deeply($data->{players}, ['aa:bb:cc:dd:ee:01'], 'grant visible') }
 	if ($op eq 'users')   { is($data->{users}[0]{username}, 'alice') }
-	if ($op eq 'settings') { is($data->{session_days}, 30, 'default sign-in lifetime') }
+	if ($op eq 'users' && !$check) {
+		is($data->{users}[0]{downloads}, JSON::PP::true, 'downloads on by default');
+		is_deeply($data->{users}[0]{download_formats}, [qw(original mp3 opus)], 'every format by default');
+	}
+	if (($check // '') eq 'downloads') {
+		is_deeply($data->{users}[0]{download_formats}, [qw(original opus)], 'download formats saved');
+	}
+	if (($check // '') eq 'downloads off') {
+		is($data->{users}[0]{downloads}, JSON::PP::false, 'downloads turned off');
+		is_deeply($data->{users}[0]{download_formats}, [qw(original opus)], 'formats kept when turned off');
+	}
+	if ($op eq 'settings') {
+		is($data->{session_days}, 30, 'default sign-in lifetime');
+		is_deeply($data->{download_formats}, ['original'], 'started with --no-transcode: originals only');
+	}
 }
 is((send_op('settings', {}))[1]{session_days}, 7, 'sign-in lifetime saved');
 my ($status) = send_op('users', {});
 my ($users_after) = (send_op('users', {}))[1];
 is_deeply($users_after->{users}, [], 'user deleted');
+
+# Bad download settings are refused by the gateway too (not only by the plugin).
+{
+	my $res = $http->request('POST', "http://127.0.0.1:$admin/admin/v1/users/nobody/downloads", {
+		headers => { Authorization => "Bearer $secret", 'Content-Type' => 'application/json' },
+		content => '{"enabled":true,"formats":["flac"]}',
+	});
+	is($res->{status}, 400, 'unknown download format refused by the gateway');
+}
 
 # Without the secret the gateway refuses, whatever the plugin would have sent.
 my $res = $http->get("http://127.0.0.1:$admin/admin/v1/users");

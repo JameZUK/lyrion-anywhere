@@ -115,7 +115,7 @@ test('renders remote-controlled names as text, never as markup', async () => {
   const replies = {
     status: { running: 1, enabled: 1, pid: 42, uptime: 60, listen: '127.0.0.1:9443', binary_ok: 1, binary: '/x', data_dir: '/d' },
     players: { players_loop: [{ playerid: 'aa:bb:cc:dd:ee:01', name: HOSTILE }] },
-    users: { data: { users: [{ username: 'bob', role: 'listener', totp_enabled: 0, disabled: 0 }] } },
+    users: { data: { users: [{ username: 'bob', role: 'listener', totp_enabled: 0, disabled: 0, downloads: true, download_formats: ['original', 'opus', HOSTILE] }] } },
     grants: { data: { players: ['aa:bb:cc:dd:ee:01'] } },
     devices: { data: { devices: [{ id: 1, name: HOSTILE, username: 'bob', mac: '02:4c:41:00:00:09', last_seen: 1 }] } },
     audit: { data: { audit: [{ at: 1, event: 'login', username: 'bob', detail: HOSTILE }] } },
@@ -150,6 +150,16 @@ test('renders remote-controlled names as text, never as markup', async () => {
   assert.equal(dom.byId.get('aw-message').textContent, '', 'no error reported');
   assert.equal(dom.byId.get('aw-session-days').value, '45', 'the sign-in lifetime is shown');
   assert.ok(dom.byId.get('aw-plugins').textContent.includes(HOSTILE), 'plugin names shown verbatim as text');
+
+  assert.ok(dom.byId.get('aw-users').textContent.includes('on (original, Opus)'), 'download permission shown, unknown formats dropped');
+
+  // The downloads toggle sends the change with the token.
+  const toggle = dom.created.find((e) => e.tagName === 'BUTTON' && e.textContent === 'Turn off downloads');
+  assert.ok(toggle, 'downloads toggle shown');
+  for (const fn of toggle.listeners.click) fn();
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  const off = sent.find((c) => c[0] === 'anywhere' && c[1] === 'user_downloads');
+  assert.deepEqual(off, ['anywhere', 'user_downloads', 'username:bob', 'enabled:0', 'csrf:' + TOKEN]);
 
   // Changing something carries the page's token.
   dom.byId.get('aw-session-days').value = '60';
@@ -193,4 +203,13 @@ test('admin-only plugins: only ticked, well-formed commands, sorted', () => {
     { commands: ['randomplay', 'randomplaygenrelist', 'randomplaylibrarylist'], checked: true },
     { commands: ['spotty'], checked: false },
   ]), 'randomplay,randomplaygenrelist,randomplaylibrarylist');
+});
+
+test('download permission text', () => {
+  assert.equal(t.downloadsText({ downloads: false, download_formats: ['original'] }), 'off');
+  assert.equal(t.downloadsText({ downloads: true, download_formats: ['original', 'mp3', 'opus'] }), 'on (original, MP3, Opus)');
+  assert.equal(t.downloadsText({ downloads: true, download_formats: [] }), 'on');
+  assert.equal(t.downloadsText({ downloads: 1 }), 'off', 'only a real true counts');
+  assert.equal(t.downloadsText({ downloads: true, download_formats: ['__proto__', 'constructor', 'toString'] }), 'on');
+  assert.equal(t.downloadsText(null), 'off');
 });

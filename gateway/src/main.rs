@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use anywhere_gateway::accounts::{Accounts, Role};
-use anywhere_gateway::{Config, Gateway, admin, random_id, router};
+use anywhere_gateway::{Config, Gateway, admin, random_id, router, transcode};
 
 #[derive(Parser)]
 #[command(version, about = "Lyrion Anywhere gateway")]
@@ -53,6 +53,15 @@ enum Cmd {
         /// Append logs to this file instead of standard output (used by the LMS plugin).
         #[arg(long)]
         log_file: Option<PathBuf>,
+        /// ffmpeg for transcoded downloads (default: `ffmpeg` on PATH, if any).
+        #[arg(long, conflicts_with = "no_transcode")]
+        ffmpeg: Option<PathBuf>,
+        /// Offer downloads in their original format only, even if ffmpeg is installed.
+        #[arg(long)]
+        no_transcode: bool,
+        /// Disk space for transcoded downloads, in MiB (the least recently used go first).
+        #[arg(long, default_value_t = 2048, value_parser = clap::value_parser!(u64).range(16..=1_048_576))]
+        download_cache_mb: u64,
     },
     /// Administer accounts directly (before the LMS plugin is set up).
     Admin {
@@ -119,6 +128,9 @@ fn main() {
             trusted_proxies,
             static_dir,
             log_file: _,
+            ffmpeg,
+            no_transcode,
+            download_cache_mb,
         } => {
             if !admin_listen.ip().is_loopback() {
                 fail("--admin-listen must be a loopback address");
@@ -141,6 +153,9 @@ fn main() {
                 allowed_origins,
                 trusted_proxies,
                 static_dir,
+                ffmpeg: transcoder(ffmpeg.as_deref(), no_transcode),
+                download_cache_dir: Some(data_dir.join("download-cache")),
+                download_cache_bytes: download_cache_mb * 1024 * 1024,
                 ..Config::default()
             };
             let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| fail(e));
@@ -171,6 +186,40 @@ fn main() {
                     .unwrap_or_else(|e| fail(e.to_string()));
                 a.abort();
             });
+        }
+    }
+}
+
+/// The ffmpeg to transcode downloads with, if any (spec D10).
+fn transcoder(explicit: Option<&Path>, disabled: bool) -> Option<transcode::Ffmpeg> {
+    if disabled {
+        tracing::info!("transcoding turned off: downloads in their original format only");
+        return None;
+    }
+    let path = match explicit {
+        Some(p) if !p.is_absolute() => {
+            tracing::warn!(
+                "--ffmpeg must be an absolute path; downloads in their original format only"
+            );
+            return None;
+        }
+        Some(p) => p.to_path_buf(),
+        None => match transcode::find_on_path() {
+            Some(p) => p,
+            None => {
+                tracing::info!("ffmpeg not found: downloads in their original format only");
+                return None;
+            }
+        },
+    };
+    match transcode::probe(&path, std::time::Duration::from_secs(10)) {
+        Some(f) => {
+            tracing::info!(path = %f.path.display(), mp3 = f.mp3, opus = f.opus, "transcoding downloads with ffmpeg");
+            Some(f)
+        }
+        None => {
+            tracing::warn!(path = %path.display(), "ffmpeg unusable (not executable, or without libmp3lame/libopus): downloads in their original format only");
+            None
         }
     }
 }

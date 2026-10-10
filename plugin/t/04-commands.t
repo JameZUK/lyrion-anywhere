@@ -10,7 +10,7 @@ use Slim::Utils::Prefs;
 Plugins::LyrionAnywhere::Commands::register();
 ok($Slim::Control::Request::DISPATCH{'anywhere status'}, 'status registered');
 ok($Slim::Control::Request::DISPATCH{"anywhere $_"}, "$_ registered")
-	for qw(users user_create user_delete grant ungrant revoke audit totp_reset pairing diagnostics settings session_days plugins plugins_admin_only);
+	for qw(users user_create user_delete grant ungrant revoke audit totp_reset pairing diagnostics settings session_days plugins plugins_admin_only user_downloads);
 is($Slim::Control::Request::DISPATCH{'anywhere users'}[0], 0, 'no player needed');
 
 my $dir = tempdir(CLEANUP => 1);
@@ -67,6 +67,7 @@ my %mutating_args = (
 	pairing       => { username => 'alice' },
 	session_days  => { days => 365 },
 	plugins_admin_only => { commands => 'audiomuseai' },
+	user_downloads => { username => 'alice', enabled => 1, formats => 'original,mp3,opus' },
 );
 my %read_only_args = (
 	users => {}, grants => { username => 'alice' }, devices => {}, audit => {},
@@ -165,6 +166,24 @@ for my $op (sort keys %read_only_args) {
 	$req = Slim::Control::Request->new(['anywhere', 'plugins_admin_only'], { csrf => $token });
 	Plugins::LyrionAnywhere::Commands::admin($req);
 	like($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1]{body}, qr/"admin_only":\[\]/, 'no commands: none admin-only');
+}
+
+# Downloads: enabled and formats reach the gateway (and only with the token, above).
+{
+	my $req = Slim::Control::Request->new(['anywhere', 'user_downloads'],
+		{ username => 'alice', enabled => 0, formats => 'opus', csrf => $token });
+	Plugins::LyrionAnywhere::Commands::admin($req);
+	is($req->{status}, 'processing', 'user_downloads: accepted');
+	my $sent = $Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1];
+	is($sent->{url}, 'http://127.0.0.1:9445/admin/v1/users/alice/downloads');
+	like($sent->{body}, qr/"enabled":false/, 'enabled is a JSON boolean');
+	like($sent->{body}, qr/"formats":\["opus"\]/, 'formats as a list');
+	my $n = @Slim::Networking::SimpleAsyncHTTP::REQUESTS;
+	$req = Slim::Control::Request->new(['anywhere', 'user_downloads'],
+		{ username => 'alice', enabled => 1, formats => "opus\n", csrf => $token });
+	Plugins::LyrionAnywhere::Commands::admin($req);
+	like($req->{results}{error} // '', qr/formats/, 'a bad format list is refused');
+	is(scalar @Slim::Networking::SimpleAsyncHTTP::REQUESTS, $n, 'and not sent');
 }
 
 done_testing;

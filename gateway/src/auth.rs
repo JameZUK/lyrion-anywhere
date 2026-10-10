@@ -307,13 +307,27 @@ pub async fn account(State(gw): State<AppState>, headers: HeaderMap) -> Response
     let Some(p) = principal(&gw, &headers) else {
         return error(StatusCode::UNAUTHORIZED, "invalid credentials");
     };
-    match gw.accounts().totp_enabled(p.user_id) {
-        Ok(on) => Json(json!({
-            "username": p.username,
-            "role": p.role.as_str(),
-            "totp_enabled": on,
-        }))
-        .into_response(),
+    let state = gw
+        .accounts()
+        .totp_enabled(p.user_id)
+        .and_then(|on| Ok((on, gw.accounts().download_policy(p.user_id)?)));
+    match state {
+        Ok((on, policy)) => {
+            // The formats this user may download that this server can produce.
+            let formats: Vec<&str> = gw
+                .server_formats()
+                .into_iter()
+                .map(crate::transcode::Format::as_str)
+                .filter(|f| policy.allows(f))
+                .collect();
+            Json(json!({
+                "username": p.username,
+                "role": p.role.as_str(),
+                "totp_enabled": on,
+                "downloads": { "enabled": policy.enabled, "formats": formats },
+            }))
+            .into_response()
+        }
         Err(e) => auth_error(e),
     }
 }
