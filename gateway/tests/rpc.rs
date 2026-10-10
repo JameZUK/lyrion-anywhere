@@ -252,3 +252,121 @@ async fn lms_unreachable_is_a_502() {
     let r = h.rpc(&h.tok_a, "", json!(["albums", 0, 1])).await;
     assert_eq!(r.status(), S::BAD_GATEWAY);
 }
+
+// --- plugin and context menus: actions LMS offered, and nothing else -----------------------
+
+async fn open_track_menu(h: &Harness, token: &str, player: &str) -> Value {
+    let r = h
+        .rpc(
+            token,
+            player,
+            json!(["trackinfo", "items", 0, 50, "track_id:9", "menu:1"]),
+        )
+        .await;
+    assert_eq!(r.status(), S::OK);
+    r.json().await.unwrap()
+}
+
+#[tokio::test]
+async fn menu_actions_run_only_after_lms_offered_them() {
+    let h = harness().await;
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    let similar = json!(["audiomuse", "similar_track", "track_id:9"]);
+
+    // Not offered yet: refused, and LMS never sees it.
+    let r = h.rpc(&h.tok_a, &mine, similar.clone()).await;
+    assert_eq!(r.status(), S::FORBIDDEN);
+    assert!(
+        !h.lms
+            .rpc_calls()
+            .iter()
+            .any(|c| c.to_string().contains("audiomuse"))
+    );
+
+    let menu = open_track_menu(&h, &h.tok_a, &mine).await;
+    // The poisoned actions (a file path, a LAN URL) never reach the client.
+    let s = menu.to_string();
+    assert!(!s.contains("file://") && !s.contains("10.0.0.50"), "{s}");
+    assert!(
+        !s.contains("jivefavorites"),
+        "a broken action must be dropped whole: {s}"
+    );
+
+    // Offered now: it runs.
+    let r = h.rpc(&h.tok_a, &mine, similar.clone()).await;
+    assert_eq!(r.status(), S::OK);
+    assert!(
+        h.lms
+            .rpc_calls()
+            .iter()
+            .any(|c| c == &json!([mine.clone(), ["audiomuse", "similar_track", "track_id:9"]]))
+    );
+
+    // But only exactly as offered.
+    for tampered in [
+        json!(["audiomuse", "similar_track", "track_id:10"]),
+        json!(["audiomuse", "similar_track", "track_id:9", "extra:1"]),
+        json!(["audiomuse", "similar_track"]),
+        json!(["audiomuse", "other_command", "track_id:9"]),
+    ] {
+        assert_eq!(
+            h.rpc(&h.tok_a, &mine, tampered.clone()).await.status(),
+            S::FORBIDDEN,
+            "{tampered}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn menu_actions_are_per_device_and_respect_player_permissions() {
+    let h = harness().await;
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    let theirs = anywhere_core::proto::format_mac(&h.mac_b);
+    open_track_menu(&h, &h.tok_a, &mine).await;
+    let similar = json!(["audiomuse", "similar_track", "track_id:9"]);
+    // Bob was never shown the menu: refused, even on his own player.
+    assert_eq!(
+        h.rpc(&h.tok_b, &theirs, similar.clone()).await.status(),
+        S::FORBIDDEN
+    );
+    // Alice can't aim her learned action at Bob's player.
+    assert_eq!(
+        h.rpc(&h.tok_a, &theirs, similar).await.status(),
+        S::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn server_commands_offered_in_menus_still_never_run() {
+    let h = harness().await;
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    open_track_menu(&h, &h.tok_a, &mine).await;
+    let r = h
+        .rpc(&h.tok_a, &mine, json!(["pref", "audiodir", "value:/x"]))
+        .await;
+    assert_eq!(r.status(), S::FORBIDDEN);
+    assert!(
+        !h.lms
+            .rpc_calls()
+            .iter()
+            .any(|c| c.to_string().contains("audiodir"))
+    );
+}
+
+#[tokio::test]
+async fn context_menus_take_only_library_ids() {
+    let h = harness().await;
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    for bad in [
+        json!(["trackinfo", "items", 0, 50, "track_id:9;rescan", "menu:1"]),
+        json!(["trackinfo", "items", 0, 50, "url:file:///x", "menu:1"]),
+        json!(["trackinfo", "items", 0, 5000, "track_id:9"]),
+        json!(["trackinfo", "delete", "track_id:9"]),
+    ] {
+        assert_eq!(
+            h.rpc(&h.tok_a, &mine, bad.clone()).await.status(),
+            S::FORBIDDEN,
+            "{bad}"
+        );
+    }
+}

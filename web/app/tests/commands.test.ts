@@ -61,6 +61,12 @@ const examples = [
 	{ player: false, admin: true, cmd: c.addToPlaylist(5, 99) },
 	{ player: false, admin: true, cmd: c.removeFromPlaylist(5, 3) },
 	{ player: false, admin: true, cmd: c.moveInPlaylist(5, 3, 0) },
+	{ player: false, cmd: c.appsList() },
+	{ player: false, cmd: c.radiosList() },
+	{ player: true, cmd: c.appMenu('spotty')(0, 100) },
+	{ player: true, cmd: c.infoMenu('track', 9)(0, 100) },
+	{ player: true, cmd: c.infoMenu('album', 7)(0, 100) },
+	{ player: true, cmd: c.infoMenu('artist', 12)(100, 50) },
 ];
 
 test('builders match the fixture the gateway policy is tested against', () => {
@@ -144,4 +150,11 @@ test('menu images map only to paths the gateway relays', () => {
 	]) {
 		expect(c.imagePath(bad), String(bad)).toBeNull();
 	}
+});
+
+test('app and info menus validate their names and ids', () => {
+	expect(() => c.appMenu('Spotty')).toThrow(RangeError);
+	expect(() => c.appMenu('spotty items')).toThrow(RangeError);
+	expect(() => c.appMenu('../x')).toThrow(RangeError);
+	expect(() => c.infoMenu('track', -1)).toThrow(RangeError);
 });

@@ -26,6 +26,7 @@
 		trash: 'M5 7h14M10 7V4.5h4V7M7 7l1 13h8l1-13',
 		power: 'M12 3v8M7 6.5a7 7 0 1 0 10 0',
 		heart: 'M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z',
+		radio: 'M4 9h16v11H4zM8 5l9 4M8.5 14.5a2 2 0 1 0 0 .01M14 13h3M14 16h3',
 		library: 'M5 4v16M10 4v16M14.5 4.5l4.5 15',
 	};
 	const SOLID = new Set(['play', 'pause', 'next', 'prev']);

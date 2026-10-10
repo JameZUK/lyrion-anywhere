@@ -175,6 +175,16 @@ Response: `{"result": {...}}`, or `{"error": "<reason>"}` with one of these stat
 | Apps and radio | `<app> items …` and `<app> playlist play/add/insert item_id:…`, only for app commands LMS lists in its `apps`/`radios` menus. Core command names can never be learned as apps. An unknown app triggers at most one menu refresh a minute. |
 | Admin role only | `rescan`; changing saved playlists (`playlists new/rename/delete/edit`) |
 
+**Plugin and context menus (learned actions).** LMS menus (apps, radio, track/album/artist info, plugin menus) offer actions: commands with parameters, which plugins define. A command outside the fixed allow-list is allowed only if **LMS offered exactly that action, in a menu the gateway relayed to the same device in the last hour**:
+- requests must match a learned action word for word and parameter for parameter, except text typed into a search box (`__TAGGEDINPUT__`);
+- request values are printable, at most 256 characters, and never URLs or paths;
+- actions are learned after response filtering, and an action whose parameters held a path or LAN URL is removed whole, so it can never be learned or shown;
+- server-level commands (preferences, rescan, restart, `client`, display/IR, …) never run this way;
+- actions that change shared data (`favorites`, `jivefavorites`, `playlists`, presets) need the admin role;
+- at most 4,000 learned actions per device, expiring after an hour.
+
+Context menus start from `trackinfo`/`albuminfo`/`artistinfo`/`genreinfo`/`yearinfo`/`playlistinfo`/`folderinfo items` with a library id.
+
 Everything else is refused, notably:
 - `readdirectory`, `pref`, `playerpref`;
 - server restart and stop, `debug`/`logging`, `button`/`display`;

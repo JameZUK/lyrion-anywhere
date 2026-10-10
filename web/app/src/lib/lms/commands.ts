@@ -72,6 +72,28 @@ export const moveInPlaylist = (playlist: number, from: number, to: number): Comm
 	'playlists', 'edit', `playlist_id:${id(playlist)}`, 'cmd:move', `index:${start(from)}`, `toindex:${start(to)}`,
 ];
 
+// --- apps, radio and context menus (SlimBrowse) --------------------------------------------
+
+/** An app or radio command word, as LMS lists them (`spotty`, `bbcsounds`, …). */
+export function appCommand(v: unknown): string {
+	if (typeof v !== 'string' || !/^[a-z0-9_]{1,64}$/.test(v)) throw new RangeError('bad app');
+	return v;
+}
+export const appsList = (): Command => ['apps', 0, 100];
+export const radiosList = (): Command => ['radios', 0, 100];
+/** An app's top menu, in menu (SlimBrowse) format. */
+export function appMenu(app: string): (from: number, n: number) => Command {
+	const a = appCommand(app); // validated now, not when the menu is fetched
+	return (from, n) => [a, 'items', start(from), count(n), 'menu:1'];
+}
+
+export type InfoKind = 'track' | 'album' | 'artist' | 'genre' | 'playlist';
+/** The "More…" (context) menu for a library item. */
+export function infoMenu(kind: InfoKind, item: number): (from: number, n: number) => Command {
+	const i = id(item);
+	return (from, n) => [`${kind}info`, 'items', start(from), count(n), `${kind}_id:${i}`, 'menu:1'];
+}
+
 // --- playback (player commands) ----------------------------------------------------------
 
 export const status = (): Command => ['status', '-', 1, STATUS_TAGS];

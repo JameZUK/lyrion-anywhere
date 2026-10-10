@@ -10,6 +10,8 @@ type SourceCtor = new () => MediaSource;
 
 export interface MediaOutputOptions {
 	source: 'managed' | 'classic';
+	/** MIME type the browser accepted (spelling differs between browsers). */
+	mime?: string;
 	/** Called with short status notes for the connection log. */
 	note?: (msg: string) => void;
 	makeAudio?: () => HTMLAudioElement;
@@ -61,7 +63,7 @@ export class MediaOutput {
 			ms.addEventListener('sourceopen', () => resolve(), { once: true });
 			setTimeout(() => reject(new Error('media source did not open')), 10_000);
 		});
-		const sb = ms.addSourceBuffer(MEDIA_TYPE);
+		const sb = ms.addSourceBuffer(this.opts.mime ?? MEDIA_TYPE);
 		sb.mode = 'segments';
 		sb.addEventListener('updateend', () => this.#pump());
 		sb.addEventListener('error', () => this.#note('media buffer error'));

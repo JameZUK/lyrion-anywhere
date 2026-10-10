@@ -412,6 +412,27 @@ pub fn check(
             _ => false,
         },
         "playlistcontrol" => playlistcontrol(&cmd[1..]),
+        // Context menus ("More…") for library items; their actions are then learned.
+        "trackinfo" | "albuminfo" | "artistinfo" | "genreinfo" | "yearinfo" | "playlistinfo"
+        | "folderinfo"
+            if c.get(1) == Some(&"items") =>
+        {
+            paging(&cmd[2..]).is_ok()
+                && params(
+                    &cmd[4..],
+                    &[
+                        ("track_id", V::Ids),
+                        ("album_id", V::Ids),
+                        ("artist_id", V::Ids),
+                        ("genre_id", V::Ids),
+                        ("year", V::Uint),
+                        ("playlist_id", V::Ids),
+                        ("folder_id", V::Ids),
+                        ("menu", V::OneOf(&["1"])),
+                    ],
+                )
+                .is_ok()
+        }
         "sync" => {
             n == 2
                 && (matches!(c[1], "-" | "?")
@@ -550,6 +571,10 @@ const STRIPPED: &[&str] = &[
 
 /// A value that reveals the server's filesystem or home network, whatever key it is under:
 /// `file:` URLs, and URLs whose host is private, loopback, link-local or a local name.
+pub(crate) fn sensitive_text(s: &str) -> bool {
+    sensitive_value(s)
+}
+
 fn sensitive_value(s: &str) -> bool {
     let lower = s.trim_start().to_ascii_lowercase();
     if lower.starts_with("file:") {
@@ -626,11 +651,26 @@ pub fn filter_response(kind: Kind, mut v: Value, may_control: &dyn Fn(&str) -> b
     v
 }
 
+/// A menu action (`{"cmd": [...], "params": {...}}`) whose parameters carry a URL, path or
+/// LAN address. It is removed whole: without them it would be a broken command.
+fn poisoned_action(x: &Value) -> bool {
+    let Some(o) = x.as_object() else { return false };
+    if !o.contains_key("cmd") {
+        return false;
+    }
+    o.get("params").and_then(Value::as_object).is_some_and(|p| {
+        p.iter()
+            .any(|(k, v)| STRIPPED.contains(&k.as_str()) || v.as_str().is_some_and(sensitive_value))
+    })
+}
+
 fn strip(v: &mut Value) {
     match v {
         Value::Object(map) => {
             map.retain(|k, x| {
-                !STRIPPED.contains(&k.as_str()) && !x.as_str().is_some_and(sensitive_value)
+                !STRIPPED.contains(&k.as_str())
+                    && !x.as_str().is_some_and(sensitive_value)
+                    && !poisoned_action(x)
             });
             for x in map.values_mut() {
                 strip(x);

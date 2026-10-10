@@ -85,10 +85,18 @@ pub async fn rpc(
     }
     let checked = match checked {
         Ok(c) => c,
-        Err(denied) => {
-            warn!(user = %principal.username, cmd = %summary(&req.cmd), reason = %denied.0, "rpc denied");
-            return error(StatusCode::FORBIDDEN, &denied.0);
-        }
+        Err(denied) => match gw.menu_action(&principal, &scope, &player, &req.cmd) {
+            // Not in the fixed allow-list, but an action LMS offered this device in a menu.
+            Some(Ok(c)) => c,
+            Some(Err(refusal)) => {
+                warn!(user = %principal.username, cmd = %summary(&req.cmd), reason = ?refusal, "menu action denied");
+                return error(StatusCode::FORBIDDEN, menu_refusal(&refusal, &denied.0));
+            }
+            None => {
+                warn!(user = %principal.username, cmd = %summary(&req.cmd), reason = %denied.0, "rpc denied");
+                return error(StatusCode::FORBIDDEN, &denied.0);
+            }
+        },
     };
 
     match gw.lms_rpc(&checked).await {
@@ -106,12 +114,28 @@ pub async fn rpc(
                 }
             }
             let filtered = rpc_policy::filter_response(checked.kind, result, &|p| scope.allows(p));
+            // Learn the menu actions this device has now been shown (after filtering, so only
+            // what the client actually received can ever be run).
+            let offered = crate::menu_actions::learn(&filtered);
+            if !offered.is_empty() {
+                gw.remember_menu_actions(principal.device_id, offered);
+            }
             Json(json!({ "result": filtered })).into_response()
         }
         Err(e) => {
             warn!(error = %e, "LMS JSON-RPC failed");
             error(StatusCode::BAD_GATEWAY, "music server unavailable")
         }
+    }
+}
+
+fn menu_refusal<'a>(r: &crate::menu_actions::Refusal, fallback: &'a str) -> &'a str {
+    use crate::menu_actions::Refusal;
+    match r {
+        Refusal::Never => "this command is not available remotely",
+        Refusal::AdminOnly => "this action needs the admin role",
+        Refusal::Malformed => "malformed command",
+        Refusal::NotOffered => fallback,
     }
 }
 
@@ -142,6 +166,67 @@ fn names_unknown_app(gw: &AppState, cmd: &[Value]) -> bool {
 }
 
 impl crate::Gateway {
+    pub(crate) fn remember_menu_actions(
+        &self,
+        device: i64,
+        actions: Vec<crate::menu_actions::Action>,
+    ) {
+        let now = std::time::Instant::now();
+        let mut all = self.menu_actions.lock().unwrap();
+        // Bound the number of devices tracked: drop the emptiest after expiring old entries.
+        if all.len() > 1000 {
+            for d in all.values_mut() {
+                d.expire(now);
+            }
+            all.retain(|_, d| !d.is_empty());
+        }
+        all.entry(device).or_default().add(actions, now);
+    }
+
+    /// A command outside the fixed allow-list: allowed if it is a menu action LMS offered this
+    /// device. `None` if it isn't shaped like one at all (the allow-list refusal stands).
+    fn menu_action(
+        &self,
+        principal: &Principal,
+        scope: &PlayerScope,
+        player: &str,
+        cmd: &[Value],
+    ) -> Option<Result<Checked, crate::menu_actions::Refusal>> {
+        use crate::menu_actions::Refusal;
+        if !player.is_empty() && !(rpc_policy::is_player_id(player) && scope.allows(player)) {
+            return None;
+        }
+        let raw: Vec<String> = cmd
+            .iter()
+            .map(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                Value::Number(n) => n.as_u64().map(|n| n.to_string()),
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
+        let now = std::time::Instant::now();
+        let mut all = self.menu_actions.lock().unwrap();
+        let empty = crate::menu_actions::DeviceActions::default();
+        let learned = match all.get_mut(&principal.device_id) {
+            Some(d) => {
+                d.expire(now);
+                &*d
+            }
+            None => &empty,
+        };
+        let verdict = crate::menu_actions::allowed(learned, &raw, principal.role == Role::Admin);
+        drop(all);
+        Some(match verdict {
+            Ok(()) => Ok(Checked {
+                player: player.to_string(),
+                cmd: raw,
+                kind: Kind::Plain,
+            }),
+            Err(Refusal::NotOffered) => return None,
+            Err(e) => Err(e),
+        })
+    }
+
     /// Send a checked command to LMS and return its `result`.
     pub(crate) async fn lms_rpc(&self, c: &Checked) -> Result<Value, String> {
         self.lms_command(&c.player, &c.cmd).await

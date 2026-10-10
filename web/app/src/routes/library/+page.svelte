@@ -5,6 +5,7 @@
 		{ href: '#/artists', icon: 'artist', label: 'Artists' },
 		{ href: '#/playlists', icon: 'queue', label: 'Playlists' },
 		{ href: '#/favourites', icon: 'heart', label: 'Favourites' },
+		{ href: '#/apps', icon: 'radio', label: 'Apps & Radio' },
 	];
 </script>
 

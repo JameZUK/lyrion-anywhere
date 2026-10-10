@@ -447,5 +447,64 @@
    "index:3",
    "toindex:0"
   ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "apps",
+   0,
+   100
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "radios",
+   0,
+   100
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "spotty",
+   "items",
+   0,
+   100,
+   "menu:1"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "trackinfo",
+   "items",
+   0,
+   100,
+   "track_id:9",
+   "menu:1"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "albuminfo",
+   "items",
+   0,
+   100,
+   "album_id:7",
+   "menu:1"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "artistinfo",
+   "items",
+   100,
+   50,
+   "artist_id:12",
+   "menu:1"
+  ]
  }
 ]

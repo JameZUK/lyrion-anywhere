@@ -33,6 +33,7 @@ pub mod admin;
 pub mod art;
 mod auth;
 pub mod events;
+pub mod menu_actions;
 mod relay;
 mod rpc;
 pub mod rpc_policy;
@@ -115,6 +116,8 @@ pub struct Gateway {
     /// App and radio commands LMS lists in its menus (the only plugin commands allowed).
     apps: Mutex<std::collections::HashSet<String>>,
     apps_refreshed: Mutex<Option<std::time::Instant>>,
+    /// Menu actions LMS offered, per device (see [`menu_actions`]).
+    menu_actions: Mutex<HashMap<i64, menu_actions::DeviceActions>>,
     /// Image URLs LMS has handed out (the only ones its image proxy may fetch for clients).
     known_images: Mutex<art::KnownImages>,
     events: Arc<events::Hub>,
@@ -137,6 +140,7 @@ impl Gateway {
             sessions: Mutex::new(HashMap::new()),
             apps: Mutex::new(Default::default()),
             apps_refreshed: Mutex::new(None),
+            menu_actions: Mutex::new(HashMap::new()),
             known_images: Mutex::new(Default::default()),
             events: Arc::new(events::Hub::default()),
         })

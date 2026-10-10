@@ -99,3 +99,23 @@ describe('timeline', async () => {
 		expect(new Timeline().frames(0, 10)).toBe(0);
 	});
 });
+
+// Regression: iPadOS Safari accepts only "fLaC" (case-sensitive), so asking for "flac" made the
+// iPad fall back to Web Audio, which iOS suspends in the background.
+test('Safari spelling of the FLAC codec is recognised', async () => {
+	const { chooseMode: choose, MEDIA_TYPES } = await import('$lib/player/mode');
+	const safari = {
+		managedMediaSource: true,
+		mediaSource: true,
+		audioWorklet: true,
+		audioSession: true,
+		types: [
+			{ type: MEDIA_TYPES[0], managed: false, classic: false },
+			{ type: MEDIA_TYPES[1], managed: true, classic: true },
+		],
+		userAgent: '',
+	};
+	expect(choose(safari, { appleMobile: true })).toMatchObject({ mode: 'media', source: 'managed', mime: 'audio/mp4; codecs="fLaC"' });
+	const chrome = { ...safari, managedMediaSource: false, types: [{ type: MEDIA_TYPES[0], managed: false, classic: true }, { type: MEDIA_TYPES[1], managed: false, classic: false }] };
+	expect(choose(chrome, { appleMobile: false, android: true })).toMatchObject({ mode: 'media', source: 'classic', mime: 'audio/mp4; codecs="flac"' });
+});

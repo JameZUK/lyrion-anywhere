@@ -6,6 +6,9 @@
 	import type { Album, AlbumsResult } from '$lib/lms/types';
 	import AlbumGrid from '$lib/components/AlbumGrid.svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import ContextMenu from '$lib/components/ContextMenu.svelte';
+
+	let showMore = $state(false);
 
 	let albums = $state<Album[]>([]);
 	let name = $state('');
@@ -51,9 +54,11 @@
 		<div class="actions">
 			<button class="btn primary" onclick={() => app.queueUp({ artist: id }, 'play')} disabled={!albums.length}><Icon name="play" size={18} />Play all</button>
 			<button class="btn" onclick={() => app.queueUp({ artist: id }, 'add')} disabled={!albums.length}><Icon name="plus" size={18} />Add to queue</button>
+			<button class="btn" onclick={() => (showMore = true)}><Icon name="more" size={18} />More</button>
 		</div>
 		<h2>{albums.length} {albums.length === 1 ? 'album' : 'albums'}</h2>
 		<AlbumGrid {albums} showArtist={false} />
+		{#if showMore}<ContextMenu kind="artist" {id} title={textOf(name)} onclose={() => (showMore = false)} />{/if}
 	{/if}
 </section>
 

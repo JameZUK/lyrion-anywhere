@@ -9,8 +9,13 @@ import type { Capabilities } from './capabilities';
 
 export type PlaybackMode = 'worklet' | 'media';
 export type ModePreference = 'auto' | PlaybackMode;
-/** What the media-element path appends: FLAC in fragmented MP4. */
-export const MEDIA_TYPE = 'audio/mp4; codecs="flac"';
+/**
+ * What the media-element path appends: FLAC in fragmented MP4. Browsers disagree on the
+ * codec name, and the check is case-sensitive: Chromium accepts "flac", Safari only "fLaC".
+ */
+export const MEDIA_TYPES = ['audio/mp4; codecs="flac"', 'audio/mp4; codecs="fLaC"'] as const;
+/** The first spelling (kept for callers that only need one). */
+export const MEDIA_TYPE = MEDIA_TYPES[0];
 
 export interface Environment {
 	/** iPhone, iPod or iPad (iPadOS reports itself as a Mac, so touch support decides). */
@@ -23,6 +28,8 @@ export interface ModeChoice {
 	mode: PlaybackMode;
 	/** For 'media': which Media Source API to use. */
 	source: 'managed' | 'classic' | null;
+	/** For 'media': the MIME type this browser accepts for our segments. */
+	mime?: string | null;
 	/** Why, for Settings. */
 	reason: string;
 }
@@ -33,15 +40,29 @@ export function detectEnvironment(nav: { userAgent?: string; maxTouchPoints?: nu
 	return { appleMobile: /iPhone|iPad|iPod/.test(ua) || ipadAsMac, android: /Android/.test(ua) };
 }
 
-/** Which Media Source API can play our segments, preferring Managed (needed on iPhone). */
-export function mediaSource(caps: Capabilities): 'managed' | 'classic' | null {
-	const t = caps.types.find((x) => x.type === MEDIA_TYPE);
-	if (caps.managedMediaSource && t?.managed) return 'managed';
-	if (caps.mediaSource && t?.classic) return 'classic';
+/** Which Media Source API and MIME spelling can play our segments (Managed preferred). */
+export function mediaFormat(caps: Capabilities): { source: 'managed' | 'classic'; mime: string } | null {
+	for (const source of ['managed', 'classic'] as const) {
+		if (source === 'managed' ? !caps.managedMediaSource : !caps.mediaSource) continue;
+		for (const mime of MEDIA_TYPES) {
+			const t = caps.types.find((x) => x.type === mime);
+			if (t && (source === 'managed' ? t.managed : t.classic)) return { source, mime };
+		}
+	}
 	return null;
 }
 
+/** Which Media Source API can play our segments, preferring Managed (needed on iPhone). */
+export function mediaSource(caps: Capabilities): 'managed' | 'classic' | null {
+	return mediaFormat(caps)?.source ?? null;
+}
+
 export function chooseMode(caps: Capabilities, env: Environment, pref: ModePreference = 'auto'): ModeChoice {
+	const c = chooseModeInner(caps, env, pref);
+	return c.mode === 'media' && c.source ? { ...c, mime: mediaFormat(caps)?.mime ?? null } : c;
+}
+
+function chooseModeInner(caps: Capabilities, env: Environment, pref: ModePreference): ModeChoice {
 	const source = mediaSource(caps);
 	const worklet = caps.audioWorklet;
 	if (pref === 'media') {

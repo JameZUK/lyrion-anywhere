@@ -111,3 +111,16 @@ export interface PlaylistTracksResult {
 	count?: number;
 	playlisttracks_loop?: Track[];
 }
+
+export interface AppInfo {
+	cmd?: string;
+	name?: string;
+	icon?: string;
+	type?: string;
+	weight?: number;
+}
+export interface AppsResult {
+	count?: number;
+	appss_loop?: AppInfo[];
+	radioss_loop?: AppInfo[];
+}

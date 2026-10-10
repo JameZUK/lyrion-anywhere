@@ -6,6 +6,9 @@
 	import Art from '$lib/components/Art.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import PlayerSwitcher from '$lib/components/PlayerSwitcher.svelte';
+	import ContextMenu from '$lib/components/ContextMenu.svelte';
+
+	let showMore = $state(false);
 
 	let seeking = $state<number | null>(null);
 	let switcher = $state(false);
@@ -110,7 +113,13 @@
 			<span class="muted vnum">{Math.round(vol)}</span>
 		</label>
 
-		<a class="btn queue-link" href="#/queue"><Icon name="queue" size={18} />Queue</a>
+		<div class="row-links">
+			<a class="btn" href="#/queue"><Icon name="queue" size={18} />Queue</a>
+			{#if typeof track?.id === 'number' && track.id > 0}
+				<button class="btn" onclick={() => (showMore = true)}><Icon name="more" size={18} />More</button>
+			{/if}
+		</div>
+		{#if showMore && typeof track?.id === 'number'}<ContextMenu kind="track" id={track.id} title={title} onclose={() => (showMore = false)} />{/if}
 	</div>
 </section>
 
@@ -219,8 +228,9 @@
 		font-size: 0.85rem;
 		font-variant-numeric: tabular-nums;
 	}
-	.queue-link {
-		justify-self: start;
+	.row-links {
+		display: flex;
+		gap: 0.6rem;
 		margin-top: 1rem;
 	}
 	@media (max-width: 760px) {

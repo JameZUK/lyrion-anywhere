@@ -72,6 +72,13 @@ pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
         "favorites" => json!({"count": 1, "loop_loop": [
             {"id": "f.1", "name": "Station", "image": "https://cdn.example.com/a.jpg", "url": "http://stream.example/x?token=secret"}
         ]}),
+        // A context menu, shaped like LMS's track info menu (SlimBrowse).
+        "trackinfo" => json!({"count": 4, "base": {"actions": {}}, "item_loop": [
+            {"text": "Similar tracks", "type": "redirect", "actions": {"go": {"cmd": ["audiomuse", "similar_track"], "params": {"track_id": "9"}, "player": 0}}},
+            {"text": "Save to Favorites", "actions": {"go": {"cmd": ["jivefavorites", "add"], "params": {"url": "file:///srv/music/x/1.flac", "title": "T"}}}},
+            {"text": "Server setting", "actions": {"go": {"cmd": ["pref", "audiodir"], "params": {"value": "/x"}}}},
+            {"text": "Stream link", "actions": {"go": {"cmd": ["remote", "items"], "params": {"item_id": "http://10.0.0.50/x"}}}}
+        ]}),
         _ => json!({"ok": 1}),
     }
 }

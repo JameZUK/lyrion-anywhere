@@ -7,6 +7,9 @@
 	import Art from '$lib/components/Art.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import TrackList from '$lib/components/TrackList.svelte';
+	import ContextMenu from '$lib/components/ContextMenu.svelte';
+
+	let ctx = $state<{ kind: cmd.InfoKind; id: number; title: string } | null>(null);
 
 	let album = $state<Album | null>(null);
 	let tracks = $state<Track[]>([]);
@@ -65,6 +68,7 @@
 					<button class="btn primary" onclick={() => app.queueUp({ album: id }, 'play')}><Icon name="play" size={18} />Play</button>
 					<button class="btn" onclick={() => app.queueUp({ album: id }, 'next')}><Icon name="playnext" size={18} />Play next</button>
 					<button class="btn" onclick={() => app.queueUp({ album: id }, 'add')}><Icon name="plus" size={18} />Add to queue</button>
+					<button class="btn" onclick={() => (ctx = { kind: 'album', id, title: textOf(album?.album) })}><Icon name="more" size={18} />More</button>
 				</div>
 			</div>
 		</header>
@@ -74,11 +78,14 @@
 			onplay={(_t, i) => app.queueUp({ album: id }, 'play', i)}
 			onnext={(t) => t.id && app.queueUp({ track: t.id }, 'next')}
 			onadd={(t) => t.id && app.queueUp({ track: t.id }, 'add')}
+			onmore={(t) => t.id && (ctx = { kind: 'track', id: t.id, title: textOf(t.title) })}
 		/>
 	{:else}
 		<p class="muted">Loading…</p>
 	{/if}
 </section>
+
+{#if ctx}<ContextMenu kind={ctx.kind} id={ctx.id} title={ctx.title} onclose={() => (ctx = null)} />{/if}
 
 <style>
 	header {

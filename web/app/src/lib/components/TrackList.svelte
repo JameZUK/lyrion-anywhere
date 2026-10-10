@@ -8,12 +8,15 @@
 		onplay,
 		onnext,
 		onadd,
+		onmore,
 		showArtist = false,
 	}: {
 		tracks: Track[];
 		onplay: (t: Track, index: number) => void;
 		onnext?: (t: Track) => void;
 		onadd?: (t: Track) => void;
+		/** "More…": the track's context menu (info, plugin actions). */
+		onmore?: (t: Track) => void;
 		showArtist?: boolean;
 	} = $props();
 
@@ -31,7 +34,7 @@
 				</span>
 				<span class="dur muted">{duration(t.duration)}</span>
 			</button>
-			{#if onnext || onadd}
+			{#if onnext || onadd || onmore}
 				<div class="more">
 					<button class="icon-btn" aria-label="More options" aria-expanded={open === i} onclick={() => (open = open === i ? null : i)}>
 						<Icon name="more" size={20} />
@@ -40,6 +43,7 @@
 						<div class="menu" role="menu">
 							{#if onnext}<button role="menuitem" onclick={() => { onnext(t); open = null; }}><Icon name="playnext" size={18} />Play next</button>{/if}
 							{#if onadd}<button role="menuitem" onclick={() => { onadd(t); open = null; }}><Icon name="plus" size={18} />Add to queue</button>{/if}
+							{#if onmore}<button role="menuitem" onclick={() => { onmore(t); open = null; }}><Icon name="more" size={18} />More…</button>{/if}
 						</div>
 					{/if}
 				</div>

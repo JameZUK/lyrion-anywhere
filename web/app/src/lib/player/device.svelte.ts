@@ -117,7 +117,7 @@ class DevicePlayer {
 			let port: MessagePort | undefined;
 			if (choice.mode === 'media' && choice.source) {
 				// The element's play() runs first, inside the tap.
-				const out = new MediaOutput({ source: choice.source, note: (m) => this.#note(m) });
+				const out = new MediaOutput({ source: choice.source, mime: choice.mime ?? undefined, note: (m) => this.#note(m) });
 				out.onDrained = () => {
 					this.#reportPosition();
 					if (!this.#drainedSent) this.#worker?.postMessage({ cmd: 'media-drained' });
