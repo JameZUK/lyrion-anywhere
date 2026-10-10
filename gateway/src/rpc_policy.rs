@@ -1,0 +1,990 @@
+//! What a remote user may ask LMS to do: the JSON-RPC allow-list.
+//!
+//! Default deny. A request is `{player, cmd}`, with `cmd` LMS's command array (for example
+//! `["albums", 0, 50, "tags:al"]`). It is allowed only if:
+//! - the command (and sub-command) is in the table for the caller's role;
+//! - every positional argument has the expected form;
+//! - every `key:value` parameter uses a key allowed for that command, with a well-formed
+//!   value;
+//! - for player commands, the caller may control the player (and, for `sync`, the other
+//!   player too).
+//!
+//! Responses are filtered too ([`filter_response`]): LAN addresses, server identifiers and
+//! URLs (which include file paths and stream credentials) never leave the gateway.
+
+use std::collections::HashSet;
+
+use serde_json::Value;
+
+use crate::accounts::Role;
+
+/// Largest page a client may request.
+pub const MAX_PAGE: u64 = 500;
+const MAX_ARGS: usize = 16;
+const MAX_ARG_LEN: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Denied(pub String);
+
+fn deny<T>(why: impl Into<String>) -> Result<T, Denied> {
+    Err(Denied(why.into()))
+}
+
+/// What the caller is allowed to do, as the policy needs it.
+pub trait Caller {
+    fn role(&self) -> Role;
+    fn may_control(&self, player: &str) -> bool;
+}
+
+/// A validated request, ready to send to LMS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checked {
+    /// Player MAC, or empty for server queries.
+    pub player: String,
+    pub cmd: Vec<String>,
+    /// How to filter the response.
+    pub kind: Kind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// Ordinary response; strip sensitive fields.
+    Plain,
+    /// `players` / `serverstatus`: also drop players the caller may not control.
+    PlayerList,
+    /// `apps` / `radios`: also learn the app commands listed.
+    AppMenu,
+}
+
+/// Normalise one argument: strings and integers only, bounded, printable.
+fn arg(v: &Value) -> Result<String, Denied> {
+    let s = match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) if n.is_i64() || n.is_u64() => n.to_string(),
+        Value::Number(n) => match n.as_f64() {
+            Some(f) if f.is_finite() && (0.0..1e7).contains(&f) => n.to_string(),
+            _ => return deny("bad number"),
+        },
+        _ => return deny("arguments must be strings or numbers"),
+    };
+    if s.len() > MAX_ARG_LEN {
+        return deny("argument too long");
+    }
+    if s.chars().any(|c| c.is_control()) {
+        return deny("control characters not allowed");
+    }
+    Ok(s)
+}
+
+fn is_uint(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 12 && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn is_ids(s: &str) -> bool {
+    // A single id or a comma-separated list of ids.
+    !s.is_empty() && s.len() <= 200 && s.split(',').all(is_uint)
+}
+
+fn is_signed_num(s: &str) -> bool {
+    let t = s.strip_prefix(['+', '-']).unwrap_or(s);
+    !t.is_empty()
+        && t.len() <= 10
+        && t.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && t.matches('.').count() <= 1
+}
+
+/// LMS player ids are MAC addresses.
+pub fn is_player_id(s: &str) -> bool {
+    s.len() == 17
+        && s.split(':').count() == 6
+        && s.split(':')
+            .all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Validation for a `key:value` parameter's value.
+#[derive(Clone, Copy)]
+enum V {
+    Ids,
+    Uint,
+    Bool,
+    /// Free text (search terms, names), already bounded and printable.
+    Text,
+    /// LMS response tags: letters only.
+    Tags,
+    /// Sort orders: a fixed vocabulary.
+    Sort,
+    /// Opaque menu/item ids from LMS (e.g. `b99447ab.1`).
+    ItemId,
+    /// One of a fixed set of words.
+    OneOf(&'static [&'static str]),
+}
+
+fn value_ok(v: V, s: &str) -> bool {
+    match v {
+        V::Ids => is_ids(s),
+        V::Uint => is_uint(s),
+        V::Bool => s == "0" || s == "1",
+        V::Text => !s.is_empty(),
+        V::Tags => !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric()),
+        V::Sort => matches!(
+            s,
+            "album"
+                | "artflow"
+                | "artistalbum"
+                | "yearalbum"
+                | "yearartistalbum"
+                | "new"
+                | "random"
+                | "title"
+                | "tracknum"
+                | "albumtrack"
+                | "artisttrack"
+                | "id"
+        ),
+        V::ItemId => {
+            s.len() <= 128
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        }
+        V::OneOf(set) => set.contains(&s),
+    }
+}
+
+/// Check the `key:value` parameters after the positional ones.
+fn params(rest: &[String], allowed: &[(&str, V)]) -> Result<(), Denied> {
+    let mut seen = HashSet::new();
+    for p in rest {
+        let Some((k, v)) = p.split_once(':') else {
+            return deny(format!("unexpected argument {p:?}"));
+        };
+        let Some((_, rule)) = allowed.iter().find(|(name, _)| *name == k) else {
+            return deny(format!("parameter {k:?} not allowed here"));
+        };
+        if !seen.insert(k) {
+            return deny(format!("parameter {k:?} repeated"));
+        }
+        if !value_ok(*rule, v) {
+            return deny(format!("bad value for {k}"));
+        }
+    }
+    Ok(())
+}
+
+/// `start count` paging, bounded.
+fn paging(a: &[String]) -> Result<(), Denied> {
+    match a {
+        [start, count, ..] if is_uint(start) && is_uint(count) => {
+            if count.parse::<u64>().unwrap_or(u64::MAX) > MAX_PAGE {
+                deny(format!("count over {MAX_PAGE}"))
+            } else {
+                Ok(())
+            }
+        }
+        _ => deny("expected start and count"),
+    }
+}
+
+const LIBRARY: &[(&str, V)] = &[("library_id", V::ItemId)];
+
+fn with<'a>(base: &'a [(&'a str, V)], extra: &'a [(&'a str, V)]) -> Vec<(&'a str, V)> {
+    base.iter().chain(extra).copied().collect()
+}
+
+/// Check a request against the policy.
+pub fn check(
+    caller: &impl Caller,
+    player: &str,
+    raw: &[Value],
+    apps: &HashSet<String>,
+) -> Result<Checked, Denied> {
+    if raw.is_empty() || raw.len() > MAX_ARGS {
+        return deny("bad command length");
+    }
+    let cmd: Vec<String> = raw.iter().map(arg).collect::<Result<_, _>>()?;
+    let c: Vec<&str> = cmd.iter().map(String::as_str).collect();
+    let server = |kind| {
+        Ok(Checked {
+            player: String::new(),
+            cmd: cmd.clone(),
+            kind,
+        })
+    };
+
+    // --- Server queries (no player) -----------------------------------------
+    let query = match c[0] {
+        "serverstatus" | "players" => {
+            paging(&cmd[1..])?;
+            params(&cmd[3..], &[])?;
+            Some(Kind::PlayerList)
+        }
+        "artists" => {
+            paging(&cmd[1..])?;
+            params(
+                &cmd[3..],
+                &with(
+                    LIBRARY,
+                    &[
+                        ("search", V::Text),
+                        ("genre_id", V::Ids),
+                        ("album_id", V::Ids),
+                        ("year", V::Uint),
+                        ("role_id", V::Text),
+                        ("tags", V::Tags),
+                    ],
+                ),
+            )?;
+            Some(Kind::Plain)
+        }
+        "albums" => {
+            paging(&cmd[1..])?;
+            params(
+                &cmd[3..],
+                &with(
+                    LIBRARY,
+                    &[
+                        ("search", V::Text),
+                        ("genre_id", V::Ids),
+                        ("artist_id", V::Ids),
+                        ("track_id", V::Ids),
+                        ("year", V::Uint),
+                        ("sort", V::Sort),
+                        ("tags", V::Tags),
+                        ("role_id", V::Text),
+                        ("compilation", V::Bool),
+                    ],
+                ),
+            )?;
+            Some(Kind::Plain)
+        }
+        "titles" | "tracks" => {
+            paging(&cmd[1..])?;
+            params(
+                &cmd[3..],
+                &with(
+                    LIBRARY,
+                    &[
+                        ("search", V::Text),
+                        ("genre_id", V::Ids),
+                        ("artist_id", V::Ids),
+                        ("album_id", V::Ids),
+                        ("year", V::Uint),
+                        ("sort", V::Sort),
+                        ("tags", V::Tags),
+                    ],
+                ),
+            )?;
+            Some(Kind::Plain)
+        }
+        "genres" => {
+            paging(&cmd[1..])?;
+            params(
+                &cmd[3..],
+                &with(
+                    LIBRARY,
+                    &[
+                        ("search", V::Text),
+                        ("artist_id", V::Ids),
+                        ("album_id", V::Ids),
+                        ("year", V::Uint),
+                        ("tags", V::Tags),
+                    ],
+                ),
+            )?;
+            Some(Kind::Plain)
+        }
+        "years" => {
+            paging(&cmd[1..])?;
+            params(&cmd[3..], &with(LIBRARY, &[("hasAlbums", V::Bool)]))?;
+            Some(Kind::Plain)
+        }
+        "search" => {
+            paging(&cmd[1..])?;
+            params(&cmd[3..], &[("term", V::Text), ("extended", V::Bool)])?;
+            Some(Kind::Plain)
+        }
+        "musicfolder" => {
+            paging(&cmd[1..])?;
+            params(
+                &cmd[3..],
+                &[
+                    ("folder_id", V::Ids),
+                    ("tags", V::Tags),
+                    ("return_top", V::Bool),
+                ],
+            )?;
+            Some(Kind::Plain)
+        }
+        "apps" | "radios" => {
+            paging(&cmd[1..])?;
+            params(&cmd[3..], &[])?;
+            Some(Kind::AppMenu)
+        }
+        "playlists" if c.get(1) == Some(&"tracks") => {
+            paging(&cmd[2..])?;
+            params(&cmd[4..], &[("playlist_id", V::Ids), ("tags", V::Tags)])?;
+            Some(Kind::Plain)
+        }
+        "playlists" if c.get(1).is_some_and(|s| is_uint(s)) => {
+            paging(&cmd[1..])?;
+            params(&cmd[3..], &[("search", V::Text), ("tags", V::Tags)])?;
+            Some(Kind::Plain)
+        }
+        "playlists" if matches!(c.get(1), Some(&"new" | &"rename" | &"delete" | &"edit")) => {
+            playlists_edit(&cmd[1..])?;
+            Some(Kind::Plain)
+        }
+        "favorites" if c.get(1) == Some(&"items") => {
+            paging(&cmd[2..])?;
+            params(
+                &cmd[4..],
+                &[("item_id", V::ItemId), ("menu", V::OneOf(&["1"]))],
+            )?;
+            Some(Kind::Plain)
+        }
+        "syncgroups" if c.get(1) == Some(&"?") && cmd.len() == 2 => Some(Kind::Plain),
+        "rescan" => {
+            if caller.role() != Role::Admin {
+                return deny("rescan needs the admin role");
+            }
+            if !(cmd.len() == 1 || (cmd.len() == 2 && matches!(c[1], "?" | "full"))) {
+                return deny("bad rescan arguments");
+            }
+            Some(Kind::Plain)
+        }
+        _ => None,
+    };
+    if let Some(kind) = query {
+        if !player.is_empty() {
+            return deny("server queries take no player");
+        }
+        return server(kind);
+    }
+
+    // --- Player commands ----------------------------------------------------
+    if !is_player_id(player) {
+        return deny(format!("command {:?} not allowed", c[0]));
+    }
+    if !caller.may_control(player) {
+        return deny("you may not control this player");
+    }
+    let n = cmd.len();
+    let ok = match c[0] {
+        "status" => {
+            paging(&cmd[1..]).is_ok()
+                && params(
+                    &cmd[3..],
+                    &[("tags", V::Tags), ("menu", V::OneOf(&["menu"]))],
+                )
+                .is_ok()
+                || (n == 2 && c[1] == "-")
+                || (n >= 3
+                    && c[1] == "-"
+                    && is_uint(c[2])
+                    && params(&cmd[3..], &[("tags", V::Tags)]).is_ok())
+        }
+        "play" | "stop" => n == 1,
+        "pause" => n == 1 || (n == 2 && matches!(c[1], "0" | "1")),
+        "mode" => n == 2 && c[1] == "?",
+        "time" => n == 2 && (c[1] == "?" || is_signed_num(c[1])),
+        "power" => n == 2 && matches!(c[1], "0" | "1" | "?"),
+        "sleep" => n == 2 && (c[1] == "?" || is_uint(c[1])),
+        "mixer" => {
+            n == 3
+                && match c[1] {
+                    "volume" => c[2] == "?" || is_signed_num(c[2]),
+                    "muting" => matches!(c[2], "0" | "1" | "toggle" | "?"),
+                    _ => false,
+                }
+        }
+        "playlist" => match (c.get(1).copied(), n) {
+            (Some("index" | "jump"), 3) => c[2] == "?" || is_signed_num(c[2]),
+            (Some("move"), 4) => is_uint(c[2]) && is_uint(c[3]),
+            (Some("delete"), 3) => is_uint(c[2]),
+            (Some("clear"), 2) => true,
+            (Some("shuffle" | "repeat"), 3) => matches!(c[2], "0" | "1" | "2" | "?"),
+            (Some("tracks"), 3) => c[2] == "?",
+            // Anything that takes a URL or file path (play, add, insert, load, …) is refused.
+            _ => false,
+        },
+        "playlistcontrol" => playlistcontrol(&cmd[1..]),
+        "sync" => {
+            n == 2
+                && (matches!(c[1], "-" | "?")
+                    || (is_player_id(c[1]) && c[1] != player && caller.may_control(c[1])))
+        }
+        "favorites" if c.get(1) == Some(&"playlist") => {
+            n >= 4
+                && matches!(c[2], "play" | "add" | "insert")
+                && params(&cmd[3..], &[("item_id", V::ItemId)]).is_ok()
+                && cmd[3..].iter().any(|p| p.starts_with("item_id:"))
+        }
+        app if apps.contains(app) => match c.get(1).copied() {
+            Some("items") => {
+                paging(&cmd[2..]).is_ok()
+                    && params(
+                        &cmd[4..],
+                        &[
+                            ("item_id", V::ItemId),
+                            ("search", V::Text),
+                            ("menu", V::OneOf(&["1"])),
+                        ],
+                    )
+                    .is_ok()
+            }
+            Some("playlist") => {
+                n >= 4
+                    && matches!(c[2], "play" | "add" | "insert")
+                    && params(&cmd[3..], &[("item_id", V::ItemId)]).is_ok()
+                    && cmd[3..].iter().any(|p| p.starts_with("item_id:"))
+            }
+            _ => false,
+        },
+        _ => false,
+    };
+    if !ok {
+        return deny(format!(
+            "command {:?} not allowed with these arguments",
+            c[0]
+        ));
+    }
+    Ok(Checked {
+        player: player.to_string(),
+        cmd,
+        kind: Kind::Plain,
+    })
+}
+
+/// `playlistcontrol cmd:<load|add|insert|delete> <exactly one id selector> [play_index:n]`.
+fn playlistcontrol(a: &[String]) -> bool {
+    let selectors = [
+        "album_id",
+        "artist_id",
+        "track_id",
+        "genre_id",
+        "year",
+        "playlist_id",
+        "folder_id",
+    ];
+    let mut cmd_ok = false;
+    let mut selector_count = 0;
+    let mut seen = HashSet::new();
+    for p in a {
+        let Some((k, v)) = p.split_once(':') else {
+            return false;
+        };
+        if !seen.insert(k) {
+            return false;
+        }
+        match k {
+            "cmd" => cmd_ok = matches!(v, "load" | "add" | "insert" | "delete"),
+            "play_index" => {
+                if !is_uint(v) {
+                    return false;
+                }
+            }
+            k if selectors.contains(&k) => {
+                if !is_ids(v) {
+                    return false;
+                }
+                selector_count += 1;
+            }
+            // url:, playlist_name:, and anything else are refused.
+            _ => return false,
+        }
+    }
+    cmd_ok && selector_count == 1
+}
+
+/// `playlists new|rename|delete|edit` with ids and names only.
+fn playlists_edit(a: &[String]) -> Result<(), Denied> {
+    let rules: &[(&str, V)] = match a[0].as_str() {
+        "new" => &[("name", V::Text)],
+        "rename" => &[
+            ("playlist_id", V::Ids),
+            ("newname", V::Text),
+            ("dry_run", V::Bool),
+        ],
+        "delete" => &[("playlist_id", V::Ids)],
+        "edit" => &[
+            ("playlist_id", V::Ids),
+            ("cmd", V::OneOf(&["up", "down", "move", "delete", "add"])),
+            ("index", V::Uint),
+            ("toindex", V::Uint),
+            ("track_id", V::Ids),
+        ],
+        _ => return deny("bad playlists command"),
+    };
+    params(&a[1..], rules)?;
+    let has = |k: &str| a[1..].iter().any(|p| p.starts_with(&format!("{k}:")));
+    let required: &[&str] = match a[0].as_str() {
+        "new" => &["name"],
+        "rename" => &["playlist_id", "newname"],
+        "delete" | "edit" => &["playlist_id"],
+        _ => &[],
+    };
+    if required.iter().all(|k| has(k)) {
+        Ok(())
+    } else {
+        deny("missing required parameter")
+    }
+}
+
+/// Keys never returned to clients: LAN addresses, server identity, and URLs (which carry
+/// file paths and streaming-service credentials).
+const STRIPPED: &[&str] = &[
+    "ip",
+    "uuid",
+    "httpport",
+    "url",
+    "mac",
+    "seq_no",
+    "remote_url",
+    "path",
+];
+
+/// Filter a response. `may_control` hides players the caller can't use.
+pub fn filter_response(kind: Kind, mut v: Value, may_control: &dyn Fn(&str) -> bool) -> Value {
+    strip(&mut v);
+    if kind == Kind::PlayerList
+        && let Some(players) = v.get_mut("players_loop").and_then(Value::as_array_mut)
+    {
+        players.retain(|p| {
+            p.get("playerid")
+                .and_then(Value::as_str)
+                .is_some_and(may_control)
+        });
+        let count = players.len();
+        if let Some(obj) = v.as_object_mut() {
+            for k in ["player count", "count"] {
+                if obj.contains_key(k) {
+                    obj.insert(k.to_string(), Value::from(count));
+                }
+            }
+            // Players on other servers or the network are none of a remote user's business.
+            obj.retain(|k, _| !k.starts_with("other player") && !k.starts_with("sn player"));
+        }
+    }
+    v
+}
+
+fn strip(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            map.retain(|k, _| !STRIPPED.contains(&k.as_str()));
+            for x in map.values_mut() {
+                strip(x);
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(strip),
+        _ => {}
+    }
+}
+
+/// App commands listed in an `apps`/`radios` response (`appss_loop`/`radioss_loop`).
+pub fn learn_apps(v: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    for key in ["appss_loop", "radioss_loop"] {
+        if let Some(items) = v.get(key).and_then(Value::as_array) {
+            for item in items {
+                if let Some(cmd) = item.get("cmd").and_then(Value::as_str)
+                    && !cmd.is_empty()
+                    && cmd.len() <= 64
+                    && cmd
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                    && !RESERVED.contains(&cmd)
+                {
+                    out.push(cmd.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Core LMS commands that must never be treated as an app, whatever a menu says.
+const RESERVED: &[&str] = &[
+    "readdirectory",
+    "pref",
+    "playerpref",
+    "rescan",
+    "wipecache",
+    "restartserver",
+    "stopserver",
+    "debug",
+    "logging",
+    "getstring",
+    "playlist",
+    "playlists",
+    "playlistcontrol",
+    "status",
+    "mixer",
+    "power",
+    "sync",
+    "sleep",
+    "button",
+    "ir",
+    "display",
+    "show",
+    "client",
+    "connect",
+    "disconnect",
+    "login",
+    "listen",
+    "subscribe",
+    "serverstatus",
+    "players",
+    "favorites",
+    "artwork",
+    "setsncredentials",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const MINE: &str = "02:4c:41:00:00:01";
+    const OTHER: &str = "02:4c:41:00:00:02";
+    const HOME: &str = "aa:bb:cc:dd:ee:01";
+
+    struct Who(Role);
+    impl Caller for Who {
+        fn role(&self) -> Role {
+            self.0
+        }
+        fn may_control(&self, p: &str) -> bool {
+            self.0 == Role::Admin || p == MINE || p == HOME
+        }
+    }
+
+    fn apps() -> HashSet<String> {
+        ["spotty", "bbcsounds"]
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }
+
+    fn ok(player: &str, cmd: Value) -> Checked {
+        let raw = cmd.as_array().unwrap().clone();
+        check(&Who(Role::Listener), player, &raw, &apps())
+            .unwrap_or_else(|e| panic!("{cmd} denied: {e:?}"))
+    }
+
+    fn denied(player: &str, cmd: Value) {
+        let raw = cmd.as_array().unwrap().clone();
+        assert!(
+            check(&Who(Role::Listener), player, &raw, &apps()).is_err(),
+            "{player} {cmd} was allowed"
+        );
+    }
+
+    #[test]
+    fn library_browsing_is_allowed() {
+        for cmd in [
+            json!(["artists", 0, 50, "tags:s", "search:abba"]),
+            json!([
+                "albums",
+                0,
+                100,
+                "tags:alj",
+                "sort:artistalbum",
+                "artist_id:12"
+            ]),
+            json!(["titles", 0, 50, "album_id:7", "tags:adl", "sort:tracknum"]),
+            json!(["genres", 0, 50]),
+            json!(["years", 0, 50, "hasAlbums:1"]),
+            json!(["search", 0, 20, "term:blue"]),
+            json!(["playlists", 0, 50]),
+            json!(["playlists", "tracks", 0, 50, "playlist_id:3", "tags:al"]),
+            json!(["musicfolder", 0, 50, "folder_id:9"]),
+            json!(["favorites", "items", 0, 50, "item_id:b99447ab.1"]),
+            json!(["apps", 0, 50]),
+            json!(["radios", 0, 50]),
+            json!(["players", 0, 50]),
+            json!(["serverstatus", 0, 50]),
+            json!(["syncgroups", "?"]),
+        ] {
+            assert!(ok("", cmd).player.is_empty());
+        }
+    }
+
+    #[test]
+    fn playback_on_permitted_players_is_allowed() {
+        for cmd in [
+            json!(["status", 0, 50, "tags:adlKj"]),
+            json!(["status", "-", 1, "tags:adl"]),
+            json!(["play"]),
+            json!(["pause", "1"]),
+            json!(["stop"]),
+            json!(["mode", "?"]),
+            json!(["time", "93.5"]),
+            json!(["time", "?"]),
+            json!(["mixer", "volume", "+5"]),
+            json!(["mixer", "volume", 40]),
+            json!(["mixer", "muting", "toggle"]),
+            json!(["power", "1"]),
+            json!(["sleep", "900"]),
+            json!(["playlist", "index", "+1"]),
+            json!(["playlist", "move", 3, 0]),
+            json!(["playlist", "delete", 2]),
+            json!(["playlist", "clear"]),
+            json!(["playlist", "shuffle", "1"]),
+            json!(["playlistcontrol", "cmd:load", "album_id:140912"]),
+            json!(["playlistcontrol", "cmd:add", "track_id:1,2,3"]),
+            json!([
+                "playlistcontrol",
+                "cmd:insert",
+                "artist_id:9",
+                "play_index:0"
+            ]),
+            json!(["sync", HOME]),
+            json!(["sync", "-"]),
+            json!(["favorites", "playlist", "play", "item_id:b99447ab.1"]),
+            json!(["spotty", "items", 0, 50, "item_id:3.1", "menu:1"]),
+            json!(["bbcsounds", "playlist", "play", "item_id:0.2"]),
+        ] {
+            assert_eq!(ok(MINE, cmd).player, MINE);
+        }
+    }
+
+    #[test]
+    fn dangerous_commands_are_denied() {
+        for cmd in [
+            json!(["readdirectory", 0, 100, "folder:/etc"]),
+            json!(["pref", "audiodir", "/"]),
+            json!(["pref", "audiodir", "?"]),
+            json!(["playerpref", "volume", "100"]),
+            json!(["restartserver"]),
+            json!(["stopserver"]),
+            json!(["wipecache"]),
+            json!(["debug", "server", "DEBUG"]),
+            json!(["logging", "group:everything"]),
+            json!(["getstring", "SETUP_AUDIODIR"]),
+            json!(["setsncredentials", "x", "y"]),
+            json!(["button", "power"]),
+            json!(["display", "a", "b"]),
+            json!(["rescan"]),
+            json!(["nonexistent"]),
+        ] {
+            denied("", cmd.clone());
+            denied(MINE, cmd);
+        }
+    }
+
+    #[test]
+    fn urls_and_paths_are_refused_everywhere() {
+        for cmd in [
+            json!(["playlist", "play", "file:///etc/passwd"]),
+            json!(["playlist", "add", "http://evil.example/x.mp3"]),
+            json!(["playlist", "insert", "/srv/music/a.flac"]),
+            json!(["playlist", "load", "file:///x"]),
+            json!(["playlist", "save", "name"]),
+            json!(["playlistcontrol", "cmd:load", "url:file:///etc/passwd"]),
+            json!(["playlistcontrol", "cmd:load", "playlist_name:x"]),
+            json!(["playlistcontrol", "cmd:load", "album_id:1", "url:file:///x"]),
+            json!(["playlistcontrol", "cmd:load"]),
+            json!(["playlistcontrol", "cmd:load", "album_id:1", "artist_id:2"]),
+            json!(["playlistcontrol", "cmd:play", "album_id:1"]),
+            json!(["playlistcontrol", "cmd:load", "album_id:../1"]),
+            json!(["favorites", "playlist", "play", "url:file:///x"]),
+            json!(["spotty", "playlist", "play", "url:http://x"]),
+            json!(["spotty", "playlist", "play"]),
+        ] {
+            denied(MINE, cmd);
+        }
+    }
+
+    #[test]
+    fn players_the_caller_cannot_control_are_refused() {
+        denied(OTHER, json!(["play"]));
+        denied(OTHER, json!(["status", 0, 10]));
+        denied(MINE, json!(["sync", OTHER]));
+        denied(MINE, json!(["sync", MINE]));
+        denied("not-a-mac", json!(["play"]));
+        denied("", json!(["play"]));
+        // Admins may control any player.
+        let raw = json!(["play"]).as_array().unwrap().clone();
+        assert!(check(&Who(Role::Admin), OTHER, &raw, &apps()).is_ok());
+    }
+
+    #[test]
+    fn server_queries_reject_a_player() {
+        denied(MINE, json!(["albums", 0, 10]));
+        denied(MINE, json!(["serverstatus", 0, 10]));
+    }
+
+    #[test]
+    fn parameters_are_validated() {
+        for cmd in [
+            json!(["albums", 0, 10, "tags:al", "tags:al"]),
+            json!(["albums", 0, 10, "unknown:1"]),
+            json!(["albums", 0, 10, "sort:'; DROP TABLE"]),
+            json!(["albums", 0, 10, "artist_id:abc"]),
+            json!(["albums", 0, 10, "tags:a l"]),
+            json!(["albums", 0, 10, "positional"]),
+            json!(["albums", 0, 501]),
+            json!(["albums", "x", 10]),
+            json!(["albums"]),
+            json!(["artists", 0, 10, "search:\n"]),
+            json!(["titles", 0, 10, "search:".to_string() + &"a".repeat(300)]),
+            json!(["albums", 0, 10, {"a": 1}]),
+            json!(["albums", 0, 10, [1]]),
+            json!(["albums", 0, 10, null]),
+            json!(["albums", 0, -1]),
+            json!(["albums", 0, 1e300]),
+        ] {
+            denied("", cmd);
+        }
+        denied(MINE, json!(["time", "abc"]));
+        denied(MINE, json!(["mixer", "volume", "1e9"]));
+        denied(MINE, json!(["mixer", "treble", "3"]));
+        denied(MINE, json!(["status", 0, 10, "subscribe:30"]));
+        denied(MINE, json!(["pause", "2"]));
+        denied(MINE, json!(["play", "extra"]));
+        let long: Vec<Value> = (0..20).map(|_| json!("x")).collect();
+        assert!(check(&Who(Role::Listener), "", &long, &apps()).is_err());
+        assert!(check(&Who(Role::Listener), "", &[], &apps()).is_err());
+    }
+
+    #[test]
+    fn rescan_is_admin_only() {
+        denied("", json!(["rescan"]));
+        let raw = json!(["rescan"]).as_array().unwrap().clone();
+        assert!(check(&Who(Role::Admin), "", &raw, &apps()).is_ok());
+        let raw = json!(["rescan", "playlists"]).as_array().unwrap().clone();
+        assert!(check(&Who(Role::Admin), "", &raw, &apps()).is_err());
+    }
+
+    #[test]
+    fn saved_playlists_can_be_edited_by_id() {
+        for cmd in [
+            json!(["playlists", "new", "name:Road trip"]),
+            json!(["playlists", "rename", "playlist_id:3", "newname:Drive"]),
+            json!(["playlists", "delete", "playlist_id:3"]),
+            json!([
+                "playlists",
+                "edit",
+                "playlist_id:3",
+                "cmd:add",
+                "track_id:9"
+            ]),
+            json!([
+                "playlists",
+                "edit",
+                "playlist_id:3",
+                "cmd:move",
+                "index:1",
+                "toindex:0"
+            ]),
+        ] {
+            ok("", cmd);
+        }
+        denied("", json!(["playlists", "new"]));
+        denied(
+            "",
+            json!([
+                "playlists",
+                "edit",
+                "playlist_id:3",
+                "cmd:add",
+                "url:file:///x"
+            ]),
+        );
+        denied("", json!(["playlists", "edit", "cmd:delete"]));
+    }
+
+    #[test]
+    fn unknown_apps_are_not_callable() {
+        denied(MINE, json!(["evilapp", "items", 0, 10]));
+        denied("", json!(["evilapp", "items", 0, 10]));
+    }
+
+    #[test]
+    fn learned_apps_exclude_core_commands() {
+        let menu = json!({
+            "appss_loop": [
+                {"cmd": "spotty"}, {"cmd": "readdirectory"}, {"cmd": "pref"},
+                {"cmd": "Bad Name"}, {"cmd": "../x"}, {"cmd": ""}
+            ],
+            "radioss_loop": [{"cmd": "bbcsounds"}]
+        });
+        assert_eq!(learn_apps(&menu), vec!["spotty", "bbcsounds"]);
+    }
+
+    #[test]
+    fn responses_lose_addresses_paths_and_unpermitted_players() {
+        let raw = json!({
+            "version": "9.1.1", "uuid": "secret-uuid", "ip": "10.0.0.10", "httpport": "9000",
+            "player count": 3, "other player count": 2,
+            "players_loop": [
+                {"playerid": MINE, "name": "Mine", "ip": "10.0.0.20:4000"},
+                {"playerid": OTHER, "name": "Theirs", "ip": "10.0.0.21:4000"},
+                {"playerid": HOME, "name": "Home", "ip": "10.0.0.22:4000"}
+            ]
+        });
+        let may = |p: &str| p == MINE || p == HOME;
+        let out = filter_response(Kind::PlayerList, raw, &may);
+        let s = out.to_string();
+        for leaked in ["10.0.0.", "secret-uuid", "9000", "Theirs", "other player"] {
+            assert!(!s.contains(leaked), "{leaked} leaked: {s}");
+        }
+        assert_eq!(out["player count"], 2);
+        assert_eq!(out["players_loop"].as_array().unwrap().len(), 2);
+
+        let tracks =
+            json!({"titles_loop": [{"id": 1, "url": "file:///srv/music/a.flac", "title": "A"}]});
+        let out = filter_response(Kind::Plain, tracks, &may);
+        assert!(!out.to_string().contains("file://"));
+        assert_eq!(out["titles_loop"][0]["title"], "A");
+    }
+
+    #[test]
+    fn arbitrary_input_never_panics() {
+        // Deterministic pseudo-random argument lists.
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let words = [
+            "albums",
+            "status",
+            "playlist",
+            "play",
+            "mixer",
+            "volume",
+            "sync",
+            "playlists",
+            "edit",
+            "playlistcontrol",
+            "cmd:load",
+            "album_id:1",
+            "tags:al",
+            "spotty",
+            "items",
+            "0",
+            "10",
+            "-",
+            "?",
+            "url:file:///x",
+            ":",
+            "",
+            "a:b:c",
+            "item_id:x",
+            "favorites",
+            "rescan",
+            MINE,
+        ];
+        for _ in 0..20_000 {
+            let n = (next() % 8) as usize;
+            let raw: Vec<Value> = (0..n)
+                .map(|_| json!(words[(next() % words.len() as u64) as usize]))
+                .collect();
+            let player = [MINE, OTHER, "", "zz"][(next() % 4) as usize];
+            let _ = check(&Who(Role::Listener), player, &raw, &apps());
+        }
+    }
+}

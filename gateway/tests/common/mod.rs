@@ -42,6 +42,33 @@ pub struct Recorded {
     pub closed: usize,
     /// STAT payloads received, in order.
     pub stats: Vec<Vec<u8>>,
+    /// JSON-RPC `params` ([player, [cmd...]]) received, in order.
+    pub rpc: Vec<serde_json::Value>,
+}
+
+/// Canned LMS JSON-RPC results, deliberately full of things that must not leak.
+pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
+    use serde_json::json;
+    match cmd {
+        "serverstatus" | "players" => json!({
+            "version": "9.1.1", "uuid": "server-uuid-secret", "ip": "10.0.0.10", "httpport": "9000",
+            "player count": 3, "other player count": 1,
+            "players_loop": [
+                {"playerid": "aa:bb:cc:dd:ee:01", "name": "Home One", "ip": "10.0.0.31:4000"},
+                {"playerid": "aa:bb:cc:dd:ee:02", "name": "Home Two", "ip": "10.0.0.32:4000"},
+                {"playerid": "02:4c:41:aa:aa:aa", "name": "Someone's phone", "ip": "10.0.0.33:4000"}
+            ]
+        }),
+        "albums" => {
+            json!({"count": 1, "albums_loop": [{"id": 7, "album": "Album", "url": "file:///srv/music/x"}]})
+        }
+        "titles" => {
+            json!({"count": 1, "titles_loop": [{"id": 1, "title": "T", "url": "file:///srv/music/x/1.flac"}]})
+        }
+        "apps" => json!({"count": 1, "appss_loop": [{"cmd": "spotty", "name": "Spotty"}]}),
+        "radios" => json!({"count": 1, "radioss_loop": [{"cmd": "bbcsounds", "name": "BBC"}]}),
+        _ => json!({"ok": 1}),
+    }
 }
 
 pub struct FakeLms {
@@ -99,6 +126,15 @@ impl FakeLms {
                     .map(|p| p.to_string())
                     .unwrap_or_default();
                 r.lock().unwrap().http_paths.push(path);
+                if req.uri().path() == "/jsonrpc.js" {
+                    let body = axum::body::to_bytes(req.into_body(), 1 << 20).await.unwrap_or_default();
+                    let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+                    let params = v["params"].clone();
+                    let cmd = params[1][0].as_str().unwrap_or("").to_string();
+                    r.lock().unwrap().rpc.push(params);
+                    let reply = serde_json::json!({"id": 1, "method": "slim.request", "result": fake_rpc_result(&cmd)});
+                    return ([("content-type", "application/json")], Body::from(reply.to_string())).into_response_parts();
+                }
                 if req.uri().path() == "/stream.mp3" {
                     (
                         [("content-type", "audio/flac")],
@@ -155,6 +191,10 @@ impl FakeLms {
             .iter()
             .map(|p| anywhere_core::proto::Stat::parse(p).unwrap())
             .collect()
+    }
+
+    pub fn rpc_calls(&self) -> Vec<serde_json::Value> {
+        self.rec.lock().unwrap().rpc.clone()
     }
 
     pub fn closed(&self) -> usize {

@@ -61,6 +61,7 @@ Endpoints:
 - `POST /admin/v1/users/{name}/disabled`
 - `POST /admin/v1/users/{name}/pairing` (returns a one-time code, valid 10 minutes)
 - `POST /admin/v1/users/{name}/totp/reset` (removes two-step for a user who lost their authenticator)
+- `GET/POST /admin/v1/users/{name}/players`, `DELETE /admin/v1/users/{name}/players/{mac}` (home players a listener may control)
 - `GET /admin/v1/devices`
 - `DELETE /admin/v1/devices/{id}`
 - `GET /admin/v1/audit`
@@ -147,3 +148,40 @@ Recommended client backoff: about 0.5, 1, 2 and 4 s, then every 5 s, with ±20 %
   | 416 | `offset` is beyond what has been sent |
 
 - **Retries:** network errors and 5xx are retryable. Everything else is final; report the stream as failed.
+
+## Browse and control (`POST /v1/rpc`)
+
+Request: `{"player": "<player id or empty>", "cmd": [...]}` with a bearer access token. `cmd` is an LMS command array, for example `["albums", 0, 50, "tags:al"]`.
+
+Response: `{"result": {...}}`, or `{"error": "<reason>"}` with one of these statuses:
+- **403:** refused by policy, with the reason;
+- **401:** bad token;
+- **400:** malformed request;
+- **413:** body over 8 KiB;
+- **502:** LMS unavailable.
+
+**Default deny.** A command is allowed only if it is in the allow-list and every argument passes validation:
+- numbers or printable strings of at most 256 characters;
+- at most 16 arguments;
+- paging `start count` with `count` ≤ 500;
+- `key:value` parameters restricted to known keys per command, each given at most once, with typed values.
+
+| Group | Allowed |
+|---|---|
+| Library (no player) | `artists`, `albums`, `titles`/`tracks`, `genres`, `years`, `search`, `musicfolder`, `playlists` (list, tracks, new/rename/delete/edit by id), `favorites items`, `apps`, `radios`, `players`, `serverstatus`, `syncgroups ?` |
+| Player (permitted players only) | `status`, `play`, `pause`, `stop`, `mode ?`, `time`, `power`, `sleep`, `mixer volume/muting`, `playlist index/jump/move/delete/clear/shuffle/repeat/tracks ?`, `playlistcontrol cmd:load/add/insert/delete` with exactly one id selector, `sync` with another permitted player, `favorites playlist play/add/insert item_id:…` |
+| Apps and radio | `<app> items …` and `<app> playlist play/add/insert item_id:…`, only for app commands LMS lists in its `apps`/`radios` menus. Core command names can never be learned as apps. An unknown app triggers at most one menu refresh a minute. |
+| Admin role only | `rescan` |
+
+Everything else is refused, notably:
+- `readdirectory`, `pref`, `playerpref`;
+- server restart and stop, `debug`/`logging`, `button`/`display`;
+- any form taking a URL or file path, such as `playlist play/add/insert/load` and `playlistcontrol url:`.
+
+**Player permissions:**
+- **Admins** may control every player.
+- **Listeners** may control their own signed-in devices, plus home players an admin has granted (`/admin/v1/users/{name}/players`).
+
+**Response filtering:**
+- removed everywhere: `ip`, `uuid`, `httpport`, `url` (file paths and stream credentials), `mac`, `seq_no`, `remote_url` and `path`;
+- player lists show only players the caller may control, with counts adjusted, and other-server counts removed.

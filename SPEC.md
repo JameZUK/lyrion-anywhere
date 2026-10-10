@@ -151,7 +151,10 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
   - `playlistcontrol` by library IDs, saved playlist CRUD;
   - transport, volume, sleep, `status`, `sync`/`unsync` among permitted players;
   - track info menus.
-- **Admin (opt-in):** also rescan and per-player settings.
+- **Admin (opt-in):** also rescan. Per-player settings are not exposed over the internet.
+- **Player permissions (implemented):**
+  - admins control every player;
+  - listeners control their own signed-in devices plus home players an admin explicitly grants (least privilege, so an account given to a friend can't take over the house's speakers).
 - **Always denied:**
   - `readdirectory`, `pref`, `restartserver`, `debug`/`logging`;
   - `serverstatus` fields beyond player list and version;

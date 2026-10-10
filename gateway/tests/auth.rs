@@ -756,3 +756,60 @@ async fn admin_can_reset_a_lost_authenticator() {
             .all(|u| u["totp_enabled"] == false)
     );
 }
+
+#[tokio::test]
+async fn admin_grants_and_removes_home_players() {
+    let h = harness().await;
+    let (base, secret) = h.admin().await;
+    let c = reqwest::Client::new();
+    let grant = |mac: &str| {
+        c.post(format!("{base}/admin/v1/users/alice/players"))
+            .bearer_auth(&secret)
+            .json(&json!({ "player": mac }))
+            .send()
+    };
+    assert_eq!(grant("not-a-mac").await.unwrap().status(), S::BAD_REQUEST);
+    assert_eq!(
+        grant("AA:BB:CC:DD:EE:01").await.unwrap().status(),
+        S::NO_CONTENT
+    );
+    let list = json_of(
+        c.get(format!("{base}/admin/v1/users/alice/players"))
+            .bearer_auth(&secret)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(list["players"], json!(["aa:bb:cc:dd:ee:01"]));
+    let principal = h.accounts.authenticate(&h.tok_a).unwrap();
+    assert!(
+        h.accounts
+            .player_scope(&principal)
+            .unwrap()
+            .allows("aa:bb:cc:dd:ee:01")
+    );
+    let removed = c
+        .delete(format!(
+            "{base}/admin/v1/users/alice/players/aa:bb:cc:dd:ee:01"
+        ))
+        .bearer_auth(&secret)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(removed.status(), S::NO_CONTENT);
+    assert!(
+        !h.accounts
+            .player_scope(&principal)
+            .unwrap()
+            .allows("aa:bb:cc:dd:ee:01")
+    );
+    // Without the secret, nothing changes.
+    let anon = c
+        .post(format!("{base}/admin/v1/users/alice/players"))
+        .json(&json!({ "player": "aa:bb:cc:dd:ee:09" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anon.status(), S::FORBIDDEN);
+}

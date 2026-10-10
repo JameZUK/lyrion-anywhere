@@ -38,6 +38,11 @@ pub fn router(gw: AppState, secret: String) -> Router {
         .route("/admin/v1/users/{name}/disabled", post(set_disabled))
         .route("/admin/v1/users/{name}/pairing", post(pairing_code))
         .route("/admin/v1/users/{name}/totp/reset", post(reset_totp))
+        .route(
+            "/admin/v1/users/{name}/players",
+            get(list_grants).post(grant),
+        )
+        .route("/admin/v1/users/{name}/players/{mac}", delete(ungrant))
         .route("/admin/v1/devices", get(list_devices))
         .route("/admin/v1/devices/{id}", delete(revoke_device))
         .route("/admin/v1/audit", get(audit))
@@ -175,6 +180,41 @@ async fn pairing_code(State(st): State<AdminState>, Path(name): Path<String>) ->
 /// Remove a user's two-step verification (e.g. they lost their phone).
 async fn reset_totp(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
     match st.gw.accounts().totp_reset(&name) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => err(e),
+    }
+}
+
+async fn list_grants(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
+    match st.gw.accounts().players_granted(&name) {
+        Ok(p) => Json(json!({ "players": p })).into_response(),
+        Err(e) => err(e),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Grant {
+    player: String,
+}
+
+/// Let a user control a home player (by its LMS player id).
+async fn grant(
+    State(st): State<AdminState>,
+    Path(name): Path<String>,
+    Json(g): Json<Grant>,
+) -> Response {
+    match st.gw.accounts().grant_player(&name, &g.player) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => err(e),
+    }
+}
+
+async fn ungrant(
+    State(st): State<AdminState>,
+    Path((name, mac)): Path<(String, String)>,
+) -> Response {
+    match st.gw.accounts().ungrant_player(&name, &mac) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(e),
     }

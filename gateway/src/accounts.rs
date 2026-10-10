@@ -12,7 +12,7 @@
 //!   current code as well as the password. Codes are single use, and wrong codes count
 //!   towards the same lockouts as wrong passwords.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -94,6 +94,27 @@ pub struct TotpSetup {
     pub uri: String,
     /// The URI as an SVG QR code.
     pub qr_svg: String,
+}
+
+/// The players a principal may control.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerScope {
+    pub all: bool,
+    pub players: HashSet<String>,
+}
+
+impl PlayerScope {
+    pub fn allows(&self, mac: &str) -> bool {
+        self.all || self.players.contains(&mac.to_ascii_lowercase())
+    }
+}
+
+fn normalise_mac(mac: &str) -> Result<String, AuthError> {
+    anywhere_core::proto::parse_mac(mac.trim())
+        .map(|m| format_mac(&m))
+        .ok_or(AuthError::BadInput(
+            "player id must be a MAC address like aa:bb:cc:dd:ee:ff",
+        ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -755,6 +776,70 @@ impl Accounts {
     }
 
     // -----------------------------------------------------------------------
+    // Player permissions
+    // -----------------------------------------------------------------------
+
+    /// Which LMS players this principal may control: admins all of them; listeners their own
+    /// devices plus home players an admin has granted.
+    pub fn player_scope(&self, p: &Principal) -> Result<PlayerScope, AuthError> {
+        if p.role == Role::Admin {
+            return Ok(PlayerScope {
+                all: true,
+                players: HashSet::new(),
+            });
+        }
+        let db = self.db.lock().unwrap();
+        let mut players: HashSet<String> = HashSet::new();
+        let mut st = db.prepare("SELECT mac FROM devices WHERE user_id = ?1 AND revoked = 0")?;
+        for mac in st.query_map([p.user_id], |r| r.get::<_, String>(0))? {
+            players.insert(mac?);
+        }
+        let mut st = db.prepare("SELECT mac FROM user_players WHERE user_id = ?1")?;
+        for mac in st.query_map([p.user_id], |r| r.get::<_, String>(0))? {
+            players.insert(mac?);
+        }
+        Ok(PlayerScope {
+            all: false,
+            players,
+        })
+    }
+
+    /// Admin: let a user control a home player.
+    pub fn grant_player(&self, username: &str, mac: &str) -> Result<(), AuthError> {
+        let mac = normalise_mac(mac)?;
+        let n = self.db.lock().unwrap().execute(
+            "INSERT OR IGNORE INTO user_players (user_id, mac)
+             SELECT id, ?2 FROM users WHERE username = ?1",
+            params![username, mac],
+        )?;
+        if n == 0 && !self.players_granted(username)?.contains(&mac) {
+            return Err(AuthError::BadInput("no such user"));
+        }
+        self.audit("player.granted", Some(username), None, &mac);
+        Ok(())
+    }
+
+    pub fn ungrant_player(&self, username: &str, mac: &str) -> Result<(), AuthError> {
+        let mac = normalise_mac(mac)?;
+        self.db.lock().unwrap().execute(
+            "DELETE FROM user_players WHERE mac = ?2 AND user_id = (SELECT id FROM users WHERE username = ?1)",
+            params![username, mac],
+        )?;
+        self.audit("player.ungranted", Some(username), None, &mac);
+        Ok(())
+    }
+
+    pub fn players_granted(&self, username: &str) -> Result<Vec<String>, AuthError> {
+        let db = self.db.lock().unwrap();
+        let mut st = db.prepare(
+            "SELECT p.mac FROM user_players p JOIN users u ON u.id = p.user_id
+             WHERE u.username = ?1 ORDER BY p.mac",
+        )?;
+        let rows = st.query_map([username], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    // -----------------------------------------------------------------------
     // Devices
     // -----------------------------------------------------------------------
 
@@ -1000,6 +1085,15 @@ fn migrate(db: &Connection) -> Result<(), AuthError> {
              ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0;
              ALTER TABLE users ADD COLUMN totp_last_step INTEGER NOT NULL DEFAULT 0;
              PRAGMA user_version = 1;",
+        )?;
+    }
+    if version < 2 {
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS user_players (
+               user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+               mac TEXT NOT NULL,
+               PRIMARY KEY (user_id, mac));
+             PRAGMA user_version = 2;",
         )?;
     }
     Ok(())
@@ -1535,6 +1629,86 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
+    }
+
+    // -- player permissions --------------------------------------------------
+
+    #[test]
+    fn listeners_control_their_own_devices_and_granted_players_only() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+        let b = a.login("admin", PW, None, "Desk", None, "c").unwrap();
+        let scope = a.player_scope(&t.principal).unwrap();
+        assert!(scope.allows(&t.principal.mac_string()));
+        assert!(
+            !scope.allows(&b.principal.mac_string()),
+            "another user's device"
+        );
+        assert!(
+            !scope.allows("aa:bb:cc:dd:ee:01"),
+            "an ungranted home player"
+        );
+
+        a.grant_player("alice", "AA:BB:CC:DD:EE:01").unwrap();
+        let scope = a.player_scope(&t.principal).unwrap();
+        assert!(scope.allows("aa:bb:cc:dd:ee:01"));
+        assert!(scope.allows("AA:BB:CC:DD:EE:01"));
+        assert_eq!(
+            a.players_granted("alice").unwrap(),
+            vec!["aa:bb:cc:dd:ee:01"]
+        );
+
+        a.ungrant_player("alice", "aa:bb:cc:dd:ee:01").unwrap();
+        assert!(
+            !a.player_scope(&t.principal)
+                .unwrap()
+                .allows("aa:bb:cc:dd:ee:01")
+        );
+    }
+
+    #[test]
+    fn admins_control_everything() {
+        let a = store();
+        let b = a.login("admin", PW, None, "Desk", None, "c").unwrap();
+        assert!(
+            a.player_scope(&b.principal)
+                .unwrap()
+                .allows("aa:bb:cc:dd:ee:99")
+        );
+    }
+
+    #[test]
+    fn revoked_devices_drop_out_of_scope() {
+        let a = store();
+        let t1 = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+        let t2 = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        a.revoke_device(t2.principal.device_id).unwrap();
+        assert!(
+            !a.player_scope(&t1.principal)
+                .unwrap()
+                .allows(&t2.principal.mac_string())
+        );
+    }
+
+    #[test]
+    fn grants_validate_input() {
+        let a = store();
+        for bad in [
+            "",
+            "nope",
+            "aa:bb:cc",
+            "aa:bb:cc:dd:ee:ff:00",
+            "zz:bb:cc:dd:ee:ff",
+        ] {
+            assert!(
+                matches!(a.grant_player("alice", bad), Err(AuthError::BadInput(_))),
+                "{bad:?}"
+            );
+        }
+        assert!(matches!(
+            a.grant_player("nobody", "aa:bb:cc:dd:ee:01"),
+            Err(AuthError::BadInput(_))
+        ));
     }
 }

@@ -4,6 +4,20 @@ Dated entries, newest first.
 
 ## 2026-10-10
 
+### Phase 1: browse and control (`/v1/rpc`)
+- **Default-deny allow-list** for LMS JSON-RPC. Every argument is validated; only app commands learned from LMS's own menus are allowed; URLs and file paths are refused in every form; rescan is admin-only.
+- **Player permissions:** admins control everything; listeners control their own devices plus admin-granted home players (admin API for grants).
+- **Response filtering:**
+  - removes LAN addresses, server identifiers, `file://` paths and stream URLs;
+  - player lists show only permitted players.
+- **Tests:** 40 new (policy matrix, 20,000 random inputs, integration against a fake LMS proving refused commands never reach it, filtering, permissions, app learning, grants). All 11 policy protections are confirmed by mutation checks.
+- **Live (read-only):**
+  - browsing returned 10,498 albums;
+  - no file paths or addresses leaked;
+  - `readdirectory`, `pref` and an unpermitted real player were refused and logged.
+- **Found:** LMS drops the connection when a plugin command targets a never-connected player; the gateway reports 502.
+- **Incident:** the build machine's disk filled during mutation testing and truncated one uncommitted source file. It was restored, and the mutation script now verifies every restore and reports build failures separately.
+
 ### Phase 1: optional two-step verification
 - **TOTP, opt-in per user** (RFC 6238, verified against the RFC test vectors).
   - Users turn it on from the account panel by scanning a QR code (rendered by the gateway as SVG) or typing the key, then confirming a code.

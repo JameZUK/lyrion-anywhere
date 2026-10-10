@@ -32,6 +32,8 @@ pub mod accounts;
 pub mod admin;
 mod auth;
 mod relay;
+mod rpc;
+pub mod rpc_policy;
 mod session;
 pub mod totp;
 mod tunnel;
@@ -101,6 +103,9 @@ pub struct Gateway {
     accounts: Arc<Accounts>,
     http: reqwest::Client,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
+    /// App and radio commands LMS lists in its menus (the only plugin commands allowed).
+    apps: Mutex<std::collections::HashSet<String>>,
+    apps_refreshed: Mutex<Option<std::time::Instant>>,
 }
 
 pub type AppState = Arc<Gateway>;
@@ -118,6 +123,8 @@ impl Gateway {
             accounts,
             http,
             sessions: Mutex::new(HashMap::new()),
+            apps: Mutex::new(Default::default()),
+            apps_refreshed: Mutex::new(None),
         })
     }
 
@@ -135,6 +142,14 @@ impl Gateway {
 
     pub fn accounts(&self) -> &Arc<Accounts> {
         &self.accounts
+    }
+
+    fn apps(&self) -> std::collections::HashSet<String> {
+        self.apps.lock().unwrap().clone()
+    }
+
+    fn add_apps(&self, names: Vec<String>) {
+        self.apps.lock().unwrap().extend(names);
     }
 
     /// End any live session for these devices (after revocation).
@@ -165,6 +180,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/account/totp/setup", post(auth::totp_setup))
         .route("/v1/account/totp/confirm", post(auth::totp_confirm))
         .route("/v1/account/totp/disable", post(auth::totp_disable))
+        .route("/v1/rpc", post(rpc::rpc))
         .route("/v1/player", get(tunnel::player_upgrade))
         .route("/v1/stream/{session}/{n}", get(relay::stream));
     app = match &state.cfg.static_dir {
