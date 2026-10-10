@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { api, app, session } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
+	import { appearance } from '$lib/theme/appearance.svelte';
 	import { clearResume, loadResume, resumeCommands, saveResume } from '$lib/player/resume';
 	import Login from '$lib/components/Login.svelte';
 	import PlayerBar from '$lib/components/PlayerBar.svelte';
@@ -10,6 +11,9 @@
 	import Icon from '$lib/components/Icon.svelte';
 
 	let { children } = $props();
+
+	// The chosen theme, before anything is drawn (also on the sign-in page).
+	appearance.start();
 
 	// A returning browser signs in silently through its refresh cookie.
 	void session.restore();
@@ -197,7 +201,16 @@
 	}
 	.side a.active {
 		background: var(--accent-soft);
-		color: var(--fg);
+		color: var(--accent-soft-fg);
+	}
+	/* Material: a navigation rail with pill-shaped indicators and no dividing line. */
+	:global(:root[data-theme='material']) .side {
+		border-right-color: transparent;
+		background: var(--bg);
+	}
+	:global(:root[data-theme='material']) .side a {
+		border-radius: 999px;
+		padding: 0.65rem 1rem;
 	}
 	.conn {
 		margin-top: auto;
@@ -269,6 +282,21 @@
 		}
 		.tabs a.active {
 			color: var(--accent);
+		}
+		/* Material: a navigation bar with a pill behind the active icon. */
+		:global(:root[data-theme='material']) .tabs {
+			border-top-color: transparent;
+			background: var(--bg-sunken);
+		}
+		:global(:root[data-theme='material']) .tabs a.active {
+			color: var(--fg);
+		}
+		:global(:root[data-theme='material']) .tabs a.active :global(svg) {
+			background: var(--accent-soft);
+			color: var(--accent-soft-fg);
+			border-radius: 999px;
+			padding: 4px 18px;
+			box-sizing: content-box;
 		}
 		/* The Now playing page has its own controls: no mini bar there. */
 		.barwrap.on-np {

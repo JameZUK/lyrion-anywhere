@@ -4,6 +4,7 @@
 	import * as auth from '$lib/api/auth';
 	import { ApiError } from '$lib/api/http';
 	import Icon from '$lib/components/Icon.svelte';
+	import AppearancePicker from '$lib/components/AppearancePicker.svelte';
 	import { detect } from '$lib/player/capabilities';
 	import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, savePreference, type ModePreference } from '$lib/player/mode';
 
@@ -24,23 +25,6 @@
 	let offPassword = $state('');
 	let offCode = $state('');
 	let msg = $state('');
-	let theme = $state<'system' | 'light' | 'dark'>('system');
-
-	try {
-		theme = (localStorage.getItem('anywhere.theme') as typeof theme) ?? 'system';
-	} catch {
-		/* storage blocked */
-	}
-	$effect(() => {
-		const root = document.documentElement;
-		if (theme === 'system') root.removeAttribute('data-theme');
-		else root.dataset.theme = theme;
-		try {
-			localStorage.setItem('anywhere.theme', theme);
-		} catch {
-			/* not essential */
-		}
-	});
 
 	async function loadAccount() {
 		try {
@@ -190,11 +174,7 @@
 
 	<div class="card">
 		<h2>Appearance</h2>
-		<div class="row" role="radiogroup" aria-label="Theme">
-			{#each ['system', 'light', 'dark'] as const as t (t)}
-				<label class="pill choice" class:on={theme === t}><input type="radio" name="theme" value={t} bind:group={theme} class="sr-only" />{t[0]!.toUpperCase() + t.slice(1)}</label>
-			{/each}
-		</div>
+		<AppearancePicker />
 	</div>
 
 	<div class="card">

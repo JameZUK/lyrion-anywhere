@@ -4,6 +4,20 @@ Dated entries, newest first.
 
 ## 2026-10-10
 
+### Themes, with Material Design as the default
+- **Themes:**
+  - **Material** (new default): Material Design 3 colour roles generated from an accent colour, with tonal surfaces instead of outlines, pill-shaped navigation indicators and large rounded shapes;
+  - **Classic:** the original look;
+  - **High contrast:** black and white, with strong outlines and focus rings.
+- **Choices:** light, dark or automatic (follows the device, and switches live). For Material, eight accent colours or any colour. Previews of each theme in Settings › Appearance. The mobile browser bar takes the theme's colour.
+- **Fix:** the light/dark choice was only applied after opening Settings; themes now apply at start-up, including on the sign-in page. The old setting carries over.
+- **Colour:** palettes are computed in OKLCH and brought into the sRGB gamut keeping lightness, so every accent gives readable text.
+- **Tests:**
+  - colour conversion against reference values, gamut mapping, WCAG contrast;
+  - AA contrast for text, muted text, errors and text on accent, for every theme, mode and accent, including extremes such as yellow, white and black;
+  - saved choices are checked, including hostile values;
+  - applying a theme.
+
 ### Staying signed in
 - **Why devices were signed out:**
   - **Refresh reuse:** the live audit log showed a `refresh.reused` event that revoked a real device. When a phone suspends mid-refresh, the new token never arrives, and the next refresh presents the old one. That looked like theft, so the gateway revoked the device.
