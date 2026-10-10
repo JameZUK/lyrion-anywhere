@@ -21,6 +21,11 @@ const FULL_SCALE: f32 = 8_388_607.0; // 2^23 - 1
 pub struct Variant {
     pub brand: Brand,
     pub high_rate: HighRate,
+    /// FLAC's fixed block-size strategy (every frame `BLOCK` long, the last padded), which
+    /// some decoders need; otherwise the variable strategy.
+    pub fixed_blocks: bool,
+    /// 16-bit samples instead of 24-bit.
+    pub bits16: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -45,7 +50,12 @@ pub enum HighRate {
 }
 
 impl Variant {
-    /// Compact code for hosts: brand in bits 0–3, high-rate style in bits 4–7.
+    fn bits(self) -> u32 {
+        if self.bits16 { 16 } else { BITS }
+    }
+
+    /// Compact code for hosts: brand in bits 0–3, high-rate style in bits 4–7, fixed block
+    /// size in bit 8, 16-bit samples in bit 9.
     pub fn from_code(code: u32) -> Variant {
         Variant {
             brand: match code & 0xf {
@@ -58,6 +68,8 @@ impl Variant {
                 2 => HighRate::Divisor,
                 _ => HighRate::Zero,
             },
+            fixed_blocks: code & 0x100 != 0,
+            bits16: code & 0x200 != 0,
         }
     }
 
@@ -72,7 +84,7 @@ impl Variant {
             HighRate::Srat => 1,
             HighRate::Divisor => 2,
         };
-        b | (h << 4)
+        b | (h << 4) | (u32::from(self.fixed_blocks) << 8) | (u32::from(self.bits16) << 9)
     }
 }
 
@@ -86,7 +98,7 @@ pub struct Segmenter {
     /// Media timeline position, in frames at `rate`, of the next segment.
     decode_time: u64,
     sequence: u32,
-    /// Sample number (for FLAC frame headers) of the next frame.
+    /// Sample number (variable strategy) or frame number (fixed) of the next FLAC frame.
     flac_sample: u64,
 }
 
@@ -178,12 +190,19 @@ impl Segmenter {
     fn emit(&mut self, frames: usize) -> Vec<u8> {
         let mut samples: Vec<(u32, Vec<u8>)> = Vec::new();
         let mut taken = 0;
+        let v = self.variant;
         while taken < frames {
             let n = (frames - taken).min(BLOCK);
             let block = &self.pending[taken * 2..(taken + n) * 2];
-            let encoded = flac_frame(block, self.rate, self.flac_sample);
-            self.flac_sample += n.max(MIN_BLOCK) as u64;
-            samples.push((n.max(MIN_BLOCK) as u32, encoded));
+            // Fixed strategy: every frame is a full block (silence pads a short last one).
+            let len = if v.fixed_blocks {
+                BLOCK
+            } else {
+                n.max(MIN_BLOCK)
+            };
+            let encoded = flac_frame(block, self.rate, self.flac_sample, len, v);
+            self.flac_sample += if v.fixed_blocks { 1 } else { len as u64 };
+            samples.push((len as u32, encoded));
             taken += n;
         }
         self.pending.drain(..frames * 2);
@@ -208,6 +227,11 @@ impl Segmenter {
 const MIN_BLOCK: usize = 16;
 
 // --- FLAC ----------------------------------------------------------------------------------
+
+fn to_i16(x: f32) -> i32 {
+    let v = (x.clamp(-1.0, 1.0) * 32_767.0).round();
+    if v.is_nan() { 0 } else { v as i32 }
+}
 
 fn to_i24(x: f32) -> i32 {
     let v = (x.clamp(-1.0, 1.0) * FULL_SCALE).round();
@@ -281,27 +305,36 @@ fn rate_code(rate: u32) -> u8 {
     }
 }
 
-/// One FLAC frame (variable block size strategy) of verbatim 24-bit stereo.
-fn flac_frame(interleaved: &[f32], rate: u32, first_sample: u64) -> Vec<u8> {
-    let real = interleaved.len() / 2;
-    let n = real.max(MIN_BLOCK);
-    let mut f = Vec::with_capacity(16 + n * 6 + 2);
-    f.extend([0xff, 0xf9]); // sync, variable block size
-    f.push(0b0111_0000 | rate_code(rate)); // block size: 16-bit (n-1) follows
-    f.push(0b0001_1100); // stereo independent, 24-bit, reserved 0
-    utf8_number(first_sample, &mut f);
-    f.extend(((n - 1) as u16).to_be_bytes());
+/// One FLAC frame of verbatim stereo, `n` samples long (`interleaved` may be shorter: the
+/// rest is silence). `number` is the first sample number (variable strategy) or the frame
+/// number (fixed strategy).
+fn flac_frame(interleaved: &[f32], rate: u32, number: u64, n: usize, v: Variant) -> Vec<u8> {
+    let real = (interleaved.len() / 2).min(n);
+    let width = if v.bits16 { 2 } else { 3 };
+    let mut f = Vec::with_capacity(16 + n * 2 * width + 2);
+    f.extend([0xff, if v.fixed_blocks { 0xf8 } else { 0xf9 }]); // sync + blocking strategy
+    let explicit = n != 4096;
+    let size_code = if explicit { 0b0111 } else { 0b1100 }; // 4096 has its own code
+    f.push((size_code << 4) | rate_code(rate));
+    f.push(if v.bits16 { 0b0001_1000 } else { 0b0001_1100 }); // stereo independent, depth
+    utf8_number(number, &mut f);
+    if explicit {
+        f.extend(((n - 1) as u16).to_be_bytes());
+    }
     f.push(crc8(&f));
     for ch in 0..2 {
         f.push(0b0000_0010); // VERBATIM subframe, no wasted bits
         for i in 0..n {
-            let v = if i < real {
-                to_i24(interleaved[i * 2 + ch])
+            let x = if i < real {
+                interleaved[i * 2 + ch]
             } else {
-                0
+                0.0
             };
-            let b = v.to_be_bytes();
-            f.extend(&b[1..]);
+            if v.bits16 {
+                f.extend(&(to_i16(x) as i16).to_be_bytes());
+            } else {
+                f.extend(&to_i24(x).to_be_bytes()[1..]);
+            }
         }
     }
     let crc = crc16(&f);
@@ -310,15 +343,16 @@ fn flac_frame(interleaved: &[f32], rate: u32, first_sample: u64) -> Vec<u8> {
 }
 
 /// STREAMINFO block body (34 bytes).
-fn streaminfo(rate: u32) -> [u8; 34] {
+fn streaminfo(rate: u32, v: Variant) -> [u8; 34] {
     let mut s = [0u8; 34];
-    s[0..2].copy_from_slice(&(MIN_BLOCK as u16).to_be_bytes());
+    let min = if v.fixed_blocks { BLOCK } else { MIN_BLOCK };
+    s[0..2].copy_from_slice(&(min as u16).to_be_bytes());
     s[2..4].copy_from_slice(&(BLOCK as u16).to_be_bytes());
     // min/max frame size unknown (0). Then 20 bits rate, 3 bits channels-1, 5 bits bps-1,
     // 36 bits total samples (0 = unknown), then MD5 (zero = unknown).
     let packed: u64 = ((rate as u64 & 0xf_ffff) << 44)
         | (((CHANNELS - 1) as u64) << 41)
-        | (((BITS - 1) as u64) << 36);
+        | (((v.bits() - 1) as u64) << 36);
     s[10..18].copy_from_slice(&packed.to_be_bytes());
     s
 }
@@ -409,7 +443,7 @@ fn init_segment(rate: u32, variant: Variant) -> Vec<u8> {
     let dinf = bx(b"dinf", &dref);
 
     let mut dfla_body = vec![0x80, 0, 0, 34]; // last block, STREAMINFO, length 34
-    dfla_body.extend(streaminfo(rate));
+    dfla_body.extend(streaminfo(rate, variant));
     let dfla = full(b"dfLa", 0, 0, &dfla_body);
     let high = rate > 65_535;
     let v1 = high && variant.high_rate == HighRate::Srat;
@@ -419,7 +453,7 @@ fn init_segment(rate: u32, variant: Variant) -> Vec<u8> {
     entry.extend((if v1 { 1u16 } else { 0 }).to_be_bytes()); // entry version
     entry.extend([0u8; 6]);
     entry.extend((CHANNELS as u16).to_be_bytes());
-    entry.extend((BITS as u16).to_be_bytes()); // must match STREAMINFO (browsers check)
+    entry.extend((variant.bits() as u16).to_be_bytes()); // must match STREAMINFO (browsers check)
     entry.extend([0u8; 4]);
     let field_rate = if !high {
         rate
@@ -580,18 +614,25 @@ mod tests {
     /// STREAMINFO's ("FLAC AudioSampleEntry sample size mismatches ... STREAMINFO").
     #[test]
     fn sample_entry_depth_matches_streaminfo() {
-        let init = Segmenter::new(96_000).init_segment();
-        let at = init
-            .windows(4)
-            .position(|w| w == b"fLaC")
-            .expect("fLaC entry")
-            + 4;
-        // 6 reserved, 2 data ref index, 8 reserved, 2 channels, then 2 bytes sample size.
-        let depth = u16::from_be_bytes([init[at + 18], init[at + 19]]);
-        let info = streaminfo(96_000);
-        let packed = u64::from_be_bytes(info[10..18].try_into().unwrap());
-        assert_eq!(depth as u64, ((packed >> 36) & 0x1f) + 1);
-        assert_eq!(depth, 24);
+        for (code, bits) in [(0x000, 24), (0x200, 16), (0x300, 16)] {
+            let v = Variant::from_code(code);
+            let mut s = Segmenter::new(96_000);
+            s.set_variant(v);
+            let init = s.init_segment();
+            let at = init
+                .windows(4)
+                .position(|w| w == b"fLaC")
+                .expect("fLaC entry")
+                + 4;
+            // 6 reserved, 2 data ref index, 8 reserved, 2 channels, then 2 bytes sample size.
+            let depth = u16::from_be_bytes([init[at + 18], init[at + 19]]);
+            let info = streaminfo(96_000, v);
+            let packed = u64::from_be_bytes(info[10..18].try_into().unwrap());
+            assert_eq!(depth as u64, ((packed >> 36) & 0x1f) + 1);
+            assert_eq!(depth, bits);
+            let min = u16::from_be_bytes([info[0], info[1]]) as usize;
+            assert_eq!(min, if v.fixed_blocks { BLOCK } else { MIN_BLOCK });
+        }
     }
 
     #[test]
@@ -610,6 +651,7 @@ mod tests {
         s.set_variant(Variant {
             brand: Brand::Iso5,
             high_rate: HighRate::Srat,
+            ..Variant::default()
         });
         let init = s.init_segment();
         assert_eq!(&init[8..12], b"iso5");
@@ -630,6 +672,7 @@ mod tests {
         s.set_variant(Variant {
             brand: Brand::Mp42,
             high_rate: HighRate::Divisor,
+            ..Variant::default()
         });
         let init = s.init_segment();
         assert_eq!(&init[8..12], b"mp42");
@@ -640,10 +683,15 @@ mod tests {
         s.set_variant(Variant {
             brand: Brand::Iso6,
             high_rate: HighRate::Srat,
+            ..Variant::default()
         });
         assert_eq!(rate_field(&s.init_segment()), 44_100);
         assert!(!s.init_segment().windows(4).any(|w| w == b"srat"));
-        for code in 0..64 {
+        for code in (0..64)
+            .chain(0x100..0x140)
+            .chain(0x200..0x240)
+            .chain(0x300..0x340)
+        {
             let v = Variant::from_code(code);
             assert_eq!(Variant::from_code(v.code()), v);
         }
@@ -653,11 +701,14 @@ mod tests {
     #[cfg(feature = "player")]
     #[test]
     fn every_variant_still_decodes_bit_exactly() {
-        for code in [0x00, 0x01, 0x02, 0x10, 0x11, 0x20] {
+        for code in [
+            0x00, 0x01, 0x02, 0x10, 0x11, 0x20, 0x100, 0x200, 0x300, 0x311,
+        ] {
             let rate = 96_000;
             let mut s = Segmenter::new(rate);
-            s.set_variant(Variant::from_code(code));
-            let pcm = sine(BLOCK * 2, rate, 0);
+            let v = Variant::from_code(code);
+            s.set_variant(v);
+            let pcm = sine(BLOCK * 2 + 777, rate, 0);
             let mut file = s.init_segment();
             s.push(&pcm);
             file.extend(s.flush().unwrap());
@@ -665,9 +716,17 @@ mod tests {
             assert_eq!(got_rate, rate, "variant {code:#x}");
             assert_eq!(
                 &got[..pcm.len()],
-                &expected_i24(&pcm)[..],
+                &expected(&pcm, v)[..],
                 "variant {code:#x}"
             );
+            // Fixed strategy: the short last frame is padded with silence to a full block.
+            let frames = if v.fixed_blocks {
+                BLOCK * 3
+            } else {
+                BLOCK * 2 + 777
+            };
+            assert_eq!(got.len(), frames * 2, "variant {code:#x}");
+            assert!(got[pcm.len()..].iter().all(|&x| x == 0));
         }
     }
 
@@ -743,6 +802,16 @@ mod tests {
         pcm.iter().map(|&x| to_i24(x)).collect()
     }
 
+    /// What `decode_all` (24-bit scale) gives back for this variant's sample depth.
+    #[cfg(feature = "player")]
+    fn expected(pcm: &[f32], v: Variant) -> Vec<i32> {
+        if v.bits16 {
+            pcm.iter().map(|&x| to_i16(x) << 8).collect()
+        } else {
+            expected_i24(pcm)
+        }
+    }
+
     #[cfg(feature = "player")]
     #[test]
     fn flac_frames_decode_bit_exactly() {
@@ -751,11 +820,12 @@ mod tests {
             let pcm = sine(BLOCK * 2 + 777, rate, 3);
             let mut flac = b"fLaC".to_vec();
             flac.extend([0x80, 0, 0, 34]);
-            flac.extend(streaminfo(rate));
+            flac.extend(streaminfo(rate, Variant::default()));
             let mut first = 0u64;
             for chunk in pcm.chunks(BLOCK * 2) {
-                flac.extend(flac_frame(chunk, rate, first));
-                first += (chunk.len() / 2).max(MIN_BLOCK) as u64;
+                let n = (chunk.len() / 2).max(MIN_BLOCK);
+                flac.extend(flac_frame(chunk, rate, first, n, Variant::default()));
+                first += n as u64;
             }
             let (got_rate, got) = decode_all(flac, "flac");
             assert_eq!(got_rate, rate);

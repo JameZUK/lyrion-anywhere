@@ -14,7 +14,10 @@ export const mediaFormatFor = (caps: Capabilities) => mediaFormat(caps);
 
 export interface Probe {
 	rate: number;
-	/** Variant code for the core's segmenter (brand bits 0–3, high-rate style bits 4–7). */
+	/**
+	 * Variant code for the core's segmenter: brand bits 0–3, high-rate style bits 4–7, fixed
+	 * FLAC block size bit 8, 16-bit samples bit 9.
+	 */
 	code: number;
 }
 
@@ -32,28 +35,37 @@ export interface SelfTest {
 }
 
 /** Bump when the probes or the segmenter change, so cached results are redone. */
-export const SELFTEST_VERSION = 2;
+export const SELFTEST_VERSION = 3;
 
-/** Low rate first (every track needs it), then ways to write rates above 65,535 Hz. */
-export const PROBES: Probe[] = [
-	{ rate: 44_100, code: 0x00 },
-	{ rate: 44_100, code: 0x01 },
-	{ rate: 96_000, code: 0x00 },
-	{ rate: 96_000, code: 0x10 },
-	{ rate: 96_000, code: 0x20 },
-	{ rate: 96_000, code: 0x11 },
-];
+/** FLAC frame styles, best first: 24-bit variable blocks, then fixed blocks, then 16-bit. */
+const FRAME_STYLES = [0x000, 0x100, 0x200, 0x300];
+
+/**
+ * Low rate first (every track needs it), then ways to write rates above 65,535 Hz; then the
+ * same with the other FLAC frame styles (some decoders refuse variable blocks or 24-bit).
+ */
+export const PROBES: Probe[] = FRAME_STYLES.flatMap((f) => [
+	{ rate: 44_100, code: f | 0x00 },
+	{ rate: 44_100, code: f | 0x01 },
+	{ rate: 96_000, code: f | 0x00 },
+	{ rate: 96_000, code: f | 0x10 },
+	{ rate: 96_000, code: f | 0x20 },
+	{ rate: 96_000, code: f | 0x11 },
+]);
 
 /** Pick the variant to use: one that plays 44.1 kHz and, if possible, high rates too. */
 export function chooseVariant(t: SelfTest | null): { media: boolean; code: number; highRates: boolean } {
 	if (!t) return { media: false, code: 0, highRates: false };
 	const ok = (rate: number, code: number) => t.results.some((r) => r.rate === rate && r.code === code && r.ok);
 	const brands = [0x0, 0x1, 0x2];
-	for (const code of [0x00, 0x10, 0x20, 0x01, 0x11, 0x21]) {
-		if (ok(44_100, code & 0xf) && ok(96_000, code)) return { media: true, code, highRates: true };
+	// The first frame style that plays at all wins; within it, prefer high rates too.
+	for (const f of FRAME_STYLES) {
+		for (const code of [0x00, 0x10, 0x20, 0x01, 0x11, 0x21]) {
+			if (ok(44_100, f | (code & 0xf)) && ok(96_000, f | code)) return { media: true, code: f | code, highRates: true };
+		}
+		const low = brands.find((b) => ok(44_100, f | b));
+		if (low !== undefined) return { media: true, code: f | low, highRates: false };
 	}
-	const low = brands.find((b) => ok(44_100, b));
-	if (low !== undefined) return { media: true, code: low, highRates: false };
 	return { media: false, code: 0, highRates: false };
 }
 

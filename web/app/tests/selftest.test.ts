@@ -38,3 +38,20 @@ test('cached results are reused only for the same browser and test version', () 
 	m.set('anywhere.mse.selftest', 'not json');
 	expect(loadCached('UA', store)).toBeNull();
 });
+
+test('other FLAC frame styles are used when the default one is refused', () => {
+	// Like Safari might: no variable block sizes, but fixed blocks play (24-bit, all rates).
+	expect(chooseVariant(result((_, code) => (code & 0x300) === 0x100))).toEqual({ media: true, code: 0x100, highRates: true });
+	// Only fixed-block 16-bit at 44.1 kHz with the iso5 brand.
+	expect(chooseVariant(result((rate, code) => rate === 44_100 && code === 0x301))).toEqual({ media: true, code: 0x301, highRates: false });
+	// The best frame style that plays wins, even if a later one also plays high rates.
+	expect(chooseVariant(result((rate, code) => (code === 0x200 && rate === 44_100) || code >= 0x300))).toEqual({ media: true, code: 0x200, highRates: false });
+});
+
+test('every frame style is probed at both rates', () => {
+	for (const style of [0x000, 0x100, 0x200, 0x300]) {
+		const mine = PROBES.filter((p) => (p.code & 0x300) === style);
+		expect(new Set(mine.map((p) => p.rate))).toEqual(new Set([44_100, 96_000]));
+	}
+	expect(new Set(PROBES.map((p) => `${p.rate}:${p.code}`)).size).toBe(PROBES.length);
+});
