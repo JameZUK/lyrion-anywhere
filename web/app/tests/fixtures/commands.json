@@ -467,6 +467,15 @@
  {
   "player": true,
   "cmd": [
+   "menu",
+   0,
+   500,
+   "direct:1"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
    "spotty",
    "items",
    0,

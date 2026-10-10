@@ -36,6 +36,9 @@ pub enum PValue {
 pub struct Action {
     pub cmd: Vec<String>,
     pub params: BTreeMap<String, PValue>,
+    /// Offered as `go` with no `nextWindow`: it opens a menu, which clients page
+    /// (`start count`) whatever the command is called.
+    pub nav: bool,
 }
 
 impl Action {
@@ -43,6 +46,11 @@ impl Action {
     fn paged(&self) -> bool {
         self.cmd.last().is_some_and(|w| w == "items")
     }
+}
+
+/// Is action `name` of this item a navigation (opens a menu) rather than a command?
+fn is_nav(name: &str, item: &Map<String, Value>, action: &Map<String, Value>) -> bool {
+    name == "go" && !item.contains_key("nextWindow") && !action.contains_key("nextWindow")
 }
 
 /// Commands never runnable through menus, whatever LMS offers: server administration,
@@ -123,7 +131,7 @@ fn scalar(v: &Value) -> Option<String> {
     }
 }
 
-fn action_from(cmd: &Value, params: &[&Map<String, Value>]) -> Option<Action> {
+fn action_from(cmd: &Value, params: &[&Map<String, Value>], nav: bool) -> Option<Action> {
     let words: Vec<String> = cmd
         .as_array()?
         .iter()
@@ -155,6 +163,7 @@ fn action_from(cmd: &Value, params: &[&Map<String, Value>]) -> Option<Action> {
     Some(Action {
         cmd: words,
         params: out,
+        nav,
     })
 }
 
@@ -177,12 +186,12 @@ pub fn learn(v: &Value) -> Vec<Action> {
         };
         let own = item.get("actions").and_then(Value::as_object);
         if let Some(own) = own {
-            for a in own.values() {
+            for (name, a) in own {
                 let Some(a) = a.as_object() else { continue };
                 let empty = Map::new();
                 let params = a.get("params").and_then(Value::as_object).unwrap_or(&empty);
                 if let Some(cmd) = a.get("cmd")
-                    && let Some(x) = action_from(cmd, &[params])
+                    && let Some(x) = action_from(cmd, &[params], is_nav(name, item, a))
                 {
                     out.push(x);
                 }
@@ -205,7 +214,8 @@ pub fn learn(v: &Value) -> Vec<Action> {
                 let empty = Map::new();
                 let base_params = a.get("params").and_then(Value::as_object).unwrap_or(&empty);
                 if let Some(cmd) = a.get("cmd")
-                    && let Some(x) = action_from(cmd, &[base_params, item_params])
+                    && let Some(x) =
+                        action_from(cmd, &[base_params, item_params], is_nav(name, item, a))
                 {
                     out.push(x);
                 }
@@ -278,10 +288,13 @@ pub fn parse(raw: &[String]) -> Option<Request> {
 
 impl Action {
     fn matches(&self, r: &Request) -> bool {
-        if self.cmd != r.cmd
-            || self.paged() != r.paging.is_some()
-            || self.params.len() != r.params.len()
-        {
+        // Menus must be paged; navigations may be; other commands never are.
+        let paging_ok = if self.paged() {
+            r.paging.is_some()
+        } else {
+            self.nav || r.paging.is_none()
+        };
+        if self.cmd != r.cmd || !paging_ok || self.params.len() != r.params.len() {
             return false;
         }
         self.params.iter().all(|(k, v)| match (v, r.params.get(k)) {
@@ -404,7 +417,7 @@ mod tests {
                 {"text": "Save", "actions": {"go": {"cmd": ["jivefavorites", "add"], "params": {"title": "Some Track", "isContextMenu": 1}}}},
                 {"text": "Bad", "actions": {"go": {"cmd": ["jivefavorites", "add"], "params": {"url": "file:///srv/x.flac"}}}},
                 {"text": "LAN", "actions": {"go": {"cmd": ["x", "items"], "params": {"item_id": "http://10.0.0.10/x"}}}},
-                {"text": "Similar", "type": "redirect", "actions": {"go": {"cmd": ["audiomuse", "similar_track"], "params": {"track_id": "4242"}, "player": 0}}}
+                {"text": "Similar", "type": "redirect", "nextWindow": "nowPlaying", "actions": {"go": {"cmd": ["audiomuse", "similar_track"], "params": {"track_id": "4242"}, "player": 0}}}
             ]
         })
     }
@@ -615,6 +628,64 @@ mod tests {
         }
     }
 
+    /// A plugin menu in the Jive style (as AudioMuse-AI's): `go` opens a submenu unless the
+    /// item has `nextWindow`, in which case it is a command that runs.
+    fn plugin_menu() -> Value {
+        json!({
+            "item_loop": [
+                {"text": "Browse by mood", "actions": {"go": {"cmd": ["someplugin", "menu_mood"], "player": 0}}},
+                {"text": "Similar to current track", "nextWindow": "refresh",
+                 "actions": {"go": {"cmd": ["someplugin", "similar_now"], "player": 0}}},
+                {"text": "Pick an artist", "actions": {"go": {"cmd": ["someplugin", "browse"], "params": {"start": 0, "target": "x"}}}},
+                {"text": "Describe it", "nextWindow": "refresh",
+                 "actions": {"go": {"cmd": ["someplugin", "instant"], "params": {"prompt": "__TAGGEDINPUT__"}}}}
+            ]
+        })
+    }
+
+    #[test]
+    fn navigations_may_be_paged_but_commands_may_not() {
+        let mut d = DeviceActions::default();
+        d.add(learn(&plugin_menu()), Instant::now());
+        let ok = |raw: &[&str]| allowed(&d, &strs(raw), false);
+        // A submenu opens with or without paging.
+        assert_eq!(ok(&["someplugin", "menu_mood", "0", "100"]), Ok(()));
+        assert_eq!(ok(&["someplugin", "menu_mood"]), Ok(()));
+        assert_eq!(
+            ok(&["someplugin", "browse", "0", "50", "start:0", "target:x"]),
+            Ok(())
+        );
+        // A command (nextWindow) runs exactly as offered: no paging slipped in.
+        assert_eq!(ok(&["someplugin", "similar_now"]), Ok(()));
+        assert_eq!(
+            ok(&["someplugin", "similar_now", "0", "100"]),
+            Err(Refusal::NotOffered)
+        );
+        assert_eq!(ok(&["someplugin", "instant", "prompt:quiet piano"]), Ok(()));
+        assert_eq!(
+            ok(&["someplugin", "instant", "0", "1", "prompt:x"]),
+            Err(Refusal::NotOffered)
+        );
+        // Navigation doesn't loosen parameters or command words.
+        assert_eq!(
+            ok(&["someplugin", "browse", "0", "50", "start:0", "target:y"]),
+            Err(Refusal::NotOffered)
+        );
+        assert_eq!(
+            ok(&["someplugin", "browse", "0", "50", "start:0"]),
+            Err(Refusal::NotOffered)
+        );
+        assert_eq!(
+            ok(&["someplugin", "menu_mood", "0", "100", "extra:1"]),
+            Err(Refusal::NotOffered)
+        );
+        assert_eq!(
+            ok(&["someplugin", "menu_mood", "0", "9999"]),
+            Err(Refusal::Malformed)
+        );
+        assert_eq!(ok(&["someplugin", "menu_other"]), Err(Refusal::NotOffered));
+    }
+
     #[test]
     fn learned_actions_expire_and_are_bounded() {
         let t0 = Instant::now();
@@ -627,6 +698,7 @@ mod tests {
             .map(|i| Action {
                 cmd: strs(&["x", "items"]),
                 params: [("item_id".to_string(), PValue::Exact(i.to_string()))].into(),
+                nav: true,
             })
             .collect();
         d.add(many, t0);

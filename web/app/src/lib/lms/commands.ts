@@ -80,6 +80,8 @@ export function appCommand(v: unknown): string {
 	return v;
 }
 export const appsList = (): Command => ['apps', 0, 100];
+/** The player's home menu, where plugins add entries (filtered by the gateway). */
+export const homeMenu = (): Command => ['menu', 0, 500, 'direct:1'];
 export const radiosList = (): Command => ['radios', 0, 100];
 /** An app's top menu, in menu (SlimBrowse) format. */
 export function appMenu(app: string): (from: number, n: number) => Command {

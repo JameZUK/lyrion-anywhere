@@ -63,6 +63,7 @@ const examples = [
 	{ player: false, admin: true, cmd: c.moveInPlaylist(5, 3, 0) },
 	{ player: false, cmd: c.appsList() },
 	{ player: false, cmd: c.radiosList() },
+	{ player: true, cmd: c.homeMenu() },
 	{ player: true, cmd: c.appMenu('spotty')(0, 100) },
 	{ player: true, cmd: c.infoMenu('track', 9)(0, 100) },
 	{ player: true, cmd: c.infoMenu('album', 7)(0, 100) },

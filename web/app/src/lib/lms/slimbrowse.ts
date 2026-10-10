@@ -24,6 +24,7 @@ export interface SBItem {
 	actions?: Record<string, SBAction | unknown>;
 	input?: { title?: string; len?: number } | unknown;
 	addAction?: string;
+	nextWindow?: string;
 	[k: string]: unknown;
 }
 
@@ -41,6 +42,8 @@ export interface Resolved {
 	cmd: string[];
 	params: Record<string, string>;
 	nextWindow?: string;
+	/** Opens a menu (paged) rather than running a command. */
+	menu: boolean;
 }
 
 const WORD = /^[A-Za-z0-9_-]{1,64}$/;
@@ -54,7 +57,7 @@ function scalar(v: unknown): string | undefined {
 	return undefined;
 }
 
-function toResolved(a: unknown, extra?: unknown): Resolved | null {
+function toResolved(name: string, item: SBItem, a: unknown, extra?: unknown): Resolved | null {
 	if (!a || typeof a !== 'object') return null;
 	const act = a as SBAction;
 	if (!Array.isArray(act.cmd) || !act.cmd.length || act.cmd.length > 6) return null;
@@ -69,23 +72,28 @@ function toResolved(a: unknown, extra?: unknown): Resolved | null {
 			params[k] = s;
 		}
 	}
-	return { cmd: act.cmd as string[], params, nextWindow: typeof act.nextWindow === 'string' ? act.nextWindow : undefined };
+	const cmd = act.cmd as string[];
+	const next = typeof act.nextWindow === 'string' ? act.nextWindow : typeof item.nextWindow === 'string' ? item.nextWindow : undefined;
+	// As in LMS's own clients (and the gateway): `… items` lists are menus, and so is any `go`
+	// that doesn't say where to go next; with `nextWindow` it is a command that runs.
+	const menu = cmd[cmd.length - 1] === 'items' || (name === 'go' && next === undefined);
+	return { cmd, params, nextWindow: next, menu };
 }
 
 /** The action `name` for an item in a menu, or null if the item doesn't offer it. */
 export function resolveAction(menu: SBMenu, item: SBItem, name: string): Resolved | null {
 	const own = item.actions && typeof item.actions === 'object' ? (item.actions as Record<string, unknown>)[name] : undefined;
-	if (own !== undefined) return toResolved(own);
+	if (own !== undefined) return toResolved(name, item, own);
 	const base = menu.base?.actions?.[name];
 	if (!base || typeof base !== 'object') return null;
 	const field = typeof (base as SBAction).itemsParams === 'string' ? (base as SBAction).itemsParams! : 'params';
 	const itemParams = item[field];
 	if (!itemParams || typeof itemParams !== 'object') return null;
-	return toResolved(base, itemParams);
+	return toResolved(name, item, base, itemParams);
 }
 
 /** Does running this action open another menu (rather than do something)? */
-export const opensMenu = (r: Resolved) => r.cmd[r.cmd.length - 1] === 'items';
+export const opensMenu = (r: Resolved) => r.menu;
 
 /** Does it need text typed by the user (a search box)? */
 export const needsInput = (r: Resolved) => Object.values(r.params).some((v) => INPUT.test(v));
@@ -120,4 +128,51 @@ export function itemKind(menu: SBMenu, item: SBItem): ItemKind {
 /** Icon path (for the art relay) from an item's icon fields. */
 export function iconOf(item: SBItem): unknown {
 	return item.image ?? item.icon ?? item['icon-id'];
+}
+
+/** An entry plugins add to LMS's home menu (My Music, Radio, Extras, …). */
+export interface PluginEntry {
+	id: string;
+	text: string;
+	icon: unknown;
+	node: string;
+	weight: number;
+	/** Opens this (a plugin menu), or null for a group of other entries. */
+	go: Resolved | null;
+	/** Entries under this one (e.g. Random Mix's mixes). */
+	children: SBItem[];
+}
+
+const ID = /^[A-Za-z0-9_.-]{1,96}$/;
+
+/**
+ * Plugin entries from the home menu (`menu`), for listing beside apps and radio: everything
+ * the gateway relayed, except what the app already shows its own way (the library, apps and
+ * radio listed by `apps`/`radios`) and entries with nothing to open.
+ */
+export function pluginEntries(home: SBMenu, shownApps: Set<string>): PluginEntry[] {
+	const loop = Array.isArray(home.item_loop) ? home.item_loop : [];
+	const items = loop.filter((i) => !!i && typeof i === 'object' && typeof i.id === 'string' && ID.test(i.id));
+	const out: PluginEntry[] = [];
+	for (const item of items) {
+		const id = item.id as string;
+		const node = typeof item.node === 'string' ? item.node : '';
+		if (id.startsWith('myMusic') || ['opmlmyapps', 'favorites', 'globalSearch', 'radios'].includes(id)) continue;
+		// Entries under another entry are shown inside it.
+		if (items.some((p) => p.id === node)) continue;
+		const go = resolveAction({}, item, 'go');
+		if (go && shownApps.has(go.cmd[0]!)) continue;
+		const children = items.filter((c) => c.node === id);
+		if (!go?.menu && !children.length) continue;
+		out.push({
+			id,
+			text: typeof item.text === 'string' ? item.text : id,
+			icon: item.icon ?? (item.window as { 'icon-id'?: unknown } | undefined)?.['icon-id'] ?? item.menuIcon,
+			node,
+			weight: typeof item.weight === 'number' ? item.weight : 100,
+			go: go?.menu ? go : null,
+			children,
+		});
+	}
+	return out.sort((a, b) => a.weight - b.weight || a.text.localeCompare(b.text));
 }

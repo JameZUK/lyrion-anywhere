@@ -21,12 +21,15 @@
 
 	let {
 		start,
+		initial,
 		title,
 		onclose,
 		compact = false,
 	}: {
-		/** First menu: a command builder taking paging. */
-		start: (from: number, count: number) => Command;
+		/** First menu: a command builder taking paging… */
+		start?: (from: number, count: number) => Command;
+		/** …or a menu already in hand (e.g. a group of home-menu entries). */
+		initial?: SBMenu;
 		title: string;
 		onclose?: () => void;
 		compact?: boolean;
@@ -86,10 +89,12 @@
 
 	$effect(() => {
 		const make = start;
+		const menu = initial;
 		const t = title;
 		untrack(() => {
 			stack = [];
-			push(t, { make });
+			if (make) push(t, { make });
+			else push(t, null, menu ?? { item_loop: [] });
 		});
 	});
 

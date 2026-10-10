@@ -182,7 +182,10 @@ Response: `{"result": {...}}`, or `{"error": "<reason>"}` with one of these stat
 - actions are learned after response filtering, and an action whose parameters held a path or LAN URL is removed whole, so it can never be learned or shown;
 - server-level commands (preferences, rescan, restart, `client`, display/IR, …) never run this way;
 - actions that change shared data (`favorites`, `jivefavorites`, `playlists`, presets) need the admin role;
+- paging (`start count`) is required for `… items` menus, optional for a navigation (a `go` action without `nextWindow`, which opens a submenu in LMS's own clients), and refused for any other action;
 - at most 4,000 learned actions per device, expiring after an hour.
+
+**Plugin entries (home menu).** Plugins also add entries to the player's home menu (My Music, Radio, Extras), not only to `apps`/`radios`. `menu <start> <count> [direct:1]` (permitted players only) returns that menu cut down to library and plugin entries: anything under the settings nodes, player power, and entries the app shows itself (library, favourites, search) are dropped before the device sees them, as are entries not reachable from a top-level node. Their actions are then learned like any menu's.
 
 Context menus start from `trackinfo`/`albuminfo`/`artistinfo`/`genreinfo`/`yearinfo`/`playlistinfo`/`folderinfo items` with a library id.
 

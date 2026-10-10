@@ -54,6 +54,8 @@ pub enum Kind {
     PlayerList,
     /// `apps` / `radios`: also learn the app commands listed.
     AppMenu,
+    /// `menu`: the player's home menu, cut down to library and plugin entries.
+    HomeMenu,
 }
 
 /// Normalise one argument: strings and integers only, bounded, printable.
@@ -412,6 +414,11 @@ pub fn check(
             _ => false,
         },
         "playlistcontrol" => playlistcontrol(&cmd[1..]),
+        // The home menu, where plugins add entries (My Music, Radio, Extras): read-only, and
+        // filtered (see `home_menu`). Its actions are then learned like any other menu's.
+        "menu" => {
+            paging(&cmd[1..]).is_ok() && params(&cmd[3..], &[("direct", V::OneOf(&["1"]))]).is_ok()
+        }
         // Context menus ("More…") for library items; their actions are then learned.
         "trackinfo" | "albuminfo" | "artistinfo" | "genreinfo" | "yearinfo" | "playlistinfo"
         | "folderinfo"
@@ -473,10 +480,15 @@ pub fn check(
             c[0]
         ));
     }
+    let kind = if c[0] == "menu" {
+        Kind::HomeMenu
+    } else {
+        Kind::Plain
+    };
     Ok(Checked {
         player: player.to_string(),
         cmd,
-        kind: Kind::Plain,
+        kind,
     })
 }
 
@@ -629,6 +641,9 @@ fn local_host(host: &str) -> bool {
 /// Filter a response. `may_control` hides players the caller can't use.
 pub fn filter_response(kind: Kind, mut v: Value, may_control: &dyn Fn(&str) -> bool) -> Value {
     strip(&mut v);
+    if kind == Kind::HomeMenu {
+        home_menu(&mut v);
+    }
     if kind == Kind::PlayerList
         && let Some(players) = v.get_mut("players_loop").and_then(Value::as_array_mut)
     {
@@ -649,6 +664,59 @@ pub fn filter_response(kind: Kind, mut v: Value, may_control: &dyn Fn(&str) -> b
         }
     }
     v
+}
+
+/// Home-menu nodes whose entries are kept: the top level, My Music, Radio, Extras and apps.
+const HOME_ROOTS: &[&str] = &["home", "", "myMusic", "radios", "extras", "plugins"];
+
+/// Home-menu entries never relayed: player and server settings, power, and entries the app
+/// has its own pages for (the library, favourites, search).
+fn home_entry_refused(id: &str, node: &str) -> bool {
+    let refused_prefix = |s: &str| {
+        ["settings", "advancedSettings", "myMusic", "playerpower"]
+            .iter()
+            .any(|p| s.starts_with(p))
+    };
+    refused_prefix(id)
+        || matches!(id, "globalSearch" | "favorites" | "home")
+        || node.starts_with("settings")
+        || node.starts_with("advancedSettings")
+}
+
+/// Cut the home menu (`menu`) down to library and plugin entries: an entry is kept if it is
+/// not refused and sits under a root node or under another kept entry (e.g. Random Mix's
+/// items). Everything else, settings above all, is dropped before the device sees it, so
+/// its actions are never learned.
+fn home_menu(v: &mut Value) {
+    let Some(items) = v.get_mut("item_loop").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let field = |x: &Value, k: &str| x.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
+    items.retain(|x| x.is_object() && !home_entry_refused(&field(x, "id"), &field(x, "node")));
+    let mut kept: HashSet<String> = HOME_ROOTS.iter().map(|s| s.to_string()).collect();
+    let mut keep = vec![false; items.len()];
+    loop {
+        let mut changed = false;
+        for (i, x) in items.iter().enumerate() {
+            let id = field(x, "id");
+            if !keep[i] && kept.contains(&field(x, "node")) {
+                keep[i] = true;
+                changed |= !id.is_empty() && kept.insert(id);
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut i = 0;
+    items.retain(|_| {
+        i += 1;
+        keep[i - 1]
+    });
+    let count = items.len();
+    if let Some(o) = v.as_object_mut() {
+        o.insert("count".into(), Value::from(count));
+    }
 }
 
 /// A menu action (`{"cmd": [...], "params": {...}}`) whose parameters carry a URL, path or
@@ -1018,6 +1086,116 @@ mod tests {
         // Admins may control any player.
         let raw = json!(["play"]).as_array().unwrap().clone();
         assert!(check(&Who(Role::Admin), OTHER, &raw, &apps()).is_ok());
+    }
+
+    #[test]
+    fn the_home_menu_is_read_only_and_player_scoped() {
+        assert_eq!(
+            ok(MINE, json!(["menu", 0, 500, "direct:1"])).kind,
+            Kind::HomeMenu
+        );
+        assert_eq!(ok(MINE, json!(["menu", 0, 100])).kind, Kind::HomeMenu);
+        denied(OTHER, json!(["menu", 0, 500, "direct:1"]));
+        denied("", json!(["menu", 0, 500]));
+        denied(MINE, json!(["menu", 0, 500, "direct:0"]));
+        denied(MINE, json!(["menu", 0, 500, "item_id:1"]));
+        denied(MINE, json!(["menu", "status", 0, 10]));
+        denied(MINE, json!(["menu", 0, 100000]));
+        denied(MINE, json!(["menu"]));
+    }
+
+    /// A home menu like LMS's: library entries, plugin entries in several nodes, a node with
+    /// children (Random Mix), and settings and power entries that must never reach a device.
+    fn home_menu_fixture() -> Value {
+        json!({"count": 14, "item_loop": [
+            {"id": "myMusic", "node": "home", "text": "My Music"},
+            {"id": "favorites", "node": "home", "actions": {"go": {"cmd": ["favorites", "items"]}}},
+            {"id": "playerpower", "node": "home", "actions": {"do": {"cmd": ["power", "0"]}}},
+            {"id": "globalSearch", "node": "home", "actions": {"go": {"cmd": ["globalsearch", "items"]}}},
+            {"id": "myMusicAlbums", "node": "myMusic", "actions": {"go": {"cmd": ["browselibrary", "items"], "params": {"mode": "albums"}}}},
+            {"id": "pluginSomePlugin", "node": "myMusic", "text": "Some Plugin", "actions": {"go": {"cmd": ["someplugin", "menu"], "player": 0}}},
+            {"id": "randomplay", "node": "myMusic", "isANode": 1, "text": "Random Mix"},
+            {"id": "randomtracks", "node": "randomplay", "nextWindow": "nowPlaying", "actions": {"go": {"cmd": ["randomplay", "tracks"]}}},
+            {"id": "opmlsomeradio", "node": "radios", "actions": {"go": {"cmd": ["someradio", "items"], "params": {"menu": "someradio"}}}},
+            {"id": "opmlsomeapp", "node": "", "actions": {"go": {"cmd": ["someapp", "items"], "params": {"menu": "someapp"}}}},
+            {"id": "settingsAudio", "node": "settings", "text": "Audio"},
+            {"id": "settingsXfade", "node": "settingsAudio", "actions": {"go": {"cmd": ["crossfadesettings"]}}},
+            {"id": "settingsRescan", "node": "advancedSettings", "actions": {"go": {"cmd": ["rescanplugin", "menu"]}}},
+            {"id": "sneaky", "node": "settingsAudio", "actions": {"go": {"cmd": ["someplugin", "wipe"]}}},
+            {"id": "orphan", "node": "nowhere", "actions": {"go": {"cmd": ["someplugin", "orphan"]}}},
+            {"id": "lanlink", "node": "myMusic", "actions": {"go": {"cmd": ["someplugin", "items"], "params": {"url": "http://10.0.0.10/x"}}}}
+        ]})
+    }
+
+    #[test]
+    fn the_home_menu_keeps_only_library_and_plugin_entries() {
+        let out = filter_response(Kind::HomeMenu, home_menu_fixture(), &|_| true);
+        let ids: Vec<&str> = out["item_loop"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "pluginSomePlugin",
+                "randomplay",
+                "randomtracks",
+                "opmlsomeradio",
+                "opmlsomeapp",
+                "lanlink"
+            ]
+        );
+        assert_eq!(out["count"], 6);
+        // The LAN URL's action is removed whole, so it can't be learned.
+        assert!(
+            out["item_loop"][5]
+                .get("actions")
+                .is_none_or(|a| a.get("go").is_none())
+        );
+        // Nothing from settings, power or search is offered, so none of it can be learned.
+        let learned = crate::menu_actions::learn(&out);
+        let cmds: Vec<String> = learned.iter().map(|a| a.cmd.join(" ")).collect();
+        for never in [
+            "power 0",
+            "crossfadesettings",
+            "rescanplugin menu",
+            "someplugin wipe",
+            "someplugin orphan",
+            "globalsearch items",
+            "browselibrary items",
+        ] {
+            assert!(
+                !cmds.iter().any(|c| c == never),
+                "{never} learned: {cmds:?}"
+            );
+        }
+        assert!(cmds.iter().any(|c| c == "someplugin menu"));
+        assert!(cmds.iter().any(|c| c == "randomplay tracks"));
+        // Other responses are untouched by this filter.
+        let plain = filter_response(Kind::Plain, home_menu_fixture(), &|_| true);
+        assert_eq!(plain["item_loop"].as_array().unwrap().len(), 16);
+    }
+
+    #[test]
+    fn hostile_home_menus_never_panic() {
+        for v in [
+            json!({"item_loop": "x"}),
+            json!({"item_loop": [1, null, [], {"id": 5, "node": []}]}),
+            json!({"item_loop": [{"id": "a", "node": "b"}, {"id": "b", "node": "a"}]}),
+            json!([]),
+            json!(null),
+        ] {
+            let _ = filter_response(Kind::HomeMenu, v, &|_| true);
+        }
+        // A cycle not attached to a root is dropped.
+        let out = filter_response(
+            Kind::HomeMenu,
+            json!({"item_loop": [{"id": "a", "node": "b"}, {"id": "b", "node": "a"}]}),
+            &|_| true,
+        );
+        assert_eq!(out["item_loop"].as_array().unwrap().len(), 0);
     }
 
     #[test]

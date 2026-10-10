@@ -79,6 +79,12 @@ pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
             {"text": "Server setting", "actions": {"go": {"cmd": ["pref", "audiodir"], "params": {"value": "/x"}}}},
             {"text": "Stream link", "actions": {"go": {"cmd": ["remote", "items"], "params": {"item_id": "http://10.0.0.50/x"}}}}
         ]}),
+        // The home menu: a plugin entry in My Music, and a settings entry.
+        "menu" => json!({"count": 3, "item_loop": [
+            {"id": "pluginSomePlugin", "node": "myMusic", "text": "Some Plugin", "actions": {"go": {"cmd": ["someplugin", "menu"], "player": 0}}},
+            {"id": "settingsXfade", "node": "settingsAudio", "actions": {"go": {"cmd": ["crossfadesettings"], "player": 0}}},
+            {"id": "playerpower", "node": "home", "actions": {"do": {"cmd": ["power", "0"]}}}
+        ]}),
         _ => json!({"ok": 1}),
     }
 }

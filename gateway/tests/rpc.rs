@@ -255,6 +255,52 @@ async fn lms_unreachable_is_a_502() {
 
 // --- plugin and context menus: actions LMS offered, and nothing else -----------------------
 
+#[tokio::test]
+async fn plugins_in_the_home_menu_can_be_browsed() {
+    let h = harness().await;
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    let open = json!(["someplugin", "menu", 0, 100]);
+    // Not offered yet.
+    assert_eq!(
+        h.rpc(&h.tok_a, &mine, open.clone()).await.status(),
+        S::FORBIDDEN
+    );
+    let r = h
+        .rpc(&h.tok_a, &mine, json!(["menu", 0, 500, "direct:1"]))
+        .await;
+    assert_eq!(r.status(), S::OK);
+    let menu: Value = r.json().await.unwrap();
+    let s = menu.to_string();
+    assert!(s.contains("Some Plugin"), "{s}");
+    assert!(
+        !s.contains("crossfadesettings") && !s.contains("playerpower"),
+        "settings and power never reach a device: {s}"
+    );
+    // The plugin's menu opens now (paged, as a navigation); settings stay refused.
+    assert_eq!(h.rpc(&h.tok_a, &mine, open).await.status(), S::OK);
+    assert_eq!(
+        h.rpc(&h.tok_a, &mine, json!(["crossfadesettings"]))
+            .await
+            .status(),
+        S::FORBIDDEN
+    );
+    // Learned per device: another device hasn't been shown it.
+    let theirs = anywhere_core::proto::format_mac(&h.mac_b);
+    assert_eq!(
+        h.rpc(&h.tok_b, &theirs, json!(["someplugin", "menu", 0, 100]))
+            .await
+            .status(),
+        S::FORBIDDEN
+    );
+    // Another device's player: the home menu itself is refused.
+    assert_eq!(
+        h.rpc(&h.tok_a, &theirs, json!(["menu", 0, 500, "direct:1"]))
+            .await
+            .status(),
+        S::FORBIDDEN
+    );
+}
+
 async fn open_track_menu(h: &Harness, token: &str, player: &str) -> Value {
     let r = h
         .rpc(
