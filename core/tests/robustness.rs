@@ -39,7 +39,9 @@ fn cfg() -> PlayerConfig {
 /// A syntactically valid server frame with a random opcode drawn from the real set and a
 /// random (often truncated or oversized) payload.
 fn random_server_frame(r: &mut Rng) -> Vec<u8> {
-    const OPS: [&[u8; 4]; 8] = [b"strm", b"audg", b"aude", b"setd", b"serv", b"vers", b"vfdc", b"grfe"];
+    const OPS: [&[u8; 4]; 8] = [
+        b"strm", b"audg", b"aude", b"setd", b"serv", b"vers", b"vfdc", b"grfe",
+    ];
     let op = OPS[r.below(OPS.len() as u64) as usize];
     let len = r.below(80) as usize;
     let mut payload = r.bytes(len);
@@ -93,7 +95,10 @@ fn client_frame_reader_survives_random_bytes() {
 fn oversize_frame_length_is_rejected_not_buffered_forever() {
     let mut reader = ServerFrameReader::default();
     reader.push(&[0xff, 0xff, b's', b't', b'r', b'm']);
-    assert!(reader.next_msg().is_err(), "a 64 KiB+ frame must be refused");
+    assert!(
+        reader.next_msg().is_err(),
+        "a 64 KiB+ frame must be refused"
+    );
 }
 
 #[test]
@@ -139,14 +144,30 @@ fn player_survives_clock_going_backwards() {
     let mut p = Player::new(cfg());
     p.connected(10_000);
     let mut s = Strm {
-        command: b's', autostart: b'1', format: b'f', pcm_sample_size: b'?', pcm_sample_rate: b'?',
-        pcm_channels: b'?', pcm_endianness: b'?', threshold: 1, spdif_enable: 0, transition_period: 0,
-        transition_type: b'0', flags: 0, output_threshold: 0, slaves: 0, replay_gain: 0,
-        server_port: 9000, server_ip: 0, request: b"GET / HTTP/1.0\r\n\r\n".to_vec(),
+        command: b's',
+        autostart: b'1',
+        format: b'f',
+        pcm_sample_size: b'?',
+        pcm_sample_rate: b'?',
+        pcm_channels: b'?',
+        pcm_endianness: b'?',
+        threshold: 1,
+        spdif_enable: 0,
+        transition_period: 0,
+        transition_type: b'0',
+        flags: 0,
+        output_threshold: 0,
+        slaves: 0,
+        replay_gain: 0,
+        server_port: 9000,
+        server_ip: 0,
+        request: b"GET / HTTP/1.0\r\n\r\n".to_vec(),
     };
-    p.on_control_data(&encode_server_frame(*b"strm", &s.encode_payload()), 10_000).unwrap();
+    p.on_control_data(&encode_server_frame(*b"strm", &s.encode_payload()), 10_000)
+        .unwrap();
     s.command = b't';
-    p.on_control_data(&encode_server_frame(*b"strm", &s.encode_payload()), 5).unwrap();
+    p.on_control_data(&encode_server_frame(*b"strm", &s.encode_payload()), 5)
+        .unwrap();
     p.tick(3);
     p.tick(10_001);
     p.tick(0);
@@ -185,12 +206,27 @@ fn player_input_is_bounded_by_back_pressure_signal() {
     // before memory use grows past the high-water mark.
     let mut p = Player::new(cfg());
     let s = Strm {
-        command: b's', autostart: b'1', format: b'f', pcm_sample_size: b'?', pcm_sample_rate: b'?',
-        pcm_channels: b'?', pcm_endianness: b'?', threshold: 1, spdif_enable: 0, transition_period: 0,
-        transition_type: b'0', flags: 0, output_threshold: 0, slaves: 0, replay_gain: 0,
-        server_port: 9000, server_ip: 0, request: b"GET / HTTP/1.0\r\n\r\n".to_vec(),
+        command: b's',
+        autostart: b'1',
+        format: b'f',
+        pcm_sample_size: b'?',
+        pcm_sample_rate: b'?',
+        pcm_channels: b'?',
+        pcm_endianness: b'?',
+        threshold: 1,
+        spdif_enable: 0,
+        transition_period: 0,
+        transition_type: b'0',
+        flags: 0,
+        output_threshold: 0,
+        slaves: 0,
+        replay_gain: 0,
+        server_port: 9000,
+        server_ip: 0,
+        request: b"GET / HTTP/1.0\r\n\r\n".to_vec(),
     };
-    p.on_control_data(&encode_server_frame(*b"strm", &s.encode_payload()), 0).unwrap();
+    p.on_control_data(&encode_server_frame(*b"strm", &s.encode_payload()), 0)
+        .unwrap();
     let chunk = vec![0u8; 64 * 1024];
     let mut pushed = 0;
     while p.wants_stream_data() {

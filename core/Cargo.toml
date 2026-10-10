@@ -6,4 +6,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-symphonia = { version = "0.6", default-features = false, features = ["flac", "mp3", "aac", "ogg", "vorbis", "isomp4", "alac", "wav", "pcm", "id3v2"] }
+symphonia = { version = "0.6", optional = true, default-features = false, features = ["flac", "mp3", "aac", "ogg", "vorbis", "isomp4", "alac", "wav", "pcm", "id3v2"] }
+
+[features]
+default = ["player"]
+# Decoder and player state machine. The gateway uses only `proto`.
+player = ["dep:symphonia"]

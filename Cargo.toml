@@ -1,11 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["core", "cli"]
+members = ["core", "cli", "gateway"]
 
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
-license = "GPL-2.0-only"
+license = "GPL-2.0-or-later"
 repository = "https://github.com/JameZUK/lyrion-anywhere"
 
 [profile.release]

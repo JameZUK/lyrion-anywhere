@@ -6,7 +6,13 @@
 //!
 //! ```text
 //! anywhere-cli --server lms.example.lan [--name "Anywhere CLI"] [--mac 02:4c:41:00:00:01] [--null]
+//! ANYWHERE_TOKEN=… anywhere-cli --gateway https://music.example.com [--ca-file ca.pem] [--null]
 //! ```
+//!
+//! With `--gateway`, the player connects through a Lyrion Anywhere gateway instead of
+//! directly. The device token comes from `--token-file` or `ANYWHERE_TOKEN`, never argv.
+
+mod gateway;
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
@@ -31,6 +37,9 @@ enum Event {
 
 struct Args {
     server: String,
+    gateway: Option<String>,
+    token_file: Option<String>,
+    ca_file: Option<String>,
     name: String,
     mac: [u8; 6],
     codecs: Vec<String>,
@@ -41,6 +50,9 @@ struct Args {
 fn parse_args() -> Result<Args, String> {
     let mut a = Args {
         server: String::new(),
+        gateway: None,
+        token_file: None,
+        ca_file: None,
         name: "Anywhere CLI".into(),
         mac: [0x02, 0x4c, 0x41, 0x00, 0x00, 0x01],
         codecs: vec!["flc".into(), "mp3".into(), "ogg".into()],
@@ -51,28 +63,37 @@ fn parse_args() -> Result<Args, String> {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--server" => a.server = it.next().ok_or("--server needs a value")?,
+            "--gateway" => a.gateway = Some(it.next().ok_or("--gateway needs a value")?),
+            "--token-file" => a.token_file = Some(it.next().ok_or("--token-file needs a value")?),
+            "--ca-file" => a.ca_file = Some(it.next().ok_or("--ca-file needs a value")?),
             "--name" => a.name = it.next().ok_or("--name needs a value")?,
             "--mac" => {
                 let v = it.next().ok_or("--mac needs a value")?;
                 a.mac = parse_mac(&v).ok_or("bad --mac")?;
             }
             "--codecs" => {
-                a.codecs = it.next().ok_or("--codecs needs a value")?.split(',').map(String::from).collect()
+                a.codecs = it
+                    .next()
+                    .ok_or("--codecs needs a value")?
+                    .split(',')
+                    .map(String::from)
+                    .collect()
             }
             "--null" => a.null = true,
             "-v" | "--verbose" => a.verbose = true,
             "-h" | "--help" => {
                 println!(
-                    "anywhere-cli --server HOST[:PORT] [--name NAME] [--mac 02:..] \
-                     [--codecs flc,mp3,ogg] [--null] [-v]"
+                    "anywhere-cli (--server HOST[:PORT] | --gateway URL [--token-file F] [--ca-file F]) \
+                     [--name NAME] [--mac 02:..] [--codecs flc,mp3,ogg] [--null] [-v]\n\
+                     With --gateway the token is read from --token-file or $ANYWHERE_TOKEN."
                 );
                 std::process::exit(0);
             }
             other => return Err(format!("unknown argument {other}")),
         }
     }
-    if a.server.is_empty() {
-        return Err("--server is required".into());
+    if a.server.is_empty() == a.gateway.is_none() {
+        return Err("give exactly one of --server or --gateway".into());
     }
     Ok(a)
 }
@@ -92,7 +113,11 @@ fn main() {
 }
 
 fn resolve(server: &str, default_port: u16) -> Result<SocketAddr, String> {
-    let with_port = if server.contains(':') { server.to_string() } else { format!("{server}:{default_port}") };
+    let with_port = if server.contains(':') {
+        server.to_string()
+    } else {
+        format!("{server}:{default_port}")
+    };
     with_port
         .to_socket_addrs()
         .map_err(|e| format!("resolve {with_port}: {e}"))?
@@ -100,8 +125,25 @@ fn resolve(server: &str, default_port: u16) -> Result<SocketAddr, String> {
         .ok_or_else(|| format!("no address for {with_port}"))
 }
 
+enum Control {
+    Direct { sock: TcpStream, addr: SocketAddr },
+    Gateway(gateway::GatewayConn),
+}
+
+fn read_token(args: &Args) -> Result<String, String> {
+    let raw = match &args.token_file {
+        Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?,
+        None => std::env::var("ANYWHERE_TOKEN")
+            .map_err(|_| "set ANYWHERE_TOKEN or pass --token-file")?,
+    };
+    let t = raw.trim().to_string();
+    if t.is_empty() {
+        return Err("empty token".into());
+    }
+    Ok(t)
+}
+
 fn run(args: Args) -> Result<(), String> {
-    let control_addr = resolve(&args.server, 3483)?;
     let player = Arc::new(Mutex::new(Player::new(PlayerConfig {
         mac: args.mac,
         uuid: [0; 16],
@@ -114,11 +156,28 @@ fn run(args: Args) -> Result<(), String> {
     let now = move || epoch.elapsed().as_millis() as u64;
 
     let (tx, rx) = mpsc::channel::<Event>();
-    let mut control = TcpStream::connect_timeout(&control_addr, Duration::from_secs(5))
-        .map_err(|e| format!("connect {control_addr}: {e}"))?;
-    control.set_nodelay(true).ok();
-    spawn_control_reader(control.try_clone().map_err(|e| e.to_string())?, tx.clone());
-    println!("connected to {control_addr} as {} ({})", args.name, format_mac(&args.mac));
+    let mut control = if let Some(url) = &args.gateway {
+        let token = read_token(&args)?;
+        let conn = gateway::connect(url, &token, args.ca_file.as_deref(), tx.clone())?;
+        println!(
+            "connected via gateway {url} as {} ({})",
+            args.name,
+            format_mac(&args.mac)
+        );
+        Control::Gateway(conn)
+    } else {
+        let addr = resolve(&args.server, 3483)?;
+        let sock = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+            .map_err(|e| format!("connect {addr}: {e}"))?;
+        sock.set_nodelay(true).ok();
+        spawn_control_reader(sock.try_clone().map_err(|e| e.to_string())?, tx.clone());
+        println!(
+            "connected to {addr} as {} ({})",
+            args.name,
+            format_mac(&args.mac)
+        );
+        Control::Direct { sock, addr }
+    };
 
     player.lock().unwrap().connected(now());
 
@@ -166,23 +225,45 @@ fn run(args: Args) -> Result<(), String> {
                     if args.verbose {
                         log_client_frame(&bytes);
                     }
-                    control.write_all(&bytes).map_err(|e| format!("control write: {e}"))?;
+                    match &mut control {
+                        Control::Direct { sock, .. } => sock
+                            .write_all(&bytes)
+                            .map_err(|e| format!("control write: {e}"))?,
+                        Control::Gateway(g) => g.send(bytes)?,
+                    }
                 }
-                Action::OpenStream { host, port, request } => {
+                Action::OpenStream {
+                    host,
+                    port,
+                    request,
+                    stream_number,
+                } => {
                     if let Some(s) = stream.take() {
                         s.cancel.store(true, Ordering::Relaxed);
                     }
                     stream_id += 1;
-                    let ip = match host {
-                        StreamHost::Server => control_addr.ip(),
-                        StreamHost::Ip(b) => std::net::IpAddr::from(b),
-                    };
-                    let addr = SocketAddr::new(ip, port);
-                    if args.verbose {
-                        let line = request.split(|b| *b == b'\r').next().unwrap_or(&[]);
-                        println!("-> stream {addr} {}", String::from_utf8_lossy(line));
+                    match &control {
+                        Control::Direct {
+                            addr: control_addr, ..
+                        } => {
+                            let ip = match host {
+                                StreamHost::Server => control_addr.ip(),
+                                StreamHost::Ip(b) => std::net::IpAddr::from(b),
+                            };
+                            let addr = SocketAddr::new(ip, port);
+                            if args.verbose {
+                                let line = request.split(|b| *b == b'\r').next().unwrap_or(&[]);
+                                println!("-> stream {addr} {}", String::from_utf8_lossy(line));
+                            }
+                            stream = Some(spawn_stream(stream_id, addr, request, tx.clone()));
+                        }
+                        Control::Gateway(g) => {
+                            if args.verbose {
+                                println!("-> gateway stream #{stream_number}");
+                            }
+                            stream = Some(g.spawn_stream(stream_id, stream_number, tx.clone()));
+                        }
                     }
-                    stream = Some(spawn_stream(stream_id, addr, request, tx.clone()));
                 }
                 Action::CloseStream => {
                     if let Some(s) = stream.take() {
@@ -211,7 +292,10 @@ fn run(args: Args) -> Result<(), String> {
                 status.input_bytes / 1024,
                 status.sample_rate,
                 status.volume.0,
-                status.last_error.map(|e| format!(", last error: {e}")).unwrap_or_default()
+                status
+                    .last_error
+                    .map(|e| format!(", last error: {e}"))
+                    .unwrap_or_default()
             );
         }
     }
@@ -260,7 +344,8 @@ fn spawn_stream(id: u64, addr: SocketAddr, request: Vec<u8>, tx: Sender<Event>) 
     let (w, c) = (want.clone(), cancel.clone());
     thread::spawn(move || {
         let result = (|| -> Result<(), String> {
-            let mut sock = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).map_err(|e| e.to_string())?;
+            let mut sock = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+                .map_err(|e| e.to_string())?;
             sock.set_read_timeout(Some(Duration::from_secs(30))).ok();
             sock.write_all(&request).map_err(|e| e.to_string())?;
             let mut buf = vec![0u8; 64 * 1024];
@@ -312,7 +397,13 @@ struct Audio {
 
 impl Audio {
     fn new(player: Arc<Mutex<Player>>, null: bool) -> Self {
-        Audio { player, null, rate: None, stream: None, null_stop: None }
+        Audio {
+            player,
+            null,
+            rate: None,
+            stream: None,
+            null_stop: None,
+        }
     }
 
     fn ensure_rate(&mut self, rate: Option<u32>) -> Result<(), String> {
@@ -324,7 +415,10 @@ impl Audio {
         if let Some(stop) = self.null_stop.take() {
             stop.store(true, Ordering::Relaxed);
         }
-        println!("audio output at {rate} Hz{}", if self.null { " (null sink)" } else { "" });
+        println!(
+            "audio output at {rate} Hz{}",
+            if self.null { " (null sink)" } else { "" }
+        );
         if self.null {
             self.null_stop = Some(spawn_null_sink(self.player.clone(), rate));
         } else {
@@ -337,8 +431,14 @@ impl Audio {
 
 fn open_device(player: Arc<Mutex<Player>>, rate: u32) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
-    let device = host.default_output_device().ok_or("no default audio output device")?;
-    let config = cpal::StreamConfig { channels: 2, sample_rate: rate, buffer_size: cpal::BufferSize::Default };
+    let device = host
+        .default_output_device()
+        .ok_or("no default audio output device")?;
+    let config = cpal::StreamConfig {
+        channels: 2,
+        sample_rate: rate,
+        buffer_size: cpal::BufferSize::Default,
+    };
     let stream = device
         .build_output_stream::<f32, _, _>(
             config,
@@ -379,4 +479,3 @@ fn spawn_null_sink(player: Arc<Mutex<Player>>, rate: u32) -> Arc<AtomicBool> {
     });
     stop
 }
-

@@ -10,7 +10,7 @@ Secure internet access to a [Lyrion Music Server](https://lyrion.org) through on
 |---|---|
 | `core/` | Rust player core: Slimproto, buffering, decoding (no I/O; native + WASM) |
 | `cli/` | Native test player for the core |
-| `gateway/` | Go gateway (planned) |
+| `gateway/` | Rust gateway: authenticated Slimproto tunnel and stream relay |
 | `plugin/` | LMS plugin (planned) |
 | `web/` | SvelteKit web app (planned) |
 | `docs/` | Documentation and reports |
@@ -26,6 +26,6 @@ Put local, environment-specific settings in `dev/local.env` (git-ignored). Never
 
 ## Licence
 
-GPL-2.0-only. See [`LICENSE`](LICENSE).
+GPL-2.0-or-later. See [`LICENSE`](LICENSE). Binaries that include Apache-2.0-licensed dependencies are distributed under the terms of GPLv3.
 
 Squeezelite and Material Skin served as behavioural references only. No code was copied from either.

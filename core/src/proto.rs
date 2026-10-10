@@ -13,9 +13,16 @@ use std::fmt;
 /// treats as a fully capable modern player (gapless, all codecs it advertises).
 pub const DEVICE_ID_SOFTWARE: u8 = 12;
 
+/// A raw frame: opcode and payload.
+pub type RawFrame = ([u8; 4], Vec<u8>);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProtoError {
-    Truncated { opcode: [u8; 4], need: usize, got: usize },
+    Truncated {
+        opcode: [u8; 4],
+        need: usize,
+        got: usize,
+    },
     FrameTooLarge(usize),
 }
 
@@ -72,7 +79,7 @@ pub struct Strm {
 impl Strm {
     pub const FIXED_LEN: usize = 24;
 
-    fn parse(p: &[u8]) -> Result<Self, ProtoError> {
+    pub fn parse(p: &[u8]) -> Result<Self, ProtoError> {
         need(b"strm", p, Self::FIXED_LEN)?;
         Ok(Strm {
             command: p[0],
@@ -151,7 +158,10 @@ impl Audg {
         if self.adjust == 0 {
             return (1.0, 1.0);
         }
-        (self.new_left as f32 / 65536.0, self.new_right as f32 / 65536.0)
+        (
+            self.new_left as f32 / 65536.0,
+            self.new_right as f32 / 65536.0,
+        )
     }
 }
 
@@ -160,13 +170,25 @@ pub enum ServerMsg {
     Strm(Strm),
     Audg(Audg),
     /// Audio enable: (spdif, dac).
-    Aude { spdif: bool, dac: bool },
+    Aude {
+        spdif: bool,
+        dac: bool,
+    },
     /// Player setting. id 0 = player name: empty data means "tell me your name".
-    Setd { id: u8, data: Vec<u8> },
+    Setd {
+        id: u8,
+        data: Vec<u8>,
+    },
     /// Switch to another server. Always refused by Lyrion Anywhere clients.
-    Serv { ip: u32, sync_group: Vec<u8> },
+    Serv {
+        ip: u32,
+        sync_group: Vec<u8>,
+    },
     Vers(String),
-    Other { opcode: [u8; 4], payload: Vec<u8> },
+    Other {
+        opcode: [u8; 4],
+        payload: Vec<u8>,
+    },
 }
 
 impl ServerMsg {
@@ -176,18 +198,30 @@ impl ServerMsg {
             b"audg" => ServerMsg::Audg(Audg::parse(p)?),
             b"aude" => {
                 need(b"aude", p, 2)?;
-                ServerMsg::Aude { spdif: p[0] != 0, dac: p[1] != 0 }
+                ServerMsg::Aude {
+                    spdif: p[0] != 0,
+                    dac: p[1] != 0,
+                }
             }
             b"setd" => {
                 need(b"setd", p, 1)?;
-                ServerMsg::Setd { id: p[0], data: p[1..].to_vec() }
+                ServerMsg::Setd {
+                    id: p[0],
+                    data: p[1..].to_vec(),
+                }
             }
             b"serv" => {
                 need(b"serv", p, 4)?;
-                ServerMsg::Serv { ip: be32(&p[0..4]), sync_group: p[4..].to_vec() }
+                ServerMsg::Serv {
+                    ip: be32(&p[0..4]),
+                    sync_group: p[4..].to_vec(),
+                }
             }
             b"vers" => ServerMsg::Vers(String::from_utf8_lossy(p).into_owned()),
-            _ => ServerMsg::Other { opcode, payload: p.to_vec() },
+            _ => ServerMsg::Other {
+                opcode,
+                payload: p.to_vec(),
+            },
         })
     }
 
@@ -220,7 +254,7 @@ impl ServerFrameReader {
     }
 
     /// Returns the next complete frame as (opcode, payload), if any.
-    pub fn next_frame(&mut self) -> Result<Option<([u8; 4], Vec<u8>)>, ProtoError> {
+    pub fn next_frame(&mut self) -> Result<Option<RawFrame>, ProtoError> {
         if self.buf.len() < 2 {
             return Ok(None);
         }
@@ -386,7 +420,10 @@ pub enum ClientMsg {
     /// Stream disconnected. 0 = closed normally, 1 = reset, 2 = timeout, 3/4 = connect failures.
     Dsco(u8),
     /// Reply to `setd`.
-    Setd { id: u8, data: Vec<u8> },
+    Setd {
+        id: u8,
+        data: Vec<u8>,
+    },
     Bye,
 }
 
@@ -436,13 +473,20 @@ pub struct ClientFrameReader {
 }
 
 impl ClientFrameReader {
-    pub const MAX_FRAME: usize = 64 * 1024;
+    /// Largest client payload accepted. HELO capabilities, RESP headers and META are the
+    /// largest legitimate frames and are well under this.
+    pub const MAX_FRAME: usize = 16 * 1024;
+
+    /// Bytes buffered while waiting for a complete frame.
+    pub fn buffered(&self) -> usize {
+        self.buf.len()
+    }
 
     pub fn push(&mut self, data: &[u8]) {
         self.buf.extend_from_slice(data);
     }
 
-    pub fn next_frame(&mut self) -> Result<Option<([u8; 4], Vec<u8>)>, ProtoError> {
+    pub fn next_frame(&mut self) -> Result<Option<RawFrame>, ProtoError> {
         if self.buf.len() < 8 {
             return Ok(None);
         }
@@ -461,12 +505,49 @@ impl ClientFrameReader {
 }
 
 // ---------------------------------------------------------------------------
+// Stream request policy
+// ---------------------------------------------------------------------------
+
+/// The only stream path LMS legitimately asks a player to fetch.
+pub fn stream_path_for(mac: &[u8; 6]) -> String {
+    format!("/stream.mp3?player={}", format_mac(mac))
+}
+
+/// Check that a `strm` HTTP request is exactly a GET of this player's own stream, and
+/// return the path. Anything else (another player, another path, an absolute URL,
+/// encodings, extra parameters, a malformed request line) is refused.
+pub fn validate_stream_request(request: &[u8], mac: &[u8; 6]) -> Result<String, String> {
+    let line_end = request
+        .windows(2)
+        .position(|w| w == b"\r\n")
+        .unwrap_or(request.len());
+    let line =
+        std::str::from_utf8(&request[..line_end]).map_err(|_| "request line is not UTF-8")?;
+    let parts: Vec<&str> = line.split(' ').collect();
+    if parts.len() != 3 || parts[0] != "GET" || !parts[2].starts_with("HTTP/1.") {
+        return Err("malformed stream request line".into());
+    }
+    let want = stream_path_for(mac);
+    if parts[1] != want {
+        return Err(format!(
+            "stream target {:?} is not this player's stream",
+            parts[1]
+        ));
+    }
+    Ok(want)
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 fn need(opcode: &[u8; 4], p: &[u8], n: usize) -> Result<(), ProtoError> {
     if p.len() < n {
-        Err(ProtoError::Truncated { opcode: *opcode, need: n, got: p.len() })
+        Err(ProtoError::Truncated {
+            opcode: *opcode,
+            need: n,
+            got: p.len(),
+        })
     } else {
         Ok(())
     }
@@ -494,7 +575,10 @@ pub fn parse_mac(s: &str) -> Option<[u8; 6]> {
 }
 
 pub fn format_mac(mac: &[u8; 6]) -> String {
-    mac.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":")
+    mac.iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 #[cfg(test)]
@@ -546,7 +630,13 @@ mod tests {
         let mut r = ServerFrameReader::default();
         r.push(&bytes);
         assert_eq!(r.next_msg().unwrap(), Some(ServerMsg::Vers("9.1.1".into())));
-        assert_eq!(r.next_msg().unwrap(), Some(ServerMsg::Aude { spdif: true, dac: true }));
+        assert_eq!(
+            r.next_msg().unwrap(),
+            Some(ServerMsg::Aude {
+                spdif: true,
+                dac: true
+            })
+        );
     }
 
     #[test]
@@ -587,7 +677,7 @@ mod tests {
 
     #[test]
     fn truncated_strm_is_an_error_not_a_panic() {
-        let frame = encode_server_frame(*b"strm", &[b's', b'1']);
+        let frame = encode_server_frame(*b"strm", b"s1");
         let mut r = ServerFrameReader::default();
         r.push(&frame);
         assert!(matches!(r.next_msg(), Err(ProtoError::Truncated { .. })));
@@ -595,10 +685,54 @@ mod tests {
 
     #[test]
     fn audg_fixed_volume_when_adjust_off() {
-        let a = Audg { old_left: 0, old_right: 0, adjust: 0, preamp: 255, new_left: 100, new_right: 100 };
+        let a = Audg {
+            old_left: 0,
+            old_right: 0,
+            adjust: 0,
+            preamp: 255,
+            new_left: 100,
+            new_right: 100,
+        };
         assert_eq!(a.gains(), (1.0, 1.0));
-        let a = Audg { adjust: 1, new_left: 0x8000, new_right: 0x10000, ..a };
+        let a = Audg {
+            adjust: 1,
+            new_left: 0x8000,
+            new_right: 0x10000,
+            ..a
+        };
         assert_eq!(a.gains(), (0.5, 1.0));
+    }
+
+    #[test]
+    fn stream_request_policy() {
+        let mac = [2, 0, 0, 0, 0, 1];
+        let good = b"GET /stream.mp3?player=02:00:00:00:00:01 HTTP/1.0\r\nIcy-MetaData: 1\r\n\r\n";
+        assert_eq!(
+            validate_stream_request(good, &mac).unwrap(),
+            "/stream.mp3?player=02:00:00:00:00:01"
+        );
+        let attacks: &[&[u8]] = &[
+            b"GET /stream.mp3?player=aa:bb:cc:dd:ee:ff HTTP/1.0\r\n\r\n",
+            b"GET /music/123/download HTTP/1.0\r\n\r\n",
+            b"GET /stream.mp3/../jsonrpc.js?player=02:00:00:00:00:01 HTTP/1.0\r\n\r\n",
+            b"GET /stream.mp3?player=02:00:00:00:00:01&x=1 HTTP/1.0\r\n\r\n",
+            b"POST /stream.mp3?player=02:00:00:00:00:01 HTTP/1.0\r\n\r\n",
+            b"GET http://evil.example/stream.mp3?player=02:00:00:00:00:01 HTTP/1.0\r\n\r\n",
+            b"GET /stream.mp3?player=02:00:00:00:00:01 HTTP/1.0 X\r\n\r\n",
+            b"",
+            b"GET /stream.mp3?player=02:00:00:00:00:01\r\n\r\n",
+            b"GET /%2e%2e/stream.mp3?player=02:00:00:00:00:01 HTTP/1.0\r\n\r\n",
+            b"GET /stream.mp3?player=02%3A00%3A00%3A00%3A00%3A01 HTTP/1.0\r\n\r\n",
+            b"GET  /stream.mp3?player=02:00:00:00:00:01 HTTP/1.0\r\n\r\n",
+            b"\xff\xfe /stream.mp3?player=02:00:00:00:00:01 HTTP/1.0\r\n\r\n",
+        ];
+        for a in attacks {
+            assert!(
+                validate_stream_request(a, &mac).is_err(),
+                "accepted {:?}",
+                String::from_utf8_lossy(a)
+            );
+        }
     }
 
     #[test]

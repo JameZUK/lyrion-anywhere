@@ -13,9 +13,7 @@
 use std::collections::VecDeque;
 
 use crate::decode::{DecodeStatus, InputBuffer, StreamDecoder};
-use crate::proto::{
-    ClientMsg, DEVICE_ID_SOFTWARE, Helo, ServerFrameReader, ServerMsg, Stat, Strm,
-};
+use crate::proto::{ClientMsg, DEVICE_ID_SOFTWARE, Helo, ServerFrameReader, ServerMsg, Stat, Strm};
 
 /// Stop reading the network stream once this many compressed bytes are waiting.
 pub const INPUT_HIGH_WATER: usize = 8 * 1024 * 1024;
@@ -66,7 +64,15 @@ pub enum Action {
     /// Bytes to write to the slimproto (control) connection.
     Send(Vec<u8>),
     /// Open an HTTP stream: connect to `host:port` and send `request` verbatim.
-    OpenStream { host: StreamHost, port: u16, request: Vec<u8> },
+    /// Through the gateway, fetch `/v1/stream/<session>/<stream_number>` instead.
+    OpenStream {
+        host: StreamHost,
+        port: u16,
+        request: Vec<u8>,
+        /// 1-based count of every `strm s` received on this connection, including ones
+        /// refused locally, so it matches the gateway's numbering exactly.
+        stream_number: u64,
+    },
     /// Abandon the current HTTP stream.
     CloseStream,
 }
@@ -80,7 +86,9 @@ pub enum OutputState {
     Loaded,
     Playing,
     /// Paused; resumes automatically at `until` (jiffies) if set.
-    Paused { until: Option<u64> },
+    Paused {
+        until: Option<u64>,
+    },
 }
 
 /// A run of PCM in the output queue belonging to one track.
@@ -215,40 +223,47 @@ impl Player {
 
     fn end_stream(&mut self, reason: u8, now_ms: u64) {
         self.now = now_ms;
-        if let Some(t) = &mut self.track {
-            if !t.stream_ended {
-                t.stream_ended = true;
-                t.input.set_eof();
-                self.send(ClientMsg::Dsco(reason));
-            }
+        if let Some(t) = &mut self.track
+            && !t.stream_ended
+        {
+            t.stream_ended = true;
+            t.input.set_eof();
+            self.send(ClientMsg::Dsco(reason));
         }
     }
 
     /// Whether the host should keep reading the network stream (back-pressure).
     pub fn wants_stream_data(&self) -> bool {
-        self.track.as_ref().is_some_and(|t| t.input.unread() < INPUT_HIGH_WATER)
+        self.track
+            .as_ref()
+            .is_some_and(|t| t.input.unread() < INPUT_HIGH_WATER)
     }
 
     /// Do decode work, autostart, timed resume, heartbeats and underrun detection.
     pub fn tick(&mut self, now_ms: u64) {
         self.now = now_ms;
 
-        if let OutputState::Paused { until: Some(at) } = self.output {
-            if self.jiffies() as u64 >= at {
-                self.output = OutputState::Playing;
-            }
+        if let OutputState::Paused { until: Some(at) } = self.output
+            && self.jiffies() as u64 >= at
+        {
+            self.output = OutputState::Playing;
         }
 
         self.decode_some();
         self.check_autostart();
 
-        if self.output == OutputState::Playing && now_ms.saturating_sub(self.last_heartbeat) >= HEARTBEAT_MS {
+        if self.output == OutputState::Playing
+            && now_ms.saturating_sub(self.last_heartbeat) >= HEARTBEAT_MS
+        {
             self.last_heartbeat = now_ms;
             self.send_stat(*b"STMt", 0);
         }
 
         // Everything decoded and played out: tell LMS the track (and playlist) finished.
-        let drained = self.segments.iter().all(|s| s.complete && s.played == s.frames);
+        let drained = self
+            .segments
+            .iter()
+            .all(|s| s.complete && s.played == s.frames);
         let decoding = self.track.as_ref().is_some_and(|t| !t.decode_done);
         if self.output == OutputState::Playing && drained && !decoding && !self.stmu_sent {
             self.stmu_sent = true;
@@ -264,7 +279,10 @@ impl Player {
     /// Sample rate of the next PCM to be pulled. The host should (re)open its audio output at
     /// this rate when it changes; `pull_audio` never crosses a rate change.
     pub fn output_rate(&self) -> Option<u32> {
-        self.segments.iter().find(|s| s.pulled < s.frames || !s.complete).map(|s| s.rate)
+        self.segments
+            .iter()
+            .find(|s| s.pulled < s.frames || !s.complete)
+            .map(|s| s.rate)
     }
 
     /// Fill `out` (interleaved stereo) with up to `out.len() / 2` frames at `output_rate()`.
@@ -274,7 +292,9 @@ impl Player {
         if self.output != OutputState::Playing {
             return 0;
         }
-        let Some(rate) = self.output_rate() else { return 0 };
+        let Some(rate) = self.output_rate() else {
+            return 0;
+        };
         let want = out.len() / 2;
         let mut written = 0;
         for seg in self.segments.iter_mut() {
@@ -303,7 +323,9 @@ impl Player {
     /// Report that `frames` previously pulled have now been played.
     pub fn played(&mut self, mut frames: u64) {
         while frames > 0 {
-            let Some(idx) = self.segments.iter().position(|s| s.played < s.pulled) else { break };
+            let Some(idx) = self.segments.iter().position(|s| s.played < s.pulled) else {
+                break;
+            };
             let seg = &mut self.segments[idx];
             if seg.played == 0 && self.playing_seq != Some(seg.seq) {
                 let seq = seg.seq;
@@ -378,7 +400,9 @@ impl Player {
             }
             b'u' => {
                 if s.replay_gain != 0 && (s.replay_gain as u64) > self.jiffies() as u64 {
-                    self.output = OutputState::Paused { until: Some(s.replay_gain as u64) };
+                    self.output = OutputState::Paused {
+                        until: Some(s.replay_gain as u64),
+                    };
                 } else {
                     self.output = OutputState::Playing;
                 }
@@ -410,7 +434,11 @@ impl Player {
             autostart: s.autostart,
             threshold: s.threshold as usize * 1024,
             bytes_received: 0,
-            replay_gain: if s.replay_gain == 0 { 1.0 } else { s.replay_gain as f32 / 65536.0 },
+            replay_gain: if s.replay_gain == 0 {
+                1.0
+            } else {
+                s.replay_gain as f32 / 65536.0
+            },
             stream_ended: false,
             decode_done: false,
         });
@@ -424,7 +452,12 @@ impl Player {
         } else {
             StreamHost::Ip(s.server_ip.to_be_bytes())
         };
-        self.actions.push(Action::OpenStream { host, port: s.server_port, request: s.request });
+        self.actions.push(Action::OpenStream {
+            host,
+            port: s.server_port,
+            request: s.request,
+            stream_number: seq as u64 + 1,
+        });
         self.send_stat(*b"STMc", 0);
         if matches!(self.output, OutputState::Stopped) {
             self.output = OutputState::Waiting;
@@ -444,7 +477,9 @@ impl Player {
     }
 
     fn skip_ahead(&mut self, ms: u64) {
-        let Some(rate) = self.output_rate() else { return };
+        let Some(rate) = self.output_rate() else {
+            return;
+        };
         let mut frames = ms * rate as u64 / 1000;
         for seg in self.segments.iter_mut() {
             let n = (seg.frames - seg.pulled).min(frames);
@@ -461,7 +496,8 @@ impl Player {
     }
 
     fn decode_some(&mut self) {
-        let target_frames = OUTPUT_TARGET_SECS as usize * self.output_rate().unwrap_or(48_000) as usize;
+        let target_frames =
+            OUTPUT_TARGET_SECS as usize * self.output_rate().unwrap_or(48_000) as usize;
         if self.pcm.len() / 2 >= target_frames {
             return;
         }
@@ -476,12 +512,19 @@ impl Player {
                 None => true,
             };
             if need_new {
-                if let Some(prev) = segments.back_mut() {
-                    if prev.seq == seq {
-                        prev.complete = true; // rate change mid-track
-                    }
+                if let Some(prev) = segments.back_mut()
+                    && prev.seq == seq
+                {
+                    prev.complete = true; // rate change mid-track
                 }
-                segments.push_back(Segment { seq, rate, frames: 0, pulled: 0, played: 0, complete: false });
+                segments.push_back(Segment {
+                    seq,
+                    rate,
+                    frames: 0,
+                    pulled: 0,
+                    played: 0,
+                    complete: false,
+                });
             }
             let seg = segments.back_mut().unwrap();
             if rg == 1.0 {
@@ -534,14 +577,20 @@ impl Player {
     }
 
     fn elapsed_ms(&self) -> u64 {
-        let Some(seq) = self.playing_seq else { return 0 };
+        let Some(seq) = self.playing_seq else {
+            return 0;
+        };
         let mut frames = 0;
         let mut rate = 0;
         for s in self.segments.iter().filter(|s| s.seq == seq) {
             frames += s.played;
             rate = s.rate;
         }
-        if rate == 0 { 0 } else { frames * 1000 / rate as u64 }
+        if rate == 0 {
+            0
+        } else {
+            frames * 1000 / rate as u64
+        }
     }
 
     fn buffered_ms(&self) -> u64 {
@@ -676,7 +725,8 @@ mod tests {
     fn helo_on_connect_and_name_on_request() {
         let mut p = Player::new(cfg());
         p.connected(0);
-        p.on_control_data(&encode_server_frame(*b"setd", &[0]), 1).unwrap();
+        p.on_control_data(&encode_server_frame(*b"setd", &[0]), 1)
+            .unwrap();
         assert_eq!(events(&p.take_actions()), vec!["HELO", "SETD"]);
     }
 
@@ -689,7 +739,14 @@ mod tests {
         // Track 1.
         p.on_control_data(&strm(b's', b'1', b'p', 0), 10).unwrap();
         let a = p.take_actions();
-        assert!(matches!(a[0], Action::OpenStream { host: StreamHost::Server, port: 9000, .. }));
+        assert!(matches!(
+            a[0],
+            Action::OpenStream {
+                host: StreamHost::Server,
+                port: 9000,
+                ..
+            }
+        ));
         assert_eq!(events(&a), vec!["STMc"]);
 
         let t1 = wav(44100, 44100); // 1 s
@@ -721,7 +778,11 @@ mod tests {
         let total = drain(&mut p);
         assert_eq!(total, 22050 + 44100);
         let ev = events(&p.take_actions());
-        assert_eq!(ev.iter().filter(|e| *e == "STMs").count(), 1, "STMs for track 2: {ev:?}");
+        assert_eq!(
+            ev.iter().filter(|e| *e == "STMs").count(),
+            1,
+            "STMs for track 2: {ev:?}"
+        );
         assert_eq!(p.status().elapsed_ms, 1000);
 
         p.tick(2000);
@@ -755,7 +816,8 @@ mod tests {
     #[test]
     fn heartbeat_echoes_server_timestamp() {
         let mut p = Player::new(cfg());
-        p.on_control_data(&strm(b't', b'0', b'p', 0xdead_beef), 5).unwrap();
+        p.on_control_data(&strm(b't', b'0', b'p', 0xdead_beef), 5)
+            .unwrap();
         let a = p.take_actions();
         let Action::Send(bytes) = &a[0] else { panic!() };
         let stat = Stat::parse(&bytes[8..]).unwrap();
@@ -785,6 +847,22 @@ mod tests {
         let a = p.take_actions();
         assert!(!a.iter().any(|x| matches!(x, Action::OpenStream { .. })));
         assert_eq!(events(&a), vec!["STMn"]);
+    }
+
+    #[test]
+    fn stream_numbers_count_every_strm_s_including_refused_ones() {
+        let mut p = Player::new(cfg());
+        p.on_control_data(&strm(b's', b'1', b'w', 0), 0).unwrap(); // unsupported: #1
+        p.on_control_data(&strm(b's', b'1', b'p', 0), 1).unwrap(); // #2
+        let numbers: Vec<u64> = p
+            .take_actions()
+            .into_iter()
+            .filter_map(|a| match a {
+                Action::OpenStream { stream_number, .. } => Some(stream_number),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(numbers, vec![2]);
     }
 
     #[test]

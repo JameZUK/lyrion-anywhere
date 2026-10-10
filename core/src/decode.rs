@@ -113,8 +113,14 @@ pub enum DecodeStatus {
 }
 
 enum State {
-    Probing { min_bytes: usize },
-    Decoding { reader: Box<dyn FormatReader>, decoder: Box<dyn AudioDecoder>, track_id: u32 },
+    Probing {
+        min_bytes: usize,
+    },
+    Decoding {
+        reader: Box<dyn FormatReader>,
+        decoder: Box<dyn AudioDecoder>,
+        track_id: u32,
+    },
     Done,
     Failed(String),
 }
@@ -138,7 +144,9 @@ impl StreamDecoder {
         StreamDecoder {
             input,
             hint,
-            state: State::Probing { min_bytes: DECODE_MARGIN },
+            state: State::Probing {
+                min_bytes: DECODE_MARGIN,
+            },
             tmp: Vec::new(),
             stereo: Vec::new(),
         }
@@ -150,16 +158,21 @@ impl StreamDecoder {
 
     /// Decode up to `max_packets`, passing each block of PCM to `sink(sample_rate, samples)`.
     pub fn work(&mut self, max_packets: usize, sink: &mut dyn FnMut(u32, &[f32])) -> DecodeStatus {
-        if let State::Probing { min_bytes } = self.state {
-            match self.probe(min_bytes) {
-                Some(status) => return status,
-                None => {} // probed; fall through to decoding
-            }
+        // Once probed, fall through to decoding.
+        if let State::Probing { min_bytes } = self.state
+            && let Some(status) = self.probe(min_bytes)
+        {
+            return status;
         }
 
         let mut decoded = 0;
         loop {
-            let State::Decoding { reader, decoder, track_id } = &mut self.state else {
+            let State::Decoding {
+                reader,
+                decoder,
+                track_id,
+            } = &mut self.state
+            else {
                 return match &self.state {
                     State::Done => DecodeStatus::Finished,
                     State::Failed(e) => DecodeStatus::Failed(e.clone()),
@@ -170,7 +183,11 @@ impl StreamDecoder {
                 return DecodeStatus::Progress;
             }
             if !self.input.eof() && self.input.unread() < DECODE_MARGIN {
-                return if decoded > 0 { DecodeStatus::Progress } else { DecodeStatus::NeedData };
+                return if decoded > 0 {
+                    DecodeStatus::Progress
+                } else {
+                    DecodeStatus::NeedData
+                };
             }
 
             let packet = match reader.next_packet() {
@@ -235,11 +252,20 @@ impl StreamDecoder {
             MediaSourceStreamOptions::default(),
         );
         let fmt_opts = FormatOptions::default();
-        match symphonia::default::get_probe().probe(&self.hint, mss, fmt_opts, MetadataOptions::default()) {
+        match symphonia::default::get_probe().probe(
+            &self.hint,
+            mss,
+            fmt_opts,
+            MetadataOptions::default(),
+        ) {
             Ok(reader) => match make_decoder(reader.as_ref()) {
                 Ok((decoder, track_id)) => {
                     self.input.release();
-                    self.state = State::Decoding { reader, decoder, track_id };
+                    self.state = State::Decoding {
+                        reader,
+                        decoder,
+                        track_id,
+                    };
                     None
                 }
                 Err(e) => {
@@ -251,7 +277,9 @@ impl StreamDecoder {
                 // Headers not all here yet (e.g. large embedded artwork): retry with more data.
                 self.input.rewind();
                 let have = self.input.unread();
-                self.state = State::Probing { min_bytes: (have * 2).max(min_bytes) };
+                self.state = State::Probing {
+                    min_bytes: (have * 2).max(min_bytes),
+                };
                 Some(DecodeStatus::NeedData)
             }
             Err(e) => {
@@ -264,7 +292,9 @@ impl StreamDecoder {
 }
 
 fn make_decoder(reader: &dyn FormatReader) -> Result<(Box<dyn AudioDecoder>, u32), String> {
-    let track = reader.default_track(TrackType::Audio).ok_or("no audio track")?;
+    let track = reader
+        .default_track(TrackType::Audio)
+        .ok_or("no audio track")?;
     let Some(CodecParameters::Audio(params)) = &track.codec_params else {
         return Err("audio track has no codec parameters".into());
     };
@@ -373,7 +403,11 @@ mod tests {
             }
             assert_eq!(st, DecodeStatus::Progress);
         }
-        assert_eq!(total, frames * 2, "every mono frame should become one stereo frame");
+        assert_eq!(
+            total,
+            frames * 2,
+            "every mono frame should become one stereo frame"
+        );
     }
 
     #[test]
@@ -382,7 +416,10 @@ mod tests {
         input.push(&[0x42; 4096]);
         input.set_eof();
         let mut dec = StreamDecoder::new(input, b'f');
-        assert!(matches!(dec.work(8, &mut |_, _| {}), DecodeStatus::Failed(_)));
+        assert!(matches!(
+            dec.work(8, &mut |_, _| {}),
+            DecodeStatus::Failed(_)
+        ));
     }
 
     #[test]

@@ -6,7 +6,7 @@ Lyrion Anywhere gives secure internet access to a home Lyrion Music Server (LMS)
 
 **v1 includes:**
 - an LMS plugin;
-- a gateway, a small Go binary the plugin runs;
+- a gateway, a small Rust binary the plugin runs;
 - a feature-rich web app (an installable PWA) with a built-in browser player and offline downloads.
 
 Native Android and iOS apps come after v1 and use the same documented protocol.
@@ -18,7 +18,7 @@ Native Android and iOS apps come after v1 and use the same documented protocol.
 | # | Decision | Choice |
 |---|---|---|
 | D1 | How a remote device plays audio | **Real Slimproto player.** The device appears in LMS as a normal player (gapless, sync groups, full LMS behaviour). |
-| D2 | Server build | **Perl LMS plugin + Go gateway sidecar.** |
+| D2 | Server build | **Perl LMS plugin + Rust gateway sidecar.** The gateway reuses the core's fuzzed Slimproto parser. Rust gives compile-time data-race safety and no garbage collector (low RAM on small LMS hosts). Changed from Go on 2026-10-10. |
 | D3 | Client stack | **Shared Rust core.** Compiled to WebAssembly for the web app, with UniFFI bindings for the later native apps. |
 | D4 | Web interface | **Full-featured web app is a v1 goal.** Native apps come later, on the same protocol. |
 | D5 | Offline download format | **Chosen by the user per download:** original, or a transcode (Opus/MP3), with a default for each network type. |
@@ -27,7 +27,7 @@ Native Android and iOS apps come after v1 and use the same documented protocol.
 | D8 | Minimum LMS | **9.0+** |
 | D9 | Web UI framework | **SvelteKit** (TypeScript, static build served by the gateway) |
 | D10 | Transcoding for downloads | **System `ffmpeg`** if installed (not bundled). Without it, only Original is offered. |
-| D11 | Licence | **GPL-2.0** for all components (matches LMS) |
+| D11 | Licence | **GPL-2.0-or-later** for all components. Compatible with LMS (GPL-2.0) for the plugin; lets Rust binaries include Apache-2.0-only dependencies (e.g. `sync_wrapper` in the axum/tower stack), which are then distributed under GPLv3 terms. Changed from GPL-2.0-only on 2026-10-10. |
 
 ---
 
@@ -61,7 +61,7 @@ Native Android and iOS apps come after v1 and use the same documented protocol.
  Internet                     Home network (LAN)
 ┌─────────────────┐          ┌────────────────────────────────────────────────────────┐
 │ Web app (PWA)   │  HTTPS   │ ┌──────────────┐   ┌───────────────────┐  ┌──────────┐ │
-│  UI + WASM core │──WSS────▶│ │ Reverse proxy│──▶│ Gateway (Go)      │─▶│ LMS      │ │
+│  UI + WASM core │──WSS────▶│ │ Reverse proxy│──▶│ Gateway (Rust)    │─▶│ LMS      │ │
 │  player+offline │          │ │ Caddy/nginx  │   │ auth · tokens     │  │ 3483 TCP │ │
 ├─────────────────┤          │ │ TLS :443     │   │ Slimproto tunnel  │  │ 9000 HTTP│ │
 │ Android / iOS   │          │ └──────────────┘   │ RPC allow-list    │  │ LAN-only │ │
@@ -121,7 +121,7 @@ For players that connect through the gateway, the plugin:
 
 ## 5. Gateway
 
-A single static Go binary. It is run by the plugin or standalone (Docker), and listens on `127.0.0.1:9443` by default.
+A single static Rust binary (tokio/axum), sharing the Slimproto parser and stream-request policy with `core/` so the security filter and the clients can never disagree. It is run by the plugin or standalone (Docker), and listens on `127.0.0.1:9443` by default.
 
 ### 5.1 Slimproto tunnel (`WS /v1/player`)
 
@@ -413,20 +413,20 @@ Every component is tested for security, stability and reliability, and security 
 | Layer | Security | Stability | Reliability |
 |---|---|---|---|
 | Rust core | Fuzzing (`cargo-fuzz`) and arbitrary-input tests for the Slimproto parser and decoder; must never panic or allocate unbounded memory | Unit tests for the player state machine, framing edge cases and rate changes | Gapless/resume/back-pressure scenario tests; WASM build tested in a headless browser |
-| Gateway (Go) | Negative tests per endpoint: no/expired/forged/revoked tokens, wrong-MAC HELO, forged stream paths, `serv`, every denied RPC command, `file://` URLs, path traversal in art/download routes, oversize frames, rate limits, CSRF/Origin, header spoofing from untrusted sources. A scanner suite proves LMS paths are unreachable. Go native fuzzing on frame and request parsers | Unit tests with race detector | Integration tests against a fake LMS (Slimproto + HTTP + CometD): resume within grace, reconnect, timeouts, LMS restart during play |
+| Gateway (Rust) | Negative tests per endpoint: no/expired/forged/revoked tokens, wrong-MAC HELO, forged stream paths, `serv`, every denied RPC command, `file://` URLs, path traversal in art/download routes, oversize frames, rate limits, CSRF/Origin, header spoofing from untrusted sources. A scanner suite proves LMS paths are unreachable. `cargo-fuzz` on frame and request parsers (shared with core) | Unit tests; mutation checks that each security test fails when its protection is removed | Integration tests against a fake LMS (Slimproto + HTTP + CometD): resume within grace, reconnect, timeouts, LMS restart during play |
 | Plugin (Perl) | Settings input validation (CR/LF, ranges, enums); internal API secret enforcement; track resolution only from library | `prove` tests with stubbed `Slim::*` modules | Sidecar supervision (crash, restart, signature failure) |
 | Web app | CSP compliance; XSS tests with hostile tag metadata; auth flows (login, TOTP, logout, revoked session) | Component tests (Vitest) | Playwright end-to-end tests against gateway + fake LMS; offline mode and sync-back |
 | Live (opt-in) | Proxy self-test against a real deployment | — | Muted dedicated test player on a real LMS, config from gitignored `dev/local.env` |
 
 Other rules:
 - Security fixes get a regression test that fails before the fix.
-- Dependency audits (`cargo audit`, `govulncheck`, `npm audit`) run in CI.
+- Dependency audits (`cargo audit`, `cargo deny` for licences and advisories, `npm audit`) run in CI.
 
 ## 14. Project conventions
 
 - **Language:** British English in all docs and UI strings.
 - **Repo layout:**
-  - `core/` (Rust), `cli/` (native test player), `gateway/` (Go), `plugin/` (Perl), `web/` (SvelteKit), `docs/`
+  - `core/` (Rust), `cli/` (native test player), `gateway/` (Rust), `plugin/` (Perl), `web/` (SvelteKit), `docs/`
   - `docs/` holds `USAGE.md`, `SETTINGS.md`, `PROTOCOL.md`, `TROUBLESHOOTING.md`, and runbooks, each runbook with a "Gotchas" section.
 - **Changelog:** `CHANGELOG.md` with dated entries, newest first.
 - **Plugin release:**
