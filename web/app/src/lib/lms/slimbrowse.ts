@@ -176,3 +176,22 @@ export function pluginEntries(home: SBMenu, shownApps: Set<string>): PluginEntry
 	}
 	return out.sort((a, b) => a.weight - b.weight || a.text.localeCompare(b.text));
 }
+
+/** Whether an app or plugin is usable from here, judged from its top menu. */
+export type Suitability = { state: 'ok' } | { state: 'setup'; message: string } | { state: 'empty' } | { state: 'error'; message: string };
+
+/**
+ * Judge an app from its top menu (or the error opening it): usable if it offers anything to
+ * open, play or search; "needs setup" if all it says is a message (e.g. "Log in to … in
+ * Advanced settings"); otherwise empty or broken. Nothing is hard-coded per app.
+ */
+export function suitability(menu: SBMenu | null, error?: unknown): Suitability {
+	if (error !== undefined) {
+		const status = (error as { status?: number })?.status;
+		return { state: 'error', message: status === 403 ? 'Not available remotely.' : 'The music server could not open it.' };
+	}
+	const items = (Array.isArray(menu?.item_loop) ? menu!.item_loop : []).filter((i) => !!i && typeof i === 'object');
+	if (items.some((i) => itemKind(menu!, i) !== 'text')) return { state: 'ok' };
+	const message = items.map((i) => (typeof i.text === 'string' ? i.text.trim() : '')).find((t) => t.length > 0);
+	return message ? { state: 'setup', message: message.slice(0, 200) } : { state: 'empty' };
+}

@@ -187,6 +187,7 @@
 							{#if ic}<span class="thumb"><Art path={ic} alt="" label={textOf(item.text)} /></span>{/if}
 							<span class="label">{textOf(item.text)}</span>
 							{#if kind === 'folder'}<span class="chev" aria-hidden="true">›</span>{/if}
+							{#if kind === 'action'}<span class="run" aria-hidden="true"><Icon name="play" size={14} /></span>{/if}
 						</button>
 						{#if kind === 'playable' || kind === 'folder'}
 							{#if resolveAction(top.menu, item, 'add-hold') || resolveAction(top.menu, item, 'insert')}
@@ -262,6 +263,16 @@
 	.chev {
 		color: var(--fg-muted);
 		font-size: 1.3rem;
+	}
+	/* Runs something (e.g. makes a mix) rather than opening a menu. */
+	.run {
+		display: inline-grid;
+		place-items: center;
+		width: 26px;
+		height: 26px;
+		border-radius: 50%;
+		background: var(--accent-soft);
+		color: var(--accent-soft-fg);
 	}
 	.text {
 		margin: 0.3rem 0.6rem;

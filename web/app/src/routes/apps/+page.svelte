@@ -4,13 +4,36 @@
 	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
 	import type { AppInfo, AppsResult } from '$lib/lms/types';
-	import { pluginEntries, type PluginEntry, type SBMenu } from '$lib/lms/slimbrowse';
+	import { pluginEntries, toCommand, type PluginEntry, type SBMenu, type Suitability } from '$lib/lms/slimbrowse';
+	import { probeAll } from '$lib/lms/suitability';
 	import Art from '$lib/components/Art.svelte';
 
 	let apps = $state<AppInfo[]>([]);
 	let radios = $state<AppInfo[]>([]);
 	let plugins = $state<PluginEntry[]>([]);
 	let error = $state('');
+	/** How usable each app/plugin is from here (by `app:cmd` / `plugin:id`), once probed. */
+	let fit = $state<Record<string, Suitability>>({});
+	let showAll = $state(false);
+
+	// Judge each app and plugin from its own top menu, so ones that are broken or empty here
+	// are tucked away and ones needing setup in LMS say so. Needs a player to browse with.
+	async function probe(player: string) {
+		if (!player) return;
+		const targets = [
+			...[...radios, ...apps].map((a) => ({ key: `app:${a.cmd}`, command: cmd.appMenu(a.cmd!)(0, 10) })),
+			...plugins.flatMap((p) => (p.go ? [{ key: `plugin:${p.id}`, command: toCommand(p.go, { start: 0, count: 10 }) }] : [])),
+		];
+		await probeAll(targets, (c) => api.rpc<SBMenu>(player, c), (k, s) => (fit = { ...fit, [k]: s }));
+	}
+	const usable = (key: string) => !['empty', 'error'].includes(fit[key]?.state ?? 'ok');
+	const hidden = $derived(
+		[...radios, ...apps].filter((a) => !usable(`app:${a.cmd}`)).length + plugins.filter((p) => !usable(`plugin:${p.id}`)).length,
+	);
+	const setupNote = (key: string) => {
+		const s = fit[key];
+		return s?.state === 'setup' ? s.message : s?.state === 'error' ? s.message : s?.state === 'empty' ? 'Nothing to show here.' : '';
+	};
 
 	async function load() {
 		try {
@@ -40,19 +63,25 @@
 	$effect(() => {
 		void app.libraryVersion;
 		const player = app.playerId ?? '';
-		untrack(() => void load().then(() => loadPlugins(player)));
+		untrack(() => void load().then(() => loadPlugins(player)).then(() => probe(player)));
 	});
 </script>
 
+{#snippet tile(href: string, key: string, icon: unknown, name: string)}
+	{@const note = setupNote(key)}
+	<li>
+		<a {href} class="tile" class:dim={!!note} title={note || undefined}>
+			<span class="ic"><Art path={cmd.imagePath(icon, 160)} alt="" label={name} /></span>
+			<span class="name ellipsis">{name}</span>
+			{#if note}<span class="note muted">{fit[key]?.state === 'setup' ? 'Needs setting up in LMS' : 'Not usable here'}</span>{/if}
+		</a>
+	</li>
+{/snippet}
+
 {#snippet grid(list: AppInfo[])}
 	<ul class="grid">
-		{#each list as a (a.cmd)}
-			<li>
-				<a href={`#/browse/${a.cmd}`} class="tile">
-					<span class="ic"><Art path={cmd.imagePath(a.icon, 160)} alt="" label={textOf(a.name)} /></span>
-					<span class="name ellipsis">{textOf(a.name)}</span>
-				</a>
-			</li>
+		{#each list.filter((a) => showAll || usable(`app:${a.cmd}`)) as a (a.cmd)}
+			{@render tile(`#/browse/${a.cmd}`, `app:${a.cmd}`, a.icon, textOf(a.name))}
 		{/each}
 	</ul>
 {/snippet}
@@ -66,15 +95,16 @@
 	{#if plugins.length}
 		<h2>Plugins</h2>
 		<ul class="grid">
-			{#each plugins as p (p.id)}
-				<li>
-					<a href={`#/plugin/${encodeURIComponent(p.id)}`} class="tile">
-						<span class="ic"><Art path={cmd.imagePath(p.icon, 160)} alt="" label={p.text} /></span>
-						<span class="name ellipsis">{p.text}</span>
-					</a>
-				</li>
+			{#each plugins.filter((p) => showAll || usable(`plugin:${p.id}`)) as p (p.id)}
+				{@render tile(`#/plugin/${encodeURIComponent(p.id)}`, `plugin:${p.id}`, p.icon, p.text)}
 			{/each}
 		</ul>
+	{/if}
+	{#if hidden > 0 || showAll}
+		<p class="muted hidden-note">
+			{#if showAll}Showing everything installed.{:else}{hidden} {hidden === 1 ? 'app is' : 'apps are'} hidden: they show nothing here, or the music server couldn’t open them.{/if}
+			<button class="btn" onclick={() => (showAll = !showAll)}>{showAll ? 'Hide unusable' : 'Show all'}</button>
+		</p>
 	{/if}
 	{#if !error && !apps.length && !radios.length && !plugins.length}<p class="muted">No apps installed in LMS.</p>{/if}
 </section>
@@ -110,5 +140,18 @@
 	.name {
 		font-weight: 600;
 		max-width: 100%;
+	}
+	.dim .ic {
+		opacity: 0.55;
+	}
+	.note {
+		font-size: 0.75rem;
+	}
+	.hidden-note {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem;
+		margin-top: 1.5rem;
 	}
 </style>
