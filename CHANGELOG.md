@@ -4,6 +4,17 @@ Dated entries, newest first.
 
 ## 2026-10-10
 
+### Now playing on phones: redesigned to fit without squashing
+- **Why:** fitting the old layout to the screen made the cover small and crammed the details together.
+- **New phone layout:**
+  - the player picker, Queue and More sit in one row at the top (Queue and More as icon buttons), which frees the space the bottom button row used;
+  - the cover takes the remaining height, up to the full width;
+  - the title, artist, album and controls are centred under it, with comfortable spacing;
+  - on short screens (up to 700 px tall), the quality line is left out first;
+  - landscape phones still scroll.
+- **Wide screens:** the same top row (player, Queue, More) moves above the details, next to the cover.
+- **Checked:** no scrolling at 360×600, 360×680, 390×760, 412×780 and 412×915, and on desktop.
+
 ### Fixes: flickering menus; Now playing fits the phone screen
 - **Menus flickered while open.** The page around them re-renders whenever the player's status refreshes (every 2 s). It handed the menu a new but identical source each time, so the menu started over: it flickered, and a submenu jumped back to the top. Menus now restart only when what they show really changes, such as a different track. Regression test: re-renders with an identical source load the menu once (the old code loaded it 6 times).
 - **Now playing scrolled on phones, with a gap at the bottom.**
