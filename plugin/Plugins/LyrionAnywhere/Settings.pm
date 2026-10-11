@@ -8,6 +8,8 @@ use strict;
 use warnings;
 use base qw(Slim::Web::Settings);
 
+use File::Basename ();
+use File::Spec;
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 
@@ -114,11 +116,25 @@ sub clean {
 	return (\%out, \@errors);
 }
 
+# The latest modification time of the settings page's own files, as digits only.
+sub assets_stamp {
+	my $dir = File::Spec->catdir(File::Basename::dirname(__FILE__), 'HTML', 'EN', 'plugins', 'LyrionAnywhere', 'settings');
+	my $latest = 0;
+	for my $f (qw(anywhere.js anywhere.css basic.html)) {
+		my $m = (stat(File::Spec->catfile($dir, $f)))[9] // 0;
+		$latest = $m if $m > $latest;
+	}
+	return $latest =~ /\A\d+\z/ ? $latest : 0;
+}
+
 sub handler {
 	my ($class, $client, $params) = @_;
 	# The page's script needs this to change accounts (see Commands.pm). Only this page,
 	# which other web sites cannot read, carries it.
 	$params->{anywhere_csrf} = Plugins::LyrionAnywhere::Commands::csrf_token();
+	# LMS serves the page's script and stylesheet with a week-long cache; stamping their
+	# URLs with the files' modification time makes browsers fetch them again after an update.
+	$params->{anywhere_assets} = assets_stamp();
 	$params->{anywhere_gateway_path_allowed} =
 		($ENV{ Plugins::LyrionAnywhere::Gateway::ALLOW_GATEWAY_PATH_ENV() } // '') eq '1' ? 1 : 0;
 	if ($params->{saveSettings}) {

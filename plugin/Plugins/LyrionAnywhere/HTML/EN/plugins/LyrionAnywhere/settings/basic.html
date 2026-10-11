@@ -1,6 +1,6 @@
 [% PROCESS settings/header.html %]
 
-<link rel="stylesheet" href="/plugins/LyrionAnywhere/settings/anywhere.css">
+<link rel="stylesheet" href="/plugins/LyrionAnywhere/settings/anywhere.css?v=[% anywhere_assets | uri %]">
 
 <img class="anywhere-logo" src="/plugins/LyrionAnywhere/html/images/logo.png" alt="" width="64" height="64">
 <p class="anywhere-intro">
@@ -102,6 +102,6 @@
 	<p id="aw-message" class="aw-message" role="status" aria-live="polite"></p>
 </div>
 
-<script src="/plugins/LyrionAnywhere/settings/anywhere.js"></script>
+<script src="/plugins/LyrionAnywhere/settings/anywhere.js?v=[% anywhere_assets | uri %]"></script>
 
 [% PROCESS settings/footer.html %]

@@ -134,4 +134,15 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 	}
 }
 
+# Browsers cache the page's script and stylesheet for a week: their URLs carry a stamp
+# that changes with the files (regression: an old cached script left sections blank).
+{
+	my $stamp = Plugins::LyrionAnywhere::Settings::assets_stamp();
+	like($stamp, qr/\A[1-9]\d*\z/, 'assets stamp is the files\' modification time');
+	open my $fh, '<', 'Plugins/LyrionAnywhere/HTML/EN/plugins/LyrionAnywhere/settings/basic.html' or die;
+	my $html = do { local $/; <$fh> };
+	like($html, qr{anywhere\.js\?v=\[% anywhere_assets \| uri %\]}, 'script URL is stamped');
+	like($html, qr{anywhere\.css\?v=\[% anywhere_assets \| uri %\]}, 'stylesheet URL is stamped');
+}
+
 done_testing;

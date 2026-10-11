@@ -50,7 +50,7 @@ for my $e ($page =~ /&([a-z]+);/g) {
 }
 
 # --- every file the page references exists, and images are under html/ -----------------
-my @refs = $page =~ /(?:src|href)="(\/plugins\/LyrionAnywhere\/[^"]+)"/g;
+my @refs = map { s/\?.*\z//sr } $page =~ /(?:src|href)="(\/plugins\/LyrionAnywhere\/[^"]+)"/g;   # minus any ?v= stamp
 ok(scalar(grep { /\.png\z/ } @refs), 'the page shows the logo');
 for my $ref (@refs) {
 	my $file = $html . $ref;
