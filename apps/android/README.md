@@ -1,6 +1,6 @@
 # Lyrion Anywhere for Android
 
-The native Android app: sign-in, browsing, remote control of LMS players (milestone A0), and the phone as an LMS player with native audio output (A1). The plan is in [`docs/plans/native-apps.md`](../../docs/plans/native-apps.md); the protocol it speaks is [`docs/PROTOCOL.md`](../../docs/PROTOCOL.md).
+The native Android app: sign-in, browsing, remote control of LMS players (milestone A0), the phone as an LMS player with native audio output (A1), bit-perfect USB DAC output and the Sound settings (A2), and the waveform seek bar with loudness levelling (A3). The plan is in [`docs/plans/native-apps.md`](../../docs/plans/native-apps.md); the protocol it speaks is [`docs/PROTOCOL.md`](../../docs/PROTOCOL.md).
 
 ## Building
 
@@ -60,7 +60,7 @@ Kotlin: RustLocalPlayerRepository ─► PlaybackService (Media3 session) ─►
 ```
 
 - **The engine is Rust** (`mobile/src/player`): the Slimproto tunnel with resume, stream downloads with byte-offset resume, the core's decoders, optional DSP, and a lock-free ring buffer. **AAudio is driven from Rust** (the `ndk` crate): its real-time callback reads the ring directly, so no JNI runs per buffer, and the callback neither allocates nor locks.
-- **Bit-perfect by default.** DSP is off, and LMS volume at 100 % leaves samples untouched. The output opens at the source's rate and reopens when it changes. The signal-path panel shows exactly what happens; it claims "bit-perfect" end to end only for a direct route, which needs A2's USB mixer mode.
+- **Bit-perfect by default.** DSP is off, and LMS volume at 100 % leaves samples untouched. The output opens at the source's rate and reopens when it changes. The signal-path panel shows exactly what happens. It claims "bit-perfect" end to end only for a direct route to a USB DAC (below), and otherwise lists why not.
 - **Media3:** `PlaybackService` (not exported) wraps LMS's state for this player in a `SimpleBasePlayer`. Its buttons become LMS commands. It also handles:
   - audio focus (pause, duck, resume after a call);
   - "becoming noisy" (instant silence, then pause through LMS);
@@ -68,6 +68,63 @@ Kotlin: RustLocalPlayerRepository ─► PlaybackService (Media3 session) ─►
 
   Media3 runs it as a foreground service (type `mediaPlayback`) while playing.
 - **Starting:** the switch is remembered. The service starts while the app is in front; if LMS starts playback on an idle phone whose app is in the background, the session appears when the app is next opened.
+
+### Bit-perfect USB DAC output (Android 14+)
+
+```
+engine: new track format ─► OutputNegotiator.offers() ─► plan() (Rust, pure) ─► apply(offer)
+                            UsbDacNegotiator: getSupportedMixerAttributes      setPreferredMixerAttributes
+        ─► AAudio opened in that integer format at the source's rate ─► DAC
+```
+
+- `UsbDacNegotiator` (`:playback`, `UsbDac.kt`) is Android's side. It finds the USB DAC and lists its mixer attributes (API 34), then applies or clears the one the engine chose, for `USAGE_MEDIA`. The mapping between platform values and the engine's offers is pure Kotlin, tested on the JVM.
+- The engine (`mobile/src/player/negotiate.rs`) chooses the format: bit-perfect, stereo, at the source's rate, in the shallowest integer format holding the source's depth. It then opens AAudio in that format, and falls back to float through Android's mixer if anything refuses.
+- **Volume is fixed at 100 % on a bit-perfect route** (SPEC D19): use the DAC's own volume. The signal path says so.
+- `PlaybackService` registers the negotiator and renegotiates when a USB DAC comes or goes. Settings → Sound → *Bit-perfect USB output* turns it off.
+- `MODIFY_AUDIO_SETTINGS` (a normal, install-time permission) is needed for the mixer attributes; the `:playback` module declares it.
+
+### Sound settings
+
+Settings → Sound:
+- preamp;
+- loudness levelling (off, ReplayGain track or album, the server's R128 analysis);
+- the true-peak limiter and its ceiling;
+- a parametric EQ from an AutoEq `ParametricEQ.txt` (pasted, or picked with the system file picker; checked by the engine before it is saved);
+- crossfeed;
+- dither.
+
+Everything is off by default (bit-perfect), with an indicator saying so or naming the stages that change the samples. Settings are stored with DataStore and applied to the engine at once.
+
+### Manual test with a USB DAC (not yet done)
+
+Nothing here has run on hardware yet. With an Android 14+ phone and a USB DAC:
+
+1. Install a debug build, sign in, and turn on *Play on this phone*. Plug in the DAC. Check Settings → Sound: *Bit-perfect USB output* is on and the indicator says *Bit-perfect*.
+2. Play a 16-bit/44.1 kHz FLAC to this phone from LMS. Open Now Playing → Signal path. Expect:
+   - the verdict *Bit-perfect*;
+   - output "<DAC name> · 44.1 kHz · 16-bit integer";
+   - the line "Volume: use your DAC's".
+
+   If it shows reasons instead, note them (e.g. "this DAC doesn't offer a bit-perfect mode"): that is the device's answer.
+3. Confirm the phone's mixing is bypassed:
+   - `adb shell dumpsys media.audio_flinger`: an output thread with the `BIT_PERFECT` flag at 44100 Hz, our track on it;
+   - `adb shell dumpsys audio`: our preferred mixer attributes.
+
+   Change LMS's volume: the level must not change (the DAC's volume controls it). A notification sound shouldn't mix into the music (Android mutes other apps in this mode).
+4. Play a 24-bit/96 kHz track next. The output switches to 24-bit at 96 kHz at the track boundary.
+5. Unplug the DAC while playing. Expected:
+   - playback pauses (becoming noisy);
+   - after you resume on the speaker, the signal path shows "the output isn't a USB DAC", and LMS's volume applies again.
+
+   Plug it back in and resume: bit-perfect again.
+6. Turn on a Sound stage (e.g. preamp −3 dB):
+   - the route stays direct;
+   - the signal path shows *Lossless, processed*, a dither stage and "a Sound setting changes the samples".
+
+   Turn it off again: *Bit-perfect*.
+7. **Bit-exactness, if you have the equipment:** play a known test file to a DAC with a digital output (S/PDIF) into a capture device, record it, and compare the samples with the file. They should be identical, apart from any leading or trailing silence.
+
+Record the phone, Android version, DAC and results (in the A2 status of `docs/plans/native-apps.md`, without serial numbers or other personal details).
 
 ## Security
 
@@ -87,8 +144,13 @@ Kotlin: RustLocalPlayerRepository ─► PlaybackService (Media3 session) ─►
   - the LMS → Media3 state mapping and the focus policy (plain JVM);
   - the session player's state and buttons (Robolectric);
   - the controller's refreshes and commands;
-- `:data`: the local player's lifecycle (sign-in, switch, replaced players).
-- `:ui`: the signal-path panel and the "Play on this phone" switch.
-- The Rust layer has its own unit and integration tests against the real gateway (`cargo test -p anywhere-mobile`). These include the player end to end against a fake LMS: gapless, bit-perfect, rate changes, resume after a dropped connection, refusals and hostile frames.
+- `:data`: the local player's lifecycle (sign-in, switch, replaced players); the Sound settings' persistence (across a restart, migration, refusal of stored nonsense), clamping and mapping to the engine's `DspSettings`.
+- `:ui`: the signal-path panel (with the reasons it isn't bit-perfect and the DAC volume note), the "Play on this phone" switch, and the Sound screen and its view model.
+- `:playback`: bit-perfect USB output's platform side (mixer-attribute mapping and selection, USB DAC choice, refusals).
+- The Rust layer has its own unit and integration tests against the real gateway (`cargo test -p anywhere-mobile`). These include the player end to end against a fake LMS:
+  - gapless, bit-perfect, rate changes;
+  - resume after a dropped connection, refusals and hostile frames;
+  - a fake USB DAC receiving the files' integers;
+  - Ogg Opus.
 
-Instrumented tests (the AndroidKeyStore key itself, the camera, AAudio output, the media notification and buttons) need a device and are not run in CI yet. The A1 status in `docs/plans/native-apps.md` lists what has and hasn't been verified on hardware.
+Instrumented tests (the AndroidKeyStore key itself, the camera, AAudio output, bit-perfect USB output, the media notification and buttons) need a device and are not run in CI yet. The A1 and A2 statuses in `docs/plans/native-apps.md` list what has and hasn't been verified on hardware.

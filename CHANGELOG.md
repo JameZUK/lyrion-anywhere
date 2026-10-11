@@ -4,6 +4,33 @@ Dated entries, newest first.
 
 ## 2026-10-11
 
+### Audiophile output (A2)
+- **Bit-perfect USB DAC output (Android 14+, detected at run time):** with a USB DAC that offers it, the app sets Android's bit-perfect mixer attributes for the track's rate and depth. The engine then plays to the DAC in that integer format (16, 24 or 32-bit), so the samples reach it unchanged.
+  - **Fallback:** Android's mixer (32-bit float) whenever the phone, the DAC or a format refuses.
+  - **Volume:** fixed at 100 % on a bit-perfect route; the DAC's own volume sets the level (SPEC D19).
+  - **Changes:** the output switches format at track boundaries, and renegotiates when a DAC is plugged in or out or the setting changes.
+- **Signal path:** "bit-perfect" end to end only when the mixer attributes were applied and the stream's format and rate match the source. It shows the DAC's name and accepted format, and every reason it falls short: the setting is off, there is no USB DAC, Android 13 or older, the DAC doesn't offer the mode or rate, DSP, resampling, a lossy source, and so on. Bluetooth shows the route and device name only; the codec isn't readable without system APIs.
+- **Sound settings (Android):**
+  - preamp;
+  - loudness levelling: off, ReplayGain track or album, or the server's R128 analysis (A3's switch migrates to the last);
+  - the true-peak limiter and its ceiling;
+  - a parametric EQ from an AutoEq profile, pasted or picked as a file and checked by the engine;
+  - crossfeed presets;
+  - dither.
+
+  Everything is off by default, with a "Bit-perfect" indicator that changes as soon as any stage is on. Settings are saved and apply live.
+- **Opus:** advertised to LMS only by builds that decode it, and now tested end to end through the player.
+- **Robustness fix:** the streaming decoder (the Android player and the web player) refuses WAV headers that overflowed Symphonia's reader, before the reader sees them. Native builds also catch any other decoder panic. A regression test fails without the fix.
+- **Tests:**
+  - Rust: 632 across the workspace, including:
+    - integer bit-exactness at 16/24/32-bit for 44.1–192 kHz with the real decoder in the loop;
+    - format negotiation as pure functions;
+    - a fake DAC end to end: the files' integers arrive with LMS's volume at 25 %, a refused mixer, DSP on a DAC, a depth change, unplugging;
+    - Opus through the player;
+  - Android: 122 JVM/Robolectric tests (mixer selection, settings persistence, the Sound screen, signal-path reasons); lint clean;
+  - web: unchanged (286 Vitest, 24 Node).
+  - **Not verified on hardware:** bit-perfect USB output hasn't run on a phone or DAC yet. See the A2 status in `docs/plans/native-apps.md`, and the manual test procedure in `apps/android/README.md`.
+
 ### Analysis and waveform (A3)
 - **Gateway track analysis:** `GET /v1/analysis/track/{id}` gives a track's waveform, EBU R128 loudness, loudness range, true peak, silence and fades. It answers in JSON or a compact binary form, with ETags.
   - **Access:** the same rules as downloads.
