@@ -33,22 +33,16 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::{Connector, connect_async_tls_with_config};
 
-use anywhere_core::decode::SourceFormat;
-use anywhere_core::player::{Action, OutputState, Player, PlayerConfig, TrackAudio};
+use anywhere_core::player::{Action, OutputState, Player, PlayerConfig};
 use anywhere_core::proto::{ClientMsg, format_mac};
 
-use super::negotiate::{
-    self, MixerOffer, NotBitPerfect, OutputNegotiator, OutputOffers, PcmEncoding, Plan, RouteState,
-    SourceSpec,
-};
-use super::output::{AudioOutput, OutputEvent};
-use super::pipeline::{DspSettings, Levelling, Pipeline};
+use super::audio::{AudioPath, AudioSource, OutputShared};
+use super::output::AudioOutput;
+use super::pipeline::{DspSettings, Levelling};
 use super::protocol::{self, CloseAction, Greeting};
-use super::ring::{CHANNELS, Producer, Ring};
-use super::signal;
+use super::ring::CHANNELS;
 use super::{
-    LocalPlayback, LocalPlayerObserver, LocalPlayerStatus, OutputRoute, PlayerConnection,
-    SignalPathInfo,
+    LocalPlayback, LocalPlayerObserver, LocalPlayerStatus, PlayerConnection, SignalPathInfo,
 };
 use crate::error::ApiError;
 use crate::server::Server;
@@ -56,12 +50,7 @@ use crate::session::Core;
 use crate::transport::{self, Http};
 use anywhere_core::dsp::levelling::Measurement;
 
-const TICK: Duration = Duration::from_millis(20);
-/// Audio queued in the ring ahead of the output. Enough to ride out a slow tick, small
-/// enough that pause and skip feel immediate (pause also holds the ring at once).
-const RING_AHEAD: Duration = Duration::from_millis(400);
-/// Frames pulled from the core per block.
-const BLOCK_FRAMES: usize = 4096;
+pub(crate) const TICK: Duration = Duration::from_millis(20);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// LMS asks for the player's status every 5 s; a socket that has brought nothing for this
 /// long has died without closing (a network change): resume on a new one, well within the
@@ -73,11 +62,7 @@ const SOCKET_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// Between two pieces of an audio stream (the gateway gives up on LMS after 60 s).
 const STREAM_READ_TIMEOUT: Duration = Duration::from_secs(75);
 /// Status notifications at most this often (state changes are sent at once).
-const STATUS_EVERY: Duration = Duration::from_millis(500);
-/// Retry opening a failed output this often.
-const OUTPUT_RETRY: Duration = Duration::from_secs(2);
-/// Rates tried when the output can't take the source's (the engine then resamples).
-const FALLBACK_RATES: [u32; 2] = [48_000, 44_100];
+pub(crate) const STATUS_EVERY: Duration = Duration::from_millis(500);
 
 /// Codecs this build decodes from a stream, as Slimproto capability tokens. Not
 /// advertised, so LMS converts them (losslessly where the source is lossless):
@@ -159,12 +144,8 @@ pub(crate) struct Shared {
     pub status: Mutex<LocalPlayerStatus>,
     pub signal: Mutex<Option<SignalPathInfo>>,
     pub observer: Arc<dyn LocalPlayerObserver>,
-    pub ring: Arc<Ring>,
-    /// The app asked for silence now (becoming noisy, focus loss).
-    pub hold: AtomicBool,
-    pub route: Mutex<OutputRoute>,
-    /// Bit-perfect output negotiation (the host's `AudioManager`), if any.
-    pub negotiator: Mutex<Option<Arc<dyn OutputNegotiator>>>,
+    /// The ring, the hold, the route and the negotiator.
+    pub out: Arc<OutputShared>,
 }
 
 struct StreamTask {
@@ -204,31 +185,10 @@ pub(crate) struct Engine {
     stream_ids: u64,
     last_ack: (u64, u64),
     last_flush: u64,
-    // Audio.
-    producer: Producer,
-    output: Box<dyn AudioOutput>,
-    output_failed_at: Option<Instant>,
-    device: String,
-    pipeline: Pipeline,
-    block: Vec<f32>,
+    // Audio: pipeline, ring, output and its negotiated route.
+    audio: AudioPath,
     underruns_seen: u64,
     was_playing: bool,
-    // Output negotiation (bit-perfect USB).
-    /// How the open output was set up.
-    route_state: RouteState,
-    /// The stream format of the open output.
-    out_encoding: PcmEncoding,
-    /// The mixer attributes the host applied for us (cleared when the output closes).
-    applied: Option<(MixerOffer, Arc<dyn OutputNegotiator>)>,
-    /// What the device offered at the last negotiation (to tell whether a new track
-    /// needs another format).
-    last_offers: Option<OutputOffers>,
-    /// The source of the audio the output was opened for.
-    current_source: Option<SourceFormat>,
-    /// The track whose output format was last checked.
-    planned_seq: Option<u32>,
-    /// Negotiate again at the next tick.
-    renegotiate: bool,
     // Analysis levelling.
     loudness: VecDeque<(u32, Option<Measurement>)>,
     /// A fresh start waiting (until the instant) for track `seq`'s analysis.
@@ -253,10 +213,7 @@ impl Engine {
         cmds: mpsc::UnboundedReceiver<Cmd>,
     ) -> Result<Engine, ApiError> {
         let (tx, rx) = mpsc::unbounded_channel();
-        let producer = shared
-            .ring
-            .producer()
-            .ok_or_else(|| ApiError::invalid("player already running"))?;
+        let audio = AudioPath::new(shared.out.clone(), output, dsp)?;
         Ok(Engine {
             server: core.server().clone(),
             core,
@@ -286,21 +243,9 @@ impl Engine {
             stream_ids: 0,
             last_ack: (0, 0),
             last_flush: 0,
-            producer,
-            output,
-            output_failed_at: None,
-            device: String::new(),
-            pipeline: Pipeline::new(dsp),
-            block: vec![0.0; BLOCK_FRAMES * CHANNELS],
+            audio,
             underruns_seen: 0,
             was_playing: false,
-            route_state: RouteState::default(),
-            out_encoding: PcmEncoding::Float,
-            applied: None,
-            last_offers: None,
-            current_source: None,
-            planned_seq: None,
-            renegotiate: false,
             loudness: VecDeque::new(),
             gate: None,
             lookup: None,
@@ -325,10 +270,10 @@ impl Engine {
                 Some(ev) = self.rx.recv() => self.handle(ev),
                 cmd = self.cmds.recv() => match cmd {
                     Some(Cmd::SetDsp(d)) => {
-                        self.pipeline.set_dsp(d);
+                        self.audio.pipeline.set_dsp(d);
                         self.publish_signal(true);
                     }
-                    Some(Cmd::Renegotiate) => self.renegotiate = true,
+                    Some(Cmd::Renegotiate) => self.audio.renegotiate = true,
                     // The app let go of the player, or asked to stop.
                     Some(Cmd::Stop) | None => self.shutdown("stopped").await,
                 },
@@ -352,7 +297,7 @@ impl Engine {
             t.abort();
         }
         self.close_output();
-        self.shared.ring.set_hold(true);
+        self.shared.out.ring.set_hold(true);
         self.connection = PlayerConnection::Stopped {
             reason: reason.into(),
         };
@@ -364,25 +309,8 @@ impl Engine {
 
     /// Close the output for good (stopping): Android's normal mixing is restored.
     fn close_output(&mut self) {
-        self.output.close();
-        self.clear_mixer_attributes();
-        self.route_state = RouteState::default();
-        self.out_encoding = PcmEncoding::Float;
-        if let Some(p) = &mut self.player {
-            p.set_fixed_volume(false);
-        }
-    }
-
-    /// Restore Android's normal mixing, through the negotiator that set the attributes
-    /// (even if the host has since replaced or removed it).
-    fn clear_mixer_attributes(&mut self) {
-        if let Some((_, n)) = self.applied.take() {
-            n.apply(None);
-        }
-    }
-
-    fn negotiator(&self) -> Option<Arc<dyn OutputNegotiator>> {
-        self.shared.negotiator.lock().ok().and_then(|n| n.clone())
+        let src = self.player.as_mut().map(|p| p as &mut dyn AudioSource);
+        self.audio.close_output(src);
     }
 
     // --- Connection ---------------------------------------------------------------------
@@ -450,8 +378,8 @@ impl Engine {
             });
             p.connected(self.now_ms());
             // A bit-perfect DAC keeps its fixed volume across sessions.
-            p.set_fixed_volume(self.route_state.direct);
-            self.planned_seq = None;
+            p.set_fixed_volume(self.audio.route_state.direct);
+            self.audio.forget_plan();
             self.last_flush = p.flush_count();
             self.player = Some(p);
             self.mac = Some(g.mac);
@@ -482,8 +410,8 @@ impl Engine {
             CloseAction::Stop => {
                 self.close_stream();
                 self.close_output();
-                self.pipeline.unconfigure();
-                self.shared.ring.set_hold(true);
+                self.audio.pipeline.unconfigure();
+                self.shared.out.ring.set_hold(true);
                 self.player = None;
                 self.connection = PlayerConnection::Stopped {
                     reason: if reason.is_empty() {
@@ -633,7 +561,7 @@ impl Engine {
     /// streaming (stream `n` carries track `seq = n - 1`). A fresh start waits briefly for
     /// it (see [`LOUDNESS_WAIT`]); a gapless next track has until the current one ends.
     fn look_up_loudness(&mut self, stream_number: u64) {
-        let dsp = self.pipeline.dsp();
+        let dsp = self.audio.pipeline.dsp();
         if !(dsp.enabled && dsp.analysis_levelling && dsp.levelling != Levelling::Off) {
             return;
         }
@@ -749,8 +677,7 @@ impl Engine {
 
     /// Drop audio queued between the core and the speaker (a flush, or a new session).
     fn drop_queued_audio(&mut self) {
-        self.producer.discard_all();
-        self.pipeline.reset();
+        self.audio.drop_queued_audio();
     }
 
     fn on_tick(&mut self) {
@@ -761,10 +688,10 @@ impl Engine {
             self.connect(resume);
         }
         let now = self.now_ms();
-        let ring = self.shared.ring.clone();
+        let ring = self.shared.out.ring.clone();
 
         // Frames the output has consumed since the last tick.
-        let played = self.pipeline.played(ring.read_pos());
+        let played = self.audio.played();
         let Some(p) = &mut self.player else {
             self.publish_status(false);
             return;
@@ -779,18 +706,23 @@ impl Engine {
         }
         self.run_actions();
 
-        if let Some(OutputEvent::Disconnected) = self.output.poll_event() {
-            // Headphones unplugged, Bluetooth gone: reopen on the new default device. (The
-            // app pauses through LMS on "becoming noisy".)
-            self.reopen_output();
-        } else if self.renegotiate {
-            // A USB DAC came or went, or the bit-perfect setting changed: set the output
-            // up again now (queued audio carries on through the new stream).
-            self.renegotiate = false;
-            self.last_offers = None;
-            self.reopen_output();
+        let src = self.player.as_mut().map(|p| p as &mut dyn AudioSource);
+        self.audio.poll_output(src);
+        let gate = self.gate.is_some_and(|(_, until)| Instant::now() < until);
+        if let Some(p) = self.player.as_mut() {
+            let loudness = &self.loudness;
+            self.audio.fill(p, gate, &|seq| {
+                loudness
+                    .iter()
+                    .find(|(s, _)| *s == seq)
+                    .and_then(|(_, m)| *m)
+            });
         }
-        self.fill();
+        if let Some(e) = self.audio.take_error()
+            && let Ok(mut st) = self.shared.status.lock()
+        {
+            st.last_error = Some(e);
+        }
         let gating = self.gating();
 
         let Some(p) = &mut self.player else { return };
@@ -799,10 +731,10 @@ impl Engine {
         // A local hold lasts until LMS next starts or resumes playback (from this app or
         // any other controller): the hold covers the moment before LMS's own pause lands.
         if playing && !self.was_playing {
-            self.shared.hold.store(false, Ordering::Release);
+            self.shared.out.hold.store(false, Ordering::Release);
         }
         self.was_playing = playing;
-        let user_hold = self.shared.hold.load(Ordering::Acquire);
+        let user_hold = self.shared.out.hold.load(Ordering::Acquire);
         ring.set_hold(user_hold || !playing);
         // While a fresh start waits for its loudness, the silence is not an underrun.
         ring.set_expect_data(playing && !user_hold && !p.audio_exhausted() && !gating);
@@ -811,7 +743,7 @@ impl Engine {
             self.underruns_seen = underruns;
             p.output_underrun();
         }
-        let rate = self.pipeline.out_rate().unwrap_or(48_000) as u64;
+        let rate = self.audio.pipeline.out_rate().unwrap_or(48_000) as u64;
         let cap_bytes = ring.capacity() as u64 * 4;
         p.set_host_buffer(ring.len() as u64 * 4, cap_bytes.min(rate * 8 * 2));
         if let Some(s) = &self.stream {
@@ -822,238 +754,12 @@ impl Engine {
         self.publish_signal(false);
     }
 
-    /// Move audio from the core through the pipeline into the ring, reopening the output
-    /// when the source rate changes.
-    fn fill(&mut self) {
-        let ring = self.shared.ring.clone();
-        loop {
-            if !self.pipeline.write_pending(&mut self.producer) {
-                return; // the ring is full
-            }
-            let Some(p) = &mut self.player else { return };
-            let Some(next) = p.next_audio() else {
-                if p.audio_exhausted() && self.pipeline.is_resampling() {
-                    // The end of the audio: let the resampler's last frames out.
-                    self.pipeline.drain_resampler();
-                    continue;
-                }
-                return;
-            };
-            let rate = next.sample_rate;
-            // A new track at the same rate may still need another output format (e.g. a
-            // 24-bit track after a 16-bit one on a bit-perfect DAC).
-            let new_format = self.planned_seq != Some(next.seq)
-                && needs_new_format(&self.last_offers, self.out_encoding, &next);
-            if self.planned_seq != Some(next.seq) && !new_format {
-                self.planned_seq = Some(next.seq);
-            }
-            if self.pipeline.src_rate() != Some(rate) || new_format {
-                if self.pipeline.src_rate().is_some() && self.pipeline.is_resampling() {
-                    self.pipeline.drain_resampler();
-                    if !self.pipeline.write_pending(&mut self.producer) {
-                        return;
-                    }
-                }
-                // Play out everything at the old rate first (a rate change is a track
-                // boundary), then reopen the output at the new one.
-                if !ring.is_empty() {
-                    return;
-                }
-                if !self.open_output(rate, next.source) {
-                    return;
-                }
-                self.planned_seq = Some(next.seq);
-                continue;
-            }
-            if self.output_failed_at.is_some() {
-                return;
-            }
-            let ahead = (u64::from(self.pipeline.out_rate().unwrap_or(rate))
-                * RING_AHEAD.as_millis() as u64
-                / 1000) as usize
-                * CHANNELS;
-            if ring.len() >= ahead.min(ring.capacity() / 2) {
-                return;
-            }
-            if self.gate.is_some_and(|(_, until)| Instant::now() < until) {
-                return; // a fresh start waiting for its track's loudness
-            }
-            let Some((seq, frames)) = p.pull_track(&mut self.block) else {
-                return;
-            };
-            let source = p.track_audio(seq).and_then(|t| t.source);
-            let tags = source.map(|s| s.replay_gain);
-            let analysis = self
-                .loudness
-                .iter()
-                .find(|(s, _)| *s == seq)
-                .and_then(|(_, m)| *m);
-            self.pipeline.push_with(
-                &self.block[..frames * CHANNELS],
-                seq,
-                tags.as_ref(),
-                analysis,
-                source_bits(source),
-            );
-        }
-    }
-
-    /// Open the output for audio at `rate` from `source`; false if it failed (retried
-    /// later).
-    ///
-    /// With a negotiator (a USB DAC on Android 14+), the bit-perfect format is negotiated
-    /// first and the stream opened in it at the source's rate; if anything refuses, Android's
-    /// normal mixer is restored and the output opens as float, as without one: at the
-    /// source's rate, or a fallback rate with our resampler.
-    fn open_output(&mut self, rate: u32, source: Option<SourceFormat>) -> bool {
-        if let Some(t) = self.output_failed_at
-            && t.elapsed() < OUTPUT_RETRY
-        {
-            return false;
-        }
-        self.output.close();
-        self.current_source = source;
-        let spec = SourceSpec {
-            rate,
-            bits: source_bits(source),
-        };
-        let negotiator = self.negotiator();
-        let (mut plan, dac) = match &negotiator {
-            Some(n) => {
-                let offers = n.offers();
-                let device = protocol::clean_name(&offers.device);
-                let plan = negotiate::plan(spec, &offers);
-                self.last_offers = Some(offers);
-                (plan, device)
-            }
-            None => {
-                self.last_offers = None;
-                (Plan::mixed(NotBitPerfect::NoUsbDac), String::new())
-            }
-        };
-        // Apply the mixer attributes (or restore normal mixing). A negotiator that was
-        // replaced clears what it set first.
-        if let Some((_, old)) = &self.applied
-            && !negotiator.as_ref().is_some_and(|n| Arc::ptr_eq(n, old))
-        {
-            self.clear_mixer_attributes();
-        }
-        match (plan.offer, &negotiator) {
-            (Some(offer), Some(n)) => {
-                if n.apply(Some(offer)) {
-                    self.applied = Some((offer, n.clone()));
-                } else {
-                    self.applied = None;
-                    plan = Plan::mixed(NotBitPerfect::NotApplied);
-                }
-            }
-            _ => self.clear_mixer_attributes(),
-        }
-        let ring = self.shared.ring.clone();
-        if plan.encoding != PcmEncoding::Float {
-            match self.output.open(&ring, rate, plan.encoding) {
-                Ok(o) if o.rate == rate && o.encoding == plan.encoding => {
-                    if self.pipeline.configure(rate, rate).is_ok() {
-                        self.output_ready(o.device, o.encoding, plan.quantise_bits);
-                        self.route_state = RouteState {
-                            direct: true,
-                            encoding: o.encoding,
-                            device: dac,
-                            reasons: plan.reasons,
-                        };
-                        self.set_fixed_volume(true);
-                        self.publish_signal(true);
-                        return true;
-                    }
-                    self.output.close();
-                }
-                Ok(_) => self.output.close(),
-                Err(_) => {}
-            }
-            // The stream wouldn't take the negotiated format: back to normal mixing.
-            self.clear_mixer_attributes();
-            plan = Plan::mixed(NotBitPerfect::FormatRefused);
-        }
-        let mut last_err = String::new();
-        let candidates =
-            std::iter::once(rate).chain(FALLBACK_RATES.into_iter().filter(|r| *r != rate));
-        for try_rate in candidates {
-            match self.output.open(&ring, try_rate, PcmEncoding::Float) {
-                Ok(o) => match self.pipeline.configure(rate, o.rate) {
-                    Ok(()) => {
-                        self.output_ready(o.device, o.encoding, None);
-                        self.route_state = RouteState {
-                            direct: false,
-                            encoding: PcmEncoding::Float,
-                            device: dac,
-                            reasons: plan.reasons,
-                        };
-                        self.set_fixed_volume(false);
-                        self.publish_signal(true);
-                        return true;
-                    }
-                    Err(e) => {
-                        self.output.close();
-                        last_err = e;
-                    }
-                },
-                Err(e) => last_err = e,
-            }
-        }
-        self.pipeline.unconfigure();
-        self.output_failed_at = Some(Instant::now());
-        if let Ok(mut st) = self.shared.status.lock() {
-            st.last_error = Some(protocol::clean_name(&last_err));
-        }
-        false
-    }
-
-    fn output_ready(&mut self, device: String, encoding: PcmEncoding, bits: Option<u32>) {
-        self.device = device;
-        self.out_encoding = encoding;
-        self.pipeline.set_output_bits(bits);
-        self.output_failed_at = None;
-    }
-
-    /// LMS's volume is ignored on a bit-perfect route (the DAC's volume rules).
-    fn set_fixed_volume(&mut self, fixed: bool) {
-        if let Some(p) = &mut self.player {
-            p.set_fixed_volume(fixed);
-        }
-    }
-
-    fn reopen_output(&mut self) {
-        let Some(src) = self.pipeline.src_rate() else {
-            return;
-        };
-        self.output.close();
-        self.output_failed_at = None;
-        if self.negotiator().is_some() || self.route_state.direct {
-            // The device may offer something else now (a DAC came or went): negotiate
-            // afresh. Queued audio carries on through the new stream.
-            self.open_output(src, self.current_source);
-            self.publish_signal(true);
-            return;
-        }
-        let ring = self.shared.ring.clone();
-        let out = self.pipeline.out_rate().unwrap_or(src);
-        match self.output.open(&ring, out, PcmEncoding::Float) {
-            Ok(o) => self.device = o.device,
-            Err(_) => {
-                // The new device can't take that rate: start over (fallbacks, resampling).
-                self.pipeline.unconfigure();
-                self.open_output(src, self.current_source);
-            }
-        }
-        self.publish_signal(true);
-    }
-
     // --- Reporting ----------------------------------------------------------------------
 
     fn current_status(&self) -> LocalPlayerStatus {
-        let ring = &self.shared.ring;
+        let ring = &self.shared.out.ring;
         let (underruns, underrun_frames) = ring.underruns();
-        let rate = self.pipeline.out_rate().unwrap_or(0);
+        let rate = self.audio.pipeline.out_rate().unwrap_or(0);
         let ring_ms = if rate > 0 {
             (ring.len() / CHANNELS) as u64 * 1000 / u64::from(rate)
         } else {
@@ -1088,7 +794,7 @@ impl Engine {
             output_rate: rate,
             underruns,
             underrun_frames,
-            held: self.shared.hold.load(Ordering::Acquire),
+            held: self.shared.out.hold.load(Ordering::Acquire),
             last_error: error.map(|e| protocol::clean_name(&e)).or(previous_error),
         }
     }
@@ -1111,33 +817,8 @@ impl Engine {
     }
 
     fn publish_signal(&mut self, force: bool) {
-        let route = self
-            .shared
-            .route
-            .lock()
-            .map(|r| r.clone())
-            .unwrap_or_default();
-        let path = self.player.as_ref().and_then(|p| {
-            let seq = p.playing_track()?;
-            let audio = p.track_audio(seq)?;
-            let out_rate = self.pipeline.out_rate()?;
-            Some(signal::describe(&signal::Inputs {
-                audio,
-                volume: p.applied_volume(),
-                pipeline_stages: self.pipeline.stages(),
-                dsp_active: self.pipeline.processing(),
-                dsp_chain: self.pipeline.dsp_processing(),
-                duck: self.shared.ring.gain(),
-                out_rate,
-                device: if route.device.is_empty() {
-                    self.device.clone()
-                } else {
-                    route.device.clone()
-                },
-                mixer_rate: route.mixer_rate,
-                route: self.route_state.clone(),
-            }))
-        });
+        let force = force || self.audio.take_signal_dirty();
+        let path = self.player.as_ref().and_then(|p| self.audio.signal_path(p));
         if !force && path == self.last_signal {
             return;
         }
@@ -1147,28 +828,6 @@ impl Engine {
         }
         self.shared.observer.on_signal_path(path);
     }
-}
-
-/// Would `next` need another stream format than the open output's (`current`)? Judged
-/// from what the device offered at the last negotiation; never without a negotiator.
-fn needs_new_format(
-    offers: &Option<OutputOffers>,
-    current: PcmEncoding,
-    next: &TrackAudio,
-) -> bool {
-    let Some(offers) = offers else {
-        return false;
-    };
-    let spec = SourceSpec {
-        rate: next.sample_rate,
-        bits: source_bits(next.source),
-    };
-    negotiate::plan(spec, offers).encoding != current
-}
-
-/// The integer depth of a lossless source (`None`: lossy, float or not yet known).
-fn source_bits(source: Option<SourceFormat>) -> Option<u32> {
-    source.filter(|s| s.lossless).and_then(|s| s.bits)
 }
 
 /// A content type from the gateway, made safe to put in a header line for LMS.

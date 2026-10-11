@@ -33,6 +33,7 @@ pub mod events;
 pub mod library;
 pub mod menus;
 pub mod model;
+pub mod offline;
 pub mod player;
 pub mod players;
 pub mod server;
@@ -54,6 +55,12 @@ pub use menus::{
     PluginEntry, Suitability, app_menu, info_menu,
 };
 pub use model::*;
+pub use offline::{
+    DownloadFailure, DownloadFormat, DownloadItem, DownloadObserver, DownloadOrigin,
+    DownloadPolicy, DownloadRequest, DownloadState, Downloader, DownloadsSnapshot, FormatChoice,
+    NetworkKind, OfflineAlbum, OfflineLibrary, OfflineTrack, PlayRecord, PlayVerdict,
+    PlaysSyncOutcome, SmartPlan, plan_smart, remove_offline_data, sync_plays,
+};
 pub use player::{
     CrossfeedSetting, DitherSetting, DspSettings, EqProfileSummary, Levelling, LocalPlayback,
     LocalPlayer, LocalPlayerConfig, LocalPlayerObserver, LocalPlayerStatus, MixerOffer,

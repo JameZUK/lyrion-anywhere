@@ -201,6 +201,15 @@ impl Request {
         self
     }
 
+    /// A header built at run time (e.g. `Range`); a value that isn't a valid header is
+    /// not sent.
+    pub(crate) fn header_value(mut self, name: HeaderName, value: &str) -> Request {
+        if let Ok(v) = HeaderValue::from_str(value) {
+            self.headers.insert(name, v);
+        }
+        self
+    }
+
     /// `token` has been checked to be printable ASCII; anything else sends no header (and
     /// the server answers 401).
     pub(crate) fn bearer_auth(mut self, token: &str) -> Request {
@@ -219,13 +228,19 @@ impl Request {
     }
 
     pub(crate) async fn send(self) -> Result<Response, ApiError> {
+        self.send_within(HEADERS_TIMEOUT).await
+    }
+
+    /// Send, waiting up to `headers_timeout` for the response headers (a transcoded
+    /// download only starts once the server has made it).
+    pub(crate) async fn send_within(self, headers_timeout: Duration) -> Result<Response, ApiError> {
         let mut req = hyper::Request::builder()
             .method(self.method)
             .uri(self.url.as_str())
             .body(Full::new(self.body))
             .map_err(|_| ApiError::invalid("bad request"))?;
         *req.headers_mut() = self.headers;
-        match tokio::time::timeout(HEADERS_TIMEOUT, self.http.0.request(req)).await {
+        match tokio::time::timeout(headers_timeout, self.http.0.request(req)).await {
             Ok(Ok(resp)) => Ok(Response(resp)),
             Ok(Err(e)) if e.is_connect() => Err(ApiError::network(format!(
                 "could not connect: {}",

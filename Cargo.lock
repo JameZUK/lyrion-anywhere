@@ -162,6 +162,7 @@ dependencies = [
  "log",
  "ndk",
  "percent-encoding",
+ "ring",
  "rustls",
  "rustls-platform-verifier",
  "serde",

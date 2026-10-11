@@ -8,7 +8,7 @@
 //! MiB of embedded artwork) haven't fully arrived yet.
 
 use std::collections::VecDeque;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek};
 use std::sync::{Arc, Mutex};
 
 use symphonia::core::codecs::CodecParameters;
@@ -630,6 +630,288 @@ fn decode_seekable_inner(
     }
 }
 
+/// Bytes at the start of a file checked by [`check_wav_headers`] before a [`FileDecoder`]
+/// lets Symphonia probe it.
+const FILE_HEADER_CHECK: usize = 1024 * 1024;
+
+/// Decodes a complete local file (a downloaded track) piece by piece, with seeking.
+///
+/// Unlike [`StreamDecoder`] the source is seekable and wholly present, so the demuxer may
+/// seek (MP4 with its index at the end works) and the host can ask for a position. Like
+/// [`decode_seekable`], a corrupt packet is skipped and [`MAX_BAD_PACKETS`] in a row fail
+/// the file. The host does the I/O (it supplies `source`); this only reads through it.
+///
+/// File bytes are untrusted: the WAV headers known to trip Symphonia's arithmetic are
+/// refused before probing, and where panics unwind any other panic in the demuxer or decoder
+/// fails the file instead of the host.
+pub struct FileDecoder {
+    reader: Box<dyn FormatReader>,
+    decoder: Box<dyn AudioDecoder>,
+    track_id: u32,
+    source: Option<SourceFormat>,
+    /// The track's sample rate, from its parameters or the first decoded block.
+    rate: Option<u32>,
+    /// Frames in the track, if the container says.
+    frames: Option<u64>,
+    /// Frames still to drop after an accurate seek (the demuxer lands on a packet start).
+    skip: u64,
+    tmp: Vec<f32>,
+    stereo: Vec<f32>,
+    bad: u32,
+    state: FileState,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum FileState {
+    Decoding,
+    Done,
+    Failed(String),
+}
+
+impl FileDecoder {
+    /// Probe `source` (`ext_hint`, e.g. "flac", helps the prober).
+    pub fn open(mut source: Box<dyn MediaSource>, ext_hint: Option<&str>) -> Result<Self, String> {
+        // Check the headers first: Symphonia's prober scans what it can see.
+        let mut head = Vec::new();
+        (&mut source)
+            .take(FILE_HEADER_CHECK as u64)
+            .read_to_end(&mut head)
+            .map_err(|e| format!("read: {e}"))?;
+        check_wav_headers(&head).map_err(|e| format!("probe: {e}"))?;
+        drop(head);
+        source
+            .seek(io::SeekFrom::Start(0))
+            .map_err(|e| format!("read: {e}"))?;
+        let hint = ext_hint.map(str::to_string);
+        catch(move || Self::open_inner(source, hint.as_deref()))
+            .unwrap_or_else(|| Err("decoder failed on this file".into()))
+    }
+
+    fn open_inner(source: Box<dyn MediaSource>, ext_hint: Option<&str>) -> Result<Self, String> {
+        let mut hint = Hint::new();
+        if let Some(ext) = ext_hint {
+            hint.with_extension(ext);
+        }
+        let mss = MediaSourceStream::new(source, MediaSourceStreamOptions::default());
+        let mut reader = symphonia::default::get_probe()
+            .probe(
+                &hint,
+                mss,
+                FormatOptions::default(),
+                MetadataOptions::default(),
+            )
+            .map_err(|e| format!("probe: {e}"))?;
+        let (decoder, track_id) = make_decoder(reader.as_ref())?;
+        let track = reader.default_track(TrackType::Audio);
+        let frames = track.and_then(|t| t.num_frames);
+        let params = track.and_then(|t| t.codec_params.clone());
+        let (source, rate) = match params {
+            Some(CodecParameters::Audio(params)) => (
+                Some(source_format(&params, reader.as_mut())),
+                params.sample_rate.filter(|r| (1..=1_536_000).contains(r)),
+            ),
+            _ => (None, None),
+        };
+        Ok(FileDecoder {
+            reader,
+            decoder,
+            track_id,
+            source,
+            rate,
+            frames,
+            skip: 0,
+            tmp: Vec::new(),
+            stereo: Vec::new(),
+            bad: 0,
+            state: FileState::Decoding,
+        })
+    }
+
+    pub fn source_format(&self) -> Option<&SourceFormat> {
+        self.source.as_ref()
+    }
+
+    /// The sample rate, once known (from the headers, or after the first block).
+    pub fn sample_rate(&self) -> Option<u32> {
+        self.rate
+    }
+
+    /// Frames in the track, if the container says.
+    pub fn total_frames(&self) -> Option<u64> {
+        self.frames
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.state == FileState::Done
+    }
+
+    /// Decode up to `max_packets`, passing each block of interleaved stereo PCM to
+    /// `sink(sample_rate, samples)`. Never blocks on anything but reading the file.
+    pub fn work(&mut self, max_packets: usize, sink: &mut dyn FnMut(u32, &[f32])) -> DecodeStatus {
+        match &self.state {
+            FileState::Done => return DecodeStatus::Finished,
+            FileState::Failed(e) => return DecodeStatus::Failed(e.clone()),
+            FileState::Decoding => {}
+        }
+        match catch(|| self.work_inner(max_packets, sink)) {
+            Some(s) => s,
+            None => {
+                let msg = "decode: the decoder failed on this file".to_string();
+                self.state = FileState::Failed(msg.clone());
+                DecodeStatus::Failed(msg)
+            }
+        }
+    }
+
+    fn work_inner(
+        &mut self,
+        max_packets: usize,
+        sink: &mut dyn FnMut(u32, &[f32]),
+    ) -> DecodeStatus {
+        let mut decoded = 0;
+        while decoded < max_packets {
+            let packet = match self.reader.next_packet() {
+                Ok(Some(p)) => p,
+                Ok(None) => {
+                    self.state = FileState::Done;
+                    return DecodeStatus::Finished;
+                }
+                Err(SymError::IoError(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    self.state = FileState::Done;
+                    return DecodeStatus::Finished;
+                }
+                Err(SymError::ResetRequired) => {
+                    match make_decoder(self.reader.as_ref()) {
+                        Ok((d, id)) => {
+                            self.decoder = d;
+                            self.track_id = id;
+                        }
+                        Err(e) => return self.fail(e),
+                    }
+                    continue;
+                }
+                Err(e) => return self.fail(format!("demux: {e}")),
+            };
+            if packet.track_id != self.track_id {
+                continue;
+            }
+            decoded += 1;
+            match self.decoder.decode(&packet) {
+                Ok(buf) => {
+                    self.bad = 0;
+                    let rate = buf.spec().rate();
+                    let channels = buf.spec().channels().count().max(1);
+                    self.tmp.clear();
+                    buf.copy_to_vec_interleaved(&mut self.tmp);
+                    to_stereo(&self.tmp, channels, &mut self.stereo);
+                    if rate == 0 {
+                        return self.fail("decode: no sample rate".into());
+                    }
+                    self.rate = Some(rate);
+                    let frames = (self.stereo.len() / 2) as u64;
+                    let drop = self.skip.min(frames);
+                    self.skip -= drop;
+                    let rest = &self.stereo[drop as usize * 2..];
+                    if !rest.is_empty() {
+                        sink(rate, rest);
+                    }
+                }
+                Err(SymError::DecodeError(_)) => {
+                    self.bad += 1;
+                    if self.bad >= MAX_BAD_PACKETS {
+                        return self.fail("decode: too many corrupt packets".into());
+                    }
+                }
+                Err(e) => return self.fail(format!("decode: {e}")),
+            }
+        }
+        DecodeStatus::Progress
+    }
+
+    fn fail(&mut self, msg: String) -> DecodeStatus {
+        self.state = FileState::Failed(msg.clone());
+        DecodeStatus::Failed(msg)
+    }
+
+    /// Go to `seconds` from the start (clamped to the track). Returns the position decoding
+    /// resumes from, in frames: sample-accurate where the format allows.
+    pub fn seek(&mut self, seconds: f64) -> Result<u64, String> {
+        if let FileState::Failed(e) = &self.state {
+            return Err(e.clone());
+        }
+        let rate = self.rate.ok_or("seek: unknown sample rate")?;
+        let mut secs = if seconds.is_finite() {
+            seconds.max(0.0)
+        } else {
+            0.0
+        };
+        if let Some(n) = self.frames {
+            secs = secs.min(n as f64 / f64::from(rate));
+        }
+        match catch(|| self.seek_inner(secs, rate)) {
+            Some(Ok(frame)) => Ok(frame),
+            Some(Err(e)) => Err(e),
+            None => {
+                let msg = "seek: the decoder failed on this file".to_string();
+                self.state = FileState::Failed(msg.clone());
+                Err(msg)
+            }
+        }
+    }
+
+    fn seek_inner(&mut self, secs: f64, rate: u32) -> Result<u64, String> {
+        let time = symphonia::core::units::Time::try_from_secs_f64(secs).ok_or("seek: bad time")?;
+        let seeked = self
+            .reader
+            .seek(
+                symphonia::core::formats::SeekMode::Accurate,
+                symphonia::core::formats::SeekTo::Time {
+                    time,
+                    track_id: Some(self.track_id),
+                },
+            )
+            .map_err(|e| format!("seek: {e}"))?;
+        self.decoder.reset();
+        self.state = FileState::Decoding;
+        self.bad = 0;
+        // Timestamps are in the track's time base; for audio that is almost always one
+        // tick per frame. Convert through seconds otherwise.
+        let base = self
+            .reader
+            .tracks()
+            .iter()
+            .find(|t| t.id == self.track_id)
+            .and_then(|t| t.time_base);
+        let to_frames = |ts: symphonia::core::units::Timestamp| -> u64 {
+            let ticks = ts.get().max(0) as u64;
+            match base {
+                Some(b) => b
+                    .calc_time(symphonia::core::units::Timestamp::new(ticks as i64))
+                    .map_or(ticks, |t| {
+                        (t.as_secs_f64() * f64::from(rate)).round() as u64
+                    }),
+                None => ticks,
+            }
+        };
+        let required = to_frames(seeked.required_ts);
+        let actual = to_frames(seeked.actual_ts).min(required);
+        self.skip = required - actual;
+        Ok(required)
+    }
+}
+
+/// Run `f`, catching a panic where panics unwind (`None` if it panicked).
+fn catch<T>(f: impl FnOnce() -> T) -> Option<T> {
+    #[cfg(panic = "unwind")]
+    {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
+    }
+    #[cfg(not(panic = "unwind"))]
+    {
+        Some(f())
+    }
+}
+
 /// Most channels Symphonia's WAV reader maps; it refuses more, but only after arithmetic
 /// that overflows on absurd counts.
 const WAV_MAX_CHANNELS: u16 = 26;
@@ -925,5 +1207,137 @@ mod tests {
         assert_eq!(b.read(&mut out).unwrap(), 4);
         assert_eq!(&out[..4], &[4, 5, 6, 7]);
         assert_eq!(b.read(&mut out).unwrap(), 0);
+    }
+
+    /// A 16-bit stereo WAV whose left sample at frame `i` is `i` (wrapping) and right `-i`.
+    fn counting_wav(rate: u32, frames: usize) -> Vec<u8> {
+        let mut v = wav(rate, 2, 0);
+        let data_len = frames * 4;
+        v[4..8].copy_from_slice(&((36 + data_len) as u32).to_le_bytes());
+        v[40..44].copy_from_slice(&(data_len as u32).to_le_bytes());
+        for i in 0..frames {
+            let x = (i % 30_000) as i16;
+            v.extend_from_slice(&x.to_le_bytes());
+            v.extend_from_slice(&(-x).to_le_bytes());
+        }
+        v
+    }
+
+    fn open_bytes(b: Vec<u8>, ext: Option<&str>) -> Result<FileDecoder, String> {
+        FileDecoder::open(Box::new(std::io::Cursor::new(b)), ext)
+    }
+
+    fn file_all(dec: &mut FileDecoder) -> (Vec<f32>, DecodeStatus) {
+        let mut out = Vec::new();
+        loop {
+            let st = dec.work(16, &mut |_, s| out.extend_from_slice(s));
+            if st != DecodeStatus::Progress {
+                return (out, st);
+            }
+        }
+    }
+
+    #[test]
+    fn file_decoder_decodes_every_frame_exactly() {
+        let mut dec = open_bytes(counting_wav(44_100, 50_000), Some("wav")).unwrap();
+        assert_eq!(dec.sample_rate(), Some(44_100));
+        assert_eq!(dec.total_frames(), Some(50_000));
+        assert_eq!(dec.source_format().unwrap().bits, Some(16));
+        let (pcm, st) = file_all(&mut dec);
+        assert_eq!(st, DecodeStatus::Finished);
+        assert!(dec.is_finished());
+        assert_eq!(pcm.len(), 50_000 * 2);
+        for (i, f) in pcm.as_chunks::<2>().0.iter().enumerate() {
+            let x = (i % 30_000) as f32 / 32768.0;
+            assert_eq!((f[0], f[1]), (x, -x), "frame {i}");
+        }
+        // Finished stays finished.
+        assert_eq!(dec.work(4, &mut |_, _| {}), DecodeStatus::Finished);
+    }
+
+    #[test]
+    fn file_decoder_seeks_sample_accurately() {
+        let mut dec = open_bytes(counting_wav(48_000, 96_000), None).unwrap();
+        // Decode a little, then jump forward, back, and past the end.
+        dec.work(2, &mut |_, _| {});
+        for (secs, frame) in [(1.25, 60_000u64), (0.5, 24_000), (0.0, 0)] {
+            assert_eq!(dec.seek(secs).unwrap(), frame);
+            let mut first = None;
+            dec.work(1, &mut |_, s| {
+                if first.is_none() {
+                    first = Some(s[0]);
+                }
+            });
+            let want = (frame % 30_000) as f32 / 32768.0;
+            assert_eq!(first, Some(want), "seek to {secs}");
+        }
+        assert_eq!(dec.seek(99.0).unwrap(), 96_000);
+        let (rest, st) = file_all(&mut dec);
+        assert!(rest.is_empty());
+        assert_eq!(st, DecodeStatus::Finished);
+        // Seeking after the end starts decoding again.
+        dec.seek(1.9).unwrap();
+        let (rest, _) = file_all(&mut dec);
+        assert_eq!(rest.len(), (96_000 - 91_200) * 2);
+        // Nonsense positions are clamped.
+        assert_eq!(dec.seek(f64::NAN).unwrap(), 0);
+        assert_eq!(dec.seek(-3.0).unwrap(), 0);
+    }
+
+    #[test]
+    fn file_decoder_refuses_hostile_and_broken_files() {
+        // The WAV header that overflows Symphonia's arithmetic.
+        let mut hostile = wav(44_100, 2, 100);
+        hostile[22..24].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert!(open_bytes(hostile, Some("wav")).is_err());
+        assert!(open_bytes(Vec::new(), None).is_err());
+        assert!(open_bytes(b"not audio at all".to_vec(), Some("flac")).is_err());
+        // Truncated mid-data: decodes what is there, then finishes cleanly.
+        let mut cut = counting_wav(44_100, 10_000);
+        cut.truncate(44 + 4 * 5_000 + 3);
+        if let Ok(mut dec) = open_bytes(cut, Some("wav")) {
+            let (pcm, st) = file_all(&mut dec);
+            assert!(pcm.len() <= 10_000 * 2);
+            assert!(matches!(
+                st,
+                DecodeStatus::Finished | DecodeStatus::Failed(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn file_decoder_never_panics_on_arbitrary_bytes() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let base = counting_wav(8_000, 2_000);
+        for round in 0..300 {
+            let mut b = if round % 3 == 0 {
+                (0..(next() % 4096) as usize)
+                    .map(|_| next() as u8)
+                    .collect()
+            } else {
+                base.clone()
+            };
+            if !b.is_empty() {
+                for _ in 0..(next() % 16) {
+                    let i = (next() as usize) % b.len();
+                    b[i] = next() as u8;
+                }
+                if round % 2 == 0 {
+                    let n = (next() as usize) % b.len();
+                    b.truncate(n);
+                }
+            }
+            let ext = [None, Some("wav"), Some("flac"), Some("mp3"), Some("ogg")][round % 5];
+            if let Ok(mut dec) = open_bytes(b, ext) {
+                let _ = dec.seek((next() % 3) as f64);
+                let _ = file_all(&mut dec);
+            }
+        }
     }
 }

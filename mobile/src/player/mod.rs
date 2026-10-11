@@ -22,9 +22,11 @@ pub mod pipeline;
 pub mod protocol;
 pub mod ring;
 
+mod audio;
 mod engine;
 mod signal;
 
+use audio::OutputShared;
 use engine::{Cmd, Engine, Shared};
 use output::{AudioOutput, PullOutput, PullSlot};
 use ring::Ring;
@@ -286,10 +288,12 @@ impl LocalPlayer {
             status: Mutex::new(LocalPlayerStatus::default()),
             signal: Mutex::new(None),
             observer,
-            ring,
-            hold: std::sync::atomic::AtomicBool::new(*self.hold.lock().unwrap()),
-            route: Mutex::new(self.route.lock().unwrap().clone()),
-            negotiator: Mutex::new(self.negotiator.lock().unwrap().clone()),
+            out: Arc::new(OutputShared {
+                ring,
+                hold: std::sync::atomic::AtomicBool::new(*self.hold.lock().unwrap()),
+                route: Mutex::new(self.route.lock().unwrap().clone()),
+                negotiator: Mutex::new(self.negotiator.lock().unwrap().clone()),
+            }),
         });
         let pull = Arc::new(Mutex::new(PullSlot::default()));
         let output = make_output(cfg.output, &pull)?;
@@ -324,7 +328,7 @@ impl LocalPlayer {
     /// Leave LMS and stop playing. Returns at once; the engine finishes in the background.
     pub fn stop(&self) {
         if let Some(r) = self.run.lock().unwrap().take() {
-            r.shared.ring.set_hold(true);
+            r.shared.out.ring.set_hold(true);
             let _ = r.cmds.send(Cmd::Stop);
         }
     }
@@ -375,9 +379,9 @@ impl LocalPlayer {
     pub fn set_hold(&self, hold: bool) {
         *self.hold.lock().unwrap() = hold;
         if let Some(r) = self.run.lock().unwrap().as_ref() {
-            r.shared.hold.store(hold, Ordering::Release);
+            r.shared.out.hold.store(hold, Ordering::Release);
             if hold {
-                r.shared.ring.set_hold(true);
+                r.shared.out.ring.set_hold(true);
             }
         }
     }
@@ -386,7 +390,10 @@ impl LocalPlayer {
     pub fn set_duck(&self, duck: bool) {
         *self.duck.lock().unwrap() = duck;
         if let Some(r) = self.run.lock().unwrap().as_ref() {
-            r.shared.ring.set_gain(if duck { DUCK_GAIN } else { 1.0 });
+            r.shared
+                .out
+                .ring
+                .set_gain(if duck { DUCK_GAIN } else { 1.0 });
         }
     }
 
@@ -402,7 +409,7 @@ impl LocalPlayer {
         };
         *self.route.lock().unwrap() = route.clone();
         if let Some(r) = self.run.lock().unwrap().as_ref() {
-            *r.shared.route.lock().unwrap() = route;
+            *r.shared.out.route.lock().unwrap() = route;
         }
     }
 
@@ -413,7 +420,7 @@ impl LocalPlayer {
     pub fn set_output_negotiator(&self, negotiator: Option<Arc<dyn OutputNegotiator>>) {
         *self.negotiator.lock().unwrap() = negotiator.clone();
         if let Some(r) = self.run.lock().unwrap().as_ref() {
-            *r.shared.negotiator.lock().unwrap() = negotiator;
+            *r.shared.out.negotiator.lock().unwrap() = negotiator;
             let _ = r.cmds.send(Cmd::Renegotiate);
         }
     }
