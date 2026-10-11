@@ -1,0 +1,15 @@
+[package]
+name = "anywhere-uniffi-bindgen"
+description = "uniffi-bindgen for the Lyrion Anywhere mobile bindings (a build tool; never shipped)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/main.rs"
+
+[dependencies]
+# Must stay on the same UniFFI version as anywhere-mobile.
+uniffi = { version = "0.31", features = ["cli"] }

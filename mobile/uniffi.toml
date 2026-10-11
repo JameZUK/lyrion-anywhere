@@ -1,0 +1,3 @@
+[bindings.kotlin]
+package_name = "io.github.jamezuk.lyrionanywhere.core"
+cdylib_name = "anywhere_mobile"
