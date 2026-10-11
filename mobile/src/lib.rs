@@ -31,6 +31,7 @@ pub mod player;
 pub mod players;
 pub mod server;
 pub mod session;
+mod tls;
 mod transport;
 
 #[cfg(target_os = "android")]

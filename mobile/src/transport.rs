@@ -25,7 +25,6 @@ use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use rustls::ClientConfig;
-use rustls_platform_verifier::BuilderVerifierExt;
 use serde_json::Value;
 use url::Url;
 
@@ -103,15 +102,20 @@ mod causes_tests {
 /// The platform-verified TLS configuration shared by HTTP and WebSocket connections.
 pub(crate) fn tls_config(alpn: &[&[u8]]) -> Result<ClientConfig, ApiError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let unavailable = |e: rustls::Error| {
+        ApiError::network(format!(
+            "TLS is not available on this device: {}",
+            causes(&e)
+        ))
+    };
+    // The platform's verifier, with a second opinion for Android's unreliable "revoked"
+    // verdict (see `crate::tls`).
+    let verifier = crate::tls::verifier(provider.clone()).map_err(unavailable)?;
     let mut cfg = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
-        .and_then(|b| b.with_platform_verifier())
-        .map_err(|e| {
-            ApiError::network(format!(
-                "TLS is not available on this device: {}",
-                causes(&e)
-            ))
-        })?
+        .map_err(unavailable)?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
     cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     Ok(cfg)

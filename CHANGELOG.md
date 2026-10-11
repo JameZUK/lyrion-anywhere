@@ -52,6 +52,7 @@ Dated entries, newest first.
   - *README:* its header.
 
 ### Fixes
+- **Android: "invalid peer certificate: revoked" for valid certificates.** Android's revocation check, as used by rustls-platform-verifier, reports any failure to check revocation as "revoked". Let's Encrypt certificates have had no OCSP responder since 2025, and Android can't fetch CRLs, so every such site failed. A "revoked" verdict from the platform is now checked again with webpki against the device's own system CA store, and accepted only if that passes; every other verdict stands. Network errors now also show their cause, so connection problems can be diagnosed.
 - **Tapping the position bar of a paused or stopped track now plays from there** (web app and Android), instead of only moving the position.
 - **Tracks stopping part-way:** when a player held enough audio not to need more for a minute (a long buffer, or paused), the gateway ended its stream cleanly, and the player took that for the end of the track and cut it short. The stream now ends with an error, so the player fetches the rest from where it was.
 - **No other clean ends that aren't the end of the track:** a stream request resumed after LMS's stream had failed or stalled was served the rest and then ended cleanly, so the player reported a cut-off track as finished. Cancelled and superseded requests ended cleanly too. Only a stream LMS itself finished cleanly now ends cleanly.

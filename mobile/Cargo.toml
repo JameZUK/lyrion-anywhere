@@ -25,6 +25,7 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["http1"
 http-body-util = "0.1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-platform-verifier = "0.7"
+log = "0.4"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "__rustls-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 serde = { version = "1", features = ["derive"] }
@@ -40,6 +41,7 @@ jni = { version = "0.22", default-features = false }
 ndk = { version = "0.9", default-features = false, features = ["audio", "api-level-29"] }
 
 [dev-dependencies]
+webpki-root-certs = "1"
 anywhere-gateway = { path = "../gateway" }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }

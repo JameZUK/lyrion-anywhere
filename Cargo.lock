@@ -159,6 +159,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "jni",
+ "log",
  "ndk",
  "percent-encoding",
  "rustls",
@@ -170,6 +171,7 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "uniffi",
  "url",
+ "webpki-root-certs",
 ]
 
 [[package]]
