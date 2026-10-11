@@ -92,13 +92,13 @@ jobs:
       - name: Build, unit tests and lint (all three ABIs)
         working-directory: apps/android
         run: ./gradlew assembleDebug testDebugUnitTest lint
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: android-reports
           path: apps/android/*/build/reports/
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: lyrion-anywhere-debug-apk
           path: apps/android/app/build/outputs/apk/debug/*.apk
@@ -161,7 +161,7 @@ jobs:
         env:
           ANYWHERE_RUN_ARM: '1'
         run: tools/test-release.sh dist
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: plugin-release
           path: |
@@ -274,7 +274,7 @@ jobs:
             java -version 2>&1 | head -1
           } > dist-android/BUILDINFO.txt
           (cd dist-android && sha256sum LyrionAnywhere-* BUILDINFO.txt > SHA256SUMS && cat SHA256SUMS)
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: android-release
           path: dist-android/
