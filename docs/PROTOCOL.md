@@ -356,7 +356,7 @@ Headers: `Content-Type`, `Content-Length`, `Accept-Ranges: bytes`, `Cache-Contro
 
 A library track's waveform and loudness, for waveform seek bars and loudness levelling (plan §4, milestone A3). Computed by the gateway with the core (`core::analysis`) the first time it is asked for, then cached. `/v1/me` says whether a server offers it: `"features": {"analysis": true}`.
 
-**Who may ask:** the same rules as downloads. A bearer access token (401 without a valid one) and the user's download permission (403 `downloads are not allowed for this account` without it). Only local library files: streams and radio are 404. No `X-Anywhere-Client` header is needed.
+**Who may ask:** any signed-in user: a bearer access token (401 without a valid one). The waveform is available for everything a user can play, so it does not depend on the download permission. Only local library files: streams and radio are 404. No `X-Anywhere-Client` header is needed.
 
 **Query and encoding:** nothing, `?format=json` or `?format=binary`; anything else is 400 `unknown parameter`. Without a query, `Accept: application/vnd.lyrion-anywhere.analysis` (not `q=0`) asks for the binary form; otherwise the answer is JSON.
 

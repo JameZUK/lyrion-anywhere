@@ -3,9 +3,9 @@
 //! The waveform, loudness (EBU R128), peaks, silence and fades of a library track, computed
 //! by the core ([`anywhere_core::analysis`]) and cached on disk.
 //!
-//! - **Who:** the same rules as downloads: a valid access token and the user's download
-//!   permission (403 without it). Library files only (LMS `url` `file://…`); streams and
-//!   radio are 404. Nothing in the answer names a path.
+//! - **Who:** any signed-in user (a valid access token). Everyone can play every library
+//!   track, so the waveform is not tied to the download permission. Library files only
+//!   (LMS `url` `file://…`); streams and radio are 404. Nothing in the answer names a path.
 //! - **Ids:** checked as for downloads (a positive integer), then looked up in LMS with a
 //!   time limit, so only a track LMS knows is fetched.
 //! - **Formats:** what the core decodes: FLAC, MP3, AAC/ALAC in MP4, Ogg Vorbis, Ogg Opus,
@@ -365,13 +365,6 @@ pub async fn track(
     let Some(query) = parse_query(query.as_deref()) else {
         return error(StatusCode::BAD_REQUEST, "unknown parameter");
     };
-    let policy = match gw.accounts().download_policy(principal.user_id) {
-        Ok(p) => p,
-        Err(_) => return Failure::Internal.response(),
-    };
-    if !policy.enabled {
-        return error(StatusCode::FORBIDDEN, download::NOT_ALLOWED);
-    }
     let Some(svc) = gw.analysis.as_ref() else {
         return error(StatusCode::NOT_FOUND, NOT_AVAILABLE);
     };

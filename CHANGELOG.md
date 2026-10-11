@@ -6,7 +6,7 @@ Dated entries, newest first.
 
 ### Analysis and waveform (A3)
 - **Gateway track analysis:** `GET /v1/analysis/track/{id}` gives a track's waveform, EBU R128 loudness, loudness range, true peak, silence and fades. It answers in JSON or a compact binary form, with ETags.
-  - **Access:** the same rules as downloads.
+  - **Access:** any signed-in user, for any library track; not tied to the download permission.
   - **How it runs:** the gateway decodes the track with the core, off the async runtime, and caches the result on disk by the stable track key.
   - **While it runs:** a request waits up to 10 s, then gets 202 with `Retry-After`.
   - **Bounded:** one analysis at a time, per-user limits (429), size and duration caps (413) and a deadline (504). Corrupt files are a clean 422.

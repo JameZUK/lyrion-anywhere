@@ -226,17 +226,13 @@ async fn missing_invalid_and_foreign_credentials_are_refused() {
 }
 
 #[tokio::test]
-async fn users_without_download_permission_are_refused() {
+async fn users_without_download_permission_still_get_waveforms() {
+    // Anyone signed in can play every library track, so the waveform follows sign-in, not
+    // the download permission.
     let a = with_analysis(|_| {}).await;
     let h = &a.h;
     h.accounts.set_downloads("alice", false, None).unwrap();
     let r = h.track_analysis("10").await;
-    assert_eq!(r.status(), S::FORBIDDEN);
-    assert!(h.lms.rpc_calls().is_empty());
-    // Bob still may.
-    let r = h
-        .analysis("/v1/analysis/track/10", Some(&h.tok_b), &[])
-        .await;
     assert_eq!(r.status(), S::OK);
 }
 

@@ -34,7 +34,7 @@ Native Android and iOS apps come after v1 and use the same documented protocol.
 | D15 | Android minimum | **Android 10 (API 29).** Bit-perfect USB DAC output is enabled at runtime on Android 14+ where the device supports it. Decided 2026-10-11. |
 | D16 | Native app distribution | **Free, through Google Play, F-Droid (reproducible builds) and signed APKs on GitHub releases.** Decided 2026-10-11. |
 | D17 | iOS licensing | **GPL plus an App Store exception** for this project's own code, so the iOS app can be distributed through the App Store. The exception text is added to the licence before the iOS milestone; contributions from then on are accepted under it. Decided 2026-10-11. |
-| D18 | Where track analysis runs | **On the gateway**, on demand (`GET /v1/analysis/track/{id}`, §5.7): decoded and analysed with the core, one track at a time, results cached on disk by the stable track key and file version. Same access rules as downloads. On by default, with an off switch (`--no-analysis`, plugin setting); clients fall back to a plain seek bar and ReplayGain tags. Plan decision N5. Decided 2026-10-11. |
+| D18 | Where track analysis runs | **On the gateway**, on demand (`GET /v1/analysis/track/{id}`, §5.7): decoded and analysed with the core, one track at a time, results cached on disk by the stable track key and file version. Open to any signed-in user (not tied to the download permission: the waveform is for anything you can play; decided 2026-10-11). On by default, with an off switch (`--no-analysis`, plugin setting); clients fall back to a plain seek bar and ReplayGain tags. Plan decision N5. Decided 2026-10-11. |
 
 ---
 
@@ -246,7 +246,7 @@ This is the one contract used by the web app now and the native apps later. It i
 | `POST /v1/rpc` | Filtered JSON-RPC (§5.2) | Access token |
 | `WS /v1/events` | Filtered event push | Access token |
 | `GET /v1/art/…` | Artwork | Access token or signed URL |
-| `POST /v1/offline/manifest` | Albums/playlists/tracks → track list with sizes, versions, metadata | Access token + download permission |
+| `POST /v1/offline/manifest` | Albums/playlists/tracks → track list with sizes, versions, metadata | Access token |
 | `GET /v1/download/track/{id}/info` | Track metadata, stable key and the formats this user may download | Access token + download permission |
 | `GET /v1/download/track/{id}?format=` | One track file (`original`, `mp3` = MP3 320, `opus` = Opus 160), `Range` supported | Access token + download permission |
 | `GET /v1/analysis/track/{id}[?format=json\|binary]` | Waveform, R128 loudness, peaks, silence and fades of a track (§5.7); 202 while it is being analysed | Access token + download permission |
