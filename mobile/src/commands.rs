@@ -225,6 +225,11 @@ pub fn players() -> Command {
     vec![json!("players"), json!(0), json!(100)]
 }
 
+/// All sync groups (the gateway keeps only players the caller may control).
+pub fn sync_groups() -> Command {
+    vec![json!("syncgroups"), json!("?")]
+}
+
 pub fn albums(
     start: u32,
     n: u32,
@@ -777,6 +782,7 @@ mod tests {
             ]
         );
         assert_eq!(libraries(), vec![json!("libraries")]);
+        assert_eq!(sync_groups(), vec![json!("syncgroups"), json!("?")]);
         assert_eq!(
             favourites(0, 500, Some("f047f379.3")).unwrap(),
             vec![

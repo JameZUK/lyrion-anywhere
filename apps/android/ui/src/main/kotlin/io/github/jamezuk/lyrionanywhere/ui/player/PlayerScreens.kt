@@ -1,6 +1,8 @@
 package io.github.jamezuk.lyrionanywhere.ui.player
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -16,6 +18,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.PowerSettingsNew
@@ -60,11 +63,12 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import io.github.jamezuk.lyrionanywhere.core.Player
+import io.github.jamezuk.lyrionanywhere.core.Track
 import io.github.jamezuk.lyrionanywhere.core.RepeatMode
 import io.github.jamezuk.lyrionanywhere.core.ShuffleMode
 import io.github.jamezuk.lyrionanywhere.data.Waveform
 import io.github.jamezuk.lyrionanywhere.ui.R
+import io.github.jamezuk.lyrionanywhere.ui.theme.ArtTinted
 import io.github.jamezuk.lyrionanywhere.ui.components.ArtworkImage
 import io.github.jamezuk.lyrionanywhere.ui.components.EmptyState
 import io.github.jamezuk.lyrionanywhere.ui.components.ErrorState
@@ -88,11 +92,27 @@ fun rememberElapsed(state: PlayerUiState, clock: () -> Long): Double {
     return PlayerViewModel.elapsedAt(state, now)
 }
 
-/** The bar shown above the navigation: what's playing, with play/pause and next. */
+/**
+ * The bar shown above the navigation: what's playing, with play/pause, next and the output
+ * button; above it, the "Playing on …" strip when another player is controlled (D20).
+ */
 @Composable
-fun MiniPlayer(state: PlayerUiState, onOpen: () -> Unit, onTogglePlay: () -> Unit, onNext: () -> Unit) {
-    val track = state.status?.current ?: return
+fun MiniPlayer(
+    state: PlayerUiState,
+    onOpen: () -> Unit,
+    onTogglePlay: () -> Unit,
+    onNext: () -> Unit,
+    onOutputs: () -> Unit = {},
+    onBackToPhone: () -> Unit = {},
+) {
+    val track = state.status?.current
+    if (track == null) {
+        PlayingOnStrip(state, onBackToPhone)
+        return
+    }
     Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
+      Column {
+        PlayingOnStrip(state, onBackToPhone)
         Row(
             Modifier
                 .clickable(onClickLabel = stringResource(R.string.open_now_playing), onClick = onOpen)
@@ -111,11 +131,13 @@ fun MiniPlayer(state: PlayerUiState, onOpen: () -> Unit, onTogglePlay: () -> Uni
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            OutputButton(state, onOutputs)
             PlayPauseButton(state.playing, onTogglePlay, filled = false)
             IconButton(onClick = onNext) {
                 Icon(Icons.Outlined.SkipNext, contentDescription = stringResource(R.string.action_next))
             }
         }
+      }
     }
 }
 
@@ -132,95 +154,6 @@ private fun PlayPauseButton(playing: Boolean, onClick: () -> Unit, filled: Boole
     }
 }
 
-/** The players this account may control, to pick one. */
-@Composable
-fun PlayerPicker(
-    players: List<Player>,
-    selectedId: String?,
-    onSelect: (String) -> Unit,
-) {
-    Column {
-        players.forEach { p ->
-            ListItem(
-                leadingContent = { Icon(Icons.Outlined.Speaker, contentDescription = null) },
-                headlineContent = { Text(p.name) },
-                supportingContent = {
-                    Text(
-                        stringResource(
-                            when {
-                                !p.connected -> R.string.player_disconnected
-                                p.playing -> R.string.player_playing
-                                !p.powered -> R.string.player_off
-                                else -> R.string.player_idle
-                            },
-                        ),
-                    )
-                },
-                trailingContent = { RadioButton(selected = p.id == selectedId, onClick = null) },
-                modifier = Modifier.selectable(
-                    selected = p.id == selectedId,
-                    role = Role.RadioButton,
-                    onClick = { onSelect(p.id) },
-                ),
-            )
-        }
-    }
-}
-
-/** Home: choose a player, and see what it's playing. */
-@Composable
-fun HomeScreen(
-    state: PlayerUiState,
-    onSelect: (String) -> Unit,
-    onOpenNowPlaying: () -> Unit,
-    onRetry: () -> Unit,
-    modifier: Modifier = Modifier,
-    onPlayOnPhone: (Boolean) -> Unit = {},
-) {
-    when {
-        state.loading -> LoadingState(modifier)
-        state.players.isEmpty() && state.error != null -> ErrorState(state.error, onRetry, modifier)
-        else -> LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
-            val current = state.status?.current
-            if (current != null) {
-                item {
-                    Card(
-                        onClick = onOpenNowPlaying,
-                        modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    ) {
-                        Row(
-                            Modifier.padding(16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            ArtworkImage(current.artwork, 300, contentDescription = null, modifier = Modifier.size(96.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    stringResource(if (state.playing) R.string.now_playing else R.string.paused),
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                                Text(current.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                current.artist?.let { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                                current.album?.let {
-                                    Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            item { SectionHeader(stringResource(R.string.section_players)) }
-            item { PlayOnPhoneRow(state.local, onPlayOnPhone) }
-            if (state.players.isEmpty()) {
-                item { Text(stringResource(R.string.no_players), Modifier.padding(16.dp)) }
-            } else {
-                item { PlayerPicker(state.players, state.selectedId, onSelect) }
-            }
-        }
-    }
-}
-
 /** Full remote control for the selected player. */
 @Composable
 fun NowPlayingScreen(
@@ -232,7 +165,7 @@ fun NowPlayingScreen(
     val status = state.status
     val player = state.selected
     if (player == null) {
-        EmptyState(stringResource(R.string.choose_player_first), modifier)
+        if (state.waitingForPhone) LoadingState(modifier) else EmptyState(stringResource(R.string.choose_player_first), modifier)
         return
     }
     if (status == null) {
@@ -241,8 +174,11 @@ fun NowPlayingScreen(
     }
     val track = status.current
     val elapsed = rememberElapsed(state, clock)
+    ArtTinted(track?.artwork) {
+    Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    PlayingOnStrip(state, actions.onBackToPhone)
     LazyColumn(
-        modifier.fillMaxSize(),
+        Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         contentPadding = PaddingValues(16.dp),
     ) {
@@ -321,7 +257,15 @@ fun NowPlayingScreen(
                         )
                     }
                 }
-                VolumeBar(status.volume.toInt(), actions.onVolume)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) { VolumeBar(status.volume.toInt(), actions.onVolume) }
+                    OutputButton(state, actions.onOutputs)
+                    if (track?.id != null && actions.onMore != null) {
+                        IconButton(onClick = { actions.onMore.invoke(track) }) {
+                            Icon(Icons.Outlined.MoreVert, contentDescription = stringResource(R.string.action_more))
+                        }
+                    }
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(player.name, style = MaterialTheme.typography.labelLarge)
                     Spacer(Modifier.weight(1f))
@@ -354,6 +298,8 @@ fun NowPlayingScreen(
             )
         }
     }
+    }
+    }
 }
 
 /** Everything the Now Playing screen can do. */
@@ -368,6 +314,11 @@ data class NowPlayingActions(
     val onPower: (Boolean) -> Unit,
     val onJump: (Int) -> Unit,
     val onRetry: () -> Unit,
+    /** Open "Play on…" (D20). */
+    val onOutputs: () -> Unit = {},
+    val onBackToPhone: () -> Unit = {},
+    /** "More…" for the current track. */
+    val onMore: ((Track) -> Unit)? = null,
 )
 
 /**

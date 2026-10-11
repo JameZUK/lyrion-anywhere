@@ -165,6 +165,12 @@ pub struct Track {
     pub year: Option<i32>,
 }
 
+/// Players playing in step: their ids (two or more), as LMS lists them.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SyncGroup {
+    pub player_ids: Vec<String>,
+}
+
 /// A page of years that have albums (0 is "no year").
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct YearPage {
@@ -413,6 +419,31 @@ fn khz(hz: i64) -> String {
     } else {
         format!("{:.1}", hz as f64 / 1000.0)
     }
+}
+
+/// Sync groups: well-formed, distinct player ids only; groups of one and players in two
+/// groups (nonsense) are left out.
+pub(crate) fn sync_groups_from(v: &Value) -> Vec<SyncGroup> {
+    let mut out: Vec<SyncGroup> = Vec::new();
+    for g in loop_of(v, "syncgroups_loop").take(100) {
+        let Some(list) = g["sync_members"].as_str().filter(|s| s.len() <= 4096) else {
+            continue;
+        };
+        let mut ids: Vec<String> = Vec::new();
+        for raw in list.split(',') {
+            let id = raw.trim().to_ascii_lowercase();
+            if is_player_id(&id) && !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        let taken = out
+            .iter()
+            .any(|x| x.player_ids.iter().any(|p| ids.contains(p)));
+        if ids.len() > 1 && !taken {
+            out.push(SyncGroup { player_ids: ids });
+        }
+    }
+    out
 }
 
 pub(crate) fn years_from(v: &Value) -> YearPage {
@@ -845,6 +876,23 @@ mod tests {
     }
 
     #[test]
+    fn sync_groups_need_valid_distinct_players() {
+        let g = sync_groups_from(&json!({"syncgroups_loop": [
+            {"sync_members": "AA:BB:CC:DD:EE:01,aa:bb:cc:dd:ee:02,aa:bb:cc:dd:ee:01"},
+            {"sync_members": "aa:bb:cc:dd:ee:03"},
+            {"sync_members": "aa:bb:cc:dd:ee:02,aa:bb:cc:dd:ee:04"},
+            {"sync_members": "../x,aa:bb:cc:dd:ee:05"},
+            {"sync_members": 7}
+        ]}));
+        assert_eq!(
+            g,
+            vec![SyncGroup {
+                player_ids: vec!["aa:bb:cc:dd:ee:01".into(), "aa:bb:cc:dd:ee:02".into()]
+            }]
+        );
+    }
+
+    #[test]
     fn robust_on_arbitrary_json() {
         let samples = [
             json!(null),
@@ -868,6 +916,7 @@ mod tests {
             let _ = libraries_from(&v);
             let _ = favourites_from(&v);
             let _ = playlists_from(&v);
+            let _ = sync_groups_from(&v);
             let s = status_from(&v);
             assert!(s.volume <= 100);
         }

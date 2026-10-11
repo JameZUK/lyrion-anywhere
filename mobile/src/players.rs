@@ -40,6 +40,12 @@ impl Players {
         Ok(model::players_from(&v))
     }
 
+    /// Sync groups among the players this account may control.
+    pub async fn sync_groups(&self) -> Result<Vec<model::SyncGroup>, ApiError> {
+        let v = self.session.core().rpc("", commands::sync_groups()).await?;
+        Ok(model::sync_groups_from(&v))
+    }
+
     pub async fn status(&self, player: String) -> Result<PlayerStatus, ApiError> {
         Ok(model::status_from(
             &self.send(&player, commands::status()).await?,

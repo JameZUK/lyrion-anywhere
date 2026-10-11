@@ -500,6 +500,80 @@ Built, in CI. **Verified on the host, in a browser and on the JVM; nothing has r
 - The web mini player (bottom bar) keeps the plain slider.
 - ~~In debug builds, the player's streaming decoder can still panic on the WAV header overflow the fuzz test found.~~ Fixed in A2: the streaming decoder refuses those headers before Symphonia parses them.
 
+### A4 part 1 status (2026-10-11): browse parity, rich pages, player-first
+
+Built, in CI. **Verified on the host and on the JVM (Robolectric); nothing has run on a phone yet.**
+
+**Player-first (decision D20, agreed 2026-10-11)**
+- **This phone is the default player.** After sign-in its player is on unless the user turned it off, and Now playing, the mini player and the queue follow it. The A1 "Play on this phone" switch on Home is gone; it became the setting below.
+- **No prominent picker.** An output button (next to the volume in Now playing, and in the mini player) opens a **"Play on…" sheet**:
+  - this phone, ticked when it is the player;
+  - the other players the user may control, each with what it is playing;
+  - sync groups.
+- **Controlling another player is always visible:** a coloured strip on Now playing and the mini player says "Playing on <name>", with one tap for **Back to this phone**.
+- **Default player, per device** (Settings): this phone (default), last used, or a specific player; this phone if that player isn't available.
+- The rules live in one small place (`ui/player/PlayerChoice.kt`); screens only ask the player controller to play things.
+- **Transfer ("Move playback here", "Bring to this phone") is agreed but not built:** its LMS recipe is still being designed on the web side. Each player row in the sheet already has a slot for that action next to *Control* (`PlayOnActions.rowActions`).
+
+**Browse parity with the web app** (using the same commands, which the gateway already allowed)
+- **Library page:**
+  - **New Music** first;
+  - Albums, Artists, Genres, Years, Compilations, Random Albums and Music Folder;
+  - Playlists, Favourites, and Apps & Radio;
+  - a virtual-library picker, shown only when LMS has libraries; the choice is remembered on the device.
+- **Albums** sort by title, artist, year or date added. **Artists** have role chips (album artists, all, and composers, conductors and bands where the library has them).
+- **Genres** (searchable) open with an Albums/Artists switch. **Years** open a year. **Random Albums** come as one batch with "Shuffle again". **Music Folder** uses numeric `folder_id` only; folders and tracks can be played and added.
+- **Rich pages:**
+  - Home: the library first, with carousels for recently added, random albums, favourites and playlists, plus a compact player card while something is playing.
+  - Album: large art, details (year, genre, track count, length, format such as "FLAC 24/96"), numbered tracks with durations, disc sections, and Play, Shuffle, Add and More.
+  - Artist: header art, albums grouped as *Albums* (album artist), *Appears on* and *Compilations*, and Play all, Shuffle and More.
+  - Playlists and favourites pages.
+- **Art-driven colour:**
+  - an in-house quantiser (no new dependency) picks the cover's colour;
+  - the album, artist and Now playing pages are tinted with it;
+  - every foreground is adjusted until it meets WCAG AA contrast on its background.
+- **"More…" everywhere** (tracks, albums, artists, genres, years, folders and playlists, from a button or a long press):
+  - a bottom sheet with Play now, Play next and Add to queue;
+  - then LMS's own `trackinfo`/`albuminfo`/`artistinfo`/… menu, so plugin entries such as "more like this" appear.
+  - Its actions run through the gateway's learned-action check, as the web app's do.
+- **Apps & Radio:**
+  - apps, radio services and plugins from the player's home menu;
+  - SlimBrowse menus with search boxes, paging, Play next and Add;
+  - suitability judged from each top menu (3 at a time, remembered for 10 minutes): unusable apps are hidden behind "Show all", and apps needing setup say so.
+
+**`mobile/`**
+- Typed builders mirroring the web app's, with a `LibraryFilter` (genre, year, artist, compilation, role, virtual library) and new `Selection`s (playlist, genre, year, folder).
+- `Menus` resolves SlimBrowse actions exactly as `slimbrowse.ts` does (items' own and base actions with `itemsParams`). It checks command words, keys and values again before sending, and refuses `url` parameters. It also lists plugin entries and judges suitability.
+- Also new: `Players::sync_groups` and `play_favourite`. Tracks now carry disc, genre, format and year.
+
+**Tests**
+- **Rust unit:** every new builder's shape (matching the web app); hostile filters, item ids and app names refused; parsers for folders (paths cut to their last part), libraries, favourites, playlists, years and sync groups; SlimBrowse resolution, hostile menus and robustness on arbitrary JSON.
+- **Rust integration against the real gateway:**
+  - every new command passes the allow-list;
+  - apps, radio, plugins and app search boxes open;
+  - context menus offer the plugin action and never the file's location;
+  - forged, altered and never-offered actions, and server administration, are refused by the gateway and never reach LMS;
+  - malformed actions never leave the device.
+- **Android:**
+  - view models: albums with filters and the virtual library, random batches, duplicate pages, role chips, genre search, album discs and details, artist grouping (and a failing role query), Home's carousels, the menu navigator, Apps & Radio suitability and its cache;
+  - D20: the start-up rules, the phone waited for (never another player meanwhile), "Back to this phone" (including with "Last used"), and the default-player setting and its persistence (malformed values ignored);
+  - Compose: the "Playing on" strip, the "Play on…" sheet, the default-player setting, the Library picker, the album page, the "More…" sheet and Apps & Radio, plus 48 dp touch targets with labels;
+  - art colour: contrast for 511 covers in both themes, and the quantiser.
+- **Totals:** 150 `anywhere-mobile` tests; 174 Android JVM/Robolectric tests.
+
+**Unverified:** everything on a device. That includes:
+- the art tint as rendered;
+- bottom sheets with TalkBack;
+- real LMS context menus and plugins through the app: AudioMuse-AI, Spotty and so on are covered only by the fake LMS and the web app's experience;
+- the phone being chosen at start-up against a real LMS, which lists the player a moment after it connects.
+
+**Known gaps (A4 part 2 and later)**
+- Transfer of playback (above).
+- Queue editing; syncing and unsyncing players from the sheet (groups are listed only); widgets, Quick Settings tile, gestures and tablet layouts.
+- Playlist editing (admins).
+- Search results don't yet carry art or "More…" for albums and artists.
+- "Shuffle" leaves LMS's shuffle mode on, as LMS's own clients do.
+
 ## 9. Quality: testing audio as seriously as security
 
 **Bit-perfect verification**

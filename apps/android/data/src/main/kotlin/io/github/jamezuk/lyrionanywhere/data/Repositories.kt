@@ -3,6 +3,23 @@ package io.github.jamezuk.lyrionanywhere.data
 import io.github.jamezuk.lyrionanywhere.core.Album
 import io.github.jamezuk.lyrionanywhere.core.AlbumPage
 import io.github.jamezuk.lyrionanywhere.core.AlbumSort
+import io.github.jamezuk.lyrionanywhere.core.AppEntry
+import io.github.jamezuk.lyrionanywhere.core.ArtistRole
+import io.github.jamezuk.lyrionanywhere.core.FavouritePage
+import io.github.jamezuk.lyrionanywhere.core.FolderPage
+import io.github.jamezuk.lyrionanywhere.core.Genre
+import io.github.jamezuk.lyrionanywhere.core.GenrePage
+import io.github.jamezuk.lyrionanywhere.core.InfoKind
+import io.github.jamezuk.lyrionanywhere.core.LibraryFilter
+import io.github.jamezuk.lyrionanywhere.core.MenuAction
+import io.github.jamezuk.lyrionanywhere.core.MenuOutcome
+import io.github.jamezuk.lyrionanywhere.core.MenuPage
+import io.github.jamezuk.lyrionanywhere.core.PlaylistPage
+import io.github.jamezuk.lyrionanywhere.core.PluginEntry
+import io.github.jamezuk.lyrionanywhere.core.Suitability
+import io.github.jamezuk.lyrionanywhere.core.SyncGroup
+import io.github.jamezuk.lyrionanywhere.core.VirtualLibrary
+import io.github.jamezuk.lyrionanywhere.core.YearPage
 import io.github.jamezuk.lyrionanywhere.core.ArtImage
 import io.github.jamezuk.lyrionanywhere.core.ArtistPage
 import io.github.jamezuk.lyrionanywhere.core.EventListener
@@ -25,22 +42,76 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 
 /** Library browsing. Pages are at most 500 items. */
 interface LibraryRepository {
-    suspend fun albums(start: Int, count: Int, sort: AlbumSort, search: String? = null): ApiResult<AlbumPage>
+    suspend fun albums(
+        start: Int,
+        count: Int,
+        sort: AlbumSort,
+        search: String? = null,
+        filter: LibraryFilter = LibraryFilter(),
+    ): ApiResult<AlbumPage>
 
     suspend fun album(id: Long): ApiResult<Album?>
 
     suspend fun albumTracks(albumId: Long): ApiResult<List<Track>>
 
-    suspend fun artists(start: Int, count: Int, search: String? = null): ApiResult<ArtistPage>
+    suspend fun artists(
+        start: Int,
+        count: Int,
+        search: String? = null,
+        filter: LibraryFilter = LibraryFilter(),
+    ): ApiResult<ArtistPage>
 
-    suspend fun artistAlbums(artistId: Long): ApiResult<List<Album>>
+    /** Whether the library has any artists in this role. */
+    suspend fun hasRole(role: ArtistRole, libraryId: String?): ApiResult<Boolean>
+
+    suspend fun artistAlbums(artistId: Long, role: ArtistRole? = null): ApiResult<List<Album>>
+
+    suspend fun genres(start: Int, count: Int, libraryId: String?, search: String? = null): ApiResult<GenrePage>
+
+    suspend fun genre(id: Long): ApiResult<Genre?>
+
+    suspend fun years(start: Int, count: Int, libraryId: String?): ApiResult<YearPage>
+
+    suspend fun musicFolder(start: Int, count: Int, folderId: Long?): ApiResult<FolderPage>
+
+    suspend fun libraries(): ApiResult<List<VirtualLibrary>>
+
+    suspend fun favourites(start: Int, count: Int, itemId: String? = null): ApiResult<FavouritePage>
+
+    suspend fun playlists(start: Int, count: Int): ApiResult<PlaylistPage>
+
+    suspend fun playlistTracks(playlistId: Long): ApiResult<List<Track>>
 
     suspend fun search(term: String, count: Int = 20): ApiResult<SearchResults>
+}
+
+/** LMS menus (apps, radio, plugins and "More…" menus), browsed for a player. */
+interface MenusRepository {
+    suspend fun apps(): ApiResult<List<AppEntry>>
+
+    suspend fun radios(): ApiResult<List<AppEntry>>
+
+    suspend fun plugins(player: String, shownApps: List<String>): ApiResult<List<PluginEntry>>
+
+    suspend fun open(player: String, action: MenuAction, start: Int, count: Int, input: String? = null): ApiResult<MenuPage>
+
+    suspend fun run(player: String, action: MenuAction, input: String? = null): ApiResult<MenuOutcome>
+
+    suspend fun probe(player: String, action: MenuAction): Suitability
+
+    /** An app's top menu. */
+    fun appMenu(cmd: String): ApiResult<MenuAction>
+
+    /** The "More…" menu for a library item. */
+    fun infoMenu(kind: InfoKind, id: Long): ApiResult<MenuAction>
 }
 
 /** Remote control of LMS players. */
 interface PlayersRepository {
     suspend fun list(): ApiResult<List<Player>>
+
+    /** Sync groups among the players this account may control. */
+    suspend fun syncGroups(): ApiResult<List<SyncGroup>>
 
     suspend fun status(player: String): ApiResult<PlayerStatus>
 
@@ -72,6 +143,9 @@ interface PlayersRepository {
         placement: Placement,
         playIndex: Int? = null,
     ): ApiResult<Unit>
+
+    /** Play a favourite (a station, track or app item). */
+    suspend fun playFavourite(player: String, itemId: String, placement: Placement): ApiResult<Unit>
 }
 
 /** Artwork bytes by key (from a record), for the image loader. */
@@ -99,19 +173,78 @@ class RustLibraryRepository(private val source: ConnectionSource) : LibraryRepos
         return apiCall { block(lib) }
     }
 
-    override suspend fun albums(start: Int, count: Int, sort: AlbumSort, search: String?) =
-        withLibrary { it.albums(start.u(), count.u(), sort, search) }
+    override suspend fun albums(start: Int, count: Int, sort: AlbumSort, search: String?, filter: LibraryFilter) =
+        withLibrary { it.albums(start.u(), count.u(), sort, search, filter) }
 
     override suspend fun album(id: Long) = withLibrary { it.album(id) }
 
     override suspend fun albumTracks(albumId: Long) = withLibrary { it.albumTracks(albumId) }
 
-    override suspend fun artists(start: Int, count: Int, search: String?) =
-        withLibrary { it.artists(start.u(), count.u(), search) }
+    override suspend fun artists(start: Int, count: Int, search: String?, filter: LibraryFilter) =
+        withLibrary { it.artists(start.u(), count.u(), search, filter) }
 
-    override suspend fun artistAlbums(artistId: Long) = withLibrary { it.artistAlbums(artistId) }
+    override suspend fun hasRole(role: ArtistRole, libraryId: String?) = withLibrary { it.hasRole(role, libraryId) }
+
+    override suspend fun artistAlbums(artistId: Long, role: ArtistRole?) = withLibrary { it.artistAlbums(artistId, role) }
+
+    override suspend fun genres(start: Int, count: Int, libraryId: String?, search: String?) =
+        withLibrary { it.genres(start.u(), count.u(), libraryId, search) }
+
+    override suspend fun genre(id: Long) = withLibrary { it.genre(id) }
+
+    override suspend fun years(start: Int, count: Int, libraryId: String?) =
+        withLibrary { it.years(start.u(), count.u(), libraryId) }
+
+    override suspend fun musicFolder(start: Int, count: Int, folderId: Long?) =
+        withLibrary { it.musicFolder(start.u(), count.u(), folderId) }
+
+    override suspend fun libraries() = withLibrary { it.libraries() }
+
+    override suspend fun favourites(start: Int, count: Int, itemId: String?) =
+        withLibrary { it.favourites(start.u(), count.u(), itemId) }
+
+    override suspend fun playlists(start: Int, count: Int) = withLibrary { it.playlists(start.u(), count.u()) }
+
+    override suspend fun playlistTracks(playlistId: Long) = withLibrary { it.playlistTracks(playlistId) }
 
     override suspend fun search(term: String, count: Int) = withLibrary { it.search(term, count.u()) }
+}
+
+class RustMenusRepository(private val source: ConnectionSource) : MenusRepository {
+    private suspend fun <T> withMenus(block: suspend (io.github.jamezuk.lyrionanywhere.core.Menus) -> T): ApiResult<T> {
+        val m = source.connection.value?.menus ?: return ApiResult.Err(AppError.SignedOut)
+        return apiCall { block(m) }
+    }
+
+    override suspend fun apps() = withMenus { it.apps() }
+
+    override suspend fun radios() = withMenus { it.radios() }
+
+    override suspend fun plugins(player: String, shownApps: List<String>) = withMenus { it.plugins(player, shownApps) }
+
+    override suspend fun open(player: String, action: MenuAction, start: Int, count: Int, input: String?) =
+        withMenus { it.open(player, action, start.u(), count.u(), input) }
+
+    override suspend fun run(player: String, action: MenuAction, input: String?) =
+        withMenus { it.run(player, action, input) }
+
+    override suspend fun probe(player: String, action: MenuAction): Suitability =
+        when (val r = withMenus { it.probe(player, action) }) {
+            is ApiResult.Ok -> r.value
+            is ApiResult.Err -> Suitability.Failed("The music server could not open it.")
+        }
+
+    override fun appMenu(cmd: String): ApiResult<MenuAction> = try {
+        ApiResult.Ok(io.github.jamezuk.lyrionanywhere.core.appMenu(cmd))
+    } catch (e: Exception) {
+        ApiResult.Err(e.toAppError())
+    }
+
+    override fun infoMenu(kind: InfoKind, id: Long): ApiResult<MenuAction> = try {
+        ApiResult.Ok(io.github.jamezuk.lyrionanywhere.core.infoMenu(kind, id))
+    } catch (e: Exception) {
+        ApiResult.Err(e.toAppError())
+    }
 }
 
 class RustPlayersRepository(private val source: ConnectionSource) : PlayersRepository {
@@ -121,6 +254,8 @@ class RustPlayersRepository(private val source: ConnectionSource) : PlayersRepos
     }
 
     override suspend fun list() = withPlayers { it.list() }
+
+    override suspend fun syncGroups() = withPlayers { it.syncGroups() }
 
     override suspend fun status(player: String) = withPlayers { it.status(player) }
 
@@ -150,6 +285,9 @@ class RustPlayersRepository(private val source: ConnectionSource) : PlayersRepos
 
     override suspend fun enqueue(player: String, selection: Selection, placement: Placement, playIndex: Int?) =
         withPlayers { it.enqueue(player, selection, placement, playIndex?.u()) }
+
+    override suspend fun playFavourite(player: String, itemId: String, placement: Placement) =
+        withPlayers { it.playFavourite(player, itemId, placement) }
 }
 
 class RustArtRepository(private val source: ConnectionSource) : ArtRepository {

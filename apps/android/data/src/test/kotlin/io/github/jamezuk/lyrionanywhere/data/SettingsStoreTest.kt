@@ -126,4 +126,55 @@ class SettingsStoreTest {
         assertTrue(all.playOnPhone)
         assertEquals(-1.0, all.sound.preampDb, 0.0)
     }
+
+    @Test
+    fun thisPhoneIsTheDefaultPlayerAndIsOn() = runBlocking {
+        val all = DataStoreSettings(store()).settings.first()
+        assertEquals(DefaultPlayer.THIS_PHONE, all.defaultPlayer)
+        assertNull(all.defaultPlayerId)
+        assertTrue(all.playOnPhone)
+    }
+
+    @Test
+    fun theDefaultPlayerSurvivesARestartAndIsChecked() = runBlocking {
+        val first = DataStoreSettings(store())
+        first.setDefaultPlayer(DefaultPlayer.SPECIFIC, "AA:BB:CC:DD:EE:01")
+        val again = DataStoreSettings(restart()).settings.first()
+        assertEquals(DefaultPlayer.SPECIFIC, again.defaultPlayer)
+        assertEquals("aa:bb:cc:dd:ee:01", again.defaultPlayerId)
+        // A malformed player is refused; the setting is unchanged.
+        val s = DataStoreSettings(restart())
+        s.setDefaultPlayer(DefaultPlayer.SPECIFIC, "../x")
+        assertEquals("aa:bb:cc:dd:ee:01", s.settings.first().defaultPlayerId)
+        s.setDefaultPlayer(DefaultPlayer.LAST_USED, null)
+        assertEquals(DefaultPlayer.LAST_USED, s.settings.first().defaultPlayer)
+        assertNull(s.settings.first().defaultPlayerId)
+    }
+
+    @Test
+    fun storedNonsenseForThePlayerAndLibraryIsIgnored() = runBlocking {
+        val raw = store()
+        raw.edit {
+            it[stringPreferencesKey("default_player")] = "SPECIFIC"
+            it[stringPreferencesKey("default_player_id")] = "not a player"
+            it[stringPreferencesKey("virtual_library")] = "../../x"
+        }
+        val all = DataStoreSettings(raw).settings.first()
+        assertEquals(DefaultPlayer.THIS_PHONE, all.defaultPlayer)
+        assertNull(all.defaultPlayerId)
+        assertNull(all.libraryId)
+    }
+
+    @Test
+    fun aNewServerForgetsItsPlayersAndLibrary() = runBlocking {
+        val s = DataStoreSettings(store())
+        s.setLibrary("ab12")
+        s.setLibrary("x y")
+        assertEquals("ab12", s.settings.first().libraryId)
+        s.setDefaultPlayer(DefaultPlayer.SPECIFIC, "aa:bb:cc:dd:ee:01")
+        s.setServerUrl("https://music.example.com")
+        val all = s.settings.first()
+        assertNull(all.libraryId)
+        assertEquals(DefaultPlayer.THIS_PHONE, all.defaultPlayer)
+    }
 }

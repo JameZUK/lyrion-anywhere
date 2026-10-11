@@ -1,6 +1,6 @@
 # Lyrion Anywhere for Android
 
-The native Android app: sign-in, browsing, remote control of LMS players (milestone A0), the phone as an LMS player with native audio output (A1), bit-perfect USB DAC output and the Sound settings (A2), and the waveform seek bar with loudness levelling (A3). The plan is in [`docs/plans/native-apps.md`](../../docs/plans/native-apps.md); the protocol it speaks is [`docs/PROTOCOL.md`](../../docs/PROTOCOL.md).
+The native Android app: sign-in, browsing, remote control of LMS players (milestone A0), the phone as an LMS player with native audio output (A1), bit-perfect USB DAC output and the Sound settings (A2), the waveform seek bar with loudness levelling (A3), and browsing on a par with the web app, with rich album and artist pages, LMS's own menus and "player-first" control (A4 part 1). The plan is in [`docs/plans/native-apps.md`](../../docs/plans/native-apps.md); the protocol it speaks is [`docs/PROTOCOL.md`](../../docs/PROTOCOL.md).
 
 ## Building
 
@@ -48,6 +48,34 @@ To try a debug build against a gateway on your computer, forward the port with `
 - **Artwork:** a Coil fetcher calls the Rust Art API, which adds the bearer token in a header (never in a URL), validates the path and caps the size. Images are cached in memory only.
 - **State:** view models expose `StateFlow`s; one `PlayerViewModel` per sign-in controls the selected player. It listens to `/v1/events` while the UI is visible (refreshing on changes, coalesced) and polls slowly as a fallback.
 
+### Browsing and LMS menus
+
+- **Library:** New Music; albums (by title, artist, year or date added); artists by role (only the roles the library has); genres (searchable) and years; compilations; random albums; the music folder; playlists; favourites; Apps & Radio. A virtual-library picker appears only when LMS has libraries.
+- **Pages:**
+  - Home puts the library first: recently added, random albums, favourites and playlists.
+  - Album pages show large art, details (year, genre, format) and disc sections.
+  - Artist pages group albums into *Albums*, *Appears on* and *Compilations*.
+  - Both offer Play, Shuffle, Add and More.
+- **Art-driven colour:**
+  - `ui/theme/ArtColours.kt` picks a cover's colour with a small quantiser (no dependency) and derives a tinted scheme;
+  - every foreground is pushed until it meets WCAG AA contrast;
+  - `ArtTinted` applies it to the album, artist and Now playing pages.
+- **"More…"** (a button, or a long press on an album) opens a bottom sheet:
+  - Play now, Play next and Add to queue;
+  - then LMS's own context menu (`trackinfo`, `albuminfo`, …), where plugins add entries such as "more like this".
+- **Apps & Radio:**
+  - apps, radio services, and plugins from the player's home menu;
+  - each judged from its own top menu, so unusable ones are hidden behind "Show all".
+- **The Rust layer resolves menu actions** (`mobile/src/menus.rs`) exactly as the web app does, and checks them again before sending. The gateway runs only actions LMS offered this device. Text from LMS is only ever displayed.
+
+### Player-first (SPEC D20)
+
+- **This phone is the default player:** Now playing, the mini player and the queue follow it.
+- **"Play on…":** an output button (in Now playing and the mini player) opens it. It lists this phone, the other players you may control (with what each is playing) and sync groups.
+- **Another player is always named:** while you control one, a coloured strip says "Playing on <name>", with **Back to this phone**.
+- **Settings → Default player:** this phone (default), last used, or a specific player.
+- The choice rules are in `ui/player/PlayerChoice.kt`. Screens never pick a player themselves.
+
 ### Play on this phone
 
 The phone becomes an LMS player, as the web app's player does. LMS owns the queue (SPEC D14); the app only mirrors it.
@@ -67,7 +95,7 @@ Kotlin: RustLocalPlayerRepository ─► PlaybackService (Media3 session) ─►
   - wake and Wi-Fi locks while playing.
 
   Media3 runs it as a foreground service (type `mediaPlayback`) while playing.
-- **Starting:** the switch is remembered. The service starts while the app is in front; if LMS starts playback on an idle phone whose app is in the background, the session appears when the app is next opened.
+- **Starting:** the phone's player is on by default (D20). The service starts while the app is in front; if LMS starts playback on an idle phone whose app is in the background, the session appears when the app is next opened.
 
 ### Bit-perfect USB DAC output (Android 14+)
 
@@ -139,6 +167,11 @@ Record the phone, Android version, DAC and results (in the A2 status of `docs/pl
 
 - `:data`: the secure-store sealing (tampering, wrong keys, strict encoding), error mapping.
 - `:ui`: view models with fakes (sign-in and two-step, pairing, paging, search debounce, player selection, events, optimistic transport), and Compose screens under Robolectric (labels for accessibility, error messages).
+- `:ui` (A4): every browse view model (filters, virtual library, role chips, genre search, random batches, duplicate pages), album discs and details, artist grouping, Home's carousels, the menu navigator and Apps & Radio suitability.
+- `:ui` (A4): player-first rules and "Back to this phone".
+- `:ui` (A4): Compose tests for the "Playing on" strip, the "Play on…" sheet, the default-player setting, the Library page, the album page, the "More…" sheet and Apps & Radio, with 48 dp touch targets.
+- `:ui` (A4): WCAG contrast of the art-tinted colours for 511 covers in both themes.
+- `:data` (A4): the default-player and library settings (malformed stored values ignored), the virtual-library choice, and the suitability cache.
 - `:app`: regression tests for the manifest (no exported service, the expected permissions only), backup rules and network policy.
 - `:playback`:
   - the LMS → Media3 state mapping and the focus policy (plain JVM);

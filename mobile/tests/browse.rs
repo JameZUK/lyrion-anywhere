@@ -96,6 +96,7 @@ async fn every_browse_command_passes_the_allow_list() {
     assert!(fav.items[1].is_folder);
     lib.favourites(0, 500, Some("f0.1".into())).await.unwrap();
 
+    players.sync_groups().await.unwrap();
     let pl = lib.playlists(0, 100).await.unwrap();
     assert_eq!(pl.items[0].name, "Road trip");
     assert_eq!(lib.playlist_tracks(5).await.unwrap()[0].title, "One");

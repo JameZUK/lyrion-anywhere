@@ -117,9 +117,15 @@ fun SettingsScreen(
     onLicences: () -> Unit,
     modifier: Modifier = Modifier,
     onSound: () -> Unit = {},
+    /** The default-player choice (D20), when the app has players to offer. */
+    defaultPlayer: (@Composable () -> Unit)? = null,
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     LazyColumn(modifier.fillMaxSize()) {
+        if (defaultPlayer != null) {
+            item { SectionHeader(stringResource(R.string.section_default_player)) }
+            item { defaultPlayer() }
+        }
         state.sound?.let { sound ->
             item { SectionHeader(stringResource(R.string.section_playback)) }
             item {
