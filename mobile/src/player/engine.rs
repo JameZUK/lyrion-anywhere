@@ -37,7 +37,7 @@ use anywhere_core::player::{Action, OutputState, Player, PlayerConfig};
 use anywhere_core::proto::{ClientMsg, format_mac};
 
 use super::output::{AudioOutput, OutputEvent};
-use super::pipeline::{DspSettings, Pipeline};
+use super::pipeline::{DspSettings, Levelling, Pipeline};
 use super::protocol::{self, CloseAction, Greeting};
 use super::ring::{CHANNELS, Producer, Ring};
 use super::signal;
@@ -49,6 +49,7 @@ use crate::error::ApiError;
 use crate::server::Server;
 use crate::session::Core;
 use crate::transport::{self, Http};
+use anywhere_core::dsp::levelling::Measurement;
 
 const TICK: Duration = Duration::from_millis(20);
 /// Audio queued in the ring ahead of the output. Enough to ride out a slow tick, small
@@ -118,7 +119,23 @@ enum Ev {
     StreamFailed {
         id: u64,
     },
+    /// The R128 measurement for track `seq` (`None`: no analysis, use tags).
+    Loudness {
+        player_gen: u64,
+        seq: u32,
+        measurement: Option<Measurement>,
+    },
 }
+
+/// How long a fresh start waits for its track's analysis before playing with tag-based
+/// levelling instead (only when analysis levelling is on).
+const LOUDNESS_WAIT: Duration = Duration::from_millis(1500);
+/// How long a lookup keeps asking while the gateway is still analysing: a gapless next
+/// track has until the current one ends.
+const LOUDNESS_BUDGET_FRESH: Duration = Duration::from_secs(10);
+const LOUDNESS_BUDGET_NEXT: Duration = Duration::from_secs(90);
+/// Measurements remembered (by track sequence number).
+const LOUDNESS_KEEP: usize = 8;
 
 /// Messages towards the gateway.
 enum Out {
@@ -183,6 +200,13 @@ pub(crate) struct Engine {
     block: Vec<f32>,
     underruns_seen: u64,
     was_playing: bool,
+    // Analysis levelling.
+    loudness: VecDeque<(u32, Option<Measurement>)>,
+    /// A fresh start waiting (until the instant) for track `seq`'s analysis.
+    gate: Option<(u32, Instant)>,
+    lookup: Option<tokio::task::AbortHandle>,
+    /// Bumped with every new core player (track numbers start again).
+    player_gen: u64,
     // Reporting.
     last_status_at: Option<Instant>,
     last_status_key: Option<(PlayerConnection, LocalPlayback, u32, bool)>,
@@ -241,6 +265,10 @@ impl Engine {
             block: vec![0.0; BLOCK_FRAMES * CHANNELS],
             underruns_seen: 0,
             was_playing: false,
+            loudness: VecDeque::new(),
+            gate: None,
+            lookup: None,
+            player_gen: 0,
             last_status_at: None,
             last_status_key: None,
             last_signal: None,
@@ -345,6 +373,13 @@ impl Engine {
             self.outbox.clear();
             self.received = 0;
             self.drop_queued_audio();
+            // Track numbers start again with the new player.
+            self.loudness.clear();
+            self.gate = None;
+            self.player_gen += 1;
+            if let Some(t) = self.lookup.take() {
+                t.abort();
+            }
             let mut p = Player::new(PlayerConfig {
                 mac: g.mac,
                 uuid: [0; 16],
@@ -512,8 +547,85 @@ impl Engine {
                 }
                 self.run_actions();
             }
+            Ev::Loudness {
+                player_gen,
+                seq,
+                measurement,
+            } if player_gen == self.player_gen => {
+                self.loudness.retain(|(s, _)| *s != seq);
+                self.loudness.push_back((seq, measurement));
+                while self.loudness.len() > LOUDNESS_KEEP {
+                    self.loudness.pop_front();
+                }
+                if self.gate.is_some_and(|(s, _)| s == seq) {
+                    self.gate = None;
+                }
+            }
             // Stale: from an older socket or a superseded stream.
             _ => {}
+        }
+    }
+
+    /// Analysis levelling is on: look up the R128 loudness of the track LMS just started
+    /// streaming (stream `n` carries track `seq = n - 1`). A fresh start waits briefly for
+    /// it (see [`LOUDNESS_WAIT`]); a gapless next track has until the current one ends.
+    fn look_up_loudness(&mut self, stream_number: u64) {
+        let dsp = self.pipeline.dsp();
+        if !(dsp.enabled && dsp.analysis_levelling && dsp.levelling != Levelling::Off) {
+            return;
+        }
+        let (Some(mac), Ok(seq)) = (self.mac, u32::try_from(stream_number.saturating_sub(1)))
+        else {
+            return;
+        };
+        let fresh = self
+            .player
+            .as_ref()
+            .is_none_or(|p| p.playing_track().is_none());
+        if fresh {
+            self.gate = Some((seq, Instant::now() + LOUDNESS_WAIT));
+            if let Some(t) = self.lookup.take() {
+                t.abort();
+            }
+        }
+        let (core, tx, player_gen) = (self.core.clone(), self.tx.clone(), self.player_gen);
+        let budget = if fresh {
+            LOUDNESS_BUDGET_FRESH
+        } else {
+            LOUDNESS_BUDGET_NEXT
+        };
+        let task = tokio::spawn(async move {
+            let player = format_mac(&mac);
+            let measurement = async {
+                let st = core
+                    .rpc(&player, protocol::stream_status_command())
+                    .await
+                    .ok()?;
+                let id = protocol::stream_track_id(&st, fresh)?;
+                crate::analysis::fetch_waiting(&core, id, budget)
+                    .await
+                    .ok()??
+                    .measurement()
+            }
+            .await;
+            let _ = tx.send(Ev::Loudness {
+                player_gen,
+                seq,
+                measurement,
+            });
+        });
+        self.lookup = Some(task.abort_handle());
+    }
+
+    /// A fresh start is waiting for its track's loudness (nothing else is audible).
+    fn gating(&mut self) -> bool {
+        match self.gate {
+            Some((_, until)) if Instant::now() < until => true,
+            Some(_) => {
+                self.gate = None;
+                false
+            }
+            None => false,
         }
     }
 
@@ -529,7 +641,10 @@ impl Engine {
                 Action::Send(b) => self.send_ws(Out::Binary(b)),
                 // The gateway fetches exactly what LMS asked for; we fetch it from the
                 // gateway by number.
-                Action::OpenStream { stream_number, .. } => self.open_stream(stream_number),
+                Action::OpenStream { stream_number, .. } => {
+                    self.open_stream(stream_number);
+                    self.look_up_loudness(stream_number);
+                }
                 Action::CloseStream => self.close_stream(),
             }
         }
@@ -607,6 +722,7 @@ impl Engine {
             self.reopen_output();
         }
         self.fill();
+        let gating = self.gating();
 
         let Some(p) = &mut self.player else { return };
         let state = p.status().output;
@@ -619,7 +735,8 @@ impl Engine {
         self.was_playing = playing;
         let user_hold = self.shared.hold.load(Ordering::Acquire);
         ring.set_hold(user_hold || !playing);
-        ring.set_expect_data(playing && !user_hold && !p.audio_exhausted());
+        // While a fresh start waits for its loudness, the silence is not an underrun.
+        ring.set_expect_data(playing && !user_hold && !p.audio_exhausted() && !gating);
         let (underruns, _) = ring.underruns();
         if underruns > self.underruns_seen {
             self.underruns_seen = underruns;
@@ -680,6 +797,9 @@ impl Engine {
             if ring.len() >= ahead.min(ring.capacity() / 2) {
                 return;
             }
+            if self.gate.is_some_and(|(_, until)| Instant::now() < until) {
+                return; // a fresh start waiting for its track's loudness
+            }
             let Some((seq, frames)) = p.pull_track(&mut self.block) else {
                 return;
             };
@@ -687,8 +807,17 @@ impl Engine {
                 .track_audio(seq)
                 .and_then(|t| t.source)
                 .map(|s| s.replay_gain);
-            self.pipeline
-                .push(&self.block[..frames * CHANNELS], seq, tags.as_ref());
+            let analysis = self
+                .loudness
+                .iter()
+                .find(|(s, _)| *s == seq)
+                .and_then(|(_, m)| *m);
+            self.pipeline.push_with(
+                &self.block[..frames * CHANNELS],
+                seq,
+                tags.as_ref(),
+                analysis,
+            );
         }
     }
 

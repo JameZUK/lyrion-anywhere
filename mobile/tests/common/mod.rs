@@ -90,7 +90,11 @@ pub struct FakeLms {
     slim_conns: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<OwnedWriteHalf>>,
     /// Answers for `/stream.mp3`, in order; 404 once they run out.
     pub streams: Arc<Mutex<std::collections::VecDeque<StreamPlan>>>,
+    /// Library files (see [`FakeLms::add_track`]): id → (titles item, file).
+    pub library: Library,
 }
+
+pub type Library = Arc<Mutex<std::collections::HashMap<u64, (Value, Vec<u8>)>>>;
 
 /// Size of the "huge" cover served for `/music/99999999/…`.
 pub const HUGE_COVER: usize = 3 * 1024 * 1024;
@@ -102,9 +106,15 @@ impl FakeLms {
         let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let http_addr = http.local_addr().unwrap();
         let streams: Arc<Mutex<std::collections::VecDeque<StreamPlan>>> = Default::default();
-        let (r, paths, plans) = (rpc.clone(), http_paths.clone(), streams.clone());
+        let library: Library = Default::default();
+        let (r, paths, plans, lib) = (
+            rpc.clone(),
+            http_paths.clone(),
+            streams.clone(),
+            library.clone(),
+        );
         let app = Router::new().fallback(any(move |req: Request| {
-            let (r, paths, plans) = (r.clone(), paths.clone(), plans.clone());
+            let (r, paths, plans, lib) = (r.clone(), paths.clone(), plans.clone(), lib.clone());
             async move {
                 let path = req.uri().path().to_string();
                 paths.lock().unwrap().push(path.clone());
@@ -121,11 +131,36 @@ impl FakeLms {
                     let v: Value = serde_json::from_slice(&body).unwrap_or_default();
                     let params = v["params"].clone();
                     let cmd = params[1][0].as_str().unwrap_or("").to_string();
+                    let track_id = params[1]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|p| p.as_str()?.strip_prefix("track_id:"))
+                        .find_map(|id| id.parse::<u64>().ok());
                     r.lock().unwrap().push(params);
-                    let reply =
-                        json!({"id": 1, "method": "slim.request", "result": fake_result(&cmd)});
+                    let result = match track_id {
+                        Some(id) if cmd == "titles" => match lib.lock().unwrap().get(&id) {
+                            Some((item, _)) => json!({"count": 1, "titles_loop": [item]}),
+                            None => json!({"count": 0}),
+                        },
+                        _ => fake_result(&cmd),
+                    };
+                    let reply = json!({"id": 1, "method": "slim.request", "result": result});
                     return ([("content-type", "application/json")], reply.to_string())
                         .into_response();
+                }
+                if let Some(id) = path
+                    .strip_prefix("/music/")
+                    .and_then(|p| p.strip_suffix("/download"))
+                {
+                    let file = id
+                        .parse::<u64>()
+                        .ok()
+                        .and_then(|id| lib.lock().unwrap().get(&id).map(|(_, f)| f.clone()));
+                    return match file {
+                        Some(f) => ([("content-type", "audio/flac")], f).into_response(),
+                        None => (axum::http::StatusCode::NOT_FOUND, "").into_response(),
+                    };
                 }
                 if path.starts_with("/music/99999999/") {
                     return ([("content-type", "image/jpeg")], vec![0xffu8; HUGE_COVER])
@@ -206,7 +241,18 @@ impl FakeLms {
             slim_accepted,
             slim_conns: tokio::sync::Mutex::new(conn_rx),
             streams,
+            library,
         }
+    }
+
+    /// A local library file the gateway may analyse (LMS type `kind`).
+    pub fn add_track(&self, id: u64, kind: &str, file: Vec<u8>) {
+        let item = json!({
+            "id": id, "title": format!("Track {id}"), "type": kind,
+            "url": format!("file:///srv/music/{id}.{kind}"), "filesize": file.len(),
+            "modificationTime": "Tuesday, 1 January 2030",
+        });
+        self.library.lock().unwrap().insert(id, (item, file));
     }
 
     /// The next Slimproto connection from the gateway (5 s at most).
@@ -310,15 +356,26 @@ pub struct Harness {
 
 impl Harness {
     pub async fn start() -> Harness {
+        Self::start_with(|_| {}).await
+    }
+
+    /// With track analysis on (a fresh cache directory) and `tweak` applied to the config.
+    pub async fn start_with(tweak: impl FnOnce(&mut Config)) -> Harness {
         let lms = FakeLms::start().await;
-        let cfg = Config {
+        let cache = std::env::temp_dir().join(format!(
+            "anywhere-mobile-an-{}",
+            anywhere_gateway::random_id()
+        ));
+        let mut cfg = Config {
             lms_slimproto: lms.slim_addr.to_string(),
             lms_http: lms.http_addr.to_string(),
             lms_cli: lms.cli_addr.to_string(),
             lms_ips: vec![Ipv4Addr::LOCALHOST],
             auth_timeout: Duration::from_millis(500),
+            analysis_cache_dir: Some(cache),
             ..Config::default()
         };
+        tweak(&mut cfg);
         let accounts = Arc::new(Accounts::in_memory().unwrap());
         accounts.create_user("alice", PW, Role::Listener).unwrap();
         accounts.create_user("bob", PW, Role::Listener).unwrap();

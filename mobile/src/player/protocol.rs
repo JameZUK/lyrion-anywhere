@@ -145,9 +145,138 @@ pub fn random01() -> f64 {
     getrandom::u32().map_or(0.5, |r| f64::from(r) / f64::from(u32::MAX))
 }
 
+/// The LMS status query that names the track a new stream is for (see
+/// [`stream_track_id`]).
+pub fn stream_status_command() -> Vec<Value> {
+    vec![json!("status"), json!("-"), json!(2), json!("tags:x")]
+}
+
+/// Which library track a stream LMS just started is for, from this player's `status - 2`
+/// (the playing track and the one after it, in play order).
+///
+/// - A **fresh** stream (nothing audible: a new play, a skip, a seek) is the current
+///   track.
+/// - Otherwise it is the gapless **next** track: the one after the current, or the same
+///   one again when repeating a single track.
+///
+/// The answer is untrusted: the item's playlist position must be the one expected, and its
+/// id a positive integer. Anything doubtful (a wrap to the start of the playlist, a remote
+/// stream, a malformed answer) gives `None`, and levelling falls back to tags.
+pub fn stream_track_id(status: &Value, fresh: bool) -> Option<i64> {
+    let int = |v: &Value| -> Option<i64> {
+        match v {
+            Value::Number(n) => n.as_i64(),
+            Value::String(s) if (1..=15).contains(&s.len()) => s.parse().ok(),
+            _ => None,
+        }
+    };
+    let repeat_one = status.get("playlist repeat").and_then(int) == Some(1);
+    let offset = if fresh || repeat_one { 0 } else { 1 };
+    let item = status
+        .get("playlist_loop")?
+        .as_array()?
+        .get(offset as usize)?;
+    if let (Some(cur), Some(at)) = (
+        status.get("playlist_cur_index").and_then(int),
+        item.get("playlist index").and_then(int),
+    ) && cur.checked_add(offset) != Some(at)
+    {
+        return None;
+    }
+    if item.get("remote").and_then(int).unwrap_or(0) != 0 {
+        return None;
+    }
+    item.get("id")
+        .and_then(int)
+        .filter(|id| (1..=999_999_999_999).contains(id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_track_ids_from_status() {
+        let st = json!({
+            "playlist_cur_index": "4", "playlist repeat": 0,
+            "playlist_loop": [
+                {"playlist index": 4, "id": 101},
+                {"playlist index": 5, "id": "102"}
+            ]
+        });
+        assert_eq!(stream_track_id(&st, true), Some(101));
+        assert_eq!(stream_track_id(&st, false), Some(102));
+        // Repeating one track: the next stream is the same track.
+        let mut one = st.clone();
+        one["playlist repeat"] = json!("1");
+        assert_eq!(stream_track_id(&one, false), Some(101));
+        // The last track: no next item (a wrap isn't guessed).
+        let mut last = st.clone();
+        last["playlist_loop"].as_array_mut().unwrap().pop();
+        assert_eq!(stream_track_id(&last, false), None);
+        // The position must match what was asked for.
+        let mut moved = st.clone();
+        moved["playlist_loop"][1]["playlist index"] = json!(9);
+        assert_eq!(stream_track_id(&moved, false), None);
+        // Streams and odd ids.
+        for (k, v) in [
+            ("remote", json!(1)),
+            ("id", json!(-3)),
+            ("id", json!(0)),
+            ("id", json!("12abc")),
+            ("id", json!(1.5)),
+            ("id", json!(1_000_000_000_000i64)),
+            ("id", json!(null)),
+            ("id", json!({"x": 1})),
+        ] {
+            let mut bad = st.clone();
+            bad["playlist_loop"][0][k] = v;
+            assert_eq!(stream_track_id(&bad, true), None, "{k}");
+        }
+        assert_eq!(stream_track_id(&json!({}), true), None);
+        assert_eq!(stream_track_id(&json!({"playlist_loop": "x"}), true), None);
+        assert_eq!(stream_track_id(&json!([1, 2]), true), None);
+    }
+
+    #[test]
+    fn stream_track_id_survives_arbitrary_json() {
+        let parts = [
+            json!(null),
+            json!(1),
+            json!(-1),
+            json!("1"),
+            json!("x"),
+            json!([]),
+            json!({}),
+            json!(1e300),
+            json!(u64::MAX),
+            json!(i64::MAX),
+            json!(i64::MIN),
+        ];
+        let mut seed = 0x2545_f491u64;
+        for _ in 0..5_000 {
+            let mut pick = || {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                parts[(seed % parts.len() as u64) as usize].clone()
+            };
+            let st = json!({
+                "playlist_cur_index": pick(),
+                "playlist repeat": pick(),
+                "playlist_loop": [
+                    {"playlist index": pick(), "id": pick(), "remote": pick()},
+                    {"playlist index": pick(), "id": pick()},
+                    pick()
+                ]
+            });
+            for fresh in [true, false] {
+                if let Some(id) = stream_track_id(&st, fresh) {
+                    assert!(id > 0);
+                }
+            }
+        }
+    }
 
     const GOOD: &str = r#"{"session":"0123456789abcdef0123456789abcdef","secret":"fedcba9876543210fedcba9876543210","mac":"02:4c:41:00:00:01","name":"Test phone","resumed":false}"#;
 

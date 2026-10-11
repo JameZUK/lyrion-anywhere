@@ -11,6 +11,7 @@
 //! - [`MusicLibrary`], [`Players`]: browsing and remote control, using only commands the
 //!   gateway's allow-list accepts (the same shapes as the web app);
 //! - [`Art`]: artwork bytes, fetched with the bearer token and size-capped;
+//! - [`Analysis`]: track analyses (waveform, loudness) from the gateway;
 //! - [`Events`]: the live event stream with reconnects and token renewal;
 //! - [`LocalPlayer`]: this phone as an LMS player (Slimproto through the gateway, the
 //!   core's decoders, optional DSP, a lock-free ring and AAudio output).
@@ -19,6 +20,7 @@
 
 uniffi::setup_scaffolding!();
 
+pub mod analysis;
 pub mod art;
 pub mod commands;
 pub mod error;
@@ -34,6 +36,7 @@ mod transport;
 #[cfg(target_os = "android")]
 mod android;
 
+pub use analysis::{Analysis, AnalysisOutcome, TrackAnalysisInfo};
 pub use art::{Art, ArtImage};
 pub use error::ApiError;
 pub use events::{EventListener, EventSubscription, Events, EventsState, ServerEvent};

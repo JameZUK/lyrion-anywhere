@@ -53,6 +53,10 @@ pub struct DspSettings {
     pub target_lufs: f64,
     /// True-peak limiter at −1 dBTP (recommended with any boost).
     pub limiter: bool,
+    /// Level from the gateway's R128 analysis of each track (integrated loudness and true
+    /// peak), falling back to ReplayGain tags where there is none. Needs `levelling`.
+    #[uniffi(default = false)]
+    pub analysis_levelling: bool,
 }
 
 impl Default for DspSettings {
@@ -63,8 +67,20 @@ impl Default for DspSettings {
             levelling: Levelling::Off,
             target_lufs: -18.0,
             limiter: true,
+            analysis_levelling: false,
         }
     }
+}
+
+/// Where a track's levelling gain came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelSource {
+    /// No levelling (off, or nothing known about the track).
+    None,
+    /// ReplayGain tags in the file.
+    Tags,
+    /// The gateway's R128 analysis.
+    Analysis,
 }
 
 impl DspSettings {
@@ -78,6 +94,7 @@ impl DspSettings {
             levelling: self.levelling,
             target_lufs: f(self.target_lufs, -18.0, -30.0, -5.0),
             limiter: self.limiter,
+            analysis_levelling: self.analysis_levelling,
         }
     }
 
@@ -98,17 +115,34 @@ impl DspSettings {
 
 /// The levelling gain for a track's tags (0 when unknown or off).
 pub fn levelling_gain_db(settings: &DspSettings, tags: &ReplayGainTags) -> f64 {
+    levelling_decision(settings, Some(tags), None).0
+}
+
+/// The levelling gain for a track, dB, and where it came from.
+///
+/// - **Track mode:** the analysis's integrated loudness and true peak when
+///   `analysis_levelling` is on and the track has an analysis, otherwise the track's
+///   ReplayGain tags.
+/// - **Album mode:** the album's ReplayGain tags where present (an album's loudness needs
+///   every track, which one track's analysis can't give), otherwise as track mode.
+pub fn levelling_decision(
+    settings: &DspSettings,
+    tags: Option<&ReplayGainTags>,
+    analysis: Option<Measurement>,
+) -> (f64, LevelSource) {
     let mode = match settings.levelling {
-        Levelling::Off => return 0.0,
+        Levelling::Off => return (0.0, LevelSource::None),
         Levelling::Track => LevellingMode::Track,
         Levelling::Album => LevellingMode::Album,
     };
     let m = |g: Option<f64>, p: Option<f64>| {
         g.and_then(|g| Measurement::from_replaygain(g, p.unwrap_or(1.0)))
     };
+    let analysed = analysis.filter(|_| settings.analysis_levelling);
+    let tag_track = tags.and_then(|t| m(t.track_gain_db, t.track_peak));
     let info = LoudnessInfo {
-        track: m(tags.track_gain_db, tags.track_peak),
-        album: m(tags.album_gain_db, tags.album_peak),
+        track: analysed.or(tag_track),
+        album: tags.and_then(|t| m(t.album_gain_db, t.album_peak)),
     };
     let cfg = LevellingConfig {
         target_lufs: settings.target_lufs,
@@ -117,7 +151,17 @@ pub fn levelling_gain_db(settings: &DspSettings, tags: &ReplayGainTags) -> f64 {
         limiter_headroom_db: if settings.limiter { 3.0 } else { 0.0 },
         ..LevellingConfig::default()
     };
-    levelling::decide(&cfg, &info).map_or(0.0, |d| d.gain_db)
+    match levelling::decide(&cfg, &info) {
+        None => (0.0, LevelSource::None),
+        Some(d) => {
+            let source = if d.used == LevellingMode::Track && analysed.is_some() {
+                LevelSource::Analysis
+            } else {
+                LevelSource::Tags
+            };
+            (d.gain_db, source)
+        }
+    }
 }
 
 /// Ring samples carrying some source frames.
@@ -144,6 +188,7 @@ pub struct Pipeline {
     /// Track whose levelling is set up.
     track: Option<u32>,
     levelling_db: f64,
+    level_source: LevelSource,
     pending: Vec<f32>,
     pending_off: usize,
     /// Source frames carried by `pending`, and how many of them were already written.
@@ -166,6 +211,7 @@ impl Pipeline {
             out_rate: None,
             track: None,
             levelling_db: 0.0,
+            level_source: LevelSource::None,
             pending: Vec::new(),
             pending_off: 0,
             pending_src: 0,
@@ -195,6 +241,16 @@ impl Pipeline {
 
     pub fn levelling_db(&self) -> f64 {
         self.levelling_db
+    }
+
+    /// Where the current track's levelling gain came from.
+    pub fn level_source(&self) -> LevelSource {
+        self.level_source
+    }
+
+    /// The track whose levelling is set up (the last one pushed).
+    pub fn track(&self) -> Option<u32> {
+        self.track
     }
 
     /// Change the DSP settings (applies to audio processed from now on).
@@ -249,6 +305,18 @@ impl Pipeline {
     /// Process one block of the core's PCM (interleaved stereo, `frames` frames of track
     /// `seq`) into the pending buffer. Call only when [`Pipeline::has_pending`] is false.
     pub fn push(&mut self, block: &[f32], seq: u32, tags: Option<&ReplayGainTags>) {
+        self.push_with(block, seq, tags, None);
+    }
+
+    /// [`Pipeline::push`], with the track's R128 analysis when known (used for levelling
+    /// if `analysis_levelling` is on; decided once, at the track's first block).
+    pub fn push_with(
+        &mut self,
+        block: &[f32],
+        seq: u32,
+        tags: Option<&ReplayGainTags>,
+        analysis: Option<Measurement>,
+    ) {
         debug_assert!(!self.has_pending());
         // Source frames that produced no output yet (held inside the resampler) ride along
         // with the next output, so every frame is eventually reported as played.
@@ -259,7 +327,7 @@ impl Pipeline {
         self.drained = false;
         if self.track != Some(seq) {
             self.track = Some(seq);
-            self.levelling_db = tags.map_or(0.0, |t| levelling_gain_db(&self.dsp, t));
+            (self.levelling_db, self.level_source) = levelling_decision(&self.dsp, tags, analysis);
             if let Some(c) = &mut self.chain {
                 c.set_levelling_db(self.levelling_db);
             }
@@ -395,6 +463,16 @@ impl Pipeline {
             Some(c) => c.stages(),
             None => Vec::new(),
         };
+        let source = match self.level_source {
+            LevelSource::Analysis => Some("R128 analysis"),
+            LevelSource::Tags => Some("ReplayGain"),
+            LevelSource::None => None,
+        };
+        if let Some(source) = source {
+            for s in v.iter_mut().filter(|s| s.name.starts_with("Levelling")) {
+                s.name = format!("{} ({source})", s.name);
+            }
+        }
         if let Some(r) = &self.resampler {
             let (from, to) = r.rates();
             v.push(Stage::resample(from, to, "sinc"));
@@ -485,6 +563,7 @@ mod tests {
             levelling: Levelling::Off,
             target_lufs: 1e9,
             limiter: false,
+            analysis_levelling: true,
         }
         .sanitised();
         assert_eq!(weird.preamp_db, 0.0);
@@ -513,6 +592,126 @@ mod tests {
         };
         assert_eq!(levelling_gain_db(&s, &track_only), -3.0);
         assert_eq!(levelling_gain_db(&s, &ReplayGainTags::default()), 0.0);
+    }
+
+    /// R128 levelling from the analysis: the gain is target − integrated loudness, capped
+    /// by the true peak; tags are the fallback; the source shows in the signal path.
+    #[test]
+    fn analysis_levelling_gain_and_fallback() {
+        let loud = Measurement::from_analysis(-9.0, -0.2).unwrap();
+        let quiet = Measurement::from_analysis(-24.0, -12.0).unwrap();
+        let tags = ReplayGainTags {
+            track_gain_db: Some(-2.0),
+            track_peak: Some(0.9),
+            album_gain_db: Some(-4.0),
+            album_peak: Some(0.95),
+        };
+        let mut s = DspSettings {
+            enabled: true,
+            levelling: Levelling::Track,
+            target_lufs: -18.0,
+            limiter: true,
+            analysis_levelling: true,
+            ..DspSettings::default()
+        };
+        // A loud master is turned down by exactly the difference.
+        assert_eq!(
+            levelling_decision(&s, Some(&tags), Some(loud)),
+            (-9.0, LevelSource::Analysis)
+        );
+        // A quiet one is turned up: by 6 dB, within the peak's room plus the limiter's
+        // 3 dB headroom (−12 dBTP + 6 dB stays under the −1 dBTP ceiling).
+        assert_eq!(
+            levelling_decision(&s, Some(&tags), Some(quiet)),
+            (6.0, LevelSource::Analysis)
+        );
+        // Without the limiter, a boost never takes the true peak over the ceiling.
+        let hot_quiet = Measurement::from_analysis(-24.0, -4.0).unwrap();
+        s.limiter = false;
+        let (g, _) = levelling_decision(&s, None, Some(hot_quiet));
+        assert!((g - 3.0).abs() < 1e-9, "{g}");
+        s.limiter = true;
+        // No analysis: the tags (ReplayGain is referenced to −18 LUFS).
+        assert_eq!(
+            levelling_decision(&s, Some(&tags), None),
+            (-2.0, LevelSource::Tags)
+        );
+        // Nothing at all: no levelling.
+        assert_eq!(levelling_decision(&s, None, None), (0.0, LevelSource::None));
+        // Analysis levelling off: the analysis is ignored.
+        s.analysis_levelling = false;
+        assert_eq!(
+            levelling_decision(&s, Some(&tags), Some(loud)),
+            (-2.0, LevelSource::Tags)
+        );
+        // Album mode prefers the album's tags; without them, the track's analysis.
+        s.analysis_levelling = true;
+        s.levelling = Levelling::Album;
+        assert_eq!(
+            levelling_decision(&s, Some(&tags), Some(loud)),
+            (-4.0, LevelSource::Tags)
+        );
+        let track_tags = ReplayGainTags {
+            track_gain_db: Some(-2.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            levelling_decision(&s, Some(&track_tags), Some(loud)),
+            (-9.0, LevelSource::Analysis)
+        );
+        // Levelling off: nothing, whatever is known.
+        s.levelling = Levelling::Off;
+        assert_eq!(
+            levelling_decision(&s, Some(&tags), Some(loud)),
+            (0.0, LevelSource::None)
+        );
+        // The target moves the gain one for one.
+        s.levelling = Levelling::Track;
+        s.target_lufs = -14.0;
+        assert_eq!(levelling_decision(&s, None, Some(loud)).0, -5.0);
+    }
+
+    #[test]
+    fn the_signal_path_names_the_levelling_source() {
+        let mut p = Pipeline::new(DspSettings {
+            enabled: true,
+            levelling: Levelling::Track,
+            limiter: false,
+            analysis_levelling: true,
+            ..DspSettings::default()
+        });
+        p.configure(44_100, 44_100).unwrap();
+        let m = Measurement::from_analysis(-12.0, -1.5).unwrap();
+        p.push_with(&[0.1, 0.1], 1, None, Some(m));
+        assert_eq!(p.level_source(), LevelSource::Analysis);
+        assert_eq!(p.levelling_db(), -6.0);
+        let names: Vec<String> = p.stages().into_iter().map(|s| s.name).collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n.starts_with("Levelling") && n.ends_with("(R128 analysis)")),
+            "{names:?}"
+        );
+        // The next track has only tags.
+        p.pending.clear();
+        p.pending_off = 0;
+        let tags = ReplayGainTags {
+            track_gain_db: Some(-3.0),
+            ..Default::default()
+        };
+        p.push_with(&[0.1, 0.1], 2, Some(&tags), None);
+        assert_eq!(p.level_source(), LevelSource::Tags);
+        let names: Vec<String> = p.stages().into_iter().map(|s| s.name).collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("(ReplayGain)")),
+            "{names:?}"
+        );
+        // A track is decided once: a late analysis doesn't change it mid-track.
+        p.pending.clear();
+        p.pending_off = 0;
+        p.push_with(&[0.1, 0.1], 2, Some(&tags), Some(m));
+        assert_eq!(p.level_source(), LevelSource::Tags);
+        assert_eq!(p.levelling_db(), -3.0);
     }
 
     #[test]
