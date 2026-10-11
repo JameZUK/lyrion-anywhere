@@ -27,19 +27,20 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
 
 | Endpoint | Body | Result |
 |---|---|---|
-| `POST /v1/auth/login` | `{"username","password","device_name","device_id"?,"refresh"?: "cookie"\|"body"}` | `{access_token, expires_in, user, device}`, plus the refresh token (see below) |
-| `POST /v1/auth/pair` | `{"code","device_name"}` | Same, with `refresh_token` in the body (native apps) |
-| `POST /v1/auth/refresh` | none (cookie), or `{"refresh_token"}` | A new access token and a **rotated** refresh token |
+| `POST /v1/auth/login` | `{"username","password","device_name","device_id"?,"refresh"?: "cookie"\|"body"}`, plus the optional client fields | `{access_token, expires_in, user, device}`, plus the refresh token (see below) |
+| `POST /v1/auth/pair` | `{"code","device_name"}`, plus the optional client fields | Same, with `refresh_token` in the body (native apps) |
+| `POST /v1/auth/refresh` | none (cookie), or `{"refresh_token"}`; either may add the optional client fields | A new access token and a **rotated** refresh token |
 | `POST /v1/auth/logout` | bearer access token | 204; revokes this device and ends its sessions. Sends `Clear-Site-Data: "cache"` |
 | `GET /v1/me` | bearer access token | `{user, device, features}` (`features.analysis`: the server offers track analysis) |
 | `GET /v1/account` | bearer access token | `{username, role, totp_enabled, downloads: {enabled, formats}}` (`formats`: what this user may download that this server can produce; see [Downloads](#downloads)) |
 | `POST /v1/account/totp/setup` | `{"password"}` | `{secret, uri, qr_svg}`: a new secret, active once confirmed. A wrong password is 401 and counts towards a lockout of its own (per user), separate from sign-in |
 | `POST /v1/account/totp/confirm` | `{"code"}` | 204; two-step is now on |
 | `POST /v1/account/totp/disable` | `{"password","code"}` | 204; two-step is now off |
+| `PATCH /v1/devices/self` | `{"name"}`, bearer access token | `{id, name}`: renames the caller's own device (see **Devices**) |
 
 - **Access tokens:** random, valid for 15 minutes. Use them as `Authorization: Bearer …` for streams and `/v1/me`, and as the first message on the player socket. Keep them in memory only.
 - **Refresh tokens:**
-  - single use; each refresh returns a new one, valid for the sign-in lifetime (30 days by default, 1–365 set by the admin in the plugin settings). A device in use therefore stays signed in; one unused for the whole lifetime must sign in again;
+  - single use; each refresh returns a new one, valid for the sign-in lifetime (90 days by default, 1–365 set by the admin in the plugin settings). A device in use therefore stays signed in; one unused for the whole lifetime must sign in again;
   - presenting a used one revokes the whole device, because the token has been copied (audit event `refresh.reused`, and the 401 carries `Clear-Site-Data: "cache"`);
   - **grace:** within 60 seconds of a token's use, while none of its replacements has been used, presenting it again is a lost response (a phone suspended mid-request) or a concurrent refresh (two tabs restoring at once). Another replacement is issued *alongside* the first, which stays valid (audit event `refresh.retried`), so whichever one the client keeps works. At most 8 replacements per token; beyond that the refresh is refused (401) without revoking;
   - **siblings:** the first replacement to be used wins. Its unused siblings are superseded at once: their access tokens stop working, and presenting one later is reuse, so the device is revoked. Presenting the original after any of its replacements was used is reuse too;
@@ -59,6 +60,9 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
 - **Devices:** each login (or pairing) is a device with its own player MAC. A browser can pass its previous `device_id` to keep the same LMS player, as long as the device belongs to the same user (the web app always does). A user has at most 20 active devices: signing in (or pairing) another revokes the least recently seen one and ends its live session (audit event `device.evicted`).
   - At most 10 **new** devices per user per hour (reusing one doesn't count); beyond that, 429 with `Retry-After` (audit event `device.rate_limited`).
   - **Device names** are cleaned rather than refused: letters of any script, digits, spaces and `. , - _ ' ’ ( ) &` are kept, everything else (markup, control, bidi and other format characters such as U+202E or U+200B) is removed, runs of whitespace become one space, and the result is cut to 64 characters. Nothing left: `Browser`. The name a player reports to LMS (`SETD`) is cleaned the same way, and replaced by the device name if nothing usable is left.
+  - **Renaming:** `PATCH /v1/devices/self` `{"name"}` renames the device the access token belongs to (there is no way to name another one; it needs `X-Anywhere-Client` like `/v1/auth/*`). Admins rename any device through the admin API. A name must be 1–64 characters once trimmed, and is then cleaned as above; one with nothing usable left (e.g. only markup or format characters) is refused with 400, as is one already used (ignoring case) by another of the same user's devices. Other users may use the same name. Access tokens carry the new name at once. If the device has a live player session, the gateway renames its LMS player with LMS's `name` command (LMS then tells the player, as when a player is renamed in LMS) and answers later name queries with it; otherwise the new name reaches LMS in the greeting and name reply when the device next connects. Audit event `device.renamed`.
+  - **Client fields** (optional, on login, pair and refresh): `"client_kind"`: `"pwa"` (the web app in a standalone display mode, i.e. installed), `"browser"` (a browser tab) or `"android"`; anything else is a 400. `"client_platform"`: a short description such as `"Safari on iPadOS"` or `"Pixel 8"`, at most 48 characters (longer is a 400), cleaned like a device name. Fields left out keep what the device reported before. The gateway also keeps the `User-Agent` header, cut to 200 characters of printable ASCII, without `<`, `>`, `"`, `'`, `&`, backslashes and backticks. Clients from before these fields send none; a client meeting an older gateway (which refuses unknown fields as `malformed request`) may repeat a sign-in without them, as the Android app does. The web app sends them on every sign-in and renewal; the Android app on sign-in and pairing.
+  - **Last seen:** each device's last client address (as resolved under **Client address**, the full address rather than the /64 used for lockouts) and time are recorded at sign-in, pairing and refresh, and on authenticated API requests and player connections at most once a minute per device. Only the admin API's device list shows them, with the client fields; listeners can't see them for any device, their own included (the apps have no device list). Revoking a device clears its address and User-Agent at once; its row (name and client type) goes with the other revoked devices.
   - When a device is revoked (any of the ways under **Revocation**), the gateway asks LMS to forget its player (`client forget`), after ending the session; best effort, failures are logged. Revoked devices are deleted after 30 days.
 - **Errors:**
   - wrong credentials always return the same 401;
@@ -101,12 +105,14 @@ Endpoints:
 - `POST /admin/v1/users/{name}/totp/reset` (removes two-step for a user who lost their authenticator)
 - `POST /admin/v1/users/{name}/downloads` `{"enabled": bool, "formats"?: ["original","mp3","opus"]}` (download permission; `formats` must name one to three of these and is kept as it was when left out). `GET /admin/v1/users` lists `downloads` and `download_formats` per user, and `GET /admin/v1/settings` lists the `download_formats` this server can produce
 - `GET/POST /admin/v1/users/{name}/players`, `DELETE /admin/v1/users/{name}/players/{mac}` (home players a listener may control)
-- `GET /admin/v1/devices`
+- `GET /admin/v1/devices`: each active device's `id, username, name, mac, created_at, last_seen`, and `last_addr` (the client address it was last seen from), `client_kind`, `client_platform` and `user_agent` (each `null` until known; see **Devices** under Authentication)
+- `PATCH /admin/v1/devices/{id}` `{"name"}` (also `POST /admin/v1/devices/{id}/name`): rename any device, with the same rules as `PATCH /v1/devices/self`. Returns `{id, name}`; 404 for an unknown or revoked device
 - `GET /admin/v1/devices/{id}/diagnostics` (the device's latest diagnostics report)
 - `DELETE /admin/v1/devices/{id}`
+- `GET/POST /admin/v1/settings`: `{"session_days"}` sets the sign-in lifetime (1–365 days). The GET also returns `session_days_default` (90), `session_days_min`, `session_days_max` and the `download_formats` this server can produce
 - `GET /admin/v1/audit`
 
-LMS's HTTP client cannot send `DELETE`, so each delete also has a `POST` form: `/admin/v1/users/{name}/delete`, `/admin/v1/users/{name}/players/{mac}/remove` and `/admin/v1/devices/{id}/revoke`.
+LMS's HTTP client cannot send `DELETE` or `PATCH`, so the rename has a `POST` form (above) and each delete has one too: `/admin/v1/users/{name}/delete`, `/admin/v1/users/{name}/players/{mac}/remove` and `/admin/v1/devices/{id}/revoke`.
 
 ## Player socket
 
