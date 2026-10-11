@@ -409,6 +409,8 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 
 ## 10. Native apps (post-v1)
 
+The detailed plan (scope, architecture, audio engine, track analysis, milestones and open decisions) is in [`docs/plans/native-apps.md`](docs/plans/native-apps.md).
+
 Android (Kotlin + Jetpack Compose) and iOS (Swift + SwiftUI) are thin native UIs over the same Rust core (UniFFI) and the same protocol (§6). They reach feature parity with the web app, and add:
 
 - device pairing by QR code;
