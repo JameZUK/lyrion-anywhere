@@ -37,19 +37,23 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
     lateinit var container: AppContainer
         private set
 
+    // Everything below is created on first use, never while Android constructs the app, so a
+    // failure there is recorded by [CrashLog] rather than killing the app before it can.
+
     /** Work that outlives any screen (resuming the sign-in, the phone's player). */
-    val appScope = CoroutineScope(
-        SupervisorJob() + Dispatchers.Main.immediate +
-            CoroutineExceptionHandler { _, e -> CrashLog.record(this, "Background task failed", e) },
-    )
+    val appScope: CoroutineScope by lazy {
+        CoroutineScope(
+            SupervisorJob() + Dispatchers.Main.immediate +
+                CoroutineExceptionHandler { _, e -> CrashLog.record(this, "Background task failed", e) },
+        )
+    }
 
     /** What plays, for the home-screen widget and the Quick Settings tile. */
-    override val nowPlaying = NowPlayingHub()
+    override val nowPlaying: NowPlayingHub by lazy { NowPlayingHub() }
 
     /** The widget's and tile's buttons. */
-    val controls = Controls({ container.players }, nowPlaying)
+    val controls: Controls by lazy { Controls({ container.players }, nowPlaying) }
 
-    @OptIn(FlowPreview::class)
     /**
      * The last run crashed: start nothing and let [MainActivity] show the report (see
      * [CrashLog]), so a crash at start-up can't repeat itself on every launch.
@@ -66,9 +70,10 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
         CrashLog.install(base)
     }
 
+    @OptIn(FlowPreview::class)
     override fun onCreate() {
         super.onCreate()
-        if (CrashLog.pending(this) != null) {
+        if (runCatching { CrashLog.pending(this) }.getOrNull() != null) {
             safeMode = true
             return
         }

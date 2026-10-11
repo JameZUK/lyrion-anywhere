@@ -16,8 +16,8 @@ android {
         applicationId = "io.github.jamezuk.lyrionanywhere"
         minSdk = 29
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.1.0-alpha.6"
+        versionCode = 7
+        versionName = "0.1.0-alpha.7"
         // Only the ABIs the Rust layer is built for (keep in step with `anywhere.rust.abis`
         // in gradle.properties): dependencies such as JNA ship more (armeabi, mips, x86),
         // and a device preferring one of those would load that folder, find no Rust library

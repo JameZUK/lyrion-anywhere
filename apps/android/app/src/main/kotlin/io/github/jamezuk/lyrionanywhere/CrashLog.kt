@@ -1,7 +1,10 @@
 package io.github.jamezuk.lyrionanywhere
 
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.Build
+import androidx.core.content.edit
 import java.io.File
 
 /**
@@ -52,12 +55,77 @@ object CrashLog {
             .filter { it.isFile }
             .mapNotNull { runCatching { it.readText().take(MAX_CHARS) }.getOrNull() }
             .filter { it.isNotBlank() }
+            .toMutableList()
+        runCatching { lastCrashExit(context) }.getOrNull()?.let { parts += it }
         return if (parts.isEmpty()) null else parts.joinToString("\n\n----\n\n")
     }
 
     fun clear(context: Context) {
         jvmFile(context).delete()
         nativeFile(context).delete()
+        // Android's record of the last exit stays; remember it has been seen.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching { latestExit(context)?.let { e -> seen(context).edit { putLong(SEEN_EXIT, e.timestamp) } } }
+        }
+    }
+
+    private const val SEEN_EXIT = "seen_exit"
+
+    private fun seen(context: Context) = context.getSharedPreferences("crash_log", Context.MODE_PRIVATE)
+
+    private fun latestExit(context: Context): ApplicationExitInfo? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        val am = context.getSystemService(ActivityManager::class.java) ?: return null
+        return am.getHistoricalProcessExitReasons(context.packageName, 0, 1).firstOrNull()
+    }
+
+    /**
+     * Android's own record of the last time the app died, if it crashed and hasn't been
+     * shown yet (Android 11+). This works even for crashes before any app code ran, and for
+     * native crashes, whose tombstone is reduced to its readable strings.
+     */
+    private fun lastCrashExit(context: Context): String? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        val exit = latestExit(context) ?: return null
+        val kind = when (exit.reason) {
+            ApplicationExitInfo.REASON_CRASH -> "Java/Kotlin crash"
+            ApplicationExitInfo.REASON_CRASH_NATIVE -> "Native crash"
+            ApplicationExitInfo.REASON_ANR -> "Not responding (ANR)"
+            ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "Initialisation failure"
+            else -> return null
+        }
+        if (exit.timestamp <= seen(context).getLong(SEEN_EXIT, 0L)) return null
+        val trace = runCatching {
+            exit.traceInputStream?.use { it.readBytes() }
+        }.getOrNull()?.let { readable(it) }.orEmpty()
+        return buildString {
+            appendLine("$kind (reported by Android)")
+            appendLine(header(context))
+            appendLine("description: ${exit.description ?: "(none)"}")
+            appendLine("status: ${exit.status} · at ${java.util.Date(exit.timestamp)}")
+            if (trace.isNotBlank()) {
+                appendLine()
+                append(trace)
+            }
+        }.take(MAX_CHARS)
+    }
+
+    /** The readable runs of characters in a binary trace (e.g. a native tombstone). */
+    private fun readable(bytes: ByteArray): String {
+        val out = StringBuilder()
+        val run = StringBuilder()
+        for (b in bytes.take(256 * 1024)) {
+            val c = b.toInt() and 0xff
+            if (c in 0x20..0x7e || c == 0x0a || c == 0x09) {
+                run.append(c.toChar())
+            } else {
+                if (run.length >= 6) out.append(run.trim()).append('\n')
+                run.setLength(0)
+            }
+            if (out.length > MAX_CHARS) break
+        }
+        if (run.length >= 6) out.append(run.trim())
+        return out.toString()
     }
 
     private fun header(context: Context): String {
