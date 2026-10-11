@@ -12,7 +12,7 @@
 	import { version as buildVersion } from '$app/environment';
 	import pkg from '../../../package.json';
 	import { VOLUME_LABELS, canFollow, planVolume, type VolumeSetting } from '$lib/player/volume';
-	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
+	import { downloads, offlinePlayer, plays } from '$lib/offline/index.svelte';
 	import { forgetOwner, formatBytes, loadPrefs, networkType, requestPersist, savePrefs, storageInfo, type DownloadPrefs, type StorageInfo } from '$lib/offline/settings';
 	import { FORMATS, FORMAT_LABELS } from '$lib/offline/types';
 	import { loadDefault, saveDefault, type DefaultSetting } from '$lib/player/default-player';
@@ -139,6 +139,7 @@
 		// Offline mode no longer offers this account's downloads without signing in.
 		forgetOwner();
 		await downloads.setUser(null);
+		await plays.setUser(null);
 		await session.signOut();
 	}
 

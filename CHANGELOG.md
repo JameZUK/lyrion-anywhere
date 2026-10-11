@@ -4,6 +4,56 @@ Dated entries, newest first.
 
 ## 2026-10-11
 
+### Offline plays sync back to LMS (SPEC D6, plan A5)
+- **Web app:** each play of a downloaded track is noted on the device when it ends (finished, skipped or stopped), with the seconds actually heard (seeking and pauses don't count).
+  - Plays are kept in the browser's storage per user, next to the downloads, and sent to the server in batches when online.
+  - Each play stays queued until the server has answered for it, with backoff after failures.
+  - The Downloads page shows "N plays waiting to sync".
+  - Removing downloads keeps waiting plays. At most 5000 are kept per user (the oldest go first).
+- **Gateway: `POST /v1/plays`** (`docs/PROTOCOL.md` › Offline plays). Android will use the same endpoint.
+  - Up to 200 plays an upload, each with a client-made key, so a retry never counts twice (keys are kept per user).
+  - Strict checks:
+    - integer track ids;
+    - start time within 90 days and not in the future (5 minutes' skew allowed);
+    - 0–24 h heard;
+    - no unknown fields;
+    - a 96 KiB cap.
+  - Only local library tracks count, and with the download's stable key, only if it is still the same file.
+  - **The counting rule (as scrobblers use):** half the track or 240 s heard, whichever is less.
+  - Each play gets an answer: `recorded`, `duplicate`, `refused` (with the reason) or `retry` (LMS unreachable or scanning, the hourly allowance used).
+  - Limits: one upload at a time per user, 30 uploads a minute, 1000 plays an hour, a 30 s budget per upload.
+- **Plugin: `anywhere play_record`**. LMS has no command that counts a play, so the plugin adds one.
+  - The gateway sends it over LMS JSON-RPC on loopback, signed with HMAC-SHA256 under the admin secret both already share. Unsigned, wrongly signed or stale requests are refused before anything is looked up.
+  - It raises the track's play count and sets last played (never backwards) through LMS's own schema, as LMS does when a track plays. It refuses radio, streaming and unknown tracks, and answers `busy` while a scan runs.
+  - Recent keys are remembered, so a resend is a duplicate.
+- **Tests:**
+  - Gateway, against the fake LMS and a fake plugin that checks signatures:
+    - success, and dedupe on retry, within an upload and across users;
+    - 401, and malformed, oversize and hostile values;
+    - future and too-old times;
+    - non-library, unknown and renumbered tracks, and the counting rule;
+    - plugin refusals;
+    - an unreachable or hung LMS;
+    - one upload at a time and the rate limits;
+    - the plugin command refused through `/v1/rpc`;
+    - parser fuzzing and random uploads.
+  - Account store: claims, stale claims, pruning and the migration.
+  - Plugin (`t/09-plays.t`):
+    - recording;
+    - duplicates;
+    - every signature and freshness refusal;
+    - hostile values never reaching the library;
+    - scan, statistics-off and database-error states;
+    - random input.
+
+    A shared test vector keeps the gateway's and the plugin's signatures in step.
+  - Web:
+    - queueing per user, batches, answers, backoff and Retry-After;
+    - 401, and splitting a bad batch;
+    - the queue cap;
+    - what the player reports as heard;
+    - the Downloads page line.
+
 ### Android: moving playback, queue editing, sync groups, tablets, widget, tile and gestures (A4 part 2)
 - **Transfer (SPEC D20):** *Move playback here* on each player in *Play on…*, and *Bring to this phone* on the phone's row and the "Playing on …" strip.
   - The same recipe as the web app (`docs/PROTOCOL.md` › Transfer): group then leave, or copy the list of library tracks when LMS won't group the two, with every documented refusal.

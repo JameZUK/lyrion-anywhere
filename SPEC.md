@@ -22,7 +22,7 @@ Native Android and iOS apps come after v1 and use the same documented protocol.
 | D3 | Client stack | **Shared Rust core.** Compiled to WebAssembly for the web app, with UniFFI bindings for the later native apps. |
 | D4 | Web interface | **Full-featured web app is a v1 goal.** Native apps come later, on the same protocol. |
 | D5 | Offline download format | **Chosen by the user per download:** original, or a transcode (Opus/MP3), with a default for each network type. |
-| D6 | Offline playback | **Local player that syncs back.** Plays from cache when offline; play counts and ratings are queued and sent to LMS on reconnect. |
+| D6 | Offline playback | **Local player that syncs back.** Plays from cache when offline; play counts (and later ratings) are queued and sent to LMS on reconnect. Plays implemented 2026-10-11 (`POST /v1/plays`): a play counts once half the track or 240 s (whichever is less) was heard. |
 | D7 | Accounts | **Admin creates all users.** No self sign-up. |
 | D8 | Minimum LMS | **9.0+** |
 | D9 | Web UI framework | **SvelteKit** (TypeScript, static build served by the gateway) |
@@ -252,7 +252,7 @@ This is the one contract used by the web app now and the native apps later. It i
 | `GET /v1/download/track/{id}/info` | Track metadata, stable key and the formats this user may download | Access token + download permission |
 | `GET /v1/download/track/{id}?format=` | One track file (`original`, `mp3` = MP3 320, `opus` = Opus 160), `Range` supported | Access token + download permission |
 | `GET /v1/analysis/track/{id}[?format=json\|binary]` | Waveform, R128 loudness, peaks, silence and fades of a track (§5.7); 202 while it is being analysed | Access token + download permission |
-| `POST /v1/offline/events` | Batched offline plays and ratings (idempotent by event UUID) | Access token |
+| `POST /v1/plays` | Batched offline plays (idempotent by a client key per play); ratings later (D6) | Access token |
 | `GET /v1/account/devices`, `DELETE …/{id}` | User's own sessions/devices | Access token |
 | `GET /healthz` | Liveness | None |
 
@@ -369,10 +369,24 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 
 - When the gateway is unreachable, or the user turns on Offline mode, the app switches to a local player:
   - It uses the same decoder pipeline, with gapless playback, its own queue, and browse of downloaded content.
-- Plays (track ID, start time, seconds played, completed) and rating changes are logged locally, each with a UUID.
-- On reconnect they go to `POST /v1/offline/events`. The plugin applies them to LMS play count, last played and rating. Duplicates are ignored by UUID.
+- **Plays (implemented 2026-10-11):**
+  - Each play is logged locally, per user, when it ends (finished, skipped or stopped). The log holds the track ID, stable track key, start time and seconds actually heard, with a client-made idempotency key.
+  - Back online, plays are sent in batches to `POST /v1/plays` (`docs/PROTOCOL.md` › Offline plays) and kept until the server answers for each.
+  - The gateway checks each play:
+    - the token;
+    - shape and ranges;
+    - start time within the last 90 days and not in the future (5 minutes' skew allowed);
+    - a local library track, still the same file;
+    - the per-user limits.
+  - Keys are deduped per user, so a retry never counts twice.
+  - **Counting rule (as scrobblers use):** a play counts if at least half the track, or 240 s, was heard, whichever is less (240 s when the duration is unknown).
+  - The gateway forwards each play to the plugin's `anywhere play_record` over LMS JSON-RPC on loopback, signed with HMAC-SHA256 under the admin secret both already share. The plugin raises LMS's play count and sets last played (if later) through `Slim::Schema::TrackPersistent`, as LMS does for its own players.
+- **Ratings** (not yet): rating changes will be queued the same way.
 - Back online, the app offers to send the offline queue to an LMS player ("continue on <player>").
-- _Web app, first slice (2026-10-10):_ the local player (an `<audio>` element on blob: URLs, with Media Session controls) and offline mode are in; play-event logging and sync-back are not yet.
+- _Web app (2026-10-10, 2026-10-11):_
+  - the local player: an `<audio>` element on blob: URLs, with Media Session controls;
+  - offline mode;
+  - play logging in IndexedDB, with sync-back and backoff. The Downloads page shows "N plays waiting to sync".
 
 ### 8.5 Security
 

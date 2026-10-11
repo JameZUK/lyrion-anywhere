@@ -11,6 +11,9 @@ package Plugins::LyrionAnywhere::Commands;
 # `csrf:<token>`: a random value made when LMS starts, given only to the settings page
 # (which other web sites cannot read). Read-only commands need no token. The gateway never
 # forwards `anywhere` commands from the internet (it is reserved in its allow-list).
+#
+# `anywhere play_record` (Plays.pm) is the one command the gateway itself sends: it is
+# signed with the admin secret instead of carrying the settings page's token.
 
 use strict;
 use warnings;
@@ -23,6 +26,7 @@ use Slim::Utils::Log;
 
 use Plugins::LyrionAnywhere::Admin;
 use Plugins::LyrionAnywhere::Gateway;
+use Plugins::LyrionAnywhere::Plays;
 
 my $log = logger('plugin.lyrionanywhere');
 
@@ -87,6 +91,7 @@ sub register {
 	# [needsClient, isQuery, hasTags, function]
 	Slim::Control::Request::addDispatch(['anywhere', 'status'],  [0, 1, 0, \&status]);
 	Slim::Control::Request::addDispatch(['anywhere', 'restart'], [0, 0, 1, \&restart]);
+	Slim::Control::Request::addDispatch(['anywhere', 'play_record'], [0, 0, 1, \&Plugins::LyrionAnywhere::Plays::command]);
 	for my $op (Plugins::LyrionAnywhere::Admin::operations()) {
 		Slim::Control::Request::addDispatch(['anywhere', $op], [0, 1, 1, \&admin]);
 	}

@@ -11,13 +11,15 @@
 // - Audio is stored in pieces (about 1 MiB each) as it arrives, so an interrupted download
 //   keeps what it has and resumes with an HTTP Range request, even after a reload.
 //
+// Plays made offline wait in 'plays' until the server has them (see ./plays.svelte).
+//
 // Everything is partitioned by user: each key starts with the (encoded) username, so a
 // different user signing in on the same browser never sees another user's downloads.
 // Tokens are never stored.
-import type { PartialDownload, QueuedDownload, StoredTrack } from './types';
+import type { PartialDownload, QueuedDownload, QueuedPlay, StoredTrack } from './types';
 
-export type StoreName = 'tracks' | 'chunks' | 'partials' | 'covers' | 'queues';
-const STORES: StoreName[] = ['tracks', 'chunks', 'partials', 'covers', 'queues'];
+export type StoreName = 'tracks' | 'chunks' | 'partials' | 'covers' | 'queues' | 'plays';
+const STORES: StoreName[] = ['tracks', 'chunks', 'partials', 'covers', 'queues', 'plays'];
 
 /** The handful of operations the store needs: real (IndexedDB) or in memory (tests). */
 export interface Backend {
@@ -65,7 +67,8 @@ export class IdbBackend implements Backend {
 	#open(): Promise<IDBDatabase> {
 		this.#db ??= new Promise<IDBDatabase>((resolve, reject) => {
 			if (typeof indexedDB === 'undefined') return reject(new Error('This browser can’t store downloads.'));
-			const req = indexedDB.open(this.name, 1);
+			// Version 2 added 'plays'; the upgrade only creates the stores that are missing.
+			const req = indexedDB.open(this.name, 2);
 			req.onupgradeneeded = () => {
 				for (const s of STORES) if (!req.result.objectStoreNames.contains(s)) req.result.createObjectStore(s);
 			};
@@ -131,6 +134,12 @@ const coverKey = (user: string, albumId: number) => {
 	return `${userPrefix(user)}${albumId}`;
 };
 const seqKey = (n: number) => String(n).padStart(8, '0');
+/** A queued play's id: its start time (so plays list oldest first) and a random part. */
+export const PLAY_ID = /^\d{11}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const playKey = (user: string, id: string) => {
+	if (typeof id !== 'string' || !PLAY_ID.test(id)) throw new RangeError('bad play id');
+	return `${userPrefix(user)}${id}`;
+};
 
 export class OfflineStore {
 	constructor(readonly backend: Backend) {}
@@ -188,6 +197,23 @@ export class OfflineStore {
 		return q.length ? this.backend.put('queues', userPrefix(user), q.map((e) => ({ ...e }))) : this.backend.del('queues', userPrefix(user));
 	}
 
+	/** Queue a play made offline until the server has it. */
+	async addPlay(p: QueuedPlay): Promise<void> {
+		return this.backend.put('plays', playKey(p.user, p.id), { ...p });
+	}
+	/** This user's queued plays, oldest first. */
+	async listPlays(user: string): Promise<QueuedPlay[]> {
+		return this.backend.list<QueuedPlay>('plays', userPrefix(user));
+	}
+	/** The ids of this user's queued plays, oldest first. */
+	async playIds(user: string): Promise<string[]> {
+		const p = userPrefix(user);
+		return (await this.backend.keys('plays', p)).map((k) => k.slice(p.length));
+	}
+	async deletePlay(user: string, id: string): Promise<void> {
+		return this.backend.del('plays', playKey(user, id));
+	}
+
 	/** Remove one downloaded track (and any partial download of it). */
 	async deleteTrack(user: string, key: string): Promise<void> {
 		const k = trackKey(user, key);
@@ -200,10 +226,12 @@ export class OfflineStore {
 		for (const c of await this.backend.keys('covers', p)) if (!albums.has(c.slice(p.length))) await this.backend.del('covers', c);
 	}
 
-	/** Remove everything this user downloaded on this device. */
+	/** Remove everything this user downloaded on this device. Plays waiting to be sent are
+	 *  kept: they are the user's listening history, not downloads, and go on next sign-in. */
 	async deleteUser(user: string): Promise<void> {
 		const p = userPrefix(user);
 		for (const s of STORES) {
+			if (s === 'plays') continue;
 			if (s === 'queues') await this.backend.del(s, p);
 			else await this.backend.delPrefix(s, p);
 		}

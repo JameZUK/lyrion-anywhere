@@ -147,3 +147,17 @@ export interface QueuedDownload {
 	choice: Format | 'auto';
 	paused: boolean;
 }
+
+/** A play made offline, waiting to be sent to the server (POST /v1/plays). */
+export interface QueuedPlay {
+	user: string;
+	/** Also the idempotency key the server dedupes by: `<start, 11 digits>-<uuid>`. */
+	id: string;
+	trackId: number;
+	/** The download's stable key: the server checks it is still the same file. */
+	trackKey: string;
+	/** When playback started (Unix seconds). */
+	playedAt: number;
+	/** Seconds actually heard. */
+	seconds: number;
+}

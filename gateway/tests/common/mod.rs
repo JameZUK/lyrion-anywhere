@@ -248,6 +248,78 @@ pub struct FakeLms {
     pub stall_stream: Arc<std::sync::atomic::AtomicBool>,
     /// Tracks added by a test (see [`FakeLms::add_track`]): id → (titles item, file).
     pub extra: ExtraTracks,
+    /// The plugin's `anywhere play_record`.
+    pub plugin: Arc<Mutex<FakePlugin>>,
+}
+
+/// The secret the test gateway signs plays with (`Config::plays_secret`).
+pub const PLAYS_SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/// How the fake plugin's `anywhere play_record` behaves.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PluginMode {
+    /// Check the signature and record the play (remembering keys, like the plugin).
+    Record,
+    /// Answer with this result.
+    Answer(serde_json::Value),
+    /// Never answer.
+    Hang,
+}
+
+/// The fake plugin: what it recorded, as (track id, played_at, key).
+pub struct FakePlugin {
+    pub mode: PluginMode,
+    pub recorded: Vec<(u64, u64, String)>,
+    pub calls: usize,
+}
+
+impl Default for FakePlugin {
+    fn default() -> Self {
+        FakePlugin {
+            mode: PluginMode::Record,
+            recorded: vec![],
+            calls: 0,
+        }
+    }
+}
+
+/// The fake plugin's handling of one `anywhere play_record` (see the real one in
+/// plugin/Plugins/LyrionAnywhere/Commands.pm).
+fn fake_play_record(
+    plugin: &Mutex<FakePlugin>,
+    args: &[serde_json::Value],
+) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let mut pl = plugin.lock().unwrap();
+    pl.calls += 1;
+    match pl.mode.clone() {
+        PluginMode::Hang => return None,
+        PluginMode::Answer(v) => return Some(v),
+        PluginMode::Record => {}
+    }
+    let arg = |name: &str| {
+        args.iter()
+            .filter_map(|a| a.as_str()?.strip_prefix(&format!("{name}:")))
+            .next()
+            .map(str::to_string)
+    };
+    let (Some(id), Some(at), Some(key), Some(ts), Some(sig)) = (
+        arg("track_id").and_then(|v| v.parse::<u64>().ok()),
+        arg("played_at").and_then(|v| v.parse::<u64>().ok()),
+        arg("key"),
+        arg("ts").and_then(|v| v.parse::<u64>().ok()),
+        arg("sig"),
+    ) else {
+        return Some(json!({"error": "invalid"}));
+    };
+    if anywhere_gateway::plays::signature(PLAYS_SECRET, id, at, &key, ts) != sig {
+        return Some(json!({"error": "refused: bad signature"}));
+    }
+    if pl.recorded.iter().any(|(_, _, k)| *k == key) {
+        return Some(json!({"error": "duplicate"}));
+    }
+    pl.recorded.push((id, at, key));
+    Some(json!({"ok": 1}))
 }
 
 pub type ExtraTracks = Arc<Mutex<std::collections::HashMap<u64, (serde_json::Value, Vec<u8>)>>>;
@@ -292,14 +364,17 @@ impl FakeLms {
         let http_addr = http.local_addr().unwrap();
         let stall_stream: Arc<std::sync::atomic::AtomicBool> = Default::default();
         let extra: ExtraTracks = Default::default();
-        let (r, a, stall, ex) = (
+        let plugin: Arc<Mutex<FakePlugin>> = Default::default();
+        let (r, a, stall, ex, pl) = (
             rec.clone(),
             audio.clone(),
             stall_stream.clone(),
             extra.clone(),
+            plugin.clone(),
         );
         let app = Router::new().fallback(any(move |req: Request| {
-            let (r, a, stall, ex) = (r.clone(), a.clone(), stall.clone(), ex.clone());
+            let (r, a, stall, ex, pl) =
+                (r.clone(), a.clone(), stall.clone(), ex.clone(), pl.clone());
             async move {
                 let path = req
                     .uri()
@@ -321,9 +396,24 @@ impl FakeLms {
                         .filter_map(|p| p.as_str()?.strip_prefix("track_id:"))
                         .next()
                         .map(|id| id.parse::<u64>().unwrap_or(0));
-                    r.lock().unwrap().rpc.push(params);
+                    r.lock().unwrap().rpc.push(params.clone());
                     let added = track_id.and_then(|id| ex.lock().unwrap().get(&id).cloned());
+                    let words = params[1].as_array().cloned().unwrap_or_default();
+                    let plugin_answer = if cmd == "anywhere"
+                        && words.get(1).and_then(|w| w.as_str()) == Some("play_record")
+                    {
+                        match fake_play_record(&pl, &words[2..]) {
+                            Some(v) => Some(v),
+                            None => {
+                                futures_util::future::pending::<()>().await;
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let result = match track_id {
+                        _ if plugin_answer.is_some() => plugin_answer.unwrap(),
                         Some(_) if cmd == "titles" && added.is_some() => {
                             serde_json::json!({"count": 1, "titles_loop": [added.unwrap().0]})
                         }
@@ -446,6 +536,7 @@ impl FakeLms {
             audio,
             stall_stream,
             extra,
+            plugin,
         }
     }
 
@@ -567,6 +658,7 @@ pub async fn harness_with(mutate: impl FnOnce(&mut Config)) -> Harness {
         lms_cli: lms.cli_addr.to_string(),
         lms_ips: vec![Ipv4Addr::LOCALHOST],
         auth_timeout: Duration::from_millis(300),
+        plays_secret: Some(PLAYS_SECRET.to_string()),
         ..Config::default()
     };
     mutate(&mut cfg);

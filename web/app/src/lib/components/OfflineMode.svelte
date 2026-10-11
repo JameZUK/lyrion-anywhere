@@ -3,7 +3,7 @@
 	// trying, and meanwhile offers this device's downloads (they are local, so they need no
 	// sign-in). Only the account last signed in here is offered: its session is still on this
 	// device. Signing out forgets it, so nobody else's downloads are ever shown.
-	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
+	import { downloads, offlinePlayer, plays } from '$lib/offline/index.svelte';
 	import { lastOwner } from '$lib/offline/settings';
 	import DownloadsView from './DownloadsView.svelte';
 	import OfflineBar from './OfflineBar.svelte';
@@ -13,7 +13,10 @@
 	const owner = lastOwner();
 
 	$effect(() => {
-		if (owner) void downloads.setUser(owner, false);
+		if (owner) {
+			void downloads.setUser(owner, false);
+			void plays.setUser(owner, false);
+		}
 	});
 	const count = $derived(owner && downloads.user === owner ? downloads.saved.length : 0);
 </script>

@@ -2,9 +2,9 @@
 // <audio> element and blob: URLs, with its own queue (album order), lock-screen controls
 // (Media Session) and background playback. It is separate from LMS players.
 //
-// Play-event sync (SPEC D6) would hook in at `#finished` and `#loadIndex` below: a play
-// (stable key, start time, seconds played, completed) would be logged locally and sent to
-// POST /v1/offline/events on reconnect. It is not implemented yet, so nothing is logged.
+// Plays are reported for sync-back (SPEC D6; see ./plays.svelte): when a track finishes, is
+// skipped, or playback stops, `onPlay` gets the track, when it started and the seconds
+// actually heard (seeking doesn't count as listening).
 import type { OfflineStore } from './store';
 import { FORMAT_LABELS, type StoredTrack } from './types';
 
@@ -28,7 +28,13 @@ export interface PlayerDeps {
 	urls?: { create(b: Blob): string; revoke(u: string): void };
 	/** Builds lock-screen metadata (MediaMetadata where the browser has it). */
 	metadata?: (init: MediaMetadataInit) => MediaMetadata | null;
+	/** A play ended (finished, skipped or stopped): `seconds` heard, from `startedMs`. */
+	onPlay?: (user: string, track: StoredTrack, startedMs: number, seconds: number) => void;
+	now?: () => number;
 }
+
+/** Larger jumps between position updates are seeks, not listening. */
+const MAX_STEP = 2;
 
 /** Other names browsers know a file type by: some say "" to audio/x-flac but play audio/flac. */
 const ALIASES: Record<string, string[]> = {
@@ -86,6 +92,8 @@ export class OfflinePlayer {
 	#ms: MediaSession | null;
 	#urls: { create(b: Blob): string; revoke(u: string): void };
 	#coverAlbum: number | null = null;
+	/** The play being listened to: its track, start time and seconds heard so far. */
+	#play: { user: string; track: StoredTrack; startedMs: number; heard: number; last: number | null } | null = null;
 
 	constructor(private deps: PlayerDeps) {
 		this.#ms = deps.mediaSession !== undefined ? deps.mediaSession : typeof navigator !== 'undefined' && 'mediaSession' in navigator ? navigator.mediaSession : null;
@@ -116,12 +124,25 @@ export class OfflinePlayer {
 			a = el as unknown as AudioLike;
 		}
 		a.preload = 'auto';
-		a.addEventListener('timeupdate', () => (this.position = a.currentTime || 0));
+		a.addEventListener('timeupdate', () => {
+			const cur = a.currentTime || 0;
+			this.position = cur;
+			const p = this.#play;
+			if (p) {
+				// A track starts at 0, so the first update counts from there.
+				const step = cur - (p.last ?? 0);
+				if (this.playing && step > 0 && step <= MAX_STEP) p.heard += step;
+				p.last = cur;
+			}
+		});
 		a.addEventListener('durationchange', () => {
 			if (Number.isFinite(a.duration) && a.duration > 0) this.duration = a.duration;
 			this.#positionState();
 		});
-		a.addEventListener('play', () => this.#state(true));
+		a.addEventListener('play', () => {
+			if (this.#play && !this.#play.startedMs) this.#play.startedMs = this.#now();
+			this.#state(true);
+		});
 		a.addEventListener('pause', () => this.#state(false));
 		a.addEventListener('ended', () => void this.#finished());
 		a.addEventListener('error', () => {
@@ -131,6 +152,27 @@ export class OfflinePlayer {
 		});
 		this.#audio = a;
 		return a;
+	}
+
+	#now(): number {
+		return this.deps.now ? this.deps.now() : Date.now();
+	}
+
+	/** Start counting a play of the current track. */
+	#begin(t: StoredTrack) {
+		this.#play = { user: this.#user, track: t, startedMs: 0, heard: 0, last: null };
+	}
+
+	/** Report the play in progress, if anything was heard. */
+	flushPlay() {
+		const p = this.#play;
+		this.#play = null;
+		if (!p || p.heard <= 0 || !p.user) return;
+		try {
+			this.deps.onPlay?.(p.user, p.track, p.startedMs || this.#now(), p.heard);
+		} catch {
+			/* reporting must never stop playback */
+		}
 	}
 
 	#state(playing: boolean) {
@@ -163,6 +205,8 @@ export class OfflinePlayer {
 		if (!t) return;
 		const load = ++this.#load;
 		const a = this.#el();
+		this.flushPlay();
+		this.#begin(t);
 		this.index = i;
 		this.position = 0;
 		this.duration = t.duration || 0;
@@ -240,9 +284,11 @@ export class OfflinePlayer {
 	}
 
 	async #finished() {
-		// (Play-event sync would record a completed play of `this.current` here.)
 		if (this.index < this.queue.length - 1) await this.#loadIndex(this.index + 1, true);
 		else {
+			// The last track finished: that play is over; playing it again is a new one.
+			this.flushPlay();
+			if (this.current) this.#begin(this.current);
 			this.#state(false);
 			this.position = 0;
 			if (this.#audio) this.#audio.currentTime = 0;
@@ -308,6 +354,7 @@ export class OfflinePlayer {
 
 	/** Stop, forget the queue, and give back every blob: URL and the lock-screen controls. */
 	stop() {
+		this.flushPlay();
 		this.#load++;
 		this.#audio?.pause();
 		this.#release();

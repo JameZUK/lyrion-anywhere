@@ -188,6 +188,8 @@ fn main() {
                     Some(data_dir.join("analysis-cache"))
                 },
                 analysis_cache_bytes: analysis_cache_mb * 1024 * 1024,
+                // Plays are signed for the plugin with the secret it already reads.
+                plays_secret: Some(admin_secret.clone()),
                 ..Config::default()
             };
             let body_timeout = cfg.body_timeout;

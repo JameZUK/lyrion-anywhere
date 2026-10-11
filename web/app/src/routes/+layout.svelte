@@ -14,7 +14,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import OfflineBar from '$lib/components/OfflineBar.svelte';
 	import OfflineMode from '$lib/components/OfflineMode.svelte';
-	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
+	import { downloads, offlinePlayer, plays } from '$lib/offline/index.svelte';
 	import { forgetOwner, rememberOwner } from '$lib/offline/settings';
 	import { library } from '$lib/state/library.svelte';
 
@@ -71,12 +71,14 @@
 		if (app.status === 'signed-in' && user) {
 			rememberOwner(user);
 			void downloads.setUser(user, true);
+			void plays.setUser(user, true);
 			void library.start(user, (c) => api.rpc('', c));
 		} else if (app.status === 'signed-out') {
 			offlinePlayer.stop();
 			library.stop();
 			forgetOwner();
 			void downloads.setUser(null);
+			void plays.setUser(null);
 		}
 	});
 

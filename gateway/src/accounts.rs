@@ -228,6 +228,17 @@ pub struct AuditEntry {
     pub detail: String,
 }
 
+/// What [`Accounts::claim_play`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayClaim {
+    /// The key is ours to forward.
+    Claimed,
+    /// LMS already recorded a play with this key.
+    Recorded,
+    /// Another request is forwarding it right now.
+    InFlight,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthError {
     /// Wrong credentials (deliberately unspecific).
@@ -1496,6 +1507,120 @@ impl Accounts {
         db.last_insert_rowid()
     }
 
+    // -----------------------------------------------------------------------
+    // Offline plays (dedupe keys; see crate::plays)
+    // -----------------------------------------------------------------------
+
+    /// Claim a play's idempotency key for forwarding to LMS. A pending claim older than
+    /// `stale` (a crash mid-forward) is taken over.
+    pub fn claim_play(
+        &self,
+        user: i64,
+        device: i64,
+        key: &str,
+        track_id: u64,
+        played_at: u64,
+        stale: Duration,
+    ) -> Result<PlayClaim, AuthError> {
+        let now = now_secs();
+        let db = self.db.lock().unwrap();
+        let n = db.execute(
+            "INSERT OR IGNORE INTO plays (user_id, key, device_id, track_id, played_at, state, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
+            params![user, key, device, track_id as i64, played_at as i64, now],
+        )?;
+        if n == 1 {
+            return Ok(PlayClaim::Claimed);
+        }
+        let (state, created): (i64, i64) = db.query_row(
+            "SELECT state, created_at FROM plays WHERE user_id = ?1 AND key = ?2",
+            params![user, key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if state != 0 {
+            return Ok(PlayClaim::Recorded);
+        }
+        if now.saturating_sub(created) < stale.as_secs() as i64 {
+            return Ok(PlayClaim::InFlight);
+        }
+        let n = db.execute(
+            "UPDATE plays SET device_id = ?3, track_id = ?4, played_at = ?5, created_at = ?6
+             WHERE user_id = ?1 AND key = ?2 AND state = 0 AND created_at = ?7",
+            params![
+                user,
+                key,
+                device,
+                track_id as i64,
+                played_at as i64,
+                now,
+                created
+            ],
+        )?;
+        Ok(if n == 1 {
+            PlayClaim::Claimed
+        } else {
+            PlayClaim::InFlight
+        })
+    }
+
+    /// LMS recorded the play: its key now marks it as done.
+    pub fn finish_play(&self, user: i64, key: &str) -> Result<(), AuthError> {
+        self.db.lock().unwrap().execute(
+            "UPDATE plays SET state = 1 WHERE user_id = ?1 AND key = ?2",
+            params![user, key],
+        )?;
+        Ok(())
+    }
+
+    /// The play was not recorded (refused, or to be retried): give its key back.
+    pub fn release_play(&self, user: i64, key: &str) -> Result<(), AuthError> {
+        self.db.lock().unwrap().execute(
+            "DELETE FROM plays WHERE user_id = ?1 AND key = ?2 AND state = 0",
+            params![user, key],
+        )?;
+        Ok(())
+    }
+
+    /// Forget keys of plays from before `oldest` (such plays are refused anyway, so their
+    /// keys can't matter), then keep at most `cap` recorded keys for `user`, the newest.
+    pub fn prune_plays(&self, user: Option<i64>, oldest: u64, cap: usize) -> Result<(), AuthError> {
+        let db = self.db.lock().unwrap();
+        db.execute("DELETE FROM plays WHERE played_at < ?1", [oldest as i64])?;
+        if let Some(user) = user {
+            db.execute(
+                "DELETE FROM plays WHERE user_id = ?1 AND state = 1 AND rowid NOT IN (
+                   SELECT rowid FROM plays WHERE user_id = ?1
+                   ORDER BY created_at DESC, rowid DESC LIMIT ?2)",
+                params![user, cap as i64],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// How many play keys are kept for this user (recorded or being forwarded).
+    pub fn stored_plays(&self, user: i64) -> Result<usize, AuthError> {
+        let n: i64 = self.db.lock().unwrap().query_row(
+            "SELECT count(*) FROM plays WHERE user_id = ?1",
+            [user],
+            |r| r.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
+    /// A user's id, by name.
+    pub fn user_id_by_name(&self, username: &str) -> Result<Option<i64>, AuthError> {
+        Ok(self
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM users WHERE username = ?1",
+                [username],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     /// Store a device's latest diagnostics report (already sanitised JSON).
     pub fn save_diagnostics(&self, device_id: i64, report: &str) -> Result<(), AuthError> {
         let db = self.db.lock().unwrap();
@@ -1960,6 +2085,27 @@ fn migrate(db: &Connection) -> Result<(), AuthError> {
              PRAGMA user_version = 6;",
             now_secs()
         ))?;
+    }
+    if version < 7 {
+        // Offline plays sent back by devices (`POST /v1/plays`): the client's idempotency
+        // key per user, so a retried upload never counts a play twice. `state` 0 is a play
+        // being forwarded to LMS right now, 1 one LMS has recorded. Kept per user, not per
+        // device, so a device that signs in again (a new device record) still dedupes. No
+        // reference to the device: its record may be pruned while the key must stay.
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plays (
+               user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+               key TEXT NOT NULL,
+               device_id INTEGER NOT NULL,
+               track_id INTEGER NOT NULL,
+               played_at INTEGER NOT NULL,
+               state INTEGER NOT NULL,
+               created_at INTEGER NOT NULL,
+               PRIMARY KEY (user_id, key));
+             CREATE INDEX IF NOT EXISTS plays_played_at ON plays(played_at);
+             CREATE INDEX IF NOT EXISTS plays_user_created ON plays(user_id, created_at);
+             PRAGMA user_version = 7;",
+        )?;
     }
     Ok(())
 }
@@ -3110,7 +3256,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
         // Version 3 added per-device diagnostics.
         let d = a.devices_for_test();
         a.save_diagnostics(d, r#"{"ok":true}"#).unwrap();
@@ -3482,5 +3628,104 @@ mod tests {
             a.grant_player("nobody", "aa:bb:cc:dd:ee:01"),
             Err(AuthError::BadInput(_))
         ));
+    }
+
+    #[test]
+    fn play_keys_are_claimed_once_and_given_back_on_failure() {
+        let a = store();
+        let alice = a.user_id_by_name("alice").unwrap().unwrap();
+        let admin = a.user_id_by_name("admin").unwrap().unwrap();
+        let stale = Duration::from_secs(120);
+        let at = unix_now() - 60;
+        assert_eq!(
+            a.claim_play(alice, 1, "key-0001", 5, at, stale).unwrap(),
+            PlayClaim::Claimed
+        );
+        assert_eq!(
+            a.claim_play(alice, 2, "key-0001", 5, at, stale).unwrap(),
+            PlayClaim::InFlight
+        );
+        assert_eq!(
+            a.claim_play(admin, 3, "key-0001", 5, at, stale).unwrap(),
+            PlayClaim::Claimed,
+            "keys are per user"
+        );
+        a.release_play(alice, "key-0001").unwrap();
+        assert_eq!(
+            a.claim_play(alice, 1, "key-0001", 5, at, stale).unwrap(),
+            PlayClaim::Claimed
+        );
+        a.finish_play(alice, "key-0001").unwrap();
+        assert_eq!(
+            a.claim_play(alice, 1, "key-0001", 5, at, stale).unwrap(),
+            PlayClaim::Recorded
+        );
+        // A recorded key is never given back.
+        a.release_play(alice, "key-0001").unwrap();
+        assert_eq!(
+            a.claim_play(alice, 1, "key-0001", 5, at, stale).unwrap(),
+            PlayClaim::Recorded
+        );
+        // A claim left pending (a crash mid-forward) is taken over once stale.
+        assert_eq!(
+            a.claim_play(alice, 1, "key-0002", 5, at, stale).unwrap(),
+            PlayClaim::Claimed
+        );
+        assert_eq!(
+            a.claim_play(alice, 1, "key-0002", 5, at, Duration::ZERO)
+                .unwrap(),
+            PlayClaim::Claimed
+        );
+        // Deleting the user deletes their keys.
+        assert_eq!(a.stored_plays(admin).unwrap(), 1);
+        a.delete_user("admin").unwrap();
+        assert_eq!(a.stored_plays(admin).unwrap(), 0);
+        assert_eq!(a.user_id_by_name("admin").unwrap(), None);
+    }
+
+    #[test]
+    fn play_keys_are_pruned_by_age_and_capped_per_user() {
+        let a = store();
+        let alice = a.user_id_by_name("alice").unwrap().unwrap();
+        let stale = Duration::from_secs(120);
+        let now = unix_now();
+        for i in 0..10u64 {
+            let key = format!("key-{i:04}");
+            a.claim_play(
+                alice,
+                1,
+                &key,
+                5,
+                now - 100 * 86_400 + i * 20 * 86_400,
+                stale,
+            )
+            .unwrap();
+            a.finish_play(alice, &key).unwrap();
+        }
+        // Plays from before the cut-off go.
+        a.prune_plays(None, now - 91 * 86_400, 1000).unwrap();
+        assert_eq!(a.stored_plays(alice).unwrap(), 9);
+        // At most `cap` recorded keys are kept, the newest.
+        a.prune_plays(Some(alice), 0, 4).unwrap();
+        assert_eq!(a.stored_plays(alice).unwrap(), 4);
+        assert_eq!(
+            a.claim_play(alice, 1, "key-0009", 5, now, stale).unwrap(),
+            PlayClaim::Recorded
+        );
+    }
+
+    #[test]
+    fn the_plays_table_is_added_to_an_existing_database() {
+        let db = Connection::open_in_memory().unwrap();
+        let a = Accounts::with_connection(db).unwrap();
+        let v: i64 =
+            a.db.lock()
+                .unwrap()
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(v, 7);
+        a.create_user("alice", PW, Role::Listener).unwrap();
+        let alice = a.user_id_by_name("alice").unwrap().unwrap();
+        assert_eq!(a.stored_plays(alice).unwrap(), 0);
     }
 }

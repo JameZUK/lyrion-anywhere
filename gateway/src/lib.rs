@@ -38,6 +38,7 @@ pub mod download;
 pub mod events;
 pub mod limits;
 pub mod menu_actions;
+pub mod plays;
 mod relay;
 mod rpc;
 pub mod rpc_policy;
@@ -151,6 +152,15 @@ pub struct Config {
     pub analysis_wait: Duration,
     /// How long a failed analysis is remembered (and not tried again).
     pub analysis_retry_after: Duration,
+    /// The key that signs `anywhere play_record` for the plugin (the admin secret, which
+    /// the plugin reads from the data directory). `None`: play sync is unavailable.
+    pub plays_secret: Option<String>,
+    /// Plays one user may have recorded an hour (`POST /v1/plays`).
+    pub plays_per_hour: usize,
+    /// Uploads of plays one user may make a minute.
+    pub plays_requests_per_minute: usize,
+    /// Longest one upload of plays may spend talking to LMS; the rest are answered `retry`.
+    pub plays_budget: Duration,
 }
 
 impl Default for Config {
@@ -196,6 +206,10 @@ impl Default for Config {
             analysis_timeout: Duration::from_secs(300),
             analysis_wait: Duration::from_secs(10),
             analysis_retry_after: Duration::from_secs(600),
+            plays_secret: None,
+            plays_per_hour: 1000,
+            plays_requests_per_minute: 30,
+            plays_budget: Duration::from_secs(30),
         }
     }
 }
@@ -226,6 +240,8 @@ pub struct Gateway {
     art_limit: Arc<limits::Limiter>,
     /// Track analysis, when it is on.
     analysis: Option<analysis::Analysis>,
+    /// Limits on uploads of offline plays.
+    plays: plays::PlayLimits,
 }
 
 pub type AppState = Arc<Gateway>;
@@ -279,6 +295,7 @@ impl Gateway {
             download_salt: std::sync::OnceLock::new(),
             art_limit: limits::Limiter::new(cfg.art_per_user, cfg.art_total),
             analysis: analysis::Analysis::new(&cfg),
+            plays: plays::PlayLimits::new(cfg.plays_requests_per_minute, cfg.plays_per_hour),
             cfg,
         })
     }
@@ -370,6 +387,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/download/track/{id}/info", get(download::info))
         .route("/v1/download/track/{id}", get(download::track))
         .route("/v1/analysis/track/{id}", get(analysis::track))
+        .route("/v1/plays", post(plays::record))
         .route("/v1/events", get(events::events_upgrade))
         .route("/v1/player", get(tunnel::player_upgrade))
         .route("/v1/stream/{session}/{n}", get(relay::stream));

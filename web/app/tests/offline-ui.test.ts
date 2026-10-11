@@ -5,6 +5,7 @@ import { fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import * as offline from '$lib/offline/index.svelte';
 import type { DownloadManager } from '$lib/offline/manager.svelte';
+import type { PlaySync } from '$lib/offline/plays.svelte';
 import type { OfflineStore } from '$lib/offline/store';
 import { key, stored } from './helpers/fake-downloads';
 
@@ -19,7 +20,9 @@ vi.mock('$lib/offline/index.svelte', async () => {
 	const control = { fetch: hang, hang };
 	const downloads = new DownloadManager({ store: offlineStore, authed: (fn) => fn('t'), fetch: (...a) => control.fetch(...a), sleep: async () => {} });
 	const offlinePlayer = new OfflinePlayer({ store: offlineStore, mediaSession: null });
-	return { offlineStore, downloads, offlinePlayer, control };
+	const { PlaySync } = await import('$lib/offline/plays.svelte');
+	const plays = new PlaySync({ store: offlineStore, authed: (fn) => fn('t'), fetch: (...a) => control.fetch(...a) });
+	return { offlineStore, downloads, offlinePlayer, control, plays };
 });
 
 const ALBUM = { id: 7, album: 'An <b>Album</b>', artist: 'Band', artwork_track_id: '11' };
@@ -39,6 +42,7 @@ vi.mock('$lib/state/app.svelte', () => ({
 vi.mock('$app/state', () => ({ page: { params: { id: '7' }, url: new URL('http://app.example/#/album/7') } }));
 
 const downloads = offline.downloads as DownloadManager;
+const plays = offline.plays as PlaySync;
 const store = offline.offlineStore as OfflineStore;
 const control = (offline as unknown as { control: { fetch: typeof fetch; hang: typeof fetch } }).control;
 
@@ -61,6 +65,7 @@ beforeAll(() => {
 
 beforeEach(async () => {
 	await downloads.setUser(null);
+	await plays.setUser(null);
 	for (const u of ['alice', 'bob']) await store.deleteUser(u);
 	localStorage.clear();
 	control.fetch = control.hang;
@@ -164,6 +169,26 @@ test('Downloads page only lists the signed-in user’s downloads', async () => {
 	await tick();
 	expect(container.textContent).toContain('Bob album');
 	expect(container.textContent).not.toContain('Alice album');
+});
+
+test('Downloads page says how many plays are waiting to sync, for this user only', async () => {
+	await saveTracks('alice', [{ key: key(1), id: 1, title: 'Song', album: 'Album' }]);
+	for (const p of await store.listPlays('alice')) await store.deletePlay('alice', p.id);
+	await plays.record('alice', { id: 1, key: key(1) }, Date.now() - 600_000, 250);
+	await plays.record('alice', { id: 1, key: key(1) }, Date.now() - 300_000, 250);
+	await plays.record('bob', { id: 1, key: key(1) }, Date.now() - 300_000, 250);
+	await downloads.setUser('alice', false);
+	await plays.setUser('alice', false);
+	const { default: View } = await import('$lib/components/DownloadsView.svelte');
+	const { container } = render(View);
+	await tick();
+	expect(container.textContent).toContain('2 plays waiting to sync: they’ll be sent when you’re back online.');
+	// Removing every download keeps the plays: they are listening history, not downloads.
+	await fireEvent.click(screen.getByRole('button', { name: 'Remove all…' }));
+	await fireEvent.click(screen.getByRole('button', { name: 'Remove all' }));
+	await vi.waitFor(() => expect(container.textContent).toContain('Nothing downloaded yet'));
+	expect((await store.listPlays('alice')).length).toBe(2);
+	for (const u of ['alice', 'bob']) for (const p of await store.listPlays(u)) await store.deletePlay(u, p.id);
 });
 
 test('offline splash offers “Play your downloads” for the account last signed in here', async () => {

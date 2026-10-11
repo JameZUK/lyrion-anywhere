@@ -1,7 +1,7 @@
 <script lang="ts">
 	// What this device has downloaded for the signed-in user (or, offline, the last one):
 	// albums with covers and sizes, storage use, downloads in progress, and playback.
-	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
+	import { downloads, offlinePlayer, plays } from '$lib/offline/index.svelte';
 	import { formatBytes, storageInfo, type StorageInfo } from '$lib/offline/settings';
 	import { FORMAT_LABELS, type StoredTrack } from '$lib/offline/types';
 	import { duration } from '$lib/lms/format';
@@ -82,6 +82,11 @@
 			<strong>{downloads.saved.length} {downloads.saved.length === 1 ? 'track' : 'tracks'}, {formatBytes(downloads.usedBytes)}</strong>
 			{#if info.quota}<span class="muted"> · this app uses {formatBytes(info.usage ?? 0)} of {formatBytes(info.quota)} available</span>{/if}
 		</p>
+		{#if plays.pending > 0 && plays.user === downloads.user}
+			<p class="muted small" role="status" data-testid="plays-waiting">
+				{plays.pending} {plays.pending === 1 ? 'play' : 'plays'} waiting to sync{plays.online ? '' : ': they’ll be sent when you’re back online'}.
+			</p>
+		{/if}
 		{#if info.quota}
 			<div class="meter" role="meter" aria-label="Storage used" aria-valuemin="0" aria-valuemax={info.quota} aria-valuenow={info.usage ?? 0}>
 				<span style:width={pct(Math.min(1, (info.usage ?? 0) / info.quota))}></span>

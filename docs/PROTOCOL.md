@@ -430,6 +430,100 @@ Headers: `Content-Type`, `Content-Length`, `Accept-Ranges: bytes`, `Cache-Contro
 - Each download is logged in the audit log (event `download`, detail `track <id> <format>`), at most once per track and device an hour, so resumes and retries don't flood it.
 - ffmpeg is run with a fixed argument list (no shell) and an empty environment, its input demuxer forced from a fixed table of LMS file types, `-protocol_whitelist file`, MOV external references off, and input and output files the gateway itself named in its cache directory. At most one transcode runs at once, each output is capped in size, and leftovers are removed.
 
+## Offline plays (`POST /v1/plays`)
+
+Plays made with no connection, from downloaded tracks, sent back when the device is online again (spec D6). Each play the server accepts raises the track's LMS play count and sets its last-played time, as if it had played on a player. Bearer access token required; no download permission is needed. Like `/v1/rpc`, it takes no cookies, so no `X-Anywhere-Client` header is needed.
+
+**Request:** a JSON array of 1 to 200 plays, at most 96 KiB:
+
+```json
+[{"key": "01790000000-1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed", "track_id": 123,
+  "played_at": 1790000000, "seconds": 250.5, "track_key": "<64 hex>"}]
+```
+
+| Field | Rule |
+|---|---|
+| `key` | The idempotency key: made by the client once per play, kept with it, sent unchanged on every retry. 8 to 64 characters of `A-Z a-z 0-9 _ -` (a UUID will do). |
+| `track_id` | The LMS track id: a JSON integer, 1 to 999 999 999 999 (not a string, not `1.0`). |
+| `played_at` | When playback started, in Unix seconds: a JSON integer. |
+| `seconds` | Seconds actually heard (not counting seeks or pauses): a number, 0 to 86 400. |
+| `track_key` | Optional, recommended: the download's stable `key` from `/v1/download/track/{id}/info`. If present, the track must still be that file. This protects against a full rescan having given the id to another track. |
+
+Any other field, or a wrong type, makes that play `invalid`.
+
+**Answer (200):** one result per play, in the order sent:
+
+```json
+{"results": [{"key": "…", "result": "recorded"},
+             {"key": "…", "result": "refused", "reason": "too_short"},
+             {"key": "…", "result": "retry", "reason": "server_unavailable"}],
+ "retry_after": 60}
+```
+
+| `result` | Meaning | Client |
+|---|---|---|
+| `recorded` | LMS counted it | Delete it |
+| `duplicate` | Already counted (an earlier upload got through) | Delete it |
+| `refused` | It will never count; see `reason` | Delete it |
+| `retry` | Not now; see `reason` | Keep it, and send again after `retry_after` seconds (present whenever any result is `retry`) |
+
+`key` echoes the play's key, or `null` if it wasn't a valid key.
+
+`refused` reasons:
+- `invalid`: a malformed play;
+- `in_future`: `played_at`, or `played_at + seconds`, is more than 5 minutes ahead of the server's clock;
+- `too_old`: more than 90 days ago;
+- `not_found`: LMS doesn't know the track;
+- `not_library`: not a local library file (radio, streaming services);
+- `track_changed`: `track_key` names another file;
+- `too_short`: not enough was heard (below).
+
+`retry` reasons:
+- `server_unavailable`: LMS didn't answer;
+- `server_busy`: LMS is scanning the library;
+- `rate_limited`: the hourly allowance is used up;
+- `in_progress`: another upload is recording this key right now;
+- `busy`: this upload ran out of time;
+- `server_error`: the plugin refused or failed;
+- `unsupported`: the LMS plugin is missing or too old.
+
+**The counting rule (the scrobblers' rule):** a play counts if `seconds` is at least half the track's duration or 240 seconds, whichever is less. If LMS doesn't know the duration, 240 seconds is needed. Clients may send every play: the server applies the rule.
+
+**What LMS records:** `playcount` + 1, and `lastplayed` = `played_at` if that is later than the current value. This is what LMS does when a track starts on a player, so it never moves `lastplayed` back. LMS's own players count a play when it starts, so their counts and these can differ slightly for skipped tracks.
+
+**Idempotency:** keys are kept per user (not per device, so a device that signs in again still dedupes) for as long as their plays could be accepted (90 days, plus a day). At most 50 000 are kept per user (the newest). Retrying with the same key is always safe. A play whose upload failed before LMS answered is retried by the gateway's next attempt. The plugin also remembers recent keys, so even then it isn't counted twice.
+
+**Other answers:**
+
+| Status | `error` | When |
+|---|---|---|
+| 400 | `malformed plays` | Not a JSON array, or empty |
+| 401 | `invalid credentials` | No valid access token |
+| 413 | `too many plays` | More than 200 plays, or a body over 96 KiB |
+| 429 | `another upload of plays is running` | One upload at a time per user; `Retry-After: 5` |
+| 429 | `too many uploads; try again shortly` | More than 30 uploads a minute per user; `Retry-After: 60` |
+| 503 | `play sync is not available` | The gateway has no key to sign plays with |
+
+**Limits:**
+- At most 1000 recorded plays an hour per user (beyond that, `retry` / `rate_limited`).
+- Each upload spends at most 30 s talking to LMS; plays not reached are `retry` / `busy`.
+- Once LMS fails to answer, the rest of the upload is `retry` / `server_unavailable` without further attempts.
+- Successful uploads are audited (event `plays`, detail `recorded <n>`).
+
+**How the gateway reaches LMS:**
+- LMS has no command that counts a play. The plugin adds one, `anywhere play_record track_id:<id> played_at:<unix> key:<k> ts:<unix> sig:<hex>`.
+- The gateway sends it over LMS's JSON-RPC on loopback, like all its LMS calls.
+- `key` is the first 32 hex characters of SHA-256 of the user id, a newline and the client's key, so keys are scoped to the user.
+- `sig` is the hex HMAC-SHA256, keyed with the gateway's admin secret, of `lyrion-anywhere play_record v1`, the track id, `played_at`, `key` and `ts`, each on its own line. The plugin already reads that secret from the gateway's data directory to call the admin API.
+- The plugin refuses anything unsigned, wrongly signed, or with a `ts` more than 2 minutes off. It then checks the track is a local library file, and records the play through LMS's schema (`Slim::Schema::TrackPersistent`), as LMS does for a player. While a scan runs, it answers `busy`.
+- Clients can't send `anywhere` commands through `/v1/rpc`: the allow-list reserves them.
+
+**Clients:**
+- Queue each play locally, per user, as it ends (finished, skipped or stopped), with a fresh key.
+- Send in batches of up to 200, oldest first, when online. Keep each play until it is answered `recorded`, `duplicate` or `refused`.
+- Back off on network errors, 5xx and 429 (honouring `Retry-After`), and stop on 401 until signed in again.
+- If a whole upload is 400 or 413, split it to find the play the server can't read, and drop only that one.
+
 ## Track analysis (`GET /v1/analysis/track/{id}`)
 
 A library track's waveform and loudness, for waveform seek bars and loudness levelling (plan §4, milestone A3). Computed by the gateway with the core (`core::analysis`) the first time it is asked for, then cached. `/v1/me` says whether a server offers it: `"features": {"analysis": true}`.
