@@ -295,6 +295,42 @@ class PlayerViewModelTest : MainDispatcherTest() {
     }
 
     @Test
+    fun seekingStartsPlaybackWhenPausedOrStopped() = runTest(dispatcher) {
+        for ((mode, expected) in listOf(
+            PlaybackMode.PLAYING to listOf("seek 42.0"),
+            PlaybackMode.PAUSED to listOf("seek 42.0", "pause false"),
+            PlaybackMode.STOPPED to listOf("play", "seek 42.0"),
+        )) {
+            val players = FakePlayers()
+            players.statusResult = ApiResult.Ok(sampleStatus(mode = mode))
+            val vm = vm(players, FakeEvents(), FakeSettings())
+            vm.start()
+            runCurrent()
+            val id = vm.state.value.selectedId!!
+            val before = players.commands.size
+            vm.seek(42.0)
+            runCurrent()
+            vm.stop()
+            assertEquals("from $mode", expected.map { "$it $id" }, players.commands.drop(before))
+        }
+    }
+
+    @Test
+    fun aFailedSeekDoesNotResume() = runTest(dispatcher) {
+        val players = FakePlayers()
+        players.statusResult = ApiResult.Ok(sampleStatus(mode = PlaybackMode.PAUSED))
+        val vm = vm(players, FakeEvents(), FakeSettings())
+        vm.start()
+        runCurrent()
+        players.commandResult = ApiResult.Err(AppError.Forbidden("no"))
+        val before = players.commands.size
+        vm.seek(10.0)
+        runCurrent()
+        vm.stop()
+        assertEquals("only the seek was tried", 1, players.commands.size - before)
+    }
+
+    @Test
     fun enqueueNeedsAPlayer() = runTest(dispatcher) {
         val players = FakePlayers().apply { players = emptyList() }
         val vm = vm(players, FakeEvents(), FakeSettings())

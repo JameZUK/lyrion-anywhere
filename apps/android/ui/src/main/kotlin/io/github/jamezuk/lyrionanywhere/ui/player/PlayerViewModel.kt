@@ -299,9 +299,27 @@ class PlayerViewModel(
 
     fun previous() = command { players.previous(it) }
 
-    fun seek(seconds: Double) = command(
-        optimistic = { it.copy(elapsedSecs = seconds.coerceAtLeast(0.0)) },
-    ) { players.seek(it, seconds) }
+    /**
+     * Seek, starting playback there if the player was paused or stopped (as tapping the
+     * position bar suggests). LMS keeps a paused player paused after a seek, and ignores a
+     * seek on a stopped one, hence the order.
+     */
+    fun seek(seconds: Double) {
+        val mode = _state.value.status?.mode
+        command(
+            optimistic = { it.copy(elapsedSecs = seconds.coerceAtLeast(0.0), mode = PlaybackMode.PLAYING) },
+        ) { id ->
+            when (mode) {
+                PlaybackMode.PLAYING -> players.seek(id, seconds)
+                PlaybackMode.PAUSED -> players.seek(id, seconds).then { players.setPaused(id, false) }
+                else -> players.play(id).then { players.seek(id, seconds) }
+            }
+        }
+    }
+
+    /** Run [next] only if this succeeded. */
+    private suspend fun ApiResult<Unit>.then(next: suspend () -> ApiResult<Unit>): ApiResult<Unit> =
+        if (this is ApiResult.Err) this else next()
 
     fun setVolume(volume: Int) = command(
         optimistic = { it.copy(volume = volume.coerceIn(0, 100).toUInt()) },
