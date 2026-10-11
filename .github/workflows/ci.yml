@@ -26,10 +26,14 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (core with every optional feature)
+        run: cargo clippy -p anywhere-core --all-targets --all-features -- -D warnings
       - name: Tests
         run: cargo test --workspace
-      - name: Robustness tests (release, more iterations)
-        run: cargo test -p anywhere-core --release --test robustness
+      - name: Core tests with optional features (Opus, resampler)
+        run: cargo test -p anywhere-core --all-features
+      - name: Robustness, limiter, analysis and performance tests (release, full matrices)
+        run: cargo test -p anywhere-core --release --all-features --test robustness --test dsp_limiter --test analysis --test opus --test dsp_performance
       - name: Core builds for WebAssembly (proto only)
         run: cargo build -p anywhere-core --no-default-features --target wasm32-unknown-unknown
 

@@ -9,6 +9,8 @@ pub mod analysis;
 pub mod decode;
 pub mod dsp;
 pub mod mux;
+#[cfg(feature = "opus")]
+pub mod opus;
 #[cfg(feature = "player")]
 pub mod player;
 pub mod proto;

@@ -315,7 +315,11 @@ fn make_decoder(reader: &dyn FormatReader) -> Result<(Box<dyn AudioDecoder>, u32
     let Some(CodecParameters::Audio(params)) = &track.codec_params else {
         return Err("audio track has no codec parameters".into());
     };
-    let decoder = symphonia::default::get_codecs()
+    #[cfg(feature = "opus")]
+    let codecs = crate::opus::codecs();
+    #[cfg(not(feature = "opus"))]
+    let codecs = symphonia::default::get_codecs();
+    let decoder = codecs
         .make_audio_decoder(params, &AudioDecoderOptions::default().gapless(true))
         .map_err(|e| format!("codec: {e}"))?;
     Ok((decoder, track.id))
@@ -340,6 +344,9 @@ pub fn format_extension(format: u8) -> Option<&'static str> {
         b'a' => "aac",
         b'l' => "m4a",
         b'p' => "wav",
+        // Ogg Opus; only accepted when this build can decode it.
+        #[cfg(feature = "opus")]
+        b'u' => "opus",
         _ => return None,
     })
 }
