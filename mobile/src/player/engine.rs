@@ -69,11 +69,14 @@ const OUTPUT_RETRY: Duration = Duration::from_secs(2);
 /// Rates tried when the output can't take the source's (the engine then resamples).
 const FALLBACK_RATES: [u32; 2] = [48_000, 44_100];
 
-/// Codecs this build decodes, as Slimproto capability tokens. `pcm` and `aif` are not
-/// advertised: LMS may send raw headerless PCM for them, which the decoder can't probe, so
-/// those files reach us losslessly as FLAC instead.
+/// Codecs this build decodes from a stream, as Slimproto capability tokens. Not
+/// advertised, so LMS converts them (losslessly where the source is lossless):
+/// - `pcm`, `aif`: LMS may send raw headerless PCM, which the decoder can't probe;
+/// - `alc`, `aac`: in MP4 files whose index (`moov`) comes after the audio, which is
+///   common, a stream can't be decoded without seeking (only ADTS AAC and "fast start"
+///   files can), so such tracks would fail.
 pub fn codecs() -> Vec<String> {
-    let mut c = vec!["flc", "alc", "aac", "ogg", "mp3"];
+    let mut c = vec!["flc", "ogg", "mp3"];
     if cfg!(feature = "opus") {
         c.insert(1, "ops");
     }
@@ -1120,6 +1123,9 @@ mod tests {
         let c = codecs();
         assert!(c.contains(&"flc".to_string()));
         assert!(!c.contains(&"pcm".to_string()), "raw PCM can't be probed");
+        for mp4 in ["alc", "aac"] {
+            assert!(!c.contains(&mp4.to_string()), "MP4 needs seeking: {mp4}");
+        }
         for t in &c {
             assert!(
                 t.len() <= 8

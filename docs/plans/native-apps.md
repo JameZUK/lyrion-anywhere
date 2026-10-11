@@ -94,7 +94,7 @@ Thin native UIs over a shared Rust layer, as decided in SPEC D3 and §10:
 
 | Mode | When | How |
 |---|---|---|
-| **LMS player** (default when online) | Streaming from your server | As in the web app, the phone is a Slimproto player through `/v1/player`, so LMS drives the queue, gapless playback, sync and plugins. The app declares its codecs (`flc`, `alc`, `ops`, `aac`, `ogg`, `mp3`), so LMS sends original files where possible. WAV and AIFF arrive as FLAC (`pcm` isn't declared: LMS may send it headerless) |
+| **LMS player** (default when online) | Streaming from your server | As in the web app, the phone is a Slimproto player through `/v1/player`, so LMS drives the queue, gapless playback, sync and plugins. The app declares the codecs it can decode from a stream (`flc`, `ops`, `ogg`, `mp3`), so LMS sends those files as they are. LMS converts the rest, losslessly where the source is lossless: WAV and AIFF (LMS may send `pcm` headerless), and ALAC and AAC in MP4 (a stream with the index at the end can't be decoded without seeking) |
 | **Local queue** | Offline, or for downloaded content | The app owns the queue and plays from its download store. Plays are queued and sent to LMS on reconnect (D6) |
 
 Both feed the same engine, so DSP, levelling, the waveform, the signal path and bit-perfect output behave identically. Switching between them (e.g. losing signal mid-album when the album is downloaded) is seamless where the content is available offline.
@@ -327,7 +327,9 @@ Built, in CI. **Verified on the host and the JVM only: nothing has run on a phon
   - *Ring:* lock-free SPSC, safe Rust, f32. It supports discard on flush, hold (instant pause), and ducking where 1.0 is a true bypass.
   - *Played frames:* reported as the output consumes them, so elapsed time, `STMs` and `STMu` are right. The ring counts in STAT's output buffer, and underruns are reported once each (`STMo`).
 - **Output:** AAudio from Rust on Android (float, stereo, at the source rate, power-saving mode; the callback neither allocates nor locks; a disconnect reopens the stream), or a pull API (`read_pcm`) for hosts and tests.
-- **Capabilities:** `flc`, `ops`, `alc`, `aac`, `ogg`, `mp3`, and `MaxSampleRate=192000`. `pcm` and `aif` are deliberately not advertised: LMS can send headerless PCM for them, which the decoder can't probe, so such files arrive as FLAC (still lossless).
+- **Capabilities:** `flc`, `ops`, `ogg`, `mp3`, and `MaxSampleRate=192000`. Deliberately not advertised, so LMS converts them (to FLAC where lossless):
+  - `pcm` and `aif`: LMS can send headerless PCM, which the decoder can't probe;
+  - `alc` and `aac`: MP4 files with the index (`moov`) after the audio, a common layout, can't be decoded from a stream (checked against ffmpeg-made files: "fast start" MP4 and ADTS decode, the default layout fails).
 - **Signal path:** source, every stage (mono/downmix, server ReplayGain, volume, DSP, resampler, ducking, the system mixer's rate), output, and two verdicts. *Engine bit-perfect* means our path is untouched. *Bit-perfect* means end to end, claimed only for a direct route (A2's USB mixer mode), so on A1 the panel says "bit-perfect up to Android's mixer".
 
 **Android**
