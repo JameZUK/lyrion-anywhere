@@ -933,3 +933,26 @@ async fn a_revoked_device_stops_downloading() {
     assert!(lib.tracks().is_empty());
     dl.shutdown();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn favourites_are_read_through_the_allow_list() {
+    let h = Harness::start().await;
+    let (session, _) = h.alice().await;
+    let lib = anywhere_mobile::MusicLibrary::new(session);
+    // The fake LMS's favourites are a station and a folder, neither a library item.
+    let found = lib.favourite_library_items().await.unwrap();
+    assert!(found.track_ids.is_empty() && found.album_ids.is_empty());
+    let calls = h.lms.rpc_calls();
+    let favs: Vec<&Value> = calls.iter().filter(|c| c[1][0] == "favorites").collect();
+    assert_eq!(favs.len(), 2, "the top level and its one folder");
+    assert!(
+        favs.iter()
+            .all(|c| c[1].as_array().unwrap().contains(&json!("menu:1")))
+    );
+    assert!(
+        favs[1][1]
+            .as_array()
+            .unwrap()
+            .contains(&json!("item_id:f0.1"))
+    );
+}

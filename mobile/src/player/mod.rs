@@ -24,6 +24,9 @@ pub mod ring;
 
 mod audio;
 mod engine;
+mod local;
+mod offline;
+mod queue;
 mod signal;
 
 use audio::OutputShared;
@@ -34,15 +37,17 @@ use ring::Ring;
 pub use negotiate::{
     MixerOffer, NotBitPerfect, OfferBlocker, OutputNegotiator, OutputOffers, PcmEncoding,
 };
+pub use offline::{OfflinePlayer, OfflinePlayerObserver, OfflinePlayerStatus};
 pub use pipeline::{
     CrossfeedSetting, DitherSetting, DspSettings, EqProfileSummary, Levelling, check_eq_profile,
 };
+pub use queue::LocalRepeat;
 
 use crate::error::ApiError;
 use crate::session::Session;
 
 /// Ring capacity: about 1.4 s at 192 kHz stereo (the engine keeps far less queued).
-const RING_SAMPLES: usize = 1 << 19;
+pub(crate) const RING_SAMPLES: usize = 1 << 19;
 
 /// Where the audio goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -240,7 +245,7 @@ pub struct LocalPlayer {
     negotiator: Mutex<Option<Arc<dyn OutputNegotiator>>>,
 }
 
-fn make_output(
+pub(crate) fn make_output(
     kind: OutputKind,
     pull: &Arc<Mutex<PullSlot>>,
 ) -> Result<Box<dyn AudioOutput>, ApiError> {
@@ -438,71 +443,76 @@ impl LocalPlayer {
     /// the returned rate. When the rate changes, reopen the host's output at the new rate
     /// before playing the block.
     pub fn read_pcm(&self, max_frames: u32) -> PcmBlock {
-        let frames = max_frames.clamp(1, 16_384) as usize;
         let pull = self.run.lock().unwrap().as_ref().map(|r| r.pull.clone());
-        let Some(pull) = pull else {
-            return PcmBlock {
-                sample_rate: 0,
-                samples: Vec::new(),
-                audio_samples: 0,
-            };
-        };
-        let mut slot = pull.lock().unwrap();
-        let rate = slot.rate;
-        match slot.consumer.as_mut() {
-            Some(c) => {
-                let mut samples = vec![0f32; frames * ring::CHANNELS];
-                let n = c.read(&mut samples);
-                PcmBlock {
-                    sample_rate: rate,
-                    samples,
-                    audio_samples: n as u32,
-                }
-            }
-            None => PcmBlock {
-                sample_rate: 0,
-                samples: Vec::new(),
-                audio_samples: 0,
-            },
-        }
+        read_float(pull, max_frames)
     }
 
     /// [`OutputKind::Pull`] only: like [`LocalPlayer::read_pcm`], as integers in the format
     /// the output was opened with (what an integer `AudioTrack`, or a DAC, receives).
     pub fn read_pcm_int(&self, max_frames: u32) -> PcmIntBlock {
-        let frames = max_frames.clamp(1, 16_384) as usize;
-        let empty = PcmIntBlock {
-            sample_rate: 0,
-            encoding: PcmEncoding::Float,
-            samples: Vec::new(),
-            audio_samples: 0,
-        };
         let pull = self.run.lock().unwrap().as_ref().map(|r| r.pull.clone());
-        let Some(pull) = pull else { return empty };
-        let mut slot = pull.lock().unwrap();
-        let (rate, encoding) = (slot.rate, slot.encoding);
-        let Some(c) = slot.consumer.as_mut() else {
-            return empty;
-        };
-        let mut samples = vec![0i32; frames * ring::CHANNELS];
-        let n = match encoding {
-            PcmEncoding::I16 => {
-                let mut s16 = vec![0i16; samples.len()];
-                let n = c.read_i16(&mut s16);
-                for (d, s) in samples.iter_mut().zip(s16) {
-                    *d = i32::from(s);
-                }
-                n
+        read_int(pull, max_frames)
+    }
+}
+
+/// Pull float PCM from a pull output's slot (shared by both players).
+pub(crate) fn read_float(pull: Option<Arc<Mutex<PullSlot>>>, max_frames: u32) -> PcmBlock {
+    let frames = max_frames.clamp(1, 16_384) as usize;
+    let empty = PcmBlock {
+        sample_rate: 0,
+        samples: Vec::new(),
+        audio_samples: 0,
+    };
+    let Some(pull) = pull else { return empty };
+    let mut slot = pull.lock().unwrap();
+    let rate = slot.rate;
+    match slot.consumer.as_mut() {
+        Some(c) => {
+            let mut samples = vec![0f32; frames * ring::CHANNELS];
+            let n = c.read(&mut samples);
+            PcmBlock {
+                sample_rate: rate,
+                samples,
+                audio_samples: n as u32,
             }
-            PcmEncoding::I32 => c.read_i32(&mut samples, 32),
-            PcmEncoding::I24Packed | PcmEncoding::Float => c.read_i32(&mut samples, 24),
-        };
-        PcmIntBlock {
-            sample_rate: rate,
-            encoding,
-            samples,
-            audio_samples: n as u32,
         }
+        None => empty,
+    }
+}
+
+/// Pull integer PCM from a pull output's slot, in the format the output was opened with.
+pub(crate) fn read_int(pull: Option<Arc<Mutex<PullSlot>>>, max_frames: u32) -> PcmIntBlock {
+    let frames = max_frames.clamp(1, 16_384) as usize;
+    let empty = PcmIntBlock {
+        sample_rate: 0,
+        encoding: PcmEncoding::Float,
+        samples: Vec::new(),
+        audio_samples: 0,
+    };
+    let Some(pull) = pull else { return empty };
+    let mut slot = pull.lock().unwrap();
+    let (rate, encoding) = (slot.rate, slot.encoding);
+    let Some(c) = slot.consumer.as_mut() else {
+        return empty;
+    };
+    let mut samples = vec![0i32; frames * ring::CHANNELS];
+    let n = match encoding {
+        PcmEncoding::I16 => {
+            let mut s16 = vec![0i16; samples.len()];
+            let n = c.read_i16(&mut s16);
+            for (d, s) in samples.iter_mut().zip(s16) {
+                *d = i32::from(s);
+            }
+            n
+        }
+        PcmEncoding::I32 => c.read_i32(&mut samples, 32),
+        PcmEncoding::I24Packed | PcmEncoding::Float => c.read_i32(&mut samples, 24),
+    };
+    PcmIntBlock {
+        sample_rate: rate,
+        encoding,
+        samples,
+        audio_samples: n as u32,
     }
 }
 
@@ -513,9 +523,9 @@ impl Drop for LocalPlayer {
 }
 
 /// Output gain while ducked (about −14 dB).
-const DUCK_GAIN: f32 = 0.2;
+pub(crate) const DUCK_GAIN: f32 = 0.2;
 
-fn sanitise_config(c: LocalPlayerConfig) -> LocalPlayerConfig {
+pub(crate) fn sanitise_config(c: LocalPlayerConfig) -> LocalPlayerConfig {
     LocalPlayerConfig {
         output: c.output,
         max_sample_rate: c.max_sample_rate.clamp(44_100, 384_000),

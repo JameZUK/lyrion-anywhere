@@ -49,7 +49,7 @@ pub use analysis::{Analysis, AnalysisOutcome, TrackAnalysisInfo};
 pub use art::{Art, ArtImage};
 pub use error::ApiError;
 pub use events::{EventListener, EventSubscription, Events, EventsState, ServerEvent};
-pub use library::MusicLibrary;
+pub use library::{FavouriteLibraryItems, MusicLibrary};
 pub use menus::{
     AppEntry, MenuAction, MenuItem, MenuItemKind, MenuOutcome, MenuPage, MenuParam, Menus,
     PluginEntry, Suitability, app_menu, info_menu,
@@ -63,8 +63,9 @@ pub use offline::{
 };
 pub use player::{
     CrossfeedSetting, DitherSetting, DspSettings, EqProfileSummary, Levelling, LocalPlayback,
-    LocalPlayer, LocalPlayerConfig, LocalPlayerObserver, LocalPlayerStatus, MixerOffer,
-    NotBitPerfect, OfferBlocker, OutputKind, OutputNegotiator, OutputOffers, OutputRoute, PcmBlock,
+    LocalPlayer, LocalPlayerConfig, LocalPlayerObserver, LocalPlayerStatus, LocalRepeat,
+    MixerOffer, NotBitPerfect, OfferBlocker, OfflinePlayer, OfflinePlayerObserver,
+    OfflinePlayerStatus, OutputKind, OutputNegotiator, OutputOffers, OutputRoute, PcmBlock,
     PcmEncoding, PcmIntBlock, PlayerConnection, SignalPathInfo, SignalStage, SignalVerdict,
     check_eq_profile,
 };

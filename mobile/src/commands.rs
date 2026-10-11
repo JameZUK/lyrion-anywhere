@@ -395,6 +395,16 @@ pub fn favourites(start: u32, n: u32, item: Option<&str>) -> Result<Command, Api
     Ok(c)
 }
 
+/// Favourites in SlimBrowse form (`menu:1`), where library items carry their ids.
+pub fn favourite_menu(item: Option<&str>) -> Result<Command, ApiError> {
+    let mut c = vec![json!("favorites"), json!("items"), json!(0), json!(200)];
+    if let Some(i) = item {
+        c.push(json!(format!("item_id:{}", item_id(i)?)));
+    }
+    c.push(json!("menu:1"));
+    Ok(c)
+}
+
 pub fn playlists(start: u32, n: u32) -> Command {
     vec![json!("playlists"), json!(start), json!(count(n))]
 }
