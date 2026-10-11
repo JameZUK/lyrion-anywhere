@@ -3,10 +3,12 @@
 //! LMS's `status` leaves out a queue entry it can no longer resolve. That happens, for
 //! example, when a rescan gave a queued track a new id. The entries after it then move up
 //! one place and are numbered from there, while playback carries on with the real track. So
-//! `status - 1` can name the *next* track as the current one: the wrong title, artwork,
-//! length and waveform, though the top-level `duration` is still the playing track's.
+//! `status - 1` can name the *next* track as the current one (the wrong title, artwork,
+//! length and waveform, though the top-level `duration` is still the playing track's), or,
+//! when nothing follows it, no current track at all.
 //!
-//! When the two durations disagree, the gateway asks LMS for the path at the current queue
+//! When the two durations disagree, or the queue has a track at the current position that the
+//! status doesn't list, the gateway asks LMS for the path at the current queue
 //! position (`playlist path <i> ?`) and that track's details (`songinfo … url:<path>`), and
 //! puts them in place of the wrong entry, before the response is filtered as usual (so paths
 //! never reach the client). Any failure leaves the status as LMS sent it.
@@ -26,7 +28,8 @@ fn number(v: &Value) -> Option<f64> {
 }
 
 /// For `status - …`, the current queue position when the first entry contradicts the
-/// player's own duration (see the module documentation); otherwise `None`.
+/// player's own duration, or is missing though the queue reaches that position (see the
+/// module documentation); otherwise `None`.
 pub(crate) fn needs_repair(cmd: &[String], result: &Value) -> Option<u64> {
     if cmd.first().map(String::as_str) != Some("status")
         || cmd.get(1).map(String::as_str) != Some("-")
@@ -37,10 +40,13 @@ pub(crate) fn needs_repair(cmd: &[String], result: &Value) -> Option<u64> {
     if cur < 0.0 || cur.fract() != 0.0 || cur > u32::MAX as f64 {
         return None;
     }
+    let first = result["playlist_loop"].get(0).filter(|t| t.is_object());
+    let Some(first) = first else {
+        let tracks = number(&result["playlist_tracks"])?;
+        return (tracks > cur).then_some(cur as u64);
+    };
     let playing = number(&result["duration"])?;
-    let listed = result["playlist_loop"]
-        .get(0)
-        .and_then(|t| number(&t["duration"]))?;
+    let listed = number(&first["duration"])?;
     ((playing - listed).abs() > TOLERANCE_S).then_some(cur as u64)
 }
 
@@ -79,14 +85,17 @@ pub(crate) fn entry_from_songinfo(answer: &Value, index: u64) -> Option<Value> {
     Some(Value::Object(entry))
 }
 
-/// Put `entry` in place of the first queue entry of a status result.
+/// Put `entry` in place of the first queue entry of a status result, or make it the only
+/// entry when the status listed none.
 pub(crate) fn replace_current(result: &mut Value, entry: Value) {
-    match result
-        .get_mut("playlist_loop")
-        .and_then(Value::as_array_mut)
-    {
+    let Some(map) = result.as_object_mut() else {
+        return;
+    };
+    match map.get_mut("playlist_loop").and_then(Value::as_array_mut) {
         Some(list) if !list.is_empty() => list[0] = entry,
-        _ => {}
+        _ => {
+            map.insert("playlist_loop".into(), Value::Array(vec![entry]));
+        }
     }
 }
 
@@ -121,7 +130,11 @@ mod tests {
         assert_eq!(needs_repair(&c, &status(Value::Null, json!(98.0))), None);
         assert_eq!(needs_repair(&c, &status(json!(300), Value::Null)), None);
         assert_eq!(
-            needs_repair(&c, &json!({"duration": 300, "playlist_cur_index": 0})),
+            needs_repair(
+                &c,
+                &json!({"duration": 300, "playlist_cur_index": 0, "playlist_tracks": 1,
+                                     "playlist_loop": [{"title": "no duration"}]})
+            ),
             None
         );
     }
@@ -187,13 +200,38 @@ mod tests {
     }
 
     #[test]
-    fn replacing_keeps_the_rest_and_ignores_an_empty_queue() {
+    fn replacing_swaps_the_first_entry_or_adds_the_only_one() {
         let mut s = status(json!(300.0), json!(98.0));
         replace_current(&mut s, json!({"id": 9}));
         assert_eq!(s["playlist_loop"][0]["id"], 9);
-        let mut empty = json!({"playlist_loop": []});
-        replace_current(&mut empty, json!({"id": 9}));
-        assert_eq!(empty, json!({"playlist_loop": []}));
+        for mut listed_none in [json!({"playlist_loop": []}), json!({"mode": "play"})] {
+            replace_current(&mut listed_none, json!({"id": 9}));
+            assert_eq!(listed_none["playlist_loop"], json!([{"id": 9}]));
+        }
+        let mut not_an_object = json!([1]);
+        replace_current(&mut not_an_object, json!({"id": 9}));
+        assert_eq!(not_an_object, json!([1]));
+    }
+
+    #[test]
+    fn a_status_listing_no_current_track_is_repaired_when_the_queue_has_one() {
+        let c = cmd(&["status", "-", "1", "tags:adc"]);
+        // Regression: LMS listed nothing while the playing track sat at position 13 of 25.
+        let s = json!({"mode": "play", "duration": 300.5, "playlist_cur_index": "13",
+                       "playlist_tracks": 25});
+        assert_eq!(needs_repair(&c, &s), Some(13));
+        let s = json!({"playlist_cur_index": 2, "playlist_tracks": 3, "playlist_loop": []});
+        assert_eq!(needs_repair(&c, &s), Some(2));
+        // An empty queue, or a position past its end: nothing to look up.
+        for s in [
+            json!({"playlist_tracks": 0}),
+            json!({"playlist_cur_index": 0, "playlist_tracks": 0}),
+            json!({"playlist_cur_index": 3, "playlist_tracks": 3}),
+            json!({"playlist_cur_index": 1}),
+            json!({"playlist_cur_index": 0, "playlist_tracks": "x", "playlist_loop": [null]}),
+        ] {
+            assert_eq!(needs_repair(&c, &s), None, "{s}");
+        }
     }
 
     #[test]
