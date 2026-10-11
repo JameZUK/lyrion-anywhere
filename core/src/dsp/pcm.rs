@@ -67,6 +67,43 @@ pub(crate) fn int_scale(bits: u32) -> f64 {
     scale(bits)
 }
 
+/// Significant bits an `f32` carries exactly: integer PCM up to this deep survives
+/// integer → `f32` → integer unchanged (24-bit mantissa, power-of-two scale). The engine's
+/// ring and the core's decoded PCM are `f32`, so this is the deepest source an integer
+/// output can deliver bit-perfect.
+pub const F32_EXACT_BITS: u32 = 24;
+
+/// One `f32` sample (±1.0 full scale) to a `bits`-deep integer, right-aligned, rounding to
+/// nearest and clamping (NaN becomes 0). The identity on the integer grid: a sample that
+/// came from an integer of at most `min(bits, F32_EXACT_BITS)` bits converts back exactly
+/// (shifted left when `bits` is deeper, which is lossless padding). Real-time safe.
+#[inline]
+pub fn f32_to_int(x: f32, bits: u32) -> i32 {
+    let s = int_scale(bits);
+    let (lo, hi) = int_range(bits);
+    quantise_one(f64::from(x) * s, lo, hi)
+}
+
+/// `bits`-deep integers (`bits` ≤ [`F32_EXACT_BITS`]) to `f32`, exactly.
+pub fn int_to_f32(src: &[i32], bits: u32, dst: &mut [f32]) {
+    assert!(
+        (MIN_BITS..=F32_EXACT_BITS).contains(&bits),
+        "f32 can't hold {bits}-bit integers exactly"
+    );
+    let inv = 1.0 / scale(bits);
+    for (d, s) in dst.iter_mut().zip(src) {
+        *d = (f64::from(*s) * inv) as f32;
+    }
+}
+
+/// Is `x` exactly on the `bits`-deep integer grid (so [`f32_to_int`] is lossless)?
+#[inline]
+pub fn f32_on_grid(x: f32, bits: u32) -> bool {
+    let v = f64::from(x) * int_scale(bits);
+    let (lo, hi) = int_range(bits);
+    v.fract() == 0.0 && (lo..=hi).contains(&v)
+}
+
 /// `f32` to `f64` (exact).
 pub fn f32_to_f64(src: &[f32], dst: &mut [f64]) {
     for (d, s) in dst.iter_mut().zip(src) {
