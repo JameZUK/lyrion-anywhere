@@ -4,9 +4,15 @@
 
 <h1 align="center">Lyrion Anywhere</h1>
 
-<p align="center"><strong>Your <a href="https://lyrion.org">Lyrion Music Server</a> from anywhere: securely, losslessly, in any modern browser.</strong></p>
+<p align="center"><strong>Your <a href="https://lyrion.org">Lyrion Music Server</a> from anywhere: securely, losslessly, in any modern browser and in a native Android app.</strong></p>
 
-Lyrion Anywhere gives your phone, tablet or laptop secure access to your LMS library over the internet. A browser can be a remote control for your home players, or a player itself, streaming your music losslessly. LMS stays on your home network: only one small, hardened gateway faces the internet, behind your HTTPS reverse proxy.
+<p align="center">
+  <a href="https://github.com/JameZUK/lyrion-anywhere/releases/tag/android-v1.0.0"><strong>Android app 1.0.0</strong></a> ·
+  <a href="https://github.com/JameZUK/lyrion-anywhere/releases/latest">LMS plugin</a> ·
+  <a href="docs/INSTALL.md">Installation guide</a>
+</p>
+
+Lyrion Anywhere gives your phone, tablet or laptop secure access to your LMS library over the internet. Each device is a player in its own right, streaming your music losslessly, and can also control and move playback between your home players. LMS stays on your home network: only one small, hardened gateway faces the internet, behind your HTTPS reverse proxy.
 
 <p align="center">
   <img src="docs/images/now-playing-desktop.png" alt="Now playing on a desktop browser: cover art, track details, transport controls and volume" width="820">
@@ -32,9 +38,11 @@ Lyrion Anywhere gives your phone, tablet or laptop secure access to your LMS lib
   - *Web Audio:* lowest latency, used on desktops;
   - *the media element:* survives the screen locking on Android and iOS, with lock-screen controls.
 - **Picks up where you left off.** Reload the page and playback carries on, on the same track and at the same time.
+- **Waveform seek bar.** Now playing shows each track's waveform, analysed on your server, and tapping it jumps there (and starts playback if it was paused).
+- **Offline.** Download albums to the device and play them with no connection. Plays are counted in LMS (play count, last played) once you're back online.
 
 **Your whole library and LMS**
-- Albums, artists, playlists, favourites, search, the queue, and track, album and artist details.
+- **New Music**, albums (sortable), artists by role (album artists, composers, conductors…), genres, years, compilations, random albums, the music folder, playlists, favourites, search, the queue (drag, swipe, undo) and track, album and artist details. LMS virtual libraries are supported.
 - **Apps, radio and plugins, found automatically.** Whatever your LMS offers (podcasts, radio directories, streaming services, AudioMuse-AI, Custom Browse, Random Mix…) appears with nothing hard-coded. Plugins that need setting up in LMS say so, and empty or broken ones are tucked away.
 - **Context menus** ("More…") with every action LMS and its plugins offer for a track, album or artist.
 
@@ -46,7 +54,21 @@ Lyrion Anywhere gives your phone, tablet or laptop secure access to your LMS lib
   - **High contrast**.
 - Light, dark or automatic mode. Every colour combination is tested for legibility.
 
-**Security first**
+## The Android app
+
+A native app for Android 10 and later, built for the same gateway. It does everything the web app does, plus what only a native app can:
+
+- **Bit-perfect audio:** native output with gapless playback, bit-perfect by default, and bit-perfect to a USB DAC on Android 14+ where the DAC supports it. A signal-path panel shows exactly what happens to the sound.
+- **Sound options** (all off by default): loudness levelling (ReplayGain or your server's EBU R128 analysis), parametric EQ with AutoEq import, crossfeed, dither, and smart crossfades that never cross into a gapless album.
+- **Android Auto**, lock-screen and Bluetooth controls, a home-screen widget and a Quick Settings tile.
+- **Start radio** and **More like this**, through AudioMuse-AI or LMS's *Don't Stop The Music*.
+- **Offline:** downloads (with smart downloads and storage limits), an offline mode, and plays synced back to LMS.
+- **Layouts for phones, tablets and foldables.**
+
+**Download:** [the latest Android release](https://github.com/JameZUK/lyrion-anywhere/releases/tag/android-v1.0.0). `LyrionAnywhere-android-1.0.0-arm64-v8a.apk` suits most phones; the universal `.apk` works on any. Check the files against `SHA256SUMS`. Google Play and F-Droid listings are on their way. The app is in [`apps/android`](apps/android).
+
+## Security first
+
 - **LMS is never exposed.** Only the gateway is reachable, through your TLS reverse proxy. Every command is checked against an allow-list, plugin actions run only if LMS offered them to that device, and responses are stripped of file paths and LAN addresses.
 - **Accounts:**
   - per-user accounts with *admin* and *listener* roles;
@@ -55,6 +77,7 @@ Lyrion Anywhere gives your phone, tablet or laptop secure access to your LMS lib
   - sign-in lockouts;
   - sign-ins that stay valid with use, for a period you choose.
 - **Per-plugin access:** reserve any plugin for admins (e.g. one with server maintenance actions).
+- **Your devices, named and visible:** each device shows its type (installed web app, browser or Android app), platform and last address in the plugin's device list, and can be renamed there or from the device itself. The name is also its player name in LMS.
 - **Built for scrutiny:**
   - a strict Content Security Policy;
   - no third-party code at runtime;
@@ -75,6 +98,7 @@ Lyrion Anywhere gives your phone, tablet or laptop secure access to your LMS lib
   - tunnels each browser player's Slimproto connection to LMS;
   - relays the audio stream, resuming it if the connection drops.
 - **The web app** (SvelteKit). For playback, it runs the player core (Rust, compiled to WebAssembly) in a worker.
+- **The Android app** (Kotlin, Jetpack Compose) sits on a shared Rust layer ([`mobile/`](mobile)) that does the networking, sign-in, the player engine and the audio processing, so the signal path is the same everywhere. An iOS app is planned on the same layer.
 
 The full design is in [`SPEC.md`](SPEC.md), and the API and protocol in [`docs/PROTOCOL.md`](docs/PROTOCOL.md). What the apps and the gateway store is in the [privacy policy](docs/PRIVACY.md); how releases are made is in [`docs/RELEASING.md`](docs/RELEASING.md).
 
@@ -87,12 +111,13 @@ In short:
 1. **Install the plugin** in LMS (*Settings › Plugins*), or run the gateway with Docker.
 2. **Put a reverse proxy in front of the gateway,** with an HTTPS certificate for a name such as `music.example.com`.
 3. **Create users** on the plugin's settings page.
-4. **Open `https://music.example.com`** on your phone, sign in, and optionally *Add to Home Screen*.
+4. **Open `https://music.example.com`** on your phone, sign in, and optionally *Add to Home Screen*. Or install the [Android app](https://github.com/JameZUK/lyrion-anywhere/releases/tag/android-v1.0.0) and enter the same address.
 
 Requirements:
 - **LMS:** 9.0 or later, on Linux (x86_64, aarch64 or armhf for the bundled gateway; other platforms via Docker);
 - **Proxy:** a domain name and a reverse proxy with TLS;
-- **Browsers:** current Chrome, Edge, Firefox or Safari (iOS/iPadOS 17+).
+- **Browsers:** current Chrome, Edge, Firefox or Safari (iOS/iPadOS 17+);
+- **Android app:** Android 10 or later.
 
 ## Screenshots
 
@@ -130,6 +155,7 @@ tools/demo/run.sh                  # then open http://127.0.0.1:19443  (demo / d
 | `cli/` | Native test player for the core |
 | `deploy/` | Example reverse-proxy configuration (nginx), tested in CI |
 | `tools/` | Build, release and deployment-test scripts; the demo |
+| `mobile/` | The apps' shared Rust layer (UniFFI): networking, sign-in, the player engine, downloads, Android Auto's browse model |
 | `apps/android/` | The native Android app (Kotlin, Compose) over the `mobile/` Rust layer |
 | `docs/` | Installation, deployment reference, protocol, privacy, releasing, security reviews |
 
@@ -141,6 +167,12 @@ cargo clippy --workspace --all-targets
 tools/build-web.sh                                      # WebAssembly core + web app into web/app/build
 cd web/app && npm run check && npm test                 # strict type check; Vitest + Node tests
 cd plugin && PERL5LIB=t/stubs:. prove -r t/ && node --test t/js/*.test.mjs
+```
+
+For the Android app (Android SDK, NDK and `cargo-ndk`; see [`apps/android/README.md`](apps/android/README.md)):
+
+```sh
+cd apps/android && ./gradlew assembleDebug testDebugUnitTest lint
 ```
 
 The plugin's contract test also runs the real gateway, so build it first (`cargo build -p anywhere-gateway`). `cd web/app && npm run dev` starts a dev server that proxies `/v1` to a gateway on `127.0.0.1:9443`.
