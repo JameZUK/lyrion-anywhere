@@ -2,6 +2,24 @@
 
 Dated entries, newest first.
 
+## 2026-10-11
+
+### Native apps: foundations (A0) and the audio engine
+- **Android app (`apps/android`), remote control:**
+  - covers sign-in (with two-step verification), pairing links, home, albums, artists, search, now playing and settings;
+  - Material You with adaptive navigation;
+  - runs on Android 10 and later.
+- **`mobile/` crate:** the network side of the native apps in Rust, exposed to Kotlin (and later Swift) through UniFFI. It covers sessions with single-flight token refresh, the command API, artwork, and an events stream that reconnects by itself. TLS uses the phone's own certificate store.
+- **Security on the phone:** the refresh token is sealed with AES-256-GCM under a non-exportable Android Keystore key, and backups are off. Release builds allow no cleartext traffic and trust only system certificates.
+- **Audio engine in the core:**
+  - *Processing:* a 64-bit chain (levelling, 4× oversampled true-peak limiter, parametric EQ with AutoEq import, crossfeed, TPDF dither, resampling, crossfades), bit-perfect when bypassed.
+  - *Analysis:* streaming EBU R128 loudness, loudness range, true peak, a 1,000-point waveform, and silence and fade detection.
+  - *Formats:* Opus decoding behind the `opus` feature.
+- **Tests:**
+  - Rust: 526 tests across the workspace, including integration tests of the mobile crate against the real gateway, and fuzz tests on the engine;
+  - Android: 35 JVM tests (view models, screens, sealing, network policy) and lint with no baseline;
+  - CI: a new Android job.
+
 ## 2026-10-10
 
 ### Security testing of the internet-facing product: fixes
