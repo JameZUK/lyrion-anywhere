@@ -14,7 +14,7 @@ import androidx.compose.ui.platform.LocalContext
 
 // The brand palette, used where dynamic colour isn't available (Android 10 and 11). A deep
 // teal accent, like the web app's Material theme. Album-art colour comes later (A4).
-private val Light = lightColorScheme(
+internal val BrandLight = lightColorScheme(
     primary = Color(0xFF006A6A),
     onPrimary = Color(0xFFFFFFFF),
     primaryContainer = Color(0xFF9CF1F0),
@@ -35,7 +35,7 @@ private val Light = lightColorScheme(
     onError = Color(0xFFFFFFFF),
 )
 
-private val Dark = darkColorScheme(
+internal val BrandDark = darkColorScheme(
     primary = Color(0xFF80D5D4),
     onPrimary = Color(0xFF003737),
     primaryContainer = Color(0xFF004F4F),
@@ -63,8 +63,8 @@ fun appColorScheme(dark: Boolean, dynamicColour: Boolean): ColorScheme {
     return when {
         dynamicColour && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
             if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        dark -> Dark
-        else -> Light
+        dark -> BrandDark
+        else -> BrandLight
     }
 }
 

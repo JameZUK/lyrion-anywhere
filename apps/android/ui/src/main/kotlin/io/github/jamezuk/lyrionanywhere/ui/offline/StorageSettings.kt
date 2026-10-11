@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Download
@@ -23,7 +24,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import io.github.jamezuk.lyrionanywhere.core.DownloadFormat
 import io.github.jamezuk.lyrionanywhere.data.AppError
@@ -52,7 +56,7 @@ private fun recentName(n: Int): String =
 
 @Composable
 private fun <T> Choices(options: List<T>, selected: T, label: @Composable (T) -> String, onSelect: (T) -> Unit) {
-    Column {
+    Column(Modifier.selectableGroup()) {
         options.forEach { o ->
             ListItem(
                 leadingContent = { RadioButton(selected = o == selected, onClick = null) },
@@ -165,7 +169,7 @@ fun StorageSettingsScreen(
                         errorMessage(it),
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(16.dp),
+                        modifier = Modifier.padding(16.dp).semantics { liveRegion = LiveRegionMode.Polite },
                     )
                 }
             }

@@ -54,6 +54,9 @@ object WaveformMath {
     }
 }
 
+/** The unplayed bars' alpha over onSurfaceVariant: enough for 3:1 against the background. */
+internal const val UNPLAYED_ALPHA = 0.65f
+
 /** Bar pitch and gap, dp. */
 private const val PITCH_DP = 3f
 private const val GAP_DP = 1f
@@ -68,7 +71,7 @@ fun WaveformTrack(
     fraction: Float,
     modifier: Modifier = Modifier,
     played: Color = MaterialTheme.colorScheme.primary,
-    rest: Color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+    rest: Color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = UNPLAYED_ALPHA),
 ) {
     val cache = remember(waveform) { HashMap<Int, FloatArray>() }
     Canvas(modifier.fillMaxWidth().height(36.dp).testTag("waveform")) {

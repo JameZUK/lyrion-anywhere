@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ClearAll
 import androidx.compose.material.icons.outlined.Delete
@@ -35,6 +37,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -82,7 +91,10 @@ fun QueueHeader(count: Int, playerName: String, onClear: () -> Unit) {
         AlertDialog(
             onDismissRequest = { confirm = false },
             title = { Text(stringResource(R.string.queue_clear_confirm_title)) },
-            text = { Text(stringResource(R.string.queue_clear_confirm, playerName)) },
+            text = {
+                // Scrolls when large text makes it taller than the dialog.
+                Text(stringResource(R.string.queue_clear_confirm, playerName), Modifier.verticalScroll(rememberScrollState()))
+            },
             confirmButton = {
                 TextButton(onClick = {
                     confirm = false
@@ -96,7 +108,8 @@ fun QueueHeader(count: Int, playerName: String, onClear: () -> Unit) {
 
 /**
  * The queue's rows: tap to play, swipe left to remove, long-press the handle and drag to
- * reorder. TalkBack users get Move up, Move down and Remove as actions on each row.
+ * reorder. TalkBack users get Move up, Move down and Remove as actions on each row; with a
+ * keyboard, Alt+Up and Alt+Down move the focused row and Delete removes it.
  */
 fun LazyListScope.queueItems(
     entries: List<QueueEntry>,
@@ -148,25 +161,35 @@ private fun QueueRow(
             .testTag("queue-row-$index")
             .zIndex(if (dragging) 1f else 0f)
             .graphicsLayer { translationY = if (dragging) drag.offset else 0f }
-            .onSizeChanged { drag.rowPx = it.height.toFloat() }
-            .semantics {
-                customActions = buildList {
-                    if (index > 0) add(CustomAccessibilityAction(moveUp) { actions.onMove(index, index - 1); true })
-                    if (index < size - 1) add(CustomAccessibilityAction(moveDown) { actions.onMove(index, index + 1); true })
-                    add(CustomAccessibilityAction(remove) { actions.onRemove(index); true })
-                }
-            },
+            .onSizeChanged { drag.rowPx = it.height.toFloat() },
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.background(MaterialTheme.colorScheme.background),
         ) {
             Box(Modifier.weight(1f)) {
-                TrackRow(entry.track, onClick = { actions.onJump(index) }, highlighted = current, showArt = true)
+                // The actions sit on the row TalkBack focuses (the one that plays the track).
+                TrackRow(
+                    entry.track,
+                    onClick = { actions.onJump(index) },
+                    highlighted = current,
+                    showArt = true,
+                    modifier = Modifier
+                        .testTag("queue-track-$index")
+                        .onPreviewKeyEvent { e -> e.type == KeyEventType.KeyDown && queueKey(e, index, size, actions) }
+                        .semantics {
+                            customActions = buildList {
+                                if (index > 0) add(CustomAccessibilityAction(moveUp) { actions.onMove(index, index - 1); true })
+                                if (index < size - 1) add(CustomAccessibilityAction(moveDown) { actions.onMove(index, index + 1); true })
+                                add(CustomAccessibilityAction(remove) { actions.onRemove(index); true })
+                            }
+                        },
+                )
             }
+            // Touch only: screen-reader and keyboard users have the row's actions instead.
             Icon(
                 Icons.Outlined.DragHandle,
-                contentDescription = stringResource(R.string.queue_drag),
+                contentDescription = null,
                 modifier = Modifier
                     .testTag("queue-drag-$index")
                     .padding(horizontal = 12.dp, vertical = 16.dp)
@@ -195,4 +218,21 @@ private fun QueueRow(
             )
         }
     }
+}
+
+/** A queue row's keys: Alt+Up/Alt+Down move it, Delete or Backspace removes it. */
+internal fun queueKey(e: KeyEvent, index: Int, size: Int, actions: QueueActions): Boolean = when {
+    e.isAltPressed && e.key == Key.DirectionUp -> {
+        if (index > 0) actions.onMove(index, index - 1)
+        true
+    }
+    e.isAltPressed && e.key == Key.DirectionDown -> {
+        if (index < size - 1) actions.onMove(index, index + 1)
+        true
+    }
+    e.key == Key.Delete || e.key == Key.Backspace -> {
+        actions.onRemove(index)
+        true
+    }
+    else -> false
 }

@@ -1,5 +1,8 @@
 package io.github.jamezuk.lyrionanywhere.ui
 
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasClickAction
@@ -195,8 +198,13 @@ class OfflineScreenTests {
         }
         compose.onNodeWithTag("offline-mini-player").assertIsDisplayed()
         compose.onNodeWithText("Playing downloads on this phone").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Repeating the queue").performClick()
-        compose.onNodeWithContentDescription("Shuffle is off").performClick()
+        // Constant names; the mode is the toggle's state.
+        compose.onNodeWithContentDescription("Repeat")
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Repeating the queue"))
+            .performClick()
+        compose.onNodeWithContentDescription("Shuffle")
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
+            .performClick()
         compose.onNodeWithContentDescription("Previous track").performClick()
         compose.onNodeWithContentDescription("Stop playing downloads").performClick()
         compose.onNodeWithTag("offline-now-playing").performScrollToNode(hasText("Song 1"))

@@ -27,6 +27,9 @@ import io.github.jamezuk.lyrionanywhere.ui.settings.SignOutDialog
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
@@ -120,7 +123,7 @@ fun OfflineApp(
             composable<OfflineLibraryRoute> {
                 Column(Modifier.fillMaxSize()) {
                     TopAppBar(
-                        title = { Text(stringResource(R.string.offline_library)) },
+                        title = { TopBarTitle(stringResource(R.string.offline_library)) },
                         actions = {
                             IconButton(onClick = { nav.navigate(OfflineDownloadsRoute) }) {
                                 Icon(Icons.Outlined.Download, contentDescription = stringResource(R.string.title_downloads))
@@ -205,7 +208,7 @@ internal fun offlineNowPlayingActions(vm: OfflinePlayerViewModel) = OfflineNowPl
 private fun OfflineScreen(title: String, onBack: () -> Unit, content: @Composable () -> Unit) {
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text(title, maxLines = 1) },
+            title = { TopBarTitle(title) },
             navigationIcon = {
                 IconButton(onClick = onBack) {
                     Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = stringResource(R.string.action_back))
@@ -214,4 +217,10 @@ private fun OfflineScreen(title: String, onBack: () -> Unit, content: @Composabl
         )
         content()
     }
+}
+
+/** A top bar's title: one line (ellipsised with large text), and a heading for TalkBack. */
+@Composable
+private fun TopBarTitle(title: String) {
+    Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.semantics { heading() })
 }

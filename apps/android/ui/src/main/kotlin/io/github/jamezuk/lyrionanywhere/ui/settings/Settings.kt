@@ -7,6 +7,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Dns
@@ -15,6 +19,7 @@ import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Gavel
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.PrivacyTip
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material3.AlertDialog
@@ -31,9 +36,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -54,6 +64,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+
+/** The privacy policy: what the app and the server keep, and what they don't. */
+const val PRIVACY_POLICY_URL = "https://github.com/JameZUK/lyrion-anywhere/blob/main/docs/PRIVACY.md"
 
 data class SettingsUiState(
     val serverName: String = "",
@@ -245,9 +258,15 @@ fun SettingsScreen(
                     leadingContent = { Icon(Icons.Outlined.Smartphone, contentDescription = null) },
                     headlineContent = { Text(stringResource(R.string.this_phone_name)) },
                     supportingContent = {
+                        val error = state.renameError?.let { errorMessage(it) }
                         Text(
-                            state.renameError?.let { errorMessage(it) }
-                                ?: stringResource(R.string.this_phone_name_explained, state.deviceName),
+                            error ?: stringResource(R.string.this_phone_name_explained, state.deviceName),
+                            // A failed rename is announced as it appears.
+                            modifier = if (error != null) {
+                                Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                            } else {
+                                Modifier
+                            },
                         )
                     },
                     trailingContent = { Text(stringResource(R.string.action_rename)) },
@@ -311,6 +330,20 @@ fun SettingsScreen(
                 modifier = Modifier.clickable(onClick = onLicences),
             )
         }
+        item {
+            val uriHandler = LocalUriHandler.current
+            ListItem(
+                leadingContent = { Icon(Icons.Outlined.PrivacyTip, contentDescription = null) },
+                headlineContent = { Text(stringResource(R.string.privacy_policy)) },
+                supportingContent = { Text(stringResource(R.string.privacy_policy_body)) },
+                modifier = Modifier
+                    .testTag("privacy-policy")
+                    .clickable {
+                        // No browser (or a locked-down profile) must not crash the app.
+                        runCatching { uriHandler.openUri(PRIVACY_POLICY_URL) }
+                    },
+            )
+        }
     }
     if (confirm) {
         SignOutDialog(
@@ -357,12 +390,14 @@ fun SignOutDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.sign_out_confirm_title)) },
         text = {
+            // Scrolls when large text makes it taller than the dialog.
             Text(
                 if (hasDownloads) {
                     stringResource(R.string.sign_out_downloads_body, formatBytes(downloadedBytes))
                 } else {
                     stringResource(R.string.sign_out_confirm_body)
                 },
+                modifier = Modifier.verticalScroll(rememberScrollState()),
             )
         },
         confirmButton = {
@@ -397,6 +432,8 @@ fun RenameDeviceEditor(current: String, onRename: (String) -> Unit, onDismiss: (
             label = { Text(stringResource(R.string.rename_phone_label)) },
             supportingText = { Text(stringResource(R.string.rename_phone_hint)) },
             isError = valid == null,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { if (valid != null && valid != current) onRename(valid) }),
             modifier = Modifier.testTag("rename-field"),
         )
         androidx.compose.foundation.layout.Row {

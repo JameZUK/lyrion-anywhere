@@ -8,6 +8,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -312,7 +313,7 @@ fun SoundScreen(state: SoundUiState, actions: SoundActions, modifier: Modifier =
                     label = {
                         stringResource(R.string.sound_limiter_ceiling, String.format(Locale.ROOT, "%.1f", it).replace("-", "−"))
                     },
-                    accessibleName = stringResource(R.string.sound_limiter),
+                    accessibleName = stringResource(R.string.sound_limiter_ceiling_name),
                     value = s.limiterCeilingDb,
                     range = SoundSettings.CEILING_RANGE,
                     step = 0.1,
@@ -361,7 +362,7 @@ fun SoundScreen(state: SoundUiState, actions: SoundActions, modifier: Modifier =
         item { SectionHeader(stringResource(R.string.sound_section_crossfeed)) }
         item {
             RadioGroup(
-                label = stringResource(R.string.sound_section_crossfeed),
+                label = null, // The section header above names it.
                 options = listOf(
                     Triple(CrossfeedMode.OFF, R.string.crossfeed_off, null),
                     Triple(CrossfeedMode.LIGHT, R.string.crossfeed_light, null),
@@ -377,7 +378,7 @@ fun SoundScreen(state: SoundUiState, actions: SoundActions, modifier: Modifier =
         item { SectionHeader(stringResource(R.string.sound_section_transitions)) }
         item {
             RadioGroup(
-                label = stringResource(R.string.sound_section_transitions),
+                label = null, // The section header above names it.
                 options = listOf(
                     Triple(TransitionsMode.OFF, R.string.transitions_off, R.string.transitions_off_body),
                     Triple(TransitionsMode.CROSSFADE, R.string.transitions_crossfade, R.string.transitions_crossfade_body),
@@ -413,7 +414,7 @@ fun SoundScreen(state: SoundUiState, actions: SoundActions, modifier: Modifier =
         }
         item {
             RadioGroup(
-                label = stringResource(R.string.sound_section_dither),
+                label = null, // The section header above names it.
                 options = listOf(
                     Triple(DitherMode.TPDF, R.string.dither_tpdf, null),
                     Triple(DitherMode.TPDF_SHAPED, R.string.dither_shaped, null),
@@ -500,14 +501,15 @@ private fun SwitchRow(
     )
 }
 
+/** Radio choices; [label] names the group, or null when the section header above already does. */
 @Composable
 private fun <T> RadioGroup(
-    label: String,
+    label: String?,
     options: List<Triple<T, Int, Int?>>,
     selected: T,
     onSelect: (T) -> Unit,
 ) {
-    Column(Modifier.selectableGroup().semantics { contentDescription = label }) {
+    Column(Modifier.selectableGroup().semantics { if (label != null) contentDescription = label }) {
         options.forEach { (value, title, body) ->
             ListItem(
                 leadingContent = { RadioButton(selected = value == selected, onClick = null) },
@@ -574,7 +576,8 @@ private fun EqButtons(hasProfile: Boolean, onPaste: () -> Unit, actions: SoundAc
             }
         }
     }
-    Row(
+    // Wraps onto two lines with large text, rather than squeezing either button.
+    FlowRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
     ) {
@@ -617,10 +620,15 @@ private fun readProfile(context: Context, uri: Uri): Pair<String, String>? = try
 private fun PasteBox(onCancel: () -> Unit, onImport: (String) -> Unit) {
     var text by rememberSaveable { mutableStateOf("") }
     Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-        Text(stringResource(R.string.sound_eq_paste_title), style = MaterialTheme.typography.titleSmall)
+        Text(
+            stringResource(R.string.sound_eq_paste_title),
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.semantics { heading() },
+        )
         OutlinedTextField(
             value = text,
             onValueChange = { text = it.take(SoundSettings.MAX_EQ_CHARS + 1) },
+            label = { Text(stringResource(R.string.sound_eq_paste_label)) },
             placeholder = { Text(stringResource(R.string.sound_eq_paste_hint)) },
             minLines = 4,
             maxLines = 10,

@@ -26,6 +26,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -192,7 +194,11 @@ private fun Unreachable(container: AppContainer, state: AuthState.Unreachable) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Text(stringResource(R.string.unreachable_title), style = MaterialTheme.typography.headlineSmall)
+            Text(
+                stringResource(R.string.unreachable_title),
+                style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.semantics { heading() },
+            )
             Text(
                 stringResource(R.string.unreachable_body, state.server.name),
                 textAlign = TextAlign.Center,

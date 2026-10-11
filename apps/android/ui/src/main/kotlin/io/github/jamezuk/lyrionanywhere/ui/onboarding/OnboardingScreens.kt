@@ -1,5 +1,8 @@
 package io.github.jamezuk.lyrionanywhere.ui.onboarding
 
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.draw.alpha
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -28,16 +31,23 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.autofill.ContentType
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.contentType
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -69,7 +79,13 @@ private fun FormColumn(content: @Composable ColumnScope.() -> Unit) {
 @Composable
 private fun ErrorText(text: String?) {
     if (text != null) {
-        Text(text, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            text,
+            color = MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.bodyMedium,
+            // Read out when it appears, without moving focus away from the form.
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+        )
     }
 }
 
@@ -78,12 +94,14 @@ private fun ErrorText(text: String?) {
 private fun authErrorMessage(error: AppError, refused: Int): String =
     if (error == AppError.SignedOut) stringResource(refused) else errorMessage(error)
 
+/** A button's label, or a spinner while busy: the spinner carries the label, so the button keeps its name. */
 @Composable
 private fun BusyLabel(busy: Boolean, label: String) {
-    if (busy) {
-        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-    } else {
-        Text(label)
+    // The label stays (invisible while busy), so the button keeps its name for TalkBack and
+    // its size; the spinner itself says nothing (it would be a separate, unlabelled stop).
+    Box(contentAlignment = Alignment.Center) {
+        Text(label, Modifier.alpha(if (busy) 0f else 1f))
+        if (busy) CircularProgressIndicator(Modifier.size(20.dp).clearAndSetSemantics {}, strokeWidth = 2.dp)
     }
 }
 
@@ -93,6 +111,9 @@ fun ServerScreen(
     onAddressChange: (String) -> Unit,
     onSubmit: () -> Unit,
 ) {
+    val addressFocus = remember { FocusRequester() }
+    // Ready to type on first show, unless an address is already filled in.
+    LaunchedEffect(Unit) { if (state.address.isEmpty() && !state.busy) addressFocus.requestFocus() }
     FormColumn {
         Icon(
             Icons.Outlined.LibraryMusic,
@@ -120,7 +141,7 @@ fun ServerScreen(
                 autoCorrectEnabled = false,
             ),
             keyboardActions = KeyboardActions(onGo = { onSubmit() }),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().focusRequester(addressFocus),
         )
         ErrorText(state.error?.let { errorMessage(it) })
         Button(
@@ -149,6 +170,11 @@ fun SignInScreen(
     revoked: Boolean = false,
 ) {
     var showPassword by rememberSaveable { mutableStateOf(false) }
+    val usernameFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        if (state.username.isEmpty() && !state.busy && !state.needsCode) usernameFocus.requestFocus()
+    }
+    val failed = state.error != null
     FormColumn {
         Text(
             stringResource(R.string.sign_in_title),
@@ -171,19 +197,24 @@ fun SignInScreen(
             onValueChange = onUsernameChange,
             label = { Text(stringResource(R.string.username)) },
             singleLine = true,
+            isError = failed,
             enabled = !state.busy && !state.needsCode,
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Text,
                 imeAction = ImeAction.Next,
                 autoCorrectEnabled = false,
             ),
-            modifier = Modifier.fillMaxWidth().semantics { contentType = ContentType.Username },
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusRequester(usernameFocus)
+                .semantics { contentType = ContentType.Username },
         )
         OutlinedTextField(
             value = state.password,
             onValueChange = onPasswordChange,
             label = { Text(stringResource(R.string.password)) },
             singleLine = true,
+            isError = failed,
             enabled = !state.busy && !state.needsCode,
             visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(
@@ -210,6 +241,7 @@ fun SignInScreen(
                 onValueChange = onCodeChange,
                 label = { Text(stringResource(R.string.two_step_code)) },
                 singleLine = true,
+                isError = failed,
                 enabled = !state.busy,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.NumberPassword,
@@ -269,6 +301,7 @@ fun PairScreen(
             onValueChange = onCodeChange,
             label = { Text(stringResource(R.string.pairing_code)) },
             singleLine = true,
+            isError = state.error != null,
             enabled = !state.busy,
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Ascii,

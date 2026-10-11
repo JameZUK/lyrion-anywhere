@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -49,7 +50,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -78,7 +81,11 @@ private fun LazyListScope.menuRows(frame: MenuFrame, navigator: MenuNavigator, i
     if (frame.error != null && frame.items.isNotEmpty()) {
         item {
             Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(errorMessage(frame.error), textAlign = TextAlign.Center)
+                Text(
+                    errorMessage(frame.error),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                )
                 TextButton(onClick = navigator::retry) { Text(stringResource(R.string.action_retry)) }
             }
         }
@@ -254,7 +261,9 @@ fun ItemSheetContent(
                         modifier = Modifier.semantics { heading() },
                     )
                 },
-                supportingContent = target.subtitle?.takeIf { stack.size <= 1 }?.let { { Text(it, maxLines = 1) } },
+                supportingContent = target.subtitle?.takeIf { stack.size <= 1 }?.let {
+                    { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                },
                 trailingContent = {
                     IconButton(onClick = onClose) { Icon(Icons.Outlined.Close, stringResource(R.string.action_close)) }
                 },
@@ -262,18 +271,19 @@ fun ItemSheetContent(
         }
         if (stack.size <= 1 && target.canPlay) {
             item {
-                Row(
+                // Wraps onto more lines with large text, rather than squeezing the labels.
+                FlowRow(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    FilledTonalButton(onClick = { onPlay(Placement.PLAY_NOW) }, modifier = Modifier.weight(1f)) {
-                        Text(stringResource(R.string.action_play_now), maxLines = 1)
+                    FilledTonalButton(onClick = { onPlay(Placement.PLAY_NOW) }) {
+                        Text(stringResource(R.string.action_play_now))
                     }
-                    OutlinedButton(onClick = { onPlay(Placement.PLAY_NEXT) }, modifier = Modifier.weight(1f)) {
-                        Text(stringResource(R.string.action_play_next), maxLines = 1)
+                    OutlinedButton(onClick = { onPlay(Placement.PLAY_NEXT) }) {
+                        Text(stringResource(R.string.action_play_next))
                     }
-                    OutlinedButton(onClick = { onPlay(Placement.ADD_TO_QUEUE) }, modifier = Modifier.weight(1f)) {
-                        Text(stringResource(R.string.action_add_short), maxLines = 1)
+                    OutlinedButton(onClick = { onPlay(Placement.ADD_TO_QUEUE) }) {
+                        Text(stringResource(R.string.action_add_short))
                     }
                 }
                 if (onDownload != null) {
@@ -282,7 +292,12 @@ fun ItemSheetContent(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                     ) {
                         Icon(Icons.Outlined.Download, contentDescription = null)
-                        Text(stringResource(R.string.action_download), Modifier.padding(start = 8.dp), maxLines = 1)
+                        Text(
+                            stringResource(R.string.action_download),
+                            Modifier.padding(start = 8.dp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
                 if (discovery != null) {
@@ -298,7 +313,11 @@ fun ItemSheetContent(
             }
             frame.items.isEmpty() && frame.error != null -> item {
                 Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(errorMessage(frame.error), textAlign = TextAlign.Center)
+                    Text(
+                        errorMessage(frame.error),
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    )
                     TextButton(onClick = navigator::retry) { Text(stringResource(R.string.action_retry)) }
                 }
             }

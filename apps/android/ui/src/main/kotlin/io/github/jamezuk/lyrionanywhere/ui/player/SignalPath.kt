@@ -151,7 +151,8 @@ fun reasonText(r: NotBitPerfect): Int = when (r) {
 
 @Composable
 private fun LabelledLine(label: String, value: String) {
-    Column {
+    // One stop for TalkBack: the label and its value together.
+    Column(Modifier.semantics(mergeDescendants = true) {}) {
         Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
         Text(value, style = MaterialTheme.typography.bodyMedium)
     }

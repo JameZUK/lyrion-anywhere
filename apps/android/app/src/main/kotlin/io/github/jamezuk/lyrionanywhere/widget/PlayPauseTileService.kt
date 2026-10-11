@@ -3,6 +3,7 @@ package io.github.jamezuk.lyrionanywhere.widget
 import android.content.ComponentName
 import android.content.Context
 import android.graphics.drawable.Icon
+import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import io.github.jamezuk.lyrionanywhere.LyrionApp
@@ -66,6 +67,13 @@ class PlayPauseTileService : TileService() {
             else -> m.title ?: getString(if (m.playing) R.string.tile_playing else R.string.tile_paused)
         }
         tile.icon = Icon.createWithResource(this, if (m.playing) R.drawable.ic_widget_pause else R.drawable.ic_widget_play)
+        // TalkBack reads the state, not the subtitle (which is the track's title when playing).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            tile.stateDescription = when (m.state) {
+                TileModel.State.UNAVAILABLE -> getString(R.string.tile_unavailable)
+                else -> getString(if (m.playing) R.string.tile_playing else R.string.tile_paused)
+            }
+        }
         tile.updateTile()
     }
 

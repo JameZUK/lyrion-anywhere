@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -29,6 +28,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.automirrored.outlined.Sort
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Shuffle
@@ -56,11 +57,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.CustomAccessibilityAction
-import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.jamezuk.lyrionanywhere.core.Album
@@ -95,7 +106,11 @@ internal fun PageFooter(state: PagedState<*>, onRetry: () -> Unit) {
         when {
             state.loading -> CircularProgressIndicator(Modifier.size(24.dp))
             state.error != null -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(errorMessage(state.error), style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    errorMessage(state.error),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                )
                 TextButton(onClick = onRetry) { Text(stringResource(R.string.action_retry)) }
             }
         }
@@ -112,6 +127,10 @@ fun sortLabel(sort: AlbumSort): String = stringResource(
         AlbumSort.RANDOM -> R.string.sort_random
     },
 )
+
+/** The keys that open a context menu: Menu, or Shift+F10. */
+internal fun isContextMenuKey(e: KeyEvent): Boolean =
+    e.key == Key.Menu || (e.key == Key.F10 && e.isShiftPressed)
 
 /** Album orders offered on album lists (random has its own page). */
 val ALBUM_SORTS = listOf(AlbumSort.TITLE, AlbumSort.ARTIST, AlbumSort.YEAR, AlbumSort.NEWEST)
@@ -132,10 +151,11 @@ fun AlbumSortMenu(sort: AlbumSort, onSort: (AlbumSort) -> Unit) {
                         onSort(s)
                     },
                     trailingIcon = if (s == sort) {
-                        { Text("✓") }
+                        { Icon(Icons.Outlined.Check, contentDescription = null) }
                     } else {
                         null
                     },
+                    modifier = Modifier.semantics { selected = s == sort },
                 )
             }
         }
@@ -192,22 +212,30 @@ internal fun LazyGridScope.albumItems(albums: List<Album>, onAlbum: (Album) -> U
     }
 }
 
-/** An album: tap to open; long-press (or the accessibility action) for "More…". */
+/**
+ * An album: tap to open; long-press for "More…" (TalkBack offers it as the long-press
+ * action; on a keyboard, the Menu key or Shift+F10).
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AlbumTile(album: Album, onClick: () -> Unit, onMore: (() -> Unit)? = null, showArtist: Boolean = true) {
     val moreLabel = stringResource(R.string.action_more)
     Column(
         Modifier
+            .onPreviewKeyEvent { e ->
+                if (onMore != null && e.type == KeyEventType.KeyDown && isContextMenuKey(e)) {
+                    onMore()
+                    true
+                } else {
+                    false
+                }
+            }
             .combinedClickable(
                 onClickLabel = stringResource(R.string.open_album),
                 onLongClickLabel = if (onMore != null) moreLabel else null,
                 onLongClick = onMore,
                 onClick = onClick,
             )
-            .semantics {
-                if (onMore != null) customActions = listOf(CustomAccessibilityAction(moreLabel) { onMore(); true })
-            }
             .padding(bottom = 4.dp),
     ) {
         ArtworkImage(album.artwork, GRID_ART_PX, contentDescription = null, modifier = Modifier.fillMaxWidth())
@@ -338,10 +366,11 @@ fun TintedHeader(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        // Decorative: the title beside it is the heading.
         ArtworkImage(
             artwork,
             600,
-            contentDescription = stringResource(R.string.album_cover),
+            contentDescription = null,
             modifier = Modifier.widthIn(max = 320.dp).fillMaxWidth(0.72f),
             corner = 12.dp,
         )
@@ -363,6 +392,8 @@ fun TintedHeader(
                 line,
                 style = if (i == 0) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
                 color = if (i == 0) scheme.primary else scheme.onSurfaceVariant,
+                // A link: underlined, so it doesn't rely on colour alone.
+                textDecoration = if (click != null) TextDecoration.Underline else null,
                 modifier = if (click != null) {
                     Modifier.clickable(onClickLabel = stringResource(R.string.open_artist)) { click(i) }.padding(vertical = 12.dp)
                 } else {
@@ -480,10 +511,15 @@ fun AlbumScreen(state: Loadable<AlbumDetail>, actions: AlbumActions, modifier: M
 private fun pluralTracks(n: Int): String =
     androidx.compose.ui.platform.LocalResources.current.getQuantityString(R.plurals.track_count, n, n)
 
+/**
+ * A track: tap to play from it. [highlighted] marks the one playing now, by colour, an
+ * equaliser icon and (for TalkBack) its state, so it never relies on colour alone.
+ */
 @Composable
 fun TrackRow(
     track: Track,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
     highlighted: Boolean = false,
     showArt: Boolean = false,
     showArtist: Boolean = true,
@@ -491,6 +527,7 @@ fun TrackRow(
 ) {
     val playLabel = stringResource(R.string.play_track)
     val title = track.title.ifEmpty { stringResource(R.string.unknown_track) }
+    val nowPlaying = stringResource(R.string.now_playing)
     ListItem(
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         leadingContent = when {
@@ -498,17 +535,28 @@ fun TrackRow(
                 { ArtworkImage(track.artwork, LIST_ART_PX, contentDescription = null, modifier = Modifier.size(48.dp)) }
             }
             track.trackNumber != null -> {
-                { Text(track.trackNumber.toString(), Modifier.width(28.dp), style = MaterialTheme.typography.bodyMedium) }
+                { Text(track.trackNumber.toString(), Modifier.widthIn(min = 28.dp), style = MaterialTheme.typography.bodyMedium) }
             }
             else -> null
         },
         headlineContent = {
-            Text(
-                title,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color = if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (highlighted) {
+                    Icon(
+                        Icons.Outlined.GraphicEq,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(end = 6.dp).size(18.dp),
+                    )
+                }
+                Text(
+                    title,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+            }
         },
         supportingContent = track.artist?.takeIf { showArtist }?.let { { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) } },
         trailingContent = {
@@ -519,7 +567,9 @@ fun TrackRow(
                 }
             }
         },
-        modifier = Modifier.clickable(onClickLabel = playLabel, onClick = onClick),
+        modifier = modifier
+            .semantics { if (highlighted) stateDescription = nowPlaying }
+            .clickable(onClickLabel = playLabel, onClick = onClick),
     )
 }
 

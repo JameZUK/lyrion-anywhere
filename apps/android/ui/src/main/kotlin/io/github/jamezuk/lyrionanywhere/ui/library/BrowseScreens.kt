@@ -18,7 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
@@ -62,9 +62,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -272,6 +276,7 @@ fun GenresScreen(
     onMore: (MoreRequest) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val focusManager = LocalFocusManager.current
     Column(modifier) {
         OutlinedTextField(
             value = query,
@@ -280,6 +285,8 @@ fun GenresScreen(
             singleLine = true,
             leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            // The list filters as you type: Search just closes the keyboard.
+            keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
         )
         PagedList(state, stringResource(R.string.no_genres), onLoadMore, key = { i, g -> "${g.id}-$i" }) { g ->
@@ -608,7 +615,7 @@ private fun AlbumCard(a: Album, actions: HomeActions) {
 @Composable
 private fun SmallCard(name: String, artwork: String?, icon: ImageVector, onClick: () -> Unit) {
     Column(
-        Modifier.width(120.dp).selectable(selected = false, role = Role.Button, onClick = onClick),
+        Modifier.width(120.dp).clickable(role = Role.Button, onClick = onClick),
     ) {
         if (artwork != null) {
             ArtworkImage(artwork, 240, contentDescription = null, modifier = Modifier.fillMaxWidth())
@@ -643,14 +650,21 @@ fun <T> Carousel(
                 modifier = Modifier.weight(1f).semantics { heading() },
             )
             extra()
-            TextButton(onClick = onSeeAll) { Text(stringResource(R.string.see_all)) }
+            val seeAll = stringResource(R.string.see_all_named, title)
+            TextButton(onClick = onSeeAll, modifier = Modifier.semantics { contentDescription = seeAll }) {
+                Text(stringResource(R.string.see_all))
+            }
         }
         when (state) {
             Loadable.Loading -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                 androidx.compose.material3.CircularProgressIndicator(Modifier.size(24.dp))
             }
             is Loadable.Failed -> Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(errorMessage(state.error), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    errorMessage(state.error),
+                    Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
+                    style = MaterialTheme.typography.bodyMedium,
+                )
                 OutlinedButton(onClick = onRetry) { Text(stringResource(R.string.action_retry)) }
             }
             is Loadable.Ready -> if (state.value.isEmpty()) {

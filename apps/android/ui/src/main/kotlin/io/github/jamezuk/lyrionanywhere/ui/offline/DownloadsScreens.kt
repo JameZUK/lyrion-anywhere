@@ -12,12 +12,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DownloadDone
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
@@ -47,9 +50,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.jamezuk.lyrionanywhere.core.DownloadFailure
@@ -86,26 +89,36 @@ data class DownloadsActions(
     val onStorage: (() -> Unit)? = null,
 )
 
-/** A strip saying the app is offline, with what can be done about it. */
+/**
+ * A strip saying the app is offline, with what can be done about it. The buttons sit on
+ * their own line, so large text never squeezes the message.
+ */
 @Composable
 fun OfflineBannerBar(text: String, onRetry: (() -> Unit)?, modifier: Modifier = Modifier, action: @Composable () -> Unit = {}) {
     Surface(color = MaterialTheme.colorScheme.tertiaryContainer, modifier = modifier.fillMaxWidth().testTag("offline-banner")) {
-        Row(
-            Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Icon(Icons.Outlined.CloudOff, contentDescription = null, tint = MaterialTheme.colorScheme.onTertiaryContainer)
-            Text(
-                text,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onTertiaryContainer,
-                modifier = Modifier.weight(1f),
-            )
-            if (onRetry != null) {
-                TextButton(onClick = onRetry) { Text(stringResource(R.string.action_retry)) }
+        Column(Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 4.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.padding(end = 8.dp),
+            ) {
+                Icon(Icons.Outlined.CloudOff, contentDescription = null, tint = MaterialTheme.colorScheme.onTertiaryContainer)
+                Text(
+                    text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    modifier = Modifier.weight(1f),
+                )
             }
-            action()
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+            ) {
+                if (onRetry != null) {
+                    TextButton(onClick = onRetry) { Text(stringResource(R.string.action_retry)) }
+                }
+                action()
+            }
         }
     }
 }
@@ -307,7 +320,12 @@ fun DownloadsScreen(state: DownloadsUiState, actions: DownloadsActions, modifier
         AlertDialog(
             onDismissRequest = { confirmAll = false },
             title = { Text(stringResource(R.string.downloads_remove_all_title)) },
-            text = { Text(stringResource(R.string.downloads_remove_all_body, formatBytes(state.usedBytes))) },
+            text = {
+                Text(
+                    stringResource(R.string.downloads_remove_all_body, formatBytes(state.usedBytes)),
+                    Modifier.verticalScroll(rememberScrollState()),
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     confirmAll = false
@@ -322,7 +340,7 @@ fun DownloadsScreen(state: DownloadsUiState, actions: DownloadsActions, modifier
         AlertDialog(
             onDismissRequest = { confirmAlbum = null },
             title = { Text(stringResource(R.string.remove_download_title)) },
-            text = { Text(stringResource(R.string.remove_download_body, title)) },
+            text = { Text(stringResource(R.string.remove_download_body, title), Modifier.verticalScroll(rememberScrollState())) },
             confirmButton = {
                 TextButton(onClick = {
                     confirmAlbum = null
@@ -381,10 +399,11 @@ fun OfflineAlbumScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                // Decorative: the title below is the heading.
                 ArtworkImage(
                     if (album?.hasArt == true) offlineArtKey(album.albumRef) else null,
                     600,
-                    contentDescription = stringResource(R.string.album_cover),
+                    contentDescription = null,
                     modifier = Modifier.fillMaxWidth(0.6f),
                     corner = 12.dp,
                 )
@@ -428,7 +447,7 @@ fun OfflineAlbumScreen(
         AlertDialog(
             onDismissRequest = { confirm = false },
             title = { Text(stringResource(R.string.remove_download_title)) },
-            text = { Text(stringResource(R.string.remove_download_body, title)) },
+            text = { Text(stringResource(R.string.remove_download_body, title), Modifier.verticalScroll(rememberScrollState())) },
             confirmButton = {
                 TextButton(onClick = {
                     confirm = false
@@ -440,9 +459,11 @@ fun OfflineAlbumScreen(
     }
 }
 
+/** A downloaded track; [highlighted] marks the one playing, not by colour alone. */
 @Composable
 fun OfflineTrackRow(track: OfflineTrack, onClick: () -> Unit, highlighted: Boolean = false) {
     val playLabel = stringResource(R.string.play_track)
+    val nowPlaying = stringResource(R.string.now_playing)
     ListItem(
         leadingContent = {
             Text(
@@ -452,17 +473,28 @@ fun OfflineTrackRow(track: OfflineTrack, onClick: () -> Unit, highlighted: Boole
             )
         },
         headlineContent = {
-            Text(
-                track.title.ifEmpty { stringResource(R.string.unknown_track) },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color = if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (highlighted) {
+                    Icon(
+                        Icons.Outlined.GraphicEq,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(end = 6.dp).size(18.dp),
+                    )
+                }
+                Text(
+                    track.title.ifEmpty { stringResource(R.string.unknown_track) },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+            }
         },
         supportingContent = { Text(track.artist, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         trailingContent = { Text(formatDuration(track.durationSecs.takeIf { it > 0 })) },
         modifier = Modifier.clickable(onClickLabel = playLabel, onClick = onClick).semantics {
-            if (highlighted) contentDescription = track.title
+            if (highlighted) stateDescription = nowPlaying
         },
     )
 }

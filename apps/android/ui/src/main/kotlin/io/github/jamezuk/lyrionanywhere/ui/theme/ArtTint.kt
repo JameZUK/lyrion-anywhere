@@ -1,5 +1,8 @@
 package io.github.jamezuk.lyrionanywhere.ui.theme
 
+import android.app.UiModeManager
+import android.content.Context
+import android.os.Build
 import android.util.LruCache
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
@@ -14,6 +17,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalContext
 import coil3.SingletonImageLoader
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
@@ -81,15 +85,28 @@ fun rememberArtSeed(key: String?): Int? {
     return seed
 }
 
+/** System contrast above this counts as "high contrast" (medium is 0.5, high 1.0). */
+private const val HIGH_CONTRAST = 0.3f
+
+/** Whether the user asked the system for more contrast (Android 14+). */
+internal fun isHighContrast(context: Context): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return false
+    val uiMode = context.getSystemService(UiModeManager::class.java) ?: return false
+    return uiMode.contrast > HIGH_CONTRAST
+}
+
 /**
  * [content] in the current theme tinted by the artwork's colours (animated in once the
- * image is in), or untinted while there is none.
+ * image is in), or untinted while there is none. With the system's contrast turned up,
+ * pages keep the plain theme: its colours are the ones the user chose to read.
  */
 @Composable
 fun ArtTinted(key: String?, content: @Composable () -> Unit) {
     val base = MaterialTheme.colorScheme
     val dark = base.background.luminance() < 0.5f || isSystemInDarkTheme() && base.background.luminance() < 0.5f
-    val seed = rememberArtSeed(key)
+    val context = LocalContext.current
+    val highContrast = remember(context) { isHighContrast(context) }
+    val seed = rememberArtSeed(key).takeUnless { highContrast }
     val target = if (seed == null) base else base.tintedBy(seed, dark)
     val spec = tween<Color>(durationMillis = 450)
     val primary by animateColorAsState(target.primary, spec, label = "primary")
