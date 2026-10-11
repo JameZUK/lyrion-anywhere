@@ -171,6 +171,8 @@ pub struct Player {
     host_buffered: (u64, u64),
     /// An underrun has been reported (STMo) and audio has not flowed since.
     underrun_reported: bool,
+    /// Ignore `audg`: samples leave at 100 % (see [`Player::set_fixed_volume`]).
+    fixed_volume: bool,
 }
 
 impl Player {
@@ -193,6 +195,7 @@ impl Player {
             flushes: 0,
             host_buffered: (0, 0),
             underrun_reported: false,
+            fixed_volume: false,
         }
     }
 
@@ -386,6 +389,7 @@ impl Player {
             return (0, None);
         };
         let want = out.len() / 2;
+        let gain = self.applied_volume();
         let mut written = 0;
         let mut first_seq = None;
         for seg in self.segments.iter_mut() {
@@ -410,8 +414,8 @@ impl Player {
             for i in 0..n {
                 let l = self.pcm.pop_front().unwrap_or(0.0);
                 let r = self.pcm.pop_front().unwrap_or(0.0);
-                out[(written + i) * 2] = l * self.gain.0;
-                out[(written + i) * 2 + 1] = r * self.gain.1;
+                out[(written + i) * 2] = l * gain.0;
+                out[(written + i) * 2 + 1] = r * gain.1;
             }
             seg.pulled += n as u64;
             written += n;
@@ -440,6 +444,42 @@ impl Player {
     /// unity, which leaves samples untouched.
     pub fn volume(&self) -> (f32, f32) {
         self.gain
+    }
+
+    /// Fixed volume: ignore LMS's volume (`audg`) and pass samples at 100 %. For outputs
+    /// whose volume is the device's own (a bit-perfect USB DAC), so that turning LMS's
+    /// volume down can't change a sample. LMS's volume is still remembered, and applies
+    /// again once this is turned off.
+    pub fn set_fixed_volume(&mut self, fixed: bool) {
+        self.fixed_volume = fixed;
+    }
+
+    pub fn fixed_volume(&self) -> bool {
+        self.fixed_volume
+    }
+
+    /// The volume applied to pulled audio: LMS's, or (1.0, 1.0) at fixed volume.
+    pub fn applied_volume(&self) -> (f32, f32) {
+        if self.fixed_volume {
+            (1.0, 1.0)
+        } else {
+            self.gain
+        }
+    }
+
+    /// Format details of the audio the next pull returns (the first segment not yet fully
+    /// pulled), so a host can prepare its output before pulling it.
+    pub fn next_audio(&self) -> Option<TrackAudio> {
+        let seg = self
+            .segments
+            .iter()
+            .find(|s| s.pulled < s.frames || !s.complete)?;
+        Some(TrackAudio {
+            seq: seg.seq,
+            sample_rate: seg.rate,
+            source: seg.source,
+            server_gain: seg.server_gain,
+        })
     }
 
     /// Nothing more to pull until LMS starts another track: the current track is fully
@@ -999,6 +1039,51 @@ mod tests {
         p.played(10);
         assert_eq!(p.playing_track(), Some(seq1));
         assert_eq!(p.volume(), (1.0, 1.0));
+    }
+
+    /// At fixed volume (a bit-perfect DAC), LMS's volume never touches a sample; it still
+    /// applies once fixed volume is off again.
+    #[test]
+    fn fixed_volume_ignores_audg_and_next_audio_describes_the_next_pull() {
+        let mut p = Player::new(cfg());
+        p.connected(0);
+        // Volume 50 % on both channels (16.16 fixed point), with adjustment on.
+        let mut audg = Vec::new();
+        audg.extend_from_slice(&[0; 8]);
+        audg.extend_from_slice(&[1, 255]);
+        audg.extend_from_slice(&0x8000u32.to_be_bytes());
+        audg.extend_from_slice(&0x8000u32.to_be_bytes());
+        p.on_control_data(&encode_server_frame(*b"audg", &audg), 1)
+            .unwrap();
+        assert_eq!(p.volume(), (0.5, 0.5));
+        assert!(p.next_audio().is_none());
+        p.on_control_data(&strm(b's', b'1', b'p', 0), 2).unwrap();
+        p.on_stream_data(&wav(48_000, 1000), 3);
+        p.on_stream_end(4);
+        for i in 0..10 {
+            p.tick(5 + i);
+        }
+        let next = p.next_audio().unwrap();
+        assert_eq!(next.sample_rate, 48_000);
+        assert_eq!(next.source.unwrap().bits, Some(16));
+
+        let mut halved = vec![0f32; 200];
+        p.pull_audio(&mut halved);
+        p.set_fixed_volume(true);
+        assert!(p.fixed_volume());
+        assert_eq!(p.applied_volume(), (1.0, 1.0));
+        assert_eq!(p.volume(), (0.5, 0.5), "LMS's volume is remembered");
+        let mut full = vec![0f32; 200];
+        p.pull_audio(&mut full);
+        // The test WAV repeats every 100 frames, so the two blocks hold the same samples.
+        for (h, f) in halved.iter().zip(&full) {
+            assert_eq!(*h, f * 0.5);
+        }
+        assert!(full.iter().any(|s| *s != 0.0));
+        p.set_fixed_volume(false);
+        let mut again = vec![0f32; 200];
+        p.pull_audio(&mut again);
+        assert_eq!(again, halved);
     }
 
     #[test]

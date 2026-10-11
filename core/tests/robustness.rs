@@ -4,7 +4,7 @@
 //! so every parser and state machine is driven here with arbitrary and adversarial input.
 //! (Coverage-guided fuzzing via cargo-fuzz complements these deterministic tests.)
 
-use anywhere_core::decode::{InputBuffer, StreamDecoder};
+use anywhere_core::decode::{DecodeStatus, InputBuffer, StreamDecoder};
 use anywhere_core::player::{Player, PlayerConfig};
 use anywhere_core::proto::{ClientFrameReader, ServerFrameReader, Strm, encode_server_frame};
 
@@ -353,5 +353,127 @@ fn dsp_chain_survives_hostile_samples() {
             );
             chain.quantise(&buf, Some(24), 16, &mut q[..n]);
         }
+    }
+}
+
+/// A small, valid 16-bit stereo WAV file.
+fn wav16(rate: u32, frames: usize) -> Vec<u8> {
+    let data_len = frames * 4;
+    let mut v = Vec::new();
+    v.extend_from_slice(b"RIFF");
+    v.extend_from_slice(&((36 + data_len) as u32).to_le_bytes());
+    v.extend_from_slice(b"WAVEfmt ");
+    v.extend_from_slice(&16u32.to_le_bytes());
+    v.extend_from_slice(&1u16.to_le_bytes());
+    v.extend_from_slice(&2u16.to_le_bytes());
+    v.extend_from_slice(&rate.to_le_bytes());
+    v.extend_from_slice(&(rate * 4).to_le_bytes());
+    v.extend_from_slice(&4u16.to_le_bytes());
+    v.extend_from_slice(&16u16.to_le_bytes());
+    v.extend_from_slice(b"data");
+    v.extend_from_slice(&(data_len as u32).to_le_bytes());
+    for i in 0..frames * 2 {
+        v.extend_from_slice(&(((i % 200) as i16 - 100) * 100).to_le_bytes());
+    }
+    v
+}
+
+/// Decode `file` through the streaming decoder (as the player does) to the end.
+fn stream_decode(file: &[u8], fmt: u8) -> DecodeStatus {
+    let input = InputBuffer::new();
+    input.push(file);
+    input.set_eof();
+    let mut dec = StreamDecoder::new(input, fmt);
+    let mut last = DecodeStatus::NeedData;
+    for _ in 0..10_000 {
+        last = dec.work(64, &mut |_, s| assert!(s.iter().all(|x| x.is_finite())));
+        if last != DecodeStatus::Progress {
+            break;
+        }
+    }
+    last
+}
+
+/// The streaming decoder's message when it caught a panic (native builds only).
+const CAUGHT_PANIC: &str = "decode: the decoder failed on this stream";
+
+/// Regression: hostile WAV header fields through the streaming decoder (the player's path,
+/// shared with the web player). Symphonia's WAV reader overflowed on some of these in debug
+/// builds; they must be refused *before* the reader sees them, because WebAssembly builds
+/// abort on a panic. So the native safety net (a caught panic) must never be what saved us.
+#[test]
+fn stream_decoder_survives_hostile_wav_headers() {
+    let base = wav16(8_000, 4_000);
+    assert_eq!(stream_decode(&base, b'p'), DecodeStatus::Finished);
+    let mut r = Rng(7);
+    let mut refused = 0;
+    for i in 0..6_000 {
+        let mut b = base.clone();
+        for k in [4usize, 16, 20, 22, 24, 28, 32, 34, 36, 40] {
+            if k + 4 <= b.len() && r.below(2) == 0 {
+                let v = match r.below(4) {
+                    0 => u32::MAX,
+                    1 => 0,
+                    2 => 1 << r.below(32),
+                    _ => r.next() as u32,
+                };
+                b[k..k + 4].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        if i % 3 == 0 {
+            // An extensible format chunk with a hostile channel mask.
+            b[16..20].copy_from_slice(&40u32.to_le_bytes());
+            b[20..22].copy_from_slice(&0xfffeu16.to_le_bytes());
+            let mut ext = vec![22u8, 0, 16, 0];
+            ext.extend_from_slice(&(r.next() as u32).to_le_bytes());
+            ext.extend_from_slice(&[
+                1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71,
+            ]);
+            b.splice(36..36, ext);
+        }
+        if i % 5 == 0 {
+            // Junk first: the prober scans for the marker.
+            let n = 1 + r.below(64) as usize;
+            b.splice(0..0, r.bytes(n));
+        }
+        let fmt = b"pfmo"[r.below(4) as usize];
+        if let DecodeStatus::Failed(e) = stream_decode(&b, fmt) {
+            assert_ne!(e, CAUGHT_PANIC, "case {i} reached the reader's overflow");
+            refused += 1;
+        }
+    }
+    assert!(
+        refused > 100,
+        "the mutations should hit refusals ({refused})"
+    );
+}
+
+/// The exact header that overflowed: 16,384 channels × 4 bytes in a `u16`.
+#[test]
+fn wav_channel_count_overflow_is_refused_before_parsing() {
+    let mut b = wav16(44_100, 100);
+    b[22..24].copy_from_slice(&16_384u16.to_le_bytes());
+    b[34..36].copy_from_slice(&32u16.to_le_bytes());
+    assert_eq!(
+        anywhere_core::decode::check_wav_headers(&b),
+        Err("wav: unsupported channel count")
+    );
+    match stream_decode(&b, b'p') {
+        DecodeStatus::Failed(e) => assert!(e.contains("channel count"), "{e}"),
+        other => panic!("{other:?}"),
+    }
+    // RIFF length under 4 (the reader subtracts 4), and a mask needing a 32-bit shift.
+    let mut short = wav16(44_100, 10);
+    short[4..8].copy_from_slice(&3u32.to_le_bytes());
+    assert!(anywhere_core::decode::check_wav_headers(&short).is_err());
+    // A sane file passes, with junk before it or not.
+    let ok = wav16(44_100, 10);
+    assert_eq!(anywhere_core::decode::check_wav_headers(&ok), Ok(()));
+    let mut junk = b"RIFFxxxxNOPE".to_vec();
+    junk.extend_from_slice(&ok);
+    assert_eq!(anywhere_core::decode::check_wav_headers(&junk), Ok(()));
+    // Truncated anywhere: never a panic in the checker itself.
+    for n in 0..ok.len().min(60) {
+        let _ = anywhere_core::decode::check_wav_headers(&ok[..n]);
     }
 }

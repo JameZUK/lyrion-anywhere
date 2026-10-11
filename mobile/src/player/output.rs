@@ -5,11 +5,14 @@
 //! - [`PullOutput`]: the host pulls PCM itself through [`crate::LocalPlayer::read_pcm`]
 //!   (an `AudioTrack` fed from Kotlin, or tests).
 //!
-//! An output is opened at the source's sample rate. If that fails, the engine retries at a
-//! fallback rate and resamples, and the signal path says so.
+//! An output is opened at the source's sample rate, as 32-bit float for Android's mixer or,
+//! for a bit-perfect USB DAC, in the integer format negotiated with the platform (see
+//! [`super::negotiate`]). If the source's rate fails, the engine retries at a fallback rate
+//! and resamples (float only), and the signal path says so.
 
 use std::sync::{Arc, Mutex};
 
+use super::negotiate::PcmEncoding;
 use super::ring::{Consumer, Ring};
 
 /// An opened output.
@@ -17,6 +20,8 @@ use super::ring::{Consumer, Ring};
 pub struct Opened {
     /// The stream's actual sample rate.
     pub rate: u32,
+    /// The stream's actual sample format.
+    pub encoding: PcmEncoding,
     /// Display name of the route, e.g. "AAudio".
     pub device: String,
 }
@@ -29,20 +34,38 @@ pub enum OutputEvent {
 }
 
 pub trait AudioOutput: Send {
-    /// Open (or reopen) at `rate`, reading from `ring`.
-    fn open(&mut self, ring: &Arc<Ring>, rate: u32) -> Result<Opened, String>;
+    /// Open (or reopen) at `rate` in `encoding`, reading from `ring`. Fails rather than
+    /// giving another rate or format.
+    fn open(
+        &mut self,
+        ring: &Arc<Ring>,
+        rate: u32,
+        encoding: PcmEncoding,
+    ) -> Result<Opened, String>;
     fn close(&mut self);
     fn poll_event(&mut self) -> Option<OutputEvent>;
 }
 
 /// The pull slot shared with [`crate::LocalPlayer::read_pcm`].
-#[derive(Default)]
 pub struct PullSlot {
     pub consumer: Option<Consumer>,
     pub rate: u32,
+    pub encoding: PcmEncoding,
 }
 
-/// Output for hosts that pull PCM themselves.
+impl Default for PullSlot {
+    fn default() -> Self {
+        PullSlot {
+            consumer: None,
+            rate: 0,
+            encoding: PcmEncoding::Float,
+        }
+    }
+}
+
+/// Output for hosts that pull PCM themselves. It takes any format: the host reads float
+/// with [`crate::LocalPlayer::read_pcm`] or integers with
+/// [`crate::LocalPlayer::read_pcm_int`].
 pub struct PullOutput {
     slot: Arc<Mutex<PullSlot>>,
 }
@@ -54,13 +77,20 @@ impl PullOutput {
 }
 
 impl AudioOutput for PullOutput {
-    fn open(&mut self, ring: &Arc<Ring>, rate: u32) -> Result<Opened, String> {
+    fn open(
+        &mut self,
+        ring: &Arc<Ring>,
+        rate: u32,
+        encoding: PcmEncoding,
+    ) -> Result<Opened, String> {
         let mut slot = self.slot.lock().unwrap();
         slot.consumer = None; // give the old handle back first
         slot.consumer = Some(ring.consumer().ok_or("output already in use")?);
         slot.rate = rate;
+        slot.encoding = encoding;
         Ok(Opened {
             rate,
+            encoding,
             device: "Host output".into(),
         })
     }
@@ -69,6 +99,7 @@ impl AudioOutput for PullOutput {
         let mut slot = self.slot.lock().unwrap();
         slot.consumer = None;
         slot.rate = 0;
+        slot.encoding = PcmEncoding::Float;
     }
 
     fn poll_event(&mut self) -> Option<OutputEvent> {
@@ -89,12 +120,28 @@ mod aaudio {
         AudioPerformanceMode, AudioSharingMode, AudioStream, AudioStreamBuilder, AudioUsage,
     };
 
-    use super::{AudioOutput, Opened, OutputEvent};
+    use super::{AudioOutput, Opened, OutputEvent, PcmEncoding};
     use crate::player::ring::{CHANNELS, Ring};
 
-    /// An AAudio output stream in shared mode, 32-bit float, stereo, "power saving"
-    /// performance (large buffers on the deep-buffer path: right for music, and kind to the
-    /// battery).
+    /// `AAUDIO_FORMAT_PCM_I24_PACKED` and `AAUDIO_FORMAT_PCM_I32` (API 31). The `ndk`
+    /// crate's enum doesn't name them, but carries any value through.
+    const AAUDIO_FORMAT_PCM_I24_PACKED: i32 = 3;
+    const AAUDIO_FORMAT_PCM_I32: i32 = 4;
+
+    fn aaudio_format(e: PcmEncoding) -> AudioFormat {
+        match e {
+            PcmEncoding::Float => AudioFormat::PCM_Float,
+            PcmEncoding::I16 => AudioFormat::PCM_I16,
+            PcmEncoding::I24Packed => AudioFormat::from(AAUDIO_FORMAT_PCM_I24_PACKED),
+            PcmEncoding::I32 => AudioFormat::from(AAUDIO_FORMAT_PCM_I32),
+        }
+    }
+
+    /// An AAudio output stream in shared mode, stereo, at the source's rate:
+    /// - 32-bit float with "power saving" performance (the deep-buffer path: right for
+    ///   music, and kind to the battery) for Android's mixer;
+    /// - the negotiated integer format, with no performance hint, for a bit-perfect USB
+    ///   DAC (Android then routes it to the bit-perfect output it set up for us).
     #[derive(Default)]
     pub struct AAudioOutput {
         stream: Option<AudioStream>,
@@ -106,32 +153,66 @@ mod aaudio {
     unsafe impl Send for AAudioOutput {}
 
     impl AudioOutput for AAudioOutput {
-        fn open(&mut self, ring: &Arc<Ring>, rate: u32) -> Result<Opened, String> {
+        fn open(
+            &mut self,
+            ring: &Arc<Ring>,
+            rate: u32,
+            encoding: PcmEncoding,
+        ) -> Result<Opened, String> {
             self.close();
             let rate_i = i32::try_from(rate).map_err(|_| "bad sample rate")?;
             let mut consumer = ring.consumer().ok_or("output already in use")?;
             self.disconnected.store(false, Ordering::Release);
             let flag = self.disconnected.clone();
+            let performance = if encoding == PcmEncoding::Float {
+                AudioPerformanceMode::PowerSaving
+            } else {
+                AudioPerformanceMode::None
+            };
             let stream = AudioStreamBuilder::new()
                 .map_err(|e| format!("AAudio: {e}"))?
                 .direction(AudioDirection::Output)
                 .sharing_mode(AudioSharingMode::Shared)
-                .performance_mode(AudioPerformanceMode::PowerSaving)
+                .performance_mode(performance)
                 .usage(AudioUsage::Media)
                 .content_type(AudioContentType::Music)
-                .format(AudioFormat::PCM_Float)
+                .format(aaudio_format(encoding))
                 .channel_count(CHANNELS as i32)
                 .sample_rate(rate_i)
                 .data_callback(Box::new(move |_stream, data, frames| {
                     let len = usize::try_from(frames).unwrap_or(0) * CHANNELS;
                     if !data.is_null() && len > 0 {
                         // SAFETY: AAudio hands us a buffer of `frames` frames in the format
-                        // we asked for and got (float, `CHANNELS` channels: both are set
-                        // exactly, so the open fails rather than giving us another
-                        // layout). It is valid and exclusive for this call only.
-                        let out =
-                            unsafe { std::slice::from_raw_parts_mut(data.cast::<f32>(), len) };
-                        consumer.read(out);
+                        // we asked for and got (`encoding`, `CHANNELS` channels: both are
+                        // checked after the open, which fails rather than giving us another
+                        // layout). It is valid, suitably aligned for that sample type and
+                        // exclusive for this call only.
+                        match encoding {
+                            PcmEncoding::Float => {
+                                let out = unsafe {
+                                    std::slice::from_raw_parts_mut(data.cast::<f32>(), len)
+                                };
+                                consumer.read(out);
+                            }
+                            PcmEncoding::I16 => {
+                                let out = unsafe {
+                                    std::slice::from_raw_parts_mut(data.cast::<i16>(), len)
+                                };
+                                consumer.read_i16(out);
+                            }
+                            PcmEncoding::I24Packed => {
+                                let out = unsafe {
+                                    std::slice::from_raw_parts_mut(data.cast::<u8>(), len * 3)
+                                };
+                                consumer.read_i24_packed(out);
+                            }
+                            PcmEncoding::I32 => {
+                                let out = unsafe {
+                                    std::slice::from_raw_parts_mut(data.cast::<i32>(), len)
+                                };
+                                consumer.read_i32(out, 32);
+                            }
+                        }
                     }
                     AudioCallbackResult::Continue
                 }))
@@ -141,11 +222,14 @@ mod aaudio {
                     flag.store(true, Ordering::Release);
                 }))
                 .open_stream()
-                .map_err(|e| format!("AAudio open at {rate} Hz: {e}"))?;
-            if stream.format() != AudioFormat::PCM_Float
+                .map_err(|e| format!("AAudio open at {rate} Hz ({encoding:?}): {e}"))?;
+            if stream.format() != aaudio_format(encoding)
                 || stream.channel_count() != CHANNELS as i32
             {
-                return Err("AAudio gave an unexpected format".into());
+                return Err(format!(
+                    "AAudio gave {:?} instead of {encoding:?}",
+                    stream.format()
+                ));
             }
             let actual = u32::try_from(stream.sample_rate()).unwrap_or(0);
             if actual != rate {
@@ -158,6 +242,7 @@ mod aaudio {
             self.stream = Some(stream);
             Ok(Opened {
                 rate,
+                encoding,
                 device: "AAudio".into(),
             })
         }

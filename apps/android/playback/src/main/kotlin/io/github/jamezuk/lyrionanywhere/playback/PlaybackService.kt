@@ -58,10 +58,13 @@ class PlaybackService : MediaSessionService() {
     }
 
     private val devices = object : AudioDeviceCallback() {
-        override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>) = updateRoute()
+        override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>) = devicesChanged()
 
-        override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>) = updateRoute()
+        override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>) = devicesChanged()
     }
+
+    /** The USB DAC the output was last negotiated for (null: none). */
+    private var usbDac: OutputDevice? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -96,6 +99,11 @@ class PlaybackService : MediaSessionService() {
         session = MediaSession.Builder(this, player)
             .apply { launch?.let { setSessionActivity(it) } }
             .build()
+        // Bit-perfect USB output: the engine asks this before opening its output.
+        host.localPlayer.setOutputNegotiator(
+            UsbDacNegotiator(audio) { host.localPlayer.state.value.sound.bitPerfectUsb },
+        )
+        usbDac = currentUsbDac()
         audio.registerAudioDeviceCallback(devices, Handler(Looper.getMainLooper()))
         updateRoute()
 
@@ -160,6 +168,18 @@ class PlaybackService : MediaSessionService() {
         host.localPlayer.setOutputRoute(describeRoute(this, audio))
     }
 
+    private fun currentUsbDac(): OutputDevice? = pickUsbDac(outputDevices(audio))
+
+    /** A device came or went: update the route, and renegotiate if the USB DAC changed. */
+    private fun devicesChanged() {
+        updateRoute()
+        val now = currentUsbDac()
+        if (now?.id != usbDac?.id) {
+            usbDac = now
+            host.localPlayer.renegotiateOutput()
+        }
+    }
+
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -169,6 +189,8 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         audio.unregisterAudioDeviceCallback(devices)
+        // The engine clears any mixer attributes through the negotiator that set them.
+        host.localPlayer.setOutputNegotiator(null)
         setNoisyReceiver(false)
         focus.abandon()
         locks.hold(false)
@@ -211,11 +233,23 @@ class PlaybackLocks(context: Context) {
     }
 }
 
-/** What Android says about the output, for the signal path (best effort). */
+/** The output devices, as plain values. */
+fun outputDevices(audio: AudioManager): List<OutputDevice> =
+    audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS).map {
+        OutputDevice(it.id, it.type, it.productName?.toString() ?: "")
+    }
+
+/**
+ * What Android says about the output, for the signal path (best effort).
+ *
+ * Bluetooth shows the route and the device's name only, not the codec (LDAC, aptX, AAC,
+ * SBC): `BluetoothA2dp.getCodecStatus` is a system API (not in the public SDK), and the
+ * codec-change broadcast isn't public either, so an ordinary app can't read it.
+ */
 fun describeRoute(context: Context, audio: AudioManager): OutputRoute {
-    val outputs = audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-    val best = outputs.maxByOrNull { routePriority(it.type) }
-    val label = when (best?.type?.let(::routeKind)) {
+    val best = outputDevices(audio).maxByOrNull { routePriority(it.type) }
+    val kind = best?.type?.let(::routeKind)
+    val label = when (kind) {
         RouteKind.USB -> R.string.route_usb
         RouteKind.WIRED -> R.string.route_wired
         RouteKind.BLUETOOTH -> R.string.route_bluetooth
@@ -223,13 +257,21 @@ fun describeRoute(context: Context, audio: AudioManager): OutputRoute {
     }
     // The mixer rate Android reports is the primary output's: meaningful for the speaker
     // and wired headphones, not for USB or Bluetooth devices (unknown there).
-    val primary = best == null || routeKind(best.type) in setOf(RouteKind.SPEAKER, RouteKind.WIRED)
+    val primary = best == null || kind in setOf(RouteKind.SPEAKER, RouteKind.WIRED)
     val mixer = if (primary) {
         audio.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: 0
     } else {
         0
     }
-    return OutputRoute(context.getString(label), mixer.coerceAtLeast(0).toUInt(), false)
+    return OutputRoute(routeLabel(context.getString(label), kind, best?.name), mixer.coerceAtLeast(0).toUInt())
+}
+
+/** "USB audio · <DAC>" or "Bluetooth · <headphones>": the route, with the device's own name
+ *  where it has a meaningful one. */
+fun routeLabel(route: String, kind: RouteKind?, deviceName: String?): String {
+    val name = deviceName?.filter { !it.isISOControl() }?.trim()?.take(48).orEmpty()
+    val named = kind == RouteKind.USB || kind == RouteKind.BLUETOOTH
+    return if (named && name.isNotEmpty()) "$route · $name" else route
 }
 
 enum class RouteKind { USB, WIRED, BLUETOOTH, SPEAKER, OTHER }

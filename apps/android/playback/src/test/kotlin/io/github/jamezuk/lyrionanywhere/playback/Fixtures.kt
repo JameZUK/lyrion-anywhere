@@ -84,8 +84,8 @@ class FakeLocal(initial: LocalPlayerState = running()) : LocalPlayerRepository {
         calls += "route ${route.device}"
     }
 
-    override suspend fun setLevelling(on: Boolean) {
-        calls += "levelling $on"
+    override fun renegotiateOutput() {
+        calls += "renegotiate"
     }
 }
 

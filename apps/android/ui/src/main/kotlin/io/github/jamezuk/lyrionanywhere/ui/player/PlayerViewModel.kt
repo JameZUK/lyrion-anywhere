@@ -76,8 +76,6 @@ object NoLocalPlayer : LocalPlayerRepository {
     override fun setDuck(duck: Boolean) {}
 
     override fun setOutputRoute(route: OutputRoute) {}
-
-    override suspend fun setLevelling(on: Boolean) {}
 }
 
 /** One-off messages for a snackbar. */

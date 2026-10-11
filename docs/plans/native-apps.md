@@ -107,7 +107,7 @@ Both feed the same engine, so DSP, levelling, the waveform, the signal path and 
   - the app queries `AudioManager.getSupportedMixerAttributes(usbDevice)` and sets `MIXER_BEHAVIOR_BIT_PERFECT` with the source's format and rate;
   - in that mode Android skips mixing, volume and effects, so volume control is the DAC's own (the UI says so) and DSP that changes samples is bypassed or flagged;
   - BIT_PERFECT is optional for device makers, so it's detected at runtime and the signal path shows what was actually achieved.
-- **Bluetooth:** shows the codec in use (LDAC, aptX HD, AAC, SBC) in the signal path, where the platform reports it.
+- **Bluetooth:** the signal path shows the route and the device's name. The codec in use (LDAC, aptX HD, AAC, SBC) can't be shown: `BluetoothA2dp.getCodecStatus` is a system API, and the codec-change broadcast isn't public (checked against the API 37 SDK in A2).
 
 **iOS**
 - **Output:** AVAudioEngine with a source node fed from the Rust ring buffer.
@@ -363,8 +363,99 @@ Built, in CI. **Verified on the host and the JVM only: nothing has run on a phon
 **Known gaps (later milestones or follow-ups)**
 - Elapsed time doesn't yet subtract the device's output latency (AAudio timestamps): a few tens of ms early.
 - The service starts while the app is in front. If LMS starts playback on an idle phone whose app is in the background, the media session appears only once the app is opened.
-- No settings screen for DSP yet: it is off (bit-perfect), with the engine and API ready. (A3 adds the loudness levelling switch.)
+- No settings screen for DSP yet: it is off (bit-perfect), with the engine and API ready. (A3 adds the loudness levelling switch; A2 adds the Sound screen.)
 - Volume keys control Android's stream volume, not LMS's.
+
+### A2 status (2026-10-11)
+
+Built, in CI. **Verified on the host and the JVM only. Bit-perfect USB output has not run on a phone or a DAC yet** (no device or emulator was available). The lists below keep the two apart.
+
+**Bit-perfect USB output (`mobile/src/player/negotiate.rs`, `engine.rs`; Android `:playback` `UsbDac.kt`)**
+- **Negotiation:** the engine asks the app's `OutputNegotiator` (Android's `AudioManager`) what the output offers before opening its output for a new format:
+  - the USB DAC (`TYPE_USB_DEVICE`, else `TYPE_USB_HEADSET`);
+  - its `getSupportedMixerAttributes`;
+  - or why there is nothing to ask: the setting is off, there's no USB DAC, or Android is older than 14.
+- **Choosing a format:** a pure function picks a bit-perfect, stereo offer at the source's rate, in the shallowest integer format that holds the source's depth:
+  - a 16-bit source in a 24- or 32-bit container is lossless padding, and still bit-perfect;
+  - lossy sources get 24 bits;
+  - a DAC shallower than the source is used with dither, and said so.
+- **Applying it:** the app sets it with `setPreferredMixerAttributes` (`USAGE_MEDIA`). The engine opens AAudio in that format (`I16`, `I24_PACKED`, `I32`; no performance hint) at the source's rate, and checks it got exactly that.
+- **When anything refuses** (the attributes or the stream format), Android's normal mixing is restored and the output opens as float, as before.
+- **When the format changes:**
+  - a new depth at the same rate switches format at the track boundary;
+  - plugging a DAC in or out, or turning the setting off, renegotiates at once;
+  - the attributes are cleared when the output closes or the player stops, through the negotiator that set them.
+- **Exactness:** the core's decoded `f32` carries 24 significant bits exactly (power-of-two scales), so the integer output is exact for sources of up to 24 bits; 32-bit sources are never claimed bit-perfect. Processed or lossy audio is dithered onto the DAC's grid in the pipeline, so the output only ever converts exact values.
+- **Volume:** fixed at 100 % on a bit-perfect route (SPEC D19): LMS's `audg` is ignored there, and the signal path says "use your DAC's volume".
+- **Signal path:** `bit_perfect` needs all of these:
+  - the attributes applied;
+  - the stream opened in their format at the source's rate;
+  - nothing in the engine changing a sample.
+
+  It shows the DAC's name, the accepted depth and the fixed volume, and lists every reason it falls short: setting off, no USB DAC, Android 13 or older, not offered, not at this rate, DAC too shallow, source deeper than 24 bits, refused by Android, format refused, DSP, resampling, lossy source, other processing (LMS volume or ReplayGain, ducking, downmix).
+- **Bluetooth:** the route and the device's name only (see §3.3).
+
+**Sound settings (Settings → Sound)**
+- **The stages:**
+  - preamp (±12 dB);
+  - loudness levelling: off, ReplayGain track or album, or the server's R128 analysis (A3's switch migrates to R128);
+  - the true-peak limiter and its ceiling (−6 to 0 dBTP);
+  - a parametric EQ from an AutoEq `ParametricEQ.txt`, pasted or picked as a file (64 KiB cap), checked by the engine's bounded parser;
+  - crossfeed (light, moderate, natural);
+  - dither: TPDF, noise-shaped, or off. It applies only when depth is reduced, e.g. processed audio to a USB DAC.
+- **Defaults:** everything off (bit-perfect), with a "Bit-perfect" indicator that becomes "Processing: …" when any stage is on.
+- **Saving:** DataStore, applied live through `DspSettings`. The engine clamps numbers again and drops an invalid or flat profile.
+
+**Opus:** `ops` is advertised only when the `opus` feature is built in (Android builds have it), checked both ways; an Ogg Opus stream plays through the whole player in an integration test.
+
+**Robustness fix:** the streaming decoder (the Android and web players) walks every `RIFF…WAVE` header the prober can see. Before Symphonia parses it, it refuses:
+- channel counts that overflow `u16` arithmetic;
+- channel masks that need a 32-bit shift;
+- RIFF lengths under 4.
+
+This holds in WebAssembly too, where panics abort. Native builds also catch any other decoder panic.
+
+**Tests**
+- **Rust:** 632 across the workspace (`--all-features`), including:
+  - integer bit-exactness at 16/24/32-bit for 44.1–192 kHz, through the pipeline, ring and integer reads, and with the real decoder (WAV files of known integers);
+  - the limit of `f32` for 32-bit sources;
+  - negotiation as pure functions, including random offer lists;
+  - DSP settings clamping and refusal;
+  - EQ text fuzz through the settings path (on top of the core's AutoEq fuzz);
+  - the WAV regression: it fails without the fix, and asserts the caught-panic safety net never fires;
+  - **end to end against the real gateway with a fake DAC:**
+    - the files' integers arrive with LMS's volume at 25 %;
+    - 16-bit then 24-bit at the same rate switches format;
+    - a refused mixer falls back to float with its reason;
+    - DSP on a DAC stays direct, dithered, not claimed bit-perfect;
+    - unplugging and replugging mid-track;
+    - dropping the negotiator clears the attributes;
+  - Ogg Opus through the player.
+- **Android:** 122 JVM/Robolectric tests (was 92), including:
+  - mixer-attribute mapping and selection as pure functions, including random platform values;
+  - the negotiator's refusals under Robolectric;
+  - settings persistence across a restart, migration and refusal of stored nonsense;
+  - Sound settings to `DspSettings`;
+  - the Sound screen and view model;
+  - the signal path's reasons and the volume note;
+  - the playback module's one permission.
+- **Clean:** lint with no baseline; clippy for the host and for Android (arm64); `cargo fmt`; the web app's tests and checks.
+
+**Verified on the host and JVM; unverified on hardware**
+- Any real device's `getSupportedMixerAttributes` answer, and whether `setPreferredMixerAttributes` engages for our AAudio stream (AAudio over the bit-perfect output, no performance hint). AOSP documents it for `AudioTrack`; AAudio's legacy path uses one, but this is untested.
+- The integer AAudio formats on a device (`I24_PACKED` and `I32` need API 31; the format is checked after opening).
+- Bit-perfect delivery itself (§9: a DAC with digital loopback, or a capture device).
+- How Android reroutes or disconnects our stream when a DAC is plugged in while playing (the engine renegotiates either way).
+- The Sound screen's file picker (Robolectric covers paste, not the system picker).
+
+**Known gaps**
+- The bit-perfect attributes are re-applied at each output open, even when unchanged. That costs one binder call per track format.
+- A format switch at a track boundary waits for the old track to play out: a short gap where a 16-bit track meets a 24-bit one on a bit-perfect DAC (as with rate changes).
+- No hardware volume control: on a bit-perfect route the level is the DAC's own (or its hardware volume, if Android exposes one for it).
+- Bluetooth codecs aren't shown (system API only).
+- 32-bit integer sources are played at 24 significant bits (dithered), and said so.
+
+**Manual test with a USB DAC:** see `apps/android/README.md`.
 
 ### A3 status (2026-10-11)
 
@@ -407,7 +498,7 @@ Built, in CI. **Verified on the host, in a browser and on the JVM; nothing has r
 - No background analysis pass yet: a track is analysed the first time it is asked for, so the first play of a long track shows the plain bar for a few seconds.
 - The analysis thread doesn't lower its own CPU priority (the one-job limit is the protection).
 - The web mini player (bottom bar) keeps the plain slider.
-- In debug builds, the player's streaming decoder can still panic on the WAV header overflow the fuzz test found (release builds wrap). Only the seekable path used for analysis catches it.
+- ~~In debug builds, the player's streaming decoder can still panic on the WAV header overflow the fuzz test found.~~ Fixed in A2: the streaming decoder refuses those headers before Symphonia parses them.
 
 ## 9. Quality: testing audio as seriously as security
 

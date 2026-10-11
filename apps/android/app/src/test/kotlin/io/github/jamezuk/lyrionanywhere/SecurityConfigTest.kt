@@ -70,6 +70,12 @@ class SecurityConfigTest {
             ),
             perms,
         )
+        // The playback module adds only what bit-perfect USB output needs (a normal,
+        // install-time permission).
+        val playbackPerms = xml("../playback/src/main/AndroidManifest.xml").children("uses-permission")
+            .map { it.getAttributeNS(android, "name") }
+            .toSet()
+        assertEquals(setOf("android.permission.MODIFY_AUDIO_SETTINGS"), playbackPerms)
     }
 
     @Test

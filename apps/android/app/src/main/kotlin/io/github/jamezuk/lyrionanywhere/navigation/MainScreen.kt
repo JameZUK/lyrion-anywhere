@@ -79,6 +79,9 @@ import io.github.jamezuk.lyrionanywhere.ui.player.PlayerViewModel
 import io.github.jamezuk.lyrionanywhere.ui.settings.LicencesScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsViewModel
+import io.github.jamezuk.lyrionanywhere.ui.settings.SoundScreen
+import io.github.jamezuk.lyrionanywhere.ui.settings.SoundViewModel
+import io.github.jamezuk.lyrionanywhere.ui.settings.actions
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -107,6 +110,9 @@ data object SettingsRoute
 
 @Serializable
 data object LicencesRoute
+
+@Serializable
+data object SoundRoute
 
 private data class TopLevel(val route: Any, val label: Int, val icon: ImageVector)
 
@@ -327,8 +333,16 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             libraryVersion = remember { libraryVersion() },
                             onSignOut = vm::signOut,
                             onLicences = { nav.navigate(LicencesRoute) },
-                            onLevelling = vm::setLevelling,
+                            onSound = { nav.navigate(SoundRoute) },
                         )
+                    }
+                }
+                composable<SoundRoute> {
+                    val vm = viewModel { SoundViewModel(container.localPlayer) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    val actions = remember(vm) { vm.actions() }
+                    Screen(title = stringResource(R.string.title_sound), onBack = { nav.popBackStack() }) {
+                        SoundScreen(state = ui, actions = actions)
                     }
                 }
                 composable<LicencesRoute> {
