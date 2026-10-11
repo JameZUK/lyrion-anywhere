@@ -4,6 +4,29 @@ Dated entries, newest first.
 
 ## 2026-10-11
 
+### Android: the phone as a player (A1)
+- **"Play on this phone":** the phone becomes an LMS player through the gateway, like the web app's player. LMS owns the queue.
+  - Reconnects resume the same player, and LMS never sees it leave.
+  - Broken downloads resume at their byte offset.
+  - Expired sign-ins are renewed.
+- **The audio engine is Rust:**
+  - the core's decoders and a lock-free ring buffer;
+  - AAudio output driven from Rust, opened at each track's sample rate;
+  - bit-perfect by default, with optional preamp, ReplayGain levelling (from the file's tags) and a true-peak limiter.
+- **Signal-path panel** in Now Playing: source, every stage, output, and an honest verdict ("bit-perfect up to Android's mixer" until A2's USB mode).
+- **Media3 session:**
+  - the notification, lock screen, Bluetooth and headset buttons;
+  - audio focus (pause, duck, resume after a call), and "becoming noisy";
+  - wake and Wi-Fi locks while playing.
+- **Core:**
+  - reports each stream's codec, bit depth and ReplayGain tags (parsed strictly);
+  - can pull one track at a time;
+  - counts the host's buffer in STAT and reports output underruns (`STMo`).
+- **Tests:**
+  - Rust: 573 across the workspace, including the player end to end against the real gateway and a fake LMS (gapless and bit-perfect FLAC, a rate change, a resumed disconnect, token expiry, refusals, hostile frames);
+  - Android: 74 JVM/Robolectric tests; lint clean.
+  - Not yet run on a phone: see the A1 status in `docs/plans/native-apps.md` for what is verified on hardware and what isn't.
+
 ### Native apps: foundations (A0) and the audio engine
 - **Android app (`apps/android`), remote control:**
   - covers sign-in (with two-step verification), pairing links, home, albums, artists, search, now playing and settings;

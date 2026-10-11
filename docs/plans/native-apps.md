@@ -94,7 +94,7 @@ Thin native UIs over a shared Rust layer, as decided in SPEC D3 and §10:
 
 | Mode | When | How |
 |---|---|---|
-| **LMS player** (default when online) | Streaming from your server | As in the web app, the phone is a Slimproto player through `/v1/player`, so LMS drives the queue, gapless playback, sync and plugins. The app declares lossless capabilities (`flc`, `alc`, `pcm`, `mp3`, `ops` …), so LMS sends original files where possible |
+| **LMS player** (default when online) | Streaming from your server | As in the web app, the phone is a Slimproto player through `/v1/player`, so LMS drives the queue, gapless playback, sync and plugins. The app declares its codecs (`flc`, `alc`, `ops`, `aac`, `ogg`, `mp3`), so LMS sends original files where possible. WAV and AIFF arrive as FLAC (`pcm` isn't declared: LMS may send it headerless) |
 | **Local queue** | Offline, or for downloaded content | The app owns the queue and plays from its download store. Plays are queued and sent to LMS on reconnect (D6) |
 
 Both feed the same engine, so DSP, levelling, the waveform, the signal path and bit-perfect output behave identically. Switching between them (e.g. losing signal mid-album when the album is downloaded) is seamless where the content is available offline.
@@ -235,8 +235,8 @@ Plexamp's waveform seek bar ("seekprint"), loudness levelling and sweet fades al
 |---|---|
 | `:app` | Navigation, DI |
 | `:ui` | Design system and screens |
-| `:playback` | `MediaLibraryService`, the `SimpleBasePlayer` adapter, audio focus, the becoming-noisy handler |
-| `:audio` | AAudio/AudioTrack output, USB detection and mixer attributes, signal-path reporting |
+| `:playback` | `MediaSessionService` (a `MediaLibraryService` once Android Auto arrives, A6), the `SimpleBasePlayer` adapter, audio focus, the becoming-noisy handler, wake and Wi-Fi locks |
+| `:audio` | USB detection and mixer attributes (A2). The AAudio output itself lives in Rust (`mobile/`), so no JNI runs per buffer; the output route reaches the signal path from `:playback` |
 | `:downloads` | WorkManager jobs; storage on internal storage or SD card |
 | `:auto` | Android Auto browse tree, through Media3 |
 | `:widgets` | Glance widgets |
@@ -310,6 +310,59 @@ Built, in CI (job `android`):
 - compileSdk is 37 (current AndroidX requires it); targetSdk stays 36 for now.
 
 Not yet: the gateway/web app showing a pairing QR code (the app reads `lyrion-anywhere://pair?…` links, documented in `docs/PROTOCOL.md`; the plugin's pairing code can be typed meanwhile), signed release builds in CI, instrumented tests, Paging-library lists, a disk cache for artwork, and opening pairing links from outside the app.
+
+### A1 status (2026-10-11)
+
+Built, in CI. **Verified on the host and the JVM only: nothing has run on a phone yet** (no device or emulator was available). The list below separates the two.
+
+**`mobile/`: the player engine (`LocalPlayer`, UniFFI)**
+- **Engine:** its own thread and single-threaded runtime drive the core's Slimproto player.
+  - *Tunnel and streams:* the authenticated `/v1/player` tunnel and `/v1/stream` downloads, with a private HTTP pool.
+  - *Reconnect, as the web worker does:* resume the same session (frames counted, a bounded outbox); after the grace period, or 4404/1001, a new session with the same MAC; renew the token on 1008 "unauthorised"; stop on other refusals and takeovers (4000). A broken download resumes at its byte offset, acknowledged every 256 KiB. `BYE!` on stop.
+- **Pipeline:**
+  - *Bit-perfect by default:* the core's PCM goes straight to the ring. LMS volume at 100 % is exactly 1.0.
+  - *Optional DSP from `core::dsp`:* preamp, ReplayGain levelling (track or album, from the file's tags, which the core now reads) and the true-peak limiter, decided per track (`pull_track`).
+  - *Resampling:* only if the output refuses the source rate.
+- **Ring and STAT:**
+  - *Ring:* lock-free SPSC, safe Rust, f32. It supports discard on flush, hold (instant pause), and ducking where 1.0 is a true bypass.
+  - *Played frames:* reported as the output consumes them, so elapsed time, `STMs` and `STMu` are right. The ring counts in STAT's output buffer, and underruns are reported once each (`STMo`).
+- **Output:** AAudio from Rust on Android (float, stereo, at the source rate, power-saving mode; the callback neither allocates nor locks; a disconnect reopens the stream), or a pull API (`read_pcm`) for hosts and tests.
+- **Capabilities:** `flc`, `ops`, `alc`, `aac`, `ogg`, `mp3`, and `MaxSampleRate=192000`. `pcm` and `aif` are deliberately not advertised: LMS can send headerless PCM for them, which the decoder can't probe, so such files arrive as FLAC (still lossless).
+- **Signal path:** source, every stage (mono/downmix, server ReplayGain, volume, DSP, resampler, ducking, the system mixer's rate), output, and two verdicts. *Engine bit-perfect* means our path is untouched. *Bit-perfect* means end to end, claimed only for a direct route (A2's USB mixer mode), so on A1 the panel says "bit-perfect up to Android's mixer".
+
+**Android**
+- **`:playback` module:** a `MediaSessionService` (not exported) with a `SimpleBasePlayer` mirroring LMS's queue and status for this phone's player (D14). Its buttons send LMS commands. It also handles:
+  - audio focus (pause, duck, resume after a transient loss);
+  - "becoming noisy" (an instant local hold, then pause through LMS; the hold lifts when LMS next resumes);
+  - wake and Wi-Fi locks while playing;
+  - the output route for the signal path.
+- **App:**
+  - a "Play on this phone" switch (Home), remembered; the phone is selected as the player once LMS lists it;
+  - a signal-path panel in Now Playing when the phone is the selected player;
+  - foreground service type `mediaPlayback`.
+
+**Tests**
+- **Rust:**
+  - ring: model-based random operations, a two-thread transfer, bit exactness;
+  - pipeline: bit-perfect at 44.1–192 kHz, levelling at track boundaries, played-frame accounting with and without resampling;
+  - the greeting parser: hostile and random input;
+  - ReplayGain tag parsing: negative and random input;
+  - signal-path verdicts;
+  - integration against the real gateway and a fake LMS: gapless bit-perfect FLAC to the end of the playlist, a 44.1 → 96 kHz change, a mid-stream disconnect resumed with no audio lost or repeated (LMS never sees the player leave), token expiry, refusals (unsupported format, a stream the gateway refuses, `serv`), a barrage of hostile frames, stop and sign-out.
+- **Kotlin (JVM, Robolectric):** the LMS → Media3 state mapping, the session player's buttons, the controller, the focus policy, the repository's lifecycle, the signal-path panel and the switch, and the manifest's service, permissions and export rules.
+
+**Verified only on the host and JVM; unverified on hardware**
+- the AAudio stream itself: opening at each rate, the deep-buffer path, the callback timing, disconnect and reopen (the code compiles and passes clippy for all three ABIs);
+- the Media3 notification, lock screen, Bluetooth and headset buttons;
+- real audio focus behaviour, "becoming noisy", the locks under Doze;
+- background survival on aggressive OEMs;
+- gapless playback through a real DAC.
+
+**Known gaps (later milestones or follow-ups)**
+- Elapsed time doesn't yet subtract the device's output latency (AAudio timestamps): a few tens of ms early.
+- The service starts while the app is in front. If LMS starts playback on an idle phone whose app is in the background, the media session appears only once the app is opened.
+- No settings screen for DSP yet: it is off (bit-perfect), with the engine and API ready.
+- Volume keys control Android's stream volume, not LMS's.
 
 ## 9. Quality: testing audio as seriously as security
 
