@@ -7,12 +7,22 @@ import type { Session } from '$lib/api/auth';
 import * as cmd from '$lib/lms/commands';
 import type { PlayerInfo, PlayersResult, PlayerStatus } from '$lib/lms/types';
 import { loadResume } from '$lib/player/resume';
+import { AnalysisClient } from '$lib/analysis/client';
+import { ApiError, CLIENT_HEADER, bearer } from '$lib/api/http';
 
 const PLAYER_KEY = 'anywhere.player';
 const POLL_MS = 2000;
 
 export const session = new SessionManager();
 export const api = new Api(session);
+/** Track analyses (waveforms) for this session. */
+export const analyses = new AnalysisClient((url, signal) =>
+	session.authed(async (token) => {
+		const r = await fetch(url, { headers: { ...CLIENT_HEADER, ...bearer(token) }, cache: 'no-cache', signal });
+		if (r.status === 401) throw new ApiError(401, 'unauthorised');
+		return r;
+	}),
+);
 
 class AppState {
 	session = $state<Session | null>(null);
@@ -113,6 +123,7 @@ class AppState {
 		clearInterval(this.#tick);
 		document.removeEventListener('visibilitychange', this.#onVisible);
 		api.clearArt();
+		analyses.clear();
 		this.players = [];
 		this.now = null;
 	}

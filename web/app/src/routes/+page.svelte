@@ -8,6 +8,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import PlayerSwitcher from '$lib/components/PlayerSwitcher.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
+	import SeekBar from '$lib/components/SeekBar.svelte';
 
 	let showMore = $state(false);
 
@@ -80,16 +81,14 @@
 		{/if}
 
 		<div class="progress">
-			<input
-				type="range"
-				min="0"
-				max={Math.max(total, 1)}
+			<SeekBar
+				trackId={typeof track?.id === 'number' && track.id > 0 && !track.remote ? track.id : null}
 				value={shown}
+				{total}
 				disabled={!total || app.now?.can_seek === 0}
-				aria-label="Position"
-				oninput={(e) => (seeking = Number(e.currentTarget.value))}
-				onchange={async (e) => {
-					await app.seek(Number(e.currentTarget.value));
+				oninput={(v) => (seeking = v)}
+				onchange={async (v) => {
+					await app.seek(v);
 					seeking = null;
 				}}
 			/>
