@@ -130,3 +130,90 @@ export async function loadCore(workerUrl, importer) {
   const wasm = await mod.default({ module_or_path: new URL(`./pkg/anywhere_wasm_bg.wasm${q}`, workerUrl).href });
   return { wasm, WasmPlayer: mod.WasmPlayer, WasmSegmenter: mod.WasmSegmenter };
 }
+
+/**
+ * Times a seek (or any flush) to the moment the new audio is heard, so the connection log
+ * shows where the time went on a real device. Starts at the flush; each stage is recorded
+ * once, in milliseconds after it.
+ */
+export const SEEK_STAGES = ['stream', 'response', 'bytes', 'started', 'queued', 'audible'];
+const SEEK_LABELS = {
+  stream: 'new stream',
+  response: 'response',
+  bytes: 'first bytes',
+  started: 'started',
+  queued: 'queued',
+};
+// A seek that hasn't been heard after this long is dropped (e.g. LMS stopped instead).
+export const SEEK_GIVE_UP_MS = 30_000;
+
+export class SeekTimer {
+  constructor() {
+    this.at = -1;
+    this.marks = {};
+  }
+
+  get active() {
+    return this.at >= 0;
+  }
+
+  /** A flush at `t` (ms): start timing, replacing any timing still running. */
+  start(t) {
+    this.at = t;
+    this.marks = {};
+  }
+
+  /**
+   * Stage `name` reached at `t`. Returns the finished timing once the audio is heard,
+   * `{ total, marks }` (ms after the flush); otherwise null.
+   */
+  mark(name, t) {
+    if (!this.active || !SEEK_STAGES.includes(name) || Object.hasOwn(this.marks, name)) return null;
+    // Audio played before any of the new audio was handed to the output is the old position.
+    if (name === 'audible' && !Object.hasOwn(this.marks, 'queued')) return null;
+    if (!(t - this.at <= SEEK_GIVE_UP_MS)) {
+      this.at = -1;
+      return null;
+    }
+    this.marks[name] = Math.max(0, Math.round(t - this.at));
+    if (name !== 'audible') return null;
+    const done = { total: this.marks.audible, marks: { ...this.marks } };
+    this.at = -1;
+    return done;
+  }
+
+  cancel() {
+    this.at = -1;
+  }
+}
+
+/** One log line for a finished seek timing. */
+export function describeSeek(timing) {
+  const parts = SEEK_STAGES.filter((s) => s !== 'audible' && Object.hasOwn(timing.marks, s)).map(
+    (s) => `${SEEK_LABELS[s]} +${timing.marks[s]}`,
+  );
+  return `seek: heard after ${timing.total} ms${parts.length ? ` (${parts.join(', ')})` : ''}`;
+}
+
+/**
+ * Follows the core's flush count. LMS sends a seek's flush and the new stream back to back
+ * (often in one message), so the output state alone can go from playing to waiting without
+ * ever reading "stopped": the count is what says the queued audio must go.
+ */
+export class FlushWatch {
+  constructor() {
+    this.count = 0;
+  }
+
+  /** The core's count now: true if it flushed since the last call. */
+  changed(count) {
+    if (count === this.count) return false;
+    this.count = count;
+    return true;
+  }
+
+  /** A new core player (counting from zero again). */
+  reset() {
+    this.count = 0;
+  }
+}

@@ -124,7 +124,7 @@ For players that connect through the gateway, the plugin:
 
 - turns off direct streaming, so LMS always proxies radio and service streams and the device never needs to reach the LAN;
 - applies the user's transcoding/bitrate policy as player prefs;
-- fixes LMS volume at 100% for "this device" players, which use the device's own volume control.
+- leaves LMS volume alone for "this device" players: the browser player applies it itself where it can, and holds it at 100% where it can't (§7.2, "Volume on this device"). _Changed 2026-10-11:_ previously planned as always fixed at 100%.
 
 ### Storage
 
@@ -272,7 +272,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
   - the build moves SvelteKit's inline start-up script into a file, and fails if any inline script, event-handler attribute or `javascript:` URL remains;
   - the gateway allows inline `style` attributes only (`style-src-attr 'unsafe-inline'`), which the framework needs. Style sheets and `<style>` elements stay `'self'`.
 - The Rust core is compiled to WebAssembly. It handles Slimproto, buffering, resume, and decoding with Symphonia (FLAC, ALAC, MP3, AAC-LC, Vorbis, WAV/AIFF) plus Opus.
-- Audio output goes through an `AudioWorklet`.
+- Audio output goes through an `AudioWorklet`, or, on iOS and Android, an `<audio>` element fed lossless fMP4 segments through (Managed) Media Source, about 8 s ahead, which keeps playing in the background.
 - The Media Session API gives lock-screen/notification controls and hardware media keys.
 - A service worker serves the app shell offline. Offline audio and its metadata (and album covers) are stored in IndexedDB, partitioned per user, never in the service worker's caches. _Changed 2026-10-10 from OPFS:_ Safari 17 can't write OPFS files from the page, and the service worker deletes old caches on every update, so IndexedDB Blobs (stored in ~1 MiB pieces, so downloads resume) are the one store that works on every target.
 - **Sign-out holds:** token renewals or restores started before a sign-out are discarded. If the logout call can't reach the gateway, a flag in local storage stops the next page load from restoring the session from the refresh cookie; that load shows the sign-in form and finishes the logout (refresh, then logout) in the background. A successful sign-in clears the flag.
@@ -283,6 +283,11 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 - "This browser" as an LMS player: gapless, seek, and survives network drops via resume.
 - Player switcher: this browser plus every permitted home player. Sync/unsync groups (`sync <player>` for the player that joins, `sync -` to leave); the player button names the group ("Lounge + Study"). Only permitted players are listed or targeted.
 - Per-player volume, mute, power, and sleep timer.
+- **Volume on this device** (_decided 2026-10-11_): automatic, with a setting to override, kept per browser.
+  - **Automatic (default):** where the browser can set its output volume, LMS's volume is applied on the device, so any controller (this app, Material Skin, another phone) changes what is heard. LMS sends linear gains (`audg`, already on LMS's volume curve); they are applied as given, after the queued audio, so a change is heard at once. Web Audio uses a gain in the AudioWorklet, the media element its `volume`. Changes ramp over 30 ms, so they don't click.
+  - **Where it can't** (iPhone/iPad: a media element's `volume` is read-only and reads 1; found by a feature test, not the user agent), the device plays at full scale and its own buttons set the level. LMS's volume is held at 100% for this player: if a controller moves it, the device sets it back (at most every 3 s; a mute is left alone). Now playing and the player bar show "Use this device's volume buttons" instead of the slider.
+  - **Override in Settings:** Automatic / Follow LMS volume / Device buttons only. "Follow LMS volume" is shown disabled, with the reason, where it can't work.
+- **Seek:** LMS sends a flush and the new stream back to back (about 2 ms apart for MP3). The player drops its queued audio on the flush itself, counted by the core, not on a timer that may never see the stopped state in between. In media-element mode the play head is then moved to where the new audio starts, so the browser also drops audio it had already decoded. After a seek, or from stopped, playback starts once 0.5 s is decoded if the stream is arriving at least twice as fast as it plays (a library file, not live radio), and the 8 s queue fills while playing. The connection log records each seek's timing (new stream, first bytes, started, queued, heard).
 - Transfer playback between players (move the queue and position).
 
 **Now playing and queue**

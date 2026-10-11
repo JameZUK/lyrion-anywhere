@@ -23,6 +23,10 @@ pub const OUTPUT_TARGET_SECS: u32 = 10;
 /// Packets decoded per `tick`, to bound the time spent per call.
 const PACKETS_PER_TICK: usize = 48;
 const HEARTBEAT_MS: u64 = 1000;
+/// With quick start on, the stream must be arriving at least this many times faster than it
+/// plays. A live stream (radio) arrives at about real time, so it keeps waiting for LMS's
+/// threshold and the cushion that gives it.
+const QUICK_START_SPEEDUP: u64 = 2;
 
 #[derive(Debug, Clone)]
 pub struct PlayerConfig {
@@ -132,6 +136,8 @@ struct Track {
     replay_gain: f32,
     stream_ended: bool,
     decode_done: bool,
+    /// When the stream was requested (host clock, ms).
+    opened_at: u64,
 }
 
 /// Snapshot for UIs and logs.
@@ -173,6 +179,11 @@ pub struct Player {
     underrun_reported: bool,
     /// Ignore `audg`: samples leave at 100 % (see [`Player::set_fixed_volume`]).
     fixed_volume: bool,
+    /// The host applies the volume at its output (see [`Player::set_host_volume`]).
+    host_volume: bool,
+    /// Start once this much audio is decoded, if it is arriving quickly (see
+    /// [`Player::set_quick_start`]).
+    quick_start_ms: Option<u32>,
 }
 
 impl Player {
@@ -196,7 +207,25 @@ impl Player {
             host_buffered: (0, 0),
             underrun_reported: false,
             fixed_volume: false,
+            host_volume: false,
+            quick_start_ms: None,
         }
+    }
+
+    /// Leave LMS's volume (`audg`) to the host. Pulled audio is then at full scale, and the
+    /// host applies [`Player::volume`] at its output, where a change is heard at once rather
+    /// than after the audio it has queued ahead (seconds, for a media element).
+    pub fn set_host_volume(&mut self, on: bool) {
+        self.host_volume = on;
+    }
+
+    /// Start playing a stream (after a seek, or from stopped) as soon as `ms` of audio is
+    /// decoded, instead of waiting for all of LMS's buffer threshold, provided the stream
+    /// is arriving at least twice as fast as real time: a library file, not live radio.
+    /// The rest of the buffer then fills while playing. `None` (the default) keeps the
+    /// threshold alone, as squeezelite does.
+    pub fn set_quick_start(&mut self, ms: Option<u32>) {
+        self.quick_start_ms = ms.filter(|m| *m > 0);
     }
 
     /// Tell the player how much pulled audio the host holds ahead of its output, and how
@@ -460,7 +489,7 @@ impl Player {
 
     /// The volume applied to pulled audio: LMS's, or (1.0, 1.0) at fixed volume.
     pub fn applied_volume(&self) -> (f32, f32) {
-        if self.fixed_volume {
+        if self.fixed_volume || self.host_volume {
             (1.0, 1.0)
         } else {
             self.gain
@@ -614,6 +643,7 @@ impl Player {
             },
             stream_ended: false,
             decode_done: false,
+            opened_at: self.now,
         });
         self.stmu_sent = false;
         if !codec_ok {
@@ -745,8 +775,12 @@ impl Player {
             return;
         }
         let Some(t) = &self.track else { return };
-        let ready = (t.bytes_received as usize >= t.threshold || t.stream_ended || t.decode_done)
-            && !self.pcm.is_empty();
+        let quick = self
+            .quick_start_ms
+            .is_some_and(|min| self.buffered_ms() >= min as u64 && self.arriving_fast(t));
+        let ready =
+            (t.bytes_received as usize >= t.threshold || t.stream_ended || t.decode_done || quick)
+                && !self.pcm.is_empty();
         if !ready {
             return;
         }
@@ -756,6 +790,21 @@ impl Player {
             self.output = OutputState::Loaded;
             self.send_stat(*b"STMl", 0);
         }
+    }
+
+    /// Is the track's stream arriving at least [`QUICK_START_SPEEDUP`] times faster than it
+    /// plays? Compares bytes received per millisecond waited against the bytes the decoder
+    /// has used per millisecond of audio. (Headers such as artwork count as used bytes, which
+    /// only makes the stream look slower: the safe direction.)
+    fn arriving_fast(&self, t: &Track) -> bool {
+        let decoded_ms = self.buffered_ms() as u128;
+        let used = (t.bytes_received as u128).saturating_sub(t.input.unread() as u128);
+        let waited_ms = self.now.saturating_sub(t.opened_at) as u128;
+        if decoded_ms == 0 || used == 0 {
+            return false;
+        }
+        // received / waited >= SPEEDUP * used / decoded, without dividing.
+        t.bytes_received as u128 * decoded_ms >= QUICK_START_SPEEDUP as u128 * used * waited_ms
     }
 
     fn jiffies(&self) -> u32 {
@@ -838,6 +887,11 @@ mod tests {
     }
 
     fn strm(cmd: u8, autostart: u8, format: u8, arg: u32) -> Vec<u8> {
+        strm_with_threshold(cmd, autostart, format, arg, 1)
+    }
+
+    /// `strm` with LMS's buffer threshold, in KiB.
+    fn strm_with_threshold(cmd: u8, autostart: u8, format: u8, arg: u32, kib: u8) -> Vec<u8> {
         let s = Strm {
             command: cmd,
             autostart,
@@ -846,7 +900,7 @@ mod tests {
             pcm_sample_rate: b'?',
             pcm_channels: b'?',
             pcm_endianness: b'?',
-            threshold: 1,
+            threshold: kib,
             spdif_enable: 0,
             transition_period: 0,
             transition_type: b'0',
@@ -1250,5 +1304,187 @@ mod tests {
         );
         p.on_stream_data(&vec![0u8; PROBE_MAX_BYTES - INPUT_HIGH_WATER], 2);
         assert!(!p.wants_stream_data());
+    }
+
+    /// `audg` as LMS sends it: 16.16 gains, `adjust` 1 for digital volume control.
+    fn audg(adjust: u8, left: f32, right: f32) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.push(adjust);
+        p.push(255);
+        p.extend_from_slice(&((left * 65536.0) as u32).to_be_bytes());
+        p.extend_from_slice(&((right * 65536.0) as u32).to_be_bytes());
+        encode_server_frame(*b"audg", &p)
+    }
+
+    /// A player with one second of a constant-level track decoded and playing.
+    fn playing_player(host_volume: bool) -> Player {
+        let mut p = Player::new(cfg());
+        p.set_host_volume(host_volume);
+        p.on_control_data(&strm(b's', b'1', b'p', 0), 0).unwrap();
+        p.on_stream_data(&wav(44100, 44100), 1);
+        p.on_stream_end(2);
+        for i in 0..10 {
+            p.tick(3 + i);
+        }
+        assert_eq!(p.status().output, OutputState::Playing);
+        p
+    }
+
+    #[test]
+    fn volume_is_applied_to_pulled_audio_by_default() {
+        let mut p = playing_player(false);
+        let mut q = playing_player(false);
+        let mut full = vec![0f32; 64];
+        q.pull_audio(&mut full);
+        p.on_control_data(&audg(1, 0.25, 0.5), 20).unwrap();
+        assert_eq!(p.volume(), (0.25, 0.5));
+        let mut buf = vec![0f32; 64];
+        p.pull_audio(&mut buf);
+        assert!(full[0] != 0.0);
+        assert_eq!(buf[0], full[0] * 0.25);
+        assert_eq!(buf[1], full[1] * 0.5);
+    }
+
+    /// With the host applying volume, pulled audio stays at full scale (so audio queued
+    /// ahead isn't stuck at the old volume) while `volume()` still reports LMS's gains.
+    #[test]
+    fn host_volume_leaves_pulled_audio_at_full_scale() {
+        let mut p = playing_player(true);
+        let mut q = playing_player(false);
+        p.on_control_data(&audg(1, 0.125, 0.25), 20).unwrap();
+        assert_eq!(p.volume(), (0.125, 0.25));
+        assert_eq!(p.status().volume, (0.125, 0.25));
+        let (mut a, mut b) = (vec![0f32; 64], vec![0f32; 64]);
+        p.pull_audio(&mut a);
+        q.pull_audio(&mut b);
+        assert_eq!(a, b, "unscaled");
+        // Fixed volume from LMS (adjust 0) reads as unity.
+        p.on_control_data(&audg(0, 0.1, 0.2), 30).unwrap();
+        assert_eq!(p.volume(), (1.0, 1.0));
+    }
+
+    /// 44.1 kHz 16-bit stereo: 176 400 bytes a second. LMS's usual threshold, 255 KiB, is
+    /// about 1.5 s of it.
+    const WAV_BYTES_PER_SEC: usize = 176_400;
+
+    fn open_with_threshold(p: &mut Player, now: u64) {
+        p.on_control_data(&strm_with_threshold(b's', b'1', b'p', 0, 255), now)
+            .unwrap();
+        p.on_stream_headers(b"HTTP/1.0 200 OK\r\n\r\n", now);
+    }
+
+    fn tick_n(p: &mut Player, from: u64, n: u64) {
+        for i in 0..n {
+            p.tick(from + i);
+        }
+    }
+
+    #[test]
+    fn without_quick_start_playback_waits_for_lms_threshold() {
+        let mut p = Player::new(cfg());
+        open_with_threshold(&mut p, 0);
+        // 1.4 s of audio in 50 ms: below 255 KiB (and the decoder keeps 128 KiB unread).
+        p.on_stream_data(&wav(44100, 44100 * 7 / 5), 50);
+        tick_n(&mut p, 51, 200);
+        assert_eq!(p.status().output, OutputState::Waiting);
+        p.on_stream_data(&vec![0x10; WAV_BYTES_PER_SEC / 2], 80);
+        tick_n(&mut p, 81, 5);
+        assert_eq!(p.status().output, OutputState::Playing);
+    }
+
+    #[test]
+    fn quick_start_plays_a_fast_stream_before_the_threshold() {
+        let mut p = Player::new(cfg());
+        p.set_quick_start(Some(500));
+        open_with_threshold(&mut p, 0);
+        p.on_stream_data(&wav(44100, 44100 * 7 / 5), 50);
+        tick_n(&mut p, 51, 200);
+        assert_eq!(p.status().output, OutputState::Playing);
+        assert!(p.track.as_ref().unwrap().bytes_received < 255 * 1024);
+    }
+
+    #[test]
+    fn quick_start_waits_for_its_minimum() {
+        let mut p = Player::new(cfg());
+        p.set_quick_start(Some(500));
+        open_with_threshold(&mut p, 0);
+        p.on_stream_data(&wav(44100, 44100), 50); // 1 s: about 0.25 s decodable
+        tick_n(&mut p, 51, 200);
+        assert_eq!(p.status().output, OutputState::Waiting);
+    }
+
+    /// A stream arriving at about real time (live radio through LMS) keeps the cushion
+    /// LMS's threshold gives it.
+    #[test]
+    fn quick_start_ignores_a_stream_arriving_in_real_time() {
+        let mut p = Player::new(cfg());
+        p.set_quick_start(Some(500));
+        open_with_threshold(&mut p, 0);
+        let full = wav(44100, 44100 * 3);
+        p.on_stream_data(&full[..44], 0);
+        // 1.4 s of audio over 1.4 s.
+        let tenth = WAV_BYTES_PER_SEC / 10;
+        for step in 1..=14usize {
+            let at = 44 + (step - 1) * tenth;
+            p.on_stream_data(&full[at..at + tenth], step as u64 * 100);
+            tick_n(&mut p, step as u64 * 100, 30);
+        }
+        assert!(
+            p.status().buffered_ms >= 500,
+            "enough decoded: only the speed holds it"
+        );
+        assert_eq!(p.status().output, OutputState::Waiting);
+        // The threshold still starts it.
+        let at = 44 + 14 * tenth;
+        p.on_stream_data(&full[at..at + WAV_BYTES_PER_SEC / 2], 1500);
+        tick_n(&mut p, 1501, 5);
+        assert_eq!(p.status().output, OutputState::Playing);
+    }
+
+    /// After a seek (flush, then a new stream) quick start applies again; a zero minimum
+    /// turns it off.
+    #[test]
+    fn quick_start_after_a_seek_and_off_with_zero() {
+        let mut p = Player::new(cfg());
+        p.set_quick_start(Some(500));
+        open_with_threshold(&mut p, 0);
+        p.on_stream_data(&wav(44100, 44100 * 7 / 5), 50);
+        tick_n(&mut p, 51, 200);
+        assert_eq!(p.status().output, OutputState::Playing);
+        p.on_control_data(&strm(b'q', b'0', b'p', 0), 5000).unwrap();
+        open_with_threshold(&mut p, 5001);
+        p.on_stream_data(&wav(44100, 44100 * 7 / 5), 5030);
+        tick_n(&mut p, 5031, 200);
+        assert_eq!(p.status().output, OutputState::Playing);
+
+        let mut q = Player::new(cfg());
+        q.set_quick_start(Some(0));
+        open_with_threshold(&mut q, 0);
+        q.on_stream_data(&wav(44100, 44100 * 7 / 5), 50);
+        tick_n(&mut q, 51, 200);
+        assert_eq!(q.status().output, OutputState::Waiting);
+    }
+
+    /// Regression (browser player): LMS sends a seek's flush and new stream back to back
+    /// (about 2 ms apart for MP3), often in one message. A host that watched the output
+    /// state on a timer never saw "Stopped" and kept the old audio queued; the flush count
+    /// is what it must follow.
+    #[test]
+    fn a_flush_is_counted_even_when_the_new_stream_arrives_with_it() {
+        let mut p = playing_player(false);
+        let before = p.flush_count();
+        let mut both = strm(b'q', b'0', b'p', 0);
+        both.extend(strm(b's', b'1', b'p', 0));
+        p.on_control_data(&both, 50).unwrap();
+        assert_eq!(p.flush_count(), before + 1);
+        assert_eq!(
+            p.status().output,
+            OutputState::Waiting,
+            "never seen as Stopped"
+        );
+        let ev = events(&p.take_actions());
+        assert!(ev.contains(&"STMf".to_string()) && ev.contains(&"STMc".to_string()));
     }
 }

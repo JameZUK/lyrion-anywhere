@@ -9,6 +9,8 @@
 	import PlayerSwitcher from '$lib/components/PlayerSwitcher.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import SeekBar from '$lib/components/SeekBar.svelte';
+	import { device } from '$lib/player/device.svelte';
+	import { DEVICE_BUTTONS_NOTE } from '$lib/player/volume';
 
 	let showMore = $state(false);
 
@@ -116,12 +118,16 @@
 			</button>
 		</div>
 
-		<label class="volume">
-			<Icon name={vol > 0 ? 'volume' : 'mute'} size={20} />
-			<span class="sr-only">Volume</span>
-			<input type="range" min="0" max="100" value={vol} oninput={(e) => setVolume(Number(e.currentTarget.value))} disabled={!app.now} />
-			<span class="muted vnum">{Math.round(vol)}</span>
-		</label>
+		{#if device.buttonsOnly(app.playerId)}
+			<p class="volume muted" data-volume-note><Icon name="volume" size={20} /><span>{DEVICE_BUTTONS_NOTE}</span></p>
+		{:else}
+			<label class="volume">
+				<Icon name={vol > 0 ? 'volume' : 'mute'} size={20} />
+				<span class="sr-only">Volume</span>
+				<input type="range" min="0" max="100" value={vol} oninput={(e) => setVolume(Number(e.currentTarget.value))} disabled={!app.now} />
+				<span class="muted vnum">{Math.round(vol)}</span>
+			</label>
+		{/if}
 
 		{#if showMore && typeof track?.id === 'number'}<ContextMenu kind="track" id={track.id} title={title} onclose={() => (showMore = false)} />{/if}
 	</div>
@@ -248,6 +254,10 @@
 		gap: 0.6rem;
 		max-width: 360px;
 		color: var(--fg-muted);
+	}
+	p.volume {
+		margin: 0;
+		font-size: 0.9rem;
 	}
 	.vnum {
 		width: 2.5ch;

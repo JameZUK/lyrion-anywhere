@@ -11,6 +11,7 @@
 	import SignOut from '$lib/components/SignOut.svelte';
 	import { version as buildVersion } from '$app/environment';
 	import pkg from '../../../package.json';
+	import { VOLUME_LABELS, canFollow, planVolume, type VolumeSetting } from '$lib/player/volume';
 	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
 	import { forgetOwner, formatBytes, loadPrefs, networkType, requestPersist, savePrefs, storageInfo, type DownloadPrefs, type StorageInfo } from '$lib/offline/settings';
 	import { FORMATS, FORMAT_LABELS } from '$lib/offline/types';
@@ -25,6 +26,13 @@
 		pref = p;
 		savePreference(p);
 	}
+
+	// Volume on this device: follows LMS where the browser allows it, otherwise the device's
+	// own buttons (see lib/player/volume.ts).
+	const volAbility = $derived({ mode: active && device.choice ? device.choice.mode : planned.mode, mediaVolume: device.volumeAbility().mediaVolume });
+	const volFollow = $derived(canFollow(volAbility));
+	const volPlan = $derived(active && device.volumePlan ? device.volumePlan : planVolume(volAbility, device.volumeSetting));
+	const VOLUME_CHOICES: VolumeSetting[] = ['auto', 'follow', 'device'];
 
 	let account = $state<auth.Account | null>(null);
 	let setup = $state<auth.TotpSetup | null>(null);
@@ -150,6 +158,21 @@
 					</label>
 				{/each}
 			</div>
+			<p>
+				<strong>Volume on this device: {volPlan.follow ? 'follows LMS' : 'device buttons'}</strong>
+				<span class="muted"> — {volPlan.reason}</span>
+			</p>
+			<div class="row" role="radiogroup" aria-label="Volume on this device">
+				{#each VOLUME_CHOICES as value (value)}
+					{@const off = value === 'follow' && !volFollow.ok}
+					<label class="pill choice" class:on={device.volumeSetting === value} class:off aria-disabled={off}>
+						<input type="radio" name="volmode" {value} checked={device.volumeSetting === value} disabled={off} onchange={() => device.setVolumeSetting(value)} class="sr-only" />{VOLUME_LABELS[value]}
+					</label>
+				{/each}
+			</div>
+			{#if !volFollow.ok}
+				<p class="muted small" data-volume-reason>{VOLUME_LABELS.follow} isn't available: {volFollow.why}</p>
+			{/if}
 			{#if active && device.choice && planned.mode !== device.choice.mode}
 				<p class="muted small">Takes effect the next time you start playing here.
 					<button class="btn" onclick={async () => { device.stop(); await device.start(); }}>Restart player now</button></p>
@@ -331,6 +354,10 @@
 	}
 	.choice {
 		cursor: pointer;
+	}
+	.choice.off {
+		cursor: not-allowed;
+		opacity: 0.5;
 	}
 	.choice:focus-within {
 		outline: 2px solid var(--accent);

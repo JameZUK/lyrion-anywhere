@@ -43,6 +43,23 @@ impl WasmPlayer {
         })
     }
 
+    /// The worker applies LMS's volume at the output (see `Player::set_host_volume`).
+    pub fn set_host_volume(&mut self, on: bool) {
+        self.inner.set_host_volume(on);
+    }
+
+    /// Start a fast stream once `ms` of audio is decoded (0: off; see
+    /// `Player::set_quick_start`).
+    pub fn set_quick_start(&mut self, ms: u32) {
+        self.inner.set_quick_start(Some(ms));
+    }
+
+    /// LMS's volume as linear `[left, right]` gains (1 is full scale).
+    pub fn volume(&self) -> Vec<f32> {
+        let (l, r) = self.inner.volume();
+        vec![l, r]
+    }
+
     pub fn connected(&mut self, now_ms: f64) {
         self.inner.connected(now_ms as u64);
     }
@@ -122,6 +139,12 @@ impl WasmPlayer {
     /// True once the current track is fully decoded and pulled (see the core's docs).
     pub fn audio_exhausted(&self) -> bool {
         self.inner.audio_exhausted()
+    }
+
+    /// How many times LMS has flushed the player (`strm q`/`strm f`, e.g. for a seek). When it
+    /// changes, audio queued ahead of the output belongs to the old position.
+    pub fn flush_count(&self) -> f64 {
+        self.inner.flush_count() as f64
     }
 
     /// Frames the AudioWorklet has actually played.

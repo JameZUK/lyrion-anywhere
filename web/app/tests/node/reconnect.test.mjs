@@ -1,7 +1,19 @@
 // Reconnect policy tests (node --test).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AuthWait, CLOSE, Outbox, RateRequest, backoffMs, closeAction, streamFailureAction } from '../../static/player/reconnect.js';
+import {
+  AuthWait,
+  CLOSE,
+  FlushWatch,
+  Outbox,
+  RateRequest,
+  SEEK_GIVE_UP_MS,
+  SeekTimer,
+  backoffMs,
+  closeAction,
+  describeSeek,
+  streamFailureAction,
+} from '../../static/player/reconnect.js';
 import { readFileSync } from 'node:fs';
 
 test('close codes map to the right recovery', () => {
@@ -126,4 +138,66 @@ test('the worker loads its helpers with the version and keeps early messages', (
   assert.match(src, /await import\(\s*`\.\/reconnect\.js\$\{/);
   assert.match(src, /onmessage = \(e\) => early\.push\(e\)/);
   assert.match(src, /for \(const e of early\.splice\(0\)\) void onmessage\(e\);\s*$/);
+});
+
+test('seek timing records each stage once, relative to the flush, and finishes when heard', () => {
+  const t = new SeekTimer();
+  assert.equal(t.mark('stream', 5), null, 'nothing before a flush');
+  t.start(1000);
+  assert.equal(t.mark('stream', 1020), null);
+  assert.equal(t.mark('stream', 1500), null, 'second mark ignored');
+  t.mark('response', 1030.4);
+  t.mark('bytes', 1031);
+  t.mark('started', 1050);
+  t.mark('queued', 1052);
+  const done = t.mark('audible', 1080);
+  assert.deepEqual(done, { total: 80, marks: { stream: 20, response: 30, bytes: 31, started: 50, queued: 52, audible: 80 } });
+  assert.equal(t.active, false);
+  assert.equal(t.mark('audible', 1100), null, 'finished');
+  assert.equal(
+    describeSeek(done),
+    'seek: heard after 80 ms (new stream +20, response +30, first bytes +31, started +50, queued +52)',
+  );
+});
+
+// Regression: audio of the old position, played just after the flush, counted as the seek
+// being heard.
+test('seek timing ignores audio heard before any new audio was queued', () => {
+  const t = new SeekTimer();
+  t.start(0);
+  assert.equal(t.mark('audible', 4), null);
+  assert.ok(t.active);
+  t.mark('queued', 40);
+  assert.equal(t.mark('audible', 60).total, 60);
+});
+
+test('seek timing gives up, restarts on a new flush, and ignores unknown stages', () => {
+  const t = new SeekTimer();
+  t.start(0);
+  t.mark('queued', 10);
+  assert.equal(t.mark('audible', SEEK_GIVE_UP_MS + 1), null, 'too late: dropped');
+  assert.equal(t.active, false);
+  t.start(100);
+  t.start(200); // a second flush replaces the first
+  t.mark('queued', 210);
+  assert.equal(t.mark('audible', 250).total, 50);
+  t.start(0);
+  assert.equal(t.mark('__proto__', 1), null);
+  assert.equal(t.mark('constructor', 1), null);
+  assert.equal(t.mark('audible', NaN), null);
+  t.cancel();
+  assert.equal(t.active, false);
+});
+
+// Regression: MP3 seeks (flush and new stream ~2 ms apart) kept the old 8 s media queue,
+// because the worker looked for a "Stopped" output state on its 20 ms tick.
+test('flush watch reports each flush once, however the state looked in between', () => {
+  const w = new FlushWatch();
+  assert.equal(w.changed(0), false);
+  assert.equal(w.changed(1), true);
+  assert.equal(w.changed(1), false);
+  assert.equal(w.changed(3), true, 'two flushes in one message still flush');
+  w.reset();
+  assert.equal(w.changed(0), false, 'a new core player starts at zero');
+  assert.equal(w.changed(1), true);
 });

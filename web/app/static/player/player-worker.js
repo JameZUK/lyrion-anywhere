@@ -11,7 +11,8 @@ const V = new URL(self.location.href).searchParams.get('v');
 // Messages that arrive while the helpers load wait here, then go to the real handler.
 const early = [];
 onmessage = (e) => early.push(e);
-const { AuthWait, CLOSE, Outbox, RateRequest, backoffMs, closeAction, loadCore, streamFailureAction } = await import(
+const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, closeAction, describeSeek, loadCore, streamFailureAction } =
+  await import(
   `./reconnect.js${V && /^[\w.-]{1,64}$/.test(V) ? `?v=${V}` : ''}`
 );
 
@@ -19,6 +20,10 @@ const TICK_MS = 20;
 // PCM queued in the worklet ahead of playback. Small, so pause/stop feel immediate.
 const WORKLET_AHEAD_SECS = 0.3;
 const CODECS = 'flc,mp3,ogg';
+// After a seek (or from stopped), start once this much audio is decoded if the stream is
+// arriving quickly, rather than waiting for all of LMS's buffer threshold. The output's
+// queue then fills while playing.
+const QUICK_START_MS = 500;
 // Give up resuming slightly before the gateway's default 60 s grace runs out.
 const RESUME_FOR_MS = 55_000;
 const STREAM_RETRIES = 12;
@@ -49,6 +54,15 @@ let received = 0;
 const outbox = new Outbox(2000);
 const rateRequest = new RateRequest();
 const authWait = new AuthWait();
+// Seek timing: from LMS's flush to the new audio being heard (logged once heard).
+const seekTimer = new SeekTimer();
+const flushWatch = new FlushWatch();
+let seekFlushAt = 0;
+// Bumped at every flush: the worklet tags its "played" reports with it, so frames of the
+// old position reported after a flush are not counted against the new one.
+let epoch = 0;
+// LMS's volume last reported to the page ([left, right] linear gains).
+let lastVolume = null;
 
 // Output mode: 'worklet' (PCM to an AudioWorklet) or 'media' (fMP4/FLAC segments for an
 // <audio> element on the main thread, which keeps playing in the background on iOS).
@@ -62,17 +76,55 @@ let mediaWaiting = false; // flushed; waiting for the main thread's new timeline
 
 const now = () => performance.now();
 const log = (msg) => postMessage({ log: msg });
+
+function seekMark(stage) {
+  const done = seekTimer.mark(stage, now());
+  if (!done) return;
+  log(describeSeek(done));
+  postMessage({ seekTiming: { ...done, flushAt: performance.timeOrigin + seekFlushAt } });
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function attachSink(port) {
   sink = port;
   pulled = played = 0;
+  sink.postMessage({ flush: true, epoch });
   sink.onmessage = (m) => {
-    if (m.data.played && player) {
+    if (m.data.played && player && m.data.epoch === epoch) {
+      seekMark('audible');
       played += m.data.played;
       player.played(m.data.played);
     }
   };
+}
+
+/**
+ * LMS flushed the player (a seek, a stop, or a new session): drop the audio queued in the
+ * output at once. Driven by the core's flush count, not by watching the output state on a
+ * timer: LMS sends the flush and the new stream back to back, and a tick can miss the
+ * stopped state in between (then the old queue, seconds of it in media mode, played on).
+ */
+function flushOutput() {
+  pulled = played = 0;
+  epoch++;
+  if (outputMode === 'media') {
+    if (segmenter) {
+      mediaWaiting = true;
+      postMessage({ media: { flush: true } });
+    }
+  } else if (sink) {
+    sink.postMessage({ flush: true, epoch });
+  }
+}
+
+/** Tell the page when LMS's volume changes; the page applies it at the output. */
+function reportVolume() {
+  const v = player.volume();
+  const l = Number(v[0]);
+  const r = Number(v[1]);
+  if (lastVolume && lastVolume[0] === l && lastVolume[1] === r) return;
+  lastVolume = [l, r];
+  postMessage({ volume: lastVolume });
 }
 
 onmessage = async (e) => {
@@ -92,7 +144,9 @@ onmessage = async (e) => {
     readyRate = msg.rate;
   } else if (msg.cmd === 'played') {
     // Media mode: frames the <audio> element has actually played.
-    if (player && msg.frames > 0) {
+    // Reports sent while a flush is under way are of the old position.
+    if (player && msg.frames > 0 && !mediaWaiting) {
+      seekMark('audible');
       played += msg.frames;
       player.played(msg.frames);
     }
@@ -149,6 +203,14 @@ function onGreeting(g) {
     outbox.clear();
     received = 0;
     player = new core.WasmPlayer(g.mac, g.name, CODECS);
+    // Volume is applied at the output, where a change is heard at once.
+    player.set_host_volume(true);
+    player.set_quick_start(QUICK_START_MS);
+    flushWatch.reset();
+    lastVolume = null;
+    seekTimer.cancel();
+    flushOutput(); // anything still queued belongs to the old session
+    reportVolume();
     player.connected(now());
     log(`connected as ${g.name} (${g.mac})`);
   } else {
@@ -167,6 +229,12 @@ function onFrames(data) {
   received++;
   try {
     player.on_control(new Uint8Array(data), now());
+    if (flushWatch.changed(player.flush_count())) {
+      flushOutput();
+      seekFlushAt = now();
+      seekTimer.start(seekFlushAt);
+    }
+    reportVolume();
   } catch (err) {
     log(`protocol error: ${err}`);
     ws.close();
@@ -212,7 +280,10 @@ function sendAck(n, bytes) {
 function runActions() {
   for (const a of player.take_actions()) {
     if (a.type === 'send') send(a.bytes);
-    else if (a.type === 'open') openStream(a.stream);
+    else if (a.type === 'open') {
+      seekMark('stream');
+      openStream(a.stream);
+    }
     else if (a.type === 'close') closeStream();
   }
 }
@@ -256,6 +327,7 @@ async function fetchStream(id, n) {
       status = 0;
       if (!headersSeen) {
         headersSeen = true;
+        seekMark('response');
         const ct = resp.headers.get('content-type') || 'application/octet-stream';
         player.on_stream_headers(new TextEncoder().encode(`HTTP/1.0 200 OK\r\nContent-Type: ${ct}\r\n\r\n`), now());
       } else {
@@ -274,6 +346,7 @@ async function fetchStream(id, n) {
           return;
         }
         tries = 0;
+        seekMark('bytes');
         player.on_stream_data(value, now());
         const got = player.open_stream();
         if (got && got[0] === n && got[1] - lastAck >= ACK_EVERY) {
@@ -303,10 +376,11 @@ function tick() {
   runActions();
 
   const status = JSON.parse(player.status_json());
+  if (status.output === 'Playing') seekMark('started');
   if (outputMode === 'media') {
     mediaTick(status.output);
   } else {
-    workletTick(status.output);
+    workletTick();
   }
   lastOutput = status.output;
   status.connection = open ? 'connected' : 'reconnecting';
@@ -316,13 +390,7 @@ function tick() {
   postMessage({ status });
 }
 
-function workletTick(output) {
-  // After stop/flush, drop audio already queued in the worklet.
-  if (output === 'Stopped' && lastOutput !== 'Stopped') {
-    sink.postMessage({ flush: true });
-    pulled = played = 0;
-  }
-
+function workletTick() {
   const rate = player.output_rate();
   if (rate && rate !== readyRate) {
     // The main thread (re)creates the AudioContext at this rate: ask once, then wait.
@@ -335,24 +403,20 @@ function workletTick(output) {
       if (!frames) break;
       const chunk = buf.slice(0, frames * 2);
       sink.postMessage({ pcm: chunk }, [chunk.buffer]);
+      seekMark('queued');
       pulled += frames;
     }
   }
 }
 
 function postSegment(bytes) {
-  if (bytes) postMessage({ media: { segment: bytes } }, [bytes.buffer]);
+  if (!bytes) return;
+  postMessage({ media: { segment: bytes } }, [bytes.buffer]);
+  seekMark('queued');
 }
 
 function mediaTick(output) {
-  // Stop/flush: the main thread empties the element's buffer and tells us where to resume.
-  if (output === 'Stopped' && lastOutput !== 'Stopped') {
-    pulled = played = 0;
-    if (segmenter) {
-      mediaWaiting = true;
-      postMessage({ media: { flush: true } });
-    }
-  }
+  // (A flush is handled as it arrives: see flushOutput.)
   // The core reports e.g. "Paused { until: None }": compare by prefix.
   const paused = output.startsWith('Paused');
   const wasPaused = String(lastOutput).startsWith('Paused');

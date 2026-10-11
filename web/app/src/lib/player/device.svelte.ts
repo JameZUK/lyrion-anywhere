@@ -2,13 +2,31 @@
 // the gateway socket and stream downloads. Audio plays through an AudioWorklet, or through an
 // <audio> element (Media Source) where only that keeps playing in the background (iOS).
 import { version } from '$app/environment';
-import { session } from '$lib/state/app.svelte';
+import { api, session } from '$lib/state/app.svelte';
 import { KeepAlive, PersistentLog, describeLifecycle } from './background';
 import { detect } from './capabilities';
 import { MediaOutput, Timeline } from './media-output';
 import { MEDIA_TYPE, MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
 import { Reporter, buildReport, diagnosticsSender } from './diagnostics';
 import { chooseVariant, loadCached, mediaFormatFor, mimeFor, runSelfTest, saveCached, type SelfTest } from './selftest';
+import {
+	ElementVolume,
+	VOLUME_LABELS,
+	belowFull,
+	cleanGains,
+	detectMediaVolume,
+	elementVolume,
+	loadVolumeSetting,
+	outputGains,
+	planVolume,
+	saveVolumeSetting,
+	type VolumeAbility,
+	type VolumePlan,
+	type VolumeSetting,
+} from './volume';
+
+/** While LMS's volume is held at 100% here, ask again at most this often. */
+const HOLD_FULL_EVERY_MS = 3000;
 
 export type DeviceState = 'off' | 'starting' | 'connected' | 'reconnecting' | 'stopped' | 'error';
 
@@ -52,6 +70,19 @@ class DevicePlayer {
 	#auto = false;
 	/** Called when the player is connected (the app selects it). */
 	onConnected: ((mac: string) => void) | null = null;
+	/** "Volume on this device" in Settings. */
+	volumeSetting = $state<VolumeSetting>(loadVolumeSetting());
+	/** How volume works while this device plays (null when it isn't playing). */
+	volumePlan = $state<VolumePlan | null>(null);
+	/** LMS's volume for this player, as linear [left, right] gains. */
+	#lmsGains: [number, number] = [1, 1];
+	#mediaVolume: boolean | null = null;
+	#elementVolume: ElementVolume | null = null;
+	#node: AudioWorkletNode | null = null;
+	#heldFullAt = -Infinity;
+	/** Media mode: the next timeline position from the worker follows a flush. */
+	#seekAfterFlush = false;
+	#restartTimer: ReturnType<typeof setInterval> | undefined;
 
 	#worker: Worker | null = null;
 	#ctx: AudioContext | null = null;
@@ -203,6 +234,58 @@ class DevicePlayer {
 		}
 	}
 
+	/** What this browser can do about volume, for the mode in use (or planned). */
+	volumeAbility(): VolumeAbility {
+		this.#mediaVolume ??= typeof Audio === 'function' ? detectMediaVolume() : false;
+		const mode = this.#worker && this.choice ? this.choice.mode : chooseMode(detect(), detectEnvironment(), loadPreference()).mode;
+		return { mode, mediaVolume: this.#mediaVolume };
+	}
+
+	/** Change "Volume on this device"; applies at once if this device is playing. */
+	setVolumeSetting(s: VolumeSetting) {
+		this.volumeSetting = s;
+		saveVolumeSetting(s);
+		if (!this.#worker || !this.choice) return;
+		this.#planVolume(this.choice.mode);
+		this.#applyVolume();
+	}
+
+	/** True when `playerId` is this device and its own volume buttons set the level. */
+	buttonsOnly(playerId: string | null | undefined): boolean {
+		return !!playerId && playerId === this.mac && !!this.volumePlan && !this.volumePlan.follow;
+	}
+
+	#planVolume(mode: VolumeAbility['mode']) {
+		this.#mediaVolume ??= typeof Audio === 'function' ? detectMediaVolume() : false;
+		const plan = planVolume({ mode, mediaVolume: this.#mediaVolume }, this.volumeSetting);
+		this.volumePlan = plan;
+		this.#note(`volume: ${VOLUME_LABELS[this.volumeSetting]} (${plan.follow ? 'follows LMS' : 'device buttons; LMS held at 100%'}). ${plan.reason}`);
+	}
+
+	/** Apply LMS's volume (or full scale) at the output, after anything queued. */
+	#applyVolume() {
+		const plan = this.volumePlan;
+		const gains = outputGains(plan, this.#lmsGains);
+		if (this.#media) this.#elementVolume?.set(elementVolume(gains));
+		else this.#node?.port.postMessage({ gain: gains });
+		if (plan && !plan.follow) this.#holdLmsAtFull();
+	}
+
+	/**
+	 * Device buttons only: LMS's volume is held at 100%, so every controller shows what is
+	 * heard. A controller that moves it is answered by setting it back (rate-limited; a
+	 * mute is left alone).
+	 */
+	#holdLmsAtFull() {
+		const g = this.#lmsGains;
+		if (!belowFull(g) || (g[0] === 0 && g[1] === 0)) return;
+		if (!this.mac || this.state !== 'connected') return;
+		const now = performance.now();
+		if (now - this.#heldFullAt < HOLD_FULL_EVERY_MS) return;
+		this.#heldFullAt = now;
+		api.rpc(this.mac, ['mixer', 'volume', 100]).catch((e: Error) => this.#note(`could not set LMS volume to 100%: ${e.message}`));
+	}
+
 	get supported(): boolean {
 		const g = globalThis as Record<string, unknown>;
 		const output = typeof AudioWorkletNode !== 'undefined' || !!g.ManagedMediaSource || !!g.MediaSource;
@@ -227,6 +310,9 @@ class DevicePlayer {
 			const { choice, variant } = this.#decide();
 			this.choice = choice;
 			this.#note(`playback: ${MODE_LABELS[choice.mode]}. ${choice.reason}`);
+			this.#lmsGains = [1, 1];
+			this.#heldFullAt = -Infinity;
+			this.#planVolume(choice.mode);
 			this.#configureAudioSession();
 			let port: MessagePort | undefined;
 			if (choice.mode === 'media' && choice.source) {
@@ -244,6 +330,8 @@ class DevicePlayer {
 					this.#drainedAtEnd = out.bufferedEnd;
 				};
 				this.#media = out;
+				this.#elementVolume = new ElementVolume(out.audio);
+				this.#applyVolume();
 				await out.start();
 				if (!live()) {
 					out.stop(); // stop() has stopped it already; this is harmless
@@ -342,6 +430,12 @@ class DevicePlayer {
 		this.needsTap = false;
 		this.#keepAlive.stop();
 		clearInterval(this.#posTimer);
+		clearInterval(this.#restartTimer);
+		this.#seekAfterFlush = false;
+		this.#elementVolume?.cancel();
+		this.#elementVolume = null;
+		this.#node = null;
+		this.volumePlan = null;
 		this.#media?.stop();
 		this.#media = null;
 		this.#unsubscribe?.();
@@ -394,6 +488,8 @@ class DevicePlayer {
 		if (!live()) return abandon();
 		const node = new AudioWorkletNode(ctx, 'anywhere-sink', { outputChannelCount: [2] });
 		node.connect(ctx.destination);
+		this.#node = node;
+		node.port.postMessage({ gain: outputGains(this.volumePlan, this.#lmsGains), instant: true });
 		const channel = new MessageChannel();
 		node.port.postMessage({ port: channel.port1 }, [channel.port1]);
 		// Without a tap, resume() waits for one: don't let that hold up starting.
@@ -433,6 +529,19 @@ class DevicePlayer {
 		return this.#audioQueue;
 	}
 
+	/**
+	 * Media mode, after a flush: report the position often until the new audio plays, so
+	 * LMS (and the seek timing in the log) hear of it promptly, not at the next 250 ms poll.
+	 */
+	#watchRestart() {
+		clearInterval(this.#restartTimer);
+		const until = performance.now() + 1500;
+		this.#restartTimer = setInterval(() => {
+			this.#reportPosition();
+			if (!this.#media || performance.now() > until) clearInterval(this.#restartTimer);
+		}, 20);
+	}
+
 	/** Media mode: tell the core how much the element has played. */
 	#reportPosition() {
 		const media = this.#media;
@@ -464,7 +573,16 @@ class DevicePlayer {
 		const media = this.#media;
 		if (!media) return;
 		const span = m.span as { at?: number; rate?: number } | undefined;
-		if (span && typeof span.at === 'number' && typeof span.rate === 'number') this.#timeline.mark(span.at, span.rate);
+		if (span && typeof span.at === 'number' && typeof span.rate === 'number') {
+			this.#timeline.mark(span.at, span.rate);
+			if (this.#seekAfterFlush) {
+				// The new audio starts exactly here: move the play head to it (see MediaOutput.seek).
+				this.#seekAfterFlush = false;
+				media.seek(span.at);
+				this.#lastPos = span.at;
+				this.#watchRestart();
+			}
+		}
 		if (m.init instanceof Uint8Array) media.append(m.init);
 		if (m.segment instanceof Uint8Array) media.append(m.segment);
 		if (m.pause) media.pause();
@@ -473,12 +591,17 @@ class DevicePlayer {
 			this.#reportPosition();
 			const at = await media.flush();
 			this.#lastPos = at;
+			this.#seekAfterFlush = true;
 			this.#worker?.postMessage({ cmd: 'media-time', at });
 		}
 	}
 
 	async #onMessage(m: Record<string, unknown>) {
 		if (typeof m.log === 'string') this.#note(m.log);
+		if (Array.isArray(m.volume)) {
+			this.#lmsGains = cleanGains(m.volume);
+			this.#applyVolume();
+		}
 		if (m.media && typeof m.media === 'object') await this.#onMedia(m.media as Record<string, unknown>);
 		if (m.connection === 'connected') {
 			this.state = 'connected';
@@ -488,6 +611,7 @@ class DevicePlayer {
 				this.name = p.name ?? '';
 				this.onConnected?.(p.mac);
 			}
+			this.#applyVolume();
 		} else if (m.connection === 'reconnecting' || m.connection === 'restarting' || m.connection === 'reauthenticating') {
 			this.state = 'reconnecting';
 		} else if (m.connection === 'closed') {

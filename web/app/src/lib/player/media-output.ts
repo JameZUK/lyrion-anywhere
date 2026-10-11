@@ -183,6 +183,20 @@ export class MediaOutput {
 		return now;
 	}
 
+	/**
+	 * After a flush: move the play head to `t`, where the new audio starts. Removing the
+	 * buffer alone doesn't make every browser drop the audio it has already decoded from the
+	 * old position; a seek does, and the element then waits for the new audio.
+	 */
+	seek(t: number) {
+		if (this.#closed || !Number.isFinite(t) || t < 0) return;
+		try {
+			this.audio.currentTime = t;
+		} catch (e) {
+			this.#note(`could not move the play head: ${(e as Error).message}`);
+		}
+	}
+
 	stop() {
 		this.#closed = true;
 		this.#queue = [];
