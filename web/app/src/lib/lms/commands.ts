@@ -206,3 +206,16 @@ export function coverPath(cover: unknown, size = 300): string | null {
 	const px = Math.max(50, Math.min(1000, Math.round(size)));
 	return `music/${cover}/cover_${px}x${px}`;
 }
+
+/**
+ * The commands for a seek that also starts playback, as the user expects from clicking the
+ * position bar of a track that isn't playing:
+ * - playing: just the seek;
+ * - paused: the seek, then resume (LMS keeps a paused player paused after a seek);
+ * - stopped (or unknown): start, then seek (LMS ignores a seek on a stopped player).
+ */
+export function seekAndPlay(mode: unknown, seconds: number): Command[] {
+	if (mode === 'play') return [seek(seconds)];
+	if (mode === 'pause') return [seek(seconds), pause(false)];
+	return [play(), seek(seconds)];
+}

@@ -247,11 +247,13 @@ class AppState {
 	}
 
 	/** Seek, updating the shown position at once. */
+	/** Seek, starting playback there if the player was paused or stopped. */
 	async seek(seconds: number) {
+		const mode = this.now?.mode;
 		this.elapsed = seconds;
 		if (this.now) this.now = { ...this.now, time: seconds };
 		this.#statusAt = performance.now();
-		await this.send(cmd.seek(seconds));
+		for (const c of cmd.seekAndPlay(mode, seconds)) await this.send(c);
 	}
 }
 
