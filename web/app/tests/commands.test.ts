@@ -71,6 +71,35 @@ const examples = [
 	{ player: true, cmd: c.infoMenu('track', 9)(0, 100) },
 	{ player: true, cmd: c.infoMenu('album', 7)(0, 100) },
 	{ player: true, cmd: c.infoMenu('artist', 12)(100, 50) },
+	// My Music: new, random, genres, years, compilations, roles, folders, virtual libraries.
+	{ player: false, cmd: c.albums(0, 120, 'new', undefined, { library: '1a2b3c4d' }) },
+	{ player: false, cmd: c.albums(0, 60, 'random') },
+	{ player: false, cmd: c.albums(120, 120, 'artistalbum', undefined, { genre: 12, library: '1a2b3c4d' }) },
+	{ player: false, cmd: c.albums(0, 120, 'yearalbum', undefined, { year: 1999 }) },
+	{ player: false, cmd: c.albums(0, 120, 'album', undefined, { year: 0 }) },
+	{ player: false, cmd: c.albums(0, 120, 'album', undefined, { compilation: true }) },
+	{ player: false, cmd: c.artists(0, 200, undefined, { role: 'ALBUMARTIST' }) },
+	{ player: false, cmd: c.artists(200, 200, undefined, { role: 'COMPOSER', library: 'ABCDEF12' }) },
+	{ player: false, cmd: c.artists(0, 200, undefined, { genre: 12 }) },
+	{ player: false, cmd: c.hasRole('CONDUCTOR') },
+	{ player: false, cmd: c.hasRole('BAND', '1a2b3c4d') },
+	{ player: false, cmd: c.genres(0, 200) },
+	{ player: false, cmd: c.genres(0, 200, '1a2b3c4d', 'jazz') },
+	{ player: false, cmd: c.genreById(12) },
+	{ player: false, cmd: c.years(0, 500) },
+	{ player: false, cmd: c.years(500, 500, '1a2b3c4d') },
+	{ player: false, cmd: c.musicFolder(0, 200) },
+	{ player: false, cmd: c.musicFolder(200, 200, 4321) },
+	{ player: false, cmd: c.libraries() },
+	{ player: true, cmd: c.enqueue({ genre: 12 }, 'play') },
+	{ player: true, cmd: c.enqueue({ genre: 12 }, 'add') },
+	{ player: true, cmd: c.enqueue({ year: 1999 }, 'play') },
+	{ player: true, cmd: c.enqueue({ year: 0 }, 'add') },
+	{ player: true, cmd: c.enqueue({ folder: 4321 }, 'play') },
+	{ player: true, cmd: c.enqueue({ folder: 4321 }, 'next') },
+	{ player: true, cmd: c.infoMenu('genre', 12)(0, 100) },
+	{ player: true, cmd: c.infoMenu('year', 1999)(0, 100) },
+	{ player: true, cmd: c.infoMenu('folder', 4321)(0, 100) },
 ];
 
 test('builders match the fixture the gateway policy is tested against', () => {
@@ -195,6 +224,62 @@ test('sync builders take only well-formed player ids', () => {
 	for (const bad of ['', '-', '?', 'aa:bb:cc:dd:ee', 'aa:bb:cc:dd:ee:01 x', 'aa:bb:cc:dd:ee:zz', '../x']) {
 		expect(() => c.syncWith(bad), bad).toThrow(RangeError);
 	}
+});
+
+test('browse filters take only well-formed values', () => {
+	const bad: c.Filter[] = [
+		{ genre: -1 },
+		{ genre: '12;rescan' as unknown as number },
+		{ genre: 1.5 },
+		{ year: -1 },
+		{ year: 10000 },
+		{ year: '1999-2000' as unknown as number },
+		{ year: 'x' as unknown as number },
+		{ artist: 0 },
+		{ role: 'FOO' as c.Role },
+		{ role: 'albumartist' as c.Role },
+		{ role: 'ALBUMARTIST,COMPOSER' as c.Role },
+		{ library: '../x' },
+		{ library: '/srv/music' },
+		{ library: 'file:///srv/music' },
+		{ library: 'zz' },
+		{ library: 'a'.repeat(33) },
+	];
+	for (const f of bad) {
+		// Albums are not listed by role here, so a role is not looked at (see below).
+		if (f.role === undefined) expect(() => c.albums(0, 10, 'album', undefined, f), JSON.stringify(f)).toThrow(RangeError);
+		if (f.role !== undefined || f.library !== undefined || f.genre !== undefined) {
+			expect(() => c.artists(0, 10, undefined, f), JSON.stringify(f)).toThrow(RangeError);
+		}
+	}
+	// A sort from outside the gateway's list.
+	expect(() => c.albums(0, 10, 'newest' as c.AlbumSort)).toThrow(RangeError);
+	// No library chosen: no parameter at all.
+	expect(c.albums(0, 10, 'new', undefined, { library: null })).toEqual(['albums', 0, 10, c.ALBUM_TAGS, 'sort:new']);
+	expect(c.genres(0, 10, null)).toEqual(['genres', 0, 10]);
+	// Filters an album list doesn't take are not sent with artists, and vice versa.
+	expect(c.artists(0, 10, undefined, { compilation: true, year: 1999 })).toEqual(['artists', 0, 10]);
+	expect(c.albums(0, 10, 'album', undefined, { role: 'COMPOSER' })).toEqual(['albums', 0, 10, c.ALBUM_TAGS, 'sort:album']);
+	for (const r of c.ROLES) expect(c.role(r)).toBe(r);
+});
+
+test('the music folder is browsed by id, never by path or URL', () => {
+	expect(c.musicFolder(0, 50)).toEqual(['musicfolder', 0, 50, 'tags:cdt']);
+	for (const bad of ['/srv/music', 'file:///srv/music', '../1', '1,2', -1, 0, 1.5, 'url:file:///x', '7 ']) {
+		expect(() => c.musicFolder(0, 50, bad as unknown as number), String(bad)).toThrow(RangeError);
+		expect(() => c.enqueue({ folder: bad as unknown as number }, 'play'), String(bad)).toThrow(RangeError);
+		expect(() => c.infoMenu('folder', bad as unknown as number), String(bad)).toThrow(RangeError);
+	}
+	expect(() => c.infoMenu('year', -1)).toThrow(RangeError);
+	expect(c.infoMenu('year', 0)(0, 10)).toEqual(['yearinfo', 'items', 0, 10, 'year:0', 'menu:1']);
+});
+
+test('year links only for real years', () => {
+	expect(c.yearLink(1999)).toBe('#/year/1999');
+	expect(c.yearLink('0')).toBe('#/year/0');
+	for (const bad of ['javascript:alert(1)', '', null, -1, 12345, '19 99', '../x']) expect(c.yearLink(bad)).toBeNull();
+	expect(c.link('genre', 12)).toBe('#/genre/12');
+	expect(c.link('folder', '"><x')).toBeNull();
 });
 
 test('app and info menus validate their names and ids', () => {

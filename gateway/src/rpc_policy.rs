@@ -122,7 +122,20 @@ enum V {
     ItemId,
     /// One of a fixed set of words.
     OneOf(&'static [&'static str]),
+    /// LMS virtual library ids: short lower- or upper-case hex (LMS derives them from an MD5).
+    Hex,
 }
+
+/// Contributor roles LMS browses by (`role_id:`). LMS fails outright on a name it doesn't
+/// know, so only these are passed on.
+const ROLES: &[&str] = &[
+    "ALBUMARTIST",
+    "ARTIST",
+    "COMPOSER",
+    "CONDUCTOR",
+    "BAND",
+    "TRACKARTIST",
+];
 
 fn value_ok(v: V, s: &str) -> bool {
     match v {
@@ -152,6 +165,7 @@ fn value_ok(v: V, s: &str) -> bool {
                     .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
         }
         V::OneOf(set) => set.contains(&s),
+        V::Hex => !s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_hexdigit()),
     }
 }
 
@@ -207,7 +221,7 @@ fn paging(a: &[String]) -> Result<(), Denied> {
     }
 }
 
-const LIBRARY: &[(&str, V)] = &[("library_id", V::ItemId)];
+const LIBRARY: &[(&str, V)] = &[("library_id", V::Hex)];
 
 fn with<'a>(base: &'a [(&'a str, V)], extra: &'a [(&'a str, V)]) -> Vec<(&'a str, V)> {
     base.iter().chain(extra).copied().collect()
@@ -251,7 +265,7 @@ pub fn check(
                         ("genre_id", V::Ids),
                         ("album_id", V::Ids),
                         ("year", V::Uint),
-                        ("role_id", V::Text),
+                        ("role_id", V::OneOf(ROLES)),
                         ("tags", V::Tags),
                     ],
                 ),
@@ -273,7 +287,7 @@ pub fn check(
                         ("year", V::Uint),
                         ("sort", V::Sort),
                         ("tags", V::Tags),
-                        ("role_id", V::Text),
+                        ("role_id", V::OneOf(ROLES)),
                         ("compilation", V::Bool),
                     ],
                 ),
@@ -307,6 +321,7 @@ pub fn check(
                     LIBRARY,
                     &[
                         ("search", V::Text),
+                        ("genre_id", V::Uint),
                         ("artist_id", V::Ids),
                         ("album_id", V::Ids),
                         ("year", V::Uint),
@@ -330,14 +345,17 @@ pub fn check(
             paging(&cmd[1..])?;
             params(
                 &cmd[3..],
+                // One numeric folder id: never `url:` (a path LMS would scan) or a list.
                 &[
-                    ("folder_id", V::Ids),
+                    ("folder_id", V::Uint),
                     ("tags", V::Tags),
                     ("return_top", V::Bool),
                 ],
             )?;
             Some(Kind::Plain)
         }
+        // LMS's virtual libraries (their ids and names), to browse within one.
+        "libraries" if cmd.len() == 1 => Some(Kind::Plain),
         "apps" | "radios" => {
             paging(&cmd[1..])?;
             params(&cmd[3..], &[])?;
@@ -2122,6 +2140,226 @@ mod tests {
         let e = crate::events::parse_line("aa%3Abb%3Acc%3Add%3Aee%3A01 playlist newsong 10.5 3")
             .unwrap();
         assert_eq!(e.tokens, vec!["playlist", "newsong", "10.5", "3"]);
+    }
+
+    #[test]
+    fn my_music_browse_options_are_allowed() {
+        for cmd in [
+            json!(["albums", 0, 120, "tags:aljyS", "sort:new"]),
+            json!(["albums", 0, 100, "tags:aljyS", "sort:random"]),
+            json!(["albums", 0, 120, "tags:aljyS", "sort:album", "genre_id:12"]),
+            json!([
+                "albums",
+                0,
+                120,
+                "tags:aljyS",
+                "sort:yearalbum",
+                "year:1999"
+            ]),
+            json!(["albums", 0, 120, "tags:aljyS", "compilation:1"]),
+            json!(["albums", 0, 120, "tags:aljyS", "library_id:1a2b3c4d"]),
+            json!(["albums", 0, 1, "artist_id:5", "role_id:COMPOSER"]),
+            json!(["artists", 0, 200, "role_id:ALBUMARTIST"]),
+            json!(["artists", 0, 1, "role_id:CONDUCTOR", "library_id:ABCDEF12"]),
+            json!(["artists", 0, 200, "genre_id:12"]),
+            json!(["genres", 0, 200, "library_id:1a2b3c4d"]),
+            json!(["genres", 0, 1, "genre_id:12"]),
+            json!(["years", 0, 500, "hasAlbums:1", "library_id:1a2b3c4d"]),
+            json!(["musicfolder", 0, 200, "tags:cdt"]),
+            json!(["musicfolder", 0, 200, "folder_id:4321", "tags:cdt"]),
+            json!(["libraries"]),
+        ] {
+            assert!(ok("", cmd).player.is_empty());
+        }
+        for role in ROLES {
+            ok("", json!(["artists", 0, 1, format!("role_id:{role}")]));
+        }
+        for sel in ["genre_id:12", "year:1999", "folder_id:4321", "track_id:5"] {
+            ok(MINE, json!(["playlistcontrol", "cmd:load", sel]));
+            ok(MINE, json!(["playlistcontrol", "cmd:add", sel]));
+        }
+        ok(
+            MINE,
+            json!(["folderinfo", "items", 0, 100, "folder_id:7", "menu:1"]),
+        );
+        ok(
+            MINE,
+            json!(["yearinfo", "items", 0, 100, "year:1999", "menu:1"]),
+        );
+        ok(
+            MINE,
+            json!(["genreinfo", "items", 0, 100, "genre_id:3", "menu:1"]),
+        );
+    }
+
+    /// The music folder browses by numeric id only: a path, a URL or anything else that
+    /// could make LMS read (or scan) a location of the client's choosing is refused.
+    #[test]
+    fn music_folder_takes_one_numeric_id_and_never_a_path() {
+        for bad in [
+            "folder_id:",
+            "folder_id:abc",
+            "folder_id:-1",
+            "folder_id:1,2",
+            "folder_id:/srv/music",
+            "folder_id:../1",
+            "folder_id:1 OR 1=1",
+            "folder_id:1;rescan",
+            "folder_id:0x10",
+            "folder_id:1234567890123",
+            "url:file:///srv/music",
+            "url:file:///etc",
+            "url:smb://10.0.0.10/music",
+            "url:http://lms.example.lan/x",
+            "folder:/etc",
+            "path:/srv/music",
+            "type:audio",
+        ] {
+            denied("", json!(["musicfolder", 0, 10, bad]));
+        }
+        denied(
+            "",
+            json!(["musicfolder", 0, 10, "folder_id:1", "folder_id:2"]),
+        );
+        denied(
+            "",
+            json!(["musicfolder", 0, 10, "folder_id:1", "url:file:///x"]),
+        );
+        denied("", json!(["musicfolder", 0, 501]));
+        denied("", json!(["musicfolder", "/srv/music", 10]));
+        denied(MINE, json!(["musicfolder", 0, 10]));
+        // Playing a folder or its context menu: by id only.
+        for bad in [
+            "folder_id:/srv/music",
+            "folder_id:x",
+            "url:file:///srv/music/a",
+        ] {
+            denied(MINE, json!(["playlistcontrol", "cmd:load", bad]));
+            denied(MINE, json!(["folderinfo", "items", 0, 10, bad]));
+        }
+    }
+
+    /// LMS's music folder answers carry each entry's file URL (its path on the server): the
+    /// app gets ids, names and types only.
+    #[test]
+    fn music_folder_answers_lose_their_paths() {
+        let lms = json!({"count": 4, "folder_loop": [
+            {"id": 11, "filename": "Jazz", "type": "folder", "url": "file:///srv/music/Jazz", "title": "Jazz"},
+            {"id": 12, "filename": "01 Song.flac", "type": "track", "coverid": "c0ffee12", "duration": "3:01",
+             "url": "file:///srv/music/Jazz/01%20Song.flac", "title": "Song"},
+            {"id": 13, "filename": "/srv/music/odd/name.mp3", "type": "track",
+             "url": "smb://10.0.0.10/music/odd/name.mp3", "title": "C:\\Music\\name.mp3"},
+            {"id": 14, "filename": "AC/DC Live", "type": "folder", "path": "/srv/music/AC/DC Live"}
+        ]});
+        let out = filter_response(Kind::Plain, lms, &|_| true);
+        let text = out.to_string();
+        for leak in ["file:", "/srv/", "smb:", "10.0.0.10", "C:\\\\"] {
+            assert!(!text.contains(leak), "{leak} leaked: {text}");
+        }
+        let rows = out["folder_loop"].as_array().unwrap();
+        assert_eq!(rows.len(), 4, "entries stay, only their paths go");
+        assert_eq!(
+            rows[0],
+            json!({"id": 11, "filename": "Jazz", "type": "folder", "title": "Jazz"})
+        );
+        assert_eq!(rows[1]["title"], "Song");
+        assert_eq!(rows[1]["coverid"], "c0ffee12");
+        assert!(rows[2].get("filename").is_none() && rows[2].get("title").is_none());
+        assert_eq!(rows[3]["filename"], "AC/DC Live");
+    }
+
+    /// Regression: `role_id:` took free text, and LMS fails outright on a role it doesn't know.
+    #[test]
+    fn roles_are_a_fixed_list() {
+        let long = "A".repeat(300);
+        for bad in [
+            "",
+            "FOO",
+            "albumartist",
+            "ALBUMARTIST,COMPOSER",
+            "ALBUMARTIST;rescan",
+            "COMPOSER ",
+            "1",
+            "../ARTIST",
+            "/srv/music",
+            "http://lms.example.lan/",
+            long.as_str(),
+        ] {
+            denied("", json!(["artists", 0, 10, format!("role_id:{bad}")]));
+            denied("", json!(["albums", 0, 10, format!("role_id:{bad}")]));
+        }
+        denied("", json!(["artists", 0, 10, "role_id:ARTIST\u{0}"]));
+    }
+
+    #[test]
+    fn library_ids_are_short_hex() {
+        for bad in [
+            "",
+            "zz",
+            "1a2b-3c4d",
+            "1a2b.3c4d",
+            "../1a2b",
+            "/srv/music",
+            "file:///srv/music",
+            "1a2b3c4d;rescan",
+            "1a2b 3c4d",
+            "0123456789abcdef0123456789abcdef0",
+        ] {
+            for cmd in ["albums", "artists", "genres", "years", "titles"] {
+                denied("", json!([cmd, 0, 10, format!("library_id:{bad}")]));
+            }
+        }
+        ok(
+            "",
+            json!([
+                "albums",
+                0,
+                10,
+                "library_id:0123456789abcdef0123456789abcdef"
+            ]),
+        );
+        // `libraries` lists them and takes nothing else (`getid` needs a player and is of
+        // no use to the app).
+        for bad in [
+            json!(["libraries", 0, 10]),
+            json!(["libraries", "getid"]),
+            json!(["libraries", "url:file:///x"]),
+        ] {
+            denied("", bad.clone());
+            denied(MINE, bad);
+        }
+        denied(MINE, json!(["libraries"]));
+    }
+
+    #[test]
+    fn new_browse_parameters_are_typed() {
+        for bad in [
+            json!(["albums", 0, 10, "genre_id:pop"]),
+            json!(["albums", 0, 10, "genre_id:1;rescan"]),
+            json!(["albums", 0, 10, "year:1999-2000"]),
+            json!(["albums", 0, 10, "year:-1"]),
+            json!(["albums", 0, 10, "year:1".to_string() + &"9".repeat(20)]),
+            json!(["albums", 0, 10, "year:'1999'"]),
+            json!(["albums", 0, 10, "compilation:2"]),
+            json!(["albums", 0, 10, "compilation:yes"]),
+            json!(["albums", 0, 10, "compilation:1", "compilation:0"]),
+            json!(["albums", 0, 10, "sort:newest"]),
+            json!(["albums", 0, 10, "sort:new;rescan"]),
+            json!(["albums", 0, 10, "artist_id:x"]),
+            json!(["albums", 0, 10, "url:file:///srv/music"]),
+            json!(["artists", 0, 10, "genre_id:x"]),
+            json!(["artists", 0, 10, "compilation:1"]),
+            json!(["genres", 0, 10, "genre_id:1,2"]),
+            json!(["genres", 0, 10, "genre_id:x"]),
+            json!(["years", 0, 10, "year:x"]),
+            json!(["years", 0, 10, "hasAlbums:2"]),
+        ] {
+            denied("", bad);
+        }
+        for bad in ["year:x", "year:1999.5", "year:/srv", "genre_id:1"] {
+            denied(MINE, json!(["yearinfo", "items", 0, 10, bad, "genre_id:x"]));
+        }
+        denied(MINE, json!(["genreinfo", "items", 0, 10, "genre_id:-1"]));
     }
 
     /// Regression: an app's `search:` took URLs and paths (`search:http://10.0.0.1/`,

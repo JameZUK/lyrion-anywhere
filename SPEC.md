@@ -297,6 +297,8 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 
 **Library and discovery**
 - Artists, album artists, composers, albums (grid/list, sort, filter), tracks, genres, years, folders, new music, random mix.
+- LMS "My Music" parity: New Music (in the sidebar), Albums with sorting, Artists by role (album artists by default, all artists, and composers, conductors and bands where the library has them), Genres (albums and artists), Years, Compilations, Random Albums (shuffle again), and the Music Folder (browsed and played by folder id only; paths never reach the app).
+- Virtual libraries: when LMS reports any, the Library page offers a picker; the choice narrows the browse lists and is remembered per user on the device.
 - Global search with instant results grouped by type.
 - Saved playlists: create, edit, reorder, delete.
 - Favorites, including adding to and removing from them.

@@ -15,6 +15,7 @@
 	import OfflineMode from '$lib/components/OfflineMode.svelte';
 	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
 	import { forgetOwner, rememberOwner } from '$lib/offline/settings';
+	import { library } from '$lib/state/library.svelte';
 
 	let { children } = $props();
 
@@ -44,8 +45,10 @@
 		if (app.status === 'signed-in' && user) {
 			rememberOwner(user);
 			void downloads.setUser(user, true);
+			void library.start(user, (c) => api.rpc('', c));
 		} else if (app.status === 'signed-out') {
 			offlinePlayer.stop();
+			library.stop();
 			forgetOwner();
 			void downloads.setUser(null);
 		}
@@ -97,6 +100,8 @@
 
 	const NAV = [
 		{ href: '#/', label: 'Now playing', icon: 'home', match: (p: string) => p === '/' },
+		{ href: '#/library', label: 'Library', icon: 'library', match: (p: string) => MORE_LIBRARY.some((l) => p.startsWith(l)) },
+		{ href: '#/new', label: 'New Music', icon: 'new', match: (p: string) => p.startsWith('/new') },
 		{ href: '#/albums', label: 'Albums', icon: 'album', match: (p: string) => p.startsWith('/album') },
 		{ href: '#/artists', label: 'Artists', icon: 'artist', match: (p: string) => p.startsWith('/artist') },
 		{ href: '#/playlists', label: 'Playlists', icon: 'queue', match: (p: string) => p.startsWith('/playlist') },
@@ -107,8 +112,10 @@
 		{ href: '#/downloads', label: 'Downloads', icon: 'download', match: (p: string) => p.startsWith('/downloads') },
 		{ href: '#/settings', label: 'Settings', icon: 'settings', match: (p: string) => p.startsWith('/settings') },
 	];
+	// Library sections without a sidebar entry of their own: under "Library".
+	const MORE_LIBRARY = ['/library', '/genre', '/year', '/folder', '/compilations', '/random'];
 	// Phones: five tabs; the library sections are one tap away on the Library page.
-	const LIBRARY = ['/album', '/artist', '/playlist', '/favourites', '/library', '/apps', '/browse', '/downloads'];
+	const LIBRARY = ['/album', '/artist', '/playlist', '/favourites', '/apps', '/browse', '/downloads', '/new', ...MORE_LIBRARY];
 	const TABS = [
 		{ href: '#/', label: 'Playing', icon: 'home', match: (p: string) => p === '/' },
 		{ href: '#/library', label: 'Library', icon: 'library', match: (p: string) => LIBRARY.some((l) => p.startsWith(l)) },
@@ -201,6 +208,7 @@
 		flex-direction: column;
 		gap: 0.15rem;
 		padding: 1.25rem 0.75rem;
+		overflow-y: auto;
 		border-right: 1px solid var(--line);
 		background: var(--bg-raised);
 	}
