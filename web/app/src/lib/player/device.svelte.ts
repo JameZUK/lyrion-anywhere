@@ -323,6 +323,14 @@ class DevicePlayer {
 					note: (m) => this.#note(m),
 					onFail: (why) => void this.#mediaFailed(why),
 				});
+				out.onExternalPause = () => {
+					// The system paused us (a call, another app's audio): pause the player in LMS
+					// too, so every controller shows it paused and Play resumes it, rather than
+					// LMS carrying on as if it were playing while nothing is heard.
+					if (!this.mac || this.detail.output !== 'Playing') return;
+					this.#note('pausing the player: the system paused playback');
+					api.rpc(this.mac, ['pause', 1]).catch((e: Error) => this.#note(`could not pause the player: ${e.message}`));
+				};
 				out.onDrained = () => {
 					this.#reportPosition();
 					if (!this.#drainedSent) this.#worker?.postMessage({ cmd: 'media-drained' });
@@ -406,7 +414,8 @@ class DevicePlayer {
 		const events = ['pointerup', 'touchend', 'click', 'keydown'] as const;
 		const resume = async () => {
 			void this.#keepAlive.start();
-			this.#media?.resume();
+			// Not while LMS has the player paused: that would play the old queued audio.
+			if (!String(this.detail.output ?? '').startsWith('Paused')) this.#media?.resume();
 			await this.#ctx?.resume().catch(() => {});
 			const ctxOk = !this.#ctx || this.#ctx.state === 'running';
 			const mediaOk = !this.#media || !this.#media.audio.paused;
@@ -557,14 +566,17 @@ class DevicePlayer {
 		} else {
 			// Re-arm once more audio has been appended (e.g. the final partial frame).
 			if (this.#drainedSent && media.bufferedEnd > this.#drainedAtEnd + 1e-3) this.#drainedSent = false;
-			if (!this.#drainedSent && !media.audio.paused && media.ahead < 0.1 && now - this.#advancedAt > 1000) {
-				// Stalled with (almost) nothing buffered: everything appended has played, or the
-				// browser won't play a tiny tail without an end of stream. Browsers don't always
-				// fire "waiting" again, so this is detected here.
+			if (!this.#drainedSent && media.atEnd && now - this.#advancedAt > 1000) {
+				// Stalled at the end of everything appended: it has all played, or the browser
+				// won't play a tiny tail without an end of stream. Browsers don't always fire
+				// "waiting" again, so this is detected here. (A stall anywhere else is not the
+				// end: counting it as one would report audio still to come as played.)
 				this.#drainedSent = true;
 				this.#drainedAtEnd = media.bufferedEnd;
 				this.#advancedAt = now;
 				this.#worker.postMessage({ cmd: 'media-drained' });
+			} else if (!media.audio.paused && now - this.#advancedAt > 1000 && media.unstick()) {
+				this.#advancedAt = now;
 			}
 		}
 	}

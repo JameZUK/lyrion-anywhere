@@ -11,7 +11,7 @@ const V = new URL(self.location.href).searchParams.get('v');
 // Messages that arrive while the helpers load wait here, then go to the real handler.
 const early = [];
 onmessage = (e) => early.push(e);
-const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, closeAction, describeSeek, loadCore, streamFailureAction } =
+const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, closeAction, describeSeek, loadCore, socketSilent, streamFailureAction } =
   await import(
   `./reconnect.js${V && /^[\w.-]{1,64}$/.test(V) ? `?v=${V}` : ''}`
 );
@@ -49,6 +49,8 @@ let tickTimer = null;
 let open = false;
 let attempt = 0;
 let disconnectedAt = 0;
+// When the socket last brought anything (LMS polls every 5 s): a silent one has died.
+let lastHeard = 0;
 // Frames received in this session; on resume the gateway resends anything after this.
 let received = 0;
 const outbox = new Outbox(2000);
@@ -153,7 +155,8 @@ onmessage = async (e) => {
   } else if (msg.cmd === 'media-drained') {
     // Media mode: the element played everything appended (it is waiting for more). Count
     // it all, so the core sees the end of the playlist and LMS stops ("played out").
-    if (player && segmenter) {
+    // Only while playing: a drain reported around a pause or a flush is not the end.
+    if (player && segmenter && !mediaWaiting && lastOutput === 'Playing') {
       if (segmenter.pending_frames() > 0) {
         // Something is still held back (a partial frame): send it; the element plays on.
         postSegment(segmenter.flush());
@@ -188,14 +191,35 @@ function connect(resume) {
   ws.onopen = () => {
     ws.send(resume ? JSON.stringify({ token, resume: { session, secret, received } }) : token);
   };
-  ws.onmessage = (m) => (typeof m.data === 'string' ? onGreeting(JSON.parse(m.data)) : onFrames(m.data));
+  ws.onmessage = (m) => {
+    lastHeard = now();
+    if (typeof m.data === 'string') onGreeting(JSON.parse(m.data));
+    else onFrames(m.data);
+  };
   ws.onclose = (e) => onClose(e.code, e.reason);
+}
+
+/**
+ * The socket went silent without closing (it died on a network change, and the browser
+ * hasn't noticed): stop waiting for it and resume on a new one, while the gateway still
+ * holds the session.
+ */
+function abandonSocket() {
+  const dead = ws;
+  dead.onopen = dead.onmessage = dead.onclose = null;
+  try {
+    dead.close();
+  } catch {
+    /* already closing */
+  }
+  onClose(CLOSE.ABNORMAL, 'no messages from the server');
 }
 
 function onGreeting(g) {
   session = g.session;
   secret = g.secret;
   open = true;
+  lastHeard = now();
   attempt = 0;
   if (!g.resumed || !player) {
     // A fresh session: LMS sees a new connection, so start from a clean player.
@@ -306,6 +330,7 @@ async function fetchStream(id, n) {
   const current = () => stream && stream.id === id;
   let headersSeen = false;
   let lastAck = 0;
+  let renewed = false;
   for (let tries = 0; ; tries++) {
     // Resume from what the core has already received for this stream.
     const os = player.open_stream();
@@ -346,6 +371,7 @@ async function fetchStream(id, n) {
           return;
         }
         tries = 0;
+        renewed = false;
         seekMark('bytes');
         player.on_stream_data(value, now());
         const got = player.open_stream();
@@ -356,7 +382,17 @@ async function fetchStream(id, n) {
       }
     } catch (err) {
       if (err.name === 'AbortError' || !current()) return;
-      if (streamFailureAction(status) === 'fail' || tries >= STREAM_RETRIES) {
+      const action = streamFailureAction(status, renewed);
+      if (action === 'renew') {
+        // Most likely the access token expired (a long pause, or a page in the background
+        // whose renewal timer was held back): get a new one, then carry on.
+        renewed = true;
+        log(`stream ${n}: access token refused; renewing`);
+        await renewToken();
+        if (!current()) return;
+        continue;
+      }
+      if (action === 'fail' || tries >= STREAM_RETRIES) {
         log(`stream ${n} failed after ${tries} retries at byte ${offset}: ${err.message} (HTTP ${status || 'none'})`);
         player.on_stream_error(now());
         runActions();
@@ -370,8 +406,19 @@ async function fetchStream(id, n) {
   }
 }
 
+/** Ask the page for a new access token; resolves once it arrives (or after 15 s). */
+async function renewToken() {
+  const old = token;
+  postMessage({ authFailed: true });
+  for (let waited = 0; token === old && waited < 15_000; waited += 100) await sleep(100);
+}
+
 function tick() {
   if (!player) return;
+  if (open && socketSilent(lastHeard, now())) {
+    log('no messages from the server for a while; reconnecting');
+    abandonSocket();
+  }
   player.tick(now());
   runActions();
 
