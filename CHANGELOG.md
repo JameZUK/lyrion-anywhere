@@ -4,6 +4,26 @@ Dated entries, newest first.
 
 ## 2026-10-11
 
+### Analysis and waveform (A3)
+- **Gateway track analysis:** `GET /v1/analysis/track/{id}` gives a track's waveform, EBU R128 loudness, loudness range, true peak, silence and fades. It answers in JSON or a compact binary form, with ETags.
+  - **Access:** the same rules as downloads.
+  - **How it runs:** the gateway decodes the track with the core, off the async runtime, and caches the result on disk by the stable track key.
+  - **While it runs:** a request waits up to 10 s, then gets 202 with `Retry-After`.
+  - **Bounded:** one analysis at a time, per-user limits (429), size and duration caps (413) and a deadline (504). Corrupt files are a clean 422.
+  - **Switches:** `--no-analysis` and `--analysis-cache-mb`, and the plugin's *Track analysis* setting. `/v1/me` reports `features.analysis`.
+- **Web app:** a waveform seek bar in Now playing. The played part is in the accent colour, and it is themed for every theme in light and dark. It is still the accessible native slider, with a plain-slider fallback.
+- **Android:**
+  - a waveform seek bar in Now Playing;
+  - **Loudness levelling** in Settings, off by default (bit-perfect). It levels each track to −18 LUFS from its R128 analysis, falls back to ReplayGain tags, uses the true-peak limiter, and the signal path shows the source.
+- **Core:** decoding of a whole seekable file, with decoder panics caught (a new robustness test found a Symphonia WAV header overflow). Binary analyses now decode exactly to the values encoded.
+- **Demo LMS:** serves generated audio, so waveforms can be tried without a library.
+- **Tests:**
+  - Rust: 605 across the workspace, including 12 gateway integration tests for the endpoint's security and limits, and end-to-end levelling;
+  - web: 286 Vitest, including decoder robustness;
+  - Android: 92 JVM/Robolectric tests;
+  - plugin: 825 Perl tests.
+  - Not yet run on a phone: see the A3 status in `docs/plans/native-apps.md`.
+
 ### Android: the phone as a player (A1)
 - **"Play on this phone":** the phone becomes an LMS player through the gateway, like the web app's player. LMS owns the queue.
   - Reconnects resume the same player, and LMS never sees it leave.

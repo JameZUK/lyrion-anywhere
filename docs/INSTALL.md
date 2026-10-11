@@ -121,6 +121,8 @@ The main `serve` options:
 | `--ffmpeg` | `ffmpeg` on `PATH` | ffmpeg for MP3/Opus downloads (an absolute path). |
 | `--no-transcode` | | Offer downloads in their original format only, even with ffmpeg installed. |
 | `--download-cache-mb` | 2048 | Disk space (MiB, 16–1048576) for transcoded downloads, kept in `<data-dir>/download-cache`. The least recently used are removed first. |
+| `--no-analysis` | | Turn off track analysis (the apps' waveform seek bar and R128 loudness levelling; see [`PROTOCOL.md`](PROTOCOL.md#track-analysis-get-v1analysistrackid)). The apps then show a plain seek bar and level from ReplayGain tags. |
+| `--analysis-cache-mb` | 64 | Disk space (MiB, 1–65536) for track analyses, kept in `<data-dir>/analysis-cache` (about 2 KiB a track). The least recently used are removed first. |
 | `--max-connections` | 1024 | Open client connections at once (16–65536); beyond this, new ones wait. Request heads and bodies each have 15 s, and idle keep-alive connections close after 15 s. |
 
 The Docker image has no ffmpeg, so downloads from it are original-format only.

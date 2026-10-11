@@ -31,7 +31,7 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
 | `POST /v1/auth/pair` | `{"code","device_name"}` | Same, with `refresh_token` in the body (native apps) |
 | `POST /v1/auth/refresh` | none (cookie), or `{"refresh_token"}` | A new access token and a **rotated** refresh token |
 | `POST /v1/auth/logout` | bearer access token | 204; revokes this device and ends its sessions. Sends `Clear-Site-Data: "cache"` |
-| `GET /v1/me` | bearer access token | `{user, device}` |
+| `GET /v1/me` | bearer access token | `{user, device, features}` (`features.analysis`: the server offers track analysis) |
 | `GET /v1/account` | bearer access token | `{username, role, totp_enabled, downloads: {enabled, formats}}` (`formats`: what this user may download that this server can produce; see [Downloads](#downloads)) |
 | `POST /v1/account/totp/setup` | `{"password"}` | `{secret, uri, qr_svg}`: a new secret, active once confirmed. A wrong password is 401 and counts towards a lockout of its own (per user), separate from sign-in |
 | `POST /v1/account/totp/confirm` | `{"code"}` | 204; two-step is now on |
@@ -70,7 +70,7 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
   - malformed or unknown fields return 400, and bodies over 4 KiB return 413.
 - **Revocation:** revoking a device, disabling or deleting a user, an admin password reset, logging out, the device limit, or detecting refresh-token reuse closes that device's live player session immediately (1008, "access revoked"), then removes its LMS player.
 - **Client address:** for lockouts and audit, the gateway uses the TCP peer, unless the peer is a trusted proxy (loopback or `--trusted-proxy`). Then, if `--client-ip-header` names a header (e.g. `CF-Connecting-IP`) and it holds one valid address, that; otherwise `X-Forwarded-For` read from the right, skipping trusted proxies: the first address no trusted proxy vouches beyond. Entries further left are written by the client and ignored, so proxies may append to the header.
-- **Response headers:** every `/v1/` response except artwork (and downloads, which set `private, no-store`) carries `Cache-Control: no-store`. All responses, the "TLS required" 403 included, carry the security headers: CSP, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Cross-Origin-Opener-Policy` and a `Permissions-Policy` that turns off camera, microphone, geolocation, payment, USB and other features the app doesn't use.
+- **Response headers:** every `/v1/` response except artwork (and downloads, which set `private, no-store`) carries `Cache-Control: no-store` (track analyses set `private, no-cache`, with an ETag). All responses, the "TLS required" 403 included, carry the security headers: CSP, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Cross-Origin-Opener-Policy` and a `Permissions-Policy` that turns off camera, microphone, geolocation, payment, USB and other features the app doesn't use.
 - **Origins:** an `Origin` is accepted if it is the request's own host over HTTPS, or listed with `--allowed-origin`. `http://` same-origin is accepted only on plain-HTTP requests, which the gateway serves only on loopback without proxy headers (local development).
 - **`Clear-Site-Data: "cache"`** on sign-out (and on the reuse refusal) clears cached artwork and responses from the browser. It leaves IndexedDB alone, so offline downloads stay; browsers may also empty the service worker's caches, which it refills.
 
@@ -351,6 +351,59 @@ Headers: `Content-Type`, `Content-Length`, `Accept-Ranges: bytes`, `Cache-Contro
 - The permission is read on every request, so an admin's change applies at once.
 - Each download is logged in the audit log (event `download`, detail `track <id> <format>`), at most once per track and device an hour, so resumes and retries don't flood it.
 - ffmpeg is run with a fixed argument list (no shell) and an empty environment, its input demuxer forced from a fixed table of LMS file types, `-protocol_whitelist file`, MOV external references off, and input and output files the gateway itself named in its cache directory. At most one transcode runs at once, each output is capped in size, and leftovers are removed.
+
+## Track analysis (`GET /v1/analysis/track/{id}`)
+
+A library track's waveform and loudness, for waveform seek bars and loudness levelling (plan §4, milestone A3). Computed by the gateway with the core (`core::analysis`) the first time it is asked for, then cached. `/v1/me` says whether a server offers it: `"features": {"analysis": true}`.
+
+**Who may ask:** the same rules as downloads. A bearer access token (401 without a valid one) and the user's download permission (403 `downloads are not allowed for this account` without it). Only local library files: streams and radio are 404. No `X-Anywhere-Client` header is needed.
+
+**Query and encoding:** nothing, `?format=json` or `?format=binary`; anything else is 400 `unknown parameter`. Without a query, `Accept: application/vnd.lyrion-anywhere.analysis` (not `q=0`) asks for the binary form; otherwise the answer is JSON.
+
+**JSON** (`application/json`), about 3 KiB:
+
+```json
+{"version":1,"sample_rate":44100,"channels":2,"frames":7938000,
+ "integrated_lufs":-9.84,"loudness_range_lu":5.2,"max_momentary_lufs":-6.1,"max_short_term_lufs":-7.9,
+ "true_peak_dbtp":0.31,"sample_peak_dbfs":-0.01,"leading_silence_s":0.0,"trailing_silence_s":1.25,
+ "fade_in":{"slope_db_per_s":0.4,"start_lufs":-12.0,"end_lufs":-10.2,"length_s":0.0,"fade":false},
+ "fade_out":{"slope_db_per_s":-4.1,"start_lufs":-10.0,"end_lufs":-38.6,"length_s":6.3,"fade":true},
+ "invalid_samples":0,"waveform":{"peak":"<base64>","rms":"<base64>"}}
+```
+
+- Loudness per EBU R128 / ITU-R BS.1770-4 (LUFS, LU), true peak in dBTP (4× oversampled), sample peak in dBFS, all rounded to 0.01. `null` where there is nothing to measure (silence, or too short for a loudness range). Mono files are measured as played: dual mono.
+- `waveform.peak` and `waveform.rms`: the same number of buckets (1,000 for any track long enough), each a byte from 0 (silence) to 255 (full scale), linear, base64-encoded.
+- Fades are the least-squares loudness slope over the first and last 8 s of audio; `fade` marks a deliberate one.
+
+**Binary** (`application/vnd.lyrion-anywhere.analysis`), about 2.1 KiB, little-endian:
+
+```text
+"LAAN"  u16 version (1)
+u32 sample rate    u16 channels    u64 frames
+f32 ×6  integrated LUFS, loudness range LU, max momentary, max short-term, true peak dBTP,
+        sample peak dBFS   (NaN = null)
+f32 ×2  leading, trailing silence (s)
+edge ×2 fade in, fade out: f32 slope dB/s, f32 start LUFS (NaN = null), f32 end LUFS (NaN = null),
+        f32 length s, u8 fade (0 or 1)
+u64     invalid (non-finite) samples
+u16 N   (at most 10,000)   u8 ×N peak   u8 ×N RMS
+```
+
+Clients must treat both forms as untrusted: check the magic, the version, every length (no trailing bytes, at most 20,250 bytes in all), that every float is finite and within ±10⁶ except the NaN "null"s, and that the fade flags are 0 or 1. The web app (`web/app/src/lib/analysis/format.ts`) and the core (`TrackAnalysis::from_bytes`, used by the native apps) do so and are fuzz-tested.
+
+**Caching:** responses carry an `ETag` (different for the two encodings), `Vary: Accept` and `Cache-Control: private, no-cache`; `If-None-Match` gets 304. On the server, results are kept on disk (`<data-dir>/analysis-cache`, 64 MiB by default, least recently used removed first), named by a hash of the stable track key (as for downloads: salted, survives rescans), the file's size and modification time as LMS reports them, and the analysis version. A changed file is analysed afresh.
+
+**While it runs:** a request waits up to 10 s for the result. If it isn't ready by then, the answer is **202** `{"status":"pending"}` with `Retry-After: 3`, and the analysis carries on: ask again. Requests for a file being analysed join that job (one analysis per file at a time). A cached result is never limited.
+
+**Limits:**
+- One analysis runs at a time (the rest queue, at most 16 in all). One user may have 2 analyses of their own queued or running, and 8 analysis requests open; beyond either, **429** with `Retry-After: 5`.
+- Files over 1 GiB, or tracks over 2 hours, are **413**: refused before fetching when LMS's size or duration says so, otherwise while fetching or decoding.
+- An analysis (fetch and decode together) that takes over 5 minutes is abandoned: **504** `analysis took too long`.
+- Decoding and analysis run on a blocking thread, never on the async runtime; the deadline is checked between packets. A decoder panic is caught.
+- Formats: FLAC, MP3, AAC and ALAC in MP4 (the index may be at the end: the file is read whole and seekable), Ogg Vorbis, Ogg Opus and WAV. Other types (WMA, APE, WavPack, DSD, AIFF, …) are **415** before anything is fetched.
+- A file that can't be decoded (corrupt, hostile, or truncated to nothing) is **422** `the audio could not be analysed`. 413, 422 and 504 are remembered for 10 minutes, so the same file isn't fetched and decoded again meanwhile.
+
+**Other answers:** 404 `not found` (a bad or unknown id, as for downloads), 404 `not analysable` (not a library file), 404 `analysis is not available on this server` (turned off with `--no-analysis` or the plugin's setting), 502/504 `music server unavailable`/`timed out` (not remembered).
 
 ## Events (`WS /v1/events`)
 

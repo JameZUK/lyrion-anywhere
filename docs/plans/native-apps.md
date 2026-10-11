@@ -183,9 +183,9 @@ Plexamp's waveform seek bar ("seekprint"), loudness levelling and sweet fades al
 | What | Detail |
 |---|---|
 | Output per track | Waveform peaks (about 1,000 buckets of peak plus RMS, 2–4 KiB); EBU R128 integrated loudness, loudness range and true peak; leading and trailing silence; fade-in and fade-out shape (for smart transitions). Album loudness is aggregated from its tracks |
-| Endpoint | `GET /v1/analysis/track/{id}` → compact JSON (or CBOR), cached with `ETag`; keyed by the stable track key (survives rescans) |
+| Endpoint | `GET /v1/analysis/track/{id}` → compact JSON or a binary form (about 2.1 KiB), with `ETag`; keyed by the stable track key (survives rescans) |
 | When | On demand the first time a track is played or shown, plus an optional low-priority background pass. It is CPU-capped (one job, idle priority) because many LMS hosts are Raspberry Pis |
-| How | Fetch the original through the existing download path, decode with the core (Symphonia), analyse in streaming fashion (constant memory). Results go in the gateway's database (a few KiB per track) |
+| How | Fetch the original through the existing download path, decode with the core (Symphonia), analyse in streaming fashion (constant memory). Results are cached on disk under the data directory (about 2 KiB per track, LRU), as built in A3 |
 | Security | Same rules as downloads: permission checks, library tracks only, no paths in output, limits per user |
 
 **Clients:**
@@ -363,8 +363,51 @@ Built, in CI. **Verified on the host and the JVM only: nothing has run on a phon
 **Known gaps (later milestones or follow-ups)**
 - Elapsed time doesn't yet subtract the device's output latency (AAudio timestamps): a few tens of ms early.
 - The service starts while the app is in front. If LMS starts playback on an idle phone whose app is in the background, the media session appears only once the app is opened.
-- No settings screen for DSP yet: it is off (bit-perfect), with the engine and API ready.
+- No settings screen for DSP yet: it is off (bit-perfect), with the engine and API ready. (A3 adds the loudness levelling switch.)
 - Volume keys control Android's stream volume, not LMS's.
+
+### A3 status (2026-10-11)
+
+Built, in CI. **Verified on the host, in a browser and on the JVM; nothing has run on a phone yet.**
+
+**Gateway: `GET /v1/analysis/track/{id}`** (`gateway/src/analysis.rs`; contract in `docs/PROTOCOL.md`, decision SPEC D18)
+- Same access as downloads (token, download permission, library files only). The original is fetched as for downloads into a temporary file, decoded with the core on a blocking thread and analysed in one pass. A new core entry point (`decode_seekable`, `analyse_source`) reads the whole file seekably, so MP4 with the index at the end works; it has a stop check, a duration limit and a cap on consecutive corrupt packets, and it catches decoder panics.
+- **Pending behaviour (decided):** a request waits up to 10 s; after that it gets 202 with `Retry-After: 3` and the job carries on. Requests for the same file join one job.
+- **Limits:** one analysis at a time, a queue of 16, 2 jobs and 8 open requests per user (429), 1 GiB and 2 hours (413, before fetching when LMS knows), a 5-minute deadline (504). 413, 422 (corrupt) and 504 are remembered for 10 minutes.
+- **Cache:** the binary form on disk (`<data-dir>/analysis-cache`, 64 MiB, LRU), named by the salted stable key, LMS's size and mtime, and the analysis version; ETags and 304s.
+- `--no-analysis`, `--analysis-cache-mb`; the plugin's *Track analysis* setting; `/v1/me` reports `features.analysis`.
+- FLAC, MP3, AAC/ALAC (MP4), Vorbis, Opus and WAV. Others (AIFF, WMA, APE, WavPack, DSD) are 415.
+
+**Web app:** Now playing draws the waveform under a transparent native range input (keyboard, screen readers and touch unchanged), played part in the accent colour; the plain slider while there is no analysis. Per-session cache, cleared at sign-out.
+
+**`mobile/` and Android**
+- `Analysis` (UniFFI) returns ready, pending or unavailable; the core's decoder checks the binary form.
+- `DspSettings.analysis_levelling` (off by default). When LMS starts a stream, the engine asks LMS (`status - 2`) which track it is: the current one for a fresh start, the next for a gapless follow-on, the same one under repeat-one, checked against the playlist position. It then fetches that track's analysis. The gain is −18 LUFS minus the integrated loudness, capped by the true peak, with the limiter; ReplayGain tags are the fallback. A fresh start waits up to 1.5 s for the analysis, and that silence isn't reported as an underrun. A gapless track has until the current one ends. The signal path names the source ("(R128 analysis)" or "(ReplayGain)").
+- Android: the waveform as the Material slider's track in Now Playing; Settings → "Playback on this phone" → "Loudness levelling".
+
+**Tests**
+- **Gateway integration** (fake LMS serving generated WAV and hostile files): success, both encodings, caching and restarts, a damaged cache entry, ETags; 401 (missing, bad, oversized, revoked); 403 without download permission; bad ids, traversal and parameters (404/400, never reaching LMS); streams 404, unsupported types 415; oversize and overlong 413 (with LMS understating both); corrupt and fuzzed audio 422 without a panic; a stalled fetch 504; 202 then 200; per-user and queue 429; analysis off.
+- **Robustness:** `analyse_source` on truncated, bit-flipped, header-mangled and random files. This found a Symphonia WAV header overflow, now caught. Also the TypeScript binary decoder (20,000 cases) and the stream-track parser on random JSON.
+- **Mobile, end to end against the real gateway:** fetching (ready, pending, unavailable, refused ids, signed out). A −10 dBFS track is levelled by −8 dB from its first sample; without an analysis it plays untouched.
+- **Totals:** 605 Rust tests across the workspace (`--all-features`); 286 Vitest plus 24 Node tests for the web app; 92 Android JVM/Robolectric tests; 825 plugin Perl tests plus 11 JS.
+
+**Verified:**
+- The web waveform in a real browser against the demo LMS (`tools/demo` now serves generated audio): wide and phone layouts, light and dark.
+- Levelling maths and the engine's gain on the host.
+- Android code compiled, lint clean, and JVM/Robolectric tests passing (built for x86_64 only locally; CI builds all ABIs).
+
+**Unverified:**
+- Levelling heard through AAudio on a phone.
+- The Compose waveform on a device (Robolectric only).
+- Analysis speed on a Raspberry Pi class host.
+- Real LMS answers to `status - 2` at gapless boundaries (shuffle, repeat-all wrap). The fake LMS in the tests returns a fixed status, so only fresh starts are covered end to end. Gapless offsets are covered by unit tests only.
+
+**Known gaps**
+- Album-mode levelling uses album ReplayGain tags where present. Album loudness from analyses (`core::analysis::album_loudness`) would need every track of the album and isn't wired in.
+- No background analysis pass yet: a track is analysed the first time it is asked for, so the first play of a long track shows the plain bar for a few seconds.
+- The analysis thread doesn't lower its own CPU priority (the one-job limit is the protection).
+- The web mini player (bottom bar) keeps the plain slider.
+- In debug builds, the player's streaming decoder can still panic on the WAV header overflow the fuzz test found (release builds wrap). Only the seekable path used for analysis catches it.
 
 ## 9. Quality: testing audio as seriously as security
 
@@ -397,7 +440,7 @@ Built, in CI. **Verified on the host and the JVM only: nothing has run on a phon
 | N2 | Minimum Android version | **Android 10 (API 29); bit-perfect on 14+ (D15).** Confirmed. |
 | N3 | Distribution | **Free: Google Play, F-Droid, GitHub release APKs (D16).** Confirmed. |
 | N4 | iOS licensing | **GPL plus an App Store exception (D17).** Confirmed; exception text added before I0. |
-| N5 | Where analysis runs | Recommended: **on the gateway**, CPU-capped and off-switchable; the app falls back to tags. |
+| N5 | Where analysis runs | **On the gateway**, CPU-capped and off-switchable; the apps fall back to a plain seek bar and tags. Confirmed in A3 (SPEC D18). |
 | N6 | App name and branding | A working title until a naming and icon pass in A4. |
 
 ## 11. Risks
