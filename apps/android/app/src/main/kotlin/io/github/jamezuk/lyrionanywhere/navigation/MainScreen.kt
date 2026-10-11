@@ -949,6 +949,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             appVersion = BuildConfig.VERSION_NAME,
                             libraryVersion = remember { libraryVersion() },
                             onSignOut = vm::signOut,
+                            onRename = vm::rename,
                             onLicences = { nav.navigate(LicencesRoute) },
                             onSound = { nav.navigate(SoundRoute) },
                             onDownloads = { nav.navigate(DownloadsRoute) },

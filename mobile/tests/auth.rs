@@ -314,3 +314,114 @@ async fn pairing_with_a_one_time_code() {
         Err(ApiError::Unauthorised)
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sign_in_tells_the_gateway_this_is_the_android_app() {
+    let h = Harness::start().await;
+    let (s, _) = h.alice().await;
+    let id = s.current().unwrap().device.id;
+    let d = h
+        .accounts
+        .list_devices()
+        .unwrap()
+        .into_iter()
+        .find(|d| d.id == id)
+        .unwrap();
+    assert_eq!(d.client_kind.as_deref(), Some("android"));
+    assert_eq!(d.client_platform.as_deref(), Some("Test phone"));
+    assert_eq!(d.last_addr.as_deref(), Some("127.0.0.1"));
+    // Pairing too.
+    let code = h.accounts.create_pairing_code("bob").unwrap();
+    let p = h.session(MemStore::new());
+    let who = p.pair(code).await.unwrap();
+    let d = h
+        .accounts
+        .list_devices()
+        .unwrap()
+        .into_iter()
+        .find(|d| d.id == who.device.id)
+        .unwrap();
+    assert_eq!(d.client_kind.as_deref(), Some("android"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_device_can_be_renamed() {
+    let h = Harness::start().await;
+    let (s, _) = h.alice().await;
+    assert_eq!(
+        s.rename_device("  Kitchen phone ".into()).await.unwrap(),
+        "Kitchen phone"
+    );
+    assert_eq!(s.current().unwrap().device.name, "Kitchen phone");
+    assert_eq!(s.me().await.unwrap().device.name, "Kitchen phone");
+    // Markup is cleaned by the gateway, and the answer is what it stored.
+    assert_eq!(s.rename_device("<b>Den</b>".into()).await.unwrap(), "bDenb");
+    // Refused before sending.
+    for bad in ["", "   ", "a\nb"] {
+        assert!(matches!(
+            s.rename_device(bad.into()).await,
+            Err(ApiError::InvalidInput { .. })
+        ));
+    }
+    assert!(matches!(
+        s.rename_device("x".repeat(65)).await,
+        Err(ApiError::InvalidInput { .. })
+    ));
+    // Refused by the gateway: nothing usable left.
+    assert!(matches!(
+        s.rename_device("<>/".into()).await,
+        Err(ApiError::InvalidInput { .. })
+    ));
+    assert_eq!(s.current().unwrap().device.name, "bDenb");
+    // Not signed in: nothing to rename.
+    let out = h.session(MemStore::new());
+    assert_eq!(
+        out.rename_device("Phone".into()).await,
+        Err(ApiError::Unauthorised)
+    );
+}
+
+/// A gateway from before client types refuses unknown fields: sign-in still works.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_older_gateway_still_signs_in() {
+    use axum::Json;
+    use axum::http::StatusCode;
+    use axum::routing::post;
+    use serde_json::{Value, json};
+    let seen: Arc<std::sync::Mutex<Vec<Value>>> = Default::default();
+    let log = seen.clone();
+    let app = axum::Router::new().route(
+        "/v1/auth/login",
+        post(move |Json(body): Json<Value>| {
+            let log = log.clone();
+            async move {
+                log.lock().unwrap().push(body.clone());
+                if body.get("client_kind").is_some() {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": "malformed request" })),
+                    );
+                }
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "access_token": "acc", "refresh_token": "ref", "expires_in": 900,
+                        "user": { "username": "alice", "role": "listener" },
+                        "device": { "id": 9, "name": "Test phone", "mac": "02:4c:41:00:00:09" },
+                    })),
+                )
+            }
+        }),
+    );
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    let server = Server::new(format!("http://{addr}")).unwrap();
+    let s = Session::new(server, MemStore::new(), "Test phone".into()).unwrap();
+    let who = s.login("alice".into(), PW.into(), None).await.unwrap();
+    assert_eq!(who.device.id, 9);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2, "asked again without the client fields");
+    assert_eq!(seen[0]["client_kind"], "android");
+    assert!(seen[1].get("client_kind").is_none());
+}

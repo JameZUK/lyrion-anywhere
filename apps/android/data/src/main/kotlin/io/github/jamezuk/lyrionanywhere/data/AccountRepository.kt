@@ -95,6 +95,12 @@ interface AccountRepository {
     suspend fun signOut(): Boolean
 
     suspend fun account(): ApiResult<AccountInfo>
+
+    /**
+     * Rename this phone (1 to 64 characters; the server cleans the name). Its player in LMS
+     * follows. Returns the name the server stored.
+     */
+    suspend fun renameDevice(name: String): ApiResult<String> = ApiResult.Err(AppError.SignedOut)
 }
 
 /**
@@ -260,5 +266,17 @@ class RustAccountRepository(
     override suspend fun account(): ApiResult<AccountInfo> {
         val sess = _connection.value?.session ?: return ApiResult.Err(AppError.SignedOut)
         return apiCall { sess.account() }
+    }
+
+    override suspend fun renameDevice(name: String): ApiResult<String> {
+        val sess = _connection.value?.session ?: return ApiResult.Err(AppError.SignedOut)
+        val r = apiCall { sess.renameDevice(name) }
+        if (r is ApiResult.Ok) {
+            // Everything showing who is signed in shows the new name.
+            (_state.value as? AuthState.SignedInState)?.let { s ->
+                _state.value = s.copy(who = s.who.copy(device = s.who.device.copy(name = r.value)))
+            }
+        }
+        return r
     }
 }

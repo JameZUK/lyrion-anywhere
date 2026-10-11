@@ -87,6 +87,8 @@ pub(crate) struct Core {
     http: Http,
     store: Arc<dyn SecureStore>,
     device_name: String,
+    /// What the gateway is told this client runs on (the phone's model, e.g. "Pixel 8").
+    platform: String,
     state: Mutex<State>,
     refresh_lock: Arc<tokio::sync::Mutex<()>>,
     observer: Mutex<Option<Arc<dyn SessionObserver>>>,
@@ -168,7 +170,49 @@ fn clean_device_name(name: &str) -> String {
     if n.is_empty() { "Android".into() } else { n }
 }
 
+/// A device name the gateway takes: 1 to 64 characters once trimmed, no control characters
+/// (it cleans names further). The trimmed name, or `None`.
+fn valid_device_name(name: &str) -> Option<String> {
+    let n = name.trim();
+    let count = n.chars().count();
+    ((1..=64).contains(&count) && !n.chars().any(char::is_control)).then(|| n.to_string())
+}
+
+/// The client platform sent at sign-in: the device name as the app first gave it, cut to
+/// the gateway's 48 characters.
+fn client_platform(device_name: &str) -> String {
+    device_name
+        .chars()
+        .take(48)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// A gateway older than client types refuses the unknown fields as a malformed request.
+fn refused_as_malformed(e: &ApiError) -> bool {
+    matches!(e, ApiError::InvalidInput { detail } if detail.contains("malformed request"))
+}
+
 impl Core {
+    /// Add what kind of client this is to a sign-in body (shown to the server's admins).
+    fn with_client(&self, mut body: Value) -> Value {
+        body["client_kind"] = json!("android");
+        body["client_platform"] = json!(self.platform);
+        body
+    }
+
+    /// Sign in (login or pairing), telling the gateway what this client is. A gateway from
+    /// before client types refuses the extra fields; then it is asked again without them.
+    async fn sign_in(&self, path: &str, body: Value) -> Result<Value, ApiError> {
+        match transport::send_json(self.post(path, &self.with_client(body.clone()))).await {
+            Err(e) if refused_as_malformed(&e) => {
+                transport::send_json(self.post(path, &body)).await
+            }
+            other => other,
+        }
+    }
+
     fn post(&self, path: &str, body: &Value) -> transport::Request {
         self.http
             .post(self.server.endpoint(path))
@@ -363,6 +407,7 @@ impl Session {
                 server,
                 http: Http::shared()?,
                 store,
+                platform: client_platform(&clean_device_name(&device_name)),
                 device_name: clean_device_name(&device_name),
                 state: Mutex::new(state),
                 refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -433,7 +478,7 @@ impl Session {
         if let Some(id) = self.core.state.lock().unwrap().device_id {
             body["device_id"] = json!(id);
         }
-        let v = transport::send_json(self.core.post("v1/auth/login", &body)).await?;
+        let v = self.core.sign_in("v1/auth/login", body).await?;
         self.core.adopt(parse_issued(&v)?, None)
     }
 
@@ -441,7 +486,7 @@ impl Session {
     pub async fn pair(&self, code: String) -> Result<SignedIn, ApiError> {
         let code = normalise_pairing_code(&code)?;
         let body = json!({ "code": code, "device_name": self.core.device_name });
-        let v = transport::send_json(self.core.post("v1/auth/pair", &body)).await?;
+        let v = self.core.sign_in("v1/auth/pair", body).await?;
         self.core.adopt(parse_issued(&v)?, None)
     }
 
@@ -475,6 +520,35 @@ impl Session {
         };
         self.core.forget(false, None);
         Ok(confirmed)
+    }
+
+    /// Rename this device (`PATCH /v1/devices/self`): its player in LMS follows. Returns the
+    /// name the server stored (it cleans names: no markup or control characters).
+    pub async fn rename_device(&self, name: String) -> Result<String, ApiError> {
+        let name = valid_device_name(&name)
+            .ok_or_else(|| ApiError::invalid("device names are 1 to 64 characters"))?;
+        let url = self.core.server.endpoint("v1/devices/self");
+        let core = &self.core;
+        let v = core
+            .authed(|token| {
+                transport::send_json(
+                    core.http
+                        .patch(url.clone())
+                        .header(CLIENT_HEADER, "1")
+                        .bearer_auth(&token)
+                        .json(&json!({ "name": name })),
+                )
+            })
+            .await?;
+        let stored = v["name"]
+            .as_str()
+            .map(crate::model::clean_text)
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| ApiError::bad_response("no name in answer"))?;
+        if let Some(who) = core.state.lock().unwrap().who.as_mut() {
+            who.device.name = stored.clone();
+        }
+        Ok(stored)
     }
 
     /// `GET /v1/me`: who this token belongs to.
@@ -559,6 +633,29 @@ mod tests {
         bad_mac["device"]["mac"] = json!("not-a-mac");
         assert_eq!(parse_issued(&bad_mac).unwrap().who.device.player_id, "");
         assert!(parse_issued(&json!([])).is_err());
+    }
+
+    #[test]
+    fn renamed_device_names_are_checked_before_sending() {
+        assert_eq!(valid_device_name("  Kitchen  "), Some("Kitchen".into()));
+        assert_eq!(valid_device_name(&"é".repeat(64)), Some("é".repeat(64)));
+        for bad in ["", "   ", "a\nb", "a\u{0}b", "a\u{7f}b", "a\u{85}b"] {
+            assert_eq!(valid_device_name(bad), None, "{bad:?}");
+        }
+        assert_eq!(valid_device_name(&"x".repeat(65)), None);
+    }
+
+    #[test]
+    fn the_client_platform_fits_the_gateway() {
+        assert_eq!(client_platform("Google Pixel 8"), "Google Pixel 8");
+        assert_eq!(client_platform(&"x".repeat(100)).chars().count(), 48);
+        assert!(refused_as_malformed(&ApiError::invalid(
+            "malformed request"
+        )));
+        assert!(!refused_as_malformed(&ApiError::invalid(
+            "enter your password"
+        )));
+        assert!(!refused_as_malformed(&ApiError::Unauthorised));
     }
 
     #[test]

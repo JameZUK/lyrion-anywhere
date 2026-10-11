@@ -169,6 +169,10 @@ impl Http {
     pub(crate) fn post(&self, url: Url) -> Request {
         Request::new(self.clone(), Method::POST, url)
     }
+
+    pub(crate) fn patch(&self, url: Url) -> Request {
+        Request::new(self.clone(), Method::PATCH, url)
+    }
 }
 
 /// A request being built (a deliberately small subset of what HTTP allows).

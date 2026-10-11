@@ -154,9 +154,9 @@ Click *Apply*. The **Status** panel should show the gateway as running. If it sh
 
 The same page has these sections:
 - **Users:** add users; for each one, *Disable*/*Enable*, *Delete*, set a *New password*, *Add a player…* (grant a home player), *Reset two-step*, *Pairing code*, and *Turn off downloads*/*Allow downloads* (offline downloads are allowed for every user by default; the *Downloads* column shows the formats each may use).
-- **Sign-in › Stay signed in:** how many days an unused device stays signed in (1–365, default 30). Every use renews it.
+- **Sign-in › Stay signed in:** how many days an unused device stays signed in (1–365, default 90). Every use renews it.
 - **Plugins › Admins only:** the plugins LMS offers remote devices. Tick one to hide it from listeners and refuse its use, e.g. a plugin with server maintenance actions.
-- **Devices:** every signed-in device, when it was last seen, its *Diagnostics*, and *Sign out* (e.g. for a lost phone).
+- **Devices:** every signed-in device: its user, what kind of client it is (*Installed web app*, *Browser tab* or *Android app*, with the browser or phone, and the browser's full identification underneath), the internet address it was last seen from (as your reverse proxy passed it on, so set *Trusted proxies* and, behind a CDN, *Client address header* correctly), when, its *Diagnostics*, *Rename* (its player in LMS is renamed too) and *Sign out* (e.g. for a lost phone). The address and browser details are kept only while the device stays signed in, and are shown only here. Users can rename their own device too: in the web app under *Settings › This device*, and in the Android app under *Settings › This phone*.
 - **Recent activity:** sign-ins, failures and administrative changes.
 
 > **Your LAN and LMS's own security.** By default, LMS's web interface and control ports (9000, 9090) don't ask for a password on your home network. Anyone on your network can therefore open this settings page. Changes to remote accounts are only accepted from this page (other web sites can't make them through LMS), but if other people use your network, turn on LMS's password protection under *Settings › Advanced › Security*.
@@ -280,6 +280,8 @@ From a phone **off your Wi-Fi** (on mobile data):
 | **Playback stops when the screen locks (iPhone/iPad)** | Check *Settings › This device*. If it says Web Audio, the browser refused the background-capable mode. The device's **Diagnostics** show why; please include them in a bug report. |
 | **A plugin shows "Needs setting up in LMS"** | It needs an account or settings in LMS itself (e.g. a streaming service). Set it up in LMS's own settings. |
 | **The settings page says "refused: use the Lyrion Anywhere settings page"** | LMS was restarted since the page was opened. Reload the page. |
+| **The settings page has no logo, or shows odd characters such as "Settings âº Advanced"** | A plugin version from before 2026-10-11. Update the plugin. |
+| **Every device's address is the proxy's (e.g. 127.0.0.1)** | The gateway doesn't trust the proxy, or the proxy doesn't send `X-Forwarded-For`. Set *Trusted proxies* (a proxy on another machine) and, behind Cloudflare or another CDN, *Client address header*; see §4. |
 
 **Logs:**
 - **Gateway:** `lyrion-anywhere.log` in LMS's log folder, e.g. `/var/log/squeezeboxserver/` (Docker: `docker logs lyrion-anywhere`).

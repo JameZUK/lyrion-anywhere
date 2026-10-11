@@ -59,8 +59,8 @@ test('validates input like the gateway does', () => {
 });
 
 test('formats times and durations', () => {
-  assert.equal(t.formatTime(0), '–');
-  assert.equal(t.formatUptime(0), '–');
+  assert.equal(t.formatTime(0), '\u2013');
+  assert.equal(t.formatUptime(0), '\u2013');
   assert.equal(t.formatUptime(125), '2 min');
   assert.equal(t.formatUptime(3725), '1 h 2 min');
 });
@@ -117,7 +117,7 @@ test('renders remote-controlled names as text, never as markup', async () => {
     players: { players_loop: [{ playerid: 'aa:bb:cc:dd:ee:01', name: HOSTILE }] },
     users: { data: { users: [{ username: 'bob', role: 'listener', totp_enabled: 0, disabled: 0, downloads: true, download_formats: ['original', 'opus', HOSTILE] }] } },
     grants: { data: { players: ['aa:bb:cc:dd:ee:01'] } },
-    devices: { data: { devices: [{ id: 1, name: HOSTILE, username: 'bob', mac: '02:4c:41:00:00:09', last_seen: 1 }] } },
+    devices: { data: { devices: [{ id: 1, name: HOSTILE, username: 'bob', mac: '02:4c:41:00:00:09', last_seen: 1, last_addr: '198.51.100.7', client_kind: 'pwa', client_platform: HOSTILE, user_agent: HOSTILE }] } },
     audit: { data: { audit: [{ at: 1, event: 'login', username: 'bob', detail: HOSTILE }] } },
     settings: { data: { session_days: 45 } },
     plugins: { data: { plugins: [
@@ -168,9 +168,68 @@ test('renders remote-controlled names as text, never as markup', async () => {
   const change = sent.find((c) => c[0] === 'anywhere' && c[1] === 'session_days');
   assert.ok(change, 'session_days sent');
   assert.deepEqual(change, ['anywhere', 'session_days', 'days:60', 'csrf:' + TOKEN]);
+  // Devices show the client type, address and browser, as text.
+  const devices = dom.byId.get('aw-devices').textContent;
+  assert.ok(devices.includes('198.51.100.7'), 'last address shown');
+  assert.ok(devices.includes('Installed web app · ' + HOSTILE), 'client type shown, platform as text');
+
+  // Renaming: an input in place of the name, sent with the token; bad names stay local.
+  const rename = dom.created.find((e) => e.tagName === 'BUTTON' && e.textContent === 'Rename');
+  assert.ok(rename, 'rename button shown');
+  for (const fn of rename.listeners.click) fn();
+  const input = dom.created.find((e) => e.tagName === 'INPUT' && e.attrs['aria-label'] === 'New name');
+  assert.ok(input, 'name input shown');
+  assert.equal(input.value, HOSTILE, 'starts from the current name, as a value');
+  const save = dom.created.filter((e) => e.tagName === 'BUTTON' && e.textContent === 'Save').pop();
+  input.value = '   ';
+  for (const fn of save.listeners.click) fn();
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.ok(!sent.some((c) => c[1] === 'device_rename'), 'a blank name is not sent');
+  assert.match(dom.byId.get('aw-message').textContent, /1 to 64/);
+  input.value = ' Kitchen iPad ';
+  for (const fn of save.listeners.click) fn();
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.deepEqual(sent.find((c) => c[1] === 'device_rename'), ['anywhere', 'device_rename', 'id:1', 'name:Kitchen iPad', 'csrf:' + TOKEN]);
+
   for (const c of sent.filter((c) => c[0] === 'anywhere' && c[1] !== 'status')) {
     assert.equal(c[c.length - 1], 'csrf:' + TOKEN, `token sent with ${c[1]}`);
   }
+});
+
+test('the script is ASCII only (non-ASCII text is written as escapes)', () => {
+  assert.ok(!/[^\x00-\x7f]/.test(src), `non-ASCII at ${src.search(/[^\x00-\x7f]/)}`);
+  // ...and the escapes produce the intended characters.
+  assert.equal(t.formatTime(0), '\u2013');
+});
+
+test('the sign-in lifetime shown: the gateway value, its default, or 90', () => {
+  assert.equal(t.DEFAULT_SESSION_DAYS, 90);
+  assert.equal(t.sessionDaysShown({ session_days: 45 }), 45);
+  assert.equal(t.sessionDaysShown({ session_days: '45' }), 45, 'LMS may pass numbers on as strings');
+  assert.equal(t.sessionDaysShown({ session_days: 0, session_days_default: 60 }), 60);
+  for (const s of [{}, null, undefined, { session_days: '' }, { session_days: 'x' }, { session_days: 400 }, { session_days: -3 }]) {
+    assert.equal(t.sessionDaysShown(s), 90, JSON.stringify(s));
+  }
+});
+
+test('device names: 1 to 64 characters, trimmed, no control characters', () => {
+  assert.equal(t.validDeviceName('  Kitchen iPad '), 'Kitchen iPad');
+  assert.equal(t.validDeviceName('é'.repeat(64)), 'é'.repeat(64));
+  assert.equal(t.validDeviceName('\u{1f3b5}'.repeat(64)), '\u{1f3b5}'.repeat(64), 'counts characters, not UTF-16 units');
+  for (const bad of ['', '   ', 'x'.repeat(65), 'a\nb', 'a\u0000b', 'a\u007fb', 'a\u0085b', null, undefined, 42, ['x']]) {
+    assert.equal(t.validDeviceName(bad), null, JSON.stringify(bad));
+  }
+});
+
+test('client type text', () => {
+  assert.equal(t.clientText({ client_kind: 'pwa', client_platform: 'Safari on iPadOS' }), 'Installed web app · Safari on iPadOS');
+  assert.equal(t.clientText({ client_kind: 'browser', client_platform: 'Chrome on Android' }), 'Browser tab · Chrome on Android');
+  assert.equal(t.clientText({ client_kind: 'android', client_platform: 'Pixel 8' }), 'Android app · Pixel 8');
+  assert.equal(t.clientText({ client_kind: 'android' }), 'Android app');
+  assert.equal(t.clientText({}), 'unknown');
+  assert.equal(t.clientText(null), 'unknown');
+  assert.equal(t.clientText({ client_kind: '__proto__' }), 'unknown');
+  assert.equal(t.clientText({ client_kind: 'toString', client_platform: 5 }), 'unknown');
 });
 
 test('diagnostics are shown as plain JSON text', () => {

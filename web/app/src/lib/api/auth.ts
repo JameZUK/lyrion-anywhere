@@ -48,29 +48,66 @@ function rememberDevice(id: number, storage: Pick<Storage, 'setItem'> | undefine
 	}
 }
 
-/** A readable default name for this browser's player, e.g. "Firefox on Linux". */
-export function defaultDeviceName(ua: string = globalThis.navigator?.userAgent ?? ''): string {
-	const browser = /Firefox\//.test(ua)
+/** Touch points of this device's screen (iPads report themselves as Macs, but have touch). */
+function touchPoints(): number {
+	try {
+		return Number(globalThis.navigator?.maxTouchPoints) || 0;
+	} catch {
+		return 0;
+	}
+}
+
+/**
+ * A readable default name for this browser's player, e.g. "Firefox on Linux" or
+ * "Safari on iPadOS". Also sent as the client's platform at sign-in.
+ */
+export function defaultDeviceName(ua: string = globalThis.navigator?.userAgent ?? '', touch: number = touchPoints()): string {
+	const browser = /Firefox\/|FxiOS\//.test(ua)
 		? 'Firefox'
 		: /Edg\//.test(ua)
 			? 'Edge'
-			: /Chrome\//.test(ua)
+			: /Chrome\/|CriOS\//.test(ua)
 				? 'Chrome'
 				: /Safari\//.test(ua)
 					? 'Safari'
 					: 'Browser';
 	const os = /Android/.test(ua)
 		? 'Android'
-		: /iPhone|iPad|iPod/.test(ua)
-			? 'iOS'
-			: /Mac OS X/.test(ua)
-				? 'macOS'
-				: /Windows/.test(ua)
-					? 'Windows'
-					: /Linux/.test(ua)
-						? 'Linux'
-						: 'unknown';
+		: /iPad/.test(ua) || (/Macintosh/.test(ua) && touch > 1)
+			? 'iPadOS'
+			: /iPhone|iPod/.test(ua)
+				? 'iOS'
+				: /Mac OS X/.test(ua)
+					? 'macOS'
+					: /Windows/.test(ua)
+						? 'Windows'
+						: /Linux/.test(ua)
+							? 'Linux'
+							: 'unknown';
 	return `${browser} on ${os}`;
+}
+
+/** How this web app runs: installed (standalone display, a PWA) or in a browser tab. */
+export type ClientKind = 'pwa' | 'browser';
+
+export function clientKind(
+	matches: (query: string) => boolean = (q) => typeof globalThis.matchMedia === 'function' && globalThis.matchMedia(q).matches,
+	iosStandalone: unknown = (globalThis.navigator as { standalone?: unknown } | undefined)?.standalone,
+): ClientKind {
+	try {
+		if (iosStandalone === true) return 'pwa';
+		for (const mode of ['standalone', 'fullscreen', 'minimal-ui', 'window-controls-overlay']) {
+			if (matches(`(display-mode: ${mode})`)) return 'pwa';
+		}
+	} catch {
+		/* no matchMedia: a tab */
+	}
+	return 'browser';
+}
+
+/** What the gateway is told about this client at sign-in and renewal (shown to admins). */
+export function clientInfo(): { client_kind: ClientKind; client_platform: string } {
+	return { client_kind: clientKind(), client_platform: defaultDeviceName().slice(0, 48) };
 }
 
 export async function login(username: string, password: string, totp?: string, deviceName = defaultDeviceName()): Promise<Session> {
@@ -83,6 +120,7 @@ export async function login(username: string, password: string, totp?: string, d
 			...(totp ? { totp } : {}),
 			device_name: deviceName,
 			device_id: rememberedDevice(),
+			...clientInfo(),
 		}),
 	});
 	rememberDevice(session.device.id);
@@ -119,7 +157,11 @@ export function withRefreshLock<T>(fn: () => Promise<T>, locks: LockManagerLike 
 /** Exchange the refresh cookie for a new access token (and a rotated cookie). */
 export async function refresh(locks: LockManagerLike | undefined = browserLocks()): Promise<Session> {
 	return withRefreshLock(async () => {
-		const session = await callJson<Session>('/v1/auth/refresh', { method: 'POST' });
+		const session = await callJson<Session>('/v1/auth/refresh', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(clientInfo()),
+		});
 		rememberDevice(session.device.id);
 		return session;
 	}, locks);
@@ -128,6 +170,21 @@ export async function refresh(locks: LockManagerLike | undefined = browserLocks(
 export async function logout(token: string): Promise<void> {
 	await callJson('/v1/auth/logout', { method: 'POST', headers: bearer(token) });
 }
+
+/** Device names: 1 to 64 characters (the gateway cleans them further). Trimmed, or null. */
+export function validDeviceName(v: string): string | null {
+	const s = v.trim();
+	const n = [...s].length;
+	return n >= 1 && n <= 64 && !/[\u0000-\u001f\u007f-\u009f]/.test(s) ? s : null;
+}
+
+/** Rename this device (its LMS player follows). Returns the name the gateway stored. */
+export const renameDevice = (token: string, name: string) =>
+	callJson<{ id: number; name: string }>('/v1/devices/self', {
+		method: 'PATCH',
+		headers: { ...bearer(token), 'Content-Type': 'application/json' },
+		body: JSON.stringify({ name }),
+	});
 
 export const account = (token: string) => callJson<Account>('/v1/account', { headers: bearer(token) });
 

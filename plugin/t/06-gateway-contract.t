@@ -61,6 +61,8 @@ my @steps = (
 	[user_downloads => { username => 'alice', enabled => 0 }, 204],
 	[users         => {}, 200, 'downloads off'],
 	[devices       => {}, 200],
+	# No such device: the route and body are right (a wrong body would be a 400).
+	[device_rename => { id => 999999, name => 'Kitchen' }, 404],
 	[audit         => { limit => 20 }, 200],
 	[settings      => {}, 200],
 	[session_days  => { days => 90 }, 204],
@@ -89,7 +91,8 @@ for my $s (@steps) {
 		is_deeply($data->{users}[0]{download_formats}, [qw(original opus)], 'formats kept when turned off');
 	}
 	if ($op eq 'settings') {
-		is($data->{session_days}, 30, 'default sign-in lifetime');
+		is($data->{session_days}, 90, 'default sign-in lifetime');
+		is($data->{session_days_default}, 90, 'the gateway reports the default');
 		is_deeply($data->{download_formats}, ['original'], 'started with --no-transcode: originals only');
 	}
 }

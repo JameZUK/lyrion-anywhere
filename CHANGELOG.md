@@ -4,6 +4,25 @@ Dated entries, newest first.
 
 ## 2026-10-11
 
+### Plugin settings and device management
+- **Fixed: the logo didn't load** on the plugin settings page. LMS serves a plugin's images only from paths with an `html/` segment (other image paths are treated as templates, and 404), so it moved to `HTML/EN/plugins/LyrionAnywhere/html/images/logo.png`.
+- **Fixed: odd characters** such as "Settings âº Advanced". LMS reads templates as bytes and sends the page as UTF-8, so raw UTF-8 in a template came out encoded twice. The template now uses HTML entities (`&rsaquo;`, `&hellip;`) and the script `\u` escapes; the page's files are ASCII only, checked by the plugin tests and `tools/test-release.sh`.
+- **Stay signed in: 90 days by default** (was 30), in the gateway and on the settings page, which shows it even before the gateway answers. The range is still 1–365 days. Installations that never changed it get 90 days from their devices' next renewal.
+- **Devices show their last address and client type** (`docs/PROTOCOL.md` › Authentication › Devices):
+  - the internet address each device was last seen from, as the reverse proxy passed it on (only trusted proxies are believed), and when. Recorded at sign-in and renewal, and on use at most once a minute per device;
+  - what kind of client it is: *Installed web app* (PWA), *Browser tab* or *Android app*, with the browser and system or the phone (e.g. "Safari on iPadOS", "Pixel 8"), and the browser's User-Agent underneath. Clients report this in new optional `client_kind` and `client_platform` fields at sign-in (the web app also at every renewal), strictly checked;
+  - **privacy:** only admins see these, in the plugin's device list (the admin API); listeners can't see them for any device. A device's address and User-Agent are cleared as soon as it is signed out or revoked.
+  - Database migration 8 adds `last_addr`, `client_kind`, `client_platform` and `user_agent` to devices.
+- **Devices can be renamed**, and their LMS player follows (at once if it is connected, using LMS's own `name` command; otherwise when it next connects):
+  - admins rename any device in the plugin's device list (admin API `PATCH /admin/v1/devices/{id}`, or `POST …/{id}/name`);
+  - users rename their own: web app *Settings › This device*, Android *Settings › This phone* (`PATCH /v1/devices/self`);
+  - names are 1–64 characters, cleaned as before (no markup, control or bidi characters), and unique per user.
+- **Android:** sign-in and pairing report the app as `android` with the phone's model. Against an older gateway, which refuses the new fields, the app signs in again without them.
+- **Tests:**
+  - gateway: the migration, address recording and its once-a-minute limit (sign-in, refresh, API use, player connection; forwarded addresses only via a trusted proxy), clearing on revocation, the client fields (bad kinds, long or hostile platforms, unknown fields refused on login, pair and refresh), cleaning fuzzed, renaming (own device, admin, too long, empty, hostile characters, duplicates, another user's device unreachable, no secret, not on the public listener), the LMS name following, and the 90-day default;
+  - plugin: the rename operation's validation and CSRF protection, the gateway contract, the page's files ASCII only, every referenced file present (images under `html/`), and the device list rendering hostile names, platforms and User-Agents as text;
+  - web app: PWA and iPadOS detection, the client fields on sign-in and renewal, renaming; mobile and Android: the client fields, the older-gateway fallback, renaming and the Settings row.
+
 ### Android: car and discovery (A6)
 - **Android Auto:** browse *Home* (carry on, new music, favourites, playlists), *Library* (new music, albums, artists, playlists, favourites) and *Downloads*, search, and ask by voice; everything plays on this phone (its player is switched on if needed), or from the downloads when there's no server.
   - The playback service is now a media library service and is **exported**, so every caller is checked: Android Auto and the Google assistants only with their release certificates; the system's own controllers (platform-signed, or holding `MEDIA_CONTENT_CONTROL`) and this app; other trusted controllers (e.g. a watch app with notification access) get play, pause and skip only; anyone else is refused, as is a known package name with the wrong certificate.

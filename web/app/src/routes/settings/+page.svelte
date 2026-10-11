@@ -51,6 +51,29 @@
 	const volPlan = $derived(active && device.volumePlan ? device.volumePlan : planVolume(volAbility, device.volumeSetting));
 	const VOLUME_CHOICES: VolumeSetting[] = ['auto', 'follow', 'device'];
 
+	// This device's name: the player name in LMS. Renaming renames that player too.
+	const deviceName = $derived(app.session?.device.name ?? '');
+	let newName = $state('');
+	$effect(() => {
+		newName = deviceName;
+	});
+	async function renameThis(e: SubmitEvent) {
+		e.preventDefault();
+		const name = auth.validDeviceName(newName);
+		if (!name) {
+			msg = 'Device names are 1 to 64 characters.';
+			return;
+		}
+		try {
+			const r = await session.authed((t) => auth.renameDevice(t, name));
+			session.setDeviceName(r.name);
+			msg = `This device is now called “${r.name}”.`;
+			void app.loadPlayers();
+		} catch (err) {
+			msg = (err as Error).message;
+		}
+	}
+
 	let account = $state<auth.Account | null>(null);
 	let setup = $state<auth.TotpSetup | null>(null);
 	let code = $state('');
@@ -155,7 +178,11 @@
 
 	<div class="card">
 		<h2>This device</h2>
-		<p class="muted">Music plays in this browser unless you choose another player. It appears in LMS as a player named “{session.current?.device.name}”.</p>
+		<p class="muted">Music plays in this browser unless you choose another player. It appears in LMS as a player named “{deviceName}”.</p>
+		<form onsubmit={renameThis} class="inline" data-rename>
+			<label class="field"><span>Name</span><input bind:value={newName} maxlength="64" autocomplete="off" spellcheck="false" required data-device-name /></label>
+			<button class="btn" type="submit" disabled={!auth.validDeviceName(newName) || newName.trim() === deviceName}>Rename</button>
+		</form>
 		<label class="field start-with">
 			<span>When the app opens, play on</span>
 			<select value={startKey(startWith)} onchange={(e) => setStartWith(e.currentTarget.value)} data-start-with>

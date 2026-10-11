@@ -2,7 +2,7 @@
 
 <link rel="stylesheet" href="/plugins/LyrionAnywhere/settings/anywhere.css">
 
-<img class="anywhere-logo" src="/plugins/LyrionAnywhere/settings/logo.png" alt="" width="64" height="64">
+<img class="anywhere-logo" src="/plugins/LyrionAnywhere/html/images/logo.png" alt="" width="64" height="64">
 <p class="anywhere-intro">
 	Lyrion Anywhere lets your devices use this server securely over the internet, through the
 	gateway this plugin runs. Put the gateway behind your HTTPS reverse proxy; never expose
@@ -12,7 +12,7 @@
 	Out of the box, this server's own web and control ports (9000 and 9090) need no password
 	on your local network, so anyone on it can change these settings. Remote accounts can only
 	be changed from this page, not by other web sites, but if other people use your network,
-	turn on password protection in Settings › Advanced › Security.
+	turn on password protection in Settings &rsaquo; Advanced &rsaquo; Security.
 </p>
 
 [% WRAPPER setting title="Gateway" desc="Run the Lyrion Anywhere gateway." %]
@@ -61,7 +61,7 @@
 
 <div id="anywhere-app" class="anywhere" data-csrf="[% anywhere_csrf | html %]">
 	<h3>Status</h3>
-	<div id="aw-status" class="aw-panel">Loading…</div>
+	<div id="aw-status" class="aw-panel">Loading&hellip;</div>
 
 	<h3>Users</h3>
 	<p class="aw-note">Admins can control every player. Listeners control their own devices plus the home players you grant them.</p>
@@ -79,8 +79,8 @@
 	<h3>Sign-in</h3>
 	<fieldset class="aw-panel" id="aw-session">
 		<legend>Stay signed in</legend>
-		<p class="aw-note">How long a device stays signed in without being used. Every use renews it, so devices in regular use never need to sign in again. Changes apply from each device's next use.</p>
-		<label>Days <input id="aw-session-days" type="number" min="1" max="365" step="1" inputmode="numeric"></label>
+		<p class="aw-note">How long a device stays signed in without being used: 1 to 365 days, 90 by default. Every use renews it, so devices in regular use never need to sign in again. Changes apply from each device's next use.</p>
+		<label>Days <input id="aw-session-days" type="number" min="1" max="365" step="1" inputmode="numeric" value="90" placeholder="90"></label>
 		<button type="button" id="aw-session-btn">Save</button>
 	</fieldset>
 
@@ -93,6 +93,7 @@
 	</fieldset>
 
 	<h3>Devices</h3>
+	<p class="aw-note">Each signed-in device, the kind of client it is, and the internet address it was last seen from (as your reverse proxy passed it on). The gateway keeps the address and browser details only while the device stays signed in, and shows them only here, never in the apps. Renaming a device also renames its player in this server.</p>
 	<div id="aw-devices" class="aw-panel"></div>
 
 	<h3>Recent activity</h3>

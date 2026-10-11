@@ -311,7 +311,7 @@ async fn a_lost_refresh_response_does_not_sign_the_device_out() {
     let retry = refresh(cookie1.clone()).await;
     assert_eq!(retry.status(), S::OK, "the retry is accepted");
     let cookie2 = cookie_value(&cookie_from(&retry).unwrap());
-    assert!(cookie_from(&retry).unwrap().contains("Max-Age=2592000"));
+    assert!(cookie_from(&retry).unwrap().contains("Max-Age=7776000"));
     // The device and its player session carry on.
     assert_eq!(refresh(cookie2).await.status(), S::OK);
     assert!(
@@ -608,7 +608,7 @@ async fn admin_sets_the_sign_in_lifetime() {
             .json(&body)
     };
     let s = json_of(get().send().await.unwrap()).await;
-    assert_eq!(s["session_days"], 30);
+    assert_eq!(s["session_days"], 90, "the default");
     assert_eq!(
         set(json!({"session_days": 120}))
             .send()

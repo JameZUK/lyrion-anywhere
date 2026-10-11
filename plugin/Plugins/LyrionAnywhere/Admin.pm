@@ -26,6 +26,15 @@ sub valid_username { my $u = shift // ''; return $u =~ /^[a-z0-9._-]{1,64}\z/ }
 sub valid_mac      { my $m = shift // ''; return $m =~ /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\z/i }
 sub valid_id       { my $i = shift // ''; return $i =~ /^\d{1,18}\z/ }
 
+# A device name for the gateway, which checks it fully (1-64 characters, cleaned): here, at
+# most 64 characters once trimmed, and no control characters.
+sub valid_device_name {
+	my $n = shift;
+	return 0 if !defined $n || ref $n;
+	(my $t = $n) =~ s/\A\s+|\s+\z//g;
+	return length($t) >= 1 && length($t) <= 64 && $n !~ /[\x00-\x1f\x7f]/;
+}
+
 sub valid_password {
 	my $p = shift;
 	return defined $p && length($p) >= 10 && length($p) <= 1024 && $p !~ /[\x00-\x1f\x7f]/;
@@ -56,6 +65,9 @@ my %OPS = (
 	ungrant      => ['POST', '/admin/v1/users/{username}/players/{player}/remove', [qw(username player)]],
 	devices      => ['GET',  '/admin/v1/devices'],
 	revoke       => ['POST', '/admin/v1/devices/{id}/revoke', [qw(id)]],
+	# The gateway cleans the name and renames the device's LMS player too.
+	device_rename => ['POST', '/admin/v1/devices/{id}/name', [qw(id name)],
+	                 sub { { name => $_[0]{name} } }],
 	diagnostics  => ['GET',  '/admin/v1/devices/{id}/diagnostics', [qw(id)]],
 	audit        => ['GET',  '/admin/v1/audit?limit={limit}', [qw(limit)]],
 	settings     => ['GET',  '/admin/v1/settings'],
@@ -90,6 +102,7 @@ my %CHECK = (
 	},
 	player   => \&valid_mac,
 	id       => \&valid_id,
+	name     => \&valid_device_name,
 	limit    => sub { ($_[0] // '') =~ /^\d{1,4}\z/ && $_[0] >= 1 && $_[0] <= 1000 },
 	days     => sub { ($_[0] // '') =~ /^\d{1,3}\z/ && $_[0] >= 1 && $_[0] <= 365 },
 	# Comma-separated plugin command words (none = no plugin is admin-only).
@@ -110,6 +123,7 @@ my %MESSAGE = (
 	formats  => 'formats must be one or more of original, mp3, opus (comma-separated)',
 	player   => 'player must be a MAC address like aa:bb:cc:dd:ee:ff',
 	id       => 'bad device id',
+	name     => 'device names are 1-64 characters (no line breaks)',
 	limit    => 'limit must be 1-1000',
 	days     => 'the sign-in lifetime must be 1-365 days',
 	commands => 'plugin commands are comma-separated words of A-Z a-z 0-9 _ - (at most 200)',

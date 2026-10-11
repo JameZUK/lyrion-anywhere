@@ -16,11 +16,13 @@ import androidx.compose.material.icons.outlined.Gavel
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Security
+import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -29,6 +31,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -37,12 +40,14 @@ import androidx.lifecycle.viewModelScope
 import io.github.jamezuk.lyrionanywhere.core.AccountInfo
 import io.github.jamezuk.lyrionanywhere.data.AccountRepository
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
+import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.data.AuthState
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.SoundSettings
 import io.github.jamezuk.lyrionanywhere.data.offline.OfflineRepository
 import io.github.jamezuk.lyrionanywhere.ui.offline.formatBytes
 import io.github.jamezuk.lyrionanywhere.ui.R
+import io.github.jamezuk.lyrionanywhere.ui.components.errorMessage
 import io.github.jamezuk.lyrionanywhere.ui.library.SectionHeader
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -62,7 +67,19 @@ data class SettingsUiState(
     /** Bytes of downloads on this device (for the sign-out question). */
     val downloadedBytes: Long = 0,
     val downloadedTracks: Int = 0,
+    /** This phone's name: its player's name in LMS. */
+    val deviceName: String = "",
+    val renaming: Boolean = false,
+    /** Why the last rename failed, if it did. */
+    val renameError: AppError? = null,
 )
+
+/** A name the server takes for this phone (it cleans it further), trimmed; or null. */
+fun validDeviceName(name: String): String? {
+    val n = name.trim()
+    val count = n.codePointCount(0, n.length)
+    return n.takeIf { count in 1..64 && n.none { it.isISOControl() } }
+}
 
 class SettingsViewModel(
     private val account: AccountRepository,
@@ -74,7 +91,9 @@ class SettingsViewModel(
 
     init {
         (account.state.value as? AuthState.SignedInState)?.let { s ->
-            _state.update { it.copy(serverName = s.server.name, username = s.who.user.username) }
+            _state.update {
+                it.copy(serverName = s.server.name, username = s.who.user.username, deviceName = s.who.device.name)
+            }
         }
         viewModelScope.launch {
             (account.account() as? ApiResult.Ok)?.let { r -> _state.update { it.copy(account = r.value) } }
@@ -90,6 +109,19 @@ class SettingsViewModel(
                 o.state.collect { s ->
                     _state.update { it.copy(downloadedBytes = s.usedBytes, downloadedTracks = s.tracks.size) }
                 }
+            }
+        }
+    }
+
+    /** Rename this phone; its LMS player follows. */
+    fun rename(name: String) {
+        val n = validDeviceName(name) ?: return
+        if (_state.value.renaming) return
+        _state.update { it.copy(renaming = true, renameError = null) }
+        viewModelScope.launch {
+            when (val r = account.renameDevice(n)) {
+                is ApiResult.Ok -> _state.update { it.copy(renaming = false, deviceName = r.value) }
+                is ApiResult.Err -> _state.update { it.copy(renaming = false, renameError = r.error) }
             }
         }
     }
@@ -144,8 +176,10 @@ fun SettingsScreen(
     onStorage: () -> Unit = {},
     /** The default-player choice (D20), when the app has players to offer. */
     defaultPlayer: (@Composable () -> Unit)? = null,
+    onRename: (String) -> Unit = {},
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
+    var renaming by rememberSaveable { mutableStateOf(false) }
     LazyColumn(modifier.fillMaxSize()) {
         if (defaultPlayer != null) {
             item { SectionHeader(stringResource(R.string.section_default_player)) }
@@ -204,6 +238,34 @@ fun SettingsScreen(
                     )
                 },
             )
+        }
+        if (state.deviceName.isNotEmpty()) {
+            item {
+                ListItem(
+                    leadingContent = { Icon(Icons.Outlined.Smartphone, contentDescription = null) },
+                    headlineContent = { Text(stringResource(R.string.this_phone_name)) },
+                    supportingContent = {
+                        Text(
+                            state.renameError?.let { errorMessage(it) }
+                                ?: stringResource(R.string.this_phone_name_explained, state.deviceName),
+                        )
+                    },
+                    trailingContent = { Text(stringResource(R.string.action_rename)) },
+                    modifier = Modifier.clickable(enabled = !state.renaming) { renaming = !renaming },
+                )
+            }
+            if (renaming) {
+                item {
+                    RenameDeviceEditor(
+                        current = state.deviceName,
+                        onRename = { name ->
+                            renaming = false
+                            onRename(name)
+                        },
+                        onDismiss = { renaming = false },
+                    )
+                }
+            }
         }
         item {
             ListItem(
@@ -320,4 +382,32 @@ fun SignOutDialog(
             { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } }
         },
     )
+}
+
+/** Rename this phone, in place in the list: a name of 1 to 64 characters. */
+@Composable
+fun RenameDeviceEditor(current: String, onRename: (String) -> Unit, onDismiss: () -> Unit) {
+    var name by rememberSaveable { mutableStateOf(current) }
+    val valid = validDeviceName(name)
+    androidx.compose.foundation.layout.Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it.take(80) },
+            singleLine = true,
+            label = { Text(stringResource(R.string.rename_phone_label)) },
+            supportingText = { Text(stringResource(R.string.rename_phone_hint)) },
+            isError = valid == null,
+            modifier = Modifier.testTag("rename-field"),
+        )
+        androidx.compose.foundation.layout.Row {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+            TextButton(
+                onClick = { valid?.let(onRename) },
+                enabled = valid != null && valid != current,
+                modifier = Modifier.testTag("rename-save"),
+            ) {
+                Text(stringResource(R.string.action_rename))
+            }
+        }
+    }
 }
