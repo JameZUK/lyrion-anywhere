@@ -62,6 +62,42 @@ jobs:
         working-directory: web/app
         run: npm test
 
+  android:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: '0'
+      NDK_VERSION: 29.0.14206865
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: android
+      - name: Install cargo-ndk (pinned)
+        run: cargo install --locked cargo-ndk --version 4.1.2
+      - name: JDK 21 (preinstalled on the runner)
+        run: echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
+      - name: Android NDK and platform
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" "platforms;android-37.0"
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
+      - name: Build, unit tests and lint (all three ABIs)
+        working-directory: apps/android
+        run: ./gradlew assembleDebug testDebugUnitTest lint
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: android-reports
+          path: apps/android/*/build/reports/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lyrion-anywhere-debug-apk
+          path: apps/android/app/build/outputs/apk/debug/*.apk
+
   supply-chain:
     runs-on: ubuntu-latest
     steps:
@@ -104,7 +140,7 @@ jobs:
     # The full cross-build takes a while: run it on main and on tags, not on every branch.
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     # A release is published only when every other check passed.
-    needs: [test, web, plugin, deploy, supply-chain]
+    needs: [test, web, android, plugin, deploy, supply-chain]
     runs-on: ubuntu-latest
     # Write access only here, and only used by the last step, on version tags.
     permissions:

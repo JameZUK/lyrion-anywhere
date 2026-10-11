@@ -302,6 +302,15 @@ Each milestone ends with: tests green in CI, a security review of new surfaces, 
 | **I0–I3** | iOS | After A5: SwiftUI shell over `mobile/`; AVAudioEngine output; CarPlay; App Store (subject to the §6 licensing decision) |
 | **A8+** | After 1.0 | Parametric EQ with device profiles, crossfeed, visualiser, lyrics, Wear OS, DSD (DoP) |
 
+### A0 status (2026-10-11)
+
+Built, in CI (job `android`):
+- **`mobile/` crate** (UniFFI 0.31): `Server`, `Session` (password, two-step, pairing, body refresh token, sign-out), `MusicLibrary`, `Players`, `Art`, `Events`; rustls with the platform verifier; integration tests against the real gateway and a fake LMS.
+- **Android app** (`apps/android`): modules `:app`, `:ui`, `:data`, `:rust`; screens for server, sign-in, QR pairing, home, albums, album, artists, artist, search, now playing, settings and licences. Remote control only. See `apps/android/README.md`.
+- compileSdk is 37 (current AndroidX requires it); targetSdk stays 36 for now.
+
+Not yet: the gateway/web app showing a pairing QR code (the app reads `lyrion-anywhere://pair?…` links, documented in `docs/PROTOCOL.md`; the plugin's pairing code can be typed meanwhile), signed release builds in CI, instrumented tests, Paging-library lists, a disk cache for artwork, and opening pairing links from outside the app.
+
 ## 9. Quality: testing audio as seriously as security
 
 **Bit-perfect verification**

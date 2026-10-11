@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- British English throughout. -->
+<resources>
+    <string name="app_name_full">Lyrion Anywhere</string>
+
+    <!-- Welcome and sign-in -->
+    <string name="welcome_title">Welcome to Lyrion Anywhere</string>
+    <string name="welcome_body">Listen to your own Lyrion Music Server from anywhere. Enter the address of your Lyrion Anywhere server to begin.</string>
+    <string name="server_address">Server address</string>
+    <string name="server_address_hint">music.example.com</string>
+    <string name="server_https_note">Connections are always encrypted (https).</string>
+    <string name="sign_in_title">Sign in</string>
+    <string name="sign_in_server">to %1$s</string>
+    <string name="sign_in_revoked">You have been signed out. Please sign in again.</string>
+    <string name="username">User name</string>
+    <string name="password">Password</string>
+    <string name="show_password">Show password</string>
+    <string name="hide_password">Hide password</string>
+    <string name="two_step_prompt">Enter the 6-digit code from your authenticator app.</string>
+    <string name="two_step_code">Two-step code</string>
+    <string name="pair_title">Pair this phone</string>
+    <string name="pair_body">On the web app, open Settings and choose to pair a phone, then scan the QR code it shows. Or type the pairing code.</string>
+    <string name="pairing_code">Pairing code</string>
+    <string name="camera_preview">Camera view for scanning the pairing QR code</string>
+    <string name="restoring">Signing in…</string>
+    <string name="unreachable_title">Can\'t reach your server</string>
+    <string name="unreachable_body">%1$s isn\'t answering. You\'re still signed in; check your connection and try again.</string>
+
+    <!-- Actions -->
+    <string name="action_continue">Continue</string>
+    <string name="action_sign_in">Sign in</string>
+    <string name="action_sign_out">Sign out</string>
+    <string name="action_pair">Pair</string>
+    <string name="action_pair_instead">Pair with a QR code instead</string>
+    <string name="action_scan_qr">Scan the QR code</string>
+    <string name="action_back_to_sign_in">Back to sign in</string>
+    <string name="action_change_server">Use a different server</string>
+    <string name="action_retry">Try again</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_back">Back</string>
+    <string name="action_play">Play</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_next">Next track</string>
+    <string name="action_previous">Previous track</string>
+    <string name="action_play_next">Play next</string>
+    <string name="action_add_to_queue">Add to queue</string>
+    <string name="action_play_all">Play all</string>
+
+    <!-- Navigation -->
+    <string name="nav_home">Home</string>
+    <string name="nav_albums">Albums</string>
+    <string name="nav_artists">Artists</string>
+    <string name="nav_search">Search</string>
+    <string name="title_settings">Settings</string>
+    <string name="title_now_playing">Now playing</string>
+    <string name="title_licences">Open-source licences</string>
+    <string name="title_album">Album</string>
+
+    <!-- Library -->
+    <string name="sort_albums">Sort albums</string>
+    <string name="sort_title">By title</string>
+    <string name="sort_artist">By artist</string>
+    <string name="sort_year">By year</string>
+    <string name="sort_newest">Newest first</string>
+    <string name="sort_random">Random</string>
+    <string name="open_album">Open album</string>
+    <string name="open_artist">Open artist</string>
+    <string name="play_track">Play from this track</string>
+    <string name="album_cover">Album cover</string>
+    <string name="unknown_album">Unknown album</string>
+    <string name="unknown_artist">Unknown artist</string>
+    <string name="unknown_track">Unknown track</string>
+    <string name="no_albums">No albums yet.</string>
+    <string name="no_artists">No artists yet.</string>
+    <string name="no_tracks">This album has no tracks.</string>
+    <string name="search_field">Search your library</string>
+    <string name="search_hint">Search for artists, albums and tracks.</string>
+    <string name="search_nothing">Nothing found for “%1$s”.</string>
+    <string name="section_artists">Artists</string>
+    <string name="section_albums">Albums</string>
+    <string name="section_tracks">Tracks</string>
+
+    <!-- Players -->
+    <string name="section_players">Players</string>
+    <string name="section_queue">Queue</string>
+    <string name="no_players">No players are available to you. Ask your server\'s admin to give you access to a player.</string>
+    <string name="choose_player_first">Choose a player on the Home screen first.</string>
+    <string name="player_playing">Playing</string>
+    <string name="player_idle">Ready</string>
+    <string name="player_off">Switched off</string>
+    <string name="player_disconnected">Not connected</string>
+    <string name="now_playing">Now playing</string>
+    <string name="paused">Paused</string>
+    <string name="nothing_playing">Nothing playing</string>
+    <string name="open_now_playing">Open now playing</string>
+    <string name="queue_empty">The queue is empty.</string>
+    <string name="shuffle">Shuffle</string>
+    <string name="shuffle_songs">Shuffling tracks</string>
+    <string name="shuffle_albums">Shuffling albums</string>
+    <string name="repeat">Repeat</string>
+    <string name="repeat_one">Repeating this track</string>
+    <string name="repeat_all">Repeating the queue</string>
+    <string name="mode_off">Off</string>
+    <string name="position">Position in track</string>
+    <string name="volume">Volume</string>
+    <string name="power_on">Switch player on</string>
+    <string name="power_off">Switch player off</string>
+    <string name="queued_play_now">Playing now</string>
+    <string name="queued_next">Playing next</string>
+    <string name="queued_add">Added to the queue</string>
+    <string name="no_player_selected">Choose a player first</string>
+
+    <!-- Settings -->
+    <string name="section_account">Account</string>
+    <string name="section_about">About</string>
+    <string name="server">Server</string>
+    <string name="role_admin">Administrator</string>
+    <string name="role_listener">Listener</string>
+    <string name="two_step_verification">Two-step verification</string>
+    <string name="two_step_on">On</string>
+    <string name="two_step_off">Off (turn it on in the web app)</string>
+    <string name="sign_out_explained">Signs this phone out and removes it from your devices</string>
+    <string name="sign_out_confirm_title">Sign out?</string>
+    <string name="sign_out_confirm_body">This phone will need your password or a new pairing code to sign in again.</string>
+    <string name="version_line">App %1$s · core %2$s</string>
+    <string name="licences">Open-source licences</string>
+    <string name="licences_intro">Lyrion Anywhere is free software under the GNU GPL (version 2 or later). It is built on these open-source components:</string>
+
+    <!-- States and errors -->
+    <string name="loading">Loading</string>
+    <string name="error_offline">Can\'t reach your server. Check your connection and try again.</string>
+    <string name="error_signed_out">You\'ve been signed out. Please sign in again.</string>
+    <string name="error_two_step_required">Enter your two-step code.</string>
+    <string name="error_forbidden">You don\'t have permission to do that.</string>
+    <plurals name="error_rate_limited_seconds">
+        <item quantity="one">Too many attempts. Try again in %1$d second.</item>
+        <item quantity="other">Too many attempts. Try again in %1$d seconds.</item>
+    </plurals>
+    <plurals name="error_rate_limited_minutes">
+        <item quantity="one">Too many attempts. Try again in %1$d minute.</item>
+        <item quantity="other">Too many attempts. Try again in %1$d minutes.</item>
+    </plurals>
+    <string name="error_server">Your music server didn\'t answer properly. Try again shortly.</string>
+    <string name="error_wrong_credentials">Wrong user name, password or code.</string>
+    <string name="error_bad_pairing_code">That pairing code isn\'t valid or has expired. Ask for a new one.</string>
+    <string name="error_unexpected">Something went wrong. Please try again.</string>
+</resources>

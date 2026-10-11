@@ -1,0 +1,37 @@
+[package]
+name = "anywhere-mobile"
+description = "Lyrion Anywhere native host layer (Android, later iOS): API client, sign-in, events; exposed through UniFFI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "anywhere_mobile"
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+uniffi = { version = "0.31", features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "ring", "tls12", "logging"] }
+http-body-util = "0.1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-platform-verifier = "0.7"
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "__rustls-tls"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+percent-encoding = "2"
+thiserror = "2"
+getrandom = "0.3"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "0.22", default-features = false }
+
+[dev-dependencies]
+anywhere-gateway = { path = "../gateway" }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }

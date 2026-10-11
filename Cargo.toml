@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["core", "cli", "gateway", "wasm"]
+members = ["core", "cli", "gateway", "wasm", "mobile", "mobile/uniffi-bindgen"]
 
 [workspace.package]
 version = "0.0.1"
@@ -11,6 +11,13 @@ repository = "https://github.com/JameZUK/lyrion-anywhere"
 [profile.release]
 lto = true
 opt-level = 3
+
+# Debug builds of the Android library (apps/android): unoptimised but without debug info,
+# so the debug APK stays a sensible size.
+[profile.android-dev]
+inherits = "dev"
+debug = false
+strip = "debuginfo"
 
 # Password hashing is deliberately expensive; keep tests fast in debug builds.
 [profile.dev.package.argon2]
