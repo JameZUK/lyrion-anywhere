@@ -342,13 +342,21 @@ pub async fn run(
 /// Cache file names: a hex SHA-256 and a transcode extension. Nothing else in the cache
 /// directory is ever served.
 pub fn valid_cache_name(name: &str) -> bool {
+    valid_name_with(name, TRANSCODE_EXTS)
+}
+
+/// The extensions of transcodes.
+pub const TRANSCODE_EXTS: &[&str] = &["mp3", "opus"];
+
+/// A hex SHA-256, a dot, and one of `exts`.
+pub fn valid_name_with(name: &str, exts: &[&str]) -> bool {
     match name.split_once('.') {
         Some((hash, ext)) => {
             hash.len() == 64
                 && hash
                     .bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                && matches!(ext, "mp3" | "opus")
+                && exts.contains(&ext)
         }
         None => false,
     }
@@ -364,17 +372,28 @@ struct Index {
     clock: u64,
 }
 
-/// Transcodes on disk, at most `cap` bytes in all; the least recently used go first.
+/// Transcodes (or other derived files, see [`Cache::open_with`]) on disk, at most `cap`
+/// bytes in all; the least recently used go first.
 pub struct Cache {
     dir: PathBuf,
     cap: u64,
+    exts: &'static [&'static str],
     index: Mutex<Index>,
 }
 
 impl Cache {
-    /// Open (creating it, owner-only) a cache directory, forgetting unfinished work and
-    /// trimming it to the cap.
+    /// Open (creating it, owner-only) a transcode cache directory, forgetting unfinished
+    /// work and trimming it to the cap.
     pub fn open(dir: &Path, cap: u64) -> std::io::Result<Cache> {
+        Self::open_with(dir, cap, TRANSCODE_EXTS)
+    }
+
+    /// Like [`Cache::open`], for files named `<sha256>.<ext>` with `ext` one of `exts`.
+    pub fn open_with(
+        dir: &Path,
+        cap: u64,
+        exts: &'static [&'static str],
+    ) -> std::io::Result<Cache> {
         std::fs::create_dir_all(dir)?;
         #[cfg(unix)]
         {
@@ -387,7 +406,7 @@ impl Cache {
             let Ok(meta) = entry.metadata() else { continue };
             if name.starts_with(TEMP_PREFIX) && meta.is_file() {
                 let _ = std::fs::remove_file(entry.path());
-            } else if valid_cache_name(&name) && meta.is_file() {
+            } else if valid_name_with(&name, exts) && meta.is_file() {
                 let used = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                 found.push((used, name, meta.len()));
             }
@@ -396,6 +415,7 @@ impl Cache {
         let cache = Cache {
             dir: dir.to_path_buf(),
             cap,
+            exts,
             index: Mutex::new(Index::default()),
         };
         {
@@ -430,7 +450,7 @@ impl Cache {
 
     /// A cached transcode, marked as just used.
     pub fn lookup(&self, name: &str) -> Option<PathBuf> {
-        if !valid_cache_name(name) {
+        if !valid_name_with(name, self.exts) {
             return None;
         }
         let path = self.dir.join(name);
@@ -461,7 +481,7 @@ impl Cache {
     /// bigger than the whole cache is not kept. Returns whether it was kept.
     pub fn insert(&self, name: &str, size: u64) -> bool {
         let path = self.dir.join(name);
-        if !valid_cache_name(name) || size > self.cap {
+        if !valid_name_with(name, self.exts) || size > self.cap {
             let _ = std::fs::remove_file(&path);
             return false;
         }
@@ -476,6 +496,19 @@ impl Cache {
         }
         self.evict(Some(name));
         true
+    }
+
+    /// Forget an entry and delete its file (e.g. found unreadable).
+    pub fn remove(&self, name: &str) {
+        if !valid_name_with(name, self.exts) {
+            return;
+        }
+        let mut ix = self.index.lock().unwrap();
+        if let Some((size, _)) = ix.entries.remove(name) {
+            ix.total -= size;
+        }
+        drop(ix);
+        let _ = std::fs::remove_file(self.dir.join(name));
     }
 
     /// Remove least recently used entries (never `keep`) until the cache fits.

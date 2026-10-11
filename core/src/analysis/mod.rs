@@ -532,6 +532,93 @@ fn edge(v: &[f64], rising: bool) -> Edge {
     }
 }
 
+/// Why [`analyse_source`] gave up.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnalyseError {
+    /// Not decodable: unsupported, corrupt or truncated.
+    Decode(String),
+    /// Longer than the limit.
+    TooLong,
+    /// `should_stop` said so (e.g. a deadline passed).
+    Stopped,
+    /// Decoded, but held no audio.
+    NoAudio,
+    /// The audio's shape is outside what the analyser supports (rate, rate changes).
+    Unsupported(AnalysisError),
+}
+
+impl std::fmt::Display for AnalyseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AnalyseError::Decode(e) => write!(f, "{e}"),
+            AnalyseError::TooLong => write!(f, "too long"),
+            AnalyseError::Stopped => write!(f, "stopped"),
+            AnalyseError::NoAudio => write!(f, "no audio"),
+            AnalyseError::Unsupported(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for AnalyseError {}
+
+/// Decode a whole, seekable file (see [`crate::decode::decode_seekable`]) and analyse it in
+/// one pass, in constant memory.
+///
+/// - `max_seconds`: audio beyond this is refused with [`AnalyseError::TooLong`].
+/// - `should_stop`: polled between packets; `true` abandons the work with
+///   [`AnalyseError::Stopped`] (the host's deadline or shutdown).
+///
+/// The decoder delivers stereo, so mono files are measured as dual mono, as they are played.
+#[cfg(feature = "player")]
+pub fn analyse_source(
+    source: Box<dyn crate::decode::MediaSource>,
+    ext_hint: Option<&str>,
+    config: AnalysisConfig,
+    max_seconds: f64,
+    should_stop: &dyn Fn() -> bool,
+) -> Result<TrackAnalysis, AnalyseError> {
+    let mut an: Option<Analyser> = None;
+    let mut err: Option<AnalyseError> = None;
+    let max_seconds = if max_seconds.is_finite() {
+        max_seconds.max(0.0)
+    } else {
+        f64::MAX
+    };
+    let decoded = crate::decode::decode_seekable(source, ext_hint, &mut |rate, pcm| {
+        if should_stop() {
+            err = Some(AnalyseError::Stopped);
+            return false;
+        }
+        if an.is_none() {
+            match Analyser::new(rate, 2, config.clone()) {
+                Ok(a) => an = Some(a),
+                Err(e) => {
+                    err = Some(AnalyseError::Unsupported(e));
+                    return false;
+                }
+            }
+        }
+        let Some(a) = &mut an else { return false };
+        if let Err(e) = a.push_with_rate(rate, pcm) {
+            err = Some(AnalyseError::Unsupported(e));
+            return false;
+        }
+        if a.frames as f64 > max_seconds * f64::from(a.rate) {
+            err = Some(AnalyseError::TooLong);
+            return false;
+        }
+        true
+    });
+    if let Some(e) = err {
+        return Err(e);
+    }
+    decoded.map_err(AnalyseError::Decode)?;
+    match an {
+        Some(a) if a.frames > 0 => Ok(a.finish()),
+        _ => Err(AnalyseError::NoAudio),
+    }
+}
+
 /// Decode an encoded file (any format the player decodes) and analyse it. The decoder
 /// delivers stereo, so mono files are measured as dual mono, as they are played.
 #[cfg(feature = "player")]

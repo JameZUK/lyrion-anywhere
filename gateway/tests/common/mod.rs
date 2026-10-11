@@ -227,7 +227,11 @@ pub struct FakeLms {
     pub audio: Arc<Vec<u8>>,
     /// When set, `/stream.mp3` sends its first 1000 bytes and then stalls for ever.
     pub stall_stream: Arc<std::sync::atomic::AtomicBool>,
+    /// Tracks added by a test (see [`FakeLms::add_track`]): id → (titles item, file).
+    pub extra: ExtraTracks,
 }
+
+pub type ExtraTracks = Arc<Mutex<std::collections::HashMap<u64, (serde_json::Value, Vec<u8>)>>>;
 
 impl FakeLms {
     pub async fn start() -> FakeLms {
@@ -268,9 +272,15 @@ impl FakeLms {
         let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let http_addr = http.local_addr().unwrap();
         let stall_stream: Arc<std::sync::atomic::AtomicBool> = Default::default();
-        let (r, a, stall) = (rec.clone(), audio.clone(), stall_stream.clone());
+        let extra: ExtraTracks = Default::default();
+        let (r, a, stall, ex) = (
+            rec.clone(),
+            audio.clone(),
+            stall_stream.clone(),
+            extra.clone(),
+        );
         let app = Router::new().fallback(any(move |req: Request| {
-            let (r, a, stall) = (r.clone(), a.clone(), stall.clone());
+            let (r, a, stall, ex) = (r.clone(), a.clone(), stall.clone(), ex.clone());
             async move {
                 let path = req
                     .uri()
@@ -293,7 +303,11 @@ impl FakeLms {
                         .next()
                         .map(|id| id.parse::<u64>().unwrap_or(0));
                     r.lock().unwrap().rpc.push(params);
+                    let added = track_id.and_then(|id| ex.lock().unwrap().get(&id).cloned());
                     let result = match track_id {
+                        Some(_) if cmd == "titles" && added.is_some() => {
+                            serde_json::json!({"count": 1, "titles_loop": [added.unwrap().0]})
+                        }
                         Some(id) if cmd == "titles" => match fake_track(id, a.len()) {
                             Some(t) => serde_json::json!({"count": 1, "titles_loop": [t]}),
                             None => serde_json::json!({"count": 0}),
@@ -319,6 +333,13 @@ impl FakeLms {
                         .and_then(|v| v.to_str().ok())
                         .map(str::to_string);
                     r.lock().unwrap().downloads.push((p.clone(), range.clone()));
+                    let added = id
+                        .parse::<u64>()
+                        .ok()
+                        .and_then(|n| ex.lock().unwrap().get(&n).cloned());
+                    if let Some((_, file)) = added {
+                        return fake_download(&file, "1", range.as_deref());
+                    }
                     if !matches!(id, "1" | "3" | "5" | "6" | "7" | "8") {
                         // Unknown ids (and 4): a real LMS never answers at all.
                         futures_util::future::pending::<()>().await;
@@ -405,7 +426,20 @@ impl FakeLms {
             conns,
             audio,
             stall_stream,
+            extra,
         }
+    }
+
+    /// Add a local library track of LMS type `kind` whose file is `file`. Its URL is
+    /// `file:///srv/music/added/<id>.<kind>`; `duration` as LMS reports it.
+    pub fn add_track(&self, id: u64, kind: &str, file: Vec<u8>, duration: f64) {
+        let item = serde_json::json!({
+            "id": id, "title": format!("Added {id}"), "artist": "Artist", "album": "Album",
+            "type": kind, "url": format!("file:///srv/music/added/{id}.{kind}"),
+            "filesize": file.len(), "duration": duration.to_string(),
+            "modificationTime": "Tuesday, 1 January 2030",
+        });
+        self.extra.lock().unwrap().insert(id, (item, file));
     }
 
     pub async fn accept(&mut self) -> OwnedWriteHalf {

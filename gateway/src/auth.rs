@@ -299,6 +299,8 @@ pub async fn me(State(gw): State<AppState>, headers: HeaderMap) -> Response {
     Json(json!({
         "user": { "username": p.username, "role": p.role.as_str() },
         "device": { "id": p.device_id, "name": p.device_name, "mac": p.mac_string() },
+        // Optional features this server offers (plan §7).
+        "features": { "analysis": gw.analysis().is_some() },
     }))
     .into_response()
 }

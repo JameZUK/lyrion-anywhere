@@ -496,6 +496,100 @@ fn make_decoder(reader: &dyn FormatReader) -> Result<(Box<dyn AudioDecoder>, u32
     Ok((decoder, track.id))
 }
 
+/// A complete, seekable input for [`decode_seekable`] (a file the host saved, or bytes in
+/// memory). Re-exported so hosts need not depend on Symphonia.
+pub use symphonia::core::io::MediaSource;
+
+/// Consecutive undecodable packets after which a stream counts as corrupt.
+pub const MAX_BAD_PACKETS: u32 = 64;
+
+/// Decode a whole, seekable source into interleaved stereo `f32` PCM, passing each block to
+/// `sink(sample_rate, samples)`; the sink returns `false` to stop early.
+///
+/// Unlike [`StreamDecoder`], the demuxer may seek, so MP4 files with their index at the end
+/// decode too. It is for hosts that already hold the whole file (e.g. the gateway's track
+/// analysis). The host does the I/O; this only reads through `source`. A corrupt packet is
+/// skipped, as players do, but [`MAX_BAD_PACKETS`] in a row fail the stream.
+///
+/// A panic inside the third-party demuxers and decoders (hostile headers have been seen to
+/// trip arithmetic overflow checks in debug builds) is caught and reported as an error, so
+/// one bad file can't take its host down.
+pub fn decode_seekable(
+    source: Box<dyn MediaSource>,
+    ext_hint: Option<&str>,
+    sink: &mut dyn FnMut(u32, &[f32]) -> bool,
+) -> Result<Option<SourceFormat>, String> {
+    let run = std::panic::AssertUnwindSafe(|| decode_seekable_inner(source, ext_hint, sink));
+    std::panic::catch_unwind(run).unwrap_or_else(|_| Err("decoder failed on this file".into()))
+}
+
+fn decode_seekable_inner(
+    source: Box<dyn MediaSource>,
+    ext_hint: Option<&str>,
+    sink: &mut dyn FnMut(u32, &[f32]) -> bool,
+) -> Result<Option<SourceFormat>, String> {
+    let mut hint = Hint::new();
+    if let Some(ext) = ext_hint {
+        hint.with_extension(ext);
+    }
+    let mss = MediaSourceStream::new(source, MediaSourceStreamOptions::default());
+    let mut reader = symphonia::default::get_probe()
+        .probe(
+            &hint,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .map_err(|e| format!("probe: {e}"))?;
+    let (mut decoder, mut track_id) = make_decoder(reader.as_ref())?;
+    let format = match reader
+        .default_track(TrackType::Audio)
+        .and_then(|t| t.codec_params.clone())
+    {
+        Some(CodecParameters::Audio(params)) => Some(source_format(&params, reader.as_mut())),
+        _ => None,
+    };
+    let (mut tmp, mut stereo) = (Vec::new(), Vec::new());
+    let mut bad = 0u32;
+    loop {
+        let packet = match reader.next_packet() {
+            Ok(Some(p)) => p,
+            Ok(None) => return Ok(format),
+            Err(SymError::IoError(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                return Ok(format);
+            }
+            Err(SymError::ResetRequired) => {
+                (decoder, track_id) = make_decoder(reader.as_ref())?;
+                continue;
+            }
+            Err(e) => return Err(format!("demux: {e}")),
+        };
+        if packet.track_id != track_id {
+            continue;
+        }
+        match decoder.decode(&packet) {
+            Ok(buf) => {
+                bad = 0;
+                let rate = buf.spec().rate();
+                let channels = buf.spec().channels().count().max(1);
+                tmp.clear();
+                buf.copy_to_vec_interleaved(&mut tmp);
+                to_stereo(&tmp, channels, &mut stereo);
+                if !sink(rate, &stereo) {
+                    return Ok(format);
+                }
+            }
+            Err(SymError::DecodeError(_)) => {
+                bad += 1;
+                if bad >= MAX_BAD_PACKETS {
+                    return Err("decode: too many corrupt packets".into());
+                }
+            }
+            Err(e) => return Err(format!("decode: {e}")),
+        }
+    }
+}
+
 /// Map interleaved samples with `channels` channels onto interleaved stereo.
 fn to_stereo(src: &[f32], channels: usize, dst: &mut Vec<f32>) {
     dst.clear();

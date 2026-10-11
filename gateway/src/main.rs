@@ -70,6 +70,13 @@ enum Cmd {
         /// Disk space for transcoded downloads, in MiB (the least recently used go first).
         #[arg(long, default_value_t = 2048, value_parser = clap::value_parser!(u64).range(16..=1_048_576))]
         download_cache_mb: u64,
+        /// Turn off track analysis (waveforms and loudness): `/v1/analysis` answers 404.
+        #[arg(long)]
+        no_analysis: bool,
+        /// Disk space for track analyses, in MiB (about 2 KiB per track; the least recently
+        /// used go first).
+        #[arg(long, default_value_t = 64, value_parser = clap::value_parser!(u64).range(1..=65_536))]
+        analysis_cache_mb: u64,
         /// Open client connections at once (beyond this, new ones wait).
         #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u64).range(16..=65_536))]
         max_connections: u64,
@@ -143,6 +150,8 @@ fn main() {
             ffmpeg,
             no_transcode,
             download_cache_mb,
+            no_analysis,
+            analysis_cache_mb,
             max_connections,
         } => {
             if !admin_listen.ip().is_loopback() {
@@ -172,6 +181,13 @@ fn main() {
                 ffmpeg: transcoder(ffmpeg.as_deref(), no_transcode),
                 download_cache_dir: Some(data_dir.join("download-cache")),
                 download_cache_bytes: download_cache_mb * 1024 * 1024,
+                analysis_cache_dir: if no_analysis {
+                    tracing::info!("track analysis turned off");
+                    None
+                } else {
+                    Some(data_dir.join("analysis-cache"))
+                },
+                analysis_cache_bytes: analysis_cache_mb * 1024 * 1024,
                 ..Config::default()
             };
             let body_timeout = cfg.body_timeout;

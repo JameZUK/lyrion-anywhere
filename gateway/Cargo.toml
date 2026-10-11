@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-anywhere-core = { path = "../core", default-features = false }
+anywhere-core = { path = "../core", default-features = false, features = ["opus"] }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "sync", "signal", "fs", "process"] }
 tower-http = { version = "0.7", features = ["fs"] }

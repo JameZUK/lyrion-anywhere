@@ -341,11 +341,13 @@ fn float(v: &Value, k: &str) -> Option<f64> {
 }
 
 #[derive(Debug)]
-enum Refusal {
+pub(crate) enum Refusal {
     NotFound,
     NotDownloadable,
     Unavailable,
     TimedOut,
+    /// Larger than the caller's limit.
+    TooLarge,
     Range(Option<u64>),
     FormatUnavailable,
     TranscodeFailed,
@@ -360,6 +362,7 @@ impl Refusal {
             Refusal::FormatUnavailable => error(StatusCode::NOT_FOUND, "format not available"),
             Refusal::Unavailable => error(StatusCode::BAD_GATEWAY, "music server unavailable"),
             Refusal::TimedOut => error(StatusCode::GATEWAY_TIMEOUT, "music server timed out"),
+            Refusal::TooLarge => error(StatusCode::PAYLOAD_TOO_LARGE, "track too large"),
             Refusal::TranscodeFailed => error(StatusCode::BAD_GATEWAY, "transcoding failed"),
             Refusal::TranscodeTimedOut => {
                 error(StatusCode::GATEWAY_TIMEOUT, "transcoding timed out")
@@ -379,7 +382,7 @@ impl Refusal {
 
 impl crate::Gateway {
     /// Look a track up in the library (with a time limit). Only local files qualify.
-    async fn library_track(&self, id: u64) -> Result<Track, Refusal> {
+    pub(crate) async fn library_track(&self, id: u64) -> Result<Track, Refusal> {
         let cmd = [
             "titles".to_string(),
             "0".into(),
@@ -424,7 +427,7 @@ impl crate::Gateway {
         })
     }
 
-    fn download_salt(&self) -> Option<String> {
+    pub(crate) fn download_salt(&self) -> Option<String> {
         if let Some(s) = self.download_salt.get() {
             return Some(s.clone());
         }
@@ -884,7 +887,7 @@ async fn original(
 }
 
 /// A temporary file, removed when dropped.
-struct TempFile(std::path::PathBuf);
+pub(crate) struct TempFile(pub(crate) std::path::PathBuf);
 
 impl Drop for TempFile {
     fn drop(&mut self) {
@@ -892,20 +895,28 @@ impl Drop for TempFile {
     }
 }
 
-/// Save a track's original into `path` (for ffmpeg), within the size limit.
-async fn save_original(gw: &AppState, id: u64, path: &Path) -> Result<(), Refusal> {
+/// Save a track's original into `path` (for ffmpeg or analysis), refusing anything over
+/// `max` bytes (whatever LMS claims, at most `max` are ever written).
+pub(crate) async fn save_original(
+    gw: &AppState,
+    id: u64,
+    path: &Path,
+    max: u64,
+) -> Result<(), Refusal> {
     let resp = fetch_original(gw, id, None).await?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(Refusal::NotFound);
     }
     if resp.status() != reqwest::StatusCode::OK {
-        tracing::warn!(track = id, status = %resp.status(), "LMS refused a download for transcoding");
+        tracing::warn!(track = id, status = %resp.status(), "LMS refused a download of an original");
         return Err(Refusal::Unavailable);
     }
     let total = resp
         .content_length()
-        .filter(|n| *n <= MAX_SOURCE)
-        .ok_or_else(|| unusable(id, "no Content-Length, or too large"))?;
+        .ok_or_else(|| unusable(id, "no Content-Length"))?;
+    if total > max.min(MAX_SOURCE) {
+        return Err(Refusal::TooLarge);
+    }
     let mut file = tokio::fs::File::create(path)
         .await
         .map_err(|_| Refusal::TranscodeFailed)?;
@@ -964,7 +975,7 @@ async fn transcode_file(
         .await
         .map_err(|_| Refusal::TranscodeFailed)?;
     let input = TempFile(tc.cache.temp_path("src"));
-    save_original(gw, track.id, &input.0).await?;
+    save_original(gw, track.id, &input.0, MAX_SOURCE).await?;
     let output = TempFile(tc.cache.temp_path(format.ext()));
     let tags = Tags {
         title: track.title.clone(),

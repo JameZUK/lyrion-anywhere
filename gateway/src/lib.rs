@@ -30,6 +30,7 @@
 
 pub mod accounts;
 pub mod admin;
+pub mod analysis;
 pub mod art;
 mod auth;
 pub mod diagnostics;
@@ -124,6 +125,26 @@ pub struct Config {
     pub art_queue_wait: Duration,
     /// Longest a request body (JSON, at most a few KiB) may take to arrive.
     pub body_timeout: Duration,
+    /// Where track analyses are cached (`None`: analysis off). See [`analysis`].
+    pub analysis_cache_dir: Option<PathBuf>,
+    /// Most bytes the analysis cache may hold (about 2 KiB per track).
+    pub analysis_cache_bytes: u64,
+    /// Analyses running at once.
+    pub analysis_jobs: usize,
+    /// Analyses queued or running, for everyone.
+    pub analysis_queue: usize,
+    /// Analyses one user may have queued or running.
+    pub analysis_per_user: usize,
+    /// Largest file analysed.
+    pub analysis_max_bytes: u64,
+    /// Longest track analysed.
+    pub analysis_max_duration: Duration,
+    /// Longest one analysis (fetch and decode) may take.
+    pub analysis_timeout: Duration,
+    /// How long a request waits for a running analysis before getting 202.
+    pub analysis_wait: Duration,
+    /// How long a failed analysis is remembered (and not tried again).
+    pub analysis_retry_after: Duration,
 }
 
 impl Default for Config {
@@ -158,6 +179,16 @@ impl Default for Config {
             art_total: 32,
             art_queue_wait: Duration::from_secs(10),
             body_timeout: Duration::from_secs(15),
+            analysis_cache_dir: None,
+            analysis_cache_bytes: 64 * 1024 * 1024,
+            analysis_jobs: 1,
+            analysis_queue: 16,
+            analysis_per_user: 2,
+            analysis_max_bytes: 1024 * 1024 * 1024,
+            analysis_max_duration: Duration::from_secs(2 * 3600),
+            analysis_timeout: Duration::from_secs(300),
+            analysis_wait: Duration::from_secs(10),
+            analysis_retry_after: Duration::from_secs(600),
         }
     }
 }
@@ -186,6 +217,8 @@ pub struct Gateway {
     download_salt: std::sync::OnceLock<String>,
     /// Artwork requests in flight, per user and overall.
     art_limit: Arc<limits::Limiter>,
+    /// Track analysis, when it is on.
+    analysis: Option<analysis::Analysis>,
 }
 
 pub type AppState = Arc<Gateway>;
@@ -238,6 +271,7 @@ impl Gateway {
             download_audit: Mutex::new(HashMap::new()),
             download_salt: std::sync::OnceLock::new(),
             art_limit: limits::Limiter::new(cfg.art_per_user, cfg.art_total),
+            analysis: analysis::Analysis::new(&cfg),
             cfg,
         })
     }
@@ -256,6 +290,11 @@ impl Gateway {
 
     pub fn accounts(&self) -> &Arc<Accounts> {
         &self.accounts
+    }
+
+    /// The track analysis service, if it is on.
+    pub fn analysis(&self) -> Option<&analysis::Analysis> {
+        self.analysis.as_ref()
     }
 
     fn apps(&self) -> std::collections::HashSet<String> {
@@ -323,6 +362,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/art/{*path}", get(art::art))
         .route("/v1/download/track/{id}/info", get(download::info))
         .route("/v1/download/track/{id}", get(download::track))
+        .route("/v1/analysis/track/{id}", get(analysis::track))
         .route("/v1/events", get(events::events_upgrade))
         .route("/v1/player", get(tunnel::player_upgrade))
         .route("/v1/stream/{session}/{n}", get(relay::stream));

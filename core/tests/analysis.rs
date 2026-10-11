@@ -418,3 +418,132 @@ fn analyses_an_encoded_file() {
     assert!((a.integrated_lufs.unwrap() + 20.0).abs() < 0.1);
     assert!(analyse_encoded(&[0x42; 1000], b'f', AnalysisConfig::default()).is_err());
 }
+
+/// A 16-bit stereo WAV of interleaved stereo samples.
+fn wav16(rate: u32, pcm: &[f32]) -> Vec<u8> {
+    let mut wav = Vec::new();
+    let data_len = pcm.len() * 2;
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len as u32).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&rate.to_le_bytes());
+    wav.extend_from_slice(&(rate * 4).to_le_bytes());
+    wav.extend_from_slice(&4u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(data_len as u32).to_le_bytes());
+    for s in pcm {
+        wav.extend_from_slice(&((s * 32767.0).round() as i16).to_le_bytes());
+    }
+    wav
+}
+
+fn source(b: Vec<u8>) -> Box<dyn anywhere_core::decode::MediaSource> {
+    Box::new(std::io::Cursor::new(b))
+}
+
+#[test]
+fn analyses_a_seekable_source() {
+    use anywhere_core::analysis::analyse_source;
+    let rate = 44_100u32;
+    let wav = wav16(rate, &tone(rate, &[(3.0, -23.0)]));
+    let a = analyse_source(
+        source(wav.clone()),
+        Some("wav"),
+        AnalysisConfig::default(),
+        60.0,
+        &|| false,
+    )
+    .unwrap();
+    assert_eq!(a.frames, u64::from(rate) * 3);
+    assert!((a.integrated_lufs.unwrap() + 23.0).abs() < 0.1);
+    // Same answer as the streaming path.
+    let b = analyse_encoded(&wav, b'p', AnalysisConfig::default()).unwrap();
+    assert_eq!(a, b);
+}
+
+#[test]
+fn analyse_source_enforces_its_limits() {
+    use anywhere_core::analysis::{AnalyseError, analyse_source};
+    let rate = 44_100u32;
+    let wav = wav16(rate, &tone(rate, &[(3.0, -23.0)]));
+    let cfg = AnalysisConfig::default;
+    // Longer than allowed.
+    assert_eq!(
+        analyse_source(source(wav.clone()), Some("wav"), cfg(), 1.0, &|| false),
+        Err(AnalyseError::TooLong)
+    );
+    // Asked to stop (a deadline).
+    assert_eq!(
+        analyse_source(source(wav.clone()), Some("wav"), cfg(), 60.0, &|| true),
+        Err(AnalyseError::Stopped)
+    );
+    // Garbage, an empty file, a header with no audio: clean errors.
+    assert!(matches!(
+        analyse_source(source(vec![0x42; 5000]), Some("flac"), cfg(), 60.0, &|| {
+            false
+        }),
+        Err(AnalyseError::Decode(_))
+    ));
+    assert!(analyse_source(source(Vec::new()), None, cfg(), 60.0, &|| false).is_err());
+    let header_only = wav16(rate, &[]);
+    assert!(analyse_source(source(header_only), Some("wav"), cfg(), 60.0, &|| false).is_err());
+    // The fake audio the gateway tests serve: a FLAC marker and nonsense.
+    let fake = b"fLaCAUDIO".repeat(20_000);
+    assert!(matches!(
+        analyse_source(source(fake), Some("flac"), cfg(), 60.0, &|| false),
+        Err(AnalyseError::Decode(_))
+    ));
+    // A truncated file analyses what is there (as a player would play it).
+    let cut = wav[..wav.len() / 2].to_vec();
+    let a = analyse_source(source(cut), Some("wav"), cfg(), 60.0, &|| false).unwrap();
+    assert!(a.frames > 0 && a.frames < u64::from(rate) * 3);
+}
+
+#[test]
+fn analyse_source_survives_hostile_files() {
+    use anywhere_core::analysis::analyse_source;
+    let rate = 8_000u32;
+    let wav = wav16(rate, &tone(rate, &[(0.5, -20.0)]));
+    let flac_like = {
+        let mut v = b"fLaC\x00\x00\x00\x22".to_vec();
+        v.extend((0..400u32).map(|i| (i * 31) as u8));
+        v
+    };
+    let mut r = Rng(7);
+    let iters = if FULL { 3_000 } else { 400 };
+    for i in 0..iters {
+        let base = if i % 2 == 0 { &wav } else { &flac_like };
+        let mut b = base.clone();
+        match r.next() % 4 {
+            0 => b.truncate((r.next() % base.len() as u64) as usize),
+            1 => {
+                for _ in 0..1 + r.next() % 16 {
+                    let k = (r.next() % b.len() as u64) as usize;
+                    b[k] = r.next() as u8;
+                }
+            }
+            2 => {
+                // Hostile header fields: sizes, rates, channel counts.
+                for k in [4usize, 22, 24, 28, 32, 34, 40] {
+                    if k + 4 <= b.len() && r.next().is_multiple_of(2) {
+                        b[k..k + 4].copy_from_slice(&(r.next() as u32).to_le_bytes());
+                    }
+                }
+            }
+            _ => b = (0..r.next() % 2000).map(|_| r.next() as u8).collect(),
+        }
+        let hint = ["wav", "flac", "mp3", "m4a", "ogg"][(r.next() % 5) as usize];
+        // Never a panic; an answer either way.
+        let _ = analyse_source(
+            source(b),
+            Some(hint),
+            AnalysisConfig::default(),
+            30.0,
+            &|| false,
+        );
+    }
+}

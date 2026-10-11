@@ -95,6 +95,14 @@ impl Limiter {
         }
     }
 
+    /// A slot for `key` if one is free now (never waits).
+    pub fn try_acquire(self: &Arc<Self>, key: i64) -> Option<Permit> {
+        self.try_take(key).then(|| Permit {
+            lim: self.clone(),
+            key,
+        })
+    }
+
     /// Slots in use (for tests and diagnostics).
     pub fn in_use(&self) -> usize {
         self.state.lock().unwrap().total
