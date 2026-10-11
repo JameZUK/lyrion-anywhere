@@ -1,7 +1,8 @@
 package io.github.jamezuk.lyrionanywhere.ui.library
 
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -70,6 +71,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.jamezuk.lyrionanywhere.core.Album
 import io.github.jamezuk.lyrionanywhere.core.Favourite
@@ -611,8 +613,11 @@ internal fun carouselCardWidth(screenWidthDp: Int, small: Boolean = false): Floa
 }
 
 @Composable
-private fun cardWidth(small: Boolean = false) =
-    carouselCardWidth(LocalConfiguration.current.screenWidthDp, small).dp
+private fun cardWidth(small: Boolean = false): Dp {
+    // The window's own width (split screen, foldables), not the whole display's.
+    val widthDp = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp().value.toInt() }
+    return carouselCardWidth(widthDp, small).dp
+}
 
 @Composable
 private fun AlbumCard(a: Album, actions: HomeActions) {
