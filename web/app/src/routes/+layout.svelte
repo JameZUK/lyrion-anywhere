@@ -1,5 +1,6 @@
 <script lang="ts">
 	import '../app.css';
+	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api, app, session } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
@@ -19,6 +20,9 @@
 
 	let { children } = $props();
 
+	/** How long the app waits for this device's player to appear in LMS before using another. */
+	const DEVICE_WAIT_MS = 20_000;
+
 	// The chosen theme, before anything is drawn (also on the sign-in page).
 	appearance.start();
 	install.start();
@@ -29,14 +33,36 @@
 	// Diagnostics for troubleshooting: report once signed in (capabilities, playback choice).
 	$effect(() => {
 		if (app.status === 'signed-in') {
-			// Test the media-element path quietly, so "Play on this device" can use it at once.
-			// Then, if this device was playing before a reload, carry on by itself.
-			void device.prepare().then(() => {
+			// Test the media-element path quietly, so this device can use it at once. Then start
+			// this device's player by itself if it is the one to use (SPEC D20: player-first), or
+			// if it was playing before a reload: it connects now, and the first tap anywhere
+			// turns the sound on.
+			void device.prepare().then(async () => {
 				device.report();
-				void device.resumeAfterReload();
+				if (!untrack(() => app.wantDevice) && !device.wasActive) return;
+				const r = await device.autoStart();
+				// Another tab of this browser runs it: control that (once LMS lists it).
+				if (r === 'busy') void app.waitForPlayer(app.deviceMac);
+				else if (r !== 'started') app.deviceFailed();
 			});
 		}
 	});
+
+	// This device's player failed while the app was waiting for it, or LMS still hasn't listed
+	// it after a while (e.g. the server can't reach back): use another player, and say why.
+	const waitingForDevice = $derived(!!app.playerId && app.playerId === app.deviceMac && !app.current);
+	$effect(() => {
+		if (!waitingForDevice) return;
+		if (device.state === 'error') {
+			untrack(() => app.deviceFailed());
+			return;
+		}
+		const t = setTimeout(() => app.deviceFailed(), DEVICE_WAIT_MS);
+		return () => clearTimeout(t);
+	});
+
+	// The sound is held back until a tap, but only worth saying while this device plays.
+	const heldBack = $derived(device.needsTap && (device.detail.output === 'Playing' || (app.playerId === device.mac && app.playing)));
 
 	// Downloads belong to the signed-in user. Remember who that is, so offline mode can offer
 	// their downloads when the server can't be reached; forget it once signed out.
@@ -77,8 +103,14 @@
 	device.onConnected = async (mac) => {
 		const point = loadResume();
 		clearResume();
-		// LMS may not list the new player for a moment: wait for it, then select it.
-		if (!(await app.waitForPlayer(mac)) || point?.mac !== mac) return;
+		if (!app.playerId || app.playerId === mac) {
+			// LMS may not list the new player for a moment: wait for it, then select it.
+			if (!(await app.waitForPlayer(mac))) return;
+		} else {
+			// The user controls another player (e.g. one chosen before a reload): keep it.
+			await app.loadPlayers();
+		}
+		if (point?.mac !== mac) return;
 		// After a reload: if LMS hasn't carried on playing by itself, go back to where it was.
 		await new Promise((r) => setTimeout(r, 1500));
 		// Ask about this device's own player: the user may have selected another meanwhile.
@@ -146,8 +178,8 @@
 				<p class="conn muted">Reconnecting…</p>
 			{/if}
 		</nav>
-		<main class="content" class:on-np={path === '/' && !offlinePlayer.active}>
-			{#if device.needsTap}
+		<main class="content" class:has-strip={app.remote && !offlinePlayer.active} class:on-np={path === '/' && !offlinePlayer.active}>
+			{#if heldBack}
 				<button class="banner resume tap" onclick={() => {}}>
 					<Icon name="play" size={16} /><span>Playing on this device. Tap here (or anywhere) to turn the sound on.</span>
 				</button>
@@ -156,6 +188,12 @@
 					<span>This device was playing before the page reloaded.</span>
 					<button class="btn primary" onclick={() => device.start()}><Icon name="play" size={16} />Resume playing here</button>
 					<button class="btn" onclick={() => device.stop()}>Dismiss</button>
+				</div>
+			{/if}
+			{#if app.notice}
+				<div class="banner resume notice" role="status">
+					<span>{app.notice}</span>
+					<button class="btn" onclick={() => (app.notice = '')}>OK</button>
 				</div>
 			{/if}
 			{#if app.error}<p class="banner error" role="alert">{app.error}</p>{/if}
@@ -258,6 +296,14 @@
 	.content {
 		min-width: 0;
 		padding-bottom: calc(var(--bar-h) + var(--tabs-h) + 1rem);
+	}
+	/* Room for the "Playing on …" strip above the player bar. Now playing shows the strip
+	   itself, so the bar's is hidden there. */
+	.content.has-strip:not(.on-np) {
+		padding-bottom: calc(var(--bar-h) + var(--tabs-h) + var(--strip-h) + 1rem);
+	}
+	.barwrap.on-np :global(.bar > .strip) {
+		display: none;
 	}
 	.banner {
 		margin: 1rem clamp(1rem, 3vw, 2.5rem) 0;

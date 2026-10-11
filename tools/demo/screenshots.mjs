@@ -30,6 +30,9 @@ async function session({ device, scheme, theme, accent = '#c2410c', signIn = tru
   await page.evaluate(
     ([p, prefs]) => {
       localStorage.setItem('anywhere.player', p);
+      // The demo has no audio server for this browser to play through: start on Lounge
+      // (Settings › This device), so the shots show the "Playing on …" strip.
+      localStorage.setItem('anywhere.defaultPlayer.demo', JSON.stringify({ kind: 'player', id: p }));
       localStorage.setItem('anywhere.appearance', JSON.stringify(prefs));
       localStorage.setItem('anywhere.playback.mode', 'worklet'); // no self-test noise
     },

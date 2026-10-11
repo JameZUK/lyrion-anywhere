@@ -15,8 +15,22 @@ export const api = {
 	art: () => new Promise<string>(() => {}),
 };
 
+/** The signed-in session, as far as components read it. */
+export const session = {
+	current: null as null | { user: { username: string; role: string }; device: { id: number; name: string; mac?: string } },
+	token: 't',
+	subscribe: () => () => {},
+	authed: <T,>(fn: (t: string) => Promise<T>) => fn('t'),
+	renew: async () => true,
+};
+
+export const moves: { source: string; target: string; name: string }[] = [];
+
 class FakeApp {
 	playerId = $state('');
+	deviceMac = $state('');
+	notice = $state('');
+	moving = $state('');
 	players = $state<PlayerInfo[]>([]);
 	now = $state<PlayerStatus | null>(null);
 	queueVersion = $state(0);
@@ -25,8 +39,29 @@ class FakeApp {
 	get current() {
 		return this.players.find((p) => p.playerid === this.playerId);
 	}
+	get remote() {
+		return !!this.playerId && this.playerId !== this.deviceMac && !!this.current;
+	}
+	get playing() {
+		return this.now?.mode === 'play';
+	}
+	nameOf(id: string) {
+		return this.players.find((p) => p.playerid === id)?.name ?? '';
+	}
 	select(id: string) {
 		this.playerId = id;
+	}
+	preferDevice() {
+		this.playerId = this.deviceMac;
+	}
+	async moveTo(source: string, target: string, name: string) {
+		moves.push({ source, target, name });
+		this.playerId = target;
+		return true;
+	}
+	async waitForPlayer(id: string) {
+		this.playerId = id;
+		return this.players.some((p) => p.playerid === id);
 	}
 	async send(c: (string | number)[]) {
 		await api.rpc(this.playerId, c);

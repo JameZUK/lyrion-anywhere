@@ -1,18 +1,21 @@
 <script lang="ts">
-	// Pick which player to control; start or stop this browser as a player.
+	// "Play on…": where the music plays (SPEC D20). This device first (ticked when in use), then
+	// the other players this user may control, with what each is playing. Each other player
+	// can be controlled, or have playback moved to it (Transfer). Then sync groups.
 	import { untrack } from 'svelte';
-	import { api, app } from '$lib/state/app.svelte';
+	import { api, app, session } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
+	import { bringHere, isThisDevice, moveTo, useThisDevice } from '$lib/player/outputs';
 	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
 	import { groupFromStatus, groupLabel, groupOf, syncGroupsFrom, syncToggle } from '$lib/lms/sync';
-	import type { SyncGroupsResult } from '$lib/lms/types';
+	import type { PlayerStatus, SyncGroupsResult } from '$lib/lms/types';
 	import Icon from './Icon.svelte';
 
 	let { onclose }: { onclose: () => void } = $props();
 
-	// Focus moves into the panel when it opens, and back to whatever opened it (the player
-	// button) when it closes; Escape closes it.
+	// Focus moves into the panel when it opens, and back to whatever opened it when it closes;
+	// Escape closes it.
 	let sheet = $state<HTMLDivElement>();
 	$effect(() => {
 		const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -35,13 +38,55 @@
 		}
 	}
 
-	function pick(id: string) {
+	const selected = $derived(app.playerId.toLowerCase());
+	const hereSelected = $derived(isThisDevice(selected));
+	/** The players other than this device. */
+	const others = $derived(app.players.filter((p) => !isThisDevice(p.playerid)));
+	/** Something to move: the player in use has a queue. */
+	const canMove = $derived(!!app.current && Number(app.now?.playlist_tracks ?? 0) > 0 && !app.moving);
+
+	function control(id: string) {
 		app.select(id);
 		onclose();
 	}
+	function here() {
+		useThisDevice();
+		onclose();
+	}
+	function move(id: string) {
+		onclose();
+		void moveTo(id);
+	}
+	function bring() {
+		onclose();
+		void bringHere();
+	}
 
-	async function startHere() {
-		await device.start();
+	// --- what each player is playing --------------------------------------------------------
+
+	let playing = $state<Record<string, string>>({});
+	async function loadPlaying() {
+		const list = others.slice(0, 24);
+		const out: Record<string, string> = {};
+		await Promise.all(
+			list.map(async (p) => {
+				try {
+					const s = await api.rpc<PlayerStatus>(p.playerid, cmd.nowPlaying());
+					out[p.playerid] = describe(s);
+				} catch {
+					/* leave it out */
+				}
+			}),
+		);
+		playing = out;
+	}
+	function describe(s: PlayerStatus): string {
+		if (Number(s.power ?? 1) === 0) return 'Off';
+		const t = s.playlist_loop?.[0];
+		const what = [textOf(t?.title ?? s.current_title), textOf(t?.artist)].filter(Boolean).join(' · ');
+		if (s.mode === 'play') return what ? `Playing ${what}` : 'Playing';
+		if (s.mode === 'pause') return what ? `Paused: ${what}` : 'Paused';
+		return what ? `Stopped: ${what}` : 'Idle';
 	}
 
 	// --- sync groups ----------------------------------------------------------------------
@@ -63,19 +108,21 @@
 	}
 	$effect(() => {
 		void app.players;
-		untrack(() => void loadGroups());
+		untrack(() => {
+			void loadGroups();
+			void loadPlaying();
+		});
 	});
 
-	const selected = $derived(app.playerId.toLowerCase());
 	/** The selected player's group: from `syncgroups ?`, else from its own status. */
 	const myGroup = $derived.by(() => {
 		const g = groupOf(selected, groups);
 		return g.length ? g : groupFromStatus(selected, app.now, app.players);
 	});
-	const others = $derived(app.players.filter((p) => p.playerid.toLowerCase() !== selected));
+	const syncable = $derived(app.players.filter((p) => p.playerid.toLowerCase() !== selected));
 	const nameOf = (id: string) => textOf(app.players.find((p) => p.playerid.toLowerCase() === id)?.name);
 
-	/** "With Study", for a player in a group, naming the others. */
+	/** "with Study", for a player in a group, naming the others. */
 	function groupNote(id: string): string {
 		const g = groupOf(id, groups);
 		const rest = g.filter((x) => x !== id.toLowerCase());
@@ -100,7 +147,7 @@
 		if (!selected || syncBusy) return;
 		let t;
 		try {
-			t = syncToggle(selected, other.toLowerCase(), groups.length ? groups : myGroup.length ? [myGroup] : [], on);
+			t = syncToggle(selected, other.toLowerCase(), on);
 		} catch {
 			return; // not a well-formed player id: never sent
 		}
@@ -112,69 +159,86 @@
 		void runSync(selected, cmd.unsync());
 	}
 
-	const deviceLabel = $derived(
-		{
-			off: 'Play on this device',
+	const deviceSub = $derived.by(() => {
+		if (!device.supported) return "This browser can't play music itself";
+		const name = textOf(session.current?.device.name);
+		const state = {
+			off: 'Ready',
 			starting: 'Starting…',
-			connected: 'Playing here',
+			connected: hereSelected && app.playing ? 'Playing' : 'Ready',
 			reconnecting: 'Reconnecting…',
-			stopped: 'Play on this device',
-			error: 'Could not start; try again',
-		}[device.state],
-	);
+			stopped: 'Ready',
+			error: "Couldn't start; tap to try again",
+		}[device.state];
+		return [name, state].filter(Boolean).join(' · ');
+	});
 </script>
 
 <svelte:window {onkeydown} {onpointerdown} />
 
-<div class="sheet" role="dialog" aria-label="Choose a player" tabindex="-1" bind:this={sheet}>
+<div class="sheet" role="dialog" aria-label="Play on" tabindex="-1" bind:this={sheet}>
 	<header>
-		<h2>Players</h2>
+		<h2>Play on…</h2>
 		<button class="icon-btn" onclick={onclose} aria-label="Close"><Icon name="close" /></button>
 	</header>
 
-	<div class="here">
-		{#if device.state === 'connected' || device.state === 'reconnecting' || device.state === 'starting'}
-			<div class="row active-device">
+	<ul class="outputs">
+		<li class="output" class:selected={hereSelected}>
+			<button
+				class="row choice"
+				aria-current={hereSelected ? 'true' : undefined}
+				disabled={!device.supported}
+				onclick={here}
+				data-output="device"
+			>
 				<Icon name="device" />
-				<span class="grow">{deviceLabel}</span>
-				<button class="btn" onclick={() => device.stop()}>Stop</button>
-			</div>
-		{:else if device.supported}
-			<button class="row choice" onclick={startHere}>
-				<Icon name="device" />
-				<span class="grow">{deviceLabel}</span>
-				<Icon name="plus" size={18} />
+				<span class="grow">
+					<span class="name">This device</span>
+					<span class="sub muted ellipsis">{deviceSub}</span>
+				</span>
+				{#if hereSelected}<span class="tick"><Icon name="check" size={20} label="In use" /></span>{/if}
 			</button>
-		{:else}
-			<p class="muted">This browser can't play here (no AudioWorklet).</p>
-		{/if}
-	</div>
+			{#if !hereSelected && device.supported && canMove}
+				<button class="btn move" onclick={bring} aria-label="Bring playback to this device">
+					<Icon name="transfer" size={16} />Move here
+				</button>
+			{/if}
+		</li>
 
-	<ul>
-		{#each app.players as p (p.playerid)}
-			<li>
-				<button class="row choice" class:selected={p.playerid === app.playerId} onclick={() => pick(p.playerid)}>
-					<Icon name={p.playerid === device.mac ? 'device' : 'speaker'} />
+		{#each others as p (p.playerid)}
+			{@const on = p.playerid.toLowerCase() === selected}
+			<li class="output" class:selected={on}>
+				<button class="row choice" aria-current={on ? 'true' : undefined} onclick={() => control(p.playerid)} aria-label={`Control ${textOf(p.name)}`}>
+					<Icon name="speaker" />
 					<span class="grow">
 						<span class="name ellipsis">{textOf(p.name)}</span>
-						<span class="sub muted">
-							{p.isplaying ? 'Playing' : p.power ? 'On' : 'Off'}{p.playerid === device.mac ? ' · this device' : ''}{groupNote(p.playerid) ? ` · ${groupNote(p.playerid)}` : ''}
+						<span class="sub muted ellipsis">
+							{playing[p.playerid] ?? (p.isplaying ? 'Playing' : p.power ? 'On' : 'Off')}{groupNote(p.playerid) ? ` · ${groupNote(p.playerid)}` : ''}
 						</span>
 					</span>
 					{#if p.isplaying}<span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>{/if}
+					{#if on}<span class="tick"><Icon name="check" size={20} label="In use" /></span>{/if}
 				</button>
+				{#if !on && canMove}
+					<button class="btn move" onclick={() => move(p.playerid)} aria-label={`Move playback to ${textOf(p.name)}`}>
+						<Icon name="transfer" size={16} />Move here
+					</button>
+				{/if}
 			</li>
 		{:else}
-			<li class="muted empty">No players you can control yet.</li>
+			{#if !app.players.length}<li class="muted empty">No other players you can control.</li>{/if}
 		{/each}
 	</ul>
+	{#if canMove && (others.length || !hereSelected)}
+		<p class="hint muted">Move here: playback carries on there from the same point, and stops where it was. That player's own queue is replaced.</p>
+	{/if}
 
-	{#if selected && others.length}
+	{#if selected && app.current && syncable.length}
 		<section class="sync" aria-labelledby="sync-h">
 			<h3 id="sync-h">Play {nameOf(selected) || 'this player'} in sync with…</h3>
 			{#if syncError}<p class="error" role="alert">{syncError}</p>{/if}
 			<ul>
-				{#each others as p (p.playerid)}
+				{#each syncable as p (p.playerid)}
 					{@const on = myGroup.includes(p.playerid.toLowerCase())}
 					<li>
 						<button
@@ -185,7 +249,7 @@
 							disabled={syncBusy}
 							onclick={() => toggle(p.playerid, !on)}
 						>
-							<Icon name="speaker" size={18} />
+							<Icon name={isThisDevice(p.playerid) ? 'device' : 'speaker'} size={18} />
 							<span class="grow">
 								<span class="name ellipsis">{textOf(p.name)}</span>
 								{#if !on && groupNote(p.playerid)}<span class="sub muted ellipsis">Grouped {groupNote(p.playerid)}</span>{/if}
@@ -208,10 +272,11 @@
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
 		box-shadow: var(--shadow);
-		width: min(92vw, 360px);
-		max-height: min(70vh, 560px);
+		width: min(92vw, 380px);
+		max-height: min(70vh, 600px);
 		overflow: auto;
 		padding: 0.5rem;
+		text-align: left;
 	}
 	.sheet:focus {
 		outline: none; /* the panel itself only holds focus for keyboard users to move on from */
@@ -231,36 +296,44 @@
 		margin: 0;
 		padding: 0;
 	}
+	.output {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+		border-radius: var(--radius-sm);
+		padding-right: 0.4rem;
+	}
+	.output:hover {
+		background: var(--bg-sunken);
+	}
+	.output.selected {
+		background: var(--accent-soft);
+		color: var(--accent-soft-fg);
+	}
 	.row {
 		display: flex;
 		align-items: center;
 		gap: 0.75rem;
 		width: 100%;
+		min-width: 0;
 		padding: 0.6rem 0.75rem;
 		border-radius: var(--radius-sm);
 		text-align: left;
+		color: inherit;
+	}
+	.output .row {
+		flex: 1;
 	}
 	.choice {
 		border: 0;
 		background: transparent;
 	}
-	.choice:hover {
+	.choice:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+	.toggle:hover {
 		background: var(--bg-sunken);
-	}
-	.selected {
-		background: var(--accent-soft);
-	}
-	.active-device {
-		background: var(--accent-soft);
-	}
-	.here {
-		border-bottom: 1px solid var(--line);
-		padding-bottom: 0.4rem;
-		margin-bottom: 0.4rem;
-	}
-	.here p {
-		padding: 0.5rem 0.75rem;
-		margin: 0;
 	}
 	.grow {
 		flex: 1;
@@ -272,6 +345,24 @@
 	}
 	.sub {
 		font-size: 0.82rem;
+	}
+	.selected .sub {
+		color: inherit;
+		opacity: 0.8;
+	}
+	.tick {
+		display: inline-grid;
+		color: var(--accent);
+	}
+	.move {
+		flex: none;
+		font-size: 0.8rem;
+		padding: 0.35em 0.7em;
+		white-space: nowrap;
+	}
+	.hint {
+		margin: 0.4rem 0.75rem 0.2rem;
+		font-size: 0.78rem;
 	}
 	.empty {
 		padding: 0.75rem;

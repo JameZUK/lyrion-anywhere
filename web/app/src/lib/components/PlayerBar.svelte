@@ -1,16 +1,15 @@
 <script lang="ts">
 	import { app } from '$lib/state/app.svelte';
-	import { playerLabel } from '$lib/lms/sync';
 	import * as cmd from '$lib/lms/commands';
 	import { coverPath } from '$lib/lms/commands';
 	import { duration, textOf } from '$lib/lms/format';
 	import Art from './Art.svelte';
 	import Icon from './Icon.svelte';
-	import PlayerSwitcher from './PlayerSwitcher.svelte';
+	import OutputButton from './OutputButton.svelte';
+	import PlayingElsewhere from './PlayingElsewhere.svelte';
 	import { device } from '$lib/player/device.svelte';
 	import { DEVICE_BUTTONS_NOTE } from '$lib/player/volume';
 
-	let switcher = $state(false);
 	let seeking = $state<number | null>(null);
 	let volume = $state<number | null>(null);
 	let volTimer: ReturnType<typeof setTimeout> | undefined;
@@ -34,6 +33,7 @@
 </script>
 
 <footer class="bar" aria-label="Player">
+	<div class="strip"><PlayingElsewhere compact /></div>
 	<a class="now" href="#/" aria-label="Now playing">
 		<div class="thumb"><Art path={coverPath(track?.coverid ?? track?.artwork_track_id, 120)} alt="" label={title} /></div>
 		<div class="meta">
@@ -90,15 +90,7 @@
 				<input type="range" min="0" max="100" value={vol} oninput={(e) => setVolume(Number(e.currentTarget.value))} disabled={!app.now} />
 			</label>
 		{/if}
-		<div class="switch">
-			<button class="btn player-btn" onclick={() => (switcher = !switcher)} aria-expanded={switcher}>
-				<Icon name="speaker" size={18} />
-				<span class="ellipsis">{playerLabel(app.playerId, app.now, app.players) || 'Choose player'}</span>
-			</button>
-			{#if switcher}
-				<div class="pop"><PlayerSwitcher onclose={() => (switcher = false)} /></div>
-			{/if}
-		</div>
+		<OutputButton />
 	</div>
 </footer>
 
@@ -192,39 +184,38 @@
 		font-size: 0.75rem;
 		line-height: 1.2;
 	}
-	.switch {
-		position: relative;
-		min-width: 0;
-	}
-	.player-btn {
-		max-width: 200px;
-	}
-	.pop {
+	/* "Playing on …": a strip along the top edge of the bar. */
+	.strip {
 		position: absolute;
+		left: 0;
 		right: 0;
-		bottom: calc(100% + 10px);
+		bottom: 100%;
 	}
 
 	/* Phones: a compact bar with title and play/pause; the rest is on the Now playing page. */
 	@media (max-width: 760px) {
 		.bar {
-			grid-template-columns: minmax(0, 1fr) auto;
-			gap: 0.5rem;
+			grid-template-columns: minmax(0, 1fr) auto auto;
+			gap: 0.25rem;
 			padding: 0 0.5rem 0 0.75rem;
 		}
 		.centre {
 			order: 2;
+		}
+		.right {
+			order: 3;
 		}
 		.progress,
 		.volume,
 		.transport .icon-btn:not(.play) {
 			display: none;
 		}
-		.right {
-			display: none;
-		}
 		.thumb {
 			width: 46px;
+		}
+		/* The bar's backdrop filter makes it the frame for the Play on… sheet. */
+		.bar {
+			--pop-bottom: calc(100% + 8px);
 		}
 	}
 </style>
