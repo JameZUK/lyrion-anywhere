@@ -306,6 +306,43 @@ class PlayerViewModelTest : MainDispatcherTest() {
     }
 
     @Test
+    fun playOnPhoneSelectsThePhoneOnceLmsListsIt() = runTest(dispatcher) {
+        val players = FakePlayers()
+        val local = FakeLocalPlayer()
+        val vm = PlayerViewModel(players, FakeEvents(), FakeSettings(), local) { now }
+        vm.start()
+        assertEquals("aa:00:00:00:00:02", vm.state.value.selectedId)
+        vm.setPlayOnPhone(true)
+        assertEquals(listOf(true), local.enabled)
+        assertTrue(vm.state.value.local.enabled)
+        // The engine connects and says hello; LMS now lists the phone.
+        players.players = players.players + samplePlayer("02:4c:41:00:00:01")
+        local.state.value = local.state.value.copy(status = localStatus("02:4c:41:00:00:01"))
+        runCurrent()
+        assertEquals("02:4c:41:00:00:01", vm.state.value.selectedId)
+        assertTrue(vm.state.value.localSelected)
+        // Choosing another player is the user's call from then on.
+        vm.select("aa:00:00:00:00:01")
+        vm.refresh()
+        assertEquals("aa:00:00:00:00:01", vm.state.value.selectedId)
+        assertFalse(vm.state.value.localSelected)
+        vm.stop()
+    }
+
+    @Test
+    fun aRefusedPlayOnPhoneIsReported() = runTest(dispatcher) {
+        val local = FakeLocalPlayer().apply { enableResult = ApiResult.Err(AppError.SignedOut) }
+        val vm = PlayerViewModel(FakePlayers(), FakeEvents(), FakeSettings(), local) { now }
+        val messages = mutableListOf<PlayerMessage>()
+        val collector = backgroundScope.launch { vm.messages.collect { messages += it } }
+        vm.setPlayOnPhone(true)
+        runCurrent()
+        assertEquals(PlayerMessage.Failed(AppError.SignedOut), messages.single())
+        assertFalse(vm.state.value.local.enabled)
+        collector.cancel()
+    }
+
+    @Test
     fun thePositionTicksOnlyWhilePlaying() {
         val playing = PlayerUiState(status = sampleStatus(PlaybackMode.PLAYING, elapsed = 10.0), statusAt = 1000)
         assertEquals(15.0, PlayerViewModel.elapsedAt(playing, 6000), 0.001)

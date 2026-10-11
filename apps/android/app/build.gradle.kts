@@ -79,6 +79,7 @@ android {
 
 dependencies {
     implementation(project(":ui"))
+    implementation(project(":playback"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.navigation.compose)

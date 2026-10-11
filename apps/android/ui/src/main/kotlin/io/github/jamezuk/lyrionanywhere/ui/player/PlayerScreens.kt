@@ -171,11 +171,11 @@ fun HomeScreen(
     onOpenNowPlaying: () -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    onPlayOnPhone: (Boolean) -> Unit = {},
 ) {
     when {
         state.loading -> LoadingState(modifier)
         state.players.isEmpty() && state.error != null -> ErrorState(state.error, onRetry, modifier)
-        state.players.isEmpty() -> EmptyState(stringResource(R.string.no_players), modifier)
         else -> LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
             val current = state.status?.current
             if (current != null) {
@@ -207,7 +207,12 @@ fun HomeScreen(
                 }
             }
             item { SectionHeader(stringResource(R.string.section_players)) }
-            item { PlayerPicker(state.players, state.selectedId, onSelect) }
+            item { PlayOnPhoneRow(state.local, onPlayOnPhone) }
+            if (state.players.isEmpty()) {
+                item { Text(stringResource(R.string.no_players), Modifier.padding(16.dp)) }
+            } else {
+                item { PlayerPicker(state.players, state.selectedId, onSelect) }
+            }
         }
     }
 }
@@ -321,6 +326,9 @@ fun NowPlayingScreen(
                             contentDescription = stringResource(if (status.powered) R.string.power_off else R.string.power_on),
                         )
                     }
+                }
+                if (state.localSelected) {
+                    SignalPathPanel(state.local.signalPath)
                 }
             }
         }

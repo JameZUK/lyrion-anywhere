@@ -47,6 +47,32 @@ class SecurityConfigTest {
     }
 
     @Test
+    fun thePlaybackServiceIsPrivateAndAMediaForegroundService() {
+        val services = xml("src/main/AndroidManifest.xml").children("service")
+        val playback = services.single { it.getAttributeNS(android, "name").endsWith(".PlaybackService") }
+        assertEquals("false", playback.getAttributeNS(android, "exported"))
+        assertEquals("mediaPlayback", playback.getAttributeNS(android, "foregroundServiceType"))
+        assertFalse(playback.hasAttributeNS(android, "permission"))
+    }
+
+    @Test
+    fun onlyTheExpectedPermissions() {
+        val perms = xml("src/main/AndroidManifest.xml").children("uses-permission")
+            .map { it.getAttributeNS(android, "name") }
+            .toSet()
+        assertEquals(
+            setOf(
+                "android.permission.INTERNET",
+                "android.permission.CAMERA",
+                "android.permission.FOREGROUND_SERVICE",
+                "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+                "android.permission.WAKE_LOCK",
+            ),
+            perms,
+        )
+    }
+
+    @Test
     fun releaseRefusesCleartextAndUserCertificates() {
         val cfg = xml("src/main/res/xml/network_security_config.xml")
         val base = cfg.children("base-config").single()

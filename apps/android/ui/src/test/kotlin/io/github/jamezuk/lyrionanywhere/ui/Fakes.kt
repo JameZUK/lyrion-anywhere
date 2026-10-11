@@ -26,7 +26,16 @@ import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.data.AppSettings
 import io.github.jamezuk.lyrionanywhere.data.AuthState
 import io.github.jamezuk.lyrionanywhere.data.EventsRepository
+import io.github.jamezuk.lyrionanywhere.core.LocalPlayback
+import io.github.jamezuk.lyrionanywhere.core.LocalPlayerStatus
+import io.github.jamezuk.lyrionanywhere.core.OutputRoute
+import io.github.jamezuk.lyrionanywhere.core.PlayerConnection
+import io.github.jamezuk.lyrionanywhere.core.SignalPathInfo
+import io.github.jamezuk.lyrionanywhere.core.SignalStage
+import io.github.jamezuk.lyrionanywhere.core.SignalVerdict
 import io.github.jamezuk.lyrionanywhere.data.LibraryRepository
+import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
+import io.github.jamezuk.lyrionanywhere.data.LocalPlayerState
 import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
 import io.github.jamezuk.lyrionanywhere.data.ServerInfo
 import io.github.jamezuk.lyrionanywhere.data.SettingsStore
@@ -207,4 +216,61 @@ class FakeSettings(initial: AppSettings = AppSettings()) : SettingsStore {
     override suspend fun setServerUrl(url: String?) = state.update { it.copy(serverUrl = url) }
 
     override suspend fun setSelectedPlayer(playerId: String?) = state.update { it.copy(selectedPlayerId = playerId) }
+
+    override suspend fun setPlayOnPhone(on: Boolean) = state.update { it.copy(playOnPhone = on) }
+}
+
+fun localStatus(id: String, connection: PlayerConnection = PlayerConnection.Connected) = LocalPlayerStatus(
+    connection = connection,
+    playback = LocalPlayback.STOPPED,
+    playerId = id,
+    name = "Test phone",
+    elapsedMs = 0u,
+    bufferedMs = 0u,
+    outputRate = 0u,
+    underruns = 0u,
+    underrunFrames = 0u,
+    held = false,
+    lastError = null,
+)
+
+fun signalPath(
+    verdict: SignalVerdict = SignalVerdict.BIT_PERFECT,
+    engineBitPerfect: Boolean = true,
+    bitPerfect: Boolean = false,
+    stages: List<SignalStage> = listOf(SignalStage("Decode (lossless)", true, false)),
+) = SignalPathInfo(
+    sourceCodec = "FLAC",
+    sourceLossless = true,
+    sourceBits = 24u,
+    sourceRate = 96_000u,
+    sourceChannels = 2u,
+    stages = stages,
+    dspActive = false,
+    outputDevice = "Headphones",
+    outputRate = 96_000u,
+    outputFormat = "32-bit float",
+    resampled = verdict == SignalVerdict.RESAMPLED,
+    engineBitPerfect = engineBitPerfect,
+    bitPerfect = bitPerfect,
+    verdict = verdict,
+    summary = "",
+)
+
+class FakeLocalPlayer : LocalPlayerRepository {
+    override val state = MutableStateFlow(LocalPlayerState())
+    var enableResult: ApiResult<Unit> = ApiResult.Ok(Unit)
+    val enabled = mutableListOf<Boolean>()
+
+    override suspend fun setEnabled(on: Boolean): ApiResult<Unit> {
+        enabled += on
+        if (enableResult is ApiResult.Ok) state.update { it.copy(enabled = on) }
+        return enableResult
+    }
+
+    override fun setHold(hold: Boolean) {}
+
+    override fun setDuck(duck: Boolean) {}
+
+    override fun setOutputRoute(route: OutputRoute) {}
 }

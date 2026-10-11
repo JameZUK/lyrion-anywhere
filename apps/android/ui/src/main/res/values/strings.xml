@@ -126,6 +126,31 @@
     <string name="licences">Open-source licences</string>
     <string name="licences_intro">Lyrion Anywhere is free software under the GNU GPL (version 2 or later). It is built on these open-source components:</string>
 
+    <!-- This phone as a player, and its signal path -->
+    <string name="play_on_phone">Play on this phone</string>
+    <string name="play_on_phone_off">Make this phone a player in your music server</string>
+    <string name="play_on_phone_starting">Connecting…</string>
+    <string name="play_on_phone_ready">Ready as “%1$s”</string>
+    <string name="play_on_phone_reconnecting">Connection lost; reconnecting…</string>
+    <string name="play_on_phone_stopped">Stopped: %1$s</string>
+    <string name="play_on_phone_failed">Couldn\'t start the player</string>
+    <string name="signal_path">Signal path</string>
+    <string name="signal_path_none">Nothing playing on this phone yet.</string>
+    <string name="signal_source">Source</string>
+    <string name="signal_output">Output</string>
+    <string name="bits_format">%1$d-bit</string>
+    <string name="verdict_bit_perfect">Bit-perfect</string>
+    <string name="verdict_lossless_processed">Lossless, processed</string>
+    <string name="verdict_resampled">Resampled</string>
+    <string name="verdict_lossy">Lossy source</string>
+    <string name="stage_transparent">bit-transparent</string>
+    <string name="stage_processing">changes samples</string>
+    <string name="stage_resamples">changes the sample rate</string>
+    <string name="signal_note_bit_perfect">Every sample reaches the device unchanged.</string>
+    <string name="signal_note_mixer">Bit-perfect up to Android\'s mixer, at the source\'s rate. Android may still process the audio on its way to the device.</string>
+    <string name="signal_note_resampled">The sample rate is converted on the way to the device.</string>
+    <string name="signal_note_dsp">Lossless, with processing you turned on.</string>
+
     <!-- States and errors -->
     <string name="loading">Loading</string>
     <string name="error_offline">Can\'t reach your server. Check your connection and try again.</string>
