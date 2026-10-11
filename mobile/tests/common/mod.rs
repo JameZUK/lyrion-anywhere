@@ -112,7 +112,20 @@ fn fake_result(cmd: &str) -> Value {
             {"text": "Artist: Artist", "actions": {"go": {"cmd": ["browselibrary", "items"], "params": {"mode": "albums", "artist_id": "3", "menu": "1"}}}},
             {"text": "More like this", "nextWindow": "nowPlaying", "actions": {"go": {"cmd": ["someplugin", "mix"], "params": {"track_id": "7"}}}},
             {"text": "Location: /srv/music/Jazz/one.flac"},
-            {"text": "Duration: 1:01"}
+            {"text": "Duration: 1:01"},
+            {"text": "Instant mix", "nextWindow": "nowPlaying", "actions": {"go": {"cmd": ["audiomuseai", "mix"], "params": {"track_id": "7"}}}},
+            {"text": "Similar tracks", "actions": {"go": {"cmd": ["audiomuseai", "similar"], "params": {"track_id": "7"}}}}
+        ]}),
+        // AudioMuse-AI's list of similar tracks.
+        "audiomuseai" => json!({"count": 2, "item_loop": [
+            {"text": "Two\nArtist", "type": "audio", "actions": {"play": {"cmd": ["playlistcontrol"], "params": {"cmd": "load", "track_id": "2"}}}},
+            {"text": "Three\nArtist", "type": "audio", "actions": {"play": {"cmd": ["playlistcontrol"], "params": {"cmd": "load", "track_id": "3"}}}}
+        ]}),
+        // Don't Stop The Music's settings for a player: off, two providers.
+        "dontstopthemusicsetting" => json!({"count": 3, "item_loop": [
+            {"text": "Disabled", "radio": 1, "actions": {"do": {"player": 0, "cmd": ["playerpref", "plugin.dontstopthemusic:provider", 0]}}},
+            {"text": "Random songs", "radio": 0, "actions": {"do": {"player": 0, "cmd": ["playerpref", "plugin.dontstopthemusic:provider", "PLUGIN_RANDOM_TRACK"]}}},
+            {"text": "Similar tracks", "radio": 0, "actions": {"do": {"player": 0, "cmd": ["playerpref", "plugin.dontstopthemusic:provider", "PLUGIN_DSTM_SIMILAR"]}}}
         ]}),
         // An app's menus: a search box and something to play.
         "someapp" => json!({"count": 2, "item_loop": [

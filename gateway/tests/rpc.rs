@@ -665,3 +665,100 @@ async fn a_queue_listing_is_never_repaired() {
     assert_eq!(body["result"]["playlist_loop"][0]["title"], "Next Track");
     assert!(h.lms.rpc_calls().iter().all(|c| c[1][0] != "songinfo"));
 }
+
+/// Don't Stop The Music: a listener reads its menu and chooses a provider for their own
+/// player; nothing else of `playerpref`, no other player, no malformed provider.
+#[tokio::test]
+async fn dont_stop_the_music_for_permitted_players_only() {
+    let h = harness().await;
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    let theirs = anywhere_core::proto::format_mac(&h.mac_b);
+    let pref = "plugin.dontstopthemusic:provider";
+    let r = h
+        .rpc(&h.tok_a, &mine, json!(["dontstopthemusicsetting"]))
+        .await;
+    assert_eq!(r.status(), S::OK);
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["result"]["item_loop"].as_array().unwrap().len(), 4);
+    let r = h
+        .rpc(
+            &h.tok_a,
+            &mine,
+            json!(["playerpref", pref, "PLUGIN_DSTM_SIMILAR"]),
+        )
+        .await;
+    assert_eq!(r.status(), S::OK);
+    assert!(
+        h.lms
+            .rpc_calls()
+            .iter()
+            .any(|c| c == &json!([mine.clone(), ["playerpref", pref, "PLUGIN_DSTM_SIMILAR"]]))
+    );
+
+    let lms_calls = || {
+        h.lms
+            .rpc_calls()
+            .into_iter()
+            .filter(|c| !matches!(c[1][0].as_str(), Some("apps" | "radios")))
+            .count()
+    };
+    let before = lms_calls();
+    for (player, cmd) in [
+        (theirs.as_str(), json!(["dontstopthemusicsetting"])),
+        (
+            theirs.as_str(),
+            json!(["playerpref", pref, "PLUGIN_DSTM_SIMILAR"]),
+        ),
+        ("", json!(["playerpref", pref, "PLUGIN_DSTM_SIMILAR"])),
+        (mine.as_str(), json!(["playerpref", pref, "/srv/music"])),
+        (mine.as_str(), json!(["playerpref", pref, "PLUGIN X"])),
+        (mine.as_str(), json!(["playerpref", "audiodir", "/"])),
+        (
+            mine.as_str(),
+            json!(["playerpref", "plugin.anywhere:secret", "x"]),
+        ),
+        (mine.as_str(), json!(["dontstopthemusicsetting", 0, 100])),
+    ] {
+        let r = h.rpc(&h.tok_a, player, cmd.clone()).await;
+        assert_eq!(r.status(), S::FORBIDDEN, "{player} {cmd}");
+    }
+    assert_eq!(lms_calls(), before, "refused commands reached LMS");
+}
+
+/// An admin-only plugin's Don't Stop The Music provider is neither listed nor choosable by
+/// a listener.
+#[tokio::test]
+async fn admin_only_plugins_dstm_providers_are_hidden() {
+    let h = harness().await;
+    h.accounts
+        .set_admin_only_plugins(&["audiomuseai".to_string()])
+        .unwrap();
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    let pref = "plugin.dontstopthemusic:provider";
+    let body: Value = h
+        .rpc(&h.tok_a, &mine, json!(["dontstopthemusicsetting"]))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let s = body.to_string();
+    assert!(
+        !s.contains("AUDIOMUSE") && s.contains("PLUGIN_RANDOM_TRACK"),
+        "{s}"
+    );
+    assert_eq!(body["result"]["count"], 3);
+    let r = h
+        .rpc(
+            &h.tok_a,
+            &mine,
+            json!(["playerpref", pref, "PLUGIN_AUDIOMUSEAI_DSTM"]),
+        )
+        .await;
+    assert_eq!(r.status(), S::FORBIDDEN);
+    assert!(
+        !h.lms
+            .rpc_calls()
+            .iter()
+            .any(|c| c.to_string().contains("AUDIOMUSEAI"))
+    );
+}

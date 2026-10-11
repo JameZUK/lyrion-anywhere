@@ -230,7 +230,14 @@ impl Engine {
         }
         self.audio
             .poll_output(Some(&mut self.source as &mut dyn AudioSource));
-        self.audio.fill(&mut self.source, false, &|_| None);
+        let source = &mut self.source;
+        let facts: Vec<(u32, Option<super::transitions::TrackFacts>)> = source.fact_seqs();
+        self.audio.fill(source, false, &|_| None, &|seq| {
+            facts
+                .iter()
+                .find(|(s, _)| *s == seq)
+                .and_then(|(_, f)| f.clone())
+        });
         if let Some(e) = self.audio.take_error() {
             self.error = Some(e);
         }
@@ -240,14 +247,16 @@ impl Engine {
         }
         self.was_playing = playing;
         // The end of the queue: once the last sample has left the ring.
-        if playing && self.source.queue_exhausted() && ring.is_empty() {
+        if playing && self.source.queue_exhausted() && ring.is_empty() && self.audio.idle() {
             self.source.finish();
             self.after_flush();
         }
         let user_hold = self.shared.out.hold.load(Ordering::Acquire);
         let playing = self.source.transport() == Transport::Playing;
         ring.set_hold(user_hold || !playing);
-        ring.set_expect_data(playing && !user_hold && !self.source.audio_exhausted());
+        ring.set_expect_data(
+            playing && !user_hold && !(self.source.audio_exhausted() && self.audio.idle()),
+        );
         self.record_events();
         self.publish_status(false);
         self.publish_signal(false);
@@ -484,6 +493,7 @@ impl OfflinePlayer {
                     path,
                     ext: t.ext,
                     duration_secs: t.duration_secs,
+                    album: t.album_id.map(|id| id.to_string()),
                 });
             }
         }

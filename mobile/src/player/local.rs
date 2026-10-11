@@ -38,6 +38,8 @@ pub(crate) struct LocalTrack {
     pub path: PathBuf,
     pub ext: String,
     pub duration_secs: f64,
+    /// The album it belongs to (LMS's album id), for transitions; `None` if unknown.
+    pub album: Option<String>,
 }
 
 /// Opens a track's file for decoding (a seam for tests).
@@ -749,6 +751,27 @@ impl LocalSource {
         }
     }
 
+    /// What transitions need to know about track `seq` (its album and length). Downloads
+    /// carry no analysis, so smart transitions use their fixed crossfade here.
+    pub(crate) fn facts(&self, seq: u32) -> Option<super::transitions::TrackFacts> {
+        let s = self.segments.iter().find(|s| s.seq == seq)?;
+        let t = self.tracks.get(s.index)?;
+        Some(super::transitions::TrackFacts {
+            album: t.album.clone(),
+            duration_s: (t.duration_secs.is_finite() && t.duration_secs > 0.0)
+                .then_some(t.duration_secs),
+            edges: None,
+        })
+    }
+
+    /// [`LocalSource::facts`] for every queued segment (a snapshot for one fill).
+    pub(crate) fn fact_seqs(&self) -> Vec<(u32, Option<super::transitions::TrackFacts>)> {
+        self.segments
+            .iter()
+            .map(|s| (s.seq, self.facts(s.seq)))
+            .collect()
+    }
+
     /// The rate of the track audible now (tests).
     #[cfg(test)]
     pub(crate) fn rate(&self) -> Option<u32> {
@@ -794,6 +817,7 @@ mod tests {
                 path: PathBuf::from(format!("/nowhere/{i}")),
                 ext: "wav".into(),
                 duration_secs: 0.0,
+                album: None,
             })
             .collect();
         let opener: Opener = Box::new(move |t: &LocalTrack| {
@@ -1003,6 +1027,7 @@ mod tests {
                 path: PathBuf::from(format!("/nowhere/{i}")),
                 ext: "wav".into(),
                 duration_secs: 0.0,
+                album: None,
             })
             .collect()
     }

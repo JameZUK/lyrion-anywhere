@@ -30,6 +30,7 @@ use super::pipeline::{DspSettings, Pipeline};
 use super::protocol;
 use super::ring::{CHANNELS, Producer, Ring};
 use super::signal;
+use super::transitions::{TrackFacts, TrackFactsSource, Transitions};
 use crate::error::ApiError;
 
 /// Audio queued in the ring ahead of the output. Enough to ride out a slow tick, small
@@ -130,6 +131,29 @@ pub(crate) struct AudioPath {
     signal_dirty: bool,
     /// Why the output last failed to open (taken by the engine for its status).
     error: Option<String>,
+    /// Crossfades between tracks (off by default: then nothing passes through it).
+    pub transitions: Transitions,
+}
+
+/// What the transitions ask about tracks, from the engine's lookups and the pipeline.
+struct FactsFrom<'a> {
+    dsp: &'a DspSettings,
+    analysis: &'a dyn Fn(u32) -> Option<Measurement>,
+    facts: &'a dyn Fn(u32) -> Option<TrackFacts>,
+}
+
+impl TrackFactsSource for FactsFrom<'_> {
+    fn facts(&self, seq: u32) -> Option<TrackFacts> {
+        (self.facts)(seq)
+    }
+
+    fn level_db(&self, seq: u32, audio: Option<&TrackAudio>) -> f64 {
+        if !self.dsp.active() {
+            return 0.0;
+        }
+        let tags = audio.and_then(|a| a.source).map(|s| s.replay_gain);
+        super::pipeline::levelling_decision(self.dsp, tags.as_ref(), (self.analysis)(seq)).0
+    }
 }
 
 impl AudioPath {
@@ -138,6 +162,7 @@ impl AudioPath {
         output: Box<dyn AudioOutput>,
         dsp: DspSettings,
     ) -> Result<AudioPath, ApiError> {
+        let transitions = dsp_transitions(&dsp);
         let producer = out
             .ring
             .producer()
@@ -159,6 +184,7 @@ impl AudioPath {
             renegotiate: false,
             signal_dirty: false,
             error: None,
+            transitions: Transitions::new(transitions),
         })
     }
 
@@ -187,6 +213,12 @@ impl AudioPath {
     pub(crate) fn drop_queued_audio(&mut self) {
         self.producer.discard_all();
         self.pipeline.reset();
+        self.transitions.reset();
+    }
+
+    /// Nothing waits between the source and the ring (no pending block, nothing held).
+    pub(crate) fn idle(&self) -> bool {
+        !self.pipeline.has_pending() && self.transitions.is_empty()
     }
 
     /// Close the output for good (stopping): Android's normal mixing is restored.
@@ -229,19 +261,41 @@ impl AudioPath {
     /// Move audio from the source through the pipeline into the ring, reopening the output
     /// when the source's rate or format changes. `gate`: hold back new audio (a fresh start
     /// waiting for its loudness analysis). `analysis`: a track's R128 measurement, if known.
+    /// `facts`: what transitions need to know about a track (album, analysis), if known.
     pub(crate) fn fill(
         &mut self,
         src: &mut dyn AudioSource,
         gate: bool,
         analysis: &dyn Fn(u32) -> Option<Measurement>,
+        facts: &dyn Fn(u32) -> Option<TrackFacts>,
     ) {
         let ring = self.out.ring.clone();
+        let wanted = dsp_transitions(self.pipeline.dsp());
+        if wanted != self.transitions.config() {
+            self.transitions.set_config(wanted);
+            self.signal_dirty = true;
+        }
+        let through = self.transitions.active();
         loop {
             if !self.pipeline.write_pending(&mut self.producer) {
                 return; // the ring is full
             }
-            let Some(next) = src.next_audio() else {
-                if src.audio_exhausted() && self.pipeline.is_resampling() {
+            if through && self.output_failed_at.is_none() {
+                // Keep the end of the current track in hand, for the next boundary.
+                self.transitions.top_up(src, &mut self.block);
+            }
+            let next = if through {
+                self.transitions.next_audio(src)
+            } else {
+                src.next_audio()
+            };
+            let Some(next) = next else {
+                let exhausted = if through {
+                    self.transitions.exhausted(src)
+                } else {
+                    src.audio_exhausted()
+                };
+                if exhausted && self.pipeline.is_resampling() {
                     // The end of the audio: let the resampler's last frames out.
                     self.pipeline.drain_resampler();
                     continue;
@@ -281,23 +335,39 @@ impl AudioPath {
                 * RING_AHEAD.as_millis() as u64
                 / 1000) as usize
                 * CHANNELS;
-            if ring.len() >= ahead.min(ring.capacity() / 2) {
+            let ahead = ahead.min(ring.capacity() / 2);
+            if ring.len() >= ahead {
                 return;
             }
             if gate {
                 return;
             }
-            let Some((seq, frames)) = src.pull_track(&mut self.block) else {
-                return;
+            let (seq, frames, src_frames) = if through {
+                let info = FactsFrom {
+                    dsp: self.pipeline.dsp(),
+                    analysis,
+                    facts,
+                };
+                let low = ring.len() < ahead / 2;
+                let Some(p) = self.transitions.pull(src, &mut self.block, &info, low) else {
+                    return;
+                };
+                (p.seq, p.frames, p.src_frames)
+            } else {
+                let Some((seq, frames)) = src.pull_track(&mut self.block) else {
+                    return;
+                };
+                (seq, frames, frames as u64)
             };
             let source = src.track_audio(seq).and_then(|t| t.source);
             let tags = source.map(|s| s.replay_gain);
-            self.pipeline.push_with(
+            self.pipeline.push_counted(
                 &self.block[..frames * CHANNELS],
                 seq,
                 tags.as_ref(),
                 analysis(seq),
                 source_bits(source),
+                src_frames,
             );
         }
     }
@@ -470,6 +540,7 @@ impl AudioPath {
         let audio = src.track_audio(seq)?;
         let out_rate = self.pipeline.out_rate()?;
         Some(signal::describe(&signal::Inputs {
+            transitions: self.transitions.config().describe(),
             audio,
             volume: src.applied_volume(),
             pipeline_stages: self.pipeline.stages(),
@@ -539,4 +610,13 @@ fn needs_new_format(
 /// The integer depth of a lossless source (`None`: lossy, float or not yet known).
 pub(crate) fn source_bits(source: Option<SourceFormat>) -> Option<u32> {
     source.filter(|s| s.lossless).and_then(|s| s.bits)
+}
+
+/// The transition settings carried in the DSP settings.
+pub(crate) fn dsp_transitions(dsp: &DspSettings) -> super::transitions::TransitionConfig {
+    super::transitions::TransitionConfig {
+        mode: dsp.transitions,
+        fade_s: dsp.crossfade_s,
+    }
+    .sanitised()
 }

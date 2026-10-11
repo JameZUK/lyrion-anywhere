@@ -187,7 +187,9 @@ pub async fn rpc(
     } else {
         gw.accounts().admin_only_plugins()
     };
-    if checked.cmd.first().is_some_and(|c| hidden.contains(c)) {
+    if checked.cmd.first().is_some_and(|c| hidden.contains(c))
+        || rpc_policy::chooses_hidden_dstm_provider(&checked.cmd, &hidden)
+    {
         warn!(user = %principal.username, cmd = %summary(&req.cmd), "admin-only plugin denied");
         return error(StatusCode::FORBIDDEN, "this plugin is for admins only");
     }
@@ -205,6 +207,13 @@ pub async fn rpc(
             let mut filtered =
                 rpc_policy::filter_response(checked.kind, result, &|p| scope.allows(p));
             rpc_policy::hide_plugins(&mut filtered, &hidden);
+            if checked
+                .cmd
+                .first()
+                .is_some_and(|c| c == "dontstopthemusicsetting")
+            {
+                rpc_policy::hide_dstm_providers(&mut filtered, &hidden);
+            }
             // Remember image URLs LMS handed out, so their artwork can be fetched later: only
             // from image fields of what the client actually receives.
             let mut images = Vec::new();

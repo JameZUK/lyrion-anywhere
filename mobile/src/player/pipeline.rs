@@ -34,6 +34,7 @@ use anywhere_core::dsp::resample::Resampler;
 use anywhere_core::dsp::signal_path::Stage;
 
 use super::ring::{CHANNELS, Producer};
+use super::transitions::TransitionMode;
 
 /// Loudness levelling from ReplayGain tags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -90,6 +91,12 @@ pub struct DspSettings {
     pub eq_profile: Option<String>,
     pub crossfeed: CrossfeedSetting,
     pub dither: DitherSetting,
+    /// Crossfades between tracks (independent of `enabled`; off keeps playback gapless and
+    /// bit-perfect). See [`super::transitions`].
+    pub transitions: TransitionMode,
+    /// Crossfade length, seconds (1..=10; the most a smart transition uses).
+    #[uniffi(default = 6.0)]
+    pub crossfade_s: f64,
 }
 
 impl Default for DspSettings {
@@ -105,6 +112,8 @@ impl Default for DspSettings {
             eq_profile: None,
             crossfeed: CrossfeedSetting::Off,
             dither: DitherSetting::Tpdf,
+            transitions: TransitionMode::Off,
+            crossfade_s: super::transitions::DEFAULT_FADE_S,
         }
     }
 }
@@ -176,6 +185,13 @@ impl DspSettings {
                 .cloned(),
             crossfeed: self.crossfeed,
             dither: self.dither,
+            transitions: self.transitions,
+            crossfade_s: f(
+                self.crossfade_s,
+                super::transitions::DEFAULT_FADE_S,
+                super::transitions::MIN_FADE_S,
+                super::transitions::MAX_FADE_S,
+            ),
         }
     }
 
@@ -441,13 +457,29 @@ impl Pipeline {
         analysis: Option<Measurement>,
         source_bits: Option<u32>,
     ) {
+        let n = (block.len() / CHANNELS) as u64;
+        self.push_counted(block, seq, tags, analysis, source_bits, n);
+    }
+
+    /// [`Pipeline::push_with`] for a block that accounts for `src_frames` source frames
+    /// rather than its own length: a crossfade carries both tracks' frames, and trimmed
+    /// silence rides along with the next block (see [`super::transitions`]).
+    pub fn push_counted(
+        &mut self,
+        block: &[f32],
+        seq: u32,
+        tags: Option<&ReplayGainTags>,
+        analysis: Option<Measurement>,
+        source_bits: Option<u32>,
+        src_frames: u64,
+    ) {
         debug_assert!(!self.has_pending());
         // Source frames that produced no output yet (held inside the resampler) ride along
         // with the next output, so every frame is eventually reported as played.
         let carry = self.pending_src - self.pending_src_written;
         self.pending.clear();
         self.pending_off = 0;
-        let frames = (block.len() / CHANNELS) as u64 + carry;
+        let frames = src_frames + carry;
         self.drained = false;
         if self.track != Some(seq) {
             self.track = Some(seq);
@@ -746,8 +778,21 @@ mod tests {
             eq_profile: Some("Filter 1: ON PK Fc 99999999 Hz Gain 3 dB Q 1".into()),
             crossfeed: CrossfeedSetting::Off,
             dither: DitherSetting::Tpdf,
+            transitions: TransitionMode::Smart,
+            crossfade_s: f64::NAN,
         }
         .sanitised();
+        assert_eq!(weird.crossfade_s, 6.0, "nonsense becomes the default");
+        assert_eq!(weird.transitions, TransitionMode::Smart);
+        assert_eq!(
+            DspSettings {
+                crossfade_s: 99.0,
+                ..DspSettings::default()
+            }
+            .sanitised()
+            .crossfade_s,
+            10.0
+        );
         assert_eq!(weird.preamp_db, 0.0);
         assert_eq!(weird.target_lufs, -5.0);
         assert_eq!(weird.limiter_ceiling_db, -1.0);

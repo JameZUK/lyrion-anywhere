@@ -15,8 +15,8 @@ use anywhere_mobile::offline::index::serialise;
 use anywhere_mobile::offline::store::scope_name;
 use anywhere_mobile::{
     DownloadFormat, DownloadOrigin, DspSettings, LocalPlayback, LocalPlayerConfig, LocalRepeat,
-    OfflineLibrary, OfflinePlayer, OfflinePlayerObserver, OfflinePlayerStatus, OfflineTrack,
-    OutputKind, SignalPathInfo, SignalVerdict,
+    NotBitPerfect, OfflineLibrary, OfflinePlayer, OfflinePlayerObserver, OfflinePlayerStatus,
+    OfflineTrack, OutputKind, SignalPathInfo, SignalVerdict, TransitionMode,
 };
 use common::flac;
 use common::wait_for;
@@ -47,6 +47,16 @@ struct Track {
 
 /// Write `files` as downloaded tracks (album 7) and open the library.
 fn library(files: Vec<Vec<u8>>, rate_secs: f64) -> (Arc<OfflineLibrary>, Vec<Track>, PathBuf) {
+    let albums = vec![Some(7); files.len()];
+    library_with(files, rate_secs, &albums)
+}
+
+/// [`library`], with each track's album id.
+fn library_with(
+    files: Vec<Vec<u8>>,
+    rate_secs: f64,
+    albums: &[Option<i64>],
+) -> (Arc<OfflineLibrary>, Vec<Track>, PathBuf) {
     let root = std::env::temp_dir().join(format!(
         "anywhere-op-{}",
         anywhere_mobile::offline::plays::new_key()
@@ -64,7 +74,7 @@ fn library(files: Vec<Vec<u8>>, rate_secs: f64) -> (Arc<OfflineLibrary>, Vec<Tra
             title: format!("Track {i}"),
             artist: "Band".into(),
             album: "Record".into(),
-            album_id: Some(7),
+            album_id: albums[i],
             track_number: Some(i as u32 + 1),
             duration_secs: rate_secs,
             format: DownloadFormat::Original,
@@ -369,4 +379,73 @@ async fn repeat_one_loops_without_a_gap() {
     let got = rig.audio();
     assert_eq!(got[..n], tracks[0].pcm[..]);
     assert_eq!(got[n..2 * n], tracks[0].pcm[..], "the loop is seamless");
+}
+
+/// Transitions on, tracks from two albums: they crossfade (1 s, equal power), every frame of
+/// both is accounted for (both plays recorded), and the signal path says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn crossfades_between_albums() {
+    let (lib, tracks, _) = library_with(vec![song(6.0, 1), song(5.5, 2)], 6.0, &[Some(7), Some(8)]);
+    let dsp = DspSettings {
+        transitions: TransitionMode::Crossfade,
+        crossfade_s: 1.0,
+        ..DspSettings::default()
+    };
+    let rig = Rig::start(&lib, dsp);
+    let keys: Vec<String> = tracks.iter().map(|t| t.key.clone()).collect();
+    rig.player.play_tracks(keys, 0, false, true).unwrap();
+    let overlap = 44_100 * 2; // samples
+    let (a, b) = (&tracks[0].pcm, &tracks[1].pcm);
+    let total = a.len() + b.len() - overlap;
+    rig.wait_samples(total).await;
+    wait_for("the end of the queue", || {
+        rig.status().playback == LocalPlayback::Stopped
+    })
+    .await;
+    let got = rig.audio();
+    assert_eq!(got.len(), total, "the tracks overlap by exactly 1 s");
+    let split = a.len() - overlap;
+    assert!(got[..split] == a[..split], "untouched before the overlap");
+    assert!(got[split + overlap..] == b[overlap..], "untouched after it");
+    // In the overlap: the equal-power mix of the two.
+    for i in (0..overlap / 2).step_by(509) {
+        let t = (i as f64 + 0.5) / (overlap / 2) as f64;
+        let (go, gi) = (
+            (std::f64::consts::FRAC_PI_2 * t).cos(),
+            (std::f64::consts::FRAC_PI_2 * t).sin(),
+        );
+        let want = f64::from(a[split + 2 * i]) * go + f64::from(b[2 * i]) * gi;
+        assert!(
+            (f64::from(got[split + 2 * i]) - want).abs() < 1e-6,
+            "frame {i}"
+        );
+    }
+    wait_for("the plays", || lib.pending_plays() == 2).await;
+    let path = rig.player.signal_path();
+    if let Some(p) = path {
+        assert!(!p.bit_perfect);
+        assert!(p.not_bit_perfect.contains(&NotBitPerfect::Crossfade));
+    }
+}
+
+/// Transitions on, tracks from the same album: still bit-exact and gapless.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transitions_keep_an_album_gapless() {
+    let (lib, tracks, _) = library(vec![song(6.0, 3), song(5.5, 4)], 6.0);
+    let dsp = DspSettings {
+        transitions: TransitionMode::Smart,
+        crossfade_s: 6.0,
+        ..DspSettings::default()
+    };
+    let rig = Rig::start(&lib, dsp);
+    let keys: Vec<String> = tracks.iter().map(|t| t.key.clone()).collect();
+    rig.player.play_tracks(keys, 0, false, true).unwrap();
+    let want: Vec<f32> = tracks.iter().flat_map(|t| t.pcm.iter().copied()).collect();
+    rig.wait_samples(want.len()).await;
+    wait_for("the end of the queue", || {
+        rig.status().playback == LocalPlayback::Stopped
+    })
+    .await;
+    assert!(rig.audio() == want, "bit-exact, gapless within the album");
+    wait_for("the plays", || lib.pending_plays() == 2).await;
 }

@@ -124,6 +124,8 @@ pub enum NotBitPerfect {
     LossySource,
     /// Something else changes samples: LMS volume or ReplayGain, ducking, a downmix.
     OtherProcessing,
+    /// Crossfades between tracks are on (they mix tracks of different albums).
+    Crossfade,
 }
 
 impl From<OfferBlocker> for NotBitPerfect {

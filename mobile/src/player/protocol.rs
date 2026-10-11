@@ -148,7 +148,16 @@ pub fn random01() -> f64 {
 /// The LMS status query that names the track a new stream is for (see
 /// [`stream_track_id`]).
 pub fn stream_status_command() -> Vec<Value> {
-    vec![json!("status"), json!("-"), json!(2), json!("tags:x")]
+    // x: remote (a stream, not a library file); e: album id; d: duration.
+    vec![json!("status"), json!("-"), json!(2), json!("tags:xed")]
+}
+
+/// A library track LMS is streaming, as [`stream_track`] reads it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamTrack {
+    pub id: i64,
+    pub album_id: Option<i64>,
+    pub duration_s: Option<f64>,
 }
 
 /// Which library track a stream LMS just started is for, from this player's `status - 2`
@@ -163,6 +172,11 @@ pub fn stream_status_command() -> Vec<Value> {
 /// id a positive integer. Anything doubtful (a wrap to the start of the playlist, a remote
 /// stream, a malformed answer) gives `None`, and levelling falls back to tags.
 pub fn stream_track_id(status: &Value, fresh: bool) -> Option<i64> {
+    stream_track(status, fresh).map(|t| t.id)
+}
+
+/// [`stream_track_id`], with the track's album and duration where LMS gave sane ones.
+pub fn stream_track(status: &Value, fresh: bool) -> Option<StreamTrack> {
     let int = |v: &Value| -> Option<i64> {
         match v {
             Value::Number(n) => n.as_i64(),
@@ -186,9 +200,19 @@ pub fn stream_track_id(status: &Value, fresh: bool) -> Option<i64> {
     if item.get("remote").and_then(int).unwrap_or(0) != 0 {
         return None;
     }
-    item.get("id")
-        .and_then(int)
-        .filter(|id| (1..=999_999_999_999).contains(id))
+    let id_ok = |id: &i64| (1..=999_999_999_999).contains(id);
+    let id = item.get("id").and_then(int).filter(id_ok)?;
+    let duration_s = match item.get("duration") {
+        Some(Value::Number(n)) => n.as_f64(),
+        Some(Value::String(s)) if s.len() <= 20 => s.parse::<f64>().ok(),
+        _ => None,
+    }
+    .filter(|d| d.is_finite() && *d > 0.0 && *d < 1e7);
+    Some(StreamTrack {
+        id,
+        album_id: item.get("album_id").and_then(int).filter(id_ok),
+        duration_s,
+    })
 }
 
 #[cfg(test)]
@@ -236,6 +260,54 @@ mod tests {
         assert_eq!(stream_track_id(&json!({}), true), None);
         assert_eq!(stream_track_id(&json!({"playlist_loop": "x"}), true), None);
         assert_eq!(stream_track_id(&json!([1, 2]), true), None);
+    }
+
+    #[test]
+    fn stream_track_album_and_duration() {
+        let st = json!({
+            "playlist_cur_index": 0,
+            "playlist_loop": [
+                {"playlist index": 0, "id": 5, "album_id": "77", "duration": "201.5"},
+                {"playlist index": 1, "id": 6, "album_id": 78, "duration": 180}
+            ]
+        });
+        assert_eq!(
+            stream_track(&st, true),
+            Some(StreamTrack {
+                id: 5,
+                album_id: Some(77),
+                duration_s: Some(201.5)
+            })
+        );
+        assert_eq!(
+            stream_track(&st, false),
+            Some(StreamTrack {
+                id: 6,
+                album_id: Some(78),
+                duration_s: Some(180.0)
+            })
+        );
+        // Hostile album ids and durations are dropped, never the track.
+        for (album, duration) in [
+            (json!(-1), json!("NaN")),
+            (json!("x"), json!(-5)),
+            (json!(1e300), json!("inf")),
+            (json!({"a": 1}), json!([1])),
+            (json!(0), json!(1e300)),
+        ] {
+            let mut bad = st.clone();
+            bad["playlist_loop"][0]["album_id"] = album;
+            bad["playlist_loop"][0]["duration"] = duration;
+            assert_eq!(
+                stream_track(&bad, true),
+                Some(StreamTrack {
+                    id: 5,
+                    album_id: None,
+                    duration_s: None
+                })
+            );
+        }
+        assert!(stream_status_command().contains(&json!("tags:xed")));
     }
 
     #[test]

@@ -36,6 +36,8 @@ pub(crate) struct Inputs {
     pub mixer_rate: u32,
     /// How the output was set up (negotiated mixer attributes, format, reasons).
     pub route: RouteState,
+    /// Crossfades between tracks, described (`None`: off, gapless).
+    pub transitions: Option<String>,
 }
 
 fn gain_db(g: f32) -> f64 {
@@ -77,6 +79,9 @@ pub(crate) fn describe(i: &Inputs) -> SignalPathInfo {
     }
     let other_processing = !stages.iter().all(|s| s.bit_transparent) || i.duck != 1.0;
     stages.extend(i.pipeline_stages.iter().cloned());
+    if let Some(t) = &i.transitions {
+        stages.push(Stage::processing(t.clone()));
+    }
     if i.duck != 1.0 {
         stages.push(Stage::processing("Ducked for another app"));
     }
@@ -128,6 +133,7 @@ pub(crate) fn describe(i: &Inputs) -> SignalPathInfo {
         (i.dsp_chain, NotBitPerfect::DspActive),
         (resampled, NotBitPerfect::Resampled),
         (other_processing, NotBitPerfect::OtherProcessing),
+        (i.transitions.is_some(), NotBitPerfect::Crossfade),
     ] {
         if applies && !reasons.contains(&r) {
             reasons.push(r);
@@ -149,7 +155,7 @@ pub(crate) fn describe(i: &Inputs) -> SignalPathInfo {
                 resamples: s.resamples,
             })
             .collect(),
-        dsp_active: i.dsp_active,
+        dsp_active: i.dsp_active || i.transitions.is_some(),
         output_device: path.output.device.clone(),
         output_rate: i.out_rate,
         output_format: if direct {
@@ -202,7 +208,26 @@ mod tests {
             mixer_rate: 0,
             dsp_chain: false,
             route: RouteState::default(),
+            transitions: None,
         }
+    }
+
+    #[test]
+    fn crossfades_are_shown_and_never_called_bit_perfect() {
+        let mut i = inputs(flac(44_100, 16));
+        i.route = usb(PcmEncoding::I16);
+        assert!(describe(&i).bit_perfect, "a direct route, untouched");
+        i.transitions = Some("Crossfade 6 s (not within albums)".into());
+        let p = describe(&i);
+        assert!(!p.bit_perfect && !p.engine_bit_perfect);
+        assert!(p.dsp_active);
+        assert!(p.not_bit_perfect.contains(&NotBitPerfect::Crossfade));
+        assert!(
+            p.stages
+                .iter()
+                .any(|s| s.name == "Crossfade 6 s (not within albums)" && !s.bit_transparent)
+        );
+        assert!(p.summary.contains("Crossfade 6 s"), "{}", p.summary);
     }
 
     fn usb(encoding: PcmEncoding) -> RouteState {

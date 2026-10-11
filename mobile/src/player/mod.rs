@@ -21,6 +21,7 @@ pub mod output;
 pub mod pipeline;
 pub mod protocol;
 pub mod ring;
+pub mod transitions;
 
 mod audio;
 mod engine;
@@ -42,6 +43,7 @@ pub use pipeline::{
     CrossfeedSetting, DitherSetting, DspSettings, EqProfileSummary, Levelling, check_eq_profile,
 };
 pub use queue::LocalRepeat;
+pub use transitions::TransitionMode;
 
 use crate::error::ApiError;
 use crate::session::Session;

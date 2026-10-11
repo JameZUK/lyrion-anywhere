@@ -37,6 +37,16 @@ pub struct TrackAnalysisInfo {
     /// length.
     pub peak: Vec<u8>,
     pub rms: Vec<u8>,
+    /// Silence at the start and end, seconds (for smart transitions).
+    #[uniffi(default = 0.0)]
+    pub leading_silence_s: f64,
+    #[uniffi(default = 0.0)]
+    pub trailing_silence_s: f64,
+    /// The length of a deliberate fade-in or fade-out, seconds (`None`: none).
+    #[uniffi(default = None)]
+    pub fade_in_s: Option<f64>,
+    #[uniffi(default = None)]
+    pub fade_out_s: Option<f64>,
 }
 
 impl From<TrackAnalysis> for TrackAnalysisInfo {
@@ -47,6 +57,10 @@ impl From<TrackAnalysis> for TrackAnalysisInfo {
             integrated_lufs: a.integrated_lufs,
             loudness_range_lu: a.loudness_range_lu,
             true_peak_dbtp: a.true_peak_dbtp,
+            leading_silence_s: a.leading_silence_s,
+            trailing_silence_s: a.trailing_silence_s,
+            fade_in_s: a.fade_in.fade.then_some(a.fade_in.length_s),
+            fade_out_s: a.fade_out.fade.then_some(a.fade_out.length_s),
             peak: a.waveform.peak,
             rms: a.waveform.rms,
         }
@@ -57,6 +71,16 @@ impl TrackAnalysisInfo {
     /// The loudness measurement for levelling, if the track has one.
     pub fn measurement(&self) -> Option<Measurement> {
         Measurement::from_analysis(self.integrated_lufs?, self.true_peak_dbtp.unwrap_or(0.0))
+    }
+
+    /// The track's ends, for smart transitions.
+    pub fn edges(&self) -> crate::player::transitions::EdgeFacts {
+        crate::player::transitions::EdgeFacts {
+            leading_silence_s: self.leading_silence_s,
+            trailing_silence_s: self.trailing_silence_s,
+            fade_in_s: self.fade_in_s,
+            fade_out_s: self.fade_out_s,
+        }
     }
 }
 
@@ -244,7 +268,21 @@ mod tests {
             true_peak_dbtp: Some(0.4),
             peak: vec![],
             rms: vec![],
+            leading_silence_s: 0.5,
+            trailing_silence_s: 1.25,
+            fade_in_s: None,
+            fade_out_s: Some(4.0),
         };
+        let e = a.edges();
+        assert_eq!(
+            (
+                e.leading_silence_s,
+                e.trailing_silence_s,
+                e.fade_in_s,
+                e.fade_out_s
+            ),
+            (0.5, 1.25, None, Some(4.0))
+        );
         let m = a.measurement().unwrap();
         assert_eq!(m.loudness_lufs, -9.5);
         assert_eq!(m.peak_db, 0.4);

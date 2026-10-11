@@ -231,6 +231,13 @@ pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
             {"id": "settingsXfade", "node": "settingsAudio", "actions": {"go": {"cmd": ["crossfadesettings"], "player": 0}}},
             {"id": "playerpower", "node": "home", "actions": {"do": {"cmd": ["power", "0"]}}}
         ]}),
+        // Don't Stop The Music's settings menu for a player: off, with three providers.
+        "dontstopthemusicsetting" => json!({"count": 4, "item_loop": [
+            {"text": "Disabled", "radio": 1, "actions": {"do": {"player": 0, "cmd": ["playerpref", "plugin.dontstopthemusic:provider", 0]}}},
+            {"text": "AudioMuse-AI similar", "radio": 0, "actions": {"do": {"player": 0, "cmd": ["playerpref", "plugin.dontstopthemusic:provider", "PLUGIN_AUDIOMUSEAI_DSTM"]}}},
+            {"text": "Random songs", "radio": 0, "actions": {"do": {"player": 0, "cmd": ["playerpref", "plugin.dontstopthemusic:provider", "PLUGIN_RANDOM_TRACK"]}}},
+            {"text": "Similar tracks", "radio": 0, "actions": {"do": {"player": 0, "cmd": ["playerpref", "plugin.dontstopthemusic:provider", "PLUGIN_DSTM_SIMILAR"]}}}
+        ]}),
         _ => json!({"ok": 1}),
     }
 }

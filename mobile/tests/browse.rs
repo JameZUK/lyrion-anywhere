@@ -10,6 +10,7 @@ use anywhere_mobile::{
     MenuOutcome, MenuParam, Menus, MusicLibrary, Placement, Players, Selection, Suitability,
     app_menu, info_menu,
 };
+use anywhere_mobile::{Discovery, RadioSeed};
 use common::*;
 use serde_json::{Value, json};
 
@@ -257,7 +258,7 @@ async fn context_menus_offer_plugin_actions_and_never_paths() {
             .await
             .unwrap();
         // The gateway drops the file's location; the rest arrives.
-        assert_eq!(page.items.len(), 3, "{kind:?}");
+        assert_eq!(page.items.len(), 5, "{kind:?}");
         assert!(page.items.iter().all(|i| !i.text.contains("/srv/")));
     }
     let page = menus
@@ -420,4 +421,111 @@ async fn forged_menu_actions_are_refused() {
             .await,
         Err(ApiError::Forbidden { .. })
     ));
+}
+
+/// "Start radio" and "More like this" through the real gateway: AudioMuse-AI's entries are
+/// found in the item's context menu and run as offered; Don't Stop The Music is read and
+/// switched on with a strict provider; another account's player is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn discovery_runs_through_the_gateway() {
+    let h = Harness::start().await;
+    let (s, _) = h.alice().await;
+    let me = s.current().unwrap().device.player_id;
+    let d = Discovery::new(s.clone());
+    let menus = Menus::new(s.clone());
+
+    let dstm = d.dont_stop_the_music(me.clone()).await.unwrap();
+    assert_eq!(dstm.current, None);
+    assert_eq!(dstm.providers.len(), 2);
+
+    let o = d
+        .options(me.clone(), RadioSeed::Track { id: 7 }, None)
+        .await
+        .unwrap();
+    let plan = o.radio.clone().expect("radio offered");
+    assert_eq!(plan.mix_label.as_deref(), Some("Instant mix"));
+    // Off, so the similarity provider is chosen and switched on.
+    assert_eq!(plan.dstm.as_ref().unwrap().token, "PLUGIN_DSTM_SIMILAR");
+    assert!(plan.enable_dstm);
+    assert_eq!(o.more_like_this_label.as_deref(), Some("Similar tracks"));
+
+    // "More like this": AudioMuse-AI's list opens as offered.
+    let shelf = menus
+        .open(me.clone(), o.more_like_this.clone().unwrap(), 0, 20, None)
+        .await
+        .unwrap();
+    assert_eq!(shelf.items.len(), 2);
+    assert_eq!(shelf.items[0].text, "Two\nArtist");
+
+    let before = h.lms.rpc_calls().len();
+    d.start_radio(me.clone(), RadioSeed::Track { id: 7 }, plan.clone())
+        .await
+        .unwrap();
+    let sent: Vec<Value> = calls_since(&h, before)
+        .into_iter()
+        .filter(|c| !matches!(c[1][0].as_str(), Some("apps" | "radios")))
+        .collect();
+    assert_eq!(
+        sent,
+        vec![
+            json!([
+                me,
+                [
+                    "playerpref",
+                    "plugin.dontstopthemusic:provider",
+                    "PLUGIN_DSTM_SIMILAR"
+                ]
+            ]),
+            json!([me, ["audiomuseai", "mix", "track_id:7"]]),
+        ]
+    );
+
+    // Without a mix (DSTM only): the item itself plays.
+    let mut plain = plan.clone();
+    plain.mix = None;
+    plain.enable_dstm = false;
+    let before = h.lms.rpc_calls().len();
+    d.start_radio(me.clone(), RadioSeed::Album { id: 7 }, plain)
+        .await
+        .unwrap();
+    let sent: Vec<Value> = calls_since(&h, before)
+        .into_iter()
+        .filter(|c| !matches!(c[1][0].as_str(), Some("apps" | "radios")))
+        .collect();
+    assert_eq!(
+        sent,
+        vec![json!([me, ["playlistcontrol", "cmd:load", "album_id:7"]])]
+    );
+
+    // A forged plan never reaches LMS: a mix LMS didn't offer is refused by the gateway,
+    // and a malformed provider never leaves the device.
+    let mut forged = plan.clone();
+    forged.mix.as_mut().unwrap().cmd = vec!["audiomuseai".into(), "wipe".into()];
+    forged.enable_dstm = false;
+    assert!(
+        d.start_radio(me.clone(), RadioSeed::Track { id: 7 }, forged)
+            .await
+            .is_err()
+    );
+    let mut bad = plan.clone();
+    bad.dstm.as_mut().unwrap().token = "PLUGIN X".into();
+    let before = h.lms.rpc_calls().len();
+    assert!(
+        d.start_radio(me.clone(), RadioSeed::Track { id: 7 }, bad)
+            .await
+            .is_err()
+    );
+    assert!(
+        calls_since(&h, before)
+            .iter()
+            .all(|c| matches!(c[1][0].as_str(), Some("apps" | "radios")))
+    );
+
+    // Another player (not this account's): refused.
+    assert!(
+        d.options(HOME_PLAYER.into(), RadioSeed::Track { id: 7 }, None)
+            .await
+            .is_err()
+    );
+    assert!(d.dont_stop_the_music(HOME_PLAYER.into()).await.is_none());
 }

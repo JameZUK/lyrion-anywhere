@@ -15,6 +15,9 @@
 //!   and joins sync groups;
 //! - [`Art`]: artwork bytes, fetched with the bearer token and size-capped;
 //! - [`Analysis`]: track analyses (waveform, loudness) from the gateway;
+//! - [`Discovery`]: "Start radio" and "More like this", from AudioMuse-AI's menus or LMS's
+//!   Don't Stop The Music, whichever the server has;
+//! - [`auto`]: the browse tree for cars (Android Auto now, CarPlay later);
 //! - [`Events`]: the live event stream with reconnects and token renewal;
 //! - [`LocalPlayer`]: this phone as an LMS player (Slimproto through the gateway, the
 //!   core's decoders, optional DSP, a lock-free ring and AAudio output);
@@ -30,8 +33,10 @@ uniffi::setup_scaffolding!();
 
 pub mod analysis;
 pub mod art;
+pub mod auto;
 pub mod commands;
 pub mod crash;
+pub mod discovery;
 pub mod edits;
 pub mod error;
 pub mod events;
@@ -52,6 +57,8 @@ mod android;
 
 pub use analysis::{Analysis, AnalysisOutcome, TrackAnalysisInfo};
 pub use art::{Art, ArtImage};
+pub use auto::{BrowseNode, PageWindow};
+pub use discovery::{Discovery, DiscoveryOptions, DstmProvider, DstmState, RadioPlan, RadioSeed};
 pub use error::ApiError;
 pub use events::{EventListener, EventSubscription, Events, EventsState, ServerEvent};
 pub use library::{FavouriteLibraryItems, MusicLibrary};
@@ -72,7 +79,7 @@ pub use player::{
     MixerOffer, NotBitPerfect, OfferBlocker, OfflinePlayer, OfflinePlayerObserver,
     OfflinePlayerStatus, OutputKind, OutputNegotiator, OutputOffers, OutputRoute, PcmBlock,
     PcmEncoding, PcmIntBlock, PlayerConnection, SignalPathInfo, SignalStage, SignalVerdict,
-    check_eq_profile,
+    TransitionMode, check_eq_profile,
 };
 pub use players::Players;
 pub use server::{PairingInvite, Server, parse_pairing_invite};

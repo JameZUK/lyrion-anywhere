@@ -36,11 +36,12 @@ use tokio_tungstenite::{Connector, connect_async_tls_with_config};
 use anywhere_core::player::{Action, OutputState, Player, PlayerConfig};
 use anywhere_core::proto::{ClientMsg, format_mac};
 
-use super::audio::{AudioPath, AudioSource, OutputShared};
+use super::audio::{AudioPath, AudioSource, OutputShared, dsp_transitions};
 use super::output::AudioOutput;
 use super::pipeline::{DspSettings, Levelling};
 use super::protocol::{self, CloseAction, Greeting};
 use super::ring::CHANNELS;
+use super::transitions::{TrackFacts, TransitionMode};
 use super::{
     LocalPlayback, LocalPlayerObserver, LocalPlayerStatus, PlayerConnection, SignalPathInfo,
 };
@@ -121,6 +122,13 @@ enum Ev {
         seq: u32,
         measurement: Option<Measurement>,
     },
+    /// What transitions need to know about track `seq` (sent once LMS has said which track
+    /// it is, and again when its analysis arrives).
+    Facts {
+        player_gen: u64,
+        seq: u32,
+        facts: TrackFacts,
+    },
 }
 
 /// How long a fresh start waits for its track's analysis before playing with tag-based
@@ -191,6 +199,8 @@ pub(crate) struct Engine {
     was_playing: bool,
     // Analysis levelling.
     loudness: VecDeque<(u32, Option<Measurement>)>,
+    /// Track facts for transitions (by track sequence number).
+    facts: VecDeque<(u32, TrackFacts)>,
     /// A fresh start waiting (until the instant) for track `seq`'s analysis.
     gate: Option<(u32, Instant)>,
     lookup: Option<tokio::task::AbortHandle>,
@@ -247,6 +257,7 @@ impl Engine {
             underruns_seen: 0,
             was_playing: false,
             loudness: VecDeque::new(),
+            facts: VecDeque::new(),
             gate: None,
             lookup: None,
             player_gen: 0,
@@ -363,6 +374,7 @@ impl Engine {
             self.drop_queued_audio();
             // Track numbers start again with the new player.
             self.loudness.clear();
+            self.facts.clear();
             self.gate = None;
             self.player_gen += 1;
             if let Some(t) = self.lookup.take() {
@@ -552,19 +564,37 @@ impl Engine {
                     self.gate = None;
                 }
             }
+            Ev::Facts {
+                player_gen,
+                seq,
+                facts,
+            } if player_gen == self.player_gen => {
+                self.facts.retain(|(s, _)| *s != seq);
+                self.facts.push_back((seq, facts));
+                while self.facts.len() > LOUDNESS_KEEP {
+                    self.facts.pop_front();
+                }
+            }
             // Stale: from an older socket or a superseded stream.
             _ => {}
         }
     }
 
-    /// Analysis levelling is on: look up the R128 loudness of the track LMS just started
-    /// streaming (stream `n` carries track `seq = n - 1`). A fresh start waits briefly for
-    /// it (see [`LOUDNESS_WAIT`]); a gapless next track has until the current one ends.
+    /// Look up the track LMS just started streaming (stream `n` carries track
+    /// `seq = n - 1`), for what needs it:
+    /// - **analysis levelling:** its R128 loudness. A fresh start waits briefly for it (see
+    ///   [`LOUDNESS_WAIT`]); a gapless next track has until the current one ends;
+    /// - **transitions:** its album and length (from LMS), and for smart transitions the
+    ///   silence and fades at its ends (from its analysis). Never waited for: a boundary
+    ///   whose facts are late is played gapless.
     fn look_up_loudness(&mut self, stream_number: u64) {
         let dsp = self.audio.pipeline.dsp();
-        if !(dsp.enabled && dsp.analysis_levelling && dsp.levelling != Levelling::Off) {
+        let levelling = dsp.enabled && dsp.analysis_levelling && dsp.levelling != Levelling::Off;
+        let transitions = dsp_transitions(dsp);
+        if !levelling && !transitions.enabled() {
             return;
         }
+        let smart = transitions.mode == TransitionMode::Smart;
         let (Some(mac), Ok(seq)) = (self.mac, u32::try_from(stream_number.saturating_sub(1)))
         else {
             return;
@@ -574,7 +604,9 @@ impl Engine {
             .as_ref()
             .is_none_or(|p| p.playing_track().is_none());
         if fresh {
-            self.gate = Some((seq, Instant::now() + LOUDNESS_WAIT));
+            if levelling {
+                self.gate = Some((seq, Instant::now() + LOUDNESS_WAIT));
+            }
             if let Some(t) = self.lookup.take() {
                 t.abort();
             }
@@ -587,23 +619,54 @@ impl Engine {
         };
         let task = tokio::spawn(async move {
             let player = format_mac(&mac);
-            let measurement = async {
-                let st = core
-                    .rpc(&player, protocol::stream_status_command())
-                    .await
-                    .ok()?;
-                let id = protocol::stream_track_id(&st, fresh)?;
-                crate::analysis::fetch_waiting(&core, id, budget)
-                    .await
-                    .ok()??
-                    .measurement()
+            let track = core
+                .rpc(&player, protocol::stream_status_command())
+                .await
+                .ok()
+                .and_then(|st| protocol::stream_track(&st, fresh));
+            let mut facts = TrackFacts {
+                album: track
+                    .as_ref()
+                    .and_then(|t| t.album_id)
+                    .map(|a| a.to_string()),
+                duration_s: track.as_ref().and_then(|t| t.duration_s),
+                edges: None,
+            };
+            if transitions.enabled() {
+                // What LMS said is enough for the album rule and a fixed crossfade.
+                let _ = tx.send(Ev::Facts {
+                    player_gen,
+                    seq,
+                    facts: facts.clone(),
+                });
             }
-            .await;
-            let _ = tx.send(Ev::Loudness {
-                player_gen,
-                seq,
-                measurement,
-            });
+            let analysis = match &track {
+                Some(t) if levelling || smart => {
+                    crate::analysis::fetch_waiting(&core, t.id, budget)
+                        .await
+                        .ok()
+                        .flatten()
+                }
+                _ => None,
+            };
+            if levelling {
+                let _ = tx.send(Ev::Loudness {
+                    player_gen,
+                    seq,
+                    measurement: analysis.as_ref().and_then(|a| a.measurement()),
+                });
+            }
+            if smart && let Some(a) = &analysis {
+                facts.edges = Some(a.edges());
+                if facts.duration_s.is_none() && a.duration_s.is_finite() && a.duration_s > 0.0 {
+                    facts.duration_s = Some(a.duration_s);
+                }
+                let _ = tx.send(Ev::Facts {
+                    player_gen,
+                    seq,
+                    facts,
+                });
+            }
         });
         self.lookup = Some(task.abort_handle());
     }
@@ -711,12 +774,23 @@ impl Engine {
         let gate = self.gate.is_some_and(|(_, until)| Instant::now() < until);
         if let Some(p) = self.player.as_mut() {
             let loudness = &self.loudness;
-            self.audio.fill(p, gate, &|seq| {
-                loudness
-                    .iter()
-                    .find(|(s, _)| *s == seq)
-                    .and_then(|(_, m)| *m)
-            });
+            let facts = &self.facts;
+            self.audio.fill(
+                p,
+                gate,
+                &|seq| {
+                    loudness
+                        .iter()
+                        .find(|(s, _)| *s == seq)
+                        .and_then(|(_, m)| *m)
+                },
+                &|seq| {
+                    facts
+                        .iter()
+                        .find(|(s, _)| *s == seq)
+                        .map(|(_, f)| f.clone())
+                },
+            );
         }
         if let Some(e) = self.audio.take_error()
             && let Ok(mut st) = self.shared.status.lock()
@@ -737,7 +811,8 @@ impl Engine {
         let user_hold = self.shared.out.hold.load(Ordering::Acquire);
         ring.set_hold(user_hold || !playing);
         // While a fresh start waits for its loudness, the silence is not an underrun.
-        ring.set_expect_data(playing && !user_hold && !p.audio_exhausted() && !gating);
+        let exhausted = p.audio_exhausted() && self.audio.idle();
+        ring.set_expect_data(playing && !user_hold && !exhausted && !gating);
         let (underruns, _) = ring.underruns();
         if underruns > self.underruns_seen {
             self.underruns_seen = underruns;

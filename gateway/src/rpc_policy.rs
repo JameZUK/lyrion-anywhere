@@ -484,6 +484,11 @@ pub fn check(
                 && (matches!(c[1], "-" | "?")
                     || (is_player_id(c[1]) && c[1] != player && caller.may_control(c[1])))
         }
+        // Don't Stop The Music (part of LMS): its settings menu for the player, and choosing
+        // its provider (or "0", off). Nothing else of `playerpref` is reachable, and the
+        // provider is a strict token, never free text.
+        "dontstopthemusicsetting" => n == 1,
+        "playerpref" => n == 3 && c[1] == DSTM_PREF && (c[2] == "?" || dstm_provider_ok(c[2])),
         "favorites" if c.get(1) == Some(&"playlist") => {
             n >= 4
                 && matches!(c[2], "play" | "add" | "insert")
@@ -529,6 +534,71 @@ pub fn check(
         cmd,
         kind,
     })
+}
+
+/// The player preference holding Don't Stop The Music's provider.
+pub const DSTM_PREF: &str = "plugin.dontstopthemusic:provider";
+
+/// A Don't Stop The Music provider as LMS names them (`PLUGIN_…`: letters, digits and `_`,
+/// starting with a letter, at most 64), or `0` for off.
+pub fn dstm_provider_ok(s: &str) -> bool {
+    s == "0"
+        || ((1..=64).contains(&s.len())
+            && s.as_bytes()[0].is_ascii_alphabetic()
+            && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+}
+
+/// Does this Don't Stop The Music provider belong to an admin-only plugin? Providers are
+/// named after their plugin (e.g. `PLUGIN_AUDIOMUSEAI_…` for `audiomuseai`), so a provider
+/// naming a hidden plugin's command word is treated as that plugin's.
+pub fn dstm_provider_hidden(provider: &str, hidden: &HashSet<String>) -> bool {
+    let p = provider.to_ascii_lowercase();
+    hidden
+        .iter()
+        .any(|h| h.len() >= 3 && p.contains(&h.to_ascii_lowercase()))
+}
+
+/// For listeners: a request choosing an admin-only plugin's Don't Stop The Music provider.
+pub fn chooses_hidden_dstm_provider(cmd: &[String], hidden: &HashSet<String>) -> bool {
+    matches!(cmd, [w, pref, provider] if w == "playerpref" && pref == DSTM_PREF
+        && dstm_provider_hidden(provider, hidden))
+}
+
+/// For listeners: remove admin-only plugins' providers from Don't Stop The Music's menu.
+pub fn hide_dstm_providers(v: &mut Value, hidden: &HashSet<String>) {
+    if hidden.is_empty() {
+        return;
+    }
+    let Some(items) = v.get_mut("item_loop").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let before = items.len();
+    items.retain(|item| {
+        let Some(actions) = item.get("actions").and_then(Value::as_object) else {
+            return true;
+        };
+        !actions.values().any(|a| {
+            let words: Vec<String> = a
+                .get("cmd")
+                .and_then(Value::as_array)
+                .map(|c| {
+                    c.iter()
+                        .map(|w| match w {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            chooses_hidden_dstm_provider(&words, hidden)
+        })
+    });
+    let removed = (before - items.len()) as u64;
+    if removed > 0
+        && let Some(n) = v.get("count").and_then(Value::as_u64)
+    {
+        v["count"] = Value::from(n.saturating_sub(removed));
+    }
 }
 
 /// `playlistcontrol cmd:<load|add|insert|delete> <exactly one id selector> [play_index:n]`.
@@ -1321,6 +1391,113 @@ mod tests {
         ] {
             assert_eq!(ok(MINE, cmd).player, MINE);
         }
+    }
+
+    #[test]
+    fn dont_stop_the_music_is_allowed_strictly() {
+        assert_eq!(ok(MINE, json!(["dontstopthemusicsetting"])).player, MINE);
+        for p in [
+            "PLUGIN_AUDIOMUSEAI_DSTM",
+            "PLUGIN_RANDOM_TRACK",
+            "X",
+            "0",
+            "?",
+        ] {
+            assert_eq!(
+                ok(MINE, json!(["playerpref", DSTM_PREF, p])).player,
+                MINE,
+                "{p}"
+            );
+        }
+        assert_eq!(
+            ok(HOME, json!(["playerpref", DSTM_PREF, "PLUGIN_A"])).player,
+            HOME
+        );
+        // Only for players the caller may control, and never without one.
+        denied(OTHER, json!(["dontstopthemusicsetting"]));
+        denied(OTHER, json!(["playerpref", DSTM_PREF, "PLUGIN_A"]));
+        denied("", json!(["dontstopthemusicsetting"]));
+        denied("", json!(["playerpref", DSTM_PREF, "PLUGIN_A"]));
+        // Exactly these shapes.
+        for cmd in [
+            json!(["dontstopthemusicsetting", 0, 100]),
+            json!(["dontstopthemusicsetting", "menu:1"]),
+            json!(["playerpref", DSTM_PREF]),
+            json!(["playerpref", DSTM_PREF, "PLUGIN_A", "x"]),
+            json!(["playerpref", "plugin.dontstopthemusic:other", "1"]),
+            json!([
+                "playerpref",
+                "plugin.dontstopthemusic:provider:x",
+                "PLUGIN_A"
+            ]),
+            json!(["playerpref", "audiodir", "/"]),
+            json!(["playerpref", "transitionType", "1"]),
+            json!(["playerpref", "plugin.anywhere:token", "x"]),
+            json!(["playerpref", "PLUGIN.DONTSTOPTHEMUSIC:PROVIDER", "PLUGIN_A"]),
+        ] {
+            denied(MINE, cmd);
+        }
+        // Provider tokens: strict, never text, paths or URLs.
+        for p in [
+            "",
+            "1",
+            "_PLUGIN",
+            "PLUGIN A",
+            "PLUGIN-A",
+            "plugin.x",
+            "/srv/music",
+            "http://10.0.0.10/",
+            "file:///etc/passwd",
+            "PLUGIN;rescan",
+            "PLUGIN\nX",
+            "\u{0}",
+            "é",
+        ] {
+            denied(MINE, json!(["playerpref", DSTM_PREF, p]));
+        }
+        denied(MINE, json!(["playerpref", DSTM_PREF, "A".repeat(65)]));
+        denied(MINE, json!(["playerpref", DSTM_PREF, 5]));
+    }
+
+    #[test]
+    fn admin_only_plugins_dstm_providers_are_hidden_and_refused() {
+        let hidden: HashSet<String> = ["audiomuseai".to_string()].into_iter().collect();
+        let set = |p: &str| {
+            vec![
+                "playerpref".to_string(),
+                DSTM_PREF.to_string(),
+                p.to_string(),
+            ]
+        };
+        assert!(chooses_hidden_dstm_provider(
+            &set("PLUGIN_AUDIOMUSEAI_DSTM"),
+            &hidden
+        ));
+        assert!(chooses_hidden_dstm_provider(
+            &set("plugin_audiomuseai"),
+            &hidden
+        ));
+        assert!(!chooses_hidden_dstm_provider(
+            &set("PLUGIN_RANDOM_TRACK"),
+            &hidden
+        ));
+        assert!(!chooses_hidden_dstm_provider(&set("0"), &hidden));
+        assert!(!chooses_hidden_dstm_provider(
+            &set("PLUGIN_AUDIOMUSEAI_DSTM"),
+            &HashSet::new()
+        ));
+        // Too short a word never hides everything.
+        let short: HashSet<String> = ["a".to_string()].into_iter().collect();
+        assert!(!chooses_hidden_dstm_provider(&set("PLUGIN_A"), &short));
+        let mut menu = json!({"count": 3, "item_loop": [
+            {"text": "Disabled", "actions": {"do": {"cmd": ["playerpref", DSTM_PREF, 0]}}},
+            {"text": "AudioMuse-AI", "actions": {"do": {"cmd": ["playerpref", DSTM_PREF, "PLUGIN_AUDIOMUSEAI_DSTM"]}}},
+            {"text": "Random", "actions": {"do": {"cmd": ["playerpref", DSTM_PREF, "PLUGIN_RANDOM_TRACK"]}}}
+        ]});
+        hide_dstm_providers(&mut menu, &hidden);
+        assert_eq!(menu["count"], 2);
+        assert!(!menu.to_string().contains("AUDIOMUSE"));
+        assert!(menu.to_string().contains("PLUGIN_RANDOM_TRACK"));
     }
 
     #[test]
