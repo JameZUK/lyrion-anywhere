@@ -3,8 +3,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code};
+use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
@@ -40,6 +40,7 @@ struct StreamAck {
 
 pub async fn player_upgrade(
     State(gw): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -47,9 +48,10 @@ pub async fn player_upgrade(
         warn!("refused cross-origin websocket");
         return (StatusCode::FORBIDDEN, "origin not allowed\n").into_response();
     }
+    let addr = crate::client_addr(&gw.cfg, peer, &headers);
     ws.max_message_size(MAX_WS_MESSAGE)
         .max_frame_size(MAX_WS_MESSAGE)
-        .on_upgrade(move |socket| handle(gw, socket))
+        .on_upgrade(move |socket| handle(gw, socket, addr))
 }
 
 #[derive(Deserialize)]
@@ -96,7 +98,7 @@ async fn close(mut ws: WebSocket, code: u16, reason: &str) {
         .await;
 }
 
-async fn handle(gw: AppState, mut ws: WebSocket) {
+async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
     let first = tokio::time::timeout(gw.cfg.auth_timeout, ws.recv()).await;
     let auth = match first {
         Ok(Some(Ok(Message::Text(t)))) => parse_auth(&gw, t.as_str()),
@@ -149,7 +151,7 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
         "session": session.id,
         "secret": session.secret(),
         "mac": session.device.mac_string(),
-        "name": session.device.device_name,
+        "name": session.name(),
         "resumed": resumed,
     })
     .to_string();
@@ -158,7 +160,8 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
         return;
     }
     gw.accounts.touch_device(session.device.device_id);
-    info!(device = %session.device.device_name, user = %session.device.username, mac = %session.device.mac_string(), resumed, "player attached");
+    gw.accounts.note_seen(session.device.device_id, addr);
+    info!(device = %session.name(), user = %session.device.username, mac = %session.device.mac_string(), resumed, "player attached");
 
     let (sink, stream) = ws.split();
     let mut writer = tokio::spawn(write_loop(sink, attached.rx, attached.kick.clone()));

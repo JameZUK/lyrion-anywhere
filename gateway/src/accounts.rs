@@ -38,9 +38,12 @@ use sha2::{Digest, Sha256};
 use anywhere_core::proto::format_mac;
 
 pub const ACCESS_TTL: Duration = Duration::from_secs(15 * 60);
-/// Default sign-in lifetime: unused this long, a device must sign in again. Every use
-/// renews it (refresh tokens rotate, each with a fresh lifetime). Admins can change it.
-pub const REFRESH_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
+/// Default sign-in lifetime in days: unused this long, a device must sign in again. Every
+/// use renews it (refresh tokens rotate, each with a fresh lifetime). Admins can change it
+/// (the LMS plugin's settings page shows the same default).
+pub const DEFAULT_SESSION_DAYS: u32 = 90;
+/// [`DEFAULT_SESSION_DAYS`] as a duration.
+pub const REFRESH_TTL: Duration = Duration::from_secs(DEFAULT_SESSION_DAYS as u64 * 24 * 3600);
 /// Bounds for the configurable sign-in lifetime, in days.
 pub const SESSION_DAYS: std::ops::RangeInclusive<u32> = 1..=365;
 /// At most this many plugins can be marked admin-only.
@@ -85,6 +88,91 @@ const FORGET_QUEUE_CAP: usize = 1000;
 /// A device name that has nothing usable left after cleaning.
 pub const DEFAULT_DEVICE_NAME: &str = "Browser";
 pub const MAX_DEVICE_NAME: usize = 64;
+/// A device's last address and time are written at most this often while it is in use
+/// (sign-in and token renewal always write).
+pub const SEEN_WRITE_INTERVAL: Duration = Duration::from_secs(60);
+/// Devices whose last write time is remembered in memory (beyond this, the stalest go).
+const SEEN_CAP: usize = 4096;
+/// Longest client platform description kept, e.g. "Safari on iPadOS" or "Pixel 8".
+pub const MAX_CLIENT_PLATFORM: usize = 48;
+/// Longest User-Agent kept (for display only).
+pub const MAX_USER_AGENT: usize = 200;
+
+/// What kind of client a device is, as it reports itself at sign-in and renewal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClientKind {
+    /// The web app installed to the home screen or as an app (standalone display mode).
+    Pwa,
+    /// The web app in an ordinary browser tab.
+    Browser,
+    /// The Android app.
+    Android,
+}
+
+impl ClientKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ClientKind::Pwa => "pwa",
+            ClientKind::Browser => "browser",
+            ClientKind::Android => "android",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<ClientKind> {
+        match s {
+            "pwa" => Some(ClientKind::Pwa),
+            "browser" => Some(ClientKind::Browser),
+            "android" => Some(ClientKind::Android),
+            _ => None,
+        }
+    }
+}
+
+/// What a client said about itself (each part optional: older clients send nothing).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientInfo {
+    pub kind: Option<ClientKind>,
+    /// Cleaned again by [`clean_platform`] when stored.
+    pub platform: Option<String>,
+    /// Cleaned again by [`clean_user_agent`] when stored.
+    pub user_agent: Option<String>,
+}
+
+/// A client's platform description: cleaned like a device name, at most
+/// [`MAX_CLIENT_PLATFORM`] characters. `None` if nothing usable is left.
+pub fn clean_platform(raw: &str) -> Option<String> {
+    let s: String = clean_name(raw)?.chars().take(MAX_CLIENT_PLATFORM).collect();
+    let s = s.trim_end().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+/// A User-Agent for display: printable ASCII only, without characters that mean anything
+/// in markup (`< > " ' ` \ &`), runs of spaces collapsed, at most [`MAX_USER_AGENT`]
+/// characters. `None` if nothing is left.
+pub fn clean_user_agent(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut space = false;
+    for c in raw.chars() {
+        if c == ' ' || c == '\t' {
+            space = !out.is_empty();
+            continue;
+        }
+        if !c.is_ascii_graphic() || "<>\"'`\\&".contains(c) {
+            continue;
+        }
+        let need = if space { 2 } else { 1 };
+        if out.len() + need > MAX_USER_AGENT {
+            break;
+        }
+        if space {
+            out.push(' ');
+        }
+        space = false;
+        out.push(c);
+    }
+    (!out.is_empty()).then_some(out)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -217,6 +305,13 @@ pub struct DeviceInfo {
     pub mac: String,
     pub created_at: i64,
     pub last_seen: Option<i64>,
+    /// The client address it was last seen from (as resolved behind trusted proxies).
+    pub last_addr: Option<String>,
+    /// `pwa`, `browser` or `android`, as the client last reported.
+    pub client_kind: Option<String>,
+    /// E.g. "Safari on iPadOS" or "Pixel 8".
+    pub client_platform: Option<String>,
+    pub user_agent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -494,6 +589,8 @@ pub struct Accounts {
     dummy_hash: String,
     /// Player MACs of revoked devices, for the gateway to have LMS forget.
     forget: Mutex<std::collections::VecDeque<String>>,
+    /// When each device's last address was written (to rate-limit the writes).
+    seen: Mutex<HashMap<i64, Instant>>,
 }
 
 fn now_secs() -> i64 {
@@ -630,6 +727,7 @@ impl Accounts {
             password_checks: AtomicU64::new(0),
             dummy_hash: hash_password(&new_secret())?,
             forget: Mutex::new(Default::default()),
+            seen: Mutex::new(HashMap::new()),
         })
     }
 
@@ -1479,17 +1577,32 @@ impl Accounts {
     pub fn list_devices(&self) -> Result<Vec<DeviceInfo>, AuthError> {
         let db = self.db.lock().unwrap();
         let mut st = db.prepare(
-            "SELECT d.id, u.username, d.name, d.mac, d.created_at, d.last_seen
+            "SELECT d.id, u.username, d.name, d.mac, d.created_at, d.last_seen, d.last_addr,
+                    d.client_kind, d.client_platform, d.user_agent
              FROM devices d JOIN users u ON u.id = d.user_id WHERE d.revoked = 0 ORDER BY d.id",
         )?;
         let rows = st.query_map([], |r| {
+            // Cleaned again on the way out, whatever is stored.
+            let addr: Option<String> = r.get(6)?;
+            let kind: Option<String> = r.get(7)?;
+            let platform: Option<String> = r.get(8)?;
+            let ua: Option<String> = r.get(9)?;
             Ok(DeviceInfo {
                 id: r.get(0)?,
                 username: r.get(1)?,
-                name: r.get(2)?,
+                name: clean_device_name(&r.get::<_, String>(2)?),
                 mac: r.get(3)?,
                 created_at: r.get(4)?,
                 last_seen: r.get(5)?,
+                last_addr: addr
+                    .and_then(|a| a.parse::<std::net::IpAddr>().ok())
+                    .map(|a| a.to_string()),
+                client_kind: kind
+                    .as_deref()
+                    .and_then(ClientKind::parse)
+                    .map(|k| k.as_str().to_string()),
+                client_platform: platform.as_deref().and_then(clean_platform),
+                user_agent: ua.as_deref().and_then(clean_user_agent),
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -1650,7 +1763,8 @@ impl Accounts {
         let n = {
             let db = self.db.lock().unwrap();
             let n = db.execute(
-                "UPDATE devices SET revoked = 1, revoked_at = ?2 WHERE id = ?1 AND revoked = 0",
+                "UPDATE devices SET revoked = 1, revoked_at = ?2, last_addr = NULL, user_agent = NULL
+                 WHERE id = ?1 AND revoked = 0",
                 params![device_id, now_secs()],
             )?;
             if n > 0 {
@@ -1678,6 +1792,7 @@ impl Accounts {
             .lock()
             .unwrap()
             .retain(|_, e| e.principal.device_id != device_id);
+        self.seen.lock().unwrap().remove(&device_id);
         if n > 0 {
             self.audit("device.revoked", None, Some(device_id), "");
         }
@@ -1711,6 +1826,138 @@ impl Accounts {
                 |_| Ok(()),
             )
             .is_ok()
+    }
+
+    /// A device was used from `addr` (an authenticated request). Its last address and time
+    /// are written at most once per [`SEEN_WRITE_INTERVAL`], so busy clients cost no extra
+    /// database writes. Returns whether this call wrote.
+    pub fn note_seen(&self, device_id: i64, addr: std::net::IpAddr) -> bool {
+        self.note_seen_at(device_id, addr, Instant::now())
+    }
+
+    fn note_seen_at(&self, device_id: i64, addr: std::net::IpAddr, now: Instant) -> bool {
+        {
+            let mut seen = self.seen.lock().unwrap();
+            if let Some(at) = seen.get(&device_id)
+                && now.saturating_duration_since(*at) < SEEN_WRITE_INTERVAL
+            {
+                return false;
+            }
+            if seen.len() >= SEEN_CAP && !seen.contains_key(&device_id) {
+                seen.retain(|_, at| now.saturating_duration_since(*at) < SEEN_WRITE_INTERVAL);
+                if seen.len() >= SEEN_CAP
+                    && let Some(k) = seen.iter().min_by_key(|(_, at)| **at).map(|(k, _)| *k)
+                {
+                    // Still full of busy devices: forget the stalest.
+                    seen.remove(&k);
+                }
+            }
+            seen.insert(device_id, now);
+        }
+        let _ = self.db.lock().unwrap().execute(
+            "UPDATE devices SET last_seen = ?1, last_addr = ?2 WHERE id = ?3 AND revoked = 0",
+            params![now_secs(), addr.to_string(), device_id],
+        );
+        true
+    }
+
+    /// At sign-in and renewal: record where the device is and what it said about itself
+    /// (always written; parts the client didn't send are left as they were).
+    pub fn record_client(&self, device_id: i64, addr: std::net::IpAddr, info: &ClientInfo) {
+        self.seen.lock().unwrap().insert(device_id, Instant::now());
+        let _ = self.db.lock().unwrap().execute(
+            "UPDATE devices SET last_seen = ?1, last_addr = ?2,
+               client_kind = COALESCE(?3, client_kind),
+               client_platform = COALESCE(?4, client_platform),
+               user_agent = COALESCE(?5, user_agent)
+             WHERE id = ?6 AND revoked = 0",
+            params![
+                now_secs(),
+                addr.to_string(),
+                info.kind.map(ClientKind::as_str),
+                info.platform.as_deref().and_then(clean_platform),
+                info.user_agent.as_deref().and_then(clean_user_agent),
+                device_id
+            ],
+        );
+    }
+
+    /// Rename a device. `owner`: only if it belongs to this user (a listener renaming their
+    /// own device); `None` for an admin. The name must be 1 to [`MAX_DEVICE_NAME`]
+    /// characters and is cleaned like every device name ([`clean_name`]); it must differ
+    /// from the user's other devices' names. Returns the name stored. Live access tokens
+    /// carry the new name at once.
+    pub fn rename_device(
+        &self,
+        device_id: i64,
+        owner: Option<i64>,
+        raw: &str,
+    ) -> Result<String, AuthError> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(AuthError::BadInput("enter a name for the device"));
+        }
+        if trimmed.chars().count() > MAX_DEVICE_NAME {
+            return Err(AuthError::BadInput(
+                "device names are at most 64 characters",
+            ));
+        }
+        let name = clean_name(trimmed).ok_or(AuthError::BadInput(
+            "use letters, digits and spaces in device names",
+        ))?;
+        let db = self.db.lock().unwrap();
+        let user: Option<i64> = db
+            .query_row(
+                "SELECT user_id FROM devices WHERE id = ?1 AND revoked = 0",
+                [device_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let user = match (user, owner) {
+            (Some(u), Some(o)) if u == o => u,
+            (Some(u), None) => u,
+            _ => return Err(AuthError::BadInput("no such device")),
+        };
+        let taken: Option<i64> = db
+            .query_row(
+                "SELECT id FROM devices
+                 WHERE user_id = ?1 AND id != ?2 AND revoked = 0 AND lower(name) = lower(?3)",
+                params![user, device_id, name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if taken.is_some() {
+            return Err(AuthError::BadInput(
+                "another of this user's devices already has that name",
+            ));
+        }
+        db.execute(
+            "UPDATE devices SET name = ?1 WHERE id = ?2",
+            params![name, device_id],
+        )?;
+        drop(db);
+        for e in self.access.lock().unwrap().values_mut() {
+            if e.principal.device_id == device_id {
+                e.principal.device_name = name.clone();
+            }
+        }
+        self.audit("device.renamed", None, Some(device_id), &name);
+        Ok(name)
+    }
+
+    /// The stored last address of a device, revoked or not (tests only).
+    #[doc(hidden)]
+    pub fn stored_address_for_test(&self, device_id: i64) -> Option<String> {
+        self.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT last_addr FROM devices WHERE id = ?1",
+                [device_id],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten()
     }
 
     pub fn touch_device(&self, device_id: i64) {
@@ -1966,7 +2213,7 @@ fn session_days_on(db: &Connection) -> u32 {
     .ok()
     .and_then(|v| v.parse().ok())
     .filter(|d| SESSION_DAYS.contains(d))
-    .unwrap_or((REFRESH_TTL.as_secs() / 86_400) as u32)
+    .unwrap_or(DEFAULT_SESSION_DAYS)
 }
 
 /// Store a new refresh token for an active device (on the caller's connection or
@@ -2105,6 +2352,18 @@ fn migrate(db: &Connection) -> Result<(), AuthError> {
              CREATE INDEX IF NOT EXISTS plays_played_at ON plays(played_at);
              CREATE INDEX IF NOT EXISTS plays_user_created ON plays(user_id, created_at);
              PRAGMA user_version = 7;",
+        )?;
+    }
+    if version < 8 {
+        // Shown to admins in the device list: where each device was last seen from (the
+        // client address as resolved behind trusted proxies), and what kind of client it
+        // is. The address and User-Agent are cleared when the device is revoked.
+        db.execute_batch(
+            "ALTER TABLE devices ADD COLUMN last_addr TEXT;
+             ALTER TABLE devices ADD COLUMN client_kind TEXT;
+             ALTER TABLE devices ADD COLUMN client_platform TEXT;
+             ALTER TABLE devices ADD COLUMN user_agent TEXT;
+             PRAGMA user_version = 8;",
         )?;
     }
     Ok(())
@@ -2680,18 +2939,26 @@ mod tests {
     #[test]
     fn the_sign_in_lifetime_is_configurable_and_bounded() {
         let a = store();
-        assert_eq!(a.session_days(), 30);
+        // Unset: the default, 90 days.
+        assert_eq!(a.session_days(), DEFAULT_SESSION_DAYS);
+        assert_eq!(DEFAULT_SESSION_DAYS, 90);
+        assert!(SESSION_DAYS.contains(&DEFAULT_SESSION_DAYS));
         let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
-        assert_eq!(t.refresh_expires_in, 30 * 86_400);
-        a.set_session_days(90).unwrap();
-        assert_eq!(a.session_days(), 90);
+        assert_eq!(t.refresh_expires_in, 90 * 86_400);
+        a.set_session_days(30).unwrap();
+        assert_eq!(a.session_days(), 30);
         // Applies from the next renewal: the lifetime slides with use.
         let t = a.refresh(&t.refresh).unwrap();
-        assert_eq!(t.refresh_expires_in, 90 * 86_400);
+        assert_eq!(t.refresh_expires_in, 30 * 86_400);
+        for ok in [1, 365] {
+            a.set_session_days(ok).unwrap();
+            assert_eq!(a.session_days(), ok);
+        }
+        a.set_session_days(30).unwrap();
         for bad in [0, 366, u32::MAX] {
             assert!(a.set_session_days(bad).is_err());
         }
-        assert_eq!(a.session_days(), 90);
+        assert_eq!(a.session_days(), 30);
         // A bad stored value falls back to the default.
         a.db.lock()
             .unwrap()
@@ -2700,7 +2967,17 @@ mod tests {
                 [],
             )
             .unwrap();
-        assert_eq!(a.session_days(), 30);
+        assert_eq!(a.session_days(), DEFAULT_SESSION_DAYS);
+        for stored in ["0", "366", "-5", "", "90.5"] {
+            a.db.lock()
+                .unwrap()
+                .execute(
+                    "UPDATE settings SET value = ?1 WHERE key = 'session_days'",
+                    [stored],
+                )
+                .unwrap();
+            assert_eq!(a.session_days(), DEFAULT_SESSION_DAYS, "{stored:?}");
+        }
     }
 
     #[test]
@@ -3256,7 +3533,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         // Version 3 added per-device diagnostics.
         let d = a.devices_for_test();
         a.save_diagnostics(d, r#"{"ok":true}"#).unwrap();
@@ -3723,9 +4000,306 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, 8);
         a.create_user("alice", PW, Role::Listener).unwrap();
         let alice = a.user_id_by_name("alice").unwrap().unwrap();
         assert_eq!(a.stored_plays(alice).unwrap(), 0);
+    }
+
+    fn device_row(a: &Accounts, id: i64) -> DeviceInfo {
+        a.list_devices()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.id == id)
+            .unwrap()
+    }
+
+    #[test]
+    fn the_device_columns_are_added_to_an_existing_database() {
+        // A version 7 database: as before this migration.
+        let a = store();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        {
+            let db = a.db.lock().unwrap();
+            db.execute_batch(
+                "ALTER TABLE devices DROP COLUMN last_addr;
+                 ALTER TABLE devices DROP COLUMN client_kind;
+                 ALTER TABLE devices DROP COLUMN client_platform;
+                 ALTER TABLE devices DROP COLUMN user_agent;
+                 PRAGMA user_version = 7;",
+            )
+            .unwrap();
+            migrate(&db).unwrap();
+            let v: i64 = db
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(v, 8);
+            // Migrating again is a no-op.
+            migrate(&db).unwrap();
+        }
+        // Existing devices keep working, with nothing recorded yet.
+        let d = device_row(&a, t.principal.device_id);
+        assert_eq!(d.name, "Phone");
+        assert_eq!(
+            (d.last_addr, d.client_kind, d.client_platform, d.user_agent),
+            (None, None, None, None)
+        );
+        let t = a.refresh(&t.refresh).unwrap();
+        a.record_client(
+            t.principal.device_id,
+            "198.51.100.1".parse().unwrap(),
+            &ClientInfo {
+                kind: Some(ClientKind::Android),
+                platform: Some("Pixel 8".into()),
+                user_agent: None,
+            },
+        );
+        let d = device_row(&a, t.principal.device_id);
+        assert_eq!(d.last_addr.as_deref(), Some("198.51.100.1"));
+        assert_eq!(d.client_kind.as_deref(), Some("android"));
+        assert_eq!(d.client_platform.as_deref(), Some("Pixel 8"));
+    }
+
+    #[test]
+    fn device_addresses_are_written_at_most_once_a_minute() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let id = t.principal.device_id;
+        let ip1: std::net::IpAddr = "198.51.100.1".parse().unwrap();
+        let ip2: std::net::IpAddr = "2001:db8::2".parse().unwrap();
+        let start = Instant::now();
+        assert!(a.note_seen_at(id, ip1, start));
+        assert_eq!(
+            device_row(&a, id).last_addr.as_deref(),
+            Some("198.51.100.1")
+        );
+        // Within the interval nothing is written, even from another address.
+        assert!(!a.note_seen_at(id, ip2, start + Duration::from_secs(1)));
+        assert!(!a.note_seen_at(id, ip2, start + Duration::from_secs(59)));
+        assert_eq!(
+            device_row(&a, id).last_addr.as_deref(),
+            Some("198.51.100.1")
+        );
+        // After it, the next use writes.
+        assert!(a.note_seen_at(id, ip2, start + SEEN_WRITE_INTERVAL));
+        assert_eq!(device_row(&a, id).last_addr.as_deref(), Some("2001:db8::2"));
+        // Sign-in and renewal always write.
+        a.record_client(id, ip1, &ClientInfo::default());
+        assert_eq!(
+            device_row(&a, id).last_addr.as_deref(),
+            Some("198.51.100.1")
+        );
+    }
+
+    #[test]
+    fn the_seen_table_is_bounded() {
+        let a = store();
+        let ip: std::net::IpAddr = "198.51.100.1".parse().unwrap();
+        let now = Instant::now();
+        // Device ids that don't exist write nothing to the database but are remembered.
+        for id in 0..(SEEN_CAP as i64 + 100) {
+            a.note_seen_at(10_000 + id, ip, now);
+        }
+        assert!(a.seen.lock().unwrap().len() <= SEEN_CAP);
+    }
+
+    #[test]
+    fn revoked_devices_lose_their_address_and_user_agent() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let id = t.principal.device_id;
+        a.record_client(
+            id,
+            "198.51.100.1".parse().unwrap(),
+            &ClientInfo {
+                kind: Some(ClientKind::Browser),
+                platform: Some("Firefox on Linux".into()),
+                user_agent: Some("Mozilla/5.0 (X11; Linux x86_64)".into()),
+            },
+        );
+        assert!(a.revoke_device(id).unwrap());
+        assert_eq!(a.stored_address_for_test(id), None);
+        let ua: Option<String> =
+            a.db.lock()
+                .unwrap()
+                .query_row("SELECT user_agent FROM devices WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+        assert_eq!(ua, None);
+        // A revoked device is never written again.
+        a.note_seen_at(
+            id,
+            "198.51.100.2".parse().unwrap(),
+            Instant::now() + SEEN_WRITE_INTERVAL * 2,
+        );
+        assert_eq!(a.stored_address_for_test(id), None);
+    }
+
+    #[test]
+    fn client_info_is_kept_until_replaced_and_cleaned() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let id = t.principal.device_id;
+        let ip: std::net::IpAddr = "198.51.100.1".parse().unwrap();
+        a.record_client(
+            id,
+            ip,
+            &ClientInfo {
+                kind: Some(ClientKind::Pwa),
+                platform: Some("<i>Safari</i> on\u{202e} iPadOS".into()),
+                user_agent: Some("Mozilla/5.0 <script>\"x\"</script>\u{7}\u{e9}".into()),
+            },
+        );
+        let d = device_row(&a, id);
+        assert_eq!(d.client_kind.as_deref(), Some("pwa"));
+        assert_eq!(d.client_platform.as_deref(), Some("iSafarii on iPadOS"));
+        assert_eq!(d.user_agent.as_deref(), Some("Mozilla/5.0 scriptx/script"));
+        // Nothing sent: kept.
+        a.record_client(id, ip, &ClientInfo::default());
+        assert_eq!(device_row(&a, id).client_kind.as_deref(), Some("pwa"));
+        // Whatever is in the database is cleaned on the way out.
+        a.db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE devices SET client_kind = 'root', client_platform = '<x>',
+                   user_agent = '<>', last_addr = 'not an address', name = '<b>\u{202e}' WHERE id = ?1",
+                [id],
+            )
+            .unwrap();
+        let d = device_row(&a, id);
+        assert_eq!(d.client_kind, None);
+        assert_eq!(d.client_platform.as_deref(), Some("x"));
+        assert_eq!(d.user_agent, None);
+        assert_eq!(d.last_addr, None);
+        assert_eq!(d.name, "b");
+    }
+
+    #[test]
+    fn client_kinds_parse_strictly() {
+        for k in [ClientKind::Pwa, ClientKind::Browser, ClientKind::Android] {
+            assert_eq!(ClientKind::parse(k.as_str()), Some(k));
+        }
+        for bad in ["", "PWA", "ios", " pwa", "pwa ", "android\0"] {
+            assert_eq!(ClientKind::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    /// Small deterministic PRNG (xorshift64*), so failures are reproducible.
+    fn rng(seed: &mut u64) -> u64 {
+        *seed ^= *seed >> 12;
+        *seed ^= *seed << 25;
+        *seed ^= *seed >> 27;
+        seed.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+
+    #[test]
+    fn platform_and_user_agent_cleaning_never_panics_and_stays_bounded() {
+        let pool: Vec<char> =
+            "aZ09 .,-_'’()&<>\"`\\/;:=\t\n\r\u{0}\u{7}\u{7f}\u{202e}\u{200b}\u{300}é漢🎵\u{feff}"
+                .chars()
+                .collect();
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..20_000 {
+            let len = (rng(&mut seed) % 300) as usize;
+            let s: String = (0..len)
+                .map(|_| pool[(rng(&mut seed) % pool.len() as u64) as usize])
+                .collect();
+            if let Some(p) = clean_platform(&s) {
+                assert!(p.chars().count() <= MAX_CLIENT_PLATFORM);
+                assert!(!p.is_empty() && p.trim() == p, "{p:?}");
+                assert!(
+                    p.chars()
+                        .all(|c| !c.is_control() && !"<>\"`\\/;:=".contains(c) && c != '\u{202e}'),
+                    "{p:?}"
+                );
+            }
+            if let Some(u) = clean_user_agent(&s) {
+                assert!(u.len() <= MAX_USER_AGENT);
+                assert!(
+                    u.chars()
+                        .all(|c| (c.is_ascii_graphic() || c == ' ') && !"<>\"'`\\&".contains(c)),
+                    "{u:?}"
+                );
+                assert!(!u.starts_with(' ') && !u.ends_with(' ') && !u.contains("  "));
+            }
+        }
+        assert_eq!(
+            clean_user_agent(&"a".repeat(1000)).unwrap().len(),
+            MAX_USER_AGENT
+        );
+        assert_eq!(clean_user_agent("   "), None);
+        assert_eq!(clean_platform("<>"), None);
+    }
+
+    #[test]
+    fn renaming_devices() {
+        let a = store();
+        let alice = a.user_id_by_name("alice").unwrap().unwrap();
+        let admin = a.user_id_by_name("admin").unwrap().unwrap();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let other = a.login("alice", PW, None, "Tablet", None, "c").unwrap();
+        let theirs = a.login("admin", PW, None, "Desk", None, "c").unwrap();
+        let id = t.principal.device_id;
+
+        // Success: trimmed, cleaned, and live access tokens carry the new name.
+        assert_eq!(
+            a.rename_device(id, Some(alice), "  Kitchen \u{202e} iPad ")
+                .unwrap(),
+            "Kitchen iPad"
+        );
+        assert_eq!(
+            a.authenticate(&t.access).unwrap().device_name,
+            "Kitchen iPad"
+        );
+        assert_eq!(device_row(&a, id).name, "Kitchen iPad");
+        // And new tokens too.
+        let t = a.refresh(&t.refresh).unwrap();
+        assert_eq!(t.principal.device_name, "Kitchen iPad");
+
+        // Empty, blank, too long, nothing usable.
+        for bad in ["", "   ", "<>/", "\u{202e}\u{200b}", "\u{0}\u{7}"] {
+            assert!(
+                matches!(
+                    a.rename_device(id, Some(alice), bad),
+                    Err(AuthError::BadInput(_))
+                ),
+                "{bad:?}"
+            );
+        }
+        assert!(a.rename_device(id, Some(alice), &"x".repeat(65)).is_err());
+        assert!(a.rename_device(id, Some(alice), &"é".repeat(64)).is_ok());
+
+        // Unique per user (ignoring case), but another user may use it.
+        assert!(a.rename_device(id, Some(alice), "tablet").is_err());
+        assert!(
+            a.rename_device(theirs.principal.device_id, Some(admin), "Tablet")
+                .is_ok()
+        );
+        // A device may keep its own name in another case.
+        assert!(
+            a.rename_device(other.principal.device_id, Some(alice), "TABLET")
+                .is_ok()
+        );
+
+        // A listener can't rename another user's device (indistinguishable from none).
+        assert_eq!(
+            a.rename_device(theirs.principal.device_id, Some(alice), "Mine now"),
+            Err(AuthError::BadInput("no such device"))
+        );
+        assert_eq!(device_row(&a, theirs.principal.device_id).name, "Tablet");
+        // An admin (no owner) can rename anyone's.
+        assert_eq!(
+            a.rename_device(theirs.principal.device_id, None, "Office")
+                .unwrap(),
+            "Office"
+        );
+        // Unknown and revoked devices.
+        assert!(a.rename_device(999_999, None, "X").is_err());
+        a.revoke_device(other.principal.device_id).unwrap();
+        assert_eq!(
+            a.rename_device(other.principal.device_id, None, "X"),
+            Err(AuthError::BadInput("no such device"))
+        );
     }
 }

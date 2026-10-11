@@ -37,6 +37,7 @@ pub fn router(gw: AppState, secret: String) -> Router {
         // POST forms of the deletes, for HTTP clients without DELETE (e.g. LMS's).
         .route("/admin/v1/users/{name}/delete", post(delete_user))
         .route("/admin/v1/devices/{id}/revoke", post(revoke_device))
+        .route("/admin/v1/devices/{id}/name", post(rename_device))
         .route("/admin/v1/users/{name}/players/{mac}/remove", post(ungrant))
         .route("/admin/v1/users/{name}/password", post(set_password))
         .route("/admin/v1/users/{name}/disabled", post(set_disabled))
@@ -53,7 +54,10 @@ pub fn router(gw: AppState, secret: String) -> Router {
             "/admin/v1/devices/{id}/diagnostics",
             get(device_diagnostics),
         )
-        .route("/admin/v1/devices/{id}", delete(revoke_device))
+        .route(
+            "/admin/v1/devices/{id}",
+            delete(revoke_device).patch(rename_device),
+        )
         .route("/admin/v1/audit", get(audit))
         .route("/admin/v1/settings", get(settings).post(set_settings))
         .route("/admin/v1/plugins", get(plugins).post(set_plugins))
@@ -198,6 +202,7 @@ async fn settings(State(st): State<AdminState>) -> Response {
         .collect();
     Json(json!({
         "session_days": st.gw.accounts().session_days(),
+        "session_days_default": crate::accounts::DEFAULT_SESSION_DAYS,
         "session_days_min": crate::accounts::SESSION_DAYS.start(),
         "session_days_max": crate::accounts::SESSION_DAYS.end(),
         "download_formats": formats,
@@ -451,6 +456,25 @@ async fn audit(
 ) -> Response {
     match st.gw.accounts().audit_log(q.limit.unwrap_or(100)) {
         Ok(a) => Json(json!({ "audit": a })).into_response(),
+        Err(e) => err(e),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Rename {
+    name: String,
+}
+
+/// Rename any device (its LMS player follows if it is connected).
+async fn rename_device(
+    State(st): State<AdminState>,
+    Path(id): Path<i64>,
+    Json(r): Json<Rename>,
+) -> Response {
+    match st.gw.rename_device(id, None, &r.name).await {
+        Ok(name) => Json(json!({ "id": id, "name": name })).into_response(),
+        Err(AuthError::BadInput("no such device")) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => err(e),
     }
 }

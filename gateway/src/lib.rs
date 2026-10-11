@@ -350,6 +350,35 @@ impl Gateway {
         }
     }
 
+    /// Rename a device (`owner`: only if it is this user's; `None` for an admin). If it has
+    /// a live session, its LMS player is renamed too, with LMS's own `name` command (LMS
+    /// then tells the player, as it does when someone renames a player in LMS). Otherwise
+    /// the new name reaches LMS when the device next connects (its HELO name reply).
+    pub async fn rename_device(
+        self: &Arc<Self>,
+        device_id: i64,
+        owner: Option<i64>,
+        name: &str,
+    ) -> Result<String, accounts::AuthError> {
+        let name = self.accounts.rename_device(device_id, owner, name)?;
+        let live: Vec<Arc<Session>> = self
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|s| s.device.device_id == device_id && !s.is_ended())
+            .cloned()
+            .collect();
+        for s in live {
+            s.set_name(&name);
+            let cmd = ["name".to_string(), name.clone()];
+            if let Err(e) = self.lms_command(&s.device.mac_string(), &cmd).await {
+                warn!(mac = %s.device.mac_string(), error = %e, "could not rename the LMS player");
+            }
+        }
+        Ok(name)
+    }
+
     /// Best effort: `client forget` each player in LMS. Failures are only logged.
     async fn forget_players(&self, macs: Vec<String>) {
         // Let LMS notice the closed Slimproto connection first.
@@ -381,6 +410,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/account/totp/setup", post(auth::totp_setup))
         .route("/v1/account/totp/confirm", post(auth::totp_confirm))
         .route("/v1/account/totp/disable", post(auth::totp_disable))
+        .route("/v1/devices/self", axum::routing::patch(auth::rename_self))
         .route("/v1/rpc", post(rpc::rpc))
         .route("/v1/diagnostics", post(diagnostics::report))
         .route("/v1/art/{*path}", get(art::art))
@@ -390,7 +420,11 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/plays", post(plays::record))
         .route("/v1/events", get(events::events_upgrade))
         .route("/v1/player", get(tunnel::player_upgrade))
-        .route("/v1/stream/{session}/{n}", get(relay::stream));
+        .route("/v1/stream/{session}/{n}", get(relay::stream))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            note_device_use,
+        ));
     app = match &state.cfg.static_dir {
         Some(dir) => app.fallback_service(tower_http::services::ServeDir::new(dir)),
         None => app.fallback(|| async { StatusCode::NOT_FOUND }),
@@ -480,6 +514,29 @@ async fn security_headers(req: Request, next: Next) -> Response {
     resp
 }
 
+/// API requests with a valid access token: note where the device was seen from (written at
+/// most once a minute per device; see [`Accounts::note_seen`]). Invalid tokens are left for
+/// the handler to refuse.
+async fn note_device_use(
+    State(gw): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let device = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(|t| gw.accounts.authenticate(t))
+        .map(|p| p.device_id);
+    if let Some(device) = device {
+        let addr = client_addr(&gw.cfg, peer, req.headers());
+        gw.accounts.note_seen(device, addr);
+    }
+    next.run(req).await
+}
+
 /// Refuse remote requests that didn't arrive over TLS: either via a trusted reverse proxy
 /// reporting `X-Forwarded-Proto: https`, or plain HTTP from loopback with no proxy headers
 /// (local development).
@@ -528,7 +585,7 @@ fn is_trusted_proxy(cfg: &Config, ip: IpAddr) -> bool {
 ///   received the request from, so the rightmost entry that isn't itself a trusted proxy
 ///   is the first address no trusted party vouches beyond. Everything to its left was
 ///   written by the client and is ignored (a client can't pick its own lockout key).
-fn client_addr(cfg: &Config, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
+pub(crate) fn client_addr(cfg: &Config, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
     let peer_ip = canonical(peer.ip());
     if !is_trusted_proxy(cfg, peer_ip) {
         return peer_ip;

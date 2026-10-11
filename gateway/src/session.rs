@@ -131,6 +131,8 @@ const DETACHED_HEARTBEAT: Duration = Duration::from_secs(1);
 pub struct Session {
     pub id: String,
     pub device: Principal,
+    /// The player name: the device's name, updated if it is renamed during the session.
+    name: Mutex<String>,
     secret: String,
     lms_tx: tokio::sync::Mutex<OwnedWriteHalf>,
     state: Mutex<State>,
@@ -162,6 +164,7 @@ impl Session {
     fn new(device: Principal, lms_tx: OwnedWriteHalf) -> Session {
         Session {
             id: random_id(),
+            name: Mutex::new(device.device_name.clone()),
             device,
             secret: random_id(),
             lms_tx: tokio::sync::Mutex::new(lms_tx),
@@ -225,6 +228,16 @@ impl Session {
 
     pub fn secret(&self) -> &str {
         &self.secret
+    }
+
+    /// The player name (the device's current name).
+    pub fn name(&self) -> String {
+        self.name.lock().unwrap().clone()
+    }
+
+    /// The device was renamed: LMS's name queries get the new name from now on.
+    pub fn set_name(&self, name: &str) {
+        *self.name.lock().unwrap() = name.to_string();
     }
 
     pub fn is_ended(&self) -> bool {
@@ -443,7 +456,7 @@ impl Session {
             b"BYE!" if payload.len() <= 1 => Ok(payload),
             b"SETD" if payload.first() == Some(&0) && st.name_queries > 0 => {
                 st.name_queries -= 1;
-                Ok(name_reply(&payload[1..], &self.device.device_name))
+                Ok(name_reply(&payload[1..], &self.name()))
             }
             b"SETD" => Err("unsolicited SETD".into()),
             _ => Err(format!(

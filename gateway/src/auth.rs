@@ -17,7 +17,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::accounts::{AuthError, Tokens};
+use crate::accounts::{AuthError, ClientInfo, ClientKind, MAX_CLIENT_PLATFORM, Tokens};
 use crate::{AppState, origin_allowed};
 
 pub const REFRESH_COOKIE: &str = "anywhere_refresh";
@@ -136,6 +136,31 @@ fn client_id(gw: &AppState, peer: SocketAddr, headers: &HeaderMap) -> String {
     crate::client_ip(&gw.cfg, peer, headers)
 }
 
+/// What the client said about itself (`client_kind`, `client_platform`) plus its
+/// User-Agent. A platform longer than [`MAX_CLIENT_PLATFORM`] characters is refused.
+fn client_info(
+    headers: &HeaderMap,
+    kind: Option<ClientKind>,
+    platform: Option<String>,
+) -> Result<ClientInfo, (StatusCode, &'static str)> {
+    if platform
+        .as_deref()
+        .is_some_and(|p| p.chars().count() > MAX_CLIENT_PLATFORM)
+    {
+        return Err((StatusCode::BAD_REQUEST, "client_platform too long"));
+    }
+    Ok(ClientInfo {
+        kind,
+        platform: platform
+            .as_deref()
+            .and_then(crate::accounts::clean_platform),
+        user_agent: headers
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .and_then(crate::accounts::clean_user_agent),
+    })
+}
+
 fn parse<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, (StatusCode, &'static str)> {
     if body.len() > MAX_BODY {
         return Err((StatusCode::PAYLOAD_TOO_LARGE, "request too large"));
@@ -155,6 +180,10 @@ struct LoginRequest {
     device_id: Option<i64>,
     #[serde(default)]
     refresh: RefreshIn,
+    /// `pwa`, `browser` or `android`.
+    client_kind: Option<ClientKind>,
+    /// E.g. "Safari on iPadOS" or "Pixel 8" (at most 48 characters).
+    client_platform: Option<String>,
 }
 
 pub async fn login(
@@ -166,10 +195,15 @@ pub async fn login(
     if !csrf_ok(&gw, &headers) {
         return error(StatusCode::FORBIDDEN, "forbidden");
     }
-    let req: LoginRequest = match parse(&body) {
+    let mut req: LoginRequest = match parse(&body) {
         Ok(r) => r,
         Err((status, msg)) => return error(status, msg),
     };
+    let info = match client_info(&headers, req.client_kind, req.client_platform.take()) {
+        Ok(i) => i,
+        Err((status, msg)) => return error(status, msg),
+    };
+    let addr = crate::client_addr(&gw.cfg, peer, &headers);
     let client = client_id(&gw, peer, &headers);
     let accounts = gw.accounts().clone();
     // Password hashing is CPU-heavy: keep it off the async workers.
@@ -188,6 +222,8 @@ pub async fn login(
     .await;
     match result {
         Ok(Ok((t, refresh_in))) => {
+            gw.accounts()
+                .record_client(t.principal.device_id, addr, &info);
             // Devices signed out to stay within the per-user limit.
             gw.end_sessions_for(&t.evicted).await;
             token_response(t, refresh_in)
@@ -202,6 +238,8 @@ pub async fn login(
 struct PairRequest {
     code: String,
     device_name: String,
+    client_kind: Option<ClientKind>,
+    client_platform: Option<String>,
 }
 
 /// Native apps: redeem a pairing code. The refresh token is always returned in the body.
@@ -214,13 +252,20 @@ pub async fn pair(
     if !csrf_ok(&gw, &headers) {
         return error(StatusCode::FORBIDDEN, "forbidden");
     }
-    let req: PairRequest = match parse(&body) {
+    let mut req: PairRequest = match parse(&body) {
         Ok(r) => r,
         Err((status, msg)) => return error(status, msg),
     };
+    let info = match client_info(&headers, req.client_kind, req.client_platform.take()) {
+        Ok(i) => i,
+        Err((status, msg)) => return error(status, msg),
+    };
+    let addr = crate::client_addr(&gw.cfg, peer, &headers);
     let client = client_id(&gw, peer, &headers);
     match gw.accounts().pair(&req.code, &req.device_name, &client) {
         Ok(t) => {
+            gw.accounts()
+                .record_client(t.principal.device_id, addr, &info);
             gw.end_sessions_for(&t.evicted).await;
             token_response(t, RefreshIn::Body)
         }
@@ -232,18 +277,21 @@ pub async fn pair(
 #[serde(deny_unknown_fields)]
 struct RefreshRequest {
     refresh_token: Option<String>,
+    client_kind: Option<ClientKind>,
+    client_platform: Option<String>,
 }
 
 /// Rotate the refresh token (from the cookie, or the body for native apps).
 pub async fn refresh(
     State(gw): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
     if !csrf_ok(&gw, &headers) {
         return error(StatusCode::FORBIDDEN, "forbidden");
     }
-    let req: RefreshRequest = if body.is_empty() {
+    let mut req: RefreshRequest = if body.is_empty() {
         RefreshRequest::default()
     } else {
         match parse(&body) {
@@ -251,13 +299,22 @@ pub async fn refresh(
             Err((status, msg)) => return error(status, msg),
         }
     };
+    let info = match client_info(&headers, req.client_kind, req.client_platform.take()) {
+        Ok(i) => i,
+        Err((status, msg)) => return error(status, msg),
+    };
     let (token, refresh_in) = match (req.refresh_token, cookie(&headers, REFRESH_COOKIE)) {
         (Some(t), _) => (t, RefreshIn::Body),
         (None, Some(c)) => (c.to_string(), RefreshIn::Cookie),
         (None, None) => return error(StatusCode::UNAUTHORIZED, "invalid credentials"),
     };
     match gw.accounts().refresh(&token) {
-        Ok(t) => token_response(t, refresh_in),
+        Ok(t) => {
+            let addr = crate::client_addr(&gw.cfg, peer, &headers);
+            gw.accounts()
+                .record_client(t.principal.device_id, addr, &info);
+            token_response(t, refresh_in)
+        }
         Err(AuthError::Reused(device)) => {
             // A stolen refresh token: the device is revoked, so end its live session too.
             gw.end_sessions_for(&[device]).await;
@@ -446,5 +503,41 @@ pub async fn totp_disable(
         Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(e)) => auth_error(e),
         Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// This device
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenameRequest {
+    name: String,
+}
+
+/// `PATCH /v1/devices/self`: rename the device the access token belongs to (its LMS player
+/// follows). Only ever the caller's own device: there is no device id to name.
+pub async fn rename_self(
+    State(gw): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if !csrf_ok(&gw, &headers) {
+        return error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Some(p) = principal(&gw, &headers) else {
+        return error(StatusCode::UNAUTHORIZED, "invalid credentials");
+    };
+    let req: RenameRequest = match parse(&body) {
+        Ok(r) => r,
+        Err((status, msg)) => return error(status, msg),
+    };
+    match gw
+        .rename_device(p.device_id, Some(p.user_id), &req.name)
+        .await
+    {
+        Ok(name) => Json(json!({ "id": p.device_id, "name": name })).into_response(),
+        Err(e) => auth_error(e),
     }
 }
