@@ -267,7 +267,13 @@ jobs:
           if grep -r -a -l -e "$HOME" -e "$GITHUB_WORKSPACE" "$RUNNER_TEMP/libs"; then
             echo "build paths found in the native libraries" >&2; exit 1
           fi
-          jarsigner -verify -strict "$out/bundle/release/app-release.aab"
+          # The bundle: verified, and signed by the same certificate as the APKs. (Not
+          # `jarsigner -strict`, which calls any self-signed key, as Android keys are, an error.)
+          aab="$out/bundle/release/app-release.aab"
+          jarsigner -verify "$aab" | grep -q '^jar verified' || { echo "the app bundle doesn't verify" >&2; exit 1; }
+          expected=$("$apksigner" verify --print-certs "dist-android/LyrionAnywhere-android-$VERSION.apk" | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)
+          got=$(keytool -printcert -jarfile "$aab" | sed -n 's/^[[:space:]]*SHA256: //p' | head -1 | tr -d ':' | tr 'A-F' 'a-f')
+          [ -n "$expected" ] && [ "$expected" = "$got" ] || { echo "the app bundle isn't signed with the APKs' certificate" >&2; exit 1; }
           cp "$out/bundle/release/app-release.aab" "dist-android/LyrionAnywhere-android-$VERSION.aab"
           # What it was built with, for anyone reproducing the build (docs/RELEASING.md).
           {
