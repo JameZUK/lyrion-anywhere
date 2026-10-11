@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { api, app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
-	import { duration, textOf } from '$lib/lms/format';
+	import { duration, isRemote, textOf } from '$lib/lms/format';
 	import type { Album, AlbumsResult, TitlesResult, Track } from '$lib/lms/types';
 	import Art from '$lib/components/Art.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -57,7 +57,7 @@
 	let choice = $state<Format | 'auto'>('auto');
 	const auto = defaultFormat();
 	const onWifi = networkType() === 'wifi';
-	const downloadable = $derived(tracks.filter((t) => typeof t.id === 'number' && !t.remote));
+	const downloadable = $derived(tracks.filter((t) => typeof t.id === 'number' && !isRemote(t.remote)));
 	const savedCount = $derived(downloadable.filter((t) => downloads.savedById(t.id)).length);
 	const allSaved = $derived(downloadable.length > 0 && savedCount === downloadable.length);
 	const progress = $derived(albumId !== null ? downloads.album(albumId) : null);

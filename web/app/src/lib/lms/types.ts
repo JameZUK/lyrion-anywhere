@@ -32,7 +32,7 @@ export interface Track {
 	bitrate?: string;
 	samplerate?: string;
 	samplesize?: string;
-	remote?: number;
+	remote?: number | string;
 	remote_title?: string;
 	'playlist index'?: number;
 }
@@ -50,7 +50,7 @@ export interface PlayerStatus {
 	'playlist shuffle'?: number;
 	'playlist repeat'?: number;
 	can_seek?: number;
-	remote?: number;
+	remote?: number | string;
 	current_title?: string;
 	playlist_loop?: Track[];
 	/** Set while the player is in a sync group (only players the caller may control). */

@@ -9,6 +9,17 @@ export function duration(seconds: unknown): string {
 	return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
 }
 
+/**
+ * Whether LMS marks a track as remote (a stream or radio). LMS sends the flag as a number in
+ * some answers and as text in others (`"0"` in player status), so `"0"` must count as local.
+ */
+export function isRemote(v: unknown): boolean {
+	if (typeof v === 'boolean') return v;
+	if (typeof v === 'number') return Number.isFinite(v) && v !== 0;
+	if (typeof v === 'string') return v.trim() !== '' && v.trim() !== '0';
+	return false;
+}
+
 /** Any LMS value as display text: strings and numbers only, trimmed and length-capped. */
 export function textOf(v: unknown, max = 300): string {
 	if (typeof v === 'number' && Number.isFinite(v)) return String(v);

@@ -3,7 +3,7 @@
 	import { app } from '$lib/state/app.svelte';
 	import { playerLabel } from '$lib/lms/sync';
 	import * as cmd from '$lib/lms/commands';
-	import { duration, formatDetails, textOf } from '$lib/lms/format';
+	import { duration, formatDetails, isRemote, textOf } from '$lib/lms/format';
 	import Art from '$lib/components/Art.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import PlayerSwitcher from '$lib/components/PlayerSwitcher.svelte';
@@ -82,7 +82,7 @@
 
 		<div class="progress">
 			<SeekBar
-				trackId={typeof track?.id === 'number' && track.id > 0 && !track.remote ? track.id : null}
+				trackId={typeof track?.id === 'number' && track.id > 0 && !isRemote(track.remote) ? track.id : null}
 				value={shown}
 				{total}
 				disabled={!total || app.now?.can_seek === 0}
