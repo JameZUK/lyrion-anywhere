@@ -1,6 +1,6 @@
 # Lyrion Anywhere for Android
 
-The native Android app: sign-in, browsing, remote control of LMS players (milestone A0), the phone as an LMS player with native audio output (A1), bit-perfect USB DAC output and the Sound settings (A2), the waveform seek bar with loudness levelling (A3), and browsing on a par with the web app, with rich album and artist pages, LMS's own menus and "player-first" control (A4 part 1), and moving playback between players, queue editing, sync groups, tablet layouts, a home-screen widget, a Quick Settings tile and gestures (A4 part 2). The plan is in [`docs/plans/native-apps.md`](../../docs/plans/native-apps.md); the protocol it speaks is [`docs/PROTOCOL.md`](../../docs/PROTOCOL.md).
+The native Android app: sign-in, browsing, remote control of LMS players (milestone A0), the phone as an LMS player with native audio output (A1), bit-perfect USB DAC output and the Sound settings (A2), the waveform seek bar with loudness levelling (A3), and browsing on a par with the web app, with rich album and artist pages, LMS's own menus and "player-first" control (A4 part 1), moving playback between players, queue editing, sync groups, tablet layouts, a home-screen widget, a Quick Settings tile and gestures (A4 part 2), and offline listening: downloads, smart downloads, offline mode and plays synced back (A5). The plan is in [`docs/plans/native-apps.md`](../../docs/plans/native-apps.md); the protocol it speaks is [`docs/PROTOCOL.md`](../../docs/PROTOCOL.md).
 
 ## Building
 
@@ -36,9 +36,11 @@ To try a debug build against a gateway on your computer, forward the port with `
 ```
 :app       Application, manual DI (AppContainer), navigation, Coil set-up
 :ui        Design system, screens and view models (Compose, Material 3)
-:playback  Media3 session service for "Play on this phone": SimpleBasePlayer over LMS,
-           audio focus, becoming noisy, wake/Wi-Fi locks, output route
-:data      Repositories over the Rust layer, typed errors, settings, secure storage
+:playback  Media3 session service for this phone's playback: a SimpleBasePlayer over LMS
+           and one over the local (offline) queue, audio focus, becoming noisy,
+           wake/Wi-Fi locks, output route
+:data      Repositories over the Rust layer, typed errors, settings, secure storage,
+           downloads and offline mode (data/offline)
 :rust      libanywhere_mobile.so (cargo-ndk) + generated UniFFI Kotlin bindings
 ```
 
@@ -126,6 +128,27 @@ Kotlin: RustLocalPlayerRepository ─► PlaybackService (Media3 session) ─►
   Media3 runs it as a foreground service (type `mediaPlayback`) while playing.
 - **Starting:** the phone's player is on by default (D20). The service starts while the app is in front; if LMS starts playback on an idle phone whose app is in the background, the session appears when the app is next opened.
 
+### Offline: downloads, offline mode and plays (A5)
+
+```
+Download ─► OfflineRepository ─► Rust Downloader (own thread) ─► /v1/download/track/{id}[/info]
+                                       │ Range resume, size and key checks, 401/403/429
+                                       ▼
+            noBackupFilesDir/offline/<hash of server+user>/  tracks/<key>.<ext>  index.json  art/  plays.json
+                                       ▲
+Offline queue ─► OfflinePlayerRepository ─► Rust OfflinePlayer ─► the same AudioPath as streaming ─► AAudio
+                                       └─► plays.json ─► PlaysSender ─► POST /v1/plays (when online)
+```
+
+- **Downloading:** *Download* on album and playlist pages and in "More…" (tracks, albums, playlists). The Rust download manager (`mobile/src/offline`) fetches two at a time, resumes with `Range`, checks sizes and the stable key, renews an expired token, shows a 403 ("downloads aren't allowed for this account"), waits on a 429, and pauses or cancels on request. The queue survives a restart.
+- **Formats and storage** (Settings → Downloads and storage): the format on Wi-Fi and on mobile data (Original, MP3 320 or Opus 160; "auto" picks by network), *Wi-Fi only*, and a storage cap.
+- **Smart downloads:** *Keep recently added albums offline (N)* and *Keep favourites offline*, refreshed on Wi-Fi only within the cap. They never remove your own downloads.
+- **Downloads screen:** in progress, on this phone (by album), storage used, remove and remove all.
+- **Offline mode:** when the server can't be reached (or there is no network), the app shows the downloaded library under an *Offline* banner and plays it on the phone. It switches back by itself.
+- **Playing downloads** uses the same Rust engine as streaming (DSP, levelling, bit-perfect USB, signal path, gapless), from the app's own queue: play, pause, next, previous, seek, shuffle, repeat. The Media3 session switches to it, so the notification, lock screen and Bluetooth buttons work offline. Downloads and this phone's LMS player never play at once.
+- **Plays** heard offline are recorded with an idempotency key and sent to `POST /v1/plays` once back online (kept if the server doesn't have it yet).
+- **In the background:** `DownloadService`, a foreground service of type `dataSync`, runs only while downloads are busy, with progress and *Cancel*. There is **no WorkManager** (or any other `androidx.startup` initialiser): WorkManager's start-up initialiser crashed earlier test builds and stays removed in the manifest.
+
 ### Bit-perfect USB DAC output (Android 14+)
 
 ```
@@ -187,6 +210,7 @@ Record the phone, Android version, DAC and results (in the A2 status of `docs/pl
 
 - The refresh token and device id are the only secrets stored: sealed with AES-256-GCM under a key generated in the AndroidKeyStore (not exportable), in the app's no-backup directory. A blob that fails to open is deleted and the user signs in again. Access tokens live in memory only.
 - No backups or device transfers (`allowBackup="false"`, data extraction rules exclude everything).
+- Downloads live in app-private storage only (`noBackupFilesDir/offline`), in a folder named by a hash of the server and user. Files are named by the gateway's stable key and a fixed extension; the index holds no tokens, addresses or paths and is checked entry by entry when read. Signing out asks whether to keep or remove them; a device the server revoked removes them.
 - No cleartext traffic and only system CAs (`network_security_config.xml`); debug builds also allow plain HTTP to loopback. The Rust layer independently refuses `http://` except to loopback.
 - Tokens and passwords are never logged or put in error messages; the password is dropped from memory after sign-in.
 - Pairing QR codes are parsed and validated in Rust (`lyrion-anywhere://pair?server=…&code=…`, see `docs/PROTOCOL.md`); the server address in one obeys the same rules as a typed one.
@@ -219,5 +243,12 @@ Record the phone, Android version, DAC and results (in the A2 status of `docs/pl
   - resume after a dropped connection, refusals and hostile frames;
   - a fake USB DAC receiving the files' integers;
   - Ogg Opus.
+
+- Offline (A5):
+  - `:data`: download settings and the offline owner (persistence, refusal of stored nonsense); the offline repository with fakes (sign-in, offline owner, revocation, keep or remove at sign-out, downloads, smart downloads, plays sending, another user); the offline player repository; the plays sender's timing; offline-mode decisions and timing; one player at a time.
+  - `:playback`: the local queue's Media3 mapping and session player (state, cover, buttons, shuffle and repeat).
+  - `:ui`: the Downloads, storage and offline view models; Compose tests for the Downloads screen, offline library, album and Now playing, storage settings, the sign-out question and the Download button.
+  - `:app`: the download notification's progress; the manifest (the download service is private and `dataSync`; WorkManager's initialiser stays removed).
+  - Rust: the download manager against a scripted gateway and the real one (Range resume, 416, sizes, 401/403/429, cap, Wi-Fi only), the index (fuzzed), plays, the play queue, the local source and the offline player end to end.
 
 Instrumented tests (the AndroidKeyStore key itself, the camera, AAudio output, bit-perfect USB output, the media notification and buttons) need a device and are not run in CI yet. The A1 and A2 statuses in `docs/plans/native-apps.md` list what has and hasn't been verified on hardware.

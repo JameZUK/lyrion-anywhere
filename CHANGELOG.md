@@ -4,6 +4,25 @@ Dated entries, newest first.
 
 ## 2026-10-11
 
+### Android: offline (A5)
+- **Downloads** of albums, playlists and tracks ("Download" on their pages and in "More…"), into app-private storage that is never backed up.
+  - The download manager is in the Rust layer: two at a time, resumed with HTTP `Range` after a break, checked against `/info`'s size and stable key, and named by that key (no tokens in file names or the index).
+  - It renews an expired sign-in once and retries; a 403 (downloads turned off for the account) is shown and not retried; a 429 waits as the server says; other failures back off and retry.
+  - Pause, resume and cancel, each or all; the queue survives a restart; album covers are kept for offline browsing.
+  - The format follows the network, as on the web (Original on Wi-Fi and Opus on mobile data by default), with *Wi-Fi only* and a storage cap.
+- **Downloads screen:** what is downloading (with progress), what is on the phone (by album), storage used, remove and remove all.
+- **Smart downloads (optional):** *Keep recently added albums offline (N)* and *Keep favourites offline* (library tracks and albums among the LMS favourites). Refreshed on Wi-Fi only, inside the storage cap; they never remove the user's own downloads, and a failed refresh removes nothing.
+- **Offline mode:** when the server can't be reached (or the phone has no network), the app shows the downloaded library under an *Offline* banner and plays it on the phone; when the server is back it switches back by itself.
+- **Playing downloads, through the same engine as streaming:** the app's own queue (play, pause, next, previous, seek, shuffle, repeat), decoded by the Rust engine with the same DSP, levelling, bit-perfect USB output and signal path, and gapless between tracks. The notification, lock screen and Bluetooth buttons work offline too. Downloads and this phone's LMS player never play at once.
+- **Plays heard offline** are recorded (with an idempotency key) in a durable queue and sent to `POST /v1/plays` when back online; an older server without it keeps them for later.
+- **Sign-out** asks whether to keep or remove the downloads (keeping is the default); a device the server revoked removes them.
+- **Background downloading:** a foreground service of type `dataSync` with a progress notification and *Cancel*, only while downloads run; no WorkManager or other start-up initialiser. On Android 15's time limit, downloads pause and resume when the app is next opened.
+- **Tests:**
+  - Rust: the seekable file decoder (sample-accurate seeks, hostile and random files); the index parser (fuzzed), the plays queue and its sender (behind a trait, with a fake), smart planning, the play queue (random operations) and the local source (gapless, rate changes, seek, skip, repeat-one, shuffle, missing and broken files);
+  - Rust against a scripted gateway: resume after a cut, a 416, a misplaced `Content-Range`, sizes that disagree, more data than announced, 401 renewal, 403, 404, 429 with `Retry-After`, pause and cancel, the storage cap, Wi-Fi only, and the queue across a restart;
+  - Rust against the real gateway: a download through `/v1/download/track/{id}`, `Range` resume through it, unknown ids, downloads turned off and on again, and a revoked device; the offline player end to end with real FLAC files (bit-exact and gapless, signal path, controls, plays);
+  - Android: the repositories (sign-in, offline owner, revocation, sign-out, smart downloads, plays sending), offline-mode switching, the Media3 player for the local queue, the view models, and Compose tests for the Downloads, offline and storage screens and the sign-out question; the manifest (the download service is private, `dataSync`, and WorkManager's initialiser stays removed).
+
 ### Offline plays sync back to LMS (SPEC D6, plan A5)
 - **Web app:** each play of a downloaded track is noted on the device when it ends (finished, skipped or stopped), with the seconds actually heard (seeking and pauses don't count).
   - Plays are kept in the browser's storage per user, next to the downloads, and sent to the server in batches when online.

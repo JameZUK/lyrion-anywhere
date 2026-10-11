@@ -73,7 +73,7 @@ Thin native UIs over a shared Rust layer, as decided in SPEC D3 and §10:
 ```
 ┌──────────────── Android app (Kotlin) ────────────────┐   ┌─────────── iOS app (Swift) ───────────┐
 │ Jetpack Compose UI · Media3 MediaLibraryService      │   │ SwiftUI · MPNowPlaying · CarPlay      │
-│ Android Auto · widgets · WorkManager downloads       │   │ AVAudioSession · background audio      │
+│ Android Auto · widgets · dataSync-service downloads  │   │ AVAudioSession · background audio      │
 │ AudioOutput: AAudio / AudioTrack (+ USB mixer attrs) │   │ AudioOutput: AVAudioEngine source node │
 └───────────────┬──────────────────────────────────────┘   └───────────────┬───────────────────────┘
                 │ UniFFI (Kotlin)                                          │ UniFFI (Swift)
@@ -237,7 +237,7 @@ Plexamp's waveform seek bar ("seekprint"), loudness levelling and sweet fades al
 | `:ui` | Design system and screens |
 | `:playback` | `MediaSessionService` (a `MediaLibraryService` once Android Auto arrives, A6), the `SimpleBasePlayer` adapter, audio focus, the becoming-noisy handler, wake and Wi-Fi locks |
 | `:audio` | USB detection and mixer attributes (A2). The AAudio output itself lives in Rust (`mobile/`), so no JNI runs per buffer; the output route reaches the signal path from `:playback` |
-| `:downloads` | WorkManager jobs; storage on internal storage or SD card |
+| `:downloads` | Built in A5 without its own module: the download manager is Rust (`mobile/src/offline`), its Android side is in `:data` (repositories) and `:app` (a `dataSync` foreground service; no WorkManager, see A5). Storage is app-private internal storage |
 | `:auto` | Android Auto browse tree, through Media3 |
 | `:widgets` | Glance widgets |
 | `:rust` | Generated UniFFI bindings plus `cargo-ndk` builds for `arm64-v8a`, `armeabi-v7a` and `x86_64` |
@@ -651,6 +651,108 @@ Built. **Verified on the host and on the JVM (Robolectric); nothing has run on a
 - Drag to reorder moves one row at a time visually (the others don't make room while dragging); the drop is right.
 - Album and artist pages opened from a detail pane open full screen.
 - Playlist editing (admins); search results without art or "More…" for albums and artists.
+
+### A5 status (2026-10-11): offline
+
+Built. **Verified on the host and on the JVM (Robolectric); nothing has run on a phone yet.**
+
+**`mobile/`: downloads, the offline index and plays (`mobile/src/offline`)**
+- **`OfflineLibrary`** (no network): what is on the device for one user on one server.
+  - Folder: `<app-private root>/<hash of server and user>/`; files are `tracks/<stable key>.<ext>` (a fixed list of extensions), partial downloads `partial/<key>.<format>`, covers `art/<album>.img`. Nothing names a user, server, path or token.
+  - The index (`index.json`) lists key, track id, title, artist, album, album id, number, duration, format, codec, extension, size, date and origin (manual or smart). It is bounded (100,000 tracks, 96 MiB), every entry is checked (malformed ones dropped, text cleaned and cut), and it is written atomically with the previous version kept as a backup.
+  - On opening, entries whose file is missing or the wrong size, and files no entry names, are removed (crash clean-up).
+- **`Downloader`** (its own thread): the web app's manager, natively.
+  - Two at a time (the gateway allows three per user); `GET /v1/download/track/{id}/info` then the audio, resumed with `Range` from the partial file's length.
+  - Integrity: the stable key names the file; `/info`'s size, `Content-Length` and `Content-Range` must agree; a body may not run past them; a short body resumes rather than being kept; a 416 or a `Content-Range` starting elsewhere starts again.
+  - 401 renews the token once and retries; 403 fails for good and is reported (`forbidden`) so the app says so; 404 is "not downloadable"; 429 waits as `Retry-After` says (not counted as a failure); other failures back off (2 s … 60 s, five attempts).
+  - Pause, resume and cancel (one or all); the queue survives a restart (`queue.json`); progress reaches the app through `DownloadObserver`.
+  - Policy: the format by network ("auto": Original on Wi-Fi, Opus on mobile data by default), *Wi-Fi only*, and a storage cap: the user's own downloads remove smart downloads (oldest first) to make room, never the reverse.
+  - The album's cover is cached once per album (`music/<track>/cover`, 600 px; only real images are kept).
+- **Plays** (SPEC D6): each play heard offline of at least 5 s (track id, start time, seconds heard, a random UUID as idempotency key) goes into `plays.json` (bounded, durable). `sync_plays` sends them in batches of 100 to `POST /v1/plays` as `[{track_id, played_at, seconds, key}]` and reads a per-play `recorded`/`duplicate`/`refused`/`retry`; a 404 (an older server) keeps them. The sender is behind a trait, tested with a fake.
+- **Smart downloads:** `plan_smart` (pure) compares what the lists hold with what is on the device; `MusicLibrary::favourite_library_items` finds library tracks and albums among the LMS favourites (SlimBrowse form, one folder deep).
+
+**`mobile/`: local-queue playback through the same engine (`mobile/src/player`)**
+- The engine's audio half (pipeline, ring, output, bit-perfect negotiation, signal path) is now `AudioPath`, fed through an **`AudioSource`** trait by either the core's Slimproto player (LMS stream) or **`LocalSource`** (downloaded files). DSP, levelling, bit-perfect USB output and the signal path are therefore identical.
+- `LocalSource` decodes files with the core's new **`FileDecoder`** (seekable, sample-accurate, the WAV header check first, panics caught), in per-track segments; the next track is opened and decoded ahead, so tracks of the same format play gaplessly (a change of rate or format reopens the output at the boundary, as when streaming). Missing or broken files are skipped and reported.
+- `PlayQueue` (pure): play order, shuffle (the current track stays first) and repeat (off, all, one, looped gaplessly).
+- **`OfflinePlayer`** (UniFFI): `play_tracks(keys, start, shuffle)`, play, pause, next, previous (restart within 3 s), jump, seek, shuffle, repeat, stop; the same hold, duck, route, negotiator and pull-PCM calls as `LocalPlayer`. Plays are recorded in the library as tracks end, skip or stop (a seek doesn't start a new play).
+
+**Android**
+- `:data`:
+  - download settings (formats, Wi-Fi only, cap, smart) and the offline owner in DataStore;
+  - `NetworkMonitor` (Wi-Fi means unmetered);
+  - **`RustOfflineRepository`**:
+    - opens the signed-in user's library, or offline the last user signed in on this server;
+    - runs the `Downloader` while signed in;
+    - removes everything when the server revokes the device;
+    - at sign-out sends plays first, then keeps or removes the downloads and forgets the owner;
+    - refreshes smart downloads on Wi-Fi (at most six-hourly, or when their settings change; all or nothing);
+    - sends plays when online (`PlaysSender`: at once, then 1, 5, 15 and 60 minutes; hourly for an older server).
+  - **`RustOfflinePlayerRepository`** (the engine starts on the first play, stops when the library closes);
+  - **`OfflineModeController`** (offline when the saved sign-in can't be checked, or, signed in, after 3 s without a network or 20 s of this phone's player failing to reach the server; retries every 30 s and at once when the network returns);
+  - **`PlaybackArbiter`** (downloads and this phone's LMS player never play at once).
+- `:playback`: **`OfflineSessionPlayer`**, a `SimpleBasePlayer` over the local queue (play order, cover from the download store, shuffle and repeat commands). `PlaybackService` hands the session to it while a local queue is loaded, so the notification, lock screen and Bluetooth buttons work offline; focus, becoming noisy, the route and the USB DAC negotiator apply to both engines.
+- `:ui`:
+  - *Download* on album and playlist pages (marked when all or some tracks are here) and in "More…" for tracks, albums and playlists;
+  - the **Downloads** screen (in progress with progress bars, pause, resume or retry and cancel, each or all; downloaded albums; storage used against the cap; remove and remove all, both confirmed);
+  - offline album, mini player and Now playing;
+  - **Settings → Downloads and storage** (cap, Wi-Fi and mobile formats, Wi-Fi only, smart downloads, refresh now);
+  - the sign-out question (keep or remove downloads);
+  - covers from the download store through the image loader (`offline:` keys).
+- `:app`:
+  - **offline mode**: the downloaded library, played on the phone, under an *Offline* banner with *Try again* (and *Sign out* before sign-in); back to the app by itself when the server returns;
+  - **`DownloadService`**: a foreground service of type `dataSync`, running only while downloads are busy, with a progress notification and *Cancel*. On Android 15's daily limit (`onTimeout`) downloads pause and the service stops. Started only while the app is in front (Android refuses otherwise; downloads then carry on while the process lives).
+  - Notification permission is asked for at the first download (Android 13+).
+- **Manifest:**
+  - new permissions: `FOREGROUND_SERVICE_DATA_SYNC` and `POST_NOTIFICATIONS` (app), `ACCESS_NETWORK_STATE` (`:data`, normal);
+  - new component: `DownloadService` (not exported);
+  - no new providers, start-up initialisers or exported components (A5 adds no Android dependency). The release APK, checked with `aapt2 dump xmltree`, has one provider, `androidx.startup.InitializationProvider` (not exported), with three initialisers: `EmojiCompatInitializer`, `ProcessLifecycleInitializer` and `ProfileInstallerInitializer`. WorkManager's initialiser stays removed.
+- **Storage and backup:** downloads live under `noBackupFilesDir/offline` (app-private, never backed up or transferred; the app also disables backup).
+
+**Tests**
+- **Rust unit:**
+  - `FileDecoder`: exact frames, sample-accurate seeks, hostile, truncated and random files;
+  - the index: round trip, malformed entries, cleaning, unreadable files, a fuzz test (3,000 cases);
+  - the store: scopes, persistence, crash clean-up, the backup index, removal, covers, durable plays;
+  - plays: keys, bounds, file damage, verdicts, batches, an older server, `retry` not looping;
+  - `/info` parsing, `Content-Range`, refusal classification, backoff, the saved queue, stray partial files, smart planning;
+  - `PlayQueue` (including random operations) and `LocalSource` (gapless, a rate change, missing and broken files, seek, next, previous and jump, repeat-one, shuffle, pause and stop).
+- **Rust against a scripted gateway:** resume after a cut (`Range`), a 416, a misplaced `Content-Range`, a short `Content-Length`, a chunked body longer than `/info` says, 401 renewal, 403 (reported, never retried), 404, 429 with `Retry-After`, pause and cancel, the storage cap, Wi-Fi only with the format following the network, the queue across a restart, plays sent once and kept by an older server, and no token in any file name or the index.
+- **Rust against the real gateway:**
+  - a download through `/v1/download/track/{id}`, and `Range` resume through it (a marked partial file proves only the rest was fetched);
+  - an unknown id (404), downloads turned off (403, shown) and on again;
+  - a revoked device stops downloading;
+  - favourites read through the allow-list.
+- **The offline player end to end** with real FLAC files: bit-exact gapless output across tracks with one output run, the signal path and DSP, seek, next, previous, jump, pause, shuffle, repeat, stop, a vanished file skipped and reported, unknown keys refused, a gapless repeat-one loop, and plays recorded.
+- **Android:**
+  - settings persistence and refusal of stored nonsense;
+  - the offline repository (sign-in, offline owner, revocation, sign-out, downloads, smart downloads, plays sending, another user);
+  - the offline player repository;
+  - the plays sender's timing;
+  - offline-mode decisions and timing;
+  - the arbiter;
+  - the Media3 mapping and session player;
+  - the view models;
+  - Compose: the Downloads screen, offline library, album and Now playing, storage settings, the sign-out question, the Download button;
+  - the notification's progress;
+  - the manifest (the download service is private and `dataSync`; WorkManager's initialiser stays removed; the expected permissions only).
+- **Totals:** 240 `anywhere-mobile` tests (was 180); 116 `anywhere-core` library tests (was 112); 294 Android JVM/Robolectric tests.
+
+**Unverified:** everything on a device. That includes:
+- the `dataSync` service and its notification;
+- Android 15's time limit;
+- the offline Media3 session with real Bluetooth and lock-screen controls;
+- AAudio playing downloads;
+- offline-mode switching on real network changes;
+- `/v1/plays` against the real endpoint (being built alongside this; the contract above is assumed).
+
+**Known gaps**
+- `/v1/plays`: `played_at` is sent as Unix seconds, and the answer is read leniently (by key or position). Track ids are sent as recorded: there is no key-to-id lookup yet, so a rescan between the play and the sync sends a stale id.
+- *Keep favourites offline* finds only favourites LMS identifies by library id. Favourites saved by file location can't be resolved through the gateway (it strips URLs, rightly), so many may be skipped; a gateway lookup would fix it.
+- Offline playback uses ReplayGain tags for levelling: R128 analyses aren't cached for offline use.
+- The widget and the Quick Settings tile don't show downloads playing.
+- Not built: "continue on <player>" when back online, ratings sync-back, refreshing a download when its library file changes, and a free-space check before downloading (a full disk fails the download cleanly).
+- While signed in with a network but an unreachable server, offline mode relies on this phone's player failing to reconnect, so it needs *Play on this phone* on.
 
 ## 9. Quality: testing audio as seriously as security
 

@@ -226,7 +226,8 @@ mod tests {
         for _ in 0..300 {
             let len = (xorshift(&mut seed) % 20 + 1) as usize;
             let start = (xorshift(&mut seed) % 25) as usize;
-            let mut q = PlayQueue::new(len, start, seed.is_multiple_of(2), LocalRepeat::Off, seed).unwrap();
+            let mut q =
+                PlayQueue::new(len, start, seed.is_multiple_of(2), LocalRepeat::Off, seed).unwrap();
             for _ in 0..100 {
                 match xorshift(&mut seed) % 7 {
                     0 => q.set_shuffle(xorshift(&mut seed).is_multiple_of(2)),
