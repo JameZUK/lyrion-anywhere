@@ -65,6 +65,18 @@ impl Http {
         if let Some(c) = CLIENT.get() {
             return Ok(c.clone());
         }
+        let client = Http::build()?;
+        Ok(CLIENT.get_or_init(|| client).clone())
+    }
+
+    /// A client with its own connection pool, for a component that runs on its own
+    /// runtime (the player engine): pooled connections belong to the runtime that made
+    /// them.
+    pub(crate) fn private() -> Result<Http, ApiError> {
+        Http::build()
+    }
+
+    fn build() -> Result<Http, ApiError> {
         let mut tcp = HttpConnector::new();
         tcp.enforce_http(false);
         tcp.set_connect_timeout(Some(CONNECT_TIMEOUT));
@@ -79,7 +91,7 @@ impl Http {
         let client = Client::builder(TokioExecutor::new())
             .pool_idle_timeout(Duration::from_secs(30))
             .build(https);
-        Ok(CLIENT.get_or_init(|| Http(client)).clone())
+        Ok(Http(client))
     }
 
     pub(crate) fn get(&self, url: Url) -> Request {
@@ -172,6 +184,11 @@ impl Response {
             .ok()?
             .parse()
             .ok()
+    }
+
+    /// The body, for reading piece by piece (audio streams).
+    pub(crate) fn into_body(self) -> Incoming {
+        self.0.into_body()
     }
 
     /// Read the body up to `limit` bytes; more than that is an error, never a truncated
