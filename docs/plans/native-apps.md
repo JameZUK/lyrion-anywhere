@@ -1,6 +1,6 @@
 # Native apps plan: Android first, iOS designed in
 
-**Status:** draft for review (2026-10-11). This plans SPEC §10 and milestones 4–5. Decisions marked **(to confirm)** need the project owner's answer before the milestone that depends on them.
+**Status:** agreed plan (2026-10-11). This plans SPEC §10 and milestones 4–5. Decisions N1–N4 are confirmed (SPEC D14–D17); N5 and N6 follow the recommendations unless changed.
 
 **Goal: the best way to listen to your own LMS library on a phone.**
 - **Audiophile-grade:** bit-perfect where the hardware allows, and a signal path you can see and trust.
@@ -171,7 +171,7 @@ Plexamp's waveform seek bar ("seekprint"), loudness levelling and sweet fades al
 | `:widgets` | Glance widgets |
 | `:rust` | Generated UniFFI bindings plus `cargo-ndk` builds for `arm64-v8a`, `armeabi-v7a` and `x86_64` |
 
-- **Minimum Android version: 10 (API 29) (to confirm).** About 95% of active devices. Bit-perfect needs 14+ and is enabled where available.
+- **Minimum Android version: 10 (API 29) (D15).** About 95% of active devices. Bit-perfect needs 14+ and is enabled where available.
 - **Security:**
   - refresh token in Android Keystore-backed storage; access token in memory only;
   - no cleartext traffic (network security config); an optional biometric app lock;
@@ -195,7 +195,7 @@ Plexamp's waveform seek bar ("seekprint"), loudness levelling and sweet fades al
   - background audio mode;
   - the Keychain;
   - `URLSession` background transfers, which could replace the Rust download I/O for reliability.
-- **Licensing: (to confirm, needed before any iOS work).**
+- **Licensing: GPL plus an App Store exception (D17).**
   - **The problem:** Apple's App Store terms conflict with the GPL, per the FSF. VLC's iOS app was removed over this in 2011.
   - **Option A:** the copyright holder adds an "App Store exception" to the GPL for this project's own code. Every contributor must agree, so it's easiest now, while there is one author. Dependency licences (MIT, Apache-2.0, MPL-2.0) also need checking.
   - **Option B:** licence the mobile apps under a permissive or dual licence.
@@ -227,7 +227,7 @@ Each milestone ends with: tests green in CI, a security review of new surfaces, 
 | **A4** | Killer UX | Home, search, artist and album pages, art-driven colour, gestures, plugin menus and context menus, queue editing, sync groups, widgets, Quick Settings tile, tablet layouts |
 | **A5** | Offline | Download manager, smart downloads, storage management, offline mode, `/v1/plays` sync-back |
 | **A6** | Car and discovery | Android Auto; radio and "more like this" through AudioMuse-AI or Don't Stop The Music; smart transitions |
-| **A7** | Release 1.0 | Accessibility audit, performance budgets met, privacy policy, a full pentest of app and protocol, Play Store production, an F-Droid build (to confirm) |
+| **A7** | Release 1.0 | Accessibility audit, performance budgets met, privacy policy, a full pentest of app and protocol, Play Store production, an F-Droid build and GitHub APKs (D16) |
 | **I0–I3** | iOS | After A5: SwiftUI shell over `mobile/`; AVAudioEngine output; CarPlay; App Store (subject to the §6 licensing decision) |
 | **A8+** | After 1.0 | Parametric EQ with device profiles, crossfeed, visualiser, lyrics, Wear OS, DSD (DoP) |
 
@@ -254,16 +254,16 @@ Each milestone ends with: tests green in CI, a security review of new surfaces, 
 - **UI tests:** Compose UI tests, screenshot tests (Roborazzi) for themes and sizes, and macrobenchmarks for startup and scrolling.
 - **Device matrix:** a few reference phones (Pixel, Samsung, one budget device) plus emulators in CI. One phone with known BIT_PERFECT support is used for A2.
 
-## 10. Decisions needed
+## 10. Decisions
 
-| # | Question | Recommendation |
+| # | Question | Decision |
 |---|---|---|
-| N1 | Is LMS-player mode the default for streaming (keeping full LMS integration), with a local queue for offline? | **Yes** (§3.2) |
-| N2 | Minimum Android version | **Android 10 (API 29)**; bit-perfect on 14+ |
-| N3 | Distribution | **Free**: Play Store plus F-Droid (reproducible builds); GitHub release APKs |
-| N4 | iOS licensing | **GPL plus an App Store exception**, decided now while there is one copyright holder |
-| N5 | Where analysis runs | **On the gateway** (LMS host), CPU-capped and off-switchable; the app falls back to tags |
-| N6 | App name and branding | Something distinctive (a working title, then a name and icon pass in A4) |
+| N1 | Playback model | **The phone is an LMS player when streaming; local queue offline (D14).** Confirmed. |
+| N2 | Minimum Android version | **Android 10 (API 29); bit-perfect on 14+ (D15).** Confirmed. |
+| N3 | Distribution | **Free: Google Play, F-Droid, GitHub release APKs (D16).** Confirmed. |
+| N4 | iOS licensing | **GPL plus an App Store exception (D17).** Confirmed; exception text added before I0. |
+| N5 | Where analysis runs | Recommended: **on the gateway**, CPU-capped and off-switchable; the app falls back to tags. |
+| N6 | App name and branding | A working title until a naming and icon pass in A4. |
 
 ## 11. Risks
 

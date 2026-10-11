@@ -30,6 +30,10 @@ Native Android and iOS apps come after v1 and use the same documented protocol.
 | D11 | Licence | **GPL-2.0-or-later** for all components. Compatible with LMS (GPL-2.0) for the plugin; lets Rust binaries include Apache-2.0-only dependencies (e.g. `sync_wrapper` in the axum/tower stack), which are then distributed under GPLv3 terms. Changed from GPL-2.0-only on 2026-10-10. |
 | D12 | Account database | **Owned by the gateway** (SQLite; argon2id passwords). The plugin manages accounts through the gateway's loopback-only admin API. Security-critical code stays in one memory-safe, tested component. Decided 2026-10-10. |
 | D13 | Web app look | **Built-in theme system**, with a Material Design theme as the flagship, plus Classic (the original look) and High contrast; light/dark/automatic and an accent colour. Palettes are generated in OKLCH from the accent (Material's tonal roles), output as sRGB hex, and tested for WCAG contrast for every theme, mode and accent. LMS's own skins (e.g. Material Skin) are **not** proxied: that would expose LMS's web interface and full command API remotely, against the default-deny design. Clean-room: no skin code is copied. Decided 2026-10-10. |
+| D14 | Native playback model | **The phone is a real LMS player when streaming** (Slimproto through the gateway: LMS drives queue, gapless, sync, plugins); **a local queue for downloaded music offline**, with plays synced back (D6). Both use the same Rust audio engine (bit-perfect output, levelling, waveform). Decided 2026-10-11. |
+| D15 | Android minimum | **Android 10 (API 29).** Bit-perfect USB DAC output is enabled at runtime on Android 14+ where the device supports it. Decided 2026-10-11. |
+| D16 | Native app distribution | **Free, through Google Play, F-Droid (reproducible builds) and signed APKs on GitHub releases.** Decided 2026-10-11. |
+| D17 | iOS licensing | **GPL plus an App Store exception** for this project's own code, so the iOS app can be distributed through the App Store. The exception text is added to the licence before the iOS milestone; contributions from then on are accepted under it. Decided 2026-10-11. |
 
 ---
 
