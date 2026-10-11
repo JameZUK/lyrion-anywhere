@@ -322,6 +322,8 @@ fn encodings_are_compact_and_round_trip() {
     assert_eq!(back.waveform, a.waveform);
     assert_eq!(back.frames, a.frames);
     assert!((back.integrated_lufs.unwrap() - a.integrated_lufs.unwrap()).abs() < 1e-4);
+    // Values are rounded to 0.01, so the binary form gives back exactly what was encoded.
+    assert_eq!(back, a);
     assert_eq!(back.to_bytes(), bin);
 }
 

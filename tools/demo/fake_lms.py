@@ -3,8 +3,9 @@
 
 Every artist, album, track and player here is made up, and the cover art is generated, so
 screenshots taken against it show nothing from a real installation. It answers the JSON-RPC
-commands the web app uses (read-only: playback commands are accepted and ignored) and serves
-artwork. It is not a test double for the gateway's security tests (those live in
+commands the web app uses (read-only: playback commands are accepted and ignored), serves
+artwork, and serves each track as generated audio (a WAV of shaped noise) so the gateway's
+track analysis has something to analyse. It is not a test double for the gateway's security tests (those live in
 gateway/tests).
 
     python3 tools/demo/fake_lms.py --port 19000
@@ -16,7 +17,10 @@ import colorsys
 import hashlib
 import io
 import json
+import math
+import random
 import re
+import struct
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from PIL import Image, ImageDraw, ImageFilter
@@ -118,6 +122,11 @@ def answer(player, cmd):
         return page(rows, rest, "artists_loop")
     if op in ("titles", "tracks"):
         rows = TRACKS
+        if "track_id" in p:
+            # The gateway's lookup before a download or an analysis: a library file.
+            rows = [{**t, "type": "wav", "url": f"file:///srv/music/demo/{t['id']}.wav",
+                     "filesize": len(audio(t["id"])), "modificationTime": "Monday, 1 January 2024"}
+                    for t in rows if str(t["id"]) == p["track_id"]]
         if "album_id" in p:
             rows = [t for t in rows if str(t["album_id"]) == p["album_id"]]
         if "search" in p:
@@ -188,6 +197,38 @@ def answer(player, cmd):
     return {}
 
 
+RATE = 8000
+_AUDIO = {}
+
+
+def audio(tid):
+    """A track as a mono 16-bit WAV: noise shaped into quiet and loud sections, with a fade
+    in and out, the same every time (so its waveform looks like music)."""
+    if tid in _AUDIO:
+        return _AUDIO[tid]
+    row = next(t for t in TRACKS if t["id"] == tid)
+    rnd = random.Random(tid)
+    n = int(row["duration"] * RATE)
+    levels, t = [], 0
+    while t < n:
+        length = int(RATE * rnd.uniform(6, 24))
+        levels.append((t, t + length, rnd.uniform(0.15, 0.9)))
+        t += length
+    out = bytearray()
+    sect = 0
+    for i in range(n):
+        while levels[sect][1] <= i:
+            sect += 1
+        sec = i / RATE
+        env = levels[sect][2] * (0.65 + 0.35 * abs(math.sin(math.pi * 2 * sec)))
+        env *= min(1.0, sec / 3.0, (n - i) / (8.0 * RATE))
+        out += struct.pack("<h", int(max(-1.0, min(1.0, rnd.gauss(0, 0.3) * env)) * 32767))
+    head = b"RIFF" + struct.pack("<I", 36 + len(out)) + b"WAVEfmt " + struct.pack(
+        "<IHHIIHH", 16, 1, 1, RATE, RATE * 2, 2, 16) + b"data" + struct.pack("<I", len(out))
+    _AUDIO[tid] = bytes(head + out)
+    return _AUDIO[tid]
+
+
 def cover(key, size):
     """Abstract artwork, the same every time for the same key."""
     h = hashlib.sha256(key.encode()).digest()
@@ -231,6 +272,9 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/music/(\w+)/cover(?:_(\d+)x\d+)?", self.path)
         if m:
             return self._send(cover(m.group(1), min(int(m.group(2) or 300), 800)), "image/png")
+        m = re.match(r"^/music/(\d+)/download$", self.path)
+        if m and any(t["id"] == int(m.group(1)) for t in TRACKS):
+            return self._send(audio(int(m.group(1))), "audio/wav")
         m = re.match(r"^/plugins/(\w+)/html/", self.path)
         if m:
             return self._send(cover("icon-" + m.group(1), 160), "image/png")

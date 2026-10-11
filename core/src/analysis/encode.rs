@@ -17,7 +17,7 @@
 //! ```
 
 use super::waveform::MAX_BUCKETS;
-use super::{ANALYSIS_VERSION, Edge, TrackAnalysis, Waveform};
+use super::{ANALYSIS_VERSION, Edge, TrackAnalysis, Waveform, round2};
 
 const MAGIC: &[u8; 4] = b"LAAN";
 /// Largest binary encoding accepted.
@@ -149,7 +149,7 @@ impl R<'_> {
     fn f32(&mut self) -> Result<f64, String> {
         let v = f64::from(f32::from_le_bytes(self.take(4)?.try_into().unwrap()));
         if v.is_finite() && v.abs() <= 1e6 {
-            Ok(v)
+            Ok(round2(v))
         } else {
             Err("value out of range".into())
         }
@@ -159,7 +159,7 @@ impl R<'_> {
         if v.is_nan() {
             Ok(None)
         } else if v.is_finite() && v.abs() <= 1e6 {
-            Ok(Some(v))
+            Ok(Some(round2(v)))
         } else {
             Err("value out of range".into())
         }
