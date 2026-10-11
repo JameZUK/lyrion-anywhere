@@ -236,3 +236,122 @@ fn player_input_is_bounded_by_back_pressure_signal() {
         assert!(pushed <= anywhere_core::decode::PROBE_MAX_BYTES + chunk.len());
     }
 }
+
+/// A valid AutoEq profile used as the seed for mutation.
+const AUTOEQ: &str = "Preamp: -6.4 dB\n\
+Filter 1: ON LSC Fc 105 Hz Gain 5.8 dB Q 0.70\n\
+Filter 2: ON PK Fc 152 Hz Gain -2.5 dB Q 0.81\n\
+Filter 3: ON PK Fc 3800 Hz Gain 4.1 dB Q 3.2\n\
+Filter 4: OFF NO Fc 6000 Hz Q 5\n\
+Filter 5: ON HSC Fc 10000 Hz Gain -2.6 dB Q 0.70\n";
+
+/// Accepted profiles must be within the documented bounds, and running them must give
+/// finite audio.
+fn check_profile(p: &anywhere_core::dsp::eq::EqProfile) {
+    use anywhere_core::dsp::eq::{MAX_FILTERS, ParametricEq};
+    assert!(p.filters.len() <= MAX_FILTERS);
+    p.validate().expect("parser output must validate");
+    let mut eq = ParametricEq::new(p.clone(), 44_100, 2).unwrap();
+    let mut buf: Vec<f64> = (0..512)
+        .map(|i| ((i * 31) % 17) as f64 / 17.0 - 0.5)
+        .collect();
+    eq.process(&mut buf);
+    assert!(buf.iter().all(|x| x.is_finite()));
+}
+
+#[test]
+fn autoeq_parser_survives_random_and_mutated_profiles() {
+    use anywhere_core::dsp::eq::parse_autoeq;
+    let mut r = Rng(0xa5a5_1234);
+    let iters = if cfg!(debug_assertions) {
+        20_000
+    } else {
+        200_000
+    };
+    let alphabet = b"Filter PreampONOFFPKLSCHSCLPHPNOFcGainQHzdB:0123456789.-+ \n\r\t#eExinfNaN";
+    for i in 0..iters {
+        let text: Vec<u8> = match i % 3 {
+            // Random bytes from a profile-like alphabet.
+            0 => (0..r.below(400))
+                .map(|_| alphabet[r.below(alphabet.len() as u64) as usize])
+                .collect(),
+            // Byte mutations of a valid profile.
+            1 => {
+                let mut t = AUTOEQ.as_bytes().to_vec();
+                for _ in 0..1 + r.below(6) {
+                    let k = r.below(t.len() as u64) as usize;
+                    match r.below(3) {
+                        0 => t[k] = alphabet[r.below(alphabet.len() as u64) as usize],
+                        1 => {
+                            t.remove(k);
+                        }
+                        _ => t.insert(k, r.next() as u8),
+                    }
+                }
+                t
+            }
+            // Raw random bytes.
+            _ => {
+                let n = r.below(300) as usize;
+                r.bytes(n)
+            }
+        };
+        let s = String::from_utf8_lossy(&text);
+        if let Ok(p) = parse_autoeq(&s) {
+            check_profile(&p);
+        }
+    }
+    check_profile(&parse_autoeq(AUTOEQ).unwrap());
+}
+
+#[test]
+fn dsp_chain_survives_hostile_samples() {
+    use anywhere_core::dsp::chain::{Chain, ChainConfig};
+    use anywhere_core::dsp::crossfeed::CrossfeedPreset;
+    use anywhere_core::dsp::eq::parse_autoeq;
+    use anywhere_core::dsp::limiter::LimiterConfig;
+    let cfg = ChainConfig {
+        preamp_db: 12.0,
+        eq: Some(parse_autoeq(AUTOEQ).unwrap()),
+        crossfeed: Some(CrossfeedPreset::Natural.config()),
+        limiter: Some(LimiterConfig::default()),
+        ..Default::default()
+    };
+    let mut r = Rng(77);
+    let specials = [
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::MAX,
+        -f64::MAX,
+        f64::MIN_POSITIVE,
+        5e-324,
+        0.0,
+        1.0,
+        -1.0,
+    ];
+    for rate in [8_000, 44_100, 192_000, 768_000] {
+        let mut chain = Chain::new(cfg.clone(), rate, 2).unwrap();
+        let mut q = vec![0i32; 1024];
+        for _ in 0..50 {
+            let n = 1 + r.below(1023) as usize;
+            let mut buf: Vec<f64> = (0..n)
+                .map(|_| {
+                    if r.below(4) == 0 {
+                        specials[r.below(specials.len() as u64) as usize]
+                    } else {
+                        (r.next() as i64) as f64 / i64::MAX as f64
+                    }
+                })
+                .collect();
+            chain.process(&mut buf);
+            // A trailing partial frame is left untouched; every whole frame is finite.
+            let whole = n - n % 2;
+            assert!(
+                buf[..whole].iter().all(|x| x.is_finite()),
+                "non-finite output at {rate} Hz"
+            );
+            chain.quantise(&buf, Some(24), 16, &mut q[..n]);
+        }
+    }
+}

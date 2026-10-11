@@ -134,16 +134,23 @@ pub struct TruePeakDetector {
     /// Per channel, a ring of TAPS_PER_PHASE samples stored twice so any window is contiguous.
     hist: Vec<f64>,
     pos: usize,
+    /// Sliding maximum of |sample| (over channels) across the window (stored negated).
+    window_peak: super::window::SlidingMin,
+    /// Upper bound on |interpolated| / |window peak|.
+    bound: f64,
 }
 
 impl TruePeakDetector {
     pub fn new(channels: usize) -> Self {
         let channels = channels.max(1);
+        let interp = Interpolator::new();
         TruePeakDetector {
-            interp: Interpolator::new(),
+            bound: interp.max_abs_gain(),
+            interp,
             channels,
             hist: vec![0.0; channels * 2 * TAPS_PER_PHASE],
             pos: 0,
+            window_peak: super::window::SlidingMin::new(TAPS_PER_PHASE),
         }
     }
 
@@ -154,24 +161,44 @@ impl TruePeakDetector {
     pub fn reset(&mut self) {
         self.hist.fill(0.0);
         self.pos = 0;
+        self.window_peak.reset();
     }
 
     /// Push one frame; returns the largest |value| over all channels in the interval that
     /// this frame completed. Non-finite samples count as silence.
     #[inline]
     pub fn push_frame(&mut self, frame: &[f64]) -> f64 {
+        self.push_frame_above(frame, -1.0)
+    }
+
+    /// Like [`push_frame`](Self::push_frame), but when the interval provably can't exceed
+    /// `floor` it skips the interpolation and returns an upper bound that is ≤ `floor`.
+    /// Callers that only care about values above a threshold (the limiter's ceiling, a
+    /// meter's running maximum) save most of the work this way.
+    #[inline]
+    pub fn push_frame_above(&mut self, frame: &[f64], floor: f64) -> f64 {
         let n = TAPS_PER_PHASE;
-        let mut peak: f64 = 0.0;
+        let mut frame_peak: f64 = 0.0;
         for c in 0..self.channels {
             let x = super::sanitise(frame.get(c).copied().unwrap_or(0.0));
             let base = c * 2 * n;
             self.hist[base + self.pos] = x;
             self.hist[base + self.pos + n] = x;
-            // The window now runs from the oldest sample to the one just written.
-            let start = base + self.pos + 1;
+            frame_peak = frame_peak.max(x.abs());
+        }
+        let start_pos = self.pos + 1;
+        self.pos = (self.pos + 1) % n;
+        // No interpolated value can exceed the window's sample peak times Σ|h|.
+        let bound = -self.window_peak.push(-frame_peak) * self.bound;
+        if bound <= floor {
+            return bound;
+        }
+        let mut peak: f64 = 0.0;
+        for c in 0..self.channels {
+            // The window runs from the oldest sample to the one just written.
+            let start = c * 2 * n + start_pos;
             peak = peak.max(self.interp.interval_peak(&self.hist[start..start + n]));
         }
-        self.pos = (self.pos + 1) % n;
         peak
     }
 }
@@ -198,7 +225,7 @@ impl TruePeakMeter {
     /// Feed interleaved samples (a trailing partial frame is ignored).
     pub fn push(&mut self, samples: &[f64]) {
         for f in samples.chunks_exact(self.det.channels) {
-            self.peak = self.peak.max(self.det.push_frame(f));
+            self.peak = self.peak.max(self.det.push_frame_above(f, self.peak));
         }
     }
 
@@ -284,6 +311,26 @@ mod tests {
         x[50] = f64::NAN;
         assert!(true_peak(&x, 2) >= 0.8);
         assert_eq!(true_peak(&[], 2), 0.0);
+    }
+
+    #[test]
+    fn bounded_push_agrees_with_exact() {
+        let x: Vec<f64> = (0..20_000)
+            .map(|i| {
+                ((i * 7919 % 1013) as f64 / 1013.0 - 0.5) * if i % 3000 < 50 { 1.8 } else { 0.4 }
+            })
+            .collect();
+        let mut exact = TruePeakDetector::new(2);
+        let mut fast = TruePeakDetector::new(2);
+        let (mut a, mut b) = (0.0f64, 0.0f64);
+        for f in x.as_chunks::<2>().0 {
+            let e = exact.push_frame(f);
+            let q = fast.push_frame_above(f, b);
+            assert!(q >= e || q <= b, "bound violated");
+            a = a.max(e);
+            b = b.max(q);
+        }
+        assert_eq!(a, b);
     }
 
     #[test]

@@ -23,6 +23,14 @@ pub struct ChainConfig {
     pub dither: DitherMode,
 }
 
+/// Largest sample magnitude the processing path accepts (+60 dBFS); anything beyond is
+/// garbage, clamped so that no stage can overflow.
+pub const MAX_INPUT: f64 = 1e3;
+
+fn all_finite(buf: &[f64]) -> bool {
+    buf.iter().all(|x| x.is_finite())
+}
+
 #[derive(Debug, Clone)]
 pub struct Chain {
     config: ChainConfig,
@@ -127,26 +135,39 @@ impl Chain {
         self.dither.reset();
     }
 
-    /// Process interleaved frames in place. Allocates nothing.
+    /// Process interleaved frames in place. Allocates nothing. A trailing partial frame
+    /// is left untouched.
+    ///
+    /// Input is sanitised on the processing path: non-finite samples become silence and
+    /// magnitudes are clamped to [`MAX_INPUT`], so no stage can overflow. If a recursive
+    /// stage still produced a non-finite value, its state is reset and the block muted
+    /// rather than letting it poison every later block.
     pub fn process(&mut self, buf: &mut [f64]) {
         if self.is_bit_transparent() {
             return;
         }
         let whole = buf.len() - buf.len() % self.channels;
         let buf = &mut buf[..whole];
+        for s in buf.iter_mut() {
+            *s = super::sanitise(*s).clamp(-MAX_INPUT, MAX_INPUT);
+        }
         self.gain.process(buf);
         if let Some(eq) = &mut self.eq {
             eq.process(buf);
+            if !all_finite(buf) {
+                eq.reset();
+                buf.fill(0.0);
+            }
         }
         if let Some(cf) = &mut self.crossfeed {
             cf.process(buf, self.channels);
+            if !all_finite(buf) {
+                cf.reset();
+                buf.fill(0.0);
+            }
         }
         if let Some(l) = &mut self.limiter {
             l.process(buf);
-        } else {
-            for s in buf.iter_mut() {
-                *s = super::sanitise(*s);
-            }
         }
     }
 

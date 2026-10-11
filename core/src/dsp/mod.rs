@@ -49,6 +49,7 @@ pub mod resample;
 pub mod signal_path;
 pub mod transition;
 pub mod truepeak;
+mod window;
 
 pub use chain::{Chain, ChainConfig};
 
