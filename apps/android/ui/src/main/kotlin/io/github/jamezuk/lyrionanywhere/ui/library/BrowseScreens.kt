@@ -1,5 +1,7 @@
 package io.github.jamezuk.lyrionanywhere.ui.library
 
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -598,9 +600,23 @@ fun HomeScreen(
     }
 }
 
+/**
+ * A carousel card's width for this screen: about two and a half cards across a phone, more
+ * on wider screens, never tiny or huge (pure, so it is unit-tested).
+ */
+internal fun carouselCardWidth(screenWidthDp: Int, small: Boolean = false): Float {
+    val across = (screenWidthDp - 32f) / 2.4f - 12f
+    val w = if (small) across * 0.8f else across
+    return if (small) w.coerceIn(96f, 150f) else w.coerceIn(112f, 190f)
+}
+
+@Composable
+private fun cardWidth(small: Boolean = false) =
+    carouselCardWidth(LocalConfiguration.current.screenWidthDp, small).dp
+
 @Composable
 private fun AlbumCard(a: Album, actions: HomeActions) {
-    Box(Modifier.width(150.dp)) {
+    Box(Modifier.width(cardWidth())) {
         AlbumTile(a, onClick = { actions.onAlbum(a) }, onMore = { actions.onMore(More.album(a)) })
     }
 }
@@ -608,12 +624,12 @@ private fun AlbumCard(a: Album, actions: HomeActions) {
 @Composable
 private fun SmallCard(name: String, artwork: String?, icon: ImageVector, onClick: () -> Unit) {
     Column(
-        Modifier.width(120.dp).selectable(selected = false, role = Role.Button, onClick = onClick),
+        Modifier.width(cardWidth(small = true)).selectable(selected = false, role = Role.Button, onClick = onClick),
     ) {
         if (artwork != null) {
             ArtworkImage(artwork, 240, contentDescription = null, modifier = Modifier.fillMaxWidth())
         } else {
-            Card(Modifier.fillMaxWidth().size(120.dp)) {
+            Card(Modifier.fillMaxWidth().aspectRatio(1f)) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Icon(icon, contentDescription = null, modifier = Modifier.size(40.dp))
                 }

@@ -5,6 +5,14 @@ import android.content.Intent
 import android.content.res.Resources
 import android.os.SystemClock
 import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
+import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -127,7 +135,6 @@ import io.github.jamezuk.lyrionanywhere.ui.menus.MenuNavigator
 import io.github.jamezuk.lyrionanywhere.ui.menus.MenuViewModel
 import io.github.jamezuk.lyrionanywhere.ui.menus.More
 import io.github.jamezuk.lyrionanywhere.ui.menus.MoreRequest
-import io.github.jamezuk.lyrionanywhere.ui.player.CompactPlayerCard
 import io.github.jamezuk.lyrionanywhere.ui.player.DefaultPlayerSetting
 import io.github.jamezuk.lyrionanywhere.ui.player.MiniPlayer
 import io.github.jamezuk.lyrionanywhere.ui.player.NowPlayingActions
@@ -440,7 +447,13 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
 
     val backStack by nav.currentBackStackEntryAsState()
     val destination = backStack?.destination
+    // Which navigation the window gets: a bottom bar on phones, a rail or drawer on larger
+    // screens. The bottom bar handles the gesture/navigation inset itself; otherwise the
+    // content (and the mini player) must keep clear of it.
+    val suiteType = NavigationSuiteScaffoldDefaults.calculateFromAdaptiveInfo(currentWindowAdaptiveInfo())
+    val bottomBarNav = suiteType == NavigationSuiteType.NavigationBar
     NavigationSuiteScaffold(
+        layoutType = suiteType,
         navigationSuiteItems = {
             TOP_LEVEL.forEach { item ->
                 val selected = destination?.hierarchy?.any { it.hasRoute(item.route::class) } == true
@@ -455,7 +468,15 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
     ) {
         Scaffold(
             snackbarHost = { SnackbarHost(snackbar) },
+            // Each screen's top app bar handles the status bar, and the navigation bar (when
+            // there is one) the bottom: counting them here as well doubled the empty space.
+            contentWindowInsets = if (bottomBarNav) {
+                WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)
+            } else {
+                WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+            },
             bottomBar = {
+              Column(if (bottomBarNav) Modifier else Modifier.navigationBarsPadding()) {
                 val onNowPlaying = destination?.hasRoute(NowPlayingRoute::class) == true ||
                     destination?.hasRoute(OfflineNowPlayingRoute::class) == true
                 if (!onNowPlaying && offlineUi.state.active) {
@@ -478,6 +499,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                         onDismissTransfer = player::dismissTransfer,
                     )
                 }
+              }
             },
         ) { padding ->
             val openAlbum: (Long) -> Unit = { nav.navigate(AlbumRoute(it)) }
@@ -509,7 +531,6 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 onReshuffle = vm::reshuffle,
                                 onRetry = vm::refresh,
                             ),
-                            playerCard = { CompactPlayerCard(playerState, onOpen = { nav.navigate(NowPlayingRoute) }) },
                         )
                     }
                 }
