@@ -111,7 +111,19 @@ impl Players {
         self.run(&player, commands::power(on)).await
     }
 
-    /// Play an album, track or artist now, next, or at the end of the queue. With
+    /// Play a favourite (a station, track or app item) now, next, or at the end.
+    pub async fn play_favourite(
+        &self,
+        player: String,
+        item_id: String,
+        placement: Placement,
+    ) -> Result<(), ApiError> {
+        self.run(&player, commands::play_favourite(&item_id, placement)?)
+            .await
+    }
+
+    /// Play an album, track, artist, playlist, genre, year or folder now, next, or at the
+    /// end of the queue. With
     /// `PlayNow`, `play_index` starts at that track of the selection.
     pub async fn enqueue(
         &self,

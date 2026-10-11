@@ -128,7 +128,7 @@ async fn refresh_rotates_the_stored_token() {
     );
     // Still works with the new token.
     MusicLibrary::new(s.clone())
-        .albums(0, 10, AlbumSort::Title, None)
+        .albums(0, 10, AlbumSort::Title, None, Default::default())
         .await
         .unwrap();
 }
@@ -144,7 +144,7 @@ async fn a_saved_sign_in_is_restored_by_a_new_session() {
     assert_eq!(s2.current(), None);
     assert_eq!(s2.restore().await.unwrap(), who);
     let page = MusicLibrary::new(s2.clone())
-        .albums(0, 50, AlbumSort::Title, None)
+        .albums(0, 50, AlbumSort::Title, None, Default::default())
         .await
         .unwrap();
     assert_eq!(page.items.len(), 2);
@@ -176,7 +176,7 @@ async fn an_expired_access_token_is_renewed_and_the_call_retried_once() {
     let saves = store.saves();
     s.debug_invalidate_access_token();
     let page = MusicLibrary::new(s.clone())
-        .albums(0, 10, AlbumSort::Newest, None)
+        .albums(0, 10, AlbumSort::Newest, None, Default::default())
         .await
         .unwrap();
     assert_eq!(page.total, 2);
@@ -193,7 +193,7 @@ async fn concurrent_calls_share_one_refresh() {
     let lib = MusicLibrary::new(s.clone());
     let calls = (0..8).map(|_| {
         let lib = lib.clone();
-        tokio::spawn(async move { lib.artists(0, 10, None).await })
+        tokio::spawn(async move { lib.artists(0, 10, None, Default::default()).await })
     });
     for c in calls {
         c.await.unwrap().unwrap();
@@ -220,7 +220,9 @@ async fn a_copied_refresh_token_revokes_the_device() {
     assert!(!s.has_sign_in());
     assert_eq!(*observer.signed_out.lock().unwrap(), vec![true]);
     assert_eq!(
-        MusicLibrary::new(s.clone()).artists(0, 1, None).await,
+        MusicLibrary::new(s.clone())
+            .artists(0, 1, None, Default::default())
+            .await,
         Err(ApiError::Unauthorised)
     );
 }
@@ -238,7 +240,9 @@ async fn logout_revokes_the_device_and_forgets_the_token() {
     assert_eq!(s.current(), None);
     assert_eq!(*observer.signed_out.lock().unwrap(), vec![false]);
     assert_eq!(
-        MusicLibrary::new(s.clone()).artists(0, 1, None).await,
+        MusicLibrary::new(s.clone())
+            .artists(0, 1, None, Default::default())
+            .await,
         Err(ApiError::Unauthorised)
     );
     // The old refresh token no longer works anywhere.
@@ -299,7 +303,7 @@ async fn pairing_with_a_one_time_code() {
     assert_eq!(who.user.username, "bob");
     assert!(store.get().is_some());
     MusicLibrary::new(s.clone())
-        .artists(0, 5, None)
+        .artists(0, 5, None, Default::default())
         .await
         .unwrap();
     // Single use.

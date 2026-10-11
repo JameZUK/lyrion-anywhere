@@ -16,7 +16,10 @@ async fn library_calls_parse_through_the_gateway() {
     let (s, _) = h.alice().await;
     let lib = MusicLibrary::new(s.clone());
 
-    let page = lib.albums(0, 100, AlbumSort::Title, None).await.unwrap();
+    let page = lib
+        .albums(0, 100, AlbumSort::Title, None, Default::default())
+        .await
+        .unwrap();
     assert_eq!(page.total, 2);
     assert_eq!(page.items[0].title, "First Album");
     assert_eq!(
@@ -31,16 +34,23 @@ async fn library_calls_parse_through_the_gateway() {
     assert_eq!(tracks[1].track_number, Some(2));
 
     assert_eq!(
-        lib.artists(0, 50, None).await.unwrap().items[0].name,
+        lib.artists(0, 50, None, Default::default())
+            .await
+            .unwrap()
+            .items[0]
+            .name,
         "Artist"
     );
-    assert_eq!(lib.genres(0, 50).await.unwrap().items[0].name, "Jazz");
+    assert_eq!(
+        lib.genres(0, 50, None, None).await.unwrap().items[0].name,
+        "Jazz"
+    );
     let found = lib.search("first".into(), 10).await.unwrap();
     assert_eq!(found.albums[0].id, 7);
     assert_eq!(found.tracks[0].id, Some(1));
     assert_eq!(found.artists[0].id, 3);
     assert_eq!(lib.album(7).await.unwrap().unwrap().id, 7);
-    assert_eq!(lib.artist_albums(3).await.unwrap().len(), 2);
+    assert_eq!(lib.artist_albums(3, None).await.unwrap().len(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -58,15 +68,23 @@ async fn every_command_the_app_sends_passes_the_allow_list() {
         AlbumSort::Newest,
         AlbumSort::Random,
     ] {
-        lib.albums(500, 500, sort, Some("AC/DC Live 1990/91".into()))
-            .await
-            .unwrap();
+        lib.albums(
+            500,
+            500,
+            sort,
+            Some("AC/DC Live 1990/91".into()),
+            Default::default(),
+        )
+        .await
+        .unwrap();
     }
     lib.album(7).await.unwrap();
     lib.album_tracks(7).await.unwrap();
-    lib.artists(0, 500, Some("beatles".into())).await.unwrap();
-    lib.artist_albums(12).await.unwrap();
-    lib.genres(0, 100).await.unwrap();
+    lib.artists(0, 500, Some("beatles".into()), Default::default())
+        .await
+        .unwrap();
+    lib.artist_albums(12, None).await.unwrap();
+    lib.genres(0, 100, None, None).await.unwrap();
     lib.search("abba gold".into(), 20).await.unwrap();
     players.list().await.unwrap();
 
@@ -123,7 +141,7 @@ async fn every_command_the_app_sends_passes_the_allow_list() {
                 "albums",
                 "500",
                 "500",
-                "tags:aljyS",
+                "tags:aljySw",
                 "sort:new",
                 "search:AC/DC Live 1990/91"
             ]

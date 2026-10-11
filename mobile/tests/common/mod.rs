@@ -53,6 +53,51 @@ fn fake_result(cmd: &str) -> Value {
         "status" => json!({"player_name": "Phone", "mode": "play", "time": 12.5, "duration": 61.5,
             "mixer volume": 40, "playlist_tracks": 2, "playlist_cur_index": "0",
             "playlist_loop": [{"id": 1, "title": "One", "coverid": "abcdef12", "playlist index": 0}]}),
+        "years" => json!({"count": 2, "years_loop": [{"year": 2001}, {"year": 1999}]}),
+        "musicfolder" => json!({"count": 2, "folder_loop": [
+            {"id": 12, "type": "folder", "title": "Jazz"},
+            {"id": 13, "type": "track", "title": "One", "coverid": "abcdef12", "duration": "1:01",
+             "url": "file:///srv/music/Jazz/one.flac"}
+        ]}),
+        "libraries" => json!({"folder_loop": [{"id": "ab12", "name": "Classical"}]}),
+        "favorites" => json!({"title": "Favourites", "count": 2, "loop_loop": [
+            {"id": "f0.0", "name": "Radio", "isaudio": 1, "hasitems": 0},
+            {"id": "f0.1", "name": "Folder", "isaudio": 0, "hasitems": 1}
+        ]}),
+        "playlists" => json!({"count": 1, "playlists_loop": [{"id": 5, "playlist": "Road trip"}],
+            "playlisttracks_loop": [{"id": 1, "title": "One", "duration": 61}]}),
+        "apps" => json!({"count": 1, "appss_loop": [
+            {"cmd": "someapp", "name": "Some App", "icon": "plugins/SomeApp/html/images/icon.png"}
+        ]}),
+        "radios" => {
+            json!({"count": 1, "radioss_loop": [{"cmd": "someradio", "name": "Some Radio"}]})
+        }
+        // The player's home menu: library entries (dropped by the gateway) and plugins.
+        "menu" => json!({"count": 5, "item_loop": [
+            {"id": "myMusicAlbums", "node": "myMusic", "actions": {"go": {"cmd": ["browselibrary", "items"], "params": {"mode": "albums"}}}},
+            {"id": "pluginSomePlugin", "node": "myMusic", "text": "Some Plugin", "actions": {"go": {"cmd": ["someplugin", "items"], "params": {"menu": "1"}}}},
+            {"id": "randomplay", "node": "myMusic", "isANode": 1, "text": "Random Mix"},
+            {"id": "randomtracks", "node": "randomplay", "text": "Song Mix", "nextWindow": "nowPlaying", "actions": {"go": {"cmd": ["randomplay", "tracks"]}}},
+            {"id": "opmlsomeapp", "node": "", "text": "Some App", "actions": {"go": {"cmd": ["someapp", "items"], "params": {"menu": "someapp"}}}}
+        ]}),
+        // A context menu, as LMS builds them: library links, a plugin's "more like this",
+        // and the file's location (which the gateway must never pass on).
+        "trackinfo" | "albuminfo" | "artistinfo" | "genreinfo" | "yearinfo" | "folderinfo"
+        | "playlistinfo" => json!({"count": 4, "title": "One", "item_loop": [
+            {"text": "Artist: Artist", "actions": {"go": {"cmd": ["browselibrary", "items"], "params": {"mode": "albums", "artist_id": "3", "menu": "1"}}}},
+            {"text": "More like this", "nextWindow": "nowPlaying", "actions": {"go": {"cmd": ["someplugin", "mix"], "params": {"track_id": "7"}}}},
+            {"text": "Location: /srv/music/Jazz/one.flac"},
+            {"text": "Duration: 1:01"}
+        ]}),
+        // An app's menus: a search box and something to play.
+        "someapp" => json!({"count": 2, "item_loop": [
+            {"text": "Search", "type": "search", "actions": {"go": {"cmd": ["someapp", "items"], "params": {"item_id": "0", "search": "__TAGGEDINPUT__", "menu": "someapp"}}}},
+            {"text": "A track", "type": "audio", "actions": {"play": {"cmd": ["someapp", "playlist", "play"], "params": {"item_id": "1"}}}}
+        ]}),
+        // A plugin that needs setting up first.
+        "someplugin" => {
+            json!({"count": 1, "item_loop": [{"text": "Log in to Some Plugin in its settings"}]})
+        }
         _ => json!({}),
     }
 }
