@@ -27,6 +27,31 @@ use tokio::net::tcp::OwnedWriteHalf;
 
 pub const PW: &str = "correct horse battery";
 
+/// The secret the test gateway signs plays with (test-only, not a real secret).
+pub const PLAYS_SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/// Plays the fake LMS plugin recorded: (track id, played_at, gateway key).
+pub fn recorded_plays(lms: &FakeLms) -> Vec<(u64, u64, String)> {
+    lms.rpc_calls()
+        .iter()
+        .filter(|p| p[1][0] == "anywhere" && p[1][1] == "play_record")
+        .filter_map(|p| {
+            let arg = |n: &str| {
+                p[1].as_array()?.iter().find_map(|a| {
+                    a.as_str()?
+                        .strip_prefix(&format!("{n}:"))
+                        .map(str::to_string)
+                })
+            };
+            Some((
+                arg("track_id")?.parse().ok()?,
+                arg("played_at")?.parse().ok()?,
+                arg("key")?,
+            ))
+        })
+        .collect()
+}
+
 /// Home players the fake LMS knows (not granted to anyone in these tests).
 pub const HOME_PLAYER: &str = "aa:bb:cc:dd:ee:01";
 
@@ -259,6 +284,27 @@ impl FakeLms {
                     };
                     if cmd == "sync" {
                         sy.apply(&player, &arg1);
+                    }
+                    if cmd == "anywhere" && arg1 == "play_record" {
+                        // The plugin's play_record (the gateway's own tests check its
+                        // signature): record once per key, like the plugin.
+                        let key_of = |p: &Value| {
+                            p[1].as_array()
+                                .into_iter()
+                                .flatten()
+                                .find_map(|a| a.as_str()?.strip_prefix("key:").map(str::to_string))
+                        };
+                        let log = r.lock().unwrap();
+                        let me = key_of(log.last().unwrap());
+                        let seen = log
+                            .iter()
+                            .filter(|p| p[1][0] == "anywhere" && key_of(p) == me)
+                            .count();
+                        result = if seen > 1 {
+                            json!({"error": "duplicate"})
+                        } else {
+                            json!({"ok": 1})
+                        };
                     }
                     if cmd == "status" {
                         sy.annotate(&player, &mut result);
@@ -499,6 +545,7 @@ impl Harness {
             lms_ips: vec![Ipv4Addr::LOCALHOST],
             auth_timeout: Duration::from_millis(500),
             analysis_cache_dir: Some(cache),
+            plays_secret: Some(PLAYS_SECRET.into()),
             ..Config::default()
         };
         tweak(&mut cfg);

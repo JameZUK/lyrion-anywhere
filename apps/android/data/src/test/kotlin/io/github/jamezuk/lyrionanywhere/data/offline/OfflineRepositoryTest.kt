@@ -240,14 +240,14 @@ class OfflineRepositoryTest {
         stores.single().pending = 3
         fakeLink.sync = {
             stores.single().pending = 0
-            PlaysSyncOutcome(3u, 0u, 0u, false)
+            PlaysSyncOutcome(3u, 0u, 0u, false, null)
         }
         fakeLink.observer!!.onLibraryChanged()
         advanceTimeBy(RustOfflineRepository.REFRESH_COALESCE_MS + 1)
         runCurrent()
         assertEquals(1, fakeLink.syncs)
         assertEquals(0, r.state.value.pendingPlays)
-        assertEquals(PlaysSyncOutcome(3u, 0u, 0u, false), r.playsSender.last.value)
+        assertEquals(PlaysSyncOutcome(3u, 0u, 0u, false, null), r.playsSender.last.value)
     }
 
     @Test

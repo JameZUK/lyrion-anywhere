@@ -220,8 +220,8 @@ class PlaysSenderTest {
         val outcomes = ArrayDeque(
             listOf(
                 null,
-                PlaysSyncOutcome(1u, 0u, 2u, false),
-                PlaysSyncOutcome(2u, 0u, 0u, false),
+                PlaysSyncOutcome(1u, 0u, 2u, false, null),
+                PlaysSyncOutcome(2u, 0u, 0u, false, null),
             ),
         )
         var calls = 0
@@ -242,7 +242,25 @@ class PlaysSenderTest {
         // Done: no more attempts.
         advanceTimeBy(24 * 60 * 60 * 1000L)
         assertEquals(3, calls)
-        assertEquals(PlaysSyncOutcome(2u, 0u, 0u, false), sender.last.value)
+        assertEquals(PlaysSyncOutcome(2u, 0u, 0u, false, null), sender.last.value)
+    }
+
+    @Test
+    fun theServersRetryAfterIsHonoured() = runTest {
+        val ready = MutableStateFlow(true)
+        var calls = 0
+        val sender = PlaysSender(CoroutineScope(backgroundScope.coroutineContext + UnconfinedTestDispatcher(testScheduler)), ready) {
+            calls++
+            if (calls == 1) PlaysSyncOutcome(1u, 0u, 1u, false, 120u) else PlaysSyncOutcome(1u, 0u, 0u, false, null)
+        }
+        sender.start()
+        runCurrent()
+        assertEquals(1, calls)
+        // Not after the usual minute: after the two the server asked for.
+        advanceTimeBy(61_000)
+        assertEquals(1, calls)
+        advanceTimeBy(60_000)
+        assertEquals(2, calls)
     }
 
     @Test
@@ -251,7 +269,7 @@ class PlaysSenderTest {
         var calls = 0
         val sender = PlaysSender(CoroutineScope(backgroundScope.coroutineContext + UnconfinedTestDispatcher(testScheduler)), ready) {
             calls++
-            PlaysSyncOutcome(0u, 0u, 4u, true)
+            PlaysSyncOutcome(0u, 0u, 4u, true, null)
         }
         sender.start()
         runCurrent()

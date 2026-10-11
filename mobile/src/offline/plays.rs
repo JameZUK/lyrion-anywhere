@@ -1,12 +1,15 @@
 //! Plays made offline (SPEC D6): recorded on the device with an idempotency key, kept in a
 //! durable queue (`plays.json`), and sent to `POST /v1/plays` once the server is back.
 //!
-//! The contract (being built on the gateway alongside this): the body is a JSON array of
-//! `{track_id, played_at, seconds, key}`; the answer gives, per play, `recorded`,
-//! `duplicate`, `refused` or `retry`. Recorded, duplicate and refused plays leave the
-//! queue; `retry` (and anything the answer doesn't mention) stays. A server without the
-//! endpoint (404) keeps every play for a later attempt. The sender is behind [`PlaysApi`],
-//! so the queue logic is tested against a fake.
+//! The contract (docs/PROTOCOL.md › Offline plays): the body is a JSON array of
+//! `{key, track_id, played_at, seconds, track_key}` (the stable key protects against a
+//! rescan having given the id to another track); the answer is
+//! `{"results": [{key, result}], "retry_after"}`, with `recorded`, `duplicate`, `refused` or
+//! `retry` per play. Recorded, duplicate and refused plays leave the queue; `retry` (and
+//! anything the answer doesn't mention) stays, and is sent again after `retry_after`. A
+//! server without the endpoint (404) keeps every play for a later attempt. The sender is
+//! behind [`PlaysApi`], so the queue logic is tested against a fake; the real endpoint is
+//! tested end to end in `tests/downloads.rs`.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,6 +33,8 @@ pub struct PlayRecord {
     pub key: String,
     /// The LMS track id when it was played.
     pub track_id: i64,
+    /// The download's stable key (64 hex digits; empty if unknown).
+    pub track_key: String,
     /// Unix seconds when it started.
     pub played_at: u64,
     /// Seconds actually heard.
@@ -56,6 +61,8 @@ pub struct PlaysSyncOutcome {
     pub pending: u32,
     /// The server doesn't have `/v1/plays` yet (an older version): plays are kept.
     pub unsupported: bool,
+    /// The server asked for the next attempt to wait this long (seconds).
+    pub retry_after_secs: Option<u32>,
 }
 
 /// Why a send failed as a whole.
@@ -116,7 +123,11 @@ fn valid_uuid(s: &str) -> bool {
 }
 
 fn record_json(p: &PlayRecord) -> Value {
-    json!({"track_id": p.track_id, "played_at": p.played_at, "seconds": p.seconds, "key": p.key})
+    let mut v = json!({"key": p.key, "track_id": p.track_id, "played_at": p.played_at, "seconds": p.seconds});
+    if crate::offline::index::valid_key(&p.track_key) {
+        v["track_key"] = json!(p.track_key);
+    }
+    v
 }
 
 fn record_from(v: &Value) -> Option<PlayRecord> {
@@ -130,6 +141,12 @@ fn record_from(v: &Value) -> Option<PlayRecord> {
             .get("track_id")?
             .as_i64()
             .filter(|n| (1..=999_999_999_999).contains(n))?,
+        track_key: v
+            .get("track_key")
+            .and_then(Value::as_str)
+            .filter(|k| crate::offline::index::valid_key(k))
+            .unwrap_or("")
+            .to_string(),
         played_at: v.get("played_at")?.as_u64()?,
         seconds: v
             .get("seconds")?
@@ -167,6 +184,7 @@ pub fn serialise(plays: &[PlayRecord]) -> Vec<u8> {
 pub fn record(
     queue: &mut Vec<PlayRecord>,
     track_id: i64,
+    track_key: &str,
     played_at: u64,
     seconds: u32,
 ) -> Option<PlayRecord> {
@@ -176,6 +194,11 @@ pub fn record(
     let p = PlayRecord {
         key: new_key(),
         track_id,
+        track_key: if crate::offline::index::valid_key(track_key) {
+            track_key.to_string()
+        } else {
+            String::new()
+        },
         played_at,
         seconds: seconds.min(86_400),
     };
@@ -239,6 +262,12 @@ pub async fn flush<A: PlaysApi>(
         refused: 0,
         pending: 0,
         unsupported: false,
+        retry_after_secs: None,
+    };
+    // The longest wait the server asked for.
+    let later = |cur: Option<u32>, secs: u64| {
+        let s = secs.clamp(1, 86_400) as u32;
+        Some(cur.map_or(s, |w| w.max(s)))
     };
     // Keys already tried this round and left waiting (`retry`): not sent again now.
     let mut waiting = std::collections::HashSet::new();
@@ -258,8 +287,15 @@ pub async fn flush<A: PlaysApi>(
                 outcome.unsupported = true;
                 break;
             }
+            Err(SendError::Failed(ApiError::RateLimited { retry_after_secs })) => {
+                outcome.retry_after_secs = later(outcome.retry_after_secs, retry_after_secs);
+                break;
+            }
             Err(SendError::Failed(_)) => break,
         };
+        if let Some(s) = answer.get("retry_after").and_then(Value::as_u64) {
+            outcome.retry_after_secs = later(outcome.retry_after_secs, s);
+        }
         let mut done = Vec::new();
         for (p, v) in batch.iter().zip(verdicts(&answer, &batch)) {
             match v {
@@ -301,19 +337,19 @@ mod tests {
     #[test]
     fn short_plays_are_not_recorded_and_the_queue_is_bounded() {
         let mut q = Vec::new();
-        assert!(record(&mut q, 7, 1, MIN_SECONDS - 1).is_none());
-        assert!(record(&mut q, 0, 1, 60).is_none());
-        let first = record(&mut q, 7, 1, 60).unwrap();
+        assert!(record(&mut q, 7, "", 1, MIN_SECONDS - 1).is_none());
+        assert!(record(&mut q, 0, "", 1, 60).is_none());
+        let first = record(&mut q, 7, "", 1, 60).unwrap();
         assert_eq!(q.len(), 1);
         for i in 0..MAX_PLAYS {
-            record(&mut q, 8, i as u64, 30);
+            record(&mut q, 8, "", i as u64, 30);
         }
         assert_eq!(q.len(), MAX_PLAYS);
         assert!(
             !q.iter().any(|p| p.key == first.key),
             "the oldest went first"
         );
-        let huge = record(&mut q, 8, 1, u32::MAX).unwrap();
+        let huge = record(&mut q, 8, "", 1, u32::MAX).unwrap();
         assert_eq!(huge.seconds, 86_400);
     }
 
@@ -321,7 +357,7 @@ mod tests {
     fn the_file_round_trips_and_survives_damage() {
         let mut q = Vec::new();
         for i in 0..5 {
-            record(&mut q, 10 + i, 1000, 60);
+            record(&mut q, 10 + i, "", 1000, 60);
         }
         assert_eq!(parse(&serialise(&q)), q);
         let mut v: Value = serde_json::from_slice(&serialise(&q)).unwrap();
@@ -337,10 +373,29 @@ mod tests {
     }
 
     #[test]
+    fn the_stable_key_is_sent_and_kept_when_valid() {
+        let mut q = Vec::new();
+        let key = "ab".repeat(32);
+        let p = record(&mut q, 7, &key, 1000, 60).unwrap();
+        assert_eq!(p.track_key, key);
+        let body = record_json(&p);
+        assert_eq!(body["track_key"], json!(key));
+        assert_eq!(body.as_object().unwrap().len(), 5);
+        assert_eq!(parse(&serialise(&q)), q);
+        // Anything else is never sent.
+        let bad = record(&mut q, 7, "../x", 1000, 60).unwrap();
+        assert_eq!(bad.track_key, "");
+        assert!(record_json(&bad).get("track_key").is_none());
+        let mut v: Value = serde_json::from_slice(&serialise(&q)).unwrap();
+        v[0]["track_key"] = json!("ZZ");
+        assert_eq!(parse(&serde_json::to_vec(&v).unwrap())[0].track_key, "");
+    }
+
+    #[test]
     fn verdicts_by_key_by_position_and_unknown() {
         let mut q = Vec::new();
         for i in 0..3 {
-            record(&mut q, 10 + i, 1000, 60);
+            record(&mut q, 10 + i, "", 1000, 60);
         }
         let by_key = json!([
             {"key": q[2].key, "result": "duplicate"},
@@ -372,6 +427,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_servers_wait_is_reported() {
+        let (out, ..) = run(Mode::Mixed, 4);
+        assert_eq!(out.retry_after_secs, Some(60));
+        let (out, ..) = run(Mode::Busy, 4);
+        assert_eq!(out.retry_after_secs, Some(5));
+        assert_eq!(out.pending, 4);
+        let (out, ..) = run(Mode::AllRecorded, 4);
+        assert_eq!(out.retry_after_secs, None);
+    }
+
     /// A fake `/v1/plays` with a scripted behaviour.
     struct Fake {
         mode: Mode,
@@ -385,6 +451,8 @@ mod tests {
         Down,
         /// Every other play: retry; the rest refused.
         Mixed,
+        /// 429 with `Retry-After: 5`.
+        Busy,
     }
 
     impl PlaysApi for Fake {
@@ -394,21 +462,25 @@ mod tests {
             match self.mode {
                 Mode::Unsupported => Err(SendError::Unsupported),
                 Mode::Down => Err(SendError::Failed(ApiError::network("down"))),
+                Mode::Busy => Err(SendError::Failed(ApiError::RateLimited {
+                    retry_after_secs: 5,
+                })),
                 Mode::AllRecorded => Ok(Value::Array(
                     items
                         .iter()
                         .map(|p| json!({"key": p["key"], "result": "recorded"}))
                         .collect(),
                 )),
-                Mode::Mixed => Ok(Value::Array(
-                    items
+                Mode::Mixed => Ok(json!({
+                    "results": items
                         .iter()
                         .enumerate()
                         .map(|(i, p)| {
                             json!({"key": p["key"], "result": if i % 2 == 0 { "retry" } else { "refused" }})
                         })
-                        .collect(),
-                )),
+                        .collect::<Vec<_>>(),
+                    "retry_after": 60
+                })),
             }
         }
     }
@@ -416,7 +488,7 @@ mod tests {
     fn run(mode: Mode, n: usize) -> (PlaysSyncOutcome, Vec<PlayRecord>, Vec<Value>) {
         let mut q = Vec::new();
         for i in 0..n {
-            record(&mut q, 1 + i as i64, 1000, 60);
+            record(&mut q, 1 + i as i64, "", 1000, 60);
         }
         let store = Mutex::new(q);
         let fake = Fake {

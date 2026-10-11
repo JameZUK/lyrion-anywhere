@@ -8,7 +8,9 @@
 //!   `/v1/download/track/{id}`, resuming with `Range` through it, the transcode refusal,
 //!   refusals (no permission 403, unknown or non-library ids 404), and a device revoked
 //!   mid-way.
-//! - Plays recorded offline sent to `POST /v1/plays` (and kept by a server without it).
+//! - Plays recorded offline sent to `POST /v1/plays` (and kept by a server without it), and
+//!   to the real gateway's endpoint: recorded once (a resent key is a duplicate), refused
+//!   when the stable key names another file or too little was heard.
 
 mod common;
 
@@ -792,8 +794,8 @@ async fn plays_are_sent_once_and_kept_by_an_older_server() {
     let session = s.fake.session().await;
     // Recorded through the player in real use; here directly.
     let lib = s.lib.clone();
-    lib.record_play(5, 1_800_000_000, 200);
-    lib.record_play(6, 1_800_000_300, 3); // too short
+    lib.record_play(5, &key_of(5), 1_800_000_000, 200);
+    lib.record_play(6, &key_of(6), 1_800_000_300, 3); // too short
     assert_eq!(lib.pending_plays(), 1);
     s.fake.script.lock().unwrap().no_plays = true;
     let out = sync_plays(session.clone(), lib.clone()).await.unwrap();
@@ -812,6 +814,7 @@ async fn plays_are_sent_once_and_kept_by_an_older_server() {
     assert_eq!(sent[0]["track_id"], 5);
     assert_eq!(sent[0]["seconds"], 200);
     assert_eq!(sent[0]["played_at"], 1_800_000_000u64);
+    assert_eq!(sent[0]["track_key"], json!(key_of(5)));
     // Nothing left: nothing sent.
     let out = sync_plays(session, lib).await.unwrap();
     assert_eq!(out.sent, 0);
@@ -955,4 +958,50 @@ async fn favourites_are_read_through_the_allow_list() {
             .unwrap()
             .contains(&json!("item_id:f0.1"))
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plays_sync_back_through_the_real_gateway() {
+    let h = Harness::start().await;
+    h.lms.add_track(
+        1,
+        "flc",
+        flac::encode(44_100, 16, &flac::noise(4410, 16, 3)),
+    );
+    h.lms.add_track(
+        2,
+        "flc",
+        flac::encode(44_100, 16, &flac::noise(4410, 16, 4)),
+    );
+    let (session, lib, seen, dl, root) = real_setup(&h).await;
+    dl.enqueue(vec![manual(1)], FormatChoice::Original);
+    wait_state(&seen, 1, DownloadState::Done, 20).await;
+    dl.shutdown();
+    let key = lib.tracks()[0].key.clone();
+    let hour_ago = anywhere_mobile::offline::plays::now_secs() - 3600;
+    // Heard long enough (no known duration: four minutes count), the same file.
+    let counted = lib.record_play(1, &key, hour_ago, 300).unwrap();
+    // Track 2 with track 1's stable key: as if a rescan gave the id to another file.
+    lib.record_play(2, &key, hour_ago + 400, 300).unwrap();
+    // Too little heard: the server's counting rule refuses it.
+    lib.record_play(1, &key, hour_ago + 800, 30).unwrap();
+    let out = sync_plays(session.clone(), lib.clone()).await.unwrap();
+    assert_eq!((out.sent, out.refused, out.pending), (1, 2, 0), "{out:?}");
+    assert!(!out.unsupported);
+    let recorded = recorded_plays(&h.lms);
+    assert_eq!(recorded.len(), 1);
+    assert_eq!((recorded[0].0, recorded[0].1), (1, hour_ago));
+
+    // The same play sent again (its answer was lost): a duplicate, never counted twice.
+    let scope = PathBuf::from(&root).join(scope_name(&session.server().url(), "alice"));
+    std::fs::write(
+        scope.join("plays.json"),
+        anywhere_mobile::offline::plays::serialise(&[counted]),
+    )
+    .unwrap();
+    let again = OfflineLibrary::open(root, session.server().url(), "alice".into()).unwrap();
+    assert_eq!(again.pending_plays(), 1);
+    let out = sync_plays(session, again.clone()).await.unwrap();
+    assert_eq!((out.sent, out.pending), (1, 0), "{out:?}");
+    assert_eq!(recorded_plays(&h.lms).len(), 1);
 }

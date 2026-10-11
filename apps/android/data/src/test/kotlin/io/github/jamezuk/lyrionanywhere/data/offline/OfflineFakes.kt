@@ -177,7 +177,7 @@ class FakeLink : OnlineLink {
     val downloaders = mutableListOf<FakeDownloader>()
     var observer: DownloadObserver? = null
     var startedWith: Pair<DownloadPolicy, NetworkKind>? = null
-    var sync: () -> PlaysSyncOutcome = { PlaysSyncOutcome(0u, 0u, 0u, false) }
+    var sync: () -> PlaysSyncOutcome = { PlaysSyncOutcome(0u, 0u, 0u, false, null) }
     var syncs = 0
 
     override fun downloader(

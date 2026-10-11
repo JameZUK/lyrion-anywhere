@@ -13,8 +13,9 @@ import kotlinx.coroutines.launch
 
 /**
  * Sends plays heard offline to the server (SPEC D6) whenever it can: as soon as the app is
- * signed in and online with plays waiting, then again with growing waits while some are
- * left (the server asked to retry, failed, or is an older one without `/v1/plays`).
+ * signed in and online with plays waiting, then again while some are left (the server asked
+ * to retry, failed, or is an older one without `/v1/plays`): after the server's
+ * `retry_after` when it gave one, otherwise with growing waits.
  *
  * Sending is idempotent (each play has a key), so a retry never counts a play twice.
  */
@@ -38,7 +39,10 @@ class PlaysSender(
                     val r = send()
                     _last.value = r
                     if (r != null && !r.unsupported && r.pending == 0u) break
-                    delay(waitAfter(attempt++, r?.unsupported == true))
+                    // The server's own `retry_after` when it gave one; otherwise growing waits.
+                    val asked = r?.retryAfterSecs?.toLong()?.times(1000)?.coerceIn(MIN_WAIT_MS, 60 * MINUTE)
+                    val wait = waitAfter(attempt++, r?.unsupported == true)
+                    delay(asked ?: wait)
                 }
             }
         }
@@ -55,5 +59,8 @@ class PlaysSender(
         }
 
         private const val MINUTE = 60_000L
+
+        /** The shortest wait, whatever the server says. */
+        const val MIN_WAIT_MS = 5_000L
     }
 }

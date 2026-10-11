@@ -668,7 +668,7 @@ Built. **Verified on the host and on the JVM (Robolectric); nothing has run on a
   - Pause, resume and cancel (one or all); the queue survives a restart (`queue.json`); progress reaches the app through `DownloadObserver`.
   - Policy: the format by network ("auto": Original on Wi-Fi, Opus on mobile data by default), *Wi-Fi only*, and a storage cap: the user's own downloads remove smart downloads (oldest first) to make room, never the reverse.
   - The album's cover is cached once per album (`music/<track>/cover`, 600 px; only real images are kept).
-- **Plays** (SPEC D6): each play heard offline of at least 5 s (track id, start time, seconds heard, a random UUID as idempotency key) goes into `plays.json` (bounded, durable). `sync_plays` sends them in batches of 100 to `POST /v1/plays` as `[{track_id, played_at, seconds, key}]` and reads a per-play `recorded`/`duplicate`/`refused`/`retry`; a 404 (an older server) keeps them. The sender is behind a trait, tested with a fake.
+- **Plays** (SPEC D6): each play heard offline of at least 5 s (track id, the download's stable key, start time, seconds heard, a random UUID as idempotency key) goes into `plays.json` (bounded, durable). `sync_plays` sends them in batches of 100 to `POST /v1/plays` (`docs/PROTOCOL.md` › Offline plays) and reads each play's `recorded`/`duplicate`/`refused`/`retry` and the server's `retry_after`; a 404 (an older server) keeps them. The server applies the counting rule and, with the stable key, refuses a play whose id a rescan gave to another file. The sender is behind a trait (tested with a fake) and is also tested against the gateway's real endpoint.
 - **Smart downloads:** `plan_smart` (pure) compares what the lists hold with what is on the device; `MusicLibrary::favourite_library_items` finds library tracks and albums among the LMS favourites (SlimBrowse form, one folder deep).
 
 **`mobile/`: local-queue playback through the same engine (`mobile/src/player`)**
@@ -687,7 +687,7 @@ Built. **Verified on the host and on the JVM (Robolectric); nothing has run on a
     - removes everything when the server revokes the device;
     - at sign-out sends plays first, then keeps or removes the downloads and forgets the owner;
     - refreshes smart downloads on Wi-Fi (at most six-hourly, or when their settings change; all or nothing);
-    - sends plays when online (`PlaysSender`: at once, then 1, 5, 15 and 60 minutes; hourly for an older server).
+    - sends plays when online (`PlaysSender`: at once, then after the server's `retry_after`, or 1, 5, 15 and 60 minutes; hourly for an older server).
   - **`RustOfflinePlayerRepository`** (the engine starts on the first play, stops when the library closes);
   - **`OfflineModeController`** (offline when the saved sign-in can't be checked, or, signed in, after 3 s without a network or 20 s of this phone's player failing to reach the server; retries every 30 s and at once when the network returns);
   - **`PlaybackArbiter`** (downloads and this phone's LMS player never play at once).
@@ -722,7 +722,8 @@ Built. **Verified on the host and on the JVM (Robolectric); nothing has run on a
   - a download through `/v1/download/track/{id}`, and `Range` resume through it (a marked partial file proves only the rest was fetched);
   - an unknown id (404), downloads turned off (403, shown) and on again;
   - a revoked device stops downloading;
-  - favourites read through the allow-list.
+  - favourites read through the allow-list;
+  - plays through `POST /v1/plays` (with the fake LMS plugin's `play_record`): one recorded, one refused because its stable key names another file, one too short; a resent key is a duplicate and never counted twice.
 - **The offline player end to end** with real FLAC files: bit-exact gapless output across tracks with one output run, the signal path and DSP, seek, next, previous, jump, pause, shuffle, repeat, stop, a vanished file skipped and reported, unknown keys refused, a gapless repeat-one loop, and plays recorded.
 - **Android:**
   - settings persistence and refusal of stored nonsense;
@@ -736,7 +737,7 @@ Built. **Verified on the host and on the JVM (Robolectric); nothing has run on a
   - Compose: the Downloads screen, offline library, album and Now playing, storage settings, the sign-out question, the Download button;
   - the notification's progress;
   - the manifest (the download service is private and `dataSync`; WorkManager's initialiser stays removed; the expected permissions only).
-- **Totals:** 240 `anywhere-mobile` tests (was 180); 116 `anywhere-core` library tests (was 112); 294 Android JVM/Robolectric tests.
+- **Totals:** 243 `anywhere-mobile` tests (was 180); 116 `anywhere-core` library tests (was 112); 295 Android JVM/Robolectric tests.
 
 **Unverified:** everything on a device. That includes:
 - the `dataSync` service and its notification;
@@ -744,10 +745,10 @@ Built. **Verified on the host and on the JVM (Robolectric); nothing has run on a
 - the offline Media3 session with real Bluetooth and lock-screen controls;
 - AAudio playing downloads;
 - offline-mode switching on real network changes;
-- `/v1/plays` against the real endpoint (being built alongside this; the contract above is assumed).
+- plays reaching a real LMS through the plugin (tested only with the fake plugin).
 
 **Known gaps**
-- `/v1/plays`: `played_at` is sent as Unix seconds, and the answer is read leniently (by key or position). Track ids are sent as recorded: there is no key-to-id lookup yet, so a rescan between the play and the sync sends a stale id.
+- Plays are sent with the track id they were recorded with: there is no key-to-id lookup yet, so after a rescan that renumbered the track the server refuses the play (`track_changed`) rather than counting it.
 - *Keep favourites offline* finds only favourites LMS identifies by library id. Favourites saved by file location can't be resolved through the gateway (it strips URLs, rightly), so many may be skipped; a gateway lookup would fix it.
 - Offline playback uses ReplayGain tags for levelling: R128 analyses aren't cached for offline use.
 - The widget and the Quick Settings tile don't show downloads playing.

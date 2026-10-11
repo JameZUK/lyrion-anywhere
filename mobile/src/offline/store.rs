@@ -292,9 +292,15 @@ impl OfflineLibrary {
 
     /// Record a play heard offline (`None` if too short to count). The offline player
     /// calls this; it is public for hosts' tests.
-    pub fn record_play(&self, track_id: i64, played_at: u64, seconds: u32) -> Option<PlayRecord> {
+    pub fn record_play(
+        &self,
+        track_id: i64,
+        track_key: &str,
+        played_at: u64,
+        seconds: u32,
+    ) -> Option<PlayRecord> {
         let mut st = self.state.lock().unwrap();
-        let p = plays::record(&mut st.plays, track_id, played_at, seconds)?;
+        let p = plays::record(&mut st.plays, track_id, track_key, played_at, seconds)?;
         self.save_plays(&st.plays);
         Some(p)
     }
@@ -680,7 +686,7 @@ pub(crate) mod tests {
         assert_eq!(lib.remove_album("a7".into()).unwrap(), 1);
         assert!(!lib.has_art("a7"));
         assert!(!lib.final_path(&b.key, &b.ext).exists());
-        lib.record_play(103, 1, 60).unwrap();
+        lib.record_play(103, "", 1, 60).unwrap();
         lib.remove_all().unwrap();
         assert!(lib.tracks().is_empty());
         assert!(lib.artwork("a9".into()).is_none());
@@ -699,8 +705,8 @@ pub(crate) mod tests {
     fn plays_are_durable() {
         let root = temp_root();
         let lib = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
-        assert!(lib.record_play(5, 1, 2).is_none(), "too short");
-        let p = lib.record_play(5, 1000, 90).unwrap();
+        assert!(lib.record_play(5, "", 1, 2).is_none(), "too short");
+        let p = lib.record_play(5, &"cd".repeat(32), 1000, 90).unwrap();
         let again = OfflineLibrary::open(root, "https://s".into(), "u".into()).unwrap();
         assert_eq!(again.plays(), vec![p.clone()]);
         again.drop_plays(&[p.key]);

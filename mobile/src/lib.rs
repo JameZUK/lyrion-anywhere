@@ -17,7 +17,12 @@
 //! - [`Analysis`]: track analyses (waveform, loudness) from the gateway;
 //! - [`Events`]: the live event stream with reconnects and token renewal;
 //! - [`LocalPlayer`]: this phone as an LMS player (Slimproto through the gateway, the
-//!   core's decoders, optional DSP, a lock-free ring and AAudio output).
+//!   core's decoders, optional DSP, a lock-free ring and AAudio output);
+//! - offline ([`offline`]): [`OfflineLibrary`] (downloads on the device, per user and
+//!   server), [`Downloader`] (resumable downloads), [`sync_plays`] (plays heard offline, to
+//!   `POST /v1/plays`) and [`plan_smart`] (smart downloads);
+//! - [`OfflinePlayer`]: downloads played from the app's own queue through the same audio
+//!   path as [`LocalPlayer`] (DSP, levelling, bit-perfect output, signal path, gapless).
 //!
 //! Tokens and passwords are never logged or put in error messages.
 

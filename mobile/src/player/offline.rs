@@ -263,8 +263,12 @@ impl Engine {
                     seconds,
                 } => {
                     if let Some(t) = self.source.tracks().get(index) {
-                        self.library
-                            .record_play(t.track_id, started_at, seconds.round() as u32);
+                        self.library.record_play(
+                            t.track_id,
+                            &t.key,
+                            started_at,
+                            seconds.round() as u32,
+                        );
                     }
                 }
                 SourceEvent::Failed { error, .. } => {
