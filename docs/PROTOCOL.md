@@ -74,6 +74,18 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
 - **Origins:** an `Origin` is accepted if it is the request's own host over HTTPS, or listed with `--allowed-origin`. `http://` same-origin is accepted only on plain-HTTP requests, which the gateway serves only on loopback without proxy headers (local development).
 - **`Clear-Site-Data: "cache"`** on sign-out (and on the reuse refusal) clears cached artwork and responses from the browser. It leaves IndexedDB alone, so offline downloads stay; browsers may also empty the service worker's caches, which it refills.
 
+### Pairing links (native apps)
+
+A pairing code can be handed to a phone as a QR code holding a link:
+
+```
+lyrion-anywhere://pair?server=<percent-encoded server address>&code=<pairing code>
+```
+
+- `code` is required: 4–32 letters and digits once spaces and dashes are removed (case-insensitive), then redeemed with `POST /v1/auth/pair`.
+- `server` is optional (`https://music.example.com`). Apps validate it exactly as a typed address: `https` only (plain `http` only for loopback), no user name or password, query, fragment or path.
+- Any other parameter, a repeated parameter or a fragment makes the link invalid. A bare code (no link) is also accepted.
+
 ### Admin API
 
 The admin API is served on a separate listener (default `127.0.0.1:9445`) that must never be put behind the proxy. It is used by the LMS plugin's settings page.
