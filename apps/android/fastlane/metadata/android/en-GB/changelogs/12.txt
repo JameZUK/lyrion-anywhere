@@ -1,0 +1,1 @@
+1.0.0: player-first with Transfer and sync, bit-perfect native audio with USB DAC support, waveform seek bar, levelling, EQ and smart crossfades, Android Auto, Start radio, full library browsing, offline downloads with plays synced back, widget and Quick Settings tile.
