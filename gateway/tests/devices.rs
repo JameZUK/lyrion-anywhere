@@ -559,6 +559,77 @@ async fn renaming_a_device_without_a_player_sends_nothing_to_lms() {
 }
 
 #[tokio::test]
+async fn renaming_is_rate_limited_per_device() {
+    // Pentest 2026-10 (A7): renames were unlimited, each writing an audit entry and
+    // telling LMS, so a listener could flood the admin's audit view and LMS.
+    let h = harness().await;
+    let limit = anywhere_gateway::RENAMES_PER_WINDOW;
+    for i in 0..limit {
+        let body = format!(r#"{{"name":"Name {i}"}}"#);
+        let r = rename_self(&h, Some(&h.tok_a), &body, &[CLIENT]).await;
+        assert_eq!(r.status(), S::OK, "rename {i}");
+    }
+    let r = rename_self(&h, Some(&h.tok_a), r#"{"name":"One more"}"#, &[CLIENT]).await;
+    assert_eq!(r.status(), S::TOO_MANY_REQUESTS);
+    assert!(r.headers().contains_key("retry-after"));
+    assert_eq!(me_name(&h, &h.tok_a).await, format!("Name {}", limit - 1));
+    // Per device: Bob's device can still be renamed.
+    let r = rename_self(&h, Some(&h.tok_b), r#"{"name":"Study"}"#, &[CLIENT]).await;
+    assert_eq!(r.status(), S::OK);
+    // And the audit log holds no more of Alice's renames than the limit allowed.
+    let renames = h
+        .accounts
+        .audit_log(1000)
+        .unwrap()
+        .iter()
+        .filter(|e| e.event == "device.renamed" && e.username.as_deref() == Some("alice"))
+        .count();
+    assert_eq!(renames, limit);
+}
+
+#[tokio::test]
+async fn renaming_to_the_same_name_writes_nothing() {
+    let mut h = harness().await;
+    let mut ws = h.dial().await;
+    connect(&mut ws, &h.tok_a).await;
+    let _lms = h.lms.accept().await;
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
+    let r = rename_self(&h, Some(&h.tok_a), r#"{"name":"Den"}"#, &[CLIENT]).await;
+    assert_eq!(r.status(), S::OK);
+    let audited = |h: &Harness| {
+        h.accounts
+            .audit_log(1000)
+            .unwrap()
+            .iter()
+            .filter(|e| e.event == "device.renamed")
+            .count()
+    };
+    let names_sent = |h: &Harness| {
+        h.lms
+            .rec
+            .lock()
+            .unwrap()
+            .rpc
+            .iter()
+            .filter(|p| p[1][0] == "name")
+            .count()
+    };
+    let (a, n) = (audited(&h), names_sent(&h));
+    assert_eq!((a, n), (1, 1));
+    // The same name again (after cleaning): answered, but no audit entry, nothing to LMS.
+    let r = rename_self(&h, Some(&h.tok_a), r#"{"name":"  Den "}"#, &[CLIENT]).await;
+    assert_eq!(r.status(), S::OK);
+    assert_eq!(r.json::<Value>().await.unwrap()["name"], "Den");
+    assert_eq!((audited(&h), names_sent(&h)), (a, n));
+    // The entry says whose device it is and that its user renamed it.
+    let log = h.accounts.audit_log(1).unwrap();
+    assert_eq!(log[0].username.as_deref(), Some("alice"));
+    assert_eq!(log[0].detail, "Den (by the user)");
+}
+
+#[tokio::test]
 async fn admins_rename_any_device() {
     let h = harness().await;
     let (base, secret) = admin_api(&h).await;

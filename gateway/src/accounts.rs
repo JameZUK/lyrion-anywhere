@@ -79,6 +79,13 @@ pub const THROTTLE_WINDOW: Duration = Duration::from_secs(60);
 const FAILED_CLIENTS_CAP: usize = 1000;
 /// New devices (sign-ins without a reusable device, pairings) per user per hour.
 pub const NEW_DEVICES_PER_HOUR: i64 = 10;
+/// Audit entries are kept this long…
+pub const AUDIT_RETENTION: Duration = Duration::from_secs(365 * 24 * 3600);
+/// …and at most this many (the newest). Failed sign-ins are audited, so without a bound
+/// anyone could grow the database.
+pub const AUDIT_MAX_ROWS: i64 = 100_000;
+/// The audit log is pruned once per this many entries written.
+const AUDIT_PRUNE_EVERY: i64 = 1000;
 /// Revoked devices are kept this long (for the audit trail), then deleted.
 pub const REVOKED_DEVICE_RETENTION: Duration = Duration::from_secs(30 * 24 * 3600);
 /// Siblings one refresh token may have (lost responses and concurrent refreshes).
@@ -664,6 +671,15 @@ pub fn clean_name(raw: &str) -> Option<String> {
         count += 1;
     }
     (!out.is_empty()).then_some(out)
+}
+
+fn prune_audit_on(db: &Connection, max_rows: i64, oldest: i64) -> rusqlite::Result<usize> {
+    let old = db.execute("DELETE FROM audit WHERE at < ?1", [oldest])?;
+    let surplus = db.execute(
+        "DELETE FROM audit WHERE id <= (SELECT COALESCE(MAX(id), 0) FROM audit) - ?1",
+        [max_rows.max(0)],
+    )?;
+    Ok(old + surplus)
 }
 
 /// Pairing codes: 10 characters from an unambiguous alphabet (~50 bits), easy to type.
@@ -1676,6 +1692,30 @@ impl Accounts {
         })
     }
 
+    /// Whether `user` already has a recorded play (under another key) of `track_id` that
+    /// started less than `within` seconds before or after `played_at`.
+    pub fn play_overlaps(
+        &self,
+        user: i64,
+        key: &str,
+        track_id: u64,
+        played_at: u64,
+        within: u64,
+    ) -> Result<bool, AuthError> {
+        let found: Option<i64> = self
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT 1 FROM plays WHERE user_id = ?1 AND track_id = ?2 AND state = 1
+                 AND key != ?3 AND played_at > ?4 - ?5 AND played_at < ?4 + ?5 LIMIT 1",
+                params![user, track_id as i64, key, played_at as i64, within as i64],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
     /// LMS recorded the play: its key now marks it as done.
     pub fn finish_play(&self, user: i64, key: &str) -> Result<(), AuthError> {
         self.db.lock().unwrap().execute(
@@ -1893,6 +1933,19 @@ impl Accounts {
         owner: Option<i64>,
         raw: &str,
     ) -> Result<String, AuthError> {
+        self.rename_device_if_changed(device_id, owner, raw)
+            .map(|(name, _)| name)
+    }
+
+    /// [`Accounts::rename_device`], also saying whether the name changed. A rename to the
+    /// name the device already has writes nothing (no audit entry, nothing for LMS), so
+    /// repeating one costs the server nothing.
+    pub fn rename_device_if_changed(
+        &self,
+        device_id: i64,
+        owner: Option<i64>,
+        raw: &str,
+    ) -> Result<(String, bool), AuthError> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return Err(AuthError::BadInput("enter a name for the device"));
@@ -1906,18 +1959,22 @@ impl Accounts {
             "use letters, digits and spaces in device names",
         ))?;
         let db = self.db.lock().unwrap();
-        let user: Option<i64> = db
+        let found: Option<(i64, String, String)> = db
             .query_row(
-                "SELECT user_id FROM devices WHERE id = ?1 AND revoked = 0",
+                "SELECT d.user_id, d.name, u.username FROM devices d JOIN users u ON u.id = d.user_id
+                 WHERE d.id = ?1 AND d.revoked = 0",
                 [device_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
-        let user = match (user, owner) {
-            (Some(u), Some(o)) if u == o => u,
-            (Some(u), None) => u,
+        let (user, current, username) = match (found, owner) {
+            (Some((u, c, n)), Some(o)) if u == o => (u, c, n),
+            (Some((u, c, n)), None) => (u, c, n),
             _ => return Err(AuthError::BadInput("no such device")),
         };
+        if current == name {
+            return Ok((name, false));
+        }
         let taken: Option<i64> = db
             .query_row(
                 "SELECT id FROM devices
@@ -1941,8 +1998,19 @@ impl Accounts {
                 e.principal.device_name = name.clone();
             }
         }
-        self.audit("device.renamed", None, Some(device_id), &name);
-        Ok(name)
+        // Who renamed it: the owner themselves, or an admin through the admin API.
+        let by = if owner.is_some() {
+            "by the user"
+        } else {
+            "by an admin"
+        };
+        self.audit(
+            "device.renamed",
+            Some(&username),
+            Some(device_id),
+            &format!("{name} ({by})"),
+        );
+        Ok((name, true))
     }
 
     /// The stored last address of a device, revoked or not (tests only).
@@ -2156,10 +2224,24 @@ impl Accounts {
     }
 
     pub fn audit(&self, event: &str, username: Option<&str>, device: Option<i64>, detail: &str) {
-        let _ = self.db.lock().unwrap().execute(
-            "INSERT INTO audit (at, event, username, device_id, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![now_secs(), event, username, device, detail],
-        );
+        let db = self.db.lock().unwrap();
+        let ok = db
+            .execute(
+                "INSERT INTO audit (at, event, username, device_id, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![now_secs(), event, username, device, detail],
+            )
+            .is_ok();
+        // Kept bounded: every AUDIT_PRUNE_EVERY entries, the old and the surplus go.
+        if ok && db.last_insert_rowid() % AUDIT_PRUNE_EVERY == 0 {
+            let oldest = now_secs() - AUDIT_RETENTION.as_secs() as i64;
+            let _ = prune_audit_on(&db, AUDIT_MAX_ROWS, oldest);
+        }
+    }
+
+    /// Remove audit entries older than `oldest` (Unix seconds), and all but the newest
+    /// `max_rows`. Returns how many were removed.
+    pub fn prune_audit(&self, max_rows: i64, oldest: i64) -> Result<usize, AuthError> {
+        Ok(prune_audit_on(&self.db.lock().unwrap(), max_rows, oldest)?)
     }
 
     pub fn audit_log(&self, limit: u32) -> Result<Vec<AuditEntry>, AuthError> {
@@ -4294,12 +4376,165 @@ mod tests {
                 .unwrap(),
             "Office"
         );
+        // Renaming to the current name writes nothing (no audit entry).
+        let renames = |a: &Accounts| {
+            a.audit_log(1000)
+                .unwrap()
+                .iter()
+                .filter(|e| e.event == "device.renamed")
+                .count()
+        };
+        let before = renames(&a);
+        assert_eq!(
+            a.rename_device_if_changed(theirs.principal.device_id, None, " Office "),
+            Ok(("Office".to_string(), false))
+        );
+        assert_eq!(renames(&a), before);
+        // The audit entry names the device's owner and who renamed it.
+        a.rename_device(id, Some(alice), "Den").unwrap();
+        a.rename_device(theirs.principal.device_id, None, "Study")
+            .unwrap();
+        let log = a.audit_log(2).unwrap();
+        assert_eq!(log[0].username.as_deref(), Some("admin"));
+        assert_eq!(log[0].detail, "Study (by an admin)");
+        assert_eq!(log[1].username.as_deref(), Some("alice"));
+        assert_eq!(log[1].detail, "Den (by the user)");
+
         // Unknown and revoked devices.
         assert!(a.rename_device(999_999, None, "X").is_err());
         a.revoke_device(other.principal.device_id).unwrap();
         assert_eq!(
             a.rename_device(other.principal.device_id, None, "X"),
             Err(AuthError::BadInput("no such device"))
+        );
+    }
+
+    #[test]
+    fn the_audit_log_is_bounded_by_age_and_size() {
+        let a = store();
+        let now = now_secs();
+        {
+            let db = a.db.lock().unwrap();
+            for i in 0..10 {
+                db.execute(
+                    "INSERT INTO audit (at, event, username, device_id, detail)
+                     VALUES (?1, 'old', NULL, NULL, '')",
+                    [now - 400 * 24 * 3600 + i],
+                )
+                .unwrap();
+            }
+        }
+        for _ in 0..20 {
+            a.audit("login.failed", None, None, "c");
+        }
+        // Older than the retention go; then only the newest N stay.
+        a.prune_audit(15, now - AUDIT_RETENTION.as_secs() as i64)
+            .unwrap();
+        let log = a.audit_log(1000).unwrap();
+        assert_eq!(log.len(), 15);
+        assert!(log.iter().all(|e| e.event != "old"));
+    }
+
+    #[test]
+    fn writing_the_audit_log_prunes_it() {
+        let a = store();
+        let now = now_secs();
+        a.db.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO audit (at, event, username, device_id, detail)
+                 VALUES (?1, 'ancient', NULL, NULL, '')",
+                [now - 2 * AUDIT_RETENTION.as_secs() as i64],
+            )
+            .unwrap();
+        // A flood of failed sign-ins (each audited) triggers the pruning by itself.
+        for _ in 0..AUDIT_PRUNE_EVERY {
+            a.audit("login.failed", None, None, "c");
+        }
+        assert!(
+            a.audit_log(1000)
+                .unwrap()
+                .iter()
+                .all(|e| e.event != "ancient")
+        );
+    }
+
+    #[test]
+    fn an_abandoned_play_claim_is_taken_over() {
+        let a = store();
+        let alice = a.user_id_by_name("alice").unwrap().unwrap();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let dev = t.principal.device_id;
+        let now = now_secs() as u64;
+        let stale = Duration::from_secs(120);
+        assert_eq!(
+            a.claim_play(alice, dev, "key-00001", 1, now, stale)
+                .unwrap(),
+            PlayClaim::Claimed
+        );
+        // Still in flight: refused.
+        assert_eq!(
+            a.claim_play(alice, dev, "key-00001", 1, now, stale)
+                .unwrap(),
+            PlayClaim::InFlight
+        );
+        // A crash mid-forward left it pending for longer than `stale`: taken over.
+        a.db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE plays SET created_at = created_at - 121 WHERE key = 'key-00001'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            a.claim_play(alice, dev, "key-00001", 1, now, stale)
+                .unwrap(),
+            PlayClaim::Claimed
+        );
+        a.finish_play(alice, "key-00001").unwrap();
+        assert_eq!(
+            a.claim_play(alice, dev, "key-00001", 1, now, stale)
+                .unwrap(),
+            PlayClaim::Recorded
+        );
+    }
+
+    #[test]
+    fn overlapping_plays_are_found_per_user_and_track() {
+        let a = store();
+        let alice = a.user_id_by_name("alice").unwrap().unwrap();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let dev = t.principal.device_id;
+        let stale = Duration::from_secs(120);
+        let at = now_secs() as u64 - 3600;
+        a.claim_play(alice, dev, "key-00001", 1, at, stale).unwrap();
+        // Only recorded plays count.
+        assert!(!a.play_overlaps(alice, "key-00002", 1, at, 121).unwrap());
+        a.finish_play(alice, "key-00001").unwrap();
+        assert!(
+            a.play_overlaps(alice, "key-00002", 1, at + 120, 121)
+                .unwrap()
+        );
+        assert!(
+            a.play_overlaps(alice, "key-00002", 1, at - 120, 121)
+                .unwrap()
+        );
+        assert!(
+            !a.play_overlaps(alice, "key-00002", 1, at + 121, 121)
+                .unwrap()
+        );
+        assert!(
+            !a.play_overlaps(alice, "key-00002", 2, at, 121).unwrap(),
+            "another track"
+        );
+        assert!(
+            !a.play_overlaps(alice, "key-00001", 1, at, 121).unwrap(),
+            "its own key"
+        );
+        let bob = a.user_id_by_name("admin").unwrap().unwrap();
+        assert!(
+            !a.play_overlaps(bob, "key-00002", 1, at, 121).unwrap(),
+            "another user"
         );
     }
 }

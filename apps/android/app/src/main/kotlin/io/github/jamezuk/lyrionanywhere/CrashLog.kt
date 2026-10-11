@@ -14,7 +14,13 @@ import java.io.File
  * of starting normally and crashing again.
  *
  * Reports hold the device model, Android version, app version and the stack trace. The app
- * never puts tokens or passwords in exception messages.
+ * never puts tokens or passwords in exception messages, and every report is passed through
+ * [redact] before it is saved or shown, since the user is invited to share it:
+ * - Android's record of a native crash (its tombstone) holds memory dumps, which can hold
+ *   tokens, the server's address or anything else in memory. Only the backtrace's library
+ *   and function names are kept from it ([nativeSummary]);
+ * - bearer tokens, the gateway's secrets (long hex runs), token fields, URLs' hosts and IP
+ *   addresses, and home folders are replaced (pentest 2026-10, A7).
  */
 object CrashLog {
     private const val JVM_FILE = "crash-jvm.txt"
@@ -46,7 +52,7 @@ object CrashLog {
             appendLine()
             append(error.stackTraceToString())
         }.take(MAX_CHARS)
-        jvmFile(context).writeText(text)
+        jvmFile(context).writeText(redact(text))
     }
 
     /** The saved report(s), or null when the last run ended normally. */
@@ -57,8 +63,55 @@ object CrashLog {
             .filter { it.isNotBlank() }
             .toMutableList()
         runCatching { lastCrashExit(context) }.getOrNull()?.let { parts += it }
-        return if (parts.isEmpty()) null else parts.joinToString("\n\n----\n\n")
+        return report(parts)
     }
+
+    /** The report shown and shared: the parts joined, then [redact]ed; null when empty. */
+    internal fun report(parts: List<String>): String? =
+        if (parts.isEmpty()) null else redact(parts.joinToString("\n\n----\n\n"))
+
+    private val REDACTIONS: List<Pair<Regex, String>> = listOf(
+        // Authorization headers, whatever the token looks like.
+        Regex("""(?i)\b(bearer|basic)\s+[^\s"',;]+""") to "$1 <redacted>",
+        // JSON or key=value fields holding secrets.
+        Regex(""""(access_token|refresh_token|token|secret|password|code|csrf|sig)"\s*:\s*"[^"]*"""", RegexOption.IGNORE_CASE) to
+            "\"$1\": \"<redacted>\"",
+        Regex("""(?i)\b(access_token|refresh_token|token|secret|password|csrf|sig)=[^&\s"']+""") to "$1=<redacted>",
+        // The gateway's tokens and secrets are 32 or 64 hex digits (stable track keys look
+        // the same and go too).
+        Regex("""\b[0-9a-fA-F]{32,}\b""") to "<hex>",
+        // Where the server is.
+        Regex("""(?i)\b(https?|wss?)://[^\s/"'<>]+""") to "$1://<server>",
+        Regex("""\b(?:\d{1,3}\.){3}\d{1,3}\b""") to "<address>",
+        Regex("""(?i)\b(?:[0-9a-f]{1,4}:){4,7}[0-9a-f]{1,4}\b""") to "<address>",
+        // Build or user folders.
+        Regex("""/(home|Users)/[^/\s]+/""") to "/$1/~/",
+    )
+
+    /** Remove secrets, addresses and personal folders from a report (see the class notes). */
+    internal fun redact(text: String): String =
+        REDACTIONS.fold(text) { acc, (pattern, replacement) -> pattern.replace(acc, replacement) }
+
+    /**
+     * What is kept of a native tombstone's readable strings: native library paths and the
+     * (mangled) function names of the backtrace. Everything else, memory dumps included,
+     * is dropped.
+     */
+    internal fun nativeSummary(readable: String): String =
+        readable.lineSequence()
+            .map { it.trim() }
+            .filter { line ->
+                line.length <= 300 && (
+                    NATIVE_LIBRARY.containsMatchIn(line) ||
+                        line.startsWith("_Z") || line.startsWith("_R") ||
+                        line.startsWith("Abort message") || line.startsWith("signal ")
+                    )
+            }
+            .distinct()
+            .take(200)
+            .joinToString("\n")
+
+    private val NATIVE_LIBRARY = Regex("""^[\w./+=~-]*\.so\b|^/(apex|system|vendor|data/app)/[\w./+=~-]+$""")
 
     fun clear(context: Context) {
         jvmFile(context).delete()
@@ -97,7 +150,10 @@ object CrashLog {
         if (exit.timestamp <= seen(context).getLong(SEEN_EXIT, 0L)) return null
         val trace = runCatching {
             exit.traceInputStream?.use { it.readBytes() }
-        }.getOrNull()?.let { readable(it) }.orEmpty()
+        }.getOrNull()?.let { readable(it) }?.let {
+            // A native tombstone holds memory dumps: keep only its backtrace's names.
+            if (exit.reason == ApplicationExitInfo.REASON_CRASH_NATIVE) nativeSummary(it) else it
+        }.orEmpty()
         return buildString {
             appendLine("$kind (reported by Android)")
             appendLine(header(context))

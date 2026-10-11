@@ -39,13 +39,13 @@ is($r->{results}{ok}, 1);
 is($r->{results}{data}{code}, 'ABCDE23456');
 
 # Gateway errors become an error result, not a crash.
-$r = Slim::Control::Request->new(['anywhere', 'users'], {});
+$r = Slim::Control::Request->new(['anywhere', 'users'], { csrf => $token });
 Plugins::LyrionAnywhere::Commands::admin($r);
 Slim::Networking::SimpleAsyncHTTP::fail($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1], '403 Forbidden');
 is($r->{results}{error}, 'the gateway refused the admin secret');
 
 # Unexpected parameters are ignored, not forwarded.
-$r = Slim::Control::Request->new(['anywhere', 'users'], { evil => 'x', username => 'alice' });
+$r = Slim::Control::Request->new(['anywhere', 'users'], { evil => 'x', username => 'alice', csrf => $token });
 Plugins::LyrionAnywhere::Commands::admin($r);
 is($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1]{url}, 'http://127.0.0.1:9445/admin/v1/users');
 
@@ -108,10 +108,20 @@ for my $op (sort keys %mutating_args) {
 	unlike(($sent->{url} // '') . ($sent->{body} // ''), qr/csrf|\Q$token\E/, "$op: the token is not passed to the gateway");
 }
 
+# Pentest 2026-10 (A7): read-only commands answered anyone on the LAN, and `devices` now
+# holds remote users' addresses and browsers. They need the token too.
 for my $op (sort keys %read_only_args) {
-	my $req = Slim::Control::Request->new(['anywhere', $op], $read_only_args{$op});
+	for my $case (['no token', {}], ['wrong token', { csrf => $wrong }]) {
+		my ($name, $extra) = @$case;
+		my $n = @Slim::Networking::SimpleAsyncHTTP::REQUESTS;
+		my $req = Slim::Control::Request->new(['anywhere', $op], { %{ $read_only_args{$op} }, %$extra });
+		Plugins::LyrionAnywhere::Commands::admin($req);
+		like($req->{results}{error} // '', qr/^refused/, "$op, $name: refused");
+		is(scalar @Slim::Networking::SimpleAsyncHTTP::REQUESTS, $n, "$op, $name: nothing sent to the gateway");
+	}
+	my $req = Slim::Control::Request->new(['anywhere', $op], { %{ $read_only_args{$op} }, csrf => $token });
 	Plugins::LyrionAnywhere::Commands::admin($req);
-	is($req->{status}, 'processing', "$op works without a token");
+	is($req->{status}, 'processing', "$op works with the token");
 	ok(!defined $req->{results}{error}, "$op: no error");
 }
 

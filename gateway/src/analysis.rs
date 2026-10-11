@@ -26,8 +26,9 @@
 //! - **CPU:** decoding and analysis run on a blocking thread, never on the async runtime;
 //!   the deadline is checked between packets.
 //! - **Failures:** a file the core can't decode (corrupt, truncated to nothing, hostile) is
-//!   422; that, 413 and 504 are remembered for [`Config::analysis_retry_after`] so the same
-//!   file isn't fetched and decoded again and again. A decoder panic is caught.
+//!   422; that and 413 are remembered for [`Config::analysis_retry_after`] so the same
+//!   file isn't fetched and decoded again and again, and a 504 for as long as the deadline
+//!   itself (it is often the load, not the file). A decoder panic is caught.
 //! - **Cache:** the binary form on disk under the data directory, at most
 //!   [`Config::analysis_cache_bytes`], least recently used first. Entries are named by a
 //!   hash of the stable track key (salted, survives rescans), the file's size and
@@ -301,10 +302,21 @@ impl Analysis {
         ok
     }
 
+    /// How long a failure is answered from memory. A time-out often says more about the
+    /// load at the time (other jobs, a slow LMS) than about the file, and remembering it
+    /// served it to every user: it is kept only as long as the job's own deadline, enough to
+    /// stop a stalled file being fetched over and over (pentest 2026-10, A7).
+    fn memory(&self, f: Failure) -> Duration {
+        match f {
+            Failure::TimedOut => self.retry_after.min(self.timeout),
+            _ => self.retry_after,
+        }
+    }
+
     fn remembered_failure(&self, name: &str) -> Option<Failure> {
         let mut failed = self.failed.lock().unwrap();
         match failed.get(name) {
-            Some((at, f)) if at.elapsed() < self.retry_after => Some(*f),
+            Some((at, f)) if at.elapsed() < self.memory(*f) => Some(*f),
             Some(_) => {
                 failed.remove(name);
                 None

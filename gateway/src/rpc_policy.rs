@@ -482,7 +482,9 @@ pub fn check(
         "sync" => {
             n == 2
                 && (matches!(c[1], "-" | "?")
-                    || (is_player_id(c[1]) && c[1] != player && caller.may_control(c[1])))
+                    || (is_player_id(c[1])
+                        && !c[1].eq_ignore_ascii_case(player)
+                        && caller.may_control(c[1])))
         }
         // Don't Stop The Music (part of LMS): its settings menu for the player, and choosing
         // its provider (or "0", off). Nothing else of `playerpref` is reachable, and the
@@ -1553,6 +1555,8 @@ mod tests {
         denied(OTHER, json!(["status", 0, 10]));
         denied(MINE, json!(["sync", OTHER]));
         denied(MINE, json!(["sync", MINE]));
+        // The same player in another case is still itself (pentest 2026-10).
+        denied(MINE, json!(["sync", MINE.to_uppercase()]));
         denied("not-a-mac", json!(["play"]));
         denied("", json!(["play"]));
         // Admins may control any player.

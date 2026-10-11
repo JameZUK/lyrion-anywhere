@@ -484,7 +484,8 @@ Any other field, or a wrong type, makes that play `invalid`.
 - `not_found`: LMS doesn't know the track;
 - `not_library`: not a local library file (radio, streaming services);
 - `track_changed`: `track_key` names another file;
-- `too_short`: not enough was heard (below).
+- `too_short`: not enough was heard (below);
+- `overlap`: the user already has a counted play of this track starting less than the counting time (below) before or after this one, so it can't be a separate listen.
 
 `retry` reasons:
 - `server_unavailable`: LMS didn't answer;

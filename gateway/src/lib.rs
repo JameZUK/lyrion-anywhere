@@ -242,7 +242,13 @@ pub struct Gateway {
     analysis: Option<analysis::Analysis>,
     /// Limits on uploads of offline plays.
     plays: plays::PlayLimits,
+    /// Renames of a device by its own user ([`RENAMES_PER_WINDOW`] per [`RENAME_WINDOW`]).
+    renames: plays::Window,
 }
+
+/// Renames a device may make of itself per [`RENAME_WINDOW`] (`PATCH /v1/devices/self`).
+pub const RENAMES_PER_WINDOW: usize = 10;
+pub const RENAME_WINDOW: Duration = Duration::from_secs(60);
 
 pub type AppState = Arc<Gateway>;
 
@@ -296,6 +302,7 @@ impl Gateway {
             art_limit: limits::Limiter::new(cfg.art_per_user, cfg.art_total),
             analysis: analysis::Analysis::new(&cfg),
             plays: plays::PlayLimits::new(cfg.plays_requests_per_minute, cfg.plays_per_hour),
+            renames: plays::Window::new(RENAMES_PER_WINDOW, RENAME_WINDOW),
             cfg,
         })
     }
@@ -360,7 +367,12 @@ impl Gateway {
         owner: Option<i64>,
         name: &str,
     ) -> Result<String, accounts::AuthError> {
-        let name = self.accounts.rename_device(device_id, owner, name)?;
+        let (name, changed) = self
+            .accounts
+            .rename_device_if_changed(device_id, owner, name)?;
+        if !changed {
+            return Ok(name);
+        }
         let live: Vec<Arc<Session>> = self
             .sessions
             .lock()

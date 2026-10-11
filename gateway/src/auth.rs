@@ -533,6 +533,10 @@ pub async fn rename_self(
         Ok(r) => r,
         Err((status, msg)) => return error(status, msg),
     };
+    // Each rename may reach LMS and the audit log: a few a minute per device is plenty.
+    if !gw.renames.take(p.device_id, std::time::Instant::now()) {
+        return auth_error(AuthError::Locked(crate::RENAME_WINDOW));
+    }
     match gw
         .rename_device(p.device_id, Some(p.user_id), &req.name)
         .await
