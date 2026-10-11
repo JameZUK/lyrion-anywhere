@@ -155,13 +155,33 @@
 		gap: 0.5rem;
 		max-width: 520px;
 		margin-bottom: 1.25rem;
+		container-type: inline-size;
 	}
 	.grow {
 		flex: 1;
 	}
+	/* The player button shrinks (its name is ellipsised) but never vanishes; the action
+	   buttons give up their labels first when the column is narrow (e.g. iPad portrait). */
 	.player {
-		min-width: 0;
+		flex: 0 1 auto;
+		min-width: 7.5rem;
 		max-width: 100%;
+	}
+	.act {
+		flex: none;
+	}
+	@container (max-width: 400px) {
+		.act {
+			padding: 0.5em;
+			border-radius: 50%;
+		}
+		.act .label {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			overflow: hidden;
+			clip: rect(0 0 0 0);
+		}
 	}
 	.pop {
 		position: absolute;

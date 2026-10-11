@@ -170,7 +170,7 @@
 	<nav class="tabs" aria-label="Main">
 		{#each TABS as n (n.href)}
 			<a href={n.href} class:active={n.match(path)} aria-current={n.match(path) ? 'page' : undefined}>
-				<Icon name={n.icon} size={22} /><span>{n.label}</span>
+				<span class="ico"><Icon name={n.icon} size={22} /></span><span>{n.label}</span>
 			</a>
 		{/each}
 	</nav>
@@ -313,6 +313,7 @@
 		.tabs a {
 			display: grid;
 			justify-items: center;
+			min-width: 0;
 			align-content: center;
 			gap: 2px;
 			font-size: 0.7rem;
@@ -320,6 +321,15 @@
 		}
 		.tabs a.active {
 			color: var(--accent);
+		}
+		/* Every tab's icon sits in the same fixed slot, so labels line up and the active
+		   tab's pill (Material) never shifts or resizes anything. */
+		.tabs .ico {
+			display: grid;
+			place-items: center;
+			width: 56px;
+			height: 30px;
+			border-radius: 999px;
 		}
 		/* Material: a navigation bar with a pill behind the active icon. */
 		:global(:root[data-theme='material']) .tabs {
@@ -329,12 +339,9 @@
 		:global(:root[data-theme='material']) .tabs a.active {
 			color: var(--fg);
 		}
-		:global(:root[data-theme='material']) .tabs a.active :global(svg) {
+		:global(:root[data-theme='material']) .tabs a.active .ico {
 			background: var(--accent-soft);
 			color: var(--accent-soft-fg);
-			border-radius: 999px;
-			padding: 4px 18px;
-			box-sizing: content-box;
 		}
 		/* The Now playing page has its own controls: no mini bar there. */
 		.barwrap.on-np {
