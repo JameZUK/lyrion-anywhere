@@ -11,8 +11,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Input
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Devices
+import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.LinkOff
+import androidx.compose.material3.IconToggleButton
+import androidx.compose.ui.platform.testTag
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Speaker
 import androidx.compose.material.icons.outlined.SpeakerGroup
@@ -64,7 +69,12 @@ fun OutputButton(state: PlayerUiState, onClick: () -> Unit, modifier: Modifier =
  * phone. Shows nothing while this phone is the player.
  */
 @Composable
-fun PlayingOnStrip(state: PlayerUiState, onBackToPhone: () -> Unit, modifier: Modifier = Modifier) {
+fun PlayingOnStrip(
+    state: PlayerUiState,
+    onBackToPhone: () -> Unit,
+    modifier: Modifier = Modifier,
+    onBringToPhone: (() -> Unit)? = null,
+) {
     if (!state.controllingOther) return
     val name = state.selected?.name ?: return
     val bg = MaterialTheme.colorScheme.tertiaryContainer
@@ -86,20 +96,57 @@ fun PlayingOnStrip(state: PlayerUiState, onBackToPhone: () -> Unit, modifier: Mo
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
         )
+        // Moving playback here needs a player with something queued, and none in progress.
+        if (onBringToPhone != null && state.status?.current != null && state.transfer !is TransferState.Running) {
+            TextButton(onClick = onBringToPhone) {
+                Text(stringResource(R.string.bring_to_phone), color = fg)
+            }
+        }
         TextButton(onClick = onBackToPhone) {
             Text(stringResource(R.string.back_to_phone), color = fg)
         }
     }
 }
 
-/** What the "Play on…" sheet can do. Each player row has room for more actions later
- *  (e.g. "Move playback here"), next to "Control". */
+/** What the "Play on…" sheet can do. */
 data class PlayOnActions(
     val onControl: (String) -> Unit,
     val onBackToPhone: () -> Unit,
-    /** Extra actions for a player row (none yet). */
+    /** "Move playback here": move what the controlled player plays to this one (Transfer). */
+    val onMoveHere: ((String) -> Unit)? = null,
+    /** "Bring to this phone" (Transfer), offered on this phone's row. */
+    val onBringToPhone: (() -> Unit)? = null,
+    /** Join this player to the controlled player's group (true), or take it out (false). */
+    val onSync: ((String, Boolean) -> Unit)? = null,
+    val onDismissTransfer: () -> Unit = {},
+    /** Extra actions for a player row, after the built-in ones. */
     val rowActions: @Composable RowScope.(Player) -> Unit = {},
 )
+
+/** A player row's actions: "Move playback here" and "Play in sync with …". */
+@Composable
+private fun RowScope.PlayerRowActions(p: Player, state: PlayerUiState, actions: PlayOnActions) {
+    if (p.id == state.selectedId || state.selectedId == null) return
+    val busy = state.transfer is TransferState.Running
+    actions.onMoveHere?.let { move ->
+        IconButton(onClick = { move(p.id) }, enabled = !busy && state.status?.current != null) {
+            Icon(Icons.AutoMirrored.Outlined.Input, contentDescription = stringResource(R.string.move_here_named, p.name))
+        }
+    }
+    actions.onSync?.let { sync ->
+        val together = SyncChoice.together(state.selectedId, p.id, state.syncGroups)
+        val current = state.selected?.name.orEmpty()
+        val label = stringResource(R.string.sync_with, current)
+        IconToggleButton(
+            checked = together,
+            onCheckedChange = { sync(p.id, it) },
+            enabled = !busy,
+            modifier = Modifier.testTag("sync-${p.id}"),
+        ) {
+            Icon(if (together) Icons.Outlined.Link else Icons.Outlined.LinkOff, contentDescription = label)
+        }
+    }
+}
 
 /** "Play on…": this phone, the other players this account may control, and sync groups. */
 @Composable
@@ -110,15 +157,34 @@ fun PlayOnList(state: PlayerUiState, actions: PlayOnActions, modifier: Modifier 
             style = MaterialTheme.typography.titleLarge,
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp).semantics { heading() },
         )
+        TransferStatus(state.transfer, actions.onDismissTransfer)
+        if (actions.onMoveHere != null && state.otherPlayers.isNotEmpty()) {
+            Text(
+                stringResource(R.string.move_replaces_queue),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+            )
+        }
         val phone = state.localSelected || (state.selectedId == null && state.waitingForPhone)
-        ListItem(
-            leadingContent = { Icon(Icons.Outlined.PhoneAndroid, contentDescription = null) },
-            headlineContent = { Text(stringResource(R.string.this_phone)) },
-            supportingContent = { Text(playOnPhoneDetail(state.local)) },
-            trailingContent = { if (phone) Icon(Icons.Outlined.Check, contentDescription = null) },
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            modifier = Modifier.selectable(selected = phone, role = Role.RadioButton, onClick = actions.onBackToPhone),
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ListItem(
+                leadingContent = { Icon(Icons.Outlined.PhoneAndroid, contentDescription = null) },
+                headlineContent = { Text(stringResource(R.string.this_phone)) },
+                supportingContent = { Text(playOnPhoneDetail(state.local)) },
+                trailingContent = { if (phone) Icon(Icons.Outlined.Check, contentDescription = null) },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                modifier = Modifier
+                    .weight(1f)
+                    .selectable(selected = phone, role = Role.RadioButton, onClick = actions.onBackToPhone),
+            )
+            val bring = actions.onBringToPhone
+            if (bring != null && state.controllingOther && state.status?.current != null) {
+                IconButton(onClick = bring, enabled = state.transfer !is TransferState.Running) {
+                    Icon(Icons.AutoMirrored.Outlined.Input, contentDescription = stringResource(R.string.bring_to_phone))
+                }
+            }
+        }
         val others = state.otherPlayers
         if (others.isEmpty()) {
             Text(
@@ -143,6 +209,7 @@ fun PlayOnList(state: PlayerUiState, actions: PlayOnActions, modifier: Modifier 
                             actions.onControl(p.id)
                         },
                 )
+                PlayerRowActions(p, state, actions)
                 actions.rowActions(this, p)
             }
         }

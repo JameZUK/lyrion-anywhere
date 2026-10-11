@@ -113,6 +113,13 @@ class PlaybackService : MediaSessionService() {
                 .distinctUntilChanged()
                 .collect { (wantsToPlay, enabled) -> onPlayingChanged(wantsToPlay, enabled) }
         }
+        host.nowPlaying?.let { hub ->
+            scope.launch {
+                // The widget and tile follow this phone's player from what the session
+                // already knows; nothing extra is fetched for them.
+                controller.snapshot.map { it.nowPlaying() }.distinctUntilChanged().collect(hub::publishPhone)
+            }
+        }
         scope.launch {
             // Keep the wake lock's timeout fresh while playing (each track change).
             controller.snapshot.map { it.status?.current?.id }.distinctUntilChanged().collect {

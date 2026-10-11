@@ -9,6 +9,8 @@ import io.github.jamezuk.lyrionanywhere.data.ArtRepository
 import io.github.jamezuk.lyrionanywhere.data.EventsRepository
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerState
+import io.github.jamezuk.lyrionanywhere.data.NowPlaying
+import io.github.jamezuk.lyrionanywhere.data.NowPlayingHub
 import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
 
 /** What the playback service needs from the app (implemented by the `Application`). */
@@ -17,6 +19,15 @@ interface PlaybackHost {
     val players: PlayersRepository
     val events: EventsRepository
     val art: ArtRepository
+
+    /** Where the widget and the Quick Settings tile learn what this phone plays (none: not shared). */
+    val nowPlaying: NowPlayingHub? get() = null
+}
+
+/** What this phone's player plays, for the widget and tile (null until LMS has said). */
+fun SessionSnapshot.nowPlaying(): NowPlaying? {
+    val id = local.playerId ?: return null
+    return NowPlaying.from(id, status?.name.orEmpty(), status, isPhone = true)
 }
 
 /** Cover art for the current track (compared by key, not by bytes). */

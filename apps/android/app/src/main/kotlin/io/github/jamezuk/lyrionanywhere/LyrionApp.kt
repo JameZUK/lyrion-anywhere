@@ -7,6 +7,17 @@ import coil3.SingletonImageLoader
 import coil3.memory.MemoryCache
 import coil3.request.crossfade
 import io.github.jamezuk.lyrionanywhere.data.ArtRepository
+import io.github.jamezuk.lyrionanywhere.data.AuthState
+import io.github.jamezuk.lyrionanywhere.data.NowPlayingHub
+import io.github.jamezuk.lyrionanywhere.widget.Controls
+import io.github.jamezuk.lyrionanywhere.widget.NowPlayingWidget
+import io.github.jamezuk.lyrionanywhere.widget.PlayPauseTileService
+import io.github.jamezuk.lyrionanywhere.widget.WidgetModel
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.dropWhile
+import kotlinx.coroutines.flow.map
 import io.github.jamezuk.lyrionanywhere.data.EventsRepository
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
@@ -24,8 +35,15 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
         private set
 
     /** Work that outlives any screen (resuming the sign-in, the phone's player). */
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+    /** What plays, for the home-screen widget and the Quick Settings tile. */
+    override val nowPlaying = NowPlayingHub()
+
+    /** The widget's and tile's buttons. */
+    val controls = Controls({ container.players }, nowPlaying)
+
+    @OptIn(FlowPreview::class)
     override fun onCreate() {
         super.onCreate()
         // Load the Rust library and give its TLS verifier Android's TrustManager, before
@@ -33,6 +51,23 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
         NativeInit.init(this)
         container = AppContainer(this, appScope)
         appScope.launch { container.account.start() }
+        appScope.launch {
+            container.account.state.collect { if (it is AuthState.SignedOut) nowPlaying.clear() }
+        }
+        // Redraw the widget and tile only when what they show changes. This follows state
+        // the app has anyway; it never wakes the app or schedules work.
+        appScope.launch {
+            // A fresh process knows nothing yet: keep the widget as it was until it does.
+            nowPlaying.shown.map(WidgetModel::from).dropWhile { it.kind == WidgetModel.Kind.NOTHING }
+                .distinctUntilChanged().debounce(WIDGET_DEBOUNCE_MS).collect {
+                NowPlayingWidget.render(this@LyrionApp)
+            }
+        }
+        appScope.launch {
+            nowPlaying.phone.map { it?.playing to it?.title }.distinctUntilChanged().collect {
+                PlayPauseTileService.refresh(this@LyrionApp)
+            }
+        }
     }
 
     // The playback service's view of the app.
@@ -40,6 +75,10 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
     override val players: PlayersRepository get() = container.players
     override val events: EventsRepository get() = container.events
     override val art: ArtRepository get() = container.art
+
+    private companion object {
+        const val WIDGET_DEBOUNCE_MS = 500L
+    }
 
     /** Artwork goes through the Rust Art API (bearer token, size cap); memory cache only. */
     override fun newImageLoader(context: PlatformContext): ImageLoader =

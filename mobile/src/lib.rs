@@ -10,7 +10,9 @@
 //!   Android); access tokens live in memory only;
 //! - [`MusicLibrary`], [`Players`], [`Menus`]: browsing, remote control and LMS menus (apps,
 //!   radio, plugins, "More…"), using only commands the gateway's allow-list accepts (the
-//!   same shapes as the web app) and menu actions LMS offered;
+//!   same shapes as the web app) and menu actions LMS offered. `Players` also moves
+//!   playback between players (`transfer`, docs/PROTOCOL.md › Transfer), edits the queue
+//!   and joins sync groups;
 //! - [`Art`]: artwork bytes, fetched with the bearer token and size-capped;
 //! - [`Analysis`]: track analyses (waveform, loudness) from the gateway;
 //! - [`Events`]: the live event stream with reconnects and token renewal;

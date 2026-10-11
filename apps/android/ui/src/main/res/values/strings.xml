@@ -353,4 +353,46 @@
     <string name="default_player_last">Last used</string>
     <string name="default_player_last_detail">Start with whichever player you used last</string>
     <string name="default_player_missing">The chosen player isn\'t available now, so this phone is used.</string>
+
+    <!-- Transfer (docs/PROTOCOL.md › Transfer) -->
+    <string name="move_here_named">Move playback to %1$s</string>
+    <string name="bring_to_phone">Bring to this phone</string>
+    <string name="move_replaces_queue">Moving playback replaces the other player\'s queue.</string>
+    <string name="transfer_reading">Moving playback to %1$s: reading the queue…</string>
+    <string name="transfer_grouping">Moving playback to %1$s…</string>
+    <string name="transfer_starting">Moving playback to %1$s: starting it…</string>
+    <string name="transfer_copying">Moving playback to %1$s: copying the queue…</string>
+    <string name="transfer_done">Now playing on %1$s</string>
+    <string name="transfer_failed">Couldn\'t move playback to %1$s.</string>
+    <string name="transfer_same">%1$s is already playing this.</string>
+    <string name="transfer_empty">Nothing to move: the queue is empty.</string>
+    <string name="transfer_remote">%1$s can\'t take over radio or app items. Start them on %1$s instead.</string>
+    <string name="transfer_too_long">This queue is too long to move to %1$s (at most 500 tracks).</string>
+    <string name="transfer_not_grouped">Couldn\'t move playback to %1$s.</string>
+    <string name="transfer_phone_not_ready">This phone isn\'t ready as a player yet. Try again in a moment.</string>
+    <string name="action_dismiss">Dismiss</string>
+
+    <!-- Sync groups -->
+    <string name="sync_with">Play in sync with %1$s</string>
+
+    <!-- Queue editing -->
+    <string name="queue_clear">Clear queue</string>
+    <string name="queue_clear_confirm_title">Clear the queue?</string>
+    <string name="queue_clear_confirm">This removes every track from the queue of %1$s.</string>
+    <string name="action_clear">Clear</string>
+    <string name="queue_removed">Removed %1$s</string>
+    <string name="queue_removed_track">Removed the track</string>
+    <string name="action_undo">Undo</string>
+    <string name="queue_remove">Remove from queue</string>
+    <string name="queue_move_up">Move up</string>
+    <string name="queue_move_down">Move down</string>
+    <string name="queue_drag">Drag to reorder</string>
+    <string name="queue_failed">Couldn\'t change the queue.</string>
+    <string name="queue_undo_failed">Couldn\'t put the track back.</string>
+
+    <!-- Tablet layouts (list and detail) -->
+    <string name="choose_album">Choose an album to see it here.</string>
+    <string name="choose_artist">Choose an artist to see them here.</string>
+    <string name="choose_playlist">Choose a playlist to see it here.</string>
+
 </resources>

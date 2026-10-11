@@ -139,6 +139,27 @@ class FakePlayers : PlayersRepository {
         cmd("enqueue")
 
     override suspend fun playFavourite(player: String, itemId: String, placement: Placement) = cmd("favourite")
+
+    override suspend fun removeFromQueue(player: String, index: Int) = cmd("remove $index")
+
+    override suspend fun moveInQueue(player: String, from: Int, to: Int) = cmd("move $from $to")
+
+    override suspend fun clearQueue(player: String) = cmd("clear")
+
+    override suspend fun restoreToQueue(player: String, trackId: Long, index: Int) = cmd("restore $trackId $index")
+
+    override suspend fun setSynced(current: String, other: String, on: Boolean) = cmd("sync $other $on")
+
+    override suspend fun transfer(
+        source: String,
+        target: String,
+        onStage: (io.github.jamezuk.lyrionanywhere.core.TransferStage) -> Unit,
+    ): ApiResult<io.github.jamezuk.lyrionanywhere.core.TransferOutcome> {
+        commands += "transfer $source $target"
+        return ApiResult.Ok(
+            io.github.jamezuk.lyrionanywhere.core.TransferOutcome.Moved(io.github.jamezuk.lyrionanywhere.core.TransferMethod.GROUP),
+        )
+    }
 }
 
 class FakeEvents : EventsRepository {

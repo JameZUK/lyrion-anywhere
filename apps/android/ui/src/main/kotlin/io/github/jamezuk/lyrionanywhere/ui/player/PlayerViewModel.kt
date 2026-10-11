@@ -13,6 +13,12 @@ import io.github.jamezuk.lyrionanywhere.core.ServerEvent
 import io.github.jamezuk.lyrionanywhere.core.ShuffleMode
 import io.github.jamezuk.lyrionanywhere.core.SyncGroup
 import io.github.jamezuk.lyrionanywhere.core.Track
+import io.github.jamezuk.lyrionanywhere.core.TransferOutcome
+import io.github.jamezuk.lyrionanywhere.core.TransferStage
+import io.github.jamezuk.lyrionanywhere.data.NowPlaying
+import io.github.jamezuk.lyrionanywhere.data.NowPlayingHub
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import io.github.jamezuk.lyrionanywhere.data.DefaultPlayer
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
@@ -49,7 +55,8 @@ data class PlayerUiState(
     val status: PlayerStatus? = null,
     /** When [status] was read ([PlayerViewModel]'s clock, ms), for a ticking position. */
     val statusAt: Long = 0,
-    val queue: List<Track> = emptyList(),
+    /** The selected player's queue (the first page), each entry with a key for the UI. */
+    val queue: List<QueueEntry> = emptyList(),
     val loading: Boolean = true,
     val error: AppError? = null,
     /** The event stream is connected (updates are instant rather than polled). */
@@ -67,6 +74,8 @@ data class PlayerUiState(
     val defaultPlayerId: String? = null,
     /** Waiting for this phone's player to appear in LMS before controlling it. */
     val waitingForPhone: Boolean = false,
+    /** Moving playback to another player (docs/PROTOCOL.md › Transfer). */
+    val transfer: TransferState = TransferState.Idle,
 ) {
     val selected: Player? get() = players.firstOrNull { it.id == selectedId }
     val playing: Boolean get() = status?.mode == PlaybackMode.PLAYING
@@ -102,6 +111,15 @@ sealed interface PlayerMessage {
     data object NoPlayer : PlayerMessage
 
     data class Failed(val error: AppError) : PlayerMessage
+
+    /** A queue entry was removed; [canUndo] offers Undo. */
+    data class Removed(val title: String, val canUndo: Boolean, val token: Long = 0) : PlayerMessage
+
+    /** A queue edit failed (the queue shown is put back); shown with the error's detail. */
+    data class QueueFailed(val error: AppError, val undo: Boolean = false) : PlayerMessage
+
+    /** Playback moved to [targetName], which is now controlled. */
+    data class Moved(val targetName: String) : PlayerMessage
 }
 
 /**
@@ -116,8 +134,21 @@ class PlayerViewModel(
     private val localPlayer: LocalPlayerRepository = NoLocalPlayer,
     /** Waveforms for the seek bar (none without). */
     private val waveforms: WaveformCache? = null,
+    /** Where the home-screen widget and tile learn what plays (none in tests). */
+    private val nowPlaying: NowPlayingHub? = null,
     private val clock: () -> Long,
 ) : ViewModel() {
+    /** The last removal, for Undo (only for the player it was removed from). */
+    private data class Undo(val player: String, val track: Track, val index: Int, val token: Long)
+
+    private var undo: Undo? = null
+    /** Queue edits run one at a time, in order. */
+    private val edits = Mutex()
+    /** Edits sent but not finished: a queue read meanwhile would undo what is shown. */
+    private var pendingEdits = 0
+    private var nextQueueKey = 0L
+    private var undoToken = 0L
+
     /** Select this phone's player as soon as LMS lists it (after "Play on this phone"). */
     private var selectLocalWhenReady = false
     private val _state = MutableStateFlow(PlayerUiState())
@@ -186,6 +217,14 @@ class PlayerViewModel(
                         val w = waveforms.load(id)
                         _state.update { s -> if (s.status?.current?.id == id) s.copy(waveform = w) else s }
                     }
+                }
+            }
+            if (nowPlaying != null) {
+                launch {
+                    // What the controlled player plays, for the home-screen widget.
+                    state.map { s ->
+                        s.selectedId?.let { id -> NowPlaying.from(id, s.selected?.name.orEmpty(), s.status, s.localSelected) }
+                    }.distinctUntilChanged().collect { n -> if (n != null) nowPlaying.publishSelected(n) }
                 }
             }
             launch {
@@ -296,12 +335,181 @@ class PlayerViewModel(
 
     fun loadQueue() {
         val id = _state.value.selectedId ?: return
+        viewModelScope.launch { readQueue(id) }
+    }
+
+    private suspend fun readQueue(id: String) {
+        when (val r = players.queue(id, 0, QUEUE_PAGE)) {
+            is ApiResult.Ok -> _state.update {
+                // An edit still on its way would be undone on screen by this older list.
+                if (it.selectedId != id || pendingEdits > 0) it else it.copy(queue = r.value.map { t -> QueueEntry(nextQueueKey++, t) })
+            }
+            is ApiResult.Err -> _messages.trySend(PlayerMessage.Failed(r.error))
+        }
+    }
+
+    // --- queue editing (as the web app: optimistic, put back on failure) ---------------------
+
+    /**
+     * Show [optimistic] at once and run [action] on the selected player (after any earlier
+     * edit). On failure the list shown before is put back and the error reported.
+     */
+    private fun edit(
+        optimistic: (List<QueueEntry>) -> List<QueueEntry>,
+        undoing: Boolean = false,
+        onDone: (String) -> Unit = {},
+        action: suspend (String) -> ApiResult<Unit>,
+    ) {
+        val id = _state.value.selectedId
+        if (id == null) {
+            _messages.trySend(PlayerMessage.NoPlayer)
+            return
+        }
+        val before = _state.value.queue
+        _state.update { it.copy(queue = optimistic(it.queue)) }
+        pendingEdits++
         viewModelScope.launch {
-            when (val r = players.queue(id, 0, QUEUE_PAGE)) {
-                is ApiResult.Ok -> _state.update { if (it.selectedId == id) it.copy(queue = r.value) else it }
-                is ApiResult.Err -> _messages.trySend(PlayerMessage.Failed(r.error))
+            val r = try {
+                edits.withLock { action(id) }
+            } finally {
+                pendingEdits--
+            }
+            when (r) {
+                is ApiResult.Ok -> onDone(id)
+                is ApiResult.Err -> {
+                    _state.update { if (it.selectedId == id) it.copy(queue = before) else it }
+                    _messages.trySend(PlayerMessage.QueueFailed(r.error, undo = undoing))
+                }
+            }
+            if (pendingEdits == 0 && _state.value.selectedId == id) {
+                readQueue(id)
+                refreshStatus()
             }
         }
+    }
+
+    /** Take the entry at [index] out (swipe), offering Undo for library tracks. */
+    fun removeFromQueue(index: Int) {
+        val entry = _state.value.queue.getOrNull(index) ?: return
+        undo = null
+        edit(optimistic = { QueueEdit.removeAt(it, index) }, onDone = { id ->
+            val canUndo = QueueEdit.canRestore(entry.track)
+            val token = ++undoToken
+            undo = if (canUndo) Undo(id, entry.track, index, token) else null
+            _messages.trySend(PlayerMessage.Removed(entry.track.title, canUndo, token))
+        }) { id -> players.removeFromQueue(id, index) }
+    }
+
+    /**
+     * Put the last removed track back where it was (Undo). With [token], only if that is
+     * still the last removal (an older snackbar's Undo does nothing).
+     */
+    fun undoRemove(token: Long? = null) {
+        val u = undo ?: return
+        if (token != null && token != u.token) return
+        undo = null
+        if (u.player != _state.value.selectedId) return
+        val trackId = u.track.id ?: return
+        edit(optimistic = { QueueEdit.insertAt(it, u.index, QueueEntry(nextQueueKey++, u.track)) }, undoing = true) { id ->
+            players.restoreToQueue(id, trackId, u.index)
+        }
+    }
+
+    /** Move the entry at [from] so it ends up at [to] (drag to reorder). */
+    fun moveInQueue(from: Int, to: Int) {
+        val size = _state.value.queue.size
+        if (from == to || from !in 0 until size || to !in 0 until size) return
+        undo = null
+        edit(optimistic = { QueueEdit.reorder(it, from, to) }) { id -> players.moveInQueue(id, from, to) }
+    }
+
+    /** Empty the queue (after the UI has asked to confirm). */
+    fun clearQueue() {
+        undo = null
+        edit(optimistic = { emptyList() }) { id -> players.clearQueue(id) }
+    }
+
+    // --- sync groups -------------------------------------------------------------------------
+
+    /** Put [otherId] in the selected player's group ([on]), or take it out of its group. */
+    fun setSynced(otherId: String, on: Boolean) {
+        val current = _state.value.selectedId
+        if (current == null) {
+            _messages.trySend(PlayerMessage.NoPlayer)
+            return
+        }
+        val before = _state.value.syncGroups
+        _state.update { it.copy(syncGroups = SyncChoice.toggled(it.syncGroups, current, otherId, on)) }
+        viewModelScope.launch {
+            when (val r = players.setSynced(current, otherId, on)) {
+                is ApiResult.Ok -> {}
+                is ApiResult.Err -> {
+                    _state.update { it.copy(syncGroups = before) }
+                    _messages.trySend(PlayerMessage.Failed(r.error))
+                }
+            }
+            (players.syncGroups() as? ApiResult.Ok)?.value?.let { g -> _state.update { it.copy(syncGroups = g) } }
+            refreshStatus()
+        }
+    }
+
+    // --- transfer (docs/PROTOCOL.md › Transfer) ------------------------------------------------
+
+    /** A player's name as LMS lists it (the phone's own name for this phone). */
+    private fun nameOf(id: String): String =
+        _state.value.players.firstOrNull { it.id == id }?.name?.ifEmpty { null }
+            ?: _state.value.local.status?.name?.takeIf { id == _state.value.local.playerId && it.isNotEmpty() }
+            ?: id
+
+    /** Move what the controlled player plays to [targetId] ("Move playback here"), then control it. */
+    fun moveTo(targetId: String) {
+        val source = _state.value.selectedId
+        if (source == null) {
+            _messages.trySend(PlayerMessage.NoPlayer)
+            return
+        }
+        if (_state.value.transfer is TransferState.Running) return
+        val name = nameOf(targetId)
+        _state.update { it.copy(transfer = TransferState.Running(targetId, name, TransferStage.READING)) }
+        viewModelScope.launch {
+            val r = players.transfer(source, targetId) { stage ->
+                _state.update { s ->
+                    val running = s.transfer as? TransferState.Running
+                    if (running?.targetId == targetId) s.copy(transfer = running.copy(stage = stage)) else s
+                }
+            }
+            when (r) {
+                is ApiResult.Ok -> when (val outcome = r.value) {
+                    is TransferOutcome.Moved -> {
+                        _state.update { it.copy(transfer = TransferState.Idle) }
+                        if (targetId == _state.value.local.playerId) backToPhone() else select(targetId)
+                        _messages.trySend(PlayerMessage.Moved(name))
+                    }
+                    is TransferOutcome.Refused ->
+                        _state.update { it.copy(transfer = TransferState.Refused(name, outcome.reason)) }
+                }
+                is ApiResult.Err -> _state.update { it.copy(transfer = TransferState.Failed(name, r.error)) }
+            }
+            refreshStatus()
+        }
+    }
+
+    /** "Bring to this phone": move what the controlled player plays to this phone's player. */
+    fun bringToPhone() {
+        val s = _state.value
+        val phone = s.local.playerId?.takeIf { id -> s.players.any { it.id == id } }
+        if (phone == null) {
+            // The phone isn't an LMS player (yet): start it, and say so.
+            if (!s.local.enabled) setPlayOnPhone(true)
+            _state.update { it.copy(transfer = TransferState.PhoneNotReady) }
+            return
+        }
+        moveTo(phone)
+    }
+
+    /** Hide a transfer's refusal or error. */
+    fun dismissTransfer() {
+        _state.update { if (it.transfer is TransferState.Running) it else it.copy(transfer = TransferState.Idle) }
     }
 
     /** Control this phone again ("Back to this phone"), starting its player if need be. */

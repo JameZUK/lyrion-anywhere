@@ -56,5 +56,38 @@
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>
+        <!--
+          The home-screen widget. Exported because the launcher's widget host must reach it;
+          it accepts only the widget update broadcast, which at worst redraws it. Its buttons
+          go through Glance's own receiver, which is not exported.
+        -->
+        <receiver
+            android:name=".widget.NowPlayingWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/now_playing_widget" />
+        </receiver>
+        <!--
+          Quick Settings play/pause. Exported for the system UI, and only the system can bind
+          it (BIND_QUICK_SETTINGS_TILE is a signature permission).
+        -->
+        <service
+            android:name=".widget.PlayPauseTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_widget_play"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="true" />
+        </service>
     </application>
 </manifest>

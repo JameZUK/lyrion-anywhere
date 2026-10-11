@@ -38,12 +38,26 @@ class SecurityConfigTest {
     }
 
     @Test
-    fun onlyTheLauncherActivityIsExported() {
+    fun onlyTheLauncherTheWidgetAndTheTileAreExported() {
         val manifest = xml("src/main/AndroidManifest.xml")
         val exported = listOf("activity", "service", "receiver", "provider")
             .flatMap { manifest.children(it) }
             .filter { it.getAttributeNS(android, "exported") == "true" }
-        assertEquals(listOf(".MainActivity"), exported.map { it.getAttributeNS(android, "name") })
+        assertEquals(
+            setOf(".MainActivity", ".widget.NowPlayingWidgetReceiver", ".widget.PlayPauseTileService"),
+            exported.map { it.getAttributeNS(android, "name") }.toSet(),
+        )
+        fun actions(e: Element) = e.children("action").map { it.getAttributeNS(android, "name") }.toSet()
+        // The widget receiver takes only the widget update broadcast.
+        val widget = exported.single { it.getAttributeNS(android, "name").endsWith("NowPlayingWidgetReceiver") }
+        assertEquals(setOf("android.appwidget.action.APPWIDGET_UPDATE"), actions(widget))
+        // Only the system can bind the tile.
+        val tile = exported.single { it.getAttributeNS(android, "name").endsWith("PlayPauseTileService") }
+        assertEquals("android.permission.BIND_QUICK_SETTINGS_TILE", tile.getAttributeNS(android, "permission"))
+        assertEquals(setOf("android.service.quicksettings.action.QS_TILE"), actions(tile))
+        // No periodic widget updates: nothing wakes the phone for it.
+        val info = xml("src/main/res/xml/now_playing_widget.xml")
+        assertEquals("0", info.getAttributeNS(android, "updatePeriodMillis"))
     }
 
     @Test

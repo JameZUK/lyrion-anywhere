@@ -9,14 +9,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Pause
@@ -44,6 +45,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -51,12 +53,17 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -74,8 +81,6 @@ import io.github.jamezuk.lyrionanywhere.ui.components.EmptyState
 import io.github.jamezuk.lyrionanywhere.ui.components.ErrorState
 import io.github.jamezuk.lyrionanywhere.ui.components.LoadingState
 import io.github.jamezuk.lyrionanywhere.ui.components.formatDuration
-import io.github.jamezuk.lyrionanywhere.ui.library.SectionHeader
-import io.github.jamezuk.lyrionanywhere.ui.library.TrackRow
 import kotlinx.coroutines.delay
 
 /** The current position, ticking once a second while playing. */
@@ -104,17 +109,29 @@ fun MiniPlayer(
     onNext: () -> Unit,
     onOutputs: () -> Unit = {},
     onBackToPhone: () -> Unit = {},
+    onBringToPhone: (() -> Unit)? = null,
+    onDismissTransfer: () -> Unit = {},
 ) {
     val track = state.status?.current
     if (track == null) {
-        PlayingOnStrip(state, onBackToPhone)
+        Column {
+            TransferStatus(state.transfer, onDismissTransfer)
+            PlayingOnStrip(state, onBackToPhone, onBringToPhone = onBringToPhone)
+        }
         return
     }
+    val swipeMin = with(LocalDensity.current) { SWIPE_MIN.toPx() }
+    // A stable callback, so recompositions don't restart a swipe in progress.
+    val latestOpen by rememberUpdatedState(onOpen)
+    val open = remember { { latestOpen() } }
     Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
       Column {
-        PlayingOnStrip(state, onBackToPhone)
+        TransferStatus(state.transfer, onDismissTransfer)
+        PlayingOnStrip(state, onBackToPhone, onBringToPhone = onBringToPhone)
         Row(
             Modifier
+                .testTag("mini-player")
+                .swipeUpToOpen(swipeMin, open)
                 .clickable(onClickLabel = stringResource(R.string.open_now_playing), onClick = onOpen)
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -154,13 +171,18 @@ private fun PlayPauseButton(playing: Boolean, onClick: () -> Unit, filled: Boole
     }
 }
 
-/** Full remote control for the selected player. */
+/**
+ * Full remote control for the selected player. On a phone the controls and the queue
+ * scroll as one column (pull down at the top to close); with [twoPane] the queue sits
+ * beside the controls (tablets, and phones held sideways).
+ */
 @Composable
 fun NowPlayingScreen(
     state: PlayerUiState,
     clock: () -> Long,
     actions: NowPlayingActions,
     modifier: Modifier = Modifier,
+    twoPane: Boolean = false,
 ) {
     val status = state.status
     val player = state.selected
@@ -173,132 +195,173 @@ fun NowPlayingScreen(
         return
     }
     val track = status.current
-    val elapsed = rememberElapsed(state, clock)
+    val drag = remember { QueueDrag() }
+    val queueActions = QueueActions(actions.onJump, actions.onRemove, actions.onMove, actions.onClearQueue)
+    val currentIndex = status.queueIndex?.toInt()
+    val pullMin = with(LocalDensity.current) { SWIPE_MIN.toPx() * 1.5f }
+    // Kept across recompositions (the caller's lambda changes each time), so a pull in
+    // progress isn't lost.
+    val onClose by rememberUpdatedState(actions.onClose)
+    val pull = remember(pullMin) { PullToClose(pullMin) { onClose?.invoke() } }
     ArtTinted(track?.artwork) {
     Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-    PlayingOnStrip(state, actions.onBackToPhone)
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        contentPadding = PaddingValues(16.dp),
-    ) {
-        item {
+    TransferStatus(state.transfer, actions.onDismissTransfer)
+    PlayingOnStrip(state, actions.onBackToPhone, onBringToPhone = actions.onBringToPhone)
+    if (twoPane) {
+        Row(Modifier.fillMaxSize().testTag("now-playing-two-pane")) {
             Column(
-                Modifier.widthIn(max = 560.dp).fillMaxWidth(),
+                Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                ArtworkImage(
-                    track?.artwork,
-                    800,
-                    contentDescription = stringResource(R.string.album_cover),
-                    modifier = Modifier.fillMaxWidth(0.85f),
-                    corner = 16.dp,
-                )
-                Text(
-                    track?.title ?: stringResource(R.string.nothing_playing),
-                    style = MaterialTheme.typography.headlineSmall,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.semantics { heading() },
-                )
-                Text(
-                    listOfNotNull(track?.artist, track?.album).joinToString(" — "),
-                    style = MaterialTheme.typography.bodyLarge,
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                SeekBar(
-                    elapsed = elapsed,
-                    duration = status.durationSecs,
-                    enabled = status.canSeek && track != null,
-                    onSeek = actions.onSeek,
-                    waveform = state.waveform,
-                )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    val shuffleLabel = stringResource(R.string.shuffle)
-                    val shuffleState = stringResource(
-                        when (status.shuffle) {
-                            ShuffleMode.OFF -> R.string.mode_off
-                            ShuffleMode.SONGS -> R.string.shuffle_songs
-                            ShuffleMode.ALBUMS -> R.string.shuffle_albums
-                        },
+                NowPlayingControls(state, status, player.name, clock, actions)
+            }
+            VerticalDivider()
+            LazyColumn(Modifier.weight(1f).fillMaxHeight().testTag("queue-pane"), contentPadding = PaddingValues(vertical = 8.dp)) {
+                item(key = "queue-header") { QueueHeader(state.queue.size, player.name, actions.onClearQueue) }
+                queueItems(state.queue, currentIndex, drag, queueActions)
+            }
+        }
+    } else {
+        LazyColumn(
+            Modifier.fillMaxSize().nestedScroll(pull).testTag("now-playing-list"),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            contentPadding = PaddingValues(16.dp),
+        ) {
+            item(key = "controls") { NowPlayingControls(state, status, player.name, clock, actions) }
+            item(key = "queue-header") {
+                HorizontalDivider()
+                QueueHeader(state.queue.size, player.name, actions.onClearQueue)
+            }
+            queueItems(state.queue, currentIndex, drag, queueActions)
+        }
+    }
+    }
+    }
+}
+
+/** Artwork, track details, seek bar and buttons. */
+@Composable
+private fun NowPlayingControls(
+    state: PlayerUiState,
+    status: io.github.jamezuk.lyrionanywhere.core.PlayerStatus,
+    playerName: String,
+    clock: () -> Long,
+    actions: NowPlayingActions,
+) {
+    val track = status.current
+    val elapsed = rememberElapsed(state, clock)
+    val nextLabel = stringResource(R.string.action_next)
+    val previousLabel = stringResource(R.string.action_previous)
+    Column(
+        Modifier.widthIn(max = 560.dp).fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        SwipeableArtwork(
+            onNext = actions.onNext,
+            onPrevious = actions.onPrevious,
+            modifier = Modifier
+                .fillMaxWidth(0.85f)
+                .testTag("artwork")
+                .semantics {
+                    customActions = listOf(
+                        CustomAccessibilityAction(nextLabel) { actions.onNext(); true },
+                        CustomAccessibilityAction(previousLabel) { actions.onPrevious(); true },
                     )
-                    IconToggleButton(
-                        checked = status.shuffle != ShuffleMode.OFF,
-                        onCheckedChange = { actions.onShuffle() },
-                        modifier = Modifier.semantics { stateDescription = shuffleState },
-                    ) { Icon(Icons.Outlined.Shuffle, contentDescription = shuffleLabel) }
-                    IconButton(onClick = actions.onPrevious) {
-                        Icon(Icons.Outlined.SkipPrevious, contentDescription = stringResource(R.string.action_previous))
-                    }
-                    PlayPauseButton(state.playing, actions.onTogglePlay, filled = true)
-                    IconButton(onClick = actions.onNext) {
-                        Icon(Icons.Outlined.SkipNext, contentDescription = stringResource(R.string.action_next))
-                    }
-                    val repeatState = stringResource(
-                        when (status.repeat) {
-                            RepeatMode.OFF -> R.string.mode_off
-                            RepeatMode.ONE -> R.string.repeat_one
-                            RepeatMode.ALL -> R.string.repeat_all
-                        },
-                    )
-                    IconToggleButton(
-                        checked = status.repeat != RepeatMode.OFF,
-                        onCheckedChange = { actions.onRepeat() },
-                        modifier = Modifier.semantics { stateDescription = repeatState },
-                    ) {
-                        Icon(
-                            if (status.repeat == RepeatMode.ONE) Icons.Outlined.RepeatOne else Icons.Outlined.Repeat,
-                            contentDescription = stringResource(R.string.repeat),
-                        )
-                    }
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f)) { VolumeBar(status.volume.toInt(), actions.onVolume) }
-                    OutputButton(state, actions.onOutputs)
-                    if (track?.id != null && actions.onMore != null) {
-                        IconButton(onClick = { actions.onMore.invoke(track) }) {
-                            Icon(Icons.Outlined.MoreVert, contentDescription = stringResource(R.string.action_more))
-                        }
-                    }
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(player.name, style = MaterialTheme.typography.labelLarge)
-                    Spacer(Modifier.weight(1f))
-                    IconToggleButton(checked = status.powered, onCheckedChange = actions.onPower) {
-                        Icon(
-                            Icons.Outlined.PowerSettingsNew,
-                            contentDescription = stringResource(if (status.powered) R.string.power_off else R.string.power_on),
-                        )
-                    }
-                }
-                if (state.localSelected) {
-                    SignalPathPanel(state.local.signalPath)
+                },
+        ) {
+            ArtworkImage(
+                track?.artwork,
+                800,
+                contentDescription = stringResource(R.string.album_cover),
+                modifier = Modifier.fillMaxWidth(),
+                corner = 16.dp,
+            )
+        }
+        Text(
+            track?.title ?: stringResource(R.string.nothing_playing),
+            style = MaterialTheme.typography.headlineSmall,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.semantics { heading() },
+        )
+        Text(
+            listOfNotNull(track?.artist, track?.album).joinToString(" — "),
+            style = MaterialTheme.typography.bodyLarge,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        SeekBar(
+            elapsed = elapsed,
+            duration = status.durationSecs,
+            enabled = status.canSeek && track != null,
+            onSeek = actions.onSeek,
+            waveform = state.waveform,
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            val shuffleLabel = stringResource(R.string.shuffle)
+            val shuffleState = stringResource(
+                when (status.shuffle) {
+                    ShuffleMode.OFF -> R.string.mode_off
+                    ShuffleMode.SONGS -> R.string.shuffle_songs
+                    ShuffleMode.ALBUMS -> R.string.shuffle_albums
+                },
+            )
+            IconToggleButton(
+                checked = status.shuffle != ShuffleMode.OFF,
+                onCheckedChange = { actions.onShuffle() },
+                modifier = Modifier.semantics { stateDescription = shuffleState },
+            ) { Icon(Icons.Outlined.Shuffle, contentDescription = shuffleLabel) }
+            IconButton(onClick = actions.onPrevious) {
+                Icon(Icons.Outlined.SkipPrevious, contentDescription = previousLabel)
+            }
+            PlayPauseButton(state.playing, actions.onTogglePlay, filled = true)
+            IconButton(onClick = actions.onNext) {
+                Icon(Icons.Outlined.SkipNext, contentDescription = nextLabel)
+            }
+            val repeatState = stringResource(
+                when (status.repeat) {
+                    RepeatMode.OFF -> R.string.mode_off
+                    RepeatMode.ONE -> R.string.repeat_one
+                    RepeatMode.ALL -> R.string.repeat_all
+                },
+            )
+            IconToggleButton(
+                checked = status.repeat != RepeatMode.OFF,
+                onCheckedChange = { actions.onRepeat() },
+                modifier = Modifier.semantics { stateDescription = repeatState },
+            ) {
+                Icon(
+                    if (status.repeat == RepeatMode.ONE) Icons.Outlined.RepeatOne else Icons.Outlined.Repeat,
+                    contentDescription = stringResource(R.string.repeat),
+                )
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) { VolumeBar(status.volume.toInt(), actions.onVolume) }
+            OutputButton(state, actions.onOutputs)
+            if (track?.id != null && actions.onMore != null) {
+                IconButton(onClick = { actions.onMore.invoke(track) }) {
+                    Icon(Icons.Outlined.MoreVert, contentDescription = stringResource(R.string.action_more))
                 }
             }
         }
-        item {
-            HorizontalDivider()
-            SectionHeader(stringResource(R.string.section_queue))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(playerName, style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.weight(1f))
+            IconToggleButton(checked = status.powered, onCheckedChange = actions.onPower) {
+                Icon(
+                    Icons.Outlined.PowerSettingsNew,
+                    contentDescription = stringResource(if (status.powered) R.string.power_off else R.string.power_on),
+                )
+            }
         }
-        if (state.queue.isEmpty()) {
-            item { Text(stringResource(R.string.queue_empty), Modifier.padding(16.dp)) }
+        if (state.localSelected) {
+            SignalPathPanel(state.local.signalPath)
         }
-        itemsIndexed(state.queue, key = { i, t -> "$i-${t.id}" }) { i, t ->
-            val index = t.queueIndex?.toInt() ?: i
-            TrackRow(
-                t,
-                onClick = { actions.onJump(index) },
-                highlighted = index == status.queueIndex?.toInt(),
-                showArt = true,
-            )
-        }
-    }
-    }
     }
 }
 
@@ -319,6 +382,15 @@ data class NowPlayingActions(
     val onBackToPhone: () -> Unit = {},
     /** "More…" for the current track. */
     val onMore: ((Track) -> Unit)? = null,
+    /** Queue editing. */
+    val onRemove: (Int) -> Unit = {},
+    val onMove: (Int, Int) -> Unit = { _, _ -> },
+    val onClearQueue: () -> Unit = {},
+    /** Transfer: "Bring to this phone" (null: not offered), and hiding its result. */
+    val onBringToPhone: (() -> Unit)? = null,
+    val onDismissTransfer: () -> Unit = {},
+    /** Close Now playing (pulling it down from the top). */
+    val onClose: (() -> Unit)? = null,
 )
 
 /**

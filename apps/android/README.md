@@ -1,6 +1,6 @@
 # Lyrion Anywhere for Android
 
-The native Android app: sign-in, browsing, remote control of LMS players (milestone A0), the phone as an LMS player with native audio output (A1), bit-perfect USB DAC output and the Sound settings (A2), the waveform seek bar with loudness levelling (A3), and browsing on a par with the web app, with rich album and artist pages, LMS's own menus and "player-first" control (A4 part 1). The plan is in [`docs/plans/native-apps.md`](../../docs/plans/native-apps.md); the protocol it speaks is [`docs/PROTOCOL.md`](../../docs/PROTOCOL.md).
+The native Android app: sign-in, browsing, remote control of LMS players (milestone A0), the phone as an LMS player with native audio output (A1), bit-perfect USB DAC output and the Sound settings (A2), the waveform seek bar with loudness levelling (A3), and browsing on a par with the web app, with rich album and artist pages, LMS's own menus and "player-first" control (A4 part 1), and moving playback between players, queue editing, sync groups, tablet layouts, a home-screen widget, a Quick Settings tile and gestures (A4 part 2). The plan is in [`docs/plans/native-apps.md`](../../docs/plans/native-apps.md); the protocol it speaks is [`docs/PROTOCOL.md`](../../docs/PROTOCOL.md).
 
 ## Building
 
@@ -75,6 +75,35 @@ To try a debug build against a gateway on your computer, forward the port with `
 - **Another player is always named:** while you control one, a coloured strip says "Playing on <name>", with **Back to this phone**.
 - **Settings → Default player:** this phone (default), last used, or a specific player.
 - The choice rules are in `ui/player/PlayerChoice.kt`. Screens never pick a player themselves.
+
+### Moving playback, the queue and sync groups (A4 part 2)
+
+- **Transfer:** *Move playback here* on each other player in *Play on…*, and *Bring to this phone* on the phone's row and the "Playing on …" strip.
+  - It follows `docs/PROTOCOL.md` › Transfer, as the web app does: group then leave, or copy the list of library tracks if LMS won't group the two.
+  - The plan and the runner are Rust (`mobile/src/transfer.rs`): pure planning (status in, steps out), and a runner that reports its stage and never leaves the two grouped after a failure.
+  - The sheet shows progress, and any refusal or error (with its detail) until dismissed. A move that works controls the target.
+- **Queue** (Now playing):
+  - swipe a row left to remove it, with *Undo*;
+  - long-press the handle and drag to reorder;
+  - *Clear queue* (asks first);
+  - tap a row to play it.
+
+  Edits show at once and are put back if LMS refuses them. TalkBack users get Move up, Move down and Remove on each row.
+- **Sync groups:** the link toggle on each player in *Play on…* puts it in the controlled player's group (`<selected> sync <other>`) or takes it out (`<other> sync -`).
+
+### Tablets, widget, tile and gestures
+
+- **Layouts** follow Material's width classes (`ui/components/Adaptive.kt`):
+  - Expanded (840 dp and wider): Albums, Artists and Playlists show the chosen item beside the list, and Now playing puts the queue beside the controls;
+  - Medium: one pane with the navigation rail; Now playing also gets two panes when the window is short (a phone on its side).
+- **Home-screen widget** (`app/…/widget`): artwork, title, artist, play/pause and next.
+  - It shows this phone's player while it plays, otherwise the player the app last controlled.
+  - It is drawn from state the app already has (`NowPlayingHub`), once per change, with `GlanceRemoteViews`. No Glance session, WorkManager job, alarm or periodic update, so it never wakes the phone.
+- **Quick Settings tile:** play/pause for this phone's player (unavailable when the phone isn't a player). Only the system can bind it.
+- **Gestures:**
+  - swipe the mini player up to open Now playing;
+  - pull Now playing down from the top to close it;
+  - swipe the artwork left for the next track and right for the previous one, with a haptic tick (TalkBack: actions on the artwork).
 
 ### Play on this phone
 
@@ -172,7 +201,12 @@ Record the phone, Android version, DAC and results (in the A2 status of `docs/pl
 - `:ui` (A4): Compose tests for the "Playing on" strip, the "Play on…" sheet, the default-player setting, the Library page, the album page, the "More…" sheet and Apps & Radio, with 48 dp touch targets.
 - `:ui` (A4): WCAG contrast of the art-tinted colours for 511 covers in both themes.
 - `:data` (A4): the default-player and library settings (malformed stored values ignored), the virtual-library choice, and the suitability cache.
-- `:app`: regression tests for the manifest (no exported service, the expected permissions only), backup rules and network policy.
+- `:app`: regression tests for the manifest (only the launcher activity, the widget receiver and the system-bound tile are exported; the expected permissions only; no periodic widget updates), backup rules and network policy.
+- `:ui` and `:app` (A4 part 2):
+  - transfer states, queue editing with Undo, and sync direction (view models and Compose);
+  - layout selection by window size, gesture thresholds and pull-to-close;
+  - the widget's and tile's models and buttons (malformed player ids are never sent).
+- `:data` (A4 part 2): what the widget shows (`NowPlayingHub`).
 - `:playback`:
   - the LMS → Media3 state mapping and the focus policy (plain JVM);
   - the session player's state and buttons (Robolectric);

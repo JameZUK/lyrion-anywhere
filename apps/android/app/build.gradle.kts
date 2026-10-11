@@ -93,6 +93,9 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.compose.material3.adaptive.navigation.suite)
+    // The home-screen widget.
+    implementation(libs.androidx.glance.appwidget)
 
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

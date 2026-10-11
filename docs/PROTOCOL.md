@@ -291,7 +291,7 @@ Everything else is refused, notably:
 
 ## Transfer (move playback between players)
 
-Clients move what one player is playing (its queue, the current track and position, shuffle order and repeat) to another player, start it there and stop the first. The web app offers it as *Move here* and *Bring here*; native apps must use the same recipe. It uses only commands already on the allow-list above, all through `POST /v1/rpc`, so the gateway's player permissions apply to every step: the caller must be allowed to control **both** players, or the first step that names the other one is refused (403) and nothing more is sent.
+Clients move what one player is playing (its queue, the current track and position, shuffle order and repeat) to another player, start it there and stop the first. The web app offers it as *Move here* and *Bring here*, and the Android app as *Move playback here* and *Bring to this phone* (planned and run in `mobile/src/transfer.rs`); native apps must use the same recipe. It uses only commands already on the allow-list above, all through `POST /v1/rpc`, so the gateway's player permissions apply to every step: the caller must be allowed to control **both** players, or the first step that names the other one is refused (403) and nothing more is sent.
 
 Below, `S` is the source player (the one playing now) and `T` the target. Both are player ids (MAC addresses) taken from the caller's `players` list. Clients check that each is a well-formed MAC before sending anything, and that `S` ≠ `T`.
 

@@ -32,6 +32,9 @@ import io.github.jamezuk.lyrionanywhere.core.Selection
 import io.github.jamezuk.lyrionanywhere.core.ShuffleMode
 import io.github.jamezuk.lyrionanywhere.core.SignedIn
 import io.github.jamezuk.lyrionanywhere.core.Track
+import io.github.jamezuk.lyrionanywhere.core.TransferMethod
+import io.github.jamezuk.lyrionanywhere.core.TransferOutcome
+import io.github.jamezuk.lyrionanywhere.core.TransferStage
 import io.github.jamezuk.lyrionanywhere.core.User
 import io.github.jamezuk.lyrionanywhere.core.UserRole
 import io.github.jamezuk.lyrionanywhere.data.AccountRepository
@@ -262,6 +265,40 @@ class FakePlayers : PlayersRepository {
 
     override suspend fun playFavourite(player: String, itemId: String, placement: Placement) =
         cmd("favourite $itemId $placement $player")
+
+    override suspend fun removeFromQueue(player: String, index: Int) = cmd("remove $index $player")
+
+    override suspend fun moveInQueue(player: String, from: Int, to: Int) = cmd("move $from $to $player")
+
+    override suspend fun clearQueue(player: String) = cmd("clear $player")
+
+    var restoreResult: ApiResult<Unit> = ApiResult.Ok(Unit)
+
+    override suspend fun restoreToQueue(player: String, trackId: Long, index: Int): ApiResult<Unit> {
+        commands += "restore $trackId $index $player"
+        return restoreResult
+    }
+
+    /** Holds setSynced until completed (to see what is shown meanwhile). */
+    var syncGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
+    override suspend fun setSynced(current: String, other: String, on: Boolean): ApiResult<Unit> {
+        syncGate?.await()
+        return cmd("sync $current $other $on")
+    }
+
+    /** Stages reported, then this result. A gate, if set, holds the transfer until completed. */
+    var transferStages = listOf(TransferStage.READING, TransferStage.GROUPING, TransferStage.STARTING)
+    var transferResult: ApiResult<TransferOutcome> = ApiResult.Ok(TransferOutcome.Moved(TransferMethod.GROUP))
+    var transferGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    val transfers = mutableListOf<Pair<String, String>>()
+
+    override suspend fun transfer(source: String, target: String, onStage: (TransferStage) -> Unit): ApiResult<TransferOutcome> {
+        transfers += source to target
+        transferStages.forEach(onStage)
+        transferGate?.await()
+        return transferResult
+    }
 }
 
 class FakeEvents : EventsRepository {

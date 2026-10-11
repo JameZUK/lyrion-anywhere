@@ -568,11 +568,89 @@ Built, in CI. **Verified on the host and on the JVM (Robolectric); nothing has r
 - the phone being chosen at start-up against a real LMS, which lists the player a moment after it connects.
 
 **Known gaps (A4 part 2 and later)**
-- Transfer of playback (above).
-- Queue editing; syncing and unsyncing players from the sheet (groups are listed only); widgets, Quick Settings tile, gestures and tablet layouts.
+- ~~Transfer of playback (above).~~ Built in part 2.
+- ~~Queue editing; syncing and unsyncing players from the sheet (groups are listed only); widgets, Quick Settings tile, gestures and tablet layouts.~~ Built in part 2.
 - Playlist editing (admins).
 - Search results don't yet carry art or "More…" for albums and artists.
 - "Shuffle" leaves LMS's shuffle mode on, as LMS's own clients do.
+
+### A4 part 2 status (2026-10-11): transfer, queue editing, sync, tablets, widget, tile, gestures
+
+Built. **Verified on the host and on the JVM (Robolectric); nothing has run on a phone or tablet yet.**
+
+**Transfer (SPEC D20; docs/PROTOCOL.md › Transfer)**
+- The same recipe as the web app: group then leave, with "copy the list" as the fallback, and every refusal it documents (same player, empty queue, radio or app items, over 500 entries or a short read, LMS won't group).
+- **Planning is pure Rust** (`mobile/src/transfer.rs`): the source's status in, command steps out (`plan_group`, `plan_copy`, `grouped`).
+  - The runner is in Rust too, behind a small `Rpc` trait, so it is unit-tested against a scripted LMS.
+  - It reports its stage (reading, grouping, starting, copying), takes the target out of the group again after any failure once it has joined, and checks player ids before anything is sent.
+  - `Players::transfer` exposes it to Kotlin.
+- **Android:**
+  - every other player in *Play on…* has **Move playback here**;
+  - the phone's row, and the "Playing on …" strip, have **Bring to this phone**;
+  - progress shows as a line with a progress bar; refusals and errors stay, with the `AppError` detail, until dismissed;
+  - a move that works controls the target and closes the sheet;
+  - "Bring to this phone" before the phone is an LMS player starts it and says so.
+
+**Queue editing** (as the web app's `queue-edit.ts`):
+- swipe a row left to remove it, with **Undo** in the snackbar (library tracks only; Undo re-adds then moves it back, and says so if the queue changed meanwhile);
+- long-press the handle and drag to reorder;
+- **Clear queue** after a confirmation dialog;
+- tap to jump to a track;
+- TalkBack users get Move up, Move down and Remove as actions on each row.
+- Edits show at once, run one at a time, and are put back with the error's detail if LMS refuses. A queue read that lands mid-edit doesn't undo what is shown.
+- `Players` gained `remove_from_queue`, `move_in_queue`, `clear_queue` and `restore_to_queue`.
+
+**Sync groups:** each player in *Play on…* has a link toggle, "Play in sync with <controlled player>". `Players::set_synced` sends `<selected> sync <other>` to join, and `<other> sync -` to leave, the direction fixed on the web today. The sheet shows the change at once and puts it back if refused.
+
+**Tablet layouts** (`ui/components/Adaptive.kt`, Material's 600/840 dp breakpoints):
+- **Expanded:** Albums, Artists and Playlists show the chosen item beside the list; Now playing puts the queue beside the controls.
+- **Medium:** one pane with the navigation rail, except Now playing in a window under 480 dp tall (a phone on its side), which also gets two panes.
+
+**Home-screen widget:** artwork, title, artist and player, with play/pause and next.
+- It shows this phone's player while it plays, otherwise the player the app last controlled.
+- It is fed only from state the app already has (`NowPlayingHub`: the playback service for the phone, the UI for the controlled player).
+- It is composed once per change with `GlanceRemoteViews` and handed to the launcher: no Glance session, WorkManager job, alarm or periodic update (`updatePeriodMillis` 0), so it never wakes the phone.
+- Buttons go through the same repository (and the gateway's policy); player ids are checked first.
+
+**Quick Settings tile:** play/pause for this phone's player; unavailable when the phone isn't a player. It updates only while the panel is open.
+
+**Gestures:** swipe the mini player up to open Now playing; pull Now playing down from the top of its list to close it; swipe the artwork left or right for next or previous, with a haptic tick (also offered as TalkBack actions).
+
+**Tests**
+- **Rust unit:**
+  - both transfer plans, step by step;
+  - every refusal, including hostile queue entries (negative, string and missing ids, `remote`);
+  - chunking at the gateway's 200-character limit;
+  - lenient status parsing;
+  - the runner: order, fallback, clean-up after a failure, and a refused target stopping at the first step;
+  - queue-edit and sync builders and the sync direction;
+  - Undo's add-then-move, with a lagging or meddled queue.
+- **Rust integration (real gateway, and a fake LMS that now models sync groups):**
+  - a full transfer each way by grouping, and by copying when LMS won't group;
+  - a target or source the account may not control is refused (403), and nothing naming it reaches LMS;
+  - every step of both recipes passes between permitted players and is refused for another account's player (mirroring the gateway's `transfer_recipe_needs_both_players`);
+  - queue edits and sync pass the allow-list, and are refused for others' players.
+- **Android:**
+  - transfer view-model states (stages, no overlap, refusals, errors, the phone not ready);
+  - queue editing (optimistic, failure put back, Undo, an old snackbar's Undo ignored);
+  - sync (direction, optimistic, put back);
+  - the widget's and tile's models and buttons (malformed player ids never sent);
+  - layout selection by size;
+  - gesture thresholds and pull-to-close;
+  - Compose: the sheet's actions, progress and error detail, swipe to remove, drag handles' accessibility actions, the clear dialog, swipes on the artwork and mini player, pull-down to close, and the two-pane layouts;
+  - the manifest test now allows exactly the widget receiver (update broadcast only) and the tile (system-bound) beside the launcher activity.
+
+**Unverified:** everything on a device. That includes:
+- the gestures' feel and their thresholds, and haptics;
+- the widget on real launchers (sizes, dynamic colour), and the tile's refresh;
+- tablets and foldables;
+- transfer against a real LMS from the phone (the web app's recipe was measured against LMS 9.1).
+
+**Known gaps**
+- The widget shows what the app last knew: with the phone idle and the app closed, a remote player's state isn't followed (by design, nothing polls).
+- Drag to reorder moves one row at a time visually (the others don't make room while dragging); the drop is right.
+- Album and artist pages opened from a detail pane open full screen.
+- Playlist editing (admins); search results without art or "More…" for albums and artists.
 
 ## 9. Quality: testing audio as seriously as security
 

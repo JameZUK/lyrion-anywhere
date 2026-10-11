@@ -33,6 +33,9 @@ import io.github.jamezuk.lyrionanywhere.core.Selection
 import io.github.jamezuk.lyrionanywhere.core.ServerEvent
 import io.github.jamezuk.lyrionanywhere.core.ShuffleMode
 import io.github.jamezuk.lyrionanywhere.core.Track
+import io.github.jamezuk.lyrionanywhere.core.TransferOutcome
+import io.github.jamezuk.lyrionanywhere.core.TransferProgress
+import io.github.jamezuk.lyrionanywhere.core.TransferStage
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -146,6 +149,26 @@ interface PlayersRepository {
 
     /** Play a favourite (a station, track or app item). */
     suspend fun playFavourite(player: String, itemId: String, placement: Placement): ApiResult<Unit>
+
+    /** Take the queue entry at [index] out. */
+    suspend fun removeFromQueue(player: String, index: Int): ApiResult<Unit>
+
+    /** Move the queue entry at [from] so that it ends up at [to]. */
+    suspend fun moveInQueue(player: String, from: Int, to: Int): ApiResult<Unit>
+
+    suspend fun clearQueue(player: String): ApiResult<Unit>
+
+    /** Undo a removal: put library track [trackId] back at [index]. */
+    suspend fun restoreToQueue(player: String, trackId: Long, index: Int): ApiResult<Unit>
+
+    /** Put [other] in [current]'s sync group, or take [other] out of its group. */
+    suspend fun setSynced(current: String, other: String, on: Boolean): ApiResult<Unit>
+
+    /**
+     * Move playback from [source] to [target] (docs/PROTOCOL.md › Transfer), reporting each
+     * stage to [onStage] (on a background thread).
+     */
+    suspend fun transfer(source: String, target: String, onStage: (TransferStage) -> Unit): ApiResult<TransferOutcome>
 }
 
 /** Artwork bytes by key (from a record), for the image loader. */
@@ -288,6 +311,31 @@ class RustPlayersRepository(private val source: ConnectionSource) : PlayersRepos
 
     override suspend fun playFavourite(player: String, itemId: String, placement: Placement) =
         withPlayers { it.playFavourite(player, itemId, placement) }
+
+    override suspend fun removeFromQueue(player: String, index: Int) =
+        withPlayers { it.removeFromQueue(player, index.u()) }
+
+    override suspend fun moveInQueue(player: String, from: Int, to: Int) =
+        withPlayers { it.moveInQueue(player, from.u(), to.u()) }
+
+    override suspend fun clearQueue(player: String) = withPlayers { it.clearQueue(player) }
+
+    override suspend fun restoreToQueue(player: String, trackId: Long, index: Int) =
+        withPlayers { it.restoreToQueue(player, trackId, index.u()) }
+
+    override suspend fun setSynced(current: String, other: String, on: Boolean) =
+        withPlayers { it.setSynced(current, other, on) }
+
+    override suspend fun transfer(source: String, target: String, onStage: (TransferStage) -> Unit) =
+        withPlayers {
+            it.transfer(
+                source,
+                target,
+                object : TransferProgress {
+                    override fun onStage(stage: TransferStage) = onStage(stage)
+                },
+            )
+        }
 }
 
 class RustArtRepository(private val source: ConnectionSource) : ArtRepository {

@@ -4,6 +4,33 @@ Dated entries, newest first.
 
 ## 2026-10-11
 
+### Android: moving playback, queue editing, sync groups, tablets, widget, tile and gestures (A4 part 2)
+- **Transfer (SPEC D20):** *Move playback here* on each player in *Play on…*, and *Bring to this phone* on the phone's row and the "Playing on …" strip.
+  - The same recipe as the web app (`docs/PROTOCOL.md` › Transfer): group then leave, or copy the list of library tracks when LMS won't group the two, with every documented refusal.
+  - Planned and run in the Rust layer. Progress shows in the sheet; refusals and errors stay there, with the error's detail, until dismissed.
+  - Nothing new on the gateway: every step is an existing command between two players the account may control.
+- **Queue editing**, as on the web:
+  - swipe left to remove, with *Undo*;
+  - drag the handle to reorder;
+  - *Clear queue* after a confirmation;
+  - tap to play a track.
+
+  TalkBack users get Move up, Move down and Remove on each row.
+- **Sync groups:** join or leave the controlled player's group from *Play on…*, sent the right way round (`<selected> sync <other>`).
+- **Tablets:**
+  - wide windows show albums, artists and playlists beside their lists, and the queue beside Now playing;
+  - medium windows use one pane with the navigation rail, with two panes for Now playing when the window is short.
+- **Home-screen widget:** artwork, title, artist, play/pause and next, for this phone's player (or the one the app controls). It is redrawn only when that changes, from state the app already has; it never polls or wakes the phone.
+- **Quick Settings tile:** play/pause for this phone's player.
+- **Gestures:**
+  - swipe the mini player up to open Now playing;
+  - pull Now playing down to close it;
+  - swipe the artwork for next and previous, with a haptic tick.
+- **Tests:**
+  - Rust: transfer planning and the runner (both recipes, refusals, hostile queues, clean-up after failures); queue-edit and sync commands; Undo;
+  - Rust against the real gateway: full transfers both ways and by copying, every step refused for a player the account may not control, and queue edits and sync through the allow-list;
+  - Android: view models and Compose for transfer, queue editing, sync, layouts and gestures; the widget's and tile's logic; the manifest (only the widget receiver and the system-bound tile are exported beside the launcher).
+
 ### Web app: player-first, and moving playback between players (SPEC D20)
 - **This device by default, everywhere** (desktops too). After sign-in the browser's player connects by itself, so it's ready; the first tap anywhere turns the sound on (browsers need a gesture), with no "Play on this device" step. iPhone and iPad keep the media-element mode as before.
   - Only one tab of a browser runs the player (a Web Lock): a second tab that opens controls it rather than taking it over. A tap that starts it takes it over.

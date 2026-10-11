@@ -58,8 +58,18 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.runtime.CompositionLocalProvider
 import io.github.jamezuk.lyrionanywhere.AppContainer
 import io.github.jamezuk.lyrionanywhere.BuildConfig
+import io.github.jamezuk.lyrionanywhere.LyrionApp
+import io.github.jamezuk.lyrionanywhere.ui.components.ListDetail
+import io.github.jamezuk.lyrionanywhere.ui.components.LocalWindowLayout
+import io.github.jamezuk.lyrionanywhere.ui.components.WindowLayout
+import io.github.jamezuk.lyrionanywhere.ui.player.TransferState
+import io.github.jamezuk.lyrionanywhere.ui.player.errorWithDetail
 import io.github.jamezuk.lyrionanywhere.core.AlbumSort
 import io.github.jamezuk.lyrionanywhere.core.LibraryFilter
 import io.github.jamezuk.lyrionanywhere.core.Placement
@@ -205,6 +215,11 @@ private fun messageText(res: Resources, m: PlayerMessage): String = when (m) {
     )
     PlayerMessage.NoPlayer -> res.getString(R.string.no_player_selected)
     is PlayerMessage.Failed -> errorText(res, m.error)
+    is PlayerMessage.Removed ->
+        if (m.title.isBlank()) res.getString(R.string.queue_removed_track) else res.getString(R.string.queue_removed, m.title.take(80))
+    is PlayerMessage.QueueFailed ->
+        res.getString(if (m.undo) R.string.queue_undo_failed else R.string.queue_failed) + "\n" + errorWithDetail(res, m.error)
+    is PlayerMessage.Moved -> res.getString(R.string.transfer_done, m.targetName)
 }
 
 /** The signed-in app: adaptive navigation (bar, rail or drawer by window size). */
@@ -212,6 +227,7 @@ private fun messageText(res: Resources, m: PlayerMessage): String = when (m) {
 @Composable
 fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
     val nav = rememberNavController()
+    val nowPlayingHub = (LocalContext.current.applicationContext as? LyrionApp)?.nowPlaying
     // One player controller for every screen, per sign-in. Which player it controls is
     // decided in one place (PlayerChoice, D20); screens only ask it to play things.
     val player = viewModel(key = "player-${signedIn.who.device.id}") {
@@ -221,6 +237,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
             container.settings,
             localPlayer = container.localPlayer,
             waveforms = WaveformCache(container.analysis),
+            nowPlaying = nowPlayingHub,
             clock = clock,
         )
     }
@@ -242,7 +259,15 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
     val snackbar = remember { SnackbarHostState() }
     val res = LocalResources.current
     LaunchedEffect(player) {
-        player.messages.collect { m -> snackbar.showSnackbar(messageText(res, m)) }
+        player.messages.collect { m ->
+            val undo = (m as? PlayerMessage.Removed)?.canUndo == true
+            val result = snackbar.showSnackbar(
+                messageText(res, m),
+                actionLabel = if (undo) res.getString(R.string.action_undo) else null,
+                duration = SnackbarDuration.Short,
+            )
+            if (undo && result == SnackbarResult.ActionPerformed) player.undoRemove((m as PlayerMessage.Removed).token)
+        }
     }
 
     // "More…" sheet and "Play on…" sheet.
@@ -264,6 +289,58 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
             MenuEvent.NoPlayer -> scope.launch { snackbar.showSnackbar(res.getString(R.string.no_player_selected)) }
             MenuEvent.Closed -> onClosed()
         }
+    }
+
+    // Album, artist and playlist pages: full screen, or beside their list on wide windows.
+    val albumPage: @Composable (Long) -> Unit = { albumId ->
+        val vm = viewModel(key = "album-$albumId") { AlbumViewModel(container.library, albumId) }
+        val ui by vm.state.collectAsStateWithLifecycle()
+        AlbumScreen(
+            state = ui,
+            actions = AlbumActions(
+                onRetry = vm::load,
+                onPlay = { placement, index -> player.enqueue(Selection.Album(albumId), placement, index) },
+                onShuffle = { player.playShuffled(Selection.Album(albumId)) },
+                onPlayTrack = { track ->
+                    val tracks = (ui as? Loadable.Ready)?.value?.tracks.orEmpty()
+                    val index = tracks.indexOf(track).takeIf { it >= 0 }
+                    player.enqueue(Selection.Album(albumId), Placement.PLAY_NOW, index)
+                },
+                onArtist = { id, name -> nav.navigate(ArtistRoute(id, name)) },
+                onMore = openMore,
+            ),
+        )
+    }
+    val artistPage: @Composable (Long, String) -> Unit = { artistId, name ->
+        val vm = viewModel(key = "artist-$artistId") { ArtistViewModel(container.library, artistId) }
+        val ui by vm.state.collectAsStateWithLifecycle()
+        ArtistScreen(
+            id = artistId,
+            name = name,
+            state = ui,
+            actions = ArtistActions(
+                onRetry = vm::load,
+                onAlbum = { nav.navigate(AlbumRoute(it.id)) },
+                onPlay = { player.enqueue(Selection.Artist(artistId), it) },
+                onShuffle = { player.playShuffled(Selection.Artist(artistId)) },
+                onMore = openMore,
+            ),
+        )
+    }
+    val playlistPage: @Composable (Long, String) -> Unit = { playlistId, name ->
+        val vm = viewModel(key = "playlist-$playlistId") { PlaylistViewModel(container.library, playlistId) }
+        val ui by vm.state.collectAsStateWithLifecycle()
+        val sel = Selection.Playlist(playlistId)
+        PlaylistScreen(
+            ui,
+            onRetry = vm::reload,
+            onPlay = { placement, index -> player.enqueue(sel, placement, index) },
+            onShuffle = { player.playShuffled(sel) },
+            onMorePlaylist = {
+                openMore(More.playlist(io.github.jamezuk.lyrionanywhere.core.SavedPlaylist(playlistId, name)))
+            },
+            onMore = openMore,
+        )
     }
 
     val backStack by nav.currentBackStackEntryAsState()
@@ -292,12 +369,17 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                         onNext = player::next,
                         onOutputs = openOutputs,
                         onBackToPhone = player::backToPhone,
+                        onBringToPhone = player::bringToPhone,
+                        onDismissTransfer = player::dismissTransfer,
                     )
                 }
             },
         ) { padding ->
             val openAlbum: (Long) -> Unit = { nav.navigate(AlbumRoute(it)) }
-            NavHost(nav, startDestination = HomeRoute, modifier = Modifier.padding(padding)) {
+            BoxWithConstraints(Modifier.padding(padding)) {
+            val layout = WindowLayout.of(maxWidth.value, maxHeight.value)
+            CompositionLocalProvider(LocalWindowLayout provides layout) {
+            NavHost(nav, startDestination = HomeRoute) {
                 composable<HomeRoute> {
                     val vm = viewModel { HomeFeedViewModel(container.library, libraryId) }
                     val feed by vm.state.collectAsStateWithLifecycle()
@@ -373,12 +455,21 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     val vm = viewModel { AlbumsViewModel(container.library, libraryId = libraryId) }
                     val ui by vm.state.collectAsStateWithLifecycle()
                     val sort by vm.sort.collectAsStateWithLifecycle()
+                    var chosen by rememberSaveable { mutableStateOf<Long?>(null) }
                     Screen(
                         title = stringResource(R.string.lib_albums),
                         onBack = { nav.popBackStack() },
                         actions = { AlbumSortMenu(sort, vm::setSort) },
                     ) {
-                        AlbumGrid(ui, onAlbum = { openAlbum(it.id) }, onLoadMore = vm::loadMore, onMore = openMore)
+                        if (LocalWindowLayout.current.listDetail) {
+                            ListDetail(
+                                list = { AlbumGrid(ui, onAlbum = { chosen = it.id }, onLoadMore = vm::loadMore, onMore = openMore) },
+                                detail = chosen?.let { id -> { albumPage(id) } },
+                                placeholder = { EmptyState(stringResource(R.string.choose_album)) },
+                            )
+                        } else {
+                            AlbumGrid(ui, onAlbum = { openAlbum(it.id) }, onLoadMore = vm::loadMore, onMore = openMore)
+                        }
                     }
                 }
                 composable<CompilationsRoute> {
@@ -423,14 +514,26 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     val ui by vm.state.collectAsStateWithLifecycle()
                     val views by vm.views.collectAsStateWithLifecycle()
                     val view by vm.view.collectAsStateWithLifecycle()
+                    var chosen by rememberSaveable { mutableStateOf<Pair<Long, String>?>(null) }
                     Screen(title = stringResource(R.string.lib_artists), onBack = { nav.popBackStack() }) {
-                        ArtistList(
-                            ui,
-                            onArtist = { nav.navigate(ArtistRoute(it.id, it.name)) },
-                            onLoadMore = vm::loadMore,
-                            onMore = openMore,
-                            header = { ArtistViewChips(views, view, vm::setView) },
-                        )
+                        val list = @Composable { onArtist: (io.github.jamezuk.lyrionanywhere.core.Artist) -> Unit ->
+                            ArtistList(
+                                ui,
+                                onArtist = onArtist,
+                                onLoadMore = vm::loadMore,
+                                onMore = openMore,
+                                header = { ArtistViewChips(views, view, vm::setView) },
+                            )
+                        }
+                        if (LocalWindowLayout.current.listDetail) {
+                            ListDetail(
+                                list = { list { chosen = it.id to it.name } },
+                                detail = chosen?.let { (id, name) -> { artistPage(id, name) } },
+                                placeholder = { EmptyState(stringResource(R.string.choose_artist)) },
+                            )
+                        } else {
+                            list { nav.navigate(ArtistRoute(it.id, it.name)) }
+                        }
                     }
                 }
                 composable<GenresRoute> {
@@ -558,31 +661,30 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                 composable<PlaylistsRoute> {
                     val vm = viewModel { PlaylistsViewModel(container.library) }
                     val ui by vm.state.collectAsStateWithLifecycle()
+                    var chosen by rememberSaveable { mutableStateOf<Pair<Long, String>?>(null) }
                     Screen(title = stringResource(R.string.lib_playlists), onBack = { nav.popBackStack() }) {
-                        PlaylistsScreen(
-                            ui,
-                            onPlaylist = { nav.navigate(PlaylistRoute(it.id, it.name)) },
-                            onLoadMore = vm::loadMore,
-                            onMore = openMore,
-                        )
+                        if (LocalWindowLayout.current.listDetail) {
+                            ListDetail(
+                                list = {
+                                    PlaylistsScreen(ui, onPlaylist = { chosen = it.id to it.name }, onLoadMore = vm::loadMore, onMore = openMore)
+                                },
+                                detail = chosen?.let { (id, name) -> { playlistPage(id, name) } },
+                                placeholder = { EmptyState(stringResource(R.string.choose_playlist)) },
+                            )
+                        } else {
+                            PlaylistsScreen(
+                                ui,
+                                onPlaylist = { nav.navigate(PlaylistRoute(it.id, it.name)) },
+                                onLoadMore = vm::loadMore,
+                                onMore = openMore,
+                            )
+                        }
                     }
                 }
                 composable<PlaylistRoute> { entry ->
                     val route = entry.toRoute<PlaylistRoute>()
-                    val vm = viewModel { PlaylistViewModel(container.library, route.id) }
-                    val ui by vm.state.collectAsStateWithLifecycle()
-                    val sel = Selection.Playlist(route.id)
                     Screen(title = route.name, onBack = { nav.popBackStack() }) {
-                        PlaylistScreen(
-                            ui,
-                            onRetry = vm::reload,
-                            onPlay = { placement, index -> player.enqueue(sel, placement, index) },
-                            onShuffle = { player.playShuffled(sel) },
-                            onMorePlaylist = {
-                                openMore(More.playlist(io.github.jamezuk.lyrionanywhere.core.SavedPlaylist(route.id, route.name)))
-                            },
-                            onMore = openMore,
-                        )
+                        playlistPage(route.id, route.name)
                     }
                 }
                 composable<FavouritesRoute> { entry ->
@@ -628,43 +730,14 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                 }
                 composable<AlbumRoute> { entry ->
                     val route = entry.toRoute<AlbumRoute>()
-                    val vm = viewModel { AlbumViewModel(container.library, route.id) }
-                    val ui by vm.state.collectAsStateWithLifecycle()
                     Screen(title = stringResource(R.string.title_album), onBack = { nav.popBackStack() }) {
-                        AlbumScreen(
-                            state = ui,
-                            actions = AlbumActions(
-                                onRetry = vm::load,
-                                onPlay = { placement, index -> player.enqueue(Selection.Album(route.id), placement, index) },
-                                onShuffle = { player.playShuffled(Selection.Album(route.id)) },
-                                onPlayTrack = { track ->
-                                    val tracks = (ui as? Loadable.Ready)?.value?.tracks.orEmpty()
-                                    val index = tracks.indexOf(track).takeIf { it >= 0 }
-                                    player.enqueue(Selection.Album(route.id), Placement.PLAY_NOW, index)
-                                },
-                                onArtist = { id, name -> nav.navigate(ArtistRoute(id, name)) },
-                                onMore = openMore,
-                            ),
-                        )
+                        albumPage(route.id)
                     }
                 }
                 composable<ArtistRoute> { entry ->
                     val route = entry.toRoute<ArtistRoute>()
-                    val vm = viewModel { ArtistViewModel(container.library, route.id) }
-                    val ui by vm.state.collectAsStateWithLifecycle()
                     Screen(title = route.name, onBack = { nav.popBackStack() }) {
-                        ArtistScreen(
-                            id = route.id,
-                            name = route.name,
-                            state = ui,
-                            actions = ArtistActions(
-                                onRetry = vm::load,
-                                onAlbum = { openAlbum(it.id) },
-                                onPlay = { player.enqueue(Selection.Artist(route.id), it) },
-                                onShuffle = { player.playShuffled(Selection.Artist(route.id)) },
-                                onMore = openMore,
-                            ),
-                        )
+                        artistPage(route.id, route.name)
                     }
                 }
                 composable<NowPlayingRoute> {
@@ -675,6 +748,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                         NowPlayingScreen(
                             state = playerState,
                             clock = clock,
+                            twoPane = LocalWindowLayout.current.nowPlayingTwoPane,
                             actions = NowPlayingActions(
                                 onTogglePlay = player::togglePlay,
                                 onNext = player::next,
@@ -689,6 +763,12 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 onOutputs = openOutputs,
                                 onBackToPhone = player::backToPhone,
                                 onMore = { t -> More.track(t)?.let(openMore) },
+                                onRemove = player::removeFromQueue,
+                                onMove = player::moveInQueue,
+                                onClearQueue = player::clearQueue,
+                                onBringToPhone = player::bringToPhone,
+                                onDismissTransfer = player::dismissTransfer,
+                                onClose = { nav.popBackStack() },
                             ),
                         )
                     }
@@ -721,6 +801,8 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                         LicencesScreen()
                     }
                 }
+            }
+            }
             }
         }
     }
@@ -764,9 +846,20 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             player.backToPhone()
                             outputs = false
                         },
+                        onMoveHere = player::moveTo,
+                        onBringToPhone = player::bringToPhone,
+                        onSync = player::setSynced,
+                        onDismissTransfer = player::dismissTransfer,
                     ),
                 )
             }
+        }
+        // A move that worked closes the sheet (its progress and errors show in it meanwhile).
+        var wasMoving by remember { mutableStateOf(false) }
+        LaunchedEffect(playerState.transfer) {
+            val moving = playerState.transfer is TransferState.Running
+            if (wasMoving && playerState.transfer == TransferState.Idle) outputs = false
+            wasMoving = moving
         }
     }
 }
