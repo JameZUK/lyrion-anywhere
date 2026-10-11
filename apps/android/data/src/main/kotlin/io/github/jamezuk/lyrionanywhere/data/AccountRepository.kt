@@ -1,6 +1,7 @@
 package io.github.jamezuk.lyrionanywhere.data
 
 import io.github.jamezuk.lyrionanywhere.core.AccountInfo
+import io.github.jamezuk.lyrionanywhere.core.Analysis
 import io.github.jamezuk.lyrionanywhere.core.Art
 import io.github.jamezuk.lyrionanywhere.core.Events
 import io.github.jamezuk.lyrionanywhere.core.MusicLibrary
@@ -50,9 +51,10 @@ class Connection(val server: ServerInfo, val session: Session) {
     val players = Players(session)
     val art = Art(session)
     val events = Events(session)
+    val analysis = Analysis(session)
 
     fun close() {
-        listOf(library, players, art, events, session).forEach { it.close() }
+        listOf(library, players, art, events, analysis, session).forEach { it.close() }
     }
 }
 

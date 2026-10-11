@@ -1,6 +1,7 @@
 package io.github.jamezuk.lyrionanywhere.ui.player
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -35,7 +36,9 @@ import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -60,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import io.github.jamezuk.lyrionanywhere.core.Player
 import io.github.jamezuk.lyrionanywhere.core.RepeatMode
 import io.github.jamezuk.lyrionanywhere.core.ShuffleMode
+import io.github.jamezuk.lyrionanywhere.data.Waveform
 import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.components.ArtworkImage
 import io.github.jamezuk.lyrionanywhere.ui.components.EmptyState
@@ -272,6 +276,7 @@ fun NowPlayingScreen(
                     duration = status.durationSecs,
                     enabled = status.canSeek && track != null,
                     onSeek = actions.onSeek,
+                    waveform = state.waveform,
                 )
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -365,13 +370,27 @@ data class NowPlayingActions(
     val onRetry: () -> Unit,
 )
 
+/**
+ * The seek bar. With the track's waveform (from the gateway's analysis) the slider's track
+ * is the waveform, played part highlighted; without one it is the plain slider. Either
+ * way it is the same Material slider, so dragging, keys and TalkBack work alike.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SeekBar(elapsed: Double, duration: Double?, enabled: Boolean, onSeek: (Double) -> Unit) {
+internal fun SeekBar(
+    elapsed: Double,
+    duration: Double?,
+    enabled: Boolean,
+    onSeek: (Double) -> Unit,
+    waveform: Waveform? = null,
+) {
     var dragging by remember { mutableStateOf(false) }
     var dragValue by remember { mutableFloatStateOf(0f) }
     val total = duration ?: 0.0
     val shown = if (dragging) dragValue.toDouble() else elapsed
     val label = stringResource(R.string.position)
+    val range = 0f..(if (total > 0) total.toFloat() else 1f)
+    val interaction = remember { MutableInteractionSource() }
     Column(Modifier.fillMaxWidth()) {
         Slider(
             value = if (total > 0) shown.toFloat().coerceIn(0f, total.toFloat()) else 0f,
@@ -383,11 +402,20 @@ private fun SeekBar(elapsed: Double, duration: Double?, enabled: Boolean, onSeek
                 dragging = false
                 onSeek(dragValue.toDouble())
             },
-            valueRange = 0f..(if (total > 0) total.toFloat() else 1f),
+            valueRange = range,
             enabled = enabled && total > 0,
+            interactionSource = interaction,
             modifier = Modifier.semantics {
                 stateDescription = "${formatDuration(shown)} / ${formatDuration(duration)}"
                 this.contentDescription = label
+            },
+            thumb = { SliderDefaults.Thumb(interactionSource = interaction, enabled = enabled && total > 0) },
+            track = { s ->
+                if (waveform != null) {
+                    WaveformTrack(waveform, WaveformMath.fraction(s.value.toDouble(), range.endInclusive.toDouble()))
+                } else {
+                    SliderDefaults.Track(sliderState = s, enabled = enabled && total > 0)
+                }
             },
         )
         Row {

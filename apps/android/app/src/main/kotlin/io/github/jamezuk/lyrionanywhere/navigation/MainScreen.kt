@@ -55,6 +55,7 @@ import io.github.jamezuk.lyrionanywhere.core.Placement
 import io.github.jamezuk.lyrionanywhere.core.Selection
 import io.github.jamezuk.lyrionanywhere.core.libraryVersion
 import io.github.jamezuk.lyrionanywhere.data.AuthState
+import io.github.jamezuk.lyrionanywhere.data.WaveformCache
 import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.components.errorText
 import io.github.jamezuk.lyrionanywhere.ui.library.Loadable
@@ -124,7 +125,14 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
     val nav = rememberNavController()
     // One player controller for every screen, per sign-in.
     val player = viewModel(key = "player-${signedIn.who.device.id}") {
-        PlayerViewModel(container.players, container.events, container.settings, container.localPlayer, clock)
+        PlayerViewModel(
+            container.players,
+            container.events,
+            container.settings,
+            localPlayer = container.localPlayer,
+            waveforms = WaveformCache(container.analysis),
+            clock = clock,
+        )
     }
     LifecycleStartEffect(player) {
         player.start()
@@ -310,7 +318,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     }
                 }
                 composable<SettingsRoute> {
-                    val vm = viewModel { SettingsViewModel(container.account) }
+                    val vm = viewModel { SettingsViewModel(container.account, container.localPlayer) }
                     val ui by vm.state.collectAsStateWithLifecycle()
                     Screen(title = stringResource(R.string.title_settings), onBack = { nav.popBackStack() }) {
                         SettingsScreen(
@@ -319,6 +327,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             libraryVersion = remember { libraryVersion() },
                             onSignOut = vm::signOut,
                             onLicences = { nav.navigate(LicencesRoute) },
+                            onLevelling = vm::setLevelling,
                         )
                     }
                 }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Gavel
 import androidx.compose.material.icons.outlined.Person
@@ -17,6 +18,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -25,7 +27,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -33,6 +37,7 @@ import io.github.jamezuk.lyrionanywhere.core.AccountInfo
 import io.github.jamezuk.lyrionanywhere.data.AccountRepository
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AuthState
+import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.library.SectionHeader
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,9 +51,14 @@ data class SettingsUiState(
     val username: String = "",
     val account: AccountInfo? = null,
     val signingOut: Boolean = false,
+    /** Loudness levelling on this phone's player (null: no local player here). */
+    val levelling: Boolean? = null,
 )
 
-class SettingsViewModel(private val account: AccountRepository) : ViewModel() {
+class SettingsViewModel(
+    private val account: AccountRepository,
+    private val localPlayer: LocalPlayerRepository? = null,
+) : ViewModel() {
     private val _state = MutableStateFlow(SettingsUiState())
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
 
@@ -59,6 +69,18 @@ class SettingsViewModel(private val account: AccountRepository) : ViewModel() {
         viewModelScope.launch {
             (account.account() as? ApiResult.Ok)?.let { r -> _state.update { it.copy(account = r.value) } }
         }
+        localPlayer?.let { lp ->
+            viewModelScope.launch {
+                lp.state.collect { local -> _state.update { it.copy(levelling = local.levelling) } }
+            }
+        }
+    }
+
+    /** Loudness levelling on or off (bit-perfect when off). */
+    fun setLevelling(on: Boolean) {
+        val lp = localPlayer ?: return
+        _state.update { it.copy(levelling = on) }
+        viewModelScope.launch { lp.setLevelling(on) }
     }
 
     fun signOut() {
@@ -101,9 +123,27 @@ fun SettingsScreen(
     onSignOut: () -> Unit,
     onLicences: () -> Unit,
     modifier: Modifier = Modifier,
+    onLevelling: (Boolean) -> Unit = {},
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     LazyColumn(modifier.fillMaxSize()) {
+        state.levelling?.let { on ->
+            item { SectionHeader(stringResource(R.string.section_playback)) }
+            item {
+                ListItem(
+                    leadingContent = { Icon(Icons.Outlined.GraphicEq, contentDescription = null) },
+                    headlineContent = { Text(stringResource(R.string.loudness_levelling)) },
+                    supportingContent = {
+                        Text(stringResource(if (on) R.string.loudness_levelling_on else R.string.loudness_levelling_off))
+                    },
+                    // The switch is decoration: the whole row is the toggle (one target for
+                    // touch and screen readers).
+                    trailingContent = { Switch(checked = on, onCheckedChange = null) },
+                    modifier = Modifier.toggleable(value = on, role = Role.Switch, onValueChange = onLevelling),
+                )
+            }
+            item { HorizontalDivider() }
+        }
         item { SectionHeader(stringResource(R.string.section_account)) }
         item {
             ListItem(

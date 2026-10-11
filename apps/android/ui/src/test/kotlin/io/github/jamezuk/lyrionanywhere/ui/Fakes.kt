@@ -218,6 +218,8 @@ class FakeSettings(initial: AppSettings = AppSettings()) : SettingsStore {
     override suspend fun setSelectedPlayer(playerId: String?) = state.update { it.copy(selectedPlayerId = playerId) }
 
     override suspend fun setPlayOnPhone(on: Boolean) = state.update { it.copy(playOnPhone = on) }
+
+    override suspend fun setLoudnessLevelling(on: Boolean) = state.update { it.copy(loudnessLevelling = on) }
 }
 
 fun localStatus(id: String, connection: PlayerConnection = PlayerConnection.Connected) = LocalPlayerStatus(
@@ -273,4 +275,11 @@ class FakeLocalPlayer : LocalPlayerRepository {
     override fun setDuck(duck: Boolean) {}
 
     override fun setOutputRoute(route: OutputRoute) {}
+
+    val levelling = mutableListOf<Boolean>()
+
+    override suspend fun setLevelling(on: Boolean) {
+        levelling += on
+        state.update { it.copy(levelling = on) }
+    }
 }

@@ -21,6 +21,10 @@ import io.github.jamezuk.lyrionanywhere.data.LocalPlayerState
 import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
 import io.github.jamezuk.lyrionanywhere.data.SettingsStore
 import io.github.jamezuk.lyrionanywhere.data.StreamUpdate
+import io.github.jamezuk.lyrionanywhere.data.Waveform
+import io.github.jamezuk.lyrionanywhere.data.WaveformCache
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
@@ -50,6 +54,8 @@ data class PlayerUiState(
     val live: Boolean = false,
     /** This phone as a player ("Play on this phone"). */
     val local: LocalPlayerState = LocalPlayerState(),
+    /** The current track's waveform for the seek bar (null: the plain seek bar). */
+    val waveform: Waveform? = null,
 ) {
     val selected: Player? get() = players.firstOrNull { it.id == selectedId }
     val playing: Boolean get() = status?.mode == PlaybackMode.PLAYING
@@ -70,6 +76,8 @@ object NoLocalPlayer : LocalPlayerRepository {
     override fun setDuck(duck: Boolean) {}
 
     override fun setOutputRoute(route: OutputRoute) {}
+
+    override suspend fun setLevelling(on: Boolean) {}
 }
 
 /** One-off messages for a snackbar. */
@@ -91,6 +99,8 @@ class PlayerViewModel(
     private val events: EventsRepository,
     private val settings: SettingsStore,
     private val localPlayer: LocalPlayerRepository = NoLocalPlayer,
+    /** Waveforms for the seek bar (none without). */
+    private val waveforms: WaveformCache? = null,
     private val clock: () -> Long,
 ) : ViewModel() {
     /** Select this phone's player as soon as LMS lists it (after "Play on this phone"). */
@@ -134,6 +144,18 @@ class PlayerViewModel(
                 while (true) {
                     delay(if (_state.value.live) SLOW_POLL_MS else FAST_POLL_MS)
                     refreshStatus()
+                }
+            }
+            if (waveforms != null) {
+                launch {
+                    // The current track's waveform: fetched when the track changes (a
+                    // change cancels the fetch for the previous one).
+                    state.map { it.status?.current?.id }.distinctUntilChanged().collectLatest { id ->
+                        _state.update { s -> s.copy(waveform = s.waveform?.takeIf { it.trackId == id }) }
+                        if (id == null || id <= 0) return@collectLatest
+                        val w = waveforms.load(id)
+                        _state.update { s -> if (s.status?.current?.id == id) s.copy(waveform = w) else s }
+                    }
                 }
             }
             launch {

@@ -83,6 +83,10 @@ class FakeLocal(initial: LocalPlayerState = running()) : LocalPlayerRepository {
     override fun setOutputRoute(route: OutputRoute) {
         calls += "route ${route.device}"
     }
+
+    override suspend fun setLevelling(on: Boolean) {
+        calls += "levelling $on"
+    }
 }
 
 class FakePlayers : PlayersRepository {

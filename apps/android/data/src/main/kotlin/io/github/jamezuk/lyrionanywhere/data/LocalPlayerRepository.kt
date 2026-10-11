@@ -31,6 +31,8 @@ data class LocalPlayerState(
     val status: LocalPlayerStatus? = null,
     val signalPath: SignalPathInfo? = null,
     val error: AppError? = null,
+    /** Loudness levelling is on (R128 analysis, falling back to ReplayGain tags). */
+    val levelling: Boolean = false,
 ) {
     /** The player's id in LMS, once connected. */
     val playerId: String? get() = status?.playerId?.takeIf { it.isNotEmpty() }
@@ -54,6 +56,9 @@ interface LocalPlayerRepository {
 
     /** What Android says about the output route, for the signal path. */
     fun setOutputRoute(route: OutputRoute)
+
+    /** Turn loudness levelling on or off (remembered; applies from the next audio). */
+    suspend fun setLevelling(on: Boolean)
 }
 
 /** The parts of the Rust [LocalPlayer] the repository uses (a seam for tests). */
@@ -68,6 +73,8 @@ interface LocalPlayerHandle {
 
     fun setOutputRoute(route: OutputRoute)
 
+    fun setDsp(dsp: DspSettings)
+
     fun close()
 }
 
@@ -78,7 +85,29 @@ val DEFAULT_DSP = DspSettings(
     levelling = Levelling.OFF,
     targetLufs = -18.0,
     limiter = true,
+    analysisLevelling = false,
 )
+
+/** The levelling target, LUFS (ReplayGain's reference, so tagged and analysed tracks agree). */
+const val LEVELLING_TARGET_LUFS = -18.0
+
+/**
+ * The engine's DSP for the levelling setting. Off is [DEFAULT_DSP] (bit-perfect). On levels
+ * each track to [LEVELLING_TARGET_LUFS] from the gateway's R128 analysis, falling back to
+ * its ReplayGain tags, with the true-peak limiter so a boost can never clip.
+ */
+fun dspFor(levelling: Boolean): DspSettings =
+    if (!levelling) {
+        DEFAULT_DSP
+    } else {
+        DEFAULT_DSP.copy(
+            enabled = true,
+            levelling = Levelling.TRACK,
+            targetLufs = LEVELLING_TARGET_LUFS,
+            limiter = true,
+            analysisLevelling = true,
+        )
+    }
 
 /** Highest rate offered to LMS; it transcodes anything above. */
 const val MAX_SAMPLE_RATE = 192_000
@@ -98,6 +127,8 @@ private class RustHandle(session: Session) : LocalPlayerHandle {
     override fun setDuck(duck: Boolean) = player.setDuck(duck)
 
     override fun setOutputRoute(route: OutputRoute) = player.setOutputRoute(route)
+
+    override fun setDsp(dsp: DspSettings) = player.setDsp(dsp)
 
     override fun close() = player.close()
 }
@@ -120,6 +151,7 @@ class RustLocalPlayerRepository(
     @Volatile private var handle: LocalPlayerHandle? = null
     private var handleSession: Session? = null
     private var route = OutputRoute("", 0u, false)
+    @Volatile private var levelling = false
 
     /** Ignores updates from a player that has since been replaced. */
     private inner class Observer(private val owner: LocalPlayerHandle) : LocalPlayerObserver {
@@ -139,6 +171,13 @@ class RustLocalPlayerRepository(
                 reconcile(s.takeIf { on }, on)
             }
         }
+        scope.launch {
+            settings.settings.map { it.loudnessLevelling }.distinctUntilChanged().collect { on ->
+                levelling = on
+                _state.update { it.copy(levelling = on) }
+                withContext(io) { handle?.setDsp(dspFor(on)) }
+            }
+        }
     }
 
     private suspend fun reconcile(session: Session?, enabled: Boolean) = withContext(io) {
@@ -149,13 +188,15 @@ class RustLocalPlayerRepository(
         }
         handle = null
         handleSession = null
-        _state.value = LocalPlayerState(enabled = enabled)
+        _state.value = LocalPlayerState(enabled = enabled, levelling = levelling)
         if (session == null) return@withContext
         try {
             val h = factory(session)
             handle = h
             handleSession = session
             h.setOutputRoute(route)
+            // The engine starts bit-perfect; levelling, when on, is set before any audio.
+            if (levelling) h.setDsp(dspFor(true))
             h.start(Observer(h))
         } catch (e: Exception) {
             handle = null
@@ -181,5 +222,9 @@ class RustLocalPlayerRepository(
     override fun setOutputRoute(route: OutputRoute) {
         this.route = route
         handle?.setOutputRoute(route)
+    }
+
+    override suspend fun setLevelling(on: Boolean) {
+        settings.setLoudnessLevelling(on)
     }
 }

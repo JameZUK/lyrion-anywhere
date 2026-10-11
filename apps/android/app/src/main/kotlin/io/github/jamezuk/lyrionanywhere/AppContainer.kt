@@ -5,6 +5,8 @@ import android.os.Build
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.preferencesDataStoreFile
 import io.github.jamezuk.lyrionanywhere.data.AccountRepository
+import io.github.jamezuk.lyrionanywhere.data.AnalysisRepository
+import io.github.jamezuk.lyrionanywhere.data.RustAnalysisRepository
 import io.github.jamezuk.lyrionanywhere.data.ArtRepository
 import io.github.jamezuk.lyrionanywhere.data.DataStoreSettings
 import io.github.jamezuk.lyrionanywhere.data.EventsRepository
@@ -56,6 +58,7 @@ class AppContainer(context: Context, scope: CoroutineScope) {
     val players: PlayersRepository = RustPlayersRepository(accountImpl)
     val art: ArtRepository = RustArtRepository(accountImpl)
     val events: EventsRepository = RustEventsRepository(accountImpl)
+    val analysis: AnalysisRepository = RustAnalysisRepository(accountImpl)
 
     /** This phone as an LMS player, while signed in and switched on. */
     val localPlayer: LocalPlayerRepository = RustLocalPlayerRepository(

@@ -136,6 +136,11 @@
     <string name="play_on_phone_failed">Couldn\'t start the player</string>
     <string name="signal_path">Signal path</string>
     <string name="signal_path_none">Nothing playing on this phone yet.</string>
+    <string name="section_playback">Playback on this phone</string>
+    <string name="loudness_levelling">Loudness levelling</string>
+    <string name="loudness_levelling_on">Evens out loudness between tracks, using the server\'s analysis (EBU R128) or ReplayGain tags, with a true-peak limiter.</string>
+    <string name="loudness_levelling_off">Off: tracks play bit-perfect, as mastered.</string>
+    <string name="waveform_seek">Waveform of this track</string>
     <string name="signal_source">Source</string>
     <string name="signal_output">Output</string>
     <string name="bits_format">%1$d-bit</string>

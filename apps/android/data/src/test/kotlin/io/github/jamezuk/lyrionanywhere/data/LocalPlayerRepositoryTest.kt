@@ -1,6 +1,8 @@
 package io.github.jamezuk.lyrionanywhere.data
 
 import io.github.jamezuk.lyrionanywhere.core.ApiException
+import io.github.jamezuk.lyrionanywhere.core.DspSettings
+import io.github.jamezuk.lyrionanywhere.core.Levelling
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayback
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayerObserver
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayerStatus
@@ -46,6 +48,8 @@ private class MemSettings : SettingsStore {
     override suspend fun setSelectedPlayer(playerId: String?) = state.update { it.copy(selectedPlayerId = playerId) }
 
     override suspend fun setPlayOnPhone(on: Boolean) = state.update { it.copy(playOnPhone = on) }
+
+    override suspend fun setLoudnessLevelling(on: Boolean) = state.update { it.copy(loudnessLevelling = on) }
 }
 
 private class FakeHandle : LocalPlayerHandle {
@@ -73,6 +77,10 @@ private class FakeHandle : LocalPlayerHandle {
 
     override fun setOutputRoute(route: OutputRoute) {
         calls += "route ${route.device}"
+    }
+
+    override fun setDsp(dsp: DspSettings) {
+        calls += "dsp ${dsp.analysisLevelling}"
     }
 
     override fun close() {
@@ -110,6 +118,45 @@ class LocalPlayerRepositoryTest {
         assertTrue(handles[0].stopped && handles[0].closed)
         assertFalse(r.state.value.enabled)
         assertNull(r.state.value.status)
+    }
+
+    @Test
+    fun levellingIsOffByDefaultAndFollowsTheSetting() = runTest {
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        // Off: the engine keeps its bit-perfect default (no DSP call at all).
+        assertEquals(listOf("route ", "start"), handles[0].calls)
+        assertFalse(r.state.value.levelling)
+
+        r.setLevelling(true)
+        assertTrue(settings.state.value.loudnessLevelling)
+        assertTrue(r.state.value.levelling)
+        assertEquals("dsp true", handles[0].calls.last())
+
+        r.setLevelling(false)
+        assertEquals("dsp false", handles[0].calls.last())
+
+        // A player started while levelling is on gets it before any audio.
+        r.setLevelling(true)
+        r.setEnabled(false)
+        r.setEnabled(true)
+        assertEquals(listOf("route ", "dsp true", "start"), handles.last().calls)
+        assertTrue(r.state.value.levelling)
+    }
+
+    @Test
+    fun levellingDspIsBitPerfectWhenOff() {
+        val off = dspFor(false)
+        assertEquals(DEFAULT_DSP, off)
+        assertFalse(off.enabled)
+        assertFalse(off.analysisLevelling)
+        assertEquals(Levelling.OFF, off.levelling)
+        val on = dspFor(true)
+        assertTrue(on.enabled && on.analysisLevelling && on.limiter)
+        assertEquals(Levelling.TRACK, on.levelling)
+        assertEquals(-18.0, on.targetLufs, 0.0)
+        assertEquals(0.0, on.preampDb, 0.0)
     }
 
     @Test
