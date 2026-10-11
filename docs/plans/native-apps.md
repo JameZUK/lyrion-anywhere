@@ -117,7 +117,7 @@ Both feed the same engine, so DSP, levelling, the waveform, the signal path and 
 ### 3.4 Engine details (Rust)
 - **Decode:**
   - Symphonia (FLAC, ALAC, WAV/AIFF, MP3, AAC, Vorbis).
-  - **Opus** needs adding (libopus via the `opus` crate, or Symphonia's Opus support if it has landed). Opus downloads need it.
+  - **Opus:** done (see §3.5). Symphonia 0.6 demuxes Ogg Opus but still has no decoder, so the core registers the pure-Rust `opus-decoder` crate with Symphonia, behind the `opus` cargo feature.
   - **DSD:** DSF/DFF parsing and DoP packing later (§2.3).
 - **DSP chain:** 64-bit float, applied in this order, with each stage able to be bypassed:
   1. preamp;
@@ -130,6 +130,49 @@ Both feed the same engine, so DSP, levelling, the waveform, the signal path and 
 - **Resampling:** only when the output can't take the source rate, with a high-quality sinc resampler (e.g. `rubato`), shown in the signal path.
 - **Gapless:** sample-accurate, already proven in the core and gateway.
 - **Look-ahead:** the next track is decoded early, for gapless playback and smart transitions.
+
+### 3.5 Engine mathematics: implemented in the core
+
+The signal processing and analysis are in `core/` (sans-IO, deterministic, `f64` throughout), so the `mobile/` host only moves buffers. Module docs carry the details; this is the summary.
+
+**Internal format and bit-perfect playback (`core::dsp::pcm`, `core::dsp::chain`)**
+- Samples are `f64` scaled to ±1.0. Integer PCM of up to 32 bits converts in and out exactly: an `f64` holds every `i32`, and the scale is a power of two.
+- A bypassed stage doesn't touch the buffer, so a chain with nothing active is bit-transparent by construction.
+- A harness proves 16-, 24- and 32-bit pseudo-random PCM (with full-scale extremes) comes back identical at 44.1, 48, 88.2, 96, 176.4 and 192 kHz. Widening (16 → 24-bit) and float output are exact too.
+
+**The chain, in order (`core::dsp`)**
+
+| Stage | What it does |
+|---|---|
+| Gain | Preamp plus levelling. Exactly 0 dB is a true bypass |
+| Levelling (`levelling`) | Gain to a target (e.g. −16 or −18 LUFS) from R128 analysis or ReplayGain tags, track or album mode. Attenuation is always applied; a boost is capped so the peak stays under the limiter's ceiling (plus optional limiter headroom) |
+| EQ (`eq`, `biquad`) | RBJ-cookbook peaking, shelves, low/high pass and notch, transposed direct form II, recomputed on a rate change. Parses AutoEq `ParametricEQ.txt`, with bounded size, lines, filter count and values |
+| Crossfeed (`crossfeed`) | Bauer-style: the opposite channel, delayed, low-passed and attenuated, with unity gain for centred bass. Light, moderate and natural presets |
+| True-peak limiter (`limiter`) | Look-ahead brickwall with linked channels. 4× oversampled detection per BS.1770-4 Annex 2, hold and release, and a moving-average attack that reaches each target on time. Latency is reported |
+| Output (`dither`) | TPDF dither, optionally noise-shaped, only when the integer depth is reduced (a narrower output, or after processing). Never for float output or untouched audio |
+
+**Outside the chain**
+- **Resampler (`resample`, `resample` feature):** wraps `rubato`'s 256-tap sinc in `f64`, used only when the output can't take the source rate.
+- **Transitions (`transition`):** sample-accurate equal-power or linear crossfades, and gapless joins.
+- **Signal path (`signal_path`):** stage list plus a verdict: bit-perfect, lossless processed, resampled, or lossy source.
+
+**Verified**
+- **Limiter:** the output's true peak never exceeds the ceiling. Tested with full-scale square waves, fs/4 sines at 45°, impulses, bursts, steps, rail noise and sweeps, at boosts up to +20 dB, at 44.1–192 kHz, and with randomised signals and settings. It aims 0.05 dB under the ceiling; the worst case measured lands 0.0001 dB above that aim.
+- **Hostile samples:** NaN, infinities and huge values are sanitised on the processing path, and a stage that still goes non-finite is reset.
+- **Speed (release build, one thread, 44.1 kHz stereo):** the full chain (gain, 10-band EQ, crossfeed, limiter, dither) runs at about 170× real time, and analysis at about 400×.
+
+**Opus (`core::opus`, `opus` feature)**
+- **Options considered:**
+  - libopus via `opus`/`audiopus`: needs a C toolchain per target and can't build for `wasm32-unknown-unknown`;
+  - Symphonia: no Opus decoder in 0.6;
+  - pure-Rust decoders.
+- **Chosen:** `opus-decoder`, which is MIT/Apache-2.0, has no `unsafe` code, and claims RFC 8251 conformance.
+- **What it supports:**
+  - mono and stereo;
+  - the header's output gain;
+  - pre-skip and end trimming, so decoding is sample-accurate.
+- **Format code:** Slimproto's `u` is accepted only in builds that can decode it.
+- **Web:** off for WebAssembly (browsers decode Opus natively).
 
 ## 4. Waveform, loudness and track analysis
 
@@ -149,6 +192,34 @@ Plexamp's waveform seek bar ("seekprint"), loudness levelling and sweet fades al
 - **Waveform seek bar:** drawn from the peaks, coloured from the album art, with the played portion highlighted and drag-to-seek. While no analysis exists, it falls back to a plain bar and fills in progressively.
 - **Loudness levelling:** uses the integrated loudness and true peak (track or album mode; the target is configurable, e.g. −16 LUFS on phones). Without analysis, ReplayGain tags are used.
 - **Smart transitions:** use the end and start analysis to choose fade length and shape. They never apply within an album, a gapless sequence or a classical work.
+
+**Implemented in the core (`core::analysis`, for the gateway service):**
+- **One pass, constant memory:**
+  - a streaming `Analyser` takes decoded PCM at any rate from 8 to 768 kHz, with up to 16 channels;
+  - `analyse_encoded` decodes and analyses a file in one call.
+- **Loudness:**
+  - **K-weighting at any sample rate:** BS.1770-4's 48 kHz biquads are mapped to their analogue prototypes and re-discretised, pre-warped at each filter's natural frequency; the result is exact at 48 kHz.
+  - **Integrated loudness:** 400 ms blocks with 75% overlap, gated at −70 LUFS absolute and −10 LU relative. Gating uses a 0.01 LU histogram that keeps the exact power summed in each bin.
+  - **Loudness range:** per EBU Tech 3342 (3 s blocks, −20 LU relative gate, 10th–95th percentile).
+  - **Also reported:** maximum momentary and short-term loudness.
+- **Peaks:** true peak (the limiter's 4× detector) and sample peak.
+- **Waveform:**
+  - N buckets (1,000 by default) of peak and RMS, quantised to `u8`;
+  - built by doubling bucket widths: at most 4N buckets are kept, so the track length needn't be known.
+- **Silence and fades:**
+  - leading and trailing silence (threshold and minimum length);
+  - fade-in and fade-out from the least-squares slope of momentary loudness over the first and last seconds of audio.
+- **Output:** a versioned struct (`ANALYSIS_VERSION`), with two encodings:
+  - JSON, with the waveform as base64: about 3 KiB for 1,000 buckets;
+  - a binary form: about 2.1 KiB.
+
+  Both decoders refuse hostile input (fuzz-tested). Album loudness is the duration-weighted power mean of the tracks.
+- **Verified against signals with known loudness:**
+  - EBU Tech 3341 steady tones (−18, −23 and −33 dBFS give the same LUFS within ±0.1 at 44.1, 48, 96 and 192 kHz);
+  - the gating sequences of Tech 3341 cases 3 and 4;
+  - the Tech 3342 loudness-range cases (within ±1 LU);
+  - fs/4 inter-sample peaks;
+  - BS.1770 channel weighting for mono and 5.1.
 
 **Phasing:** loudness and peaks first (they're cheap). Tempo and key are later, only if a feature needs them. Similarity ("sonic analysis") isn't ours to build: AudioMuse-AI does it in LMS, and we integrate it.
 

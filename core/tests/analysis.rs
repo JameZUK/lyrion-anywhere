@@ -309,6 +309,11 @@ fn encodings_are_compact_and_round_trip() {
         &tone(44_100, &[(1.0, -60.0), (8.0, -14.0), (1.0, -40.0)]),
     );
     let json = a.to_json();
+    println!(
+        "JSON {} bytes, binary {} bytes",
+        json.len(),
+        a.to_bytes().len()
+    );
     assert!(json.len() < 4096, "JSON is {} bytes", json.len());
     assert_eq!(TrackAnalysis::from_json(&json).unwrap(), a);
     let bin = a.to_bytes();
