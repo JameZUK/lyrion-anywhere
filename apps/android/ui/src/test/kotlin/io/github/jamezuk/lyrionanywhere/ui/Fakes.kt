@@ -142,6 +142,14 @@ class FakeAccount : AccountRepository {
     }
 
     override suspend fun account(): ApiResult<AccountInfo> = ApiResult.Ok(AccountInfo("alice", false, true, false))
+
+    val renames = mutableListOf<String>()
+    var renameResult: ApiResult<String>? = null
+
+    override suspend fun renameDevice(name: String): ApiResult<String> {
+        renames += name
+        return renameResult ?: ApiResult.Ok(name)
+    }
 }
 
 class FakeLibrary(var totalAlbums: Int = 250) : LibraryRepository {
