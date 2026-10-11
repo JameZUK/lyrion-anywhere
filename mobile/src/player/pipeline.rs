@@ -22,6 +22,9 @@ use std::collections::VecDeque;
 
 use anywhere_core::decode::ReplayGainTags;
 use anywhere_core::dsp::chain::{Chain, ChainConfig};
+use anywhere_core::dsp::crossfeed::CrossfeedPreset;
+use anywhere_core::dsp::dither::{Dither, DitherMode, needs_dither};
+use anywhere_core::dsp::eq::{self, EqProfile};
 use anywhere_core::dsp::levelling::{
     self, LevellingConfig, LevellingMode, LoudnessInfo, Measurement,
 };
@@ -41,6 +44,27 @@ pub enum Levelling {
     Album,
 }
 
+/// Headphone crossfeed (`core::dsp::crossfeed` presets).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum CrossfeedSetting {
+    Off,
+    Light,
+    Moderate,
+    Natural,
+}
+
+/// How samples are requantised when the bit depth is reduced (only then: a processed
+/// stream into an integer output, or a source deeper than the DAC).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum DitherSetting {
+    /// TPDF dither (recommended).
+    Tpdf,
+    /// TPDF with first-order noise shaping.
+    TpdfShaped,
+    /// No dither: round to nearest.
+    Off,
+}
+
 /// The engine's optional processing. The default does nothing (bit-perfect).
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct DspSettings {
@@ -51,12 +75,21 @@ pub struct DspSettings {
     pub levelling: Levelling,
     /// Levelling target, LUFS (−30..=−5); ReplayGain's reference is −18.
     pub target_lufs: f64,
-    /// True-peak limiter at −1 dBTP (recommended with any boost).
+    /// True-peak limiter (recommended with any boost).
     pub limiter: bool,
     /// Level from the gateway's R128 analysis of each track (integrated loudness and true
     /// peak), falling back to ReplayGain tags where there is none. Needs `levelling`.
     #[uniffi(default = false)]
     pub analysis_levelling: bool,
+    /// The limiter's ceiling, dBTP (−20..=0).
+    #[uniffi(default = -1.0)]
+    pub limiter_ceiling_db: f64,
+    /// A parametric EQ as AutoEq `ParametricEQ.txt` text; `None` (or a flat, invalid or
+    /// oversized profile) is no EQ. Check it first with [`check_eq_profile`].
+    #[uniffi(default = None)]
+    pub eq_profile: Option<String>,
+    pub crossfeed: CrossfeedSetting,
+    pub dither: DitherSetting,
 }
 
 impl Default for DspSettings {
@@ -68,8 +101,44 @@ impl Default for DspSettings {
             target_lufs: -18.0,
             limiter: true,
             analysis_levelling: false,
+            limiter_ceiling_db: -1.0,
+            eq_profile: None,
+            crossfeed: CrossfeedSetting::Off,
+            dither: DitherSetting::Tpdf,
         }
     }
+}
+
+/// An EQ profile that parsed: what the app shows after an import.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct EqProfileSummary {
+    pub preamp_db: f64,
+    /// Filters that are on.
+    pub filters: u32,
+    /// Every filter is 0 dB and the preamp is 0 dB: the EQ would change nothing.
+    pub flat: bool,
+}
+
+/// Parse an AutoEq `ParametricEQ.txt` profile (pasted or from a file): its summary, or why
+/// it was refused (with the line). Bounded: at most 64 KiB, 512-byte lines, 32 filters.
+#[uniffi::export]
+pub fn check_eq_profile(text: String) -> Result<EqProfileSummary, crate::ApiError> {
+    let p = parse_eq(&text).map_err(crate::ApiError::invalid)?;
+    Ok(EqProfileSummary {
+        preamp_db: p.preamp_db,
+        filters: p.filters.len() as u32,
+        flat: p.is_flat(),
+    })
+}
+
+fn parse_eq(text: &str) -> Result<EqProfile, String> {
+    if text.len() > eq::MAX_PROFILE_BYTES {
+        return Err(format!(
+            "the profile is larger than {} KiB",
+            eq::MAX_PROFILE_BYTES / 1024
+        ));
+    }
+    eq::parse_autoeq(text).map_err(|e| e.to_string())
 }
 
 /// Where a track's levelling gain came from.
@@ -86,6 +155,10 @@ pub enum LevelSource {
 impl DspSettings {
     /// The same settings with every value forced into its supported range (they come from
     /// the app's settings, which may be stale or hand-edited).
+    ///
+    /// Out-of-range numbers are clamped (non-finite ones reset to their defaults), and an
+    /// EQ profile that doesn't parse, or is flat, is dropped: the EQ is then off rather
+    /// than half-applied.
     pub fn sanitised(&self) -> DspSettings {
         let f = |x: f64, d: f64, lo: f64, hi: f64| if x.is_finite() { x.clamp(lo, hi) } else { d };
         DspSettings {
@@ -95,21 +168,56 @@ impl DspSettings {
             target_lufs: f(self.target_lufs, -18.0, -30.0, -5.0),
             limiter: self.limiter,
             analysis_levelling: self.analysis_levelling,
+            limiter_ceiling_db: f(self.limiter_ceiling_db, -1.0, -20.0, 0.0),
+            eq_profile: self
+                .eq_profile
+                .as_ref()
+                .filter(|t| parse_eq(t).is_ok_and(|p| !p.is_flat()))
+                .cloned(),
+            crossfeed: self.crossfeed,
+            dither: self.dither,
         }
     }
 
-    /// Does any stage change samples?
+    /// Does any stage change samples? (Dither alone doesn't: it only applies where the
+    /// depth is reduced. The limiter is a safety net for the other stages, applied only
+    /// with one of them.)
     pub fn active(&self) -> bool {
-        self.enabled && (self.preamp_db != 0.0 || self.levelling != Levelling::Off || self.limiter)
+        self.enabled
+            && (self.preamp_db != 0.0
+                || self.levelling != Levelling::Off
+                || self.eq_profile.is_some()
+                || self.crossfeed != CrossfeedSetting::Off)
     }
 
     fn chain_config(&self) -> ChainConfig {
+        let crossfeed = match self.crossfeed {
+            CrossfeedSetting::Off => None,
+            CrossfeedSetting::Light => Some(CrossfeedPreset::Light.config()),
+            CrossfeedSetting::Moderate => Some(CrossfeedPreset::Moderate.config()),
+            CrossfeedSetting::Natural => Some(CrossfeedPreset::Natural.config()),
+        };
         ChainConfig {
             preamp_db: self.preamp_db,
             levelling_db: 0.0,
-            limiter: self.limiter.then(LimiterConfig::default),
-            ..ChainConfig::default()
+            eq: self.eq_profile.as_deref().and_then(|t| parse_eq(t).ok()),
+            crossfeed,
+            limiter: self.limiter.then(|| {
+                LimiterConfig {
+                    ceiling_dbtp: self.limiter_ceiling_db,
+                    ..LimiterConfig::default()
+                }
+                .sanitised()
+            }),
+            dither: dither_mode(self.dither),
         }
+    }
+}
+
+fn dither_mode(d: DitherSetting) -> DitherMode {
+    match d {
+        DitherSetting::TpdfShaped => DitherMode::TpdfShaped,
+        DitherSetting::Tpdf | DitherSetting::Off => DitherMode::Tpdf,
     }
 }
 
@@ -199,6 +307,12 @@ pub struct Pipeline {
     drained: bool,
     f64_in: Vec<f64>,
     f64_out: Vec<f64>,
+    /// Integer output depth (see [`Pipeline::set_output_bits`]).
+    out_bits: Option<u32>,
+    /// The current track's integer depth.
+    source_bits: Option<u32>,
+    out_dither: Dither,
+    ints: Vec<i32>,
 }
 
 impl Pipeline {
@@ -220,6 +334,10 @@ impl Pipeline {
             drained: false,
             f64_in: Vec::new(),
             f64_out: Vec::new(),
+            out_bits: None,
+            source_bits: None,
+            out_dither: Dither::new(dither_mode(dsp.dither), CHANNELS),
+            ints: Vec::new(),
         }
     }
 
@@ -258,6 +376,9 @@ impl Pipeline {
         let dsp = dsp.sanitised();
         if dsp == self.dsp {
             return;
+        }
+        if dsp.dither != self.dsp.dither {
+            self.out_dither = Dither::new(dither_mode(dsp.dither), CHANNELS);
         }
         self.dsp = dsp;
         self.chain = None;
@@ -305,17 +426,20 @@ impl Pipeline {
     /// Process one block of the core's PCM (interleaved stereo, `frames` frames of track
     /// `seq`) into the pending buffer. Call only when [`Pipeline::has_pending`] is false.
     pub fn push(&mut self, block: &[f32], seq: u32, tags: Option<&ReplayGainTags>) {
-        self.push_with(block, seq, tags, None);
+        self.push_with(block, seq, tags, None, None);
     }
 
     /// [`Pipeline::push`], with the track's R128 analysis when known (used for levelling
-    /// if `analysis_levelling` is on; decided once, at the track's first block).
+    /// if `analysis_levelling` is on; decided once, at the track's first block) and the
+    /// source's integer depth (`None`: lossy or float), which decides whether an integer
+    /// output needs dither.
     pub fn push_with(
         &mut self,
         block: &[f32],
         seq: u32,
         tags: Option<&ReplayGainTags>,
         analysis: Option<Measurement>,
+        source_bits: Option<u32>,
     ) {
         debug_assert!(!self.has_pending());
         // Source frames that produced no output yet (held inside the resampler) ride along
@@ -332,7 +456,9 @@ impl Pipeline {
                 c.set_levelling_db(self.levelling_db);
             }
         }
-        if self.chain.is_none() && self.resampler.is_none() {
+        self.source_bits = source_bits;
+        let quantise = self.quantise_bits();
+        if self.chain.is_none() && self.resampler.is_none() && quantise.is_none() {
             // The bit-perfect path: a plain copy.
             self.pending.extend_from_slice(block);
         } else {
@@ -350,10 +476,47 @@ impl Pipeline {
                 None => &self.f64_in,
             };
             self.pending.resize(out.len(), 0.0);
-            pcm::f64_to_f32(out, &mut self.pending);
+            match quantise {
+                // An integer output, and the depth is reduced: onto its grid, dithered
+                // (exact in the f32 ring, so the output's conversion is lossless).
+                Some(bits) => {
+                    self.ints.resize(out.len(), 0);
+                    if self.dsp.dither == DitherSetting::Off {
+                        pcm::from_f64(out, bits, &mut self.ints);
+                    } else {
+                        self.out_dither.quantise(out, bits, &mut self.ints);
+                    }
+                    pcm::int_to_f32(&self.ints, bits, &mut self.pending);
+                }
+                None => pcm::f64_to_f32(out, &mut self.pending),
+            }
         }
         self.pending_src = frames;
         self.pending_src_written = 0;
+    }
+
+    /// The output is an integer stream (a bit-perfect DAC) whose samples are exact at
+    /// `bits` (≤ 24); `None` for float output. Processed or deeper audio is then dithered to
+    /// that depth here, so the output only ever converts exact values.
+    pub fn set_output_bits(&mut self, bits: Option<u32>) {
+        let bits = bits.map(|b| b.clamp(16, pcm::F32_EXACT_BITS));
+        if bits != self.out_bits {
+            self.out_bits = bits;
+            self.out_dither.reset();
+        }
+    }
+
+    pub fn output_bits(&self) -> Option<u32> {
+        self.out_bits
+    }
+
+    /// The depth audio is requantised to now, if any: an integer output and a reduction
+    /// (processing, or a source that is lossy or deeper than the output).
+    fn quantise_bits(&self) -> Option<u32> {
+        let q = self.out_bits?;
+        let processed = self.chain.as_ref().is_some_and(|c| !c.is_bit_transparent())
+            || self.resampler.is_some();
+        needs_dither(Some(q), self.source_bits, processed).then_some(q)
     }
 
     /// The source rate is about to change (or the audio has ended): emit the resampler's
@@ -452,6 +615,7 @@ impl Pipeline {
         if let Some(c) = &mut self.chain {
             c.reset();
         }
+        self.out_dither.reset();
         if let (Some(s), Some(o), true) = (self.src_rate, self.out_rate, self.resampler.is_some()) {
             self.resampler = Resampler::new(s, o, CHANNELS).ok();
         }
@@ -477,12 +641,26 @@ impl Pipeline {
             let (from, to) = r.rates();
             v.push(Stage::resample(from, to, "sinc"));
         }
+        if let Some(bits) = self.quantise_bits() {
+            v.push(Stage::processing(match self.dsp.dither {
+                DitherSetting::Tpdf => format!("Dither to {bits}-bit (TPDF)"),
+                DitherSetting::TpdfShaped => format!("Dither to {bits}-bit (TPDF, noise-shaped)"),
+                DitherSetting::Off => format!("Rounded to {bits}-bit (no dither)"),
+            }));
+        }
         v
     }
 
     /// Any sample-changing processing in the pipeline itself?
     pub fn processing(&self) -> bool {
-        self.chain.as_ref().is_some_and(|c| !c.is_bit_transparent()) || self.resampler.is_some()
+        self.chain.as_ref().is_some_and(|c| !c.is_bit_transparent())
+            || self.resampler.is_some()
+            || self.quantise_bits().is_some()
+    }
+
+    /// Our DSP chain (not resampling or requantising) changes samples.
+    pub fn dsp_processing(&self) -> bool {
+        self.chain.as_ref().is_some_and(|c| !c.is_bit_transparent())
     }
 }
 
@@ -564,11 +742,296 @@ mod tests {
             target_lufs: 1e9,
             limiter: false,
             analysis_levelling: true,
+            limiter_ceiling_db: f64::INFINITY,
+            eq_profile: Some("Filter 1: ON PK Fc 99999999 Hz Gain 3 dB Q 1".into()),
+            crossfeed: CrossfeedSetting::Off,
+            dither: DitherSetting::Tpdf,
         }
         .sanitised();
         assert_eq!(weird.preamp_db, 0.0);
         assert_eq!(weird.target_lufs, -5.0);
+        assert_eq!(weird.limiter_ceiling_db, -1.0);
+        assert_eq!(weird.eq_profile, None, "an invalid profile is dropped");
         assert!(!weird.active());
+    }
+
+    const PROFILE: &str = "Preamp: -6.4 dB\n\
+        Filter 1: ON LSC Fc 105 Hz Gain 5.8 dB Q 0.70\n\
+        Filter 2: ON PK Fc 3800 Hz Gain 4.1 dB Q 3.2\n\
+        Filter 3: OFF PK Fc 6000 Hz Gain 2 dB Q 5\n";
+
+    /// Out-of-range values are clamped, nonsense is reset, and invalid, flat or oversized
+    /// EQ profiles are refused (the EQ is then off, never half-applied).
+    #[test]
+    fn settings_are_clamped_or_refused() {
+        let base = DspSettings {
+            enabled: true,
+            ..DspSettings::default()
+        };
+        let s = DspSettings {
+            preamp_db: -99.0,
+            target_lufs: -99.0,
+            limiter_ceiling_db: 6.0,
+            ..base.clone()
+        }
+        .sanitised();
+        assert_eq!(
+            (s.preamp_db, s.target_lufs, s.limiter_ceiling_db),
+            (-20.0, -30.0, 0.0)
+        );
+        let s = DspSettings {
+            preamp_db: 99.0,
+            limiter_ceiling_db: -99.0,
+            ..base.clone()
+        }
+        .sanitised();
+        assert_eq!((s.preamp_db, s.limiter_ceiling_db), (12.0, -20.0));
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let s = DspSettings {
+                preamp_db: bad,
+                target_lufs: bad,
+                limiter_ceiling_db: bad,
+                ..base.clone()
+            }
+            .sanitised();
+            assert_eq!(
+                (s.preamp_db, s.target_lufs, s.limiter_ceiling_db),
+                (0.0, -18.0, -1.0)
+            );
+        }
+        // EQ: a valid profile is kept and activates the chain; others are dropped.
+        let with = |t: &str| {
+            DspSettings {
+                eq_profile: Some(t.to_string()),
+                ..base.clone()
+            }
+            .sanitised()
+        };
+        let ok = with(PROFILE);
+        assert_eq!(ok.eq_profile.as_deref(), Some(PROFILE));
+        assert!(ok.active());
+        assert_eq!(
+            with("Filter 1: ON PK Fc 1000 Hz Gain 0 dB Q 1").eq_profile,
+            None,
+            "flat"
+        );
+        assert_eq!(with("garbage").eq_profile, None);
+        assert_eq!(
+            with("Filter 1: ON PK Fc 1000 Hz Gain 300 dB Q 1").eq_profile,
+            None
+        );
+        let huge = format!(
+            "{PROFILE}{}",
+            "# padding\n".repeat(eq::MAX_PROFILE_BYTES / 10)
+        );
+        assert_eq!(with(&huge).eq_profile, None, "oversized");
+        // The import check says why.
+        let summary = check_eq_profile(PROFILE.into()).unwrap();
+        assert_eq!((summary.filters, summary.flat), (2, false));
+        assert_eq!(summary.preamp_db, -6.4);
+        assert!(check_eq_profile(huge).is_err());
+        let err = check_eq_profile("Preamp: -3 dB\nFilter 1: ON ZZ Fc 1 Hz".into()).unwrap_err();
+        assert!(err.to_string().contains("line 2"), "{err}");
+        // Each stage alone makes the chain active (bit-perfect goes); dither alone doesn't.
+        assert!(!base.active(), "the default has nothing to do");
+        for s in [
+            DspSettings {
+                preamp_db: -1.0,
+                ..base.clone()
+            },
+            DspSettings {
+                levelling: Levelling::Album,
+                ..base.clone()
+            },
+            DspSettings {
+                crossfeed: CrossfeedSetting::Light,
+                ..base.clone()
+            },
+            ok.clone(),
+        ] {
+            assert!(s.active(), "{s:?}");
+            assert!(
+                !DspSettings {
+                    enabled: false,
+                    ..s
+                }
+                .active(),
+                "the master switch"
+            );
+        }
+        assert!(
+            !DspSettings {
+                dither: DitherSetting::TpdfShaped,
+                ..base.clone()
+            }
+            .active()
+        );
+    }
+
+    /// Hostile profile text through the settings path: never a panic, and whatever is kept
+    /// builds a working chain.
+    #[test]
+    fn eq_text_fuzz_never_panics_and_kept_profiles_run() {
+        let mut x = 0x5eed_u64;
+        let mut rnd = |n: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % n
+        };
+        let alphabet = b"Filter PreampONOFFPKLSCHSCLPHPNOFcGainQHzdB:0123456789.-+ \n\t#e";
+        for i in 0..3_000 {
+            let mut t = PROFILE.as_bytes().to_vec();
+            if i % 2 == 0 {
+                for _ in 0..1 + rnd(5) {
+                    let k = rnd(t.len() as u64) as usize;
+                    t[k] = alphabet[rnd(alphabet.len() as u64) as usize];
+                }
+            } else {
+                t = (0..rnd(300)).map(|_| rnd(256) as u8).collect();
+            }
+            let text = String::from_utf8_lossy(&t).into_owned();
+            let _ = check_eq_profile(text.clone());
+            let s = DspSettings {
+                enabled: true,
+                eq_profile: Some(text),
+                ..DspSettings::default()
+            }
+            .sanitised();
+            if s.eq_profile.is_some() {
+                let mut p = Pipeline::new(s);
+                p.configure(48_000, 48_000).unwrap();
+                p.push(&[0.5, -0.5, 0.25, 0.1], 0, None);
+                assert!(p.pending.iter().all(|v| v.is_finite()));
+            }
+        }
+    }
+
+    /// Integer output (a bit-perfect DAC): untouched audio is copied as is, and processed
+    /// or lossy audio is dithered onto the output's grid, so the output's conversion to
+    /// integers is always exact.
+    #[test]
+    fn integer_output_copies_untouched_audio_and_dithers_the_rest() {
+        let ring = Ring::new(1 << 18);
+        ring.set_hold(false);
+        let mut prod = ring.producer().unwrap();
+        let mut p = Pipeline::new(DspSettings::default());
+        p.configure(96_000, 96_000).unwrap();
+        p.set_output_bits(Some(24));
+        let input = noise(4096, 3);
+        p.push_with(&input, 0, None, None, Some(24));
+        assert!(!p.processing(), "24-bit into 24-bit: untouched");
+        assert!(p.stages().is_empty());
+        assert_eq!(p.pending, input);
+        assert!(p.write_pending(&mut prod));
+        // A lossy source into the same output: dithered to 24 bits.
+        p.push_with(&[0.123_456_79, -0.333_333_34], 1, None, None, None);
+        assert!(p.processing());
+        assert!(
+            p.stages()
+                .iter()
+                .any(|s| s.name == "Dither to 24-bit (TPDF)")
+        );
+        assert!(p.pending.iter().all(|v| pcm::f32_on_grid(*v, 24)));
+        p.write_pending(&mut prod);
+        // A 24-bit source into a 16-bit DAC: reduced with dither.
+        p.set_output_bits(Some(16));
+        p.push_with(&input, 2, None, None, Some(24));
+        assert!(p.pending.iter().all(|v| pcm::f32_on_grid(*v, 16)));
+        assert!(
+            p.stages()
+                .iter()
+                .any(|s| s.name.starts_with("Dither to 16-bit"))
+        );
+        p.write_pending(&mut prod);
+        // DSP on: processed audio is dithered (or rounded, if dither is off).
+        let mut p = Pipeline::new(DspSettings {
+            enabled: true,
+            preamp_db: -3.0,
+            limiter: false,
+            dither: DitherSetting::Off,
+            ..DspSettings::default()
+        });
+        p.configure(44_100, 44_100).unwrap();
+        p.set_output_bits(Some(16));
+        p.push_with(&[0.5, -0.5], 0, None, None, Some(16));
+        let g = 10f64.powf(-3.0 / 20.0);
+        assert_eq!(
+            p.pending[0],
+            ((0.5 * g * 32_768.0).round() / 32_768.0) as f32
+        );
+        assert!(
+            p.stages()
+                .iter()
+                .any(|s| s.name == "Rounded to 16-bit (no dither)")
+        );
+        // Back to float output: no quantisation.
+        p.set_output_bits(None);
+        p.pending.clear();
+        p.pending_off = 0;
+        p.push_with(&[0.5, -0.5], 0, None, None, Some(16));
+        assert_eq!(f64::from(p.pending[0]), f64::from((0.5 * g) as f32));
+        // Out-of-range depths are clamped to what the f32 ring carries exactly.
+        p.set_output_bits(Some(32));
+        assert_eq!(p.output_bits(), Some(24));
+        p.set_output_bits(Some(1));
+        assert_eq!(p.output_bits(), Some(16));
+    }
+
+    /// Bit-exactness through the pipeline, ring and integer output, at 16/24/32-bit for
+    /// 44.1–192 kHz: what the DAC receives is the source's integers.
+    #[test]
+    fn integer_path_is_bit_exact_at_every_rate_and_depth() {
+        for rate in [44_100, 48_000, 88_200, 96_000, 176_400, 192_000] {
+            for (src_bits, out_bits) in [(16, 16), (16, 24), (16, 32), (24, 24), (24, 32)] {
+                let mut x = u64::from(rate) * 31 + u64::from(src_bits);
+                let ints: Vec<i32> = (0..rate as usize / 20 * CHANNELS)
+                    .map(|i| {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        let hi = (1i64 << (src_bits - 1)) - 1;
+                        match i % 50 {
+                            0 => hi as i32,
+                            1 => (-hi - 1) as i32,
+                            _ => ((x % (2 * hi as u64 + 2)) as i64 - hi - 1) as i32,
+                        }
+                    })
+                    .collect();
+                let mut f = vec![0f32; ints.len()];
+                pcm::int_to_f32(&ints, src_bits, &mut f);
+                let ring = Ring::new(1 << 20);
+                ring.set_hold(false);
+                let mut prod = ring.producer().unwrap();
+                let mut cons = ring.consumer().unwrap();
+                let mut p = Pipeline::new(DspSettings::default());
+                p.configure(rate, rate).unwrap();
+                p.set_output_bits(Some(out_bits.min(24)));
+                for chunk in f.chunks(4096) {
+                    p.push_with(chunk, 0, None, None, Some(src_bits));
+                    assert!(p.write_pending(&mut prod));
+                }
+                assert!(!p.processing());
+                let mut got = vec![0i32; ints.len()];
+                let n = if out_bits == 16 {
+                    let mut o = vec![0i16; ints.len()];
+                    let n = cons.read_i16(&mut o);
+                    got = o.into_iter().map(i32::from).collect();
+                    n
+                } else {
+                    cons.read_i32(&mut got, out_bits)
+                };
+                assert_eq!(n, ints.len());
+                let shift = out_bits - src_bits;
+                for (k, (g, i)) in got.iter().zip(&ints).enumerate() {
+                    assert_eq!(
+                        *g,
+                        i << shift,
+                        "{src_bits}→{out_bits} at {rate} Hz, sample {k}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -682,7 +1145,7 @@ mod tests {
         });
         p.configure(44_100, 44_100).unwrap();
         let m = Measurement::from_analysis(-12.0, -1.5).unwrap();
-        p.push_with(&[0.1, 0.1], 1, None, Some(m));
+        p.push_with(&[0.1, 0.1], 1, None, Some(m), None);
         assert_eq!(p.level_source(), LevelSource::Analysis);
         assert_eq!(p.levelling_db(), -6.0);
         let names: Vec<String> = p.stages().into_iter().map(|s| s.name).collect();
@@ -699,7 +1162,7 @@ mod tests {
             track_gain_db: Some(-3.0),
             ..Default::default()
         };
-        p.push_with(&[0.1, 0.1], 2, Some(&tags), None);
+        p.push_with(&[0.1, 0.1], 2, Some(&tags), None, None);
         assert_eq!(p.level_source(), LevelSource::Tags);
         let names: Vec<String> = p.stages().into_iter().map(|s| s.name).collect();
         assert!(
@@ -709,7 +1172,7 @@ mod tests {
         // A track is decided once: a late analysis doesn't change it mid-track.
         p.pending.clear();
         p.pending_off = 0;
-        p.push_with(&[0.1, 0.1], 2, Some(&tags), Some(m));
+        p.push_with(&[0.1, 0.1], 2, Some(&tags), Some(m), None);
         assert_eq!(p.level_source(), LevelSource::Tags);
         assert_eq!(p.levelling_db(), -3.0);
     }

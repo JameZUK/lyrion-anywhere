@@ -16,6 +16,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+pub mod negotiate;
 pub mod output;
 pub mod pipeline;
 pub mod protocol;
@@ -28,7 +29,12 @@ use engine::{Cmd, Engine, Shared};
 use output::{AudioOutput, PullOutput, PullSlot};
 use ring::Ring;
 
-pub use pipeline::{DspSettings, Levelling};
+pub use negotiate::{
+    MixerOffer, NotBitPerfect, OfferBlocker, OutputNegotiator, OutputOffers, PcmEncoding,
+};
+pub use pipeline::{
+    CrossfeedSetting, DitherSetting, DspSettings, EqProfileSummary, Levelling, check_eq_profile,
+};
 
 use crate::error::ApiError;
 use crate::session::Session;
@@ -146,28 +152,39 @@ pub struct SignalPathInfo {
     pub stages: Vec<SignalStage>,
     /// Our DSP or resampler changes samples.
     pub dsp_active: bool,
+    /// The output device: the USB DAC's name on a direct route, else the route.
     pub output_device: String,
     pub output_rate: u32,
+    /// e.g. "32-bit float" (Android's mixer) or "24-bit integer" (a bit-perfect DAC).
     pub output_format: String,
+    /// The integer depth the DAC accepted (`None`: float to Android's mixer).
+    pub output_bits: Option<u32>,
+    /// Bit-perfect mixer attributes are in force: Android passes the stream to the USB
+    /// DAC without mixing, resampling or volume.
+    pub direct: bool,
+    /// LMS's volume is ignored (100 %); the DAC's own volume controls the level.
+    pub fixed_volume: bool,
     pub resampled: bool,
     /// Our engine delivers the source's samples untouched, at its rate.
     pub engine_bit_perfect: bool,
     /// ... and the platform passes them to the device untouched.
     pub bit_perfect: bool,
+    /// Why it isn't bit-perfect end to end (empty when it is).
+    pub not_bit_perfect: Vec<NotBitPerfect>,
     pub verdict: SignalVerdict,
     /// One line, e.g. "FLAC 96 kHz/24-bit → Decode (lossless) → AAudio 96 kHz/float".
     pub summary: String,
 }
 
-/// What the app knows about the output route (from `AudioManager`).
+/// What the app knows about the output route (from `AudioManager`). Whether the route is
+/// bit-perfect is not the app's to say: it comes from negotiation
+/// ([`LocalPlayer::set_output_negotiator`]).
 #[derive(Debug, Clone, Default, PartialEq, uniffi::Record)]
 pub struct OutputRoute {
-    /// e.g. "Headphones", "USB DAC", "Bluetooth (LDAC)"; empty = unknown.
+    /// e.g. "Headphones", "USB DAC", "Bluetooth"; empty = unknown.
     pub device: String,
     /// The platform mixer's sample rate (0 = unknown).
     pub mixer_rate: u32,
-    /// The platform passes the stream to the device untouched (bit-perfect mixer mode).
-    pub direct: bool,
 }
 
 /// PCM pulled by the host (interleaved stereo float).
@@ -178,6 +195,20 @@ pub struct PcmBlock {
     /// Interleaved stereo; silence where nothing was ready.
     pub samples: Vec<f32>,
     /// How many of the samples are real audio (the rest is silence).
+    pub audio_samples: u32,
+}
+
+/// PCM pulled by the host as integers, in the format the output was opened with.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct PcmIntBlock {
+    /// 0 when no output is open (play nothing).
+    pub sample_rate: u32,
+    /// The output's format; for float, samples are 24-bit.
+    pub encoding: PcmEncoding,
+    /// Interleaved stereo, right-aligned at the format's depth; silence where nothing was
+    /// ready.
+    pub samples: Vec<i32>,
+    /// How many of the samples are real audio.
     pub audio_samples: u32,
 }
 
@@ -204,6 +235,7 @@ pub struct LocalPlayer {
     route: Mutex<OutputRoute>,
     hold: Mutex<bool>,
     duck: Mutex<bool>,
+    negotiator: Mutex<Option<Arc<dyn OutputNegotiator>>>,
 }
 
 fn make_output(
@@ -230,6 +262,7 @@ impl LocalPlayer {
             route: Mutex::new(OutputRoute::default()),
             hold: Mutex::new(false),
             duck: Mutex::new(false),
+            negotiator: Mutex::new(None),
         })
     }
 
@@ -256,6 +289,7 @@ impl LocalPlayer {
             ring,
             hold: std::sync::atomic::AtomicBool::new(*self.hold.lock().unwrap()),
             route: Mutex::new(self.route.lock().unwrap().clone()),
+            negotiator: Mutex::new(self.negotiator.lock().unwrap().clone()),
         });
         let pull = Arc::new(Mutex::new(PullSlot::default()));
         let output = make_output(cfg.output, &pull)?;
@@ -365,11 +399,31 @@ impl LocalPlayer {
             } else {
                 0
             },
-            direct: route.direct,
         };
         *self.route.lock().unwrap() = route.clone();
         if let Some(r) = self.run.lock().unwrap().as_ref() {
             *r.shared.route.lock().unwrap() = route;
+        }
+    }
+
+    /// The host's side of bit-perfect output negotiation (Android: `AudioManager`'s mixer
+    /// attributes for a USB DAC); `None` for normal mixed output only. The engine asks it
+    /// before opening its output for each new format, and tells it to clear its mixer
+    /// attributes when the output closes. Renegotiates now if playing.
+    pub fn set_output_negotiator(&self, negotiator: Option<Arc<dyn OutputNegotiator>>) {
+        *self.negotiator.lock().unwrap() = negotiator.clone();
+        if let Some(r) = self.run.lock().unwrap().as_ref() {
+            *r.shared.negotiator.lock().unwrap() = negotiator;
+            let _ = r.cmds.send(Cmd::Renegotiate);
+        }
+    }
+
+    /// Something changed what the output can do (a USB DAC plugged in or out, the
+    /// bit-perfect setting): negotiate again and reopen the output, at the next moment it
+    /// can be done without losing audio (between tracks, or at once if nothing is queued).
+    pub fn renegotiate_output(&self) {
+        if let Some(r) = self.run.lock().unwrap().as_ref() {
+            let _ = r.cmds.send(Cmd::Renegotiate);
         }
     }
 
@@ -403,6 +457,44 @@ impl LocalPlayer {
                 samples: Vec::new(),
                 audio_samples: 0,
             },
+        }
+    }
+
+    /// [`OutputKind::Pull`] only: like [`LocalPlayer::read_pcm`], as integers in the format
+    /// the output was opened with (what an integer `AudioTrack`, or a DAC, receives).
+    pub fn read_pcm_int(&self, max_frames: u32) -> PcmIntBlock {
+        let frames = max_frames.clamp(1, 16_384) as usize;
+        let empty = PcmIntBlock {
+            sample_rate: 0,
+            encoding: PcmEncoding::Float,
+            samples: Vec::new(),
+            audio_samples: 0,
+        };
+        let pull = self.run.lock().unwrap().as_ref().map(|r| r.pull.clone());
+        let Some(pull) = pull else { return empty };
+        let mut slot = pull.lock().unwrap();
+        let (rate, encoding) = (slot.rate, slot.encoding);
+        let Some(c) = slot.consumer.as_mut() else {
+            return empty;
+        };
+        let mut samples = vec![0i32; frames * ring::CHANNELS];
+        let n = match encoding {
+            PcmEncoding::I16 => {
+                let mut s16 = vec![0i16; samples.len()];
+                let n = c.read_i16(&mut s16);
+                for (d, s) in samples.iter_mut().zip(s16) {
+                    *d = i32::from(s);
+                }
+                n
+            }
+            PcmEncoding::I32 => c.read_i32(&mut samples, 32),
+            PcmEncoding::I24Packed | PcmEncoding::Float => c.read_i32(&mut samples, 24),
+        };
+        PcmIntBlock {
+            sample_rate: rate,
+            encoding,
+            samples,
+            audio_samples: n as u32,
         }
     }
 }

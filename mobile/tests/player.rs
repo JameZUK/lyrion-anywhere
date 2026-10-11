@@ -17,8 +17,8 @@ use std::time::Duration;
 use anywhere_core::proto::{Strm, encode_server_frame, format_mac};
 use anywhere_mobile::{
     DspSettings, LocalPlayback, LocalPlayer, LocalPlayerConfig, LocalPlayerObserver,
-    LocalPlayerStatus, OutputKind, PlayerConnection, Server, Session, SignalPathInfo,
-    SignalVerdict,
+    LocalPlayerStatus, MixerOffer, NotBitPerfect, OfferBlocker, OutputKind, OutputNegotiator,
+    OutputOffers, PcmEncoding, PlayerConnection, Server, Session, SignalPathInfo, SignalVerdict,
 };
 use common::flac;
 use common::*;
@@ -56,20 +56,31 @@ impl Obs {
     }
 }
 
-/// Audio pulled from the player, as (sample rate, samples) runs.
+/// Audio pulled from the player, as (sample rate, samples) runs: float, or integers in
+/// the output's format (as a DAC receives them) when pulling integers.
 #[derive(Default)]
 struct Pulled {
     runs: Mutex<Vec<(u32, Vec<f32>)>>,
+    int_runs: Mutex<Vec<(u32, PcmEncoding, Vec<i32>)>>,
 }
 
 impl Pulled {
     fn frames(&self) -> usize {
-        self.runs
+        let f: usize = self
+            .runs
             .lock()
             .unwrap()
             .iter()
             .map(|(_, s)| s.len() / 2)
-            .sum()
+            .sum();
+        let i: usize = self
+            .int_runs
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, _, s)| s.len() / 2)
+            .sum();
+        f + i
     }
     fn all(&self) -> Vec<f32> {
         self.runs
@@ -94,6 +105,17 @@ struct Rig {
 }
 
 async fn rig(with_proxy: bool) -> Rig {
+    rig_with(with_proxy, None, DspSettings::default()).await
+}
+
+/// A rig whose player negotiates its output with `negotiator` (a stand-in for Android's
+/// `AudioManager`) and is pulled as integers when one is given.
+async fn rig_with(
+    with_proxy: bool,
+    negotiator: Option<Arc<dyn OutputNegotiator>>,
+    dsp: DspSettings,
+) -> Rig {
+    let pull_ints = negotiator.is_some();
     let h = Harness::start().await;
     let proxy = if with_proxy {
         Some(Proxy::start(h.addr).await)
@@ -114,9 +136,10 @@ async fn rig(with_proxy: bool) -> Rig {
         LocalPlayerConfig {
             output: OutputKind::Pull,
             max_sample_rate: 192_000,
-            dsp: DspSettings::default(),
+            dsp,
         },
     );
+    player.set_output_negotiator(negotiator);
     let obs = Arc::new(Obs::default());
     player.start(obs.clone()).unwrap();
     let lms = h.lms.slim_conn().await;
@@ -133,6 +156,21 @@ async fn rig(with_proxy: bool) -> Rig {
     let (p, out, stop) = (player.clone(), pulled.clone(), stop_pull.clone());
     tokio::spawn(async move {
         while !stop.load(Ordering::SeqCst) {
+            if pull_ints {
+                let b = p.read_pcm_int(2048);
+                let n = b.audio_samples as usize;
+                if n > 0 {
+                    let mut runs = out.int_runs.lock().unwrap();
+                    match runs.last_mut() {
+                        Some((r, e, s)) if *r == b.sample_rate && *e == b.encoding => {
+                            s.extend_from_slice(&b.samples[..n])
+                        }
+                        _ => runs.push((b.sample_rate, b.encoding, b.samples[..n].to_vec())),
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(4)).await;
+                continue;
+            }
             let b = p.read_pcm(2048);
             let n = b.audio_samples as usize;
             if n > 0 {
@@ -578,4 +616,342 @@ async fn hold_silences_at_once_and_ducking_scales() {
     };
     assert!(!path.engine_bit_perfect, "ducking is processing");
     r.stop_pulling();
+}
+
+/// A stand-in for Android's `AudioManager` with a USB DAC attached: it offers what a
+/// typical DAC lists and records every mixer attribute the engine applies.
+struct FakeDac {
+    offers: Vec<MixerOffer>,
+    accept: bool,
+    applied: Mutex<Vec<Option<MixerOffer>>>,
+    /// Unplugged: the output is no longer a USB DAC.
+    unplugged: AtomicBool,
+}
+
+impl FakeDac {
+    fn typical(accept: bool) -> Arc<FakeDac> {
+        let mut offers = Vec::new();
+        for rate in [44_100, 48_000, 96_000, 192_000] {
+            for encoding in [PcmEncoding::I16, PcmEncoding::I24Packed, PcmEncoding::I32] {
+                offers.push(MixerOffer {
+                    encoding,
+                    sample_rate: rate,
+                    channels: 2,
+                    bit_perfect: true,
+                });
+            }
+        }
+        Arc::new(FakeDac {
+            offers,
+            accept,
+            applied: Mutex::new(Vec::new()),
+            unplugged: AtomicBool::new(false),
+        })
+    }
+
+    fn applied(&self) -> Vec<Option<MixerOffer>> {
+        self.applied.lock().unwrap().clone()
+    }
+}
+
+impl OutputNegotiator for FakeDac {
+    fn offers(&self) -> OutputOffers {
+        if self.unplugged.load(Ordering::SeqCst) {
+            return OutputOffers {
+                device: String::new(),
+                blocker: Some(OfferBlocker::NoUsbDac),
+                offers: vec![],
+            };
+        }
+        OutputOffers {
+            device: "Example USB DAC".into(),
+            blocker: None,
+            offers: self.offers.clone(),
+        }
+    }
+    fn apply(&self, offer: Option<MixerOffer>) -> bool {
+        self.applied.lock().unwrap().push(offer);
+        self.accept
+    }
+}
+
+/// Integers as the decoder delivers them, shifted into a `container`-bit DAC sample.
+fn shifted(samples: &[i32], bits: u32, container: u32) -> Vec<i32> {
+    samples.iter().map(|s| s << (container - bits)).collect()
+}
+
+/// A USB DAC with bit-perfect mixer attributes: each track's mixer attributes are applied
+/// (16-bit at 44.1 kHz, then 24-bit at 96 kHz), the output opens in that integer format,
+/// the DAC receives the file's very integers, LMS's volume doesn't touch them, the signal
+/// path says bit-perfect end to end, and stopping restores Android's mixer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bit_perfect_dac_receives_the_files_integers() {
+    let dac = FakeDac::typical(true);
+    let mut r = rig_with(false, Some(dac.clone()), DspSettings::default()).await;
+    let n1 = flac::noise(22_050, 16, 21);
+    let n2 = flac::noise(48_000, 24, 22);
+    {
+        let mut s = r.h.lms.streams.lock().unwrap();
+        s.push_back(StreamPlan::whole(flac::encode(44_100, 16, &n1)));
+        s.push_back(StreamPlan::whole(flac::encode(96_000, 24, &n2)));
+    }
+    let mac = r.mac;
+    // LMS's volume at 25 %: ignored on a bit-perfect route.
+    let mut audg = vec![0u8; 18];
+    audg[8] = 1;
+    audg[9] = 255;
+    audg[10..14].copy_from_slice(&0x4000u32.to_be_bytes());
+    audg[14..18].copy_from_slice(&0x4000u32.to_be_bytes());
+    r.send(encode_server_frame(*b"audg", &audg)).await;
+    r.send(strm_s(b'f', &mac)).await;
+    let obs = r.obs.clone();
+    wait_for("a bit-perfect path", move || {
+        obs.last_path().is_some_and(|p| p.bit_perfect)
+    })
+    .await;
+    let p = r.obs.last_path().unwrap();
+    assert!(p.direct && p.fixed_volume && p.not_bit_perfect.is_empty());
+    assert_eq!(p.output_device, "Example USB DAC");
+    assert_eq!((p.output_bits, p.output_rate), (Some(16), 44_100));
+    assert_eq!(p.output_format, "16-bit integer");
+    assert!(!p.stages.iter().any(|s| s.name.starts_with("Volume")));
+    r.wait_event("STMd", 1, 20).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMu", 1, 30).await;
+    r.stop_pulling();
+
+    let runs = r.pulled.int_runs.lock().unwrap().clone();
+    assert_eq!(runs.len(), 2, "one run per format");
+    assert_eq!((runs[0].0, runs[0].1), (44_100, PcmEncoding::I16));
+    assert_eq!((runs[1].0, runs[1].1), (96_000, PcmEncoding::I24Packed));
+    assert_eq!(runs[0].2, n1, "16-bit track, integer for integer");
+    assert_eq!(runs[1].2, n2, "24-bit track, integer for integer");
+    let p = r.obs.last_path().unwrap();
+    assert!(p.bit_perfect);
+    assert_eq!((p.output_bits, p.output_rate), (Some(24), 96_000));
+    // The mixer attributes followed the tracks.
+    let applied = dac.applied();
+    assert_eq!(applied[0].unwrap().encoding, PcmEncoding::I16);
+    assert_eq!(applied.last().unwrap().unwrap().sample_rate, 96_000);
+    // Stopping hands the DAC back to Android's mixer.
+    r.player.stop();
+    let d = dac.clone();
+    wait_for("mixer attributes cleared", move || {
+        d.applied().last() == Some(&None)
+    })
+    .await;
+}
+
+/// Unplugging the DAC mid-track (the app renegotiates): the output goes back to float
+/// through Android's mixer, the mixer attributes are cleared, LMS's volume applies again
+/// and the panel says why. Removing the negotiator clears through the one that set them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unplugging_the_dac_renegotiates_mid_track() {
+    let dac = FakeDac::typical(true);
+    let mut r = rig_with(false, Some(dac.clone()), DspSettings::default()).await;
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(flac::encode(
+            48_000,
+            24,
+            &flac::noise(48_000 * 3, 24, 25),
+        )));
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    let obs = r.obs.clone();
+    wait_for("bit-perfect", move || {
+        obs.last_path().is_some_and(|p| p.bit_perfect)
+    })
+    .await;
+    dac.unplugged.store(true, Ordering::SeqCst);
+    r.player.renegotiate_output();
+    let obs = r.obs.clone();
+    wait_for("back to the mixer", move || {
+        obs.last_path().is_some_and(|p| !p.direct)
+    })
+    .await;
+    let p = r.obs.last_path().unwrap();
+    assert_eq!(p.not_bit_perfect, vec![NotBitPerfect::NoUsbDac]);
+    assert!(!p.fixed_volume && p.engine_bit_perfect);
+    assert_eq!(dac.applied().last(), Some(&None), "attributes cleared");
+    // Plugged back in: bit-perfect again.
+    dac.unplugged.store(false, Ordering::SeqCst);
+    r.player.renegotiate_output();
+    let obs = r.obs.clone();
+    wait_for("bit-perfect again", move || {
+        obs.last_path().is_some_and(|p| p.bit_perfect)
+    })
+    .await;
+    // The app drops its negotiator (the service went away): cleared through the old one.
+    r.player.set_output_negotiator(None);
+    let d = dac.clone();
+    wait_for("cleared by the old negotiator", move || {
+        d.applied().last() == Some(&None)
+    })
+    .await;
+    let obs = r.obs.clone();
+    wait_for("float", move || obs.last_path().is_some_and(|p| !p.direct)).await;
+    r.stop_pulling();
+    r.player.stop();
+}
+
+/// A 24-bit track after a 16-bit one at the same rate: the output switches format at the
+/// track boundary (after the first has played out), and both arrive integer for integer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_depth_at_the_same_rate_switches_the_dac_format() {
+    let dac = FakeDac::typical(true);
+    let mut r = rig_with(false, Some(dac.clone()), DspSettings::default()).await;
+    let n1 = flac::noise(20_000, 16, 26);
+    let n2 = flac::noise(20_000, 24, 27);
+    {
+        let mut s = r.h.lms.streams.lock().unwrap();
+        s.push_back(StreamPlan::whole(flac::encode(44_100, 16, &n1)));
+        s.push_back(StreamPlan::whole(flac::encode(44_100, 24, &n2)));
+    }
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMd", 1, 20).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMu", 1, 30).await;
+    r.stop_pulling();
+    let runs = r.pulled.int_runs.lock().unwrap().clone();
+    assert_eq!(
+        runs.len(),
+        2,
+        "{:?}",
+        runs.iter().map(|r| (r.0, r.1)).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        (runs[0].1, runs[1].1),
+        (PcmEncoding::I16, PcmEncoding::I24Packed)
+    );
+    assert_eq!(runs[0].2, n1);
+    assert_eq!(runs[1].2, n2);
+    let encodings: Vec<_> = dac
+        .applied()
+        .into_iter()
+        .flatten()
+        .map(|o| o.encoding)
+        .collect();
+    assert_eq!(encodings, vec![PcmEncoding::I16, PcmEncoding::I24Packed]);
+}
+
+/// The platform refused the mixer attributes: float through the mixer, LMS's volume
+/// applies, and the panel says why it isn't bit-perfect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_mixer_falls_back_to_float_and_says_why() {
+    let dac = FakeDac::typical(false);
+    let mut r = rig_with(false, Some(dac.clone()), DspSettings::default()).await;
+    let n = flac::noise(22_050, 16, 23);
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(flac::encode(48_000, 16, &n)));
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMu", 1, 30).await;
+    r.stop_pulling();
+    let p = r.obs.last_path().unwrap();
+    assert!(!p.bit_perfect && !p.direct && p.engine_bit_perfect);
+    assert_eq!(p.not_bit_perfect, vec![NotBitPerfect::NotApplied]);
+    assert_eq!(p.output_format, "32-bit float");
+    let runs = r.pulled.int_runs.lock().unwrap().clone();
+    assert_eq!(runs[0].1, PcmEncoding::Float);
+    // Float pulled as 24-bit integers: still the file's samples (padded).
+    assert_eq!(
+        runs.iter().flat_map(|r| r.2.clone()).collect::<Vec<_>>(),
+        shifted(&n, 16, 24)
+    );
+}
+
+/// DSP on a bit-perfect DAC: the route stays direct (no Android resampling), the processed
+/// audio is dithered onto the DAC's grid, and the panel says the DSP is why it isn't
+/// bit-perfect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dsp_on_a_dac_is_direct_but_not_bit_perfect() {
+    let dac = FakeDac::typical(true);
+    let dsp = DspSettings {
+        enabled: true,
+        preamp_db: -6.0,
+        limiter: false,
+        ..DspSettings::default()
+    };
+    let mut r = rig_with(false, Some(dac.clone()), dsp).await;
+    let n = flac::noise(22_050, 16, 24);
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(flac::encode(44_100, 16, &n)));
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMu", 1, 30).await;
+    r.stop_pulling();
+    let p = r.obs.last_path().unwrap();
+    assert!(p.direct && !p.bit_perfect);
+    assert_eq!(p.not_bit_perfect, vec![NotBitPerfect::DspActive]);
+    assert!(p.stages.iter().any(|s| s.name.starts_with("Preamp")));
+    assert!(
+        p.stages
+            .iter()
+            .any(|s| s.name.starts_with("Dither to 16-bit"))
+    );
+    let runs = r.pulled.int_runs.lock().unwrap().clone();
+    let got: Vec<i32> = runs.iter().flat_map(|r| r.2.clone()).collect();
+    assert_eq!(got.len(), n.len());
+    // About half the level, within the dither's ±1 LSB.
+    let g = 10f64.powf(-6.0 / 20.0);
+    for (o, i) in got.iter().zip(&n) {
+        assert!(
+            (f64::from(*o) - f64::from(*i) * g).abs() <= 1.5,
+            "{o} vs {i}"
+        );
+    }
+    // Turning DSP off again takes effect for the next audio: settings apply live.
+    r.player.set_dsp(DspSettings::default());
+}
+
+/// Opus is advertised only by builds that decode it, and an Ogg Opus stream plays through
+/// the whole player (gateway, decoder, pipeline, output).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn opus_is_advertised_and_plays_end_to_end() {
+    let mut r = rig(false).await;
+    let helo = String::from_utf8_lossy(&r.h.lms.slim_payloads(b"HELO")[0][36..]).into_owned();
+    assert_eq!(
+        helo.contains("ops"),
+        cfg!(feature = "opus"),
+        "advertised exactly when built in: {helo}"
+    );
+    if !cfg!(feature = "opus") {
+        return;
+    }
+    let fixture = include_bytes!("../../core/tests/fixtures/sine-997hz-stereo.opus").to_vec();
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(fixture));
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'u', &mac)).await;
+    r.wait_event("STMu", 1, 30).await;
+    r.stop_pulling();
+    let runs = r.pulled.runs.lock().unwrap().clone();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].0, 48_000, "Opus decodes at 48 kHz");
+    // One second, sample-accurate (pre-skip and end trimming applied).
+    assert_eq!(runs[0].1.len() / 2, 48_000);
+    let peak = runs[0].1.iter().fold(0f32, |m, s| m.max(s.abs()));
+    assert!((0.08..0.12).contains(&peak), "a −20 dBFS sine: {peak}");
+    let p = r.obs.last_path().unwrap();
+    assert_eq!(p.source_codec, "Opus");
+    assert_eq!(p.verdict, SignalVerdict::LossySource);
+    assert!(p.not_bit_perfect.contains(&NotBitPerfect::LossySource));
 }

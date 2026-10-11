@@ -43,9 +43,11 @@ pub use events::{EventListener, EventSubscription, Events, EventsState, ServerEv
 pub use library::MusicLibrary;
 pub use model::*;
 pub use player::{
-    DspSettings, Levelling, LocalPlayback, LocalPlayer, LocalPlayerConfig, LocalPlayerObserver,
-    LocalPlayerStatus, OutputKind, OutputRoute, PcmBlock, PlayerConnection, SignalPathInfo,
-    SignalStage, SignalVerdict,
+    CrossfeedSetting, DitherSetting, DspSettings, EqProfileSummary, Levelling, LocalPlayback,
+    LocalPlayer, LocalPlayerConfig, LocalPlayerObserver, LocalPlayerStatus, MixerOffer,
+    NotBitPerfect, OfferBlocker, OutputKind, OutputNegotiator, OutputOffers, OutputRoute, PcmBlock,
+    PcmEncoding, PcmIntBlock, PlayerConnection, SignalPathInfo, SignalStage, SignalVerdict,
+    check_eq_profile,
 };
 pub use players::Players;
 pub use server::{PairingInvite, Server, parse_pairing_invite};

@@ -22,6 +22,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use anywhere_core::dsp::pcm;
+
 /// Channels per frame (the core's output is always stereo).
 pub const CHANNELS: usize = 2;
 
@@ -203,8 +205,39 @@ impl Consumer {
     /// the samples of real audio written (the rest of `out` is zeroed). While held, writes
     /// silence and consumes nothing.
     pub fn read(&mut self, out: &mut [f32]) -> usize {
+        let len = out.len();
+        let n = self.read_map(len, |i, s| out[i] = s);
+        // An odd trailing sample (never a whole frame) is silence too.
+        out[len - len % CHANNELS..].fill(0.0);
+        n
+    }
+
+    /// [`Consumer::read`] into 16-bit integers (exact for 16-bit sources; anything else is
+    /// rounded to nearest, without dither).
+    pub fn read_i16(&mut self, out: &mut [i16]) -> usize {
+        self.read_map(out.len(), |i, s| out[i] = pcm::f32_to_int(s, 16) as i16)
+    }
+
+    /// [`Consumer::read`] into right-aligned `bits`-deep integers (24 or 32; exact for
+    /// sources of up to `min(bits, 24)` bits).
+    pub fn read_i32(&mut self, out: &mut [i32], bits: u32) -> usize {
+        self.read_map(out.len(), |i, s| out[i] = pcm::f32_to_int(s, bits))
+    }
+
+    /// [`Consumer::read`] into packed little-endian 24-bit samples (3 bytes each).
+    pub fn read_i24_packed(&mut self, out: &mut [u8]) -> usize {
+        self.read_map(out.len() / 3, |i, s| {
+            let b = pcm::f32_to_int(s, 24).to_le_bytes();
+            out[i * 3..i * 3 + 3].copy_from_slice(&b[..3]);
+        })
+    }
+
+    /// The one read loop: `put(index, sample)` for each of up to `len` samples (whole
+    /// frames), audio first and then silence (0.0), so every slot is written. Returns the
+    /// samples of real audio. Real-time safe when `put` is.
+    fn read_map(&mut self, len: usize, mut put: impl FnMut(usize, f32)) -> usize {
         let ring = &*self.ring;
-        let len = out.len() - out.len() % CHANNELS;
+        let len = len - len % CHANNELS;
         // Apply a discard first (even while held), so the producer gets the space back.
         let mut r = ring.read.load(Ordering::Relaxed);
         let discard = ring.discard_to.load(Ordering::Acquire);
@@ -213,20 +246,20 @@ impl Consumer {
             ring.read.store(r, Ordering::Release);
         }
         if ring.hold.load(Ordering::Acquire) {
-            out.fill(0.0);
+            (0..len).for_each(|i| put(i, 0.0));
             return 0;
         }
         let w = ring.write.load(Ordering::Acquire);
         let avail = w.saturating_sub(r) as usize;
         let n = avail.min(len);
         let gain = f32::from_bits(ring.gain.load(Ordering::Acquire));
-        for (i, o) in out[..n].iter_mut().enumerate() {
+        for i in 0..n {
             let slot = ((r + i as u64) & ring.mask) as usize;
             let s = f32::from_bits(ring.buf[slot].load(Ordering::Relaxed));
             // Exactly 1.0 leaves the bits untouched (no multiplication at all).
-            *o = if gain == 1.0 { s } else { s * gain };
+            put(i, if gain == 1.0 { s } else { s * gain });
         }
-        out[n..].fill(0.0);
+        (n..len).for_each(|i| put(i, 0.0));
         ring.read.store(r + n as u64, Ordering::Release);
         if n < len && ring.expect_data.load(Ordering::Acquire) {
             ring.underruns.fetch_add(1, Ordering::Relaxed);
@@ -385,6 +418,74 @@ mod tests {
         }
         r.set_gain(7.0);
         assert_eq!(r.gain(), 1.0, "never amplifies");
+    }
+
+    /// Integer reads for a bit-perfect DAC: samples on the source's grid come out as the
+    /// source's integers (padded when the container is deeper), silence fills the rest,
+    /// and hold, gain and underrun accounting behave as for `f32`.
+    #[test]
+    fn integer_reads_are_exact_on_the_grid() {
+        let ints16: Vec<i32> = vec![-32768, 32767, 0, 1, -1, 12345, -23456, 7];
+        let ints24: Vec<i32> = vec![-8_388_608, 8_388_607, 0, 1, -1, 4_000_001, -77, 3];
+        let as_f32 = |v: &[i32], bits: u32| {
+            let mut f = vec![0f32; v.len()];
+            pcm::int_to_f32(v, bits, &mut f);
+            f
+        };
+        let (r, mut p, mut c) = ring(256);
+        p.write(&as_f32(&ints16, 16));
+        let mut o16 = [9i16; 10];
+        assert_eq!(c.read_i16(&mut o16), 8);
+        let want: Vec<i16> = ints16.iter().map(|v| *v as i16).collect();
+        assert_eq!(&o16[..8], &want[..]);
+        assert_eq!(&o16[8..], &[0, 0], "silence after the audio");
+
+        p.write(&as_f32(&ints24, 24));
+        let mut packed = [0xaau8; 8 * 3 + 2];
+        assert_eq!(c.read_i24_packed(&mut packed), 8);
+        for (k, v) in ints24.iter().enumerate() {
+            let b = &packed[k * 3..k * 3 + 3];
+            let back =
+                i32::from_le_bytes([b[0], b[1], b[2], if b[2] & 0x80 != 0 { 0xff } else { 0 }]);
+            assert_eq!(back, *v);
+        }
+        assert_eq!(
+            &packed[24..],
+            &[0xaa, 0xaa],
+            "a partial sample is left alone"
+        );
+
+        p.write(&as_f32(&ints24, 24));
+        let mut o32 = [0i32; 8];
+        assert_eq!(c.read_i32(&mut o32, 32), 8);
+        let want: Vec<i32> = ints24.iter().map(|v| v << 8).collect();
+        assert_eq!(&o32[..], &want[..]);
+
+        // 16-bit audio into a 24-bit container: padded, exact.
+        p.write(&as_f32(&ints16, 16));
+        let mut o24 = [0i32; 8];
+        assert_eq!(c.read_i32(&mut o24, 24), 8);
+        let want: Vec<i32> = ints16.iter().map(|v| v << 8).collect();
+        assert_eq!(&o24[..], &want[..]);
+
+        // Held: silence, nothing consumed.
+        p.write(&as_f32(&ints16, 16));
+        r.set_hold(true);
+        let mut held = [5i32; 4];
+        assert_eq!(c.read_i32(&mut held, 24), 0);
+        assert_eq!(held, [0; 4]);
+        r.set_hold(false);
+        // Ducked: scaled and rounded.
+        r.set_gain(0.5);
+        let mut ducked = [0i16; 8];
+        c.read_i16(&mut ducked);
+        assert_eq!(ducked[0], -16384);
+        assert_eq!(ducked[1], 16384, "32767 × 0.5 rounds to nearest");
+        // Underruns count for integer reads too.
+        r.set_expect_data(true);
+        let mut empty = [0i16; 4];
+        assert_eq!(c.read_i16(&mut empty), 0);
+        assert_eq!(r.underruns().0, 1);
     }
 
     #[test]
