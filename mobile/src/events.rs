@@ -34,13 +34,13 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 pub enum ServerEvent {
     /// Something changed on a player: `name` is the LMS event (`playlist`, `mixer`,
     /// `pause`, `play`, `stop`, `power`, `client`, `sync`, `time`, `newmetadata`).
-    Player {
+    PlayerChanged {
         player_id: String,
         name: String,
         args: Vec<String>,
     },
     /// The library changed (`rescan`).
-    Library { name: String, args: Vec<String> },
+    LibraryChanged { name: String, args: Vec<String> },
     /// Events may have been missed (or the stream (re)connected): re-query everything.
     Resync,
 }
@@ -96,12 +96,12 @@ pub(crate) fn parse_message(text: &str) -> Option<Parsed> {
         return None;
     }
     match o.get("player")? {
-        Value::Null => Some(Parsed::Event(ServerEvent::Library {
+        Value::Null => Some(Parsed::Event(ServerEvent::LibraryChanged {
             name: name.clone(),
             args: args.to_vec(),
         })),
         Value::String(p) if crate::commands::is_player_id(p) => {
-            Some(Parsed::Event(ServerEvent::Player {
+            Some(Parsed::Event(ServerEvent::PlayerChanged {
                 player_id: p.to_ascii_lowercase(),
                 name: name.clone(),
                 args: args.to_vec(),
@@ -301,7 +301,7 @@ mod tests {
         );
         assert_eq!(
             parse_message(r#"{"player":"AA:BB:CC:DD:EE:01","event":["mixer","volume","50"]}"#),
-            Some(Parsed::Event(ServerEvent::Player {
+            Some(Parsed::Event(ServerEvent::PlayerChanged {
                 player_id: "aa:bb:cc:dd:ee:01".into(),
                 name: "mixer".into(),
                 args: vec!["volume".into(), "50".into()],
@@ -309,7 +309,7 @@ mod tests {
         );
         assert_eq!(
             parse_message(r#"{"player":null,"event":["rescan","done"]}"#),
-            Some(Parsed::Event(ServerEvent::Library {
+            Some(Parsed::Event(ServerEvent::LibraryChanged {
                 name: "rescan".into(),
                 args: vec!["done".into()]
             }))

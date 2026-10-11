@@ -503,7 +503,7 @@ impl Session {
     }
 
     /// Run any command array through `/v1/rpc` (for tests of the gateway's policy; the app
-    /// uses the typed [`crate::Library`] and [`crate::Players`] calls).
+    /// uses the typed [`crate::MusicLibrary`] and [`crate::Players`] calls).
     #[doc(hidden)]
     pub async fn rpc_raw(&self, player: &str, cmd: Vec<Value>) -> Result<Value, ApiError> {
         self.core.rpc(player, cmd).await

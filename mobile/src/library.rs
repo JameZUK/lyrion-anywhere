@@ -8,15 +8,15 @@ use crate::model::{self, Album, AlbumPage, ArtistPage, GenrePage, SearchResults,
 use crate::session::Session;
 
 #[derive(uniffi::Object)]
-pub struct Library {
+pub struct MusicLibrary {
     session: Arc<Session>,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
-impl Library {
+impl MusicLibrary {
     #[uniffi::constructor]
     pub fn new(session: Arc<Session>) -> Arc<Self> {
-        Arc::new(Library { session })
+        Arc::new(MusicLibrary { session })
     }
 
     /// A page of albums (`count` at most 500), optionally filtered by a search text.

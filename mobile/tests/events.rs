@@ -41,7 +41,7 @@ async fn events_arrive_and_resume_after_a_dropped_connection() {
 
     let mac_escaped = me.replace(':', "%3A");
     deliver(&h, &c, &format!("{mac_escaped} mixer volume 50"), |e| {
-        matches!(e, ServerEvent::Player { player_id, name, args }
+        matches!(e, ServerEvent::PlayerChanged { player_id, name, args }
             if *player_id == me && name == "mixer" && args == &["volume", "50"])
     })
     .await;
@@ -53,14 +53,12 @@ async fn events_arrive_and_resume_after_a_dropped_connection() {
         &h,
         &c,
         "rescan done",
-        |e| matches!(e, ServerEvent::Library { name, .. } if name == "rescan"),
+        |e| matches!(e, ServerEvent::LibraryChanged { name, .. } if name == "rescan"),
     )
     .await;
-    assert!(
-        !c.events().iter().any(
-            |e| matches!(e, ServerEvent::Player { player_id, .. } if player_id == HOME_PLAYER)
-        )
-    );
+    assert!(!c.events().iter().any(
+        |e| matches!(e, ServerEvent::PlayerChanged { player_id, .. } if player_id == HOME_PLAYER)
+    ));
 
     // The phone loses its connection: the stream comes back by itself.
     proxy.cut_all();
@@ -76,7 +74,7 @@ async fn events_arrive_and_resume_after_a_dropped_connection() {
         &h,
         &c,
         &format!("{mac_escaped} pause 1"),
-        |e| matches!(e, ServerEvent::Player { name, .. } if name == "pause"),
+        |e| matches!(e, ServerEvent::PlayerChanged { name, .. } if name == "pause"),
     )
     .await;
     assert!(c.events().len() > n);

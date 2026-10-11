@@ -8,7 +8,7 @@
 //! - [`Session`]: sign-in (password, two-step, pairing), token refresh, sign-out. The
 //!   refresh token is persisted only through the app's [`SecureStore`] (Keystore-backed on
 //!   Android); access tokens live in memory only;
-//! - [`Library`], [`Players`]: browsing and remote control, using only commands the
+//! - [`MusicLibrary`], [`Players`]: browsing and remote control, using only commands the
 //!   gateway's allow-list accepts (the same shapes as the web app);
 //! - [`Art`]: artwork bytes, fetched with the bearer token and size-capped;
 //! - [`Events`]: the live event stream with reconnects and token renewal.
@@ -34,7 +34,7 @@ mod android;
 pub use art::{Art, ArtImage};
 pub use error::ApiError;
 pub use events::{EventListener, EventSubscription, Events, EventsState, ServerEvent};
-pub use library::Library;
+pub use library::MusicLibrary;
 pub use model::*;
 pub use players::Players;
 pub use server::{PairingInvite, Server, parse_pairing_invite};

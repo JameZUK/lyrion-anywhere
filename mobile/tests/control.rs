@@ -4,8 +4,8 @@
 mod common;
 
 use anywhere_mobile::{
-    AlbumSort, ApiError, Art, Library, Placement, PlaybackMode, Players, RepeatMode, Selection,
-    ShuffleMode,
+    AlbumSort, ApiError, Art, MusicLibrary, Placement, PlaybackMode, Players, RepeatMode,
+    Selection, ShuffleMode,
 };
 use common::*;
 use serde_json::json;
@@ -14,7 +14,7 @@ use serde_json::json;
 async fn library_calls_parse_through_the_gateway() {
     let h = Harness::start().await;
     let (s, _) = h.alice().await;
-    let lib = Library::new(s.clone());
+    let lib = MusicLibrary::new(s.clone());
 
     let page = lib.albums(0, 100, AlbumSort::Title, None).await.unwrap();
     assert_eq!(page.total, 2);
@@ -48,7 +48,7 @@ async fn every_command_the_app_sends_passes_the_allow_list() {
     let h = Harness::start().await;
     let (s, _) = h.alice().await;
     let me = s.current().unwrap().device.player_id;
-    let lib = Library::new(s.clone());
+    let lib = MusicLibrary::new(s.clone());
     let players = Players::new(s.clone());
 
     for sort in [
@@ -188,7 +188,7 @@ async fn refusals_surface_as_forbidden() {
         ));
     }
     assert!(matches!(
-        Library::new(s.clone()).album_tracks(-1).await,
+        MusicLibrary::new(s.clone()).album_tracks(-1).await,
         Err(ApiError::InvalidInput { .. })
     ));
     assert!(matches!(

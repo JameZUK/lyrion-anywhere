@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use anywhere_gateway::accounts::Role;
-use anywhere_mobile::{AlbumSort, ApiError, Library, Server, Session, StoredCredentials, UserRole};
+use anywhere_mobile::{
+    AlbumSort, ApiError, MusicLibrary, Server, Session, StoredCredentials, UserRole,
+};
 use common::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -125,7 +127,7 @@ async fn refresh_rotates_the_stored_token() {
         Some(second.refresh_token.as_str())
     );
     // Still works with the new token.
-    Library::new(s.clone())
+    MusicLibrary::new(s.clone())
         .albums(0, 10, AlbumSort::Title, None)
         .await
         .unwrap();
@@ -141,7 +143,7 @@ async fn a_saved_sign_in_is_restored_by_a_new_session() {
     assert!(s2.has_sign_in());
     assert_eq!(s2.current(), None);
     assert_eq!(s2.restore().await.unwrap(), who);
-    let page = Library::new(s2.clone())
+    let page = MusicLibrary::new(s2.clone())
         .albums(0, 50, AlbumSort::Title, None)
         .await
         .unwrap();
@@ -173,7 +175,7 @@ async fn an_expired_access_token_is_renewed_and_the_call_retried_once() {
     let before = store.get().unwrap();
     let saves = store.saves();
     s.debug_invalidate_access_token();
-    let page = Library::new(s.clone())
+    let page = MusicLibrary::new(s.clone())
         .albums(0, 10, AlbumSort::Newest, None)
         .await
         .unwrap();
@@ -188,7 +190,7 @@ async fn concurrent_calls_share_one_refresh() {
     let (s, store) = h.alice().await;
     let saves = store.saves();
     s.debug_invalidate_access_token();
-    let lib = Library::new(s.clone());
+    let lib = MusicLibrary::new(s.clone());
     let calls = (0..8).map(|_| {
         let lib = lib.clone();
         tokio::spawn(async move { lib.artists(0, 10, None).await })
@@ -218,7 +220,7 @@ async fn a_copied_refresh_token_revokes_the_device() {
     assert!(!s.has_sign_in());
     assert_eq!(*observer.signed_out.lock().unwrap(), vec![true]);
     assert_eq!(
-        Library::new(s.clone()).artists(0, 1, None).await,
+        MusicLibrary::new(s.clone()).artists(0, 1, None).await,
         Err(ApiError::Unauthorised)
     );
 }
@@ -236,7 +238,7 @@ async fn logout_revokes_the_device_and_forgets_the_token() {
     assert_eq!(s.current(), None);
     assert_eq!(*observer.signed_out.lock().unwrap(), vec![false]);
     assert_eq!(
-        Library::new(s.clone()).artists(0, 1, None).await,
+        MusicLibrary::new(s.clone()).artists(0, 1, None).await,
         Err(ApiError::Unauthorised)
     );
     // The old refresh token no longer works anywhere.
@@ -296,7 +298,10 @@ async fn pairing_with_a_one_time_code() {
     let who = s.pair(typed).await.unwrap();
     assert_eq!(who.user.username, "bob");
     assert!(store.get().is_some());
-    Library::new(s.clone()).artists(0, 5, None).await.unwrap();
+    MusicLibrary::new(s.clone())
+        .artists(0, 5, None)
+        .await
+        .unwrap();
     // Single use.
     let s2 = h.session(MemStore::new());
     assert_eq!(s2.pair(code).await, Err(ApiError::Unauthorised));
