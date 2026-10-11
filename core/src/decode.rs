@@ -12,12 +12,15 @@ use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
 
 use symphonia::core::codecs::CodecParameters;
-use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
+use symphonia::core::codecs::audio::well_known as ids;
+use symphonia::core::codecs::audio::{
+    AudioCodecId, AudioCodecParameters, AudioDecoder, AudioDecoderOptions,
+};
 use symphonia::core::errors::Error as SymError;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, TrackType};
 use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions, ReadOnlySource};
-use symphonia::core::meta::MetadataOptions;
+use symphonia::core::meta::{MetadataOptions, StandardTag};
 
 /// Unread bytes required before demuxing a packet. Covers Symphonia's 32 KiB read-ahead
 /// block plus the largest realistic compressed frame, with headroom.
@@ -131,6 +134,161 @@ enum State {
     Failed(String),
 }
 
+/// ReplayGain values read from a stream's tags (Vorbis comments, ID3v2, MP4), if present
+/// and sane. Gains are in dB; peaks are linear sample peaks (1.0 = full scale).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ReplayGainTags {
+    pub track_gain_db: Option<f64>,
+    pub track_peak: Option<f64>,
+    pub album_gain_db: Option<f64>,
+    pub album_peak: Option<f64>,
+}
+
+/// Longest tag value [`parse_gain_db`] and [`parse_peak`] look at.
+const MAX_TAG_VALUE: usize = 64;
+
+/// A ReplayGain gain tag such as `-6.48 dB` or `+1.2dB`. Tag text is untrusted: anything
+/// malformed, non-finite or outside ±60 dB is refused.
+pub fn parse_gain_db(s: &str) -> Option<f64> {
+    if s.len() > MAX_TAG_VALUE {
+        return None;
+    }
+    let t = s.trim();
+    let t = t
+        .strip_suffix("dB")
+        .or_else(|| t.strip_suffix("db"))
+        .or_else(|| t.strip_suffix("DB"))
+        .unwrap_or(t)
+        .trim_end();
+    let v = parse_plain_number(t)?;
+    (v.abs() <= 60.0).then_some(v)
+}
+
+/// A ReplayGain peak tag such as `0.988525`. Refused unless it is a plain number within
+/// 0..=16 (a peak above +24 dBFS is nonsense).
+pub fn parse_peak(s: &str) -> Option<f64> {
+    if s.len() > MAX_TAG_VALUE {
+        return None;
+    }
+    let v = parse_plain_number(s.trim())?;
+    (0.0..=16.0).contains(&v).then_some(v)
+}
+
+/// A plain decimal number: optional sign, digits, optional fraction. No exponents, `inf`
+/// or `nan` (which `f64::from_str` would accept).
+fn parse_plain_number(t: &str) -> Option<f64> {
+    let digits = t.strip_prefix(['+', '-']).unwrap_or(t);
+    let ok = !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+        && digits.bytes().filter(|b| *b == b'.').count() <= 1
+        && digits.bytes().any(|b| b.is_ascii_digit());
+    if !ok {
+        return None;
+    }
+    t.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+/// What a stream turned out to be, once its headers have been probed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SourceFormat {
+    /// Display name, e.g. "FLAC".
+    pub codec: &'static str,
+    pub lossless: bool,
+    /// Integer bit depth of a lossless source (`None` for lossy or float sources).
+    pub bits: Option<u32>,
+    /// Channels in the source (the decoder's output is always stereo).
+    pub channels: u32,
+    pub replay_gain: ReplayGainTags,
+}
+
+/// Integer PCM codecs: lossless, with a meaningful bit depth.
+const INT_PCM: [AudioCodecId; 28] = [
+    ids::CODEC_ID_PCM_S32LE,
+    ids::CODEC_ID_PCM_S32LE_PLANAR,
+    ids::CODEC_ID_PCM_S32BE,
+    ids::CODEC_ID_PCM_S32BE_PLANAR,
+    ids::CODEC_ID_PCM_S24LE,
+    ids::CODEC_ID_PCM_S24LE_PLANAR,
+    ids::CODEC_ID_PCM_S24BE,
+    ids::CODEC_ID_PCM_S24BE_PLANAR,
+    ids::CODEC_ID_PCM_S16LE,
+    ids::CODEC_ID_PCM_S16LE_PLANAR,
+    ids::CODEC_ID_PCM_S16BE,
+    ids::CODEC_ID_PCM_S16BE_PLANAR,
+    ids::CODEC_ID_PCM_S8,
+    ids::CODEC_ID_PCM_S8_PLANAR,
+    ids::CODEC_ID_PCM_U32LE,
+    ids::CODEC_ID_PCM_U32LE_PLANAR,
+    ids::CODEC_ID_PCM_U32BE,
+    ids::CODEC_ID_PCM_U32BE_PLANAR,
+    ids::CODEC_ID_PCM_U24LE,
+    ids::CODEC_ID_PCM_U24LE_PLANAR,
+    ids::CODEC_ID_PCM_U24BE,
+    ids::CODEC_ID_PCM_U24BE_PLANAR,
+    ids::CODEC_ID_PCM_U16LE,
+    ids::CODEC_ID_PCM_U16LE_PLANAR,
+    ids::CODEC_ID_PCM_U16BE,
+    ids::CODEC_ID_PCM_U16BE_PLANAR,
+    ids::CODEC_ID_PCM_U8,
+    ids::CODEC_ID_PCM_U8_PLANAR,
+];
+
+/// Float PCM codecs: lossless, but with no integer depth.
+const FLOAT_PCM: [AudioCodecId; 8] = [
+    ids::CODEC_ID_PCM_F32LE,
+    ids::CODEC_ID_PCM_F32LE_PLANAR,
+    ids::CODEC_ID_PCM_F32BE,
+    ids::CODEC_ID_PCM_F32BE_PLANAR,
+    ids::CODEC_ID_PCM_F64LE,
+    ids::CODEC_ID_PCM_F64LE_PLANAR,
+    ids::CODEC_ID_PCM_F64BE,
+    ids::CODEC_ID_PCM_F64BE_PLANAR,
+];
+
+fn source_format(params: &AudioCodecParameters, reader: &mut dyn FormatReader) -> SourceFormat {
+    let c = params.codec;
+    let (codec, lossless, has_depth) = match c {
+        _ if c == ids::CODEC_ID_FLAC => ("FLAC", true, true),
+        _ if c == ids::CODEC_ID_ALAC => ("ALAC", true, true),
+        _ if INT_PCM.contains(&c) => ("PCM", true, true),
+        _ if FLOAT_PCM.contains(&c) => ("PCM (float)", true, false),
+        _ if c == ids::CODEC_ID_MP3 => ("MP3", false, false),
+        _ if c == ids::CODEC_ID_AAC => ("AAC", false, false),
+        _ if c == ids::CODEC_ID_VORBIS => ("Vorbis", false, false),
+        _ if c == ids::CODEC_ID_OPUS => ("Opus", false, false),
+        _ => ("Other", false, false),
+    };
+    let bits = if has_depth {
+        params.bits_per_sample.filter(|b| (1..=32).contains(b))
+    } else {
+        None
+    };
+    let mut rg = ReplayGainTags::default();
+    let mut meta = reader.metadata();
+    if let Some(rev) = meta.skip_to_latest() {
+        let per_track = rev.per_track.iter().flat_map(|t| t.metadata.tags.iter());
+        for tag in rev.media.tags.iter().chain(per_track) {
+            match &tag.std {
+                Some(StandardTag::ReplayGainTrackGain(v)) => rg.track_gain_db = parse_gain_db(v),
+                Some(StandardTag::ReplayGainTrackPeak(v)) => rg.track_peak = parse_peak(v),
+                Some(StandardTag::ReplayGainAlbumGain(v)) => rg.album_gain_db = parse_gain_db(v),
+                Some(StandardTag::ReplayGainAlbumPeak(v)) => rg.album_peak = parse_peak(v),
+                _ => {}
+            }
+        }
+    }
+    SourceFormat {
+        codec,
+        lossless,
+        bits,
+        channels: params
+            .channels
+            .as_ref()
+            .map_or(2, |ch| ch.count().clamp(1, 64) as u32),
+        replay_gain: rg,
+    }
+}
+
 /// Decodes one track's byte stream into interleaved stereo `f32` PCM.
 pub struct StreamDecoder {
     input: InputBuffer,
@@ -138,6 +296,7 @@ pub struct StreamDecoder {
     state: State,
     tmp: Vec<f32>,
     stereo: Vec<f32>,
+    source: Option<SourceFormat>,
 }
 
 impl StreamDecoder {
@@ -155,7 +314,13 @@ impl StreamDecoder {
             },
             tmp: Vec::new(),
             stereo: Vec::new(),
+            source: None,
         }
+    }
+
+    /// The stream's format, once its headers have been probed.
+    pub fn source_format(&self) -> Option<&SourceFormat> {
+        self.source.as_ref()
     }
 
     pub fn is_finished(&self) -> bool {
@@ -269,8 +434,14 @@ impl StreamDecoder {
             fmt_opts,
             MetadataOptions::default(),
         ) {
-            Ok(reader) => match make_decoder(reader.as_ref()) {
+            Ok(mut reader) => match make_decoder(reader.as_ref()) {
                 Ok((decoder, track_id)) => {
+                    let params = reader
+                        .default_track(TrackType::Audio)
+                        .and_then(|t| t.codec_params.clone());
+                    if let Some(CodecParameters::Audio(params)) = params {
+                        self.source = Some(source_format(&params, reader.as_mut()));
+                    }
                     self.input.release();
                     self.state = State::Decoding {
                         reader,
@@ -444,6 +615,84 @@ mod tests {
             dec.work(8, &mut |_, _| {}),
             DecodeStatus::Failed(_)
         ));
+    }
+
+    #[test]
+    fn replaygain_tags_parse_strictly() {
+        assert_eq!(parse_gain_db("-6.48 dB"), Some(-6.48));
+        assert_eq!(parse_gain_db("+1.20dB"), Some(1.2));
+        assert_eq!(parse_gain_db(" 3 db "), Some(3.0));
+        assert_eq!(parse_gain_db("0.5"), Some(0.5));
+        assert_eq!(parse_peak("0.988525"), Some(0.988525));
+        assert_eq!(parse_peak("1"), Some(1.0));
+        for bad in [
+            "",
+            "dB",
+            "-",
+            ".",
+            "nan",
+            "NaN dB",
+            "inf",
+            "-inf dB",
+            "1e3",
+            "1e-3",
+            "0x10",
+            "--1",
+            "+-1",
+            "1.2.3",
+            "61 dB",
+            "-60.01 dB",
+            "1,5 dB",
+            "1 dB extra",
+            "١٢",
+        ] {
+            assert_eq!(parse_gain_db(bad), None, "{bad:?}");
+        }
+        for bad in ["", "-0.1", "17", "nan", "inf", "1e0", "0.5 dB"] {
+            assert_eq!(parse_peak(bad), None, "{bad:?}");
+        }
+        let long = format!("{}1", "0".repeat(MAX_TAG_VALUE));
+        assert_eq!(parse_gain_db(&long), None);
+        assert_eq!(parse_peak(&long), None);
+    }
+
+    #[test]
+    fn arbitrary_tag_text_never_panics_or_escapes_bounds() {
+        let alphabet: Vec<char> = "0123456789.+-dBe inaxé\u{0}".chars().collect();
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..50_000 {
+            let len = (seed % 24) as usize;
+            let mut s = String::new();
+            for _ in 0..len {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                s.push(alphabet[(seed % alphabet.len() as u64) as usize]);
+            }
+            if let Some(g) = parse_gain_db(&s) {
+                assert!(g.is_finite() && g.abs() <= 60.0, "{s:?} -> {g}");
+            }
+            if let Some(p) = parse_peak(&s) {
+                assert!((0.0..=16.0).contains(&p), "{s:?} -> {p}");
+            }
+        }
+    }
+
+    #[test]
+    fn wav_source_format_is_reported_after_probing() {
+        let file = wav(48000, 1, 48000);
+        let input = InputBuffer::new();
+        input.push(&file);
+        input.set_eof();
+        let mut dec = StreamDecoder::new(input, b'p');
+        assert!(dec.source_format().is_none());
+        dec.work(1, &mut |_, _| {});
+        let f = dec.source_format().copied().unwrap();
+        assert_eq!(f.codec, "PCM");
+        assert!(f.lossless);
+        assert_eq!(f.bits, Some(16));
+        assert_eq!(f.channels, 1);
+        assert_eq!(f.replay_gain, ReplayGainTags::default());
     }
 
     #[test]
