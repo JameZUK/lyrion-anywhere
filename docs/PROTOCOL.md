@@ -160,7 +160,7 @@ Any of these ends the whole session, not just the socket:
 
 | Code | Meaning | Client should |
 |---|---|---|
-| 1001 | LMS closed the connection, or the session expired | start a new session |
+| 1001 | LMS closed the connection, or the session expired | start a new session. A browser can't tell the gateway's 1001 from one it made itself (for example when suspending a page), so the web player tries to resume first and starts a new session on 4404 |
 | 1006 | Connection lost (no close frame) | resume |
 | 1008 | Unauthorised, or policy violation | stop; don't retry with the same credentials |
 | 1013 | Server unavailable, or client too slow | resume (with backoff) |
@@ -173,6 +173,8 @@ When the socket drops (anything other than a policy close):
 
 1. The gateway keeps the session and its LMS connection for the **resume grace** (default 60 s). LMS never sees the player leave.
 2. While detached, the gateway reports to LMS on the player's behalf every second, and answers LMS status polls. It replays the client's last STAT with refreshed timestamps: elapsed time advances by wall time if the client was playing, and stays frozen if it was paused. Without this, LMS drops a silent player after about 15 s.
+   - It does the same for a socket that is still attached but has sent nothing for 8 s. A working client answers LMS's status polls every 5 s, so silence means its socket may have died without either side noticing (a phone changing networks). The heartbeats stop as soon as the client sends anything.
+   - **Clients:** LMS polls every player every 5 s, so a working socket never stays quiet for long. Treat about 20–25 s with nothing received as a dead socket: abandon it and resume. Count only what arrives; your own messages going out prove nothing.
 3. Frames LMS sends meanwhile are kept in a numbered log, together with recently sent frames, which may have been lost in flight. On resume the gateway re-sends every frame after the client's `received` count, in order.
 4. The log is bounded (default 1 MiB). If frames the client missed have been discarded, or the client claims frames that were never sent, the resume is refused (4404) and the client starts afresh.
 5. A resume while the old socket is still open replaces it (close 4000). On mobile, dead sockets often linger. From that moment nothing the old socket sends reaches LMS.
@@ -189,10 +191,10 @@ Recommended client backoff: about 0.5, 1, 2 and 4 s, then every 5 s, with ±20 %
   - **Resume:** a broken download resumes with `?offset=k`, where `k` is the number of bytes the client has.
   - **Supersede:** a newer request for the same stream supersedes an older one.
 - **Pacing:** the gateway reads from LMS at most one **replay window** (default 4 MiB) beyond the client's last ack. Network buffers therefore can't hold more than the window, and a resume always lands inside it.
-- **Ending:** a response ends (and its LMS connection is dropped) when:
-  - the session ends (for example, the device is revoked);
-  - LMS sends nothing for 60 s (the response fails, so the client sees a network error);
-  - the client has a full window unacknowledged and sends no ack for 60 s. It can fetch again with `?offset=`.
+- **Ending:** a response ends cleanly only when LMS finished the stream cleanly and the client has had every byte. Every other end is an error (the connection breaks without a clean end), so a client never mistakes it for the end of the track:
+  - the session ends (for example, the device is revoked), or a newer request for the stream takes over;
+  - LMS sends nothing for 60 s, or its stream fails. Later requests for that stream fail too, after replaying what was received;
+  - the client has a full window unacknowledged and sends no ack for 60 s (for example, it is paused, or its buffer is full). It fetches again with `?offset=` when it wants more.
 - **Responses:**
 
   | Status | Meaning |
