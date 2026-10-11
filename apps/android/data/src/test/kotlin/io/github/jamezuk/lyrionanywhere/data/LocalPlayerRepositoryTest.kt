@@ -1,5 +1,6 @@
 package io.github.jamezuk.lyrionanywhere.data
 
+import io.github.jamezuk.lyrionanywhere.core.TransitionMode
 import io.github.jamezuk.lyrionanywhere.core.ApiException
 import io.github.jamezuk.lyrionanywhere.core.CrossfeedSetting
 import io.github.jamezuk.lyrionanywhere.core.DitherSetting
@@ -236,6 +237,23 @@ class LocalPlayerRepositoryTest {
         val shaped = dspFor(SoundSettings(dither = DitherMode.TPDF_SHAPED))
         assertFalse(shaped.enabled)
         assertEquals(DitherSetting.TPDF_SHAPED, shaped.dither)
+    }
+
+    @Test
+    fun transitionsReachTheEngineWithoutSwitchingTheChainOn() {
+        // Off by default: gapless, bit-perfect.
+        assertEquals(TransitionMode.OFF, dspFor(SoundSettings()).transitions)
+        val x = dspFor(SoundSettings(transitions = TransitionsMode.CROSSFADE, crossfadeSecs = 3.0))
+        assertEquals(TransitionMode.CROSSFADE, x.transitions)
+        assertEquals(3.0, x.crossfadeS, 0.0)
+        assertFalse("a crossfade alone leaves the DSP chain off", x.enabled)
+        val smart = dspFor(
+            SoundSettings(transitions = TransitionsMode.SMART, preampDb = -3.0, crossfadeSecs = 99.0),
+        )
+        assertEquals(TransitionMode.SMART, smart.transitions)
+        assertEquals(10.0, smart.crossfadeS, 0.0)
+        assertTrue(smart.enabled)
+        assertEquals(-3.0, smart.preampDb, 0.0)
     }
 
     @Test

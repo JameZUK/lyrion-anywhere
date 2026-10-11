@@ -38,13 +38,18 @@ class SecurityConfigTest {
     }
 
     @Test
-    fun onlyTheLauncherTheWidgetAndTheTileAreExported() {
+    fun onlyTheLauncherTheWidgetTheTileAndTheMediaLibraryAreExported() {
         val manifest = xml("src/main/AndroidManifest.xml")
         val exported = listOf("activity", "service", "receiver", "provider")
             .flatMap { manifest.children(it) }
             .filter { it.getAttributeNS(android, "exported") == "true" }
         assertEquals(
-            setOf(".MainActivity", ".widget.NowPlayingWidgetReceiver", ".widget.PlayPauseTileService"),
+            setOf(
+                ".MainActivity",
+                ".widget.NowPlayingWidgetReceiver",
+                ".widget.PlayPauseTileService",
+                "io.github.jamezuk.lyrionanywhere.playback.PlaybackService",
+            ),
             exported.map { it.getAttributeNS(android, "name") }.toSet(),
         )
         fun actions(e: Element) = e.children("action").map { it.getAttributeNS(android, "name") }.toSet()
@@ -58,15 +63,38 @@ class SecurityConfigTest {
         // No periodic widget updates: nothing wakes the phone for it.
         val info = xml("src/main/res/xml/now_playing_widget.xml")
         assertEquals("0", info.getAttributeNS(android, "updatePeriodMillis"))
+        // No content provider is exported (car artwork isn't served by one).
+        assertTrue(exported.none { it.tagName == "provider" })
+        // The launcher, and voice "play …" (the query only; no data, no other actions).
+        val main = exported.single { it.getAttributeNS(android, "name") == ".MainActivity" }
+        assertEquals(
+            setOf("android.intent.action.MAIN", "android.media.action.MEDIA_PLAY_FROM_SEARCH"),
+            actions(main),
+        )
+        assertTrue(main.children("data").isEmpty())
     }
 
+    /** The media library for cars (A6): exported only for the media browser actions; its
+     *  callers are checked in code (CallerPolicy, tested in :playback). */
     @Test
-    fun thePlaybackServiceIsPrivateAndAMediaForegroundService() {
+    fun thePlaybackServiceIsAMediaLibraryForCarsAndAMediaForegroundService() {
         val services = xml("src/main/AndroidManifest.xml").children("service")
         val playback = services.single { it.getAttributeNS(android, "name").endsWith(".PlaybackService") }
-        assertEquals("false", playback.getAttributeNS(android, "exported"))
+        assertEquals("true", playback.getAttributeNS(android, "exported"))
         assertEquals("mediaPlayback", playback.getAttributeNS(android, "foregroundServiceType"))
-        assertFalse(playback.hasAttributeNS(android, "permission"))
+        assertEquals(
+            setOf("androidx.media3.session.MediaLibraryService", "android.media.browse.MediaBrowserService"),
+            playback.children("action").map { it.getAttributeNS(android, "name") }.toSet(),
+        )
+        assertTrue(playback.children("data").isEmpty() && playback.children("category").isEmpty())
+        // Declared as an Android Auto media app, nothing more.
+        val app = xml("src/main/AndroidManifest.xml").children("application").single()
+        val car = app.children("meta-data").single {
+            it.getAttributeNS(android, "name") == "com.google.android.gms.car.application"
+        }
+        assertEquals("@xml/automotive_app_desc", car.getAttributeNS(android, "resource"))
+        val desc = xml("src/main/res/xml/automotive_app_desc.xml")
+        assertEquals(listOf("media"), desc.children("uses").map { it.getAttribute("name") })
     }
 
     @Test

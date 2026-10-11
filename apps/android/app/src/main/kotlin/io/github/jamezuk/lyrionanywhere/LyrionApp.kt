@@ -26,7 +26,11 @@ import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
 import io.github.jamezuk.lyrionanywhere.data.offline.OfflinePlayerRepository
 import io.github.jamezuk.lyrionanywhere.downloads.DownloadService
+import io.github.jamezuk.lyrionanywhere.auto.AppAutoSource
 import io.github.jamezuk.lyrionanywhere.playback.PlaybackHost
+import io.github.jamezuk.lyrionanywhere.playback.auto.AutoCatalogue
+import io.github.jamezuk.lyrionanywhere.playback.auto.AutoSource
+import io.github.jamezuk.lyrionanywhere.playback.auto.ResourceLabels
 import io.github.jamezuk.lyrionanywhere.rust.NativeInit
 import io.github.jamezuk.lyrionanywhere.ui.art.ArtworkFetcher
 import io.github.jamezuk.lyrionanywhere.ui.art.ArtworkKeyer
@@ -119,6 +123,23 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
     override val offlinePlayer: OfflinePlayerRepository get() = container.offlinePlayer
 
     override suspend fun offlineArtwork(albumRef: String): ByteArray? = container.offline.artwork(albumRef)
+
+    // Safe mode (the last run crashed) builds nothing, and the session then accepts no one.
+    override val playbackReady: Boolean get() = started
+
+    /** The car's browse tree (Android Auto). */
+    override val autoSource: AutoSource by lazy { AppAutoSource(container) }
+
+    /**
+     * A spoken "play …" from outside the app (the assistant): the best match in the library
+     * (or the downloads) plays on this phone, through the same search and checks as the
+     * car's. Nothing but the query text is used; with no query, playback carries on.
+     */
+    fun playFromSearch(query: String?) {
+        if (!started) return
+        val q = query?.let(AutoCatalogue::clean)?.take(AutoCatalogue.MAX_QUERY)
+        appScope.launch { AutoCatalogue(autoSource, ResourceLabels(this@LyrionApp)).play(null, q) }
+    }
 
     private companion object {
         const val WIDGET_DEBOUNCE_MS = 500L

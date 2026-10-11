@@ -56,6 +56,10 @@ pub enum BrowseNode {
     Favourite {
         item_id: String,
     },
+    /// One library track on its own (a search result).
+    Track {
+        id: i64,
+    },
     /// Track `index` of an album: plays the album from there.
     AlbumTrack {
         album_id: i64,
@@ -142,6 +146,7 @@ pub fn node_id(node: BrowseNode) -> Option<String> {
         BrowseNode::Playlist { id } => format!("pl/{id}"),
         BrowseNode::FavouriteFolder { item_id } => format!("ff/{item_id}"),
         BrowseNode::Favourite { item_id } => format!("fv/{item_id}"),
+        BrowseNode::Track { id } => format!("tr/{id}"),
         BrowseNode::AlbumTrack { album_id, index } => format!("at/{album_id}/{index}"),
         BrowseNode::PlaylistTrack { playlist_id, index } => format!("pt/{playlist_id}/{index}"),
         BrowseNode::DownloadedAlbum { album_ref } => format!("da/{album_ref}"),
@@ -178,6 +183,7 @@ pub fn parse_node(id: String) -> Option<BrowseNode> {
         ["fv", i] if item_id_ok(i) => BrowseNode::Favourite {
             item_id: (*i).into(),
         },
+        ["tr", n] => BrowseNode::Track { id: num(n)? },
         ["at", n, i] => BrowseNode::AlbumTrack {
             album_id: num(n)?,
             index: index(i)?,
@@ -204,6 +210,7 @@ pub fn node_browsable(node: BrowseNode) -> bool {
         node,
         BrowseNode::Resume
             | BrowseNode::Favourite { .. }
+            | BrowseNode::Track { .. }
             | BrowseNode::AlbumTrack { .. }
             | BrowseNode::PlaylistTrack { .. }
             | BrowseNode::DownloadedTrack { .. }
@@ -219,6 +226,7 @@ pub fn node_playable(node: BrowseNode) -> bool {
             | BrowseNode::Album { .. }
             | BrowseNode::Playlist { .. }
             | BrowseNode::Favourite { .. }
+            | BrowseNode::Track { .. }
             | BrowseNode::AlbumTrack { .. }
             | BrowseNode::PlaylistTrack { .. }
             | BrowseNode::DownloadedAlbum { .. }
@@ -326,6 +334,7 @@ mod tests {
             BrowseNode::Favourite {
                 item_id: "b99447ab.1.2".into(),
             },
+            BrowseNode::Track { id: 42 },
             BrowseNode::AlbumTrack {
                 album_id: 7,
                 index: 0,
@@ -427,6 +436,9 @@ mod tests {
             "\\\\server\\share",
             "al/1\n",
             "resume/1",
+            "tr/",
+            "tr/0",
+            "tr/1/2",
         ] {
             assert_eq!(parse_node(bad.into()), None, "{bad:?}");
         }

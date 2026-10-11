@@ -25,6 +25,7 @@ import io.github.jamezuk.lyrionanywhere.data.DitherMode
 import io.github.jamezuk.lyrionanywhere.data.EqProfile
 import io.github.jamezuk.lyrionanywhere.data.LevellingMode
 import io.github.jamezuk.lyrionanywhere.data.SoundSettings
+import io.github.jamezuk.lyrionanywhere.data.TransitionsMode
 import io.github.jamezuk.lyrionanywhere.ui.player.SignalPathPanel
 import io.github.jamezuk.lyrionanywhere.ui.settings.EqMessage
 import io.github.jamezuk.lyrionanywhere.ui.settings.SoundActions
@@ -82,6 +83,14 @@ private class RecordingActions : SoundActions {
     override fun messageShown() {
         calls += "shown"
     }
+
+    override fun transitions(mode: TransitionsMode) {
+        calls += "transitions $mode"
+    }
+
+    override fun crossfadeSecs(secs: Double) {
+        calls += "crossfade $secs"
+    }
 }
 
 @RunWith(AndroidJUnit4::class)
@@ -109,6 +118,28 @@ class SoundScreenTests {
         compose.onNodeWithText("Every stage is off: samples leave the player exactly as decoded.").assertIsDisplayed()
         compose.onAllNodesWithText("Off").onFirst().assertIsSelected()
         compose.onNode(hasText("Bit-perfect USB output") and isToggleable()).assertIsOn()
+    }
+
+    @Test
+    fun transitionsAreOffByDefaultAndCanBeChosen() {
+        show(SoundUiState())
+        scrollTo("Smart transitions")
+        compose.onNodeWithText("Gapless").assertIsSelected()
+        compose.onNodeWithTag("crossfade").assertDoesNotExist()
+        compose.onNodeWithText("Smart transitions").performClick()
+        assertEquals(listOf("transitions SMART"), actions.calls)
+    }
+
+    @Test
+    fun aCrossfadeShowsItsLengthAndIsNotBitPerfect() {
+        show(SoundUiState(SoundSettings(transitions = TransitionsMode.CROSSFADE, crossfadeSecs = 4.0)))
+        compose.onNodeWithTag("sound-indicator").assertTextContains("Processing")
+        compose.onNodeWithText(
+            "These change the samples: crossfade. Turn them off for bit-perfect playback.",
+        ).assertIsDisplayed()
+        scrollTo("Crossfade: up to 4 s")
+        compose.onNodeWithText("Crossfade: up to 4 s").assertIsDisplayed()
+        compose.onNodeWithText("Crossfade").assertIsSelected()
     }
 
     @Test
@@ -267,6 +298,20 @@ class SoundViewModelTest : MainDispatcherTest() {
         vm.setEqEnabled(true)
         assertFalse(local.sounds.last().eqEnabled)
         assertFalse(SoundViewModel(local, sdk = 33).state.value.bitPerfectAvailable)
+    }
+
+    @Test
+    fun transitionSettingsAreSavedRoundedAndClamped() = runTest(dispatcher) {
+        val local = FakeLocalPlayer()
+        val vm = SoundViewModel(local, sdk = 34)
+        vm.setTransitions(TransitionsMode.SMART)
+        vm.setCrossfadeSecs(4.4)
+        assertEquals(TransitionsMode.SMART, local.state.value.sound.transitions)
+        assertEquals(4.0, local.sounds.last().crossfadeSecs, 0.0)
+        vm.setCrossfadeSecs(50.0)
+        assertEquals(10.0, local.sounds.last().crossfadeSecs, 0.0)
+        vm.setTransitions(TransitionsMode.OFF)
+        assertTrue("gapless again: bit-perfect", local.state.value.sound.bitPerfect)
     }
 
     @Test

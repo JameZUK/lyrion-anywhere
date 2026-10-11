@@ -41,8 +41,13 @@ class LmsSessionPlayer(
     private val snapshots: StateFlow<SessionSnapshot>,
     private val actions: SessionActions,
     private val scope: CoroutineScope,
+    /** What the car asks to play (none: the session plays nothing by id). */
+    private val requests: PlayRequests? = null,
 ) : SimpleBasePlayer(looper) {
     private var snapshot = snapshots.value
+
+    /** A play request is under way: it starts playback itself. */
+    private var requesting = false
     private val main = Handler(looper).asCoroutineDispatcher()
 
     init {
@@ -54,7 +59,7 @@ class LmsSessionPlayer(
         }
     }
 
-    override fun getState(): State = buildState(snapshot)
+    override fun getState(): State = buildState(snapshot, requests != null)
 
     private fun run(block: suspend () -> Unit): ListenableFuture<*> {
         val done = SettableFuture.create<Any?>()
@@ -69,8 +74,33 @@ class LmsSessionPlayer(
         return done
     }
 
-    override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> =
-        run { if (playWhenReady) actions.play() else actions.pause() }
+    override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+        // Media3 follows a play request with "play": the request already plays.
+        val covered = playWhenReady && requesting
+        return run {
+            when {
+                covered -> {}
+                playWhenReady -> actions.play()
+                else -> actions.pause()
+            }
+        }
+    }
+
+    override fun handlePrepare(): ListenableFuture<*> = SettableFuture.create<Any?>().apply { set(null) }
+
+    override fun handleSetMediaItems(mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> {
+        val r = requests
+        val item = requestedItem(mediaItems, startIndex)
+        if (r == null || item == null) return SettableFuture.create<Any?>().apply { set(null) }
+        requesting = true
+        return run {
+            try {
+                r.play(item.mediaId, item.requestMetadata.searchQuery)
+            } finally {
+                requesting = false
+            }
+        }
+    }
 
     override fun handleStop(): ListenableFuture<*> = run { actions.pause() }
 
@@ -95,8 +125,8 @@ class LmsSessionPlayer(
     override fun handleRelease(): ListenableFuture<*> = SettableFuture.create<Any?>().apply { set(null) }
 
     companion object {
-        /** The session's state for a snapshot. */
-        fun buildState(snapshot: SessionSnapshot): State {
+        /** The session's state for a snapshot. [playRequests]: the car may play items by id. */
+        fun buildState(snapshot: SessionSnapshot, playRequests: Boolean = false): State {
             val s = mapSnapshot(snapshot)
             val commands = Player.Commands.Builder().addAll(
                 Player.COMMAND_PLAY_PAUSE,
@@ -111,6 +141,7 @@ class LmsSessionPlayer(
                 Player.COMMAND_SEEK_TO_MEDIA_ITEM,
             )
             if (s.canSeek) commands.add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+            if (playRequests) commands.addAll(Player.COMMAND_SET_MEDIA_ITEM, Player.COMMAND_PREPARE)
             val playlist = s.items.mapIndexed { i, item ->
                 val meta = MediaMetadata.Builder()
                     .setTitle(item.title)

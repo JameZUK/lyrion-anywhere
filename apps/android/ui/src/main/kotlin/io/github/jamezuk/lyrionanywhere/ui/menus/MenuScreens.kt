@@ -224,6 +224,10 @@ fun ItemSheetContent(
     onClose: () -> Unit,
     /** Download it (offline); null where downloads aren't offered for this item. */
     onDownload: (() -> Unit)? = null,
+    /** "Start radio" and "More like this" for it (A6), when the server offers them. */
+    discovery: io.github.jamezuk.lyrionanywhere.ui.discovery.DiscoveryUiState? = null,
+    onStartRadio: () -> Unit = {},
+    onSimilar: (MenuItem) -> Unit = {},
 ) {
     val stack by navigator.stack.collectAsStateWithLifecycle()
     val frame = stack.lastOrNull()
@@ -280,6 +284,10 @@ fun ItemSheetContent(
                         Icon(Icons.Outlined.Download, contentDescription = null)
                         Text(stringResource(R.string.action_download), Modifier.padding(start = 8.dp), maxLines = 1)
                     }
+                }
+                if (discovery != null) {
+                    io.github.jamezuk.lyrionanywhere.ui.discovery.StartRadioButton(discovery, onStartRadio)
+                    io.github.jamezuk.lyrionanywhere.ui.discovery.MoreLikeThisShelf(discovery, onSimilar)
                 }
                 HorizontalDivider(Modifier.padding(top = 8.dp))
             }

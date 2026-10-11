@@ -116,6 +116,8 @@ import io.github.jamezuk.lyrionanywhere.ui.library.SearchResultsList
 import io.github.jamezuk.lyrionanywhere.ui.library.SearchViewModel
 import io.github.jamezuk.lyrionanywhere.ui.library.YearsScreen
 import io.github.jamezuk.lyrionanywhere.ui.library.YearsViewModel
+import io.github.jamezuk.lyrionanywhere.ui.discovery.DiscoveryController
+import io.github.jamezuk.lyrionanywhere.ui.discovery.DiscoveryEvent
 import io.github.jamezuk.lyrionanywhere.ui.menus.AppsScreen
 import io.github.jamezuk.lyrionanywhere.ui.menus.AppsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.menus.ItemSheetContent
@@ -358,10 +360,29 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
         }
     }
 
+    // "Start radio" and "More like this" (A6): what the server offers for an item.
+    fun discoveryText(e: DiscoveryEvent): String = when (e) {
+        is DiscoveryEvent.RadioStarted ->
+            res.getString(if (e.endless) R.string.radio_started_endless else R.string.radio_started)
+        DiscoveryEvent.Played -> res.getString(R.string.similar_playing)
+        is DiscoveryEvent.Failed -> errorText(res, e.error)
+        DiscoveryEvent.NoPlayer -> res.getString(R.string.no_player_selected)
+    }
+
     // Album, artist and playlist pages: full screen, or beside their list on wide windows.
     val albumPage: @Composable (Long) -> Unit = { albumId ->
         val vm = viewModel(key = "album-$albumId") { AlbumViewModel(container.library, albumId) }
         val ui by vm.state.collectAsStateWithLifecycle()
+        val discovery = remember(albumId) {
+            DiscoveryController(scope, container.discovery, container.menus, player::target, withShelf = true)
+        }
+        val found by discovery.state.collectAsStateWithLifecycle()
+        LaunchedEffect(discovery, playerState.selectedId) {
+            discovery.load(io.github.jamezuk.lyrionanywhere.core.RadioSeed.Album(albumId))
+        }
+        LaunchedEffect(discovery) {
+            discovery.events.collect { e -> snackbar.showSnackbar(discoveryText(e)) }
+        }
         AlbumScreen(
             state = ui,
             actions = AlbumActions(
@@ -377,6 +398,9 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                 onMore = openMore,
                 onDownload = { downloadAlbum(albumId) },
                 downloaded = offlineState.downloadedIds,
+                discovery = found,
+                onStartRadio = discovery::startRadio,
+                onSimilar = discovery::play,
             ),
         )
     }
@@ -956,6 +980,29 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
     more?.let { request ->
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
         val navigator = remember(request) { MenuNavigator(scope, container.menus, player::target) }
+        val seed = when (request.kind) {
+            io.github.jamezuk.lyrionanywhere.core.InfoKind.TRACK -> io.github.jamezuk.lyrionanywhere.core.RadioSeed.Track(request.id)
+            io.github.jamezuk.lyrionanywhere.core.InfoKind.ALBUM -> io.github.jamezuk.lyrionanywhere.core.RadioSeed.Album(request.id)
+            io.github.jamezuk.lyrionanywhere.core.InfoKind.ARTIST -> io.github.jamezuk.lyrionanywhere.core.RadioSeed.Artist(request.id)
+            else -> null
+        }
+        val discovery = remember(request) {
+            DiscoveryController(
+                scope,
+                container.discovery,
+                container.menus,
+                player::target,
+                withShelf = request.kind == io.github.jamezuk.lyrionanywhere.core.InfoKind.TRACK,
+            )
+        }
+        val found by discovery.state.collectAsStateWithLifecycle()
+        LaunchedEffect(discovery) {
+            seed?.let(discovery::load)
+            discovery.events.collect { e ->
+                if (e is DiscoveryEvent.RadioStarted || e is DiscoveryEvent.Played) more = null
+                snackbar.showSnackbar(discoveryText(e))
+            }
+        }
         LaunchedEffect(request) {
             when (val a = container.menus.infoMenu(request.kind, request.id)) {
                 is ApiResult.Ok -> navigator.start(request.target.title, a.value)
@@ -987,6 +1034,9 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     })
                     else -> null
                 },
+                discovery = found.takeIf { seed != null },
+                onStartRadio = discovery::startRadio,
+                onSimilar = discovery::play,
             )
         }
     }

@@ -5,4 +5,16 @@
     <string name="route_wired">Headphones</string>
     <string name="route_bluetooth">Bluetooth</string>
     <string name="route_speaker">Phone speaker</string>
+
+    <!-- The car's browse tree (Android Auto). -->
+    <string name="auto_root">Lyrion Anywhere</string>
+    <string name="auto_home">Home</string>
+    <string name="auto_library">Library</string>
+    <string name="auto_downloads">Downloads</string>
+    <string name="auto_resume">Carry on playing</string>
+    <string name="auto_new_music">New music</string>
+    <string name="auto_albums">Albums</string>
+    <string name="auto_artists">Artists</string>
+    <string name="auto_playlists">Playlists</string>
+    <string name="auto_favourites">Favourites</string>
 </resources>

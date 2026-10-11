@@ -146,6 +146,7 @@ fun reasonText(r: NotBitPerfect): Int = when (r) {
     NotBitPerfect.RESAMPLED -> R.string.reason_resampled
     NotBitPerfect.LOSSY_SOURCE -> R.string.reason_lossy_source
     NotBitPerfect.OTHER_PROCESSING -> R.string.reason_other_processing
+    NotBitPerfect.CROSSFADE -> R.string.reason_crossfade
 }
 
 @Composable

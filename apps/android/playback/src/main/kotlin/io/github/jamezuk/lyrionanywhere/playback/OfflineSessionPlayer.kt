@@ -148,10 +148,15 @@ class OfflineSessionPlayer(
     looper: Looper,
     private val snapshots: StateFlow<OfflineSnapshot>,
     private val offline: OfflinePlayerRepository,
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
+    /** What the car asks to play (none: the session plays nothing by id). */
+    private val requests: PlayRequests? = null,
 ) : SimpleBasePlayer(looper) {
     private var snapshot = snapshots.value
     private val main = Handler(looper).asCoroutineDispatcher()
+
+    /** A play request is under way: it starts playback itself. */
+    private var requesting = false
 
     init {
         scope.launch(main) {
@@ -162,7 +167,7 @@ class OfflineSessionPlayer(
         }
     }
 
-    override fun getState(): State = buildState(snapshot)
+    override fun getState(): State = buildState(snapshot, requests != null)
 
     private fun done(block: () -> Unit): ListenableFuture<*> {
         block()
@@ -170,7 +175,32 @@ class OfflineSessionPlayer(
     }
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> =
-        done { if (playWhenReady) offline.play() else offline.pause() }
+        done {
+            when {
+                playWhenReady && requesting -> {}
+                playWhenReady -> offline.play()
+                else -> offline.pause()
+            }
+        }
+
+    override fun handlePrepare(): ListenableFuture<*> = done {}
+
+    override fun handleSetMediaItems(mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> {
+        val r = requests
+        val item = requestedItem(mediaItems, startIndex)
+        if (r == null || item == null) return done {}
+        requesting = true
+        val f = SettableFuture.create<Any?>()
+        scope.launch(main) {
+            try {
+                r.play(item.mediaId, item.requestMetadata.searchQuery)
+            } finally {
+                requesting = false
+                f.set(null)
+            }
+        }
+        return f
+    }
 
     override fun handleStop(): ListenableFuture<*> = done { offline.pause() }
 
@@ -201,7 +231,7 @@ class OfflineSessionPlayer(
     override fun handleRelease(): ListenableFuture<*> = SettableFuture.create<Any?>().apply { set(null) }
 
     companion object {
-        fun buildState(snapshot: OfflineSnapshot): State {
+        fun buildState(snapshot: OfflineSnapshot, playRequests: Boolean = false): State {
             val s = mapOffline(snapshot.state)
             val commands = Player.Commands.Builder().addAll(
                 Player.COMMAND_PLAY_PAUSE,
@@ -217,7 +247,7 @@ class OfflineSessionPlayer(
                 Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM,
                 Player.COMMAND_SET_SHUFFLE_MODE,
                 Player.COMMAND_SET_REPEAT_MODE,
-            ).build()
+            ).apply { if (playRequests) addAll(Player.COMMAND_SET_MEDIA_ITEM, Player.COMMAND_PREPARE) }.build()
             val playlist = s.items.mapIndexed { i, item ->
                 val meta = MediaMetadata.Builder()
                     .setTitle(item.title)

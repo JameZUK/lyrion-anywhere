@@ -386,6 +386,11 @@ data class AlbumActions(
     val onDownload: (() -> Unit)? = null,
     /** Which of the album's tracks are on the device. */
     val downloaded: Set<Long> = emptySet(),
+    /** "Start radio" and "More like this" (A6), when the server offers them. */
+    val discovery: io.github.jamezuk.lyrionanywhere.ui.discovery.DiscoveryUiState =
+        io.github.jamezuk.lyrionanywhere.ui.discovery.DiscoveryUiState(),
+    val onStartRadio: () -> Unit = {},
+    val onSimilar: (io.github.jamezuk.lyrionanywhere.core.MenuItem) -> Unit = {},
 )
 
 /** The album page: large art, details, Play/Shuffle/Add/More, and tracks by disc. */
@@ -434,6 +439,7 @@ fun AlbumScreen(state: Loadable<AlbumDetail>, actions: AlbumActions, modifier: M
                                 )
                             },
                         )
+                        io.github.jamezuk.lyrionanywhere.ui.discovery.StartRadioButton(actions.discovery, actions.onStartRadio)
                         HorizontalDivider()
                     }
                     if (d.tracks.isEmpty()) {
@@ -452,6 +458,15 @@ fun AlbumScreen(state: Loadable<AlbumDetail>, actions: AlbumActions, modifier: M
                                 onClick = { actions.onPlayTrack(track) },
                                 showArtist = d.variousArtists,
                                 onMore = More.track(track)?.let { r -> { actions.onMore(r) } },
+                            )
+                        }
+                    }
+                    if (actions.discovery.similar.isNotEmpty()) {
+                        item(key = "more-like-this") {
+                            io.github.jamezuk.lyrionanywhere.ui.discovery.MoreLikeThisShelf(
+                                actions.discovery,
+                                actions.onSimilar,
+                                Modifier.padding(top = 16.dp),
                             )
                         }
                     }

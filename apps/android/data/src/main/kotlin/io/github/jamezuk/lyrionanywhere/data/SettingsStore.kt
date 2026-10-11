@@ -212,6 +212,8 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         val CROSSFEED = stringPreferencesKey("sound_crossfeed")
         val DITHER = stringPreferencesKey("sound_dither")
         val BIT_PERFECT_USB = booleanPreferencesKey("sound_bit_perfect_usb")
+        val TRANSITIONS = stringPreferencesKey("sound_transitions")
+        val CROSSFADE_SECS = doublePreferencesKey("sound_crossfade_secs")
 
         /** An enum stored by name; anything unknown (an older or newer app) is the default. */
         inline fun <reified T : Enum<T>> enumOr(name: String?, default: T): T =
@@ -242,6 +244,8 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
                 crossfeed = enumOr(p[CROSSFEED], d.crossfeed),
                 dither = enumOr(p[DITHER], d.dither),
                 bitPerfectUsb = p[BIT_PERFECT_USB] ?: d.bitPerfectUsb,
+                transitions = enumOr(p[TRANSITIONS], d.transitions),
+                crossfadeSecs = p[CROSSFADE_SECS] ?: d.crossfadeSecs,
             ).sanitised()
         }
 
@@ -267,6 +271,8 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
             p[CROSSFEED] = s.crossfeed.name
             p[DITHER] = s.dither.name
             p[BIT_PERFECT_USB] = s.bitPerfectUsb
+            p[TRANSITIONS] = s.transitions.name
+            p[CROSSFADE_SECS] = s.crossfadeSecs
         }
     }
 }

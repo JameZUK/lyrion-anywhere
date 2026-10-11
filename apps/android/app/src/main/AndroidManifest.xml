@@ -46,21 +46,37 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- "Play … on Lyrion Anywhere" (voice): the spoken query is searched in the
+                 library and the best match plays on this phone. Only the query text is
+                 read, bounded, and it goes through the same search as the car's. -->
+            <intent-filter>
+                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
         <!--
-          The media session for "Play on this phone". Not exported: only this app binds to
-          it. The system's media controls (notification, lock screen, Bluetooth) use the
-          platform session token, which needs no exported component. (Android Auto, later,
-          will need an exported service that checks its callers.)
+          The media session for "Play on this phone", and the media library for cars (A6).
+          Exported, because Android Auto (and Android Automotive's media centre) bind to it
+          from outside the app. Every caller is checked in its onConnect (CallerPolicy):
+          Android Auto and the assistants only with their release certificates, the
+          system's own controllers (platform-signed or holding MEDIA_CONTENT_CONTROL), and
+          this app; other controllers Media3 trusts get transport controls only; anyone
+          else is refused. The tree it serves holds no URLs or paths.
         -->
         <service
             android:name="io.github.jamezuk.lyrionanywhere.playback.PlaybackService"
-            android:exported="false"
-            android:foregroundServiceType="mediaPlayback">
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback"
+            tools:ignore="ExportedService">
             <intent-filter>
-                <action android:name="androidx.media3.session.MediaSessionService" />
+                <action android:name="androidx.media3.session.MediaLibraryService" />
+                <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
+        <!-- Android Auto: a media app, served by the service above. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
         <!--
           Downloads in the background (A5): a dataSync foreground service, running only while
           downloads are busy. Not exported: only this app starts it; its notification's Cancel

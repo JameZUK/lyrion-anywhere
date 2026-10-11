@@ -64,6 +64,7 @@ import io.github.jamezuk.lyrionanywhere.data.LevellingMode
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.SoundSettings
 import io.github.jamezuk.lyrionanywhere.data.SoundStage
+import io.github.jamezuk.lyrionanywhere.data.TransitionsMode
 import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.library.SectionHeader
 import kotlinx.coroutines.Dispatchers
@@ -131,6 +132,10 @@ class SoundViewModel(
 
     fun setBitPerfectUsb(on: Boolean) = change { it.copy(bitPerfectUsb = on) }
 
+    fun setTransitions(mode: TransitionsMode) = change { it.copy(transitions = mode) }
+
+    fun setCrossfadeSecs(secs: Double) = change { it.copy(crossfadeSecs = Math.round(secs).toDouble()) }
+
     /** Import an AutoEq profile (pasted, or read from a file), if the engine accepts it. */
     fun importEq(name: String, text: String) {
         val message = when (val c = local.checkEq(text)) {
@@ -188,6 +193,10 @@ interface SoundActions {
 
     fun bitPerfectUsb(on: Boolean) {}
 
+    fun transitions(mode: TransitionsMode) {}
+
+    fun crossfadeSecs(secs: Double) {}
+
     fun messageShown() {}
 }
 
@@ -214,6 +223,10 @@ fun SoundViewModel.actions(): SoundActions = object : SoundActions {
 
     override fun bitPerfectUsb(on: Boolean) = setBitPerfectUsb(on)
 
+    override fun transitions(mode: TransitionsMode) = setTransitions(mode)
+
+    override fun crossfadeSecs(secs: Double) = setCrossfadeSecs(secs)
+
     override fun messageShown() = this@actions.messageShown()
 }
 
@@ -226,6 +239,7 @@ fun stageNames(stages: List<SoundStage>): String = stages.map {
             SoundStage.LEVELLING -> R.string.stage_name_levelling
             SoundStage.EQ -> R.string.stage_name_eq
             SoundStage.CROSSFEED -> R.string.stage_name_crossfeed
+            SoundStage.CROSSFADE -> R.string.stage_name_crossfade
         },
     )
 }.joinToString(", ")
@@ -357,6 +371,34 @@ fun SoundScreen(state: SoundUiState, actions: SoundActions, modifier: Modifier =
                 selected = s.crossfeed,
                 onSelect = actions::crossfeed,
             )
+        }
+        item { HorizontalDivider() }
+
+        item { SectionHeader(stringResource(R.string.sound_section_transitions)) }
+        item {
+            RadioGroup(
+                label = stringResource(R.string.sound_section_transitions),
+                options = listOf(
+                    Triple(TransitionsMode.OFF, R.string.transitions_off, R.string.transitions_off_body),
+                    Triple(TransitionsMode.CROSSFADE, R.string.transitions_crossfade, R.string.transitions_crossfade_body),
+                    Triple(TransitionsMode.SMART, R.string.transitions_smart, R.string.transitions_smart_body),
+                ),
+                selected = s.transitions,
+                onSelect = actions::transitions,
+            )
+        }
+        if (s.transitions != TransitionsMode.OFF) {
+            item {
+                DbSlider(
+                    label = { stringResource(R.string.sound_crossfade_length, Math.round(it).toInt()) },
+                    accessibleName = stringResource(R.string.sound_crossfade_length_name),
+                    value = s.crossfadeSecs,
+                    range = SoundSettings.CROSSFADE_RANGE,
+                    step = 1.0,
+                    onChange = actions::crossfadeSecs,
+                    tag = "crossfade",
+                )
+            }
         }
         item { HorizontalDivider() }
 

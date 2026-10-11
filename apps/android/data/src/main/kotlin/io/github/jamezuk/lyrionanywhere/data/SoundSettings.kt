@@ -4,6 +4,7 @@ import io.github.jamezuk.lyrionanywhere.core.CrossfeedSetting
 import io.github.jamezuk.lyrionanywhere.core.DitherSetting
 import io.github.jamezuk.lyrionanywhere.core.DspSettings
 import io.github.jamezuk.lyrionanywhere.core.Levelling
+import io.github.jamezuk.lyrionanywhere.core.TransitionMode
 
 /** Loudness levelling on this phone's player. */
 enum class LevellingMode {
@@ -24,6 +25,18 @@ enum class CrossfeedMode { OFF, LIGHT, MODERATE, NATURAL }
 
 /** Requantising when the bit depth is reduced (only then). */
 enum class DitherMode { TPDF, TPDF_SHAPED, OFF }
+
+/** How tracks are joined on this phone's player. */
+enum class TransitionsMode {
+    /** Gapless and bit-perfect (the default). */
+    OFF,
+
+    /** A fixed crossfade between tracks of different albums. */
+    CROSSFADE,
+
+    /** Shaped by the server's analysis: silence trimmed, the fade follows the music. */
+    SMART,
+}
 
 /** An imported AutoEq `ParametricEQ.txt` profile, as checked by the engine. */
 data class EqProfile(
@@ -50,6 +63,10 @@ data class SoundSettings(
     val dither: DitherMode = DitherMode.TPDF,
     /** Ask Android for bit-perfect output to a USB DAC (Android 14+). */
     val bitPerfectUsb: Boolean = true,
+    /** Crossfades between tracks (never within an album). Off keeps playback gapless. */
+    val transitions: TransitionsMode = TransitionsMode.OFF,
+    /** The crossfade's length (the most a smart transition uses), seconds. */
+    val crossfadeSecs: Double = DEFAULT_CROSSFADE_SECS,
 ) {
     /** The stages that change samples (empty: bit-perfect). The limiter and dither only
      *  ever act with one of these. */
@@ -59,6 +76,7 @@ data class SoundSettings(
             if (levelling != LevellingMode.OFF) add(SoundStage.LEVELLING)
             if (eqEnabled && eq != null) add(SoundStage.EQ)
             if (crossfeed != CrossfeedMode.OFF) add(SoundStage.CROSSFEED)
+            if (transitions != TransitionsMode.OFF) add(SoundStage.CROSSFADE)
         }
 
     /** Nothing changes the samples. */
@@ -74,19 +92,22 @@ data class SoundSettings(
             limiterCeilingDb = clamp(limiterCeilingDb, -1.0, CEILING_RANGE),
             eq = eq?.takeIf { it.text.length <= MAX_EQ_CHARS },
             eqEnabled = eqEnabled && eq != null && eq.text.length <= MAX_EQ_CHARS,
+            crossfadeSecs = clamp(crossfadeSecs, DEFAULT_CROSSFADE_SECS, CROSSFADE_RANGE),
         )
     }
 
     companion object {
         val PREAMP_RANGE = -12.0..12.0
         val CEILING_RANGE = -6.0..0.0
+        val CROSSFADE_RANGE = 1.0..10.0
+        const val DEFAULT_CROSSFADE_SECS = 6.0
 
         /** The engine refuses profiles over 64 KiB. */
         const val MAX_EQ_CHARS = 64 * 1024
     }
 }
 
-enum class SoundStage { PREAMP, LEVELLING, EQ, CROSSFEED }
+enum class SoundStage { PREAMP, LEVELLING, EQ, CROSSFEED, CROSSFADE }
 
 /** The levelling target, LUFS (ReplayGain's reference, so tagged and analysed tracks agree). */
 const val LEVELLING_TARGET_LUFS = -18.0
@@ -103,12 +124,26 @@ val DEFAULT_DSP = DspSettings(
     eqProfile = null,
     crossfeed = CrossfeedSetting.OFF,
     dither = DitherSetting.TPDF,
+    transitions = TransitionMode.OFF,
+    crossfadeS = SoundSettings.DEFAULT_CROSSFADE_SECS,
 )
 
 /** The engine's DSP for the Sound settings. Bit-perfect ([DEFAULT_DSP]) when no stage is on. */
 fun dspFor(sound: SoundSettings): DspSettings {
     val s = sound.sanitised()
-    if (s.bitPerfect) return DEFAULT_DSP.copy(dither = s.dither.toCore())
+    return chainFor(s).copy(
+        transitions = when (s.transitions) {
+            TransitionsMode.OFF -> TransitionMode.OFF
+            TransitionsMode.CROSSFADE -> TransitionMode.CROSSFADE
+            TransitionsMode.SMART -> TransitionMode.SMART
+        },
+        crossfadeS = s.crossfadeSecs,
+    )
+}
+
+/** The DSP chain's part (transitions are separate: they never switch the chain on). */
+private fun chainFor(s: SoundSettings): DspSettings {
+    if ((s.activeStages - SoundStage.CROSSFADE).isEmpty()) return DEFAULT_DSP.copy(dither = s.dither.toCore())
     return DEFAULT_DSP.copy(
         enabled = true,
         preampDb = s.preampDb,

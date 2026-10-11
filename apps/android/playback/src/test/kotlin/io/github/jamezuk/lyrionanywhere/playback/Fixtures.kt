@@ -135,10 +135,20 @@ class FakePlayers : PlayersRepository {
 
     override suspend fun setPower(player: String, on: Boolean) = cmd("power $on")
 
-    override suspend fun enqueue(player: String, selection: Selection, placement: Placement, playIndex: Int?) =
-        cmd("enqueue")
+    /** What was enqueued: player, selection, placement and start index. */
+    val enqueued = mutableListOf<List<Any?>>()
 
-    override suspend fun playFavourite(player: String, itemId: String, placement: Placement) = cmd("favourite")
+    override suspend fun enqueue(player: String, selection: Selection, placement: Placement, playIndex: Int?): ApiResult<Unit> {
+        enqueued += listOf(player, selection, placement, playIndex)
+        return cmd("enqueue")
+    }
+
+    val favourites = mutableListOf<String>()
+
+    override suspend fun playFavourite(player: String, itemId: String, placement: Placement): ApiResult<Unit> {
+        favourites += itemId
+        return cmd("favourite")
+    }
 
     override suspend fun removeFromQueue(player: String, index: Int) = cmd("remove $index")
 

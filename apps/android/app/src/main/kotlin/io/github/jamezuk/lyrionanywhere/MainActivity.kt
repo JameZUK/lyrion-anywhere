@@ -1,10 +1,12 @@
 package io.github.jamezuk.lyrionanywhere
 
+import android.app.SearchManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.Typeface
 import android.os.Bundle
+import android.provider.MediaStore
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
@@ -33,6 +35,20 @@ class MainActivity : ComponentActivity() {
                 AppRoot(app.container)
             }
         }
+        if (savedInstanceState == null) playFromSearch(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val app = application as LyrionApp
+        if (!app.safeMode && app.started) playFromSearch(intent)
+    }
+
+    /** "Play … on Lyrion Anywhere": only the spoken query is read (see [LyrionApp.playFromSearch]). */
+    private fun playFromSearch(intent: Intent?) {
+        if (intent?.action != MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH) return
+        val query = runCatching { intent.getStringExtra(SearchManager.QUERY) }.getOrNull()
+        (application as LyrionApp).playFromSearch(query)
     }
 
     /**

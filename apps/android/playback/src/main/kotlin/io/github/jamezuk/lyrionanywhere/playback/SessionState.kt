@@ -29,6 +29,13 @@ interface PlaybackHost {
 
     /** A downloaded album's cached cover, by album reference. */
     suspend fun offlineArtwork(albumRef: String): ByteArray? = null
+
+    /** The normal start-up ran (the repositories exist). False in safe mode, after a crash:
+     *  the session then accepts no one. */
+    val playbackReady: Boolean get() = true
+
+    /** What the car's browse tree reads and plays (none: no Android Auto). */
+    val autoSource: io.github.jamezuk.lyrionanywhere.playback.auto.AutoSource? get() = null
 }
 
 /** What this phone's player plays, for the widget and tile (null until LMS has said). */

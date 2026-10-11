@@ -207,6 +207,17 @@
     <string name="reason_dsp_active">a Sound setting changes the samples</string>
     <string name="reason_resampled">the sample rate is converted</string>
     <string name="reason_lossy_source">the source is lossy</string>
+    <string name="sound_section_transitions">Transitions</string>
+    <string name="transitions_off">Gapless</string>
+    <string name="transitions_off_body">Tracks follow each other exactly, bit-perfect. Recommended.</string>
+    <string name="transitions_crossfade">Crossfade</string>
+    <string name="transitions_crossfade_body">Fade between tracks of different albums. Albums stay gapless.</string>
+    <string name="transitions_smart">Smart transitions</string>
+    <string name="transitions_smart_body">Like crossfade, shaped by the server\'s analysis: silence is trimmed and the fade follows each track\'s own fade.</string>
+    <string name="sound_crossfade_length">Crossfade: up to %1$d s</string>
+    <string name="sound_crossfade_length_name">Crossfade length</string>
+    <string name="stage_name_crossfade">crossfade</string>
+    <string name="reason_crossfade">crossfades between tracks are on (Settings › Sound)</string>
     <string name="reason_other_processing">the server\'s volume or ReplayGain, ducking or a downmix changes the samples</string>
     <string name="signal_source">Source</string>
     <string name="signal_output">Output</string>
@@ -412,6 +423,14 @@
     </plurals>
     <string name="download_nothing">Nothing to download here (only tracks in your library can be downloaded).</string>
     <string name="action_download">Download</string>
+    <string name="action_start_radio">Start radio</string>
+    <string name="radio_from_mix">%1$s</string>
+    <string name="radio_from_mix_endless">%1$s, then endless (Don\'t Stop The Music)</string>
+    <string name="radio_from_dstm">Endless, from %1$s (Don\'t Stop The Music)</string>
+    <string name="more_like_this">More like this</string>
+    <string name="radio_started">Radio started</string>
+    <string name="radio_started_endless">Radio started: it keeps going as long as you listen</string>
+    <string name="similar_playing">Playing</string>
     <string name="download_rest">Download the rest</string>
     <string name="downloaded">Downloaded</string>
     <string name="download_queued">Queued</string>

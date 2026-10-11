@@ -116,6 +116,27 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun transitionsSurviveARestartAndNonsenseIsRefused() = runBlocking {
+        val sound = SoundSettings(transitions = TransitionsMode.SMART, crossfadeSecs = 4.0)
+        DataStoreSettings(store()).setSound(sound)
+        val again = DataStoreSettings(restart()).settings.first().sound
+        assertEquals(sound, again)
+        assertEquals(listOf(SoundStage.CROSSFADE), again.activeStages)
+        assertFalse("a crossfade is never bit-perfect", again.bitPerfect)
+
+        val s = restart()
+        s.edit {
+            it[stringPreferencesKey("sound_transitions")] = "FADE_EVERYTHING"
+            it[doublePreferencesKey("sound_crossfade_secs")] = Double.POSITIVE_INFINITY
+        }
+        val bad = DataStoreSettings(s).settings.first().sound
+        assertEquals("unknown modes fall back to gapless", TransitionsMode.OFF, bad.transitions)
+        assertEquals(6.0, bad.crossfadeSecs, 0.0)
+        s.edit { it[doublePreferencesKey("sound_crossfade_secs")] = 600.0 }
+        assertEquals(10.0, DataStoreSettings(s).settings.first().sound.crossfadeSecs, 0.0)
+    }
+
+    @Test
     fun otherSettingsAreUntouchedBySound() = runBlocking {
         val settings = DataStoreSettings(store())
         settings.setServerUrl("https://music.example.com")

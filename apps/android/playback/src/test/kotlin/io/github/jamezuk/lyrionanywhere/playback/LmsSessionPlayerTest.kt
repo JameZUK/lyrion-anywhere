@@ -112,6 +112,41 @@ class LmsSessionPlayerTest {
     }
 
     @Test
+    fun theCarsPlayRequestsGoToThePhoneWithoutAnExtraPlay() {
+        val asked = mutableListOf<Pair<String, String?>>()
+        val p = LmsSessionPlayer(
+            Looper.getMainLooper(),
+            snapshots,
+            actions,
+            scope,
+            PlayRequests { id, q ->
+                asked += id to q
+                true
+            },
+        )
+        idle()
+        assertTrue(p.isCommandAvailable(Player.COMMAND_SET_MEDIA_ITEM))
+        assertFalse(p.isCommandAvailable(Player.COMMAND_CHANGE_MEDIA_ITEMS))
+        // As Media3 does for "play from media id": set, prepare, play.
+        p.setMediaItem(androidx.media3.common.MediaItem.Builder().setMediaId("n7").build())
+        p.prepare()
+        p.play()
+        idle()
+        assertEquals(listOf("n7" to null), asked)
+        assertFalse("the request plays by itself", "play" in actions.calls)
+        // Afterwards the state is LMS's again, and play is a play.
+        p.play()
+        idle()
+        assertTrue("play" in actions.calls)
+    }
+
+    @Test
+    fun withoutPlayRequestsNothingCanBeSetById() {
+        val p = player()
+        assertFalse(p.isCommandAvailable(Player.COMMAND_SET_MEDIA_ITEM))
+    }
+
+    @Test
     fun noSeekingWhenLmsSaysNo() {
         snapshots.value = snapshots.value.copy(status = lmsStatus(canSeek = false))
         val p = player()

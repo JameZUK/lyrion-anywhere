@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android Auto: this app is a media app (its library and playback come from the exported
+     media library service, PlaybackService, which checks every caller). -->
+<automotiveApp>
+    <uses name="media" />
+</automotiveApp>

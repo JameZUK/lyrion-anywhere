@@ -16,8 +16,14 @@ import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
+import io.github.jamezuk.lyrionanywhere.playback.auto.AutoCatalogue
+import io.github.jamezuk.lyrionanywhere.playback.auto.CallerAccess
+import io.github.jamezuk.lyrionanywhere.playback.auto.CallerFactsReader
+import io.github.jamezuk.lyrionanywhere.playback.auto.CallerPolicy
+import io.github.jamezuk.lyrionanywhere.playback.auto.LibraryCallback
+import io.github.jamezuk.lyrionanywhere.playback.auto.ResourceLabels
 import io.github.jamezuk.lyrionanywhere.core.OutputRoute
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,13 +44,34 @@ import kotlinx.coroutines.launch
  * whichever is active; the downloads take the session while their queue is loaded.
  *
  * Media3 makes this a foreground service (type `mediaPlayback`) while playback is on.
- * Not exported: only this app binds to it; the system's media controls use the platform
- * session token Media3 publishes.
+ *
+ * It is also the media library for cars (A6): Android Auto and Android Automotive browse
+ * the library, search and play through it ([AutoCatalogue]), always on this phone (SPEC
+ * D20), or from the downloads when there's no server. So it is **exported**, and every
+ * caller is checked in `onConnect` ([CallerPolicy]): Android Auto and the assistants only
+ * with their release certificates, the system's own controllers, and this app; anything
+ * else Media3 trusts gets transport controls only, and the rest is refused.
  */
 @OptIn(UnstableApi::class)
-class PlaybackService : MediaSessionService() {
+class PlaybackService : MediaLibraryService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var session: MediaSession? = null
+    private var session: MediaLibrarySession? = null
+    private var ready = false
+    private var catalogue: AutoCatalogue? = null
+    private val callers by lazy { CallerFactsReader(this) }
+
+    /** Decisions per caller (uid and package) for this service's life. */
+    private val decided = HashMap<Pair<Int, String>, CallerAccess>()
+
+    private fun access(controller: MediaSession.ControllerInfo): CallerAccess {
+        if (!ready) return CallerAccess.REJECT
+        val key = controller.uid to controller.packageName
+        return synchronized(decided) {
+            decided.getOrPut(key) {
+                CallerPolicy.decide(callers.read(controller.packageName, controller.uid, controller.isTrusted))
+            }
+        }
+    }
     private lateinit var controller: LocalPlaybackController
     private lateinit var host: PlaybackHost
     private lateinit var focus: AudioFocusHandler
@@ -86,6 +113,14 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         host = application as PlaybackHost
+        if (!host.playbackReady) {
+            // Safe mode (the last run crashed): nothing is set up, and no one may connect.
+            stopSelf()
+            return
+        }
+        ready = true
+        catalogue = host.autoSource?.let { AutoCatalogue(it, ResourceLabels(this)) }
+        val requests = catalogue?.let { c -> PlayRequests { id, query -> c.play(id, query) } }
         audio = getSystemService(AudioManager::class.java)
         locks = PlaybackLocks(this)
         controller = LocalPlaybackController(
@@ -120,17 +155,19 @@ class PlaybackService : MediaSessionService() {
                 }
             }
         }
-        val player = LmsSessionPlayer(Looper.getMainLooper(), controller.snapshot, controller, scope)
+        val player = LmsSessionPlayer(Looper.getMainLooper(), controller.snapshot, controller, scope, requests)
         lmsPlayer = player
         if (offline != null) {
             val offlineController = OfflinePlaybackController(offline, host::offlineArtwork, scope, SystemClock::elapsedRealtime)
             offlineController.start()
-            offlineSessionPlayer = OfflineSessionPlayer(Looper.getMainLooper(), offlineController.snapshot, offline, scope)
+            offlineSessionPlayer =
+                OfflineSessionPlayer(Looper.getMainLooper(), offlineController.snapshot, offline, scope, requests)
         }
         val launch = packageManager.getLaunchIntentForPackage(packageName)?.let {
             PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         }
-        session = MediaSession.Builder(this, if (offlineActive) offlineSessionPlayer ?: player else player)
+        val callback = LibraryCallback(::access, { catalogue }, scope)
+        session = MediaLibrarySession.Builder(this, if (offlineActive) offlineSessionPlayer ?: player else player, callback)
             .apply { launch?.let { setSessionActivity(it) } }
             .build()
         // Bit-perfect USB output: the engines ask this before opening their output.
@@ -238,7 +275,8 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? =
+        session.takeIf { ready && access(controllerInfo) != CallerAccess.REJECT }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         // Keep playing in the background; otherwise there is no reason to stay.
@@ -246,6 +284,11 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        if (!ready) {
+            scope.cancel()
+            super.onDestroy()
+            return
+        }
         audio.unregisterAudioDeviceCallback(devices)
         // The engine clears any mixer attributes through the negotiator that set them.
         host.localPlayer.setOutputNegotiator(null)
