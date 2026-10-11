@@ -24,6 +24,13 @@ allow = [
 ]
 confidence-threshold = 0.9
 
+# Mozilla's root certificate data, used by rustls-platform-verifier on the phone apps
+# (only as a fallback where the platform store is unavailable). CDLA-Permissive-2.0 is a
+# permissive licence for data, allowed for this crate only.
+[[licenses.exceptions]]
+crate = "webpki-root-certs"
+allow = ["CDLA-Permissive-2.0"]
+
 [advisories]
 yanked = "deny"
 
