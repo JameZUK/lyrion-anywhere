@@ -118,6 +118,10 @@ struct State {
     playing: bool,
     /// LMS name queries (`setd` id 0, no data) not yet answered by the client.
     name_queries: u8,
+    /// When the attached socket last sent anything.
+    last_heard: Instant,
+    /// The gateway is reporting to LMS for an attached but silent client.
+    speaking_for_silent: bool,
 }
 
 /// How often the gateway reports status to LMS on behalf of a detached client. LMS drops
@@ -177,6 +181,8 @@ impl Session {
                 last_stat: None,
                 playing: false,
                 name_queries: 0,
+                last_heard: Instant::now(),
+                speaking_for_silent: false,
             }),
         }
     }
@@ -209,6 +215,7 @@ impl Session {
         }
 
         tokio::spawn(read_lms(gw.clone(), session.clone(), rd));
+        tokio::spawn(speak_for_silent_client(gw.clone(), session.clone()));
         Ok(session)
     }
 
@@ -264,6 +271,8 @@ impl Session {
             let _ = tx.try_send(Outbound::Frame(f)); // capacity reserved above
         }
         st.sent_upto = st.last_seq;
+        st.last_heard = Instant::now();
+        st.speaking_for_silent = false;
         st.next_generation += 1;
         let generation = st.next_generation;
         let (kick, kick_rx) = watch::channel(None);
@@ -277,6 +286,30 @@ impl Session {
             rx,
             kick: kick_rx,
         })
+    }
+
+    /// The socket `generation` sent something (any message, even a ping): it is alive.
+    pub fn heard_from(&self, generation: u64) {
+        let mut st = self.state.lock().unwrap();
+        if Self::is_current(&st, generation) {
+            st.last_heard = Instant::now();
+            if st.speaking_for_silent {
+                st.speaking_for_silent = false;
+                info!(mac = %self.device.mac_string(), "player socket speaking again");
+            }
+        }
+    }
+
+    /// Whether the gateway should report to LMS for the attached client now: it has been
+    /// silent for `silence`. (A detached client is reported for by [`Self::hold_for_resume`].)
+    fn attached_but_silent(&self, silence: Duration) -> bool {
+        let mut st = self.state.lock().unwrap();
+        let silent = !st.ended && st.attached.is_some() && st.last_heard.elapsed() >= silence;
+        if silent && !st.speaking_for_silent {
+            st.speaking_for_silent = true;
+            info!(mac = %self.device.mac_string(), "player socket silent; reporting to LMS on its behalf");
+        }
+        silent
     }
 
     /// The client socket for `generation` went away. Starts the grace timer if it was current.
@@ -661,6 +694,23 @@ fn name_reply(data: &[u8], fallback: &str) -> Vec<u8> {
     out.extend_from_slice(name.as_bytes());
     out.push(0);
     out
+}
+
+/// For the session's lifetime: while the attached client is silent (its socket may have
+/// died without either side noticing yet), report to LMS on its behalf, as while detached,
+/// so LMS doesn't drop the player and end the session before the client can resume.
+async fn speak_for_silent_client(gw: AppState, session: Arc<Session>) {
+    let mut every = tokio::time::interval(DETACHED_HEARTBEAT);
+    every.tick().await;
+    loop {
+        every.tick().await;
+        if session.is_ended() {
+            return;
+        }
+        if session.attached_but_silent(gw.cfg.client_silence) {
+            session.heartbeat(0).await;
+        }
+    }
 }
 
 /// Read LMS → client frames for the session's lifetime.

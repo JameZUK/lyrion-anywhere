@@ -987,6 +987,39 @@ async fn no_heartbeats_before_helo_or_after_resume() {
     assert_eq!(h.lms.stats().len(), 1, "no synthesised STAT while attached");
 }
 
+/// Regression: a socket that died without either side noticing (a phone changing networks)
+/// stayed "attached", so nobody answered LMS; LMS dropped the player after about 15 s, which
+/// ended the session before the client could resume, and it had to start afresh.
+#[tokio::test]
+async fn a_silent_attached_client_is_reported_for_until_it_speaks() {
+    let mut h = harness_with(|c| c.client_silence = Duration::from_millis(700)).await;
+    let (mut ws, _, _, _lms) = attached_with_stat(&mut h, b"STMs").await;
+    // Silent, but the socket stays open.
+    tokio::time::sleep(Duration::from_millis(2900)).await;
+    let stats = h.lms.stats();
+    assert!(
+        stats.len() >= 2,
+        "expected heartbeats for a silent client, got {}",
+        stats.len() - 1
+    );
+    let last = stats.last().unwrap();
+    assert_eq!(&last.event, b"STMt");
+    assert!(
+        last.elapsed_milliseconds >= 5_000 + 1_000,
+        "playing: elapsed advances"
+    );
+    assert_eq!(h.lms.closed(), 0);
+
+    // Once it speaks, it reports for itself again.
+    ws.send(Message::Binary(stat_frame(b"STMt", 9_000, 9_000).into()))
+        .await
+        .unwrap();
+    wait_for(|| h.lms.stats().last().is_some_and(|s| s.jiffies == 9_000)).await;
+    let n = h.lms.stats().len();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(h.lms.stats().len(), n, "no synthesised STAT once it speaks");
+}
+
 // ---------------------------------------------------------------------------
 // Redelivery of frames lost in flight (found by a race in the resume test: frames written
 // into a dying socket were silently lost)

@@ -17,8 +17,10 @@
 //!
 //! A relay stops promptly when its session ends ([`Relay::cancel`]), when an upstream read
 //! stalls for [`UPSTREAM_READ_TIMEOUT`], and when the client neither acknowledges nor can
-//! take more data for [`IDLE_TIMEOUT`]. The last two end the response with an error, never
-//! cleanly, so the client can't mistake them for the end of the track and resumes instead.
+//! take more data for [`IDLE_TIMEOUT`]. A response ends cleanly only when LMS finished the
+//! stream cleanly and the client has had all of it. Every other end (a stall, a failure, a
+//! cancel, a newer request taking over) is an error, so the client can't mistake it for the
+//! end of the track: it resumes from `?offset=` instead, or reports the stream as failed.
 //!
 //! [`Config::replay_window`]: crate::Config::replay_window
 
@@ -65,6 +67,8 @@ struct RelayState {
     window: VecDeque<u8>,
     window_cap: usize,
     done: bool,
+    /// LMS's stream ended with an error or stalled (not a clean end of the track).
+    failed: bool,
     /// Incremented per client request; an older request stops when superseded.
     consumer: u64,
     /// Bytes the client has confirmed receiving.
@@ -118,6 +122,7 @@ impl Relay {
                 window: VecDeque::new(),
                 window_cap,
                 done: false,
+                failed: false,
                 consumer: 0,
                 acked: 0,
             }),
@@ -280,9 +285,16 @@ struct Cursor {
 
 enum Step {
     Yield(Bytes),
+    /// The track's audio is complete: end the response cleanly.
     End,
+    /// Stop without the rest of the audio: end the response with an error.
+    Fail(&'static str),
     Wait,
     Read,
+}
+
+fn io_error(why: &'static str) -> std::io::Error {
+    std::io::Error::other(why)
 }
 
 /// The response body for one client request, starting at `offset`.
@@ -310,12 +322,12 @@ fn step(cur: &mut Cursor) -> Step {
     let st = cur.relay.state.lock().unwrap();
     if st.consumer != cur.my_turn {
         debug!(pos = cur.pos, "stream request superseded");
-        return Step::End;
+        return Step::Fail("superseded by a newer request");
     }
     if cur.pos < st.received {
         if cur.pos < st.window_start() {
             // Another request read on past this one's replay window.
-            return Step::End;
+            return Step::Fail("past the replay window");
         }
         let chunk = st.replay(cur.pos, CHUNK);
         cur.pos += chunk.len() as u64;
@@ -323,7 +335,12 @@ fn step(cur: &mut Cursor) -> Step {
         return Step::Yield(chunk);
     }
     if st.done {
-        return Step::End;
+        // A resumed request after LMS failed must not look like the end of the track.
+        return if st.failed {
+            Step::Fail("the music server's stream failed")
+        } else {
+            Step::End
+        };
     }
     if st.too_far_ahead() {
         if st.acked != cur.last_acked {
@@ -339,11 +356,12 @@ async fn next_chunk(cur: &mut Cursor) -> Option<Result<Bytes, std::io::Error>> {
     loop {
         if cur.relay.is_cancelled() {
             debug!(pos = cur.pos, "stream cancelled");
-            return None;
+            return Some(Err(io_error("stream cancelled")));
         }
         match step(cur) {
             Step::Yield(chunk) => return Some(Ok(chunk)),
             Step::End => return None,
+            Step::Fail(why) => return Some(Err(io_error(why))),
             Step::Wait => {
                 // Wait for the client to acknowledge more before reading further from LMS.
                 let since = *cur.stalled_since.get_or_insert_with(Instant::now);
@@ -366,6 +384,7 @@ async fn next_chunk(cur: &mut Cursor) -> Option<Result<Bytes, std::io::Error>> {
                     Step::Wait => {}
                     Step::Yield(chunk) => return Some(Ok(chunk)),
                     Step::End => return None,
+                    Step::Fail(why) => return Some(Err(io_error(why))),
                     Step::Read => continue,
                 }
                 tokio::select! {
@@ -385,29 +404,27 @@ async fn next_chunk(cur: &mut Cursor) -> Option<Result<Bytes, std::io::Error>> {
     }
 }
 
-/// Read the next chunk from LMS. `None` means "look again" (another request read first);
-/// `Some(None)` ends the body.
+/// Read the next chunk from LMS. `None` means "look again" (another request read first,
+/// or the state changed); `Some(None)` ends the body cleanly (LMS finished).
 async fn read_upstream(cur: &mut Cursor) -> Option<Option<Result<Bytes, std::io::Error>>> {
     let relay = cur.relay.clone();
     let mut up = tokio::select! {
         g = relay.upstream.lock() => g,
-        _ = cancelled(&mut cur.cancel) => return Some(None),
+        _ = cancelled(&mut cur.cancel) => return None,
     };
     {
         let st = relay.state.lock().unwrap();
-        if st.consumer != cur.my_turn || st.done {
-            return Some(None);
-        }
-        if cur.pos != st.received || st.too_far_ahead() {
-            return None; // the state moved on while waiting for the reader
+        // Superseded, finished, or moved on while waiting for the reader: `step` decides.
+        if st.consumer != cur.my_turn || st.done || cur.pos != st.received || st.too_far_ahead() {
+            return None;
         }
     }
     let Some(stream) = up.stream.as_mut() else {
-        return Some(None);
+        return Some(Some(Err(io_error("no stream from the music server"))));
     };
     let next = tokio::select! {
         r = tokio::time::timeout(relay.read_timeout, stream.next()) => r,
-        _ = cancelled(&mut cur.cancel) => return Some(None),
+        _ = cancelled(&mut cur.cancel) => return None,
     };
     let mut st = relay.state.lock().unwrap();
     match next {
@@ -420,6 +437,7 @@ async fn read_upstream(cur: &mut Cursor) -> Option<Option<Result<Bytes, std::io:
         Ok(Some(Err(e))) => {
             warn!(received = st.received, error = %e, "LMS stream failed");
             st.done = true;
+            st.failed = true;
             up.stream = None;
             Some(Some(Err(std::io::Error::other(e))))
         }
@@ -432,6 +450,7 @@ async fn read_upstream(cur: &mut Cursor) -> Option<Option<Result<Bytes, std::io:
         Err(_) => {
             warn!(received = st.received, "LMS stream stalled; giving up");
             st.done = true;
+            st.failed = true;
             up.stream = None;
             Some(Some(Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
@@ -566,6 +585,75 @@ mod tests {
             .expect("not ended")
             .expect("not an error");
         assert_eq!(&first[..], b"efgh");
+    }
+
+    type BoxBody = std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
+
+    fn boxed_body(relay: Arc<Relay>, offset: u64, turn: u64) -> BoxBody {
+        Box::pin(body(relay, offset, turn))
+    }
+
+    /// Regression: after LMS's stream failed, a resumed request was served the replay and
+    /// then ended cleanly, so the player took the cut-off track for a finished one.
+    #[tokio::test]
+    async fn a_resume_after_lms_failed_ends_with_an_error() {
+        let (relay, feed, mut b) = rig(1024, IDLE_TIMEOUT, UPSTREAM_READ_TIMEOUT).await;
+        feed.send(Ok(Bytes::from_static(b"abcd"))).unwrap();
+        drop(feed); // LMS's stream ends: here, cleanly
+        let (n, err) = tokio::time::timeout(Duration::from_secs(3), drain(&mut b))
+            .await
+            .unwrap();
+        assert_eq!((n, err), (4, false), "a clean end from LMS stays clean");
+        // The same stream, but LMS's side broke: every later request fails too.
+        state(&relay).failed = true;
+        state(&relay).consumer = 2;
+        let mut again = boxed_body(relay.clone(), 2, 2);
+        let (n, err) = tokio::time::timeout(Duration::from_secs(3), drain(&mut again))
+            .await
+            .unwrap();
+        assert_eq!((n, err), (2, true), "the replay, then an error");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_upstream_fails_the_body_and_later_requests() {
+        // (A stall and an LMS error take the same path; a reqwest error can't be made by hand.)
+        let (relay, feed, mut b) = rig(1024, IDLE_TIMEOUT, Duration::from_millis(200)).await;
+        feed.send(Ok(Bytes::from_static(b"efgh"))).unwrap();
+        let (n, err) = tokio::time::timeout(Duration::from_secs(3), drain(&mut b))
+            .await
+            .unwrap();
+        assert_eq!((n, err), (4, true), "the stall fails the reading request");
+        state(&relay).consumer = 2;
+        let mut again = boxed_body(relay.clone(), 4, 2);
+        let (n, err) = tokio::time::timeout(Duration::from_secs(3), drain(&mut again))
+            .await
+            .unwrap();
+        assert_eq!((n, err), (0, true), "and a resume after it fails as well");
+        drop(feed);
+    }
+
+    #[tokio::test]
+    async fn cancelled_and_superseded_bodies_end_with_an_error() {
+        let (relay, feed, mut b) = rig(1024, IDLE_TIMEOUT, UPSTREAM_READ_TIMEOUT).await;
+        feed.send(Ok(Bytes::from_static(b"abcd"))).unwrap();
+        let first = b.next().await.unwrap().unwrap();
+        assert_eq!(&first[..], b"abcd");
+        // A newer request takes over: the old body must not end as if complete.
+        state(&relay).consumer = 2;
+        let (_, err) = tokio::time::timeout(Duration::from_secs(3), drain(&mut b))
+            .await
+            .unwrap();
+        assert!(err, "superseded ends with an error");
+        let mut newer = boxed_body(relay.clone(), 4, 2);
+        let task = tokio::spawn(async move { drain(&mut newer).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        relay.cancel();
+        let (_, err) = tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(err, "cancelled ends with an error");
+        drop(feed);
     }
 
     #[tokio::test]
