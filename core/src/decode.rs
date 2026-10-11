@@ -78,6 +78,12 @@ impl InputBuffer {
         b.pos = b.base;
     }
 
+    /// Run `f` over the bytes buffered from the current base (all of them while probing).
+    fn with_buffered<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
+        let mut b = self.0.lock().unwrap();
+        f(b.data.make_contiguous())
+    }
+
     fn release(&self) {
         let mut b = self.0.lock().unwrap();
         b.keep_all = false;
@@ -333,7 +339,36 @@ impl StreamDecoder {
     }
 
     /// Decode up to `max_packets`, passing each block of PCM to `sink(sample_rate, samples)`.
+    ///
+    /// Stream bytes are untrusted. Headers known to trip arithmetic overflow checks in the
+    /// third-party demuxers are refused before they are parsed ([`check_wav_headers`]), which
+    /// also protects WebAssembly builds (`panic = "abort"`, where a panic can't be caught).
+    /// Where panics unwind (native hosts), any other panic inside the demuxer or decoder is
+    /// caught as well and fails the stream cleanly.
     pub fn work(&mut self, max_packets: usize, sink: &mut dyn FnMut(u32, &[f32])) -> DecodeStatus {
+        #[cfg(panic = "unwind")]
+        {
+            let run = std::panic::AssertUnwindSafe(|| self.work_inner(max_packets, sink));
+            match std::panic::catch_unwind(run) {
+                Ok(status) => status,
+                Err(_) => {
+                    let msg = "decode: the decoder failed on this stream".to_string();
+                    self.state = State::Failed(msg.clone());
+                    DecodeStatus::Failed(msg)
+                }
+            }
+        }
+        #[cfg(not(panic = "unwind"))]
+        {
+            self.work_inner(max_packets, sink)
+        }
+    }
+
+    fn work_inner(
+        &mut self,
+        max_packets: usize,
+        sink: &mut dyn FnMut(u32, &[f32]),
+    ) -> DecodeStatus {
         // Once probed, fall through to decoding.
         if let State::Probing { min_bytes } = self.state
             && let Some(status) = self.probe(min_bytes)
@@ -422,6 +457,11 @@ impl StreamDecoder {
         let eof = self.input.eof();
         if !eof && self.input.unread() < min_bytes {
             return Some(DecodeStatus::NeedData);
+        }
+        if let Err(e) = self.input.with_buffered(check_wav_headers) {
+            let msg = format!("probe: {e}");
+            self.state = State::Failed(msg.clone());
+            return Some(DecodeStatus::Failed(msg));
         }
         let mss = MediaSourceStream::new(
             Box::new(ReadOnlySource::new(self.input.clone())),
@@ -588,6 +628,90 @@ fn decode_seekable_inner(
             Err(e) => return Err(format!("decode: {e}")),
         }
     }
+}
+
+/// Most channels Symphonia's WAV reader maps; it refuses more, but only after arithmetic
+/// that overflows on absurd counts.
+const WAV_MAX_CHANNELS: u16 = 26;
+/// Speaker positions defined for a WAVE_FORMAT_EXTENSIBLE channel mask (bits 0..=17).
+const WAV_MASK_BITS: u32 = 18;
+
+/// Refuse RIFF/WAVE headers that would make Symphonia's WAV reader panic.
+///
+/// Symphonia 0.6's WAV reader does unchecked arithmetic on header fields: a channel count
+/// times the sample width (`u16`), a shift by the channel mask's bit length, and the RIFF
+/// length minus 4. Hostile values overflow, which panics in builds with overflow checks.
+/// Its prober scans for the `RIFF…WAVE` marker anywhere in the stream, so every occurrence
+/// in `bytes` (what the prober can see) is checked, walking the chunks the way the reader
+/// does until the `data` chunk. A header that is cut short is left to the reader, which
+/// fails cleanly on it (or waits for more data, when this is checked again).
+pub fn check_wav_headers(bytes: &[u8]) -> Result<(), &'static str> {
+    let u16_at = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+    let u32_at =
+        |i: usize| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    let mut from = 0;
+    while let Some(off) = bytes
+        .get(from..)
+        .and_then(|b| b.windows(4).position(|w| w == b"RIFF"))
+    {
+        let start = from + off;
+        from = start + 1;
+        if bytes.get(start + 8..start + 12) != Some(b"WAVE".as_slice()) {
+            continue;
+        }
+        let riff_len = u32_at(start + 4);
+        if riff_len < 4 {
+            return Err("wav: RIFF length too small");
+        }
+        let len = (riff_len < u32::MAX).then(|| u64::from(riff_len) - 4);
+        let base = start + 12;
+        let mut consumed = 0u64;
+        loop {
+            if consumed & 1 == 1 {
+                consumed += 1;
+            }
+            if len.is_some_and(|l| consumed + 8 > l) {
+                break;
+            }
+            let Some(hdr) = usize::try_from(consumed)
+                .ok()
+                .and_then(|c| base.checked_add(c))
+            else {
+                break;
+            };
+            if hdr.checked_add(8).is_none_or(|end| end > bytes.len()) {
+                break; // not here yet
+            }
+            let tag = &bytes[hdr..hdr + 4];
+            let chunk_len = u32_at(hdr + 4);
+            consumed += 8;
+            if len.is_some_and(|l| l - consumed < u64::from(chunk_len)) {
+                break; // the reader refuses this cleanly
+            }
+            let body = hdr + 8;
+            consumed += u64::from(chunk_len);
+            match tag {
+                b"fmt " => {
+                    if chunk_len >= 16 && body + 16 <= bytes.len() {
+                        let channels = u16_at(body + 2);
+                        if channels == 0 || channels > WAV_MAX_CHANNELS {
+                            return Err("wav: unsupported channel count");
+                        }
+                        let extensible = u16_at(body) == 0xfffe;
+                        if extensible && chunk_len >= 40 && body + 24 <= bytes.len() {
+                            let mask = u32_at(body + 20);
+                            if mask >> WAV_MASK_BITS != 0 {
+                                return Err("wav: invalid channel mask");
+                            }
+                        }
+                    }
+                }
+                b"data" => break,
+                _ => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Map interleaved samples with `channels` channels onto interleaved stereo.
