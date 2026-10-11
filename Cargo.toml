@@ -12,6 +12,12 @@ repository = "https://github.com/JameZUK/lyrion-anywhere"
 lto = true
 opt-level = 3
 
+# Release builds of the Android library (apps/android): release, with one codegen unit for
+# a smaller, faster library. Panics stay `unwind`: the FFI layer catches them.
+[profile.android-release]
+inherits = "release"
+codegen-units = 1
+
 # Debug builds of the Android library (apps/android): unoptimised but without debug info,
 # so the debug APK stays a sensible size.
 [profile.android-dev]

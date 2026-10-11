@@ -27,7 +27,20 @@ The first build compiles the Rust library for every ABI. To save time and disk l
 ./gradlew assembleDebug -Panywhere.rust.abis=arm64-v8a,x86_64
 ```
 
-The debug APK is `app/build/outputs/apk/debug/app-debug.apk`. Release builds are minified; they are signed only when `ANYWHERE_KEYSTORE`, `ANYWHERE_KEYSTORE_PASSWORD`, `ANYWHERE_KEY_ALIAS` and `ANYWHERE_KEY_PASSWORD` are set in the environment. Signing material never goes in the repository.
+The debug APK is `app/build/outputs/apk/debug/app-debug.apk`.
+
+**Release builds:**
+- They are minified and resource-shrunk, carry the baseline profile, and their Rust library is built with the `android-release` profile, with build paths removed.
+- They are signed only when `ANYWHERE_KEYSTORE`, `ANYWHERE_KEYSTORE_PASSWORD`, `ANYWHERE_KEY_ALIAS` and `ANYWHERE_KEY_PASSWORD` are set in the environment. Signing material never goes in the repository.
+- `./gradlew assembleRelease` builds the APK; `bundleRelease` builds the app bundle for Google Play.
+- `-Panywhere.splitApks=true` also builds one APK per ABI, beside the universal one, as the GitHub releases do.
+
+**Build properties:**
+- `-Panywhere.rust.abis=…`: the ABIs to build (the APK carries native code for these only).
+- `-Panywhere.cargo=/path/to/cargo`: a `cargo` that isn't on `PATH`.
+- `-Panywhere.verifier.source=<rustls-platform-verifier checkout>/android/rustls-platform-verifier`: build the certificate verifier's Kotlin half from source instead of downloading it (F-Droid).
+
+Releasing, the store metadata (`fastlane/`) and the F-Droid recipe (`fdroid/`) are described in [`docs/RELEASING.md`](../../docs/RELEASING.md). The performance budgets are in [`docs/PERFORMANCE.md`](../../docs/PERFORMANCE.md).
 
 To try a debug build against a gateway on your computer, forward the port with `adb reverse tcp:9444 tcp:9444` and use `http://127.0.0.1:9444` as the server (plain HTTP is accepted only for loopback, and only debug builds' network policy allows it).
 
@@ -245,6 +258,8 @@ Record the phone, Android version, DAC and results (in the A2 status of `docs/pl
 - Tokens and passwords are never logged or put in error messages; the password is dropped from memory after sign-in.
 - Pairing QR codes are parsed and validated in Rust (`lyrion-anywhere://pair?server=…&code=…`, see `docs/PROTOCOL.md`); the server address in one obeys the same rules as a typed one.
 - No Google Play Services, analytics or proprietary libraries (F-Droid compatible).
+- Crash reports stay on the phone and are only ever shared by the user. Each report is redacted before it is saved or shown: tokens, secrets, server and IP addresses and home folders are removed. Only the backtrace's names are kept from Android's record of a native crash, which holds memory dumps.
+- What the app and the gateway keep is in [`docs/PRIVACY.md`](../../docs/PRIVACY.md), linked from Settings › About. The A7 security review is [`docs/security/pentest-2026-10-android-1.0.md`](../../docs/security/pentest-2026-10-android-1.0.md).
 - The only exported service is the media library for cars; it has no permission (Android Auto must bind to it), so every caller is checked in code (see Android Auto above). It hands out ids and text, never URLs or paths, and plays only on this phone. No content provider is exported.
 
 ## Tests

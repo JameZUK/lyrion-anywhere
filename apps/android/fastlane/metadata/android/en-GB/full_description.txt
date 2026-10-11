@@ -1,0 +1,38 @@
+Lyrion Anywhere is a player and remote control for your own Lyrion Music Server (formerly Logitech Media Server), wherever you are. It needs the free Lyrion Anywhere plugin on your server, which adds a small, hardened gateway that you put behind your own HTTPS address. Your music, your server, your data: no accounts with us, no adverts, no tracking.
+
+<b>Play on this phone</b>
+• Your phone becomes a Lyrion player, with gapless playback and synchronisation like any other.
+• Lossless decoding of FLAC, ALAC, WAV, MP3, AAC, Ogg Vorbis and Opus by the app's own audio engine.
+• Background playback with lock-screen, notification, Bluetooth and headset controls.
+
+<b>Sound you can trust</b>
+• Bit-perfect output to USB DACs on Android 14 and later, where the phone supports it.
+• A signal-path panel that shows exactly what happens to every sample, from the file to the DAC.
+• Optional loudness levelling (ReplayGain or the server's EBU R128 analysis) with a true-peak limiter, a parametric EQ with AutoEq import, crossfeed, dither and smart crossfades. Everything is off by default.
+• A waveform seek bar drawn from your server's analysis of the track.
+
+<b>Your whole library</b>
+• Home, new music, albums, artists, genres, years, playlists, favourites, the music folder and search.
+• Album and artist pages coloured from the cover art.
+• Apps, radio and plugins from your server, found automatically, with their own menus.
+• "Start radio" and "More like this" through AudioMuse-AI or Don't Stop The Music, when your server has them.
+
+<b>Control every player</b>
+• Remote control of every Lyrion player you're allowed to use: queue editing, volume, shuffle, repeat and sync groups.
+• Move playback between players in one tap.
+• A home-screen widget and a Quick Settings tile.
+
+<b>Offline and in the car</b>
+• Download albums and playlists as originals, MP3 or Opus, with smart downloads of new music and favourites.
+• An offline mode that plays your downloads when the server can't be reached, and sends your plays back later.
+• Android Auto.
+
+<b>Secure by design</b>
+• HTTPS only. Your sign-in is sealed by the Android Keystore; your password is never stored.
+• Sign in with a password (two-step verification supported) or by scanning a pairing code.
+• No analytics, adverts or third-party services. The app talks only to your server.
+• Free software under the GNU GPL: the code is public and reviewed.
+
+Tablets and foldables get two-pane layouts. Designed for TalkBack, keyboards and large text.
+
+Lyrion Anywhere is an independent project, not affiliated with Lyrion or Logitech.

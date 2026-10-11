@@ -1,0 +1,6 @@
+# DRAFT srclib for fdroiddata (srclibs/rustls-platform-verifier.yml): the source of the
+# Kotlin half of rustls-platform-verifier, which Lyrion Anywhere builds from source on
+# F-Droid instead of using the project's prebuilt Maven artefact. See
+# apps/android/fdroid/io.github.jamezuk.lyrionanywhere.yml and docs/RELEASING.md.
+RepoType: git
+Repo: https://github.com/rustls/rustls-platform-verifier.git

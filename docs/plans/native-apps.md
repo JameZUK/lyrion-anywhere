@@ -827,6 +827,103 @@ Built. **Verified on the host and on the JVM (Robolectric) only. Android Auto ha
 - Radio from Don't Stop The Music leaves its provider switched on for the player afterwards (as choosing it in LMS would).
 - "Start radio" is offered for tracks, albums and artists only; the car has no radio action.
 
+### A7 status (2026-10-11): release readiness
+
+Built: everything for a 1.0 except choosing the version, which is the owner's call. **Verified on the host and the JVM (Robolectric) only; nothing has run on a phone, and no measurement against the performance budgets has been taken yet.**
+
+**Accessibility (audit and fixes)**
+- **TalkBack:**
+  - The queue rows' Move up, Move down and Remove actions, and the artwork's Next and Previous, now sit on the node TalkBack focuses. Before, they were on unfocusable wrappers, which the old tests didn't notice.
+  - Home cards are buttons, not "not selected" items.
+  - Sign-in buttons keep their name while busy, and errors are announced and tied to their fields.
+  - The current track is said ("Now playing") and marked by an icon, not by colour only.
+  - Toggles have constant names with a state: power, offline shuffle and repeat, sync ("Play X in sync with Y").
+  - The limiter ceiling has its own name, and "See all" says what it opens.
+  - Live regions on errors, headings on top bars and dialogs, merged signal-path lines, a pane title for tablet details, and a stated state on the Quick Settings tile.
+- **Contrast:**
+  - the waveform's unplayed bars are at least 3:1 against the background;
+  - the art-tinted accent is at least 4.5:1 on its container, and the artist link is underlined;
+  - the art tint gives way to the system's high-contrast setting (Android 14+).
+- **Font scale 200 %:**
+  - top bars ellipsise;
+  - the "More…" sheet's buttons, the "Playing on" strip and the offline banner wrap instead of squeezing their text;
+  - track numbers grow;
+  - dialogs scroll;
+  - the widget drops its second line at large font sizes.
+- **Keyboard and D-pad:**
+  - queue rows: Alt+Up and Alt+Down move a row, Delete removes it;
+  - albums: the Menu key (or Shift+F10) opens "More…";
+  - Search closes the keyboard;
+  - sign-in fields take focus first, and renaming submits with Done;
+  - Space plays and pauses in Now playing.
+- **Automated checks (Robolectric):**
+  - a semantics walker (`A11yAudit.kt`) applied to the main screens: every clickable has a label and a 48 dp target; custom actions are on focusable nodes; no button claims to be selectable; toggles and sliders are labelled;
+  - font-scale-200 % tests;
+  - contrast tests for the brand schemes, the art-tinted schemes over random covers, and the waveform.
+
+**Performance** (`docs/PERFORMANCE.md`)
+- **Budgets defined:**
+  - cold start ≤ 500 ms to first frame;
+  - scrolling P90 ≤ 12 ms with under 1 % jank;
+  - memory: ≤ 160 MB browsing, ≤ 200 MB playing;
+  - no underruns while browsing;
+  - size: ≤ 20 MB per-ABI APK, ≤ 40 MB universal.
+- **Build:**
+  - R8 and resource shrinking (already on, checked);
+  - a hand-written baseline profile covering the app's own code;
+  - the Rust library in its own `android-release` profile (LTO, one codegen unit), with build paths remapped;
+  - per-ABI APKs beside the universal one (`-Panywhere.splitApks=true`), with the universal APK limited to the built ABIs.
+- **Still to do:** generating a measured profile needs a device; the procedure is documented.
+
+**Privacy:** `docs/PRIVACY.md`, linked from Settings › About › Privacy policy. It covers:
+- what the phone keeps;
+- what the gateway keeps, and for how long;
+- that nothing goes to the project;
+- deletion;
+- Google Play's Data safety answers.
+
+**Security review and pentest** (`docs/security/pentest-2026-10-android-1.0.md`). Seven findings and two hardening changes, every fix with a regression test:
+- **F1:** crash reports redacted. They had included memory from Android's native-crash record.
+- **F2:** self-renames rate-limited and unchanged names not written; renames audited with their actor; the audit log bounded (one year, 100,000 entries).
+- **F3:** plays of one track closer together than the counting time are refused as `overlap`. Before, fresh keys inflated play counts.
+- **F4:** every plugin admin command needs the settings page's token, reads too. They expose remote users' addresses.
+- **F5:** accepted and documented: Don't Stop The Music providers of admin-only plugins are recognised by name only.
+- **F6:** analysis time-outs are remembered only briefly.
+- **F7:** no build paths in the native library.
+- **Hardening:**
+  - stored credentials never print their token;
+  - `sync` to the same player in another case is refused.
+- **Accepted by design:** the refresh-token reuse grace (SPEC D21), among others listed in the report.
+
+**Distribution** (`docs/RELEASING.md`)
+- **Google Play:** `bundleRelease` (signing from the environment), and store metadata under `apps/android/fastlane/metadata/android/en-GB/` (title, descriptions, changelog, icon). The screenshot procedure is documented.
+- **F-Droid:**
+  - every dependency checked: free software, with no Play Services;
+  - the one prebuilt artefact, rustls-platform-verifier's Kotlin half, can be built from source with `-Panywhere.verifier.source` (new `:verifier-source` module, checked against the published one);
+  - `-Panywhere.cargo` for the build server's Rust;
+  - a draft recipe and srclib in `apps/android/fdroid/`;
+  - reproducible-build notes.
+- **GitHub:** the `android-release` CI job runs on `android-v*` tags only (the plugin's job takes `v*`). It:
+  - builds from scratch;
+  - signs with the repository's secrets;
+  - checks signatures and that no build paths are in the native libraries;
+  - publishes a pre-release with the universal and per-ABI APKs, the app bundle, `BUILDINFO.txt` and `SHA256SUMS`.
+
+**Manifest:** no change to providers, initialisers, permissions or exported components. Checked on the release APK against alpha.10 with `aapt2 dump xmltree`: the only differences are two resource ids (the widget's and the tile's labels moved when strings were added). The release APK went from 39.0 MB to 31.8 MB universal; per-ABI APKs are 16.2 MB (arm64-v8a), 13.8 MB (armeabi-v7a) and 16.2 MB (x86_64); the app bundle is 19.2 MB.
+
+**Tests:**
+- 742 Rust tests in `anywhere-mobile` and `anywhere-gateway` (new ones for every pentest fix, the per-user analysis request limit and abandoned play claims);
+- 398 Android JVM/Robolectric tests (was 348), including the accessibility walker over 15 screens, font scale, contrast and the crash-report redaction;
+- 1,039 plugin Perl tests and 15 JS tests;
+- lint with no issues; clippy for the host and Android (arm64).
+
+**For the owner:**
+- choose the 1.0 version;
+- add the signing secrets;
+- set up the Play Console (developer account, own signing key, Data safety, demo server for review);
+- submit to F-Droid;
+- take screenshots and performance measurements on a device.
+
 ## 9. Quality: testing audio as seriously as security
 
 **Bit-perfect verification**

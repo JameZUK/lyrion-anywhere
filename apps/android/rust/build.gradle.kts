@@ -19,6 +19,7 @@ val rustAbis: List<String> =
     providers.gradleProperty("anywhere.rust.abis").get().split(',').map { it.trim() }.filter { it.isNotEmpty() }
 val ndkVersionPinned = "29.0.14206865"
 
+
 android {
     namespace = "io.github.jamezuk.lyrionanywhere.rust"
     compileSdk = 37
@@ -80,6 +81,18 @@ abstract class CargoNdkBuild : DefaultTask() {
     @get:Internal
     abstract val ndkDir: DirectoryProperty
 
+    /**
+     * Strip build-machine paths from the library (reproducible builds): the workspace and
+     * Cargo's home are rewritten to fixed names in panic locations and debug data, so the
+     * same commit builds the same library wherever it is checked out.
+     */
+    @get:Input
+    abstract val remapPaths: Property<Boolean>
+
+    /** The `cargo` to run (`anywhere.cargo`, e.g. for a toolchain not on PATH). */
+    @get:Input
+    abstract val cargoExecutable: Property<String>
+
     @get:InputFiles
     @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val sources: ConfigurableFileCollection
@@ -96,9 +109,23 @@ abstract class CargoNdkBuild : DefaultTask() {
             workingDir = workspace.get().asFile
             environment("ANDROID_NDK_HOME", ndkDir.get().asFile.absolutePath)
             environment("CARGO_INCREMENTAL", "0")
+            if (remapPaths.get()) {
+                val cargoHome = System.getenv("CARGO_HOME") ?: "${System.getProperty("user.home")}/.cargo"
+                val targetDir = System.getenv("CARGO_TARGET_DIR")
+                val flags = listOfNotNull(
+                    "--remap-path-prefix=${workspace.get().asFile.canonicalPath}=/build",
+                    "--remap-path-prefix=$cargoHome=/cargo",
+                    targetDir?.let { "--remap-path-prefix=$it=/target" },
+                ).joinToString(" ")
+                // Per-target flags, so host build scripts (and any RUSTFLAGS set for other
+                // targets) are left alone.
+                for (triple in listOf("aarch64-linux-android", "armv7-linux-androideabi", "x86_64-linux-android", "i686-linux-android")) {
+                    environment("CARGO_TARGET_${triple.uppercase().replace('-', '_')}_RUSTFLAGS", flags)
+                }
+            }
             val targets = abis.get().flatMap { listOf("-t", it) }
             commandLine(
-                listOf("cargo", "ndk") + targets + listOf(
+                listOf(cargoExecutable.get(), "ndk") + targets + listOf(
                     "--platform", apiLevel.get().toString(),
                     "-o", out.absolutePath,
                     "build", "-p", "anywhere-mobile", "--locked", "--profile", profile.get(),
@@ -123,6 +150,9 @@ abstract class UniffiBindgen : DefaultTask() {
     @get:Internal
     abstract val workspace: DirectoryProperty
 
+    @get:Input
+    abstract val cargoExecutable: Property<String>
+
     @get:OutputDirectory
     abstract val outputDir: DirectoryProperty
 
@@ -135,13 +165,16 @@ abstract class UniffiBindgen : DefaultTask() {
             workingDir = workspace.get().asFile
             environment("CARGO_INCREMENTAL", "0")
             commandLine(
-                "cargo", "run", "-q", "--locked", "-p", "anywhere-uniffi-bindgen", "--",
+                cargoExecutable.get(), "run", "-q", "--locked", "-p", "anywhere-uniffi-bindgen", "--",
                 "generate", "--library", library.get().asFile.absolutePath,
                 "--language", "kotlin", "--no-format", "--out-dir", out.absolutePath,
             )
         }
     }
 }
+
+// `cargo` from PATH unless -Panywhere.cargo=/path/to/cargo says otherwise (F-Droid).
+val cargoCommand: Provider<String> = providers.gradleProperty("anywhere.cargo").orElse("cargo")
 
 val verifyVerifier = tasks.register<VerifyVerifierVersion>("verifyRustlsVerifierVersion") {
     lockFile.set(workspaceDir.file("Cargo.lock"))
@@ -151,12 +184,16 @@ val verifyVerifier = tasks.register<VerifyVerifierVersion>("verifyRustlsVerifier
 androidComponents {
     onVariants { variant ->
         val name = variant.name.replaceFirstChar { it.uppercase() }
-        // Debug APKs use a quick, stripped build; release builds the optimised library.
-        val cargoProfile = if (variant.buildType == "release") "release" else "android-dev"
+        // Debug APKs use a quick, stripped build; release builds the optimised library
+        // (Cargo.toml's `android-release`: LTO, one codegen unit) without build paths.
+        val isRelease = variant.buildType != "debug"
+        val cargoProfile = if (isRelease) "android-release" else "android-dev"
         val cargo = tasks.register<CargoNdkBuild>("cargoBuild$name") {
             dependsOn(verifyVerifier)
             abis.set(rustAbis)
             profile.set(cargoProfile)
+            remapPaths.set(isRelease)
+            cargoExecutable.set(cargoCommand)
             apiLevel.set(29)
             workspace.set(workspaceDir)
             ndkDir.set(androidComponents.sdkComponents.ndkDirectory)
@@ -168,6 +205,7 @@ androidComponents {
         val bindgen = tasks.register<UniffiBindgen>("uniffiBindgen$name") {
             library.set(cargo.flatMap { it.outputDir.file("${rustAbis.first()}/libanywhere_mobile.so") })
             config.set(workspaceDir.file("mobile/uniffi.toml"))
+            cargoExecutable.set(cargoCommand)
             workspace.set(workspaceDir)
             outputDir.set(layout.buildDirectory.dir("generated/uniffi/${variant.name}/kotlin"))
         }
@@ -179,7 +217,12 @@ dependencies {
     // UniFFI's Kotlin bindings call the library through JNA.
     api("${libs.jna.get()}@aar")
     // Android's certificate verifier, called by the Rust TLS stack through JNI.
-    implementation(libs.rustls.platform.verifier)
+    // From source when `anywhere.verifier.source` is set (F-Droid), else the prebuilt artefact.
+    if (providers.gradleProperty("anywhere.verifier.source").isPresent) {
+        implementation(project(":verifier-source"))
+    } else {
+        implementation(libs.rustls.platform.verifier)
+    }
     implementation(libs.androidx.core.ktx)
     api(libs.kotlinx.coroutines.android)
 }

@@ -76,7 +76,7 @@ Lyrion Anywhere gives your phone, tablet or laptop secure access to your LMS lib
   - relays the audio stream, resuming it if the connection drops.
 - **The web app** (SvelteKit). For playback, it runs the player core (Rust, compiled to WebAssembly) in a worker.
 
-The full design is in [`SPEC.md`](SPEC.md), and the API and protocol in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+The full design is in [`SPEC.md`](SPEC.md), and the API and protocol in [`docs/PROTOCOL.md`](docs/PROTOCOL.md). What the apps and the gateway store is in the [privacy policy](docs/PRIVACY.md); how releases are made is in [`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## Getting started
 
@@ -130,7 +130,8 @@ tools/demo/run.sh                  # then open http://127.0.0.1:19443  (demo / d
 | `cli/` | Native test player for the core |
 | `deploy/` | Example reverse-proxy configuration (nginx), tested in CI |
 | `tools/` | Build, release and deployment-test scripts; the demo |
-| `docs/` | Installation, deployment reference, protocol |
+| `apps/android/` | The native Android app (Kotlin, Compose) over the `mobile/` Rust layer |
+| `docs/` | Installation, deployment reference, protocol, privacy, releasing, security reviews |
 
 ## Development
 

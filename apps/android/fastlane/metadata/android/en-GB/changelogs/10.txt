@@ -1,0 +1,1 @@
+Test build 0.1.0-alpha.10: Android Auto, Start radio and More like this, smart crossfades, offline downloads with plays synced back, moving playback between players, queue editing, sync groups, a widget and a Quick Settings tile.

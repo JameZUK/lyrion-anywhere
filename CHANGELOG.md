@@ -4,6 +4,19 @@ Dated entries, newest first.
 
 ## 2026-10-11
 
+### Android: release readiness (A7)
+- **Security review and pentest** of everything added since the last one (`docs/security/pentest-2026-10-android-1.0.md`). No critical or high issues. Fixed, each with a regression test:
+  - **crash reports could hold secrets:** Android's record of a native crash includes memory dumps, and its readable text went into the shareable report. Now only the backtrace's names are kept, and every report is redacted (tokens, secrets, server and IP addresses, home folders);
+  - **play counts could be inflated** by resending one listen under new keys: a play of a track closer than the counting time to one already counted is refused (`overlap`);
+  - **the plugin's read-only commands** (devices with their last addresses and User-Agents, the audit log, users) answered anyone on the LAN: they now need the settings page's token too;
+  - **device renames** are limited to 10 a minute per device, an unchanged name writes nothing, and renames are audited with who made them; **the audit log is bounded** (one year, 100,000 entries);
+  - **analysis time-outs** are remembered only as long as the deadline, not ten minutes for everyone;
+  - **no build paths** in the Android native library; stored credentials never print their token; `sync` to the same player in another letter case is refused.
+- **Accessibility:** a TalkBack, contrast, large-text and keyboard audit of the app, with fixes (queue and artwork actions reachable by TalkBack, states not shown by colour alone, art-tinted colours meeting contrast, layouts that wrap at 200 % text, keyboard shortcuts for the queue and "More…") and automated Robolectric checks.
+- **Privacy policy** (`docs/PRIVACY.md`), linked from Settings › About, with Google Play's Data safety answers.
+- **Performance budgets** (`docs/PERFORMANCE.md`), a baseline profile, a smaller Rust library (one codegen unit) and per-ABI APKs: the universal APK is 31.8 MB (was 39.0 MB), per-ABI ones about 16 MB.
+- **Distribution:** an app bundle for Google Play with store metadata (`apps/android/fastlane/`); an F-Droid recipe that builds everything from source, including the certificate verifier's Kotlin half (`apps/android/fdroid/`); and a CI job that builds signed APKs and the bundle on `android-v*` tags and publishes a pre-release with checksums. The release checklist is `docs/RELEASING.md`.
+
 ### Plugin settings and device management
 - **Fixed: the logo didn't load** on the plugin settings page. LMS serves a plugin's images only from paths with an `html/` segment (other image paths are treated as templates, and 404), so it moved to `HTML/EN/plugins/LyrionAnywhere/html/images/logo.png`.
 - **Fixed: odd characters** such as "Settings âº Advanced". LMS reads templates as bytes and sends the page as UTF-8, so raw UTF-8 in a template came out encoded twice. The template now uses HTML entities (`&rsaquo;`, `&hellip;`) and the script `\u` escapes; the page's files are ASCII only, checked by the plugin tests and `tools/test-release.sh`.
