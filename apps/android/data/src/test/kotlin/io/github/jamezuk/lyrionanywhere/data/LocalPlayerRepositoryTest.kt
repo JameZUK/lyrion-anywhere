@@ -1,8 +1,14 @@
 package io.github.jamezuk.lyrionanywhere.data
 
 import io.github.jamezuk.lyrionanywhere.core.ApiException
+import io.github.jamezuk.lyrionanywhere.core.CrossfeedSetting
+import io.github.jamezuk.lyrionanywhere.core.DitherSetting
 import io.github.jamezuk.lyrionanywhere.core.DspSettings
 import io.github.jamezuk.lyrionanywhere.core.Levelling
+import io.github.jamezuk.lyrionanywhere.core.MixerOffer
+import io.github.jamezuk.lyrionanywhere.core.OfferBlocker
+import io.github.jamezuk.lyrionanywhere.core.OutputNegotiator
+import io.github.jamezuk.lyrionanywhere.core.OutputOffers
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayback
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayerObserver
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayerStatus
@@ -49,7 +55,7 @@ private class MemSettings : SettingsStore {
 
     override suspend fun setPlayOnPhone(on: Boolean) = state.update { it.copy(playOnPhone = on) }
 
-    override suspend fun setLoudnessLevelling(on: Boolean) = state.update { it.copy(loudnessLevelling = on) }
+    override suspend fun setSound(sound: SoundSettings) = state.update { it.copy(sound = sound) }
 }
 
 private class FakeHandle : LocalPlayerHandle {
@@ -79,8 +85,19 @@ private class FakeHandle : LocalPlayerHandle {
         calls += "route ${route.device}"
     }
 
+    val dsp = mutableListOf<DspSettings>()
+
     override fun setDsp(dsp: DspSettings) {
+        this.dsp += dsp
         calls += "dsp ${dsp.analysisLevelling}"
+    }
+
+    override fun setOutputNegotiator(negotiator: OutputNegotiator?) {
+        calls += "negotiator ${negotiator != null}"
+    }
+
+    override fun renegotiateOutput() {
+        calls += "renegotiate"
     }
 
     override fun close() {
@@ -98,10 +115,10 @@ class LocalPlayerRepositoryTest {
     private fun TestScope.repo(): RustLocalPlayerRepository {
         val d = UnconfinedTestDispatcher(testScheduler)
         val scope = CoroutineScope(backgroundScope.coroutineContext + d)
-        return RustLocalPlayerRepository(sessions, settings, scope, d) {
+        return RustLocalPlayerRepository(sessions, settings, scope, d, factory = {
             failWith?.let { throw it }
             FakeHandle().also { handles += it }
-        }
+        })
     }
 
     @Test
@@ -121,42 +138,132 @@ class LocalPlayerRepositoryTest {
     }
 
     @Test
-    fun levellingIsOffByDefaultAndFollowsTheSetting() = runTest {
+    fun soundIsBitPerfectByDefaultAndAppliesLive() = runTest {
         val r = repo()
         sessions.value = Session(NoHandle)
         r.setEnabled(true)
-        // Off: the engine keeps its bit-perfect default (no DSP call at all).
+        // Bit-perfect: the engine keeps its default (no DSP call at all).
         assertEquals(listOf("route ", "start"), handles[0].calls)
-        assertFalse(r.state.value.levelling)
+        assertTrue(r.state.value.sound.bitPerfect)
 
-        r.setLevelling(true)
-        assertTrue(settings.state.value.loudnessLevelling)
-        assertTrue(r.state.value.levelling)
+        r.setSound(SoundSettings(levelling = LevellingMode.R128))
+        assertEquals(LevellingMode.R128, settings.state.value.sound.levelling)
+        assertEquals(LevellingMode.R128, r.state.value.sound.levelling)
         assertEquals("dsp true", handles[0].calls.last())
 
-        r.setLevelling(false)
-        assertEquals("dsp false", handles[0].calls.last())
+        r.setSound(SoundSettings())
+        assertEquals(DEFAULT_DSP, handles[0].dsp.last())
 
-        // A player started while levelling is on gets it before any audio.
-        r.setLevelling(true)
+        // A player started while a stage is on gets it before any audio.
+        r.setSound(SoundSettings(preampDb = -3.0))
         r.setEnabled(false)
         r.setEnabled(true)
-        assertEquals(listOf("route ", "dsp true", "start"), handles.last().calls)
-        assertTrue(r.state.value.levelling)
+        assertEquals(listOf("route ", "dsp false", "start"), handles.last().calls)
+        assertEquals(-3.0, handles.last().dsp.single().preampDb, 0.0)
     }
 
     @Test
-    fun levellingDspIsBitPerfectWhenOff() {
-        val off = dspFor(false)
-        assertEquals(DEFAULT_DSP, off)
-        assertFalse(off.enabled)
-        assertFalse(off.analysisLevelling)
+    fun theBitPerfectSwitchRenegotiatesAndTheNegotiatorReachesThePlayer() = runTest {
+        val r = repo()
+        val neg = object : OutputNegotiator {
+            override fun offers() = OutputOffers("", OfferBlocker.NO_USB_DAC, emptyList())
+
+            override fun apply(offer: MixerOffer?) = false
+        }
+        r.setOutputNegotiator(neg)
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        assertEquals(listOf("route ", "negotiator true", "start"), handles[0].calls)
+        r.setSound(SoundSettings(bitPerfectUsb = false))
+        assertEquals("renegotiate", handles[0].calls.last())
+        assertTrue("no DSP change", handles[0].dsp.isEmpty())
+        r.renegotiateOutput()
+        r.setOutputNegotiator(null)
+        assertEquals(listOf("renegotiate", "negotiator false"), handles[0].calls.takeLast(2))
+    }
+
+    @Test
+    fun soundSettingsMapToTheEngine() {
+        assertEquals(DEFAULT_DSP, dspFor(SoundSettings()))
+        val off = DEFAULT_DSP
+        assertFalse(off.enabled || off.analysisLevelling)
         assertEquals(Levelling.OFF, off.levelling)
-        val on = dspFor(true)
-        assertTrue(on.enabled && on.analysisLevelling && on.limiter)
-        assertEquals(Levelling.TRACK, on.levelling)
-        assertEquals(-18.0, on.targetLufs, 0.0)
-        assertEquals(0.0, on.preampDb, 0.0)
+        assertNull(off.eqProfile)
+        assertEquals(CrossfeedSetting.OFF, off.crossfeed)
+
+        val r128 = dspFor(SoundSettings(levelling = LevellingMode.R128))
+        assertTrue(r128.enabled && r128.analysisLevelling && r128.limiter)
+        assertEquals(Levelling.TRACK, r128.levelling)
+        assertEquals(-18.0, r128.targetLufs, 0.0)
+        val album = dspFor(SoundSettings(levelling = LevellingMode.REPLAYGAIN_ALBUM))
+        assertEquals(Levelling.ALBUM, album.levelling)
+        assertFalse(album.analysisLevelling)
+        val track = dspFor(SoundSettings(levelling = LevellingMode.REPLAYGAIN_TRACK))
+        assertEquals(Levelling.TRACK, track.levelling)
+        assertFalse(track.analysisLevelling)
+
+        val eq = EqProfile("Headphones", "Filter 1: ON PK Fc 1000 Hz Gain 3 dB Q 1", 1, 0.0)
+        val all = dspFor(
+            SoundSettings(
+                preampDb = -2.5,
+                limiter = false,
+                limiterCeilingDb = -0.5,
+                eqEnabled = true,
+                eq = eq,
+                crossfeed = CrossfeedMode.NATURAL,
+                dither = DitherMode.TPDF_SHAPED,
+            ),
+        )
+        assertTrue(all.enabled)
+        assertEquals(-2.5, all.preampDb, 0.0)
+        assertFalse(all.limiter)
+        assertEquals(-0.5, all.limiterCeilingDb, 0.0)
+        assertEquals(eq.text, all.eqProfile)
+        assertEquals(CrossfeedSetting.NATURAL, all.crossfeed)
+        assertEquals(DitherSetting.TPDF_SHAPED, all.dither)
+        // A loaded but switched-off EQ isn't applied (and alone keeps bit-perfect).
+        val eqOff = SoundSettings(eq = eq, eqEnabled = false)
+        assertTrue(eqOff.bitPerfect)
+        assertNull(dspFor(eqOff).eqProfile)
+        assertFalse(dspFor(eqOff).enabled)
+        // Dither alone changes nothing; it's still passed on for when depth is reduced.
+        val shaped = dspFor(SoundSettings(dither = DitherMode.TPDF_SHAPED))
+        assertFalse(shaped.enabled)
+        assertEquals(DitherSetting.TPDF_SHAPED, shaped.dither)
+    }
+
+    @Test
+    fun outOfRangeSoundSettingsAreClamped() {
+        val s = SoundSettings(preampDb = 99.0, limiterCeilingDb = -99.0).sanitised()
+        assertEquals(12.0, s.preampDb, 0.0)
+        assertEquals(-6.0, s.limiterCeilingDb, 0.0)
+        val n = SoundSettings(preampDb = Double.NaN, limiterCeilingDb = Double.POSITIVE_INFINITY).sanitised()
+        assertEquals(0.0, n.preampDb, 0.0)
+        assertEquals(-1.0, n.limiterCeilingDb, 0.0)
+        assertEquals(-12.0, dspFor(SoundSettings(preampDb = -40.0)).preampDb, 0.0)
+        // An oversized profile is dropped, and the EQ is then off.
+        val huge = EqProfile("x", "#".repeat(SoundSettings.MAX_EQ_CHARS + 1), 0, 0.0)
+        val h = SoundSettings(eq = huge, eqEnabled = true).sanitised()
+        assertNull(h.eq)
+        assertFalse(h.eqEnabled)
+        // An EQ switched on with no profile does nothing.
+        assertTrue(SoundSettings(eqEnabled = true).bitPerfect)
+    }
+
+    @Test
+    fun eqProfilesAreCheckedByTheEngineAndOversizedOnesRefusedFirst() = runTest {
+        val seen = mutableListOf<String>()
+        val d = UnconfinedTestDispatcher(testScheduler)
+        val r = RustLocalPlayerRepository(
+            sessions,
+            settings,
+            CoroutineScope(backgroundScope.coroutineContext + d),
+            d,
+            eqCheck = { seen += it; EqCheck.Ok(2, -3.0, false) },
+        )
+        assertEquals(EqCheck.Ok(2, -3.0, false), r.checkEq("Preamp: -3 dB"))
+        assertTrue(r.checkEq("x".repeat(SoundSettings.MAX_EQ_CHARS + 1)) is EqCheck.Invalid)
+        assertEquals(listOf("Preamp: -3 dB"), seen)
     }
 
     @Test
@@ -200,7 +307,7 @@ class LocalPlayerRepositoryTest {
     @Test
     fun holdDuckAndRouteReachThePlayer() = runTest {
         val r = repo()
-        r.setOutputRoute(OutputRoute("USB DAC", 96_000u, false))
+        r.setOutputRoute(OutputRoute("USB DAC", 96_000u))
         settings.setPlayOnPhone(true)
         sessions.value = Session(NoHandle)
         r.setHold(true)

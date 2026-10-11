@@ -25,9 +25,12 @@ import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.data.AppSettings
 import io.github.jamezuk.lyrionanywhere.data.AuthState
+import io.github.jamezuk.lyrionanywhere.data.EqCheck
 import io.github.jamezuk.lyrionanywhere.data.EventsRepository
+import io.github.jamezuk.lyrionanywhere.data.SoundSettings
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayback
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayerStatus
+import io.github.jamezuk.lyrionanywhere.core.NotBitPerfect
 import io.github.jamezuk.lyrionanywhere.core.OutputRoute
 import io.github.jamezuk.lyrionanywhere.core.PlayerConnection
 import io.github.jamezuk.lyrionanywhere.core.SignalPathInfo
@@ -219,7 +222,7 @@ class FakeSettings(initial: AppSettings = AppSettings()) : SettingsStore {
 
     override suspend fun setPlayOnPhone(on: Boolean) = state.update { it.copy(playOnPhone = on) }
 
-    override suspend fun setLoudnessLevelling(on: Boolean) = state.update { it.copy(loudnessLevelling = on) }
+    override suspend fun setSound(sound: SoundSettings) = state.update { it.copy(sound = sound) }
 }
 
 fun localStatus(id: String, connection: PlayerConnection = PlayerConnection.Connected) = LocalPlayerStatus(
@@ -241,6 +244,8 @@ fun signalPath(
     engineBitPerfect: Boolean = true,
     bitPerfect: Boolean = false,
     stages: List<SignalStage> = listOf(SignalStage("Decode (lossless)", true, false)),
+    direct: Boolean = bitPerfect,
+    reasons: List<NotBitPerfect> = if (bitPerfect) emptyList() else listOf(NotBitPerfect.NO_USB_DAC),
 ) = SignalPathInfo(
     sourceCodec = "FLAC",
     sourceLossless = true,
@@ -249,12 +254,16 @@ fun signalPath(
     sourceChannels = 2u,
     stages = stages,
     dspActive = false,
-    outputDevice = "Headphones",
+    outputDevice = if (direct) "Example DAC" else "Headphones",
     outputRate = 96_000u,
-    outputFormat = "32-bit float",
+    outputFormat = if (direct) "24-bit integer" else "32-bit float",
+    outputBits = if (direct) 24u else null,
+    direct = direct,
+    fixedVolume = direct,
     resampled = verdict == SignalVerdict.RESAMPLED,
     engineBitPerfect = engineBitPerfect,
     bitPerfect = bitPerfect,
+    notBitPerfect = reasons,
     verdict = verdict,
     summary = "",
 )
@@ -276,10 +285,14 @@ class FakeLocalPlayer : LocalPlayerRepository {
 
     override fun setOutputRoute(route: OutputRoute) {}
 
-    val levelling = mutableListOf<Boolean>()
+    val sounds = mutableListOf<SoundSettings>()
 
-    override suspend fun setLevelling(on: Boolean) {
-        levelling += on
-        state.update { it.copy(levelling = on) }
+    override suspend fun setSound(sound: SoundSettings) {
+        sounds += sound
+        state.update { it.copy(sound = sound) }
     }
+
+    /** What the engine says about a profile: anything with "Filter" in it is good. */
+    override fun checkEq(text: String): EqCheck =
+        if ("Filter" in text) EqCheck.Ok(text.lines().count { "Filter" in it }, -3.0, false) else EqCheck.Invalid("line 1: not a profile")
 }

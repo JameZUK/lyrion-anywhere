@@ -30,6 +30,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayerStatus
+import io.github.jamezuk.lyrionanywhere.core.NotBitPerfect
 import io.github.jamezuk.lyrionanywhere.core.PlayerConnection
 import io.github.jamezuk.lyrionanywhere.core.SignalPathInfo
 import io.github.jamezuk.lyrionanywhere.core.SignalStage
@@ -115,8 +116,41 @@ fun SignalPathPanel(path: SignalPathInfo?, modifier: Modifier = Modifier) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            if (path.fixedVolume) {
+                Text(stringResource(R.string.signal_volume_on_dac), style = MaterialTheme.typography.bodySmall)
+            }
+            if (!path.bitPerfect && path.notBitPerfect.isNotEmpty()) {
+                val reasons = path.notBitPerfect.map { stringResource(reasonText(it)) }
+                Column(Modifier.semantics(mergeDescendants = true) {}) {
+                    Text(
+                        stringResource(R.string.signal_why_not),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    reasons.forEach {
+                        Text("• $it", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
         }
     }
+}
+
+/** Why the path isn't bit-perfect end to end, in words. */
+fun reasonText(r: NotBitPerfect): Int = when (r) {
+    NotBitPerfect.TURNED_OFF -> R.string.reason_turned_off
+    NotBitPerfect.NO_USB_DAC -> R.string.reason_no_usb_dac
+    NotBitPerfect.ANDROID_TOO_OLD -> R.string.reason_android_too_old
+    NotBitPerfect.NOT_OFFERED -> R.string.reason_not_offered
+    NotBitPerfect.RATE_NOT_OFFERED -> R.string.reason_rate_not_offered
+    NotBitPerfect.DAC_TOO_SHALLOW -> R.string.reason_dac_too_shallow
+    NotBitPerfect.SOURCE_TOO_DEEP -> R.string.reason_source_too_deep
+    NotBitPerfect.NOT_APPLIED -> R.string.reason_not_applied
+    NotBitPerfect.FORMAT_REFUSED -> R.string.reason_format_refused
+    NotBitPerfect.DSP_ACTIVE -> R.string.reason_dsp_active
+    NotBitPerfect.RESAMPLED -> R.string.reason_resampled
+    NotBitPerfect.LOSSY_SOURCE -> R.string.reason_lossy_source
+    NotBitPerfect.OTHER_PROCESSING -> R.string.reason_other_processing
 }
 
 @Composable

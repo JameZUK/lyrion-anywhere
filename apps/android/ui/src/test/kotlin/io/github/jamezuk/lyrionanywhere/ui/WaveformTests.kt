@@ -1,9 +1,6 @@
 package io.github.jamezuk.lyrionanywhere.ui
 
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assertIsOff
-import androidx.compose.ui.test.hasText
-import androidx.compose.ui.test.isToggleable
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -16,6 +13,9 @@ import io.github.jamezuk.lyrionanywhere.core.SignalVerdict
 import io.github.jamezuk.lyrionanywhere.core.TrackAnalysisInfo
 import io.github.jamezuk.lyrionanywhere.data.AnalysisRepository
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
+import io.github.jamezuk.lyrionanywhere.data.CrossfeedMode
+import io.github.jamezuk.lyrionanywhere.data.LevellingMode
+import io.github.jamezuk.lyrionanywhere.data.SoundSettings
 import io.github.jamezuk.lyrionanywhere.data.Waveform
 import io.github.jamezuk.lyrionanywhere.data.WaveformCache
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayerViewModel
@@ -128,33 +128,52 @@ class WaveformScreenTests {
     }
 
     @Test
-    fun levellingIsASwitchInSettings() {
-        var changed: Boolean? = null
+    fun soundIsARowInSettingsThatSaysBitPerfect() {
+        var opened = false
         compose.setContent {
             LyrionTheme(dynamicColour = false) {
                 SettingsScreen(
-                    state = SettingsUiState(username = "alice", levelling = false),
+                    state = SettingsUiState(username = "alice", sound = SoundSettings()),
                     appVersion = "1",
                     libraryVersion = "1",
                     onSignOut = {},
                     onLicences = {},
-                    onLevelling = { changed = it },
+                    onSound = { opened = true },
                 )
             }
         }
-        compose.onNodeWithText("Off: tracks play bit-perfect, as mastered.").assertIsDisplayed()
-        compose.onNode(hasText("Loudness levelling") and isToggleable()).assertIsOff().performClick()
-        assertEquals(true, changed)
+        compose.onNodeWithText("Bit-perfect: nothing changes the samples").assertIsDisplayed()
+        compose.onNodeWithText("Sound").performClick()
+        assertTrue(opened)
     }
 
     @Test
-    fun noLevellingSettingWithoutALocalPlayer() {
+    fun theSoundRowNamesTheActiveStages() {
+        compose.setContent {
+            LyrionTheme(dynamicColour = false) {
+                SettingsScreen(
+                    state = SettingsUiState(
+                        username = "alice",
+                        sound = SoundSettings(preampDb = -3.0, crossfeed = CrossfeedMode.LIGHT),
+                    ),
+                    appVersion = "1",
+                    libraryVersion = "1",
+                    onSignOut = {},
+                    onLicences = {},
+                )
+            }
+        }
+        compose.onNodeWithText("Processing: preamp, crossfeed").assertIsDisplayed()
+    }
+
+    @Test
+    fun noSoundSettingsWithoutALocalPlayer() {
         compose.setContent {
             LyrionTheme(dynamicColour = false) {
                 SettingsScreen(SettingsUiState(username = "alice"), "1", "1", {}, {})
             }
         }
-        compose.onNodeWithText("Loudness levelling").assertDoesNotExist()
+        compose.onNodeWithText("Sound").assertDoesNotExist()
     }
 
     @Test
@@ -219,13 +238,12 @@ class WaveformViewModelTest : MainDispatcherTest() {
     }
 
     @Test
-    fun settingsToggleLevellingThroughThePlayer() = runTest(dispatcher) {
+    fun settingsShowThePlayersSound() = runTest(dispatcher) {
         val local = FakeLocalPlayer()
         val vm = SettingsViewModel(FakeAccount(), local)
-        assertEquals(false, vm.state.value.levelling)
-        vm.setLevelling(true)
-        assertEquals(listOf(true), local.levelling)
-        assertEquals(true, vm.state.value.levelling)
-        assertNull(SettingsViewModel(FakeAccount()).state.value.levelling)
+        assertEquals(SoundSettings(), vm.state.value.sound)
+        local.setSound(SoundSettings(levelling = LevellingMode.R128))
+        assertEquals(LevellingMode.R128, vm.state.value.sound?.levelling)
+        assertNull(SettingsViewModel(FakeAccount()).state.value.sound)
     }
 }
