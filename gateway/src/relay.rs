@@ -17,7 +17,8 @@
 //!
 //! A relay stops promptly when its session ends ([`Relay::cancel`]), when an upstream read
 //! stalls for [`UPSTREAM_READ_TIMEOUT`], and when the client neither acknowledges nor can
-//! take more data for [`IDLE_TIMEOUT`].
+//! take more data for [`IDLE_TIMEOUT`]. The last two end the response with an error, never
+//! cleanly, so the client can't mistake them for the end of the track and resumes instead.
 //!
 //! [`Config::replay_window`]: crate::Config::replay_window
 
@@ -347,8 +348,14 @@ async fn next_chunk(cur: &mut Cursor) -> Option<Result<Bytes, std::io::Error>> {
                 // Wait for the client to acknowledge more before reading further from LMS.
                 let since = *cur.stalled_since.get_or_insert_with(Instant::now);
                 if since.elapsed() >= cur.relay.idle_timeout {
+                    // End with an error, never cleanly: a clean end looks like the end of
+                    // the track, and the player would cut it short. An error makes it
+                    // fetch again from `?offset=` when it next wants data.
                     warn!(pos = cur.pos, "stream idle without acknowledgement; ending");
-                    return None;
+                    return Some(Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "client idle without acknowledgement",
+                    )));
                 }
                 let relay = cur.relay.clone();
                 let changed = relay.ack_changed.notified();
@@ -537,14 +544,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn body_ends_when_the_client_stops_acknowledging() {
-        let (_relay, feed, mut b) = rig(4, Duration::from_millis(200), UPSTREAM_READ_TIMEOUT).await;
+    async fn body_ends_with_an_error_when_the_client_stops_acknowledging() {
+        // Regression: this used to end cleanly, which the player took for the end of the
+        // track, cutting it short. An error makes it resume from `?offset=` instead.
+        let (relay, feed, mut b) = rig(4, Duration::from_millis(200), UPSTREAM_READ_TIMEOUT).await;
         feed.send(Ok(Bytes::from_static(b"abcd"))).unwrap();
         feed.send(Ok(Bytes::from_static(b"efgh"))).unwrap();
         let (n, err) = tokio::time::timeout(Duration::from_secs(3), drain(&mut b))
             .await
             .expect("an idle body must end");
-        assert_eq!((n, err), (4, false));
+        assert_eq!((n, err), (4, true));
+        // The client resumes where it was: the rest arrives once it acknowledges.
+        state(&relay).consumer = 2;
+        let mut again = Box::pin(body(relay.clone(), 4, 2));
+        relay.ack(4);
+        feed.send(Ok(Bytes::from_static(b"ijkl"))).unwrap();
+        drop(feed);
+        let first = tokio::time::timeout(Duration::from_secs(3), again.next())
+            .await
+            .expect("the resumed body must deliver")
+            .expect("not ended")
+            .expect("not an error");
+        assert_eq!(&first[..], b"efgh");
     }
 
     #[tokio::test]

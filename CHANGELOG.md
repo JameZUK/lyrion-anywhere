@@ -29,6 +29,7 @@ Dated entries, newest first.
   - *README:* its header.
 
 ### Fixes
+- **Tracks stopping part-way:** when a player held enough audio not to need more for a minute (a long buffer, or paused), the gateway ended its stream cleanly, and the player took that for the end of the track and cut it short. The stream now ends with an error, so the player fetches the rest from where it was.
 - **Now playing showed the wrong track.** LMS's status leaves out a queued track it can't resolve, e.g. one a rescan gave a new id. The next track was then shown as the current one, with its title, artwork, length and waveform, while the real track played. When the status contradicts itself (the player's duration doesn't match the listed track), the gateway now looks up the track really at the current position and shows that.
 - **Waveform and album downloads on a real LMS:** LMS sends `remote` as `"0"`, which the web app took for a stream.
 - **Waveforms for everyone:** the waveform no longer needs the download permission.
