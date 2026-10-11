@@ -25,8 +25,9 @@ Lyrion Anywhere gives your phone, tablet or laptop secure access to your LMS lib
 ## Features
 
 **Play anywhere**
-- **Remote control** for every LMS player you're allowed to use: play, pause, seek, skip, volume, shuffle, repeat and the queue.
-- **Play on this device.** The browser becomes an LMS player. It is lossless (FLAC, MP3, Ogg and more are decoded on the device) and works with gapless playback and synchronisation like any other player.
+- **Plays on this device by default.** The browser becomes an LMS player as soon as you sign in, so the first tap on Play starts the music right there. It is lossless (FLAC, MP3, Ogg and more are decoded on the device) and works with gapless playback and synchronisation like any other player. Settings › This device can start on another player instead.
+- **Remote control** for every LMS player you're allowed to use: play, pause, seek, skip, volume, shuffle, repeat and the queue. The small output button by the volume opens *Play on…*, and a coloured strip says when you're controlling another player, with one tap back.
+- **Move playback between players.** *Move here* carries the queue on another player from the same point, and stops it where it was; *Bring here* does the reverse. Radio and app streams move too.
 - **Background playback** on phones and tablets. The app checks each browser and picks the best playback mode by itself:
   - *Web Audio:* lowest latency, used on desktops;
   - *the media element:* survives the screen locking on Android and iOS, with lock-screen controls.

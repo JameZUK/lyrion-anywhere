@@ -45,3 +45,9 @@ export function detect(g: Record<string, unknown> = globalThis as unknown as Rec
 		userAgent: String(nav.userAgent ?? '').slice(0, 300),
 	};
 }
+
+/** Can this browser be a player at all (an audio output, a worker and WebAssembly)? */
+export function canPlayHere(g: Record<string, unknown> = globalThis as unknown as Record<string, unknown>): boolean {
+	const output = typeof g.AudioWorkletNode !== 'undefined' || !!g.ManagedMediaSource || !!g.MediaSource;
+	return output && typeof g.Worker !== 'undefined' && typeof g.WebAssembly !== 'undefined';
+}

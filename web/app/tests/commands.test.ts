@@ -42,6 +42,12 @@ const examples = [
 	{ player: false, cmd: c.syncGroups() },
 	{ player: true, cmd: c.syncWith('AA:BB:CC:DD:EE:01') },
 	{ player: true, cmd: c.unsync() },
+	{ player: true, cmd: c.nowPlaying() },
+	// Transfer (copy-the-list recipe): track lists at the gateway's length limit.
+	{ player: true, cmd: c.loadTracks([2112062, 2112063, 2112064], 'load', 1) },
+	{ player: true, cmd: c.loadTracks([2112065, 2112066], 'add') },
+	{ player: true, cmd: c.loadTracks(c.chunkIds(Array.from({ length: 60 }, (_, i) => 9_000_000 + i))[0]!, 'load', 0) },
+	{ player: true, cmd: c.queue(0, 500) },
 	{ player: true, cmd: c.enqueue({ album: 7 }, 'play') },
 	{ player: true, cmd: c.enqueue({ album: 7 }, 'play', 3) },
 	{ player: true, cmd: c.enqueue({ album: 7 }, 'next') },

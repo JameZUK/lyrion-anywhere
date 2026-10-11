@@ -285,3 +285,92 @@ test('a held-back start is unmuted by a real tap, and keeps listening until it w
 	expect(device.needsTap).toBe(false);
 	expect(device.log.some((l) => l.includes('audio resumed'))).toBe(true);
 });
+
+// --- player-first (SPEC D20): starting by itself, one tab at a time ---------------------------
+
+/** A fake navigator.locks with one exclusive lock per name; `steal` takes it over. */
+function fakeLocks() {
+	const held = new Map<string, { reject: (e: Error) => void }>();
+	return {
+		held,
+		request(name: string, opts: { ifAvailable?: boolean; steal?: boolean }, cb: (lock: unknown) => unknown) {
+			if (held.has(name) && opts.ifAvailable) return Promise.resolve(cb(null));
+			if (held.has(name) && opts.steal) {
+				held.get(name)!.reject(new DOMException('stolen', 'AbortError'));
+				held.delete(name);
+			}
+			if (held.has(name)) return new Promise(() => {}); // would wait: not needed here
+			return new Promise((resolve, reject) => {
+				held.set(name, { reject });
+				Promise.resolve(cb({ name })).then(
+					(v) => {
+						held.delete(name);
+						resolve(v);
+					},
+					reject,
+				);
+			});
+		},
+	};
+}
+
+describe('autoStart', () => {
+	let locks: ReturnType<typeof fakeLocks>;
+	beforeEach(() => {
+		locks = fakeLocks();
+		Object.defineProperty(navigator, 'locks', { value: locks, configurable: true });
+	});
+	afterEach(() => {
+		Object.defineProperty(navigator, 'locks', { value: undefined, configurable: true });
+	});
+
+	test('starts without a tap, holding the tab lock; the first tap turns the sound on', async () => {
+		gesture = { needed: true, given: false };
+		expect(await device.autoStart()).toBe('started');
+		await settle();
+		expect(FakeWorker.all).toHaveLength(1);
+		expect(locks.held.has('anywhere-device-player')).toBe(true);
+		expect(device.needsTap).toBe(true);
+		gesture.given = true;
+		document.dispatchEvent(new Event('click'));
+		await settle();
+		expect(device.needsTap).toBe(false);
+	});
+
+	test('another tab runs this device: not started here', async () => {
+		locks.request('anywhere-device-player', {}, () => new Promise(() => {}));
+		expect(await device.autoStart()).toBe('busy');
+		expect(FakeWorker.all).toHaveLength(0);
+	});
+
+	test('stopping releases the lock, so another tab (or a later start) can run it', async () => {
+		expect(await device.autoStart()).toBe('started');
+		device.stop();
+		await settle();
+		expect(locks.held.has('anywhere-device-player')).toBe(false);
+	});
+
+	test('a tap takes the player over from another tab', async () => {
+		locks.request('anywhere-device-player', {}, () => new Promise(() => {})).catch(() => {});
+		await device.start();
+		await settle();
+		expect(FakeWorker.all).toHaveLength(1);
+		expect(locks.held.has('anywhere-device-player')).toBe(true);
+	});
+
+	test('a browser that cannot play: unsupported, nothing started', async () => {
+		vi.stubGlobal('AudioWorkletNode', undefined);
+		try {
+			expect(await device.autoStart()).toBe('unsupported');
+			expect(FakeWorker.all).toHaveLength(0);
+		} finally {
+			vi.stubGlobal('AudioWorkletNode', FakeNode);
+		}
+	});
+
+	test('already running: nothing more is started', async () => {
+		await started();
+		expect(await device.autoStart()).toBe('started');
+		expect(FakeWorker.all).toHaveLength(1);
+	});
+});

@@ -1383,6 +1383,89 @@ mod tests {
         assert!(check(&Who(Role::Admin), OTHER, &raw, &apps()).is_ok());
     }
 
+    /// Transfer (docs/PROTOCOL.md) uses only the existing allow-list: every step passes
+    /// between two players the caller may control, and fails as soon as either one is not.
+    #[test]
+    fn transfer_recipe_needs_both_players() {
+        // Recipe 1: group, then leave.
+        ok(HOME, json!(["power", "1"]));
+        ok(MINE, json!(["sync", HOME]));
+        ok(HOME, json!(["status", "-", 1, "tags:aAlcdeJKjNoqrsTIyx"]));
+        ok(MINE, json!(["sync", "-"]));
+        ok(MINE, json!(["stop"]));
+        ok(HOME, json!(["pause", "0"]));
+        ok(HOME, json!(["play"]));
+        // Recipe 2: copy the list.
+        ok(MINE, json!(["status", 0, 500, "tags:alcdJKj"]));
+        ok(HOME, json!(["playlist", "shuffle", "0"]));
+        ok(HOME, json!(["playlist", "repeat", "2"]));
+        ok(
+            HOME,
+            json!([
+                "playlistcontrol",
+                "cmd:load",
+                "track_id:11,12,13",
+                "play_index:1"
+            ]),
+        );
+        ok(
+            HOME,
+            json!(["playlistcontrol", "cmd:add", "track_id:14,15"]),
+        );
+        ok(HOME, json!(["playlist", "index", "40"]));
+        ok(HOME, json!(["time", "83"]));
+
+        // A target (or source) the caller may not control: refused at every step.
+        denied(MINE, json!(["sync", OTHER]));
+        denied(OTHER, json!(["sync", MINE]));
+        denied(OTHER, json!(["power", "1"]));
+        denied(OTHER, json!(["sync", "-"]));
+        denied(
+            OTHER,
+            json!([
+                "playlistcontrol",
+                "cmd:load",
+                "track_id:11,12",
+                "play_index:1"
+            ]),
+        );
+        // Only well-formed id lists within the limit; never URLs or remote items.
+        let long = (0..30)
+            .map(|i| (9_000_000 + i).to_string())
+            .collect::<Vec<_>>();
+        denied(
+            HOME,
+            json!([
+                "playlistcontrol",
+                "cmd:add",
+                format!("track_id:{}", long.join(","))
+            ]),
+        );
+        for bad in [
+            "track_id:-108699300821096",
+            "track_id:1,,2",
+            "track_id:1,2,",
+            "track_id:1;2",
+            "track_id:http://radio.example.com/stream",
+        ] {
+            denied(HOME, json!(["playlistcontrol", "cmd:load", bad]));
+        }
+        denied(
+            HOME,
+            json!(["playlistcontrol", "cmd:load", "track_id:1", "play_index:-1"]),
+        );
+        denied(
+            HOME,
+            json!([
+                "playlistcontrol",
+                "cmd:load",
+                "track_id:1",
+                "play_index:1",
+                "play_index:2"
+            ]),
+        );
+    }
+
     #[test]
     fn admin_only_plugins_are_hidden_everywhere_they_appear() {
         let hidden: HashSet<String> = ["someplugin".to_string(), "spotty".into()].into();

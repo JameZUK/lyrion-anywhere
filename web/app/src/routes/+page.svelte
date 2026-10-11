@@ -1,12 +1,12 @@
 <script lang="ts">
 	// Now playing: large art, track details, full transport.
 	import { app } from '$lib/state/app.svelte';
-	import { playerLabel } from '$lib/lms/sync';
 	import * as cmd from '$lib/lms/commands';
 	import { duration, formatDetails, isRemote, textOf } from '$lib/lms/format';
 	import Art from '$lib/components/Art.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import PlayerSwitcher from '$lib/components/PlayerSwitcher.svelte';
+	import OutputButton from '$lib/components/OutputButton.svelte';
+	import PlayingElsewhere from '$lib/components/PlayingElsewhere.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import SeekBar from '$lib/components/SeekBar.svelte';
 	import { device } from '$lib/player/device.svelte';
@@ -15,7 +15,6 @@
 	let showMore = $state(false);
 
 	let seeking = $state<number | null>(null);
-	let switcher = $state(false);
 	let volume = $state<number | null>(null);
 	let volTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -44,12 +43,7 @@
 
 <section class="np page">
 	<div class="bar">
-		<button class="btn player" onclick={() => (switcher = !switcher)} aria-expanded={switcher}>
-			<Icon name="speaker" size={18} /><span class="ellipsis">{playerLabel(app.playerId, app.now, app.players) || 'Choose a player'}</span>
-			<Icon name="chevron" size={16} />
-		</button>
-		{#if switcher}<div class="pop"><PlayerSwitcher onclose={() => (switcher = false)} /></div>{/if}
-		<span class="grow"></span>
+		{#if app.remote || app.moving}<div class="where"><PlayingElsewhere /></div>{/if}
 		<a class="btn act" href="#/queue" aria-label="Queue"><Icon name="queue" size={18} /><span class="label">Queue</span></a>
 		{#if typeof track?.id === 'number' && track.id > 0}
 			<button class="btn act" onclick={() => (showMore = true)} aria-label="More"><Icon name="more" size={18} /><span class="label">More</span></button>
@@ -64,9 +58,12 @@
 
 	<div class="info">
 
-		{#if !app.current}
+		{#if !app.current && app.playerId && app.playerId === app.deviceMac}
+			<h1>Getting this device ready…</h1>
+			<p class="muted">Music will play here. Pick something to play, or choose another player with the Play on… button.</p>
+		{:else if !app.current}
 			<h1>Nothing to control yet</h1>
-			<p class="muted">Choose a player above, or play on this device.</p>
+			<p class="muted">Choose a player with the Play on… button by the volume.</p>
 		{:else if !track && !app.now?.current_title}
 			<h1>Nothing playing</h1>
 			<p class="muted">Pick an album to start. <a class="link" href="#/albums">Browse albums</a></p>
@@ -118,16 +115,19 @@
 			</button>
 		</div>
 
-		{#if device.buttonsOnly(app.playerId)}
-			<p class="volume muted" data-volume-note><Icon name="volume" size={20} /><span>{DEVICE_BUTTONS_NOTE}</span></p>
-		{:else}
-			<label class="volume">
-				<Icon name={vol > 0 ? 'volume' : 'mute'} size={20} />
-				<span class="sr-only">Volume</span>
-				<input type="range" min="0" max="100" value={vol} oninput={(e) => setVolume(Number(e.currentTarget.value))} disabled={!app.now} />
-				<span class="muted vnum">{Math.round(vol)}</span>
-			</label>
-		{/if}
+		<div class="volrow">
+			{#if device.buttonsOnly(app.playerId)}
+				<p class="volume muted" data-volume-note><Icon name="volume" size={20} /><span>{DEVICE_BUTTONS_NOTE}</span></p>
+			{:else}
+				<label class="volume">
+					<Icon name={vol > 0 ? 'volume' : 'mute'} size={20} />
+					<span class="sr-only">Volume</span>
+					<input type="range" min="0" max="100" value={vol} oninput={(e) => setVolume(Number(e.currentTarget.value))} disabled={!app.now} />
+					<span class="muted vnum">{Math.round(vol)}</span>
+				</label>
+			{/if}
+			<OutputButton />
+		</div>
 
 		{#if showMore && typeof track?.id === 'number'}<ContextMenu kind="track" id={track.id} title={title} onclose={() => (showMore = false)} />{/if}
 	</div>
@@ -151,21 +151,19 @@
 		grid-area: bar;
 		position: relative;
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
+		justify-content: flex-end;
 		gap: 0.5rem;
 		max-width: 520px;
 		margin-bottom: 1.25rem;
 		container-type: inline-size;
 	}
-	.grow {
-		flex: 1;
-	}
-	/* The player button shrinks (its name is ellipsised) but never vanishes; the action
-	   buttons give up their labels first when the column is narrow (e.g. iPad portrait). */
-	.player {
-		flex: 0 1 auto;
-		min-width: 7.5rem;
-		max-width: 100%;
+	/* The "Playing on …" strip takes the room left by the action buttons, which give up
+	   their labels first when the column is narrow (e.g. iPad portrait). */
+	.where {
+		flex: 1 1 100%;
+		min-width: 0;
 	}
 	.act {
 		flex: none;
@@ -182,12 +180,6 @@
 			overflow: hidden;
 			clip: rect(0 0 0 0);
 		}
-	}
-	.pop {
-		position: absolute;
-		top: 3rem;
-		left: 0;
-		z-index: 10;
 	}
 	.art-wrap {
 		grid-area: art;
@@ -268,11 +260,18 @@
 		right: 6px;
 		bottom: 6px;
 	}
+	.volrow {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		max-width: 360px;
+	}
 	.volume {
+		flex: 1;
+		min-width: 0;
 		display: flex;
 		align-items: center;
 		gap: 0.6rem;
-		max-width: 360px;
 		color: var(--fg-muted);
 	}
 	p.volume {
@@ -356,7 +355,7 @@
 			justify-self: center;
 			margin: 0.35rem 0 0.5rem;
 		}
-		.volume {
+		.volrow {
 			max-width: 400px;
 			width: 100%;
 			justify-self: center;

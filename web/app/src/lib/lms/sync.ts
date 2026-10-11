@@ -58,17 +58,15 @@ export function playerLabel(player: string, s: PlayerStatus | null | undefined, 
 	return textOf(players.find((p) => p.playerid === player)?.name);
 }
 
-/** What to send to put `other` in the same group as `current`, or take it out. */
-export function syncToggle(
-	current: string,
-	other: string,
-	groups: readonly string[][],
-	on: boolean,
-): { player: string; cmd: Command } {
+/**
+ * What to send to put `other` in the same group as `current`, or take it out.
+ *
+ * `<X> sync <Y>` makes Y join X's group (leaving any group Y was in), and Y takes the queue
+ * X's group plays: Y's own queue is replaced (checked against LMS 9.1). So it is always sent
+ * for the selected player, naming the one that joins it. The other way round would pull the
+ * selected player out of its group and onto the other player's queue.
+ */
+export function syncToggle(current: string, other: string, on: boolean): { player: string; cmd: Command } {
 	if (!on) return { player: cmd.playerId(other), cmd: cmd.unsync() };
-	// Already grouped: the other player joins this group. Playing alone: this player joins
-	// the other's group (keeping any group the other is already in).
-	return groupOf(current, groups).length
-		? { player: cmd.playerId(other), cmd: cmd.syncWith(current) }
-		: { player: cmd.playerId(current), cmd: cmd.syncWith(other) };
+	return { player: cmd.playerId(current), cmd: cmd.syncWith(other) };
 }

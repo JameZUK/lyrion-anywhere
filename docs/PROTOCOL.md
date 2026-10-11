@@ -289,6 +289,62 @@ Everything else is refused, notably:
 - players on other servers (`other_players_loop`, `sn_players_loop`, `other player count`, `sn player count`, and any key starting `other_player`, `sn_player`, `other player` or `sn player`) are removed from every response;
 - player lists (`players`, `serverstatus`) show only players the caller may control, with counts adjusted, and lose the server's `version` and `lastscan` (the web app uses neither).
 
+## Transfer (move playback between players)
+
+Clients move what one player is playing (its queue, the current track and position, shuffle order and repeat) to another player, start it there and stop the first. The web app offers it as *Move here* and *Bring here*; native apps must use the same recipe. It uses only commands already on the allow-list above, all through `POST /v1/rpc`, so the gateway's player permissions apply to every step: the caller must be allowed to control **both** players, or the first step that names the other one is refused (403) and nothing more is sent.
+
+Below, `S` is the source player (the one playing now) and `T` the target. Both are player ids (MAC addresses) taken from the caller's `players` list. Clients check that each is a well-formed MAC before sending anything, and that `S` ≠ `T`.
+
+### How LMS's `sync` behaves (LMS 9.1, verified)
+
+- `<X> sync <Y>` makes **Y join X's group**. Y first leaves any group it was in, and takes the queue X's group plays: Y's own queue is replaced. If X is playing, Y starts in step with it; if X is paused or stopped, Y is too.
+- `<X> sync -` takes X out of its group. X **stops**, but keeps a copy of the queue at the same track (time 0). The players left in the group carry on without a gap.
+- A target that is switched off joins the group but stays silent, so it must be switched on first.
+- The target keeps its own volume. Shuffle order and repeat come with the queue.
+- Radio streams and app items move like library tracks: LMS copies the queue entries themselves, and the target opens the stream afresh.
+
+The order matters: sending `<T> sync <S>` instead would replace the **source's** queue with the target's (empty, typically), and lose it.
+
+### Recipe 1: group, then leave (use this)
+
+1. `S`: `status - 1 tags:…`. Note `mode` and `playlist_tracks`. If `playlist_tracks` is 0 there is nothing to move: stop and tell the user.
+2. `T`: `power 1`.
+3. `S`: `sync <T>`. T joins S's group and takes its queue.
+4. `T`: `status - 1`, until `sync_master` or `sync_slaves` lists `S` **and** `playlist_tracks` equals S's. The web app checks up to 6 times, 250 ms apart; LMS 9.1 has it done by the first check. If this never happens, send `T`: `sync -` and use recipe 2.
+5. `S`: `sync -`. S leaves the group and stops; T carries on.
+6. `S`: `stop` (it is stopped already; this makes sure).
+7. Start T as S was:
+   - `play`: nothing to do, T is playing;
+   - `pause`: `T`: `pause 0`;
+   - `stop`: `T`: `play`.
+8. Control T from now on.
+
+If any step fails after step 3, send `T`: `sync -` (best effort), so the two are never left grouped by accident, and report the error.
+
+**Measured against LMS 9.1** with two test players: T played on from the same point (31.5 s at the start, 33.8 s on T 2 s later), with nothing lost. The browser player, through a loopback gateway, moved to a test player and back in under 300 ms of client time per direction.
+
+**Edge cases:**
+- **T was in another group:** it leaves that group when it joins (LMS does this itself); the others there carry on with their own queue.
+- **S was in a group with others (C):** T joins that group, and after step 5 T and C play on together. The whole group's playback has moved from S to T.
+- **T's own queue** is replaced. The web app says so in the *Play on…* sheet.
+- **Queue length:** no limit beyond LMS's own; the queue is never sent through the client.
+
+### Recipe 2: copy the list (fallback)
+
+Only if LMS won't group the two (step 4 never succeeds). It can move **library tracks only**: the gateway never reveals URLs, so radio, app and other remote items (no `id`, a negative `id`, or `remote: 1`) can't be loaded by id. Refuse the move and tell the user to start those on the target instead.
+
+1. `S`: `status - 1 tags:…` → `mode`, `time`, `playlist_cur_index`, `playlist_tracks`, `playlist repeat`. Then `S`: `status 0 <playlist_tracks> tags:…` for the queue in play order. Refuse if the queue is empty, if it has more than 500 entries (the gateway pages at most 500), if fewer entries came back than `playlist_tracks`, or if any entry is remote. If `mode` is `play`, add the seconds since the status was read to `time`.
+2. `T`: `power 1`, then `playlist shuffle 0` (the list is copied in play order already, and must not be shuffled again), then `playlist repeat <r>` (S's repeat, 0–2).
+3. Split the track ids, in order, into lists whose comma-separated form is at most **200 characters** (the gateway's limit for an id list).
+   - First list: `T`: `playlistcontrol cmd:load track_id:<ids> play_index:<i>`. Use `play_index:<i>` if the current index `i` falls in this first list, else `play_index:0`.
+   - Each further list: `T`: `playlistcontrol cmd:add track_id:<ids>`.
+   - If `i` was beyond the first list: `T`: `playlist index <i>`.
+4. If `time` ≥ 2: `T`: `time <floor(time)>`.
+5. `S`: `stop`.
+6. Control T from now on.
+
+Loading always starts T playing, whatever S was doing.
+
 ## Diagnostics (`POST /v1/diagnostics`)
 
 A device reports how it plays, for troubleshooting by an admin: browser capabilities, the chosen playback mode and why, player status, and its recent connection log. Bearer token required.

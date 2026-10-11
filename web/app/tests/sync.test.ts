@@ -57,14 +57,14 @@ test('labels: "Lounge + Study", up to three names, then a count', () => {
 	expect(playerLabel('', null, players)).toBe('');
 });
 
-test('toggling sends the joining player sync <other>, and sync - to leave', () => {
-	// Playing alone: the selected player joins the other's group.
-	expect(syncToggle(A, C, [], true)).toEqual({ player: A, cmd: ['sync', C] });
-	// Already grouped: the other player joins this group.
-	expect(syncToggle(A, C, [[A, B]], true)).toEqual({ player: C, cmd: ['sync', A] });
-	// Taking a player out: that player leaves.
-	expect(syncToggle(A, B, [[A, B]], false)).toEqual({ player: B, cmd: ['sync', '-'] });
+// Regression: `<X> sync <Y>` makes Y join X's group and take X's queue (LMS 9.1). The grouped
+// case used to send `<other> sync <selected>`, which pulled the selected player out of its
+// group and replaced its queue with the other player's.
+test('toggling on sends the selected player sync <other>; sync - takes a player out', () => {
+	expect(syncToggle(A, C, true)).toEqual({ player: A, cmd: ['sync', C] });
+	expect(syncToggle(A, B, false)).toEqual({ player: B, cmd: ['sync', '-'] });
 	// Ids that aren't player ids are refused before anything is sent.
-	expect(() => syncToggle(A, 'x; rescan', [], true)).toThrow(RangeError);
-	expect(() => syncToggle('-', B, [], true)).toThrow(RangeError);
+	expect(() => syncToggle(A, 'x; rescan', true)).toThrow(RangeError);
+	expect(() => syncToggle('-', B, true)).toThrow(RangeError);
+	expect(() => syncToggle(A, 'x; rescan', false)).toThrow(RangeError);
 });

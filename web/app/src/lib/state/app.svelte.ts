@@ -7,10 +7,33 @@ import type { Session } from '$lib/api/auth';
 import * as cmd from '$lib/lms/commands';
 import type { PlayerInfo, PlayersResult, PlayerStatus } from '$lib/lms/types';
 import { loadResume } from '$lib/player/resume';
+import { canPlayHere } from '$lib/player/capabilities';
+import {
+	NOTES,
+	cleanId,
+	decideStart,
+	fallbackAfterFailure,
+	loadDefault,
+	loadTabSelection,
+	saveTabSelection,
+	type StartChoice,
+} from '$lib/player/default-player';
+import { refusalText, transfer } from '$lib/lms/transfer';
+import { textOf } from '$lib/lms/format';
 import { AnalysisClient } from '$lib/analysis/client';
 import { ApiError, CLIENT_HEADER, bearer } from '$lib/api/http';
 
 const PLAYER_KEY = 'anywhere.player';
+/** The last player other than this device (for falling back when this device can't play). */
+const REMOTE_KEY = 'anywhere.player.remote';
+
+function stored(key: string): string {
+	try {
+		return localStorage.getItem(key) ?? '';
+	} catch {
+		return ''; // storage blocked
+	}
+}
 const POLL_MS = 2000;
 
 export const session = new SessionManager();
@@ -38,6 +61,12 @@ class AppState {
 	libraryVersion = $state(0);
 	/** Bumped when the queue may have changed. */
 	queueVersion = $state(0);
+	/** A note for the user about which player is in use (e.g. why not this device). */
+	notice = $state('');
+	/** Set at sign-in when this device should start its player by itself (the layout does). */
+	wantDevice = $state(false);
+	/** The player playback is being moved to, while a transfer runs. */
+	moving = $state('');
 
 	/** A player to select as soon as LMS lists it (e.g. this device, just connected). */
 	#preferred = '';
@@ -91,12 +120,70 @@ class AppState {
 		return this.now?.mode === 'play';
 	}
 
-	async #started() {
-		try {
-			this.playerId = localStorage.getItem(PLAYER_KEY) ?? '';
-		} catch {
-			/* storage blocked */
+	/** This device's own player id (from the sign-in), or ''. */
+	get deviceMac(): string {
+		return cleanId(this.session?.device?.mac);
+	}
+
+	/** True when controlling a player other than this device. */
+	get remote(): boolean {
+		return !!this.playerId && this.playerId !== this.deviceMac && !!this.current;
+	}
+
+	/** Choose what to control at sign-in or reload (see default-player.ts). */
+	#chooseStart() {
+		const choice = decideStart({
+			setting: loadDefault(this.session?.user?.username ?? ''),
+			lastUsed: stored(PLAYER_KEY),
+			lastRemote: stored(REMOTE_KEY),
+			tabSelection: loadTabSelection(),
+			deviceMac: this.deviceMac,
+			deviceSupported: canPlayHere(),
+		});
+		this.#apply(choice);
+	}
+
+	#apply(choice: StartChoice) {
+		this.wantDevice = choice.use === 'device';
+		this.notice = choice.use !== 'device' && choice.note ? NOTES[choice.note] : '';
+		if (choice.use === 'device') {
+			// LMS lists this device only once its player has connected: hold the choice
+			// rather than switching to another player meanwhile.
+			this.playerId = this.deviceMac;
+			this.#preferred = this.deviceMac;
+		} else {
+			this.playerId = choice.use === 'player' ? choice.id : '';
+			if (this.#preferred === this.deviceMac) this.#preferred = '';
 		}
+	}
+
+	/**
+	 * This device's player couldn't start (or won't, here): stop waiting for it, and control
+	 * the last other player instead, saying why.
+	 */
+	deviceFailed() {
+		const mac = this.deviceMac;
+		this.wantDevice = false;
+		if (this.playerId !== mac || this.current) return;
+		this.#apply(fallbackAfterFailure(stored(REMOTE_KEY), mac));
+		void this.loadPlayers();
+	}
+
+	/** Control this device: hold the choice until LMS lists its player (just starting). */
+	preferDevice() {
+		const mac = this.deviceMac;
+		if (!mac) return;
+		this.notice = '';
+		if (this.players.some((p) => p.playerid === mac)) this.select(mac);
+		else {
+			this.playerId = mac;
+			this.now = null;
+			this.#preferred = mac;
+		}
+	}
+
+	async #started() {
+		this.#chooseStart();
 		// This device was the player before a reload: LMS lists it again only once it has
 		// reconnected, so hold the choice rather than switching to another player meanwhile.
 		if (this.playerId && loadResume()?.mac === this.playerId) this.#preferred = this.playerId;
@@ -126,6 +213,9 @@ class AppState {
 		analyses.clear();
 		this.players = [];
 		this.now = null;
+		this.notice = '';
+		this.wantDevice = false;
+		this.#preferred = '';
 	}
 
 	#onVisible = () => {
@@ -177,6 +267,7 @@ class AppState {
 	forget() {
 		this.playerId = '';
 		this.now = null;
+		saveTabSelection('');
 		try {
 			localStorage.removeItem(PLAYER_KEY);
 		} catch {
@@ -188,12 +279,45 @@ class AppState {
 		this.playerId = id;
 		this.now = null;
 		this.queueVersion++;
+		if (this.#preferred && this.#preferred !== id) this.#preferred = '';
+		saveTabSelection(id);
 		try {
 			localStorage.setItem(PLAYER_KEY, id);
+			if (id !== this.deviceMac) localStorage.setItem(REMOTE_KEY, id);
 		} catch {
 			/* not essential */
 		}
 		void this.refresh();
+	}
+
+	/**
+	 * Move playback from `source` to `target` (docs/PROTOCOL.md, Transfer), then control
+	 * `target`. `targetName` is for messages.
+	 */
+	async moveTo(source: string, target: string, targetName: string): Promise<boolean> {
+		if (this.moving) return false;
+		this.moving = targetName || 'the other player';
+		this.notice = '';
+		try {
+			const r = await transfer((p, c) => api.rpc(p, c), source, target);
+			if (r.ok) {
+				this.select(target);
+				return true;
+			}
+			this.notice = 'error' in r ? `Couldn't move playback: ${r.error}` : refusalText(r.refusal, this.moving);
+			return false;
+		} catch (e) {
+			this.notice = `Couldn't move playback: ${(e as Error).message}`;
+			return false;
+		} finally {
+			this.moving = '';
+			void this.loadPlayers();
+		}
+	}
+
+	/** A player's name, as LMS lists it. */
+	nameOf(id: string): string {
+		return textOf(this.players.find((p) => p.playerid === id)?.name);
 	}
 
 	/** Refresh status shortly (coalesces bursts of events). */
@@ -239,7 +363,7 @@ class AppState {
 	/** Play, play next or add a selection on the selected player. */
 	async queueUp(sel: cmd.Selection, placement: cmd.Placement, playIndex?: number) {
 		if (!this.playerId) {
-			this.error = 'Choose a player first (bottom right, or Settings › This device).';
+			this.error = 'Choose a player first: tap the Play on… button by the volume.';
 			return;
 		}
 		await this.send(cmd.enqueue(sel, placement, playIndex));

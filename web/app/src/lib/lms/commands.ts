@@ -173,6 +173,8 @@ export function infoMenu(kind: InfoKind, item: number): (from: number, n: number
 // --- playback (player commands) ----------------------------------------------------------
 
 export const status = (): Command => ['status', '-', 1, STATUS_TAGS];
+/** What a player is playing, in brief (for the player list). */
+export const nowPlaying = (): Command => ['status', '-', 1, 'tags:al'];
 export const queue = (from: number, n: number): Command => ['status', start(from), count(n), QUEUE_TAGS];
 export const play = (): Command => ['play'];
 export const pause = (on?: boolean): Command => (on === undefined ? ['pause'] : ['pause', on ? 1 : 0]);
@@ -225,6 +227,40 @@ export function enqueue(sel: Selection, placement: Placement, playIndex?: number
 	const cmd: Command = ['playlistcontrol', `cmd:${PLACEMENT[placement]}`, selector(sel)];
 	if (placement === 'play' && playIndex !== undefined) cmd.push(`play_index:${start(playIndex)}`);
 	return cmd;
+}
+
+/** The gateway takes an id list of at most this many characters (`1,2,3`). */
+export const ID_LIST_MAX = 200;
+
+/**
+ * Replace the queue with these tracks (`load`, starting at `playIndex`) or append them
+ * (`add`). Every id is checked, and the list must fit the gateway's limit (see `chunkIds`).
+ */
+export function loadTracks(ids: readonly number[], how: 'load' | 'add', playIndex?: number): Command {
+	const list = ids.map(id).join(',');
+	if (!list || list.length > ID_LIST_MAX) throw new RangeError('bad track list');
+	const cmd: Command = ['playlistcontrol', `cmd:${how}`, `track_id:${list}`];
+	if (how === 'load' && playIndex !== undefined) cmd.push(`play_index:${start(playIndex)}`);
+	return cmd;
+}
+
+/** Split ids into lists that each fit the gateway's limit, keeping their order. */
+export function chunkIds(ids: readonly number[], max = ID_LIST_MAX): number[][] {
+	const out: number[][] = [];
+	let cur: number[] = [];
+	let len = 0;
+	for (const v of ids) {
+		const n = String(id(v)).length;
+		if (cur.length && len + 1 + n > max) {
+			out.push(cur);
+			cur = [];
+			len = 0;
+		}
+		len += (cur.length ? 1 : 0) + n;
+		cur.push(v);
+	}
+	if (cur.length) out.push(cur);
+	return out;
 }
 
 // --- links -------------------------------------------------------------------------------

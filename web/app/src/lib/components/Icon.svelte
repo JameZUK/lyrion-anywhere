@@ -36,6 +36,9 @@
 		folder: 'M3.5 6.5a1 1 0 0 1 1-1H9l2 2.5h8.5a1 1 0 0 1 1 1V18a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1z',
 		stack: 'M4 8l8-4 8 4-8 4zM4 12l8 4 8-4M4 16l8 4 8-4',
 		note: 'M9 18V6l10-2v12M9 18a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0zM19 16a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z',
+		// Cast-style: a screen with waves from its corner (where the sound plays).
+		output: 'M3.5 8V6a1 1 0 0 1 1-1h15a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-6M3.5 11.5a7.5 7.5 0 0 1 7.5 7.5M3.5 15a4 4 0 0 1 4 4M3.5 19h.01',
+		transfer: 'M4 12h14M13 7l5 5-5 5',
 		offline:'M3 8.5a13 13 0 0 1 18 0M6.5 12a8 8 0 0 1 11 0M10 15.5a3 3 0 0 1 4 0M4 4l16 16',
 	};
 	const SOLID = new Set(['play', 'pause', 'next', 'prev']);

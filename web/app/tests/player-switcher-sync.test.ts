@@ -54,12 +54,14 @@ test('playing alone: switching another player on makes this one join its group',
 	await waitFor(() => expect(fake.calls.filter((c) => c.cmd[0] === 'syncgroups').length).toBe(2));
 });
 
+// Regression: this used to send `<Kitchen> sync <Lounge>`, which in LMS moves Lounge out of
+// its group and onto Kitchen's queue.
 test('grouped: another player joins this group; switching a member off unsyncs that member', async () => {
 	groups = [`${A},${B}`];
 	const r = render(PlayerSwitcher, { onclose: () => {} });
 	await waitFor(() => expect(r.getByRole('switch', { name: 'Sync with Study' }).getAttribute('aria-checked')).toBe('true'));
 	await fireEvent.click(r.getByRole('switch', { name: 'Sync with Kitchen' }));
-	await waitFor(() => expect(syncCalls()).toEqual([{ player: C, cmd: ['sync', A] }]));
+	await waitFor(() => expect(syncCalls()).toEqual([{ player: A, cmd: ['sync', C] }]));
 	await waitFor(() => expect(r.getByRole('switch', { name: 'Sync with Study' })).not.toHaveProperty('disabled', true));
 	await fireEvent.click(r.getByRole('switch', { name: 'Sync with Study' }));
 	await waitFor(() => expect(syncCalls()[1]).toEqual({ player: B, cmd: ['sync', '-'] }));
@@ -87,12 +89,12 @@ test('a refused sync is reported', async () => {
 	expect((await r.findByRole('alert')).textContent).toContain("Couldn't change the group");
 });
 
-test('no sync section with only one player, and no query sent', async () => {
+test('no sync section with only one player, and no group query sent', async () => {
 	fake.app.players = [{ playerid: A, name: 'Lounge' }];
 	const r = render(PlayerSwitcher, { onclose: () => {} });
 	await new Promise((res) => setTimeout(res, 10));
 	expect(r.queryAllByRole('switch')).toHaveLength(0);
-	expect(fake.calls).toEqual([]);
+	expect(fake.calls.filter((c) => c.cmd[0] !== 'status')).toEqual([]);
 });
 
 test('hostile player names stay text', async () => {

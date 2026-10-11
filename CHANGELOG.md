@@ -4,6 +4,27 @@ Dated entries, newest first.
 
 ## 2026-10-11
 
+### Web app: player-first, and moving playback between players (SPEC D20)
+- **This device by default, everywhere** (desktops too). After sign-in the browser's player connects by itself, so it's ready; the first tap anywhere turns the sound on (browsers need a gesture), with no "Play on this device" step. iPhone and iPad keep the media-element mode as before.
+  - Only one tab of a browser runs the player (a Web Lock): a second tab that opens controls it rather than taking it over. A tap that starts it takes it over.
+  - If this browser can't play, or its player doesn't start (or LMS hasn't listed it after 20 s), the app controls the player used last and says why.
+  - **Settings › This device › When the app opens, play on:** *This device* (the default), *The player used last*, or a named player. Kept per user, on this device.
+  - A reload keeps what the tab was controlling: this device resumes by itself, a remote player stays selected.
+- **No big player picker.** A small output button by the volume (Now playing and the mini bar, phones included) opens *Play on…*:
+  - this device, ticked when in use;
+  - the other players you may control, with what each is playing;
+  - sync groups, as before.
+- **"Playing on Lounge"** strip, on Now playing and above the mini bar, whenever another player is in use, with *Back to this device* and *Bring here*.
+- **Transfer:** *Move here* on any other player moves the queue, track, position, shuffle and repeat there, starts it, and stops the player it came from. *Bring here* does the reverse.
+  - The recipe groups the target with the source and then takes the source out (LMS copies the queue, radio and app items included, and the target plays on without a gap). It falls back to loading the same library tracks by id where LMS won't group the two. Documented in `docs/PROTOCOL.md` ("Transfer") for the native apps.
+  - Verified against LMS 9.1 with test players: playing, paused, stopped, a radio stream, a target that was off, a target already in a group, a source in a group.
+  - Nothing new on the gateway allow-list: every step is an existing command between two players the caller may control.
+- **Fix: sync toggles.** Adding a player to the selected player's group sent the command the wrong way round when the selected player was already grouped. In LMS, `<X> sync <Y>` makes Y join X's group and take its queue, so the selected player was pulled out of its group and onto the other player's queue. It is now always sent for the selected player.
+- **Tests:**
+  - web: the start decision (setting, last used, reloads, unsupported browsers, hostile or blocked storage); transfer planning (both recipes, remote items, empty and long queues, hostile status values) and the runner against a scripted LMS (fallback, clean-up after failures); the output button, *Play on…*, the strip, app start-up, and the one-tab lock; the sync direction regression;
+  - gateway: the whole transfer recipe passes between permitted players and is refused at every step for a player the caller may not control; over-long and malformed id lists are refused.
+- **Screenshots** updated (the demo starts on Lounge, so they show the strip).
+
 ### Android: browsing on a par with the web app, rich pages, and player-first (A4 part 1)
 - **Player-first (SPEC D20):**
   - This phone is the default player, and its player is on after sign-in.

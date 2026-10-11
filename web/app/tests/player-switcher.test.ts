@@ -12,7 +12,7 @@ test('focus moves in on open, Escape closes, and focus returns to the opener', a
 	const onclose = vi.fn();
 	const r = render(PlayerSwitcher, { onclose });
 	await tick();
-	const dialog = r.getByRole('dialog', { name: 'Choose a player' });
+	const dialog = r.getByRole('dialog', { name: 'Play on' });
 	expect(dialog.contains(document.activeElement)).toBe(true);
 
 	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -35,7 +35,7 @@ test('a tap outside closes it; taps inside, or on the button that opened it, do 
 	const onclose = vi.fn();
 	const r = render(PlayerSwitcher, { onclose });
 	await tick();
-	const dialog = r.getByRole('dialog', { name: 'Choose a player' });
+	const dialog = r.getByRole('dialog', { name: 'Play on' });
 	const tap = (el: Element) => el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
 	tap(dialog.querySelector('h2')!);
 	expect(onclose).not.toHaveBeenCalled();

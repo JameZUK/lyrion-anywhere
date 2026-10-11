@@ -4,7 +4,7 @@
 import { version } from '$app/environment';
 import { api, session } from '$lib/state/app.svelte';
 import { KeepAlive, PersistentLog, describeLifecycle } from './background';
-import { detect } from './capabilities';
+import { canPlayHere, detect } from './capabilities';
 import { MediaOutput, Timeline } from './media-output';
 import { MEDIA_TYPE, MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
 import { Reporter, buildReport, diagnosticsSender } from './diagnostics';
@@ -24,6 +24,9 @@ import {
 	type VolumePlan,
 	type VolumeSetting,
 } from './volume';
+
+/** The Web Lock a tab holds while it runs this device's player. */
+const DEVICE_LOCK = 'anywhere-device-player';
 
 /** While LMS's volume is held at 100% here, ask again at most this often. */
 const HOLD_FULL_EVERY_MS = 3000;
@@ -287,9 +290,52 @@ class DevicePlayer {
 	}
 
 	get supported(): boolean {
-		const g = globalThis as Record<string, unknown>;
-		const output = typeof AudioWorkletNode !== 'undefined' || !!g.ManagedMediaSource || !!g.MediaSource;
-		return output && typeof Worker !== 'undefined' && typeof WebAssembly !== 'undefined';
+		return canPlayHere();
+	}
+
+	/** Releases this tab's hold on the device player (see #holdTab). */
+	#releaseTab: (() => void) | null = null;
+
+	/**
+	 * Every tab of this browser is the same device (the same LMS player), so only one may run
+	 * it. A tab holds a Web Lock while its player runs: a tab that starts by itself only does
+	 * so if no other tab holds it; a tap takes it over (the gateway then closes the other
+	 * tab's player). Browsers without Web Locks just start.
+	 */
+	#holdTab(takeOver: boolean): Promise<boolean> {
+		if (this.#releaseTab) return Promise.resolve(true);
+		const locks = (globalThis.navigator as Navigator | undefined)?.locks;
+		if (!locks?.request) return Promise.resolve(true);
+		return new Promise<boolean>((resolve) => {
+			locks
+				.request(DEVICE_LOCK, takeOver ? { steal: true } : { ifAvailable: true }, (lock) => {
+					if (!lock) {
+						resolve(false);
+						return undefined;
+					}
+					resolve(true);
+					return new Promise<void>((release) => (this.#releaseTab = release));
+				})
+				.catch(() => {
+					// Taken over by another tab, or locks unavailable here.
+					this.#releaseTab = null;
+					resolve(takeOver);
+				});
+		});
+	}
+
+	/**
+	 * Start by itself, without a tap (after signing in, or a reload): the player connects and
+	 * is ready, and the first tap anywhere turns the sound on. Not if another tab of this
+	 * browser already runs it ('busy').
+	 */
+	async autoStart(): Promise<'started' | 'busy' | 'unsupported' | 'failed'> {
+		if (!this.supported) return 'unsupported';
+		if (this.#worker || this.state === 'starting') return 'started';
+		if (!(await this.#holdTab(false))) return 'busy';
+		if (this.wasActive) this.#note('resuming after the page reloaded');
+		await this.start({ auto: true });
+		return this.state === 'error' ? 'failed' : 'started';
 	}
 
 	/**
@@ -298,6 +344,7 @@ class DevicePlayer {
 	 */
 	async start(opts: { auto?: boolean } = {}) {
 		if (this.#worker || this.state === 'starting' || !session.current) return;
+		if (!opts.auto) void this.#holdTab(true);
 		// Stop may be pressed while this is still starting: after every wait, check that this
 		// start is still the current one, and if not, drop what it built and go no further.
 		const gen = ++this.#gen;
@@ -399,8 +446,7 @@ class DevicePlayer {
 	/** Restart after a reload, if this device was playing before it. */
 	async resumeAfterReload() {
 		if (!this.wasActive || this.#worker) return;
-		this.#note('resuming after the page reloaded');
-		await this.start({ auto: true });
+		await this.autoStart();
 	}
 
 	/** The browser held the sound back (no tap): unmute on the next tap or key press. */
@@ -434,6 +480,8 @@ class DevicePlayer {
 	stop(final: DeviceState = 'stopped') {
 		this.#gen++;
 		this.#audioRate = 0;
+		this.#releaseTab?.();
+		this.#releaseTab = null;
 		this.#history.active = false;
 		this.wasActive = false;
 		this.needsTap = false;

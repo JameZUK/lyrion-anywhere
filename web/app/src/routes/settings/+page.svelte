@@ -15,6 +15,9 @@
 	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
 	import { forgetOwner, formatBytes, loadPrefs, networkType, requestPersist, savePrefs, storageInfo, type DownloadPrefs, type StorageInfo } from '$lib/offline/settings';
 	import { FORMATS, FORMAT_LABELS } from '$lib/offline/types';
+	import { loadDefault, saveDefault, type DefaultSetting } from '$lib/player/default-player';
+	import { isThisDevice } from '$lib/player/outputs';
+	import { textOf } from '$lib/lms/format';
 
 	// Built in: every browser is checked, and the best playback mode chosen automatically.
 	const caps = detect();
@@ -25,6 +28,20 @@
 	function setPref(p: ModePreference) {
 		pref = p;
 		savePreference(p);
+	}
+
+	// Which player the app uses when it opens on this device (SPEC D20), per user.
+	const user = $derived(session.current?.user.username ?? '');
+	let startWith = $state<DefaultSetting>({ kind: 'device' });
+	$effect(() => {
+		startWith = loadDefault(user);
+	});
+	const startKey = (d: DefaultSetting) => (d.kind === 'player' ? d.id : d.kind);
+	const startPlayers = $derived(app.players.filter((p) => !isThisDevice(p.playerid)));
+	function setStartWith(v: string) {
+		const d: DefaultSetting = v === 'device' || v === 'last' ? { kind: v } : { kind: 'player', id: v };
+		startWith = d;
+		saveDefault(user, d);
 	}
 
 	// Volume on this device: follows LMS where the browser allows it, otherwise the device's
@@ -137,13 +154,29 @@
 
 	<div class="card">
 		<h2>This device</h2>
-		<p class="muted">Play music in this browser. It appears in LMS as a player named “{session.current?.device.name}”.</p>
+		<p class="muted">Music plays in this browser unless you choose another player. It appears in LMS as a player named “{session.current?.device.name}”.</p>
+		<label class="field start-with">
+			<span>When the app opens, play on</span>
+			<select value={startKey(startWith)} onchange={(e) => setStartWith(e.currentTarget.value)} data-start-with>
+				<option value="device">This device</option>
+				<option value="last">The player used last</option>
+				{#each startPlayers as p (p.playerid)}
+					<option value={p.playerid}>{textOf(p.name)}</option>
+				{/each}
+				{#if startWith.kind === 'player' && !startPlayers.some((p) => startWith.kind === 'player' && p.playerid === startWith.id)}
+					<option value={startKey(startWith)}>A player not connected now</option>
+				{/if}
+			</select>
+		</label>
+		{#if !device.supported}
+			<p class="muted small">This browser can't play music itself, so the app uses the player used last.</p>
+		{/if}
 		<div class="row">
 			{#if device.state === 'connected' || device.state === 'reconnecting' || device.state === 'starting'}
-				<span class="pill on">{device.state === 'connected' ? 'Playing here' : device.state === 'starting' ? 'Starting…' : 'Reconnecting…'}</span>
-				<button class="btn" onclick={() => device.stop()}>Stop</button>
+				<span class="pill on">{device.state === 'connected' ? 'Player ready' : device.state === 'starting' ? 'Starting…' : 'Reconnecting…'}</span>
+				<button class="btn" onclick={() => device.stop()}>Stop the player</button>
 			{:else}
-				<button class="btn primary" onclick={() => device.start()} disabled={!device.supported}><Icon name="device" size={18} />Play on this device</button>
+				<button class="btn primary" onclick={() => device.start()} disabled={!device.supported}><Icon name="device" size={18} />Start the player</button>
 			{/if}
 		</div>
 		<div class="mode">
@@ -436,6 +469,9 @@
 	.small {
 		font-size: 0.85rem;
 		margin: 0.5rem 0 0;
+	}
+	.start-with {
+		margin: 0.75rem 0;
 	}
 	.formats {
 		display: flex;

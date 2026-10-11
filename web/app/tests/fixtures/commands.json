@@ -271,6 +271,50 @@
  {
   "player": true,
   "cmd": [
+   "status",
+   "-",
+   1,
+   "tags:al"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:load",
+   "track_id:2112062,2112063,2112064",
+   "play_index:1"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:add",
+   "track_id:2112065,2112066"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:load",
+   "track_id:9000000,9000001,9000002,9000003,9000004,9000005,9000006,9000007,9000008,9000009,9000010,9000011,9000012,9000013,9000014,9000015,9000016,9000017,9000018,9000019,9000020,9000021,9000022,9000023,9000024",
+   "play_index:0"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "status",
+   0,
+   500,
+   "tags:alcdJKj"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
    "playlistcontrol",
    "cmd:load",
    "album_id:7"
