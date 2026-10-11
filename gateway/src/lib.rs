@@ -86,6 +86,11 @@ pub struct Config {
     pub dial_timeout: Duration,
     /// How long a session (and its LMS connection) survives without a client socket.
     pub resume_grace: Duration,
+    /// A connected client that has sent nothing for this long (it answers LMS's status
+    /// polls every 5 s) is reported to LMS by the gateway until it speaks again, as while
+    /// detached: LMS drops a player it hasn't heard from for about 15 s, which would end the
+    /// session before the client noticed its socket had died.
+    pub client_silence: Duration,
     /// Bytes of LMS → client frames queued while no socket is attached; beyond this the
     /// session ends.
     pub detached_queue_limit: usize,
@@ -161,6 +166,7 @@ impl Default for Config {
             auth_timeout: Duration::from_secs(5),
             dial_timeout: Duration::from_secs(5),
             resume_grace: Duration::from_secs(60),
+            client_silence: Duration::from_secs(8),
             detached_queue_limit: 1024 * 1024,
             replay_window: 4 * 1024 * 1024,
             static_dir: None,

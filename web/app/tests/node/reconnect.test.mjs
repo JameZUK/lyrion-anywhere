@@ -13,6 +13,8 @@ import {
   closeAction,
   describeSeek,
   streamFailureAction,
+  socketSilent,
+  SOCKET_SILENCE_MS,
 } from '../../static/player/reconnect.js';
 import { readFileSync } from 'node:fs';
 
@@ -23,7 +25,10 @@ test('close codes map to the right recovery', () => {
   assert.equal(closeAction(CLOSE.REPLACED), 'stop');
   // Session gone: start afresh.
   assert.equal(closeAction(CLOSE.NO_SESSION), 'new-session');
-  assert.equal(closeAction(CLOSE.GOING_AWAY), 'new-session');
+  // Regression: 1001 started a new session at once. Browsers send it too when they close a
+  // socket themselves, and a fresh HELO makes LMS restart the track (or stop, if paused).
+  // Resume instead: the gateway refuses (4404) if the session really ended.
+  assert.equal(closeAction(CLOSE.GOING_AWAY), 'resume');
   // Network trouble: resume the same session.
   assert.equal(closeAction(CLOSE.ABNORMAL), 'resume');
   assert.equal(closeAction(CLOSE.TRY_AGAIN), 'resume');
@@ -44,7 +49,20 @@ test('stream failures: retry network trouble, fail on definitive answers', () =>
   assert.equal(streamFailureAction(0), 'retry');
   assert.equal(streamFailureAction(502), 'retry');
   assert.equal(streamFailureAction(503), 'retry');
-  for (const s of [400, 401, 403, 404, 410, 416]) assert.equal(streamFailureAction(s), 'fail', `${s}`);
+  for (const s of [400, 403, 404, 410, 416]) assert.equal(streamFailureAction(s), 'fail', `${s}`);
+  // Regression: an expired access token failed the track (LMS then skipped or stopped).
+  // The first 401 renews the token and retries; a second one is final (revoked).
+  assert.equal(streamFailureAction(401), 'renew');
+  assert.equal(streamFailureAction(401, true), 'fail');
+  for (const s of [400, 403, 404, 410, 416]) assert.equal(streamFailureAction(s, false), 'fail', `${s}`);
+});
+
+test('a socket silent for longer than four of LMS status polls counts as dead', () => {
+  assert.ok(SOCKET_SILENCE_MS >= 4 * 5_000, 'never shorter than a few LMS polls');
+  assert.ok(SOCKET_SILENCE_MS <= 30_000, 'well within the 60 s resume grace');
+  assert.equal(socketSilent(1_000, 1_000 + SOCKET_SILENCE_MS), false);
+  assert.equal(socketSilent(1_000, 1_001 + SOCKET_SILENCE_MS), true);
+  assert.equal(socketSilent(0, 100, 50), true);
 });
 
 test('outbox is bounded and drops oldest first', () => {

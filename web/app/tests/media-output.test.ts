@@ -172,3 +172,106 @@ test('the timeline counts frames across rate changes', () => {
 	t.reset(0, 48000);
 	expect(t.frames(0, 2)).toBe(96000);
 });
+
+/** Control what the fake element reports: playing or paused, and where its play head is. */
+function control(out: MediaOutput, state: { paused: boolean; t: number }) {
+	Object.defineProperty(out.audio, 'paused', { configurable: true, get: () => state.paused });
+	Object.defineProperty(out.audio, 'currentTime', {
+		configurable: true,
+		get: () => state.t,
+		set: (v: number) => void (state.t = v),
+	});
+}
+
+// Regression: a stall that was not the end (the element paused, its play head stuck just
+// before the new audio after a seek, or audio still being appended) was reported as "played
+// everything", so the worker counted audio still to come as played. Near the end of a track
+// that told LMS the next track had started.
+test('only a play head at the end of everything appended counts as drained', async () => {
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors });
+	const drained = vi.fn();
+	out.onDrained = drained;
+	await out.start();
+	const sb = FakeSourceBuffer.last!;
+	const s = { paused: false, t: 0 };
+	control(out, s);
+	const waiting = () => out.audio.dispatchEvent(new Event('waiting'));
+
+	// Nothing appended yet (play() before the first segment): not the end.
+	waiting();
+	expect(out.atEnd).toBe(false);
+
+	// The play head a hair before the new audio (a seek that landed just short): not the end,
+	// and the play head is moved onto the audio.
+	sb.buffered = new FakeBuffered([[100.0001, 108]]);
+	s.t = 100;
+	waiting();
+	expect(drained).not.toHaveBeenCalled();
+	expect(s.t).toBe(100.0001);
+
+	// Paused at the end of the audio: not a drain either.
+	s.t = 107.95;
+	s.paused = true;
+	waiting();
+	expect(drained).not.toHaveBeenCalled();
+	s.paused = false;
+
+	// Audio still waiting to be appended: not the end.
+	sb.updating = true;
+	out.append(new Uint8Array([1]));
+	sb.updating = false;
+	waiting();
+	expect(drained).not.toHaveBeenCalled();
+	out.append(new Uint8Array([2])); // pumps the queue
+	await settle();
+
+	// Played up to the end of everything appended: drained.
+	waiting();
+	expect(drained).toHaveBeenCalledTimes(1);
+	out.stop();
+});
+
+// Regression: when the system paused the element (a call, another app's audio), nothing
+// noticed: LMS and the player carried on as if playing while nothing was heard.
+test('a pause the output did not ask for is reported once; its own pauses are not', async () => {
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors });
+	const external = vi.fn();
+	out.onExternalPause = external;
+	await out.start();
+	const pauseEvent = () => out.audio.dispatchEvent(new Event('pause'));
+
+	out.pause(); // LMS paused: our own
+	pauseEvent();
+	expect(external).not.toHaveBeenCalled();
+
+	out.resume();
+	pauseEvent(); // the system's
+	pauseEvent(); // reported once, until we play again
+	expect(external).toHaveBeenCalledTimes(1);
+
+	out.resume();
+	out.stop();
+	pauseEvent(); // stopping is ours too
+	expect(external).toHaveBeenCalledTimes(1);
+});
+
+test('a play head far from any audio is left alone; one inside audio is not stuck', async () => {
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors });
+	await out.start();
+	const sb = FakeSourceBuffer.last!;
+	const s = { paused: false, t: 10 };
+	control(out, s);
+	sb.buffered = new FakeBuffered([[20, 30]]);
+	expect(out.unstick()).toBe(false); // 10 s away: not a sliver of a gap
+	expect(s.t).toBe(10);
+	s.t = 25;
+	expect(out.unstick()).toBe(false);
+	expect(s.t).toBe(25);
+	s.t = 19.8;
+	s.paused = true;
+	expect(out.unstick()).toBe(false); // paused: nothing to do
+	s.paused = false;
+	expect(out.unstick()).toBe(true);
+	expect(s.t).toBe(20);
+	out.stop();
+});

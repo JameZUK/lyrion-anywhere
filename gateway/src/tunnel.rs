@@ -222,6 +222,9 @@ async fn read_loop(
         let Some(msg) = msg else {
             return ReadEnd::SocketGone;
         };
+        if msg.is_ok() {
+            session.heard_from(generation);
+        }
         let data = match msg {
             Ok(Message::Binary(b)) => b,
             Ok(Message::Ping(_) | Message::Pong(_)) => continue,

@@ -3,7 +3,7 @@
 // Close codes from the gateway (see gateway/src/session.rs and tunnel.rs).
 export const CLOSE = {
   NORMAL: 1000,
-  GOING_AWAY: 1001, // LMS closed the connection, or the session expired
+  GOING_AWAY: 1001, // the gateway: LMS closed the connection, or the session expired; or the browser
   ABNORMAL: 1006, // network dropped without a close frame
   POLICY: 1008, // unauthorised or protocol violation
   TRY_AGAIN: 1013, // server unavailable, or this client was too slow
@@ -16,6 +16,11 @@ export const CLOSE = {
  * - 'stop': don't reconnect (credentials rejected, protocol error, or replaced elsewhere);
  * - 'new-session': the old session is gone; connect afresh (new HELO);
  * - 'resume': reconnect and resume the existing session.
+ *
+ * 1001 is resumed too: browsers also use it when they close a socket themselves (a page
+ * being suspended), and a new session costs a fresh HELO, which makes LMS restart the
+ * track, or stop if it was paused. If the gateway really ended the session, the resume is
+ * refused (4404) and only then does a new session start.
  */
 export function closeAction(code) {
   switch (code) {
@@ -23,11 +28,22 @@ export function closeAction(code) {
     case CLOSE.REPLACED:
       return 'stop';
     case CLOSE.NO_SESSION:
-    case CLOSE.GOING_AWAY:
       return 'new-session';
     default:
       return 'resume';
   }
+}
+
+/**
+ * LMS asks every player for its status every 5 s, so a working player socket is never quiet
+ * for long. One that has been silent this long has died without closing (a network change):
+ * abandon it and resume, well within the gateway's 60 s grace.
+ */
+export const SOCKET_SILENCE_MS = 20_000;
+
+/** Has the socket been silent too long? (`lastHeard` and `now` in ms.) */
+export function socketSilent(lastHeard, now, limit = SOCKET_SILENCE_MS) {
+  return now - lastHeard > limit;
 }
 
 /** Exponential backoff with jitter: ~0.5 s, 1 s, 2 s, 4 s, then every ~5 s. */
@@ -38,11 +54,13 @@ export function backoffMs(attempt, random = Math.random) {
 
 /**
  * After a failed stream fetch with HTTP `status` (or 0 for a network error):
- * 'retry' the download from the current offset, or 'fail' the track.
+ * 'retry' the download from the current offset, 'renew' the access token and then retry
+ * (a 401 the first time: it has most likely just expired), or 'fail' the track.
  */
-export function streamFailureAction(status) {
+export function streamFailureAction(status, renewed = false) {
   if (status === 0 || status >= 500) return 'retry';
-  return 'fail'; // 401 revoked, 404 gone, 410 outside replay window, 416 bad offset
+  if (status === 401 && !renewed) return 'renew';
+  return 'fail'; // 401 again (revoked), 404 gone, 410 outside replay window, 416 bad offset
 }
 
 /** Messages for the server, held while disconnected. Bounded: oldest dropped first. */

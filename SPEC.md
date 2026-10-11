@@ -149,7 +149,7 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
    - **serv:** dropped, so a device can't be redirected to another server.
 4. **Resume** (implemented; full detail in `docs/PROTOCOL.md`):
    - **Grace period:** if the socket drops, the gateway keeps the session and the LMS connection for a grace period (60 s by default). LMS never sees the player leave.
-   - **Heartbeats:** while the client is away, the gateway reports status to LMS on the player's behalf every second. It replays the client's last STAT with the clock advanced. Without this, LMS drops a silent player after about 15 s, which the live dropout test showed.
+   - **Heartbeats:** while the client is away, the gateway reports status to LMS on the player's behalf every second. It replays the client's last STAT with the clock advanced. Without this, LMS drops a silent player after about 15 s, which the live dropout test showed. It does the same for a client whose socket is still open but has sent nothing for 8 s (a socket that died unnoticed), and clients give up on a socket that has brought nothing for 20–25 s and resume.
    - **Redelivery:** frames for the client are numbered and kept in a bounded log. On resume, the client says how many it received and everything after that is re-sent, which covers frames lost in flight.
    - **Stream resume:** downloads resume by byte offset. The client acknowledges received bytes, and the gateway never reads more than one replay window (4 MiB) beyond the last ack. A resume therefore always falls inside the window, and LMS isn't drained ahead of time.
    - **One session per device:** a new session for a device ends its previous one.

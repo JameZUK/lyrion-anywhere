@@ -22,6 +22,10 @@ export interface MediaOutputOptions {
 
 /** Keep this many seconds behind the play head; older audio is removed. */
 const KEEP_BEHIND = 10;
+/** Less than this left to play (seconds) counts as having played everything appended. */
+const END_SLACK = 0.1;
+/** A play head stuck at most this far (seconds) before buffered audio is moved onto it. */
+const MAX_GAP = 0.5;
 
 export class MediaOutput {
 	readonly audio: HTMLAudioElement;
@@ -34,6 +38,14 @@ export class MediaOutput {
 	#failed = false;
 	/** Called when the element has played everything appended and is waiting for more. */
 	onDrained: (() => void) | null = null;
+	/**
+	 * Called when something other than this output paused the element: the system (a phone
+	 * call, another app's audio, Siri) or the browser. Nothing else would notice: the player
+	 * would carry on as if playing, silently.
+	 */
+	onExternalPause: (() => void) | null = null;
+	/** This output wants the element playing (it called play() and not pause() since). */
+	#wantPlay = false;
 
 	constructor(private opts: MediaOutputOptions) {
 		this.audio = (opts.makeAudio ?? (() => new Audio()))();
@@ -61,6 +73,7 @@ export class MediaOutput {
 		this.#url = URL.createObjectURL(ms);
 		a.src = this.#url;
 		// Inside the gesture; resolves once there is data to play.
+		this.#wantPlay = true;
 		a.play().catch((e: Error) => this.#note(`media element did not start: ${e.message}`));
 		await new Promise<void>((resolve, reject) => {
 			ms.addEventListener('sourceopen', () => resolve(), { once: true });
@@ -81,8 +94,15 @@ export class MediaOutput {
 			this.#fail(`media error ${a.error?.code ?? ''}`);
 		});
 		ms.addEventListener('sourceclose', () => this.#note('media source closed'));
+		a.addEventListener('pause', () => {
+			if (!this.#wantPlay || this.#closed || this.#failed) return;
+			this.#wantPlay = false;
+			this.#note('the system paused the media element');
+			this.onExternalPause?.();
+		});
 		a.addEventListener('waiting', () => {
-			if (this.ahead < 0.1) this.onDrained?.();
+			if (this.atEnd) this.onDrained?.();
+			else this.unstick();
 		});
 		this.#pump();
 	}
@@ -146,11 +166,51 @@ export class MediaOutput {
 		return 0;
 	}
 
+	/**
+	 * Playing, and the play head has reached the end of everything appended: nothing is
+	 * waiting to be appended and less than {@link END_SLACK} is left in the last buffered
+	 * range. Only then has all the audio handed to the element been played. A stall anywhere
+	 * else (the play head in a gap, before audio still being appended, or the element paused)
+	 * is not the end, and counting it as one would tell LMS that audio still to come had
+	 * played, and so that the track had finished.
+	 */
+	get atEnd(): boolean {
+		const sb = this.#sb;
+		if (!sb || this.#closed || this.audio.paused || sb.updating || this.#queue.length) return false;
+		const b = sb.buffered;
+		if (!b.length) return false;
+		const t = this.audio.currentTime;
+		const last = b.length - 1;
+		return b.start(last) <= t + END_SLACK && b.end(last) - t < END_SLACK;
+	}
+
+	/**
+	 * The play head is stuck just before buffered audio (a sliver of a gap, e.g. after a seek
+	 * landed a hair before the new audio): move it onto that audio. Returns whether it moved.
+	 */
+	unstick(): boolean {
+		const sb = this.#sb;
+		if (!sb || this.#closed || this.audio.paused) return false;
+		const b = sb.buffered;
+		const t = this.audio.currentTime;
+		for (let i = 0; i < b.length; i++) {
+			if (b.start(i) <= t && b.end(i) > t) return false; // in buffered audio: not stuck in a gap
+			if (b.start(i) > t && b.start(i) - t <= MAX_GAP) {
+				this.seek(b.start(i));
+				this.#note(`media: moved the play head over a ${Math.round((b.start(i) - t) * 1000)} ms gap`);
+				return true;
+			}
+		}
+		return false;
+	}
+
 	pause() {
+		this.#wantPlay = false;
 		this.audio.pause();
 	}
 
 	resume() {
+		this.#wantPlay = true;
 		this.audio.play().catch((e: Error) => this.#note(`could not resume the media element: ${e.message}`));
 	}
 
@@ -199,6 +259,7 @@ export class MediaOutput {
 
 	stop() {
 		this.#closed = true;
+		this.#wantPlay = false;
 		this.#queue = [];
 		this.audio.pause();
 		this.audio.removeAttribute('src');
