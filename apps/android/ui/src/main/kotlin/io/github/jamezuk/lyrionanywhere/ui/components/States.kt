@@ -32,9 +32,15 @@ import androidx.compose.ui.unit.dp
 import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.ui.R
 
+/** The network layer's reason on its own line, shortened, or nothing. */
+fun detailLine(detail: String): String {
+    val d = detail.trim().take(200)
+    return if (d.isEmpty()) "" else "\n($d)"
+}
+
 /** A message for an error, in plain British English (usable outside composition). */
 fun errorText(res: Resources, error: AppError): String = when (error) {
-    AppError.Offline -> res.getString(R.string.error_offline)
+    is AppError.Offline -> res.getString(R.string.error_offline) + detailLine(error.detail)
     AppError.SignedOut -> res.getString(R.string.error_signed_out)
     AppError.TwoStepRequired -> res.getString(R.string.error_two_step_required)
     is AppError.Forbidden -> res.getString(R.string.error_forbidden)
@@ -55,7 +61,7 @@ fun errorText(res: Resources, error: AppError): String = when (error) {
 fun errorMessage(error: AppError): String = errorText(LocalResources.current, error)
 
 private fun icon(error: AppError): ImageVector = when (error) {
-    AppError.Offline -> Icons.Outlined.CloudOff
+    is AppError.Offline -> Icons.Outlined.CloudOff
     is AppError.Forbidden, AppError.SignedOut -> Icons.Outlined.Lock
     is AppError.RateLimited -> Icons.Outlined.HourglassEmpty
     else -> Icons.Outlined.ErrorOutline

@@ -178,7 +178,7 @@ class AlbumsViewModelTest : MainDispatcherTest() {
 
     @Test
     fun errorsCanBeRetriedAndSortingStartsOver() = runTest(dispatcher) {
-        val library = FakeLibrary().apply { fail = AppError.Offline }
+        val library = FakeLibrary().apply { fail = AppError.Offline() }
         val vm = AlbumsViewModel(library)
         assertTrue(vm.state.value.failedEmpty)
         library.fail = null

@@ -69,7 +69,7 @@ class WaveformCacheTest {
     fun refusalsAreKeptAndFailuresTriedAgain() = runTest {
         val repo = ScriptedAnalysis(
             ApiResult.Ok(AnalysisOutcome.Unavailable("not analysable")),
-            ApiResult.Err(AppError.Offline),
+            ApiResult.Err(AppError.Offline()),
             ApiResult.Ok(AnalysisOutcome.Ready(analysisInfo())),
             ApiResult.Ok(AnalysisOutcome.Ready(analysisInfo(peaks = ByteArray(0)))),
         )

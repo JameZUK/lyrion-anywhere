@@ -40,7 +40,7 @@ sealed interface AuthState {
     data class Restoring(val server: ServerInfo) : AuthState
 
     /** A saved sign-in, but the server can't be reached (it is kept). */
-    data class Unreachable(val server: ServerInfo) : AuthState
+    data class Unreachable(val server: ServerInfo, val detail: String = "") : AuthState
 
     data class SignedInState(val server: ServerInfo, val who: SignedIn) : AuthState
 }
@@ -173,8 +173,9 @@ class RustAccountRepository(
         _state.value = AuthState.Restoring(info)
         when (val r = apiCall { sess.restore() }) {
             is ApiResult.Ok -> signedIn(info, sess, r.value)
-            is ApiResult.Err -> _state.value = when (r.error) {
-                AppError.Offline, is AppError.RateLimited, is AppError.Server -> AuthState.Unreachable(info)
+            is ApiResult.Err -> _state.value = when (val e = r.error) {
+                is AppError.Offline -> AuthState.Unreachable(info, e.detail)
+                is AppError.RateLimited, is AppError.Server -> AuthState.Unreachable(info)
                 else -> AuthState.SignedOut(info, revoked = true)
             }
         }

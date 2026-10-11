@@ -41,13 +41,77 @@ const HEADERS_TIMEOUT: Duration = Duration::from_secs(30);
 /// Between two pieces of a response body.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// An error and its causes, as one short line ("client error (Connect): dns error: …"),
+/// for diagnosing a failed connection. Network-layer errors name hosts, addresses and
+/// certificate problems, never request contents, so this holds no tokens or passwords.
+pub(crate) fn causes(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = vec![e.to_string()];
+    let mut cur = e.source();
+    while let Some(c) = cur {
+        let t = c.to_string();
+        if parts.last() != Some(&t) && parts.len() < 6 {
+            parts.push(t);
+        }
+        cur = c.source();
+    }
+    let mut out = parts.join(": ");
+    if out.len() > 300 {
+        let cut = (0..=300)
+            .rev()
+            .find(|&i| out.is_char_boundary(i))
+            .unwrap_or(0);
+        out.truncate(cut);
+        out.push('…');
+    }
+    out
+}
+
+#[cfg(test)]
+mod causes_tests {
+    use super::causes;
+
+    #[derive(Debug)]
+    struct E(&'static str, Option<Box<E>>);
+    impl std::fmt::Display for E {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+    impl std::error::Error for E {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1.as_deref().map(|e| e as _)
+        }
+    }
+
+    #[test]
+    fn the_chain_is_joined_short_and_without_repeats() {
+        let e = E(
+            "client error (Connect)",
+            Some(Box::new(E(
+                "dns error",
+                Some(Box::new(E("dns error", None))),
+            ))),
+        );
+        assert_eq!(causes(&e), "client error (Connect): dns error");
+        let long = E(Box::leak("x".repeat(1000).into_boxed_str()), None);
+        assert!(causes(&long).chars().count() <= 301);
+        let multibyte = E(Box::leak("é".repeat(400).into_boxed_str()), None);
+        assert!(causes(&multibyte).ends_with('…'));
+    }
+}
+
 /// The platform-verified TLS configuration shared by HTTP and WebSocket connections.
 pub(crate) fn tls_config(alpn: &[&[u8]]) -> Result<ClientConfig, ApiError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut cfg = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .and_then(|b| b.with_platform_verifier())
-        .map_err(|_| ApiError::network("TLS is not available on this device"))?
+        .map_err(|e| {
+            ApiError::network(format!(
+                "TLS is not available on this device: {}",
+                causes(&e)
+            ))
+        })?
         .with_no_client_auth();
     cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     Ok(cfg)
@@ -159,8 +223,14 @@ impl Request {
         *req.headers_mut() = self.headers;
         match tokio::time::timeout(HEADERS_TIMEOUT, self.http.0.request(req)).await {
             Ok(Ok(resp)) => Ok(Response(resp)),
-            Ok(Err(e)) if e.is_connect() => Err(ApiError::network("could not connect")),
-            Ok(Err(_)) => Err(ApiError::network("connection failed")),
+            Ok(Err(e)) if e.is_connect() => Err(ApiError::network(format!(
+                "could not connect: {}",
+                causes(&e)
+            ))),
+            Ok(Err(e)) => Err(ApiError::network(format!(
+                "connection failed: {}",
+                causes(&e)
+            ))),
             Err(_) => Err(ApiError::network("timed out")),
         }
     }

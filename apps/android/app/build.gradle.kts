@@ -16,13 +16,14 @@ android {
         applicationId = "io.github.jamezuk.lyrionanywhere"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-alpha.1"
-        // Only the ABIs the Rust layer is built for (`anywhere.rust.abis`): dependencies
-        // such as JNA ship more (armeabi, mips, x86), and a device preferring one of those
-        // would load that folder, find no Rust library and crash.
+        versionCode = 2
+        versionName = "0.1.0-alpha.2"
+        // Only the ABIs the Rust layer is built for (keep in step with `anywhere.rust.abis`
+        // in gradle.properties): dependencies such as JNA ship more (armeabi, mips, x86),
+        // and a device preferring one of those would load that folder, find no Rust library
+        // and crash.
         ndk {
-            abiFilters += providers.gradleProperty("anywhere.rust.abis").get().split(",").map { it.trim() }
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
     }
 

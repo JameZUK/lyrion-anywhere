@@ -161,6 +161,14 @@ private fun Unreachable(container: AppContainer, state: AuthState.Unreachable) {
                 stringResource(R.string.unreachable_body, state.server.name),
                 textAlign = TextAlign.Center,
             )
+            if (state.detail.isNotBlank()) {
+                Text(
+                    state.detail.take(200),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+            }
             Button(onClick = { scope.launch { container.account.retry() } }) {
                 Text(stringResource(R.string.action_retry))
             }

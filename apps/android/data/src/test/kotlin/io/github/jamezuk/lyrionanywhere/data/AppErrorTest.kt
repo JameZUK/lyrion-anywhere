@@ -10,7 +10,7 @@ import org.junit.Test
 class AppErrorTest {
     @Test
     fun rustErrorsMapToAppErrors() {
-        assertEquals(AppError.Offline, ApiException.Network("timed out").toAppError())
+        assertEquals(AppError.Offline("timed out"), ApiException.Network("timed out").toAppError())
         assertEquals(AppError.SignedOut, ApiException.Unauthorised().toAppError())
         assertEquals(AppError.TwoStepRequired, ApiException.TwoStepRequired().toAppError())
         assertEquals(AppError.Forbidden("no"), ApiException.Forbidden("no").toAppError())
@@ -23,7 +23,7 @@ class AppErrorTest {
     @Test
     fun apiCallWrapsFailuresButNeverCancellation() = runTest {
         assertEquals(ApiResult.Ok(3), apiCall { 3 })
-        assertEquals(ApiResult.Err(AppError.Offline), apiCall { throw ApiException.Network("x") })
+        assertEquals(ApiResult.Err(AppError.Offline("x")), apiCall { throw ApiException.Network("x") })
         assertThrows(CancellationException::class.java) {
             kotlinx.coroutines.runBlocking { apiCall { throw CancellationException("stop") } }
         }

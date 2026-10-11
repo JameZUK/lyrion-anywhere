@@ -5,8 +5,12 @@ import kotlin.coroutines.cancellation.CancellationException
 
 /** Why something failed, in terms the UI can act on. Never carries tokens or passwords. */
 sealed interface AppError {
-    /** The server can't be reached. The sign-in is kept; try again later. */
-    data object Offline : AppError
+    /**
+     * The server can't be reached. The sign-in is kept; try again later. [detail] is the
+     * network layer's reason (e.g. a DNS, connection or certificate failure), shown small
+     * under the message so a failure can be diagnosed; it never holds tokens or passwords.
+     */
+    data class Offline(val detail: String = "") : AppError
 
     /** Not signed in (or the sign-in ended). */
     data object SignedOut : AppError
@@ -49,7 +53,7 @@ fun <T> ApiResult<T>.errorOrNull(): AppError? = (this as? ApiResult.Err)?.error
 /** Map anything thrown by the Rust layer (cancellation is never swallowed). */
 fun Throwable.toAppError(): AppError = when (this) {
     is CancellationException -> throw this
-    is ApiException.Network -> AppError.Offline
+    is ApiException.Network -> AppError.Offline(detail)
     is ApiException.Unauthorised -> AppError.SignedOut
     is ApiException.TwoStepRequired -> AppError.TwoStepRequired
     is ApiException.Forbidden -> AppError.Forbidden(detail)
