@@ -238,7 +238,11 @@ jobs:
           ANYWHERE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANYWHERE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANYWHERE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew --no-build-cache -Panywhere.splitApks=true assembleRelease bundleRelease
+        # Two runs: the Android Gradle plugin can't build per-ABI APKs and an app bundle in
+        # one (issuetracker.google.com/402800800). The bundle run leaves the APKs in place.
+        run: |
+          ./gradlew --no-build-cache -Panywhere.splitApks=true assembleRelease
+          ./gradlew --no-build-cache bundleRelease
       - name: Remove the signing key
         if: always()
         run: rm -f "$RUNNER_TEMP/release.jks"

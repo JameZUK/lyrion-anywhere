@@ -110,7 +110,7 @@ Alternatively, use *Settings → Secrets and variables → Actions → New repos
 1. `git tag android-v<versionName> && git push origin android-v<versionName>`.
 2. CI runs the tests and then `android-release`, which:
    - checks the tag against `versionName` and the release notes;
-   - builds from scratch (no shared caches) with `-Panywhere.splitApks=true assembleRelease bundleRelease`;
+   - builds from scratch (no shared caches): `-Panywhere.splitApks=true assembleRelease`, then `bundleRelease` in a separate run (the Android Gradle plugin can't do both in one);
    - verifies every signature;
    - checks the native libraries carry no build paths;
    - writes `BUILDINFO.txt` (commit, Rust, cargo-ndk, NDK and JDK versions) and `SHA256SUMS`;
