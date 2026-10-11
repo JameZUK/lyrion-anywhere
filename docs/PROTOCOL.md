@@ -141,6 +141,9 @@ The gateway replies with a text greeting:
 **Gateway → client:**
 - One binary message per server → client Slimproto frame, length prefix included, exactly as LMS sent it.
 - `serv` (redirect to another server) is never forwarded.
+- **Client notes:**
+  - On a seek LMS sends `strm q` and the new `strm s` back to back (about 2 ms apart for MP3), so a client sees them together. Drop queued audio on the `strm q` itself, not on a later check of the player state.
+  - `audg` carries LMS's volume as linear gains (16.16) on LMS's own curve. A client applying it should do so at its output, after any queued audio.
 
 ### Policy violations (close 1008, session ended)
 

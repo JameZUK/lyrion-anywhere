@@ -121,6 +121,44 @@ test('flush empties the buffer and reports where to carry on', async () => {
 	out.stop();
 });
 
+// After a flush the play head is moved to where the new audio starts, so the browser drops
+// audio it had already decoded from the old position.
+test('seek moves the play head; nonsense positions and a stopped output are ignored', async () => {
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors });
+	await out.start();
+	let set: number[] = [];
+	Object.defineProperty(out.audio, 'currentTime', {
+		configurable: true,
+		get: () => set[set.length - 1] ?? 0,
+		set: (v: number) => void set.push(v),
+	});
+	out.seek(12.5);
+	out.seek(NaN);
+	out.seek(-1);
+	out.seek(Infinity);
+	expect(set).toEqual([12.5]);
+	out.stop();
+	set = [];
+	out.seek(3);
+	expect(set).toEqual([]);
+});
+
+test('a play head that refuses to move is noted, not thrown', async () => {
+	const note = vi.fn();
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors, note });
+	await out.start();
+	Object.defineProperty(out.audio, 'currentTime', {
+		configurable: true,
+		get: () => 0,
+		set: () => {
+			throw new Error('not seekable');
+		},
+	});
+	expect(() => out.seek(1)).not.toThrow();
+	expect(note).toHaveBeenCalledWith(expect.stringMatching(/not seekable/));
+	out.stop();
+});
+
 test('the timeline counts frames across rate changes', () => {
 	const t = new Timeline();
 	expect(t.frames(0, 1)).toBe(0); // no spans yet

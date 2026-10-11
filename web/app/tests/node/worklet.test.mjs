@@ -29,7 +29,9 @@ function loadProcessor() {
     assert.equal(proc.process([], [[L, R]]), true, 'processor must stay alive');
     return { L, R };
   };
-  return { send, render, reports };
+  // Messages from the page (the AudioWorkletNode's port), e.g. the volume.
+  const page = (msg) => proc.port.onmessage({ data: msg });
+  return { send, render, reports, page };
 }
 
 const stereo = (frames, start = 0) => {
@@ -130,4 +132,94 @@ test('still batches reports while audio is flowing', () => {
   const msgs = reports.filter((r) => r.played);
   assert.ok(msgs.every((r) => r.played >= 1024), 'no tiny reports mid-stream');
   assert.ok(msgs.length <= 12800 / 1024 + 1);
+});
+
+const constant = (frames, l = 1, r = 1) => {
+  const b = new Float32Array(frames * 2);
+  for (let i = 0; i < frames; i++) {
+    b[2 * i] = l;
+    b[2 * i + 1] = r;
+  }
+  return b;
+};
+
+// The volume is applied after the queue: audio already queued is not stuck at the old level.
+test('a volume change applies to audio already queued, ramped without a jump', () => {
+  const { send, render, page } = loadProcessor();
+  send({ pcm: constant(48000) });
+  render(128);
+  page({ gain: [0.5, 0.5] });
+  const a = render(128);
+  assert.ok(a.L[0] < 1 && a.L[0] > 0.99, 'starts moving at once, by a small step');
+  for (let i = 1; i < 128; i++) assert.ok(a.L[i] <= a.L[i - 1], 'monotonic ramp');
+  // 30 ms at 48 kHz = 1440 samples: done well within 16 blocks.
+  let last;
+  for (let i = 0; i < 16; i++) last = render(128);
+  assert.equal(last.L[127], 0.5);
+  assert.equal(last.R[127], 0.5);
+});
+
+test('instant volume (a new output) applies from the first sample', () => {
+  const { send, render, page } = loadProcessor();
+  page({ gain: [0.25, 0.25], instant: true });
+  send({ pcm: constant(256) });
+  const a = render(128);
+  assert.equal(a.L[0], 0.25);
+  assert.equal(a.R[127], 0.25);
+});
+
+test('left and right gains apply per channel (balance)', () => {
+  const { send, render, page } = loadProcessor();
+  page({ gain: [1, 0.25], instant: true });
+  send({ pcm: constant(256) });
+  const a = render(128);
+  assert.equal(a.L[5], 1);
+  assert.equal(a.R[5], 0.25);
+});
+
+// Security/robustness: a gain from a message is clamped, never amplifies, and junk is ignored.
+test('hostile volume messages never amplify or produce NaN', () => {
+  const { send, render, page } = loadProcessor();
+  for (const g of [[NaN, NaN], [Infinity, 1], [-1, -1], [7, 7], ['1', '0'], [null], [], [{}, {}]]) {
+    page({ gain: g, instant: true });
+  }
+  page({ gain: 'loud' });
+  page(null);
+  page(42);
+  send({ pcm: constant(256) });
+  const a = render(128);
+  for (let i = 0; i < 128; i++) {
+    assert.ok(Number.isFinite(a.L[i]) && Number.isFinite(a.R[i]));
+    assert.ok(Math.abs(a.L[i]) <= 1 && Math.abs(a.R[i]) <= 1, 'never above full scale');
+  }
+  page({ gain: [7, -3], instant: true });
+  send({ pcm: constant(256) });
+  render(128);
+  const b = render(128);
+  assert.equal(b.L[0], 1, 'clamped to full scale');
+  assert.equal(b.R[0], 0, 'clamped to silence');
+});
+
+// Regression: "played" reports for audio of the old position arrived after a flush and were
+// counted against the new one. Reports now carry the flush epoch.
+test('played reports carry the epoch of the last flush', () => {
+  const { send, render, reports } = loadProcessor();
+  send({ pcm: stereo(2048) });
+  render(128);
+  send({ flush: true, epoch: 3 });
+  send({ pcm: stereo(256) });
+  for (let i = 0; i < 4; i++) render(128);
+  const after = reports.filter((r) => r.played);
+  assert.ok(after.length > 0);
+  assert.equal(after[after.length - 1].epoch, 3);
+  assert.equal(after.filter((r) => r.epoch === 3).reduce((n, r) => n + r.played, 0), 256, 'only the new audio');
+});
+
+test('worker messages that are not objects are ignored', () => {
+  const { send, render } = loadProcessor();
+  send(null);
+  send(5);
+  send('pcm');
+  const a = render(128);
+  assert.ok(a.L.every((s) => s === 0));
 });

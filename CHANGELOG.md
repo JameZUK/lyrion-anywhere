@@ -4,6 +4,22 @@ Dated entries, newest first.
 
 ## 2026-10-11
 
+### Browser player: seeks and volume take effect at once
+- **Seek fix:** a seek could take about 8 s to be heard on iPhone, iPad and Android (media-element mode), and on MP3 it seemed not to work at all.
+  - **Cause:** LMS sends the flush and the new stream back to back (about 2 ms apart for MP3, about 20 ms for FLAC). The player only dropped its queue when its 20 ms timer happened to see the stopped state in between, so the old ~8 s of queued audio played first.
+  - **Fix:** the queue is now dropped on the flush itself, from the core's flush count, and the element's play head is moved to the new audio so the browser drops what it had already decoded. "Played" reports from before the flush no longer count against the new position (Web Audio mode played up to 0.3 s of old audio).
+  - **Measured** against a real LMS (desktop Chromium on the LAN, command to new audio): MP3 seeks with the old code skipped the flush 4 times in 5 (the old queue played out first); now 25–80 ms in both modes, for MP3 (CBR and VBR) and FLAC. With a 100 ms timer the old code missed 3 flushes in 4; the new code misses none.
+- **Quicker start after a seek:** playback starts once 0.5 s is decoded, rather than after all of LMS's 255 KiB threshold, if the stream arrives at least twice as fast as it plays (not live radio). On a throttled link, MP3 seeks are heard in about 0.3 s. FLAC is still bound by its headers (embedded artwork) and the decoder's 128 KiB read-ahead.
+- **Seek timing in the connection log:** each seek logs when the new stream opened, when the first bytes arrived, and when the audio started, was queued and was heard.
+- **Volume on this device:** LMS's volume is now heard on browser players, at once, from any controller.
+  - **Where it's applied:** in the AudioWorklet (Web Audio), or with the element's `volume` (media element), after the queued audio, ramped over 30 ms. Before, it was applied when audio was decoded, up to 8 s ahead.
+  - **iPhone and iPad:** a page can't set the element's volume, so the device plays at full scale and LMS's volume is held at 100%. Now playing and the player bar say "Use this device's volume buttons".
+  - **Settings › This device › Volume on this device:** Automatic, Follow LMS volume, or Device buttons only.
+- **Core:** `Player::set_host_volume` (the host applies volume) and `Player::set_quick_start`.
+- **Tests:**
+  - core: volume left to the host, quick start (fast stream, minimum, live-rate stream, after a seek), flushes counted when the new stream arrives with them, and MP3 (CBR and VBR) decoded from arbitrary byte offsets, including a full seek through the player;
+  - web: the volume policy, gains and ramps, the note replacing the slider, the media element seek, the worklet's gain (including hostile values) and flush epochs, and the seek timer.
+
 ### Analysis and waveform (A3)
 - **Gateway track analysis:** `GET /v1/analysis/track/{id}` gives a track's waveform, EBU R128 loudness, loudness range, true peak, silence and fades. It answers in JSON or a compact binary form, with ETags.
   - **Access:** any signed-in user, for any library track; not tied to the download permission.
