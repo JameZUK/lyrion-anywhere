@@ -494,6 +494,54 @@ async fn context_menus_take_only_library_ids() {
     }
 }
 
+/// Browsing the music folder: by numeric id only, and the answer never carries a path.
+#[tokio::test]
+async fn music_folder_browsing_never_reveals_or_takes_paths() {
+    let h = harness().await;
+    let r = h
+        .rpc(
+            &h.tok_a,
+            "",
+            json!(["musicfolder", 0, 50, "folder_id:11", "tags:cdt"]),
+        )
+        .await;
+    assert_eq!(r.status(), S::OK);
+    let body: Value = r.json().await.unwrap();
+    let text = body.to_string();
+    for leak in ["file:", "/srv/", "smb:", "10.0.0.10"] {
+        assert!(!text.contains(leak), "{leak} leaked: {text}");
+    }
+    assert_eq!(body["result"]["folder_loop"][0]["filename"], "Jazz");
+    assert_eq!(body["result"]["folder_loop"][1]["title"], "Song");
+    for bad in [
+        json!(["musicfolder", 0, 50, "url:file:///srv/music"]),
+        json!(["musicfolder", 0, 50, "folder_id:/srv/music"]),
+        json!(["musicfolder", 0, 50, "folder_id:1,2"]),
+        json!(["musicfolder", 0, 50, "folder:/etc"]),
+        json!(["artists", 0, 50, "role_id:FOO"]),
+        json!(["albums", 0, 50, "library_id:../x"]),
+        json!(["libraries", "getid"]),
+    ] {
+        assert_eq!(
+            h.rpc(&h.tok_a, "", bad.clone()).await.status(),
+            S::FORBIDDEN,
+            "{bad}"
+        );
+    }
+    let calls: Vec<Value> = h
+        .lms
+        .rpc_calls()
+        .into_iter()
+        .filter(|c| !matches!(c[1][0].as_str(), Some("apps" | "radios")))
+        .collect();
+    assert_eq!(calls.len(), 1, "refused commands reached LMS: {calls:?}");
+    // Virtual libraries: listed with their ids and names.
+    let r = h.rpc(&h.tok_a, "", json!(["libraries"])).await;
+    assert_eq!(r.status(), S::OK);
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["result"]["folder_loop"][0]["id"], "1a2b3c4d");
+}
+
 /// Regression: an `imageproxy/<url>` in any text LMS relays (a track title, a player name)
 /// taught the gateway that URL, so a user could make LMS fetch from the home network.
 #[tokio::test]

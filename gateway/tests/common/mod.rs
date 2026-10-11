@@ -177,6 +177,17 @@ pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
         "titles" => {
             json!({"count": 1, "titles_loop": [{"id": 1, "title": "T", "url": "file:///srv/music/x/1.flac"}]})
         }
+        // The music folder: every entry carries its file URL, i.e. its path on the server.
+        "musicfolder" => json!({"count": 3, "folder_loop": [
+            {"id": 11, "filename": "Jazz", "type": "folder", "url": "file:///srv/music/Jazz"},
+            {"id": 12, "filename": "01 Song.flac", "type": "track", "coverid": "c0ffee12",
+             "url": "file:///srv/music/Jazz/01%20Song.flac", "title": "Song"},
+            {"id": 13, "filename": "/srv/music/odd.mp3", "type": "track",
+             "url": "smb://10.0.0.10/music/odd.mp3", "title": "Odd"}
+        ]}),
+        "genres" => json!({"count": 1, "genres_loop": [
+            {"id": 3, "genre": "Jazz", "favorites_url": "db:genre.name=Jazz"}]}),
+        "libraries" => json!({"folder_loop": [{"id": "1a2b3c4d", "name": "Lossless (12)"}]}),
         "apps" => json!({"count": 1, "appss_loop": [{"cmd": "spotty", "name": "Spotty"}]}),
         "radios" => json!({"count": 1, "radioss_loop": [{"cmd": "bbcsounds", "name": "BBC"}]}),
         "favorites" => json!({"count": 1, "loop_loop": [

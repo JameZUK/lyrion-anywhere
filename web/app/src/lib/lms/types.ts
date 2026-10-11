@@ -123,6 +123,36 @@ export interface PlaylistTracksResult {
 	playlisttracks_loop?: Track[];
 }
 
+export interface Genre {
+	id: number;
+	genre?: string;
+}
+export interface GenresResult {
+	count?: number;
+	genres_loop?: Genre[];
+}
+export interface YearsResult {
+	count?: number;
+	years_loop?: { year?: number | string }[];
+}
+/** A music folder entry. LMS's `url` (the file's path) never reaches the app. */
+export interface FolderItem {
+	id: number;
+	filename?: string;
+	title?: string;
+	type?: string;
+	coverid?: string;
+	duration?: string;
+}
+export interface MusicFolderResult {
+	count?: number;
+	folder_loop?: FolderItem[];
+}
+/** LMS virtual libraries (`libraries`). */
+export interface LibrariesResult {
+	folder_loop?: { id?: string; name?: string }[];
+}
+
 export interface AppInfo {
 	cmd?: string;
 	name?: string;

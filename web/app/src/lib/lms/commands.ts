@@ -31,16 +31,81 @@ export function text(s: string): string {
 // --- library -----------------------------------------------------------------------------
 
 export type AlbumSort = 'album' | 'artistalbum' | 'yearalbum' | 'new' | 'random';
+const SORTS: readonly AlbumSort[] = ['album', 'artistalbum', 'yearalbum', 'new', 'random'];
+
+/** LMS contributor roles (the gateway passes on only these). */
+export const ROLES = ['ALBUMARTIST', 'ARTIST', 'COMPOSER', 'CONDUCTOR', 'BAND', 'TRACKARTIST'] as const;
+export type Role = (typeof ROLES)[number];
+export function role(v: unknown): Role {
+	if (typeof v !== 'string' || !(ROLES as readonly string[]).includes(v)) throw new RangeError('bad role');
+	return v as Role;
+}
+
+/** An LMS virtual library id: short hex (the gateway refuses anything else). */
+export function libraryId(v: unknown): string {
+	if (typeof v !== 'string' || !/^[0-9a-f]{1,32}$/i.test(v)) throw new RangeError('bad library id');
+	return v;
+}
+
+/** A year as LMS lists them: 0 ("no year") up to four digits. */
+export function year(v: unknown): number {
+	const n = typeof v === 'number' ? v : typeof v === 'string' && /^\d{1,4}$/.test(v) ? Number(v) : NaN;
+	if (!Number.isInteger(n) || n < 0 || n > 9999) throw new RangeError(`bad year: ${String(v).slice(0, 40)}`);
+	return n;
+}
+
+/** What an album or artist list is narrowed to. Every value is checked before use. */
+export interface Filter {
+	genre?: number;
+	year?: number;
+	artist?: number;
+	compilation?: boolean;
+	role?: Role;
+	/** A virtual library, or none for the whole library. */
+	library?: string | null;
+}
+
+function filterParams(f: Filter, allowed: (keyof Filter)[]): string[] {
+	const out: string[] = [];
+	const has = (k: keyof Filter) => allowed.includes(k) && f[k] !== undefined && f[k] !== null;
+	if (has('genre')) out.push(`genre_id:${id(f.genre)}`);
+	if (has('year')) out.push(`year:${year(f.year)}`);
+	if (has('artist')) out.push(`artist_id:${id(f.artist)}`);
+	if (has('compilation')) out.push(`compilation:${f.compilation ? 1 : 0}`);
+	if (has('role')) out.push(`role_id:${role(f.role)}`);
+	if (has('library')) out.push(`library_id:${libraryId(f.library)}`);
+	return out;
+}
 
 export const players = (): Command => ['players', 0, 100];
-export const albums = (from: number, n: number, sort: AlbumSort = 'album', search?: string): Command => [
-	'albums', start(from), count(n), ALBUM_TAGS, `sort:${sort}`, ...(search ? [`search:${text(search)}`] : []),
-];
+export const albums = (from: number, n: number, sort: AlbumSort = 'album', search?: string, filter: Filter = {}): Command => {
+	if (!SORTS.includes(sort)) throw new RangeError('bad sort');
+	return [
+		'albums', start(from), count(n), ALBUM_TAGS, `sort:${sort}`, ...(search ? [`search:${text(search)}`] : []),
+		...filterParams(filter, ['genre', 'year', 'artist', 'compilation', 'library']),
+	];
+};
 export const artistAlbums = (artist: number): Command => ['albums', 0, 500, ALBUM_TAGS, 'sort:yearalbum', `artist_id:${id(artist)}`];
 export const albumById = (album: number): Command => ['albums', 0, 1, ALBUM_TAGS, `album_id:${id(album)}`];
-export const artists = (from: number, n: number, search?: string): Command => [
+export const artists = (from: number, n: number, search?: string, filter: Filter = {}): Command => [
 	'artists', start(from), count(n), ...(search ? [`search:${text(search)}`] : []),
+	...filterParams(filter, ['genre', 'role', 'library']),
 ];
+/** Does the library have any artists in this role? (One row is enough to tell.) */
+export const hasRole = (r: Role, library?: string | null): Command => ['artists', 0, 1, ...filterParams({ role: r, library }, ['role', 'library'])];
+export const genres = (from: number, n: number, library?: string | null, search?: string): Command => [
+	'genres', start(from), count(n), ...(search ? [`search:${text(search)}`] : []), ...filterParams({ library }, ['library']),
+];
+export const genreById = (genre: number): Command => ['genres', 0, 1, `genre_id:${id(genre)}`];
+export const years = (from: number, n: number, library?: string | null): Command => [
+	'years', start(from), count(n), 'hasAlbums:1', ...filterParams({ library }, ['library']),
+];
+/** One folder of the music folder (the top level without an id). Never a path. */
+export const musicFolder = (from: number, n: number, folder?: number): Command => [
+	'musicfolder', start(from), count(n), ...(folder === undefined ? [] : [`folder_id:${id(folder)}`]), 'tags:cdt',
+];
+/** LMS's virtual libraries, if any. */
+export const libraries = (): Command => ['libraries'];
 export const albumTracks = (album: number): Command => ['titles', 0, 500, TRACK_TAGS, 'sort:tracknum', `album_id:${id(album)}`];
 export const search = (term: string, n = 20): Command => ['search', 0, count(n), `term:${text(term)}`];
 
@@ -72,6 +137,15 @@ export const moveInPlaylist = (playlist: number, from: number, to: number): Comm
 	'playlists', 'edit', `playlist_id:${id(playlist)}`, 'cmd:move', `index:${start(from)}`, `toindex:${start(to)}`,
 ];
 
+/** In-app link to a year's albums, or null. */
+export function yearLink(v: unknown): string | null {
+	try {
+		return `#/year/${year(v)}`;
+	} catch {
+		return null;
+	}
+}
+
 // --- apps, radio and context menus (SlimBrowse) --------------------------------------------
 
 /** An app or radio command word, as LMS lists them (`spotty`, `bbcsounds`, …). */
@@ -89,11 +163,11 @@ export function appMenu(app: string): (from: number, n: number) => Command {
 	return (from, n) => [a, 'items', start(from), count(n), 'menu:1'];
 }
 
-export type InfoKind = 'track' | 'album' | 'artist' | 'genre' | 'playlist';
+export type InfoKind = 'track' | 'album' | 'artist' | 'genre' | 'playlist' | 'year' | 'folder';
 /** The "More…" (context) menu for a library item. */
 export function infoMenu(kind: InfoKind, item: number): (from: number, n: number) => Command {
-	const i = id(item);
-	return (from, n) => [`${kind}info`, 'items', start(from), count(n), `${kind}_id:${i}`, 'menu:1'];
+	const sel = kind === 'year' ? `year:${year(item)}` : `${kind}_id:${id(item)}`;
+	return (from, n) => [`${kind}info`, 'items', start(from), count(n), sel, 'menu:1'];
 }
 
 // --- playback (player commands) ----------------------------------------------------------
@@ -128,18 +202,27 @@ export const unsync = (): Command => ['sync', '-'];
 export type Placement = 'play' | 'next' | 'add';
 const PLACEMENT = { play: 'load', next: 'insert', add: 'add' } as const;
 
-export type Selection = { album: number } | { track: number } | { artist: number } | { playlist: number };
+export type Selection =
+	| { album: number }
+	| { track: number }
+	| { artist: number }
+	| { playlist: number }
+	| { genre: number }
+	| { year: number }
+	| { folder: number };
+
+function selector(sel: Selection): string {
+	if ('album' in sel) return `album_id:${id(sel.album)}`;
+	if ('track' in sel) return `track_id:${id(sel.track)}`;
+	if ('playlist' in sel) return `playlist_id:${id(sel.playlist)}`;
+	if ('genre' in sel) return `genre_id:${id(sel.genre)}`;
+	if ('year' in sel) return `year:${year(sel.year)}`;
+	if ('folder' in sel) return `folder_id:${id(sel.folder)}`;
+	return `artist_id:${id(sel.artist)}`;
+}
 
 export function enqueue(sel: Selection, placement: Placement, playIndex?: number): Command {
-	const [key, value] =
-		'album' in sel
-			? ['album_id', sel.album]
-			: 'track' in sel
-				? ['track_id', sel.track]
-				: 'playlist' in sel
-					? ['playlist_id', sel.playlist]
-					: ['artist_id', sel.artist];
-	const cmd: Command = ['playlistcontrol', `cmd:${PLACEMENT[placement]}`, `${key}:${id(value)}`];
+	const cmd: Command = ['playlistcontrol', `cmd:${PLACEMENT[placement]}`, selector(sel)];
 	if (placement === 'play' && playIndex !== undefined) cmd.push(`play_index:${start(playIndex)}`);
 	return cmd;
 }
@@ -147,7 +230,7 @@ export function enqueue(sel: Selection, placement: Placement, playIndex?: number
 // --- links -------------------------------------------------------------------------------
 
 /** In-app link to an album or artist, or null if LMS gave no usable id (e.g. "12,34" → 12). */
-export function link(kind: 'album' | 'artist' | 'playlist', v: unknown): string | null {
+export function link(kind: 'album' | 'artist' | 'playlist' | 'genre' | 'folder', v: unknown): string | null {
 	const first = typeof v === 'string' ? v.split(',')[0] : v;
 	try {
 		return `#/${kind}/${id(first)}`;

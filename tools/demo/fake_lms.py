@@ -40,7 +40,48 @@ ALBUMS = [
     ("Hymns for the Road", "Tin Roof Choir", 2014, ["Open Road", "Tin Roof", "Mile Marker", "Rest Stop", "Homeward"]),
 ]
 
-ARTISTS = sorted({a[1] for a in ALBUMS})
+ARTISTS = sorted({a[1] for a in ALBUMS} | {"Various Artists"})
+# Invented genres, and each album's genre (by position in ALBUMS).
+GENRES = ["Ambient", "Classical", "Electronic", "Folk", "Indie", "Jazz"]
+ALBUM_GENRE = [3, 4, 2, 3, 4, 1, 2, 4, 0, 0, 5, 3]
+# Order in which the albums were "added to the library": most recent first.
+ADDED = [10, 8, 4, 6, 1, 11, 0, 2, 7, 3, 9, 5]
+COMPILATIONS = {9, 11}  # "Field Recordings", "Hymns for the Road"
+# Other roles: composers and a conductor (artist ids are positions in ARTISTS, plus one).
+COMPOSERS = ["Orchard Quartet", "Haruka Mori"]
+CONDUCTORS = ["Orchard Quartet"]
+# A virtual library, so the picker shows in the demo.
+LIBRARIES = [{"id": "1a2b3c4d", "name": "Lossless only (64)"}]
+
+
+def folder_tree():
+    """The music folder: one folder per genre, an album folder in each, its tracks inside."""
+    rows = {0: []}
+    next_id = [5000]
+
+    def new_id():
+        next_id[0] += 1
+        return next_id[0]
+
+    for g, genre in enumerate(GENRES):
+        gid = new_id()
+        rows[0].append({"id": gid, "filename": genre, "type": "folder",
+                        "url": f"file:///srv/music/{genre}"})
+        rows[gid] = []
+        for aidx, (album, artist, _, _) in enumerate(ALBUMS):
+            if ALBUM_GENRE[aidx] != g:
+                continue
+            fid = new_id()
+            name = f"{artist} - {album}"
+            rows[gid].append({"id": fid, "filename": name, "type": "folder",
+                              "url": f"file:///srv/music/{genre}/{name}"})
+            rows[fid] = [{"id": t["id"], "filename": f"{t['tracknum']:02d} {t['title']}.flac", "type": "track",
+                          "title": t["title"], "coverid": t["coverid"],
+                          "duration": f"{t['duration'] // 60}:{t['duration'] % 60:02d}",
+                          "url": f"file:///srv/music/{genre}/{name}/{t['tracknum']:02d}.flac"}
+                         for t in TRACKS if t["album_id"] == aidx + 1]
+            rows[fid].append({"id": new_id(), "filename": "cover.jpg", "type": "unknown"})
+    return rows
 PLAYERS = [
     {"playerid": "aa:bb:cc:00:00:01", "name": "Lounge", "model": "squeezelite", "connected": 1, "power": 1, "isplaying": 1},
     {"playerid": "aa:bb:cc:00:00:02", "name": "Study", "model": "squeezelite", "connected": 1, "power": 1, "isplaying": 0},
@@ -66,6 +107,7 @@ def track_rows():
 
 
 TRACKS = track_rows()
+FOLDERS = folder_tree()
 NOW = [t for t in TRACKS if t["album_id"] == 1]  # the Lounge is playing "Night Ferry"
 STATE = {"index": 2, "time": 83.4, "volume": 42, "mode": "play", "shuffle": 0, "repeat": 0}
 
@@ -114,12 +156,58 @@ def answer(player, cmd):
             rows = [r for r in rows if str(r["artist_id"]) == p["artist_id"]]
         if "search" in p:
             rows = [r for r in rows if p["search"].lower() in r["album"].lower()]
-        return page(sorted(rows, key=lambda r: r["album"]), rest, "albums_loop")
+        if "genre_id" in p:
+            rows = [r for r in rows if str(ALBUM_GENRE[r["id"] - 1] + 1) == p["genre_id"]]
+        if "year" in p:
+            rows = [r for r in rows if str(r["year"]) == p["year"]]
+        if p.get("compilation") == "1":
+            rows = [{**r, "artist": "Various Artists"} for r in rows if r["id"] - 1 in COMPILATIONS]
+        if "library_id" in p:
+            rows = [r for r in rows if r["id"] % 3]  # "lossless only": most of them
+        order = p.get("sort", "album")
+        if order == "new":
+            rows = sorted(rows, key=lambda r: ADDED.index(r["id"] - 1))
+        elif order == "random":
+            rows = random.sample(rows, len(rows))
+        elif order == "artistalbum":
+            rows = sorted(rows, key=lambda r: (r["artist"], r["album"]))
+        elif order == "yearalbum":
+            rows = sorted(rows, key=lambda r: (r["year"], r["album"]))
+        else:
+            rows = sorted(rows, key=lambda r: r["album"])
+        return page(rows, rest, "albums_loop")
     if op == "artists":
         rows = [{"id": i + 1, "artist": a} for i, a in enumerate(ARTISTS)]
+        role = p.get("role_id")
+        if role == "ALBUMARTIST":
+            rows = [r for r in rows if r["artist"] != "Various Artists"]
+        elif role == "COMPOSER":
+            rows = [r for r in rows if r["artist"] in COMPOSERS]
+        elif role == "CONDUCTOR":
+            rows = [r for r in rows if r["artist"] in CONDUCTORS]
+        elif role in ("BAND", "TRACKARTIST"):
+            rows = []
+        if "genre_id" in p:
+            names = {a[1] for i, a in enumerate(ALBUMS) if str(ALBUM_GENRE[i] + 1) == p["genre_id"]}
+            rows = [r for r in rows if r["artist"] in names]
         if "search" in p:
             rows = [r for r in rows if p["search"].lower() in r["artist"].lower()]
         return page(rows, rest, "artists_loop")
+    if op == "genres":
+        rows = [{"id": i + 1, "genre": g, "favorites_url": f"db:genre.name={g}"} for i, g in enumerate(GENRES)]
+        if "genre_id" in p:
+            rows = [r for r in rows if str(r["id"]) == p["genre_id"]]
+        if "search" in p:
+            rows = [r for r in rows if p["search"].lower() in r["genre"].lower()]
+        return page(rows, rest, "genres_loop")
+    if op == "years":
+        rows = [{"year": y} for y in sorted({a[2] for a in ALBUMS}, reverse=True)]
+        return page(rows, rest, "years_loop")
+    if op == "musicfolder":
+        rows = FOLDERS.get(int(p.get("folder_id", 0)), [])
+        return page(rows, rest, "folder_loop")
+    if op == "libraries":
+        return {"folder_loop": LIBRARIES}
     if op in ("titles", "tracks"):
         rows = TRACKS
         if "track_id" in p:
@@ -179,7 +267,7 @@ def answer(player, cmd):
         return {"count": len(names), "item_loop": [
             {"text": n, "actions": {"go": {"cmd": [op, "items"], "params": {"item_id": f"0.{i}", "menu": op}}}}
             for i, n in enumerate(names)]}
-    if op in ("trackinfo", "albuminfo", "artistinfo"):
+    if op in ("trackinfo", "albuminfo", "artistinfo", "genreinfo", "yearinfo", "folderinfo"):
         items = [
             {"text": "Play next", "actions": {"go": {"cmd": ["playlistcontrol"], "params": {"cmd": "insert", "track_id": "103"}}}, "nextWindow": "parent"},
             {"text": "Add to queue", "actions": {"go": {"cmd": ["playlistcontrol"], "params": {"cmd": "add", "track_id": "103"}}}, "nextWindow": "parent"},

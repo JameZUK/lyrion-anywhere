@@ -536,5 +536,270 @@
    "artist_id:12",
    "menu:1"
   ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   0,
+   120,
+   "tags:aljyS",
+   "sort:new",
+   "library_id:1a2b3c4d"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   0,
+   60,
+   "tags:aljyS",
+   "sort:random"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   120,
+   120,
+   "tags:aljyS",
+   "sort:artistalbum",
+   "genre_id:12",
+   "library_id:1a2b3c4d"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   0,
+   120,
+   "tags:aljyS",
+   "sort:yearalbum",
+   "year:1999"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   0,
+   120,
+   "tags:aljyS",
+   "sort:album",
+   "year:0"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   0,
+   120,
+   "tags:aljyS",
+   "sort:album",
+   "compilation:1"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "artists",
+   0,
+   200,
+   "role_id:ALBUMARTIST"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "artists",
+   200,
+   200,
+   "role_id:COMPOSER",
+   "library_id:ABCDEF12"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "artists",
+   0,
+   200,
+   "genre_id:12"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "artists",
+   0,
+   1,
+   "role_id:CONDUCTOR"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "artists",
+   0,
+   1,
+   "role_id:BAND",
+   "library_id:1a2b3c4d"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "genres",
+   0,
+   200
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "genres",
+   0,
+   200,
+   "search:jazz",
+   "library_id:1a2b3c4d"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "genres",
+   0,
+   1,
+   "genre_id:12"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "years",
+   0,
+   500,
+   "hasAlbums:1"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "years",
+   500,
+   500,
+   "hasAlbums:1",
+   "library_id:1a2b3c4d"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "musicfolder",
+   0,
+   200,
+   "tags:cdt"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "musicfolder",
+   200,
+   200,
+   "folder_id:4321",
+   "tags:cdt"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "libraries"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:load",
+   "genre_id:12"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:add",
+   "genre_id:12"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:load",
+   "year:1999"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:add",
+   "year:0"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:load",
+   "folder_id:4321"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlistcontrol",
+   "cmd:insert",
+   "folder_id:4321"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "genreinfo",
+   "items",
+   0,
+   100,
+   "genre_id:12",
+   "menu:1"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "yearinfo",
+   "items",
+   0,
+   100,
+   "year:1999",
+   "menu:1"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "folderinfo",
+   "items",
+   0,
+   100,
+   "folder_id:4321",
+   "menu:1"
+  ]
  }
 ]

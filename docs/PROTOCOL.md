@@ -221,11 +221,28 @@ Response: `{"result": {...}}`, or `{"error": "<reason>"}` with one of these stat
 - at most 16 arguments;
 - paging `start count` with `count` ≤ 500;
 - `key:value` parameters restricted to known keys per command, each given at most once, with typed values;
-- free-text values (`search:`, `term:`, `role_id:`, playlist names, an app's `search:`, text typed into a learned search box) refused if they hold an absolute or Windows path, a `file:` URL, a URL to a local host (see below), a bare LAN address such as `10.0.0.5:9000`, or any URL other than http(s). Public http(s) URLs pass (some apps search by feed URL), as does ordinary text such as "AC/DC" or "Live 1990/91".
+- free-text values (`search:`, `term:`, playlist names, an app's `search:`, text typed into a learned search box) refused if they hold an absolute or Windows path, a `file:` URL, a URL to a local host (see below), a bare LAN address such as `10.0.0.5:9000`, or any URL other than http(s). Public http(s) URLs pass (some apps search by feed URL), as does ordinary text such as "AC/DC" or "Live 1990/91".
 
 | Group | Allowed |
 |---|---|
-| Library (no player) | `artists`, `albums`, `titles`/`tracks`, `genres`, `years`, `search`, `musicfolder`, `playlists` (list, tracks), `favorites items`, `apps`, `radios`, `players`, `serverstatus`, `syncgroups ?` |
+| Library (no player) | `artists`, `albums`, `titles`/`tracks`, `genres`, `years`, `search`, `musicfolder`, `libraries` (no arguments), `playlists` (list, tracks), `favorites items`, `apps`, `radios`, `players`, `serverstatus`, `syncgroups ?` |
+
+Library browse parameters ("My Music"), and the values each takes:
+
+| Parameter | Commands | Value |
+|---|---|---|
+| `artist_id`, `album_id`, `track_id` | `albums`, `artists`, `titles`, `genres` | ids: digits, or a comma-separated list of them |
+| `genre_id` | `albums`, `artists`, `titles` (ids); `genres` (one id) | digits |
+| `year` | `albums`, `artists`, `titles`, `genres` | digits (0 is "no year") |
+| `folder_id` | `musicfolder` | one id, digits only. Never `url:` or a path: LMS would read (or scan) that location |
+| `role_id` | `artists`, `albums` | one of `ALBUMARTIST`, `ARTIST`, `COMPOSER`, `CONDUCTOR`, `BAND`, `TRACKARTIST` (LMS fails outright on a role it doesn't know) |
+| `compilation` | `albums` | `0` or `1` |
+| `library_id` | `albums`, `artists`, `titles`, `genres`, `years` | an LMS virtual library id: 1–32 hex digits |
+| `sort` | `albums`, `titles` | `album`, `artflow`, `artistalbum`, `yearalbum`, `yearartistalbum`, `new`, `random`, `title`, `tracknum`, `albumtrack`, `artisttrack`, `id` |
+| `hasAlbums` | `years` | `0` or `1` |
+| `tags` | all of them | letters and digits only |
+
+A `musicfolder` answer lists each entry's `url` (its path on the server): it is stripped like every `url`, and a name that holds a path is dropped (see the response filter below).
 | Player (permitted players only) | `status`, `play`, `pause`, `stop`, `mode ?`, `time`, `power`, `sleep`, `mixer volume/muting`, `playlist index/jump/move/delete/clear/shuffle/repeat/tracks ?`, `playlistcontrol cmd:load/add/insert/delete` with exactly one id selector, `sync` with another permitted player, `favorites playlist play/add/insert item_id:…` |
 | Apps and radio | `<app> items …` and `<app> playlist play/add/insert item_id:…`, only for app commands LMS lists in its `apps`/`radios` menus. Core command names can never be learned as apps. An unknown app triggers at most one menu refresh a minute. |
 | Admin role only | `rescan`; changing saved playlists (`playlists new/rename/delete/edit`) |

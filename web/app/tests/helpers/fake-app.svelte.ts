@@ -1,6 +1,7 @@
 // A stand-in for $lib/state/app.svelte in component tests: reactive like the real one, with an
 // `api.rpc` the test scripts (by default: an empty queue, and every command succeeds).
 import type { PlayerInfo, PlayerStatus } from '$lib/lms/types';
+import { enqueue, type Placement, type Selection } from '$lib/lms/commands';
 
 export type Rpc = (player: string, cmd: (string | number)[]) => Promise<unknown>;
 export const calls: { player: string; cmd: (string | number)[] }[] = [];
@@ -29,6 +30,10 @@ class FakeApp {
 	}
 	async send(c: (string | number)[]) {
 		await api.rpc(this.playerId, c);
+	}
+	libraryVersion = $state(0);
+	async queueUp(sel: Selection, placement: Placement, playIndex?: number) {
+		await this.send(enqueue(sel, placement, playIndex));
 	}
 }
 

@@ -4,6 +4,29 @@ Dated entries, newest first.
 
 ## 2026-10-11
 
+### Library: New Music and the rest of LMS's "My Music"
+- **New Music:** recently added albums, newest first, in the sidebar and at the top of the Library page.
+- **More ways to browse** (on the Library page):
+  - *Genres:* a searchable list; a genre shows its albums or its artists, with Play all, Add to queue and More;
+  - *Years:* a year shows its albums, with Play all, Add to queue and More;
+  - *Compilations*;
+  - *Random Albums*, with "Shuffle again";
+  - *Music Folder:* browse folders and play or add folders and tracks, with More on each.
+- **Artists by role:** album artists by default (as in LMS), all artists, and composers, conductors and bands where the library has them.
+- **Album sorting** by title, artist, year or date added, on Albums, a genre's, a year's and Compilations.
+- **Virtual libraries:** if LMS has any, the Library page offers a picker. Browse lists then show only that library, and the choice is remembered per user on this device. Without virtual libraries nothing changes.
+- **Gateway allow-list:**
+  - `role_id:` takes only LMS's role names (it took free text, and LMS fails outright on an unknown role);
+  - `library_id:` takes only short hex;
+  - `musicfolder` takes a single numeric `folder_id` (no lists);
+  - `genres` takes a `genre_id`;
+  - `libraries` is allowed with no arguments.
+  - The music folder's file URLs, and any name holding a path, are stripped from its answers as before.
+- **Tests:**
+  - gateway: negative tests for every new parameter (wrong types, paths, `url:`, oversize values, unknown roles, injection attempts), and path-bearing music folder answers, filtered and end to end;
+  - web: the builders (every new command pinned in the fixture the gateway checks), the pager, the remembered library choice (including storage that refuses access), music folder entries, and the pages with hostile names.
+- **Demo:** genres, years, a music folder, recently added albums, compilations, composers and a virtual library, all invented.
+
 ### Browser player: seeks and volume take effect at once
 - **Seek fix:** a seek could take about 8 s to be heard on iPhone, iPad and Android (media-element mode), and on MP3 it seemed not to work at all.
   - **Cause:** LMS sends the flush and the new stream back to back (about 2 ms apart for MP3, about 20 ms for FLAC). The player only dropped its queue when its 20 ms timer happened to see the stopped state in between, so the old ~8 s of queued audio played first.
