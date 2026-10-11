@@ -10,7 +10,7 @@ use Slim::Utils::Prefs;
 Plugins::LyrionAnywhere::Commands::register();
 ok($Slim::Control::Request::DISPATCH{'anywhere status'}, 'status registered');
 ok($Slim::Control::Request::DISPATCH{"anywhere $_"}, "$_ registered")
-	for qw(users user_create user_delete grant ungrant revoke audit totp_reset pairing diagnostics settings session_days plugins plugins_admin_only user_downloads);
+	for qw(users user_create user_delete grant ungrant revoke device_rename audit totp_reset pairing diagnostics settings session_days plugins plugins_admin_only user_downloads);
 is($Slim::Control::Request::DISPATCH{'anywhere users'}[0], 0, 'no player needed');
 
 my $dir = tempdir(CLEANUP => 1);
@@ -63,6 +63,7 @@ my %mutating_args = (
 	grant         => { username => 'alice', player => 'aa:bb:cc:dd:ee:01' },
 	ungrant       => { username => 'alice', player => 'aa:bb:cc:dd:ee:01' },
 	revoke        => { id => 1 },
+	device_rename => { id => 1, name => 'Kitchen' },
 	totp_reset    => { username => 'alice' },
 	pairing       => { username => 'alice' },
 	session_days  => { days => 365 },

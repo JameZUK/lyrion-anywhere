@@ -16,6 +16,10 @@ is_deeply(req('ungrant', { username => 'alice', player => 'AA:BB:CC:DD:EE:01' })
 	['POST', '/admin/v1/users/alice/players/aa:bb:cc:dd:ee:01/remove', undef]);
 is_deeply(req('revoke', { id => 12 }), ['POST', '/admin/v1/devices/12/revoke', undef]);
 is_deeply(req('diagnostics', { id => 12 }), ['GET', '/admin/v1/devices/12/diagnostics', undef]);
+is_deeply(req('device_rename', { id => 12, name => 'Kitchen iPad' }), ['POST', '/admin/v1/devices/12/name', { name => 'Kitchen iPad' }]);
+is_deeply(req('device_rename', { id => 3, name => "K\x{fc}che \x{2019}n" }), ['POST', '/admin/v1/devices/3/name', { name => "K\x{fc}che \x{2019}n" }], 'any script (the gateway cleans names)');
+is_deeply(req('device_rename', { id => 3, name => 'x' x 64 }), ['POST', '/admin/v1/devices/3/name', { name => 'x' x 64 }], '64 characters');
+ok(Plugins::LyrionAnywhere::Admin::is_mutating('device_rename'), 'renaming is mutating');
 is_deeply(req('audit', { limit => 50 }), ['GET', '/admin/v1/audit?limit=50', undef]);
 is_deeply(req('settings', {}), ['GET', '/admin/v1/settings', undef]);
 is_deeply(req('plugins', {}), ['GET', '/admin/v1/plugins', undef]);
@@ -87,6 +91,19 @@ my %attacks = (
 	'formats as a list'          => ['user_downloads', { username => 'a', enabled => 1, formats => ['mp3'] }],
 	'trailing comma in formats'  => ['user_downloads', { username => 'a', enabled => 1, formats => 'mp3,' }],
 	'downloads path traversal'   => ['user_downloads', { username => '../users', enabled => 1 }],
+	# Device names: 1-64 characters, no line breaks or other controls, a plain string.
+	'empty device name'          => ['device_rename', { id => 1, name => '' }],
+	'blank device name'          => ['device_rename', { id => 1, name => "  \t " }],
+	'device name too long'       => ['device_rename', { id => 1, name => 'x' x 65 }],
+	'newline in device name'     => ['device_rename', { id => 1, name => "Kitchen\nX-Evil: 1" }],
+	'CR in device name'          => ['device_rename', { id => 1, name => "Kitchen\r" }],
+	'NUL in device name'         => ['device_rename', { id => 1, name => "Kit\0chen" }],
+	'DEL in device name'         => ['device_rename', { id => 1, name => "Kit\x7fchen" }],
+	'device name as a list'      => ['device_rename', { id => 1, name => ['Kitchen'] }],
+	'missing device name'        => ['device_rename', { id => 1 }],
+	'rename without an id'       => ['device_rename', { name => 'Kitchen' }],
+	'rename id traversal'        => ['device_rename', { id => '1/../../users', name => 'Kitchen' }],
+	'rename id with newline'     => ['device_rename', { id => "1\n", name => 'Kitchen' }],
 );
 for my $name (sort keys %attacks) {
 	my ($op, $args) = @{ $attacks{$name} };
@@ -112,6 +129,13 @@ is($r->{headers}{Authorization}, 'Bearer ' . ('ab' x 32));
 is_deeply(decode_json($r->{body}), { player => 'aa:bb:cc:dd:ee:01' });
 Slim::Networking::SimpleAsyncHTTP::respond($r, '');
 is_deeply($got, {}, '204 with no body is success');
+
+# A rename goes out as UTF-8 JSON, whatever the script.
+Plugins::LyrionAnywhere::Admin::call('device_rename', { id => 7, name => "K\x{fc}che \x{263a}" }, sub { $got = shift }, sub { $error = shift });
+$r = $Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1];
+is("$r->{method} $r->{url}", 'POST http://127.0.0.1:9445/admin/v1/devices/7/name', 'rename: method and URL');
+is_deeply(decode_json($r->{body}), { name => "K\x{fc}che \x{263a}" }, 'rename: the name survives the trip');
+ok(!utf8::is_utf8($r->{body}), 'rename: the body is UTF-8 bytes');
 
 Plugins::LyrionAnywhere::Admin::call('users', {}, sub { $got = shift }, sub { $error = shift });
 Slim::Networking::SimpleAsyncHTTP::respond($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1], '{"users":[{"username":"alice"}]}');

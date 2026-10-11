@@ -1,14 +1,17 @@
-// Lyrion Anywhere settings page: users, devices and activity, via `anywhere …` commands.
+// Lyrion Anywhere settings page: users, devices and activity, via `anywhere ...` commands.
 //
 // Names here (usernames, device names, audit details) can come from remote users, so the
 // page is built with textContent only: never innerHTML or similar.
+//
+// This file is ASCII only: other characters are written as \u escapes, so the page shows
+// them correctly however the file is served (t/10-web-files.t checks).
 (function () {
   'use strict';
 
   // --- pure helpers (also used by the tests) ------------------------------------------
 
   /**
-   * The JSON-RPC command for an operation: ["anywhere", op, "key:value", …, "csrf:<token>"].
+   * The JSON-RPC command for an operation: ["anywhere", op, "key:value", ..., "csrf:<token>"].
    * LMS refuses commands that change anything without the token, which only this page has
    * (LMS's JSON-RPC is otherwise open to any web page on the local network).
    */
@@ -41,12 +44,45 @@
     return [...out].sort().join(',');
   }
 
-  /** A sign-in lifetime in whole days (1–365), or null. */
+  const DASH = '\u2013'; // en dash: "no value"
+  const ELLIPSIS = '\u2026';
+  const DOT = ' \u00b7 ';
+
+  /** The gateway's default sign-in lifetime (accounts.rs DEFAULT_SESSION_DAYS). */
+  const DEFAULT_SESSION_DAYS = 90;
+
+  /** A sign-in lifetime in whole days (1 to 365), or null. */
   function validDays(v) {
     const s = String(v ?? '').trim();
     if (!/^\d{1,3}$/.test(s)) return null;
     const n = Number(s);
     return n >= 1 && n <= 365 ? n : null;
+  }
+
+  /**
+   * The lifetime to show from the gateway's settings: its value (a number, or a numeric
+   * string as LMS may pass it on), else its default, else ours.
+   */
+  function sessionDaysShown(s) {
+    return validDays(s && s.session_days) ?? validDays(s && s.session_days_default) ?? DEFAULT_SESSION_DAYS;
+  }
+
+  /** A device name as the gateway takes it (1 to 64 characters, no control characters), trimmed, or null. */
+  function validDeviceName(v) {
+    if (typeof v !== 'string') return null;
+    const s = v.trim();
+    const n = [...s].length;
+    if (n < 1 || n > 64 || /[\u0000-\u001f\u007f-\u009f]/.test(s)) return null;
+    return s;
+  }
+
+  const CLIENT_KINDS = { pwa: 'Installed web app', browser: 'Browser tab', android: 'Android app' };
+
+  /** What kind of client a device is, e.g. "Browser tab \u00b7 Safari on iPadOS". */
+  function clientText(d) {
+    const kind = d && Object.prototype.hasOwnProperty.call(CLIENT_KINDS, d.client_kind) ? CLIENT_KINDS[d.client_kind] : '';
+    const platform = d && typeof d.client_platform === 'string' ? d.client_platform : '';
+    return [kind, platform].filter(Boolean).join(DOT) || 'unknown';
   }
 
   function validUsername(u) {
@@ -58,12 +94,12 @@
   }
 
   function formatTime(unixSeconds) {
-    if (!unixSeconds) return '–';
+    if (!unixSeconds) return DASH;
     return new Date(unixSeconds * 1000).toLocaleString('en-GB');
   }
 
   function formatUptime(s) {
-    if (!s) return '–';
+    if (!s) return DASH;
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
     return h ? `${h} h ${m} min` : `${m} min`;
   }
@@ -98,7 +134,7 @@
     return formats.length ? `on (${formats.join(', ')})` : 'on';
   }
 
-  const api = { command, adminOnlyArg, pageToken, validDays, validUsername, validPassword, formatTime, formatUptime, diagnosticsText, downloadsText };
+  const api = { command, adminOnlyArg, pageToken, validDays, sessionDaysShown, validDeviceName, clientText, validUsername, validPassword, formatTime, formatUptime, diagnosticsText, downloadsText, DEFAULT_SESSION_DAYS };
   if (typeof globalThis.__anywhereTest === 'object') {
     Object.assign(globalThis.__anywhereTest, api);
     return;
@@ -171,9 +207,9 @@
     const rows = [
       ['Gateway', s.running ? `running (pid ${s.pid})` : s.enabled ? 'not running' : 'disabled'],
       ['Up for', formatUptime(s.uptime)],
-      ['Listening on', s.listen || '–'],
+      ['Listening on', s.listen || DASH],
       ['Binary', s.binary_ok ? s.binary : `missing: ${s.binary || 'none for this platform'}`],
-      ['Data', s.data_dir || '–'],
+      ['Data', s.data_dir || DASH],
     ];
     if (s.error) rows.push(['Last error', s.error]);
     const box = $('aw-status');
@@ -205,7 +241,7 @@
       el('tr', {}, ['User', 'Role', 'Two-step', 'Status', 'Downloads', 'Home players', ''].map((h) => el('th', { text: h }))),
     ]);
     for (const u of users) {
-      const grants = el('div', { className: 'aw-grants', text: '…' });
+      const grants = el('div', { className: 'aw-grants', text: ELLIPSIS });
       const actions = el('div', { className: 'aw-actions' }, [
         el('button', {
           type: 'button',
@@ -278,7 +314,7 @@
         ]),
       );
       const choices = [...players.entries()].filter(([mac]) => !granted.includes(mac) && !mac.startsWith('02:4c:41:'));
-      const select = el('select', {}, [el('option', { value: '', text: 'Add a player…' }), ...choices.map(([mac, name]) => el('option', { value: mac, text: name }))]);
+      const select = el('select', {}, [el('option', { value: '', text: 'Add a player' + ELLIPSIS }), ...choices.map(([mac, name]) => el('option', { value: mac, text: name }))]);
       select.addEventListener('change', () => {
         if (select.value) run(() => admin('grant', { username, player: select.value }), 'Player granted');
       });
@@ -296,21 +332,52 @@
       return;
     }
     const table = el('table', { className: 'aw-table' }, [
-      el('tr', {}, ['Device', 'User', 'Player id', 'Last seen', ''].map((h) => el('th', { text: h }))),
+      el('tr', {}, ['Device', 'User', 'Client', 'Address', 'Last seen', 'Player id', ''].map((h) => el('th', { text: h }))),
     ]);
     for (const d of devices) {
+      const client = el('td', {}, [el('div', { text: clientText(d) })]);
+      if (typeof d.user_agent === 'string' && d.user_agent) {
+        client.append(el('div', { className: 'aw-note aw-ua', text: d.user_agent }));
+      }
+      const name = el('td', {}, [el('span', { text: String(d.name) })]);
       table.append(el('tr', {}, [
-        el('td', { text: d.name }),
+        name,
         el('td', { text: d.username }),
-        el('td', { text: d.mac, className: 'aw-mono' }),
+        client,
+        el('td', { text: typeof d.last_addr === 'string' && d.last_addr ? d.last_addr : DASH, className: 'aw-mono' }),
         el('td', { text: formatTime(d.last_seen) }),
+        el('td', { text: d.mac, className: 'aw-mono' }),
         el('td', {}, [
+          renameButton(d, name),
           diagnosticsButton(d),
           confirmButton('Sign out', 'Confirm sign-out', () => run(() => admin('revoke', { id: d.id }), 'Device signed out')),
         ]),
       ]));
     }
     box.replaceChildren(table);
+  }
+
+  /** Rename a device: an input in place of its name. Its LMS player follows. */
+  function renameButton(d, cell) {
+    return el('button', {
+      type: 'button',
+      text: 'Rename',
+      onclick: () => {
+        const input = el('input', { type: 'text', maxlength: '64', spellcheck: 'false', 'aria-label': 'New name' });
+        input.value = String(d.name);
+        const save = el('button', {
+          type: 'button',
+          text: 'Save',
+          onclick: () => {
+            const name = validDeviceName(input.value);
+            if (name === null) return say('Device names are 1 to 64 characters.', true);
+            run(() => admin('device_rename', { id: d.id, name }), `Device renamed to ${name}`);
+          },
+        });
+        cell.replaceChildren(input, save);
+        input.focus();
+      },
+    });
   }
 
   /** Diagnostics the device reported (playback mode, browser capabilities, recent log). */
@@ -372,7 +439,7 @@
   async function showSettings() {
     const s = await admin('settings');
     const input = $('aw-session-days');
-    if (document.activeElement !== input && Number.isInteger(s.session_days)) input.value = String(s.session_days);
+    if (document.activeElement !== input) input.value = String(sessionDaysShown(s));
   }
 
   const KIND = { app: 'App', radio: 'Radio', menu: 'Menu', 'not installed': 'Not installed' };
@@ -390,7 +457,7 @@
       return el('label', { className: 'aw-plugin' }, [
         box,
         el('span', { text: ` ${String(p.name)} ` }),
-        el('span', { className: 'aw-note', text: `(${KIND[p.kind] || 'Plugin'} · ${commands.join(', ')})` }),
+        el('span', { className: 'aw-note', text: `(${KIND[p.kind] || 'Plugin'}${DOT}${commands.join(', ')})` }),
       ]);
     });
     $('aw-plugins').replaceChildren(...(rows.length ? rows : [el('p', { className: 'aw-note', text: 'No plugins found (the gateway asks LMS; a player must be connected for My Music plugins).' })]));
@@ -417,7 +484,7 @@
       const username = $('aw-new-user').value.trim();
       const password = $('aw-new-password').value;
       const role = $('aw-new-role').value;
-      if (!validUsername(username)) return say('Usernames are 1–64 characters: a–z, 0–9, dot, underscore or hyphen.', true);
+      if (!validUsername(username)) return say('Usernames are 1 to 64 characters: a to z, 0 to 9, dot, underscore or hyphen.', true);
       if (!validPassword(password)) return say('Passwords need at least 10 characters.', true);
       run(async () => {
         await admin('user_create', { username, password, role });
