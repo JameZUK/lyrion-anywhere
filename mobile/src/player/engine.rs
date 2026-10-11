@@ -179,6 +179,7 @@ pub(crate) struct Engine {
     pipeline: Pipeline,
     block: Vec<f32>,
     underruns_seen: u64,
+    was_playing: bool,
     // Reporting.
     last_status_at: Option<Instant>,
     last_status_key: Option<(PlayerConnection, LocalPlayback, u32, bool)>,
@@ -236,6 +237,7 @@ impl Engine {
             pipeline: Pipeline::new(dsp),
             block: vec![0.0; BLOCK_FRAMES * CHANNELS],
             underruns_seen: 0,
+            was_playing: false,
             last_status_at: None,
             last_status_key: None,
             last_signal: None,
@@ -605,8 +607,14 @@ impl Engine {
 
         let Some(p) = &mut self.player else { return };
         let state = p.status().output;
-        let user_hold = self.shared.hold.load(Ordering::Acquire);
         let playing = state == OutputState::Playing;
+        // A local hold lasts until LMS next starts or resumes playback (from this app or
+        // any other controller): the hold covers the moment before LMS's own pause lands.
+        if playing && !self.was_playing {
+            self.shared.hold.store(false, Ordering::Release);
+        }
+        self.was_playing = playing;
+        let user_hold = self.shared.hold.load(Ordering::Acquire);
         ring.set_hold(user_hold || !playing);
         ring.set_expect_data(playing && !user_hold && !p.audio_exhausted());
         let (underruns, _) = ring.underruns();

@@ -336,7 +336,8 @@ impl LocalPlayer {
 
     /// Silence the output at once (headphones unplugged, audio focus lost), keeping the
     /// queued audio. The app also pauses the player through LMS, so LMS and the output
-    /// agree; the hold stays until released here.
+    /// agree. The hold lasts until released here, or until LMS next starts or resumes
+    /// playback (from any controller).
     pub fn set_hold(&self, hold: bool) {
         *self.hold.lock().unwrap() = hold;
         if let Some(r) = self.run.lock().unwrap().as_ref() {

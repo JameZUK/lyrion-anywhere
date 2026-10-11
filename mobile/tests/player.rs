@@ -563,7 +563,12 @@ async fn hold_silences_at_once_and_ducking_scales() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(r.pulled.frames(), before, "held: nothing more played");
     assert!(r.player.status().held);
-    r.player.set_hold(false);
+    // The app paused LMS meanwhile; LMS stays paused for a while: still silent.
+    r.send(strm_frame(b'p', b'f', "")).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(r.pulled.frames(), before);
+    // Resumed from LMS (by any controller): the hold releases itself.
+    r.send(strm_frame(b'u', b'f', "")).await;
     let pulled = r.pulled.clone();
     wait_for("audio again", move || pulled.frames() > before + 4_000).await;
     r.player.set_duck(true);
