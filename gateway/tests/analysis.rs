@@ -412,6 +412,65 @@ async fn a_stalled_fetch_times_out_and_is_remembered() {
 }
 
 #[tokio::test]
+async fn a_time_out_is_remembered_only_briefly() {
+    // Pentest 2026-10 (A7): a time-out (often caused by load, which another user can
+    // create) was remembered as long as a corrupt file, and served to every user.
+    let a = with_analysis(|c| {
+        c.analysis_timeout = Duration::from_millis(400);
+        c.analysis_wait = Duration::from_secs(5);
+        c.analysis_retry_after = Duration::from_secs(600);
+    })
+    .await;
+    let h = &a.h;
+    assert_eq!(h.track_analysis("8").await.status(), S::GATEWAY_TIMEOUT);
+    assert_eq!(h.track_analysis("8").await.status(), S::GATEWAY_TIMEOUT);
+    assert_eq!(downloads_of(h, 8), 1, "remembered for a moment");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    // Tried again once the deadline's length has passed, well inside retry_after.
+    assert_eq!(h.track_analysis("8").await.status(), S::GATEWAY_TIMEOUT);
+    assert_eq!(downloads_of(h, 8), 2);
+}
+
+#[tokio::test]
+async fn open_requests_are_limited_per_user() {
+    // Not covered before the 2026-10 review: the limit on one user's open requests.
+    let a = with_analysis(|c| {
+        c.analysis_wait = Duration::from_secs(2);
+        c.analysis_timeout = Duration::from_secs(30);
+    })
+    .await;
+    let h = &a.h;
+    let limit = anywhere_gateway::analysis::ANALYSIS_REQUESTS_PER_USER;
+    let url = h.url("/v1/analysis/track/8"); // track 8 stalls, so every request waits
+    let mut open = tokio::task::JoinSet::new();
+    for _ in 0..limit {
+        let (url, tok) = (url.clone(), h.tok_a.clone());
+        open.spawn(async move {
+            reqwest::Client::new()
+                .get(url)
+                .bearer_auth(tok)
+                .send()
+                .await
+                .unwrap()
+                .status()
+        });
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let r = h.track_analysis("8").await;
+    assert_eq!(r.status(), S::TOO_MANY_REQUESTS, "one more than the limit");
+    assert!(r.headers().contains_key("retry-after"));
+    // Another user isn't affected.
+    let r = h
+        .analysis("/v1/analysis/track/8", Some(&h.tok_b), &[])
+        .await;
+    assert_eq!(r.status(), S::ACCEPTED);
+    // The open ones are answered "pending" once the wait is over.
+    while let Some(status) = open.join_next().await {
+        assert_eq!(status.unwrap(), S::ACCEPTED);
+    }
+}
+
+#[tokio::test]
 async fn slow_analyses_answer_202_then_the_result() {
     let a = with_analysis(|c| c.analysis_wait = Duration::from_millis(50)).await;
     let h = &a.h;

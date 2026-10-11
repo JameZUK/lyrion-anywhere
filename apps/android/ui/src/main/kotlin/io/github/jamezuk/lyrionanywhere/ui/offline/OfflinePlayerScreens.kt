@@ -39,8 +39,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayback
@@ -168,8 +171,14 @@ fun OfflineNowPlayingScreen(ui: OfflinePlayerUi, clock: () -> Long, actions: Off
                     onSeek = actions.onSeek,
                 )
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    IconToggleButton(checked = status.shuffle, onCheckedChange = { actions.onShuffle() }) {
-                        Icon(Icons.Outlined.Shuffle, contentDescription = stringResource(if (status.shuffle) R.string.shuffle_on else R.string.shuffle_off))
+                    // Constant names, with the mode as their state (as on the online player).
+                    val shuffleState = stringResource(if (status.shuffle) R.string.toggle_on else R.string.mode_off)
+                    IconToggleButton(
+                        checked = status.shuffle,
+                        onCheckedChange = { actions.onShuffle() },
+                        modifier = Modifier.semantics { stateDescription = shuffleState },
+                    ) {
+                        Icon(Icons.Outlined.Shuffle, contentDescription = stringResource(R.string.shuffle))
                     }
                     IconButton(onClick = actions.onPrevious) {
                         Icon(Icons.Outlined.SkipPrevious, contentDescription = stringResource(R.string.action_previous))
@@ -184,16 +193,21 @@ fun OfflineNowPlayingScreen(ui: OfflinePlayerUi, clock: () -> Long, actions: Off
                     IconButton(onClick = actions.onNext) {
                         Icon(Icons.Outlined.SkipNext, contentDescription = stringResource(R.string.action_next))
                     }
-                    IconToggleButton(checked = status.repeat != LocalRepeat.OFF, onCheckedChange = { actions.onRepeat() }) {
+                    val repeatState = stringResource(
+                        when (status.repeat) {
+                            LocalRepeat.OFF -> R.string.mode_off
+                            LocalRepeat.ALL -> R.string.repeat_all
+                            LocalRepeat.ONE -> R.string.repeat_one
+                        },
+                    )
+                    IconToggleButton(
+                        checked = status.repeat != LocalRepeat.OFF,
+                        onCheckedChange = { actions.onRepeat() },
+                        modifier = Modifier.semantics { stateDescription = repeatState },
+                    ) {
                         Icon(
                             if (status.repeat == LocalRepeat.ONE) Icons.Outlined.RepeatOne else Icons.Outlined.Repeat,
-                            contentDescription = stringResource(
-                                when (status.repeat) {
-                                    LocalRepeat.OFF -> R.string.repeat_off
-                                    LocalRepeat.ALL -> R.string.repeat_all
-                                    LocalRepeat.ONE -> R.string.repeat_one
-                                },
-                            ),
+                            contentDescription = stringResource(R.string.repeat),
                         )
                     }
                 }
@@ -201,7 +215,12 @@ fun OfflineNowPlayingScreen(ui: OfflinePlayerUi, clock: () -> Long, actions: Off
                     Icon(Icons.Outlined.Stop, contentDescription = stringResource(R.string.offline_stop))
                 }
                 status.lastError?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    )
                 }
             }
             HorizontalDivider()

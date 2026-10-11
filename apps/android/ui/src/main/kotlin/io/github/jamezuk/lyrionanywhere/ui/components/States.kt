@@ -74,13 +74,14 @@ fun ErrorState(error: AppError, onRetry: (() -> Unit)?, modifier: Modifier = Mod
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
         ) {
             Icon(icon(error), contentDescription = null, modifier = Modifier.size(48.dp))
+            // The live region is the message itself, so it is read once, without the button.
             Text(
                 errorMessage(error),
                 style = MaterialTheme.typography.bodyLarge,
                 textAlign = TextAlign.Center,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             )
             if (onRetry != null) {
                 FilledTonalButton(onClick = onRetry) { Text(stringResource(R.string.action_retry)) }

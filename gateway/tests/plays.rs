@@ -15,9 +15,13 @@ fn now() -> u64 {
         .as_secs()
 }
 
-/// A play of `track` that counts (fake track 1 lasts 241.2 s), started an hour ago.
+/// A play of `track` that counts (fake track 1 lasts 241.2 s), started an hour or more ago:
+/// each key at its own time (a multiple of five minutes), so plays don't overlap.
 fn play(key: &str, track: u64) -> Value {
-    json!({"key": key, "track_id": track, "played_at": now() - 3600, "seconds": 200})
+    let slot = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x100_0000_01b3)
+    }) % 8000;
+    json!({"key": key, "track_id": track, "played_at": now() - 3600 - slot * 300, "seconds": 200})
 }
 
 impl Harness {
@@ -357,6 +361,61 @@ async fn only_library_tracks_that_were_really_listened_to_count() {
             ("recorded".into(), "".into())
         ]
     );
+}
+
+#[tokio::test]
+async fn the_same_listening_under_new_keys_counts_once() {
+    // Pentest 2026-10 (A7): every fresh key counted, so one listener could add hundreds of
+    // plays of a track an hour by sending the same play again under new keys.
+    let h = harness().await;
+    let t = now() - 7200;
+    // Track 1 lasts 241.2 s, so a play counts after 120.6 s: plays of it can't start
+    // closer together than that.
+    let items = json!([
+        {"key": "first-001", "track_id": 1, "played_at": t, "seconds": 200},
+        {"key": "copy-0001", "track_id": 1, "played_at": t, "seconds": 200},
+        {"key": "copy-0002", "track_id": 1, "played_at": t + 60, "seconds": 200},
+        {"key": "copy-0003", "track_id": 1, "played_at": t - 120, "seconds": 200},
+        // Far enough apart: a second listen.
+        {"key": "again-001", "track_id": 1, "played_at": t + 121, "seconds": 200},
+        // Another track at the same time (another device): fine.
+        {"key": "other-001", "track_id": 7, "played_at": t, "seconds": 200},
+    ]);
+    let (_, v) = h.plays(&h.tok_a, items).await;
+    assert_eq!(
+        results(&v),
+        vec![
+            ("recorded".into(), "".into()),
+            ("refused".into(), "overlap".into()),
+            ("refused".into(), "overlap".into()),
+            ("refused".into(), "overlap".into()),
+            ("recorded".into(), "".into()),
+            ("recorded".into(), "".into()),
+        ]
+    );
+    assert_eq!(h.recorded().len(), 3);
+    // In a later upload too; and the original key is still a duplicate, not an overlap.
+    let items = json!([
+        {"key": "copy-0004", "track_id": 1, "played_at": t + 10, "seconds": 200},
+        {"key": "first-001", "track_id": 1, "played_at": t, "seconds": 200},
+    ]);
+    let (_, v) = h.plays(&h.tok_a, items).await;
+    assert_eq!(
+        results(&v),
+        vec![
+            ("refused".into(), "overlap".into()),
+            ("duplicate".into(), "".into()),
+        ]
+    );
+    // Another user's listening is their own.
+    let (_, v) = h
+        .plays(
+            &h.tok_b,
+            json!([{"key": "bob-00001", "track_id": 1, "played_at": t, "seconds": 200}]),
+        )
+        .await;
+    assert_eq!(one(&v).0, "recorded");
+    assert_eq!(h.recorded().len(), 4);
 }
 
 #[tokio::test]

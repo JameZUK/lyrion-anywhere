@@ -57,6 +57,12 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -203,8 +209,23 @@ fun NowPlayingScreen(
     // progress isn't lost.
     val onClose by rememberUpdatedState(actions.onClose)
     val pull = remember(pullMin) { PullToClose(pullMin) { onClose?.invoke() } }
+    val togglePlay by rememberUpdatedState(actions.onTogglePlay)
     ArtTinted(track?.artwork) {
-    Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Column(
+        modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            // Space or the media key plays and pauses. Handled after the focused control (not
+            // in preview), so Space on a focused button still presses that button.
+            .onKeyEvent { e ->
+                if (isPlayPauseKey(e)) {
+                    togglePlay()
+                    true
+                } else {
+                    false
+                }
+            },
+    ) {
     TransferStatus(state.transfer, actions.onDismissTransfer)
     PlayingOnStrip(state, actions.onBackToPhone, onBringToPhone = actions.onBringToPhone)
     if (twoPane) {
@@ -252,6 +273,7 @@ private fun NowPlayingControls(
     val elapsed = rememberElapsed(state, clock)
     val nextLabel = stringResource(R.string.action_next)
     val previousLabel = stringResource(R.string.action_previous)
+    val coverLabel = stringResource(R.string.album_cover)
     Column(
         Modifier.widthIn(max = 560.dp).fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -263,7 +285,10 @@ private fun NowPlayingControls(
             modifier = Modifier
                 .fillMaxWidth(0.85f)
                 .testTag("artwork")
-                .semantics {
+                // One node, labelled as the cover (with or without an image), carrying Next
+                // and Previous.
+                .semantics(mergeDescendants = true) {
+                    contentDescription = coverLabel
                     customActions = listOf(
                         CustomAccessibilityAction(nextLabel) { actions.onNext(); true },
                         CustomAccessibilityAction(previousLabel) { actions.onPrevious(); true },
@@ -273,7 +298,7 @@ private fun NowPlayingControls(
             ArtworkImage(
                 track?.artwork,
                 800,
-                contentDescription = stringResource(R.string.album_cover),
+                contentDescription = null,
                 modifier = Modifier.fillMaxWidth(),
                 corner = 16.dp,
             )
@@ -350,12 +375,23 @@ private fun NowPlayingControls(
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(playerName, style = MaterialTheme.typography.labelLarge)
-            Spacer(Modifier.weight(1f))
-            IconToggleButton(checked = status.powered, onCheckedChange = actions.onPower) {
+            Text(
+                playerName,
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            // A constant name, with on/off as its state (a toggle's label mustn't flip).
+            val powerState = stringResource(if (status.powered) R.string.toggle_on else R.string.mode_off)
+            IconToggleButton(
+                checked = status.powered,
+                onCheckedChange = actions.onPower,
+                modifier = Modifier.semantics { stateDescription = powerState },
+            ) {
                 Icon(
                     Icons.Outlined.PowerSettingsNew,
-                    contentDescription = stringResource(if (status.powered) R.string.power_off else R.string.power_on),
+                    contentDescription = stringResource(R.string.power_named, playerName),
                 )
             }
         }
@@ -364,6 +400,10 @@ private fun NowPlayingControls(
         }
     }
 }
+
+/** Space or the play/pause media key, on key down (not on release, or it would toggle twice). */
+internal fun isPlayPauseKey(e: KeyEvent): Boolean =
+    e.type == KeyEventType.KeyDown && (e.key == Key.Spacebar || e.key == Key.MediaPlayPause)
 
 /** Everything the Now Playing screen can do. */
 data class NowPlayingActions(

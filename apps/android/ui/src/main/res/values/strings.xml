@@ -99,8 +99,8 @@
     <string name="mode_off">Off</string>
     <string name="position">Position in track</string>
     <string name="volume">Volume</string>
-    <string name="power_on">Switch player on</string>
-    <string name="power_off">Switch player off</string>
+    <string name="power_named">Power, %1$s</string>
+    <string name="toggle_on">On</string>
     <string name="queued_play_now">Playing now</string>
     <string name="queued_next">Playing next</string>
     <string name="queued_add">Added to the queue</string>
@@ -125,6 +125,8 @@
     <string name="sign_out_confirm_body">This phone will need your password or a new pairing code to sign in again.</string>
     <string name="version_line">App %1$s · core %2$s</string>
     <string name="licences">Open-source licences</string>
+    <string name="privacy_policy">Privacy policy</string>
+    <string name="privacy_policy_body">What the app and your server keep, and what they don\'t</string>
     <string name="licences_intro">Lyrion Anywhere is free software under the GNU GPL (version 2 or later). It is built on these open-source components:</string>
 
     <!-- This phone as a player, and its signal path -->
@@ -170,6 +172,7 @@
     <string name="sound_limiter">True-peak limiter</string>
     <string name="sound_limiter_body">Stops boosted audio from clipping. Acts only with another stage on.</string>
     <string name="sound_limiter_ceiling">Limiter ceiling: %1$s dBTP</string>
+    <string name="sound_limiter_ceiling_name">Limiter ceiling</string>
     <string name="sound_section_eq">Equaliser</string>
     <string name="sound_eq">Parametric EQ</string>
     <string name="sound_eq_none">No profile yet. Import an AutoEq ParametricEQ.txt file for your headphones.</string>
@@ -182,6 +185,7 @@
     <string name="sound_eq_file">Choose a file</string>
     <string name="sound_eq_remove">Remove the profile</string>
     <string name="sound_eq_paste_title">Paste an AutoEq profile</string>
+    <string name="sound_eq_paste_label">AutoEq profile text</string>
     <string name="sound_eq_paste_hint">Preamp: -6.4 dB\nFilter 1: ON PK Fc 105 Hz Gain 5.8 dB Q 0.70</string>
     <string name="sound_eq_import">Import</string>
     <string name="sound_eq_pasted_name">Pasted profile</string>
@@ -310,6 +314,7 @@
     <string name="no_compilations">No compilations here.</string>
     <string name="shuffle_again">Shuffle again</string>
     <string name="see_all">See all</string>
+    <string name="see_all_named">See all: %1$s</string>
     <string name="home_recent">Recently added</string>
     <string name="home_random">Random albums</string>
     <string name="disc_number">Disc %1$d</string>
@@ -389,7 +394,7 @@
     <string name="action_dismiss">Dismiss</string>
 
     <!-- Sync groups -->
-    <string name="sync_with">Play in sync with %1$s</string>
+    <string name="sync_with">Play %1$s in sync with %2$s</string>
 
     <!-- Queue editing -->
     <string name="queue_clear">Clear queue</string>
@@ -402,11 +407,11 @@
     <string name="queue_remove">Remove from queue</string>
     <string name="queue_move_up">Move up</string>
     <string name="queue_move_down">Move down</string>
-    <string name="queue_drag">Drag to reorder</string>
     <string name="queue_failed">Couldn\'t change the queue.</string>
     <string name="queue_undo_failed">Couldn\'t put the track back.</string>
 
     <!-- Tablet layouts (list and detail) -->
+    <string name="detail_pane">Details</string>
     <string name="choose_album">Choose an album to see it here.</string>
     <string name="choose_artist">Choose an artist to see them here.</string>
     <string name="choose_playlist">Choose a playlist to see it here.</string>
@@ -482,9 +487,6 @@
     <string name="offline_banner_signed_in">Offline. Showing your downloads.</string>
     <string name="playing_downloads">Downloads</string>
     <string name="playing_downloads_on_phone">Playing downloads on this phone</string>
-    <string name="shuffle_on">Shuffle is on</string>
-    <string name="shuffle_off">Shuffle is off</string>
-    <string name="repeat_off">Repeat is off</string>
     <string name="format_original">Original (as in your library)</string>
     <string name="format_mp3">MP3 (320 kb/s)</string>
     <string name="format_opus">Opus (160 kb/s, smallest)</string>

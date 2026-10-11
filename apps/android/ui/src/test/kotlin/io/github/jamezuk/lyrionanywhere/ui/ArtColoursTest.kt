@@ -73,6 +73,14 @@ class ArtColoursTest {
                 check("onSurfaceVariant/background", s.onSurfaceVariant, s.background, text)
                 // The accent is used for text (links, headings) on the page.
                 check("primary/background", s.primary, s.background, text)
+                // ...including the header's gradient, which starts at primaryContainer...
+                check("primary/primaryContainer", s.primary, s.primaryContainer, text)
+                // ...and on raised surfaces (cards, sheets).
+                for (c in listOf(s.containerLow, s.container, s.containerHigh, s.surfaceVariant)) {
+                    check("primary/container", s.primary, c, text)
+                    check("onSurfaceVariant/container", s.onSurfaceVariant, c, text)
+                }
+                check("onBackground/surfaceVariant", s.onBackground, s.surfaceVariant, text)
                 // Text on the header's gradient, from the container into the background.
                 check("onBackground/primaryContainer", s.onBackground, s.primaryContainer, ArtScheme.ACCENT_CONTRAST)
             }

@@ -24,12 +24,23 @@ use crate::server::{Server, normalise_pairing_code};
 use crate::transport::{self, CLIENT_HEADER, Http};
 
 /// What the app keeps in secure storage: nothing else.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct StoredCredentials {
     /// The current (single-use) refresh token.
     pub refresh_token: String,
     /// The gateway's id for this device, so signing in again keeps the same LMS player.
     pub device_id: i64,
+}
+
+/// Never prints the refresh token, so a `{:?}` in a log line, panic message or crash
+/// report can't leak it (pentest 2026-10, A7 hardening).
+impl std::fmt::Debug for StoredCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredCredentials")
+            .field("refresh_token", &"<redacted>")
+            .field("device_id", &self.device_id)
+            .finish()
+    }
 }
 
 /// Secure storage failed (e.g. the Keystore key was invalidated).
@@ -600,6 +611,17 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stored_credentials_never_print_the_token() {
+        let c = super::StoredCredentials {
+            refresh_token: "a".repeat(64),
+            device_id: 7,
+        };
+        let shown = format!("{c:?} {c:#?}");
+        assert!(!shown.contains(&"a".repeat(64)), "{shown}");
+        assert!(shown.contains("redacted") && shown.contains('7'));
+    }
+
     use super::*;
 
     #[test]

@@ -9,6 +9,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.semantics.semantics
+import io.github.jamezuk.lyrionanywhere.ui.R
 
 /** Material 3 window width classes (the breakpoints are Material's: 600 dp and 840 dp). */
 enum class WidthClass { COMPACT, MEDIUM, EXPANDED }
@@ -64,7 +68,15 @@ fun ListDetail(
     Row(modifier.fillMaxSize()) {
         Box(Modifier.weight(LIST_WEIGHT).fillMaxHeight().testTag("list-pane")) { list() }
         VerticalDivider()
-        Box(Modifier.weight(1f - LIST_WEIGHT).fillMaxHeight().testTag("detail-pane")) {
+        val pane = stringResource(R.string.detail_pane)
+        Box(
+            Modifier
+                .weight(1f - LIST_WEIGHT)
+                .fillMaxHeight()
+                .testTag("detail-pane")
+                // A pane: TalkBack announces it when its content changes.
+                .semantics { paneTitle = pane },
+        ) {
             if (detail != null) detail() else placeholder()
         }
     }

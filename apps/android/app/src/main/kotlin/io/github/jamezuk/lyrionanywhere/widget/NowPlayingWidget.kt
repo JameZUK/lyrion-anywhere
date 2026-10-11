@@ -60,6 +60,12 @@ object NowPlayingWidget {
     /** Widget artwork is small: decoded no larger than this (pixels). */
     const val ART_PX = 192
 
+    /** Above this font scale the widget's one row fits only the title, so the detail is dropped. */
+    const val LARGE_TEXT_SCALE = 1.3f
+
+    /** Whether the artist/player line fits at [fontScale]. */
+    fun detailFits(fontScale: Float): Boolean = fontScale <= LARGE_TEXT_SCALE
+
     /** Redraw every placed widget (cheap when none is placed). */
     @OptIn(ExperimentalGlanceRemoteViewsApi::class)
     suspend fun render(app: LyrionApp) {
@@ -105,7 +111,7 @@ object NowPlayingWidget {
                     maxLines = 1,
                     style = TextStyle(color = GlanceTheme.colors.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Medium),
                 )
-                if (detail.isNotEmpty()) {
+                if (detail.isNotEmpty() && detailFits(context.resources.configuration.fontScale)) {
                     Text(detail, maxLines = 1, style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant, fontSize = 13.sp))
                 }
             }

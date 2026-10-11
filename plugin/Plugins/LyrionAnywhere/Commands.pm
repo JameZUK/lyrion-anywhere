@@ -7,10 +7,11 @@ package Plugins::LyrionAnywhere::Commands;
 # They run inside LMS, so they are as reachable as LMS's own JSON-RPC (port 9000) and CLI
 # (9090), which are unauthenticated on the LAN unless LMS password protection is on. LMS's
 # /jsonrpc.js also accepts cross-origin "text/plain" POSTs, so any web page a LAN user
-# opens could send commands blind. Every command that changes something therefore needs
-# `csrf:<token>`: a random value made when LMS starts, given only to the settings page
-# (which other web sites cannot read). Read-only commands need no token. The gateway never
-# forwards `anywhere` commands from the internet (it is reserved in its allow-list).
+# opens could send commands blind. Every admin command therefore needs `csrf:<token>`: a
+# random value made when LMS starts, given only to the settings page (which other web sites
+# cannot read). That includes the read-only ones, since they return remote users' addresses,
+# browsers and the audit log (pentest 2026-10); only `anywhere status` is open. The gateway
+# never forwards `anywhere` commands from the internet (it is reserved in its allow-list).
 #
 # `anywhere play_record` (Plays.pm) is the one command the gateway itself sends: it is
 # signed with the admin secret instead of carrying the settings page's token.
@@ -114,7 +115,8 @@ sub restart {
 sub admin {
 	my $request = shift;
 	my $op = $request->getRequest(1) // '';
-	return _refuse($request, $op) if mutating($op) && !token_ok($request->getParam('csrf'));
+	# Reads too: devices, diagnostics, audit and users hold personal data.
+	return _refuse($request, $op) unless token_ok($request->getParam('csrf'));
 	my %args;
 	for my $k (@ARG_NAMES) {
 		my $v = $request->getParam($k);

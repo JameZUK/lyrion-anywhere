@@ -2,7 +2,9 @@ package io.github.jamezuk.lyrionanywhere.ui.player
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -66,7 +68,8 @@ fun OutputButton(state: PlayerUiState, onClick: () -> Unit, modifier: Modifier =
 
 /**
  * Says plainly when another player is being controlled (D20), with one tap back to this
- * phone. Shows nothing while this phone is the player.
+ * phone. Shows nothing while this phone is the player. The buttons wrap below the name
+ * when there isn't room (large text), so the name is never squeezed out.
  */
 @Composable
 fun PlayingOnStrip(
@@ -79,31 +82,41 @@ fun PlayingOnStrip(
     val name = state.selected?.name ?: return
     val bg = MaterialTheme.colorScheme.tertiaryContainer
     val fg = MaterialTheme.colorScheme.onTertiaryContainer
-    Row(
+    Column(
         modifier
             .fillMaxWidth()
             .background(bg)
-            .padding(start = 16.dp, end = 4.dp)
-            .semantics(mergeDescendants = false) { liveRegion = LiveRegionMode.Polite },
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(start = 16.dp, end = 4.dp, top = 4.dp),
     ) {
-        Icon(Icons.Outlined.Speaker, contentDescription = null, tint = fg)
-        Text(
-            stringResource(R.string.playing_on, name),
-            color = fg,
-            style = MaterialTheme.typography.labelLarge,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-        )
-        // Moving playback here needs a player with something queued, and none in progress.
-        if (onBringToPhone != null && state.status?.current != null && state.transfer !is TransferState.Running) {
-            TextButton(onClick = onBringToPhone) {
-                Text(stringResource(R.string.bring_to_phone), color = fg)
-            }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(end = 12.dp)) {
+            Icon(Icons.Outlined.Speaker, contentDescription = null, tint = fg)
+            Text(
+                stringResource(R.string.playing_on, name),
+                color = fg,
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 8.dp)
+                    .testTag("playing-on")
+                    // Announced when the controlled player changes.
+                    .semantics { liveRegion = LiveRegionMode.Polite },
+            )
         }
-        TextButton(onClick = onBackToPhone) {
-            Text(stringResource(R.string.back_to_phone), color = fg)
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+        ) {
+            // Moving playback here needs a player with something queued, and none in progress.
+            if (onBringToPhone != null && state.status?.current != null && state.transfer !is TransferState.Running) {
+                TextButton(onClick = onBringToPhone) {
+                    Text(stringResource(R.string.bring_to_phone), color = fg)
+                }
+            }
+            TextButton(onClick = onBackToPhone) {
+                Text(stringResource(R.string.back_to_phone), color = fg)
+            }
         }
     }
 }
@@ -136,7 +149,7 @@ private fun RowScope.PlayerRowActions(p: Player, state: PlayerUiState, actions: 
     actions.onSync?.let { sync ->
         val together = SyncChoice.together(state.selectedId, p.id, state.syncGroups)
         val current = state.selected?.name.orEmpty()
-        val label = stringResource(R.string.sync_with, current)
+        val label = stringResource(R.string.sync_with, p.name, current)
         IconToggleButton(
             checked = together,
             onCheckedChange = { sync(p.id, it) },

@@ -19,7 +19,10 @@
 //!     `track_key`, it must still be the same file (LMS renumbers tracks on a full rescan);
 //!   - **the counting rule (as scrobblers use):** a play counts only if `seconds` is at
 //!     least half the track's duration or 240 seconds, whichever is less (240 if the
-//!     duration is unknown).
+//!     duration is unknown);
+//!   - **no overlap:** a play of a track the user already has a recorded play of, starting
+//!     less than that counting time before or after it, is refused (`overlap`): it can't
+//!     be a separate listen.
 //! - **Idempotency:** keys are kept per user (see [`crate::accounts::Accounts::claim_play`])
 //!   for as long as their plays could be accepted, so a retried upload is answered
 //!   `duplicate`, never counted twice.
@@ -220,11 +223,15 @@ pub fn check_time(played_at: u64, seconds: f64, now: u64) -> Result<(), &'static
 /// The counting rule: at least half the track, or [`COUNT_AFTER`] seconds if that is less.
 /// Without a known duration, [`COUNT_AFTER`].
 pub fn counts(seconds: f64, duration: Option<f64>) -> bool {
-    let need = match duration {
+    seconds >= needed(duration)
+}
+
+/// Seconds of a track that must be heard for a play to count.
+fn needed(duration: Option<f64>) -> f64 {
+    match duration {
         Some(d) if d.is_finite() && d > 0.0 => (d / 2.0).min(COUNT_AFTER),
         _ => COUNT_AFTER,
-    };
-    seconds >= need
+    }
 }
 
 /// What became of one play.
@@ -537,6 +544,21 @@ impl crate::Gateway {
         }
         if !counts(play.seconds, track.duration) {
             return Outcome::Refused("too_short");
+        }
+        // Two counted plays of one track can't start closer together than the time a play
+        // needs to count: anything closer is the same listening sent twice under new keys
+        // (pentest 2026-10: fresh keys could inflate a track's play count at will).
+        let within = needed(track.duration).ceil() as u64;
+        match self.accounts().play_overlaps(
+            p.user_id,
+            &play.key,
+            play.track_id,
+            play.played_at,
+            within,
+        ) {
+            Ok(false) => {}
+            Ok(true) => return Outcome::Refused("overlap"),
+            Err(_) => return Outcome::Retry("server_error"),
         }
         if !self.plays.plays.take(p.user_id, Instant::now()) {
             return Outcome::Retry("rate_limited");

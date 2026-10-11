@@ -44,7 +44,7 @@ fun StartRadioButton(state: DiscoveryUiState, onStart: () -> Unit, modifier: Mod
     ) {
         Icon(Icons.Outlined.Radio, contentDescription = null)
         Column(Modifier.padding(start = 8.dp)) {
-            Text(stringResource(R.string.action_start_radio), maxLines = 1)
+            Text(stringResource(R.string.action_start_radio), maxLines = 1, overflow = TextOverflow.Ellipsis)
             val how = when {
                 plan.mixLabel != null && plan.dstm != null -> stringResource(R.string.radio_from_mix_endless, plan.mixLabel!!)
                 plan.mixLabel != null -> stringResource(R.string.radio_from_mix, plan.mixLabel!!)

@@ -4,8 +4,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
@@ -45,9 +48,11 @@ import io.github.jamezuk.lyrionanywhere.ui.player.TransferState
 import io.github.jamezuk.lyrionanywhere.ui.player.errorDetail
 import io.github.jamezuk.lyrionanywhere.ui.player.errorWithDetail
 import io.github.jamezuk.lyrionanywhere.ui.player.queueItems
+import io.github.jamezuk.lyrionanywhere.ui.player.queueKey
 import io.github.jamezuk.lyrionanywhere.ui.player.transferText
 import io.github.jamezuk.lyrionanywhere.ui.theme.LyrionTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -280,15 +285,48 @@ class QueueScreenTest {
     @Test
     fun screenReadersCanMoveAndRemoveRows() {
         queue()
-        val actions = compose.onNodeWithTag("queue-row-0").fetchSemanticsNode().config[SemanticsActions.CustomActions]
+        // The actions are on the node TalkBack focuses: the one that plays the track.
+        val first = compose.onNodeWithTag("queue-track-0").fetchSemanticsNode().config
+        assertTrue(SemanticsActions.OnClick in first)
+        val actions = first[SemanticsActions.CustomActions]
         assertEquals(listOf("Move down", "Remove from queue"), actions.map { it.label })
         actions.first { it.label == "Move down" }.action()
-        val middle = compose.onNodeWithTag("queue-row-1").fetchSemanticsNode().config[SemanticsActions.CustomActions]
+        val middle = compose.onNodeWithTag("queue-track-1").fetchSemanticsNode().config[SemanticsActions.CustomActions]
         assertEquals(listOf("Move up", "Move down", "Remove from queue"), middle.map { it.label })
         middle.first { it.label == "Move up" }.action()
         middle.first { it.label == "Remove from queue" }.action()
         assertEquals(listOf(0 to 1, 1 to 0), moves)
         assertEquals(listOf(1), removed)
+        // Not on the swipe wrapper as well, where TalkBack would never reach them.
+        val wrapper = compose.onNodeWithTag("queue-row-1", useUnmergedTree = true).fetchSemanticsNode().config
+        assertTrue(SemanticsActions.CustomActions !in wrapper)
+    }
+
+    @Test
+    fun keyboardMovesAndRemovesTheFocusedRow() {
+        val actions = QueueActions(onJump = { jumps += it }, onRemove = { removed += it }, onMove = { a, b -> moves += a to b })
+        val alt = android.view.KeyEvent.META_ALT_ON or android.view.KeyEvent.META_ALT_LEFT_ON
+        assertTrue(queueKey(keyDown(android.view.KeyEvent.KEYCODE_DPAD_UP, alt), 1, 3, actions))
+        assertTrue(queueKey(keyDown(android.view.KeyEvent.KEYCODE_DPAD_DOWN, alt), 1, 3, actions))
+        // Not past either end.
+        assertTrue(queueKey(keyDown(android.view.KeyEvent.KEYCODE_DPAD_UP, alt), 0, 3, actions))
+        assertTrue(queueKey(keyDown(android.view.KeyEvent.KEYCODE_DPAD_DOWN, alt), 2, 3, actions))
+        assertEquals(listOf(1 to 0, 1 to 2), moves)
+        // Plain arrows move focus, as usual.
+        assertFalse(queueKey(keyDown(android.view.KeyEvent.KEYCODE_DPAD_UP), 1, 3, actions))
+        assertTrue(queueKey(keyDown(android.view.KeyEvent.KEYCODE_FORWARD_DEL), 1, 3, actions))
+        assertTrue(queueKey(keyDown(android.view.KeyEvent.KEYCODE_DEL), 2, 3, actions))
+        assertEquals(listOf(1, 2), removed)
+        assertFalse(queueKey(keyDown(android.view.KeyEvent.KEYCODE_A), 1, 3, actions))
+    }
+
+    @Test
+    fun theCurrentTrackIsMarkedForScreenReaders() {
+        queue()
+        compose.onNodeWithTag("queue-track-0")
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Now playing"))
+        compose.onNodeWithTag("queue-track-1")
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.StateDescription))
     }
 
     @Test
@@ -450,3 +488,7 @@ class PhoneLayoutScreenTest {
         assertEquals(1, closed)
     }
 }
+
+/** A Compose key-down event, for testing key handlers directly. */
+internal fun keyDown(code: Int, meta: Int = 0) =
+    androidx.compose.ui.input.key.KeyEvent(android.view.KeyEvent(0L, 0L, android.view.KeyEvent.ACTION_DOWN, code, 0, meta))

@@ -102,51 +102,71 @@ data class ArtScheme(
             val s = if (c.s < 0.08) 0.06 else c.s.coerceIn(0.3, 0.75)
             val h = c.h
             val muted = min(s, 0.3)
+            // The accent is text (links, section headings) on the page, on raised surfaces and
+            // on the header's gradient (primaryContainer into the background): it must read
+            // on all of them, and the text on it must still read once it has moved.
             return if (dark) {
                 val bg = Hsl(h, muted, 0.08).argb()
-                val primary = ensure(Hsl(h, s, 0.72).argb(), bg, TEXT_CONTRAST)
-                val onPrimary = ensure(Hsl(h, s, 0.14).argb(), primary, TEXT_CONTRAST)
                 val pc = Hsl(h, s * 0.8, 0.26).argb()
                 val low = Hsl(h, muted, 0.11).argb()
                 val mid = Hsl(h, muted, 0.14).argb()
                 val high = Hsl(h, muted, 0.18).argb()
                 val sv = Hsl(h, muted, 0.22).argb()
+                val surfaces = listOf(bg, low, mid, high, sv)
+                val primary = ensureOnAll(Hsl(h, s, 0.72).argb(), surfaces + pc, TEXT_CONTRAST)
+                val onPrimary = ensure(Hsl(h, s, 0.14).argb(), primary, TEXT_CONTRAST)
                 ArtScheme(
                     primary = primary,
                     onPrimary = onPrimary,
                     primaryContainer = pc,
                     onPrimaryContainer = ensure(Hsl(h, s, 0.9).argb(), pc, TEXT_CONTRAST),
                     background = bg,
-                    onBackground = ensure(Hsl(h, 0.1, 0.92).argb(), high, TEXT_CONTRAST),
+                    onBackground = ensureOnAll(Hsl(h, 0.1, 0.92).argb(), surfaces, TEXT_CONTRAST),
                     surfaceVariant = sv,
-                    onSurfaceVariant = ensure(Hsl(h, 0.12, 0.8).argb(), sv, TEXT_CONTRAST),
+                    onSurfaceVariant = ensureOnAll(Hsl(h, 0.12, 0.8).argb(), surfaces, TEXT_CONTRAST),
                     containerLow = low,
                     container = mid,
                     containerHigh = high,
                 )
             } else {
                 val bg = Hsl(h, muted, 0.97).argb()
-                val primary = ensure(Hsl(h, s, 0.36).argb(), bg, TEXT_CONTRAST)
-                val onPrimary = ensure(0xFFFFFFFF.toInt(), primary, TEXT_CONTRAST)
                 val pc = Hsl(h, s * 0.8, 0.86).argb()
                 val low = Hsl(h, muted, 0.95).argb()
                 val mid = Hsl(h, muted, 0.93).argb()
                 val high = Hsl(h, muted, 0.9).argb()
                 val sv = Hsl(h, muted, 0.88).argb()
+                val surfaces = listOf(bg, low, mid, high, sv)
+                val primary = ensureOnAll(Hsl(h, s, 0.36).argb(), surfaces + pc, TEXT_CONTRAST)
+                val onPrimary = ensure(0xFFFFFFFF.toInt(), primary, TEXT_CONTRAST)
                 ArtScheme(
                     primary = primary,
                     onPrimary = onPrimary,
                     primaryContainer = pc,
                     onPrimaryContainer = ensure(Hsl(h, s, 0.14).argb(), pc, TEXT_CONTRAST),
                     background = bg,
-                    onBackground = ensure(Hsl(h, 0.1, 0.1).argb(), high, TEXT_CONTRAST),
+                    onBackground = ensureOnAll(Hsl(h, 0.1, 0.1).argb(), surfaces, TEXT_CONTRAST),
                     surfaceVariant = sv,
-                    onSurfaceVariant = ensure(Hsl(h, 0.12, 0.28).argb(), sv, TEXT_CONTRAST),
+                    onSurfaceVariant = ensureOnAll(Hsl(h, 0.12, 0.28).argb(), surfaces, TEXT_CONTRAST),
                     containerLow = low,
                     container = mid,
                     containerHigh = high,
                 )
             }
+        }
+
+        /**
+         * [fg], moved (as [ensure] does) until it meets [min] on every one of [bgs]. The
+         * backgrounds are all light or all dark, so each step away from the worst one also
+         * moves away from the rest; a few rounds at most.
+         */
+        fun ensureOnAll(fg: Int, bgs: List<Int>, min: Double): Int {
+            var c = fg
+            repeat(bgs.size + 1) {
+                val worst = bgs.minByOrNull { contrast(c, it) } ?: return c
+                if (contrast(c, worst) >= min) return c
+                c = ensure(c, worst, min)
+            }
+            return c
         }
 
         /**

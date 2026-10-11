@@ -1,0 +1,15 @@
+# Baseline profile for Lyrion Anywhere (human-readable rules; AGP compiles them into the APK
+# and app bundle, and ProfileInstaller applies them on devices that don't get a cloud profile).
+#
+# This is a hand-written, coarse profile: every method of the app's own code (the start-up
+# path, the Compose screens, the view models and the generated Rust bindings) is compiled
+# ahead of time, so start-up and the first scroll of a list don't run in the interpreter.
+# The AndroidX and Compose libraries bring their own profiles.
+#
+# A measured profile can replace it: see docs/PERFORMANCE.md, "Baseline profiles", for how
+# to generate one on a device and check it with the start-up and scrolling budgets.
+
+# Every class of the app's own packages is loaded early (class preloading)…
+Lio/github/jamezuk/lyrionanywhere/**;
+# …and every method is hot, run at start-up and after it.
+HSPLio/github/jamezuk/lyrionanywhere/**->**(**)**

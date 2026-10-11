@@ -96,7 +96,7 @@ Native Android and iOS apps come after v1 and use the same documented protocol.
 
 **Built (0.1.0, 2026-10-10):** settings (enable, listen address, public URL, trusted proxies, development gateway path), user/role/two-step/grant/device/audit management, `anywhere …` LMS commands, gateway supervision with restart backoff. **Release (2026-10-10):** `tools/build-release.sh` builds the zip and `repo.xml`. It includes static gateways for x86_64/aarch64/armhf Linux, which the plugin checks against `Bin/SHA256SUMS` before running, and the browser player. **Still to come:** a cryptographic release signature (the checksums catch corruption and partial updates, not a malicious repository), macOS/Windows gateways, proxy self-test, device rename, streaming policy, player integration, packaging.
 
-**Trust boundary.** Account management runs through LMS's own JSON-RPC/CLI (`anywhere …` commands) and its settings page. LMS's JSON-RPC (9000) and CLI (9090) are unauthenticated on the LAN by default, and `/jsonrpc.js` accepts cross-origin `text/plain` POSTs, so any web page a LAN user opens could send `anywhere …` commands blind. Every command that changes something (account, grant, device, setting or restart) therefore needs `csrf:<token>`: 128 random bits made when LMS starts, kept in memory only, and given only to the settings page, which other sites cannot read. Read-only commands need no token. Someone with direct LAN access to an open LMS can still read the page and so manage accounts, just as they can already control LMS; the settings page says to turn on LMS's password protection. Prefs get the same validation through LMS's `pref` command as through the page, and the development gateway path is honoured only when LMS runs with `ANYWHERE_ALLOW_GATEWAY_PATH=1`. Remote users can never reach these commands: the gateway's RPC allow-list reserves `anywhere`.
+**Trust boundary.** Account management runs through LMS's own JSON-RPC/CLI (`anywhere …` commands) and its settings page. LMS's JSON-RPC (9000) and CLI (9090) are unauthenticated on the LAN by default, and `/jsonrpc.js` accepts cross-origin `text/plain` POSTs, so any web page a LAN user opens could send `anywhere …` commands blind. Every admin command therefore needs `csrf:<token>`: 128 random bits made when LMS starts, kept in memory only, and given only to the settings page, which other sites cannot read. That includes the read-only ones (users, devices with their last addresses and browsers, diagnostics, the audit log), since 2026-10; only `anywhere status` needs no token. Someone with direct LAN access to an open LMS can still read the page and so manage accounts, just as they can already control LMS; the settings page says to turn on LMS's password protection. Prefs get the same validation through LMS's `pref` command as through the page, and the development gateway path is honoured only when LMS runs with `ANYWHERE_ALLOW_GATEWAY_PATH=1`. Remote users can never reach these commands: the gateway's RPC allow-list reserves `anywhere`.
 
 ### Settings page (in LMS)
 
@@ -381,6 +381,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
     - the per-user limits.
   - Keys are deduped per user, so a retry never counts twice.
   - **Counting rule (as scrobblers use):** a play counts if at least half the track, or 240 s, was heard, whichever is less (240 s when the duration is unknown).
+  - **No overlap:** a play of a track the user already has a counted play of, starting less than that counting time before or after it, is refused (`overlap`): it can't be a separate listen (2026-10 security review).
   - The gateway forwards each play to the plugin's `anywhere play_record` over LMS JSON-RPC on loopback, signed with HMAC-SHA256 under the admin secret both already share. The plugin raises LMS's play count and sets last played (if later) through `Slim::Schema::TrackPersistent`, as LMS does for its own players.
 - **Ratings** (not yet): rating changes will be queued the same way.
 - Back online, the app offers to send the offline queue to an LMS player ("continue on <player>").
@@ -442,7 +443,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 
 ### 9.3 Hardening
 
-- Structured audit log of logins, pairings, revocations, denied commands and downloads.
+- Structured audit log of logins, pairings, revocations, denied commands and downloads. Kept for one year, at most the newest 100,000 entries (2026-10).
 - Pinned dependencies. Signed releases; the plugin verifies the gateway signature.
 - An external security review is a release gate for v1 (§11).
 

@@ -1,0 +1,66 @@
+# DRAFT metadata for fdroiddata (metadata/io.github.jamezuk.lyrionanywhere.yml).
+#
+# Not used by this repository's build. Copy it into a fork of
+# https://gitlab.com/fdroid/fdroiddata with srclibs/rustls-platform-verifier.yml (beside this
+# file), then check it with `fdroid lint` and `fdroid build -v -l io.github.jamezuk.lyrionanywhere`.
+# The recipe, and how to keep it reproducible, are explained in docs/RELEASING.md
+# ("F-Droid").
+#
+# Replace before submitting:
+# - the Builds entry: the version being submitted (versionName, versionCode and the
+#   android-v<version> tag), and the Rust version, which must be the one the GitHub
+#   release was built with (its BUILDINFO.txt);
+# - AllowedAPKSigningKeys: the SHA-256 of the release signing certificate, lower case,
+#   no colons (`apksigner verify --print-certs` on the release APK).
+
+Categories:
+  - Multimedia
+License: GPL-2.0-or-later
+SourceCode: https://github.com/JameZUK/lyrion-anywhere
+IssueTracker: https://github.com/JameZUK/lyrion-anywhere/issues
+Changelog: https://github.com/JameZUK/lyrion-anywhere/releases
+
+AutoName: Lyrion Anywhere
+
+RepoType: git
+Repo: https://github.com/JameZUK/lyrion-anywhere.git
+# Reproducible builds: F-Droid builds from source, compares its unsigned APK with the
+# project's signed one, and publishes the project's signature if they match.
+Binaries: https://github.com/JameZUK/lyrion-anywhere/releases/download/android-v%v/LyrionAnywhere-android-%v.apk
+
+Builds:
+  - versionName: 0.1.0-alpha.10
+    versionCode: 10
+    commit: android-v0.1.0-alpha.10
+    subdir: apps/android/app
+    sudo:
+      - apt-get update
+      - apt-get install -y openjdk-21-jdk-headless build-essential
+      - update-java-alternatives -a
+    srclibs:
+      - rustup@1.28.2
+      # The Kotlin half of rustls-platform-verifier, built from source: the tag matching
+      # `rustls-platform-verifier` in Cargo.lock (its android crate is 0.2.0, as
+      # gradle/libs.versions.toml expects).
+      - rustls-platform-verifier@v/0.7.1
+    prebuild:
+      # No binary repository: drop the GitHub Maven repository the project uses for the
+      # prebuilt verifier (between these markers in settings.gradle.kts).
+      - sed -i -e '/BEGIN prebuilt-verifier/,/END prebuilt-verifier/d' ../settings.gradle.kts
+      # Rust, pinned to the version the GitHub release was built with (BUILDINFO.txt).
+      - $$rustup$$/rustup-init.sh -y --profile minimal --default-toolchain 1.99.0 --target
+        aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - $HOME/.cargo/bin/cargo install --locked cargo-ndk --version 4.1.2
+    gradle:
+      - yes
+    gradleprops:
+      - anywhere.cargo=$HOME/.cargo/bin/cargo
+      - anywhere.verifier.source=$$rustls-platform-verifier$$/android/rustls-platform-verifier
+    ndk: 29.0.14206865
+
+AllowedAPKSigningKeys: 0000000000000000000000000000000000000000000000000000000000000000
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^android-v
+CurrentVersion: 0.1.0-alpha.10
+CurrentVersionCode: 10

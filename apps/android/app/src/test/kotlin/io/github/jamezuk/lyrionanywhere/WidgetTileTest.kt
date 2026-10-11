@@ -34,6 +34,15 @@ private fun np(id: String = PHONE, title: String = "One", playing: Boolean = tru
     NowPlaying(id, "Kitchen", title, "Artist", "music/1/cover", playing, id == PHONE)
 
 class WidgetModelTest {
+    /** With large text, the widget's one row keeps the title and drops the detail line. */
+    @Test
+    fun theDetailLineIsDroppedWithLargeText() {
+        assertTrue(NowPlayingWidget.detailFits(1f))
+        assertTrue(NowPlayingWidget.detailFits(1.3f))
+        assertFalse(NowPlayingWidget.detailFits(1.5f))
+        assertFalse(NowPlayingWidget.detailFits(2f))
+    }
+
     @Test
     fun nothingKnownOffersOnlyOpeningTheApp() {
         val m = WidgetModel.from(null)

@@ -181,3 +181,107 @@ jobs:
           (cd dist && sha256sum *.zip repo.xml > SHA256SUMS)
           gh release create "$GITHUB_REF_NAME" dist/*.zip dist/repo.xml dist/SHA256SUMS \
             --verify-tag --title "Lyrion Anywhere $version" --notes-file "$notes"
+
+  android-release:
+    # Android releases come from `android-v*` tags only. (The plugin's `release` job above
+    # publishes on `refs/tags/v*`, which `refs/tags/android-v*` never matches.) Built from
+    # scratch without the shared caches, signed with the release key from the repository's
+    # secrets (docs/RELEASING.md), and published as a pre-release for the owner to check and
+    # promote.
+    if: startsWith(github.ref, 'refs/tags/android-v')
+    needs: [test, android, supply-chain]
+    runs-on: ubuntu-latest
+    # Write access only here, and only used by the last step.
+    permissions:
+      contents: write
+    env:
+      CARGO_INCREMENTAL: '0'
+      NDK_VERSION: 29.0.14206865
+      BUILD_TOOLS: 36.1.0
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+      - name: Install cargo-ndk (pinned)
+        run: cargo install --locked cargo-ndk --version 4.1.2
+      - name: JDK 21 (preinstalled on the runner)
+        run: echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
+      - name: Android NDK, platform and build tools
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" "platforms;android-37.0" "build-tools;$BUILD_TOOLS"
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
+        with:
+          # A release never reads a cache that another branch could have written.
+          cache-disabled: true
+      - name: Check the tag, version and release notes
+        run: |
+          set -eu
+          version=$(sed -n 's/^ *versionName = "\(.*\)"$/\1/p' apps/android/app/build.gradle.kts)
+          [ -n "$version" ] || { echo "no versionName in apps/android/app/build.gradle.kts" >&2; exit 1; }
+          [ "$GITHUB_REF_NAME" = "android-v$version" ] || { echo "tag $GITHUB_REF_NAME doesn't match versionName $version" >&2; exit 1; }
+          [ -f "docs/release-notes/android-$version.md" ] || { echo "missing docs/release-notes/android-$version.md" >&2; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Release signing key (from the repository's secrets)
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          set -eu
+          [ -n "$ANDROID_KEYSTORE_B64" ] || { echo "the ANDROID_KEYSTORE_B64 secret isn't set (docs/RELEASING.md)" >&2; exit 1; }
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+      - name: Build the signed APKs (universal and per ABI) and the app bundle
+        working-directory: apps/android
+        env:
+          ANYWHERE_KEYSTORE: ${{ runner.temp }}/release.jks
+          ANYWHERE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANYWHERE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANYWHERE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew --no-build-cache -Panywhere.splitApks=true assembleRelease bundleRelease
+      - name: Remove the signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
+      - name: Check the signatures and collect the files
+        run: |
+          set -eu
+          apksigner="$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner"
+          out=apps/android/app/build/outputs
+          mkdir -p dist-android
+          for apk in "$out"/apk/release/app-*-release.apk; do
+            abi=$(basename "$apk" | sed 's/^app-\(.*\)-release\.apk$/\1/')
+            "$apksigner" verify --print-certs "$apk"
+            if [ "$abi" = universal ]; then
+              cp "$apk" "dist-android/LyrionAnywhere-android-$VERSION.apk"
+            else
+              cp "$apk" "dist-android/LyrionAnywhere-android-$VERSION-$abi.apk"
+            fi
+          done
+          [ -f "dist-android/LyrionAnywhere-android-$VERSION.apk" ] || { echo "no universal APK" >&2; exit 1; }
+          # No build-machine paths in the native library (they would reach crash reports).
+          unzip -o -q "dist-android/LyrionAnywhere-android-$VERSION.apk" 'lib/*' -d "$RUNNER_TEMP/libs"
+          if grep -r -a -l -e "$HOME" -e "$GITHUB_WORKSPACE" "$RUNNER_TEMP/libs"; then
+            echo "build paths found in the native libraries" >&2; exit 1
+          fi
+          jarsigner -verify -strict "$out/bundle/release/app-release.aab"
+          cp "$out/bundle/release/app-release.aab" "dist-android/LyrionAnywhere-android-$VERSION.aab"
+          # What it was built with, for anyone reproducing the build (docs/RELEASING.md).
+          {
+            echo "commit: $GITHUB_SHA"
+            rustc --version
+            cargo ndk --version
+            echo "ndk: $NDK_VERSION"
+            java -version 2>&1 | head -1
+          } > dist-android/BUILDINFO.txt
+          (cd dist-android && sha256sum LyrionAnywhere-* BUILDINFO.txt > SHA256SUMS && cat SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-release
+          path: dist-android/
+      - name: Publish the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist-android/* \
+            --verify-tag --prerelease --title "Lyrion Anywhere for Android $VERSION" \
+            --notes-file "docs/release-notes/android-$VERSION.md"

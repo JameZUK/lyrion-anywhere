@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -52,7 +53,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -549,6 +554,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     val vm = viewModel { SearchViewModel(container.library) }
                     val ui by vm.state.collectAsStateWithLifecycle()
                     Screen(title = stringResource(R.string.nav_search)) {
+                        val focusManager = LocalFocusManager.current
                         Column {
                             OutlinedTextField(
                                 value = ui.query,
@@ -557,6 +563,8 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 singleLine = true,
                                 leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                // Results come as you type: Search closes the keyboard to show them.
+                                keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                             )
                             SearchResultsList(
@@ -1152,7 +1160,9 @@ private fun Screen(
 ) {
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text(title, maxLines = 1) },
+            title = {
+                Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.semantics { heading() })
+            },
             navigationIcon = {
                 if (onBack != null) {
                     IconButton(onClick = onBack) {
