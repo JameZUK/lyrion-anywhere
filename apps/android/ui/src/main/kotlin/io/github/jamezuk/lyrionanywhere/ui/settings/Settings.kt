@@ -1,16 +1,17 @@
 package io.github.jamezuk.lyrionanywhere.ui.settings
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Dns
-import androidx.compose.material.icons.outlined.GraphicEq
-import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Gavel
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material3.AlertDialog
@@ -26,6 +27,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -182,7 +184,9 @@ fun SettingsScreen(
         item { SectionHeader(stringResource(R.string.section_about)) }
         item {
             ListItem(
-                leadingContent = { Icon(Icons.Outlined.Info, contentDescription = null) },
+                leadingContent = {
+                    Image(painterResource(R.drawable.logo), contentDescription = null, modifier = Modifier.size(40.dp))
+                },
                 headlineContent = { Text(stringResource(R.string.app_name_full)) },
                 supportingContent = { Text(stringResource(R.string.version_line, appVersion, libraryVersion)) },
             )

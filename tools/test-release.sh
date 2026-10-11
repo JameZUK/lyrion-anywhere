@@ -47,6 +47,7 @@ fi
 echo "# repo.xml"
 SHA1=$(sha1sum "$ZIP" | cut -c1-40)
 t "repo.xml is well-formed" 'python3 -c "import sys,xml.dom.minidom; xml.dom.minidom.parse(sys.argv[1])" "$DIST/repo.xml"'
+t "repo.xml names the plugin icon" 'grep -q "<icon>https://raw.githubusercontent.com/[^<]*/logo-256.png</icon>" "$DIST/repo.xml"'
 t "repo.xml sha1 matches the zip" 'grep -q "<sha>$SHA1</sha>" "$DIST/repo.xml"'
 t "repo.xml version and URL match" 'grep -q "version=\"$VERSION\"" "$DIST/repo.xml" && grep -q "<url>https://[^<]*/LyrionAnywhere-$VERSION.zip</url>" "$DIST/repo.xml"'
 

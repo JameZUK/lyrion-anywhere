@@ -1,6 +1,10 @@
-# Lyrion Anywhere
+<p align="center">
+  <img src="docs/images/logo.svg" alt="Lyrion Anywhere logo: a waveform turning into broadcast waves" width="128" height="128">
+</p>
 
-**Your [Lyrion Music Server](https://lyrion.org) from anywhere: securely, losslessly, in any modern browser.**
+<h1 align="center">Lyrion Anywhere</h1>
+
+<p align="center"><strong>Your <a href="https://lyrion.org">Lyrion Music Server</a> from anywhere: securely, losslessly, in any modern browser.</strong></p>
 
 Lyrion Anywhere gives your phone, tablet or laptop secure access to your LMS library over the internet. A browser can be a remote control for your home players, or a player itself, streaming your music losslessly. LMS stays on your home network: only one small, hardened gateway faces the internet, behind your HTTPS reverse proxy.
 
@@ -153,3 +157,5 @@ Please report vulnerabilities privately through GitHub's *Report a vulnerability
 GPL-2.0-or-later. See [`LICENSE`](LICENSE). Binaries that include Apache-2.0-licensed dependencies are distributed under the terms of GPLv3.
 
 Squeezelite and Material Skin served as behavioural references only. No code was copied from either.
+
+The logo is an original design in the spirit of the Lyrion Music Server logo: a waveform turning into broadcast waves, for your music reaching you wherever you are. It is not an official Lyrion project or logo.

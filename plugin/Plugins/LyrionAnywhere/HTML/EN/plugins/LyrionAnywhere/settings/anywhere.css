@@ -17,3 +17,10 @@
 .aw-diag-wrap { display: inline-block; margin-right: 0.5em; }
 .aw-diag { max-width: 60em; max-height: 30em; overflow: auto; white-space: pre-wrap; font-size: 0.85em; background: #f4f4f4; padding: 0.6em; border-radius: 4px; }
 .aw-plugin { display: block; margin: 0.25em 0; }
+
+.anywhere-logo {
+	float: left;
+	width: 64px;
+	height: 64px;
+	margin: 0 14px 8px 0;
+}

@@ -129,7 +129,7 @@
 	<MediaSession />
 	<div class="shell">
 		<nav class="side" aria-label="Main">
-			<div class="brand"><span class="logo" aria-hidden="true"></span>Lyrion Anywhere</div>
+			<div class="brand"><img class="logo" src="./icons/icon.svg" alt="" width="28" height="28" />Lyrion Anywhere</div>
 			{#each NAV as n (n.href)}
 				<a href={n.href} class:active={n.match(path)} aria-current={n.match(path) ? 'page' : undefined}>
 					<Icon name={n.icon} size={20} />{n.label}
@@ -212,11 +212,9 @@
 		padding: 0 0.6rem 1.1rem;
 	}
 	.logo {
-		width: 26px;
-		height: 26px;
-		border-radius: 8px;
-		background: conic-gradient(from 200deg, var(--accent), #f59e0b, var(--accent));
-		box-shadow: inset 0 0 0 7px var(--bg-raised);
+		width: 28px;
+		height: 28px;
+		flex: none;
 	}
 	.side a {
 		display: flex;

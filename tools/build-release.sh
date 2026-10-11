@@ -65,6 +65,7 @@ cat > dist/repo.xml <<XML
 			<desc lang="EN">Secure remote access to this server from phones and browsers, through an authenticated gateway behind your HTTPS reverse proxy.</desc>
 			<creator>JameZUK</creator>
 			<link>https://github.com/JameZUK/lyrion-anywhere</link>
+			<icon>https://raw.githubusercontent.com/JameZUK/lyrion-anywhere/main/docs/images/logo-256.png</icon>
 			<category>tools</category>
 			<url>$URL_PREFIX/$ZIP</url>
 			<sha>$SHA1</sha>

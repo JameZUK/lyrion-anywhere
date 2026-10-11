@@ -9,6 +9,8 @@
 	import { detect } from '$lib/player/capabilities';
 	import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, savePreference, type ModePreference } from '$lib/player/mode';
 	import SignOut from '$lib/components/SignOut.svelte';
+	import { version as buildVersion } from '$app/environment';
+	import pkg from '../../../package.json';
 	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
 	import { forgetOwner, formatBytes, loadPrefs, networkType, requestPersist, savePrefs, storageInfo, type DownloadPrefs, type StorageInfo } from '$lib/offline/settings';
 	import { FORMATS, FORMAT_LABELS } from '$lib/offline/types';
@@ -284,6 +286,18 @@
 		<p class="muted small">Signing out removes this device and its player.</p>
 	</div>
 	<p class="muted small">Connection: {app.events}</p>
+	<div class="card about">
+		<h2>About</h2>
+		<div class="about-row">
+			<img src="./icons/icon.svg" alt="" width="64" height="64" />
+			<div>
+				<p class="about-name">Lyrion Anywhere</p>
+				<p class="muted small">Version {pkg.version} · build {buildVersion}</p>
+			</div>
+		</div>
+		<p class="muted small">Your Lyrion Music Server, securely, from anywhere. Free software under the GNU GPL (version 2 or later).</p>
+		<p class="small"><a class="link" href="https://github.com/JameZUK/lyrion-anywhere" target="_blank" rel="noopener noreferrer">Project page and source code</a></p>
+	</div>
 </section>
 
 <style>
@@ -401,6 +415,22 @@
 		flex-wrap: wrap;
 		gap: 0.75rem 1.5rem;
 		margin: 0.75rem 0;
+	}
+	.about-row {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+	}
+	.about-row img {
+		flex: none;
+	}
+	.about-name {
+		margin: 0;
+		font-weight: 700;
+		font-size: 1.1rem;
+	}
+	.about-row .small {
+		margin-top: 0.15rem;
 	}
 	.steps {
 		margin: 0;

@@ -1,15 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#e2541a"/>
-      <stop offset="1" stop-color="#9a330a"/>
-    </linearGradient>
-  </defs>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#060606"/><stop offset="1" stop-color="#1e1e1e"/></linearGradient></defs>
   <rect width="512" height="512" rx="112" fill="url(#bg)"/>
-  <g fill="none" stroke="#fff" stroke-linecap="round">
-    <circle cx="226" cy="286" r="104" stroke-width="34"/>
-    <path d="M330 128a150 150 0 0 1 56 56" stroke-width="28" opacity=".9"/>
-    <path d="M342 68a214 214 0 0 1 104 104" stroke-width="28" opacity=".65"/>
+  <g fill="none" stroke="#e2fbcf" stroke-width="34.0" stroke-linecap="round">
+  <line x1="104.0" y1="216.0" x2="104.0" y2="296.0"/>
+  <line x1="154.0" y1="156.0" x2="154.0" y2="356.0"/>
+  <line x1="204.0" y1="196.0" x2="204.0" y2="316.0"/>
+  <line x1="254.0" y1="138.0" x2="254.0" y2="374.0"/>
+  <path d="M320.2 207.0A66.0 66.0 0 0 1 320.2 305.0" opacity="0.95"/>
+  <path d="M359.0 163.9A124.0 124.0 0 0 1 359.0 348.1" opacity="0.6"/>
   </g>
-  <circle cx="226" cy="286" r="26" fill="#fff"/>
 </svg>

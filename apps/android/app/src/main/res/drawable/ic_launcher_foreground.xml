@@ -1,19 +1,57 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- A record, drawn inside the adaptive icon's 66 dp safe zone. -->
+<!-- The Lyrion Anywhere mark (a waveform turning into broadcast waves), inside the
+     adaptive icon's 66 dp safe zone. Generated from docs/images/logo.svg. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
-        android:fillColor="#FFFFFFFF"
-        android:fillType="evenOdd"
-        android:pathData="M54,26a28,28 0,1 0,0.01 0zM54,48a6,6 0,1 1,-0.01 0z" />
+        android:pathData="M26.84,51.19L26.84,56.81"
+        android:strokeColor="#FFE2FBCF"
+        android:strokeWidth="3.43"
+        android:strokeLineCap="round" />
     <path
-        android:fillColor="#FF006A6A"
-        android:fillType="evenOdd"
-        android:pathData="M54,36a18,18 0,1 0,0.01 0zM54,48a6,6 0,1 1,-0.01 0z" />
+        android:pathData="M32.46,44.95L32.46,63.05"
+        android:strokeColor="#FFE2FBCF"
+        android:strokeWidth="3.43"
+        android:strokeLineCap="round" />
     <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M54,50a4,4 0,1 1,-0.01 0z" />
+        android:pathData="M38.08,38.08L38.08,69.92"
+        android:strokeColor="#FFE2FBCF"
+        android:strokeWidth="3.43"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M43.70,47.44L43.70,60.56"
+        android:strokeColor="#FFE2FBCF"
+        android:strokeWidth="3.43"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M49.32,42.14L49.32,65.86"
+        android:strokeColor="#FFE2FBCF"
+        android:strokeWidth="3.43"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54.94,35.58L54.94,72.42"
+        android:strokeColor="#FFE2FBCF"
+        android:strokeWidth="3.43"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M63.39,47.04A9.37,9.37 0,0 1,63.39,60.96"
+        android:strokeColor="#FFE2FBCF"
+        android:strokeAlpha="0.95"
+        android:strokeWidth="3.43"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M68.40,41.47A16.86,16.86 0,0 1,68.40,66.53"
+        android:strokeColor="#FFE2FBCF"
+        android:strokeAlpha="0.7"
+        android:strokeWidth="3.43"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M73.42,35.90A24.35,24.35 0,0 1,73.42,72.10"
+        android:strokeColor="#FFE2FBCF"
+        android:strokeAlpha="0.45"
+        android:strokeWidth="3.43"
+        android:strokeLineCap="round" />
 </vector>

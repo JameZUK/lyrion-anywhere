@@ -39,7 +39,7 @@
 <main class="login">
 	<form class="card" onsubmit={submit} autocomplete="on">
 		<div class="brand">
-			<span class="logo" aria-hidden="true"></span>
+			<img class="logo" src="./icons/icon.svg" alt="" width="40" height="40" />
 			<h1>Lyrion Anywhere</h1>
 		</div>
 		<p class="muted">Sign in to play your music from anywhere.</p>
@@ -108,10 +108,8 @@
 		padding: 0.75em;
 	}
 	.logo {
-		width: 34px;
-		height: 34px;
-		border-radius: 10px;
-		background: conic-gradient(from 200deg, var(--accent), #f59e0b, var(--accent));
-		box-shadow: inset 0 0 0 9px var(--bg-raised);
+		width: 40px;
+		height: 40px;
+		flex: none;
 	}
 </style>
