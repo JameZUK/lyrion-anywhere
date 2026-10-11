@@ -517,6 +517,7 @@ pub async fn wait_for(what: &str, cond: impl Fn() -> bool) {
 pub struct Proxy {
     pub addr: SocketAddr,
     cut: tokio::sync::broadcast::Sender<()>,
+    freeze: tokio::sync::broadcast::Sender<()>,
     pub accepted: Arc<AtomicUsize>,
 }
 
@@ -525,12 +526,14 @@ impl Proxy {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (cut, _) = tokio::sync::broadcast::channel::<()>(4);
+        let (freeze, _) = tokio::sync::broadcast::channel::<()>(4);
         let accepted = Arc::new(AtomicUsize::new(0));
-        let (c, a) = (cut.clone(), accepted.clone());
+        let (c, f, a) = (cut.clone(), freeze.clone(), accepted.clone());
         tokio::spawn(async move {
             while let Ok((mut client, _)) = listener.accept().await {
                 a.fetch_add(1, Ordering::SeqCst);
                 let mut stop = c.subscribe();
+                let mut frozen = f.subscribe();
                 tokio::spawn(async move {
                     let Ok(mut upstream) = tokio::net::TcpStream::connect(target).await else {
                         return;
@@ -538,6 +541,12 @@ impl Proxy {
                     tokio::select! {
                         _ = tokio::io::copy_bidirectional(&mut client, &mut upstream) => {}
                         _ = stop.recv() => {}
+                        _ = frozen.recv() => {
+                            // Nothing more gets through, but both ends stay open, as when a
+                            // phone's network changes under a connection.
+                            let _ = stop.recv().await;
+                            drop((client, upstream));
+                        }
                     }
                 });
             }
@@ -545,6 +554,7 @@ impl Proxy {
         Proxy {
             addr,
             cut,
+            freeze,
             accepted,
         }
     }
@@ -552,6 +562,12 @@ impl Proxy {
     /// Drop every open connection (as a phone losing its network would).
     pub fn cut_all(&self) {
         let _ = self.cut.send(());
+    }
+
+    /// Stop every open connection passing anything, without closing it (as when a phone's
+    /// network changes under it). New connections still work.
+    pub fn freeze_all(&self) {
+        let _ = self.freeze.send(());
     }
 
     pub fn server(&self) -> Arc<Server> {

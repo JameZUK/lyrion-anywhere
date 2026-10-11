@@ -63,9 +63,13 @@ const RING_AHEAD: Duration = Duration::from_millis(400);
 /// Frames pulled from the core per block.
 const BLOCK_FRAMES: usize = 4096;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-/// LMS sends at least a heartbeat request every few seconds; silence this long means the
-/// socket is dead.
-const SOCKET_IDLE: Duration = Duration::from_secs(60);
+/// LMS asks for the player's status every 5 s; a socket that has brought nothing for this
+/// long has died without closing (a network change): resume on a new one, well within the
+/// gateway's 60 s grace. Only what arrives counts: the player's own STATs going out say
+/// nothing about whether anything is getting through.
+const SOCKET_IDLE: Duration = Duration::from_secs(25);
+/// Longest wait to hand one message to a socket (a dead one stops taking them).
+const SOCKET_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// Between two pieces of an audio stream (the gateway gives up on LMS after 60 s).
 const STREAM_READ_TIMEOUT: Duration = Duration::from_secs(75);
 /// Status notifications at most this often (state changes are sent at once).
@@ -1244,11 +1248,21 @@ async fn socket_task(
         return;
     }
     let mut greeted = false;
+    // Regression: the time limit was set afresh on every pass of the loop, so the player's
+    // own STATs (one a second while playing) kept a dead socket looking alive until the
+    // gateway's grace had run out, and the player had to start a new session.
+    let idle = tokio::time::sleep(SOCKET_IDLE);
+    tokio::pin!(idle);
     loop {
         tokio::select! {
-            msg = tokio::time::timeout(SOCKET_IDLE, ws.next()) => {
+            _ = &mut idle => {
+                let _ = tx.send(closed(None, ""));
+                return;
+            }
+            msg = ws.next() => {
+                idle.as_mut().reset(tokio::time::Instant::now() + SOCKET_IDLE);
                 let msg = match msg {
-                    Ok(Some(Ok(m))) => m,
+                    Some(Ok(m)) => m,
                     // Silence, end of stream or a broken socket.
                     _ => {
                         let _ = tx.send(closed(None, ""));
@@ -1295,7 +1309,7 @@ async fn socket_task(
                     Out::Binary(b) => Message::Binary(b.into()),
                     Out::Text(t) => Message::Text(t.into()),
                 };
-                if ws.send(msg).await.is_err() {
+                if !matches!(tokio::time::timeout(SOCKET_SEND_TIMEOUT, ws.send(msg)).await, Ok(Ok(()))) {
                     let _ = tx.send(closed(None, ""));
                     return;
                 }

@@ -433,6 +433,51 @@ async fn a_dropped_connection_resumes_mid_stream_without_losing_audio() {
     assert!(r.proxy.as_ref().unwrap().accepted.load(Ordering::SeqCst) >= 4);
 }
 
+/// Regression: a connection that died without closing (a network change) was only noticed
+/// once the gateway's grace had run out, because the player's own STATs kept resetting the
+/// silence limit; it then had to start a new session, which makes LMS restart or stop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connection_that_goes_silent_is_resumed_within_the_grace() {
+    let mut r = rig(true).await;
+    let track = flac::encode(48_000, 16, &flac::noise(48_000 * 2, 16, 3));
+    r.h.lms.streams.lock().unwrap().push_back(StreamPlan {
+        body: track,
+        gate_at: None,
+    });
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    let pulled = r.pulled.clone();
+    wait_for("audio", move || pulled.frames() > 10_000).await;
+    let before = r.obs.statuses.lock().unwrap().len();
+    let accepted = r.proxy.as_ref().unwrap().accepted.load(Ordering::SeqCst);
+
+    r.proxy.as_ref().unwrap().freeze_all();
+    let started = std::time::Instant::now();
+    loop {
+        let reconnected = r.obs.statuses.lock().unwrap()[before..]
+            .iter()
+            .skip_while(|s| s.connection == PlayerConnection::Connected)
+            .any(|s| s.connection == PlayerConnection::Connected);
+        if reconnected {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(45),
+            "a silent connection must be given up and resumed well within the grace"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(r.proxy.as_ref().unwrap().accepted.load(Ordering::SeqCst) > accepted);
+    assert_eq!(r.count("HELO"), 1, "resumed, not a new session");
+    assert_eq!(
+        r.h.lms.slim_accepted.load(Ordering::SeqCst),
+        1,
+        "LMS never saw the player leave"
+    );
+    r.stop_pulling();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_expired_token_is_renewed_and_the_session_resumed() {
     let r = rig(true).await;
