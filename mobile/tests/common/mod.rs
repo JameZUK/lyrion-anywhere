@@ -137,9 +137,66 @@ pub struct FakeLms {
     pub streams: Arc<Mutex<std::collections::VecDeque<StreamPlan>>>,
     /// Library files (see [`FakeLms::add_track`]): id → (titles item, file).
     pub library: Library,
+    /// Sync groups, as LMS keeps them: member → the player whose group it joined.
+    pub syncs: Syncs,
 }
 
 pub type Library = Arc<Mutex<std::collections::HashMap<u64, (Value, Vec<u8>)>>>;
+
+/// Sync state of the fake LMS. With `refuse` set, `sync <player>` is accepted but does
+/// nothing (as when LMS won't group two players).
+#[derive(Clone, Default)]
+pub struct Syncs {
+    pub members: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    pub refuse: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Syncs {
+    /// `<player> sync <arg>`: `arg` joins `player`'s group; `-` takes `player` out.
+    fn apply(&self, player: &str, arg: &str) {
+        let mut m = self.members.lock().unwrap();
+        if arg == "-" {
+            m.remove(player);
+            let followers: Vec<String> = m
+                .iter()
+                .filter(|(_, master)| *master == player)
+                .map(|(k, _)| k.clone())
+                .collect();
+            // The others carry on together under the first of them.
+            if let Some((first, rest)) = followers.split_first() {
+                m.remove(first);
+                for r in rest {
+                    m.insert(r.clone(), first.clone());
+                }
+            }
+        } else if !self.refuse.load(Ordering::SeqCst) {
+            let master = m.get(player).cloned().unwrap_or_else(|| player.to_string());
+            m.remove(arg);
+            m.insert(arg.to_string(), master);
+        }
+    }
+
+    /// Add `sync_master`/`sync_slaves` to a status answer, as LMS does for grouped players.
+    fn annotate(&self, player: &str, status: &mut Value) {
+        let m = self.members.lock().unwrap();
+        let master = m.get(player).cloned().unwrap_or_else(|| player.to_string());
+        let slaves: Vec<&String> = m
+            .iter()
+            .filter(|(_, v)| **v == master)
+            .map(|(k, _)| k)
+            .collect();
+        if !slaves.is_empty() {
+            status["sync_master"] = json!(master);
+            status["sync_slaves"] = json!(
+                slaves
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+        }
+    }
+}
 
 /// Size of the "huge" cover served for `/music/99999999/…`.
 pub const HUGE_COVER: usize = 3 * 1024 * 1024;
@@ -152,14 +209,22 @@ impl FakeLms {
         let http_addr = http.local_addr().unwrap();
         let streams: Arc<Mutex<std::collections::VecDeque<StreamPlan>>> = Default::default();
         let library: Library = Default::default();
-        let (r, paths, plans, lib) = (
+        let syncs = Syncs::default();
+        let (r, paths, plans, lib, sy) = (
             rpc.clone(),
             http_paths.clone(),
             streams.clone(),
             library.clone(),
+            syncs.clone(),
         );
         let app = Router::new().fallback(any(move |req: Request| {
-            let (r, paths, plans, lib) = (r.clone(), paths.clone(), plans.clone(), lib.clone());
+            let (r, paths, plans, lib, sy) = (
+                r.clone(),
+                paths.clone(),
+                plans.clone(),
+                lib.clone(),
+                sy.clone(),
+            );
             async move {
                 let path = req.uri().path().to_string();
                 paths.lock().unwrap().push(path.clone());
@@ -182,14 +247,29 @@ impl FakeLms {
                         .flatten()
                         .filter_map(|p| p.as_str()?.strip_prefix("track_id:"))
                         .find_map(|id| id.parse::<u64>().ok());
+                    let player = params[0].as_str().unwrap_or("").to_string();
+                    let arg1 = params[1][1].as_str().unwrap_or("").to_string();
                     r.lock().unwrap().push(params);
-                    let result = match track_id {
+                    let mut result = match track_id {
                         Some(id) if cmd == "titles" => match lib.lock().unwrap().get(&id) {
                             Some((item, _)) => json!({"count": 1, "titles_loop": [item]}),
                             None => json!({"count": 0}),
                         },
                         _ => fake_result(&cmd),
                     };
+                    if cmd == "sync" {
+                        sy.apply(&player, &arg1);
+                    }
+                    if cmd == "status" {
+                        sy.annotate(&player, &mut result);
+                        // The whole queue (`status 0 N`): both of its library tracks.
+                        if arg1 == "0" {
+                            result["playlist_loop"] = json!([
+                                {"id": 1, "title": "One", "playlist index": 0},
+                                {"id": 2, "title": "Two", "playlist index": 1}
+                            ]);
+                        }
+                    }
                     let reply = json!({"id": 1, "method": "slim.request", "result": result});
                     return ([("content-type", "application/json")], reply.to_string())
                         .into_response();
@@ -287,6 +367,7 @@ impl FakeLms {
             slim_conns: tokio::sync::Mutex::new(conn_rx),
             streams,
             library,
+            syncs,
         }
     }
 

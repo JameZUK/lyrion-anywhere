@@ -30,7 +30,7 @@ fn text_of(v: &Value) -> Option<String> {
 }
 
 /// An integer that may be sent as a number or a string. "12,34" (LMS lists) reads as 12.
-fn int_of(v: &Value) -> Option<i64> {
+pub(crate) fn int_of(v: &Value) -> Option<i64> {
     match v {
         Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
         Value::String(s) => s.split(',').next()?.trim().parse().ok(),
@@ -38,7 +38,7 @@ fn int_of(v: &Value) -> Option<i64> {
     }
 }
 
-fn float_of(v: &Value) -> Option<f64> {
+pub(crate) fn float_of(v: &Value) -> Option<f64> {
     match v {
         Value::Number(n) => n.as_f64(),
         Value::String(s) => s.trim().parse().ok(),

@@ -582,6 +582,81 @@ pub fn repeat(mode: RepeatMode) -> Command {
     vec![json!("playlist"), json!("repeat"), json!(m)]
 }
 
+// --- queue editing ------------------------------------------------------------------------
+
+/// Take out the queue entry at `index`.
+pub fn remove_from_queue(index: u32) -> Command {
+    vec![json!("playlist"), json!("delete"), json!(index)]
+}
+
+/// Move the entry at `from` so that it ends up at index `to` (in the new order), as LMS's
+/// `playlist move` does.
+pub fn move_in_queue(from: u32, to: u32) -> Command {
+    vec![json!("playlist"), json!("move"), json!(from), json!(to)]
+}
+
+pub fn clear_queue() -> Command {
+    vec![json!("playlist"), json!("clear")]
+}
+
+// --- synchronisation (player groups) -------------------------------------------------------
+
+/// Sent for the player whose group `other` joins: `<X> sync <Y>` makes Y join X's group
+/// (Y's own queue is replaced by the group's).
+pub fn sync_with(other: &str) -> Result<Command, ApiError> {
+    Ok(vec![json!("sync"), json!(player_id(other)?)])
+}
+
+/// Sent for the player that leaves its group (it stops, keeping a copy of the queue).
+pub fn unsync() -> Command {
+    vec![json!("sync"), json!("-")]
+}
+
+/// The gateway's limit on a comma-separated id list (`track_id:1,2,3`).
+pub const ID_LIST_MAX: usize = 200;
+
+/// Replace the queue with these library tracks (`play_index` starting there), or append
+/// them. Every id is checked, and the list must fit [`ID_LIST_MAX`] (see [`chunk_ids`]).
+pub fn load_tracks(ids: &[i64], add: bool, play_index: Option<u32>) -> Result<Command, ApiError> {
+    let list = ids
+        .iter()
+        .map(|v| id(*v).map(|v| v.to_string()))
+        .collect::<Result<Vec<_>, _>>()?
+        .join(",");
+    if list.is_empty() || list.len() > ID_LIST_MAX {
+        return Err(ApiError::invalid("bad track list"));
+    }
+    let mut c = vec![
+        json!("playlistcontrol"),
+        json!(if add { "cmd:add" } else { "cmd:load" }),
+        json!(format!("track_id:{list}")),
+    ];
+    if let (false, Some(i)) = (add, play_index) {
+        c.push(json!(format!("play_index:{i}")));
+    }
+    Ok(c)
+}
+
+/// Split ids, in order, into lists whose comma-separated form fits `max` characters.
+pub fn chunk_ids(ids: &[i64], max: usize) -> Vec<Vec<i64>> {
+    let mut out = Vec::new();
+    let mut cur: Vec<i64> = Vec::new();
+    let mut len = 0;
+    for &v in ids {
+        let n = v.to_string().len();
+        if !cur.is_empty() && len + 1 + n > max {
+            out.push(std::mem::take(&mut cur));
+            len = 0;
+        }
+        len += usize::from(!cur.is_empty()) + n;
+        cur.push(v);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 /// What to play.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum Selection {
@@ -918,6 +993,66 @@ mod tests {
         assert!(InfoKind::Year.selector(-1).is_err());
         assert!(InfoKind::Year.selector(10_000).is_err());
         assert!(InfoKind::Track.selector(0).is_err());
+    }
+
+    #[test]
+    fn queue_edit_and_sync_shapes_match_the_web_app() {
+        assert_eq!(
+            remove_from_queue(2),
+            vec![json!("playlist"), json!("delete"), json!(2)]
+        );
+        assert_eq!(
+            move_in_queue(3, 0),
+            vec![json!("playlist"), json!("move"), json!(3), json!(0)]
+        );
+        assert_eq!(clear_queue(), vec![json!("playlist"), json!("clear")]);
+        assert_eq!(
+            sync_with("AA:BB:CC:DD:EE:01").unwrap(),
+            vec![json!("sync"), json!("aa:bb:cc:dd:ee:01")]
+        );
+        assert_eq!(unsync(), vec![json!("sync"), json!("-")]);
+        for bad in ["", "-", "all", "aa:bb:cc:dd:ee", "aa:bb:cc:dd:ee:01 x"] {
+            assert!(sync_with(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(
+            load_tracks(&[11, 12, 13], false, Some(1)).unwrap(),
+            vec![
+                json!("playlistcontrol"),
+                json!("cmd:load"),
+                json!("track_id:11,12,13"),
+                json!("play_index:1")
+            ]
+        );
+        // `add` never takes a play index.
+        assert_eq!(
+            load_tracks(&[14, 15], true, Some(1)).unwrap(),
+            vec![
+                json!("playlistcontrol"),
+                json!("cmd:add"),
+                json!("track_id:14,15")
+            ]
+        );
+    }
+
+    #[test]
+    fn track_lists_are_checked_and_fit_the_gateway() {
+        assert!(load_tracks(&[], false, None).is_err());
+        assert!(load_tracks(&[1, 0], false, None).is_err());
+        assert!(load_tracks(&[-108_699_300_821_096], false, None).is_err());
+        let long: Vec<i64> = (0..30).map(|i| 9_000_000 + i).collect();
+        assert!(load_tracks(&long, true, None).is_err());
+        let chunks = chunk_ids(&long, ID_LIST_MAX);
+        assert!(chunks.len() > 1);
+        assert_eq!(chunks.concat(), long, "order kept, nothing lost");
+        for c in &chunks {
+            assert!(load_tracks(c, true, None).is_ok());
+        }
+        // Exactly at the limit: 25 seven-digit ids and 24 commas = 199 characters.
+        let fits: Vec<i64> = (0..25).map(|i| 1_000_000 + i).collect();
+        assert_eq!(chunk_ids(&fits, ID_LIST_MAX).len(), 1);
+        assert!(chunk_ids(&[], ID_LIST_MAX).is_empty());
+        // An id longer than the limit on its own still gets a list (and is refused later).
+        assert_eq!(chunk_ids(&[123_456], 3), vec![vec![123_456]]);
     }
 
     #[test]

@@ -24,6 +24,7 @@ uniffi::setup_scaffolding!();
 pub mod analysis;
 pub mod art;
 pub mod commands;
+pub mod edits;
 pub mod error;
 pub mod events;
 pub mod library;
@@ -34,6 +35,7 @@ pub mod players;
 pub mod server;
 pub mod session;
 mod tls;
+pub mod transfer;
 mod transport;
 
 #[cfg(target_os = "android")]
@@ -59,6 +61,9 @@ pub use player::{
 pub use players::Players;
 pub use server::{PairingInvite, Server, parse_pairing_invite};
 pub use session::{SecureStore, Session, SessionObserver, StoreError, StoredCredentials};
+pub use transfer::{
+    TransferMethod, TransferOutcome, TransferProgress, TransferRefusal, TransferStage,
+};
 
 /// The version of this library, for the app's "About" screen.
 #[uniffi::export]

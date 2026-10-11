@@ -7,9 +7,11 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::commands::{self, Placement, RepeatMode, Selection, ShuffleMode};
+use crate::edits;
 use crate::error::ApiError;
 use crate::model::{self, Player, PlayerStatus, Track};
 use crate::session::Session;
+use crate::transfer::{self, TransferOutcome, TransferProgress};
 
 #[derive(uniffi::Object)]
 pub struct Players {
@@ -115,6 +117,69 @@ impl Players {
 
     pub async fn set_power(&self, player: String, on: bool) -> Result<(), ApiError> {
         self.run(&player, commands::power(on)).await
+    }
+
+    /// Take the queue entry at `index` out.
+    pub async fn remove_from_queue(&self, player: String, index: u32) -> Result<(), ApiError> {
+        self.run(&player, commands::remove_from_queue(index)).await
+    }
+
+    /// Move the queue entry at `from` so that it ends up at `to`.
+    pub async fn move_in_queue(&self, player: String, from: u32, to: u32) -> Result<(), ApiError> {
+        self.run(&player, commands::move_in_queue(from, to)).await
+    }
+
+    pub async fn clear_queue(&self, player: String) -> Result<(), ApiError> {
+        self.run(&player, commands::clear_queue()).await
+    }
+
+    /// Undo a removal: put library track `track_id` back at `index`. Fails (`Server`, 409)
+    /// if the queue changed meanwhile; the track is then at the end.
+    pub async fn restore_to_queue(
+        &self,
+        player: String,
+        track_id: i64,
+        index: u32,
+    ) -> Result<(), ApiError> {
+        edits::restore(
+            self.session.as_ref(),
+            &player,
+            track_id,
+            index,
+            edits::RESTORE_CHECKS,
+            edits::RESTORE_CHECK_INTERVAL,
+        )
+        .await
+    }
+
+    /// Put `other` in `current`'s sync group (`on`), or take `other` out of its group.
+    pub async fn set_synced(
+        &self,
+        current: String,
+        other: String,
+        on: bool,
+    ) -> Result<(), ApiError> {
+        let (player, cmd) = edits::sync_toggle(&current, &other, on)?;
+        self.run(&player, cmd).await
+    }
+
+    /// Move playback from `source` to `target` (docs/PROTOCOL.md › Transfer): group then
+    /// leave, or copy the list if LMS won't group them. Both must be players this account
+    /// may control; the gateway refuses anything else.
+    pub async fn transfer(
+        &self,
+        source: String,
+        target: String,
+        progress: Arc<dyn TransferProgress>,
+    ) -> Result<TransferOutcome, ApiError> {
+        transfer::transfer(
+            self.session.as_ref(),
+            &source,
+            &target,
+            transfer::Pace::default(),
+            &|stage| progress.on_stage(stage),
+        )
+        .await
     }
 
     /// Play a favourite (a station, track or app item) now, next, or at the end.
