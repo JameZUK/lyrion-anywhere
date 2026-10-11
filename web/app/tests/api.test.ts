@@ -3,7 +3,7 @@ import { RETRY_MS, SIGNED_OUT_KEY, SessionManager, refused, type AuthApi } from 
 import { Api, artUrl } from '$lib/api/rpc';
 import { ApiError, callJson, CLIENT_HEADER } from '$lib/api/http';
 import { EventsClient, eventsBackoff, parseEventMessage } from '$lib/api/events';
-import { defaultDeviceName, groupKey, refresh, REFRESH_LOCK, rememberedDevice, totpSetup, withRefreshLock, type LockManagerLike } from '$lib/api/auth';
+import { clientKind, defaultDeviceName, groupKey, login, refresh, REFRESH_LOCK, rememberedDevice, renameDevice, totpSetup, validDeviceName, withRefreshLock, type LockManagerLike } from '$lib/api/auth';
 import type { Session } from '$lib/api/auth';
 
 const sess = (token: string): Session => ({
@@ -597,6 +597,76 @@ describe('auth helpers', () => {
 		expect(defaultDeviceName('Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0')).toBe('Firefox on Linux');
 		expect(defaultDeviceName('Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 Version/26.0 Mobile/15E148 Safari/604.1')).toBe('Safari on iOS');
 		expect(defaultDeviceName('')).toBe('Browser on unknown');
+		// iPads ask for desktop sites and say "Macintosh"; touch gives them away.
+		const ipad = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15';
+		expect(defaultDeviceName(ipad, 5)).toBe('Safari on iPadOS');
+		expect(defaultDeviceName(ipad, 0)).toBe('Safari on macOS');
+		expect(defaultDeviceName('Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 CriOS/140.0 Mobile/15E148 Safari/604.1')).toBe('Chrome on iPadOS');
+		expect(defaultDeviceName('Mozilla/5.0 (Linux; Android 15; Pixel 8) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36')).toBe('Chrome on Android');
+	});
+
+	test('client kind: installed (standalone) or a browser tab', () => {
+		expect(clientKind(() => false, undefined)).toBe('browser');
+		expect(clientKind((q) => q === '(display-mode: standalone)', undefined)).toBe('pwa');
+		expect(clientKind((q) => q === '(display-mode: minimal-ui)', undefined)).toBe('pwa');
+		expect(clientKind(() => false, true)).toBe('pwa'); // iOS home-screen apps
+		expect(clientKind(() => false, 'yes')).toBe('browser');
+		expect(clientKind(() => { throw new Error('no matchMedia'); }, undefined)).toBe('browser');
+	});
+
+	test('device names for renaming', () => {
+		expect(validDeviceName('  Kitchen iPad ')).toBe('Kitchen iPad');
+		expect(validDeviceName('é'.repeat(64))).toBe('é'.repeat(64));
+		for (const bad of ['', '   ', 'x'.repeat(65), 'a\nb', 'a\u0000b', 'a\u007fb']) expect(validDeviceName(bad)).toBeNull();
+	});
+
+	test('sign-in and renewal tell the gateway what kind of client this is', async () => {
+		const calls: RequestInit[] = [];
+		vi.stubGlobal('fetch', vi.fn(async (_u: string, init: RequestInit) => {
+			calls.push(init);
+			return json(200, sess('t'));
+		}));
+		vi.stubGlobal('matchMedia', (q: string) => ({ matches: q === '(display-mode: standalone)' }));
+		await login('alice', 'pw');
+		await refresh(undefined);
+		for (const init of calls) {
+			const body = JSON.parse(String(init.body));
+			expect(body.client_kind).toBe('pwa');
+			expect(typeof body.client_platform).toBe('string');
+			expect(body.client_platform.length).toBeLessThanOrEqual(48);
+			expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+			expect((init.headers as Record<string, string>)['X-Anywhere-Client']).toBe('1');
+		}
+		expect(Object.keys(JSON.parse(String(calls[1]!.body))).sort()).toEqual(['client_kind', 'client_platform']);
+	});
+
+	test('renaming this device', async () => {
+		const f = vi.fn(async () => json(200, { id: 3, name: 'Kitchen iPad' }));
+		vi.stubGlobal('fetch', f);
+		expect(await renameDevice('tok', 'Kitchen iPad')).toEqual({ id: 3, name: 'Kitchen iPad' });
+		const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe('/v1/devices/self');
+		expect(init.method).toBe('PATCH');
+		expect(init.body).toBe('{"name":"Kitchen iPad"}');
+		const h = init.headers as Record<string, string>;
+		expect(h.Authorization).toBe('Bearer tok');
+		expect(h['X-Anywhere-Client']).toBe('1');
+		vi.stubGlobal('fetch', vi.fn(async () => json(400, { error: 'another of this user\'s devices already has that name' })));
+		await expect(renameDevice('tok', 'Phone')).rejects.toThrow(/already has that name/);
+	});
+
+	test('a rename shows at once', async () => {
+		const s = new SessionManager(fakeAuth(['t1']), undefined);
+		await s.restore();
+		const names: string[] = [];
+		s.subscribe((cur) => cur && names.push(cur.device.name));
+		s.setDeviceName('Kitchen iPad');
+		expect(s.current?.device.name).toBe('Kitchen iPad');
+		expect(s.current?.device.id).toBe(3);
+		expect(names.at(-1)).toBe('Kitchen iPad');
+		await s.signOut();
+		s.setDeviceName('x');
+		expect(s.current).toBeNull();
 	});
 
 	test('remembered device ids are validated', () => {

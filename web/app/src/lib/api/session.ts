@@ -210,6 +210,13 @@ export class SessionManager {
 		return p;
 	}
 
+	/** This device was renamed: show the new name everywhere at once. */
+	setDeviceName(name: string) {
+		if (!this.current) return;
+		this.current = { ...this.current, device: { ...this.current.device, name } };
+		this.#emit();
+	}
+
 	/** Run an authenticated call; on 401, renew the token once and retry. */
 	async authed<T>(fn: (token: string) => Promise<T>): Promise<T> {
 		if (!this.current) throw new ApiError(401, 'not signed in');
