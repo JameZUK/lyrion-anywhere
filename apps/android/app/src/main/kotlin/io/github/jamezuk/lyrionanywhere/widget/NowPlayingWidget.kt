@@ -63,6 +63,7 @@ object NowPlayingWidget {
     /** Redraw every placed widget (cheap when none is placed). */
     @OptIn(ExperimentalGlanceRemoteViewsApi::class)
     suspend fun render(app: LyrionApp) {
+        if (!app.started) return
         val manager = AppWidgetManager.getInstance(app) ?: return
         val ids = manager.getAppWidgetIds(ComponentName(app, NowPlayingWidgetReceiver::class.java))
         if (ids == null || ids.isEmpty()) return
@@ -166,6 +167,7 @@ object NowPlayingWidget {
 class WidgetControl : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
         val app = context.applicationContext as LyrionApp
+        if (!app.started) return
         val player = parameters[PLAYER] ?: return
         val control = Control.entries.firstOrNull { it.name == parameters[CONTROL] } ?: return
         app.controls.run(player, control)

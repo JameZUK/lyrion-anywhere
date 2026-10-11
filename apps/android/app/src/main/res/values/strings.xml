@@ -16,4 +16,9 @@
     <string name="tile_unavailable">This phone isn\'t playing</string>
     <string name="tile_playing">Playing</string>
     <string name="tile_paused">Paused</string>
+    <string name="crash_title">Lyrion Anywhere stopped</string>
+    <string name="crash_body">The app crashed last time it ran. Please share this report with the developer (it holds the phone model, Android version and where it failed; no passwords). Then tap Restart to try again.</string>
+    <string name="crash_share">Share</string>
+    <string name="crash_copy">Copy</string>
+    <string name="crash_restart">Restart</string>
 </resources>

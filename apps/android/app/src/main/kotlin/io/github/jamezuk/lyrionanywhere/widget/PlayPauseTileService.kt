@@ -38,6 +38,7 @@ class PlayPauseTileService : TileService() {
     override fun onClick() {
         super.onClick()
         val app = application as LyrionApp
+        if (!app.started) return
         val phone = app.nowPlaying.phone.value ?: return
         if (model().state == TileModel.State.UNAVAILABLE) return
         // Shown at once; LMS's answer (through the playback service) follows.
@@ -46,7 +47,9 @@ class PlayPauseTileService : TileService() {
 
     private fun model(): TileModel {
         val app = application as LyrionApp
-        return TileModel.from(app.nowPlaying.phone.value, app.container.localPlayer.state.value.enabled)
+        // In safe mode (after a crash) the app hasn't started: nothing to control.
+        val enabled = app.started && app.container.localPlayer.state.value.enabled
+        return TileModel.from(app.nowPlaying.phone.value, enabled)
     }
 
     private fun render() {

@@ -1,11 +1,13 @@
 package io.github.jamezuk.lyrionanywhere
 
 import android.app.Application
+import android.content.Context
 import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
 import coil3.memory.MemoryCache
 import coil3.request.crossfade
+import io.github.jamezuk.lyrionanywhere.core.installCrashReport
 import io.github.jamezuk.lyrionanywhere.data.ArtRepository
 import io.github.jamezuk.lyrionanywhere.data.AuthState
 import io.github.jamezuk.lyrionanywhere.data.NowPlayingHub
@@ -13,6 +15,7 @@ import io.github.jamezuk.lyrionanywhere.widget.Controls
 import io.github.jamezuk.lyrionanywhere.widget.NowPlayingWidget
 import io.github.jamezuk.lyrionanywhere.widget.PlayPauseTileService
 import io.github.jamezuk.lyrionanywhere.widget.WidgetModel
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -35,7 +38,10 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
         private set
 
     /** Work that outlives any screen (resuming the sign-in, the phone's player). */
-    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    val appScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Main.immediate +
+            CoroutineExceptionHandler { _, e -> CrashLog.record(this, "Background task failed", e) },
+    )
 
     /** What plays, for the home-screen widget and the Quick Settings tile. */
     override val nowPlaying = NowPlayingHub()
@@ -44,11 +50,32 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
     val controls = Controls({ container.players }, nowPlaying)
 
     @OptIn(FlowPreview::class)
+    /**
+     * The last run crashed: start nothing and let [MainActivity] show the report (see
+     * [CrashLog]), so a crash at start-up can't repeat itself on every launch.
+     */
+    var safeMode = false
+        private set
+
+    /** Whether the normal start-up ran ([container] is ready). */
+    val started: Boolean get() = ::container.isInitialized
+
+    /** Crash recording starts here, before content providers (e.g. WorkManager's) run. */
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(base)
+        CrashLog.install(base)
+    }
+
     override fun onCreate() {
         super.onCreate()
+        if (CrashLog.pending(this) != null) {
+            safeMode = true
+            return
+        }
         // Load the Rust library and give its TLS verifier Android's TrustManager, before
         // anything touches the network.
         NativeInit.init(this)
+        installCrashReport(CrashLog.nativeFile(this).path)
         container = AppContainer(this, appScope)
         appScope.launch { container.account.start() }
         appScope.launch {

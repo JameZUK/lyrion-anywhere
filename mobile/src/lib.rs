@@ -26,6 +26,7 @@ uniffi::setup_scaffolding!();
 pub mod analysis;
 pub mod art;
 pub mod commands;
+pub mod crash;
 pub mod edits;
 pub mod error;
 pub mod events;
