@@ -578,3 +578,42 @@ async fn sync_information_names_only_permitted_players() {
         .unwrap();
     assert_eq!(sync["result"]["_sync"], "aa:bb:cc:dd:ee:01");
 }
+
+#[tokio::test]
+async fn a_status_that_skips_the_playing_track_is_repaired() {
+    let h = harness().await;
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    let r = h
+        .rpc(&h.tok_a, &mine, json!(["status", "-", 1, "tags:adc"]))
+        .await;
+    assert_eq!(r.status(), S::OK);
+    let body: Value = r.json().await.unwrap();
+    let cur = &body["result"]["playlist_loop"][0];
+    assert_eq!(cur["title"], "Playing Track");
+    assert_eq!(cur["id"], 4);
+    assert_eq!(cur["playlist index"], 1);
+    // Filtered like any status: no path or URL reaches the client.
+    let text = body.to_string();
+    assert!(!text.contains("/srv/music"), "{text}");
+    assert!(cur.get("url").is_none());
+    // The gateway asked for exactly the current position, then that file's details.
+    let calls = h.lms.rpc_calls();
+    let asked: Vec<&Value> = calls.iter().map(|c| &c[1]).collect();
+    assert!(
+        asked.contains(&&json!(["playlist", "path", "1", "?"])),
+        "{asked:?}"
+    );
+    assert!(asked.iter().any(|c| c[0] == "songinfo"
+        && c[3] == "url:file:///srv/music/Playing%20Track.flac"
+        && c[4] == "tags:adc"));
+}
+
+#[tokio::test]
+async fn a_queue_listing_is_never_repaired() {
+    let h = harness().await;
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    let r = h.rpc(&h.tok_a, &mine, json!(["status", 0, 10])).await;
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["result"]["playlist_loop"][0]["title"], "Next Track");
+    assert!(h.lms.rpc_calls().iter().all(|c| c[1][0] != "songinfo"));
+}

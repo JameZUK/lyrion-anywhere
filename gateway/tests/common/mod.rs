@@ -203,6 +203,14 @@ pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
             {"sync_members": "aa:bb:cc:dd:ee:01,aa:bb:cc:dd:ee:02", "sync_member_names": "Home One,Home Two"}
         ]}),
         "sync" => json!({"_sync": "aa:bb:cc:dd:ee:01,aa:bb:cc:dd:ee:02"}),
+        // LMS's status leaving out a queued track it can't resolve: the next track is listed
+        // as current, though the player's duration is the playing track's (status_fix.rs).
+        "status" => json!({"mode": "play", "playlist_cur_index": "1", "duration": 300.5,
+            "playlist_loop": [{"playlist index": 1, "id": 3, "title": "Next Track", "duration": 95.25}]}),
+        "playlist" => json!({"_path": "file:///srv/music/Playing%20Track.flac"}),
+        "songinfo" => json!({"count": 6, "songinfo_loop": [
+            {"id": 4}, {"title": "Playing Track"}, {"duration": 300.5}, {"coverid": "c0ffee"},
+            {"url": "file:///srv/music/Playing%20Track.flac"}, {"comment": "ripped to /srv/music/x"}]}),
         // The home menu: a plugin entry in My Music, and a settings entry.
         "menu" => json!({"count": 3, "item_loop": [
             {"id": "pluginSomePlugin", "node": "myMusic", "text": "Some Plugin", "actions": {"go": {"cmd": ["someplugin", "menu"], "player": 0}}},

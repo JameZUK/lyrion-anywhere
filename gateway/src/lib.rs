@@ -42,6 +42,7 @@ mod relay;
 mod rpc;
 pub mod rpc_policy;
 mod session;
+mod status_fix;
 pub mod totp;
 pub mod transcode;
 mod tunnel;

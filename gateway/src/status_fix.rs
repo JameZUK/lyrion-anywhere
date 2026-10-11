@@ -1,0 +1,236 @@
+//! Repairing a player's "now playing" when LMS's status contradicts itself.
+//!
+//! LMS's `status` leaves out a queue entry it can no longer resolve. That happens, for
+//! example, when a rescan gave a queued track a new id. The entries after it then move up
+//! one place and are numbered from there, while playback carries on with the real track. So
+//! `status - 1` can name the *next* track as the current one: the wrong title, artwork,
+//! length and waveform, though the top-level `duration` is still the playing track's.
+//!
+//! When the two durations disagree, the gateway asks LMS for the path at the current queue
+//! position (`playlist path <i> ?`) and that track's details (`songinfo … url:<path>`), and
+//! puts them in place of the wrong entry, before the response is filtered as usual (so paths
+//! never reach the client). Any failure leaves the status as LMS sent it.
+
+use serde_json::{Map, Value};
+
+/// Durations closer than this (seconds) agree.
+const TOLERANCE_S: f64 = 1.0;
+
+fn number(v: &Value) -> Option<f64> {
+    match v {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+    .filter(|f: &f64| f.is_finite())
+}
+
+/// For `status - …`, the current queue position when the first entry contradicts the
+/// player's own duration (see the module documentation); otherwise `None`.
+pub(crate) fn needs_repair(cmd: &[String], result: &Value) -> Option<u64> {
+    if cmd.first().map(String::as_str) != Some("status")
+        || cmd.get(1).map(String::as_str) != Some("-")
+    {
+        return None;
+    }
+    let cur = number(&result["playlist_cur_index"])?;
+    if cur < 0.0 || cur.fract() != 0.0 || cur > u32::MAX as f64 {
+        return None;
+    }
+    let playing = number(&result["duration"])?;
+    let listed = result["playlist_loop"]
+        .get(0)
+        .and_then(|t| number(&t["duration"]))?;
+    ((playing - listed).abs() > TOLERANCE_S).then_some(cur as u64)
+}
+
+/// The `tags:` parameter of a command, if any.
+pub(crate) fn tags(cmd: &[String]) -> Option<&str> {
+    cmd.iter()
+        .find(|a| a.starts_with("tags:"))
+        .map(String::as_str)
+}
+
+/// The path LMS gave for `playlist path <i> ?`.
+pub(crate) fn path_of(answer: &Value) -> Option<&str> {
+    answer["_path"]
+        .as_str()
+        .filter(|p| !p.is_empty() && p.len() <= 4096)
+}
+
+/// A status-style track entry from a `songinfo` answer (a list of one-key objects), at queue
+/// position `index`. `None` if LMS found nothing usable.
+pub(crate) fn entry_from_songinfo(answer: &Value, index: u64) -> Option<Value> {
+    let mut entry = Map::new();
+    for item in answer["songinfo_loop"].as_array()?.iter().take(100) {
+        if let Some(obj) = item.as_object() {
+            for (k, v) in obj {
+                entry.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+    }
+    // Only a real track: it must have an id and a title.
+    if entry.get("id").and_then(number).is_none()
+        || !entry.get("title").is_some_and(Value::is_string)
+    {
+        return None;
+    }
+    entry.insert("playlist index".into(), Value::from(index));
+    Some(Value::Object(entry))
+}
+
+/// Put `entry` in place of the first queue entry of a status result.
+pub(crate) fn replace_current(result: &mut Value, entry: Value) {
+    match result
+        .get_mut("playlist_loop")
+        .and_then(Value::as_array_mut)
+    {
+        Some(list) if !list.is_empty() => list[0] = entry,
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn cmd(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn status(duration: Value, listed: Value) -> Value {
+        json!({"playlist_cur_index": "13", "duration": duration,
+               "playlist_loop": [{"playlist index": 13, "id": 2, "title": "Next", "duration": listed}]})
+    }
+
+    #[test]
+    fn a_status_whose_durations_disagree_is_repaired() {
+        let c = cmd(&["status", "-", "1", "tags:adc"]);
+        assert_eq!(
+            needs_repair(&c, &status(json!(300.5), json!(95.25))),
+            Some(13)
+        );
+    }
+
+    #[test]
+    fn agreeing_or_missing_durations_are_left_alone() {
+        let c = cmd(&["status", "-", "1", "tags:adc"]);
+        assert_eq!(
+            needs_repair(&c, &status(json!(95.3), json!("95.25"))),
+            None
+        );
+        // Radio and other streams: no duration at the top level.
+        assert_eq!(needs_repair(&c, &status(Value::Null, json!(98.0))), None);
+        assert_eq!(needs_repair(&c, &status(json!(300), Value::Null)), None);
+        assert_eq!(
+            needs_repair(&c, &json!({"duration": 300, "playlist_cur_index": 0})),
+            None
+        );
+    }
+
+    #[test]
+    fn only_the_current_track_status_is_repaired() {
+        let s = status(json!(300.0), json!(98.0));
+        for c in [
+            cmd(&["status", "0", "50"]),
+            cmd(&["serverstatus", "-"]),
+            cmd(&["status"]),
+        ] {
+            assert_eq!(needs_repair(&c, &s), None, "{c:?}");
+        }
+    }
+
+    #[test]
+    fn odd_positions_are_refused() {
+        let c = cmd(&["status", "-", "1"]);
+        for cur in [
+            json!(-1),
+            json!(1.5),
+            json!("x"),
+            json!(1e12),
+            Value::Null,
+            json!(f64::MAX),
+        ] {
+            let mut s = status(json!(300.0), json!(98.0));
+            s["playlist_cur_index"] = cur.clone();
+            assert_eq!(needs_repair(&c, &s), None, "{cur}");
+        }
+    }
+
+    #[test]
+    fn songinfo_becomes_a_status_entry() {
+        let a = json!({"songinfo_loop": [
+            {"id": 4021}, {"title": "Playing Track"}, {"artist": "Some Band"},
+            {"duration": 300.5}, {"coverid": "abc"}, {"url": "file:///srv/music/x.flac"},
+            {"title": "ignored duplicate"}, "junk", 7
+        ]});
+        let e = entry_from_songinfo(&a, 13).unwrap();
+        assert_eq!(e["id"], 4021);
+        assert_eq!(e["title"], "Playing Track");
+        assert_eq!(e["playlist index"], 13);
+        assert_eq!(
+            e["url"], "file:///srv/music/x.flac",
+            "filtered later with the rest"
+        );
+    }
+
+    #[test]
+    fn songinfo_without_a_track_is_refused() {
+        for a in [
+            json!({}),
+            json!({"songinfo_loop": []}),
+            json!({"songinfo_loop": [{"title": "x"}]}),
+            json!({"songinfo_loop": [{"id": 3}]}),
+            json!({"songinfo_loop": "nope"}),
+            json!({"songinfo_loop": [{"id": "abc"}, {"title": "x"}]}),
+        ] {
+            assert!(entry_from_songinfo(&a, 0).is_none(), "{a}");
+        }
+    }
+
+    #[test]
+    fn replacing_keeps_the_rest_and_ignores_an_empty_queue() {
+        let mut s = status(json!(300.0), json!(98.0));
+        replace_current(&mut s, json!({"id": 9}));
+        assert_eq!(s["playlist_loop"][0]["id"], 9);
+        let mut empty = json!({"playlist_loop": []});
+        replace_current(&mut empty, json!({"id": 9}));
+        assert_eq!(empty, json!({"playlist_loop": []}));
+    }
+
+    #[test]
+    fn paths_and_tags_are_read_carefully() {
+        assert_eq!(
+            path_of(&json!({"_path": "file:///a.flac"})),
+            Some("file:///a.flac")
+        );
+        assert_eq!(path_of(&json!({"_path": ""})), None);
+        assert_eq!(path_of(&json!({"_path": 5})), None);
+        assert_eq!(path_of(&json!({"_path": "x".repeat(5000)})), None);
+        assert_eq!(
+            tags(&cmd(&["status", "-", "1", "tags:ad"])),
+            Some("tags:ad")
+        );
+        assert_eq!(tags(&cmd(&["status", "-", "1"])), None);
+    }
+
+    #[test]
+    fn arbitrary_status_answers_never_panic() {
+        let c = cmd(&["status", "-", "1"]);
+        let samples = [
+            json!(null),
+            json!([]),
+            json!("s"),
+            json!({"playlist_loop": 3}),
+            json!({"playlist_loop": [null], "duration": 1, "playlist_cur_index": 0}),
+            json!({"playlist_loop": [{"duration": {}}], "duration": [], "playlist_cur_index": {}}),
+        ];
+        for mut s in samples {
+            let _ = needs_repair(&c, &s);
+            replace_current(&mut s, json!({}));
+            let _ = entry_from_songinfo(&s, 0);
+            let _ = path_of(&s);
+        }
+    }
+}

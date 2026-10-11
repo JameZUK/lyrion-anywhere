@@ -13,7 +13,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::AppState;
 use crate::accounts::{PlayerScope, Principal, Role};
@@ -193,7 +193,12 @@ pub async fn rpc(
     }
 
     match gw.lms_rpc(&checked).await {
-        Ok(result) => {
+        Ok(mut result) => {
+            if let Some(cur) = crate::status_fix::needs_repair(&checked.cmd, &result)
+                && let Some(entry) = gw.current_entry(&checked.player, cur, &checked.cmd).await
+            {
+                crate::status_fix::replace_current(&mut result, entry);
+            }
             if checked.kind == Kind::AppMenu {
                 gw.add_apps(rpc_policy::learn_apps(&result));
             }
@@ -343,6 +348,33 @@ impl crate::Gateway {
     }
 
     /// Send a checked command to LMS and return its `result`.
+    /// The track really at queue position `index` of `player`, as a status entry with the
+    /// tags of `cmd` (see [`crate::status_fix`]). `None` on any failure.
+    async fn current_entry(&self, player: &str, index: u64, cmd: &[String]) -> Option<Value> {
+        let limit = Duration::from_secs(2);
+        let path = ["playlist", "path", &index.to_string(), "?"].map(String::from);
+        let answer = self.lms_command_within(player, &path, limit).await.ok()?;
+        let url = crate::status_fix::path_of(&answer)?;
+        let mut info = vec![
+            "songinfo".to_string(),
+            "0".into(),
+            "100".into(),
+            format!("url:{url}"),
+        ];
+        if let Some(t) = crate::status_fix::tags(cmd) {
+            info.push(t.to_string());
+        }
+        let answer = self.lms_command_within("", &info, limit).await.ok()?;
+        let entry = crate::status_fix::entry_from_songinfo(&answer, index);
+        if entry.is_some() {
+            info!(
+                player,
+                index, "status skipped the playing track; repaired from songinfo"
+            );
+        }
+        entry
+    }
+
     pub(crate) async fn lms_rpc(&self, c: &Checked) -> Result<Value, String> {
         self.lms_command(&c.player, &c.cmd).await
     }
