@@ -5,6 +5,7 @@
 
 #[cfg(feature = "player")]
 pub mod decode;
+pub mod dsp;
 pub mod mux;
 #[cfg(feature = "player")]
 pub mod player;

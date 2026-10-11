@@ -7,8 +7,16 @@ license.workspace = true
 
 [dependencies]
 symphonia = { version = "0.6", optional = true, default-features = false, features = ["flac", "mp3", "aac", "ogg", "vorbis", "isomp4", "alac", "wav", "pcm", "id3v2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rubato = { version = "5", optional = true, default-features = false }
+opus-decoder = { version = "0.1.1", optional = true }
 
 [features]
 default = ["player"]
 # Decoder and player state machine. The gateway uses only `proto`.
 player = ["dep:symphonia"]
+# High-quality sample-rate conversion (rubato). Native hosts only; kept out of WebAssembly.
+resample = ["dep:rubato"]
+# Opus decoding (pure-Rust decoder registered with Symphonia). Native hosts only.
+opus = ["player", "dep:opus-decoder"]
