@@ -446,7 +446,23 @@
   let pluginBoxes = [];
 
   async function showPlugins() {
-    const r = await admin('plugins');
+    let r;
+    try {
+      r = await admin('plugins');
+    } catch (e) {
+      // Never leave the section blank: say why, and offer to try again (e.g. while the
+      // gateway is still starting after LMS restarted).
+      const retry = el('button', { type: 'button', text: 'Try again' });
+      retry.addEventListener('click', () => {
+        $('aw-plugins').replaceChildren(el('p', { className: 'aw-note', text: 'Loading plugins\u2026' }));
+        showPlugins();
+      });
+      $('aw-plugins').replaceChildren(
+        el('p', { className: 'aw-note aw-error', text: `Couldn't load the plugin list: ${e.message}` }),
+        retry,
+      );
+      return;
+    }
     const list = Array.isArray(r.plugins) ? r.plugins : [];
     pluginBoxes = [];
     const rows = list.map((p) => {
