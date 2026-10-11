@@ -12,6 +12,7 @@ import io.github.jamezuk.lyrionanywhere.data.LocalPlayerState
 import io.github.jamezuk.lyrionanywhere.data.NowPlaying
 import io.github.jamezuk.lyrionanywhere.data.NowPlayingHub
 import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
+import io.github.jamezuk.lyrionanywhere.data.offline.OfflinePlayerRepository
 
 /** What the playback service needs from the app (implemented by the `Application`). */
 interface PlaybackHost {
@@ -22,6 +23,12 @@ interface PlaybackHost {
 
     /** Where the widget and the Quick Settings tile learn what this phone plays (none: not shared). */
     val nowPlaying: NowPlayingHub? get() = null
+
+    /** Downloads played from the app's own queue (none: not offered). */
+    val offlinePlayer: OfflinePlayerRepository? get() = null
+
+    /** A downloaded album's cached cover, by album reference. */
+    suspend fun offlineArtwork(albumRef: String): ByteArray? = null
 }
 
 /** What this phone's player plays, for the widget and tile (null until LMS has said). */

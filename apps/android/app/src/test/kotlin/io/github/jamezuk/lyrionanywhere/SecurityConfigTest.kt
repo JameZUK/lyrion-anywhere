@@ -70,6 +70,28 @@ class SecurityConfigTest {
     }
 
     @Test
+    fun theDownloadServiceIsPrivateAndADataSyncForegroundService() {
+        val services = xml("src/main/AndroidManifest.xml").children("service")
+        val downloads = services.single { it.getAttributeNS(android, "name").endsWith(".DownloadService") }
+        assertEquals("false", downloads.getAttributeNS(android, "exported"))
+        assertEquals("dataSync", downloads.getAttributeNS(android, "foregroundServiceType"))
+        assertTrue("no intent filter: only explicit intents reach it", downloads.children("intent-filter").isEmpty())
+    }
+
+    @Test
+    fun noWorkManagerStartup() {
+        // Its start-up initialiser crashed earlier test builds on launch; it stays removed.
+        val manifest = xml("src/main/AndroidManifest.xml")
+        val startup = manifest.children("provider").single {
+            it.getAttributeNS(android, "name") == "androidx.startup.InitializationProvider"
+        }
+        val work = startup.children("meta-data").single {
+            it.getAttributeNS(android, "name") == "androidx.work.WorkManagerInitializer"
+        }
+        assertEquals("remove", work.getAttributeNS("http://schemas.android.com/tools", "node"))
+    }
+
+    @Test
     fun onlyTheExpectedPermissions() {
         val perms = xml("src/main/AndroidManifest.xml").children("uses-permission")
             .map { it.getAttributeNS(android, "name") }
@@ -81,9 +103,19 @@ class SecurityConfigTest {
                 "android.permission.FOREGROUND_SERVICE",
                 "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
                 "android.permission.WAKE_LOCK",
+                // Offline downloads (A5).
+                "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+                "android.permission.POST_NOTIFICATIONS",
             ),
             perms,
         )
+        // The data module adds only the network state (normal, install-time).
+        val dataPerms = xml("../data/src/main/AndroidManifest.xml").children("uses-permission")
+            .map { it.getAttributeNS(android, "name") }
+            .toSet()
+        assertEquals(setOf("android.permission.ACCESS_NETWORK_STATE"), dataPerms)
+        // Nothing that reads shared storage: downloads live in app-private storage only.
+        assertFalse(perms.any { it.contains("STORAGE") || it.contains("MEDIA_AUDIO") })
         // The playback module adds only what bit-perfect USB output needs (a normal,
         // install-time permission).
         val playbackPerms = xml("../playback/src/main/AndroidManifest.xml").children("uses-permission")

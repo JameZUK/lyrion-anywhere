@@ -11,6 +11,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Offline downloads (A5): a foreground service of type dataSync while downloads run,
+         and its progress notification (asked for when the user first downloads, Android
+         13+). The data module adds ACCESS_NETWORK_STATE (Wi-Fi or mobile data). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!--
       Security:
@@ -56,6 +61,16 @@
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>
+        <!--
+          Downloads in the background (A5): a dataSync foreground service, running only while
+          downloads are busy. Not exported: only this app starts it; its notification's Cancel
+          action is an explicit, immutable PendingIntent. (No WorkManager: its start-up
+          initialiser crashed earlier test builds, see below.)
+        -->
+        <service
+            android:name=".downloads.DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
         <!--
           The home-screen widget. Exported because the launcher's widget host must reach it;
           it accepts only the widget update broadcast, which at worst redraws it. Its buttons

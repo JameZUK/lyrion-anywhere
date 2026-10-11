@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Search
@@ -221,6 +222,8 @@ fun ItemSheetContent(
     navigator: MenuNavigator,
     onPlay: (Placement) -> Unit,
     onClose: () -> Unit,
+    /** Download it (offline); null where downloads aren't offered for this item. */
+    onDownload: (() -> Unit)? = null,
 ) {
     val stack by navigator.stack.collectAsStateWithLifecycle()
     val frame = stack.lastOrNull()
@@ -267,6 +270,15 @@ fun ItemSheetContent(
                     }
                     OutlinedButton(onClick = { onPlay(Placement.ADD_TO_QUEUE) }, modifier = Modifier.weight(1f)) {
                         Text(stringResource(R.string.action_add_short), maxLines = 1)
+                    }
+                }
+                if (onDownload != null) {
+                    OutlinedButton(
+                        onClick = onDownload,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                    ) {
+                        Icon(Icons.Outlined.Download, contentDescription = null)
+                        Text(stringResource(R.string.action_download), Modifier.padding(start = 8.dp), maxLines = 1)
                     }
                 }
                 HorizontalDivider(Modifier.padding(top = 8.dp))

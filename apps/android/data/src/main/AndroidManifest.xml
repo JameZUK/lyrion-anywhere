@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Offline downloads (A5): telling Wi-Fi from mobile data (download formats, "Wi-Fi
+         only") and noticing no network at all (offline mode). A normal permission, granted
+         at install. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+</manifest>

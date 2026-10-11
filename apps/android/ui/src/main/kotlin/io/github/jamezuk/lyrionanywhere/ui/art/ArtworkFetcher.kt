@@ -18,28 +18,51 @@ data class Artwork(val key: String, val sizePx: Int)
 
 class ArtworkException(val error: AppError) : Exception("artwork unavailable")
 
+/** The artwork key of a downloaded album's cached cover. */
+fun offlineArtKey(albumRef: String) = "$OFFLINE_PREFIX$albumRef"
+
+const val OFFLINE_PREFIX = "offline:"
+
 /**
  * Coil fetcher for [Artwork]: the bytes come from the Rust Art API, which adds the bearer
  * token and enforces the size cap. Images are cached in memory by Coil (keyed by
  * [ArtworkKeyer]); nothing touches the disk.
+ *
+ * Keys made by [offlineArtKey] are downloaded albums' covers, read from the download store
+ * (they work offline); the store checks the bytes are an image.
  */
 class ArtworkFetcher(
     private val data: Artwork,
     private val options: Options,
     private val art: ArtRepository,
+    private val offline: (suspend (String) -> ByteArray?)? = null,
 ) : Fetcher {
-    override suspend fun fetch(): FetchResult = when (val r = art.image(data.key, data.sizePx)) {
-        is ApiResult.Ok -> SourceFetchResult(
-            source = ImageSource(Buffer().write(r.value.bytes), options.fileSystem),
-            mimeType = r.value.mimeType,
-            dataSource = DataSource.NETWORK,
-        )
-        is ApiResult.Err -> throw ArtworkException(r.error)
+    override suspend fun fetch(): FetchResult {
+        if (data.key.startsWith(OFFLINE_PREFIX)) {
+            val bytes = offline?.invoke(data.key.removePrefix(OFFLINE_PREFIX))
+                ?: throw ArtworkException(AppError.InvalidInput("no cached cover"))
+            return SourceFetchResult(
+                source = ImageSource(Buffer().write(bytes), options.fileSystem),
+                mimeType = null,
+                dataSource = DataSource.DISK,
+            )
+        }
+        return when (val r = art.image(data.key, data.sizePx)) {
+            is ApiResult.Ok -> SourceFetchResult(
+                source = ImageSource(Buffer().write(r.value.bytes), options.fileSystem),
+                mimeType = r.value.mimeType,
+                dataSource = DataSource.NETWORK,
+            )
+            is ApiResult.Err -> throw ArtworkException(r.error)
+        }
     }
 
-    class Factory(private val art: ArtRepository) : Fetcher.Factory<Artwork> {
+    class Factory(
+        private val art: ArtRepository,
+        private val offline: (suspend (String) -> ByteArray?)? = null,
+    ) : Fetcher.Factory<Artwork> {
         override fun create(data: Artwork, options: Options, imageLoader: ImageLoader): Fetcher =
-            ArtworkFetcher(data, options, art)
+            ArtworkFetcher(data, options, art, offline)
     }
 }
 

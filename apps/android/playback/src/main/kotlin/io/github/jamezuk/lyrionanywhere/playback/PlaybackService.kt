@@ -23,13 +23,19 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
- * The media session for "Play on this phone": notification, lock screen, Bluetooth and
+ * The media session for this phone's playback: notification, lock screen, Bluetooth and
  * headset buttons, audio focus, "becoming noisy", and wake and Wi-Fi locks while playing.
+ *
+ * It serves both of the phone's sources (SPEC D14): this phone as an LMS player ("Play on
+ * this phone"), and downloads played from the app's own queue (offline). The session shows
+ * whichever is active; the downloads take the session while their queue is loaded.
  *
  * Media3 makes this a foreground service (type `mediaPlayback`) while playback is on.
  * Not exported: only this app binds to it; the system's media controls use the platform
@@ -47,12 +53,23 @@ class PlaybackService : MediaSessionService() {
     private val policy = AudioFocusPolicy()
     private var noisyRegistered = false
     private var playing = false
+    private var lmsPlayer: LmsSessionPlayer? = null
+    private var offlineSessionPlayer: OfflineSessionPlayer? = null
+
+    /** Downloads have the session (their queue is loaded). */
+    private val offlineActive: Boolean get() = host.offlinePlayer?.state?.value?.active == true
 
     private val noisy = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
                 policy.userPaused()
-                scope.launch { controller.becomingNoisy() }
+                val offline = host.offlinePlayer
+                if (offline != null && offlineActive) {
+                    offline.setHold(true)
+                    offline.pause()
+                } else {
+                    scope.launch { controller.becomingNoisy() }
+                }
             }
         }
     }
@@ -80,38 +97,69 @@ class PlaybackService : MediaSessionService() {
             SystemClock::elapsedRealtime,
         )
         controller.start()
+        val offline = host.offlinePlayer
         focus = AudioFocusHandler(audio) { change ->
             for (action in policy.onChange(change, playing)) {
                 when (action) {
-                    FocusAction.Pause -> {
+                    FocusAction.Pause -> if (offline != null && offlineActive) {
+                        offline.setHold(true)
+                        offline.pause()
+                    } else {
                         host.localPlayer.setHold(true)
                         scope.launch { controller.pause() }
                     }
-                    FocusAction.Resume -> scope.launch { controller.play() }
-                    is FocusAction.Duck -> host.localPlayer.setDuck(action.on)
+                    FocusAction.Resume -> if (offline != null && offlineActive) {
+                        offline.play()
+                    } else {
+                        scope.launch { controller.play() }
+                    }
+                    is FocusAction.Duck -> {
+                        host.localPlayer.setDuck(action.on)
+                        offline?.setDuck(action.on)
+                    }
                 }
             }
         }
         val player = LmsSessionPlayer(Looper.getMainLooper(), controller.snapshot, controller, scope)
+        lmsPlayer = player
+        if (offline != null) {
+            val offlineController = OfflinePlaybackController(offline, host::offlineArtwork, scope, SystemClock::elapsedRealtime)
+            offlineController.start()
+            offlineSessionPlayer = OfflineSessionPlayer(Looper.getMainLooper(), offlineController.snapshot, offline, scope)
+        }
         val launch = packageManager.getLaunchIntentForPackage(packageName)?.let {
             PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         }
-        session = MediaSession.Builder(this, player)
+        session = MediaSession.Builder(this, if (offlineActive) offlineSessionPlayer ?: player else player)
             .apply { launch?.let { setSessionActivity(it) } }
             .build()
-        // Bit-perfect USB output: the engine asks this before opening its output.
-        host.localPlayer.setOutputNegotiator(
-            UsbDacNegotiator(audio) { host.localPlayer.state.value.sound.bitPerfectUsb },
-        )
+        // Bit-perfect USB output: the engines ask this before opening their output.
+        val negotiator = UsbDacNegotiator(audio) { host.localPlayer.state.value.sound.bitPerfectUsb }
+        host.localPlayer.setOutputNegotiator(negotiator)
+        offline?.setOutputNegotiator(negotiator)
         usbDac = currentUsbDac()
         audio.registerAudioDeviceCallback(devices, Handler(Looper.getMainLooper()))
         updateRoute()
 
+        val offlineFlow = offline?.state?.map { it.playing to it.active } ?: flowOf(false to false)
         scope.launch {
-            controller.snapshot
-                .map { mapSnapshot(it).playWhenReady to it.local.enabled }
+            combine(
+                controller.snapshot.map { mapSnapshot(it).playWhenReady to it.local.enabled },
+                offlineFlow,
+            ) { (lmsWants, enabled), (offlinePlaying, active) ->
+                // Downloads have the session while their queue is loaded.
+                val wants = if (active) offlinePlaying else lmsWants
+                wants to (enabled || active)
+            }
                 .distinctUntilChanged()
                 .collect { (wantsToPlay, enabled) -> onPlayingChanged(wantsToPlay, enabled) }
+        }
+        scope.launch {
+            offlineFlow.map { it.second }.distinctUntilChanged().collect { active ->
+                // The session shows (and its buttons drive) whichever source is active.
+                val target = if (active) offlineSessionPlayer else lmsPlayer
+                session?.let { s -> if (target != null && s.player !== target) s.player = target }
+            }
         }
         host.nowPlaying?.let { hub ->
             scope.launch {
@@ -130,7 +178,7 @@ class PlaybackService : MediaSessionService() {
 
     private fun onPlayingChanged(wantsToPlay: Boolean, enabled: Boolean) {
         if (!enabled) {
-            // "Play on this phone" was switched off: nothing left to do here.
+            // "Play on this phone" was switched off and no downloads are loaded.
             playing = false
             locks.hold(false)
             setNoisyReceiver(false)
@@ -172,7 +220,9 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun updateRoute() {
-        host.localPlayer.setOutputRoute(describeRoute(this, audio))
+        val route = describeRoute(this, audio)
+        host.localPlayer.setOutputRoute(route)
+        host.offlinePlayer?.setOutputRoute(route)
     }
 
     private fun currentUsbDac(): OutputDevice? = pickUsbDac(outputDevices(audio))
@@ -184,6 +234,7 @@ class PlaybackService : MediaSessionService() {
         if (now?.id != usbDac?.id) {
             usbDac = now
             host.localPlayer.renegotiateOutput()
+            host.offlinePlayer?.renegotiateOutput()
         }
     }
 
@@ -198,13 +249,13 @@ class PlaybackService : MediaSessionService() {
         audio.unregisterAudioDeviceCallback(devices)
         // The engine clears any mixer attributes through the negotiator that set them.
         host.localPlayer.setOutputNegotiator(null)
+        host.offlinePlayer?.setOutputNegotiator(null)
         setNoisyReceiver(false)
         focus.abandon()
         locks.hold(false)
-        session?.run {
-            player.release()
-            release()
-        }
+        session?.release()
+        lmsPlayer?.release()
+        offlineSessionPlayer?.release()
         session = null
         scope.cancel()
         super.onDestroy()

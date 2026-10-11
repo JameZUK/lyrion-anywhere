@@ -28,6 +28,17 @@ import io.github.jamezuk.lyrionanywhere.data.secure.KeystoreKeyProvider
 import io.github.jamezuk.lyrionanywhere.data.secure.NoBackupFileStorage
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.RustLocalPlayerRepository
+import io.github.jamezuk.lyrionanywhere.data.offline.AndroidNetworkMonitor
+import io.github.jamezuk.lyrionanywhere.data.offline.NetworkMonitor
+import io.github.jamezuk.lyrionanywhere.data.offline.OfflineModeController
+import io.github.jamezuk.lyrionanywhere.data.offline.OfflinePlayerRepository
+import io.github.jamezuk.lyrionanywhere.data.offline.OfflineRepository
+import io.github.jamezuk.lyrionanywhere.data.offline.PlaybackArbiter
+import io.github.jamezuk.lyrionanywhere.data.offline.RustOfflinePlayerRepository
+import io.github.jamezuk.lyrionanywhere.data.offline.RustOfflineRepository
+import io.github.jamezuk.lyrionanywhere.data.offline.RustOnlineLink
+import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadActions
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
@@ -80,6 +91,51 @@ class AppContainer(context: Context, scope: CoroutineScope) {
         scope = scope,
         io = Dispatchers.IO,
     )
+
+    /** Wi-Fi, mobile data or none (for download formats, "Wi-Fi only" and offline mode). */
+    val network: NetworkMonitor = AndroidNetworkMonitor(app)
+
+    private val offlineImpl = RustOfflineRepository(
+        // App-private and never backed up or transferred (the app also disables backup).
+        root = File(app.noBackupFilesDir, "offline").absolutePath,
+        auth = accountImpl.state,
+        link = accountImpl.connection
+            .map { c -> c?.let { RustOnlineLink(it) } }
+            .stateIn(scope, SharingStarted.Eagerly, null),
+        settings = settings,
+        network = network.kind,
+        library = library,
+        scope = scope,
+        io = Dispatchers.IO,
+    )
+
+    /** Downloads, the offline library, smart downloads and plays sync-back (A5). */
+    val offline: OfflineRepository = offlineImpl
+
+    /** Downloads played on this phone from the app's own queue. */
+    val offlinePlayer: OfflinePlayerRepository = RustOfflinePlayerRepository(
+        store = offlineImpl.store,
+        settings = settings,
+        scope = scope,
+        io = Dispatchers.IO,
+    )
+
+    /** "Download" buttons across the app. */
+    val downloads = DownloadActions(offline, scope)
+
+    /** Offline mode: the server can't be reached, so the app shows and plays downloads. */
+    val offlineMode = OfflineModeController(
+        scope = scope,
+        auth = accountImpl.state,
+        network = network.kind,
+        serverTrouble = localPlayer.state.map(OfflineModeController::troubleOf),
+        retry = { accountImpl.retry() },
+    ).also { it.start() }
+
+    init {
+        // Only one of the phone's two players makes sound at a time.
+        PlaybackArbiter(scope, localPlayer, players, offlinePlayer).start()
+    }
 
     /** What this phone is called in LMS and the device list, e.g. "Google Pixel 8". */
     private fun deviceName(): String {

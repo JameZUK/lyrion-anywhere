@@ -56,12 +56,48 @@ private data object SignInRoute
 @Serializable
 private data object PairRoute
 
-/** Chooses between signing in and the app, from the account state. */
+/**
+ * Chooses between signing in, the app, and offline mode (the server can't be reached: the
+ * downloaded library, played on this phone), from the account state and the network.
+ */
 @Composable
 fun AppRoot(container: AppContainer) {
     val state by container.account.state.collectAsStateWithLifecycle()
+    val offline by container.offlineMode.offline.collectAsStateWithLifecycle()
+    val downloads by container.offline.state.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        when (val s = state) {
+        val s = state
+        val server = when (s) {
+            is AuthState.Unreachable -> s.server
+            is AuthState.Restoring -> s.server
+            is AuthState.SignedInState -> s.server
+            else -> null
+        }
+        // Offline with downloads to show (whose they are is known): offline mode.
+        if (offline && server != null && downloads.owner != null) {
+            OfflineApp(
+                container,
+                bannerText = if (s is AuthState.SignedInState) {
+                    stringResource(R.string.offline_banner_signed_in)
+                } else {
+                    stringResource(R.string.offline_banner, server.name)
+                },
+                onRetry = { scope.launch { container.account.retry() } },
+                onSignOut = if (s is AuthState.SignedInState) {
+                    null
+                } else {
+                    { remove ->
+                        scope.launch {
+                            container.offline.signOut(remove)
+                            container.account.signOut()
+                        }
+                    }
+                },
+            )
+            return@Surface
+        }
+        when (s) {
             AuthState.Starting -> LoadingState()
             is AuthState.Restoring -> Restoring()
             AuthState.NoServer -> Onboarding(container, signedOut = null)

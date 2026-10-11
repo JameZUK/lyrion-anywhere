@@ -286,6 +286,9 @@ fun PlayButtons(
     onMore: (() -> Unit)?,
     modifier: Modifier = Modifier,
     playLabel: Int = R.string.action_play,
+    /** "Download" (offline), when downloads are offered here. */
+    onDownload: (() -> Unit)? = null,
+    downloadMark: io.github.jamezuk.lyrionanywhere.ui.offline.DownloadMark = io.github.jamezuk.lyrionanywhere.ui.offline.DownloadMark.NONE,
 ) {
     FlowRow(
         modifier,
@@ -304,6 +307,9 @@ fun PlayButtons(
         }
         IconButton(onClick = { onPlay(Placement.ADD_TO_QUEUE) }) {
             Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, contentDescription = stringResource(R.string.action_add_to_queue))
+        }
+        if (onDownload != null) {
+            io.github.jamezuk.lyrionanywhere.ui.offline.DownloadButton(downloadMark, onDownload)
         }
         if (onMore != null) {
             IconButton(onClick = onMore) {
@@ -376,6 +382,10 @@ data class AlbumActions(
     val onPlayTrack: (Track) -> Unit,
     val onArtist: (Long, String) -> Unit,
     val onMore: (MoreRequest) -> Unit,
+    /** Download the album (offline); null where downloads aren't offered. */
+    val onDownload: (() -> Unit)? = null,
+    /** Which of the album's tracks are on the device. */
+    val downloaded: Set<Long> = emptySet(),
 )
 
 /** The album page: large art, details, Play/Shuffle/Add/More, and tracks by disc. */
@@ -416,6 +426,11 @@ fun AlbumScreen(state: Loadable<AlbumDetail>, actions: AlbumActions, modifier: M
                                     onShuffle = actions.onShuffle,
                                     onMore = album?.let { a -> { actions.onMore(More.album(a)) } },
                                     modifier = Modifier.padding(top = 8.dp),
+                                    onDownload = actions.onDownload,
+                                    downloadMark = io.github.jamezuk.lyrionanywhere.ui.offline.downloadMark(
+                                        d.tracks.mapNotNull { it.id },
+                                        actions.downloaded,
+                                    ),
                                 )
                             },
                         )

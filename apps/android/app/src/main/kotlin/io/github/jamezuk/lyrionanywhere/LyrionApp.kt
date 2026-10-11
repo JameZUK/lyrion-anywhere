@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.map
 import io.github.jamezuk.lyrionanywhere.data.EventsRepository
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
+import io.github.jamezuk.lyrionanywhere.data.offline.OfflinePlayerRepository
+import io.github.jamezuk.lyrionanywhere.downloads.DownloadService
 import io.github.jamezuk.lyrionanywhere.playback.PlaybackHost
 import io.github.jamezuk.lyrionanywhere.rust.NativeInit
 import io.github.jamezuk.lyrionanywhere.ui.art.ArtworkFetcher
@@ -100,6 +102,13 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
                 PlayPauseTileService.refresh(this@LyrionApp)
             }
         }
+        // Downloads keep going in the background through a foreground service (dataSync),
+        // started when they become busy; it stops itself when they are done.
+        appScope.launch {
+            container.offline.state.map { (it.downloads?.busy ?: 0u) > 0u }.distinctUntilChanged().collect { busy ->
+                if (busy) DownloadService.start(this@LyrionApp)
+            }
+        }
     }
 
     // The playback service's view of the app.
@@ -107,6 +116,9 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
     override val players: PlayersRepository get() = container.players
     override val events: EventsRepository get() = container.events
     override val art: ArtRepository get() = container.art
+    override val offlinePlayer: OfflinePlayerRepository get() = container.offlinePlayer
+
+    override suspend fun offlineArtwork(albumRef: String): ByteArray? = container.offline.artwork(albumRef)
 
     private companion object {
         const val WIDGET_DEBOUNCE_MS = 500L
@@ -117,7 +129,7 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
         ImageLoader.Builder(context)
             .components {
                 add(ArtworkKeyer())
-                add(ArtworkFetcher.Factory(container.art))
+                add(ArtworkFetcher.Factory(container.art) { ref -> container.offline.artwork(ref) })
             }
             .memoryCache { MemoryCache.Builder().maxSizePercent(context, 0.2).build() }
             .diskCache(null)

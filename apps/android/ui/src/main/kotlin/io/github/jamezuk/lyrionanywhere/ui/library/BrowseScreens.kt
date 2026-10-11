@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Album
 import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.DownloadDone
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.Folder
@@ -99,6 +100,9 @@ enum class LibraryDestination(val label: Int, val icon: ImageVector) {
     PLAYLISTS(R.string.lib_playlists, Icons.AutoMirrored.Outlined.QueueMusic),
     FAVOURITES(R.string.lib_favourites, Icons.Outlined.Favorite),
     APPS(R.string.lib_apps, Icons.Outlined.Radio),
+
+    /** Music downloaded to this phone (offline). */
+    DOWNLOADS(R.string.title_downloads, Icons.Outlined.DownloadDone),
 }
 
 private val BROWSE = listOf(
@@ -110,7 +114,12 @@ private val BROWSE = listOf(
     LibraryDestination.RANDOM,
     LibraryDestination.FOLDER,
 )
-private val MORE = listOf(LibraryDestination.PLAYLISTS, LibraryDestination.FAVOURITES, LibraryDestination.APPS)
+private val MORE = listOf(
+    LibraryDestination.PLAYLISTS,
+    LibraryDestination.FAVOURITES,
+    LibraryDestination.APPS,
+    LibraryDestination.DOWNLOADS,
+)
 
 /**
  * The Library page, as the web app's: New Music first, then LMS's "My Music", then the
@@ -435,6 +444,9 @@ fun PlaylistScreen(
     onMorePlaylist: () -> Unit,
     onMore: (MoreRequest) -> Unit,
     modifier: Modifier = Modifier,
+    /** Download the playlist (offline); null where downloads aren't offered. */
+    onDownload: (() -> Unit)? = null,
+    downloaded: Set<Long> = emptySet(),
 ) {
     when (state) {
         Loadable.Loading -> LoadingState(modifier)
@@ -446,6 +458,11 @@ fun PlaylistScreen(
                     onShuffle = onShuffle,
                     onMore = onMorePlaylist,
                     modifier = Modifier.padding(16.dp),
+                    onDownload = onDownload,
+                    downloadMark = io.github.jamezuk.lyrionanywhere.ui.offline.downloadMark(
+                        state.value.mapNotNull { it.id },
+                        downloaded,
+                    ),
                 )
             }
             if (state.value.isEmpty()) item { Text(stringResource(R.string.playlist_empty), Modifier.padding(16.dp)) }

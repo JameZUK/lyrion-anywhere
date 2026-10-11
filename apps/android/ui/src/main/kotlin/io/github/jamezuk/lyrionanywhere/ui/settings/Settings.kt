@@ -10,6 +10,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Gavel
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Person
@@ -38,6 +40,8 @@ import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AuthState
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.SoundSettings
+import io.github.jamezuk.lyrionanywhere.data.offline.OfflineRepository
+import io.github.jamezuk.lyrionanywhere.ui.offline.formatBytes
 import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.library.SectionHeader
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,11 +57,17 @@ data class SettingsUiState(
     val signingOut: Boolean = false,
     /** This phone's player's Sound settings (null: no local player here). */
     val sound: SoundSettings? = null,
+    /** Downloads are offered here. */
+    val downloadsOffered: Boolean = false,
+    /** Bytes of downloads on this device (for the sign-out question). */
+    val downloadedBytes: Long = 0,
+    val downloadedTracks: Int = 0,
 )
 
 class SettingsViewModel(
     private val account: AccountRepository,
     private val localPlayer: LocalPlayerRepository? = null,
+    private val offline: OfflineRepository? = null,
 ) : ViewModel() {
     private val _state = MutableStateFlow(SettingsUiState())
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
@@ -74,12 +84,25 @@ class SettingsViewModel(
                 lp.state.collect { local -> _state.update { it.copy(sound = local.sound) } }
             }
         }
+        offline?.let { o ->
+            _state.update { it.copy(downloadsOffered = true) }
+            viewModelScope.launch {
+                o.state.collect { s ->
+                    _state.update { it.copy(downloadedBytes = s.usedBytes, downloadedTracks = s.tracks.size) }
+                }
+            }
+        }
     }
 
-    fun signOut() {
+    /**
+     * Sign out. Downloads are kept unless [removeDownloads] (as on the web, keeping is the
+     * default); either way this account's downloads are only shown again after signing in.
+     */
+    fun signOut(removeDownloads: Boolean = false) {
         if (_state.value.signingOut) return
         _state.update { it.copy(signingOut = true) }
         viewModelScope.launch {
+            offline?.signOut(removeDownloads)
             account.signOut()
             _state.update { it.copy(signingOut = false) }
         }
@@ -113,10 +136,12 @@ fun SettingsScreen(
     state: SettingsUiState,
     appVersion: String,
     libraryVersion: String,
-    onSignOut: () -> Unit,
+    onSignOut: (removeDownloads: Boolean) -> Unit,
     onLicences: () -> Unit,
     modifier: Modifier = Modifier,
     onSound: () -> Unit = {},
+    onDownloads: () -> Unit = {},
+    onStorage: () -> Unit = {},
     /** The default-player choice (D20), when the app has players to offer. */
     defaultPlayer: (@Composable () -> Unit)? = null,
 ) {
@@ -142,6 +167,26 @@ fun SettingsScreen(
                         )
                     },
                     modifier = Modifier.clickable(onClick = onSound),
+                )
+            }
+            item { HorizontalDivider() }
+        }
+        if (state.downloadsOffered) {
+            item { SectionHeader(stringResource(R.string.section_offline)) }
+            item {
+                ListItem(
+                    leadingContent = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                    headlineContent = { Text(stringResource(R.string.title_downloads)) },
+                    supportingContent = { Text(stringResource(R.string.storage_used, formatBytes(state.downloadedBytes))) },
+                    modifier = Modifier.clickable(onClick = onDownloads),
+                )
+            }
+            item {
+                ListItem(
+                    leadingContent = { Icon(Icons.Outlined.Storage, contentDescription = null) },
+                    headlineContent = { Text(stringResource(R.string.title_storage)) },
+                    supportingContent = { Text(stringResource(R.string.storage_row)) },
+                    modifier = Modifier.clickable(onClick = onStorage),
                 )
             }
             item { HorizontalDivider() }
@@ -206,19 +251,14 @@ fun SettingsScreen(
         }
     }
     if (confirm) {
-        AlertDialog(
-            onDismissRequest = { confirm = false },
-            title = { Text(stringResource(R.string.sign_out_confirm_title)) },
-            text = { Text(stringResource(R.string.sign_out_confirm_body)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirm = false
-                    onSignOut()
-                }) { Text(stringResource(R.string.action_sign_out)) }
+        SignOutDialog(
+            downloadedTracks = state.downloadedTracks,
+            downloadedBytes = state.downloadedBytes,
+            onSignOut = { remove ->
+                confirm = false
+                onSignOut(remove)
             },
-            dismissButton = {
-                TextButton(onClick = { confirm = false }) { Text(stringResource(R.string.action_cancel)) }
-            },
+            onDismiss = { confirm = false },
         )
     }
 }
@@ -237,4 +277,47 @@ fun LicencesScreen(modifier: Modifier = Modifier) {
             ListItem(headlineContent = { Text(l.name) }, supportingContent = { Text(l.licence) })
         }
     }
+}
+
+/**
+ * "Sign out?" With downloads on the device it asks, as the web app does, whether to keep
+ * them (the default) or remove them; kept downloads show again only after signing in.
+ */
+@Composable
+fun SignOutDialog(
+    downloadedTracks: Int,
+    downloadedBytes: Long,
+    onSignOut: (removeDownloads: Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val hasDownloads = downloadedTracks > 0
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.sign_out_confirm_title)) },
+        text = {
+            Text(
+                if (hasDownloads) {
+                    stringResource(R.string.sign_out_downloads_body, formatBytes(downloadedBytes))
+                } else {
+                    stringResource(R.string.sign_out_confirm_body)
+                },
+            )
+        },
+        confirmButton = {
+            if (hasDownloads) {
+                androidx.compose.foundation.layout.Column(horizontalAlignment = androidx.compose.ui.Alignment.End) {
+                    TextButton(onClick = { onSignOut(false) }) { Text(stringResource(R.string.sign_out_keep_downloads)) }
+                    TextButton(onClick = { onSignOut(true) }) { Text(stringResource(R.string.sign_out_remove_downloads)) }
+                    TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+                }
+            } else {
+                TextButton(onClick = { onSignOut(false) }) { Text(stringResource(R.string.action_sign_out)) }
+            }
+        },
+        dismissButton = if (hasDownloads) {
+            null
+        } else {
+            { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } }
+        },
+    )
 }

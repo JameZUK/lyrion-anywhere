@@ -7,7 +7,10 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import io.github.jamezuk.lyrionanywhere.core.DownloadFormat
+import io.github.jamezuk.lyrionanywhere.data.offline.DownloadSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -27,6 +30,13 @@ data class AppSettings(
     val defaultPlayer: DefaultPlayer = DefaultPlayer.THIS_PHONE,
     /** The player for [DefaultPlayer.SPECIFIC]. */
     val defaultPlayerId: String? = null,
+    /** Downloads: formats, Wi-Fi only, the storage cap and smart downloads. */
+    val downloads: DownloadSettings = DownloadSettings(),
+    /**
+     * The user whose downloads offline mode shows when the server can't be reached before
+     * signing in (the last one signed in on this server). Forgotten at sign-out.
+     */
+    val offlineOwner: String? = null,
 )
 
 /** Which player the app controls when it starts (per device). */
@@ -66,7 +76,16 @@ interface SettingsStore {
 
     /** The default player; [playerId] is required for [DefaultPlayer.SPECIFIC]. */
     suspend fun setDefaultPlayer(choice: DefaultPlayer, playerId: String?)
+
+    /** Download settings (sanitised before they are kept). */
+    suspend fun setDownloads(downloads: DownloadSettings) {}
+
+    /** Whose downloads offline mode may show (null: nobody's). */
+    suspend fun setOfflineOwner(username: String?) {}
 }
+
+/** A user name fit to remember as the offline owner. */
+fun isOwnerName(v: String?): Boolean = v != null && v.length in 1..128 && v.none { it.isISOControl() }
 
 class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsStore {
     override val settings: Flow<AppSettings> = store.data.map {
@@ -79,7 +98,27 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
             libraryId = it[LIBRARY]?.takeIf(::isLibraryId),
             defaultPlayer = readDefault(it),
             defaultPlayerId = if (readDefault(it) == DefaultPlayer.SPECIFIC) it[DEFAULT_PLAYER_ID] else null,
+            downloads = readDownloads(it),
+            offlineOwner = it[OFFLINE_OWNER]?.takeIf(::isOwnerName),
         )
+    }
+
+    override suspend fun setDownloads(downloads: DownloadSettings) {
+        val d = downloads.sanitised()
+        store.edit { p ->
+            p[DL_WIFI] = d.wifiFormat.name
+            p[DL_MOBILE] = d.mobileFormat.name
+            p[DL_WIFI_ONLY] = d.wifiOnly
+            p[DL_CAP] = d.capBytes
+            p[DL_RECENT] = d.smartRecentAlbums
+            p[DL_FAVOURITES] = d.smartFavourites
+        }
+    }
+
+    override suspend fun setOfflineOwner(username: String?) {
+        store.edit { p ->
+            if (username != null && isOwnerName(username)) p[OFFLINE_OWNER] = username else p.remove(OFFLINE_OWNER)
+        }
     }
 
     override suspend fun setServerUrl(url: String?) {
@@ -90,6 +129,8 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
             p.remove(LIBRARY)
             p.remove(DEFAULT_PLAYER_ID)
             if (p[DEFAULT_PLAYER] == DefaultPlayer.SPECIFIC.name) p.remove(DEFAULT_PLAYER)
+            // Downloads belong to a user on a server.
+            p.remove(OFFLINE_OWNER)
         }
     }
 
@@ -130,6 +171,25 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         val LIBRARY = stringPreferencesKey("virtual_library")
         val DEFAULT_PLAYER = stringPreferencesKey("default_player")
         val DEFAULT_PLAYER_ID = stringPreferencesKey("default_player_id")
+        val OFFLINE_OWNER = stringPreferencesKey("offline_owner")
+        val DL_WIFI = stringPreferencesKey("downloads_wifi_format")
+        val DL_MOBILE = stringPreferencesKey("downloads_mobile_format")
+        val DL_WIFI_ONLY = booleanPreferencesKey("downloads_wifi_only")
+        val DL_CAP = longPreferencesKey("downloads_cap_bytes")
+        val DL_RECENT = intPreferencesKey("downloads_smart_recent")
+        val DL_FAVOURITES = booleanPreferencesKey("downloads_smart_favourites")
+
+        fun readDownloads(p: Preferences): DownloadSettings {
+            val d = DownloadSettings()
+            return DownloadSettings(
+                wifiFormat = enumOr(p[DL_WIFI], d.wifiFormat),
+                mobileFormat = enumOr<DownloadFormat>(p[DL_MOBILE], d.mobileFormat),
+                wifiOnly = p[DL_WIFI_ONLY] ?: d.wifiOnly,
+                capBytes = p[DL_CAP] ?: d.capBytes,
+                smartRecentAlbums = p[DL_RECENT] ?: d.smartRecentAlbums,
+                smartFavourites = p[DL_FAVOURITES] ?: d.smartFavourites,
+            ).sanitised()
+        }
 
         /** A specific default without a valid player is "this phone". */
         fun readDefault(p: Preferences): DefaultPlayer {

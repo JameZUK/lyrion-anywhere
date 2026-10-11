@@ -5,6 +5,7 @@ import io.github.jamezuk.lyrionanywhere.core.AlbumPage
 import io.github.jamezuk.lyrionanywhere.core.AlbumSort
 import io.github.jamezuk.lyrionanywhere.core.AppEntry
 import io.github.jamezuk.lyrionanywhere.core.ArtistRole
+import io.github.jamezuk.lyrionanywhere.core.FavouriteLibraryItems
 import io.github.jamezuk.lyrionanywhere.core.FavouritePage
 import io.github.jamezuk.lyrionanywhere.core.FolderPage
 import io.github.jamezuk.lyrionanywhere.core.Genre
@@ -86,6 +87,10 @@ interface LibraryRepository {
     suspend fun playlistTracks(playlistId: Long): ApiResult<List<Track>>
 
     suspend fun search(term: String, count: Int = 20): ApiResult<SearchResults>
+
+    /** Library tracks and albums among the LMS favourites ("Keep favourites offline"). */
+    suspend fun favouriteLibraryItems(): ApiResult<FavouriteLibraryItems> =
+        ApiResult.Ok(FavouriteLibraryItems(emptyList(), emptyList()))
 }
 
 /** LMS menus (apps, radio, plugins and "More…" menus), browsed for a player. */
@@ -231,6 +236,8 @@ class RustLibraryRepository(private val source: ConnectionSource) : LibraryRepos
     override suspend fun playlistTracks(playlistId: Long) = withLibrary { it.playlistTracks(playlistId) }
 
     override suspend fun search(term: String, count: Int) = withLibrary { it.search(term, count.u()) }
+
+    override suspend fun favouriteLibraryItems() = withLibrary { it.favouriteLibraryItems() }
 }
 
 class RustMenusRepository(private val source: ConnectionSource) : MenusRepository {

@@ -140,6 +140,23 @@ import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.settings.SoundScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SoundViewModel
 import io.github.jamezuk.lyrionanywhere.ui.settings.actions
+import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadMessage
+import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsActions
+import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsScreen
+import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsViewModel
+import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineAlbumScreen
+import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineAlbumViewModel
+import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineMiniPlayer
+import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineNowPlayingScreen
+import io.github.jamezuk.lyrionanywhere.ui.offline.OfflinePlayerViewModel
+import io.github.jamezuk.lyrionanywhere.ui.offline.StorageSettingsScreen
+import io.github.jamezuk.lyrionanywhere.ui.offline.StorageSettingsViewModel
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 
@@ -194,6 +211,10 @@ import kotlinx.serialization.Serializable
 @Serializable data object LicencesRoute
 
 @Serializable data object SoundRoute
+
+@Serializable data object DownloadsRoute
+
+@Serializable data object StorageRoute
 
 private data class TopLevel(val route: Any, val label: Int, val icon: ImageVector)
 
@@ -250,6 +271,36 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
     LaunchedEffect(playerState.local.enabled) {
         if (playerState.local.enabled) startPlaybackService(context)
     }
+    // Downloads playing on this phone (they can be played online too).
+    val offlineVm = viewModel(key = "offline-player") { OfflinePlayerViewModel(container.offlinePlayer, offlineClock) }
+    val offlineUi by offlineVm.state.collectAsStateWithLifecycle()
+    LaunchedEffect(offlineUi.state.active) {
+        if (offlineUi.state.active) startPlaybackService(context)
+    }
+    val offlineState by container.offline.state.collectAsStateWithLifecycle()
+    val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    var askedNotifications by rememberSaveable { mutableStateOf(false) }
+    /** Before the first download: the progress notification needs permission (Android 13+). */
+    fun beforeDownload() {
+        if (askedNotifications || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        askedNotifications = true
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+    val downloads = container.downloads
+    val downloadAlbum: (Long) -> Unit = { id ->
+        beforeDownload()
+        downloads.album(id)
+    }
+    val downloadPlaylist: (Long) -> Unit = { id ->
+        beforeDownload()
+        downloads.playlist(id)
+    }
+    val downloadTrack: (Long) -> Unit = { id ->
+        beforeDownload()
+        downloads.track(id)
+    }
     val scope = rememberCoroutineScope()
     LaunchedEffect(signedIn.who.device.id) { container.libraries.refresh() }
     val libraryId = container.libraries.chosen
@@ -258,6 +309,22 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
 
     val snackbar = remember { SnackbarHostState() }
     val res = LocalResources.current
+    LaunchedEffect(downloads) {
+        downloads.messages.collect { m ->
+            snackbar.showSnackbar(
+                when (m) {
+                    is DownloadMessage.Queued ->
+                        if (m.count == 0) {
+                            res.getString(R.string.download_nothing)
+                        } else {
+                            res.getQuantityString(R.plurals.downloads_queued, m.count, m.count)
+                        }
+                    is DownloadMessage.Failed -> errorText(res, m.error)
+                },
+                duration = SnackbarDuration.Short,
+            )
+        }
+    }
     LaunchedEffect(player) {
         player.messages.collect { m ->
             val undo = (m as? PlayerMessage.Removed)?.canUndo == true
@@ -308,6 +375,8 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                 },
                 onArtist = { id, name -> nav.navigate(ArtistRoute(id, name)) },
                 onMore = openMore,
+                onDownload = { downloadAlbum(albumId) },
+                downloaded = offlineState.downloadedIds,
             ),
         )
     }
@@ -340,6 +409,8 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                 openMore(More.playlist(io.github.jamezuk.lyrionanywhere.core.SavedPlaylist(playlistId, name)))
             },
             onMore = openMore,
+            onDownload = { downloadPlaylist(playlistId) },
+            downloaded = offlineState.downloadedIds,
         )
     }
 
@@ -361,7 +432,17 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
         Scaffold(
             snackbarHost = { SnackbarHost(snackbar) },
             bottomBar = {
-                if (destination?.hasRoute(NowPlayingRoute::class) != true) {
+                val onNowPlaying = destination?.hasRoute(NowPlayingRoute::class) == true ||
+                    destination?.hasRoute(OfflineNowPlayingRoute::class) == true
+                if (!onNowPlaying && offlineUi.state.active) {
+                    // Downloads have this phone: their own mini player.
+                    OfflineMiniPlayer(
+                        offlineUi,
+                        onOpen = { nav.navigate(OfflineNowPlayingRoute) },
+                        onToggle = offlineVm::toggle,
+                        onNext = offlineVm::next,
+                    )
+                } else if (!onNowPlaying) {
                     MiniPlayer(
                         state = playerState,
                         onOpen = { nav.navigate(NowPlayingRoute) },
@@ -773,8 +854,70 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                         )
                     }
                 }
+                composable<DownloadsRoute> {
+                    val vm = viewModel { DownloadsViewModel(container.offline) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    Screen(title = stringResource(R.string.title_downloads), onBack = { nav.popBackStack() }) {
+                        DownloadsScreen(
+                            ui,
+                            DownloadsActions(
+                                onPause = vm::pause,
+                                onResume = vm::resume,
+                                onCancel = vm::cancel,
+                                onClearFinished = vm::clearFinished,
+                                onAlbum = { nav.navigate(OfflineAlbumRoute(it)) },
+                                onPlayAlbum = { ref ->
+                                    val tracks = OfflineAlbumViewModel.albumOf(offlineState, ref).tracks
+                                    if (tracks.isNotEmpty()) container.offlinePlayer.play(tracks, 0, false)
+                                },
+                                onRemoveAlbum = vm::removeAlbum,
+                                onRemoveAll = vm::removeAll,
+                                onStorage = { nav.navigate(StorageRoute) },
+                            ),
+                        )
+                    }
+                }
+                composable<StorageRoute> {
+                    val vm = viewModel { StorageSettingsViewModel(container.offline) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    val refreshing by vm.refreshing.collectAsStateWithLifecycle()
+                    val error by vm.error.collectAsStateWithLifecycle()
+                    Screen(title = stringResource(R.string.title_storage), onBack = { nav.popBackStack() }) {
+                        StorageSettingsScreen(
+                            ui,
+                            refreshing,
+                            error,
+                            onChange = vm::update,
+                            onRefreshSmart = vm::refreshSmart,
+                            onDownloads = { nav.navigate(DownloadsRoute) },
+                        )
+                    }
+                }
+                composable<OfflineAlbumRoute> { entry ->
+                    val ref = entry.toRoute<OfflineAlbumRoute>().ref
+                    val vm = viewModel(key = "offline-album-$ref") {
+                        OfflineAlbumViewModel(container.offline, container.offlinePlayer, ref)
+                    }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    Screen(title = ui.album?.title.orEmpty(), onBack = { nav.popBackStack() }) {
+                        OfflineAlbumScreen(
+                            ui,
+                            onPlay = { vm.play(it) },
+                            onShuffle = { vm.play(0, shuffle = true) },
+                            onRemove = {
+                                vm.remove()
+                                nav.popBackStack()
+                            },
+                        )
+                    }
+                }
+                composable<OfflineNowPlayingRoute> {
+                    Screen(title = stringResource(R.string.title_now_playing), onBack = { nav.popBackStack() }) {
+                        OfflineNowPlayingScreen(offlineUi, offlineClock, offlineNowPlayingActions(offlineVm))
+                    }
+                }
                 composable<SettingsRoute> {
-                    val vm = viewModel { SettingsViewModel(container.account, container.localPlayer) }
+                    val vm = viewModel { SettingsViewModel(container.account, container.localPlayer, container.offline) }
                     val ui by vm.state.collectAsStateWithLifecycle()
                     Screen(title = stringResource(R.string.title_settings), onBack = { nav.popBackStack() }) {
                         SettingsScreen(
@@ -784,6 +927,8 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             onSignOut = vm::signOut,
                             onLicences = { nav.navigate(LicencesRoute) },
                             onSound = { nav.navigate(SoundRoute) },
+                            onDownloads = { nav.navigate(DownloadsRoute) },
+                            onStorage = { nav.navigate(StorageRoute) },
                             defaultPlayer = { DefaultPlayerSetting(playerState, player::setDefaultPlayer) },
                         )
                     }
@@ -827,6 +972,21 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     more = null
                 },
                 onClose = { more = null },
+                onDownload = when (request.kind) {
+                    io.github.jamezuk.lyrionanywhere.core.InfoKind.TRACK -> ({
+                        downloadTrack(request.id)
+                        more = null
+                    })
+                    io.github.jamezuk.lyrionanywhere.core.InfoKind.ALBUM -> ({
+                        downloadAlbum(request.id)
+                        more = null
+                    })
+                    io.github.jamezuk.lyrionanywhere.core.InfoKind.PLAYLIST -> ({
+                        downloadPlaylist(request.id)
+                        more = null
+                    })
+                    else -> null
+                },
             )
         }
     }
@@ -888,6 +1048,7 @@ private fun NavHostController.openLibrary(d: LibraryDestination) = navigate(
         LibraryDestination.PLAYLISTS -> PlaylistsRoute
         LibraryDestination.FAVOURITES -> FavouritesRoute()
         LibraryDestination.APPS -> AppsRoute
+        LibraryDestination.DOWNLOADS -> DownloadsRoute
     },
 )
 
