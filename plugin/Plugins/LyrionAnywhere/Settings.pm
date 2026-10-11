@@ -21,7 +21,7 @@ sub name { 'PLUGIN_LYRIONANYWHERE' }
 sub page { 'plugins/LyrionAnywhere/settings/basic.html' }
 
 sub prefs {
-	return ($prefs, qw(enabled listen public_url trusted_proxies client_ip_header gateway_path transcode ffmpeg_path download_cache_mb));
+	return ($prefs, qw(enabled listen public_url trusted_proxies client_ip_header gateway_path transcode ffmpeg_path download_cache_mb analysis));
 }
 
 sub escape_html {
@@ -108,6 +108,9 @@ sub clean {
 	if (exists $params->{pref_transcode}) {
 		$out{pref_transcode} = $params->{pref_transcode} ? 1 : 0;
 	}
+	if (exists $params->{pref_analysis}) {
+		$out{pref_analysis} = $params->{pref_analysis} ? 1 : 0;
+	}
 	return (\%out, \@errors);
 }
 
@@ -119,7 +122,7 @@ sub handler {
 	$params->{anywhere_gateway_path_allowed} =
 		($ENV{ Plugins::LyrionAnywhere::Gateway::ALLOW_GATEWAY_PATH_ENV() } // '') eq '1' ? 1 : 0;
 	if ($params->{saveSettings}) {
-		my %before = map { $_ => $prefs->get($_) } qw(enabled listen public_url trusted_proxies client_ip_header gateway_path transcode ffmpeg_path download_cache_mb);
+		my %before = map { $_ => $prefs->get($_) } qw(enabled listen public_url trusted_proxies client_ip_header gateway_path transcode ffmpeg_path download_cache_mb analysis);
 		my ($clean, $errors) = clean($params);
 		# Invalid values are not saved; the others are.
 		for my $k (keys %$params) {
@@ -128,6 +131,7 @@ sub handler {
 		$params->{$_} = $clean->{$_} for keys %$clean;
 		$params->{pref_enabled} //= 0;   # an unticked checkbox is not submitted
 		$params->{pref_transcode} //= 0;
+		$params->{pref_analysis} //= 0;
 		# Messages can echo submitted text: escape before they reach the page.
 		$params->{warning} = join('<br>', map { escape_html($_) } @$errors) if @$errors;
 		my $result = $class->SUPER::handler($client, $params);

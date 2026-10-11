@@ -69,6 +69,10 @@ is_deeply($argv, [
 	is_deeply($tail->($cl->(client_ip_header => 'CF-Connecting-IP')),
 		['--client-ip-header', 'CF-Connecting-IP'], 'CDN client address header');
 	is_deeply($tail->($cl->(client_ip_header => '')), [], 'no CDN header by default');
+	is_deeply($tail->($cl->(analysis => 0)), ['--no-analysis'], 'track analysis off');
+	is_deeply($tail->($cl->(analysis => 1)), [], 'track analysis on by default');
+	is_deeply($tail->($cl->(analysis => 0, transcode => 0)), ['--no-transcode', '--no-analysis'],
+		'analysis and transcoding off together');
 }
 
 my %bad = (
@@ -196,6 +200,7 @@ ok(Plugins::LyrionAnywhere::Gateway::is_loopback('127.0.0.1:9445'), 'loopback');
 		download_cache_mb => [['', 16, 2048, '1048576'],
 		                    [0, 15, 1048577, '2048 ', "2048\n", '-1', '1e3', '2048MB', 'abc']],
 		transcode       => [['', 0, 1, '0', '1'], ['2', 'yes', "1\n", ['1']]],
+		analysis        => [['', 0, 1, '0', '1'], ['2', 'no', "0\n", '--no-analysis', ['0'], {}]],
 	);
 	for my $name (sort keys %cases) {
 		my ($good, $bad) = @{ $cases{$name} };

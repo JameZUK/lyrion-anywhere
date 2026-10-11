@@ -54,6 +54,18 @@ for my $case (
 }
 
 {
+	my ($o, $e) = $clean->({ pref_analysis => 'on' });
+	is_deeply($e, [], 'analysis: valid');
+	is($o->{pref_analysis}, 1, 'analysis ticked');
+	($o, $e) = $clean->({ pref_analysis => '' });
+	is($o->{pref_analysis}, 0, 'analysis unticked');
+	($o, $e) = $clean->({ pref_analysis => "1\n--evil" });
+	is($o->{pref_analysis}, 1, 'anything truthy is just "on": never passed through');
+	($o, $e) = $clean->({});
+	ok(!exists $o->{pref_analysis}, 'not submitted: left alone');
+}
+
+{
 	my ($o, $e) = $clean->({ pref_client_ip_header => ' CF-Connecting-IP ' });
 	is_deeply($e, [], 'client address header: valid');
 	is($o->{pref_client_ip_header}, 'CF-Connecting-IP', 'trimmed');

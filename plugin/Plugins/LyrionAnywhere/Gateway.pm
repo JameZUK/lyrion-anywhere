@@ -183,6 +183,7 @@ sub command_line {
 	return (undef, 'client address header must be a header name such as CF-Connecting-IP')
 		unless valid_client_ip_header($ip_header);
 	my $transcode = $o{transcode} // 1;
+	my $analysis = $o{analysis} // 1;
 	my $ffmpeg = $o{ffmpeg} // '';
 	return (undef, 'ffmpeg must be an absolute path')
 		if $ffmpeg ne '' && (ref $ffmpeg || $ffmpeg =~ /[\r\n\x00]/ || !file_name_is_absolute($ffmpeg));
@@ -207,6 +208,7 @@ sub command_line {
 	elsif ($ffmpeg ne '')    { push @argv, '--ffmpeg', $ffmpeg }
 	push @argv, '--download-cache-mb', 0 + $o{download_cache_mb}
 		if defined $o{download_cache_mb} && $o{download_cache_mb} ne '';
+	push @argv, '--no-analysis' unless $analysis;
 	return (\@argv);
 }
 
@@ -318,6 +320,7 @@ my %VALIDATE = (
 	ffmpeg_path     => \&valid_ffmpeg_path,
 	download_cache_mb => \&valid_cache_mb,
 	transcode       => sub { my $v = shift // ''; !ref $v && $v =~ /^[01]?\z/ },
+	analysis        => sub { my $v = shift // ''; !ref $v && $v =~ /^[01]?\z/ },
 );
 
 sub valid_pref {
@@ -345,12 +348,14 @@ sub _options {
 	my $cache = $prefs->get('download_cache_mb') // '';
 	$cache = '' unless valid_cache_mb($cache);
 	my $transcode = $prefs->get('transcode');
+	my $analysis = $prefs->get('analysis');
 	my $ip_header = $prefs->get('client_ip_header') // '';
 	$ip_header = '' unless valid_client_ip_header($ip_header);
 	return (
 		client_ip_header  => $ip_header,
 		ffmpeg            => $ffmpeg,
 		transcode         => (defined $transcode && $transcode eq '0') ? 0 : 1,
+		analysis          => (defined $analysis && $analysis eq '0') ? 0 : 1,
 		download_cache_mb => $cache,
 		binary          => binary_path(basedir => $basedir, override => gateway_override()),
 		listen          => $prefs->get('listen') || '127.0.0.1:9443',

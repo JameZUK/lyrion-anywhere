@@ -38,6 +38,7 @@ sub initPlugin {
 		transcode       => 1,
 		ffmpeg_path     => '',
 		download_cache_mb => 2048,
+		analysis        => 1,
 	});
 	# The same checks as the settings page, for changes made with LMS's `pref` command.
 	Plugins::LyrionAnywhere::Gateway::register_validators();

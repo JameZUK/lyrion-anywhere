@@ -53,6 +53,11 @@
 	<input type="number" class="stdedit" name="pref_download_cache_mb" value="[% prefs.pref_download_cache_mb | html %]" min="16" max="1048576" step="1">
 [% END %]
 
+[% WRAPPER setting title="Track analysis" desc="Analyse tracks when they are first played, for the apps' waveform seek bar and loudness levelling. The analysis runs on this server, one track at a time, and is kept (about 2 KiB per track). Turn it off on very slow servers." %]
+	<input type="checkbox" name="pref_analysis" id="pref_analysis" value="1" [% IF prefs.pref_analysis %]checked[% END %]>
+	<label for="pref_analysis">Analyse tracks (waveforms and loudness)</label>
+[% END %]
+
 <div id="anywhere-app" class="anywhere" data-csrf="[% anywhere_csrf | html %]">
 	<h3>Status</h3>
 	<div id="aw-status" class="aw-panel">Loading…</div>
