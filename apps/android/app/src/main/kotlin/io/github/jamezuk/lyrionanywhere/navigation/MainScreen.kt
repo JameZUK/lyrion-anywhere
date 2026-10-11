@@ -1,6 +1,10 @@
 package io.github.jamezuk.lyrionanywhere.navigation
 
+import android.content.Context
+import android.content.Intent
 import android.os.SystemClock
+import androidx.compose.ui.platform.LocalContext
+import io.github.jamezuk.lyrionanywhere.playback.PlaybackService
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -120,13 +124,19 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
     val nav = rememberNavController()
     // One player controller for every screen, per sign-in.
     val player = viewModel(key = "player-${signedIn.who.device.id}") {
-        PlayerViewModel(container.players, container.events, container.settings, clock)
+        PlayerViewModel(container.players, container.events, container.settings, container.localPlayer, clock)
     }
     LifecycleStartEffect(player) {
         player.start()
         onStopOrDispose { player.stop() }
     }
     val playerState by player.state.collectAsStateWithLifecycle()
+    // "Play on this phone": the media session (notification, lock screen, headset
+    // buttons) runs in its own service, started while the app is in front.
+    val context = LocalContext.current
+    LaunchedEffect(playerState.local.enabled) {
+        if (playerState.local.enabled) startPlaybackService(context)
+    }
     val snackbar = remember { SnackbarHostState() }
     val res = LocalResources.current
     LaunchedEffect(player) {
@@ -189,6 +199,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             onSelect = player::select,
                             onOpenNowPlaying = { nav.navigate(NowPlayingRoute) },
                             onRetry = player::refresh,
+                            onPlayOnPhone = player::setPlayOnPhone,
                         )
                     }
                 }
@@ -318,6 +329,15 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                 }
             }
         }
+    }
+}
+
+/** Start the media session service (allowed while the app is in the foreground). */
+private fun startPlaybackService(context: Context) {
+    try {
+        context.startService(Intent(context, PlaybackService::class.java))
+    } catch (_: IllegalStateException) {
+        // Not in the foreground after all; it starts the next time the app opens.
     }
 }
 

@@ -14,7 +14,10 @@ import io.github.jamezuk.lyrionanywhere.core.ShuffleMode
 import io.github.jamezuk.lyrionanywhere.core.Track
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
+import io.github.jamezuk.lyrionanywhere.core.OutputRoute
 import io.github.jamezuk.lyrionanywhere.data.EventsRepository
+import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
+import io.github.jamezuk.lyrionanywhere.data.LocalPlayerState
 import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
 import io.github.jamezuk.lyrionanywhere.data.SettingsStore
 import io.github.jamezuk.lyrionanywhere.data.StreamUpdate
@@ -45,9 +48,28 @@ data class PlayerUiState(
     val error: AppError? = null,
     /** The event stream is connected (updates are instant rather than polled). */
     val live: Boolean = false,
+    /** This phone as a player ("Play on this phone"). */
+    val local: LocalPlayerState = LocalPlayerState(),
 ) {
     val selected: Player? get() = players.firstOrNull { it.id == selectedId }
     val playing: Boolean get() = status?.mode == PlaybackMode.PLAYING
+
+    /** The selected player is this phone. */
+    val localSelected: Boolean get() = local.playerId != null && local.playerId == selectedId
+}
+
+/** For hosts without a local player (and tests). */
+object NoLocalPlayer : LocalPlayerRepository {
+    override val state: StateFlow<LocalPlayerState> = MutableStateFlow(LocalPlayerState())
+
+    override suspend fun setEnabled(on: Boolean): ApiResult<Unit> =
+        ApiResult.Err(AppError.InvalidInput("this phone can't be a player here"))
+
+    override fun setHold(hold: Boolean) {}
+
+    override fun setDuck(duck: Boolean) {}
+
+    override fun setOutputRoute(route: OutputRoute) {}
 }
 
 /** One-off messages for a snackbar. */
@@ -68,8 +90,11 @@ class PlayerViewModel(
     private val players: PlayersRepository,
     private val events: EventsRepository,
     private val settings: SettingsStore,
+    private val localPlayer: LocalPlayerRepository = NoLocalPlayer,
     private val clock: () -> Long,
 ) : ViewModel() {
+    /** Select this phone's player as soon as LMS lists it (after "Play on this phone"). */
+    private var selectLocalWhenReady = false
     private val _state = MutableStateFlow(PlayerUiState())
     val state: StateFlow<PlayerUiState> = _state.asStateFlow()
 
@@ -111,6 +136,34 @@ class PlayerViewModel(
                     refreshStatus()
                 }
             }
+            launch {
+                localPlayer.state.collect { local ->
+                    val newId = local.playerId != null && local.playerId != _state.value.local.playerId
+                    _state.update { it.copy(local = local) }
+                    // LMS lists the phone once it has said hello: re-read the players.
+                    if (newId) loadPlayers()
+                }
+            }
+        }
+    }
+
+    /** Turn "Play on this phone" on or off; on also selects the phone once it is ready. */
+    fun setPlayOnPhone(on: Boolean) {
+        viewModelScope.launch {
+            when (val r = localPlayer.setEnabled(on)) {
+                is ApiResult.Ok -> {
+                    selectLocalWhenReady = on
+                    if (on) _state.value.local.playerId?.let { selectIfListed(it) }
+                }
+                is ApiResult.Err -> _messages.trySend(PlayerMessage.Failed(r.error))
+            }
+        }
+    }
+
+    private fun selectIfListed(id: String) {
+        if (_state.value.players.any { it.id == id }) {
+            selectLocalWhenReady = false
+            select(id)
         }
     }
 
@@ -142,6 +195,10 @@ class PlayerViewModel(
                     ?: list.firstOrNull()?.id
                 _state.update { it.copy(players = list, selectedId = chosen, loading = false, error = null) }
                 if (chosen != saved) settings.setSelectedPlayer(chosen)
+                val localId = _state.value.local.playerId
+                if (selectLocalWhenReady && localId != null && localId != chosen) {
+                    selectIfListed(localId)
+                }
                 refreshStatus()
             }
         }

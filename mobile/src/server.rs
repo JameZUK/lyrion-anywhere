@@ -67,9 +67,32 @@ impl Server {
 
     /// The events socket URL (`wss://…/v1/events`, or `ws://` on loopback).
     pub(crate) fn events_url(&self) -> Url {
-        let mut u = self.endpoint("v1/events");
+        self.socket_url("v1/events")
+    }
+
+    /// The player socket URL (`wss://…/v1/player`, or `ws://` on loopback).
+    pub(crate) fn player_url(&self) -> Url {
+        self.socket_url("v1/player")
+    }
+
+    fn socket_url(&self, path: &str) -> Url {
+        let mut u = self.endpoint(path);
         let scheme = if self.is_secure() { "wss" } else { "ws" };
         u.set_scheme(scheme).expect("ws schemes are valid");
+        u
+    }
+
+    /// `/v1/stream/<session>/<n>[?offset=k]`. `session` must already be validated (32 hex
+    /// characters); it is percent-encoded as a path segment regardless.
+    pub(crate) fn stream_url(&self, session: &str, n: u64, offset: u64) -> Url {
+        let mut u = self.endpoint("v1/stream");
+        u.path_segments_mut()
+            .expect("http(s) URLs have a path")
+            .push(session)
+            .push(&n.to_string());
+        if offset > 0 {
+            u.set_query(Some(&format!("offset={offset}")));
+        }
         u
     }
 }
@@ -313,6 +336,20 @@ mod tests {
         assert_eq!(local.events_url().as_str(), "ws://127.0.0.1:9444/v1/events");
         assert!(!local.is_secure());
         assert_eq!(local.display_name(), "127.0.0.1:9444");
+        assert_eq!(s.player_url().as_str(), "wss://music.example.com/v1/player");
+        assert_eq!(
+            s.stream_url("0123456789abcdef0123456789abcdef", 3, 0)
+                .as_str(),
+            "https://music.example.com/v1/stream/0123456789abcdef0123456789abcdef/3"
+        );
+        assert_eq!(
+            s.stream_url("ab", 1, 65536).as_str(),
+            "https://music.example.com/v1/stream/ab/1?offset=65536"
+        );
+        // Even an unvalidated session id can't leave its path segment.
+        let u = s.stream_url("../../rpc?x=1#y", 1, 0);
+        assert_eq!(u.path(), "/v1/stream/..%2F..%2Frpc%3Fx=1%23y/1");
+        assert_eq!(u.query(), None);
     }
 
     #[test]

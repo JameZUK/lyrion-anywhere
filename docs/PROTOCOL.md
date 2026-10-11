@@ -1,6 +1,6 @@
 # Lyrion Anywhere player protocol (v1)
 
-The protocol a client (web app, native app or test CLI) uses to act as an LMS player through the gateway. It is implemented by `gateway/` and, on the client side, by `web/app/static/player/player-worker.js` and `cli/src/gateway.rs`.
+The protocol a client (web app, native app or test CLI) uses to act as an LMS player through the gateway. It is implemented by `gateway/` and, on the client side, by `web/app/static/player/player-worker.js`, `mobile/src/player/` (the native apps) and `cli/src/gateway.rs`.
 
 ## Endpoints
 

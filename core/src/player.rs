@@ -5,14 +5,15 @@
 //! - Status events go back to LMS as STAT: `STMc` connect, `STMs` track started,
 //!   `STMd` decoder done (LMS then sends the next track), `STMu` played out,
 //!   `STMp`/`STMr` paused/resumed, `STMf` flushed, `STMt` heartbeat,
-//!   `STMl` loaded (autostart off), `STMn` unsupported.
+//!   `STMl` loaded (autostart off), `STMn` unsupported, `STMo` output underrun (reported
+//!   by the host through [`Player::output_underrun`]).
 //!
 //! Sans-I/O: the host feeds control bytes, stream bytes and a millisecond clock, executes
 //! the [`Action`]s, and pulls PCM with [`Player::pull_audio`].
 
 use std::collections::VecDeque;
 
-use crate::decode::{DecodeStatus, InputBuffer, PROBE_MAX_BYTES, StreamDecoder};
+use crate::decode::{DecodeStatus, InputBuffer, PROBE_MAX_BYTES, SourceFormat, StreamDecoder};
 use crate::proto::{ClientMsg, DEVICE_ID_SOFTWARE, Helo, ServerFrameReader, ServerMsg, Stat, Strm};
 
 /// Stop reading the network stream once this many compressed bytes are waiting.
@@ -102,6 +103,23 @@ struct Segment {
     played: u64,
     /// Decoder finished: no more frames will be appended.
     complete: bool,
+    /// What the track's stream turned out to be (known once its headers are probed).
+    source: Option<SourceFormat>,
+    /// The server's ReplayGain factor from `strm` (1.0 = none), already applied.
+    server_gain: f32,
+}
+
+/// What a host needs to know about one track's audio: for the signal-path display and for
+/// gain decisions made outside the core.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrackAudio {
+    /// The track's sequence number in this connection (as returned by
+    /// [`Player::pull_track`]).
+    pub seq: u32,
+    pub sample_rate: u32,
+    pub source: Option<SourceFormat>,
+    /// The server's ReplayGain factor from `strm` (1.0 = none), already applied to the PCM.
+    pub server_gain: f32,
 }
 
 struct Track {
@@ -146,6 +164,13 @@ pub struct Player {
     last_heartbeat: u64,
     stmu_sent: bool,
     last_error: Option<String>,
+    /// Flushes so far (`strm q`/`strm f`), so hosts can drop audio they had queued.
+    flushes: u64,
+    /// Bytes of pulled audio the host holds ahead of its output (e.g. a ring buffer), and
+    /// that buffer's capacity, both counted in STAT's output buffer figures.
+    host_buffered: (u64, u64),
+    /// An underrun has been reported (STMo) and audio has not flowed since.
+    underrun_reported: bool,
 }
 
 impl Player {
@@ -165,7 +190,39 @@ impl Player {
             last_heartbeat: 0,
             stmu_sent: true,
             last_error: None,
+            flushes: 0,
+            host_buffered: (0, 0),
+            underrun_reported: false,
         }
+    }
+
+    /// Tell the player how much pulled audio the host holds ahead of its output, and how
+    /// much it can hold (bytes, at 8 bytes per stereo frame), so STAT's output buffer
+    /// figures describe the whole path to the speaker.
+    pub fn set_host_buffer(&mut self, buffered_bytes: u64, capacity_bytes: u64) {
+        self.host_buffered = (buffered_bytes, capacity_bytes.max(buffered_bytes));
+    }
+
+    /// The host's output ran dry while playing. If the current track is still arriving
+    /// (an underrun, not the end of the audio), LMS is told once with `STMo`, as hardware
+    /// players do; reported again only after audio has flowed in between.
+    pub fn output_underrun(&mut self) {
+        let streaming = self.track.as_ref().is_some_and(|t| !t.decode_done);
+        if self.output == OutputState::Playing && streaming && !self.underrun_reported {
+            self.underrun_reported = true;
+            self.send_stat(*b"STMo", 0);
+        }
+    }
+
+    /// How many times the server has flushed the player. When this changes, a host that
+    /// queues pulled audio ahead of the output must drop that queue.
+    pub fn flush_count(&self) -> u64 {
+        self.flushes
+    }
+
+    /// The player's MAC address (as sent in HELO).
+    pub fn mac(&self) -> [u8; 6] {
+        self.cfg.mac
     }
 
     /// Call when the control connection is (re)established. Sends HELO.
@@ -308,23 +365,46 @@ impl Player {
     /// Returns frames written; the host plays silence for the rest. Call [`Player::played`]
     /// once the frames have actually been played (immediately, for low-latency outputs).
     pub fn pull_audio(&mut self, out: &mut [f32]) -> usize {
+        self.pull(out, false).0
+    }
+
+    /// Like [`Player::pull_audio`], but never crosses into the next track, so a host can
+    /// apply per-track processing (e.g. loudness levelling). Returns the frames written and
+    /// the track they belong to (see [`Player::track_audio`]); `None` if nothing was pulled.
+    pub fn pull_track(&mut self, out: &mut [f32]) -> Option<(u32, usize)> {
+        match self.pull(out, true) {
+            (n, Some(seq)) if n > 0 => Some((seq, n)),
+            _ => None,
+        }
+    }
+
+    fn pull(&mut self, out: &mut [f32], one_track: bool) -> (usize, Option<u32>) {
         if self.output != OutputState::Playing {
-            return 0;
+            return (0, None);
         }
         let Some(rate) = self.output_rate() else {
-            return 0;
+            return (0, None);
         };
         let want = out.len() / 2;
         let mut written = 0;
+        let mut first_seq = None;
         for seg in self.segments.iter_mut() {
             if written == want {
                 break;
             }
             if seg.pulled == seg.frames {
+                if one_track && first_seq.is_some_and(|s| s != seg.seq) {
+                    break;
+                }
                 continue;
             }
             if seg.rate != rate {
                 break;
+            }
+            match first_seq {
+                None => first_seq = Some(seg.seq),
+                Some(s) if one_track && s != seg.seq => break,
+                Some(_) => {}
             }
             let n = ((seg.frames - seg.pulled) as usize).min(want - written);
             for i in 0..n {
@@ -336,7 +416,30 @@ impl Player {
             seg.pulled += n as u64;
             written += n;
         }
-        written
+        (written, first_seq)
+    }
+
+    /// The track that is audible now (the last one reported as played), if any.
+    pub fn playing_track(&self) -> Option<u32> {
+        self.playing_seq
+    }
+
+    /// Format details of a track still in the output queue (`seq` from
+    /// [`Player::pull_track`] or [`Player::playing_track`]).
+    pub fn track_audio(&self, seq: u32) -> Option<TrackAudio> {
+        let seg = self.segments.iter().find(|s| s.seq == seq)?;
+        Some(TrackAudio {
+            seq,
+            sample_rate: seg.rate,
+            source: seg.source,
+            server_gain: seg.server_gain,
+        })
+    }
+
+    /// The volume LMS has set (`audg`), as linear (left, right) factors; (1.0, 1.0) is
+    /// unity, which leaves samples untouched.
+    pub fn volume(&self) -> (f32, f32) {
+        self.gain
     }
 
     /// Nothing more to pull until LMS starts another track: the current track is fully
@@ -349,6 +452,9 @@ impl Player {
 
     /// Report that `frames` previously pulled have now been played.
     pub fn played(&mut self, mut frames: u64) {
+        if frames > 0 {
+            self.underrun_reported = false;
+        }
         while frames > 0 {
             let Some(idx) = self.segments.iter().position(|s| s.played < s.pulled) else {
                 break;
@@ -504,6 +610,7 @@ impl Player {
         self.playing_seq = None;
         self.output = OutputState::Stopped;
         self.stmu_sent = true;
+        self.flushes += 1;
     }
 
     fn skip_ahead(&mut self, ms: u64) {
@@ -536,6 +643,7 @@ impl Player {
             return;
         }
         let (pcm, segments, seq, rg) = (&mut self.pcm, &mut self.segments, t.seq, t.replay_gain);
+        let source = t.decoder.source_format().copied();
         let status = t.decoder.work(PACKETS_PER_TICK, &mut |rate, samples| {
             let need_new = match segments.back() {
                 Some(s) => s.seq != seq || s.rate != rate,
@@ -554,6 +662,8 @@ impl Player {
                     pulled: 0,
                     played: 0,
                     complete: false,
+                    source,
+                    server_gain: rg,
                 });
             }
             let seg = segments.back_mut().unwrap();
@@ -564,6 +674,12 @@ impl Player {
             }
             seg.frames += (samples.len() / 2) as u64;
         });
+        // The headers are probed inside `work`: record the format on this track's segments.
+        if let Some(f) = t.decoder.source_format().copied() {
+            for s in self.segments.iter_mut().filter(|s| s.seq == seq) {
+                s.source.get_or_insert(f);
+            }
+        }
         match status {
             DecodeStatus::Finished => {
                 t.decode_done = true;
@@ -640,7 +756,13 @@ impl Player {
             .track
             .as_ref()
             .map_or((0, 0), |t| (t.input.unread() as u32, t.bytes_received));
-        let out_bytes = (self.pcm.len() * 4) as u32;
+        let (host, host_cap) = self.host_buffered;
+        let out_bytes = (self.pcm.len() as u64 * 4)
+            .saturating_add(host)
+            .min(u32::MAX as u64) as u32;
+        let out_cap = (OUTPUT_TARGET_SECS as u64 * 48_000 * 8)
+            .saturating_add(host_cap)
+            .min(u32::MAX as u64) as u32;
         let stat = Stat {
             event,
             stream_buffer_size: INPUT_HIGH_WATER as u32,
@@ -648,7 +770,7 @@ impl Player {
             bytes_received: bytes,
             signal_strength: 0xffff,
             jiffies: self.jiffies(),
-            output_buffer_size: (OUTPUT_TARGET_SECS * 48_000 * 8).max(out_bytes),
+            output_buffer_size: out_cap.max(out_bytes),
             output_buffer_fullness: out_bytes,
             elapsed_seconds: (elapsed / 1000) as u32,
             elapsed_milliseconds: elapsed as u32,
@@ -838,6 +960,95 @@ mod tests {
         p.tick(2000);
         assert!(events(&p.take_actions()).contains(&"STMu".to_string()));
         assert_eq!(p.status().output, OutputState::Stopped);
+    }
+
+    #[test]
+    fn pull_track_stops_at_track_boundaries_and_reports_formats() {
+        let mut p = Player::new(cfg());
+        p.connected(0);
+        p.on_control_data(&strm(b's', b'1', b'p', 0), 1).unwrap();
+        p.on_stream_data(&wav(44100, 1000), 2);
+        p.on_stream_end(3);
+        for i in 0..10 {
+            p.tick(4 + i);
+        }
+        // Track 2 at the same rate, with a server ReplayGain of 0.5.
+        p.on_control_data(&strm(b's', b'1', b'p', 0x8000), 20)
+            .unwrap();
+        p.on_stream_data(&wav(44100, 500), 21);
+        p.on_stream_end(22);
+        for i in 0..10 {
+            p.tick(23 + i);
+        }
+        let mut buf = vec![0f32; 8192];
+        let (seq1, n1) = p.pull_track(&mut buf).unwrap();
+        assert_eq!(n1, 1000, "stops at the end of track 1");
+        let (seq2, n2) = p.pull_track(&mut buf).unwrap();
+        assert_eq!((seq2, n2), (seq1 + 1, 500));
+        assert!(p.pull_track(&mut buf).is_none());
+
+        let a1 = p.track_audio(seq1).unwrap();
+        assert_eq!(a1.sample_rate, 44100);
+        assert_eq!(a1.server_gain, 1.0);
+        let src = a1.source.unwrap();
+        assert_eq!((src.codec, src.lossless, src.bits), ("PCM", true, Some(16)));
+        assert_eq!(p.track_audio(seq2).unwrap().server_gain, 0.5);
+        assert!(p.track_audio(seq2 + 7).is_none());
+
+        assert_eq!(p.playing_track(), None);
+        p.played(10);
+        assert_eq!(p.playing_track(), Some(seq1));
+        assert_eq!(p.volume(), (1.0, 1.0));
+    }
+
+    #[test]
+    fn host_buffer_counts_in_stat_and_underruns_report_once() {
+        let mut p = Player::new(cfg());
+        p.on_control_data(&strm(b's', b'1', b'p', 0), 0).unwrap();
+        // Half a track arrives; the stream is still open (decoding not done).
+        p.on_stream_data(&wav(44100, 44100), 1);
+        for i in 0..10 {
+            p.tick(2 + i);
+        }
+        assert_eq!(p.status().output, OutputState::Playing);
+        let mut buf = vec![0f32; 4096];
+        p.pull_audio(&mut buf);
+        p.played(100);
+        p.take_actions();
+        p.set_host_buffer(80_000, 400_000);
+        p.output_underrun();
+        p.output_underrun();
+        let a = p.take_actions();
+        assert_eq!(events(&a), vec!["STMo"], "reported once per episode");
+        let Action::Send(bytes) = &a[0] else { panic!() };
+        let stat = Stat::parse(&bytes[8..]).unwrap();
+        let core_bytes = (p.pcm.len() * 4) as u32;
+        assert_eq!(stat.output_buffer_fullness, core_bytes + 80_000);
+        assert!(stat.output_buffer_size >= stat.output_buffer_fullness);
+        assert!(stat.output_buffer_size >= 400_000);
+        // Audio flows again, then runs dry again: a new report.
+        p.played(10);
+        p.output_underrun();
+        assert_eq!(events(&p.take_actions()), vec!["STMo"]);
+        // The end of the audio is not an underrun.
+        p.on_stream_end(50);
+        for i in 0..40 {
+            p.tick(51 + i);
+        }
+        p.take_actions();
+        p.played(1);
+        p.output_underrun();
+        assert!(!events(&p.take_actions()).contains(&"STMo".to_string()));
+    }
+
+    #[test]
+    fn flushes_are_counted() {
+        let mut p = Player::new(cfg());
+        assert_eq!(p.flush_count(), 0);
+        p.on_control_data(&strm(b'q', b'0', b'p', 0), 1).unwrap();
+        p.on_control_data(&strm(b'f', b'0', b'p', 0), 2).unwrap();
+        assert_eq!(p.flush_count(), 2);
+        assert_eq!(p.mac(), [2, 0, 0, 0, 0, 1]);
     }
 
     #[test]

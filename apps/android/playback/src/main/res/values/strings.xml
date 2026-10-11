@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Output routes, as shown in the signal path. -->
+    <string name="route_usb">USB audio</string>
+    <string name="route_wired">Headphones</string>
+    <string name="route_bluetooth">Bluetooth</string>
+    <string name="route_speaker">Phone speaker</string>
+</resources>

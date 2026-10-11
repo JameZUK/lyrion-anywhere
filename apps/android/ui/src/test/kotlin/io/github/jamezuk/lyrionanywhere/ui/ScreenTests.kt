@@ -10,7 +10,16 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.isToggleable
+import androidx.compose.ui.test.performScrollTo
+import io.github.jamezuk.lyrionanywhere.core.PlayerConnection
+import io.github.jamezuk.lyrionanywhere.core.SignalStage
+import io.github.jamezuk.lyrionanywhere.core.SignalVerdict
 import io.github.jamezuk.lyrionanywhere.data.AppError
+import io.github.jamezuk.lyrionanywhere.data.LocalPlayerState
+import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnPhoneRow
+import io.github.jamezuk.lyrionanywhere.ui.player.SignalPathPanel
 import io.github.jamezuk.lyrionanywhere.ui.components.ErrorState
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.SignInScreen
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.SignInUiState
@@ -118,5 +127,98 @@ class ScreenTests {
         compose.onNodeWithText("Track 1").assertIsDisplayed()
         compose.onNodeWithContentDescription("Pause").performClick()
         assertEquals(1, toggled)
+        // Not this phone: no signal path.
+        compose.onNodeWithText("Signal path").assertDoesNotExist()
+    }
+
+    private fun panel(path: io.github.jamezuk.lyrionanywhere.core.SignalPathInfo?) {
+        compose.setContent {
+            LyrionTheme(dynamicColour = false) { SignalPathPanel(path) }
+        }
+    }
+
+    @Test
+    fun signalPathShowsSourceStagesOutputAndAnHonestVerdict() {
+        panel(signalPath())
+        compose.onNodeWithText("Bit-perfect").assertIsDisplayed()
+        compose.onNodeWithText("FLAC · 96 kHz · 24-bit").assertIsDisplayed()
+        compose.onNodeWithText("Headphones · 96 kHz · 32-bit float").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Decode (lossless), bit-transparent").assertIsDisplayed()
+        // Not claimed past Android's mixer.
+        compose.onNodeWithText("Android may still process", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun signalPathFlagsResamplingAndProcessing() {
+        panel(
+            signalPath(
+                verdict = SignalVerdict.RESAMPLED,
+                engineBitPerfect = false,
+                stages = listOf(
+                    SignalStage("Decode (lossless)", true, false),
+                    SignalStage("Volume −6.0 dB", false, false),
+                    SignalStage("Resample 96→48 kHz (system)", false, true),
+                ),
+            ),
+        )
+        compose.onNodeWithText("Resampled").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Volume −6.0 dB, changes samples").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Resample 96→48 kHz (system), changes the sample rate").assertIsDisplayed()
+        compose.onNodeWithText("The sample rate is converted", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun signalPathEndToEndOnlyWhenDirect() {
+        panel(signalPath(bitPerfect = true))
+        compose.onNodeWithText("Every sample reaches the device unchanged.").assertIsDisplayed()
+    }
+
+    @Test
+    fun signalPathWithNothingPlaying() {
+        panel(null)
+        compose.onNodeWithText("Nothing playing on this phone yet.").assertIsDisplayed()
+    }
+
+    @Test
+    fun nowPlayingOnThisPhoneShowsTheSignalPath() {
+        compose.setContent {
+            LyrionTheme(dynamicColour = false) {
+                NowPlayingScreen(
+                    state = PlayerUiState(
+                        players = listOf(samplePlayer("02:4c:41:00:00:01")),
+                        selectedId = "02:4c:41:00:00:01",
+                        status = sampleStatus(),
+                        loading = false,
+                        local = LocalPlayerState(
+                            enabled = true,
+                            status = localStatus("02:4c:41:00:00:01"),
+                            signalPath = signalPath(),
+                        ),
+                    ),
+                    clock = { 0L },
+                    actions = NowPlayingActions({}, {}, {}, {}, {}, {}, {}, {}, {}, {}),
+                )
+            }
+        }
+        compose.onNodeWithText("Signal path").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun playOnPhoneIsASwitchWithItsState() {
+        var changed: Boolean? = null
+        compose.setContent {
+            LyrionTheme(dynamicColour = false) {
+                PlayOnPhoneRow(
+                    LocalPlayerState(
+                        enabled = true,
+                        status = localStatus("02:4c:41:00:00:01", PlayerConnection.Reconnecting(500u)),
+                    ),
+                    onChange = { changed = it },
+                )
+            }
+        }
+        compose.onNodeWithText("Connection lost; reconnecting…").assertIsDisplayed()
+        compose.onNode(hasText("Play on this phone") and isToggleable()).assertIsOn().performClick()
+        assertEquals(false, changed)
     }
 }

@@ -149,6 +149,7 @@ dependencies = [
 name = "anywhere-mobile"
 version = "0.0.1"
 dependencies = [
+ "anywhere-core",
  "anywhere-gateway",
  "axum",
  "futures-util",
@@ -158,6 +159,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "jni",
+ "ndk",
  "percent-encoding",
  "rustls",
  "rustls-platform-verifier",

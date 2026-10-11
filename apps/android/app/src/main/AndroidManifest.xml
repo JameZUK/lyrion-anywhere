@@ -6,6 +6,11 @@
     <!-- Only for scanning a pairing QR code; asked for when the user chooses to scan. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- "Play on this phone": a foreground media service, and staying awake (CPU and
+         Wi-Fi) while it plays. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!--
       Security:
@@ -37,5 +42,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!--
+          The media session for "Play on this phone". Not exported: only this app binds to
+          it. The system's media controls (notification, lock screen, Bluetooth) use the
+          platform session token, which needs no exported component. (Android Auto, later,
+          will need an exported service that checks its callers.)
+        -->
+        <service
+            android:name="io.github.jamezuk.lyrionanywhere.playback.PlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

@@ -20,14 +20,20 @@ import io.github.jamezuk.lyrionanywhere.data.secure.AesGcmCipher
 import io.github.jamezuk.lyrionanywhere.data.secure.EncryptedCredentialStore
 import io.github.jamezuk.lyrionanywhere.data.secure.KeystoreKeyProvider
 import io.github.jamezuk.lyrionanywhere.data.secure.NoBackupFileStorage
+import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
+import io.github.jamezuk.lyrionanywhere.data.RustLocalPlayerRepository
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 
 /**
  * The app's object graph, wired by hand (no DI framework): it is small, has one scope
  * (the process), and constructor injection keeps every view model testable with fakes.
  * No annotation processing or reflection, which keeps builds fast and reproducible.
  */
-class AppContainer(context: Context) {
+class AppContainer(context: Context, scope: CoroutineScope) {
     private val app = context.applicationContext
 
     val settings: SettingsStore = DataStoreSettings(
@@ -50,6 +56,16 @@ class AppContainer(context: Context) {
     val players: PlayersRepository = RustPlayersRepository(accountImpl)
     val art: ArtRepository = RustArtRepository(accountImpl)
     val events: EventsRepository = RustEventsRepository(accountImpl)
+
+    /** This phone as an LMS player, while signed in and switched on. */
+    val localPlayer: LocalPlayerRepository = RustLocalPlayerRepository(
+        sessions = accountImpl.connection
+            .map { it?.session }
+            .stateIn(scope, SharingStarted.Eagerly, null),
+        settings = settings,
+        scope = scope,
+        io = Dispatchers.IO,
+    )
 
     /** What this phone is called in LMS and the device list, e.g. "Google Pixel 8". */
     private fun deviceName(): String {

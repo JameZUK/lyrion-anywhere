@@ -27,4 +27,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "LyrionAnywhere"
 
-include(":app", ":ui", ":data", ":rust")
+include(":app", ":ui", ":data", ":rust", ":playback")

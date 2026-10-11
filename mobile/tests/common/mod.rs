@@ -2,6 +2,8 @@
 //! in-memory secure store, an event collector and a TCP proxy that can cut connections.
 #![allow(dead_code)]
 
+pub mod flac;
+
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -55,6 +57,25 @@ fn fake_result(cmd: &str) -> Value {
     }
 }
 
+/// Slimproto frames received (opcode, payload), shared with the reader tasks.
+pub type SlimFrames = Arc<Mutex<Vec<([u8; 4], Vec<u8>)>>>;
+
+/// One `/stream.mp3` answer of the fake LMS.
+pub struct StreamPlan {
+    pub body: Vec<u8>,
+    /// Send this many bytes, then wait for the gate before sending the rest.
+    pub gate_at: Option<(usize, Arc<tokio::sync::Notify>)>,
+}
+
+impl StreamPlan {
+    pub fn whole(body: Vec<u8>) -> StreamPlan {
+        StreamPlan {
+            body,
+            gate_at: None,
+        }
+    }
+}
+
 pub struct FakeLms {
     pub http_addr: SocketAddr,
     pub cli_addr: SocketAddr,
@@ -62,6 +83,13 @@ pub struct FakeLms {
     pub rpc: Arc<Mutex<Vec<Value>>>,
     pub http_paths: Arc<Mutex<Vec<String>>>,
     cli_clients: Arc<tokio::sync::Mutex<Vec<OwnedWriteHalf>>>,
+    /// Slimproto frames received from players, in order (opcode, payload).
+    pub slim_frames: SlimFrames,
+    /// Slimproto connections accepted so far.
+    pub slim_accepted: Arc<AtomicUsize>,
+    slim_conns: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<OwnedWriteHalf>>,
+    /// Answers for `/stream.mp3`, in order; 404 once they run out.
+    pub streams: Arc<Mutex<std::collections::VecDeque<StreamPlan>>>,
 }
 
 /// Size of the "huge" cover served for `/music/99999999/…`.
@@ -73,12 +101,19 @@ impl FakeLms {
         let http_paths: Arc<Mutex<Vec<String>>> = Default::default();
         let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let http_addr = http.local_addr().unwrap();
-        let (r, paths) = (rpc.clone(), http_paths.clone());
+        let streams: Arc<Mutex<std::collections::VecDeque<StreamPlan>>> = Default::default();
+        let (r, paths, plans) = (rpc.clone(), http_paths.clone(), streams.clone());
         let app = Router::new().fallback(any(move |req: Request| {
-            let (r, paths) = (r.clone(), paths.clone());
+            let (r, paths, plans) = (r.clone(), paths.clone(), plans.clone());
             async move {
                 let path = req.uri().path().to_string();
                 paths.lock().unwrap().push(path.clone());
+                if path == "/stream.mp3" {
+                    let Some(plan) = plans.lock().unwrap().pop_front() else {
+                        return (axum::http::StatusCode::NOT_FOUND, "no stream").into_response();
+                    };
+                    return stream_response(plan);
+                }
                 if path == "/jsonrpc.js" {
                     let body = axum::body::to_bytes(req.into_body(), 1 << 20)
                         .await
@@ -131,10 +166,34 @@ impl FakeLms {
             }
         });
 
-        // Slimproto isn't used by these tests; something must listen there all the same.
+        // Slimproto: record what players send; tests write frames to the connections.
         let slim = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let slim_addr = slim.local_addr().unwrap();
-        tokio::spawn(async move { while slim.accept().await.is_ok() {} });
+        let slim_frames: SlimFrames = Default::default();
+        let slim_accepted = Arc::new(AtomicUsize::new(0));
+        let (conn_tx, conn_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (frames, accepted) = (slim_frames.clone(), slim_accepted.clone());
+        tokio::spawn(async move {
+            while let Ok((sock, _)) = slim.accept().await {
+                accepted.fetch_add(1, Ordering::SeqCst);
+                let (mut rd, wr) = sock.into_split();
+                let _ = conn_tx.send(wr);
+                let frames = frames.clone();
+                tokio::spawn(async move {
+                    let mut reader = anywhere_core::proto::ClientFrameReader::default();
+                    let mut buf = [0u8; 8192];
+                    while let Ok(n) = rd.read(&mut buf).await {
+                        if n == 0 {
+                            break;
+                        }
+                        reader.push(&buf[..n]);
+                        while let Ok(Some((op, payload))) = reader.next_frame() {
+                            frames.lock().unwrap().push((op, payload));
+                        }
+                    }
+                });
+            }
+        });
 
         FakeLms {
             http_addr,
@@ -143,7 +202,53 @@ impl FakeLms {
             rpc,
             http_paths,
             cli_clients,
+            slim_frames,
+            slim_accepted,
+            slim_conns: tokio::sync::Mutex::new(conn_rx),
+            streams,
         }
+    }
+
+    /// The next Slimproto connection from the gateway (5 s at most).
+    pub async fn slim_conn(&self) -> OwnedWriteHalf {
+        tokio::time::timeout(Duration::from_secs(5), self.slim_conns.lock().await.recv())
+            .await
+            .expect("the gateway never connected to LMS")
+            .unwrap()
+    }
+
+    /// Opcodes received, as strings; STAT frames as their event (`STMs`).
+    pub fn slim_events(&self) -> Vec<String> {
+        self.slim_frames
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(op, p)| {
+                if op == b"STAT" && p.len() >= 4 {
+                    String::from_utf8_lossy(&p[..4]).into_owned()
+                } else {
+                    String::from_utf8_lossy(op).into_owned()
+                }
+            })
+            .collect()
+    }
+
+    /// Payloads of every frame received with this opcode.
+    pub fn slim_payloads(&self, op: &[u8; 4]) -> Vec<Vec<u8>> {
+        self.slim_frames
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(o, _)| o == op)
+            .map(|(_, p)| p.clone())
+            .collect()
+    }
+
+    pub fn stream_requests(&self) -> usize {
+        self.http_paths()
+            .iter()
+            .filter(|p| *p == "/stream.mp3")
+            .count()
     }
 
     /// Send a notification line to every CLI listener (the gateway's event feed).
@@ -164,6 +269,37 @@ impl FakeLms {
     pub fn http_paths(&self) -> Vec<String> {
         self.http_paths.lock().unwrap().clone()
     }
+}
+
+/// A `/stream.mp3` answer: the body in 16 KiB pieces, pausing at the gate if there is one.
+fn stream_response(plan: StreamPlan) -> axum::response::Response {
+    use axum::body::Bytes;
+    let StreamPlan { body, gate_at } = plan;
+    let body = Arc::new(body);
+    let stream = futures_util::stream::unfold(0usize, move |pos| {
+        let (body, gate) = (body.clone(), gate_at.clone());
+        async move {
+            if pos >= body.len() {
+                return None;
+            }
+            let mut end = (pos + 16 * 1024).min(body.len());
+            if let Some((at, notify)) = &gate {
+                if pos == *at {
+                    notify.notified().await;
+                } else if pos < *at {
+                    end = end.min(*at);
+                }
+            }
+            Some((
+                Ok::<_, std::io::Error>(Bytes::copy_from_slice(&body[pos..end])),
+                end,
+            ))
+        }
+    });
+    axum::response::Response::builder()
+        .header("content-type", "audio/flac")
+        .body(Body::from_stream(stream))
+        .unwrap()
 }
 
 pub struct Harness {

@@ -1,6 +1,6 @@
 # Lyrion Anywhere for Android
 
-The native Android app (milestone A0: sign-in, browsing and remote control of LMS players). The plan is in [`docs/plans/native-apps.md`](../../docs/plans/native-apps.md); the protocol it speaks is [`docs/PROTOCOL.md`](../../docs/PROTOCOL.md).
+The native Android app: sign-in, browsing, remote control of LMS players (milestone A0), and the phone as an LMS player with native audio output (A1). The plan is in [`docs/plans/native-apps.md`](../../docs/plans/native-apps.md); the protocol it speaks is [`docs/PROTOCOL.md`](../../docs/PROTOCOL.md).
 
 ## Building
 
@@ -34,10 +34,12 @@ To try a debug build against a gateway on your computer, forward the port with `
 ## Architecture
 
 ```
-:app   Application, manual DI (AppContainer), navigation, Coil set-up
-:ui    Design system, screens and view models (Compose, Material 3)
-:data  Repositories over the Rust layer, typed errors, settings, secure storage
-:rust  libanywhere_mobile.so (cargo-ndk) + generated UniFFI Kotlin bindings
+:app       Application, manual DI (AppContainer), navigation, Coil set-up
+:ui        Design system, screens and view models (Compose, Material 3)
+:playback  Media3 session service for "Play on this phone": SimpleBasePlayer over LMS,
+           audio focus, becoming noisy, wake/Wi-Fi locks, output route
+:data      Repositories over the Rust layer, typed errors, settings, secure storage
+:rust      libanywhere_mobile.so (cargo-ndk) + generated UniFFI Kotlin bindings
 ```
 
 - **The Rust layer** (`mobile/` in the repository root) does all networking: HTTPS, sign-in, token rotation, the allow-listed LMS commands, artwork and the event stream. Kotlin calls it through UniFFI as `suspend` functions. The `:rust` module builds it (`cargoBuild<Variant>`) and generates the bindings (`uniffiBindgen<Variant>`) as generated sources of each variant, so a clean checkout builds with one Gradle command.
@@ -45,6 +47,27 @@ To try a debug build against a gateway on your computer, forward the port with `
 - **DI:** manual (`AppContainer`). The graph is small with one scope; constructor injection keeps view models testable with fakes, with no annotation processing or reflection.
 - **Artwork:** a Coil fetcher calls the Rust Art API, which adds the bearer token in a header (never in a URL), validates the path and caps the size. Images are cached in memory only.
 - **State:** view models expose `StateFlow`s; one `PlayerViewModel` per sign-in controls the selected player. It listens to `/v1/events` while the UI is visible (refreshing on changes, coalesced) and polls slowly as a fallback.
+
+### Play on this phone
+
+The phone becomes an LMS player, as the web app's player does. LMS owns the queue (SPEC D14); the app only mirrors it.
+
+```
+LMS ⇄ gateway ⇄ /v1/player + /v1/stream ⇄ Rust engine (own thread) ⇄ core decode ⇄ [DSP] ⇄ ring ⇄ AAudio callback
+                                                     ▲ status, signal path
+Kotlin: RustLocalPlayerRepository ─► PlaybackService (Media3 session) ─► notification, lock screen, buttons
+                                  └► PlayerViewModel ─► "Play on this phone" switch, signal-path panel
+```
+
+- **The engine is Rust** (`mobile/src/player`): the Slimproto tunnel with resume, stream downloads with byte-offset resume, the core's decoders, optional DSP, and a lock-free ring buffer. **AAudio is driven from Rust** (the `ndk` crate): its real-time callback reads the ring directly, so no JNI runs per buffer, and the callback neither allocates nor locks.
+- **Bit-perfect by default.** DSP is off, and LMS volume at 100 % leaves samples untouched. The output opens at the source's rate and reopens when it changes. The signal-path panel shows exactly what happens; it claims "bit-perfect" end to end only for a direct route, which needs A2's USB mixer mode.
+- **Media3:** `PlaybackService` (not exported) wraps LMS's state for this player in a `SimpleBasePlayer`. Its buttons become LMS commands. It also handles:
+  - audio focus (pause, duck, resume after a call);
+  - "becoming noisy" (instant silence, then pause through LMS);
+  - wake and Wi-Fi locks while playing.
+
+  Media3 runs it as a foreground service (type `mediaPlayback`) while playing.
+- **Starting:** the switch is remembered. The service starts while the app is in front; if LMS starts playback on an idle phone whose app is in the background, the session appears when the app is next opened.
 
 ## Security
 
@@ -59,7 +82,13 @@ To try a debug build against a gateway on your computer, forward the port with `
 
 - `:data`: the secure-store sealing (tampering, wrong keys, strict encoding), error mapping.
 - `:ui`: view models with fakes (sign-in and two-step, pairing, paging, search debounce, player selection, events, optimistic transport), and Compose screens under Robolectric (labels for accessibility, error messages).
-- `:app`: regression tests for the manifest, backup rules and network policy.
-- The Rust layer has its own unit and integration tests against the real gateway (`cargo test -p anywhere-mobile`).
+- `:app`: regression tests for the manifest (no exported service, the expected permissions only), backup rules and network policy.
+- `:playback`:
+  - the LMS → Media3 state mapping and the focus policy (plain JVM);
+  - the session player's state and buttons (Robolectric);
+  - the controller's refreshes and commands;
+- `:data`: the local player's lifecycle (sign-in, switch, replaced players).
+- `:ui`: the signal-path panel and the "Play on this phone" switch.
+- The Rust layer has its own unit and integration tests against the real gateway (`cargo test -p anywhere-mobile`). These include the player end to end against a fake LMS: gapless, bit-perfect, rate changes, resume after a dropped connection, refusals and hostile frames.
 
-Instrumented tests (the AndroidKeyStore key itself, the camera) need a device and are not run in CI yet.
+Instrumented tests (the AndroidKeyStore key itself, the camera, AAudio output, the media notification and buttons) need a device and are not run in CI yet. The A1 status in `docs/plans/native-apps.md` lists what has and hasn't been verified on hardware.

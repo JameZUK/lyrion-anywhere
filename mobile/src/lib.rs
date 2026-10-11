@@ -11,7 +11,9 @@
 //! - [`MusicLibrary`], [`Players`]: browsing and remote control, using only commands the
 //!   gateway's allow-list accepts (the same shapes as the web app);
 //! - [`Art`]: artwork bytes, fetched with the bearer token and size-capped;
-//! - [`Events`]: the live event stream with reconnects and token renewal.
+//! - [`Events`]: the live event stream with reconnects and token renewal;
+//! - [`LocalPlayer`]: this phone as an LMS player (Slimproto through the gateway, the
+//!   core's decoders, optional DSP, a lock-free ring and AAudio output).
 //!
 //! Tokens and passwords are never logged or put in error messages.
 
@@ -23,6 +25,7 @@ pub mod error;
 pub mod events;
 pub mod library;
 pub mod model;
+pub mod player;
 pub mod players;
 pub mod server;
 pub mod session;
@@ -36,6 +39,11 @@ pub use error::ApiError;
 pub use events::{EventListener, EventSubscription, Events, EventsState, ServerEvent};
 pub use library::MusicLibrary;
 pub use model::*;
+pub use player::{
+    DspSettings, Levelling, LocalPlayback, LocalPlayer, LocalPlayerConfig, LocalPlayerObserver,
+    LocalPlayerStatus, OutputKind, OutputRoute, PcmBlock, PlayerConnection, SignalPathInfo,
+    SignalStage, SignalVerdict,
+};
 pub use players::Players;
 pub use server::{PairingInvite, Server, parse_pairing_invite};
 pub use session::{SecureStore, Session, SessionObserver, StoreError, StoredCredentials};
