@@ -117,7 +117,7 @@ class WaveformScreenTests {
         seekBar(Waveform(1, ByteArray(1000) { (it % 256).toByte() }, 120.0))
         compose.onNodeWithTag("waveform", useUnmergedTree = true).assertExists()
         // Still the accessible slider.
-        compose.onNodeWithContentDescription("Position in track").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Position in track. Waveform of this track").assertIsDisplayed()
     }
 
     @Test

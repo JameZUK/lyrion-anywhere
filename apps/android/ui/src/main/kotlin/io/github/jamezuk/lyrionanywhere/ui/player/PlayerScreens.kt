@@ -388,7 +388,9 @@ internal fun SeekBar(
     var dragValue by remember { mutableFloatStateOf(0f) }
     val total = duration ?: 0.0
     val shown = if (dragging) dragValue.toDouble() else elapsed
-    val label = stringResource(R.string.position)
+    val position = stringResource(R.string.position)
+    val waveformLabel = stringResource(R.string.waveform_seek)
+    val label = if (waveform != null) "$position. $waveformLabel" else position
     val range = 0f..(if (total > 0) total.toFloat() else 1f)
     val interaction = remember { MutableInteractionSource() }
     Column(Modifier.fillMaxWidth()) {
