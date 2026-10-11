@@ -235,10 +235,10 @@ Plexamp's waveform seek bar ("seekprint"), loudness levelling and sweet fades al
 |---|---|
 | `:app` | Navigation, DI |
 | `:ui` | Design system and screens |
-| `:playback` | `MediaSessionService` (a `MediaLibraryService` once Android Auto arrives, A6), the `SimpleBasePlayer` adapter, audio focus, the becoming-noisy handler, wake and Wi-Fi locks |
+| `:playback` | A `MediaLibraryService` (since A6, for Android Auto), the `SimpleBasePlayer` adapter, audio focus, the becoming-noisy handler, wake and Wi-Fi locks |
 | `:audio` | USB detection and mixer attributes (A2). The AAudio output itself lives in Rust (`mobile/`), so no JNI runs per buffer; the output route reaches the signal path from `:playback` |
 | `:downloads` | Built in A5 without its own module: the download manager is Rust (`mobile/src/offline`), its Android side is in `:data` (repositories) and `:app` (a `dataSync` foreground service; no WorkManager, see A5). Storage is app-private internal storage |
-| `:auto` | Android Auto browse tree, through Media3 |
+| `:auto` | Built in A6 without its own module: the browse tree's grammar and layout are Rust (`mobile/src/auto.rs`), its Media3 side and caller checks are in `:playback` (`playback/auto`) |
 | `:widgets` | Glance widgets |
 | `:rust` | Generated UniFFI bindings plus `cargo-ndk` builds for `arm64-v8a`, `armeabi-v7a` and `x86_64` |
 
@@ -754,6 +754,78 @@ Built. **Verified on the host and on the JVM (Robolectric); nothing has run on a
 - The widget and the Quick Settings tile don't show downloads playing.
 - Not built: "continue on <player>" when back online, ratings sync-back, refreshing a download when its library file changes, and a free-space check before downloading (a full disk fails the download cleanly).
 - While signed in with a network but an unreachable server, offline mode relies on this phone's player failing to reconnect, so it needs *Play on this phone* on.
+
+### A6 status (2026-10-11): car and discovery
+
+Built. **Verified on the host and on the JVM (Robolectric) only. Android Auto has not been tried (no car, head unit, emulator or Desktop Head Unit was available), and nothing has run on a phone.**
+
+**Android Auto (`:playback` `playback/auto`; the grammar in `mobile/src/auto.rs`)**
+- `PlaybackService` is now a Media3 `MediaLibraryService` and **exported** (Android Auto binds to it from outside the app), with the `MediaLibraryService` and `MediaBrowserService` actions only.
+- **Who may connect** (`CallerPolicy`, decided in `onConnect` per uid and package, and checked again on every library call):
+  - *browse and play:* Android Auto and the Google assistants **only with their release certificates** (SHA-256, both of Android Auto's release keys, as Android's media sample lists them; debug keys excluded); anything platform-signed, on the system uid or holding `MEDIA_CONTENT_CONTROL` (system UI, Bluetooth, Android Automotive's media centre); this app;
+  - *transport only* (no library commands, no setting media items): other controllers Media3 trusts, such as a notification listener the user enabled;
+  - *refused:* everyone else; a package that doesn't belong to the calling uid; a known package name with the wrong certificate. In safe mode (after a crash) the service builds nothing and accepts no one.
+- **The tree:** tabs *Home* (carry on, new music, favourites, playlists), *Library* (new music, albums, artists, playlists, favourites) and *Downloads*; offline, *Downloads* only. Albums and playlists open to their tracks; favourites to their folders and stations. Search covers the library and the downloads; a spoken query (no id) plays the best match, and none at all carries on.
+- **Ids:** the Rust grammar (`al/7`, `at/7/3`, `fv/b99447ab.1`, `da/a42`, …) with numeric ids in the gateway's range, favourite ids in its item-id alphabet and download references in their own form; it is fuzzed, and whatever parses is exactly what the app writes. Every id coming back from the car is parsed before anything is looked up. Items carry an id and text only: no URI, artwork URI or extras. Play requests are rebuilt from the id (any URI the caller sent is dropped).
+- **Playing** goes to this phone (D20): its LMS player is switched on if it was off (the setting the app's switch uses), and the request waits up to 15 s for it to connect. Downloads play from the app's own queue, online or not. Both session players take the request (`PlayRequests`), and Media3's following "play" is absorbed so LMS isn't told to play the old queue first.
+- **Cold start from the car:** the app's start-up runs as usual (no new initialiser); the tree waits up to 8 s for the saved sign-in before deciding online or offline.
+- **Artwork:** the now-playing cover is sent as bytes, as before. Browse items have none: the car loads artwork by URI, which for an app-private, authenticated image needs a content provider (exported, or granted per URI to the car's package). That isn't strictly needed for a working tree, so none was added; it is the main gap below.
+- `res/xml/automotive_app_desc.xml` (`<uses name="media"/>`) and the `com.google.android.gms.car.application` metadata. The launcher activity also takes `MEDIA_PLAY_FROM_SEARCH` (voice "play … on Lyrion Anywhere", which lint asks for with a media library service); it reads only the query text, bounded and cleaned, and uses the same search.
+
+**Manifest, checked on the release APK** (`aapt2 dump xmltree`, against the alpha.8 release APK built from `main` before this work):
+- `PlaybackService`: `exported` false → **true**; its action `androidx.media3.session.MediaSessionService` → `androidx.media3.session.MediaLibraryService` and `android.media.browse.MediaBrowserService` (what Android Auto binds with). No permission: Android Auto must be able to bind, so callers are checked in code (above). Lint's `ExportedService` warning is suppressed on this one service for that reason.
+- `MainActivity`: a second intent filter, `android.media.action.MEDIA_PLAY_FROM_SEARCH` with `DEFAULT` (lint requires it of a media library app; it reads only the query).
+- Application metadata: `com.google.android.gms.car.application` → `@xml/automotive_app_desc`.
+- Unchanged: permissions (none added), providers (still only `androidx.startup.InitializationProvider`, not exported, with the same three initialisers: `EmojiCompatInitializer`, `ProcessLifecycleInitializer`, `ProfileInstallerInitializer`; WorkManager's stays removed), every other component and its export flag. No dependency was added (Media3's library service is in `media3-session`, already used).
+
+**Discovery (`mobile/src/discovery.rs`; Android `data/Discovery.kt`, `ui/discovery`)**
+- **AudioMuse-AI:** its entries are picked out of the item's own context menu (`trackinfo`/`albuminfo`/`artistinfo`), by command word (`audiomuse…`) and kind: an entry that runs (or a list that can also be played) is a *mix*; a list is *similar music*; a lone AudioMuse-AI submenu is looked inside once. They run exactly as offered, through the gateway's learned-action check.
+- **Don't Stop The Music:** its settings menu (`dontstopthemusicsetting`) is read and parsed strictly (only entries setting exactly the provider preference to a well-formed token). Radio keeps the provider the player already uses; if off, it switches it on, preferring AudioMuse-AI's provider, then a similarity one, then anything but random.
+- **"Start radio"** (in "More…" for tracks, albums and artists, and on album pages) plays the AudioMuse-AI mix, else the item; with Don't Stop The Music it never ends. With neither, the action is hidden. **"More like this"** is AudioMuse-AI's similar list, as a shelf on album pages and in a track's "More…". Answers are remembered for ten minutes per connection, player and item.
+- **Gateway:** two fixed allow-list entries, for permitted players only: `dontstopthemusicsetting` (exactly), and `playerpref plugin.dontstopthemusic:provider <token>|0|?` (no other `playerpref`). Providers named after an admin-only plugin are removed from the menu and refused.
+
+**Smart transitions (`mobile/src/player/transitions.rs`; Settings › Sound › Transitions)**
+- **Off by default:** nothing passes through the new stage and playback stays gapless and bit-perfect (the existing bit-exact tests are unchanged and pass).
+- **How:** the end of the current track (the crossfade length, plus 5 s for smart trims) is held back between the source and the pipeline, so a stream's end is in hand when the next track's audio appears, without knowing lengths. At the boundary a pure planner decides:
+  - *gapless* for the same album (consecutive tracks of an album, repeat-one, shuffled tracks of one album), an unknown album or track, a change of sample rate, or tracks too short;
+  - *smart* (with both tracks analysed): trailing and leading silence trimmed (up to 5 s each), and the overlap follows the outgoing track's fade-out, else the incoming fade-in, else a 2 s blend, never longer than the setting;
+  - *fixed* (the setting, 1–10 s, default 6) for *Crossfade*, or *Smart* without analysis.
+  - Never more than half of either track; hostile analysis values are tamed.
+- **Mixing:** the core's sample-accurate equal-power mixer, in `f64`. The outgoing tail is corrected for its own levelling gain (the pipeline applies the incoming track's). Every source frame is reported as played exactly once (a mixed block carries both tracks' frames, trimmed silence rides with the next block), so LMS's elapsed time, track starts and the offline play log stay right.
+- **Never at the cost of a drop-out:** while the hold waits for the next track or its facts, the ring keeps playing; if it runs low the boundary goes gapless.
+- **Sources:** the LMS stream (the engine now asks LMS for the streamed track's album and duration with `status - 2 tags:xed`, and for smart transitions fetches the analysis' silence and fades, which `TrackAnalysisInfo` now carries) and the offline queue (album from the download's index; no analysis offline, so smart uses the fixed crossfade).
+- **Signal path:** a "Crossfade 6 s (not within albums)" or "Smart transitions, up to 6 s (not within albums)" stage, and a new reason, `Crossfade`, why it isn't bit-perfect.
+
+**Tests**
+- **Rust:**
+  - transition planning as pure functions (off, album rule, unknown, rate change, fixed, smart trims and natural lengths, hostile values, 20,000 random cases);
+  - the crossfader against scripted sources: bit-exact pass-through when off, the mix equal to the core's whole-track join, the equal-power curve, album-gapless, trims counted as played, levelling correction, waiting for facts without starving, a late next track, reset, turning off mid-play, a short incoming track, and 60 random scripts never losing or inventing frames;
+  - the offline player end to end with real FLAC: a 1 s crossfade between albums (exact length, untouched either side, the mix in the overlap, both plays recorded) and bit-exact gapless within an album with smart transitions on;
+  - `stream_track` (album and duration, hostile values), the analysis record's edges, the signal path's crossfade stage and reason;
+  - discovery: AudioMuse-AI offers, other plugins ignored, URL-carrying actions never offered, Don't Stop The Music parsing (hostile tokens, fuzzed), provider choice, the commands; through the real gateway: options, the shelf, starting radio (exact commands reaching LMS), forged plans refused, another account's player refused;
+  - the browse tree: ids round-trip, nodes outside the grammar get no id, over 40 hostile ids refused, 50,000 random ids, layout, paging;
+  - gateway: the Don't Stop The Music entries (allowed shapes, permitted players only, over 20 refused variants), admin-only providers hidden and refused, and both end to end through `/v1/rpc` against the fake LMS.
+- **Android:**
+  - `:playback`: the caller policy (8 cases including impostors and a package claimed by another uid), its package-manager reading under Robolectric (4), the library callback (5: connection results per caller, library calls and play requests refused for others, ids stripped), the browse tree with fakes (12), and play requests on the session player (2);
+  - `:app`: the car's source (5) and the manifest (the media library service is the only new exported component, with only its two actions; the car metadata; voice search on the activity only);
+  - `:ui`: radio availability and starting, the shelf, their Compose views (11), and the transitions setting (3);
+  - `:data`: transitions' persistence and mapping (2).
+- **Totals:** 289 `anywhere-mobile` tests (was 243); 116 `anywhere-core` library tests (unchanged: the core didn't change); gateway 216 library and 21 `/v1/rpc` integration tests (2 new each); 348 Android JVM/Robolectric tests (was 295).
+
+**Unverified:** everything on a device or in a car. That includes:
+- Android Auto itself: the tree, search, voice, playing from the car, and whether Android Auto and the assistants are recognised on real phones (their certificates are pinned from Android's published list, so a key rotation would need an update);
+- Android Automotive OS (the app isn't built for it; the policy would admit its media centre);
+- AudioMuse-AI's real menu shapes (only the fake LMS's and the gateway's learned-action rules were exercised) and Don't Stop The Music against a real LMS;
+- crossfades heard through AAudio, and crossfades on the LMS stream at real boundaries (the planner and mixer are tested on the host; the LMS path's facts lookup is not exercised end to end against a fake LMS).
+
+**Known gaps**
+- No artwork in the car's browse lists (needs a content provider; deliberately not added).
+- No "Apps & Radio" or LMS plugin menus in the car.
+- Transitions can't see a "gapless sequence" or classical work across albums (the album is the unit), and a boundary whose album is unknown stays gapless.
+- Album-mode levelling across a crossfade uses each track's own gain, not the album's.
+- A crossfade waits for the next track's facts only while the output has audio in hand (about 0.2 s); a slow lookup makes that boundary gapless.
+- Radio from Don't Stop The Music leaves its provider switched on for the player afterwards (as choosing it in LMS would).
+- "Start radio" is offered for tracks, albums and artists only; the car has no radio action.
 
 ## 9. Quality: testing audio as seriously as security
 

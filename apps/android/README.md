@@ -1,6 +1,6 @@
 # Lyrion Anywhere for Android
 
-The native Android app: sign-in, browsing, remote control of LMS players (milestone A0), the phone as an LMS player with native audio output (A1), bit-perfect USB DAC output and the Sound settings (A2), the waveform seek bar with loudness levelling (A3), and browsing on a par with the web app, with rich album and artist pages, LMS's own menus and "player-first" control (A4 part 1), moving playback between players, queue editing, sync groups, tablet layouts, a home-screen widget, a Quick Settings tile and gestures (A4 part 2), and offline listening: downloads, smart downloads, offline mode and plays synced back (A5). The plan is in [`docs/plans/native-apps.md`](../../docs/plans/native-apps.md); the protocol it speaks is [`docs/PROTOCOL.md`](../../docs/PROTOCOL.md).
+The native Android app: sign-in, browsing, remote control of LMS players (milestone A0), the phone as an LMS player with native audio output (A1), bit-perfect USB DAC output and the Sound settings (A2), the waveform seek bar with loudness levelling (A3), and browsing on a par with the web app, with rich album and artist pages, LMS's own menus and "player-first" control (A4 part 1), moving playback between players, queue editing, sync groups, tablet layouts, a home-screen widget, a Quick Settings tile and gestures (A4 part 2), offline listening: downloads, smart downloads, offline mode and plays synced back (A5), and Android Auto, "Start radio" and "More like this", and optional crossfades (A6). The plan is in [`docs/plans/native-apps.md`](../../docs/plans/native-apps.md); the protocol it speaks is [`docs/PROTOCOL.md`](../../docs/PROTOCOL.md).
 
 ## Building
 
@@ -36,9 +36,10 @@ To try a debug build against a gateway on your computer, forward the port with `
 ```
 :app       Application, manual DI (AppContainer), navigation, Coil set-up
 :ui        Design system, screens and view models (Compose, Material 3)
-:playback  Media3 session service for this phone's playback: a SimpleBasePlayer over LMS
-           and one over the local (offline) queue, audio focus, becoming noisy,
-           wake/Wi-Fi locks, output route
+:playback  Media3 library service for this phone's playback and for cars: a SimpleBasePlayer
+           over LMS and one over the local (offline) queue, audio focus, becoming noisy,
+           wake/Wi-Fi locks, output route; the car's browse tree and its caller checks
+           (playback/auto)
 :data      Repositories over the Rust layer, typed errors, settings, secure storage,
            downloads and offline mode (data/offline)
 :rust      libanywhere_mobile.so (cargo-ndk) + generated UniFFI Kotlin bindings
@@ -120,7 +121,7 @@ Kotlin: RustLocalPlayerRepository ─► PlaybackService (Media3 session) ─►
 
 - **The engine is Rust** (`mobile/src/player`): the Slimproto tunnel with resume, stream downloads with byte-offset resume, the core's decoders, optional DSP, and a lock-free ring buffer. **AAudio is driven from Rust** (the `ndk` crate): its real-time callback reads the ring directly, so no JNI runs per buffer, and the callback neither allocates nor locks.
 - **Bit-perfect by default.** DSP is off, and LMS volume at 100 % leaves samples untouched. The output opens at the source's rate and reopens when it changes. The signal-path panel shows exactly what happens. It claims "bit-perfect" end to end only for a direct route to a USB DAC (below), and otherwise lists why not.
-- **Media3:** `PlaybackService` (not exported) wraps LMS's state for this player in a `SimpleBasePlayer`. Its buttons become LMS commands. It also handles:
+- **Media3:** `PlaybackService` (exported since A6 for Android Auto, with every caller checked: see Android Auto below) wraps LMS's state for this player in a `SimpleBasePlayer`. Its buttons become LMS commands. It also handles:
   - audio focus (pause, duck, resume after a call);
   - "becoming noisy" (instant silence, then pause through LMS);
   - wake and Wi-Fi locks while playing.
@@ -149,6 +150,34 @@ Offline queue ─► OfflinePlayerRepository ─► Rust OfflinePlayer ─► th
 - **Plays** heard offline are recorded with an idempotency key and sent to `POST /v1/plays` once back online (kept if the server doesn't have it yet).
 - **In the background:** `DownloadService`, a foreground service of type `dataSync`, runs only while downloads are busy, with progress and *Cancel*. There is **no WorkManager** (or any other `androidx.startup` initialiser): WorkManager's start-up initialiser crashed earlier test builds and stays removed in the manifest.
 
+### Android Auto (A6)
+
+```
+Android Auto ──bind──► PlaybackService (MediaLibraryService, exported)
+                         onConnect: CallerPolicy ── reject | control only | browse
+                         LibraryCallback ─► AutoCatalogue ─► node grammar (Rust, mobile/src/auto.rs)
+                                                  │            library / players repositories (gateway policy)
+                                                  └─► play: this phone's LMS player (D20), or the downloads
+```
+
+- **The tree:** *Home* (carry on, new music, favourites, playlists), *Library* (new music, albums, artists, playlists, favourites) and *Downloads* (offline albums). Offline, only *Downloads*. Search covers the library and the downloads; a spoken "play …" plays the best match. Items carry an id and text only: no URI, artwork URI or extras.
+- **Ids** are the Rust grammar's (`mobile/src/auto.rs`): numeric ids in the gateway's range, favourite ids in its item-id alphabet, download references in their own form. Anything else coming back from the car is refused before anything is looked up.
+- **Playing** always goes to this phone (SPEC D20). Its LMS player is switched on if it was off, and the request waits for it (up to 15 s). Downloaded items play from the app's own queue, so they work with no server.
+- **Who may connect** (`CallerPolicy`, checked in `onConnect` and again on every library call):
+  - **browse and play:** Android Auto (`com.google.android.projection.gearhead`) and the Google assistants, **only** when signed with their release certificates (SHA-256 pinned, both of Android Auto's release keys); apps signed with the platform key or holding `MEDIA_CONTENT_CONTROL` (system UI, Bluetooth, Android Automotive's media centre); and this app;
+  - **transport only** (play, pause, skip; no library, no playing by id): other controllers Media3 trusts, such as a watch app given notification access;
+  - **refused:** everyone else, any caller whose package doesn't belong to its uid, and a known package name with the wrong certificate. In safe mode (after a crash) the session accepts no one.
+- **Artwork:** the now-playing cover is sent as bytes, as before. Browse lists have no artwork: serving it would need a content provider, which wasn't strictly needed (see the A6 status in the plan).
+- `automotive_app_desc.xml` declares a media app; the activity also takes `MEDIA_PLAY_FROM_SEARCH` (voice "play … on Lyrion Anywhere"), reading only the query.
+
+### Discovery: radio and "more like this" (A6)
+
+- **Start radio** (in "More…" for tracks, albums and artists, and on album pages) appears only when the server offers radio:
+  - AudioMuse-AI's own mix from the item's context menu, run exactly as offered (the gateway's learned-action check);
+  - otherwise the item itself plays and LMS's **Don't Stop The Music** keeps the queue going. The provider already chosen for the player is kept; if it is off, AudioMuse-AI's provider is chosen first, then a similarity one. The gateway allows only that setting, with a strict provider token.
+- **More like this:** AudioMuse-AI's list of similar music as a shelf on album pages and in a track's "More…".
+- What the server offers is remembered for ten minutes per player and item (`RustDiscoveryRepository`).
+
 ### Bit-perfect USB DAC output (Android 14+)
 
 ```
@@ -171,7 +200,8 @@ Settings → Sound:
 - the true-peak limiter and its ceiling;
 - a parametric EQ from an AutoEq `ParametricEQ.txt` (pasted, or picked with the system file picker; checked by the engine before it is saved);
 - crossfeed;
-- dither.
+- dither;
+- **transitions:** *Gapless* (the default), *Crossfade*, or *Smart transitions*, with a length of 1–10 s. Tracks of the same album always stay gapless. Smart transitions trim silence and follow each track's own fade from the server's analysis; without one (downloads, or no analysis yet) they use the fixed crossfade. Any crossfade makes the signal path say "not bit-perfect" and why.
 
 Everything is off by default (bit-perfect), with an indicator saying so or naming the stages that change the samples. Settings are stored with DataStore and applied to the engine at once.
 
@@ -215,6 +245,7 @@ Record the phone, Android version, DAC and results (in the A2 status of `docs/pl
 - Tokens and passwords are never logged or put in error messages; the password is dropped from memory after sign-in.
 - Pairing QR codes are parsed and validated in Rust (`lyrion-anywhere://pair?server=…&code=…`, see `docs/PROTOCOL.md`); the server address in one obeys the same rules as a typed one.
 - No Google Play Services, analytics or proprietary libraries (F-Droid compatible).
+- The only exported service is the media library for cars; it has no permission (Android Auto must bind to it), so every caller is checked in code (see Android Auto above). It hands out ids and text, never URLs or paths, and plays only on this phone. No content provider is exported.
 
 ## Tests
 
@@ -225,7 +256,7 @@ Record the phone, Android version, DAC and results (in the A2 status of `docs/pl
 - `:ui` (A4): Compose tests for the "Playing on" strip, the "Play on…" sheet, the default-player setting, the Library page, the album page, the "More…" sheet and Apps & Radio, with 48 dp touch targets.
 - `:ui` (A4): WCAG contrast of the art-tinted colours for 511 covers in both themes.
 - `:data` (A4): the default-player and library settings (malformed stored values ignored), the virtual-library choice, and the suitability cache.
-- `:app`: regression tests for the manifest (only the launcher activity, the widget receiver and the system-bound tile are exported; the expected permissions only; no periodic widget updates), backup rules and network policy.
+- `:app`: regression tests for the manifest (only the launcher activity, the widget receiver, the system-bound tile and, since A6, the media library service are exported; the expected permissions only; no periodic widget updates), backup rules and network policy.
 - `:ui` and `:app` (A4 part 2):
   - transfer states, queue editing with Undo, and sync direction (view models and Compose);
   - layout selection by window size, gesture thresholds and pull-to-close;
@@ -250,5 +281,12 @@ Record the phone, Android version, DAC and results (in the A2 status of `docs/pl
   - `:ui`: the Downloads, storage and offline view models; Compose tests for the Downloads screen, offline library, album and Now playing, storage settings, the sign-out question and the Download button.
   - `:app`: the download notification's progress; the manifest (the download service is private and `dataSync`; WorkManager's initialiser stays removed).
   - Rust: the download manager against a scripted gateway and the real one (Range resume, 416, sizes, 401/403/429, cap, Wi-Fi only), the index (fuzzed), plays, the play queue, the local source and the offline player end to end.
+
+- Car and discovery (A6):
+  - `:playback`: the caller policy's decision table (Android Auto with and without its certificate, impostors, a package claimed by another uid, system controllers, transport-only controllers) and its Robolectric reading of the package manager; the library callback (who connects with what, library calls and play requests refused for others, ids stripped to an id); the browse tree with fakes (tabs online and offline, paging, refused ids, no URIs, playing on the phone or from the downloads, search, voice); the session players' play requests.
+  - `:app`: the car's source (online or not, the cold-start wait, switching the phone's player on and waiting for it, carrying on); the manifest (the media library service is the only new exported component, with only the media browser actions; the car metadata; voice search only on the activity).
+  - `:ui`: radio availability and starting (hidden when nothing is offered, on errors and with no player; one start at a time), the shelf, and their Compose views; the transitions setting and its view model.
+  - `:data`: transitions' persistence (refusal of stored nonsense) and mapping to the engine; the discovery cache.
+  - Rust: transition planning (album-gapless rule, trims, natural lengths, hostile analysis, random facts), the crossfade's mix accuracy and frame accounting over scripted and random sources, the offline player crossfading between albums and staying bit-exact within one; discovery (AudioMuse-AI's entries, Don't Stop The Music parsing, fuzzed) and through the real gateway; the browse tree's grammar (fuzzed) and layout.
 
 Instrumented tests (the AndroidKeyStore key itself, the camera, AAudio output, bit-perfect USB output, the media notification and buttons) need a device and are not run in CI yet. The A1 and A2 statuses in `docs/plans/native-apps.md` list what has and hasn't been verified on hardware.

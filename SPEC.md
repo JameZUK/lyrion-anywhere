@@ -387,6 +387,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
   - the local player: an `<audio>` element on blob: URLs, with Media Session controls;
   - offline mode;
   - play logging in IndexedDB, with sync-back and backoff. The Downloads page shows "N plays waiting to sync".
+- _Android, A6 (2026-10-11):_ Android Auto browses the library and the downloads and plays on this phone (D20); "Start radio" and "More like this" use AudioMuse-AI's menus or LMS's Don't Stop The Music; optional crossfades between albums (off by default, gapless and bit-perfect otherwise). See docs/plans/native-apps.md › A6.
 - _Android, A5 (2026-10-11):_ downloads (a Rust download manager, app-private storage), offline mode, and the local queue played through the same Rust engine as streaming (D14), with the Media3 session. Plays are logged and sent to `POST /v1/plays` as on the web. A revoked device deletes its downloads on its next connection. See docs/plans/native-apps.md › A5.
 
 ### 8.5 Security

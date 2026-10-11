@@ -245,7 +245,7 @@ Library browse parameters ("My Music"), and the values each takes:
 | `tags` | all of them | letters and digits only |
 
 A `musicfolder` answer lists each entry's `url` (its path on the server): it is stripped like every `url`, and a name that holds a path is dropped (see the response filter below).
-| Player (permitted players only) | `status`, `play`, `pause`, `stop`, `mode ?`, `time`, `power`, `sleep`, `mixer volume/muting`, `playlist index/jump/move/delete/clear/shuffle/repeat/tracks ?`, `playlistcontrol cmd:load/add/insert/delete` with exactly one id selector, `sync` with another permitted player, `favorites playlist play/add/insert item_id:…` |
+| Player (permitted players only) | `status`, `play`, `pause`, `stop`, `mode ?`, `time`, `power`, `sleep`, `mixer volume/muting`, `playlist index/jump/move/delete/clear/shuffle/repeat/tracks ?`, `playlistcontrol cmd:load/add/insert/delete` with exactly one id selector, `sync` with another permitted player, `favorites playlist play/add/insert item_id:…`; Don't Stop The Music: `dontstopthemusicsetting` (exactly that), and `playerpref plugin.dontstopthemusic:provider <token>|0|?` (no other `playerpref`; the token is letters, digits and `_`, starting with a letter, at most 64) |
 | Apps and radio | `<app> items …` and `<app> playlist play/add/insert item_id:…`, only for app commands LMS lists in its `apps`/`radios` menus. Core command names can never be learned as apps. An unknown app triggers at most one menu refresh a minute. |
 | Admin role only | `rescan`; changing saved playlists (`playlists new/rename/delete/edit`) |
 
@@ -260,7 +260,9 @@ A `musicfolder` answer lists each entry's `url` (its path on the server): it is 
 
 **Plugin entries (home menu).** Plugins also add entries to the player's home menu (My Music, Radio, Extras), not only to `apps`/`radios`. `menu <start> <count> [direct:1]` (permitted players only) returns that menu cut down to library and plugin entries: anything under the settings nodes, player power, and entries the app shows itself (library, favourites, search) are dropped before the device sees them, as are entries not reachable from a top-level node. Their actions are then learned like any menu's.
 
-**Admin-only plugins.** An admin can reserve plugins (by command word, e.g. `audiomuseai`) for admins, on the plugin settings page (`GET/POST /admin/v1/plugins` on the admin API; the GET lists what LMS offers as apps, radio and home-menu entries). For listeners, these plugins are removed from app lists, the home menu and context menus, and their commands are refused (403), however they are reached.
+**Admin-only plugins.** An admin can reserve plugins (by command word, e.g. `audiomuseai`) for admins, on the plugin settings page (`GET/POST /admin/v1/plugins` on the admin API; the GET lists what LMS offers as apps, radio and home-menu entries). For listeners, these plugins are removed from app lists, the home menu and context menus, and their commands are refused (403), however they are reached. Don't Stop The Music providers named after a reserved plugin (e.g. `PLUGIN_AUDIOMUSEAI_…` for `audiomuseai`) are removed from `dontstopthemusicsetting` and can't be chosen.
+
+**Radio and "more like this" (apps, A6).** Nothing is built in: the apps read the item's own context menu and use AudioMuse-AI's entries there (command words starting `audiomuse`) as learned actions, or play the item with Don't Stop The Music switched on for the player (the provider in use if any; otherwise AudioMuse-AI's, then a similarity provider, then any but random). With neither, there is no radio and the action is hidden.
 
 Context menus start from `trackinfo`/`albuminfo`/`artistinfo`/`genreinfo`/`yearinfo`/`playlistinfo`/`folderinfo items` with a library id.
 

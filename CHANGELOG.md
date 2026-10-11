@@ -4,6 +4,18 @@ Dated entries, newest first.
 
 ## 2026-10-11
 
+### Android: car and discovery (A6)
+- **Android Auto:** browse *Home* (carry on, new music, favourites, playlists), *Library* (new music, albums, artists, playlists, favourites) and *Downloads*, search, and ask by voice; everything plays on this phone (its player is switched on if needed), or from the downloads when there's no server.
+  - The playback service is now a media library service and is **exported**, so every caller is checked: Android Auto and the Google assistants only with their release certificates; the system's own controllers (platform-signed, or holding `MEDIA_CONTENT_CONTROL`) and this app; other trusted controllers (e.g. a watch app with notification access) get play, pause and skip only; anyone else is refused, as is a known package name with the wrong certificate.
+  - The tree holds ids and text only, never URLs or paths, and every id coming back from the car is checked against a strict grammar (in the Rust layer, fuzzed) before anything is looked up. No content provider was added (so the car's lists have no artwork yet).
+  - Voice "play … on Lyrion Anywhere" from the phone's assistant searches and plays the best match.
+- **Start radio** for a track, album or artist, and **More like this**, from what the server has: AudioMuse-AI's mixes and similar lists from LMS's own context menus (run exactly as offered), or LMS's Don't Stop The Music for an endless queue. Hidden when the server offers neither.
+- **Smart transitions** (Settings › Sound › Transitions; off by default, so playback stays gapless and bit-perfect): *Crossfade* or *Smart transitions*, 1–10 s, never between tracks of the same album. Smart transitions trim silence and follow each track's own fade from the server's analysis, and fall back to the fixed crossfade without one. For both streaming and downloads; the signal path says "not bit-perfect" and why.
+- **Gateway:** Don't Stop The Music's settings menu and its provider setting are allowed for players the user may control, with the provider a strict token and nothing else of `playerpref`. Providers belonging to admin-only plugins are hidden and refused.
+- **Tests:**
+  - Rust: transition planning (album rule, trims, fade lengths, hostile and random analyses), the crossfader's mix accuracy and exact frame accounting over scripted and random sources, the offline player crossfading between albums and staying bit-exact within one; discovery parsing (fuzzed) and through the real gateway; the browse tree's grammar (fuzzed) and layout; the gateway's new entries, refusals and admin-only providers, unit and end to end.
+  - Android: the caller policy (Android Auto with and without its certificate, impostors, a package claimed by another uid, system and transport-only controllers) and its package-manager reading; the library callback; the browse tree (tabs online and offline, paging, refused ids, no URIs, playing on the phone or from downloads, search and voice); the car's source; radio availability and the shelf (view models and Compose); the transitions setting; the manifest (one new exported component, with only the media browser actions).
+
 ### Android: offline (A5)
 - **Downloads** of albums, playlists and tracks ("Download" on their pages and in "More…"), into app-private storage that is never backed up.
   - The download manager is in the Rust layer: two at a time, resumed with HTTP `Range` after a break, checked against `/info`'s size and stable key, and named by that key (no tokens in file names or the index).
