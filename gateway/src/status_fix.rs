@@ -116,10 +116,7 @@ mod tests {
     #[test]
     fn agreeing_or_missing_durations_are_left_alone() {
         let c = cmd(&["status", "-", "1", "tags:adc"]);
-        assert_eq!(
-            needs_repair(&c, &status(json!(95.3), json!("95.25"))),
-            None
-        );
+        assert_eq!(needs_repair(&c, &status(json!(95.3), json!("95.25"))), None);
         // Radio and other streams: no duration at the top level.
         assert_eq!(needs_repair(&c, &status(Value::Null, json!(98.0))), None);
         assert_eq!(needs_repair(&c, &status(json!(300), Value::Null)), None);
