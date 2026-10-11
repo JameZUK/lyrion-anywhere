@@ -4,6 +4,40 @@ Dated entries, newest first.
 
 ## 2026-10-11
 
+### Android: browsing on a par with the web app, rich pages, and player-first (A4 part 1)
+- **Player-first (SPEC D20):**
+  - This phone is the default player, and its player is on after sign-in.
+  - An output button in Now playing and the mini player opens **"Play on…"**: this phone, the other players you may control (with what each is playing) and sync groups.
+  - While another player is controlled, a strip says **"Playing on <name>"**, with **Back to this phone**.
+  - **Settings → Default player:** this phone, last used, or a specific player.
+  - The "Play on this phone" switch has left Home.
+- **Library:**
+  - New Music; Albums (by title, artist, year or date added); Artists with role chips; Genres (searchable, with an Albums/Artists switch); Years; Compilations; Random Albums ("Shuffle again");
+  - Music Folder (play or add folders and tracks); Playlists; Favourites; Apps & Radio;
+  - a virtual-library picker when LMS has libraries.
+- **Home** puts the library first: recently added, random albums, favourites and playlists.
+- **Album pages:** large art, details (year, genre, format such as "FLAC 24/96"), disc sections, and Play, Shuffle, Add and More.
+- **Artist pages:** header art, albums grouped into *Albums*, *Appears on* and *Compilations*, and Play all, Shuffle and More.
+- **Art-driven colour:**
+  - the album, artist and Now playing pages take their colour from the cover;
+  - an in-house quantiser picks it, and every text colour is adjusted to meet WCAG AA contrast.
+- **"More…"** on tracks, albums, artists, genres, years, folders and playlists:
+  - a bottom sheet with Play now, Play next and Add to queue;
+  - then LMS's own menu, so plugin actions such as "more like this" appear.
+- **Apps & Radio:**
+  - apps, radio and plugins from LMS's home menu, with search boxes and paging;
+  - apps that can't be used from here are hidden behind "Show all", and ones that need setting up say so.
+- **`mobile/` (Rust):**
+  - typed builders for all of the above, mirroring the web app's;
+  - a SlimBrowse module (`Menus`) that replays only actions LMS offered, checks them again before sending, and lists plugin entries and their suitability;
+  - sync groups; richer track details.
+- **Tests:**
+  - Rust: builders and parsers (hostile filters, ids, folder paths, arbitrary JSON).
+  - Rust against the real gateway: every new command passes the allow-list. Forged, altered and never-offered menu actions are refused before reaching LMS, and file locations in context menus never arrive.
+  - Android: view models for every browse view, the menu navigator, Apps & Radio, and the player-first rules.
+  - Android Compose: the strip, the "Play on…" sheet, settings and pages; touch targets.
+  - Android colour: contrast for 511 covers in both themes.
+
 ### Library: New Music and the rest of LMS's "My Music"
 - **New Music:** recently added albums, newest first, in the sidebar and at the top of the Library page.
 - **More ways to browse** (on the Library page):

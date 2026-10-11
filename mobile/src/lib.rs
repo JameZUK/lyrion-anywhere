@@ -8,8 +8,9 @@
 //! - [`Session`]: sign-in (password, two-step, pairing), token refresh, sign-out. The
 //!   refresh token is persisted only through the app's [`SecureStore`] (Keystore-backed on
 //!   Android); access tokens live in memory only;
-//! - [`MusicLibrary`], [`Players`]: browsing and remote control, using only commands the
-//!   gateway's allow-list accepts (the same shapes as the web app);
+//! - [`MusicLibrary`], [`Players`], [`Menus`]: browsing, remote control and LMS menus (apps,
+//!   radio, plugins, "More…"), using only commands the gateway's allow-list accepts (the
+//!   same shapes as the web app) and menu actions LMS offered;
 //! - [`Art`]: artwork bytes, fetched with the bearer token and size-capped;
 //! - [`Analysis`]: track analyses (waveform, loudness) from the gateway;
 //! - [`Events`]: the live event stream with reconnects and token renewal;
@@ -26,6 +27,7 @@ pub mod commands;
 pub mod error;
 pub mod events;
 pub mod library;
+pub mod menus;
 pub mod model;
 pub mod player;
 pub mod players;
@@ -42,6 +44,10 @@ pub use art::{Art, ArtImage};
 pub use error::ApiError;
 pub use events::{EventListener, EventSubscription, Events, EventsState, ServerEvent};
 pub use library::MusicLibrary;
+pub use menus::{
+    AppEntry, MenuAction, MenuItem, MenuItemKind, MenuOutcome, MenuPage, MenuParam, Menus,
+    PluginEntry, Suitability, app_menu, info_menu,
+};
 pub use model::*;
 pub use player::{
     CrossfeedSetting, DitherSetting, DspSettings, EqProfileSummary, Levelling, LocalPlayback,

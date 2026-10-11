@@ -7,7 +7,9 @@ use serde_json::Value;
 use crate::art::{cover_key, image_key};
 use crate::commands::is_player_id;
 
-pub use crate::commands::{AlbumSort, Placement, RepeatMode, Selection, ShuffleMode};
+pub use crate::commands::{
+    AlbumSort, ArtistRole, InfoKind, LibraryFilter, Placement, RepeatMode, Selection, ShuffleMode,
+};
 
 const MAX_TEXT: usize = 1024;
 
@@ -106,6 +108,8 @@ pub struct Album {
     pub year: Option<i32>,
     /// Artwork key for [`crate::Art::fetch`], if the album has a cover.
     pub artwork: Option<String>,
+    /// A various-artists compilation.
+    pub compilation: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -152,6 +156,89 @@ pub struct Track {
     pub artwork: Option<String>,
     /// Position in the player's queue (queue listings only).
     pub queue_index: Option<u32>,
+    /// Disc number and count, for multi-disc albums.
+    pub disc_number: Option<u32>,
+    pub disc_count: Option<u32>,
+    pub genre: Option<String>,
+    /// The file's format, e.g. "FLAC 24/96" or "MP3".
+    pub format: Option<String>,
+    pub year: Option<i32>,
+}
+
+/// Players playing in step: their ids (two or more), as LMS lists them.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SyncGroup {
+    pub player_ids: Vec<String>,
+}
+
+/// A page of years that have albums (0 is "no year").
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct YearPage {
+    pub total: u32,
+    pub items: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum FolderKind {
+    Folder,
+    Track,
+    Playlist,
+    Other,
+}
+
+/// A music folder entry. Never a path: LMS's `url` is stripped by the gateway, and a name
+/// that still looks like a path is cut to its last part.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct FolderEntry {
+    pub id: i64,
+    pub name: String,
+    pub kind: FolderKind,
+    pub artwork: Option<String>,
+    /// As LMS shows it ("3:07"), if well-formed.
+    pub duration: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct FolderPage {
+    pub total: u32,
+    pub items: Vec<FolderEntry>,
+}
+
+/// An LMS virtual library ("Libraries" in My Music).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct VirtualLibrary {
+    pub id: String,
+    pub name: String,
+}
+
+/// A favourite: a folder of favourites, or something to play (a station, a track, …).
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct Favourite {
+    /// LMS item id (checked), for opening or playing it.
+    pub id: String,
+    pub name: String,
+    pub artwork: Option<String>,
+    pub is_folder: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct FavouritePage {
+    pub title: Option<String>,
+    pub total: u32,
+    pub items: Vec<Favourite>,
+}
+
+/// A saved playlist.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct SavedPlaylist {
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct PlaylistPage {
+    pub total: u32,
+    pub items: Vec<SavedPlaylist>,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -212,6 +299,7 @@ pub(crate) fn album_from(v: &Value) -> Option<Album> {
             .get("artwork_track_id")
             .and_then(cover_key)
             .or_else(|| v.get("artwork_url").and_then(image_key)),
+        compilation: int_of(&v["compilation"]) == Some(1),
     })
 }
 
@@ -276,6 +364,224 @@ pub(crate) fn track_from(v: &Value) -> Track {
                 (!remote).then(|| v.get("id").and_then(cover_key)).flatten()
             }),
         queue_index: int_of(&v["playlist index"]).and_then(|n| u32::try_from(n).ok()),
+        disc_number: small_uint(&v["disc"]),
+        disc_count: small_uint(&v["disccount"]),
+        genre: text_of(&v["genre"]),
+        format: format_of(v),
+        year: int_of(&v["year"])
+            .filter(|y| *y > 0 && *y < 10_000)
+            .map(|y| y as i32),
+    }
+}
+
+/// A count or number LMS lists (disc, disc count): 1–999.
+fn small_uint(v: &Value) -> Option<u32> {
+    int_of(v)
+        .filter(|n| (1..1000).contains(n))
+        .map(|n| n as u32)
+}
+
+/// "FLAC 24/96", "ALAC 16/44.1" or "MP3", from LMS's content type, sample size and rate.
+pub(crate) fn format_of(v: &Value) -> Option<String> {
+    let kind = v["type"].as_str()?.trim().to_ascii_lowercase();
+    let name = match kind.as_str() {
+        "flc" | "flac" => "FLAC".to_string(),
+        "alc" => "ALAC".into(),
+        "mp3" => "MP3".into(),
+        "aac" | "mp4" | "m4a" => "AAC".into(),
+        "wav" => "WAV".into(),
+        "aif" | "aiff" => "AIFF".into(),
+        "ogg" => "Ogg Vorbis".into(),
+        "ops" | "opus" => "Opus".into(),
+        "wma" | "wmal" | "wmap" => "WMA".into(),
+        "dsf" | "dff" => "DSD".into(),
+        "ape" => "APE".into(),
+        "wvp" => "WavPack".into(),
+        "mpc" => "Musepack".into(),
+        k if (1..=6).contains(&k.len()) && k.bytes().all(|b| b.is_ascii_alphanumeric()) => {
+            k.to_ascii_uppercase()
+        }
+        _ => return None,
+    };
+    let bits = int_of(&v["samplesize"]).filter(|b| (1..=64).contains(b));
+    let rate = int_of(&v["samplerate"]).filter(|r| (1000..=1_000_000).contains(r));
+    Some(match (bits, rate) {
+        (Some(b), Some(r)) => format!("{name} {b}/{}", khz(r)),
+        (None, Some(r)) => format!("{name} {} kHz", khz(r)),
+        _ => name,
+    })
+}
+
+/// 44100 → "44.1", 96000 → "96".
+fn khz(hz: i64) -> String {
+    if hz % 1000 == 0 {
+        (hz / 1000).to_string()
+    } else {
+        format!("{:.1}", hz as f64 / 1000.0)
+    }
+}
+
+/// Sync groups: well-formed, distinct player ids only; groups of one and players in two
+/// groups (nonsense) are left out.
+pub(crate) fn sync_groups_from(v: &Value) -> Vec<SyncGroup> {
+    let mut out: Vec<SyncGroup> = Vec::new();
+    for g in loop_of(v, "syncgroups_loop").take(100) {
+        let Some(list) = g["sync_members"].as_str().filter(|s| s.len() <= 4096) else {
+            continue;
+        };
+        let mut ids: Vec<String> = Vec::new();
+        for raw in list.split(',') {
+            let id = raw.trim().to_ascii_lowercase();
+            if is_player_id(&id) && !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        let taken = out
+            .iter()
+            .any(|x| x.player_ids.iter().any(|p| ids.contains(p)));
+        if ids.len() > 1 && !taken {
+            out.push(SyncGroup { player_ids: ids });
+        }
+    }
+    out
+}
+
+pub(crate) fn years_from(v: &Value) -> YearPage {
+    let items: Vec<u32> = loop_of(v, "years_loop")
+        .filter_map(|y| int_of(&y["year"]))
+        .filter(|y| (0..10_000).contains(y))
+        .map(|y| y as u32)
+        .collect();
+    YearPage {
+        total: total_of(v, items.len()),
+        items,
+    }
+}
+
+/// A name that is (or contains) a filesystem path: shown as its last part only.
+fn base_name(s: &str) -> String {
+    let b = s.as_bytes();
+    let absolute = s.starts_with(['/', '\\'])
+        || (b.len() > 2
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && matches!(b[2], b'/' | b'\\'));
+    if absolute {
+        s.split(['/', '\\'])
+            .rfind(|p| !p.is_empty())
+            .unwrap_or("")
+            .to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+fn folder_duration(v: &Value) -> Option<String> {
+    let s = v.as_str()?;
+    let mut parts = s.split(':');
+    let first = parts.next()?;
+    let rest: Vec<&str> = parts.collect();
+    let ok = (1..=3).contains(&first.len())
+        && first.bytes().all(|b| b.is_ascii_digit())
+        && (1..=2).contains(&rest.len())
+        && rest
+            .iter()
+            .all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_digit()));
+    ok.then(|| s.to_string())
+}
+
+pub(crate) fn folder_from(v: &Value) -> FolderPage {
+    let items: Vec<FolderEntry> = loop_of(v, "folder_loop")
+        .filter_map(|x| {
+            let id = positive_id(&x["id"])?;
+            let raw = text_of(&x["title"]).or_else(|| text_of(&x["filename"]));
+            let name = raw.map(|n| base_name(&n)).unwrap_or_default();
+            let kind = match x["type"].as_str() {
+                Some("folder") => FolderKind::Folder,
+                Some("track") => FolderKind::Track,
+                Some("playlist") => FolderKind::Playlist,
+                _ => FolderKind::Other,
+            };
+            Some(FolderEntry {
+                id,
+                name,
+                kind,
+                artwork: (kind == FolderKind::Track)
+                    .then(|| x.get("coverid").and_then(cover_key))
+                    .flatten(),
+                duration: (kind == FolderKind::Track)
+                    .then(|| folder_duration(&x["duration"]))
+                    .flatten(),
+            })
+        })
+        .collect();
+    FolderPage {
+        total: total_of(v, items.len()),
+        items,
+    }
+}
+
+pub(crate) fn libraries_from(v: &Value) -> Vec<VirtualLibrary> {
+    let mut out: Vec<VirtualLibrary> = Vec::new();
+    for x in loop_of(v, "folder_loop") {
+        let Some(id) = x["id"]
+            .as_str()
+            .filter(|s| crate::commands::library_id(s).is_ok())
+        else {
+            continue;
+        };
+        if out.iter().any(|l| l.id == id) {
+            continue;
+        }
+        let name = text_of(&x["name"])
+            .map(|n| n.trim().chars().take(200).collect())
+            .unwrap_or_else(|| "Library".to_string());
+        out.push(VirtualLibrary {
+            id: id.to_string(),
+            name,
+        });
+    }
+    out
+}
+
+pub(crate) fn favourites_from(v: &Value) -> FavouritePage {
+    let items: Vec<Favourite> = loop_of(v, "loop_loop")
+        .filter_map(|x| {
+            let id = x["id"]
+                .as_str()
+                .filter(|s| crate::commands::item_id(s).is_ok())?;
+            let has_items = int_of(&x["hasitems"]) == Some(1);
+            let audio = int_of(&x["isaudio"]) == Some(1);
+            Some(Favourite {
+                id: id.to_string(),
+                name: text_of(&x["name"]).unwrap_or_default(),
+                artwork: x
+                    .get("image")
+                    .and_then(image_key)
+                    .or_else(|| x.get("icon").and_then(image_key)),
+                is_folder: has_items && !audio,
+            })
+        })
+        .collect();
+    FavouritePage {
+        title: text_of(&v["title"]),
+        total: total_of(v, items.len()),
+        items,
+    }
+}
+
+pub(crate) fn playlists_from(v: &Value) -> PlaylistPage {
+    let items: Vec<SavedPlaylist> = loop_of(v, "playlists_loop")
+        .filter_map(|p| {
+            Some(SavedPlaylist {
+                id: positive_id(&p["id"])?,
+                name: text_of(&p["playlist"]).unwrap_or_default(),
+            })
+        })
+        .collect();
+    PlaylistPage {
+        total: total_of(v, items.len()),
+        items,
     }
 }
 
@@ -302,6 +608,7 @@ pub(crate) fn search_from(v: &Value) -> SearchResults {
                     artist_id: None,
                     year: None,
                     artwork: None,
+                    compilation: false,
                 })
             })
             .collect(),
@@ -319,6 +626,11 @@ pub(crate) fn search_from(v: &Value) -> SearchResults {
                     track_number: None,
                     artwork: cover_key(&Value::from(id)),
                     queue_index: None,
+                    disc_number: None,
+                    disc_count: None,
+                    genre: None,
+                    format: None,
+                    year: None,
                 })
             })
             .collect(),
@@ -458,6 +770,129 @@ mod tests {
     }
 
     #[test]
+    fn tracks_carry_disc_genre_and_format() {
+        let v = json!({"titles_loop": [
+            {"id": 1, "title": "A", "disc": "2", "disccount": 3, "genre": "Jazz", "type": "flc",
+             "samplesize": 24, "samplerate": "96000", "year": 1999, "album_id": "7", "artist_id": 3},
+            {"id": 2, "title": "B", "type": "mp3", "samplerate": 44100, "disc": 0},
+            {"id": 3, "title": "C", "type": "<script>", "samplesize": 999},
+            {"id": 4, "title": "D", "type": "alc", "samplesize": 16, "samplerate": 44100}
+        ]});
+        let t = tracks_from(&v, "titles_loop");
+        assert_eq!(t[0].disc_number, Some(2));
+        assert_eq!(t[0].disc_count, Some(3));
+        assert_eq!(t[0].genre.as_deref(), Some("Jazz"));
+        assert_eq!(t[0].format.as_deref(), Some("FLAC 24/96"));
+        assert_eq!(t[0].year, Some(1999));
+        assert_eq!(t[0].album_id, Some(7));
+        assert_eq!(t[1].format.as_deref(), Some("MP3 44.1 kHz"));
+        assert_eq!(t[1].disc_number, None);
+        assert_eq!(t[2].format, None);
+        assert_eq!(t[3].format.as_deref(), Some("ALAC 16/44.1"));
+    }
+
+    #[test]
+    fn music_folder_entries_never_show_paths() {
+        let v = json!({"count": 6, "folder_loop": [
+            {"id": 12, "type": "folder", "title": "Jazz"},
+            {"id": 13, "type": "track", "title": "/srv/music/Jazz/01 One.flac", "coverid": "abcdef12", "duration": "3:07"},
+            {"id": 14, "type": "track", "filename": "C:\\Music\\x.mp3", "duration": "../../x"},
+            {"id": 15, "type": "playlist", "title": "Mix"},
+            {"id": "16", "type": "unknown"},
+            {"id": 0, "type": "folder", "title": "Bad"},
+            {"id": "x"}
+        ]});
+        let p = folder_from(&v);
+        assert_eq!(p.total, 6);
+        assert_eq!(p.items.len(), 5);
+        assert_eq!(p.items[0].kind, FolderKind::Folder);
+        assert_eq!(p.items[1].name, "01 One.flac");
+        assert_eq!(p.items[1].duration.as_deref(), Some("3:07"));
+        assert_eq!(p.items[1].artwork.as_deref(), Some("music/abcdef12/cover"));
+        assert_eq!(p.items[2].name, "x.mp3");
+        assert_eq!(p.items[2].duration, None);
+        assert_eq!(p.items[3].kind, FolderKind::Playlist);
+        assert_eq!(p.items[4].kind, FolderKind::Other);
+        // Ordinary names with slashes are names, not paths.
+        assert_eq!(base_name("AC/DC"), "AC/DC");
+    }
+
+    #[test]
+    fn libraries_favourites_playlists_and_years() {
+        let libs = libraries_from(&json!({"folder_loop": [
+            {"id": "ab12", "name": " Classical "},
+            {"id": "ab12", "name": "Duplicate"},
+            {"id": "../x", "name": "Bad"},
+            {"id": 7, "name": "Number"},
+            {"id": "cd34"}
+        ]}));
+        assert_eq!(
+            libs,
+            vec![
+                VirtualLibrary {
+                    id: "ab12".into(),
+                    name: "Classical".into()
+                },
+                VirtualLibrary {
+                    id: "cd34".into(),
+                    name: "Library".into()
+                }
+            ]
+        );
+
+        let fav = favourites_from(&json!({"title": "Favourites", "count": 3, "loop_loop": [
+            {"id": "f0.0", "name": "Radio", "isaudio": 1, "hasitems": 0, "image": "http://radio.example.com/logo.png"},
+            {"id": "f0.1", "name": "Folder", "isaudio": 0, "hasitems": 1},
+            {"id": "f0 2", "name": "Bad id"},
+            {"name": "No id"}
+        ]}));
+        assert_eq!(fav.items.len(), 2);
+        assert!(!fav.items[0].is_folder);
+        assert!(
+            fav.items[0]
+                .artwork
+                .as_deref()
+                .unwrap()
+                .starts_with("imageproxy/")
+        );
+        assert!(fav.items[1].is_folder);
+
+        let pl = playlists_from(&json!({"count": "2", "playlists_loop": [
+            {"id": 5, "playlist": "Road trip"}, {"id": -1, "playlist": "Bad"}
+        ]}));
+        assert_eq!(pl.total, 2);
+        assert_eq!(
+            pl.items,
+            vec![SavedPlaylist {
+                id: 5,
+                name: "Road trip".into()
+            }]
+        );
+
+        let y = years_from(&json!({"count": 4, "years_loop": [
+            {"year": 1999}, {"year": "0"}, {"year": 123456}, {"year": "x"}
+        ]}));
+        assert_eq!(y.items, vec![1999, 0]);
+    }
+
+    #[test]
+    fn sync_groups_need_valid_distinct_players() {
+        let g = sync_groups_from(&json!({"syncgroups_loop": [
+            {"sync_members": "AA:BB:CC:DD:EE:01,aa:bb:cc:dd:ee:02,aa:bb:cc:dd:ee:01"},
+            {"sync_members": "aa:bb:cc:dd:ee:03"},
+            {"sync_members": "aa:bb:cc:dd:ee:02,aa:bb:cc:dd:ee:04"},
+            {"sync_members": "../x,aa:bb:cc:dd:ee:05"},
+            {"sync_members": 7}
+        ]}));
+        assert_eq!(
+            g,
+            vec![SyncGroup {
+                player_ids: vec!["aa:bb:cc:dd:ee:01".into(), "aa:bb:cc:dd:ee:02".into()]
+            }]
+        );
+    }
+
+    #[test]
     fn robust_on_arbitrary_json() {
         let samples = [
             json!(null),
@@ -476,6 +911,12 @@ mod tests {
             let _ = tracks_from(&v, "playlist_loop");
             let _ = search_from(&v);
             let _ = players_from(&v);
+            let _ = years_from(&v);
+            let _ = folder_from(&v);
+            let _ = libraries_from(&v);
+            let _ = favourites_from(&v);
+            let _ = playlists_from(&v);
+            let _ = sync_groups_from(&v);
             let s = status_from(&v);
             assert!(s.volume <= 100);
         }

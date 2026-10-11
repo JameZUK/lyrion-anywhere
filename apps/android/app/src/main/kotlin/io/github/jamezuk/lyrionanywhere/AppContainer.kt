@@ -11,6 +11,10 @@ import io.github.jamezuk.lyrionanywhere.data.ArtRepository
 import io.github.jamezuk.lyrionanywhere.data.DataStoreSettings
 import io.github.jamezuk.lyrionanywhere.data.EventsRepository
 import io.github.jamezuk.lyrionanywhere.data.LibraryRepository
+import io.github.jamezuk.lyrionanywhere.data.MenusRepository
+import io.github.jamezuk.lyrionanywhere.data.RustMenusRepository
+import io.github.jamezuk.lyrionanywhere.data.SuitabilityCache
+import io.github.jamezuk.lyrionanywhere.data.VirtualLibraries
 import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
 import io.github.jamezuk.lyrionanywhere.data.RustAccountRepository
 import io.github.jamezuk.lyrionanywhere.data.RustArtRepository
@@ -59,6 +63,13 @@ class AppContainer(context: Context, scope: CoroutineScope) {
     val art: ArtRepository = RustArtRepository(accountImpl)
     val events: EventsRepository = RustEventsRepository(accountImpl)
     val analysis: AnalysisRepository = RustAnalysisRepository(accountImpl)
+    val menus: MenusRepository = RustMenusRepository(accountImpl)
+
+    /** The LMS virtual library browsed (offered only when LMS has any). */
+    val libraries = VirtualLibraries(library, settings)
+
+    /** How usable each app is here, remembered for a while (Apps & Radio). */
+    val suitability = SuitabilityCache(clock = { android.os.SystemClock.elapsedRealtime() })
 
     /** This phone as an LMS player, while signed in and switched on. */
     val localPlayer: LocalPlayerRepository = RustLocalPlayerRepository(

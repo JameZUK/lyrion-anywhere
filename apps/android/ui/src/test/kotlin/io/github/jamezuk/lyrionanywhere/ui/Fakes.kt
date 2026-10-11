@@ -6,6 +6,20 @@ import io.github.jamezuk.lyrionanywhere.core.AlbumPage
 import io.github.jamezuk.lyrionanywhere.core.AlbumSort
 import io.github.jamezuk.lyrionanywhere.core.Artist
 import io.github.jamezuk.lyrionanywhere.core.ArtistPage
+import io.github.jamezuk.lyrionanywhere.core.ArtistRole
+import io.github.jamezuk.lyrionanywhere.core.Favourite
+import io.github.jamezuk.lyrionanywhere.core.FavouritePage
+import io.github.jamezuk.lyrionanywhere.core.FolderEntry
+import io.github.jamezuk.lyrionanywhere.core.FolderKind
+import io.github.jamezuk.lyrionanywhere.core.FolderPage
+import io.github.jamezuk.lyrionanywhere.core.Genre
+import io.github.jamezuk.lyrionanywhere.core.GenrePage
+import io.github.jamezuk.lyrionanywhere.core.LibraryFilter
+import io.github.jamezuk.lyrionanywhere.core.PlaylistPage
+import io.github.jamezuk.lyrionanywhere.core.SavedPlaylist
+import io.github.jamezuk.lyrionanywhere.core.SyncGroup
+import io.github.jamezuk.lyrionanywhere.core.VirtualLibrary
+import io.github.jamezuk.lyrionanywhere.core.YearPage
 import io.github.jamezuk.lyrionanywhere.core.Device
 import io.github.jamezuk.lyrionanywhere.core.PairingInvite
 import io.github.jamezuk.lyrionanywhere.core.Placement
@@ -52,10 +66,13 @@ import kotlinx.coroutines.flow.update
 val SERVER = ServerInfo("https://music.example.com/", "music.example.com", true)
 val WHO = SignedIn(User("alice", UserRole.LISTENER), Device(1, "Phone", "02:4c:41:00:00:01"))
 
-fun sampleAlbum(id: Long) = Album(id, "Album $id", "Artist", 3, 1999, "music/$id/cover")
+fun sampleAlbum(id: Long, compilation: Boolean = false) =
+    Album(id, "Album $id", "Artist", 3, 1999, "music/$id/cover", compilation)
 
-fun sampleTrack(id: Long, index: Int? = null) =
-    Track(id, "Track $id", "Artist", "Album", 7, 3, 61.0, id.toUInt(), "music/$id/cover", index?.toUInt())
+fun sampleTrack(id: Long, index: Int? = null, disc: Int? = null, artist: String = "Artist") = Track(
+    id, "Track $id", artist, "Album", 7, 3, 61.0, id.toUInt(), "music/$id/cover", index?.toUInt(),
+    disc?.toUInt(), disc?.let { 2u }, "Jazz", "FLAC 24/96", 1999,
+)
 
 fun samplePlayer(id: String, playing: Boolean = false) = Player(id, "Player $id", null, true, true, playing)
 
@@ -126,11 +143,21 @@ class FakeAccount : AccountRepository {
 
 class FakeLibrary(var totalAlbums: Int = 250) : LibraryRepository {
     val albumCalls = mutableListOf<Triple<Int, Int, AlbumSort>>()
+    val albumFilters = mutableListOf<LibraryFilter>()
+    val artistFilters = mutableListOf<LibraryFilter>()
     var fail: AppError? = null
     val searches = mutableListOf<String>()
+    val genreQueries = mutableListOf<String?>()
+    /** Roles the library has artists in. */
+    var roles = setOf(ArtistRole.COMPOSER)
+    var albumsByArtist = listOf(sampleAlbum(1), sampleAlbum(2), sampleAlbum(3, compilation = true))
+    var albumArtistOf: List<Album>? = listOf(sampleAlbum(1))
+    var tracks = listOf(sampleTrack(1), sampleTrack(2))
+    var libs = emptyList<VirtualLibrary>()
 
-    override suspend fun albums(start: Int, count: Int, sort: AlbumSort, search: String?): ApiResult<AlbumPage> {
+    override suspend fun albums(start: Int, count: Int, sort: AlbumSort, search: String?, filter: LibraryFilter): ApiResult<AlbumPage> {
         albumCalls += Triple(start, count, sort)
+        albumFilters += filter
         fail?.let { return ApiResult.Err(it) }
         val end = minOf(start + count, totalAlbums)
         val items = (start until end).map { sampleAlbum(it.toLong() + 1) }
@@ -139,12 +166,44 @@ class FakeLibrary(var totalAlbums: Int = 250) : LibraryRepository {
 
     override suspend fun album(id: Long): ApiResult<Album?> = ApiResult.Ok(sampleAlbum(id))
 
-    override suspend fun albumTracks(albumId: Long) = ApiResult.Ok(listOf(sampleTrack(1), sampleTrack(2)))
+    override suspend fun albumTracks(albumId: Long) = ApiResult.Ok(tracks)
 
-    override suspend fun artists(start: Int, count: Int, search: String?) =
-        ApiResult.Ok(ArtistPage(1u, listOf(Artist(3, "Artist"))))
+    override suspend fun artists(start: Int, count: Int, search: String?, filter: LibraryFilter): ApiResult<ArtistPage> {
+        artistFilters += filter
+        fail?.let { return ApiResult.Err(it) }
+        return ApiResult.Ok(ArtistPage(1u, listOf(Artist(3, "Artist"))))
+    }
 
-    override suspend fun artistAlbums(artistId: Long): ApiResult<List<Album>> = ApiResult.Ok(listOf(sampleAlbum(1)))
+    override suspend fun hasRole(role: ArtistRole, libraryId: String?) = ApiResult.Ok(role in roles)
+
+    override suspend fun artistAlbums(artistId: Long, role: ArtistRole?): ApiResult<List<Album>> = when (role) {
+        null -> ApiResult.Ok(albumsByArtist)
+        else -> albumArtistOf?.let { ApiResult.Ok(it) } ?: ApiResult.Err(AppError.Server(500, "x"))
+    }
+
+    override suspend fun genres(start: Int, count: Int, libraryId: String?, search: String?): ApiResult<GenrePage> {
+        genreQueries += search
+        return ApiResult.Ok(GenrePage(1u, listOf(Genre(4, "Jazz"))))
+    }
+
+    override suspend fun genre(id: Long) = ApiResult.Ok(Genre(id, "Jazz"))
+
+    override suspend fun years(start: Int, count: Int, libraryId: String?) =
+        ApiResult.Ok(YearPage(2u, listOf(2001u, 0u)))
+
+    override suspend fun musicFolder(start: Int, count: Int, folderId: Long?) = ApiResult.Ok(
+        FolderPage(2u, listOf(FolderEntry(12, "Jazz", FolderKind.FOLDER, null, null), FolderEntry(13, "One", FolderKind.TRACK, null, "1:01"))),
+    )
+
+    override suspend fun libraries(): ApiResult<List<VirtualLibrary>> = ApiResult.Ok(libs)
+
+    override suspend fun favourites(start: Int, count: Int, itemId: String?) = ApiResult.Ok(
+        FavouritePage("Favourites", 1u, listOf(Favourite("f0.0", "Radio", null, false))),
+    )
+
+    override suspend fun playlists(start: Int, count: Int) = ApiResult.Ok(PlaylistPage(1u, listOf(SavedPlaylist(5, "Road trip"))))
+
+    override suspend fun playlistTracks(playlistId: Long) = ApiResult.Ok(tracks)
 
     override suspend fun search(term: String, count: Int): ApiResult<SearchResults> {
         searches += term
@@ -165,6 +224,10 @@ class FakePlayers : PlayersRepository {
     }
 
     override suspend fun list() = ApiResult.Ok(players)
+
+    var groups = emptyList<SyncGroup>()
+
+    override suspend fun syncGroups() = ApiResult.Ok(groups)
 
     override suspend fun status(player: String): ApiResult<PlayerStatus> {
         statusCalls += player
@@ -196,6 +259,9 @@ class FakePlayers : PlayersRepository {
 
     override suspend fun enqueue(player: String, selection: Selection, placement: Placement, playIndex: Int?) =
         cmd("enqueue $selection $placement $playIndex $player")
+
+    override suspend fun playFavourite(player: String, itemId: String, placement: Placement) =
+        cmd("favourite $itemId $placement $player")
 }
 
 class FakeEvents : EventsRepository {
@@ -223,6 +289,11 @@ class FakeSettings(initial: AppSettings = AppSettings()) : SettingsStore {
     override suspend fun setPlayOnPhone(on: Boolean) = state.update { it.copy(playOnPhone = on) }
 
     override suspend fun setSound(sound: SoundSettings) = state.update { it.copy(sound = sound) }
+
+    override suspend fun setLibrary(id: String?) = state.update { it.copy(libraryId = id) }
+
+    override suspend fun setDefaultPlayer(choice: io.github.jamezuk.lyrionanywhere.data.DefaultPlayer, playerId: String?) =
+        state.update { it.copy(defaultPlayer = choice, defaultPlayerId = playerId) }
 }
 
 fun localStatus(id: String, connection: PlayerConnection = PlayerConnection.Connected) = LocalPlayerStatus(

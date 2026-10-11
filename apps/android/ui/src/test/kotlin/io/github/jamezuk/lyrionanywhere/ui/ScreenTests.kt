@@ -18,7 +18,6 @@ import io.github.jamezuk.lyrionanywhere.core.SignalStage
 import io.github.jamezuk.lyrionanywhere.core.SignalVerdict
 import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerState
-import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnPhoneRow
 import io.github.jamezuk.lyrionanywhere.ui.player.SignalPathPanel
 import io.github.jamezuk.lyrionanywhere.ui.components.ErrorState
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.SignInScreen
@@ -201,24 +200,5 @@ class ScreenTests {
             }
         }
         compose.onNodeWithText("Signal path").performScrollTo().assertIsDisplayed()
-    }
-
-    @Test
-    fun playOnPhoneIsASwitchWithItsState() {
-        var changed: Boolean? = null
-        compose.setContent {
-            LyrionTheme(dynamicColour = false) {
-                PlayOnPhoneRow(
-                    LocalPlayerState(
-                        enabled = true,
-                        status = localStatus("02:4c:41:00:00:01", PlayerConnection.Reconnecting(500u)),
-                    ),
-                    onChange = { changed = it },
-                )
-            }
-        }
-        compose.onNodeWithText("Connection lost; reconnecting…").assertIsDisplayed()
-        compose.onNode(hasText("Play on this phone") and isToggleable()).assertIsOn().performClick()
-        assertEquals(false, changed)
     }
 }

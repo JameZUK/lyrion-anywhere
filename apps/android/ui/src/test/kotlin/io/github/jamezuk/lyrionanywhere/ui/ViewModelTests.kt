@@ -342,30 +342,6 @@ class PlayerViewModelTest : MainDispatcherTest() {
     }
 
     @Test
-    fun playOnPhoneSelectsThePhoneOnceLmsListsIt() = runTest(dispatcher) {
-        val players = FakePlayers()
-        val local = FakeLocalPlayer()
-        val vm = PlayerViewModel(players, FakeEvents(), FakeSettings(), local) { now }
-        vm.start()
-        assertEquals("aa:00:00:00:00:02", vm.state.value.selectedId)
-        vm.setPlayOnPhone(true)
-        assertEquals(listOf(true), local.enabled)
-        assertTrue(vm.state.value.local.enabled)
-        // The engine connects and says hello; LMS now lists the phone.
-        players.players = players.players + samplePlayer("02:4c:41:00:00:01")
-        local.state.value = local.state.value.copy(status = localStatus("02:4c:41:00:00:01"))
-        runCurrent()
-        assertEquals("02:4c:41:00:00:01", vm.state.value.selectedId)
-        assertTrue(vm.state.value.localSelected)
-        // Choosing another player is the user's call from then on.
-        vm.select("aa:00:00:00:00:01")
-        vm.refresh()
-        assertEquals("aa:00:00:00:00:01", vm.state.value.selectedId)
-        assertFalse(vm.state.value.localSelected)
-        vm.stop()
-    }
-
-    @Test
     fun aRefusedPlayOnPhoneIsReported() = runTest(dispatcher) {
         val local = FakeLocalPlayer().apply { enableResult = ApiResult.Err(AppError.SignedOut) }
         val vm = PlayerViewModel(FakePlayers(), FakeEvents(), FakeSettings(), local) { now }

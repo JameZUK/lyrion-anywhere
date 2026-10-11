@@ -12,14 +12,43 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 /** Non-secret settings: which server, which player is being controlled, whether this
- *  phone is a player itself, and its sound (DSP and bit-perfect output). */
+ *  phone is a player itself, its sound (DSP and bit-perfect output), and which LMS virtual
+ *  library to browse. */
 data class AppSettings(
     val serverUrl: String? = null,
     val selectedPlayerId: String? = null,
-    val playOnPhone: Boolean = false,
+    /** This phone is an LMS player (on by default: the phone is the default player, D20). */
+    val playOnPhone: Boolean = true,
     /** This phone's player's sound (default: bit-perfect). */
     val sound: SoundSettings = SoundSettings(),
+    /** The LMS virtual library browsed, or null for the whole library. */
+    val libraryId: String? = null,
+    /** Which player the app controls when it starts (D20). */
+    val defaultPlayer: DefaultPlayer = DefaultPlayer.THIS_PHONE,
+    /** The player for [DefaultPlayer.SPECIFIC]. */
+    val defaultPlayerId: String? = null,
 )
+
+/** Which player the app controls when it starts (per device). */
+enum class DefaultPlayer {
+    /** This phone (the default). */
+    THIS_PHONE,
+
+    /** Whichever was controlled last. */
+    LAST_USED,
+
+    /** One chosen player (this phone if it isn't available). */
+    SPECIFIC,
+}
+
+/** An LMS player id (a MAC address). */
+fun isPlayerId(v: String?): Boolean =
+    v != null && v.length == 17 &&
+        v.withIndex().all { (i, c) -> if (i % 3 == 2) c == ':' else c.isDigit() || c.lowercaseChar() in 'a'..'f' }
+
+/** An LMS virtual library id: short hex, as the gateway requires. */
+fun isLibraryId(v: String?): Boolean =
+    v != null && v.length in 1..32 && v.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
 
 interface SettingsStore {
     val settings: Flow<AppSettings>
@@ -31,6 +60,12 @@ interface SettingsStore {
     suspend fun setPlayOnPhone(on: Boolean)
 
     suspend fun setSound(sound: SoundSettings)
+
+    /** Browse this virtual library (null: the whole library). A malformed id is ignored. */
+    suspend fun setLibrary(id: String?)
+
+    /** The default player; [playerId] is required for [DefaultPlayer.SPECIFIC]. */
+    suspend fun setDefaultPlayer(choice: DefaultPlayer, playerId: String?)
 }
 
 class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsStore {
@@ -38,16 +73,23 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         AppSettings(
             serverUrl = it[SERVER],
             selectedPlayerId = it[PLAYER],
-            playOnPhone = it[PLAY_ON_PHONE] ?: false,
+            playOnPhone = it[PLAY_ON_PHONE] ?: true,
             sound = readSound(it),
+            // Stored nonsense is never used.
+            libraryId = it[LIBRARY]?.takeIf(::isLibraryId),
+            defaultPlayer = readDefault(it),
+            defaultPlayerId = if (readDefault(it) == DefaultPlayer.SPECIFIC) it[DEFAULT_PLAYER_ID] else null,
         )
     }
 
     override suspend fun setServerUrl(url: String?) {
         store.edit { p ->
             if (url == null) p.remove(SERVER) else p[SERVER] = url
-            // A different server has different players.
+            // A different server has different players and libraries.
             p.remove(PLAYER)
+            p.remove(LIBRARY)
+            p.remove(DEFAULT_PLAYER_ID)
+            if (p[DEFAULT_PLAYER] == DefaultPlayer.SPECIFIC.name) p.remove(DEFAULT_PLAYER)
         }
     }
 
@@ -64,10 +106,36 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         store.edit { p -> writeSound(p, s) }
     }
 
+    override suspend fun setDefaultPlayer(choice: DefaultPlayer, playerId: String?) {
+        if (choice == DefaultPlayer.SPECIFIC && !isPlayerId(playerId)) return
+        store.edit { p ->
+            p[DEFAULT_PLAYER] = choice.name
+            if (choice == DefaultPlayer.SPECIFIC && playerId != null) {
+                p[DEFAULT_PLAYER_ID] = playerId.lowercase()
+            } else {
+                p.remove(DEFAULT_PLAYER_ID)
+            }
+        }
+    }
+
+    override suspend fun setLibrary(id: String?) {
+        if (id != null && !isLibraryId(id)) return
+        store.edit { p -> if (id == null) p.remove(LIBRARY) else p[LIBRARY] = id }
+    }
+
     private companion object {
         val SERVER = stringPreferencesKey("server_url")
         val PLAYER = stringPreferencesKey("selected_player")
         val PLAY_ON_PHONE = booleanPreferencesKey("play_on_phone")
+        val LIBRARY = stringPreferencesKey("virtual_library")
+        val DEFAULT_PLAYER = stringPreferencesKey("default_player")
+        val DEFAULT_PLAYER_ID = stringPreferencesKey("default_player_id")
+
+        /** A specific default without a valid player is "this phone". */
+        fun readDefault(p: Preferences): DefaultPlayer {
+            val d = enumOr(p[DEFAULT_PLAYER], DefaultPlayer.THIS_PHONE)
+            return if (d == DefaultPlayer.SPECIFIC && !isPlayerId(p[DEFAULT_PLAYER_ID])) DefaultPlayer.THIS_PHONE else d
+        }
 
         /** A1–A3's single levelling switch; read once to migrate, then removed. */
         val OLD_LEVELLING = booleanPreferencesKey("loudness_levelling")

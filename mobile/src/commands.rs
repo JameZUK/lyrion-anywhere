@@ -9,8 +9,11 @@ use crate::error::ApiError;
 
 pub const STATUS_TAGS: &str = "tags:aAlcdeJKjNoqrsTIyx";
 pub const QUEUE_TAGS: &str = "tags:alcdJKj";
-pub const ALBUM_TAGS: &str = "tags:aljyS";
-pub const TRACK_TAGS: &str = "tags:adtlcJKj";
+/// Albums: artist, album, artwork, year, artist id, and the compilation flag.
+pub const ALBUM_TAGS: &str = "tags:aljySw";
+/// Tracks: as the web app's, plus album and artist ids, genre, disc, format, sample size
+/// and rate, and year (for the album page's details and multi-disc sections).
+pub const TRACK_TAGS: &str = "tags:adtlcJKjegiqosITy";
 
 /// Largest page the gateway accepts.
 pub const MAX_PAGE: u32 = 500;
@@ -61,6 +64,48 @@ pub fn text(s: &str) -> String {
     t.trim().chars().take(200).collect()
 }
 
+/// A year as LMS lists them: 0 ("no year") up to four digits.
+pub fn year(v: u32) -> Result<u32, ApiError> {
+    if v <= 9999 {
+        Ok(v)
+    } else {
+        Err(ApiError::invalid("bad year"))
+    }
+}
+
+/// An LMS virtual library id: short hex (the gateway refuses anything else).
+pub fn library_id(v: &str) -> Result<&str, ApiError> {
+    if (1..=32).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(v)
+    } else {
+        Err(ApiError::invalid("bad library id"))
+    }
+}
+
+/// LMS favourite and menu item ids, e.g. `f047f379.3`.
+pub fn item_id(v: &str) -> Result<&str, ApiError> {
+    if (1..=128).contains(&v.len())
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    {
+        Ok(v)
+    } else {
+        Err(ApiError::invalid("bad item id"))
+    }
+}
+
+/// An app or radio command word, as LMS lists them (`spotty`, `bbcsounds`, …).
+pub fn app_command(v: &str) -> Result<&str, ApiError> {
+    if (1..=64).contains(&v.len())
+        && v.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    {
+        Ok(v)
+    } else {
+        Err(ApiError::invalid("bad app"))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum AlbumSort {
     Title,
@@ -82,13 +127,116 @@ impl AlbumSort {
     }
 }
 
+/// LMS contributor roles (the gateway passes on only these).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ArtistRole {
+    AlbumArtist,
+    Artist,
+    Composer,
+    Conductor,
+    Band,
+    TrackArtist,
+}
+
+impl ArtistRole {
+    pub(crate) fn lms(self) -> &'static str {
+        match self {
+            ArtistRole::AlbumArtist => "ALBUMARTIST",
+            ArtistRole::Artist => "ARTIST",
+            ArtistRole::Composer => "COMPOSER",
+            ArtistRole::Conductor => "CONDUCTOR",
+            ArtistRole::Band => "BAND",
+            ArtistRole::TrackArtist => "TRACKARTIST",
+        }
+    }
+}
+
+/// What an album or artist list is narrowed to. Every value is checked before use; a
+/// value a list doesn't support is left out (as the web app does).
+#[derive(Debug, Clone, Default, PartialEq, Eq, uniffi::Record)]
+pub struct LibraryFilter {
+    #[uniffi(default = None)]
+    pub genre_id: Option<i64>,
+    #[uniffi(default = None)]
+    pub year: Option<u32>,
+    #[uniffi(default = None)]
+    pub artist_id: Option<i64>,
+    #[uniffi(default = None)]
+    pub compilation: Option<bool>,
+    #[uniffi(default = None)]
+    pub role: Option<ArtistRole>,
+    /// An LMS virtual library, or none for the whole library.
+    #[uniffi(default = None)]
+    pub library_id: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Key {
+    Genre,
+    Year,
+    Artist,
+    Compilation,
+    Role,
+    Library,
+}
+
+/// `key:value` parameters for the filter, in the web app's order, for `allowed` keys only.
+fn filter_params(f: &LibraryFilter, allowed: &[Key]) -> Result<Vec<Value>, ApiError> {
+    let mut out = Vec::new();
+    let has = |k: Key| allowed.contains(&k);
+    if let (true, Some(g)) = (has(Key::Genre), f.genre_id) {
+        out.push(json!(format!("genre_id:{}", id(g)?)));
+    }
+    if let (true, Some(y)) = (has(Key::Year), f.year) {
+        out.push(json!(format!("year:{}", year(y)?)));
+    }
+    if let (true, Some(a)) = (has(Key::Artist), f.artist_id) {
+        out.push(json!(format!("artist_id:{}", id(a)?)));
+    }
+    if let (true, Some(c)) = (has(Key::Compilation), f.compilation) {
+        out.push(json!(format!("compilation:{}", u8::from(c))));
+    }
+    if let (true, Some(r)) = (has(Key::Role), f.role) {
+        out.push(json!(format!("role_id:{}", r.lms())));
+    }
+    if let (true, Some(l)) = (has(Key::Library), f.library_id.as_deref()) {
+        out.push(json!(format!("library_id:{}", library_id(l)?)));
+    }
+    Ok(out)
+}
+
+fn in_library(library: Option<&str>) -> LibraryFilter {
+    LibraryFilter {
+        library_id: library.map(str::to_owned),
+        ..Default::default()
+    }
+}
+
+fn search_param(search: Option<&str>) -> Option<Value> {
+    search
+        .map(text)
+        .filter(|s| !s.is_empty())
+        .map(|s| json!(format!("search:{s}")))
+}
+
 // --- library -----------------------------------------------------------------------------
 
 pub fn players() -> Command {
     vec![json!("players"), json!(0), json!(100)]
 }
 
-pub fn albums(start: u32, n: u32, sort: AlbumSort, search: Option<&str>) -> Command {
+/// All sync groups (the gateway keeps only players the caller may control).
+pub fn sync_groups() -> Command {
+    vec![json!("syncgroups"), json!("?")]
+}
+
+pub fn albums(
+    start: u32,
+    n: u32,
+    sort: AlbumSort,
+    search: Option<&str>,
+    filter: &LibraryFilter,
+) -> Result<Command, ApiError> {
     let mut c = vec![
         json!("albums"),
         json!(start),
@@ -96,10 +244,19 @@ pub fn albums(start: u32, n: u32, sort: AlbumSort, search: Option<&str>) -> Comm
         json!(ALBUM_TAGS),
         json!(sort.param()),
     ];
-    if let Some(s) = search.map(text).filter(|s| !s.is_empty()) {
-        c.push(json!(format!("search:{s}")));
-    }
-    c
+    c.extend(search_param(search));
+    c.extend(filter_params(
+        filter,
+        &[
+            Key::Genre,
+            Key::Year,
+            Key::Artist,
+            Key::Compilation,
+            Key::Role,
+            Key::Library,
+        ],
+    )?);
+    Ok(c)
 }
 
 pub fn album_by_id(album: i64) -> Result<Command, ApiError> {
@@ -112,23 +269,46 @@ pub fn album_by_id(album: i64) -> Result<Command, ApiError> {
     ])
 }
 
-pub fn artist_albums(artist: i64) -> Result<Command, ApiError> {
-    Ok(vec![
+/// An artist's albums, oldest first; with a role, only those where they have that role.
+pub fn artist_albums(artist: i64, role: Option<ArtistRole>) -> Result<Command, ApiError> {
+    let mut c = vec![
         json!("albums"),
         json!(0),
         json!(MAX_PAGE),
         json!(ALBUM_TAGS),
         json!("sort:yearalbum"),
         json!(format!("artist_id:{}", id(artist)?)),
-    ])
+    ];
+    if let Some(r) = role {
+        c.push(json!(format!("role_id:{}", r.lms())));
+    }
+    Ok(c)
 }
 
-pub fn artists(start: u32, n: u32, search: Option<&str>) -> Command {
+pub fn artists(
+    start: u32,
+    n: u32,
+    search: Option<&str>,
+    filter: &LibraryFilter,
+) -> Result<Command, ApiError> {
     let mut c = vec![json!("artists"), json!(start), json!(count(n))];
-    if let Some(s) = search.map(text).filter(|s| !s.is_empty()) {
-        c.push(json!(format!("search:{s}")));
-    }
-    c
+    c.extend(search_param(search));
+    c.extend(filter_params(
+        filter,
+        &[Key::Genre, Key::Role, Key::Library],
+    )?);
+    Ok(c)
+}
+
+/// Does the library have any artists in this role? (One row is enough to tell.)
+pub fn has_role(role: ArtistRole, library: Option<&str>) -> Result<Command, ApiError> {
+    let f = LibraryFilter {
+        role: Some(role),
+        ..in_library(library)
+    };
+    let mut c = vec![json!("artists"), json!(0), json!(1)];
+    c.extend(filter_params(&f, &[Key::Role, Key::Library])?);
+    Ok(c)
 }
 
 pub fn album_tracks(album: i64) -> Result<Command, ApiError> {
@@ -155,8 +335,137 @@ pub fn search(term: &str, n: u32) -> Result<Command, ApiError> {
     ])
 }
 
-pub fn genres(start: u32, n: u32) -> Command {
-    vec![json!("genres"), json!(start), json!(count(n))]
+pub fn genres(
+    start: u32,
+    n: u32,
+    library: Option<&str>,
+    search: Option<&str>,
+) -> Result<Command, ApiError> {
+    let mut c = vec![json!("genres"), json!(start), json!(count(n))];
+    c.extend(search_param(search));
+    c.extend(filter_params(&in_library(library), &[Key::Library])?);
+    Ok(c)
+}
+
+pub fn genre_by_id(genre: i64) -> Result<Command, ApiError> {
+    Ok(vec![
+        json!("genres"),
+        json!(0),
+        json!(1),
+        json!(format!("genre_id:{}", id(genre)?)),
+    ])
+}
+
+pub fn years(start: u32, n: u32, library: Option<&str>) -> Result<Command, ApiError> {
+    let mut c = vec![
+        json!("years"),
+        json!(start),
+        json!(count(n)),
+        json!("hasAlbums:1"),
+    ];
+    c.extend(filter_params(&in_library(library), &[Key::Library])?);
+    Ok(c)
+}
+
+/// One folder of the music folder (the top level without an id). Never a path.
+pub fn music_folder(start: u32, n: u32, folder: Option<i64>) -> Result<Command, ApiError> {
+    let mut c = vec![json!("musicfolder"), json!(start), json!(count(n))];
+    if let Some(f) = folder {
+        c.push(json!(format!("folder_id:{}", id(f)?)));
+    }
+    c.push(json!("tags:cdt"));
+    Ok(c)
+}
+
+/// LMS's virtual libraries, if any.
+pub fn libraries() -> Command {
+    vec![json!("libraries")]
+}
+
+pub fn favourites(start: u32, n: u32, item: Option<&str>) -> Result<Command, ApiError> {
+    let mut c = vec![
+        json!("favorites"),
+        json!("items"),
+        json!(start),
+        json!(count(n)),
+    ];
+    if let Some(i) = item {
+        c.push(json!(format!("item_id:{}", item_id(i)?)));
+    }
+    Ok(c)
+}
+
+pub fn playlists(start: u32, n: u32) -> Command {
+    vec![json!("playlists"), json!(start), json!(count(n))]
+}
+
+pub fn playlist_tracks(playlist: i64) -> Result<Command, ApiError> {
+    Ok(vec![
+        json!("playlists"),
+        json!("tracks"),
+        json!(0),
+        json!(MAX_PAGE),
+        json!(format!("playlist_id:{}", id(playlist)?)),
+        json!(TRACK_TAGS),
+    ])
+}
+
+// --- apps, radio and context menus (SlimBrowse) --------------------------------------------
+
+pub fn apps_list() -> Command {
+    vec![json!("apps"), json!(0), json!(100)]
+}
+
+pub fn radios_list() -> Command {
+    vec![json!("radios"), json!(0), json!(100)]
+}
+
+/// The player's home menu, where plugins add entries (filtered by the gateway).
+pub fn home_menu() -> Command {
+    vec![json!("menu"), json!(0), json!(500), json!("direct:1")]
+}
+
+/// What a "More…" (context) menu is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum InfoKind {
+    Track,
+    Album,
+    Artist,
+    Genre,
+    Playlist,
+    Year,
+    Folder,
+}
+
+impl InfoKind {
+    pub(crate) fn command(self) -> &'static str {
+        match self {
+            InfoKind::Track => "trackinfo",
+            InfoKind::Album => "albuminfo",
+            InfoKind::Artist => "artistinfo",
+            InfoKind::Genre => "genreinfo",
+            InfoKind::Playlist => "playlistinfo",
+            InfoKind::Year => "yearinfo",
+            InfoKind::Folder => "folderinfo",
+        }
+    }
+
+    /// The selector parameter (`track_id` = 7, `year` = 1999), checked.
+    pub(crate) fn selector(self, item: i64) -> Result<(String, String), ApiError> {
+        let key = match self {
+            InfoKind::Year => {
+                let y = u32::try_from(item).map_err(|_| ApiError::invalid("bad year"))?;
+                return Ok(("year".into(), year(y)?.to_string()));
+            }
+            InfoKind::Track => "track_id",
+            InfoKind::Album => "album_id",
+            InfoKind::Artist => "artist_id",
+            InfoKind::Genre => "genre_id",
+            InfoKind::Playlist => "playlist_id",
+            InfoKind::Folder => "folder_id",
+        };
+        Ok((key.into(), id(item)?.to_string()))
+    }
 }
 
 // --- playback (player commands) ----------------------------------------------------------
@@ -279,6 +588,25 @@ pub enum Selection {
     Album { id: i64 },
     Track { id: i64 },
     Artist { id: i64 },
+    Playlist { id: i64 },
+    Genre { id: i64 },
+    Year { year: u32 },
+    Folder { id: i64 },
+}
+
+impl Selection {
+    /// The `key:value` selector, checked.
+    fn selector(self) -> Result<String, ApiError> {
+        Ok(match self {
+            Selection::Album { id: v } => format!("album_id:{}", id(v)?),
+            Selection::Track { id: v } => format!("track_id:{}", id(v)?),
+            Selection::Artist { id: v } => format!("artist_id:{}", id(v)?),
+            Selection::Playlist { id: v } => format!("playlist_id:{}", id(v)?),
+            Selection::Genre { id: v } => format!("genre_id:{}", id(v)?),
+            Selection::Year { year: y } => format!("year:{}", year(y)?),
+            Selection::Folder { id: v } => format!("folder_id:{}", id(v)?),
+        })
+    }
 }
 
 /// Where it goes: replace the queue and play, play next, or add to the end.
@@ -294,11 +622,6 @@ pub fn enqueue(
     placement: Placement,
     play_index: Option<u32>,
 ) -> Result<Command, ApiError> {
-    let (key, value) = match sel {
-        Selection::Album { id } => ("album_id", id),
-        Selection::Track { id } => ("track_id", id),
-        Selection::Artist { id } => ("artist_id", id),
-    };
     let verb = match placement {
         Placement::PlayNow => "load",
         Placement::PlayNext => "insert",
@@ -307,7 +630,7 @@ pub fn enqueue(
     let mut c = vec![
         json!("playlistcontrol"),
         json!(format!("cmd:{verb}")),
-        json!(format!("{key}:{}", id(value)?)),
+        json!(sel.selector()?),
     ];
     if let (Placement::PlayNow, Some(i)) = (placement, play_index) {
         c.push(json!(format!("play_index:{i}")));
@@ -315,19 +638,38 @@ pub fn enqueue(
     Ok(c)
 }
 
+/// Play, play next or add a favourite (radio stations, tracks, app items).
+pub fn play_favourite(item: &str, placement: Placement) -> Result<Command, ApiError> {
+    let verb = match placement {
+        Placement::PlayNow => "play",
+        Placement::PlayNext => "insert",
+        Placement::AddToQueue => "add",
+    };
+    Ok(vec![
+        json!("favorites"),
+        json!("playlist"),
+        json!(verb),
+        json!(format!("item_id:{}", item_id(item)?)),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn none() -> LibraryFilter {
+        LibraryFilter::default()
+    }
+
     #[test]
     fn same_shapes_as_the_web_app() {
         assert_eq!(
-            albums(0, 100, AlbumSort::Title, None),
+            albums(0, 100, AlbumSort::Title, None, &none()).unwrap(),
             vec![
                 json!("albums"),
                 json!(0),
                 json!(100),
-                json!("tags:aljyS"),
+                json!("tags:aljySw"),
                 json!("sort:album")
             ]
         );
@@ -354,7 +696,147 @@ mod tests {
             vec![json!("mixer"), json!("volume"), json!(100)]
         );
         assert_eq!(queue(0, 10_000)[2], json!(500));
-        assert_eq!(artists(0, 0, None)[2], json!(1));
+        assert_eq!(artists(0, 0, None, &none()).unwrap()[2], json!(1));
+    }
+
+    #[test]
+    fn browse_builders_match_the_web_app() {
+        // Parameters in the web app's order: search, then genre, year, artist,
+        // compilation, role, library.
+        let all = LibraryFilter {
+            genre_id: Some(4),
+            year: Some(1999),
+            artist_id: Some(3),
+            compilation: Some(true),
+            role: Some(ArtistRole::Composer),
+            library_id: Some("ab12".into()),
+        };
+        assert_eq!(
+            albums(10, 60, AlbumSort::Newest, Some(" x "), &all).unwrap(),
+            vec![
+                json!("albums"),
+                json!(10),
+                json!(60),
+                json!("tags:aljySw"),
+                json!("sort:new"),
+                json!("search:x"),
+                json!("genre_id:4"),
+                json!("year:1999"),
+                json!("artist_id:3"),
+                json!("compilation:1"),
+                json!("role_id:COMPOSER"),
+                json!("library_id:ab12"),
+            ]
+        );
+        // Artists take only genre, role and library.
+        assert_eq!(
+            artists(0, 200, None, &all).unwrap(),
+            vec![
+                json!("artists"),
+                json!(0),
+                json!(200),
+                json!("genre_id:4"),
+                json!("role_id:COMPOSER"),
+                json!("library_id:ab12"),
+            ]
+        );
+        assert_eq!(
+            has_role(ArtistRole::Band, None).unwrap(),
+            vec![json!("artists"), json!(0), json!(1), json!("role_id:BAND")]
+        );
+        assert_eq!(
+            genres(0, 100, Some("ab12"), Some("ja")).unwrap(),
+            vec![
+                json!("genres"),
+                json!(0),
+                json!(100),
+                json!("search:ja"),
+                json!("library_id:ab12")
+            ]
+        );
+        assert_eq!(
+            genre_by_id(4).unwrap(),
+            vec![json!("genres"), json!(0), json!(1), json!("genre_id:4")]
+        );
+        assert_eq!(
+            years(0, 100, None).unwrap(),
+            vec![json!("years"), json!(0), json!(100), json!("hasAlbums:1")]
+        );
+        assert_eq!(
+            music_folder(0, 200, None).unwrap(),
+            vec![
+                json!("musicfolder"),
+                json!(0),
+                json!(200),
+                json!("tags:cdt")
+            ]
+        );
+        assert_eq!(
+            music_folder(0, 200, Some(12)).unwrap(),
+            vec![
+                json!("musicfolder"),
+                json!(0),
+                json!(200),
+                json!("folder_id:12"),
+                json!("tags:cdt")
+            ]
+        );
+        assert_eq!(libraries(), vec![json!("libraries")]);
+        assert_eq!(sync_groups(), vec![json!("syncgroups"), json!("?")]);
+        assert_eq!(
+            favourites(0, 500, Some("f047f379.3")).unwrap(),
+            vec![
+                json!("favorites"),
+                json!("items"),
+                json!(0),
+                json!(500),
+                json!("item_id:f047f379.3")
+            ]
+        );
+        assert_eq!(
+            playlist_tracks(5).unwrap(),
+            vec![
+                json!("playlists"),
+                json!("tracks"),
+                json!(0),
+                json!(500),
+                json!("playlist_id:5"),
+                json!(TRACK_TAGS)
+            ]
+        );
+        assert_eq!(
+            artist_albums(3, Some(ArtistRole::AlbumArtist)).unwrap()[6],
+            json!("role_id:ALBUMARTIST")
+        );
+        assert_eq!(
+            play_favourite("f0.1", Placement::PlayNext).unwrap(),
+            vec![
+                json!("favorites"),
+                json!("playlist"),
+                json!("insert"),
+                json!("item_id:f0.1")
+            ]
+        );
+        assert_eq!(
+            home_menu(),
+            vec![json!("menu"), json!(0), json!(500), json!("direct:1")]
+        );
+        for (sel, want) in [
+            (Selection::Playlist { id: 5 }, "playlist_id:5"),
+            (Selection::Genre { id: 4 }, "genre_id:4"),
+            (Selection::Year { year: 0 }, "year:0"),
+            (Selection::Folder { id: 12 }, "folder_id:12"),
+        ] {
+            assert_eq!(
+                enqueue(sel, Placement::AddToQueue, None).unwrap()[2],
+                json!(want)
+            );
+        }
+        assert_eq!(
+            InfoKind::Year.selector(1999).unwrap(),
+            ("year".into(), "1999".into())
+        );
+        assert_eq!(InfoKind::Folder.command(), "folderinfo");
     }
 
     #[test]
@@ -364,6 +846,8 @@ mod tests {
         assert!(id(i64::MAX).is_err());
         assert!(album_tracks(0).is_err());
         assert!(enqueue(Selection::Artist { id: -1 }, Placement::AddToQueue, None).is_err());
+        assert!(enqueue(Selection::Year { year: 10_000 }, Placement::PlayNow, None).is_err());
+        assert!(enqueue(Selection::Folder { id: 0 }, Placement::PlayNow, None).is_err());
         assert!(seek(f64::NAN).is_err());
         assert!(seek(f64::INFINITY).is_err());
         assert_eq!(seek(-5.0).unwrap()[1], json!(0.0));
@@ -371,7 +855,69 @@ mod tests {
         assert_eq!(text("a\r\nb\u{0}"), "a  b");
         assert_eq!(text(&"x".repeat(1000)).chars().count(), 200);
         // An empty search is no search at all.
-        assert_eq!(albums(0, 10, AlbumSort::Title, Some("  ")).len(), 5);
+        assert_eq!(
+            albums(0, 10, AlbumSort::Title, Some("  "), &none())
+                .unwrap()
+                .len(),
+            5
+        );
+    }
+
+    /// Filter values are checked: nothing malformed is ever sent.
+    #[test]
+    fn hostile_filters_and_item_ids_are_refused() {
+        for bad in [
+            LibraryFilter {
+                library_id: Some("../x".into()),
+                ..none()
+            },
+            LibraryFilter {
+                library_id: Some(String::new()),
+                ..none()
+            },
+            LibraryFilter {
+                library_id: Some("a".repeat(33)),
+                ..none()
+            },
+            LibraryFilter {
+                library_id: Some("ab12 library_id:cd".into()),
+                ..none()
+            },
+            LibraryFilter {
+                genre_id: Some(0),
+                ..none()
+            },
+            LibraryFilter {
+                year: Some(12_345),
+                ..none()
+            },
+            LibraryFilter {
+                artist_id: Some(-7),
+                ..none()
+            },
+        ] {
+            assert!(
+                albums(0, 10, AlbumSort::Title, None, &bad).is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(genres(0, 10, Some("zz"), None).is_err());
+        assert!(years(0, 10, Some("x/y")).is_err());
+        assert!(music_folder(0, 10, Some(0)).is_err());
+        assert!(playlist_tracks(-1).is_err());
+        assert!(genre_by_id(0).is_err());
+        for bad in ["", "a b", "a:b", "../x", "x\u{0}", &"a".repeat(129)] {
+            assert!(item_id(bad).is_err(), "{bad:?}");
+            assert!(favourites(0, 10, Some(bad)).is_err(), "{bad:?}");
+            assert!(play_favourite(bad, Placement::PlayNow).is_err(), "{bad:?}");
+        }
+        for bad in ["", "Spotty", "a-b", "a b", "../x", &"a".repeat(65)] {
+            assert!(app_command(bad).is_err(), "{bad:?}");
+        }
+        assert!(app_command("bbc_sounds2").is_ok());
+        assert!(InfoKind::Year.selector(-1).is_err());
+        assert!(InfoKind::Year.selector(10_000).is_err());
+        assert!(InfoKind::Track.selector(0).is_err());
     }
 
     #[test]

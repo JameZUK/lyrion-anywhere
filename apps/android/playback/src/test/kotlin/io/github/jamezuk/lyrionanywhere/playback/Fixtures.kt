@@ -28,7 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 const val PHONE = "02:4c:41:00:00:01"
 
 fun track(id: Long, index: Int, art: String? = "music/$id/cover") =
-    Track(id, "Track $id", "Artist", "Album", 7, 3, 180.0, 1u, art, index.toUInt())
+    Track(id, "Track $id", "Artist", "Album", 7, 3, 180.0, 1u, art, index.toUInt(), null, null, null, null, null)
 
 fun lmsStatus(
     mode: PlaybackMode = PlaybackMode.PLAYING,
@@ -103,6 +103,8 @@ class FakePlayers : PlayersRepository {
 
     override suspend fun list() = ApiResult.Ok(emptyList<Player>())
 
+    override suspend fun syncGroups() = ApiResult.Ok(emptyList<io.github.jamezuk.lyrionanywhere.core.SyncGroup>())
+
     override suspend fun status(player: String): ApiResult<PlayerStatus> {
         statusCalls++
         return ApiResult.Ok(status)
@@ -135,6 +137,8 @@ class FakePlayers : PlayersRepository {
 
     override suspend fun enqueue(player: String, selection: Selection, placement: Placement, playIndex: Int?) =
         cmd("enqueue")
+
+    override suspend fun playFavourite(player: String, itemId: String, placement: Placement) = cmd("favourite")
 }
 
 class FakeEvents : EventsRepository {

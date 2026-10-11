@@ -2,24 +2,26 @@ package io.github.jamezuk.lyrionanywhere.navigation
 
 import android.content.Context
 import android.content.Intent
+import android.content.res.Resources
 import android.os.SystemClock
-import androidx.compose.ui.platform.LocalContext
-import io.github.jamezuk.lyrionanywhere.playback.PlaybackService
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Album
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Shuffle
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -27,12 +29,19 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
@@ -51,29 +60,68 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import io.github.jamezuk.lyrionanywhere.AppContainer
 import io.github.jamezuk.lyrionanywhere.BuildConfig
+import io.github.jamezuk.lyrionanywhere.core.AlbumSort
+import io.github.jamezuk.lyrionanywhere.core.LibraryFilter
 import io.github.jamezuk.lyrionanywhere.core.Placement
 import io.github.jamezuk.lyrionanywhere.core.Selection
 import io.github.jamezuk.lyrionanywhere.core.libraryVersion
+import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AuthState
 import io.github.jamezuk.lyrionanywhere.data.WaveformCache
+import io.github.jamezuk.lyrionanywhere.playback.PlaybackService
 import io.github.jamezuk.lyrionanywhere.ui.R
+import io.github.jamezuk.lyrionanywhere.ui.components.EmptyState
 import io.github.jamezuk.lyrionanywhere.ui.components.errorText
-import io.github.jamezuk.lyrionanywhere.ui.library.Loadable
+import io.github.jamezuk.lyrionanywhere.ui.library.AlbumActions
 import io.github.jamezuk.lyrionanywhere.ui.library.AlbumGrid
 import io.github.jamezuk.lyrionanywhere.ui.library.AlbumScreen
 import io.github.jamezuk.lyrionanywhere.ui.library.AlbumSortMenu
 import io.github.jamezuk.lyrionanywhere.ui.library.AlbumViewModel
 import io.github.jamezuk.lyrionanywhere.ui.library.AlbumsViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.ArtistActions
 import io.github.jamezuk.lyrionanywhere.ui.library.ArtistList
 import io.github.jamezuk.lyrionanywhere.ui.library.ArtistScreen
+import io.github.jamezuk.lyrionanywhere.ui.library.ArtistViewChips
 import io.github.jamezuk.lyrionanywhere.ui.library.ArtistViewModel
 import io.github.jamezuk.lyrionanywhere.ui.library.ArtistsViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.CollectionHeader
+import io.github.jamezuk.lyrionanywhere.ui.library.FavouritesScreen
+import io.github.jamezuk.lyrionanywhere.ui.library.FavouritesViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.FolderScreen
+import io.github.jamezuk.lyrionanywhere.ui.library.FolderViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.GenreNameViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.GenresScreen
+import io.github.jamezuk.lyrionanywhere.ui.library.GenresViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.HomeActions
+import io.github.jamezuk.lyrionanywhere.ui.library.HomeFeedViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.HomeScreen
+import io.github.jamezuk.lyrionanywhere.ui.library.LibraryDestination
+import io.github.jamezuk.lyrionanywhere.ui.library.LibraryScreen
+import io.github.jamezuk.lyrionanywhere.ui.library.Loadable
+import io.github.jamezuk.lyrionanywhere.ui.library.PlaylistScreen
+import io.github.jamezuk.lyrionanywhere.ui.library.PlaylistViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.PlaylistsScreen
+import io.github.jamezuk.lyrionanywhere.ui.library.PlaylistsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.library.SearchResultsList
 import io.github.jamezuk.lyrionanywhere.ui.library.SearchViewModel
-import io.github.jamezuk.lyrionanywhere.ui.player.HomeScreen
+import io.github.jamezuk.lyrionanywhere.ui.library.YearsScreen
+import io.github.jamezuk.lyrionanywhere.ui.library.YearsViewModel
+import io.github.jamezuk.lyrionanywhere.ui.menus.AppsScreen
+import io.github.jamezuk.lyrionanywhere.ui.menus.AppsViewModel
+import io.github.jamezuk.lyrionanywhere.ui.menus.ItemSheetContent
+import io.github.jamezuk.lyrionanywhere.ui.menus.MenuBrowser
+import io.github.jamezuk.lyrionanywhere.ui.menus.MenuEvent
+import io.github.jamezuk.lyrionanywhere.ui.menus.MenuNavigator
+import io.github.jamezuk.lyrionanywhere.ui.menus.MenuViewModel
+import io.github.jamezuk.lyrionanywhere.ui.menus.More
+import io.github.jamezuk.lyrionanywhere.ui.menus.MoreRequest
+import io.github.jamezuk.lyrionanywhere.ui.player.CompactPlayerCard
+import io.github.jamezuk.lyrionanywhere.ui.player.DefaultPlayerSetting
 import io.github.jamezuk.lyrionanywhere.ui.player.MiniPlayer
 import io.github.jamezuk.lyrionanywhere.ui.player.NowPlayingActions
 import io.github.jamezuk.lyrionanywhere.ui.player.NowPlayingScreen
+import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnActions
+import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnList
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayerMessage
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayerViewModel
 import io.github.jamezuk.lyrionanywhere.ui.settings.LicencesScreen
@@ -82,54 +130,90 @@ import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.settings.SoundScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SoundViewModel
 import io.github.jamezuk.lyrionanywhere.ui.settings.actions
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 
-@Serializable
-data object HomeRoute
+@Serializable data object HomeRoute
 
-@Serializable
-data object AlbumsRoute
+@Serializable data object LibraryRoute
 
-@Serializable
-data object ArtistsRoute
+@Serializable data object SearchRoute
 
-@Serializable
-data object SearchRoute
+@Serializable data object NewMusicRoute
 
-@Serializable
-data class AlbumRoute(val id: Long)
+@Serializable data object AlbumsRoute
 
-@Serializable
-data class ArtistRoute(val id: Long, val name: String)
+@Serializable data object ArtistsRoute
 
-@Serializable
-data object NowPlayingRoute
+@Serializable data object GenresRoute
 
-@Serializable
-data object SettingsRoute
+@Serializable data class GenreRoute(val id: Long, val name: String)
 
-@Serializable
-data object LicencesRoute
+@Serializable data object YearsRoute
 
-@Serializable
-data object SoundRoute
+@Serializable data class YearRoute(val year: Int)
+
+@Serializable data object CompilationsRoute
+
+@Serializable data object RandomRoute
+
+/** A music folder; 0 for the top level. */
+@Serializable data class FolderRoute(val id: Long = 0, val name: String = "")
+
+@Serializable data object PlaylistsRoute
+
+@Serializable data class PlaylistRoute(val id: Long, val name: String)
+
+/** Favourites; an empty item id for the top level. */
+@Serializable data class FavouritesRoute(val itemId: String = "", val title: String = "")
+
+@Serializable data object AppsRoute
+
+@Serializable data class AppMenuRoute(val cmd: String, val name: String)
+
+@Serializable data class PluginMenuRoute(val id: String, val name: String)
+
+@Serializable data class AlbumRoute(val id: Long)
+
+@Serializable data class ArtistRoute(val id: Long, val name: String)
+
+@Serializable data object NowPlayingRoute
+
+@Serializable data object SettingsRoute
+
+@Serializable data object LicencesRoute
+
+@Serializable data object SoundRoute
 
 private data class TopLevel(val route: Any, val label: Int, val icon: ImageVector)
 
 private val TOP_LEVEL = listOf(
     TopLevel(HomeRoute, R.string.nav_home, Icons.Outlined.Home),
-    TopLevel(AlbumsRoute, R.string.nav_albums, Icons.Outlined.Album),
-    TopLevel(ArtistsRoute, R.string.nav_artists, Icons.Outlined.Person),
+    TopLevel(LibraryRoute, R.string.nav_library, Icons.Outlined.LibraryMusic),
     TopLevel(SearchRoute, R.string.nav_search, Icons.Outlined.Search),
 )
 
 private val clock: () -> Long = SystemClock::elapsedRealtime
 
+private fun messageText(res: Resources, m: PlayerMessage): String = when (m) {
+    is PlayerMessage.Queued -> res.getString(
+        when (m.placement) {
+            Placement.PLAY_NOW -> R.string.queued_play_now
+            Placement.PLAY_NEXT -> R.string.queued_next
+            Placement.ADD_TO_QUEUE -> R.string.queued_add
+        },
+    )
+    PlayerMessage.NoPlayer -> res.getString(R.string.no_player_selected)
+    is PlayerMessage.Failed -> errorText(res, m.error)
+}
+
 /** The signed-in app: adaptive navigation (bar, rail or drawer by window size). */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
     val nav = rememberNavController()
-    // One player controller for every screen, per sign-in.
+    // One player controller for every screen, per sign-in. Which player it controls is
+    // decided in one place (PlayerChoice, D20); screens only ask it to play things.
     val player = viewModel(key = "player-${signedIn.who.device.id}") {
         PlayerViewModel(
             container.players,
@@ -145,28 +229,40 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
         onStopOrDispose { player.stop() }
     }
     val playerState by player.state.collectAsStateWithLifecycle()
-    // "Play on this phone": the media session (notification, lock screen, headset
-    // buttons) runs in its own service, started while the app is in front.
     val context = LocalContext.current
     LaunchedEffect(playerState.local.enabled) {
         if (playerState.local.enabled) startPlaybackService(context)
     }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(signedIn.who.device.id) { container.libraries.refresh() }
+    val libraryId = container.libraries.chosen
+    val libraries by container.libraries.available.collectAsStateWithLifecycle()
+    val chosenLibrary by libraryId.collectAsStateWithLifecycle(null)
+
     val snackbar = remember { SnackbarHostState() }
     val res = LocalResources.current
     LaunchedEffect(player) {
-        player.messages.collect { m ->
-            val text = when (m) {
-                is PlayerMessage.Queued -> res.getString(
-                    when (m.placement) {
-                        Placement.PLAY_NOW -> R.string.queued_play_now
-                        Placement.PLAY_NEXT -> R.string.queued_next
-                        Placement.ADD_TO_QUEUE -> R.string.queued_add
-                    },
-                )
-                PlayerMessage.NoPlayer -> res.getString(R.string.no_player_selected)
-                is PlayerMessage.Failed -> errorText(res, m.error)
+        player.messages.collect { m -> snackbar.showSnackbar(messageText(res, m)) }
+    }
+
+    // "More…" sheet and "Play on…" sheet.
+    var more by remember { mutableStateOf<MoreRequest?>(null) }
+    var outputs by rememberSaveable { mutableStateOf(false) }
+    val openMore: (MoreRequest) -> Unit = { more = it }
+    val openOutputs = {
+        player.loadOutputs()
+        outputs = true
+    }
+    fun handleMenuEvent(e: MenuEvent, onClosed: () -> Unit = {}) {
+        when (e) {
+            is MenuEvent.Done -> scope.launch { snackbar.showSnackbar(res.getString(R.string.menu_done, e.label)) }
+            MenuEvent.NowPlaying -> {
+                onClosed()
+                nav.navigate(NowPlayingRoute)
             }
-            snackbar.showSnackbar(text)
+            is MenuEvent.Failed -> scope.launch { snackbar.showSnackbar(errorText(res, e.error)) }
+            MenuEvent.NoPlayer -> scope.launch { snackbar.showSnackbar(res.getString(R.string.no_player_selected)) }
+            MenuEvent.Closed -> onClosed()
         }
     }
 
@@ -194,12 +290,17 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                         onOpen = { nav.navigate(NowPlayingRoute) },
                         onTogglePlay = player::togglePlay,
                         onNext = player::next,
+                        onOutputs = openOutputs,
+                        onBackToPhone = player::backToPhone,
                     )
                 }
             },
         ) { padding ->
+            val openAlbum: (Long) -> Unit = { nav.navigate(AlbumRoute(it)) }
             NavHost(nav, startDestination = HomeRoute, modifier = Modifier.padding(padding)) {
                 composable<HomeRoute> {
+                    val vm = viewModel { HomeFeedViewModel(container.library, libraryId) }
+                    val feed by vm.state.collectAsStateWithLifecycle()
                     Screen(
                         title = stringResource(R.string.nav_home),
                         actions = {
@@ -209,33 +310,30 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                         },
                     ) {
                         HomeScreen(
-                            state = playerState,
-                            onSelect = player::select,
-                            onOpenNowPlaying = { nav.navigate(NowPlayingRoute) },
-                            onRetry = player::refresh,
-                            onPlayOnPhone = player::setPlayOnPhone,
+                            feed = feed,
+                            actions = HomeActions(
+                                onAlbum = { openAlbum(it.id) },
+                                onMore = openMore,
+                                onSeeAll = { d -> if (d == null) nav.navigate(NewMusicRoute) else nav.openLibrary(d) },
+                                onFavourite = { f ->
+                                    if (f.isFolder) nav.navigate(FavouritesRoute(f.id, f.name)) else player.playFavourite(f.id, Placement.PLAY_NOW)
+                                },
+                                onPlaylist = { nav.navigate(PlaylistRoute(it.id, it.name)) },
+                                onReshuffle = vm::reshuffle,
+                                onRetry = vm::refresh,
+                            ),
+                            playerCard = { CompactPlayerCard(playerState, onOpen = { nav.navigate(NowPlayingRoute) }) },
                         )
                     }
                 }
-                composable<AlbumsRoute> {
-                    val vm = viewModel { AlbumsViewModel(container.library) }
-                    val ui by vm.state.collectAsStateWithLifecycle()
-                    val sort by vm.sort.collectAsStateWithLifecycle()
-                    Screen(
-                        title = stringResource(R.string.nav_albums),
-                        actions = { AlbumSortMenu(sort, vm::setSort) },
-                    ) {
-                        AlbumGrid(ui, onAlbum = { nav.navigate(AlbumRoute(it.id)) }, onLoadMore = vm::loadMore)
-                    }
-                }
-                composable<ArtistsRoute> {
-                    val vm = viewModel { ArtistsViewModel(container.library) }
-                    val ui by vm.state.collectAsStateWithLifecycle()
-                    Screen(title = stringResource(R.string.nav_artists)) {
-                        ArtistList(
-                            ui,
-                            onArtist = { nav.navigate(ArtistRoute(it.id, it.name)) },
-                            onLoadMore = vm::loadMore,
+                composable<LibraryRoute> {
+                    Screen(title = stringResource(R.string.nav_library)) {
+                        LibraryScreen(
+                            libraries = libraries,
+                            chosenLibrary = chosenLibrary,
+                            onChooseLibrary = { id -> scope.launch { container.libraries.choose(id) } },
+                            onNewMusic = { nav.navigate(NewMusicRoute) },
+                            onOpen = { nav.openLibrary(it) },
                         )
                     }
                 }
@@ -257,13 +355,276 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 ui,
                                 onRetry = vm::retry,
                                 onArtist = { nav.navigate(ArtistRoute(it.id, it.name)) },
-                                onAlbum = { nav.navigate(AlbumRoute(it.id)) },
-                                onTrack = { t ->
-                                    t.id?.let { player.enqueue(Selection.Track(it), Placement.PLAY_NOW) }
-                                },
+                                onAlbum = { openAlbum(it.id) },
+                                onTrack = { t -> t.id?.let { player.enqueue(Selection.Track(it), Placement.PLAY_NOW) } },
+                                onMore = openMore,
                             )
                         }
                     }
+                }
+                composable<NewMusicRoute> {
+                    val vm = viewModel { AlbumsViewModel(container.library, sort = AlbumSort.NEWEST, libraryId = libraryId) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    Screen(title = stringResource(R.string.new_music), onBack = { nav.popBackStack() }) {
+                        AlbumGrid(ui, onAlbum = { openAlbum(it.id) }, onLoadMore = vm::loadMore, onMore = openMore)
+                    }
+                }
+                composable<AlbumsRoute> {
+                    val vm = viewModel { AlbumsViewModel(container.library, libraryId = libraryId) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    val sort by vm.sort.collectAsStateWithLifecycle()
+                    Screen(
+                        title = stringResource(R.string.lib_albums),
+                        onBack = { nav.popBackStack() },
+                        actions = { AlbumSortMenu(sort, vm::setSort) },
+                    ) {
+                        AlbumGrid(ui, onAlbum = { openAlbum(it.id) }, onLoadMore = vm::loadMore, onMore = openMore)
+                    }
+                }
+                composable<CompilationsRoute> {
+                    val vm = viewModel {
+                        AlbumsViewModel(container.library, LibraryFilter(compilation = true), libraryId = libraryId)
+                    }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    val sort by vm.sort.collectAsStateWithLifecycle()
+                    Screen(
+                        title = stringResource(R.string.lib_compilations),
+                        onBack = { nav.popBackStack() },
+                        actions = { AlbumSortMenu(sort, vm::setSort) },
+                    ) {
+                        AlbumGrid(
+                            ui,
+                            onAlbum = { openAlbum(it.id) },
+                            onLoadMore = vm::loadMore,
+                            onMore = openMore,
+                            empty = stringResource(R.string.no_compilations),
+                        )
+                    }
+                }
+                composable<RandomRoute> {
+                    val vm = viewModel {
+                        AlbumsViewModel(container.library, sort = AlbumSort.RANDOM, libraryId = libraryId, batch = RANDOM_BATCH)
+                    }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    Screen(
+                        title = stringResource(R.string.lib_random),
+                        onBack = { nav.popBackStack() },
+                        actions = {
+                            IconButton(onClick = vm::reload) {
+                                Icon(Icons.Outlined.Shuffle, contentDescription = stringResource(R.string.shuffle_again))
+                            }
+                        },
+                    ) {
+                        AlbumGrid(ui, onAlbum = { openAlbum(it.id) }, onLoadMore = vm::loadMore, onMore = openMore)
+                    }
+                }
+                composable<ArtistsRoute> {
+                    val vm = viewModel { ArtistsViewModel(container.library, libraryId = libraryId) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    val views by vm.views.collectAsStateWithLifecycle()
+                    val view by vm.view.collectAsStateWithLifecycle()
+                    Screen(title = stringResource(R.string.lib_artists), onBack = { nav.popBackStack() }) {
+                        ArtistList(
+                            ui,
+                            onArtist = { nav.navigate(ArtistRoute(it.id, it.name)) },
+                            onLoadMore = vm::loadMore,
+                            onMore = openMore,
+                            header = { ArtistViewChips(views, view, vm::setView) },
+                        )
+                    }
+                }
+                composable<GenresRoute> {
+                    val vm = viewModel { GenresViewModel(container.library, libraryId) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    val query by vm.query.collectAsStateWithLifecycle()
+                    Screen(title = stringResource(R.string.lib_genres), onBack = { nav.popBackStack() }) {
+                        GenresScreen(
+                            ui,
+                            query = query,
+                            onQuery = vm::onQueryChange,
+                            onGenre = { nav.navigate(GenreRoute(it.id, it.name)) },
+                            onLoadMore = vm::loadMore,
+                            onMore = openMore,
+                        )
+                    }
+                }
+                composable<GenreRoute> { entry ->
+                    val route = entry.toRoute<GenreRoute>()
+                    val nameVm = viewModel { GenreNameViewModel(container.library, route.id) }
+                    val name by nameVm.state.collectAsStateWithLifecycle()
+                    val title = (name as? Loadable.Ready)?.value ?: route.name
+                    val filter = LibraryFilter(genreId = route.id)
+                    val albums = viewModel { AlbumsViewModel(container.library, filter, libraryId = libraryId) }
+                    val artists = viewModel { ArtistsViewModel(container.library, filter, libraryId) }
+                    var tab by rememberSaveable { mutableIntStateOf(0) }
+                    val sort by albums.sort.collectAsStateWithLifecycle()
+                    Screen(
+                        title = title,
+                        onBack = { nav.popBackStack() },
+                        actions = { if (tab == 0) AlbumSortMenu(sort, albums::setSort) },
+                    ) {
+                        val header = @Composable {
+                            CollectionHeader(
+                                title = title,
+                                onPlay = { player.enqueue(Selection.Genre(route.id), it) },
+                                onMore = { openMore(More.genre(route.id, title)) },
+                                tabs = listOf(stringResource(R.string.tab_albums), stringResource(R.string.tab_artists)),
+                                tab = tab,
+                                onTab = { tab = it },
+                            )
+                        }
+                        if (tab == 0) {
+                            val ui by albums.state.collectAsStateWithLifecycle()
+                            AlbumGrid(
+                                ui,
+                                onAlbum = { openAlbum(it.id) },
+                                onLoadMore = albums::loadMore,
+                                onMore = openMore,
+                                empty = stringResource(R.string.no_albums_genre),
+                                header = header,
+                            )
+                        } else {
+                            val ui by artists.state.collectAsStateWithLifecycle()
+                            ArtistList(
+                                ui,
+                                onArtist = { nav.navigate(ArtistRoute(it.id, it.name)) },
+                                onLoadMore = artists::loadMore,
+                                onMore = openMore,
+                                header = header,
+                            )
+                        }
+                    }
+                }
+                composable<YearsRoute> {
+                    val vm = viewModel { YearsViewModel(container.library, libraryId) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    Screen(title = stringResource(R.string.lib_years), onBack = { nav.popBackStack() }) {
+                        YearsScreen(ui, onYear = { nav.navigate(YearRoute(it.toInt())) }, onLoadMore = vm::loadMore, onMore = openMore)
+                    }
+                }
+                composable<YearRoute> { entry ->
+                    val route = entry.toRoute<YearRoute>()
+                    val year = route.year.coerceIn(0, 9999).toUInt()
+                    val title = if (year == 0u) stringResource(R.string.no_year) else year.toString()
+                    val vm = viewModel {
+                        AlbumsViewModel(container.library, LibraryFilter(year = year), libraryId = libraryId)
+                    }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    val sort by vm.sort.collectAsStateWithLifecycle()
+                    Screen(title = title, onBack = { nav.popBackStack() }, actions = { AlbumSortMenu(sort, vm::setSort) }) {
+                        AlbumGrid(
+                            ui,
+                            onAlbum = { openAlbum(it.id) },
+                            onLoadMore = vm::loadMore,
+                            onMore = openMore,
+                            empty = stringResource(R.string.no_albums_year),
+                            header = {
+                                CollectionHeader(
+                                    title = title,
+                                    onPlay = { player.enqueue(Selection.Year(year), it) },
+                                    onMore = { openMore(More.year(year, title)) },
+                                )
+                            },
+                        )
+                    }
+                }
+                composable<FolderRoute> { entry ->
+                    val route = entry.toRoute<FolderRoute>()
+                    val folderId = route.id.takeIf { it > 0 }
+                    val vm = viewModel { FolderViewModel(container.library, folderId) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    Screen(
+                        title = route.name.ifEmpty { stringResource(R.string.lib_folder) },
+                        onBack = { nav.popBackStack() },
+                    ) {
+                        FolderScreen(
+                            ui,
+                            isTop = folderId == null,
+                            onFolder = { nav.navigate(FolderRoute(it.id, it.name)) },
+                            onPlay = { f, placement ->
+                                val sel = if (f.kind == io.github.jamezuk.lyrionanywhere.core.FolderKind.TRACK) {
+                                    Selection.Track(f.id)
+                                } else {
+                                    Selection.Folder(f.id)
+                                }
+                                player.enqueue(sel, placement)
+                            },
+                            onPlayAll = folderId?.let { id -> { p: Placement -> player.enqueue(Selection.Folder(id), p) } },
+                            onLoadMore = vm::loadMore,
+                            onMore = openMore,
+                        )
+                    }
+                }
+                composable<PlaylistsRoute> {
+                    val vm = viewModel { PlaylistsViewModel(container.library) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    Screen(title = stringResource(R.string.lib_playlists), onBack = { nav.popBackStack() }) {
+                        PlaylistsScreen(
+                            ui,
+                            onPlaylist = { nav.navigate(PlaylistRoute(it.id, it.name)) },
+                            onLoadMore = vm::loadMore,
+                            onMore = openMore,
+                        )
+                    }
+                }
+                composable<PlaylistRoute> { entry ->
+                    val route = entry.toRoute<PlaylistRoute>()
+                    val vm = viewModel { PlaylistViewModel(container.library, route.id) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    val sel = Selection.Playlist(route.id)
+                    Screen(title = route.name, onBack = { nav.popBackStack() }) {
+                        PlaylistScreen(
+                            ui,
+                            onRetry = vm::reload,
+                            onPlay = { placement, index -> player.enqueue(sel, placement, index) },
+                            onShuffle = { player.playShuffled(sel) },
+                            onMorePlaylist = {
+                                openMore(More.playlist(io.github.jamezuk.lyrionanywhere.core.SavedPlaylist(route.id, route.name)))
+                            },
+                            onMore = openMore,
+                        )
+                    }
+                }
+                composable<FavouritesRoute> { entry ->
+                    val route = entry.toRoute<FavouritesRoute>()
+                    val vm = viewModel { FavouritesViewModel(container.library, route.itemId.ifEmpty { null }) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    val title = route.title.ifEmpty { stringResource(R.string.lib_favourites) }
+                    Screen(title = title, onBack = { nav.popBackStack() }) {
+                        FavouritesScreen(
+                            ui,
+                            onRetry = vm::reload,
+                            onFolder = { nav.navigate(FavouritesRoute(it.id, it.name)) },
+                            onPlay = { f, placement -> player.playFavourite(f.id, placement) },
+                        )
+                    }
+                }
+                composable<AppsRoute> {
+                    val vm = viewModel { AppsViewModel(container.menus, player::target, container.suitability) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    Screen(title = stringResource(R.string.lib_apps), onBack = { nav.popBackStack() }) {
+                        AppsScreen(
+                            ui,
+                            onOpen = { tile ->
+                                val (kind, id) = tile.key.split(':', limit = 2)
+                                if (kind == "app") nav.navigate(AppMenuRoute(id, tile.name)) else nav.navigate(PluginMenuRoute(id, tile.name))
+                            },
+                            onRetry = vm::load,
+                            onToggleShowAll = vm::toggleShowAll,
+                        )
+                    }
+                }
+                composable<AppMenuRoute> { entry ->
+                    val route = entry.toRoute<AppMenuRoute>()
+                    val vm = viewModel { MenuViewModel(container.menus, player::target) }
+                    LaunchedEffect(route) { vm.openApp(route.cmd, route.name) }
+                    MenuRouteScreen(route.name, vm, onBack = { nav.popBackStack() }, onEvent = { handleMenuEvent(it) { nav.popBackStack() } })
+                }
+                composable<PluginMenuRoute> { entry ->
+                    val route = entry.toRoute<PluginMenuRoute>()
+                    val vm = viewModel { MenuViewModel(container.menus, player::target) }
+                    LaunchedEffect(route, playerState.selectedId) { vm.openPlugin(route.id, playerState.selectedId) }
+                    MenuRouteScreen(route.name, vm, onBack = { nav.popBackStack() }, onEvent = { handleMenuEvent(it) { nav.popBackStack() } })
                 }
                 composable<AlbumRoute> { entry ->
                     val route = entry.toRoute<AlbumRoute>()
@@ -272,17 +633,18 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     Screen(title = stringResource(R.string.title_album), onBack = { nav.popBackStack() }) {
                         AlbumScreen(
                             state = ui,
-                            onRetry = vm::load,
-                            onPlay = { placement, index ->
-                                player.enqueue(Selection.Album(route.id), placement, index)
-                            },
-                            onPlayTrack = { track ->
-                                val tracks = (ui as? Loadable.Ready)
-                                    ?.value?.tracks.orEmpty()
-                                val index = tracks.indexOf(track).takeIf { it >= 0 }
-                                player.enqueue(Selection.Album(route.id), Placement.PLAY_NOW, index)
-                            },
-                            onArtist = { id, name -> nav.navigate(ArtistRoute(id, name)) },
+                            actions = AlbumActions(
+                                onRetry = vm::load,
+                                onPlay = { placement, index -> player.enqueue(Selection.Album(route.id), placement, index) },
+                                onShuffle = { player.playShuffled(Selection.Album(route.id)) },
+                                onPlayTrack = { track ->
+                                    val tracks = (ui as? Loadable.Ready)?.value?.tracks.orEmpty()
+                                    val index = tracks.indexOf(track).takeIf { it >= 0 }
+                                    player.enqueue(Selection.Album(route.id), Placement.PLAY_NOW, index)
+                                },
+                                onArtist = { id, name -> nav.navigate(ArtistRoute(id, name)) },
+                                onMore = openMore,
+                            ),
                         )
                     }
                 }
@@ -292,11 +654,16 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     val ui by vm.state.collectAsStateWithLifecycle()
                     Screen(title = route.name, onBack = { nav.popBackStack() }) {
                         ArtistScreen(
+                            id = route.id,
                             name = route.name,
                             state = ui,
-                            onRetry = vm::load,
-                            onAlbum = { nav.navigate(AlbumRoute(it.id)) },
-                            onPlayAll = { placement -> player.enqueue(Selection.Artist(route.id), placement) },
+                            actions = ArtistActions(
+                                onRetry = vm::load,
+                                onAlbum = { openAlbum(it.id) },
+                                onPlay = { player.enqueue(Selection.Artist(route.id), it) },
+                                onShuffle = { player.playShuffled(Selection.Artist(route.id)) },
+                                onMore = openMore,
+                            ),
                         )
                     }
                 }
@@ -319,6 +686,9 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 onPower = player::setPower,
                                 onJump = player::jumpTo,
                                 onRetry = player::refresh,
+                                onOutputs = openOutputs,
+                                onBackToPhone = player::backToPhone,
+                                onMore = { t -> More.track(t)?.let(openMore) },
                             ),
                         )
                     }
@@ -334,6 +704,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             onSignOut = vm::signOut,
                             onLicences = { nav.navigate(LicencesRoute) },
                             onSound = { nav.navigate(SoundRoute) },
+                            defaultPlayer = { DefaultPlayerSetting(playerState, player::setDefaultPlayer) },
                         )
                     }
                 }
@@ -353,7 +724,79 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
             }
         }
     }
+
+    // "More…": quick play actions, then LMS's own context menu for the item.
+    more?.let { request ->
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+        val navigator = remember(request) { MenuNavigator(scope, container.menus, player::target) }
+        LaunchedEffect(request) {
+            when (val a = container.menus.infoMenu(request.kind, request.id)) {
+                is ApiResult.Ok -> navigator.start(request.target.title, a.value)
+                is ApiResult.Err -> navigator.startWith(request.target.title, emptyList())
+            }
+        }
+        LaunchedEffect(navigator) { navigator.events.collect { e -> handleMenuEvent(e) { more = null } } }
+        ModalBottomSheet(onDismissRequest = { more = null }, sheetState = sheetState) {
+            ItemSheetContent(
+                target = request.target.copy(canPlay = request.selection != null),
+                navigator = navigator,
+                onPlay = { placement ->
+                    request.selection?.let { player.enqueue(it, placement) }
+                    more = null
+                },
+                onClose = { more = null },
+            )
+        }
+    }
+
+    // "Play on…" (D20): this phone, other players and sync groups.
+    if (outputs) {
+        ModalBottomSheet(onDismissRequest = { outputs = false }) {
+            Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+                PlayOnList(
+                    playerState,
+                    PlayOnActions(
+                        onControl = { id ->
+                            player.select(id)
+                            outputs = false
+                        },
+                        onBackToPhone = {
+                            player.backToPhone()
+                            outputs = false
+                        },
+                    ),
+                )
+            }
+        }
+    }
 }
+
+/** Random albums come as one batch: paging a random order would only repeat albums. */
+private const val RANDOM_BATCH = 60
+
+@Composable
+private fun MenuRouteScreen(title: String, vm: MenuViewModel, onBack: () -> Unit, onEvent: (MenuEvent) -> Unit) {
+    val missing by vm.missing.collectAsStateWithLifecycle()
+    LaunchedEffect(vm) { vm.navigator.events.collect(onEvent) }
+    Screen(title = title, onBack = { if (!vm.navigator.back()) onBack() }) {
+        if (missing) EmptyState(stringResource(R.string.menu_missing)) else MenuBrowser(vm.navigator)
+    }
+}
+
+private fun NavHostController.openLibrary(d: LibraryDestination) = navigate(
+    when (d) {
+        LibraryDestination.ALBUMS -> AlbumsRoute
+        LibraryDestination.ARTISTS -> ArtistsRoute
+        LibraryDestination.GENRES -> GenresRoute
+        LibraryDestination.YEARS -> YearsRoute
+        LibraryDestination.COMPILATIONS -> CompilationsRoute
+        LibraryDestination.RANDOM -> RandomRoute
+        LibraryDestination.FOLDER -> FolderRoute()
+        LibraryDestination.PLAYLISTS -> PlaylistsRoute
+        LibraryDestination.FAVOURITES -> FavouritesRoute()
+        LibraryDestination.APPS -> AppsRoute
+    },
+)
 
 /** Start the media session service (allowed while the app is in the foreground). */
 private fun startPlaybackService(context: Context) {

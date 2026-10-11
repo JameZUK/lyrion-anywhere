@@ -11,7 +11,9 @@ import io.github.jamezuk.lyrionanywhere.core.RepeatMode
 import io.github.jamezuk.lyrionanywhere.core.Selection
 import io.github.jamezuk.lyrionanywhere.core.ServerEvent
 import io.github.jamezuk.lyrionanywhere.core.ShuffleMode
+import io.github.jamezuk.lyrionanywhere.core.SyncGroup
 import io.github.jamezuk.lyrionanywhere.core.Track
+import io.github.jamezuk.lyrionanywhere.data.DefaultPlayer
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.core.OutputRoute
@@ -56,12 +58,27 @@ data class PlayerUiState(
     val local: LocalPlayerState = LocalPlayerState(),
     /** The current track's waveform for the seek bar (null: the plain seek bar). */
     val waveform: Waveform? = null,
+    /** Sync groups among the players this account may control. */
+    val syncGroups: List<SyncGroup> = emptyList(),
+    /** What each other player is playing, for the "Play on…" sheet (player id → track). */
+    val playingOn: Map<String, Track> = emptyMap(),
+    /** The default-player setting (D20). */
+    val defaultPlayer: DefaultPlayer = DefaultPlayer.THIS_PHONE,
+    val defaultPlayerId: String? = null,
+    /** Waiting for this phone's player to appear in LMS before controlling it. */
+    val waitingForPhone: Boolean = false,
 ) {
     val selected: Player? get() = players.firstOrNull { it.id == selectedId }
     val playing: Boolean get() = status?.mode == PlaybackMode.PLAYING
 
     /** The selected player is this phone. */
     val localSelected: Boolean get() = local.playerId != null && local.playerId == selectedId
+
+    /** Controlling a player other than this phone (shown as "Playing on …", D20). */
+    val controllingOther: Boolean get() = selectedId != null && !localSelected
+
+    /** The other players this account may control (for "Play on…"). */
+    val otherPlayers: List<Player> get() = players.filter { it.id != local.playerId }
 }
 
 /** For hosts without a local player (and tests). */
@@ -114,6 +131,8 @@ class PlayerViewModel(
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     private var live: Job? = null
+    /** Whether the start-up choice (D20) has been made for this sign-in. */
+    private var started = false
     /** Bumped by every local change, so a slow status answer can't undo it. */
     private var changeGeneration = 0
 
@@ -122,7 +141,19 @@ class PlayerViewModel(
     fun start() {
         if (live?.isActive == true) return
         live = viewModelScope.launch {
-            launch { loadPlayers() }
+            launch {
+                settings.settings.map { it.defaultPlayer to it.defaultPlayerId }.distinctUntilChanged().collect { (d, id) ->
+                    _state.update { it.copy(defaultPlayer = d, defaultPlayerId = id) }
+                }
+            }
+            launch {
+                // This phone is the default player: make sure it is on.
+                val s = settings.settings.first()
+                if (!started && PlayerChoice.wantsPhone(s) && !_state.value.local.enabled && !localPlayer.state.value.enabled) {
+                    localPlayer.setEnabled(true)
+                }
+                loadPlayers()
+            }
             launch {
                 // Coalesce bursts of events (LMS sends several per change).
                 refreshRequests.collectLatest {
@@ -141,7 +172,8 @@ class PlayerViewModel(
             launch {
                 while (true) {
                     delay(if (_state.value.live) SLOW_POLL_MS else FAST_POLL_MS)
-                    refreshStatus()
+                    // Still waiting for the phone to show up in LMS: look again.
+                    if (_state.value.selectedId == null) loadPlayers() else refreshStatus()
                 }
             }
             if (waveforms != null) {
@@ -208,13 +240,33 @@ class PlayerViewModel(
             is ApiResult.Err -> _state.update { it.copy(loading = false, error = r.error) }
             is ApiResult.Ok -> {
                 val list = r.value
-                val saved = settings.settings.first().selectedPlayerId
-                val current = _state.value.selectedId ?: saved
-                val chosen = list.firstOrNull { it.id == current }?.id
-                    ?: list.firstOrNull { it.playing }?.id
-                    ?: list.firstOrNull()?.id
-                _state.update { it.copy(players = list, selectedId = chosen, loading = false, error = null) }
-                if (chosen != saved) settings.setSelectedPlayer(chosen)
+                val s = settings.settings.first()
+                val local = localPlayer.state.value
+                val current = _state.value.selectedId?.takeIf { id -> list.any { it.id == id } }
+                var waiting = false
+                val phoneAvailable = local.enabled && local.error == null
+                val phoneListed = local.playerId?.takeIf { id -> list.any { it.id == id } }
+                val chosen = current ?: if (selectLocalWhenReady && phoneAvailable) {
+                    // "Back to this phone" is pending: the phone, once LMS lists it.
+                    phoneListed ?: run {
+                        waiting = true
+                        null
+                    }
+                } else run {
+                    when (val start = PlayerChoice.start(list, local.playerId, phoneAvailable, s)) {
+                        is PlayerChoice.Start.Control -> start.playerId
+                        PlayerChoice.Start.WaitForPhone -> {
+                            waiting = true
+                            null
+                        }
+                        PlayerChoice.Start.Nothing -> null
+                    }
+                }
+                if (chosen != null) started = true
+                _state.update {
+                    it.copy(players = list, selectedId = chosen, loading = false, error = null, waitingForPhone = waiting)
+                }
+                if (chosen != null && chosen != s.selectedPlayerId) settings.setSelectedPlayer(chosen)
                 val localId = _state.value.local.playerId
                 if (selectLocalWhenReady && localId != null && localId != chosen) {
                     selectIfListed(localId)
@@ -252,10 +304,46 @@ class PlayerViewModel(
         }
     }
 
+    /** Control this phone again ("Back to this phone"), starting its player if need be. */
+    fun backToPhone() {
+        val localId = _state.value.local.playerId
+        if (localId != null && _state.value.players.any { it.id == localId }) {
+            select(localId)
+            return
+        }
+        changeGeneration++
+        selectLocalWhenReady = true
+        _state.update { it.copy(selectedId = null, status = null, queue = emptyList(), waitingForPhone = true) }
+        setPlayOnPhone(true)
+        viewModelScope.launch { loadPlayers() }
+    }
+
+    /** Players, sync groups and what each is playing, for the "Play on…" sheet. */
+    fun loadOutputs() {
+        viewModelScope.launch {
+            (players.list() as? ApiResult.Ok)?.value?.let { list -> _state.update { it.copy(players = list) } }
+            val groups = (players.syncGroups() as? ApiResult.Ok)?.value.orEmpty()
+            _state.update { it.copy(syncGroups = groups) }
+            val playing = mutableMapOf<String, Track>()
+            for (p in _state.value.otherPlayers.take(MAX_OUTPUT_STATUS)) {
+                val t = (players.status(p.id) as? ApiResult.Ok)?.value?.current ?: continue
+                playing[p.id] = t
+            }
+            _state.update { it.copy(playingOn = playing) }
+        }
+    }
+
+    /** The default player when the app starts (per device, D20). */
+    fun setDefaultPlayer(choice: DefaultPlayer, playerId: String? = null) {
+        viewModelScope.launch { settings.setDefaultPlayer(choice, playerId) }
+    }
+
     fun select(playerId: String) {
         if (playerId == _state.value.selectedId) return
+        started = true
+        selectLocalWhenReady = false
         changeGeneration++
-        _state.update { it.copy(selectedId = playerId, status = null, queue = emptyList()) }
+        _state.update { it.copy(selectedId = playerId, status = null, queue = emptyList(), waitingForPhone = false) }
         viewModelScope.launch {
             settings.setSelectedPlayer(playerId)
             refreshStatus()
@@ -347,6 +435,44 @@ class PlayerViewModel(
 
     fun setPower(on: Boolean) = command(optimistic = { it.copy(powered = on) }) { players.setPower(it, on) }
 
+    /** Play a selection shuffled: shuffle by songs, then replace the queue and play. */
+    fun playShuffled(selection: Selection) {
+        val id = _state.value.selectedId
+        if (id == null) {
+            _messages.trySend(PlayerMessage.NoPlayer)
+            return
+        }
+        viewModelScope.launch {
+            val r = players.setShuffle(id, ShuffleMode.SONGS).let {
+                if (it is ApiResult.Err) it else players.enqueue(id, selection, Placement.PLAY_NOW)
+            }
+            when (r) {
+                is ApiResult.Ok -> _messages.trySend(PlayerMessage.Queued(Placement.PLAY_NOW))
+                is ApiResult.Err -> _messages.trySend(PlayerMessage.Failed(r.error))
+            }
+            refreshStatus()
+        }
+    }
+
+    /** Play a favourite (station, track, app item) on the selected player. */
+    fun playFavourite(itemId: String, placement: Placement) {
+        val id = _state.value.selectedId
+        if (id == null) {
+            _messages.trySend(PlayerMessage.NoPlayer)
+            return
+        }
+        viewModelScope.launch {
+            when (val r = players.playFavourite(id, itemId, placement)) {
+                is ApiResult.Ok -> _messages.trySend(PlayerMessage.Queued(placement))
+                is ApiResult.Err -> _messages.trySend(PlayerMessage.Failed(r.error))
+            }
+            refreshStatus()
+        }
+    }
+
+    /** The player commands go to (for menus): the controlled player, or none yet. */
+    fun target(): String? = _state.value.selectedId
+
     /** Play an album, track or artist on the selected player. */
     fun enqueue(selection: Selection, placement: Placement, playIndex: Int? = null) {
         val id = _state.value.selectedId
@@ -379,5 +505,7 @@ class PlayerViewModel(
         /** A safety net while it is up. */
         const val SLOW_POLL_MS = 30_000L
         const val QUEUE_PAGE = 200
+        /** Players whose status the "Play on…" sheet reads. */
+        const val MAX_OUTPUT_STATUS = 20
     }
 }

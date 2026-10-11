@@ -46,7 +46,8 @@ fun status(id: String = "02:4c:41:00:00:01", connection: PlayerConnection = Play
     )
 
 private class MemSettings : SettingsStore {
-    val state = MutableStateFlow(AppSettings())
+    // Off to start with, so each test turns the phone's player on itself.
+    val state = MutableStateFlow(AppSettings(playOnPhone = false))
     override val settings: Flow<AppSettings> = state
 
     override suspend fun setServerUrl(url: String?) = state.update { it.copy(serverUrl = url) }
@@ -56,6 +57,11 @@ private class MemSettings : SettingsStore {
     override suspend fun setPlayOnPhone(on: Boolean) = state.update { it.copy(playOnPhone = on) }
 
     override suspend fun setSound(sound: SoundSettings) = state.update { it.copy(sound = sound) }
+
+    override suspend fun setLibrary(id: String?) = state.update { it.copy(libraryId = id) }
+
+    override suspend fun setDefaultPlayer(choice: io.github.jamezuk.lyrionanywhere.data.DefaultPlayer, playerId: String?) =
+        state.update { it.copy(defaultPlayer = choice, defaultPlayerId = playerId) }
 }
 
 private class FakeHandle : LocalPlayerHandle {
