@@ -116,7 +116,14 @@ import io.github.jamezuk.lyrionanywhere.ui.library.GenreNameViewModel
 import io.github.jamezuk.lyrionanywhere.ui.library.GenresScreen
 import io.github.jamezuk.lyrionanywhere.ui.library.GenresViewModel
 import io.github.jamezuk.lyrionanywhere.ui.library.HomeActions
+import io.github.jamezuk.lyrionanywhere.ui.library.HomeEditActions
 import io.github.jamezuk.lyrionanywhere.ui.library.HomeFeedViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.HomeMessage
+import io.github.jamezuk.lyrionanywhere.ui.settings.HistoryMessage
+import io.github.jamezuk.lyrionanywhere.ui.settings.HistoryScreen
+import io.github.jamezuk.lyrionanywhere.ui.settings.HistorySettings
+import io.github.jamezuk.lyrionanywhere.ui.settings.HistoryViewModel
+import io.github.jamezuk.lyrionanywhere.core.RunnerUpdate
 import io.github.jamezuk.lyrionanywhere.ui.library.HomeScreen
 import io.github.jamezuk.lyrionanywhere.ui.library.LibraryDestination
 import io.github.jamezuk.lyrionanywhere.ui.library.LibraryScreen
@@ -213,6 +220,10 @@ import kotlinx.serialization.Serializable
 @Serializable data class AppMenuRoute(val cmd: String, val name: String)
 
 @Serializable data class PluginMenuRoute(val id: String, val name: String)
+
+@Serializable data class PinnedMenuRoute(val id: Long, val name: String)
+
+@Serializable data object HistoryRoute
 
 @Serializable data class AlbumRoute(val id: Long)
 
@@ -369,6 +380,28 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
             is MenuEvent.Failed -> scope.launch { snackbar.showSnackbar(errorText(res, e.error)) }
             MenuEvent.NoPlayer -> scope.launch { snackbar.showSnackbar(res.getString(R.string.no_player_selected)) }
             MenuEvent.Closed -> onClosed()
+            is MenuEvent.Saved -> scope.launch {
+                snackbar.showSnackbar(res.getString(if (e.station) R.string.menu_saved_station else R.string.menu_pinned))
+            }
+            is MenuEvent.CantSave -> scope.launch {
+                snackbar.showSnackbar(res.getString(R.string.menu_cant_save, errorText(res, e.error)))
+            }
+        }
+    }
+
+    // A station started from Home keeps going: each status update may add another batch.
+    LaunchedEffect(playerState.selectedId, playerState.status, playerState.queue) {
+        val id = playerState.selectedId ?: return@LaunchedEffect
+        val status = playerState.status ?: return@LaunchedEffect
+        val update = container.me.onStatus(
+            id,
+            status.queueLength.toInt(),
+            status.queueIndex?.toInt() ?: 0,
+            status.current?.id,
+            playerState.queue.mapNotNull { it.track.id },
+        )
+        if (update is RunnerUpdate.Stopped) {
+            snackbar.showSnackbar(res.getString(R.string.station_broken, update.reason))
         }
     }
 
@@ -513,8 +546,20 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
             CompositionLocalProvider(LocalWindowLayout provides layout) {
             NavHost(nav, startDestination = HomeRoute) {
                 composable<HomeRoute> {
-                    val vm = viewModel { HomeFeedViewModel(container.library, libraryId) }
+                    val vm = viewModel { HomeFeedViewModel(container.library, libraryId, container.me, player::target) }
                     val feed by vm.state.collectAsStateWithLifecycle()
+                    LaunchedEffect(vm) {
+                        vm.messages.collect { m ->
+                            snackbar.showSnackbar(
+                                when (m) {
+                                    is HomeMessage.Failed -> errorText(res, m.error)
+                                    is HomeMessage.StationBroken -> res.getString(R.string.station_broken, m.reason)
+                                    HomeMessage.NoPlayer -> res.getString(R.string.station_no_player)
+                                    is HomeMessage.StationStarted -> res.getString(R.string.station_started, m.name)
+                                },
+                            )
+                        }
+                    }
                     Screen(
                         title = stringResource(R.string.nav_home),
                         actions = {
@@ -535,6 +580,22 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 onPlaylist = { nav.navigate(PlaylistRoute(it.id, it.name)) },
                                 onReshuffle = vm::reshuffle,
                                 onRetry = vm::refresh,
+                                onStation = vm::startStation,
+                                onCreateStation = vm::createStation,
+                                onDeleteStation = vm::deleteStation,
+                                onMenu = { nav.navigate(PinnedMenuRoute(it.id, it.name)) },
+                                onGenre = { id, name -> nav.navigate(GenreRoute(id, name)) },
+                                onEdit = vm::edit,
+                                genreChoices = vm::genreChoices,
+                            ),
+                            edit = HomeEditActions(
+                                onMove = vm::move,
+                                onHidden = vm::setHidden,
+                                onRemove = vm::remove,
+                                onAdd = vm::add,
+                                onReset = vm::resetDraft,
+                                onSave = vm::save,
+                                onCancel = vm::cancelEdit,
                             ),
                         )
                     }
@@ -852,15 +913,28 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                 }
                 composable<AppMenuRoute> { entry ->
                     val route = entry.toRoute<AppMenuRoute>()
-                    val vm = viewModel { MenuViewModel(container.menus, player::target) }
+                    val vm = viewModel { MenuViewModel(container.menus, container.me, player::target) }
                     LaunchedEffect(route) { vm.openApp(route.cmd, route.name) }
                     MenuRouteScreen(route.name, vm, onBack = { nav.popBackStack() }, onEvent = { handleMenuEvent(it) { nav.popBackStack() } })
                 }
                 composable<PluginMenuRoute> { entry ->
                     val route = entry.toRoute<PluginMenuRoute>()
-                    val vm = viewModel { MenuViewModel(container.menus, player::target) }
+                    val vm = viewModel { MenuViewModel(container.menus, container.me, player::target) }
                     LaunchedEffect(route, playerState.selectedId) { vm.openPlugin(route.id, playerState.selectedId) }
                     MenuRouteScreen(route.name, vm, onBack = { nav.popBackStack() }, onEvent = { handleMenuEvent(it) { nav.popBackStack() } })
+                }
+                composable<PinnedMenuRoute> { entry ->
+                    val route = entry.toRoute<PinnedMenuRoute>()
+                    val vm = viewModel { MenuViewModel(container.menus, container.me, player::target) }
+                    LaunchedEffect(route, playerState.selectedId) { vm.openPinned(route.id, route.name, playerState.selectedId) }
+                    MenuRouteScreen(route.name, vm, onBack = { nav.popBackStack() }, onEvent = { handleMenuEvent(it) { nav.popBackStack() } })
+                }
+                composable<HistoryRoute> {
+                    val vm = viewModel { HistoryViewModel(container.me) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    Screen(title = stringResource(R.string.section_history), onBack = { nav.popBackStack() }) {
+                        HistoryScreen(ui, onMore = vm::loadMore, onRetry = vm::load)
+                    }
                 }
                 composable<AlbumRoute> { entry ->
                     val route = entry.toRoute<AlbumRoute>()
@@ -972,6 +1046,18 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                 composable<SettingsRoute> {
                     val vm = viewModel { SettingsViewModel(container.account, container.localPlayer, container.offline) }
                     val ui by vm.state.collectAsStateWithLifecycle()
+                    val historyVm = viewModel { HistoryViewModel(container.me) }
+                    val historyUi by historyVm.state.collectAsStateWithLifecycle()
+                    LaunchedEffect(historyVm) {
+                        historyVm.messages.collect { m ->
+                            snackbar.showSnackbar(
+                                when (m) {
+                                    HistoryMessage.Cleared -> res.getString(R.string.history_cleared)
+                                    is HistoryMessage.Failed -> errorText(res, m.error)
+                                },
+                            )
+                        }
+                    }
                     Screen(title = stringResource(R.string.title_settings), onBack = { nav.popBackStack() }) {
                         SettingsScreen(
                             state = ui,
@@ -984,6 +1070,14 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             onDownloads = { nav.navigate(DownloadsRoute) },
                             onStorage = { nav.navigate(StorageRoute) },
                             defaultPlayer = { DefaultPlayerSetting(playerState, player::setDefaultPlayer) },
+                            history = {
+                                HistorySettings(
+                                    historyUi,
+                                    onEnabled = historyVm::setEnabled,
+                                    onView = { nav.navigate(HistoryRoute) },
+                                    onClear = historyVm::clear,
+                                )
+                            },
                         )
                     }
                 }
@@ -1009,7 +1103,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
     // "More…": quick play actions, then LMS's own context menu for the item.
     more?.let { request ->
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
-        val navigator = remember(request) { MenuNavigator(scope, container.menus, player::target) }
+        val navigator = remember(request) { MenuNavigator(scope, container.menus, player::target).also { it.saver = container.me } }
         val seed = when (request.kind) {
             io.github.jamezuk.lyrionanywhere.core.InfoKind.TRACK -> io.github.jamezuk.lyrionanywhere.core.RadioSeed.Track(request.id)
             io.github.jamezuk.lyrionanywhere.core.InfoKind.ALBUM -> io.github.jamezuk.lyrionanywhere.core.RadioSeed.Album(request.id)

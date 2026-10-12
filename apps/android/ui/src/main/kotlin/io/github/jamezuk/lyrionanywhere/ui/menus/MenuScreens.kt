@@ -29,6 +29,8 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.Radio
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilledTonalButton
@@ -73,7 +75,7 @@ import io.github.jamezuk.lyrionanywhere.ui.components.errorMessage
 /** The rows of the menu at the top of [navigator]'s stack. */
 private fun LazyListScope.menuRows(frame: MenuFrame, navigator: MenuNavigator, inputs: MutableMap<Int, String>) {
     itemsIndexed(frame.items, key = { i, _ -> "${frame.id}-$i" }) { i, item ->
-        MenuRow(item, inputs[i] ?: "", { inputs[i] = it.take(200) }, navigator)
+        MenuRow(item, i, inputs[i] ?: "", { inputs[i] = it.take(200) }, navigator)
     }
     if (frame.items.isEmpty() && !frame.loading && frame.error == null) {
         item { Text(stringResource(R.string.menu_empty), Modifier.padding(16.dp)) }
@@ -101,7 +103,7 @@ private fun LazyListScope.menuRows(frame: MenuFrame, navigator: MenuNavigator, i
 }
 
 @Composable
-private fun MenuRow(item: MenuItem, input: String, onInput: (String) -> Unit, navigator: MenuNavigator) {
+private fun MenuRow(item: MenuItem, index: Int, input: String, onInput: (String) -> Unit, navigator: MenuNavigator) {
     val transparent = ListItemDefaults.colors(containerColor = Color.Transparent)
     when (item.kind) {
         MenuItemKind.TEXT -> Text(
@@ -149,6 +151,15 @@ private fun MenuRow(item: MenuItem, input: String, onInput: (String) -> Unit, na
                                     Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, stringResource(R.string.menu_add, label))
                                 }
                             }
+                        }
+                        when (navigator.canSave(item)) {
+                            SaveKind.STATION -> IconButton(onClick = { navigator.save(item, index, SaveKind.STATION) }) {
+                                Icon(Icons.Outlined.Radio, stringResource(R.string.menu_save_station, label))
+                            }
+                            SaveKind.PIN -> IconButton(onClick = { navigator.save(item, index, SaveKind.PIN) }) {
+                                Icon(Icons.Outlined.PushPin, stringResource(R.string.menu_pin, label))
+                            }
+                            null -> {}
                         }
                         if (more != null) {
                             IconButton(onClick = { navigator.act(item, more, MORE) }) {

@@ -11,6 +11,8 @@ import io.github.jamezuk.lyrionanywhere.data.ArtRepository
 import io.github.jamezuk.lyrionanywhere.data.DataStoreSettings
 import io.github.jamezuk.lyrionanywhere.data.DiscoveryRepository
 import io.github.jamezuk.lyrionanywhere.data.RustDiscoveryRepository
+import io.github.jamezuk.lyrionanywhere.data.MeRepository
+import io.github.jamezuk.lyrionanywhere.data.RustMeRepository
 import io.github.jamezuk.lyrionanywhere.data.EventsRepository
 import io.github.jamezuk.lyrionanywhere.data.LibraryRepository
 import io.github.jamezuk.lyrionanywhere.data.MenusRepository
@@ -86,6 +88,9 @@ class AppContainer(context: Context, scope: CoroutineScope) {
     val events: EventsRepository = RustEventsRepository(accountImpl)
     val analysis: AnalysisRepository = RustAnalysisRepository(accountImpl)
     val menus: MenusRepository = RustMenusRepository(accountImpl)
+
+    /** Listening history, the customisable Home and stations (Wave 1). */
+    val me: MeRepository = RustMeRepository(accountImpl)
 
     /** "Start radio" and "More like this" (A6). */
     val discovery: DiscoveryRepository = RustDiscoveryRepository(accountImpl) { android.os.SystemClock.elapsedRealtime() }

@@ -83,8 +83,11 @@ import io.github.jamezuk.lyrionanywhere.core.FavouritePage
 import io.github.jamezuk.lyrionanywhere.core.FolderEntry
 import io.github.jamezuk.lyrionanywhere.core.FolderKind
 import io.github.jamezuk.lyrionanywhere.core.Genre
+import io.github.jamezuk.lyrionanywhere.core.PinnedMenu
 import io.github.jamezuk.lyrionanywhere.core.Placement
 import io.github.jamezuk.lyrionanywhere.core.SavedPlaylist
+import io.github.jamezuk.lyrionanywhere.core.Station
+import io.github.jamezuk.lyrionanywhere.core.StationSpec
 import io.github.jamezuk.lyrionanywhere.core.Track
 import io.github.jamezuk.lyrionanywhere.core.VirtualLibrary
 import io.github.jamezuk.lyrionanywhere.ui.R
@@ -547,67 +550,19 @@ data class HomeActions(
     val onPlaylist: (SavedPlaylist) -> Unit,
     val onReshuffle: () -> Unit,
     val onRetry: () -> Unit,
+    /** Start a station on the current player. */
+    val onStation: (Station) -> Unit = {},
+    val onCreateStation: (String, StationSpec) -> Unit = { _, _ -> },
+    val onDeleteStation: (Station) -> Unit = {},
+    /** Open a pinned menu. */
+    val onMenu: (PinnedMenu) -> Unit = {},
+    /** All albums of a genre shelf. */
+    val onGenre: (Long, String) -> Unit = { _, _ -> },
+    /** Enter edit mode. */
+    val onEdit: () -> Unit = {},
+    /** Genres to choose from (new stations, genre shelves). */
+    val genreChoices: suspend () -> List<Genre> = { emptyList() },
 )
-
-/**
- * Home: the library first (D20). Carousels of recently added and random albums,
- * favourites and playlists; the player card is compact and sits on top only while
- * something is playing ([playerCard]).
- */
-@Composable
-fun HomeScreen(
-    feed: HomeFeed,
-    actions: HomeActions,
-    modifier: Modifier = Modifier,
-    playerCard: @Composable () -> Unit = {},
-) {
-    LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
-        item { playerCard() }
-        item {
-            Carousel(
-                title = stringResource(R.string.home_recent),
-                state = feed.recent,
-                onSeeAll = { actions.onSeeAll(null) },
-                onRetry = actions.onRetry,
-            ) { a -> AlbumCard(a, actions) }
-        }
-        item {
-            Carousel(
-                title = stringResource(R.string.home_random),
-                state = feed.random,
-                onSeeAll = { actions.onSeeAll(LibraryDestination.RANDOM) },
-                onRetry = actions.onRetry,
-                extra = {
-                    IconButton(onClick = actions.onReshuffle) {
-                        Icon(Icons.Outlined.Shuffle, stringResource(R.string.shuffle_again))
-                    }
-                },
-            ) { a -> AlbumCard(a, actions) }
-        }
-        item {
-            Carousel(
-                title = stringResource(R.string.lib_favourites),
-                state = feed.favourites,
-                onSeeAll = { actions.onSeeAll(LibraryDestination.FAVOURITES) },
-                onRetry = actions.onRetry,
-                hideWhenEmpty = true,
-            ) { f ->
-                SmallCard(f.name, f.artwork, Icons.Outlined.Favorite) { actions.onFavourite(f) }
-            }
-        }
-        item {
-            Carousel(
-                title = stringResource(R.string.lib_playlists),
-                state = feed.playlists,
-                onSeeAll = { actions.onSeeAll(LibraryDestination.PLAYLISTS) },
-                onRetry = actions.onRetry,
-                hideWhenEmpty = true,
-            ) { p ->
-                SmallCard(p.name, null, Icons.AutoMirrored.Outlined.QueueMusic) { actions.onPlaylist(p) }
-            }
-        }
-    }
-}
 
 /**
  * A carousel card's width for this screen: about two and a half cards across a phone, more
@@ -627,14 +582,14 @@ private fun cardWidth(small: Boolean = false): Dp {
 }
 
 @Composable
-private fun AlbumCard(a: Album, actions: HomeActions) {
+internal fun AlbumCard(a: Album, actions: HomeActions) {
     Box(Modifier.width(cardWidth())) {
         AlbumTile(a, onClick = { actions.onAlbum(a) }, onMore = { actions.onMore(More.album(a)) })
     }
 }
 
 @Composable
-private fun SmallCard(name: String, artwork: String?, icon: ImageVector, onClick: () -> Unit) {
+internal fun SmallCard(name: String, artwork: String?, icon: ImageVector, onClick: () -> Unit) {
     Column(
         Modifier.width(cardWidth(small = true)).clickable(role = Role.Button, onClick = onClick),
     ) {
@@ -660,6 +615,7 @@ fun <T> Carousel(
     onRetry: () -> Unit,
     hideWhenEmpty: Boolean = false,
     extra: @Composable () -> Unit = {},
+    showSeeAll: Boolean = true,
     card: @Composable (T) -> Unit,
 ) {
     if (hideWhenEmpty && (state as? Loadable.Ready)?.value?.isEmpty() == true) return
@@ -671,9 +627,11 @@ fun <T> Carousel(
                 modifier = Modifier.weight(1f).semantics { heading() },
             )
             extra()
-            val seeAll = stringResource(R.string.see_all_named, title)
-            TextButton(onClick = onSeeAll, modifier = Modifier.semantics { contentDescription = seeAll }) {
-                Text(stringResource(R.string.see_all))
+            if (showSeeAll) {
+                val seeAll = stringResource(R.string.see_all_named, title)
+                TextButton(onClick = onSeeAll, modifier = Modifier.semantics { contentDescription = seeAll }) {
+                    Text(stringResource(R.string.see_all))
+                }
             }
         }
         when (state) {

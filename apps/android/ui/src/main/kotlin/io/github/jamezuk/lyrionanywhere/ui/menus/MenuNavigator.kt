@@ -6,11 +6,16 @@ import io.github.jamezuk.lyrionanywhere.core.AppEntry
 import io.github.jamezuk.lyrionanywhere.core.MenuAction
 import io.github.jamezuk.lyrionanywhere.core.MenuItem
 import io.github.jamezuk.lyrionanywhere.core.MenuItemKind
+import io.github.jamezuk.lyrionanywhere.core.HomeShelf
+import io.github.jamezuk.lyrionanywhere.core.MenuStep
+import io.github.jamezuk.lyrionanywhere.core.ShelfKind
 import io.github.jamezuk.lyrionanywhere.core.MenuOutcome
 import io.github.jamezuk.lyrionanywhere.core.PluginEntry
 import io.github.jamezuk.lyrionanywhere.core.Suitability
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
+import io.github.jamezuk.lyrionanywhere.data.MeRepository
+import io.github.jamezuk.lyrionanywhere.ui.home.HomeLayouts
 import io.github.jamezuk.lyrionanywhere.data.MenusRepository
 import io.github.jamezuk.lyrionanywhere.data.SuitabilityCache
 import kotlinx.coroutines.CoroutineScope
@@ -36,6 +41,8 @@ data class MenuFrame(
     val total: Int = 0,
     val loading: Boolean = false,
     val error: AppError? = null,
+    /** A fixed menu taken from the player's home menu (plugin entries), which can be read again. */
+    val fromHomeMenu: Boolean = false,
 ) {
     val canLoadMore: Boolean get() = action != null && !loading && error == null && items.size < total
 }
@@ -55,6 +62,21 @@ sealed interface MenuEvent {
 
     /** Backed out of the first menu. */
     data object Closed : MenuEvent
+
+    /** Saved as a station ([station]) or pinned to Home. */
+    data class Saved(val station: Boolean) : MenuEvent
+
+    /** The server wouldn't save it (the reason is fit to show). */
+    data class CantSave(val error: AppError) : MenuEvent
+}
+
+/** What can be kept from a menu item. */
+enum class SaveKind {
+    /** A mix or generator: "Save as station". */
+    STATION,
+
+    /** A menu: "Pin to Home". */
+    PIN,
 }
 
 /**
@@ -81,9 +103,74 @@ class MenuNavigator(
         push(title, action, null)
     }
 
-    /** Start over with a menu already in hand (e.g. a group of plugin entries). */
-    fun startWith(title: String, items: List<MenuItem>) {
-        _stack.value = listOf(MenuFrame(nextId++, title, null, items = items, total = items.size))
+    /**
+     * Start over with a menu already in hand (e.g. a group of plugin entries); [fromHomeMenu]
+     * when it was taken from the player's home menu (so it can be saved from).
+     */
+    fun startWith(title: String, items: List<MenuItem>, fromHomeMenu: Boolean = false) {
+        _stack.value = listOf(MenuFrame(nextId++, title, null, items = items, total = items.size, fromHomeMenu = fromHomeMenu))
+    }
+
+    /** Where stations and pinned menus are saved (none: the options aren't offered). */
+    var saver: MeRepository? = null
+
+    /**
+     * The menu the first one was taken from, when it isn't one the gateway takes as a start
+     * by itself (a plugin's entry in the home menu: [MenuStep.HomeMenu]).
+     */
+    var root: MenuStep? = null
+
+    /** What [item] (on the top menu) can be kept as, if anything. */
+    fun canSave(item: MenuItem): SaveKind? {
+        if (saver == null || stepsTo(_stack.value, 0, root) == null) return null
+        val go = item.go
+        val play = item.play
+        return when {
+            item.kind == MenuItemKind.FOLDER && go != null && go.opensMenu && !go.needsInput -> SaveKind.PIN
+            item.kind == MenuItemKind.ACTION && go != null && !go.opensMenu && !go.needsInput -> SaveKind.STATION
+            item.kind == MenuItemKind.PLAYABLE && play != null && !play.opensMenu && !play.needsInput &&
+                item.add != null -> SaveKind.STATION
+            else -> null
+        }
+    }
+
+    /** Save [item] (at [index] on the top menu) as [kind]: the server checks LMS offers it now. */
+    fun save(item: MenuItem, index: Int, kind: SaveKind) {
+        val me = saver ?: return
+        val p = player()
+        if (p == null) {
+            _events.trySend(MenuEvent.NoPlayer)
+            return
+        }
+        val steps = stepsTo(_stack.value, index, root) ?: return
+        val name = item.text.lineSequence().firstOrNull().orEmpty().trim().ifEmpty { top?.title.orEmpty() }.take(64)
+        scope.launch {
+            val r = when (kind) {
+                SaveKind.STATION -> {
+                    val play = (if (item.kind == MenuItemKind.ACTION) item.go else item.play) ?: return@launch
+                    me.saveMenuStation(name, steps, play, item.add?.takeIf { !it.opensMenu && !it.needsInput }, p)
+                }
+                SaveKind.PIN -> {
+                    val go = item.go ?: return@launch
+                    if (steps.size >= MAX_STEPS) {
+                        _events.trySend(MenuEvent.CantSave(AppError.InvalidInput("this menu is too deep to pin")))
+                        return@launch
+                    }
+                    val pinned = me.pinMenu(name, steps + MenuStep.Opened(go, 0u, PAGE.toUInt()), p)
+                    // And put it on Home (best effort: it is listed under Add a shelf anyway).
+                    if (pinned is ApiResult.Ok) {
+                        (me.home() as? ApiResult.Ok)?.value?.let { home ->
+                            HomeLayouts.add(home, HomeShelf(ShelfKind.MENU, pinned.value, false))?.let { me.saveHome(it) }
+                        }
+                    }
+                    pinned
+                }
+            }
+            when (r) {
+                is ApiResult.Ok -> _events.trySend(MenuEvent.Saved(kind == SaveKind.STATION))
+                is ApiResult.Err -> _events.trySend(MenuEvent.CantSave(r.error))
+            }
+        }
     }
 
     private fun push(title: String, action: MenuAction?, input: String?, items: List<MenuItem>? = null) {
@@ -204,15 +291,49 @@ class MenuNavigator(
         const val LABEL_PLAY = "Play"
         const val LABEL_OPEN = "Open"
         const val LABEL_SEARCH = "Search"
+
+        /** Menu requests from the first menu to an item the gateway takes, at most. */
+        const val MAX_STEPS = 4
+
+        /** Menus above the top one are read in one go (an item opened from them must be in it). */
+        private const val WHOLE = 500
+
+        /**
+         * The menu requests from the first menu to the top one, as the gateway replays them
+         * (`/v1/me/stations`, `/v1/me/menus`): each paged menu at the page holding what was
+         * chosen in it ([index] on the top one), a menu from the home menu as the home menu.
+         * Null if one can't be read again (a menu an action answered with), or too deep.
+         */
+        fun stepsTo(stack: List<MenuFrame>, index: Int, root: MenuStep? = null): List<MenuStep>? {
+            if (stack.isEmpty()) return null
+            val out = mutableListOf<MenuStep>()
+            root?.let { out += it }
+            stack.forEachIndexed { i, f ->
+                val action = f.action
+                when {
+                    action != null && f.input == null -> {
+                        val last = i == stack.size - 1
+                        val start = if (last) (index.coerceAtLeast(0) / PAGE) * PAGE else 0
+                        out += MenuStep.Opened(action, start.toUInt(), (if (last) PAGE else WHOLE).toUInt())
+                    }
+                    // A menu taken from the home menu: the root (or the home menu itself).
+                    i == 0 && (root != null || f.fromHomeMenu) -> if (root == null) out += MenuStep.HomeMenu
+                    else -> return null
+                }
+            }
+            return out.takeIf { it.size <= MAX_STEPS }
+        }
     }
 }
 
 /** A menu screen (an app, a plugin): a [MenuNavigator] that survives configuration changes. */
 class MenuViewModel(
     private val menus: MenusRepository,
+    /** Where "Save as station" and "Pin to Home" save (none: not offered). */
+    private val me: MeRepository? = null,
     player: () -> String?,
 ) : ViewModel() {
-    val navigator = MenuNavigator(viewModelScope, menus, player)
+    val navigator = MenuNavigator(viewModelScope, menus, player).also { it.saver = me }
     private val _missing = MutableStateFlow(false)
 
     /** The plugin isn't in the music server's menu any more. */
@@ -228,16 +349,31 @@ class MenuViewModel(
         }
     }
 
+    /** A menu pinned to Home, as LMS offers it now. */
+    fun openPinned(id: Long, name: String, player: String?) {
+        val m = me ?: return
+        if (started || player == null) return
+        started = true
+        viewModelScope.launch {
+            when (val r = m.openMenu(id, player)) {
+                is ApiResult.Ok -> navigator.startWith(name, r.value.items)
+                is ApiResult.Err -> _missing.value = true
+            }
+        }
+    }
+
     /** A plugin entry from the home menu, found again by its id (as the web app does). */
     fun openPlugin(id: String, player: String?) {
         if (started || player == null) return
         started = true
         viewModelScope.launch {
             val entry = (menus.plugins(player, emptyList()) as? ApiResult.Ok)?.value?.firstOrNull { it.id == id }
+            // Saved from here, the gateway replays it from the home menu it came from.
+            navigator.root = MenuStep.HomeMenu
             when {
                 entry == null -> _missing.value = true
                 entry.go != null -> navigator.start(entry.text, entry.go!!)
-                else -> navigator.startWith(entry.text, entry.children)
+                else -> navigator.startWith(entry.text, entry.children, fromHomeMenu = true)
             }
         }
     }

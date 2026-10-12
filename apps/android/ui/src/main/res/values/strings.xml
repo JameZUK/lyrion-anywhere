@@ -531,4 +531,66 @@
     </plurals>
     <string name="downloads_notification_waiting">Waiting for Wi-Fi</string>
 
+    <!-- Home: shelves, edit mode and stations (docs/plans/wave1-design.md §6–7) -->
+    <string name="action_delete">Delete</string>
+    <string name="action_save">Save</string>
+    <string name="action_create">Create</string>
+    <string name="home_edit">Edit Home</string>
+    <string name="home_edit_explained">Drag shelves by the handle or use the arrows to reorder them. Hidden shelves stay here but aren\'t shown on Home. Your Home is the same on every device.</string>
+    <string name="home_add_shelf">Add a shelf</string>
+    <string name="home_add_genre">Albums of a genre…</string>
+    <string name="home_reset">Reset to default</string>
+    <string name="home_move_up">Move up: %1$s</string>
+    <string name="home_move_down">Move down: %1$s</string>
+    <string name="home_drag">Drag to reorder: %1$s</string>
+    <string name="home_hide">Hide: %1$s</string>
+    <string name="home_show">Show: %1$s</string>
+    <string name="home_remove">Remove: %1$s</string>
+    <string name="home_hidden">Hidden</string>
+    <string name="home_stations">Stations</string>
+    <string name="home_shelf_recent">Recently played</string>
+    <string name="home_shelf_most">Most played</string>
+    <string name="home_shelf_on_this_day">On this day</string>
+    <string name="home_shelf_station">Station</string>
+    <string name="home_shelf_menu">Pinned menu</string>
+    <string name="home_shelf_genre">Genre</string>
+    <string name="home_shelf_named">%1$s: %2$s</string>
+    <string name="stations_none">No stations yet.</string>
+    <string name="station_new">New station</string>
+    <string name="station_name">Name</string>
+    <string name="station_play">Start station %1$s</string>
+    <string name="station_playing">Playing now</string>
+    <string name="station_started">Playing station %1$s</string>
+    <string name="station_delete">Delete station %1$s</string>
+    <string name="station_delete_title">Delete %1$s?</string>
+    <string name="station_kind_genre">Genres</string>
+    <string name="station_kind_decade">The %1$ds</string>
+    <string name="station_kind_decade_choice">A decade</string>
+    <string name="station_kind_forgotten">Forgotten favourites</string>
+    <string name="station_kind_fresh">Fresh</string>
+    <string name="station_kind_deep_cuts">Deep cuts</string>
+    <string name="station_kind_menu">Saved from a menu</string>
+    <string name="station_decade_mine">Favour what I\'ve played</string>
+    <string name="station_broken">This station can\'t play: %1$s</string>
+    <string name="station_no_player">Choose a player first, with Play on…</string>
+    <!-- Menus: saving items -->
+    <string name="menu_save_station">Save as station: %1$s</string>
+    <string name="menu_pin">Pin to Home: %1$s</string>
+    <string name="menu_saved_station">Saved as a station</string>
+    <string name="menu_pinned">Pinned to Home</string>
+    <string name="menu_cant_save">This can\'t be saved: %1$s</string>
+    <!-- Listening history (docs/plans/wave1-design.md §8) -->
+    <string name="section_history">Listening history</string>
+    <string name="history_record">Keep a listening history</string>
+    <string name="history_explained">What you play through Lyrion Anywhere, for Recently played, Most played and stations. Kept for 13 months on your server and never shared with other users.</string>
+    <string name="history_view">View history</string>
+    <string name="history_clear">Clear history</string>
+    <string name="history_clear_title">Clear your listening history?</string>
+    <string name="history_clear_explained">Everything recorded so far is deleted from the server. Play counts in the music server itself are not changed.</string>
+    <string name="history_cleared">History cleared</string>
+    <string name="history_empty">Nothing played yet.</string>
+    <string name="history_off">History is switched off: nothing new is recorded.</string>
+    <string name="history_offline">Offline</string>
+    <string name="history_more">Show older</string>
+
 </resources>

@@ -10,16 +10,26 @@ import io.github.jamezuk.lyrionanywhere.core.Favourite
 import io.github.jamezuk.lyrionanywhere.core.FavouritePage
 import io.github.jamezuk.lyrionanywhere.core.FolderEntry
 import io.github.jamezuk.lyrionanywhere.core.Genre
+import io.github.jamezuk.lyrionanywhere.core.HomeLayout
+import io.github.jamezuk.lyrionanywhere.core.HomeShelf
 import io.github.jamezuk.lyrionanywhere.core.LibraryFilter
+import io.github.jamezuk.lyrionanywhere.core.PinnedMenu
 import io.github.jamezuk.lyrionanywhere.core.SavedPlaylist
 import io.github.jamezuk.lyrionanywhere.core.SearchResults
+import io.github.jamezuk.lyrionanywhere.core.ShelfKind
+import io.github.jamezuk.lyrionanywhere.core.Station
+import io.github.jamezuk.lyrionanywhere.core.StationBatch
+import io.github.jamezuk.lyrionanywhere.core.StationSpec
 import io.github.jamezuk.lyrionanywhere.core.Track
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.data.LibraryRepository
+import io.github.jamezuk.lyrionanywhere.data.MeRepository
+import io.github.jamezuk.lyrionanywhere.ui.home.HomeLayouts
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,6 +39,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -462,20 +473,53 @@ class ArtistViewModel(
     }
 }
 
-/** Home's carousels (D20: the library first). */
+/** Home's shelves (D20: the library first; docs/plans/wave1-design.md §7). */
 data class HomeFeed(
+    /** New Music (recently added albums). */
     val recent: Loadable<List<Album>> = Loadable.Loading,
     val random: Loadable<List<Album>> = Loadable.Loading,
     val favourites: Loadable<List<Favourite>> = Loadable.Loading,
     val playlists: Loadable<List<SavedPlaylist>> = Loadable.Loading,
+    /** The user's layout (from the gateway); null: the fixed carousels above. */
+    val layout: HomeLayout? = null,
+    /** Albums for the history shelves (recently played, most played, on this day). */
+    val history: Map<ShelfKind, Loadable<List<Album>>> = emptyMap(),
+    val stations: Loadable<List<Station>> = Loadable.Loading,
+    val menus: List<PinnedMenu> = emptyList(),
+    /** Albums of each genre shelf, by genre id. */
+    val genres: Map<Long, Loadable<List<Album>>> = emptyMap(),
+    /** Genre names, for genre shelves and pickers. */
+    val genreNames: Map<Long, String> = emptyMap(),
+    /** The layout being edited (edit mode), or null. */
+    val draft: HomeLayout? = null,
+    val saving: Boolean = false,
+    /** The station kept going, if any. */
+    val activeStation: Long? = null,
 )
+
+/** What Home has to say (a snackbar). */
+sealed interface HomeMessage {
+    data class Failed(val error: AppError) : HomeMessage
+
+    data class StationBroken(val reason: String) : HomeMessage
+
+    data object NoPlayer : HomeMessage
+
+    data class StationStarted(val name: String) : HomeMessage
+}
 
 class HomeFeedViewModel(
     private val library: LibraryRepository,
     libraryId: Flow<String?> = flowOf(null),
+    /** The user's layout, history shelves and stations (none: the fixed carousels). */
+    private val me: MeRepository? = null,
+    /** The player stations start on. */
+    private val player: () -> String? = { null },
 ) : ViewModel() {
     private val _state = MutableStateFlow(HomeFeed())
     val state: StateFlow<HomeFeed> = _state.asStateFlow()
+    private val _messages = Channel<HomeMessage>(Channel.BUFFERED)
+    val messages: Flow<HomeMessage> = _messages.receiveAsFlow()
     private var currentLibrary: String? = null
 
     init {
@@ -484,6 +528,9 @@ class HomeFeedViewModel(
                 currentLibrary = it
                 refresh()
             }
+        }
+        me?.let { m ->
+            viewModelScope.launch { m.activeStation.collect { id -> _state.update { it.copy(activeStation = id) } } }
         }
     }
 
@@ -510,6 +557,53 @@ class HomeFeedViewModel(
             val r = library.playlists(0, CAROUSEL)
             _state.update { it.copy(playlists = r.loadable().mapReady { p -> p.items }) }
         }
+        val m = me ?: return
+        viewModelScope.launch {
+            val layout = (m.home() as? ApiResult.Ok)?.value ?: HomeLayouts.DEFAULT
+            _state.update { it.copy(layout = layout) }
+            loadShelves(m, layout)
+        }
+        viewModelScope.launch { loadStations(m) }
+    }
+
+    private suspend fun loadStations(m: MeRepository) {
+        val st = m.stations()
+        val menus = (m.menus() as? ApiResult.Ok)?.value.orEmpty()
+        _state.update { it.copy(stations = st.loadable(), menus = menus) }
+    }
+
+    /** Load what the shelves in [layout] show (only those not loaded yet, unless [all]). */
+    private fun loadShelves(m: MeRepository, layout: HomeLayout, all: Boolean = true) {
+        val lib = LibraryFilter(libraryId = currentLibrary)
+        for (shelf in layout.shelves) {
+            when (shelf.kind) {
+                ShelfKind.RECENT, ShelfKind.MOST, ShelfKind.ON_THIS_DAY -> {
+                    if (!all && _state.value.history[shelf.kind] is Loadable.Ready) continue
+                    viewModelScope.launch {
+                        val r = when (val ids = m.shelfAlbums(shelf.kind, CAROUSEL)) {
+                            is ApiResult.Ok -> m.albums(ids.value)
+                            is ApiResult.Err -> ids
+                        }
+                        _state.update { it.copy(history = it.history + (shelf.kind to r.loadable())) }
+                    }
+                }
+                ShelfKind.GENRE -> {
+                    val id = shelf.id ?: continue
+                    if (!all && _state.value.genres[id] is Loadable.Ready) continue
+                    viewModelScope.launch {
+                        val r = library.albums(0, CAROUSEL, AlbumSort.NEWEST, null, lib.copy(genreId = id))
+                        val name = (library.genre(id) as? ApiResult.Ok)?.value?.name
+                        _state.update {
+                            it.copy(
+                                genres = it.genres + (id to r.loadable().mapReady { p -> p.items }),
+                                genreNames = if (name != null) it.genreNames + (id to name) else it.genreNames,
+                            )
+                        }
+                    }
+                }
+                else -> {}
+            }
+        }
     }
 
     /** Shuffle the random albums again. */
@@ -517,6 +611,98 @@ class HomeFeedViewModel(
         viewModelScope.launch {
             val r = library.albums(0, CAROUSEL, AlbumSort.RANDOM, null, LibraryFilter(libraryId = currentLibrary))
             _state.update { it.copy(random = r.loadable().mapReady { p -> p.items }) }
+        }
+    }
+
+    // --- stations ----------------------------------------------------------------------------
+
+    fun startStation(station: Station) {
+        val m = me ?: return
+        val p = player()
+        if (p == null) {
+            _messages.trySend(HomeMessage.NoPlayer)
+            return
+        }
+        viewModelScope.launch {
+            when (val r = m.startStation(station.id, p)) {
+                is ApiResult.Ok -> when (val b = r.value) {
+                    is StationBatch.Broken -> {
+                        _messages.trySend(HomeMessage.StationBroken(b.reason))
+                        loadStations(m)
+                    }
+                    else -> _messages.trySend(HomeMessage.StationStarted(station.name))
+                }
+                is ApiResult.Err -> _messages.trySend(HomeMessage.Failed(r.error))
+            }
+        }
+    }
+
+    fun createStation(name: String, spec: StationSpec) {
+        val m = me ?: return
+        viewModelScope.launch {
+            when (val r = m.createStation(name, spec)) {
+                is ApiResult.Ok -> loadStations(m)
+                is ApiResult.Err -> _messages.trySend(HomeMessage.Failed(r.error))
+            }
+        }
+    }
+
+    fun deleteStation(station: Station) {
+        val m = me ?: return
+        viewModelScope.launch {
+            when (val r = m.deleteStation(station.id)) {
+                is ApiResult.Ok -> loadStations(m)
+                is ApiResult.Err -> _messages.trySend(HomeMessage.Failed(r.error))
+            }
+        }
+    }
+
+    /** Genres to choose from (new stations, genre shelves). */
+    suspend fun genreChoices(): List<Genre> =
+        (library.genres(0, 500, currentLibrary) as? ApiResult.Ok)?.value?.items.orEmpty()
+
+    // --- edit mode ---------------------------------------------------------------------------
+
+    fun edit() = _state.update { it.copy(draft = it.layout ?: HomeLayouts.DEFAULT) }
+
+    fun cancelEdit() = _state.update { it.copy(draft = null) }
+
+    private fun change(f: (HomeLayout) -> HomeLayout?) = _state.update { s ->
+        val d = s.draft ?: return@update s
+        f(d)?.let { s.copy(draft = it) } ?: s
+    }
+
+    fun move(from: Int, to: Int) = change { HomeLayouts.move(it, from, to) }
+
+    fun moveUp(index: Int) = move(index, index - 1)
+
+    fun moveDown(index: Int) = move(index, index + 1)
+
+    fun setHidden(index: Int, hidden: Boolean) = change { HomeLayouts.setHidden(it, index, hidden) }
+
+    fun remove(index: Int) = change { HomeLayouts.remove(it, index) }
+
+    fun add(shelf: HomeShelf) = change { HomeLayouts.add(it, shelf) }
+
+    fun resetDraft() = _state.update { if (it.draft == null) it else it.copy(draft = HomeLayouts.DEFAULT) }
+
+    /** Save the draft; on failure the edit stays open and says why. */
+    fun save() {
+        val m = me ?: return
+        val draft = _state.value.draft ?: return
+        _state.update { it.copy(saving = true) }
+        viewModelScope.launch {
+            val r = if (draft.isDefault) m.resetHome() else m.saveHome(draft)
+            when (r) {
+                is ApiResult.Ok -> {
+                    _state.update { it.copy(layout = r.value, draft = null, saving = false) }
+                    loadShelves(m, r.value, all = false)
+                }
+                is ApiResult.Err -> {
+                    _state.update { it.copy(saving = false) }
+                    _messages.trySend(HomeMessage.Failed(r.error))
+                }
+            }
         }
     }
 

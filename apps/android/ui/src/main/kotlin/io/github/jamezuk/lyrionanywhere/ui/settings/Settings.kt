@@ -190,6 +190,8 @@ fun SettingsScreen(
     /** The default-player choice (D20), when the app has players to offer. */
     defaultPlayer: (@Composable () -> Unit)? = null,
     onRename: (String) -> Unit = {},
+    /** Listening history: record or not, view, clear (docs/plans/wave1-design.md §8). */
+    history: (@Composable () -> Unit)? = null,
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var renaming by rememberSaveable { mutableStateOf(false) }
@@ -216,6 +218,11 @@ fun SettingsScreen(
                     modifier = Modifier.clickable(onClick = onSound),
                 )
             }
+            item { HorizontalDivider() }
+        }
+        if (history != null) {
+            item { SectionHeader(stringResource(R.string.section_history)) }
+            item { history() }
             item { HorizontalDivider() }
         }
         if (state.downloadsOffered) {
