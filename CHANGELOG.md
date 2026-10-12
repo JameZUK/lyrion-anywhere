@@ -2,6 +2,31 @@
 
 Dated entries, newest first.
 
+## 2026-10-12
+
+### Synchronised playback: our players now stay in step with hardware players
+- **Fixed: a phone or browser in a sync group sounded late** by its output latency: tens of ms through a speaker or Web Audio, 150–300 ms over Bluetooth. Elapsed time counted frames as they were handed to the output, not as they were heard. LMS kept the reported positions together, so it never saw the gap. Now:
+  - **position as heard:** each player reports what is audible:
+    - Android: from AAudio's presentation timestamp on `CLOCK_MONOTONIC`, which includes Bluetooth latency where Android reports it;
+    - Web Audio: from `getOutputTimestamp()`, or `outputLatency` and `baseLatency`;
+    - iOS media-element mode: from the element's play head, smoothed.
+
+    Each STAT's elapsed is extrapolated to its own jiffies (core: `Player::presented`), on the same monotonic clock as the audio timing.
+  - **exact timed start:** when LMS starts a group (`strm u` with a start time), the first frame is placed so it is heard at that time, to the sample. Audio is pre-rolled while waiting. A start the output can't make (Bluetooth against LMS's 200 ms) drops what it missed, and so starts in step.
+  - **corrections at the output:** LMS's pause-for-N-ms and skip-N-ms take effect at once, in the audio callback or worklet (or on the media element). Before, they took effect behind the 0.3–8 s of audio already queued. Pauses shorter than that were lost entirely.
+- **Measured** in a new harness (`mobile/tests/sync.rs`): two players against a fake LMS that learns clocks, starts and corrects as LMS does. It uses the real core, ring and timestamp maths, with simulated latency, clock drift and network jitter. Against a hardware player:
+  - phone speaker and Bluetooth: within 7 ms (mean 0.5–6 ms);
+  - before this change, the Bluetooth player was 256 ms late.
+
+  Real devices still need checking.
+- **LMS settings:** the plugin changes none of LMS's per-player sync settings; the defaults are right now. `docs/PROTOCOL.md` › *Synchronised playback* lists what users can tune: *Player audio delay* for latency a platform doesn't report, and the minimum adjustment.
+- **Tests:**
+  - core: extrapolation, timed starts across the jiffies wrap, corrections handed to the host, and hostile start times and intervals (refused or capped);
+  - ring: the device clock and its history, exact and late timed starts, inserted silence, skips, and consistency while the audio thread runs;
+  - timestamp maths: drift, jitter, Bluetooth latency and nonsense values;
+  - worklet: runs, hold, the timed start, silence, skip and hostile messages;
+  - the worker's presentation tracker, the output clock and play-head smoother, the media element's sync pause and skip, and the WASM bindings.
+
 ## 2026-10-11
 
 ### Android: release readiness (A7)

@@ -924,6 +924,23 @@ Built: everything for a 1.0 except choosing the version, which is the owner's ca
 - submit to F-Droid;
 - take screenshots and performance measurements on a device.
 
+### Sync status (2026-10-12): in step with hardware players
+
+The owner found a phone in a sync group with a hardware player audibly late. The cause was elapsed time counted as frames handed to the output, not frames heard, plus a start and corrections applied behind the output's queue. Fixed in the core, Android and the web player (`docs/PROTOCOL.md` › *Synchronised playback*):
+- **position as heard**, extrapolated to each STAT's jiffies;
+- **a sample-exact timed start**, allowing for output latency;
+- **pause and skip corrections applied at the output.**
+
+**Verified on the host only.** The harness (`mobile/tests/sync.rs`) measures within 7 ms of a hardware player for a speaker (30 ms) and Bluetooth (250 ms), and 3 ms for a jittery Web Audio-like output. Its "Web Audio-like" output is the Android path with Web Audio's numbers; the worklet and worker are tested on their own. Before the fix it measured 256 ms late on Bluetooth.
+
+**Needs a device:**
+- a phone (speaker, wired, Bluetooth) synced with a Squeezebox or squeezelite, by ear or with a two-microphone recording;
+- whether this phone's Bluetooth stack reports its latency in AAudio's timestamp;
+- Chrome, Firefox and Safari in Web Audio mode;
+- an iPhone in media-element mode (best effort; the limits are in PROTOCOL.md).
+
+**Decision:** the plugin sets no LMS sync preferences for our players (D22).
+
 ## 9. Quality: testing audio as seriously as security
 
 **Bit-perfect verification**
