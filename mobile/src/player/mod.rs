@@ -16,6 +16,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+pub mod clock;
 pub mod negotiate;
 pub mod output;
 pub mod pipeline;

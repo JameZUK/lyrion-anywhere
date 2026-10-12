@@ -159,6 +159,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "jni",
+ "libc",
  "log",
  "ndk",
  "percent-encoding",

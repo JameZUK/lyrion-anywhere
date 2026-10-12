@@ -37,6 +37,7 @@ use anywhere_core::player::{Action, OutputState, Player, PlayerConfig};
 use anywhere_core::proto::{ClientMsg, format_mac};
 
 use super::audio::{AudioPath, AudioSource, OutputShared, dsp_transitions};
+use super::clock::mono_ns;
 use super::output::AudioOutput;
 use super::pipeline::{DspSettings, Levelling};
 use super::protocol::{self, CloseAction, Greeting};
@@ -171,7 +172,11 @@ pub(crate) struct Engine {
     tx: mpsc::UnboundedSender<Ev>,
     rx: mpsc::UnboundedReceiver<Ev>,
     cmds: mpsc::UnboundedReceiver<Cmd>,
-    start: Instant,
+    /// The player's clock origin on `CLOCK_MONOTONIC`, the clock the output's timestamps
+    /// use: jiffies are milliseconds since then.
+    start_ns: i64,
+    /// A timed start is armed in the ring, which releases its hold at the exact frame.
+    timed_start: bool,
     // Connection.
     session: Option<(String, String)>,
     received: u64,
@@ -233,7 +238,8 @@ impl Engine {
             tx,
             rx,
             cmds,
-            start: Instant::now(),
+            start_ns: mono_ns(),
+            timed_start: false,
             session: None,
             received: 0,
             ws_gen: 0,
@@ -269,7 +275,29 @@ impl Engine {
     }
 
     fn now_ms(&self) -> u64 {
-        self.start.elapsed().as_millis() as u64
+        self.ms_at(mono_ns())
+    }
+
+    /// Host time (jiffies, ms) at monotonic time `ns`.
+    fn ms_at(&self, ns: i64) -> u64 {
+        (ns.saturating_sub(self.start_ns) / 1_000_000).max(0) as u64
+    }
+
+    /// Hand LMS's sync corrections to the output, where they apply at once and exactly.
+    fn apply_corrections(&mut self) {
+        let Some(p) = &mut self.player else { return };
+        let corrections = p.take_corrections();
+        if corrections.is_empty() {
+            return;
+        }
+        let now_ns = mono_ns();
+        let start_ns = self.start_ns;
+        for c in corrections {
+            let to_ns = |ms: u64| start_ns.saturating_add((ms as i64).saturating_mul(1_000_000));
+            if self.audio.apply_correction(c, now_ns, to_ns) {
+                self.timed_start = true;
+            }
+        }
     }
 
     pub(crate) async fn run(mut self) {
@@ -389,6 +417,8 @@ impl Engine {
                 firmware: concat!("anywhere-android-", env!("CARGO_PKG_VERSION")).into(),
             });
             p.connected(self.now_ms());
+            // Timed starts, pauses and skips for sync are applied at the output.
+            p.set_output_corrections(true);
             // A bit-perfect DAC keeps its fixed volume across sessions.
             p.set_fixed_volume(self.audio.route_state.direct);
             self.audio.forget_plan();
@@ -502,6 +532,7 @@ impl Engine {
                     self.on_closed(None, "");
                 }
                 self.run_actions();
+                self.apply_corrections();
             }
             Ev::WsClosed { conn, code, reason } if conn == self.ws_gen => {
                 self.on_closed(code, &reason)
@@ -741,6 +772,7 @@ impl Engine {
     /// Drop audio queued between the core and the speaker (a flush, or a new session).
     fn drop_queued_audio(&mut self) {
         self.audio.drop_queued_audio();
+        self.timed_start = false;
     }
 
     fn on_tick(&mut self) {
@@ -750,24 +782,24 @@ impl Engine {
             self.reconnect_at = None;
             self.connect(resume);
         }
-        let now = self.now_ms();
+        let now_ns = mono_ns();
+        let now = self.ms_at(now_ns);
         let ring = self.shared.out.ring.clone();
 
-        // Frames the output has consumed since the last tick.
-        let played = self.audio.played();
+        // Frames that have become audible since the last tick, exact as of now.
+        let played = self.audio.played_at(now_ns);
         let Some(p) = &mut self.player else {
             self.publish_status(false);
             return;
         };
-        if played > 0 {
-            p.played(played);
-        }
+        p.presented(played, now);
         p.tick(now);
         if p.flush_count() != self.last_flush {
             self.last_flush = p.flush_count();
             self.drop_queued_audio();
         }
         self.run_actions();
+        self.apply_corrections();
 
         let src = self.player.as_mut().map(|p| p as &mut dyn AudioSource);
         self.audio.poll_output(src);
@@ -809,7 +841,16 @@ impl Engine {
         }
         self.was_playing = playing;
         let user_hold = self.shared.out.hold.load(Ordering::Acquire);
-        ring.set_hold(user_hold || !playing);
+        // A timed start armed in the ring releases the hold itself, at the exact frame:
+        // leave it alone until the core's start time has come.
+        let timed = self.timed_start && matches!(state, OutputState::Paused { until: Some(_) });
+        if self.timed_start && (!timed || user_hold) {
+            self.timed_start = false;
+            ring.cancel_start();
+        }
+        if !timed || user_hold {
+            ring.set_hold(user_hold || !playing);
+        }
         // While a fresh start waits for its loudness, the silence is not an underrun.
         let exhausted = p.audio_exhausted() && self.audio.idle();
         ring.set_expect_data(playing && !user_hold && !exhausted && !gating);

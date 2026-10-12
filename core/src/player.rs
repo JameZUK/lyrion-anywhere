@@ -10,6 +10,24 @@
 //!
 //! Sans-I/O: the host feeds control bytes, stream bytes and a millisecond clock, executes
 //! the [`Action`]s, and pulls PCM with [`Player::pull_audio`].
+//!
+//! ## Synchronisation
+//!
+//! LMS keeps synced players together using each STAT's `(jiffies, elapsed)` pair, a timed
+//! start (`strm u` with a start time) and small corrections (`strm p`: pause for N ms;
+//! `strm a`: skip N ms). We advertise `AccuratePlayPoints`, so LMS uses every pair as it
+//! is. For sync to work, the pair must describe what is *audible*:
+//! - The clock (`now_ms`, which is also the jiffies) must be monotonic. It must also be the
+//!   clock the host uses to time its output.
+//! - The host reports frames as they are presented (heard), not as they are handed to its
+//!   output, using [`Player::presented`]. It passes the frames newly presented and the host
+//!   time at which that count was exact. Each STAT then extrapolates elapsed from that
+//!   moment to its own jiffies, so the pair stays consistent to within about a millisecond
+//!   whenever it is sent. ([`Player::played`] without a time still works, as before.)
+//! - With [`Player::set_output_corrections`] on, the host applies the timed start, pauses
+//!   and skips at its output stage (see [`OutputCorrection`]). They are then sample-accurate
+//!   and don't wait for the audio already queued. The host may also pull audio ahead while
+//!   a start is pending.
 
 use std::collections::VecDeque;
 
@@ -23,6 +41,15 @@ pub const OUTPUT_TARGET_SECS: u32 = 10;
 /// Packets decoded per `tick`, to bound the time spent per call.
 const PACKETS_PER_TICK: usize = 48;
 const HEARTBEAT_MS: u64 = 1000;
+/// Never extrapolate elapsed time more than this far past the host's last position report.
+/// Beyond that the host has stopped reporting (or its output has stalled), so report only
+/// what is known. A second: a browser in the background may only report once a second.
+pub const MAX_EXTRAPOLATE_MS: u64 = 1000;
+/// The longest pause or skip correction accepted from LMS (it sends at most 10 s).
+const MAX_CORRECTION_MS: u32 = 10_000;
+/// A timed start further ahead than this is not a real one (a corrupt or hostile frame), so
+/// the player starts at once instead. LMS sends starts a few hundred milliseconds ahead.
+const MAX_START_AHEAD_MS: u64 = 30_000;
 /// With quick start on, the stream must be arriving at least this many times faster than it
 /// plays. A live stream (radio) arrives at about real time, so it keeps waiting for LMS's
 /// threshold and the cushion that gives it.
@@ -82,6 +109,24 @@ pub enum Action {
     CloseStream,
 }
 
+/// A synchronisation correction from LMS, for a host that applies them at its output stage
+/// (see [`Player::set_output_corrections`]). Applied there, they take effect at once and to
+/// the sample, instead of after the audio the host has queued ahead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputCorrection {
+    /// Play `ms` of silence now, consuming no audio, then carry on. Sent as `strm p` with an
+    /// interval: this player is ahead of the group.
+    Pause { ms: u32 },
+    /// Drop the next `ms` of audio now. Sent as `strm a`: this player is behind. Report the
+    /// skipped frames through [`Player::presented`] or [`Player::played`], like played ones.
+    Skip { ms: u32 },
+    /// Make the first audible frame of the pulled audio play at host time `at_ms`. Sent as
+    /// `strm u` with a start time. Audio may be pulled ahead until then. If the output can no
+    /// longer make that time, it should start at once and drop the audio that would already
+    /// have played, so the player is still in step.
+    StartAt { at_ms: u64 },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputState {
     Stopped,
@@ -90,7 +135,7 @@ pub enum OutputState {
     /// Threshold reached with autostart off; waiting for `strm u`.
     Loaded,
     Playing,
-    /// Paused; resumes automatically at `until` (jiffies) if set.
+    /// Paused; resumes automatically at `until` (host time, in ms) if set.
     Paused {
         until: Option<u64>,
     },
@@ -184,6 +229,15 @@ pub struct Player {
     /// Start once this much audio is decoded, if it is arriving quickly (see
     /// [`Player::set_quick_start`]).
     quick_start_ms: Option<u32>,
+    /// The host time at which the count of played frames was exact (see
+    /// [`Player::presented`]); `None` for hosts that report without a time.
+    position_at: Option<u64>,
+    /// The host applies sync corrections at its output (see
+    /// [`Player::set_output_corrections`]).
+    output_corrections: bool,
+    corrections: Vec<OutputCorrection>,
+    /// A pause correction runs until this host time (ms): no extrapolation until then.
+    corrected_until: u64,
 }
 
 impl Player {
@@ -209,7 +263,39 @@ impl Player {
             fixed_volume: false,
             host_volume: false,
             quick_start_ms: None,
+            position_at: None,
+            output_corrections: false,
+            corrections: Vec::new(),
+            corrected_until: 0,
         }
+    }
+
+    /// Let the host apply LMS's sync corrections at its output stage. The timed start, the
+    /// pause for an interval and the skip ahead are then handed over as
+    /// [`OutputCorrection`]s (see [`Player::take_corrections`]) instead of being applied to
+    /// the core's queue. Audio may also be pulled ahead while loaded or waiting for a timed
+    /// start; the host keeps it silent until the start. Off by default: the core applies
+    /// the corrections itself, as before.
+    pub fn set_output_corrections(&mut self, on: bool) {
+        self.output_corrections = on;
+        if !on {
+            self.corrections.clear();
+        }
+    }
+
+    /// Corrections for the host to apply at its output, oldest first. Always empty unless
+    /// [`Player::set_output_corrections`] is on.
+    pub fn take_corrections(&mut self) -> Vec<OutputCorrection> {
+        std::mem::take(&mut self.corrections)
+    }
+
+    /// Report that `frames` more of the pulled audio have been presented (are audible), and
+    /// that the total was exact at host time `at_ms` (the same clock as `now_ms`). Call it
+    /// regularly while playing, even with 0 frames. Elapsed time in each STAT is then
+    /// extrapolated from that moment to the STAT's own jiffies.
+    pub fn presented(&mut self, frames: u64, at_ms: u64) {
+        self.played(frames);
+        self.position_at = Some(at_ms);
     }
 
     /// Leave LMS's volume (`audg`) to the host. Pulled audio is then at full scale, and the
@@ -352,7 +438,7 @@ impl Player {
         self.now = now_ms;
 
         if let OutputState::Paused { until: Some(at) } = self.output
-            && self.jiffies() as u64 >= at
+            && self.now >= at
         {
             self.output = OutputState::Playing;
         }
@@ -411,7 +497,7 @@ impl Player {
     }
 
     fn pull(&mut self, out: &mut [f32], one_track: bool) -> (usize, Option<u32>) {
-        if self.output != OutputState::Playing {
+        if !self.may_pull() {
             return (0, None);
         }
         let Some(rate) = self.output_rate() else {
@@ -450,6 +536,25 @@ impl Player {
             written += n;
         }
         (written, first_seq)
+    }
+
+    /// Whether audio may be pulled. It may while playing. A host that applies corrections at
+    /// its output may also pull while waiting to start (loaded, or a timed start pending), so
+    /// its output can start on time.
+    fn may_pull(&self) -> bool {
+        match self.output {
+            OutputState::Playing => true,
+            OutputState::Loaded | OutputState::Paused { until: Some(_) } => self.output_corrections,
+            _ => false,
+        }
+    }
+
+    /// The host time a pending timed start is due (`strm u` with a start time), if any.
+    pub fn start_due(&self) -> Option<u64> {
+        match self.output {
+            OutputState::Paused { until } => until,
+            _ => None,
+        }
     }
 
     /// The track that is audible now (the last one reported as played), if any.
@@ -594,17 +699,28 @@ impl Player {
                 if s.replay_gain == 0 {
                     self.output = OutputState::Paused { until: None };
                     self.send_stat(*b"STMp", 0);
+                } else if self.output_corrections && self.output == OutputState::Playing {
+                    // Sync adjustment at the host's output: silence now, then carry on.
+                    let ms = s.replay_gain.min(MAX_CORRECTION_MS);
+                    self.corrections.push(OutputCorrection::Pause { ms });
+                    self.corrected_until = self.now + u64::from(ms);
                 } else {
                     // Sync adjustment: pause briefly, then carry on.
-                    let until = self.jiffies() as u64 + s.replay_gain as u64;
+                    let until = self.now + u64::from(s.replay_gain.min(MAX_CORRECTION_MS));
                     self.output = OutputState::Paused { until: Some(until) };
                 }
             }
             b'u' => {
-                if s.replay_gain != 0 && (s.replay_gain as u64) > self.jiffies() as u64 {
-                    self.output = OutputState::Paused {
-                        until: Some(s.replay_gain as u64),
-                    };
+                // The start time is in our jiffies. Work out how far ahead it is, allowing
+                // for the 32-bit counter wrapping. A time in the past (or 0) means now.
+                let ahead = i64::from(s.replay_gain.wrapping_sub(self.jiffies()) as i32);
+                if s.replay_gain != 0 && ahead > 0 && ahead as u64 <= MAX_START_AHEAD_MS {
+                    let at = self.now + ahead as u64;
+                    self.output = OutputState::Paused { until: Some(at) };
+                    if self.output_corrections {
+                        self.corrections
+                            .push(OutputCorrection::StartAt { at_ms: at });
+                    }
                 } else {
                     self.output = OutputState::Playing;
                 }
@@ -615,7 +731,14 @@ impl Player {
                 self.send_stat(*b"STMf", 0);
             }
             b't' => self.send_stat(*b"STMt", s.replay_gain),
-            b'a' => self.skip_ahead(s.replay_gain as u64),
+            b'a' => {
+                let ms = s.replay_gain.min(MAX_CORRECTION_MS);
+                if self.output_corrections {
+                    self.corrections.push(OutputCorrection::Skip { ms });
+                } else {
+                    self.skip_ahead(u64::from(ms));
+                }
+            }
             _ => {}
         }
     }
@@ -681,6 +804,9 @@ impl Player {
         self.output = OutputState::Stopped;
         self.stmu_sent = true;
         self.flushes += 1;
+        self.corrections.clear();
+        self.corrected_until = 0;
+        self.position_at = None;
     }
 
     fn skip_ahead(&mut self, ms: u64) {
@@ -811,21 +937,35 @@ impl Player {
         self.now as u32
     }
 
+    /// Elapsed time in the audible track. If the host reports positions with
+    /// [`Player::presented`], it is extrapolated to now: the frames presented since the last
+    /// report are added, but at most [`MAX_EXTRAPOLATE_MS`] worth and never more than the
+    /// host has been given. Nothing is added while stopped, paused or in a pause correction.
     fn elapsed_ms(&self) -> u64 {
         let Some(seq) = self.playing_seq else {
             return 0;
         };
         let mut frames = 0;
+        let mut queued = 0;
         let mut rate = 0;
         for s in self.segments.iter().filter(|s| s.seq == seq) {
             frames += s.played;
+            queued += s.pulled - s.played;
             rate = s.rate;
         }
         if rate == 0 {
-            0
-        } else {
-            frames * 1000 / rate as u64
+            return 0;
         }
+        let mut ms = frames as f64 * 1000.0 / f64::from(rate);
+        if let Some(at) = self.position_at
+            && self.output == OutputState::Playing
+            && self.now > at
+            && self.now >= self.corrected_until
+        {
+            let dt = (self.now - at).min(MAX_EXTRAPOLATE_MS) as f64;
+            ms += dt.min(queued as f64 * 1000.0 / f64::from(rate));
+        }
+        ms as u64
     }
 
     fn buffered_ms(&self) -> u64 {
@@ -1465,6 +1605,254 @@ mod tests {
         q.on_stream_data(&wav(44100, 44100 * 7 / 5), 50);
         tick_n(&mut q, 51, 200);
         assert_eq!(q.status().output, OutputState::Waiting);
+    }
+
+    /// The STAT events sent, with their jiffies and elapsed milliseconds.
+    fn stats(actions: &[Action]) -> Vec<(String, u32, u32)> {
+        let mut r = ClientFrameReader::default();
+        for a in actions {
+            if let Action::Send(b) = a {
+                r.push(b);
+            }
+        }
+        let mut out = vec![];
+        while let Some((op, p)) = r.next_frame().unwrap() {
+            if &op == b"STAT" {
+                let s = Stat::parse(&p).unwrap();
+                out.push((
+                    String::from_utf8_lossy(&s.event).into_owned(),
+                    s.jiffies,
+                    s.elapsed_milliseconds,
+                ));
+            }
+        }
+        out
+    }
+
+    /// `strm` carrying a 32-bit argument in the replay-gain slot (interval or start time).
+    fn strm_arg(cmd: u8, arg: u32) -> Vec<u8> {
+        strm(cmd, b'0', b'p', arg)
+    }
+
+    /// A player with ten seconds of 44.1 kHz audio decoded, loaded (autostart off, as LMS
+    /// starts a synced group) and taking corrections at its output.
+    fn loaded_sync_player(now: u64) -> Player {
+        let mut p = Player::new(cfg());
+        p.set_output_corrections(true);
+        p.on_control_data(&strm(b's', b'0', b'p', 0), now).unwrap();
+        p.on_stream_data(&wav(44100, 44100 * 10), now);
+        p.on_stream_end(now);
+        tick_n(&mut p, now, 40);
+        assert_eq!(p.status().output, OutputState::Loaded);
+        p.take_actions();
+        p
+    }
+
+    /// The (jiffies, elapsed) pair in each STAT describes the same instant: elapsed is
+    /// extrapolated from the host's last position report to the STAT's jiffies.
+    #[test]
+    fn stat_elapsed_is_extrapolated_to_its_own_jiffies() {
+        let mut p = Player::new(cfg());
+        p.on_control_data(&strm(b's', b'1', b'p', 0), 0).unwrap();
+        p.on_stream_data(&wav(44100, 44100 * 3), 1);
+        p.on_stream_end(2);
+        tick_n(&mut p, 3, 40);
+        let mut buf = vec![0f32; 44100 * 2 * 2];
+        p.pull_audio(&mut buf); // 2 s handed to the host
+        p.presented(44100 / 2, 1000); // 500 ms audible, exact at t = 1000
+        p.take_actions();
+        p.on_control_data(&strm_arg(b't', 7), 1040).unwrap();
+        let s = stats(&p.take_actions());
+        assert_eq!(s[0].0, "STMt");
+        assert_eq!(s[0].1, 1040);
+        assert_eq!(s[0].2, 540, "500 ms plus the 40 ms since the report");
+        // Never further than MAX_EXTRAPOLATE_MS past the report.
+        p.on_control_data(&strm_arg(b't', 8), 4000).unwrap();
+        let s = stats(&p.take_actions());
+        assert_eq!(s[0].2, 500 + MAX_EXTRAPOLATE_MS as u32);
+        // A fresh report moves the anchor.
+        p.presented(441, 4050);
+        p.on_control_data(&strm_arg(b't', 9), 4060).unwrap();
+        assert_eq!(stats(&p.take_actions())[0].2, 520);
+    }
+
+    #[test]
+    fn extrapolation_never_passes_what_the_host_was_given_nor_runs_while_paused() {
+        let mut p = playing_player(false);
+        let mut buf = vec![0f32; 441 * 2 * 2];
+        p.pull_audio(&mut buf); // 20 ms handed over
+        p.presented(441, 100); // 10 ms heard
+        p.take_actions(); // STMs
+        p.on_control_data(&strm_arg(b't', 1), 180).unwrap();
+        assert_eq!(
+            stats(&p.take_actions())[0].2,
+            20,
+            "capped at the 20 ms pulled"
+        );
+        p.on_control_data(&strm(b'p', b'0', b'p', 0), 200).unwrap();
+        let s = stats(&p.take_actions());
+        assert_eq!(s[0].0, "STMp");
+        assert_eq!(s[0].2, 10, "paused: what was heard, no extrapolation");
+    }
+
+    /// Hosts that report without a time keep the old behaviour exactly.
+    #[test]
+    fn played_without_a_time_is_not_extrapolated() {
+        let mut p = playing_player(false);
+        let mut buf = vec![0f32; 44100 * 2];
+        p.pull_audio(&mut buf);
+        p.played(4410);
+        p.take_actions();
+        p.on_control_data(&strm_arg(b't', 1), 5000).unwrap();
+        assert_eq!(stats(&p.take_actions())[0].2, 100);
+    }
+
+    /// A synced start: LMS loads every player, then sends `strm u` with a start time in
+    /// each one's jiffies. With output corrections on, the host is told the time and may
+    /// pre-roll audio into its output while it waits.
+    #[test]
+    fn timed_start_hands_the_host_its_start_time_and_allows_pre_roll() {
+        let mut p = loaded_sync_player(1000);
+        let mut buf = vec![0f32; 4410 * 2];
+        assert_eq!(p.pull_audio(&mut buf), 4410, "pre-roll while loaded");
+        p.on_control_data(&strm_arg(b'u', 1250), 1050).unwrap();
+        assert_eq!(events(&p.take_actions()), vec!["STMr"]);
+        assert_eq!(
+            p.take_corrections(),
+            vec![OutputCorrection::StartAt { at_ms: 1250 }]
+        );
+        assert_eq!(p.start_due(), Some(1250));
+        assert!(
+            p.pull_audio(&mut buf) > 0,
+            "pre-roll while the start is due"
+        );
+        p.tick(1249);
+        assert_eq!(p.status().output, OutputState::Paused { until: Some(1250) });
+        p.tick(1250);
+        assert_eq!(p.status().output, OutputState::Playing);
+        assert_eq!(p.start_due(), None);
+    }
+
+    #[test]
+    fn without_output_corrections_nothing_is_pulled_before_the_start() {
+        let mut p = loaded_sync_player(1000);
+        p.set_output_corrections(false);
+        let mut buf = vec![0f32; 64];
+        assert_eq!(p.pull_audio(&mut buf), 0);
+        p.on_control_data(&strm_arg(b'u', 1250), 1050).unwrap();
+        assert!(p.take_corrections().is_empty());
+        assert_eq!(p.pull_audio(&mut buf), 0);
+        p.tick(1250);
+        assert!(p.pull_audio(&mut buf) > 0);
+    }
+
+    /// The start time is in the 32-bit jiffies, which wrap after 49 days.
+    #[test]
+    fn timed_start_across_the_jiffies_wrap() {
+        let now = u64::from(u32::MAX) - 100; // jiffies just before the wrap
+        let mut p = loaded_sync_player(now);
+        let target = 99u32; // 200 ms ahead, after the wrap
+        p.on_control_data(&strm_arg(b'u', target), now).unwrap();
+        assert_eq!(
+            p.take_corrections(),
+            vec![OutputCorrection::StartAt { at_ms: now + 200 }]
+        );
+    }
+
+    /// Security: a start time in the past, or implausibly far ahead (a corrupt or hostile
+    /// frame), starts at once rather than holding the player silent.
+    #[test]
+    fn implausible_start_times_start_at_once() {
+        for (now, arg) in [(5000u64, 4000u32), (5000, 5000 + 31_000), (5000, u32::MAX)] {
+            let mut p = loaded_sync_player(now);
+            p.on_control_data(&strm_arg(b'u', arg), now).unwrap();
+            assert_eq!(p.status().output, OutputState::Playing, "{arg}");
+            assert!(p.take_corrections().is_empty());
+        }
+    }
+
+    #[test]
+    fn pause_and_skip_corrections_go_to_the_host_output() {
+        let mut p = playing_player(false);
+        p.set_output_corrections(true);
+        let mut buf = vec![0f32; 4410 * 2];
+        p.pull_audio(&mut buf);
+        p.presented(2205, 100);
+        p.take_actions(); // STMs
+        p.on_control_data(&strm_arg(b'p', 30), 100).unwrap();
+        assert_eq!(p.status().output, OutputState::Playing, "no state change");
+        p.on_control_data(&strm_arg(b'a', 45), 100).unwrap();
+        assert_eq!(
+            p.take_corrections(),
+            vec![
+                OutputCorrection::Pause { ms: 30 },
+                OutputCorrection::Skip { ms: 45 }
+            ]
+        );
+        assert!(events(&p.take_actions()).is_empty(), "no STAT for either");
+        // No extrapolation while the pause runs: nothing new is heard.
+        p.on_control_data(&strm_arg(b't', 1), 120).unwrap();
+        assert_eq!(stats(&p.take_actions())[0].2, 50);
+        // Hostile intervals are capped.
+        p.on_control_data(&strm_arg(b'a', u32::MAX), 200).unwrap();
+        assert_eq!(
+            p.take_corrections(),
+            vec![OutputCorrection::Skip {
+                ms: MAX_CORRECTION_MS
+            }]
+        );
+    }
+
+    #[test]
+    fn without_output_corrections_the_core_pauses_and_skips_itself() {
+        let mut p = playing_player(false);
+        p.on_control_data(&strm_arg(b'p', 30), 100).unwrap();
+        assert_eq!(p.status().output, OutputState::Paused { until: Some(130) });
+        p.tick(130);
+        assert_eq!(p.status().output, OutputState::Playing);
+        let before = p.status().buffered_ms;
+        p.on_control_data(&strm_arg(b'a', 100), 140).unwrap();
+        assert_eq!(p.status().buffered_ms, before - 100);
+        assert!(p.take_corrections().is_empty());
+    }
+
+    #[test]
+    fn a_flush_drops_pending_corrections() {
+        let mut p = playing_player(false);
+        p.set_output_corrections(true);
+        p.on_control_data(&strm_arg(b'a', 45), 100).unwrap();
+        p.on_control_data(&strm(b'q', b'0', b'p', 0), 101).unwrap();
+        assert!(p.take_corrections().is_empty());
+    }
+
+    /// Robustness: arbitrary `strm` arguments and clocks never panic or overflow.
+    #[test]
+    fn arbitrary_sync_commands_never_panic() {
+        let mut x = 0x1234_5678_9abc_def0u64;
+        for corrections in [false, true] {
+            let mut p = playing_player(false);
+            p.set_output_corrections(corrections);
+            let mut now = 0u64;
+            let mut buf = vec![0f32; 512];
+            for _ in 0..3000 {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                now += x % 50;
+                let cmd = b"puatsq"[(x >> 8) as usize % 6];
+                let arg = (x >> 16) as u32;
+                p.on_control_data(&strm_arg(cmd, arg), now).unwrap();
+                if cmd == b's' {
+                    p.on_stream_data(&wav(48000, 2000), now);
+                }
+                p.tick(now);
+                let n = p.pull_audio(&mut buf);
+                p.presented((x >> 40) % (n as u64 + 1), now.saturating_sub(x % 300));
+                let _ = p.status();
+                p.take_actions();
+                p.take_corrections();
+            }
+        }
     }
 
     /// Regression (browser player): LMS sends a seek's flush and new stream back to back
