@@ -301,7 +301,17 @@ async fn seek_skip_jump_pause_shuffle_and_repeat() {
     // Pause: silence, and the position holds.
     rig.player.pause();
     wait_for("paused", || rig.status().playback == LocalPlayback::Paused).await;
-    let held = rig.status().elapsed_ms;
+    // The output may still finish the buffer it was playing as the pause lands: let the
+    // position settle, then it must hold.
+    let mut held = rig.status().elapsed_ms;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let now = rig.status().elapsed_ms;
+        if now == held {
+            break;
+        }
+        held = now;
+    }
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(rig.status().elapsed_ms, held);
     rig.player.play();
