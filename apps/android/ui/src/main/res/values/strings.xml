@@ -550,7 +550,10 @@
     <string name="settings_sleep_fade">Sleep timer fade-out</string>
     <string name="settings_sleep_fade_detail">How long this phone\'s player fades out before the sleep timer stops it. Other players follow LMS: they fade over the last minute.</string>
     <string name="sleep_fade_off">Off</string>
-    <string name="sleep_fade_seconds">%1$d seconds</string>
+    <plurals name="sleep_fade_seconds">
+        <item quantity="one">%1$d second</item>
+        <item quantity="other">%1$d seconds</item>
+    </plurals>
     <string name="sleep_fade_one_minute">1 minute</string>
     <string name="sleep_fade_minutes">%1$s minutes</string>
     <string name="up_next">Up next</string>

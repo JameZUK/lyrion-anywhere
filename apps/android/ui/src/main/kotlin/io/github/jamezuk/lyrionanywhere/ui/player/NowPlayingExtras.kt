@@ -59,6 +59,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
@@ -378,7 +379,7 @@ fun SignalPathSheet(state: PlayerUiState, onDismiss: () -> Unit) {
 @Composable
 fun fadeText(seconds: Int): String = when {
     seconds <= 0 -> stringResource(R.string.sleep_fade_off)
-    seconds < 60 -> stringResource(R.string.sleep_fade_seconds, seconds)
+    seconds < 60 -> pluralStringResource(R.plurals.sleep_fade_seconds, seconds, seconds)
     seconds == 60 -> stringResource(R.string.sleep_fade_one_minute)
     else -> stringResource(R.string.sleep_fade_minutes, if (seconds % 60 == 0) "${seconds / 60}" else "${seconds / 60}.5")
 }
