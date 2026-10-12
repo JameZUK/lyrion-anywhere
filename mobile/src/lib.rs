@@ -18,6 +18,8 @@
 //! - [`Discovery`]: "Start radio" and "More like this", from AudioMuse-AI's menus or LMS's
 //!   Don't Stop The Music, whichever the server has;
 //! - [`auto`]: the browse tree for cars (Android Auto now, CarPlay later);
+//! - [`Me`]: the user's listening history, customisable Home, stations and pinned menus;
+//!   [`StationRunner`] keeps a station going (docs/plans/wave1-design.md §6–8);
 //! - [`Events`]: the live event stream with reconnects and token renewal;
 //! - [`LocalPlayer`]: this phone as an LMS player (Slimproto through the gateway, the
 //!   core's decoders, optional DSP, a lock-free ring and AAudio output);
@@ -41,6 +43,7 @@ pub mod edits;
 pub mod error;
 pub mod events;
 pub mod library;
+pub mod me;
 pub mod menus;
 pub mod model;
 pub mod offline;
@@ -62,6 +65,10 @@ pub use discovery::{Discovery, DiscoveryOptions, DstmProvider, DstmState, RadioP
 pub use error::ApiError;
 pub use events::{EventListener, EventSubscription, Events, EventsState, ServerEvent};
 pub use library::{FavouriteLibraryItems, MusicLibrary};
+pub use me::{
+    HistoryEntry, HistoryPage, HomeLayout, HomeShelf, Me, MenuStep, PinnedMenu, RunnerUpdate,
+    ShelfKind, Station, StationBatch, StationRunner, StationSpec,
+};
 pub use menus::{
     AppEntry, MenuAction, MenuItem, MenuItemKind, MenuOutcome, MenuPage, MenuParam, Menus,
     PluginEntry, Suitability, app_menu, info_menu,

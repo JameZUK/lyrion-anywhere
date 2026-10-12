@@ -52,6 +52,10 @@ pub enum ShelfType {
     OnThisDay,
     /// Random albums.
     Random,
+    /// LMS favourites.
+    Favourites,
+    /// Saved playlists.
+    Playlists,
     /// One of the user's stations (`id`).
     Station,
     /// One of the user's pinned menus (`id`).
@@ -69,6 +73,8 @@ impl ShelfType {
             "most" => ShelfType::Most,
             "on_this_day" => ShelfType::OnThisDay,
             "random" => ShelfType::Random,
+            "favourites" => ShelfType::Favourites,
+            "playlists" => ShelfType::Playlists,
             "station" => ShelfType::Station,
             "menu" => ShelfType::Menu,
             "genre" => ShelfType::Genre,
@@ -84,6 +90,8 @@ impl ShelfType {
             ShelfType::Most => "most",
             ShelfType::OnThisDay => "on_this_day",
             ShelfType::Random => "random",
+            ShelfType::Favourites => "favourites",
+            ShelfType::Playlists => "playlists",
             ShelfType::Station => "station",
             ShelfType::Menu => "menu",
             ShelfType::Genre => "genre",
@@ -361,10 +369,11 @@ mod tests {
     fn layouts_round_trip() {
         let v = json!({"version": 1, "shelves": [
             {"type": "most"}, {"type": "station", "id": 4, "hidden": true},
-            {"type": "genre", "id": 12}, {"type": "menu", "id": 9}, {"type": "random", "hidden": false}
+            {"type": "genre", "id": 12}, {"type": "menu", "id": 9}, {"type": "random", "hidden": false},
+            {"type": "favourites"}, {"type": "playlists"}
         ]});
         let l = parse(v).unwrap();
-        assert_eq!(l.shelves.len(), 5);
+        assert_eq!(l.shelves.len(), 7);
         assert!(l.shelves[1].hidden);
         assert_eq!(parse(l.to_json()), Ok(l.clone()));
         assert_eq!(

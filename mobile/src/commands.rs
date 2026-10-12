@@ -259,6 +259,41 @@ pub fn albums(
     Ok(c)
 }
 
+/// The ids as a checked, comma-separated list that fits [`ID_LIST_MAX`].
+fn id_list(ids: &[i64]) -> Result<String, ApiError> {
+    let list = ids
+        .iter()
+        .map(|v| id(*v).map(|v| v.to_string()))
+        .collect::<Result<Vec<_>, _>>()?
+        .join(",");
+    if list.is_empty() || list.len() > ID_LIST_MAX {
+        return Err(ApiError::invalid("bad id list"));
+    }
+    Ok(list)
+}
+
+/// Albums by id (a Home shelf). LMS answers in its own order.
+pub fn albums_by_ids(ids: &[i64]) -> Result<Command, ApiError> {
+    Ok(vec![
+        json!("albums"),
+        json!(0),
+        json!(ids.len().min(MAX_PAGE as usize)),
+        json!(ALBUM_TAGS),
+        json!(format!("album_id:{}", id_list(ids)?)),
+    ])
+}
+
+/// Tracks by id (listening history). LMS answers in its own order.
+pub fn tracks_by_ids(ids: &[i64]) -> Result<Command, ApiError> {
+    Ok(vec![
+        json!("titles"),
+        json!(0),
+        json!(ids.len().min(MAX_PAGE as usize)),
+        json!(TRACK_TAGS),
+        json!(format!("track_id:{}", id_list(ids)?)),
+    ])
+}
+
 pub fn album_by_id(album: i64) -> Result<Command, ApiError> {
     Ok(vec![
         json!("albums"),

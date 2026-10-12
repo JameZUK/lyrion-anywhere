@@ -101,6 +101,19 @@ impl MusicLibrary {
     }
 }
 
+/// `found` put in the order of `ids` (each id once), leaving out what wasn't asked for.
+fn in_order<T: Clone>(ids: &[i64], found: Vec<T>, id_of: impl Fn(&T) -> Option<i64>) -> Vec<T> {
+    let by_id: std::collections::HashMap<i64, T> = found
+        .into_iter()
+        .filter_map(|x| id_of(&x).map(|i| (i, x)))
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    ids.iter()
+        .filter(|i| seen.insert(**i))
+        .filter_map(|i| by_id.get(i).cloned())
+        .collect()
+}
+
 #[uniffi::export(async_runtime = "tokio")]
 impl MusicLibrary {
     #[uniffi::constructor]
@@ -260,6 +273,28 @@ impl MusicLibrary {
     pub async fn playlist_tracks(&self, playlist_id: i64) -> Result<Vec<Track>, ApiError> {
         let v = self.query(commands::playlist_tracks(playlist_id)?).await?;
         Ok(model::tracks_from(&v, "playlisttracks_loop"))
+    }
+
+    /// Albums by id, in the order given (a Home shelf); ones LMS doesn't know are left out.
+    pub async fn albums_by_id(&self, ids: Vec<i64>) -> Result<Vec<Album>, ApiError> {
+        let ids: Vec<i64> = ids.into_iter().take(500).collect();
+        let mut found = Vec::new();
+        for chunk in commands::chunk_ids(&ids, commands::ID_LIST_MAX) {
+            let v = self.query(commands::albums_by_ids(&chunk)?).await?;
+            found.extend(model::albums_from(&v).items);
+        }
+        Ok(in_order(&ids, found, |a| Some(a.id)))
+    }
+
+    /// Tracks by id, in the order given (listening history); unknown ones are left out.
+    pub async fn tracks_by_id(&self, ids: Vec<i64>) -> Result<Vec<Track>, ApiError> {
+        let ids: Vec<i64> = ids.into_iter().take(500).collect();
+        let mut found = Vec::new();
+        for chunk in commands::chunk_ids(&ids, commands::ID_LIST_MAX) {
+            let v = self.query(commands::tracks_by_ids(&chunk)?).await?;
+            found.extend(model::tracks_from(&v, "titles_loop"));
+        }
+        Ok(in_order(&ids, found, |t| t.id))
     }
 
     /// Artists, albums and tracks matching `term` (up to `count` of each).
