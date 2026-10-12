@@ -90,6 +90,7 @@ import io.github.jamezuk.lyrionanywhere.core.Selection
 import io.github.jamezuk.lyrionanywhere.core.libraryVersion
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AuthState
+import io.github.jamezuk.lyrionanywhere.data.AppSettings
 import io.github.jamezuk.lyrionanywhere.data.LyricsCache
 import io.github.jamezuk.lyrionanywhere.data.WaveformCache
 import io.github.jamezuk.lyrionanywhere.playback.PlaybackService
@@ -158,6 +159,7 @@ import io.github.jamezuk.lyrionanywhere.ui.player.PlayerMessage
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayerViewModel
 import io.github.jamezuk.lyrionanywhere.ui.player.SleepFadeSetting
 import io.github.jamezuk.lyrionanywhere.ui.player.LyricsPeekSetting
+import io.github.jamezuk.lyrionanywhere.ui.settings.StreamingQualitySetting
 import io.github.jamezuk.lyrionanywhere.ui.settings.LicencesScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsViewModel
@@ -1100,6 +1102,10 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             },
                             sleepFade = { SleepFadeSetting(playerState.sleepFade, player::setSleepFade) },
                             lyrics = { LyricsPeekSetting(playerState.lyricsPeek, player::setLyricsPeek) },
+                            streaming = {
+                                val app by container.settings.settings.collectAsStateWithLifecycle(AppSettings())
+                                StreamingQualitySetting(app.streaming) { s -> scope.launch { container.settings.setStreaming(s) } }
+                            },
                         )
                     }
                 }

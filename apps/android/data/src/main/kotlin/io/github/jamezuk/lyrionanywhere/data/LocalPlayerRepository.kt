@@ -1,5 +1,7 @@
 package io.github.jamezuk.lyrionanywhere.data
 
+import io.github.jamezuk.lyrionanywhere.core.NetworkKind
+import io.github.jamezuk.lyrionanywhere.core.StreamQuality
 import io.github.jamezuk.lyrionanywhere.core.ApiException
 import io.github.jamezuk.lyrionanywhere.core.DspSettings
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayer
@@ -35,6 +37,10 @@ data class LocalPlayerState(
     val error: AppError? = null,
     /** The Sound settings (DSP and bit-perfect output). */
     val sound: SoundSettings = SoundSettings(),
+    /** The live stream's level now (by the network and the Streaming quality setting). */
+    val streamQuality: StreamQuality = StreamQuality.ORIGINAL,
+    /** On mobile data (a metered network). */
+    val metered: Boolean = false,
 ) {
     /** The player's id in LMS, once connected. */
     val playerId: String? get() = status?.playerId?.takeIf { it.isNotEmpty() }
@@ -99,8 +105,13 @@ interface LocalPlayerHandle {
 
     fun renegotiateOutput()
 
+    fun setStreamQuality(quality: StreamQuality) {}
+
     fun close()
 }
+
+/** The stream level for the network: the mobile-data setting on a metered network. */
+fun streamQualityFor(metered: Boolean, s: StreamingSettings): StreamQuality = if (metered) s.mobile else s.wifi
 
 /** A sleep timer end that moved less than this is the same timer (polling drift). */
 private const val FADE_SAME_MS = 2_000L
@@ -132,6 +143,8 @@ private class RustHandle(session: Session) : LocalPlayerHandle {
 
     override fun renegotiateOutput() = player.renegotiateOutput()
 
+    override fun setStreamQuality(quality: StreamQuality) = player.setStreamQuality(quality)
+
     override fun close() = player.close()
 }
 
@@ -158,6 +171,8 @@ class RustLocalPlayerRepository(
     private val factory: (Session) -> LocalPlayerHandle = { RustHandle(it) },
     /** A monotonic clock (ms), for the sleep fade. */
     private val nowMs: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** Wi-Fi or mobile data, for the stream level (none: as on Wi-Fi). */
+    private val network: StateFlow<NetworkKind>? = null,
 ) : LocalPlayerRepository {
     private val _state = MutableStateFlow(LocalPlayerState())
     override val state: StateFlow<LocalPlayerState> = _state.asStateFlow()
@@ -167,6 +182,7 @@ class RustLocalPlayerRepository(
     private var route = OutputRoute("", 0u)
     @Volatile private var sound = SoundSettings()
     @Volatile private var negotiator: OutputNegotiator? = null
+    @Volatile private var quality = StreamQuality.ORIGINAL
 
     /** Ignores updates from a player that has since been replaced. */
     private inner class Observer(private val owner: LocalPlayerHandle) : LocalPlayerObserver {
@@ -200,6 +216,17 @@ class RustLocalPlayerRepository(
                 }
             }
         }
+        scope.launch {
+            // The stream level follows the network: the setting for Wi-Fi or for mobile data.
+            val metered = (network ?: MutableStateFlow(NetworkKind.WIFI)).map { it == NetworkKind.MOBILE }
+            combine(settings.settings.map { it.streaming }, metered) { s, m -> m to streamQualityFor(m, s) }
+                .distinctUntilChanged()
+                .collect { (m, q) ->
+                    quality = q
+                    _state.update { it.copy(streamQuality = q, metered = m) }
+                    withContext(io) { handle?.setStreamQuality(q) }
+                }
+        }
     }
 
     private suspend fun reconcile(session: Session?, enabled: Boolean) = withContext(io) {
@@ -210,7 +237,12 @@ class RustLocalPlayerRepository(
         }
         handle = null
         handleSession = null
-        _state.value = LocalPlayerState(enabled = enabled, sound = sound)
+        _state.value = LocalPlayerState(
+            enabled = enabled,
+            sound = sound,
+            streamQuality = quality,
+            metered = _state.value.metered,
+        )
         if (session == null) return@withContext
         try {
             val h = factory(session)
@@ -222,6 +254,7 @@ class RustLocalPlayerRepository(
             // The engine starts bit-perfect; any DSP is set before any audio.
             val dsp = dspFor(sound)
             if (dsp != DEFAULT_DSP) h.setDsp(dsp)
+            h.setStreamQuality(quality)
             h.start(Observer(h))
         } catch (e: Exception) {
             handle = null

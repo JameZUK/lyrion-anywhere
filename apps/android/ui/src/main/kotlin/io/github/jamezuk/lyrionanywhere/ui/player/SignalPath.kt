@@ -24,6 +24,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import io.github.jamezuk.lyrionanywhere.core.StreamQuality
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayerStatus
 import io.github.jamezuk.lyrionanywhere.core.NotBitPerfect
 import io.github.jamezuk.lyrionanywhere.core.PlayerConnection
@@ -55,7 +56,13 @@ private fun verdictText(v: SignalVerdict): String = stringResource(
  * through untouched; otherwise the panel says the engine is bit-perfect up to the mixer.
  */
 @Composable
-fun SignalPathPanel(path: SignalPathInfo?, modifier: Modifier = Modifier) {
+fun SignalPathPanel(
+    path: SignalPathInfo?,
+    modifier: Modifier = Modifier,
+    /** The stream level asked for, and whether on mobile data (Streaming quality). */
+    quality: StreamQuality = StreamQuality.ORIGINAL,
+    metered: Boolean = false,
+) {
     Card(modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -92,6 +99,16 @@ fun SignalPathPanel(path: SignalPathInfo?, modifier: Modifier = Modifier) {
                 path.sourceBits?.let { add(stringResource(R.string.bits_format, it.toInt())) }
             }.joinToString(" · ")
             LabelledLine(stringResource(R.string.signal_source), source)
+            if (quality != StreamQuality.ORIGINAL) {
+                // Lossless tracks arrive re-encoded; others as they are.
+                LabelledLine(
+                    stringResource(R.string.signal_streaming),
+                    stringResource(
+                        if (metered) R.string.signal_streaming_mobile else R.string.signal_streaming_wifi,
+                        io.github.jamezuk.lyrionanywhere.ui.settings.qualityName(quality),
+                    ),
+                )
+            }
             path.stages.forEach { StageRow(it) }
             LabelledLine(
                 stringResource(R.string.signal_output),

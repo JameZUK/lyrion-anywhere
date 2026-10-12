@@ -1,5 +1,7 @@
 package io.github.jamezuk.lyrionanywhere.data
 
+import io.github.jamezuk.lyrionanywhere.core.NetworkKind
+import io.github.jamezuk.lyrionanywhere.core.StreamQuality
 import io.github.jamezuk.lyrionanywhere.core.TransitionMode
 import io.github.jamezuk.lyrionanywhere.core.ApiException
 import io.github.jamezuk.lyrionanywhere.core.CrossfeedSetting
@@ -59,6 +61,8 @@ private class MemSettings : SettingsStore {
 
     override suspend fun setSound(sound: SoundSettings) = state.update { it.copy(sound = sound) }
 
+    override suspend fun setStreaming(streaming: StreamingSettings) = state.update { it.copy(streaming = streaming) }
+
     override suspend fun setLibrary(id: String?) = state.update { it.copy(libraryId = id) }
 
     override suspend fun setDefaultPlayer(choice: io.github.jamezuk.lyrionanywhere.data.DefaultPlayer, playerId: String?) =
@@ -73,8 +77,13 @@ private class FakeHandle : LocalPlayerHandle {
 
     override fun start(observer: LocalPlayerObserver) {
         calls += "start"
+        qualitiesAtStart = qualities.size
         this.observer = observer
     }
+
+    /** Stream levels set, in order (kept apart from [calls]), and how many before start. */
+    val qualities = mutableListOf<StreamQuality>()
+    var qualitiesAtStart: Int? = null
 
     override fun stop() {
         stopped = true
@@ -111,6 +120,10 @@ private class FakeHandle : LocalPlayerHandle {
         calls += "renegotiate"
     }
 
+    override fun setStreamQuality(quality: StreamQuality) {
+        qualities += quality
+    }
+
     override fun close() {
         closed = true
     }
@@ -125,13 +138,54 @@ class LocalPlayerRepositoryTest {
 
     private var clockMs = 1_000_000L
 
+    private val network = MutableStateFlow(NetworkKind.WIFI)
+
     private fun TestScope.repo(): RustLocalPlayerRepository {
         val d = UnconfinedTestDispatcher(testScheduler)
         val scope = CoroutineScope(backgroundScope.coroutineContext + d)
         return RustLocalPlayerRepository(sessions, settings, scope, d, factory = {
             failWith?.let { throw it }
             FakeHandle().also { handles += it }
-        }, nowMs = { clockMs })
+        }, nowMs = { clockMs }, network = network)
+    }
+
+    /** Streaming quality: the setting for the network the phone is on, before the engine starts and on every change. */
+    @Test
+    fun theStreamLevelFollowsTheNetworkAndTheSetting() = runTest {
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        // Wi-Fi by default: Original, set before the engine starts.
+        assertEquals(listOf(StreamQuality.ORIGINAL), handles[0].qualities)
+        assertEquals(1, handles[0].qualitiesAtStart)
+        assertEquals(StreamQuality.ORIGINAL, r.state.value.streamQuality)
+        // Mobile data: High by default.
+        network.value = NetworkKind.MOBILE
+        assertEquals(listOf(StreamQuality.ORIGINAL, StreamQuality.HIGH), handles[0].qualities)
+        assertEquals(StreamQuality.HIGH, r.state.value.streamQuality)
+        assertTrue(r.state.value.metered)
+        // The user picks Data saver for mobile data.
+        settings.setStreaming(StreamingSettings(mobile = StreamQuality.LOW))
+        assertEquals(StreamQuality.LOW, handles[0].qualities.last())
+        // Back on Wi-Fi; offline counts as unmetered (nothing streams then anyway).
+        network.value = NetworkKind.WIFI
+        assertEquals(StreamQuality.ORIGINAL, handles[0].qualities.last())
+        network.value = NetworkKind.OFFLINE
+        assertFalse(r.state.value.metered)
+        // A new engine is told the current level before it starts.
+        network.value = NetworkKind.MOBILE
+        r.setEnabled(false)
+        r.setEnabled(true)
+        assertEquals(listOf(StreamQuality.LOW), handles.last().qualities)
+        assertEquals(1, handles.last().qualitiesAtStart)
+    }
+
+    @Test
+    fun theLevelForANetwork() {
+        val s = StreamingSettings(wifi = StreamQuality.HIGH, mobile = StreamQuality.LOW)
+        assertEquals(StreamQuality.LOW, streamQualityFor(true, s))
+        assertEquals(StreamQuality.HIGH, streamQualityFor(false, s))
+        assertEquals(StreamQuality.HIGH, streamQualityFor(true, StreamingSettings()))
     }
 
     /** The sleep fade (Wave 1): passed to the engine once per change, checked, and again for a new engine. */

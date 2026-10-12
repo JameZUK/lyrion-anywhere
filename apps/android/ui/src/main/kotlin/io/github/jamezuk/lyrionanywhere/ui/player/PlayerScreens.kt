@@ -527,7 +527,7 @@ private fun NowPlayingControls(
             }
         }
         if (state.localSelected) {
-            SignalPathPanel(state.local.signalPath)
+            SignalPathPanel(state.local.signalPath, quality = state.local.streamQuality, metered = state.local.metered)
         }
     }
     if (showSleep) {

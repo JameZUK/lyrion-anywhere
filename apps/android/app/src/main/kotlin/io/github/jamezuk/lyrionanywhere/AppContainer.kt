@@ -104,6 +104,9 @@ class AppContainer(context: Context, scope: CoroutineScope) {
     /** How usable each app is here, remembered for a while (Apps & Radio). */
     val suitability = SuitabilityCache(clock = { android.os.SystemClock.elapsedRealtime() })
 
+    /** Wi-Fi, mobile data or none (for download formats, "Wi-Fi only", offline mode and the stream level). */
+    val network: NetworkMonitor = AndroidNetworkMonitor(app)
+
     /** This phone as an LMS player, while signed in and switched on. */
     val localPlayer: LocalPlayerRepository = RustLocalPlayerRepository(
         sessions = accountImpl.connection
@@ -112,10 +115,8 @@ class AppContainer(context: Context, scope: CoroutineScope) {
         settings = settings,
         scope = scope,
         io = Dispatchers.IO,
+        network = network.kind,
     )
-
-    /** Wi-Fi, mobile data or none (for download formats, "Wi-Fi only" and offline mode). */
-    val network: NetworkMonitor = AndroidNetworkMonitor(app)
 
     private val offlineImpl = RustOfflineRepository(
         // App-private and never backed up or transferred (the app also disables backup).

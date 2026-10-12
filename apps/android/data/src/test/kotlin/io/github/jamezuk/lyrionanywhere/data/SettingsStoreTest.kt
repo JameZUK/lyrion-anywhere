@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import io.github.jamezuk.lyrionanywhere.core.StreamQuality
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -64,6 +65,20 @@ class SettingsStoreTest {
             s.edit { it[intPreferencesKey("sleep_fade_secs")] = bad }
             assertEquals("$bad", 30, DataStoreSettings(s).settings.first().sleepFadeSecs)
         }
+    }
+
+    /** Streaming quality: Original on Wi-Fi and High on mobile data by default, kept, and checked when read. */
+    @Test
+    fun streamingDefaultsSurviveARestartAndRefuseNonsense() = runBlocking {
+        assertEquals(StreamingSettings(StreamQuality.ORIGINAL, StreamQuality.HIGH), DataStoreSettings(store()).settings.first().streaming)
+        DataStoreSettings(restart()).setStreaming(StreamingSettings(StreamQuality.HIGH, StreamQuality.LOW))
+        assertEquals(StreamingSettings(StreamQuality.HIGH, StreamQuality.LOW), DataStoreSettings(restart()).settings.first().streaming)
+        val s = restart()
+        s.edit {
+            it[stringPreferencesKey("stream_quality_wifi")] = "ULTRA"
+            it[stringPreferencesKey("stream_quality_mobile")] = ""
+        }
+        assertEquals(StreamingSettings(), DataStoreSettings(s).settings.first().streaming)
     }
 
     /** The lyrics peek (Wave 1): on by default, and kept. */

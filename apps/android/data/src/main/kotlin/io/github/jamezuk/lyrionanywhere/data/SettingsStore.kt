@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import io.github.jamezuk.lyrionanywhere.core.DownloadFormat
+import io.github.jamezuk.lyrionanywhere.core.StreamQuality
 import io.github.jamezuk.lyrionanywhere.data.offline.DownloadSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -41,6 +42,14 @@ data class AppSettings(
     val sleepFadeSecs: Int = SLEEP_FADE_DEFAULT,
     /** The current lyric line, small, on Now playing (when a track has synced lyrics). */
     val lyricsPeek: Boolean = true,
+    /** The live stream's level on Wi-Fi and on mobile data (docs/plans/streaming-quality.md). */
+    val streaming: StreamingSettings = StreamingSettings(),
+)
+
+/** This phone's stream level by network: as sent on Wi-Fi, Opus 160 on mobile data. */
+data class StreamingSettings(
+    val wifi: StreamQuality = StreamQuality.ORIGINAL,
+    val mobile: StreamQuality = StreamQuality.HIGH,
 )
 
 /** The sleep timer's fade-out: 30 s by default, at most 2 minutes. */
@@ -99,6 +108,9 @@ interface SettingsStore {
 
     /** Show the current lyric line on Now playing. */
     suspend fun setLyricsPeek(on: Boolean) {}
+
+    /** The stream level on Wi-Fi and on mobile data. */
+    suspend fun setStreaming(streaming: StreamingSettings) {}
 }
 
 /** A user name fit to remember as the offline owner. */
@@ -119,11 +131,22 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
             offlineOwner = it[OFFLINE_OWNER]?.takeIf(::isOwnerName),
             sleepFadeSecs = sanitiseSleepFade(it[SLEEP_FADE]),
             lyricsPeek = it[LYRICS_PEEK] ?: true,
+            streaming = StreamingSettings(
+                wifi = enumOr(it[STREAM_WIFI], StreamingSettings().wifi),
+                mobile = enumOr(it[STREAM_MOBILE], StreamingSettings().mobile),
+            ),
         )
     }
 
     override suspend fun setSleepFade(seconds: Int) {
         store.edit { p -> p[SLEEP_FADE] = sanitiseSleepFade(seconds) }
+    }
+
+    override suspend fun setStreaming(streaming: StreamingSettings) {
+        store.edit { p ->
+            p[STREAM_WIFI] = streaming.wifi.name
+            p[STREAM_MOBILE] = streaming.mobile.name
+        }
     }
 
     override suspend fun setLyricsPeek(on: Boolean) {
@@ -201,6 +224,8 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         val OFFLINE_OWNER = stringPreferencesKey("offline_owner")
         val SLEEP_FADE = intPreferencesKey("sleep_fade_secs")
         val LYRICS_PEEK = booleanPreferencesKey("lyrics_peek")
+        val STREAM_WIFI = stringPreferencesKey("stream_quality_wifi")
+        val STREAM_MOBILE = stringPreferencesKey("stream_quality_mobile")
         val DL_WIFI = stringPreferencesKey("downloads_wifi_format")
         val DL_MOBILE = stringPreferencesKey("downloads_mobile_format")
         val DL_WIFI_ONLY = booleanPreferencesKey("downloads_wifi_only")

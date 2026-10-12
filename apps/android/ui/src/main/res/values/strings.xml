@@ -647,4 +647,20 @@
     <string name="lyrics_from_tags">From the file’s tags</string>
     <string name="settings_lyrics_peek">Show the current lyric line</string>
     <string name="settings_lyrics_peek_detail">On Now playing, when a track has synced lyrics. All lyrics are always a tap away with the Lyrics button.</string>
+    <!-- Streaming quality (docs/plans/streaming-quality.md) -->
+    <string name="action_done">Done</string>
+    <string name="settings_stream_quality">Streaming quality</string>
+    <string name="stream_quality_summary">Wi-Fi: %1$s · Mobile data: %2$s</string>
+    <string name="stream_quality_explain">For this phone’s player. High and Data saver re-encode lossless tracks to Opus on your server, when it offers this; other tracks are sent as they are. Changes apply from the next track.</string>
+    <string name="stream_quality_on_wifi">On Wi-Fi</string>
+    <string name="stream_quality_on_mobile">On mobile data</string>
+    <string name="stream_quality_original">Original</string>
+    <string name="stream_quality_high">High</string>
+    <string name="stream_quality_low">Data saver</string>
+    <string name="stream_quality_original_detail">As stored; lossless stays lossless (about 400 MB an hour for CD quality)</string>
+    <string name="stream_quality_high_detail">Opus 160 kbps, about 70 MB an hour</string>
+    <string name="stream_quality_low_detail">Opus 96 kbps, about 45 MB an hour</string>
+    <string name="signal_streaming">Streaming</string>
+    <string name="signal_streaming_mobile">%1$s on mobile data (lossless tracks re-encoded to Opus by the server)</string>
+    <string name="signal_streaming_wifi">%1$s (lossless tracks re-encoded to Opus by the server)</string>
 </resources>
