@@ -1,0 +1,298 @@
+<script lang="ts">
+	// Alarms for the selected player (Wave 2 §1): LMS's own, so they ring on hardware
+	// players too and with no app open.
+	import { app } from '$lib/state/app.svelte';
+	import { routine } from '$lib/state/me';
+	import Icon from '$lib/components/Icon.svelte';
+	import {
+		DAY_NAMES,
+		daysText,
+		nextAlarm,
+		parseTime,
+		timeText,
+		type Alarm,
+		type AlarmChange,
+		type AlarmListing,
+	} from '$lib/api/routine';
+
+	let listing = $state<AlarmListing | null>(null);
+	let error = $state('');
+	let busy = $state(false);
+	/** The alarm being edited ('new' for a new one). */
+	let editing = $state<string | null>(null);
+	let confirmDelete = $state<string | null>(null);
+
+	// The form.
+	let fTime = $state('07:00');
+	let fDays = $state<number[]>([1, 2, 3, 4, 5]);
+	let fRepeat = $state(true);
+	let fVolume = $state(50);
+	let fSound = $state('current');
+	let fShuffle = $state<0 | 1 | 2>(0);
+
+	const player = $derived(app.playerId);
+	const playerName = $derived(app.current?.name ?? 'this player');
+	const next = $derived(listing && listing.enabled ? nextAlarm(listing.alarms, new Date()) : null);
+	const categories: Record<string, string> = {
+		current: 'Current queue',
+		favourites: 'Favourites',
+		playlists: 'Playlists',
+		random: 'Random mixes',
+		sounds: 'Sounds',
+		other: 'Other',
+	};
+	const groups = $derived.by(() => {
+		const g = new Map<string, { id: string; title: string }[]>();
+		for (const s of listing?.sounds ?? []) {
+			const k = categories[s.category] ? s.category : 'other';
+			g.set(k, [...(g.get(k) ?? []), { id: s.id, title: s.title || 'Untitled' }]);
+		}
+		return [...g.entries()];
+	});
+
+	async function run(fn: () => Promise<AlarmListing>) {
+		busy = true;
+		error = '';
+		try {
+			listing = await fn();
+			return true;
+		} catch (e) {
+			error = (e as Error).message;
+			return false;
+		} finally {
+			busy = false;
+		}
+	}
+
+	$effect(() => {
+		const p = player;
+		listing = null;
+		editing = null;
+		if (p) void run(() => routine.alarms(p));
+	});
+
+	function edit(a: Alarm | null) {
+		confirmDelete = null;
+		editing = a ? a.id : 'new';
+		fTime = timeText(a?.time ?? 7 * 3600);
+		fDays = a?.days.length ? [...a.days] : [1, 2, 3, 4, 5];
+		fRepeat = a?.repeat ?? true;
+		fVolume = a?.volume ?? 50;
+		fSound = a?.sound?.id ?? 'current';
+		fShuffle = a?.shuffle ?? 0;
+	}
+
+	function toggleDay(d: number) {
+		fDays = fDays.includes(d) ? fDays.filter((x) => x !== d) : [...fDays, d];
+	}
+
+	async function save() {
+		const time = parseTime(fTime);
+		if (time === null) {
+			error = 'Choose a time.';
+			return;
+		}
+		if (!fDays.length) {
+			error = 'Choose at least one day.';
+			return;
+		}
+		const p = player;
+		if (!p) return;
+		const change: AlarmChange = { time, days: fDays, repeat: fRepeat, volume: fVolume, shuffle: fShuffle, sound: fSound };
+		const id = editing;
+		const ok = await run(() => (id === 'new' ? routine.addAlarm(p, { ...change, enabled: true }) : routine.changeAlarm(p, id!, change)));
+		if (ok) editing = null;
+	}
+</script>
+
+<section class="page alarms">
+	<a class="back muted" href="#/">‹ Now playing</a>
+	<header>
+		<h1>Alarms</h1>
+		{#if player && listing && editing === null}
+			<button class="btn" onclick={() => edit(null)} data-add-alarm><Icon name="plus" size={18} />New alarm</button>
+		{/if}
+	</header>
+	{#if !player}
+		<p class="muted">Choose a player first, with the Play on… button.</p>
+	{:else}
+		<p class="muted lead">On {playerName}. Alarms are kept by your music server, so they ring even with this app closed.</p>
+		{#if error}<p class="error" role="alert">{error}</p>{/if}
+		{#if !listing}
+			<p class="muted">{busy ? 'Loading…' : ''}</p>
+		{:else}
+			<label class="switch">
+				<input type="checkbox" checked={listing.enabled} disabled={busy} onchange={(e) => run(() => routine.setAllAlarms(player, e.currentTarget.checked))} data-all-alarms />
+				<span>Alarms on this player</span>
+			</label>
+			{#if next}
+				<p class="next" data-next-alarm>Next: {next.toLocaleDateString(undefined, { weekday: 'long' })} at {timeText(next.getHours() * 3600 + next.getMinutes() * 60)}</p>
+			{/if}
+
+			{#if editing !== null}
+				<form class="card editor" onsubmit={(e) => (e.preventDefault(), void save())} data-alarm-form>
+					<h2>{editing === 'new' ? 'New alarm' : 'Change alarm'}</h2>
+					<label class="field">
+						<span>Time</span>
+						<input type="time" bind:value={fTime} required data-alarm-time />
+					</label>
+					<fieldset class="days">
+						<legend>Days</legend>
+						{#each [1, 2, 3, 4, 5, 6, 0] as d (d)}
+							<button type="button" class="day" class:on={fDays.includes(d)} aria-pressed={fDays.includes(d)} onclick={() => toggleDay(d)}>{DAY_NAMES[d]}</button>
+						{/each}
+					</fieldset>
+					<label class="check"><input type="checkbox" bind:checked={fRepeat} /><span>Every week (otherwise once)</span></label>
+					<label class="field">
+						<span>Play</span>
+						<select bind:value={fSound} data-alarm-sound>
+							{#each groups as [cat, items] (cat)}
+								<optgroup label={categories[cat]}>
+									{#each items as s (s.id)}<option value={s.id}>{s.title}</option>{/each}
+								</optgroup>
+							{/each}
+						</select>
+					</label>
+					<label class="field">
+						<span>Shuffle</span>
+						<select bind:value={fShuffle}>
+							<option value={0}>Off</option>
+							<option value={1}>Songs</option>
+							<option value={2}>Albums</option>
+						</select>
+					</label>
+					<label class="field">
+						<span>Volume {fVolume}</span>
+						<input type="range" min="0" max="100" bind:value={fVolume} />
+					</label>
+					<div class="actions">
+						<button class="btn primary" type="submit" disabled={busy}>Save</button>
+						<button class="btn" type="button" onclick={() => (editing = null)}>Cancel</button>
+					</div>
+				</form>
+			{/if}
+
+			{#if listing.alarms.length === 0 && editing === null}
+				<p class="muted">No alarms yet.</p>
+			{:else}
+				<ul class="list">
+					{#each listing.alarms as a (a.id)}
+						<li class:off={!a.enabled || !listing.enabled} data-alarm={a.id}>
+							<button class="main" onclick={() => edit(a)} aria-label={`Change the ${timeText(a.time)} alarm`}>
+								<span class="time">{timeText(a.time)}</span>
+								<span class="muted">{daysText(a.days)}{a.repeat ? '' : ' · once'} · {a.sound?.title || 'Current queue'}</span>
+							</button>
+							<input
+								type="checkbox"
+								class="toggle"
+								aria-label={`${timeText(a.time)} alarm on`}
+								checked={a.enabled}
+								disabled={busy}
+								onchange={(e) => run(() => routine.changeAlarm(player, a.id, { enabled: e.currentTarget.checked }))}
+							/>
+							{#if confirmDelete === a.id}
+								<button class="btn small danger" onclick={() => run(() => routine.deleteAlarm(player, a.id)).then(() => (confirmDelete = null))} data-confirm-delete>Delete</button>
+								<button class="btn small" onclick={() => (confirmDelete = null)}>Keep</button>
+							{:else}
+								<button class="icon-btn" aria-label={`Delete the ${timeText(a.time)} alarm`} onclick={() => (confirmDelete = a.id)}><Icon name="close" size={18} /></button>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		{/if}
+	{/if}
+</section>
+
+<style>
+	header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+	}
+	.switch,
+	.check {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin: 0.5rem 0;
+	}
+	.next {
+		font-weight: 600;
+	}
+	.editor {
+		margin: 1rem 0;
+		display: grid;
+		gap: 0.6rem;
+		max-width: 28rem;
+	}
+	.days {
+		border: 0;
+		padding: 0;
+		margin: 0;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem;
+	}
+	.days legend {
+		margin-bottom: 0.3rem;
+	}
+	.day {
+		min-width: 2.8rem;
+		padding: 0.35rem 0.5rem;
+		border-radius: 999px;
+		border: 1px solid var(--line);
+		background: none;
+		color: var(--fg);
+		font: inherit;
+		cursor: pointer;
+	}
+	.day.on {
+		background: var(--accent);
+		border-color: var(--accent);
+		color: var(--accent-fg);
+	}
+	.actions {
+		display: flex;
+		gap: 0.5rem;
+	}
+	.list {
+		list-style: none;
+		padding: 0;
+		margin: 1rem 0;
+	}
+	.list li {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		padding: 0.5rem 0;
+		border-bottom: 1px solid var(--line);
+	}
+	.list li.off .time {
+		color: var(--fg-muted);
+	}
+	.main {
+		flex: 1;
+		display: grid;
+		text-align: left;
+		background: none;
+		border: 0;
+		color: inherit;
+		font: inherit;
+		cursor: pointer;
+		padding: 0;
+	}
+	.time {
+		font-size: 1.6rem;
+		font-weight: 650;
+		font-variant-numeric: tabular-nums;
+	}
+	.toggle {
+		width: 1.2rem;
+		height: 1.2rem;
+	}
+	.error {
+		color: var(--danger);
+	}
+</style>

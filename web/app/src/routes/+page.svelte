@@ -16,6 +16,7 @@
 	import SignalPath from '$lib/components/SignalPath.svelte';
 	import UpNext from '$lib/components/UpNext.svelte';
 	import LyricsView from '$lib/components/LyricsView.svelte';
+	import RatingControl from '$lib/components/RatingControl.svelte';
 	import { lyrics } from '$lib/state/lyrics';
 	import { lineAt } from '$lib/lyrics/lyrics';
 	import { badgeText, quality } from '$lib/lms/quality';
@@ -92,6 +93,7 @@
 		{#if lyrics.lyrics && lyricsId !== null}
 			<button class="btn act" onclick={() => (showLyrics = true)} aria-haspopup="dialog" aria-label="Lyrics" data-lyrics-button><Icon name="lyrics" size={18} /><span class="label">Lyrics</span></button>
 		{/if}
+		{#if app.current}<a class="btn act" href="#/alarms" aria-label="Alarms" data-alarms-link><Icon name="alarm" size={18} /><span class="label">Alarms</span></a>{/if}
 		<a class="btn act" href="#/queue" aria-label="Queue"><Icon name="queue" size={18} /><span class="label">Queue</span></a>
 		{#if typeof track?.id === 'number' && track.id > 0}
 			<button class="btn act" onclick={() => (showMore = true)} aria-label="More"><Icon name="more" size={18} /><span class="label">More</span></button>
@@ -131,6 +133,7 @@
 					<button class="badge" class:hires={badge.hiRes} onclick={() => (showPath = true)} aria-haspopup="dialog" aria-label={`${badgeText(badge)}. Show the signal path`} data-quality-badge>{badgeText(badge)}</button>
 				{:else}{formatDetails(track ?? {})}{/if}{pos ? ` · ${pos}` : ''}
 			</p>
+			{#if lyricsId !== null}<div class="rating"><RatingControl track={lyricsId} /></div>{/if}
 			{#if lyricLine}
 				<button class="peek" onclick={() => (showLyrics = true)} aria-label={`Lyrics: ${lyricLine}. Show all the lyrics`} data-lyrics-peek>{lyricLine}</button>
 			{/if}
@@ -262,6 +265,9 @@
 	.badge.hires {
 		border-color: var(--accent);
 		color: var(--fg);
+	}
+	.rating {
+		margin-top: 0.35rem;
 	}
 	/* The current lyric line, small, over the ambient background. */
 	.peek {
