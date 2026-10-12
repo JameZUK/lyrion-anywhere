@@ -179,6 +179,11 @@ jobs:
           notes="docs/release-notes/$GITHUB_REF_NAME.md"
           [ -f "$notes" ] || { echo "missing $notes" >&2; exit 1; }
           (cd dist && sha256sum *.zip repo.xml > SHA256SUMS)
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            # Published by hand already (docs/RELEASING.md, building locally): leave it as it is.
+            echo "::notice::release $GITHUB_REF_NAME already exists; not replacing it"
+            exit 0
+          fi
           gh release create "$GITHUB_REF_NAME" dist/*.zip dist/repo.xml dist/SHA256SUMS \
             --verify-tag --title "Lyrion Anywhere $version" --notes-file "$notes"
 
@@ -292,6 +297,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -eu
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            # Published by hand already (docs/RELEASING.md, building locally): leave it as it is.
+            echo "::notice::release $GITHUB_REF_NAME already exists; not replacing it"
+            exit 0
+          fi
           gh release create "$GITHUB_REF_NAME" dist-android/* \
             --verify-tag --prerelease --title "Lyrion Anywhere for Android $VERSION" \
             --notes-file "docs/release-notes/android-$VERSION.md"

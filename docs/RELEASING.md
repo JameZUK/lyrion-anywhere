@@ -27,6 +27,8 @@ Choosing a version number is the owner's decision; nothing here picks one.
    - install the zip on a test LMS, and update one through the repository URL;
    - check the gateway starts, and a sign-in and a stream work.
 
+A release published by hand first (built locally with `tools/build-release.sh`, which is quicker than waiting for CI) is left alone: the job sees the release already exists and stops without replacing it. The same applies to Android releases.
+
 ## Android releases (`android-v*`)
 
 ### Before tagging
