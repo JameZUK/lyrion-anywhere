@@ -5,7 +5,7 @@
 // Material (the default) follows Material Design 3: colour roles from tonal palettes built
 // around one seed colour, tonal surfaces instead of borders, large rounded shapes.
 import { type Oklch, oklchHex, parseHex, srgbToOklch } from './color';
-import { scrimPercent } from './ambient';
+import { ART_FILTERS, scrimPercent } from './ambient';
 
 export type ThemeId = 'material' | 'classic' | 'contrast';
 export type Mode = 'auto' | 'light' | 'dark';
@@ -173,7 +173,7 @@ export function tokens(p: ThemePrefs, dark: boolean): Tokens {
 		p.theme === 'material' ? material(p.accent, dark) : (p.theme === 'contrast' ? CONTRAST : CLASSIC)[dark ? 'dark' : 'light'];
 	const t: Tokens = { ...colours, ...SHAPES[p.theme] };
 	// Now playing's ambient background: the scrim that keeps its text legible on any cover.
-	return { ...t, 'ambient-scrim': scrimPercent(t) };
+	return { ...t, 'ambient-scrim': scrimPercent(t, dark), 'ambient-filter': ART_FILTERS[dark ? 'dark' : 'light'].css };
 }
 
 const HEX = /^#[0-9a-f]{6}$/i;

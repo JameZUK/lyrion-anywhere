@@ -21,6 +21,7 @@ import math
 import random
 import re
 import struct
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from PIL import Image, ImageDraw, ImageFilter
@@ -108,8 +109,9 @@ def track_rows():
 
 TRACKS = track_rows()
 FOLDERS = folder_tree()
-NOW = [t for t in TRACKS if t["album_id"] == 1]  # the Lounge is playing "Night Ferry"
-STATE = {"index": 2, "time": 83.4, "volume": 42, "mode": "play", "shuffle": 0, "repeat": 0}
+# The Lounge is playing "Night Ferry", a high-resolution release (for the quality badge).
+NOW = [{**t, "samplerate": "96000", "samplesize": "24", "bitrate": "3000kbps VBR"} for t in TRACKS if t["album_id"] == 1]
+STATE = {"index": 2, "time": 83.4, "volume": 42, "mode": "play", "shuffle": 0, "repeat": 0, "sleep_at": 0}
 
 
 def album_row(i):
@@ -118,7 +120,7 @@ def album_row(i):
             "year": year, "artwork_track_id": str(1001 + i)}
 
 
-def status(player):
+def status(player, args=()):
     playing = player == PLAYERS[0]["playerid"]
     base = {"player_name": next((p["name"] for p in PLAYERS if p["playerid"] == player), "Player"),
             "player_connected": 1, "power": 1, "mixer volume": STATE["volume"] if playing else 30,
@@ -126,9 +128,17 @@ def status(player):
     if not playing:
         return {**base, "mode": "stop", "playlist_tracks": 0}
     cur = NOW[STATE["index"]]
-    return {**base, "mode": STATE["mode"], "time": STATE["time"], "duration": cur["duration"],
-            "playlist_cur_index": str(STATE["index"]), "playlist_tracks": len(NOW),
-            "playlist_loop": [{**t, "playlist index": i} for i, t in enumerate(NOW)]}
+    # `status - <n>` starts at the current track; `status <start> <n>` pages the queue.
+    args = [str(a) for a in args]
+    start = STATE["index"] if args[:1] == ["-"] else int(args[0]) if args[:1] and args[0].isdigit() else 0
+    count = int(args[1]) if len(args) > 1 and args[1].isdigit() else len(NOW)
+    rows = [{**t, "playlist index": i} for i, t in enumerate(NOW)][start:start + count]
+    out = {**base, "mode": STATE["mode"], "time": STATE["time"], "duration": cur["duration"],
+           "playlist_cur_index": str(STATE["index"]), "playlist_tracks": len(NOW), "playlist_loop": rows}
+    left = STATE["sleep_at"] - time.time()
+    if left > 0:
+        out["will_sleep_in"] = round(left, 1)
+    return out
 
 
 def page(rows, args, key):
@@ -228,7 +238,10 @@ def answer(player, cmd):
                 "contributors_loop": [{"contributor_id": i + 1, "contributor": a} for i, a in enumerate(ARTISTS) if term in a.lower()],
                 "tracks_loop": [{"track_id": t["id"], "track": t["title"]} for t in TRACKS if term in t["title"].lower()][:20]}
     if op == "status":
-        return status(player)
+        return status(player, rest)
+    if op == "sleep" and rest and rest[0].isdigit():
+        STATE["sleep_at"] = time.time() + int(rest[0]) if int(rest[0]) > 0 else 0
+        return {}
     if op == "favorites":
         items = [
             {"id": "f1.0", "name": "Night Ferry", "type": "playlist", "isaudio": 1, "hasitems": 1, "image": "music/1001/cover"},

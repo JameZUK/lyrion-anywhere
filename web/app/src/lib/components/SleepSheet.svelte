@@ -123,8 +123,13 @@
 	}
 	.grid {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr));
-		gap: 0.5rem;
+		grid-template-columns: repeat(5, minmax(0, 1fr));
+		gap: 0.4rem;
+	}
+	.grid .btn {
+		justify-content: center;
+		padding-inline: 0.3rem;
+		white-space: nowrap;
 	}
 	.custom {
 		display: flex;

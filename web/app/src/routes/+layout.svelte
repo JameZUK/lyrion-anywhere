@@ -302,6 +302,11 @@
 		min-width: 0;
 		padding-bottom: calc(var(--bar-h) + var(--tabs-h) + 1rem);
 	}
+	/* Now playing's ambient background sits behind this area, inside it. */
+	.content.on-np {
+		position: relative;
+		isolation: isolate;
+	}
 	/* Room for the "Playing on …" strip above the player bar. Now playing shows the strip
 	   itself, so the bar's is hidden there. */
 	.content.has-strip:not(.on-np) {

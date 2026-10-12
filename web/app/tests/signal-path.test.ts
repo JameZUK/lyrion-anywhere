@@ -43,7 +43,8 @@ test('another player: only the source is known', () => {
 	const v = signalPath({ ...base, thisDevice: false, playerName: 'Kitchen' });
 	expect(value(v, 'Decoding')).toBe('On Kitchen');
 	expect(v.rows.some((r) => r.label === 'Rate')).toBe(false);
-	expect(v.verdict).toBe('unknown');
+	expect(v.verdict).toBe('source');
+	expect(signalPath({ ...base, thisDevice: false, quality: null }).verdict).toBe('unknown');
 });
 
 test('junk gains never show nonsense', () => {

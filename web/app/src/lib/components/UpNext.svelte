@@ -127,7 +127,7 @@
 			<div class="thumb"><Art path={cmd.coverPath(shown.track.coverid ?? shown.track.artwork_track_id, 120)} alt="" label={title} /></div>
 			<div class="meta">
 				<span class="kicker">Up next</span>
-				<span class="line ellipsis">{title}{#if artist}<span class="muted"> — {artist}</span>{/if}</span>
+				<span class="line ellipsis">{title}{#if artist}<span class="muted">{` — ${artist}`}</span>{/if}</span>
 			</div>
 		</a>
 		<button class="icon-btn rm" aria-label={`Remove ${title} from the queue`} onclick={remove}><Icon name="close" size={18} /></button>

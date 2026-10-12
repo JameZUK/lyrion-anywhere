@@ -24,7 +24,7 @@ export interface SignalInput {
 	deviceRate: number | null;
 }
 
-export type Verdict = 'lossless' | 'volume' | 'resampled' | 'lossy' | 'unknown';
+export type Verdict = 'lossless' | 'volume' | 'resampled' | 'lossy' | 'source' | 'unknown';
 
 export interface SignalPathView {
 	rows: { label: string; value: string }[];
@@ -37,6 +37,7 @@ export const VERDICT_LABELS: Record<Verdict, string> = {
 	volume: 'Lossless, volume applied',
 	resampled: 'Resampled',
 	lossy: 'Lossy source',
+	source: 'Lossless source',
 	unknown: 'Not known',
 };
 
@@ -53,7 +54,7 @@ export function signalPath(i: SignalInput): SignalPathView {
 		rows.push({ label: 'Decoding', value: `On ${i.playerName || 'the player'}` });
 		rows.push({ label: 'Volume and output', value: 'Set by that player' });
 		notes.push('Details beyond the source are known only for this device.');
-		return { rows, verdict: !q ? 'unknown' : q.lossless ? 'unknown' : 'lossy', notes };
+		return { rows, verdict: !q ? 'unknown' : q.lossless ? 'source' : 'lossy', notes };
 	}
 	rows.push({ label: 'Decoding', value: 'In this browser, by the player engine (WebAssembly)' });
 	const gain = Number.isFinite(i.gain) ? Math.min(1, Math.max(0, i.gain)) : 1;

@@ -250,11 +250,11 @@
 		background: color-mix(in srgb, var(--fg) 8%, transparent);
 	}
 	@container (max-width: 400px) {
-		.act {
+		.act:not(.set) {
 			padding: 0.5em;
 			border-radius: 50%;
 		}
-		.act .label {
+		.act:not(.set) .label {
 			position: absolute;
 			width: 1px;
 			height: 1px;
@@ -382,7 +382,7 @@
 			max-width: none;
 			margin-bottom: 1rem;
 		}
-		.act {
+		.act:not(.set) {
 			padding: 0.5em;
 			border-radius: 50%;
 		}

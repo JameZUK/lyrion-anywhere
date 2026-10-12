@@ -1,7 +1,8 @@
 <script lang="ts">
 	// Now playing's ambient background (docs/plans: Wave 1 §2): a small copy of the cover,
-	// blurred, drifting slowly behind a scrim of the page colour. The scrim's strength comes
-	// from the theme (theme/ambient.ts) so every text colour keeps WCAG AA over any cover.
+	// blurred, drifting slowly behind a scrim of the page colour. The scrim's strength and
+	// the art's filter come from the theme (theme/ambient.ts), so every text colour keeps
+	// WCAG AA over any cover.
 	// It holds still under "reduce motion", on low-power devices, and while the page is
 	// hidden; a new cover cross-fades in.
 	import { api } from '$lib/state/app.svelte';
@@ -56,8 +57,10 @@
 </div>
 
 <style>
+	/* Fills Now playing's content area (the layout makes it a stacking context of its own),
+	   behind everything on it; the sidebar and the bars keep the theme. */
 	.ambient {
-		position: fixed;
+		position: absolute;
 		inset: 0;
 		z-index: -1;
 		overflow: hidden;
@@ -76,7 +79,8 @@
 		width: 100%;
 		height: 100%;
 		object-fit: cover;
-		filter: blur(48px) saturate(1.35);
+		/* The theme bounds the art's range (theme/ambient.ts) so the scrim can stay light. */
+		filter: blur(48px) var(--ambient-filter, saturate(1.5) brightness(0.5));
 		animation: in 1.2s ease-out;
 	}
 	.scrim {
@@ -90,6 +94,10 @@
 	}
 	.still .layer {
 		animation: none;
+	}
+	/* High contrast: plain page colour, nothing behind the text. */
+	:global(:root[data-theme='contrast']) .ambient .drift {
+		display: none;
 	}
 	.paused .drift {
 		animation-play-state: paused;

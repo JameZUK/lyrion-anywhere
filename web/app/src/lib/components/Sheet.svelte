@@ -38,6 +38,7 @@
 	.sheet {
 		background: var(--bg-raised);
 		color: var(--fg);
+		text-align: left;
 		border-radius: var(--radius);
 		padding: 0.75rem 1rem 1rem;
 		max-height: 86vh;
