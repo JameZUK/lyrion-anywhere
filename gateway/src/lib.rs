@@ -30,6 +30,7 @@
 
 pub mod accounts;
 pub mod admin;
+pub mod alarms;
 pub mod analysis;
 pub mod art;
 mod auth;
@@ -487,6 +488,18 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/download/track/{id}", get(download::track))
         .route("/v1/analysis/track/{id}", get(analysis::track))
         .route("/v1/lyrics/track/{id}", get(lyrics::track))
+        .route(
+            "/v1/players/{player}/alarms",
+            get(alarms::list).post(alarms::add),
+        )
+        .route(
+            "/v1/players/{player}/alarms/enabled",
+            axum::routing::put(alarms::set_all),
+        )
+        .route(
+            "/v1/players/{player}/alarms/{id}",
+            axum::routing::patch(alarms::update).delete(alarms::delete),
+        )
         .route("/v1/plays", post(plays::record))
         .route(
             "/v1/me/history",

@@ -172,6 +172,28 @@ fn fake_download(audio: &[u8], id: &str, range: Option<&str>) -> axum::response:
     }
 }
 
+/// The fake LMS's alarms for any player: one alarm, and these sounds (LMS's own URLs, which
+/// must never reach clients). `alarm add` answers a new id.
+pub fn fake_alarm(words: &[serde_json::Value]) -> serde_json::Value {
+    use serde_json::json;
+    let w = |i: usize| words.get(i).and_then(|x| x.as_str()).unwrap_or("");
+    match (w(0), w(1)) {
+        ("alarm", "playlists") => json!({"count": 4, "item_loop": [
+            {"category": "CURRENT_PLAYLIST", "title": "{ALARM_USE_CURRENT_PLAYLIST}"},
+            {"category": "FAVORITES", "title": "Morning radio", "url": "http://radio.example.com/stream?token=secret"},
+            {"category": "PLAYLISTS", "title": "Wake up", "url": "file:///srv/music/playlists/wake.m3u"},
+            {"category": "RANDOM", "title": "Random songs", "url": "randomplay://track"}
+        ]}),
+        ("alarms", _) => json!({"fade": "1", "count": 1, "alarms_loop": [
+            {"id": "1a2b3c4d", "dow": "1,2,3,4,5", "enabled": "1", "repeat": "1", "time": "25200",
+             "volume": "40", "shufflemode": "0", "url": "file:///srv/music/playlists/wake.m3u"}
+        ]}),
+        ("alarm", "add") => json!({"id": "5e6f7a8b"}),
+        ("playerpref", _) => json!({"_p2": "1"}),
+        _ => json!({}),
+    }
+}
+
 /// Canned LMS JSON-RPC results, deliberately full of things that must not leak.
 pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
     use serde_json::json;
@@ -446,6 +468,9 @@ impl FakeLms {
                         _ if plugin_answer.is_some() => plugin_answer.unwrap(),
                         Some(_) if cmd == "titles" && added.is_some() => {
                             serde_json::json!({"count": 1, "titles_loop": [added.unwrap().0]})
+                        }
+                        _ if cmd == "alarm" || cmd == "alarms" || (cmd == "playerpref" && words.get(1).and_then(|w| w.as_str()) == Some("alarmsEnabled")) => {
+                            fake_alarm(&words)
                         }
                         Some(id) if cmd == "musicartistinfo" => {
                             if id == 1 && words.len() == 3 {
