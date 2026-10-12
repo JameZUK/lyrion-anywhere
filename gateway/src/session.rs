@@ -126,6 +126,10 @@ struct State {
     last_heard: Instant,
     /// The gateway is reporting to LMS for an attached but silent client.
     speaking_for_silent: bool,
+    /// What the client's player is heard playing, for the user's listening history.
+    tracker: crate::history::Tracker,
+    /// Tracker steps to carry out once the state lock is released.
+    steps: Vec<crate::history::Step>,
 }
 
 /// How often the gateway reports status to LMS on behalf of a detached client. LMS drops
@@ -140,6 +144,8 @@ pub struct Session {
     secret: String,
     lms_tx: tokio::sync::Mutex<OwnedWriteHalf>,
     state: Mutex<State>,
+    /// The gateway, for listening history (weak: the gateway owns its sessions).
+    gw: std::sync::Weak<Gateway>,
 }
 
 #[derive(Debug)]
@@ -165,8 +171,9 @@ enum Delivery {
 }
 
 impl Session {
-    fn new(device: Principal, lms_tx: OwnedWriteHalf) -> Session {
+    fn new(device: Principal, lms_tx: OwnedWriteHalf, gw: std::sync::Weak<Gateway>) -> Session {
         Session {
+            gw,
             id: random_id(),
             name: Mutex::new(device.device_name.clone()),
             device,
@@ -191,6 +198,8 @@ impl Session {
                 name_queries: 0,
                 last_heard: Instant::now(),
                 speaking_for_silent: false,
+                tracker: Default::default(),
+                steps: Vec::new(),
             }),
         }
     }
@@ -205,7 +214,7 @@ impl Session {
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "LMS connect timeout"))??;
         let _ = lms.set_nodelay(true);
         let (rd, wr) = lms.into_split();
-        let session = Arc::new(Session::new(device, wr));
+        let session = Arc::new(Session::new(device, wr, Arc::downgrade(gw)));
 
         // One session per device: LMS would otherwise see two players with the same MAC.
         let previous: Vec<Arc<Session>> = {
@@ -408,15 +417,74 @@ impl Session {
             if st.from_client.buffered() > ClientFrameReader::MAX_FRAME + 8 {
                 return ClientInput::Policy("oversize frame".into());
             }
-            frames
+            (frames, std::mem::take(&mut st.steps))
         };
+        let (frames, steps) = frames;
         let mut lms = self.lms_tx.lock().await;
         for f in frames {
             if lms.write_all(&f).await.is_err() {
                 return ClientInput::LmsGone;
             }
         }
+        drop(lms);
+        self.run_steps(steps);
         ClientInput::Ok
+    }
+
+    /// Carry out the listening tracker's steps: ask LMS which track started, record plays
+    /// that count in the user's history, store the time heard when a play ends.
+    fn run_steps(&self, steps: Vec<crate::history::Step>) {
+        use crate::history::{Source, Step};
+        if steps.is_empty() {
+            return;
+        }
+        let Some(gw) = self.gw.upgrade() else { return };
+        for step in steps {
+            match step {
+                Step::Lookup(generation) => {
+                    let Some(me) = gw.session(&self.id) else {
+                        continue;
+                    };
+                    let gw = gw.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(gw.cfg.history_lookup_delay).await;
+                        if me.is_ended() {
+                            return;
+                        }
+                        let track = gw.playing_track(&me.device.mac_string()).await;
+                        let more = me.state.lock().unwrap().tracker.resolved(
+                            generation,
+                            track,
+                            Instant::now(),
+                        );
+                        me.run_steps(more);
+                    });
+                }
+                Step::Record {
+                    serial,
+                    track,
+                    played_at,
+                    seconds,
+                } => {
+                    let row = gw.note_play(
+                        self.device.user_id,
+                        &track,
+                        played_at,
+                        seconds,
+                        Source::Live,
+                    );
+                    self.state.lock().unwrap().tracker.recorded(serial, row);
+                }
+                Step::Update { row, seconds } => {
+                    let _ = crate::history::update_seconds(
+                        gw.accounts(),
+                        self.device.user_id,
+                        row,
+                        seconds,
+                    );
+                }
+            }
+        }
     }
 
     /// Policy for one client frame. Returns the payload to forward (possibly rewritten).
@@ -463,6 +531,13 @@ impl Session {
                     b"STMp" | b"STMf" | b"STMu" | b"STMn" => st.playing = false,
                     _ => {}
                 }
+                let steps = st.tracker.on_stat(
+                    stat.event,
+                    stat.elapsed_milliseconds,
+                    Instant::now(),
+                    crate::history::unix_now(),
+                );
+                st.steps.extend(steps);
                 st.last_stat = Some((stat, Instant::now()));
                 Ok(payload)
             }
@@ -559,7 +634,7 @@ impl Session {
     /// End the session: close LMS's connection, stop its stream, tell any attached client
     /// why.
     pub async fn end(&self, gw: &Gateway, reason: EndReason) {
-        let (attached, relay) = {
+        let (attached, relay, steps) = {
             let mut st = self.state.lock().unwrap();
             if st.ended {
                 return;
@@ -567,8 +642,11 @@ impl Session {
             st.ended = true;
             st.log.clear();
             st.log_bytes = 0;
-            (st.attached.take(), st.relay.take())
+            let mut steps = std::mem::take(&mut st.steps);
+            steps.extend(st.tracker.finish());
+            (st.attached.take(), st.relay.take(), steps)
         };
+        self.run_steps(steps);
         if let Some(relay) = relay {
             relay.cancel();
         }
@@ -837,7 +915,7 @@ mod tests {
             device_name: "Test device".into(),
             mac: MAC,
         };
-        let s = Arc::new(Session::new(device, wr));
+        let s = Arc::new(Session::new(device, wr, std::sync::Weak::new()));
         let g = s.attach(0).unwrap().generation;
         (s, g)
     }

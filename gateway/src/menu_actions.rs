@@ -101,6 +101,10 @@ const ADMIN_ONLY: &[&str] = &[
     "playlists",
     "jiveplaylists",
     "presets",
+    // Random Mix's genre and library choices are server-wide prefs, not the player's.
+    "randomplaychoosegenre",
+    "randomplaygenreselectall",
+    "randomplaychooselibrary",
 ];
 
 fn word_ok(s: &str) -> bool {
@@ -400,6 +404,15 @@ impl DeviceActions {
         self.len
     }
 
+    /// Every action held (to hand them to a device: see `crate::stations`).
+    pub fn into_actions(self) -> Vec<Action> {
+        self.by_cmd
+            .into_values()
+            .flatten()
+            .map(|(a, _)| a)
+            .collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -629,6 +642,56 @@ mod tests {
         ]);
         assert_eq!(allowed(&d, &raw, false), Err(Refusal::AdminOnly));
         assert_eq!(allowed(&d, &raw, true), Ok(()));
+    }
+
+    /// Random Mix's genre and library choices are server-wide prefs (LMS's
+    /// `exclude_genres` and `library`): even when a menu offers them, listeners can't.
+    #[test]
+    fn random_mix_server_wide_choices_are_for_admins() {
+        let mut d = DeviceActions::default();
+        let menu = json!({"item_loop": [
+            {"actions": {"on": {"cmd": ["randomplaychoosegenre", "Jazz", "1"], "player": 0}}},
+            {"actions": {"do": {"cmd": ["randomplaygenreselectall", "0"], "player": 0}}},
+            {"actions": {"do": {"cmd": ["randomplaychooselibrary"], "params": {"library": "1a2b"}, "player": 0}}},
+            {"actions": {"do": {"cmd": ["randomplaychoosegenre"], "params": {"genre": "Jazz", "value": "0"}}}}
+        ]});
+        d.add(learn(&menu), Instant::now());
+        for raw in [
+            &["randomplaychoosegenre", "Jazz", "1"][..],
+            &["randomplaygenreselectall", "0"],
+            &["randomplaychooselibrary", "library:1a2b"],
+            &["randomplaychoosegenre", "genre:Jazz", "value:0"],
+        ] {
+            assert!(allowed(&d, &strs(raw), false).is_err(), "{raw:?}");
+        }
+        assert_eq!(
+            allowed(
+                &d,
+                &strs(&["randomplaychooselibrary", "library:1a2b"]),
+                false
+            ),
+            Err(Refusal::AdminOnly)
+        );
+        assert_eq!(
+            allowed(
+                &d,
+                &strs(&["randomplaychooselibrary", "library:1a2b"]),
+                true
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn learned_actions_can_be_handed_over_whole() {
+        let mut d = DeviceActions::default();
+        d.add(learn(&radio_menu()), Instant::now());
+        let n = d.len();
+        let all = d.into_actions();
+        assert_eq!(all.len(), n);
+        let mut again = DeviceActions::default();
+        again.add(all, Instant::now());
+        assert_eq!(again.len(), n);
     }
 
     #[test]

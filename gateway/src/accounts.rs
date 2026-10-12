@@ -697,6 +697,24 @@ impl Accounts {
         Self::with_connection(Connection::open_in_memory()?)
     }
 
+    /// Run `f` on the database (for the per-user stores in [`crate::history`],
+    /// [`crate::home`] and [`crate::stations`], which keep their own SQL).
+    pub(crate) fn with_db<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+    ) -> Result<T, AuthError> {
+        Ok(f(&self.db.lock().unwrap())?)
+    }
+
+    /// The database's schema version (for tests).
+    pub fn schema_version(&self) -> i64 {
+        self.db
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap_or(0)
+    }
+
     fn with_connection(db: Connection) -> Result<Accounts, AuthError> {
         db.execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -2546,8 +2564,55 @@ fn migrate(db: &Connection) -> Result<(), AuthError> {
              PRAGMA user_version = 9;",
         )?;
     }
+    if version < 10 {
+        // Wave 1 (docs/plans/wave1-design.md §6–8), per user and never shared:
+        // - `history`: what the user played through Lyrion Anywhere (live on their own
+        //   devices' players, or offline and sent back), by stable track key, for the Home
+        //   shelves and stations. Kept 13 months and at most `history::MAX_ROWS_PER_USER`
+        //   rows; see `crate::history`.
+        // - `user_prefs`: whether history is recorded (on unless the user turns it off),
+        //   the Home layout (validated JSON, see `crate::home`), and whether the built-in
+        //   stations have been added for the user.
+        // - `user_pins`: stations (built-in kinds and ones pinned from menus) and pinned
+        //   menus, each a validated JSON spec (see `crate::stations`). `broken` says why a
+        //   pinned menu action is no longer offered.
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS history (
+               id INTEGER PRIMARY KEY,
+               user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+               track_key TEXT NOT NULL,
+               track_id INTEGER NOT NULL,
+               album_id INTEGER,
+               artist_id INTEGER,
+               year INTEGER,
+               played_at INTEGER NOT NULL,
+               seconds REAL NOT NULL,
+               source TEXT NOT NULL);
+             CREATE INDEX IF NOT EXISTS history_user_played ON history(user_id, played_at);
+             CREATE INDEX IF NOT EXISTS history_user_key ON history(user_id, track_key);
+             CREATE INDEX IF NOT EXISTS history_played ON history(played_at);
+             CREATE TABLE IF NOT EXISTS user_prefs (
+               user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+               history INTEGER NOT NULL DEFAULT 1,
+               home TEXT,
+               stations_seeded INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE IF NOT EXISTS user_pins (
+               id INTEGER PRIMARY KEY,
+               user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+               kind TEXT NOT NULL,
+               name TEXT NOT NULL,
+               spec TEXT NOT NULL,
+               broken TEXT,
+               created_at INTEGER NOT NULL);
+             CREATE INDEX IF NOT EXISTS user_pins_user ON user_pins(user_id, kind);
+             PRAGMA user_version = 10;",
+        )?;
+    }
     Ok(())
 }
+
+/// The schema version [`migrate`] brings a database to.
+pub const SCHEMA_VERSION: i64 = 10;
 
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -3880,7 +3945,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, SCHEMA_VERSION);
         // Version 3 added per-device diagnostics.
         let d = a.devices_for_test();
         a.save_diagnostics(d, r#"{"ok":true}"#).unwrap();
@@ -3894,6 +3959,73 @@ mod tests {
         let users = a.list_users().unwrap();
         assert!(users[0].downloads);
         assert_eq!(users[0].download_formats, ["original", "mp3", "opus"]);
+    }
+
+    /// Version 10 (Wave 1: history, Home and stations) upgrades a version-9 database in
+    /// place: existing users and devices stay, the new per-user tables are there and
+    /// empty, and they go with the user.
+    #[test]
+    fn migration_to_10_adds_the_per_user_tables() {
+        let path = std::env::temp_dir().join(format!("anywhere-mig10-{}.db", crate::random_id()));
+        {
+            let a = Accounts::open(&path).unwrap();
+            a.create_user("alice", PW, Role::Listener).unwrap();
+            // Wind the schema back to version 9, as an older gateway left it.
+            a.with_db(|db| {
+                db.execute_batch(
+                    "DROP TABLE history; DROP TABLE user_prefs; DROP TABLE user_pins;
+                     PRAGMA user_version = 9;",
+                )
+            })
+            .unwrap();
+            assert_eq!(a.schema_version(), 9);
+        }
+        let a = Accounts::open(&path).unwrap();
+        assert_eq!(a.schema_version(), SCHEMA_VERSION);
+        let alice = user_id(&a, "alice");
+        let count = |table: &str| -> i64 {
+            a.with_db(|db| db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)))
+                .unwrap()
+        };
+        assert_eq!(count("history"), 0);
+        assert_eq!(count("user_prefs"), 0);
+        assert_eq!(count("user_pins"), 0);
+        // The indexes the history queries rely on exist.
+        let indexes: Vec<String> = a
+            .with_db(|db| {
+                let mut st = db.prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'history'",
+                )?;
+                let rows = st.query_map([], |r| r.get(0))?;
+                rows.collect()
+            })
+            .unwrap();
+        for want in ["history_user_played", "history_user_key", "history_played"] {
+            assert!(
+                indexes.iter().any(|i| i == want),
+                "{want} missing: {indexes:?}"
+            );
+        }
+        a.with_db(|db| {
+            db.execute(
+                "INSERT INTO history (user_id, track_key, track_id, played_at, seconds, source)
+                 VALUES (?1, ?2, 1, 1, 200, 'live')",
+                params![alice, "a".repeat(64)],
+            )?;
+            db.execute(
+                "INSERT INTO user_pins (user_id, kind, name, spec, created_at)
+                 VALUES (?1, 'station', 'S', '{}', 1)",
+                [alice],
+            )
+        })
+        .unwrap();
+        a.delete_user("alice").unwrap();
+        assert_eq!(count("history"), 0, "history goes with the user");
+        assert_eq!(count("user_pins"), 0, "stations go with the user");
+        drop(a);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
     // -- downloads -------------------------------------------------------------
@@ -4347,7 +4479,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-        assert_eq!(v, 9);
+        assert_eq!(v, SCHEMA_VERSION);
         a.create_user("alice", PW, Role::Listener).unwrap();
         let alice = a.user_id_by_name("alice").unwrap().unwrap();
         assert_eq!(a.stored_plays(alice).unwrap(), 0);
@@ -4380,7 +4512,7 @@ mod tests {
             let v: i64 = db
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(v, 9);
+            assert_eq!(v, SCHEMA_VERSION);
             // Migrating again is a no-op.
             migrate(&db).unwrap();
         }

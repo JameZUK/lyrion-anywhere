@@ -227,7 +227,7 @@ pub fn counts(seconds: f64, duration: Option<f64>) -> bool {
 }
 
 /// Seconds of a track that must be heard for a play to count.
-fn needed(duration: Option<f64>) -> f64 {
+pub fn needed(duration: Option<f64>) -> f64 {
     match duration {
         Some(d) if d.is_finite() && d > 0.0 => (d / 2.0).min(COUNT_AFTER),
         _ => COUNT_AFTER,
@@ -589,7 +589,21 @@ impl crate::Gateway {
                 return Outcome::Retry("server_unavailable");
             }
         };
-        plugin_outcome(&answer)
+        let outcome = plugin_outcome(&answer);
+        // Counted in LMS: also the user's own listening history (if they keep one).
+        if outcome == Outcome::Recorded
+            && let Some(salt) = self.download_salt()
+        {
+            let info = crate::history::TrackInfo::from_track(track, &salt);
+            self.note_play(
+                p.user_id,
+                &info,
+                play.played_at,
+                play.seconds,
+                crate::history::Source::Offline,
+            );
+        }
+        outcome
     }
 }
 

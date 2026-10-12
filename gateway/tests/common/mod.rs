@@ -259,6 +259,8 @@ pub struct FakeLms {
     pub extra: ExtraTracks,
     /// The plugin's `anywhere play_record`.
     pub plugin: Arc<Mutex<FakePlugin>>,
+    /// When set, `status` says every player is playing this track id.
+    pub status_track: Arc<Mutex<Option<u64>>>,
 }
 
 /// The secret the test gateway signs plays with (`Config::plays_secret`).
@@ -376,6 +378,8 @@ impl FakeLms {
         let plugin: Arc<Mutex<FakePlugin>> = Default::default();
         let stream_body: Arc<Mutex<Option<Arc<Vec<u8>>>>> = Default::default();
         let sb = stream_body.clone();
+        let status_track: Arc<Mutex<Option<u64>>> = Default::default();
+        let st_track = status_track.clone();
         let (r, a, stall, ex, pl) = (
             rec.clone(),
             audio.clone(),
@@ -385,6 +389,7 @@ impl FakeLms {
         );
         let app = Router::new().fallback(any(move |req: Request| {
             let (r, stall, ex, pl) = (r.clone(), stall.clone(), ex.clone(), pl.clone());
+            let playing = *st_track.lock().unwrap();
             let a = sb.lock().unwrap().clone().unwrap_or_else(|| a.clone());
             async move {
                 let path = req
@@ -432,6 +437,10 @@ impl FakeLms {
                             Some(t) => serde_json::json!({"count": 1, "titles_loop": [t]}),
                             None => serde_json::json!({"count": 0}),
                         },
+                        _ if cmd == "status" && playing.is_some() => serde_json::json!({
+                            "mode": "play",
+                            "playlist_loop": [{"playlist index": 0, "id": playing.unwrap()}]
+                        }),
                         _ => fake_rpc_result(&cmd),
                     };
                     let reply =
@@ -549,6 +558,7 @@ impl FakeLms {
             stream_body,
             extra,
             plugin,
+            status_track,
         }
     }
 

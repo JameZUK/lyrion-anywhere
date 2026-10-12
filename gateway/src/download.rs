@@ -308,6 +308,9 @@ pub struct Track {
     pub artist: String,
     pub album: String,
     pub album_id: Option<i64>,
+    /// The track's (first) artist, and its year, for listening history (`crate::history`).
+    pub artist_id: Option<i64>,
+    pub year: Option<i64>,
     pub tracknum: Option<i64>,
     pub duration: Option<f64>,
     pub kind: String,
@@ -388,7 +391,7 @@ impl crate::Gateway {
             "0".into(),
             "1".into(),
             format!("track_id:{id}"),
-            "tags:aelotdufnx".into(),
+            "tags:aelotdufnxsy".into(),
         ];
         let result = self
             .lms_query_retrying("", &cmd, self.cfg.download_lookup_timeout)
@@ -419,6 +422,8 @@ impl crate::Gateway {
             artist: text(item, "artist"),
             album: text(item, "album"),
             album_id: int(item, "album_id"),
+            artist_id: int(item, "artist_id").filter(|n| *n > 0),
+            year: int(item, "year").filter(|y| (1..=9999).contains(y)),
             tracknum: int(item, "tracknum"),
             duration: float(item, "duration"),
             kind: text(item, "type"),

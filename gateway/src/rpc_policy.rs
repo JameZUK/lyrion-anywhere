@@ -305,6 +305,8 @@ pub fn check(
                         ("genre_id", V::Ids),
                         ("artist_id", V::Ids),
                         ("album_id", V::Ids),
+                        // Tracks by id (listening history, stations): ids only.
+                        ("track_id", V::Ids),
                         ("year", V::Uint),
                         ("sort", V::Sort),
                         ("tags", V::Tags),
@@ -490,6 +492,18 @@ pub fn check(
         // its provider (or "0", off). Nothing else of `playerpref` is reachable, and the
         // provider is a strict token, never free text.
         "dontstopthemusicsetting" => n == 1,
+        // LMS's Random Mix (part of LMS) on a permitted player: start a mix of a fixed kind,
+        // optionally of one genre by id, or stop it; and ask whether one is running. LMS
+        // reads the mode as a regular expression, so only these words pass; no `genres:`
+        // (free text) and none of Random Mix's server-wide choices (genres, library).
+        "randomplay" => match (c.get(1).copied(), n) {
+            (Some("disable"), 2) => true,
+            (Some(mode), 2 | 3) if RANDOM_MIX_MODES.contains(&mode) => cmd[2..]
+                .iter()
+                .all(|p| p.strip_prefix("genre_id:").is_some_and(positive_id)),
+            _ => false,
+        },
+        "randomplayisactive" => n == 1,
         "playerpref" => n == 3 && c[1] == DSTM_PREF && (c[2] == "?" || dstm_provider_ok(c[2])),
         "favorites" if c.get(1) == Some(&"playlist") => {
             n >= 4
@@ -536,6 +550,21 @@ pub fn check(
         cmd,
         kind,
     })
+}
+
+/// Random Mix's kinds of mix, as its command takes them.
+pub const RANDOM_MIX_MODES: &[&str] = &[
+    "tracks",
+    "albums",
+    "contributors",
+    "artists",
+    "year",
+    "works",
+];
+
+/// A database id: a positive decimal number without leading zeros.
+fn positive_id(s: &str) -> bool {
+    is_uint(s) && !s.starts_with('0')
 }
 
 /// The player preference holding Don't Stop The Music's provider.
@@ -1459,6 +1488,82 @@ mod tests {
         }
         denied(MINE, json!(["playerpref", DSTM_PREF, "A".repeat(65)]));
         denied(MINE, json!(["playerpref", DSTM_PREF, 5]));
+    }
+
+    #[test]
+    fn random_mix_has_a_fixed_grammar() {
+        for cmd in [
+            json!(["randomplay", "tracks"]),
+            json!(["randomplay", "albums"]),
+            json!(["randomplay", "contributors"]),
+            json!(["randomplay", "artists"]),
+            json!(["randomplay", "year"]),
+            json!(["randomplay", "works"]),
+            json!(["randomplay", "tracks", "genre_id:3"]),
+            json!(["randomplay", "albums", "genre_id:123456"]),
+            json!(["randomplay", "disable"]),
+            json!(["randomplayisactive"]),
+        ] {
+            assert_eq!(ok(MINE, cmd.clone()).player, MINE, "{cmd}");
+            assert_eq!(ok(HOME, cmd.clone()).player, HOME, "{cmd}");
+        }
+        // Only on players the caller may control, and never as a server query.
+        denied(OTHER, json!(["randomplay", "tracks"]));
+        denied("", json!(["randomplay", "tracks"]));
+        denied("", json!(["randomplayisactive"]));
+        for cmd in [
+            json!(["randomplay"]),
+            json!(["randomplay", "track"]),
+            json!(["randomplay", "Tracks"]),
+            // LMS greps its list of modes with the mode as a pattern.
+            json!(["randomplay", ".*"]),
+            json!(["randomplay", "track|year"]),
+            json!(["randomplay", "tracks", "genre_id:0"]),
+            json!(["randomplay", "tracks", "genre_id:03"]),
+            json!(["randomplay", "tracks", "genre_id:-1"]),
+            json!(["randomplay", "tracks", "genre_id:1,2"]),
+            json!(["randomplay", "tracks", "genre_id:x"]),
+            json!(["randomplay", "tracks", "genre_id:"]),
+            json!(["randomplay", "tracks", "genre_id:1", "genre_id:2"]),
+            json!(["randomplay", "tracks", "genres:Jazz"]),
+            json!(["randomplay", "tracks", "genres:%2Fsrv"]),
+            json!(["randomplay", "tracks", "library_id:1a2b"]),
+            json!(["randomplay", "tracks", "url:file:///srv/music"]),
+            json!(["randomplay", "disable", "genre_id:3"]),
+            json!(["randomplay", "tracks", 3]),
+            json!(["randomplayisactive", "x"]),
+            json!(["randomplaychoosegenre", "Jazz", 0]),
+            json!(["randomplaygenreselectall", 0]),
+            json!(["randomplaychooselibrary", "1a2b"]),
+            json!(["randomplaygenrelist", 0, 100]),
+            json!(["randomplaylibrarylist", 0, 100]),
+        ] {
+            denied(MINE, cmd.clone());
+            // Not for admins either: the shape itself is refused.
+            let raw = cmd.as_array().unwrap().clone();
+            assert!(
+                check(&Who(Role::Admin), MINE, &raw, &apps()).is_err(),
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn tracks_can_be_listed_by_id_only() {
+        assert!(
+            ok("", json!(["titles", 0, 50, "track_id:1,2,3", "tags:alc"]))
+                .player
+                .is_empty()
+        );
+        for bad in [
+            json!(["titles", 0, 50, "track_id:x"]),
+            json!(["titles", 0, 50, "track_id:1;2"]),
+            json!(["titles", 0, 50, "track_id:-1"]),
+            json!(["titles", 0, 50, "track_id:/srv/music/a.flac"]),
+            json!(["titles", 0, 50, "track_id:1", "track_id:2"]),
+        ] {
+            denied("", bad);
+        }
     }
 
     #[test]

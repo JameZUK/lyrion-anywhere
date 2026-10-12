@@ -37,6 +37,8 @@ pub mod diagnostics;
 pub mod download;
 pub mod events;
 mod flac_strip;
+pub mod history;
+pub mod home;
 pub mod limits;
 pub mod menu_actions;
 pub mod plays;
@@ -44,6 +46,7 @@ mod relay;
 mod rpc;
 pub mod rpc_policy;
 mod session;
+pub mod stations;
 mod status_fix;
 pub mod totp;
 pub mod transcode;
@@ -165,6 +168,9 @@ pub struct Config {
     pub plays_requests_per_minute: usize,
     /// Longest one upload of plays may spend talking to LMS; the rest are answered `retry`.
     pub plays_budget: Duration,
+    /// After a player starts a track, how long to wait before asking LMS which track it is
+    /// (for listening history; LMS needs a moment to move on to it).
+    pub history_lookup_delay: Duration,
 }
 
 impl Default for Config {
@@ -215,6 +221,7 @@ impl Default for Config {
             plays_per_hour: 1000,
             plays_requests_per_minute: 30,
             plays_budget: Duration::from_secs(30),
+            history_lookup_delay: Duration::from_millis(1500),
         }
     }
 }
@@ -249,6 +256,14 @@ pub struct Gateway {
     plays: plays::PlayLimits,
     /// Renames of a device by its own user ([`RENAMES_PER_WINDOW`] per [`RENAME_WINDOW`]).
     renames: plays::Window,
+    /// Requests to `/v1/me/…` per user a minute.
+    me_requests: plays::Window,
+    /// Station batches per user a minute.
+    station_batches: plays::Window,
+    /// Tracks each station served lately (never repeated soon).
+    station_served: stations::Served,
+    /// Pruning of listening history.
+    history_upkeep: history::Upkeep,
 }
 
 /// Renames a device may make of itself per [`RENAME_WINDOW`] (`PATCH /v1/devices/self`).
@@ -308,6 +323,16 @@ impl Gateway {
             analysis: analysis::Analysis::new(&cfg),
             plays: plays::PlayLimits::new(cfg.plays_requests_per_minute, cfg.plays_per_hour),
             renames: plays::Window::new(RENAMES_PER_WINDOW, RENAME_WINDOW),
+            me_requests: plays::Window::new(
+                history::ME_REQUESTS_PER_MINUTE,
+                Duration::from_secs(60),
+            ),
+            station_batches: plays::Window::new(
+                stations::BATCHES_PER_MINUTE,
+                Duration::from_secs(60),
+            ),
+            station_served: Default::default(),
+            history_upkeep: Default::default(),
             cfg,
         })
     }
@@ -436,6 +461,35 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/download/track/{id}", get(download::track))
         .route("/v1/analysis/track/{id}", get(analysis::track))
         .route("/v1/plays", post(plays::record))
+        .route(
+            "/v1/me/history",
+            get(history::get)
+                .delete(history::delete)
+                .patch(history::patch),
+        )
+        .route("/v1/me/shelves/{name}", get(history::shelf))
+        .route(
+            "/v1/me/home",
+            get(home::get).put(home::put).delete(home::reset),
+        )
+        .route(
+            "/v1/me/stations",
+            get(stations::list_stations).post(stations::create_station),
+        )
+        .route(
+            "/v1/me/stations/{id}",
+            axum::routing::delete(stations::delete_station),
+        )
+        .route("/v1/me/stations/{id}/next", post(stations::next))
+        .route(
+            "/v1/me/menus",
+            get(stations::list_menus).post(stations::create_menu),
+        )
+        .route(
+            "/v1/me/menus/{id}",
+            axum::routing::delete(stations::delete_menu),
+        )
+        .route("/v1/me/menus/{id}/open", post(stations::open_menu))
         .route("/v1/events", get(events::events_upgrade))
         .route("/v1/player", get(tunnel::player_upgrade))
         .route("/v1/stream/{session}/{n}", get(relay::stream))
