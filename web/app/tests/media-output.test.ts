@@ -275,3 +275,61 @@ test('a play head far from any audio is left alone; one inside audio is not stuc
 	expect(s.t).toBe(20);
 	out.stop();
 });
+
+// Sync corrections from LMS are applied to the element itself, at once, not after the seconds
+// of audio queued in it.
+test('a sync pause stops the element for that long, without counting as a system pause', async () => {
+	vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+	try {
+		const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors });
+		const external = vi.fn();
+		out.onExternalPause = external;
+		const starting = out.start();
+		await vi.advanceTimersByTimeAsync(1);
+		await starting;
+		const play = out.audio.play as ReturnType<typeof vi.fn>;
+		play.mockClear();
+		out.pauseFor(40);
+		out.audio.dispatchEvent(new Event('pause'));
+		expect(out.audio.pause).toHaveBeenCalled();
+		expect(external).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(39);
+		expect(play).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(1);
+		expect(play).toHaveBeenCalledTimes(1);
+		// Not while LMS has it paused, and never for junk.
+		out.pause();
+		play.mockClear();
+		out.pauseFor(40);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(play).not.toHaveBeenCalled();
+		out.resume();
+		play.mockClear();
+		for (const bad of [NaN, -5, 0, Infinity]) out.pauseFor(bad);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(play).not.toHaveBeenCalled();
+		// A pause from LMS during a sync pause cancels the resume.
+		out.pauseFor(50);
+		out.pause();
+		await vi.advanceTimersByTimeAsync(100);
+		expect(play).not.toHaveBeenCalled();
+		out.stop();
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test('a sync skip moves the play head forward within buffered audio only', async () => {
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors });
+	await out.start();
+	const sb = FakeSourceBuffer.last!;
+	const s = { paused: false, t: 10 };
+	control(out, s);
+	sb.buffered = new FakeBuffered([[5, 18]]);
+	expect(out.skipAhead(250)).toBe(true);
+	expect(s.t).toBeCloseTo(10.25);
+	expect(out.skipAhead(9000)).toBe(false); // beyond what is buffered
+	for (const bad of [NaN, -1, 0, 20_000]) expect(out.skipAhead(bad)).toBe(false);
+	expect(s.t).toBeCloseTo(10.25);
+	out.stop();
+});

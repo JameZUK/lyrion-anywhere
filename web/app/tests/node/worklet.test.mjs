@@ -215,6 +215,105 @@ test('played reports carry the epoch of the last flush', () => {
   assert.equal(after.filter((r) => r.epoch === 3).reduce((n, r) => n + r.played, 0), 256, 'only the new audio');
 });
 
+// --- Sync: what is reported, and corrections applied at the output -------------------------
+
+// Plain arrays (the worklet's come from another realm, which strict deepEqual tells apart).
+const runsOf = (reports) => JSON.parse(JSON.stringify(reports.flatMap((r) => r.runs ?? [])));
+
+test('reports runs of context frames for what it rendered', () => {
+  const { send, render, reports } = loadProcessor();
+  send({ pcm: stereo(300) });
+  for (let i = 0; i < 4; i++) render(128);
+  // Contiguous audio from context frame 0 is one run; the underrun after it is not in it.
+  assert.deepEqual(runsOf(reports), [[0, 300, 0]]);
+});
+
+test('hold renders silence and keeps the queue', () => {
+  const { send, render, reports } = loadProcessor();
+  send({ hold: true });
+  send({ pcm: stereo(500, 1) });
+  assert.ok(render(128).L.every((s) => s === 0));
+  send({ hold: false });
+  const a = render(128);
+  assert.equal(a.L[0], 1, 'nothing was consumed while held');
+  assert.deepEqual(runsOf(reports), []);
+});
+
+// The first audible frame lands exactly on the requested context frame, mid-block.
+test('a timed start begins at the exact context frame', () => {
+  const { send, render, reports } = loadProcessor();
+  send({ pcm: stereo(1000, 1) });
+  send({ startAt: 300 });
+  render(128);
+  render(128); // frames 0..255: silent
+  const c = render(128); // frames 256..383: audio from 300
+  assert.equal(c.L[43], 0);
+  assert.equal(c.L[44], 1, 'first frame at context frame 300');
+  for (let i = 0; i < 20; i++) render(128);
+  assert.equal(runsOf(reports)[0][0], 300);
+});
+
+test('a late timed start drops what would already have played', () => {
+  const { send, render, reports } = loadProcessor();
+  for (let i = 0; i < 4; i++) render(128); // context frame 512
+  send({ pcm: stereo(1000, 0) });
+  send({ startAt: 412 });
+  const a = render(128);
+  assert.equal(a.L[0], 100, 'frame 100 plays at context frame 512');
+  for (let i = 0; i < 10; i++) render(128);
+  const [start, , skipped] = runsOf(reports)[0];
+  assert.deepEqual([start, skipped], [512, 100], 'the dropped frames count as heard with the start');
+});
+
+test('inserted silence delays the audio without consuming it', () => {
+  const { send, render } = loadProcessor();
+  send({ pcm: stereo(1000, 1) });
+  render(128);
+  send({ silence: 200 });
+  assert.ok(render(128).L.every((s) => s === 0));
+  const b = render(128);
+  assert.ok(b.L.slice(0, 72).every((s) => s === 0));
+  assert.equal(b.L[72], 129, 'carries on where it stopped');
+});
+
+test('a skip drops queued audio, and the rest as it arrives', () => {
+  const { send, render, reports } = loadProcessor();
+  send({ pcm: stereo(100, 0) });
+  send({ skip: 150 });
+  render(128);
+  send({ pcm: stereo(300, 100) });
+  const b = render(128);
+  assert.equal(b.L[0], 150);
+  for (let i = 0; i < 5; i++) render(128);
+  const counted = reports.reduce((n, r) => n + r.played, 0);
+  assert.equal(counted, 400, 'skipped frames are reported with the played ones');
+});
+
+test('a flush cancels corrections meant for the old audio', () => {
+  const { send, render } = loadProcessor();
+  send({ pcm: stereo(1000, 1) });
+  send({ skip: 500 });
+  send({ silence: 500 });
+  send({ flush: true, epoch: 1 });
+  send({ pcm: stereo(100, 7) });
+  assert.equal(render(128).L[0], 7);
+});
+
+// Security/robustness: junk corrections are ignored, never NaN or a stuck output.
+test('hostile correction messages are ignored', () => {
+  const { send, render } = loadProcessor();
+  for (const bad of [-1, 1.5, NaN, Infinity, '100', null, {}, 1e12]) {
+    send({ startAt: bad });
+    send({ silence: bad });
+    send({ skip: bad });
+  }
+  send({ hold: 'yes' });
+  send({ pcm: stereo(256, 1) });
+  const a = render(128);
+  assert.equal(a.L[0], 1, 'still playing: nothing junk took effect');
+  for (const s of a.L) assert.ok(Number.isFinite(s));
+});
+
 test('worker messages that are not objects are ignored', () => {
   const { send, render } = loadProcessor();
   send(null);

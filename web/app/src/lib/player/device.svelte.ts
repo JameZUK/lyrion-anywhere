@@ -6,6 +6,7 @@ import { api, session } from '$lib/state/app.svelte';
 import { KeepAlive, PersistentLog, describeLifecycle } from './background';
 import { canPlayHere, detect } from './capabilities';
 import { MediaOutput, Timeline } from './media-output';
+import { PlayheadSmoother, outputClock } from './output-clock';
 import { MEDIA_TYPE, MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
 import { Reporter, buildReport, diagnosticsSender } from './diagnostics';
 import { chooseVariant, loadCached, mediaFormatFor, mimeFor, runSelfTest, saveCached, type SelfTest } from './selftest';
@@ -30,6 +31,12 @@ const DEVICE_LOCK = 'anywhere-device-player';
 
 /** While LMS's volume is held at 100% here, ask again at most this often. */
 const HOLD_FULL_EVERY_MS = 3000;
+/** Web Audio: tell the worker when the output is heard this often (for sync). */
+const CLOCK_EVERY_MS = 250;
+/** Media element: read the play head this often (the background may slow it to 1 s). */
+const POSITION_EVERY_MS = 100;
+/** A smoothed play head is never put further ahead of the element's own than this (s). */
+const SMOOTH_MAX_LEAD_S = 0.03;
 
 export type DeviceState = 'off' | 'starting' | 'connected' | 'reconnecting' | 'stopped' | 'error';
 
@@ -86,6 +93,11 @@ class DevicePlayer {
 	/** Media mode: the next timeline position from the worker follows a flush. */
 	#seekAfterFlush = false;
 	#restartTimer: ReturnType<typeof setInterval> | undefined;
+	/** Web Audio: posts the output clock to the worker. */
+	#clockTimer: ReturnType<typeof setInterval> | undefined;
+	/** Media element: a synced start waiting for its time. */
+	#startTimer: ReturnType<typeof setTimeout> | undefined;
+	#smoother = new PlayheadSmoother();
 
 	#worker: Worker | null = null;
 	#ctx: AudioContext | null = null;
@@ -395,7 +407,7 @@ class DevicePlayer {
 				if (out.audio.paused) this.#resumeOnNextTap();
 				this.#lastPos = 0;
 				this.#timeline = new Timeline();
-				this.#posTimer = setInterval(() => this.#reportPosition(), 250);
+				this.#posTimer = setInterval(() => this.#reportPosition(), POSITION_EVERY_MS);
 			} else {
 				// Inside the tap: a playing media element helps keep the page alive in the background.
 				const kept = await this.#keepAlive.start();
@@ -421,7 +433,11 @@ class DevicePlayer {
 			};
 			w.postMessage({ cmd: 'start', token: session.token, port, mode: choice.mode, variant }, port ? [port] : []);
 			this.#history.active = true;
-			if (port) w.postMessage({ cmd: 'rate-ready', rate: 44100 });
+			if (port) {
+				w.postMessage({ cmd: 'rate-ready', rate: 44100 });
+				this.#postClock();
+				this.#clockTimer = setInterval(() => this.#postClock(), CLOCK_EVERY_MS);
+			}
 			// Pass renewed access tokens to the worker; stop if signed out.
 			this.#unsubscribe = session.subscribe((s) => {
 				if (!s) this.stop();
@@ -488,6 +504,9 @@ class DevicePlayer {
 		this.#keepAlive.stop();
 		clearInterval(this.#posTimer);
 		clearInterval(this.#restartTimer);
+		clearInterval(this.#clockTimer);
+		clearTimeout(this.#startTimer);
+		this.#smoother.reset();
 		this.#seekAfterFlush = false;
 		this.#elementVolume?.cancel();
 		this.#elementVolume = null;
@@ -577,6 +596,7 @@ class DevicePlayer {
 			if (this.#ctx?.state !== 'running') this.#resumeOnNextTap();
 			this.#worker?.postMessage({ cmd: 'start-sink', port }, [port]);
 			this.#worker?.postMessage({ cmd: 'rate-ready', rate });
+			this.#postClock();
 		});
 		this.#audioQueue = job.catch((e) => {
 			if (gen !== this.#gen) return;
@@ -599,19 +619,40 @@ class DevicePlayer {
 		}, 20);
 	}
 
-	/** Media mode: tell the core how much the element has played. */
+	/**
+	 * Web Audio: tell the worker which context time is heard when, so it reports what is
+	 * audible rather than what has been rendered (see output-clock.ts).
+	 */
+	#postClock() {
+		const ctx = this.#ctx;
+		const w = this.#worker;
+		if (!ctx || !w || ctx.state !== 'running') return;
+		const c = outputClock(ctx, performance.timeOrigin, performance.now());
+		if (c) w.postMessage({ cmd: 'clock', ...c });
+	}
+
+	/**
+	 * Media mode: tell the core how much the element has played, and when that was read. The
+	 * play head is smoothed while playing (see output-clock.ts); a report of no new frames
+	 * still says where it is now.
+	 */
 	#reportPosition() {
 		const media = this.#media;
 		if (!media || !this.#worker) return;
-		const t = media.position;
+		const raw = media.position;
 		const now = performance.now();
+		const at = performance.timeOrigin + now;
+		let t = raw;
+		if (media.audio.paused) this.#smoother.reset();
+		else t = Math.min(this.#smoother.update(raw, at / 1000), raw + SMOOTH_MAX_LEAD_S);
 		if (t > this.#lastPos) {
 			const frames = this.#timeline.frames(this.#lastPos, t);
 			this.#lastPos = t;
 			this.#advancedAt = now;
 			this.#drainedSent = false;
-			if (frames > 0) this.#worker.postMessage({ cmd: 'played', frames });
+			this.#worker.postMessage({ cmd: 'played', frames, at });
 		} else {
+			this.#worker.postMessage({ cmd: 'played', frames: 0, at });
 			// Re-arm once more audio has been appended (e.g. the final partial frame).
 			if (this.#drainedSent && media.bufferedEnd > this.#drainedAtEnd + 1e-3) this.#drainedSent = false;
 			if (!this.#drainedSent && media.atEnd && now - this.#advancedAt > 1000) {
@@ -646,8 +687,22 @@ class DevicePlayer {
 		if (m.init instanceof Uint8Array) media.append(m.init);
 		if (m.segment instanceof Uint8Array) media.append(m.segment);
 		if (m.pause) media.pause();
-		if (m.play) media.resume();
+		if (m.play) {
+			clearTimeout(this.#startTimer);
+			media.resume();
+		}
+		// LMS's sync corrections, applied to the element (see MediaOutput).
+		if (typeof m.pauseFor === 'number') media.pauseFor(m.pauseFor);
+		if (typeof m.skip === 'number' && media.skipAhead(m.skip)) this.#smoother.reset();
+		if (typeof m.startAt === 'number' && Number.isFinite(m.startAt)) {
+			// A synced start: play at that moment, not at the worker's next tick after it.
+			const wait = m.startAt - (performance.timeOrigin + performance.now());
+			clearTimeout(this.#startTimer);
+			if (wait > 0 && wait < 30_000) this.#startTimer = setTimeout(() => this.#media === media && media.resume(), wait);
+		}
 		if (m.flush) {
+			clearTimeout(this.#startTimer);
+			this.#smoother.reset();
 			this.#reportPosition();
 			const at = await media.flush();
 			this.#lastPos = at;
