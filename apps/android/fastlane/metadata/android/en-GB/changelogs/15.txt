@@ -1,0 +1,1 @@
+Streaming quality: choose Original, High (Opus 160) or Data saver (Opus 96) separately for Wi-Fi and mobile data; by default High on mobile data. Your server re-encodes lossless tracks when it offers this. Fixed: some Opus audio, including offline Opus downloads, could be decoded wrongly on sharp transients.
