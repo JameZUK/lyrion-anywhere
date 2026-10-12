@@ -4,7 +4,7 @@
 //! network (WebSocket + fetch) and feeds bytes in; an AudioWorklet plays the PCM pulled
 //! out and reports back how many frames it has played.
 
-use anywhere_core::player::{Action, Player, PlayerConfig};
+use anywhere_core::player::{Action, OutputCorrection, Player, PlayerConfig};
 use anywhere_core::proto::parse_mac;
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
@@ -150,6 +150,59 @@ impl WasmPlayer {
     /// Frames the AudioWorklet has actually played.
     pub fn played(&mut self, frames: f64) {
         self.inner.played(frames.max(0.0) as u64);
+    }
+
+    /// `frames` more have become audible, and the total was exact at `at_ms` (the clock
+    /// passed as `now_ms` elsewhere). Elapsed time in STATs is extrapolated from there (see
+    /// `Player::presented`).
+    pub fn presented(&mut self, frames: f64, at_ms: f64) {
+        let frames = if frames.is_finite() {
+            frames.max(0.0)
+        } else {
+            0.0
+        };
+        let at = if at_ms.is_finite() {
+            at_ms.max(0.0)
+        } else {
+            0.0
+        };
+        self.inner.presented(frames as u64, at as u64);
+    }
+
+    /// The worker applies LMS's sync corrections at its output (see
+    /// `Player::set_output_corrections`).
+    pub fn set_output_corrections(&mut self, on: bool) {
+        self.inner.set_output_corrections(on);
+    }
+
+    /// Corrections to apply at the output, as plain objects: `{type:"pause", ms}`,
+    /// `{type:"skip", ms}`, `{type:"start", at}` (`at` on the `now_ms` clock).
+    pub fn take_corrections(&mut self) -> Array {
+        let out = Array::new();
+        for c in self.inner.take_corrections() {
+            let o = Object::new();
+            match c {
+                OutputCorrection::Pause { ms } => {
+                    set(&o, "type", &"pause".into());
+                    set(&o, "ms", &JsValue::from_f64(f64::from(ms)));
+                }
+                OutputCorrection::Skip { ms } => {
+                    set(&o, "type", &"skip".into());
+                    set(&o, "ms", &JsValue::from_f64(f64::from(ms)));
+                }
+                OutputCorrection::StartAt { at_ms } => {
+                    set(&o, "type", &"start".into());
+                    set(&o, "at", &JsValue::from_f64(at_ms as f64));
+                }
+            }
+            out.push(&o);
+        }
+        out
+    }
+
+    /// When a pending timed start is due (on the `now_ms` clock), or `undefined`.
+    pub fn start_due(&self) -> Option<f64> {
+        self.inner.start_due().map(|t| t as f64)
     }
 
     pub fn status_json(&self) -> String {

@@ -117,3 +117,48 @@ fn segmenter_produces_init_and_media_segments() {
     s.set_rate(96_000);
     assert_eq!(s.rate(), 96_000);
 }
+
+fn strm_arg(command: u8, arg: u32) -> Vec<u8> {
+    let s = Strm {
+        command,
+        autostart: b'0',
+        format: b'm',
+        pcm_sample_size: b'?',
+        pcm_sample_rate: b'?',
+        pcm_channels: b'?',
+        pcm_endianness: b'?',
+        threshold: 0,
+        spdif_enable: 0,
+        transition_period: 0,
+        transition_type: b'0',
+        flags: 0,
+        output_threshold: 0,
+        slaves: 0,
+        replay_gain: arg,
+        server_port: 0,
+        server_ip: 0,
+        request: Vec::new(),
+    };
+    encode_server_frame(*b"strm", &s.encode_payload())
+}
+
+/// Sync corrections reach the worker as plain objects, and a timed start's time is on the
+/// worker's own clock.
+#[wasm_bindgen_test]
+fn sync_corrections_are_handed_to_the_worker() {
+    let mut p = WasmPlayer::new("02:00:00:00:00:01", "Web", "flc").unwrap();
+    p.set_output_corrections(true);
+    p.on_control(&strm_arg(b'a', 40), 1000.0).unwrap();
+    p.on_control(&strm_arg(b'u', 1250), 1000.0).unwrap();
+    let c = p.take_corrections();
+    assert_eq!(c.length(), 2);
+    assert_eq!(get(&c.get(0), "type").as_string().unwrap(), "skip");
+    assert_eq!(get(&c.get(0), "ms").as_f64().unwrap(), 40.0);
+    assert_eq!(get(&c.get(1), "type").as_string().unwrap(), "start");
+    assert_eq!(get(&c.get(1), "at").as_f64().unwrap(), 1250.0);
+    assert_eq!(p.start_due(), Some(1250.0));
+    assert_eq!(p.take_corrections().length(), 0);
+    // Junk numbers from JavaScript never panic.
+    p.presented(f64::NAN, f64::INFINITY);
+    p.presented(-5.0, -1.0);
+}

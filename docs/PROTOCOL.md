@@ -359,6 +359,75 @@ Only if LMS won't group the two (step 4 never succeeds). It can move **library t
 
 Loading always starts T playing, whatever S was doing.
 
+## Synchronised playback: how our players keep time
+
+Our players (Android, and browsers) take part in LMS sync groups alongside Squeezeboxes and squeezelite. LMS keeps a group together using three things, and our players do each the way a hardware player does (behaviour checked against the LMS 9.0 source: `Slim::Player::StreamingController`, `Squeezebox2`, `Player`).
+
+**1. Every STAT says what is audible, and when.** We advertise `AccuratePlayPoints=1`, so LMS uses every STAT's `(jiffies, elapsed_milliseconds)` pair as it is: no averaging. It turns the jiffies into server time with an epoch learnt from STAT arrival times (the earliest arrival seen, adjusted for drift). It then works out when each player's track apparently started (`server time − elapsed`).
+- **Jiffies** are milliseconds on the player's monotonic clock: `CLOCK_MONOTONIC` on Android, `performance.now()` in the browser worker. Audio timing uses the same clock.
+- **Elapsed** counts frames as they are **presented** (heard), not as they are handed to the output. Before 2026-10-12 it counted handed-over frames, so a player sounded late by its output latency: 10–40 ms through a phone's speaker, 150–300 ms over Bluetooth, tens of ms in Web Audio, seconds in iOS media-element mode. LMS never saw that, so never corrected it.
+- **Each STAT's elapsed is extrapolated to its own jiffies.** The host reports the frames presented together with the moment that count was exact (`Player::presented(frames, at_ms)`). A STAT sent later adds the time since (at most 1 s, never more than the host holds, and not while paused or in a sync pause).
+
+**2. A timed start.** For a group, LMS sends `strm s` with autostart off. Each player buffers and answers `STMl`. Once every player has, LMS sends each one `strm u` whose 32-bit argument is a start time in that player's jiffies: by default 200 ms ahead (the server's *Synchronised players startup delay*), minus that player's *Player start delay* and *Player audio delay*.
+- Our players pre-roll audio into the output while they wait, held silent.
+- The output then places the first frame so it is **heard** at that time, to the sample: on Android, the device frame is worked out from the output timestamp; in Web Audio, the context frame.
+- If the output's latency is longer than the time left (Bluetooth against LMS's 200 ms), the start can't be made. The player then starts at once and drops the audio that should already have played, so it is still in step.
+- A start time in the past, or more than 30 s ahead (a corrupt or hostile frame), starts at once.
+
+**3. Corrections.** About once a second LMS compares the players' apparent start times. If the gap is at least 10 ms (and at least the player's *Minimum synchronisation adjustment*), it corrects the player:
+- `strm a` (skip ahead N ms) for a player that is behind;
+- `strm p` with an interval (pause N ms) for one that is ahead, when the reference player can't skip.
+
+Our players apply both **at the output stage**, at once:
+- a pause inserts N ms of silence, consuming nothing;
+- a skip drops the next N ms of queued audio.
+
+Applied anywhere earlier, they would only take effect once the audio queued ahead of the output (400 ms on Android, 300 ms in Web Audio, about 8 s in a media element) had played. A pause shorter than that queue was lost entirely. Intervals over 10 s are capped.
+
+### Per platform
+
+| | Position heard | Timed start | Pause, skip |
+|---|---|---|---|
+| Android (AAudio) | `AAudioStream_getTimestamp(CLOCK_MONOTONIC)` maps the device frame being heard to the moment. The ring buffer's record of which frames went out where maps that back to the audio. Bluetooth latency is included where Android reports it (Android 10+, most A2DP devices). Until the stream runs: frames read by the device. | The ring holds until the device frame heard at the start time, then starts mid-callback | In the ring's consumer (the audio callback) |
+| Android (host-pulled `AudioTrack`) | Frames handed over (no timestamp yet) | The ring starts at the frame handed over at the start time (no latency allowance) | In the ring |
+| Web Audio | The worklet reports rendered context frames. The page sends `getOutputTimestamp()` (or `currentTime − outputLatency − baseLatency`) every 250 ms. | The worklet starts at the context frame heard at that time | In the worklet |
+| Media element (iOS) | The element's `currentTime` on the appended timeline, read every 100 ms and smoothed against the wall clock, with the time it was read | `play()` on a timer at that time | Paused for N ms; skip moves the play head within buffered audio |
+
+**Media-element limits:** the browser doesn't say how long `play()` takes to become audible, nor the route's latency (AirPlay, Bluetooth), so neither is compensated. Expect the same offset LMS has always seen from such a player, plus `play()`'s start-up (tens of ms, varying). LMS's corrections still keep it from drifting. If it sounds consistently late, set *Player audio delay* for that player (below).
+
+### LMS settings for our players
+
+*Settings › Player › (the player) › Synchronise*. These are LMS's own, per player. **The plugin changes none of them**: with the position reported as heard, LMS's defaults are right for our players, and changing preferences behind the owner's back (or a hardware player's by mistake) would be worse.
+
+| Setting (LMS pref) | Default | For our players |
+|---|---|---|
+| Maintain synchronisation (`maintainSync`) | on | Leave on. |
+| Minimum synchronisation adjustment (`minSyncAdjust`) | 10 ms | Leave. Raise it (to 20–30 ms) only for a browser in media-element mode if corrections are too frequent. |
+| Player audio delay (`playDelay`) | 0 | Leave at 0: our players already allow for their output latency. Set it only for latency the platform doesn't report (a media element on AirPlay, or Bluetooth on a phone that doesn't report it). If the player sounds late, set its lateness in ms. |
+| Player start delay (`startDelay`) | 0 | Leave at 0: a start our players can't make is caught up exactly. |
+| Network packet latency (`packetLatency`) | 2 ms | Leave. |
+| Synchronised players startup delay (server, `syncStartDelay`) | 200 ms | Leave. Raising it lets a Bluetooth phone start without dropping its first few hundred ms. |
+
+### Measured (simulation)
+
+`mobile/tests/sync.rs` runs two players against a fake LMS that does what LMS does:
+- epoch learning from STAT arrivals, with its drift adjustment;
+- the timed start;
+- skip corrections.
+
+It uses the real core, ring buffer and timestamp maths, in front of simulated outputs. They have latency, sample-clock drift (up to ±120 ppm), monotonic clock drift against the server, timestamp jitter, tick jitter and a jittery network with spikes. Each frame carries its own number, so what each output presents is known exactly. Against a hardware player (2 ms):
+
+| Player | First moment both play | Settled, mean | Settled, worst |
+|---|---|---|---|
+| Phone speaker (30 ms) | ≤ 5 ms | 0.5–6 ms | ≤ 7 ms |
+| Bluetooth (250 ms) | ≤ 5 ms | 1–5 ms | ≤ 7 ms |
+| Web Audio-like (60 ms, jittery) | ≤ 11 ms | 1–2 ms | ≤ 3 ms |
+| Speaker vs Bluetooth phone, both drifting | 1 ms | 3 ms | 6 ms |
+| *Before: Bluetooth, handed-over frames* | *264 ms* | *256 ms* | *264 ms* |
+| *Before: speaker, handed-over frames* | *42 ms* | *31 ms* | *36 ms* |
+
+What remains is mostly LMS's own estimate of each player's clock (the network delay of the fastest STAT it has seen). These are simulated figures. On real devices, add the platform timestamp's own error: small on Android's speaker and wired outputs; on Bluetooth, it depends on what the headset reports.
+
 ## Diagnostics (`POST /v1/diagnostics`)
 
 A device reports how it plays, for troubleshooting by an admin: browser capabilities, the chosen playback mode and why, player status, and its recent connection log. Bearer token required.

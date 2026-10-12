@@ -17,10 +17,11 @@ use std::time::{Duration, Instant};
 
 use anywhere_core::decode::SourceFormat;
 use anywhere_core::dsp::levelling::Measurement;
-use anywhere_core::player::{Player, TrackAudio};
+use anywhere_core::player::{OutputCorrection, Player, TrackAudio};
 
 use super::OutputRoute;
 use super::SignalPathInfo;
+use super::clock;
 use super::negotiate::{
     self, MixerOffer, NotBitPerfect, OutputNegotiator, OutputOffers, PcmEncoding, Plan, RouteState,
     SourceSpec,
@@ -133,6 +134,8 @@ pub(crate) struct AudioPath {
     error: Option<String>,
     /// Crossfades between tracks (off by default: then nothing passes through it).
     pub transitions: Transitions,
+    /// The ring position last reported as heard (positions only move forward).
+    heard_pos: u64,
 }
 
 /// What the transitions ask about tracks, from the engine's lookups and the pipeline.
@@ -185,6 +188,7 @@ impl AudioPath {
             signal_dirty: false,
             error: None,
             transitions: Transitions::new(transitions),
+            heard_pos: 0,
         })
     }
 
@@ -203,14 +207,72 @@ impl AudioPath {
         self.planned_seq = None;
     }
 
-    /// Frames the output has consumed since the last call.
+    /// Source frames that have become audible since the last call.
     pub(crate) fn played(&mut self) -> u64 {
-        let pos = self.out.ring.read_pos();
+        self.played_at(clock::mono_ns())
+    }
+
+    /// Source frames that have become audible since the last call, as of monotonic time
+    /// `now_ns`: what the output has presented by then (from its timestamp), not just what
+    /// it has been handed. Without a timestamp, what it has been handed.
+    pub(crate) fn played_at(&mut self, now_ns: i64) -> u64 {
+        let ring = &self.out.ring;
+        let dev = self.heard_frame(now_ns);
+        let pos = ring.presented_pos(dev).max(self.heard_pos);
+        self.heard_pos = pos;
         self.pipeline.played(pos)
+    }
+
+    /// The device frame being heard at `now_ns`.
+    fn heard_frame(&self, now_ns: i64) -> u64 {
+        let written = self.out.ring.device_frames();
+        match (self.output.timestamp(), self.pipeline.out_rate()) {
+            (Some(ts), Some(rate)) if ts.usable(now_ns) => {
+                clock::frame_at(ts, rate, now_ns, written)
+            }
+            _ => written,
+        }
+    }
+
+    /// Apply one of LMS's sync corrections at the output: `host_ns` converts the core's
+    /// host time (ms) to monotonic ns. Returns true if a timed start was armed (the ring then
+    /// releases itself at the right frame; until then the engine must leave the hold alone).
+    pub(crate) fn apply_correction(
+        &mut self,
+        c: OutputCorrection,
+        now_ns: i64,
+        host_ns: impl Fn(u64) -> i64,
+    ) -> bool {
+        let ring = &self.out.ring;
+        let Some(rate) = self.pipeline.out_rate() else {
+            return false; // no output yet: the core's own timing applies
+        };
+        let frames = |ms: u32| u64::from(ms) * u64::from(rate) / 1000;
+        match c {
+            OutputCorrection::Pause { ms } => ring.insert_silence(frames(ms)),
+            OutputCorrection::Skip { ms } => ring.skip(frames(ms)),
+            OutputCorrection::StartAt { at_ms } => {
+                let target_ns = host_ns(at_ms);
+                let target = match self.output.timestamp() {
+                    Some(ts) if ts.usable(now_ns) => clock::frame_for(ts, rate, target_ns),
+                    // No timestamp yet: assume what is handed over is heard at once.
+                    _ => {
+                        let ahead = (i128::from(target_ns) - i128::from(now_ns)) * i128::from(rate)
+                            / 1_000_000_000;
+                        (i128::from(ring.device_frames()) + ahead).clamp(0, i128::from(i64::MAX))
+                            as i64
+                    }
+                };
+                ring.start_at(target.max(0) as u64);
+                return true;
+            }
+        }
+        false
     }
 
     /// Drop audio queued between the source and the speaker (a flush, a skip, a seek).
     pub(crate) fn drop_queued_audio(&mut self) {
+        self.out.ring.cancel_start();
         self.producer.discard_all();
         self.pipeline.reset();
         self.transitions.reset();

@@ -15,6 +15,16 @@
 //! - **Hold:** while held, the consumer outputs silence and consumes nothing (pause).
 //! - **Gain:** an optional factor (ducking) applied on the way out; exactly 1.0 is a true
 //!   bypass, so the samples stay bit-identical.
+//! - **Device clock:** the consumer counts every frame it hands the output (audio or
+//!   silence). It records, for each read, where the audio landed on that count and which ring
+//!   position it came from. Given the device frame being heard now (from the output's
+//!   timestamp), [`Ring::presented_pos`] then says how far into the ring is audible. That is
+//!   what playback position reports, rather than what has merely been handed over.
+//! - **Sync corrections** are applied by the consumer, at the output, to the sample:
+//!   - a timed start ([`Ring::start_at`]): silence while held until a given device frame,
+//!     then audio from exactly that frame;
+//!   - a pause ([`Ring::insert_silence`]): N frames of silence, consuming nothing;
+//!   - a skip ([`Ring::skip`]): N frames of queued audio dropped.
 //!
 //! One producer and one consumer at a time are enforced at run time: each handle can be
 //! taken once and is given back when dropped.
@@ -26,6 +36,22 @@ use anywhere_core::dsp::pcm;
 
 /// Channels per frame (the core's output is always stereo).
 pub const CHANNELS: usize = 2;
+
+/// Reads remembered for mapping device frames back to ring positions. At 10 ms a read
+/// this covers five seconds, far more than any output's latency.
+const HISTORY: usize = 512;
+/// No timed start armed.
+const NO_START: u64 = u64::MAX;
+/// A late timed start drops at most this many frames to catch up (about a second).
+const MAX_CATCH_UP_FRAMES: u64 = 48_000;
+
+/// One read by the consumer: `frames` frames of audio from ring position `pos` (samples),
+/// placed from device frame `dev`. (Silence before or after the audio is not recorded.)
+struct Read {
+    dev: AtomicU64,
+    pos: AtomicU64,
+    frames: AtomicU64,
+}
 
 pub struct Ring {
     buf: Box<[AtomicU32]>,
@@ -46,6 +72,21 @@ pub struct Ring {
     underrun_frames: AtomicU64,
     producer_taken: AtomicBool,
     consumer_taken: AtomicBool,
+    /// Frames handed to the output device (audio and silence) since the device clock was
+    /// last reset (consumer-owned).
+    dev_frames: AtomicU64,
+    /// Held audio starts at this device frame ([`NO_START`]: no timed start).
+    start_at: AtomicU64,
+    /// Frames of silence still to insert (a pause correction).
+    silence: AtomicU64,
+    /// Samples of audio still to drop (a skip correction).
+    skip: AtomicU64,
+    /// Frames dropped because a timed start came too late to make (diagnostics).
+    late_frames: AtomicU64,
+    /// The consumer's recent reads, and how many have been recorded (seqlock-style: an
+    /// entry is valid while the count has not moved [`HISTORY`] past it).
+    history: Box<[Read]>,
+    reads: AtomicU64,
 }
 
 impl Ring {
@@ -66,7 +107,112 @@ impl Ring {
             underrun_frames: AtomicU64::new(0),
             producer_taken: AtomicBool::new(false),
             consumer_taken: AtomicBool::new(false),
+            dev_frames: AtomicU64::new(0),
+            start_at: AtomicU64::new(NO_START),
+            silence: AtomicU64::new(0),
+            skip: AtomicU64::new(0),
+            late_frames: AtomicU64::new(0),
+            history: (0..HISTORY)
+                .map(|_| Read {
+                    dev: AtomicU64::new(0),
+                    pos: AtomicU64::new(0),
+                    frames: AtomicU64::new(0),
+                })
+                .collect(),
+            reads: AtomicU64::new(0),
         })
+    }
+
+    /// Frames handed to the output device since its clock was reset.
+    pub fn device_frames(&self) -> u64 {
+        self.dev_frames.load(Ordering::Acquire)
+    }
+
+    /// The ring position (in samples) audible when the output presents device frame `dev`:
+    /// everything before it has been heard. Device frames beyond what was handed over count
+    /// as the last frame handed over. Positions in a gap (silence) are the end of the audio
+    /// before it. A frame older than the history remembers counts as the oldest remembered.
+    pub fn presented_pos(&self, dev: u64) -> u64 {
+        let count = self.reads.load(Ordering::Acquire);
+        let oldest = count.saturating_sub(HISTORY as u64 - 1);
+        let mut best = None;
+        let mut i = count;
+        while i > oldest {
+            i -= 1;
+            let e = &self.history[(i % HISTORY as u64) as usize];
+            let (d, p, n) = (
+                e.dev.load(Ordering::Acquire),
+                e.pos.load(Ordering::Acquire),
+                e.frames.load(Ordering::Acquire),
+            );
+            // Overwritten while we read it: everything older is gone too.
+            if self.reads.load(Ordering::Acquire) >= i + HISTORY as u64 {
+                break;
+            }
+            best = Some(p + (dev.saturating_sub(d)).min(n) * CHANNELS as u64);
+            if d <= dev {
+                return best.unwrap_or(p);
+            }
+        }
+        best.unwrap_or_else(|| self.read_pos())
+    }
+
+    /// Restart the device clock at 0 (a new output stream, whose frame count starts at 0).
+    /// Only while no output is reading (between taking the consumer and starting the stream).
+    pub fn reset_device_clock(&self) {
+        self.dev_frames.store(0, Ordering::Release);
+        self.start_at.store(NO_START, Ordering::Release);
+        let pos = self.read.load(Ordering::Acquire);
+        let count = self.reads.load(Ordering::Acquire);
+        let e = &self.history[(count % HISTORY as u64) as usize];
+        e.dev.store(0, Ordering::Release);
+        e.pos.store(pos, Ordering::Release);
+        e.frames.store(0, Ordering::Release);
+        self.reads.store(count + 1, Ordering::Release);
+    }
+
+    /// Hold, then start the audio exactly at device frame `frame` (a timed start). The
+    /// consumer releases the hold itself at that frame. If the frame has already been handed
+    /// over when it is next read, the audio that should have played since is dropped (up to
+    /// about a second) and the rest starts at once, still in step.
+    pub fn start_at(&self, frame: u64) {
+        self.start_at
+            .store(frame.min(NO_START - 1), Ordering::Release);
+        self.hold.store(true, Ordering::Release);
+    }
+
+    /// Forget a timed start that has not happened yet (the hold stays as it is).
+    pub fn cancel_start(&self) {
+        self.start_at.store(NO_START, Ordering::Release);
+    }
+
+    /// A timed start is armed and has not happened yet.
+    pub fn start_pending(&self) -> bool {
+        self.start_at.load(Ordering::Acquire) != NO_START
+    }
+
+    /// Insert `frames` frames of silence before the next audio (a pause correction).
+    pub fn insert_silence(&self, frames: u64) {
+        self.silence.fetch_add(frames, Ordering::AcqRel);
+    }
+
+    /// Drop the next `frames` frames of audio as they become available (a skip correction).
+    pub fn skip(&self, frames: u64) {
+        self.skip
+            .fetch_add(frames * CHANNELS as u64, Ordering::AcqRel);
+    }
+
+    /// Corrections not yet applied: (frames of silence, frames to skip).
+    pub fn pending_corrections(&self) -> (u64, u64) {
+        (
+            self.silence.load(Ordering::Acquire),
+            self.skip.load(Ordering::Acquire) / CHANNELS as u64,
+        )
+    }
+
+    /// Frames dropped so far because a timed start came too late.
+    pub fn late_frames(&self) -> u64 {
+        self.late_frames.load(Ordering::Acquire)
     }
 
     /// Capacity in samples.
@@ -181,6 +327,9 @@ impl Producer {
     pub fn discard_all(&mut self) -> u64 {
         let w = self.ring.write.load(Ordering::Relaxed);
         self.ring.discard_to.store(w, Ordering::Release);
+        // Corrections were for the audio just dropped.
+        self.ring.skip.store(0, Ordering::Release);
+        self.ring.silence.store(0, Ordering::Release);
         w
     }
 }
@@ -238,6 +387,8 @@ impl Consumer {
     fn read_map(&mut self, len: usize, mut put: impl FnMut(usize, f32)) -> usize {
         let ring = &*self.ring;
         let len = len - len % CHANNELS;
+        let frames = (len / CHANNELS) as u64;
+        let dev = ring.dev_frames.load(Ordering::Relaxed);
         // Apply a discard first (even while held), so the producer gets the space back.
         let mut r = ring.read.load(Ordering::Relaxed);
         let discard = ring.discard_to.load(Ordering::Acquire);
@@ -245,29 +396,91 @@ impl Consumer {
             r = discard;
             ring.read.store(r, Ordering::Release);
         }
-        if ring.hold.load(Ordering::Acquire) {
-            (0..len).for_each(|i| put(i, 0.0));
-            return 0;
-        }
         let w = ring.write.load(Ordering::Acquire);
+        // Frames of silence before the audio in this read.
+        let mut lead = 0u64;
+        if ring.hold.load(Ordering::Acquire) {
+            let start = ring.start_at.load(Ordering::Acquire);
+            if start == NO_START || start >= dev + frames {
+                (0..len).for_each(|i| put(i, 0.0));
+                record(ring, dev, r, 0, frames);
+                return 0;
+            }
+            if start >= dev {
+                lead = start - dev;
+            } else {
+                // Too late for the requested frame: drop what would already have played.
+                let late = (dev - start).min(MAX_CATCH_UP_FRAMES);
+                let drop = (late * CHANNELS as u64).min(w.saturating_sub(r));
+                r += drop;
+                ring.late_frames
+                    .fetch_add(drop / CHANNELS as u64, Ordering::Relaxed);
+            }
+            ring.start_at.store(NO_START, Ordering::Release);
+            ring.hold.store(false, Ordering::Release);
+        }
+        // A pause correction: silence first, consuming nothing.
+        let silence = ring.silence.load(Ordering::Acquire);
+        if silence > 0 {
+            let take = silence.min(frames - lead);
+            if ring
+                .silence
+                .compare_exchange(silence, silence - take, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                lead += take;
+            }
+        }
+        // A skip correction: drop queued audio (as much as is here; the rest next time).
+        let skip = ring.skip.load(Ordering::Acquire);
+        if skip > 0 {
+            let take = skip.min(w.saturating_sub(r));
+            let take = take - take % CHANNELS as u64;
+            if take > 0
+                && ring
+                    .skip
+                    .compare_exchange(skip, skip - take, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                r += take;
+            }
+        }
+        let lead_samples = lead as usize * CHANNELS;
         let avail = w.saturating_sub(r) as usize;
-        let n = avail.min(len);
+        let n = avail.min(len - lead_samples);
+        (0..lead_samples).for_each(|i| put(i, 0.0));
         let gain = f32::from_bits(ring.gain.load(Ordering::Acquire));
         for i in 0..n {
             let slot = ((r + i as u64) & ring.mask) as usize;
             let s = f32::from_bits(ring.buf[slot].load(Ordering::Relaxed));
             // Exactly 1.0 leaves the bits untouched (no multiplication at all).
-            put(i, if gain == 1.0 { s } else { s * gain });
+            put(lead_samples + i, if gain == 1.0 { s } else { s * gain });
         }
-        (n..len).for_each(|i| put(i, 0.0));
+        (lead_samples + n..len).for_each(|i| put(i, 0.0));
         ring.read.store(r + n as u64, Ordering::Release);
-        if n < len && ring.expect_data.load(Ordering::Acquire) {
+        record(ring, dev + lead, r, (n / CHANNELS) as u64, frames);
+        if lead_samples + n < len && ring.expect_data.load(Ordering::Acquire) {
             ring.underruns.fetch_add(1, Ordering::Relaxed);
-            ring.underrun_frames
-                .fetch_add(((len - n) / CHANNELS) as u64, Ordering::Relaxed);
+            ring.underrun_frames.fetch_add(
+                ((len - lead_samples - n) / CHANNELS) as u64,
+                Ordering::Relaxed,
+            );
         }
         n
     }
+}
+
+/// Remember a read: `frames` frames of audio from ring position `pos`, placed from device
+/// frame `dev`; the device clock moves on by `total` frames. Consumer only.
+fn record(ring: &Ring, dev: u64, pos: u64, frames: u64, total: u64) {
+    let count = ring.reads.load(Ordering::Relaxed);
+    let e = &ring.history[(count % HISTORY as u64) as usize];
+    e.dev.store(dev, Ordering::Release);
+    e.pos.store(pos, Ordering::Release);
+    e.frames.store(frames, Ordering::Release);
+    ring.reads.store(count + 1, Ordering::Release);
+    let d = ring.dev_frames.load(Ordering::Relaxed);
+    ring.dev_frames.store(d + total, Ordering::Release);
 }
 
 impl Drop for Consumer {
@@ -554,6 +767,172 @@ mod tests {
                 assert_eq!(r.len(), model.len());
             }
         }
+    }
+
+    /// Frames 0, 1, 2… as samples (left = right = the frame number), for following them.
+    fn frames(from: u32, n: u32) -> Vec<f32> {
+        (from..from + n)
+            .flat_map(|f| [f as f32, f as f32])
+            .collect()
+    }
+
+    #[test]
+    fn device_frames_map_back_to_ring_positions() {
+        let (r, mut p, mut c) = ring(4096);
+        r.reset_device_clock();
+        p.write(&frames(0, 1000));
+        let mut out = vec![0f32; 200]; // 100 frames a read
+        for _ in 0..4 {
+            c.read(&mut out);
+        }
+        assert_eq!(r.device_frames(), 400);
+        assert_eq!(r.presented_pos(0), 0);
+        assert_eq!(r.presented_pos(150), 300, "frame 150 heard: 150 frames in");
+        assert_eq!(r.presented_pos(400), 800);
+        assert_eq!(
+            r.presented_pos(10_000),
+            800,
+            "never beyond what was handed over"
+        );
+        // An underrun: 50 frames of audio, then silence. Heard positions stop at the audio.
+        p.discard_all();
+        c.read(&mut out);
+        p.write(&frames(0, 50));
+        c.read(&mut out);
+        assert_eq!(r.presented_pos(560), 2000 + 100);
+        assert_eq!(
+            r.presented_pos(590),
+            2000 + 100,
+            "in the silence after the audio"
+        );
+    }
+
+    /// A timed start: silence until the device frame, then audio from exactly that frame,
+    /// even in the middle of a read.
+    #[test]
+    fn timed_start_begins_at_the_exact_device_frame() {
+        let (r, mut p, mut c) = ring(4096);
+        r.reset_device_clock();
+        p.write(&frames(1, 500));
+        r.start_at(250);
+        assert!(r.start_pending());
+        let mut out = vec![9f32; 200];
+        assert_eq!(c.read(&mut out), 0);
+        assert_eq!(c.read(&mut out), 0);
+        assert!(out.iter().all(|s| *s == 0.0));
+        assert_eq!(
+            c.read(&mut out),
+            100,
+            "50 frames of silence, then 50 of audio"
+        );
+        assert!(out[..100].iter().all(|s| *s == 0.0));
+        assert_eq!(out[100], 1.0, "the first frame lands on device frame 250");
+        assert!(!r.is_held() && !r.start_pending());
+        assert_eq!(r.presented_pos(250), 0);
+        assert_eq!(r.presented_pos(260), 20);
+        assert_eq!(r.late_frames(), 0);
+    }
+
+    /// Too late for the requested frame: the audio that should already have played is
+    /// dropped, so what is heard is still in step.
+    #[test]
+    fn a_late_timed_start_catches_up_by_dropping_audio() {
+        let (r, mut p, mut c) = ring(4096);
+        r.reset_device_clock();
+        let mut out = vec![0f32; 200];
+        c.read(&mut out);
+        c.read(&mut out); // device frame 200
+        p.write(&frames(0, 1000));
+        r.start_at(120);
+        assert_eq!(c.read(&mut out), 200);
+        assert_eq!(out[0], 80.0, "frame 80 plays at device frame 200");
+        assert_eq!(r.late_frames(), 80);
+        assert_eq!(r.presented_pos(200), 160);
+    }
+
+    #[test]
+    fn inserted_silence_delays_the_audio_without_consuming_it() {
+        let (r, mut p, mut c) = ring(4096);
+        r.reset_device_clock();
+        p.write(&frames(0, 1000));
+        let mut out = vec![0f32; 200];
+        c.read(&mut out);
+        r.insert_silence(130);
+        assert_eq!(r.pending_corrections(), (130, 0));
+        assert_eq!(c.read(&mut out), 0);
+        assert_eq!(c.read(&mut out), 140, "30 frames of silence, then audio");
+        assert_eq!(out[60], 100.0, "carries on where it stopped");
+        assert_eq!(r.pending_corrections(), (0, 0));
+        assert_eq!(r.presented_pos(220), 200, "the silence holds the position");
+        assert_eq!(r.presented_pos(240), 220);
+        assert_eq!(r.underruns().0, 0);
+    }
+
+    #[test]
+    fn skips_drop_queued_audio_and_carry_over_until_it_arrives() {
+        let (r, mut p, mut c) = ring(4096);
+        r.reset_device_clock();
+        p.write(&frames(0, 100));
+        r.skip(150);
+        let mut out = vec![0f32; 200];
+        assert_eq!(c.read(&mut out), 0, "all 100 queued frames skipped");
+        assert_eq!(r.pending_corrections(), (0, 50));
+        p.write(&frames(100, 200));
+        c.read(&mut out);
+        assert_eq!(out[0], 150.0, "the rest of the skip, then audio");
+        // Skipped audio counts as heard once the next audio is.
+        assert_eq!(r.presented_pos(100), 300);
+        // A flush forgets corrections meant for the audio it drops.
+        r.skip(40);
+        r.insert_silence(40);
+        p.discard_all();
+        assert_eq!(r.pending_corrections(), (0, 0));
+        r.start_at(1_000_000);
+        r.cancel_start();
+        assert!(!r.start_pending());
+    }
+
+    #[test]
+    fn device_frames_older_than_the_history_map_to_the_oldest_remembered() {
+        let (r, mut p, mut c) = ring(1 << 16);
+        r.reset_device_clock();
+        let mut out = vec![0f32; 2];
+        for i in 0..(HISTORY as u32 * 3) {
+            p.write(&frames(i, 1));
+            c.read(&mut out);
+        }
+        let oldest = r.presented_pos(0);
+        assert!(oldest > 0 && oldest < r.read_pos());
+        assert_eq!(r.presented_pos(r.device_frames()), r.read_pos());
+    }
+
+    /// Positions read while the consumer runs on another thread are always ones it really
+    /// passed through: never past what was read, and never going back for later frames.
+    #[test]
+    fn presented_positions_are_consistent_while_the_output_runs() {
+        let r = Ring::new(8192);
+        r.set_hold(false);
+        r.reset_device_clock();
+        let mut p = r.producer().unwrap();
+        let mut c = r.consumer().unwrap();
+        let reader = r.clone();
+        let out_thread = std::thread::spawn(move || {
+            let mut out = vec![0f32; 96];
+            for _ in 0..200_000 {
+                c.read(&mut out);
+            }
+        });
+        let mut x = 7u32;
+        while !out_thread.is_finished() {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            p.write(&vec![0.5; (x % 300) as usize * 2]);
+            let dev = reader.device_frames();
+            let a = reader.presented_pos(dev.saturating_sub(200));
+            let b = reader.presented_pos(dev);
+            assert!(a <= b, "{a} > {b}");
+            assert!(b <= reader.read_pos());
+        }
+        out_thread.join().unwrap();
     }
 
     /// Producer and consumer on two threads: every sample arrives once, in order, intact.

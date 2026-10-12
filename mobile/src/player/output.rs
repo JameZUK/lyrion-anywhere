@@ -12,6 +12,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use super::clock::Timestamp;
 use super::negotiate::PcmEncoding;
 use super::ring::{Consumer, Ring};
 
@@ -44,6 +45,12 @@ pub trait AudioOutput: Send {
     ) -> Result<Opened, String>;
     fn close(&mut self);
     fn poll_event(&mut self) -> Option<OutputEvent>;
+    /// When a device frame was (or is being) presented, on the monotonic clock, counting
+    /// frames from this stream's open (the ring's device clock is reset then too). `None`
+    /// if the output can't say: positions are then taken as heard when handed over.
+    fn timestamp(&self) -> Option<Timestamp> {
+        None
+    }
 }
 
 /// The pull slot shared with [`crate::LocalPlayer::read_pcm`].
@@ -86,6 +93,7 @@ impl AudioOutput for PullOutput {
         let mut slot = self.slot.lock().unwrap();
         slot.consumer = None; // give the old handle back first
         slot.consumer = Some(ring.consumer().ok_or("output already in use")?);
+        ring.reset_device_clock();
         slot.rate = rate;
         slot.encoding = encoding;
         Ok(Opened {
@@ -118,9 +126,11 @@ mod aaudio {
     use ndk::audio::{
         AudioCallbackResult, AudioContentType, AudioDirection, AudioError, AudioFormat,
         AudioPerformanceMode, AudioSharingMode, AudioStream, AudioStreamBuilder, AudioUsage,
+        Clockid,
     };
 
-    use super::{AudioOutput, Opened, OutputEvent, PcmEncoding};
+    use super::{AudioOutput, Opened, OutputEvent, PcmEncoding, Timestamp};
+    use crate::player::clock::mono_ns;
     use crate::player::ring::{CHANNELS, Ring};
 
     /// `AAUDIO_FORMAT_PCM_I24_PACKED` and `AAUDIO_FORMAT_PCM_I32` (API 31). The `ndk`
@@ -162,6 +172,8 @@ mod aaudio {
             self.close();
             let rate_i = i32::try_from(rate).map_err(|_| "bad sample rate")?;
             let mut consumer = ring.consumer().ok_or("output already in use")?;
+            // The new stream counts frames from 0: so does the ring's device clock.
+            ring.reset_device_clock();
             self.disconnected.store(false, Ordering::Release);
             let flag = self.disconnected.clone();
             let performance = if encoding == PcmEncoding::Float {
@@ -259,6 +271,27 @@ mod aaudio {
         fn poll_event(&mut self) -> Option<OutputEvent> {
             (self.stream.is_some() && self.disconnected.swap(false, Ordering::AcqRel))
                 .then_some(OutputEvent::Disconnected)
+        }
+
+        /// AAudio's presentation timestamp on `CLOCK_MONOTONIC`: the frame heard at a given
+        /// time, including the route's latency (Bluetooth too, where Android reports it).
+        /// Until the stream is running it has none: then the frames the device has read so
+        /// far, as of now (which leaves out only the latency after the mixer).
+        fn timestamp(&self) -> Option<Timestamp> {
+            let s = self.stream.as_ref()?;
+            match s.timestamp(Clockid::Monotonic) {
+                Ok(t) => Some(Timestamp {
+                    frame: t.frame_position,
+                    at_ns: t.time_nanoseconds,
+                }),
+                Err(_) => {
+                    let read = s.frames_read();
+                    (read >= 0).then(|| Timestamp {
+                        frame: read,
+                        at_ns: mono_ns(),
+                    })
+                }
+            }
         }
     }
 

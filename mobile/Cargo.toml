@@ -37,6 +37,10 @@ getrandom = "0.3"
 # SHA-256 for the offline folders' names (already in the tree through rustls).
 ring = "0.17"
 
+[target.'cfg(unix)'.dependencies]
+# The monotonic clock AAudio's timestamps use (`clock_gettime(CLOCK_MONOTONIC)`).
+libc = "0.2"
+
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.22", default-features = false }
 # AAudio output (API 26+; the app's minimum is 29).

@@ -46,6 +46,8 @@ export class MediaOutput {
 	onExternalPause: (() => void) | null = null;
 	/** This output wants the element playing (it called play() and not pause() since). */
 	#wantPlay = false;
+	/** A sync pause (see {@link pauseFor}) is under way: the element's pause is ours. */
+	#syncPause: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(private opts: MediaOutputOptions) {
 		this.audio = (opts.makeAudio ?? (() => new Audio()))();
@@ -95,7 +97,7 @@ export class MediaOutput {
 		});
 		ms.addEventListener('sourceclose', () => this.#note('media source closed'));
 		a.addEventListener('pause', () => {
-			if (!this.#wantPlay || this.#closed || this.#failed) return;
+			if (!this.#wantPlay || this.#closed || this.#failed || this.#syncPause !== undefined) return;
 			this.#wantPlay = false;
 			this.#note('the system paused the media element');
 			this.onExternalPause?.();
@@ -206,12 +208,55 @@ export class MediaOutput {
 
 	pause() {
 		this.#wantPlay = false;
+		this.#endSyncPause();
 		this.audio.pause();
 	}
 
 	resume() {
 		this.#wantPlay = true;
+		this.#endSyncPause();
 		this.audio.play().catch((e: Error) => this.#note(`could not resume the media element: ${e.message}`));
+	}
+
+	#endSyncPause() {
+		clearTimeout(this.#syncPause);
+		this.#syncPause = undefined;
+	}
+
+	/**
+	 * LMS's sync correction for a player that is ahead: stop for `ms`, then carry on. Applied
+	 * to the element itself, so it takes effect at once rather than after the seconds of audio
+	 * queued in it. Only while playing.
+	 */
+	pauseFor(ms: number) {
+		if (!this.#wantPlay || this.#closed || !Number.isFinite(ms) || ms <= 0) return;
+		this.#endSyncPause();
+		this.#syncPause = setTimeout(
+			() => {
+				this.#syncPause = undefined;
+				if (this.#wantPlay && !this.#closed) this.audio.play().catch((e: Error) => this.#note(`could not resume after a sync pause: ${e.message}`));
+			},
+			Math.min(ms, 10_000),
+		);
+		this.audio.pause();
+	}
+
+	/**
+	 * LMS's sync correction for a player that is behind: move the play head `ms` forward, if
+	 * that is within the audio already buffered. Returns whether it moved.
+	 */
+	skipAhead(ms: number): boolean {
+		const sb = this.#sb;
+		if (!sb || this.#closed || !Number.isFinite(ms) || ms <= 0 || ms > 10_000) return false;
+		const to = this.audio.currentTime + ms / 1000;
+		const b = sb.buffered;
+		for (let i = 0; i < b.length; i++) {
+			if (b.start(i) <= this.audio.currentTime && b.end(i) > to) {
+				this.seek(to);
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -260,6 +305,7 @@ export class MediaOutput {
 	stop() {
 		this.#closed = true;
 		this.#wantPlay = false;
+		this.#endSyncPause();
 		this.#queue = [];
 		this.audio.pause();
 		this.audio.removeAttribute('src');

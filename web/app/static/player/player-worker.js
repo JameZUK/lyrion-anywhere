@@ -11,10 +11,10 @@ const V = new URL(self.location.href).searchParams.get('v');
 // Messages that arrive while the helpers load wait here, then go to the real handler.
 const early = [];
 onmessage = (e) => early.push(e);
+const VQ = V && /^[\w.-]{1,64}$/.test(V) ? `?v=${V}` : '';
 const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, closeAction, describeSeek, loadCore, socketSilent, streamFailureAction } =
-  await import(
-  `./reconnect.js${V && /^[\w.-]{1,64}$/.test(V) ? `?v=${V}` : ''}`
-);
+  await import(`./reconnect.js${VQ}`);
+const { Presentation } = await import(`./presentation.js${VQ}`);
 
 const TICK_MS = 20;
 // PCM queued in the worklet ahead of playback. Small, so pause/stop feel immediate.
@@ -65,6 +65,13 @@ let seekFlushAt = 0;
 let epoch = 0;
 // LMS's volume last reported to the page ([left, right] linear gains).
 let lastVolume = null;
+// Web Audio mode: what the worklet has rendered, and (from the page's output timestamps)
+// how much of it is audible. That is what the core reports to LMS, for sync.
+const presentation = new Presentation();
+// A timed start is armed in the worklet, which starts itself at the exact frame.
+let timedStart = false;
+// The hold last sent to the worklet.
+let workletHeld = false;
 
 // Output mode: 'worklet' (PCM to an AudioWorklet) or 'media' (fMP4/FLAC segments for an
 // <audio> element on the main thread, which keeps playing in the background on iOS).
@@ -77,6 +84,8 @@ let mediaVariant = 0; // init-segment variant the browser's self-test accepted
 let mediaWaiting = false; // flushed; waiting for the main thread's new timeline position
 
 const now = () => performance.now();
+// Absolute time (ms), comparable with the page's: each has its own performance.now().
+const absNow = () => performance.timeOrigin + performance.now();
 const log = (msg) => postMessage({ log: msg });
 
 function seekMark(stage) {
@@ -90,13 +99,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function attachSink(port) {
   sink = port;
   pulled = played = 0;
+  // A new AudioContext: its frames count from 0 again, and its clock comes with it.
+  presentation.reset();
+  timedStart = false;
+  workletHeld = false;
   sink.postMessage({ flush: true, epoch });
   sink.onmessage = (m) => {
-    if (m.data.played && player && m.data.epoch === epoch) {
-      seekMark('audible');
-      played += m.data.played;
-      player.played(m.data.played);
-    }
+    const d = m.data;
+    if (!d || !player || d.epoch !== epoch) return;
+    // Rendered (not yet necessarily heard): paces how far ahead the worker fills.
+    if (Number.isInteger(d.played) && d.played > 0) played += d.played;
+    presentation.add(d.runs);
   };
 }
 
@@ -109,6 +122,8 @@ function attachSink(port) {
 function flushOutput() {
   pulled = played = 0;
   epoch++;
+  presentation.dropRuns();
+  timedStart = false;
   if (outputMode === 'media') {
     if (segmenter) {
       mediaWaiting = true;
@@ -144,13 +159,19 @@ onmessage = async (e) => {
     attachSink(msg.port);
   } else if (msg.cmd === 'rate-ready') {
     readyRate = msg.rate;
+  } else if (msg.cmd === 'clock') {
+    // Web Audio mode: which context time is heard when (from getOutputTimestamp).
+    presentation.setClock(msg.ctx, msg.at, msg.rate);
   } else if (msg.cmd === 'played') {
-    // Media mode: frames the <audio> element has actually played.
-    // Reports sent while a flush is under way are of the old position.
-    if (player && msg.frames > 0 && !mediaWaiting) {
-      seekMark('audible');
-      played += msg.frames;
-      player.played(msg.frames);
+    // Media mode: frames the <audio> element has actually played, and when the position
+    // was read (absolute ms). Reports sent while a flush is under way are of the old
+    // position. A report of 0 frames still says where it is, and when.
+    const frames = Number.isInteger(msg.frames) && msg.frames >= 0 ? msg.frames : 0;
+    if (player && !mediaWaiting) {
+      if (frames > 0) seekMark('audible');
+      played += frames;
+      const at = Number.isFinite(msg.at) ? Math.min(now(), Math.max(0, msg.at - performance.timeOrigin)) : now();
+      player.presented(frames, at);
     }
   } else if (msg.cmd === 'media-drained') {
     // Media mode: the element played everything appended (it is waiting for more). Count
@@ -229,6 +250,8 @@ function onGreeting(g) {
     player = new core.WasmPlayer(g.mac, g.name, CODECS);
     // Volume is applied at the output, where a change is heard at once.
     player.set_host_volume(true);
+    // So are LMS's sync corrections: a timed start, pauses and skips.
+    player.set_output_corrections(true);
     player.set_quick_start(QUICK_START_MS);
     flushWatch.reset();
     lastVolume = null;
@@ -264,6 +287,38 @@ function onFrames(data) {
     ws.close();
   }
   runActions();
+  applyCorrections();
+}
+
+/**
+ * Apply LMS's sync corrections at the output, where they take effect at once and exactly
+ * rather than after the audio queued ahead: in the worklet (to the frame), or on the media
+ * element (as near as it allows).
+ */
+function applyCorrections() {
+  if (!player) return;
+  for (const c of player.take_corrections()) {
+    if (outputMode === 'media') {
+      if (c.type === 'start') postMessage({ media: { startAt: performance.timeOrigin + c.at } });
+      else if (c.type === 'pause') postMessage({ media: { pauseFor: c.ms } });
+      else if (c.type === 'skip') postMessage({ media: { skip: c.ms } });
+      continue;
+    }
+    if (!sink || !readyRate) continue;
+    const frames = (ms) => Math.round((ms * readyRate) / 1000);
+    if (c.type === 'pause') sink.postMessage({ silence: frames(c.ms) });
+    else if (c.type === 'skip') sink.postMessage({ skip: frames(c.ms) });
+    else if (c.type === 'start') {
+      // The context frame heard at the start time; without the page's clock, the core's
+      // own timing (a tick) starts it instead.
+      const f = presentation.frameFor(performance.timeOrigin + c.at, absNow());
+      if (f !== null) {
+        sink.postMessage({ startAt: f });
+        timedStart = true;
+        workletHeld = true;
+      }
+    }
+  }
 }
 
 function onClose(code, reason) {
@@ -419,14 +474,22 @@ function tick() {
     log('no messages from the server for a while; reconnecting');
     abandonSocket();
   }
+  if (outputMode !== 'media') {
+    // What has become audible, exact as of now.
+    const heard = presentation.take(absNow());
+    if (heard > 0) seekMark('audible');
+    player.presented(heard, now());
+  }
   player.tick(now());
   runActions();
+  applyCorrections();
 
   const status = JSON.parse(player.status_json());
   if (status.output === 'Playing') seekMark('started');
   if (outputMode === 'media') {
     mediaTick(status.output);
   } else {
+    holdWorklet(status.output);
     workletTick();
   }
   lastOutput = status.output;
@@ -435,6 +498,23 @@ function tick() {
   status.wasm_bytes = wasmMemory ? wasmMemory.buffer.byteLength : 0;
   status.mode = outputMode;
   postMessage({ status });
+}
+
+/**
+ * Silence the worklet (keeping its queue) unless playing, as LMS's pauses take effect at
+ * once. A timed start armed in the worklet releases the hold itself, at the exact frame:
+ * leave it alone until the core's start time has come.
+ */
+function holdWorklet(output) {
+  if (!sink) return;
+  const timed = timedStart && player.start_due() !== undefined;
+  if (timedStart && !timed) timedStart = false;
+  if (timed) return;
+  const hold = output !== 'Playing';
+  if (hold !== workletHeld) {
+    workletHeld = hold;
+    sink.postMessage({ hold });
+  }
 }
 
 function workletTick() {
@@ -465,8 +545,10 @@ function postSegment(bytes) {
 function mediaTick(output) {
   // (A flush is handled as it arrives: see flushOutput.)
   // The core reports e.g. "Paused { until: None }": compare by prefix.
-  const paused = output.startsWith('Paused');
-  const wasPaused = String(lastOutput).startsWith('Paused');
+  // Loaded counts as paused: audio is queued ahead of a synced start, which must not play
+  // until the start.
+  const paused = output.startsWith('Paused') || output === 'Loaded';
+  const wasPaused = String(lastOutput).startsWith('Paused') || lastOutput === 'Loaded';
   if (paused && !wasPaused) postMessage({ media: { pause: true } });
   if (output === 'Playing' && lastOutput !== 'Playing') postMessage({ media: { play: true } });
   if (mediaWaiting) return;
