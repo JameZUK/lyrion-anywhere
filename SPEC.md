@@ -39,6 +39,7 @@ Native Android and iOS apps come after v1 and use the same documented protocol.
 | D20 | Player-first apps | **Each app is a player in its own right.** Web and Android default to playing on the device itself (a per-device setting can choose "Last used" or a specific player instead, e.g. a desktop beside a hi-fi). Controlling other LMS players is secondary: a small output icon opens "Play on…" (this device, the players the user may control, sync groups). While another player is controlled, the UI says so ("Playing on Kitchen", one tap back). **Transfer** moves the queue and position to another player ("Move playback here") or back ("Bring to this device"), with the same recipe on every app (docs/PROTOCOL.md › Transfer). Decided 2026-10-11 by the owner. |
 | D21 | Refresh-token reuse grace | **Kept at 60 seconds for all clients.** A used refresh token presented again within 60 s, while none of its replacements has been used, gets another replacement (a lost response or two tabs refreshing at once); outside that, reuse revokes the device (docs/PROTOCOL.md › Authentication). A review (2026-10-11) suggested a few seconds for browser cookies; the owner chose to keep 60 s: tabs already take turns (navigator.locks), phones need slack for suspended or flaky connections, a thief needs the refresh token itself within the window, and whichever side uses its replacement first cuts the other off, revoking the device for both at the next refresh. Not a finding for future reviews. Decided 2026-10-11 by the owner. |
 | D22 | Sync with LMS's other players | **Report what is heard; correct at the output.** Our players report elapsed time as frames *presented* (from the platform's output timestamp), extrapolated to each STAT's jiffies on the same monotonic clock. They start a synced group at the exact time asked, allowing for output latency, and apply LMS's pause and skip corrections at the output stage. The plugin leaves LMS's per-player sync settings at their defaults. See docs/PROTOCOL.md › Synchronised playback. Decided 2026-10-12. |
+| D23 | Listening history | **Kept per user on the gateway, from what it sees itself.** Live plays are followed from each player session's own status reports (STAT): a session belongs to one device, so to one user, and hardware players or other users' devices are never attributed to anyone. The track is asked of LMS (`status`) as it starts; time heard is the elapsed time reported while playing, never more than wall time allows. Offline plays are added when `POST /v1/plays` records them. A play counts by the same rule as `/v1/plays`. Stored by stable track key (plus the ids, time and seconds heard), kept **13 months**, at most 50,000 per user; users view, clear and switch it off. Shelves and stations blend it (× 3) with LMS's server-wide play counts and last played (× 1), which also cover hardware players. Not the events stream (it runs only while someone subscribes) and not the clients (a phone or tab may be closed while its player plays). Decided 2026-10-12 (docs/plans/wave1-design.md §8). |
 
 ---
 
@@ -233,6 +234,15 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
 - **Limits:** one analysis at a time by default, a queue cap, per-user limits (429), maximum size (1 GiB) and duration (2 h) (413), a 5-minute deadline (504). A request waits up to 10 s, then gets 202 while the job carries on. Corrupt files are a clean 422, remembered for 10 minutes; decoder panics are caught.
 - **Cache:** the binary form on disk (`<data-dir>/analysis-cache`, 64 MiB by default, LRU), named by the stable track key (§8.3), the file's size and modification time and the analysis version. Responses carry an ETag.
 
+### 5.8 Listening history, Home and stations (Wave 1)
+
+docs/plans/wave1-design.md §6–8; full detail in docs/PROTOCOL.md › Your own things.
+- **History (D23):** per user, 13 months, view/clear/switch off. Shelves (`recent`, `most`, `on_this_day`) answer album ids only.
+- **Home:** a small JSON layout per user (version 1, at most 24 shelves and 4 KiB), shelf types from a fixed set plus ids of the user's own stations and pinned menus; strictly validated, the default when none is saved.
+- **Stations:** built-in ones computed on the gateway as track-id batches (forgotten favourites, fresh, deep cuts, several genres, a decade), avoiding the user's last 200 plays and what the station served lately; a single genre plays as LMS's Random Mix, through a fixed `randomplay` grammar in the allow-list. Clients refill when fewer than about 5 tracks are left (shared rules: `web/app/src/lib/stations/refill.ts`, `mobile/src/me.rs`).
+- **Pinned from menus:** stations and menus are stored as references to actions LMS offered (the menu requests to the item, and its `play`/`add`), never as free commands. Each use replays them under the user's own role and players with the learned-action check; anything no longer offered marks the station broken and nothing runs.
+- **Storage:** database migration 10 (`history`, `user_prefs`, `user_pins`), all deleted with the user.
+
 ---
 
 ## 6. Anywhere protocol (public API v1)
@@ -257,6 +267,11 @@ This is the one contract used by the web app now and the native apps later. It i
 | `GET /v1/download/track/{id}?format=` | One track file (`original`, `mp3` = MP3 320, `opus` = Opus 160), `Range` supported | Access token + download permission |
 | `GET /v1/analysis/track/{id}[?format=json\|binary]` | Waveform, R128 loudness, peaks, silence and fades of a track (§5.7); 202 while it is being analysed | Access token + download permission |
 | `POST /v1/plays` | Batched offline plays (idempotent by a client key per play); ratings later (D6) | Access token |
+| `GET/DELETE/PATCH /v1/me/history` | The user's listening history: view (paged), clear, switch off (D23) | Access token |
+| `GET /v1/me/shelves/{recent\|most\|on_this_day}` | Album ids for Home's history shelves | Access token |
+| `GET/PUT/DELETE /v1/me/home` | The user's Home layout (§5.8) | Access token |
+| `GET/POST /v1/me/stations`, `DELETE …/{id}`, `POST …/{id}/next` | Stations: list, add, remove, next batch (§5.8) | Access token |
+| `GET/POST /v1/me/menus`, `DELETE …/{id}`, `POST …/{id}/open` | Menus pinned to Home (§5.8) | Access token |
 | `GET /v1/account/devices`, `DELETE …/{id}` | User's own sessions/devices | Access token |
 | `GET /healthz` | Liveness | None |
 
@@ -309,6 +324,8 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 - Favorites, including adding to and removing from them.
 - Apps and radio: LMS SlimBrowse menus are rendered generically, so installed LMS plugins work without web-app changes.
 - Track/album/artist info menus from LMS plugins (bios, reviews, lyrics where available).
+- **Home** (Wave 1, §5.8): the user's own shelves (recently played, stations, new music, most played, on this day, and any they add), edited in place: reorder by dragging or Move up/down, hide, add, remove; the same layout on every device.
+- **Stations:** endless stations from the library (genres, a decade, forgotten favourites, fresh, deep cuts) and "Save as station" / "Pin to Home" on plugin menu items; listening history in Settings (view, clear, switch off).
 
 **Offline (§8)**
 - Download buttons on track/album/playlist, a downloads page with progress, and storage usage.

@@ -52,6 +52,10 @@ COMPOSERS = ["Orchard Quartet", "Haruka Mori"]
 CONDUCTORS = ["Orchard Quartet"]
 # A virtual library, so the picker shows in the demo.
 LIBRARIES = [{"id": "1a2b3c4d", "name": "Lossless only (64)"}]
+# Invented listening statistics (LMS's server-wide play counts and last played), for Home's
+# Recently played and Most played shelves and the stations: albums by position in ALBUMS,
+# most recently played first.
+LAST_PLAYED = [6, 0, 3, 7, 1, 10, 4]
 
 
 def folder_tree():
@@ -106,7 +110,16 @@ def track_rows():
     return rows
 
 
+def play_count(t):
+    """An invented play count: the recently played albums' tracks have been played most."""
+    a = t["album_id"] - 1
+    base = (len(LAST_PLAYED) - LAST_PLAYED.index(a)) * 3 if a in LAST_PLAYED else 0
+    return base + int(hashlib.sha1(t["title"].encode()).hexdigest(), 16) % 4 if base else 0
+
+
 TRACKS = track_rows()
+for _t in TRACKS:
+    _t["playcount"] = play_count(_t)
 FOLDERS = folder_tree()
 NOW = [t for t in TRACKS if t["album_id"] == 1]  # the Lounge is playing "Night Ferry"
 STATE = {"index": 2, "time": 83.4, "volume": 42, "mode": "play", "shuffle": 0, "repeat": 0}
@@ -151,7 +164,8 @@ def answer(player, cmd):
     if op == "albums":
         rows = [album_row(i) for i in range(len(ALBUMS))]
         if "album_id" in p:
-            rows = [r for r in rows if str(r["id"]) == p["album_id"]]
+            wanted = p["album_id"].split(",")
+            rows = [r for r in rows if str(r["id"]) in wanted]
         if "artist_id" in p:
             rows = [r for r in rows if str(r["artist_id"]) == p["artist_id"]]
         if "search" in p:
@@ -167,6 +181,11 @@ def answer(player, cmd):
         order = p.get("sort", "album")
         if order == "new":
             rows = sorted(rows, key=lambda r: ADDED.index(r["id"] - 1))
+        elif order == "recentlyplayed":
+            rows = sorted((r for r in rows if r["id"] - 1 in LAST_PLAYED), key=lambda r: LAST_PLAYED.index(r["id"] - 1))
+        elif order == "playcount":
+            plays = lambda r: sum(t["playcount"] for t in TRACKS if t["album_id"] == r["id"])
+            rows = sorted((r for r in rows if plays(r)), key=lambda r: -plays(r))
         elif order == "random":
             rows = random.sample(rows, len(rows))
         elif order == "artistalbum":
@@ -192,6 +211,9 @@ def answer(player, cmd):
             rows = [r for r in rows if r["artist"] in names]
         if "search" in p:
             rows = [r for r in rows if p["search"].lower() in r["artist"].lower()]
+        if p.get("sort") == "playcount":
+            plays = lambda r: sum(t["playcount"] for t in TRACKS if t["artist"] == r["artist"])
+            rows = sorted((r for r in rows if plays(r)), key=lambda r: -plays(r))
         return page(rows, rest, "artists_loop")
     if op == "genres":
         rows = [{"id": i + 1, "genre": g, "favorites_url": f"db:genre.name={g}"} for i, g in enumerate(GENRES)]
@@ -211,12 +233,23 @@ def answer(player, cmd):
     if op in ("titles", "tracks"):
         rows = TRACKS
         if "track_id" in p:
-            # The gateway's lookup before a download or an analysis: a library file.
+            # The gateway's lookup before a download or an analysis: a library file. Lists of
+            # ids (history, stations) are answered from the library too.
+            wanted = p["track_id"].split(",")
             rows = [{**t, "type": "wav", "url": f"file:///srv/music/demo/{t['id']}.wav",
                      "filesize": len(audio(t["id"])), "modificationTime": "Monday, 1 January 2024"}
-                    for t in rows if str(t["id"]) == p["track_id"]]
+                    for t in rows if str(t["id"]) in wanted]
         if "album_id" in p:
-            rows = [t for t in rows if str(t["album_id"]) == p["album_id"]]
+            wanted = p["album_id"].split(",")
+            rows = [t for t in rows if str(t["album_id"]) in wanted]
+        if "artist_id" in p:
+            wanted = p["artist_id"].split(",")
+            rows = [t for t in rows if str(t["artist_id"]) in wanted]
+        if "genre_id" in p:
+            wanted = p["genre_id"].split(",")
+            rows = [t for t in rows if str(ALBUM_GENRE[t["album_id"] - 1] + 1) in wanted]
+        if "year" in p:
+            rows = [t for t in rows if str(t["year"]) == p["year"]]
         if "search" in p:
             rows = [t for t in rows if p["search"].lower() in t["title"].lower()]
         return page(rows, rest, "titles_loop")
@@ -260,6 +293,18 @@ def answer(player, cmd):
              "actions": {"go": {"cmd": ["randomplay", "tracks"]}}},
             {"id": "randomalbums", "node": "randomplay", "text": "Album Mix", "nextWindow": "nowPlaying",
              "actions": {"go": {"cmd": ["randomplay", "albums"]}}}]}
+    if op == "discovermix" and rest[:1] == ["items"] and p.get("item_id", "").startswith("0."):
+        # One of Discover Mix's moods: mixes that play at once (and can be added to).
+        mood = p["item_id"]
+        names = ["Mix 1", "Mix 2", "Mix 3"]
+        return {"count": len(names), "base": {"actions": {
+                    "add": {"cmd": ["discovermix", "add"], "itemsParams": "params", "player": 0}}},
+                "item_loop": [{"text": f"{n}", "nextWindow": "nowPlaying", "params": {"mix": f"{mood}.{i}"},
+                               "actions": {"go": {"cmd": ["discovermix", "play"], "params": {"mix": f"{mood}.{i}"}}}}
+                              for i, n in enumerate(names)]}
+    if op == "anywhere" and rest[:1] == ["play_record"]:
+        # The Lyrion Anywhere plugin counting an offline play (the demo takes every one).
+        return {"ok": 1}
     if op in ("podcasts", "musicshop", "cloudtunes", "communityradio", "worldradio", "discovermix"):
         names = {"discovermix": ["Similar to the current track", "Late-night mood", "Energetic", "Calm"],
                  "communityradio": ["Local stations", "By genre", "Most popular"],

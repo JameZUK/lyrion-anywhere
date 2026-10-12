@@ -271,7 +271,7 @@ Library browse parameters ("My Music"), and the values each takes:
 | `tags` | all of them | letters and digits only |
 
 A `musicfolder` answer lists each entry's `url` (its path on the server): it is stripped like every `url`, and a name that holds a path is dropped (see the response filter below).
-| Player (permitted players only) | `status`, `play`, `pause`, `stop`, `mode ?`, `time`, `power`, `sleep`, `mixer volume/muting`, `playlist index/jump/move/delete/clear/shuffle/repeat/tracks ?`, `playlistcontrol cmd:load/add/insert/delete` with exactly one id selector, `sync` with another permitted player, `favorites playlist play/add/insert item_id:…`; Don't Stop The Music: `dontstopthemusicsetting` (exactly that), and `playerpref plugin.dontstopthemusic:provider <token>|0|?` (no other `playerpref`; the token is letters, digits and `_`, starting with a letter, at most 64) |
+| Player (permitted players only) | `status`, `play`, `pause`, `stop`, `mode ?`, `time`, `power`, `sleep`, `mixer volume/muting`, `playlist index/jump/move/delete/clear/shuffle/repeat/tracks ?`, `playlistcontrol cmd:load/add/insert/delete` with exactly one id selector, `sync` with another permitted player, `favorites playlist play/add/insert item_id:…`; Don't Stop The Music: `dontstopthemusicsetting` (exactly that), and `playerpref plugin.dontstopthemusic:provider <token>|0|?` (no other `playerpref`; the token is letters, digits and `_`, starting with a letter, at most 64); Random Mix (part of LMS): `randomplay <tracks\|albums\|contributors\|artists\|year\|works> [genre_id:<id>]`, `randomplay disable` and `randomplayisactive` (see below) |
 | Apps and radio | `<app> items …` and `<app> playlist play/add/insert item_id:…`, only for app commands LMS lists in its `apps`/`radios` menus. Core command names can never be learned as apps. An unknown app triggers at most one menu refresh a minute. |
 | Admin role only | `rescan`; changing saved playlists (`playlists new/rename/delete/edit`) |
 
@@ -280,7 +280,7 @@ A `musicfolder` answer lists each entry's `url` (its path on the server): it is 
 - request values are printable, at most 256 characters, and never URLs or paths;
 - actions are learned after response filtering, and an action whose parameters held a path or LAN URL is removed whole, so it can never be learned or shown;
 - server-level commands (preferences, rescan, restart, `client`, display/IR, …) never run this way;
-- actions that change shared data (`favorites`, `jivefavorites`, `playlists`, presets) need the admin role;
+- actions that change shared data (`favorites`, `jivefavorites`, `playlists`, presets, and Random Mix's server-wide genre and library choices `randomplaychoosegenre`, `randomplaygenreselectall`, `randomplaychooselibrary`) need the admin role;
 - paging (`start count`) is required for `… items` menus, optional for a navigation (a `go` action without `nextWindow`, which opens a submenu in LMS's own clients), and refused for any other action;
 - at most 4,000 learned actions per device, expiring after an hour, and learned actions are kept for at most 1,000 devices (the least recently used go first).
 
@@ -291,6 +291,12 @@ A `musicfolder` answer lists each entry's `url` (its path on the server): it is 
 **Radio and "more like this" (apps, A6).** Nothing is built in: the apps read the item's own context menu and use AudioMuse-AI's entries there (command words starting `audiomuse`) as learned actions, or play the item with Don't Stop The Music switched on for the player (the provider in use if any; otherwise AudioMuse-AI's, then a similarity provider, then any but random). With neither, there is no radio and the action is hidden.
 
 Context menus start from `trackinfo`/`albuminfo`/`artistinfo`/`genreinfo`/`yearinfo`/`playlistinfo`/`folderinfo items` with a library id.
+
+**Random Mix (`randomplay`), a fixed grammar.** Single-genre stations play as LMS's Random Mix, which keeps the queue topped up itself. Only these shapes pass, on a player the caller may control:
+- `randomplay <mode>` with `mode` one of `tracks`, `albums`, `contributors`, `artists`, `year`, `works` (LMS matches the mode as a regular expression, so nothing else is passed on), optionally with one `genre_id:<id>` (a positive number without leading zeros: LMS looks the genre up by id, and fails on 0);
+- `randomplay disable`; `randomplayisactive` (no arguments).
+
+Refused: `genres:` (free text, unescaped and split by LMS), `library_id:`, any other parameter or a second `genre_id`, and as server queries. Random Mix's genre and library choices (`randomplaychoosegenre`, `randomplaygenreselectall`, `randomplaychooselibrary`) change server-wide prefs, not the player's: they are not in the allow-list, and as learned menu actions they are admin-only.
 
 Everything else is refused, notably:
 - `readdirectory`, `pref`, `playerpref`;
@@ -621,6 +627,91 @@ Any other field, or a wrong type, makes that play `invalid`.
 - Send in batches of up to 200, oldest first, when online. Keep each play until it is answered `recorded`, `duplicate` or `refused`.
 - Back off on network errors, 5xx and 429 (honouring `Retry-After`), and stop on 401 until signed in again.
 - If a whole upload is 400 or 413, split it to find the play the server can't read, and drop only that one.
+
+## Your own things (`/v1/me/…`)
+
+Listening history, the customisable Home, stations and pinned menus (docs/plans/wave1-design.md §6–8; SPEC D23). Everything is per user: the same on every device of the user's, and never shown to anyone else. Each needs a bearer access token (401 without); a user may make 120 of these requests a minute (429 with `Retry-After` beyond). Answers are JSON with `Cache-Control: private, no-store`; refusals are `{"error": "<reason>"}`. Bodies are JSON objects whose unknown fields are refused (400), at most 4 KiB (413), 256 bytes for `PATCH /v1/me/history`. Ids in paths are plain positive decimal numbers; anything else, and another user's id, is 404.
+
+### Listening history
+
+The gateway records each play that counts (the rule of `POST /v1/plays`: half the track or 240 s, whichever is less) of a local library track:
+- **live**, on the user's own devices' players (the gateway follows each player session's status reports; time heard is elapsed time while playing, never more than wall time allows, so a seek forward isn't "heard"; a seek that restarts the stream continues the same play; the track is asked of LMS just after it starts). Hardware players and other users' devices are never attributed to anyone;
+- **offline**, when `POST /v1/plays` has LMS record a play.
+
+Each play keeps the stable track key, the LMS track, album and artist ids and year at the time, when it started, the seconds heard (updated when a live play ends), and `live` or `offline`. Plays are kept **13 months** (396 days), at most 50,000 per user (the newest). Nothing is recorded while the user has history switched off.
+
+| Request | Answer |
+|---|---|
+| `GET /v1/me/history[?limit=1–200][&before=<cursor>]` | `{"enabled": bool, "retention_days": 396, "items": [{"track_key", "track_id", "album_id", "artist_id", "year", "played_at", "seconds", "source"}], "next": "<cursor>"\|null}`, newest first (50 by default). The cursor is `<played_at>-<id>` (digits); unknown query parameters are refused (400) |
+| `DELETE /v1/me/history` | `{"removed": n}`: all of the user's plays (audited as a count) |
+| `PATCH /v1/me/history` `{"enabled": true\|false}` | `{"enabled": …}`: switch recording on or off (on unless switched off). Switching off keeps what was recorded; clear it to delete it |
+
+Clients show titles with `titles 0 <n> track_id:<id,id,…> tags:…` through `/v1/rpc`.
+
+### Shelves
+
+`GET /v1/me/shelves/{recent|most|on_this_day}[?limit=1–50]` → `{"shelf": "<name>", "albums": [<album id>, …]}`, best first (20 by default); library ids only (fetch them with `albums 0 <n> album_id:<id,id,…>`, which LMS answers in its own order). Any other shelf name is 404.
+- **recent:** the user's albums by their last play here, blended with LMS's `albums sort:recentlyplayed`;
+- **most:** the user's plays per album over the last 90 days, scaled to the most played, × 3, plus LMS's `albums sort:playcount` ranking (scaled 1 to 0) × 1;
+- **on_this_day:** albums the user played within 3 days of this date a year ago (LMS keeps only each track's last play, so this one is the user's own).
+
+LMS before 9.1 has no play-count sorts: the server side is then empty.
+
+### Home layout
+
+`GET /v1/me/home` → `{"version": 1, "shelves": [{"type": "recent"}, …], "default": bool}`. Without a saved layout it is the default, in this order: `recent`, `stations`, `new`, `most`, `on_this_day`.
+
+`PUT /v1/me/home` with `{"version": 1, "shelves": [...]}` saves one (answering it as `GET` would); `DELETE /v1/me/home` goes back to the default. A layout is refused (400) unless:
+- `version` is 1 and there are no other fields;
+- `shelves` is a list of at most 24, each `{"type", "id"?, "hidden"?}` and nothing else;
+- `type` is one of `recent`, `stations`, `new`, `most`, `on_this_day`, `random`, `favourites`, `playlists` (no id), or `station`, `menu` (one of the user's own stations or pinned menus, checked when saved) or `genre` (an LMS genre id), which need an `id` (1 to 999 999 999 999);
+- `hidden` is `true` or `false`;
+- no shelf appears twice, and the whole document is at most 4 KiB.
+
+Shelves of stations or pinned menus deleted since are left out when the layout is read.
+
+### Stations
+
+A station is endless: the client asks for the next batch whenever fewer than about 5 tracks are left after the current one. Each user starts with three built-in stations (forgotten favourites, fresh, deep cuts), which they may delete.
+
+| Request | Answer |
+|---|---|
+| `GET /v1/me/stations` | `{"stations": [{"id", "name", "kind", "spec", "broken": "<why>"\|null}]}` |
+| `POST /v1/me/stations` `{"name", "spec", "player"?}` | 201 with the station; 400 for a bad spec or name; 409 beyond 100 stations and pinned menus; 422 for a menu station LMS doesn't offer now, on `player` |
+| `DELETE /v1/me/stations/{id}` | `{"removed": true}`, or 404 |
+| `POST /v1/me/stations/{id}/next` `{"player", "start"?, "count"? (1–50, 20), "exclude"? (≤ 200 track ids)}` | see below; 403 for a player the caller may not control; 429 beyond 20 batches a minute |
+
+Specs (`name`: 1–64 characters, cleaned like device names):
+- `{"kind": "genre", "genres": [<id>, …]}` (1–5 genres). With one genre, `next` answers `{"mode": "randomplay", "command": ["randomplay", "tracks", "genre_id:<id>"], "refill": false}` for the client to send through `/v1/rpc` (LMS's Random Mix then keeps the queue filled); with several, track batches as below;
+- `{"kind": "decade", "decade": 1980, "mine": bool}` (1900–2090; `mine` favours what the user played from it). Random Mix can't filter by year, so this is a track list;
+- `{"kind": "forgotten"}`: tracks the user played at least twice but not in the last 60 days (× 3), and tracks of LMS's most played albums it hasn't played lately (× 1);
+- `{"kind": "fresh"}`: tracks of the newest albums played at most once, and never by the user;
+- `{"kind": "deep_cuts"}`: tracks played at most once, by the artists the user plays most (× 3) and LMS's most played artists (× 1);
+- `{"kind": "menu", "steps": [<command>, …], "play": <command>, "add"?: <command>}`: pinned from a menu (below).
+
+Track stations answer `{"mode": "tracks", "tracks": [<track id>, …], "refill": true}`. A batch never holds the user's last 200 plays, the `exclude` ids, or the last 200 tracks the station served. The client loads the first batch (`playlistcontrol cmd:load track_id:…`) and adds the rest (`cmd:add`), splitting id lists to fit 200 characters.
+
+**Stations pinned from menus.** "Save as station" on a mix or generator item stores a reference to an action LMS offered, never a free command:
+- `steps`: the menu requests from a root to the menu holding the item (1–4), each with paging. The first must be a menu of the fixed allow-list: `menu …` (the home menu), `apps`, `radios`, `<app> items …` for a listed app, `favorites items …` or a context menu (`trackinfo items …` and the others). Plugin entries in the home menu start from `menu`;
+- `play` (and optionally `add`): the item's actions, without paging and never with typed text;
+- commands are 1–16 words; each word is at most 256 bytes and passes the free-text check; the first is a plain word.
+
+Every time the station is saved or plays, the gateway replays the steps under the user's own role and players, exactly as `/v1/rpc` would: the first must pass the fixed allow-list; each later one must be an action LMS offered in the previous step's filtered answer; and `play`/`add` must be offered in the last one (the learned-action rules above: never server commands, admin-only actions for admins only, admin-only plugins hidden from listeners). Only then does it run the action, on a player the caller may control:
+- start (`"start": true`) runs `play`, answering `{"mode": "ran", "refill": <has add>}`;
+- a refill runs `add`, or answers `{"mode": "none", "refill": false}` without one;
+- if anything is no longer offered, nothing runs: the answer is 409 `{"error": "<why>", "broken": true}`, and the station is listed with `broken` set until it works again;
+- 502 if LMS can't be reached (the station isn't marked broken).
+
+### Pinned menus
+
+"Pin to Home" for a menu stores the steps to it (as above, with the menu itself as the last step).
+
+| Request | Answer |
+|---|---|
+| `GET /v1/me/menus` | `{"menus": [{"id", "name", "steps", "broken"}]}` |
+| `POST /v1/me/menus` `{"name", "steps", "player"}` | 201; 422 if LMS doesn't offer it now, on `player` |
+| `DELETE /v1/me/menus/{id}` | `{"removed": true}`, or 404 |
+| `POST /v1/me/menus/{id}/open` `{"player"}` | `{"result": <the last menu, filtered as /v1/rpc would>}`; the device may then run what it offers (its actions are learned for the device). 409 `{"broken": true}` if LMS no longer offers it |
 
 ## Track analysis (`GET /v1/analysis/track/{id}`)
 

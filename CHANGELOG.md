@@ -2,6 +2,51 @@
 
 Dated entries, newest first.
 
+## 2026-10-12: Wave 1 (part B): listening history, stations and a customisable Home
+
+Agreed design: `docs/plans/wave1-design.md` §6–8; decision D23 in `SPEC.md`.
+
+### Listening history (gateway)
+- **What it records:** each signed-in user's plays through Lyrion Anywhere that count (the `/v1/plays` rule: half the track or 240 s), by stable track key, with the track, album and artist ids, when it started and the seconds heard.
+- **Live plays** are followed from each player session's own status reports. A session belongs to one device, so to one user: hardware players and other users' devices are never attributed. The track is asked of LMS as it starts. Time heard is elapsed time while playing, never more than wall time allows, and a seek that restarts the stream continues the same play.
+- **Offline plays** are added when `POST /v1/plays` records them.
+- **Kept 13 months**, at most 50,000 plays per user, pruned hourly.
+- **New endpoints:**
+  - `GET/DELETE/PATCH /v1/me/history`: view (paged), clear, switch off;
+  - `GET /v1/me/shelves/{recent|most|on_this_day}`: album ids, the user's plays weighted 3 against LMS's play counts and last played (LMS 9.1 `albums sort:playcount|recentlyplayed`).
+
+### Customisable Home
+- **Layout per user on the gateway** (`GET/PUT/DELETE /v1/me/home`): versioned, at most 24 shelves and 4 KiB, a fixed set of shelf types plus the user's own stations, pinned menus and genres.
+- **Default shelves:** recently played, stations, new music, most played, on this day.
+- **Edit mode** on the web and Android: drag by a handle or Move up/down (also accessibility actions), hide, add, remove, reset.
+- **Web app:** a Home page (the phone's Home tab; the sidebar's second entry) and a Stations page.
+- **Android:** Home follows the layout. Favourites and playlists became shelves that can be added.
+
+### Stations
+- **Built-in, computed on the gateway** as batches of track ids that never repeat the user's last 200 plays or what the station served lately: forgotten favourites, fresh, deep cuts, several genres, a decade (with "favour what I've played").
+- **A single genre** plays as LMS's Random Mix, through a new fixed `randomplay` grammar in the allow-list.
+- **Clients refill** when fewer than about 5 tracks are left, one batch at a time, and stop when something else plays. The rules are shared: `web/app/src/lib/stations/refill.ts` on the web, and `mobile/src/me.rs` (`StationRunner`) for Android.
+- **Save as station and Pin to Home** on plugin menu items (e.g. a mix):
+  - what is stored is a reference to the action LMS offered (the menu requests to it, and its play/add actions), never a free command;
+  - every use replays it under the user's own role and players, with the learned-action check;
+  - if LMS no longer offers it, the station is marked broken with the reason, and nothing runs.
+
+### Security
+- **New endpoints** need a token, are rate-limited per user (120 a minute; 20 station batches a minute), size-capped, and take strictly typed bodies with unknown fields refused.
+- **Other users' ids** are answered 404.
+- **Random Mix:** `randomplay` takes a fixed mode word and at most one numeric `genre_id` (LMS reads the mode as a regular expression). Random Mix's server-wide genre and library choices became admin-only as learned menu actions.
+- **Titles by track id** (`titles … track_id:1,2,3`) are allowed, for history and stations.
+
+### Storage
+Database migration 10 adds `history`, `user_prefs` and `user_pins`, all deleted with the user.
+
+### Tests
+- **Gateway:** unit and fuzz tests for the layout and station-spec parsers, the play tracker, scoring and pruning; a migration test; integration tests against the fake LMS (live and offline history, switching off, shelves, Home, stations, Random Mix, pinned-station security, pinned menus, rate limits, other users' data and hostile ids).
+- **Mobile:** end-to-end tests through the real gateway.
+- **Web:** Vitest for the API client, refill rules, layout editing, the Home page, menu saving and history settings.
+- **Android:** layout, view-model, menu-saving and history tests, and accessibility audits.
+- **Demo:** the demo LMS has invented play counts, last-played order and a mix menu for screenshots.
+
 ## 2026-10-12: plugin 0.2.0 and Android 1.1.0
 
 ### Adding devices by QR code, and pairing links

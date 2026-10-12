@@ -2,12 +2,13 @@
 
 **Lyrion Anywhere** (the Android app, the web app and the gateway plugin for Lyrion Music Server) is free software for listening to **your own** music library on **your own** server. This policy says what each part keeps, where, and for how long.
 
-*Last updated: 11 October 2026.*
+*Last updated: 12 October 2026.*
 
 ## In short
 
 - **Nothing goes to us.** The app talks only to the server you type in or scan (your Lyrion Anywhere gateway). The project has no servers, accounts, analytics, advertising, tracking or third-party SDKs, and receives no data from the app.
 - **Your server keeps what it needs to sign you in and keep you safe:** your account, your devices, and an audit log. Its administrator (usually you or your household) can see it.
+- **Your server also keeps your listening history** (for Recently played, Most played and stations), your Home layout and your stations: yours only, for 13 months for history, and you can see it, clear it or switch it off.
 - **Your phone keeps your sign-in (sealed by the Android Keystore), your settings and your downloads.** Signing out removes the sign-in and, if you choose, the downloads. A device the server revokes deletes its downloads.
 
 ## What the Android app stores on your phone
@@ -37,7 +38,8 @@ The app sends data **only to your gateway**, over HTTPS (plain HTTP is refused, 
 - controlling players;
 - streaming and downloading music;
 - waveform analysis;
-- sending plays heard offline.
+- sending plays heard offline;
+- your Home layout, stations and listening-history settings.
 
 When it signs in, the app also tells your gateway what it is, so its admins can recognise the device:
 - the client type (`android`);
@@ -60,9 +62,12 @@ The gateway runs on your server, next to Lyrion Music Server. Its data stays the
 | **Play keys** | For plays sent from offline listening: a random key per play, the track id and when it was played, so a play retried after a lost answer is never counted twice | 91 days, at most 50,000 per user |
 | **Audit log** | Security events: sign-ins and failures (with the client's address), new and revoked devices, renames, settings changes, plays recorded (a count) | One year, at most the newest 100,000 entries |
 | **Track analysis cache** | Waveform and loudness of tracks, named by a salted hash of the file | Until the cache is full (least recently used go first) |
+| **Listening history** | What you played through Lyrion Anywhere, on your own devices or offline: the track (by a salted key, and its library ids at the time), when it started and how long you listened. Nothing about players that aren't yours (hardware players, other people's devices). Not recorded while you have it switched off | **13 months**, at most the newest 50,000 plays; until you clear it, or the account is deleted |
+| **Home and stations** | Your Home layout (which shelves, in what order), your stations (their names and what they play: genres, a decade, or a reference to a plugin menu item you saved) and menus you pinned | Until you change or delete them, or the account is deleted |
 
 - **Who sees it:** the gateway's admins, through Lyrion Music Server's settings page (which needs a token only that page has). Listeners see only their own account and devices. Nothing is shared with anyone else.
 - **Play counts** themselves are kept by Lyrion Music Server, as when you play a track on any LMS player.
+- **Your listening history is yours:** no screen or API shows it to anyone else, admins included. It is stored in the gateway's database on the server, like your account, so someone with access to the server's files could read it. See it in Settings › Listening history (*View history*), delete it all with *Clear history*, or switch it off there: nothing more is recorded until you switch it back on. Clearing or switching it off doesn't change LMS's own play counts.
 - **The reverse proxy** (for example nginx) that you put in front of the gateway may keep its own access logs. That is your proxy's configuration, not this software's.
 
 ## Deleting your data
@@ -70,7 +75,8 @@ The gateway runs on your server, next to Lyrion Music Server. Its data stays the
 - **Sign out** (Settings → Sign out): the phone deletes its sign-in, sends any plays still waiting, and keeps or deletes your downloads as you choose. The server revokes the device, erasing its address and User-Agent.
 - **Revoked by the server** (an admin revokes the device, or too many devices signed in): the phone deletes its sign-in and all its downloads the next time it connects.
 - **Uninstall:** Android deletes everything the app stored.
-- **On the server:** ask its admin to delete your account. That deletes your devices, sign-ins and play keys at once. The audit log keeps its entries naming your username until they expire (one year), as a security record.
+- **Listening history:** Settings › Listening history › *Clear history* deletes it from the server at once; switching it off stops recording.
+- **On the server:** ask its admin to delete your account. That deletes your devices, sign-ins, play keys, listening history, Home layout and stations at once. The audit log keeps its entries naming your username until they expire (one year), as a security record.
 
 ## Children
 
@@ -109,6 +115,7 @@ For the Play Console's *Data safety* form. Google defines "collected" as data **
 | Personal info → User IDs (username) | Yes | No | Account management, app functionality | No |
 | Device or other IDs (device id) | Yes | No | App functionality, security | No |
 | App activity → Other actions (offline plays) | Yes | No | App functionality | Yes (only when offline playback is used) |
+| App activity → App interactions (listening history, Home layout, stations) | Yes | No | App functionality, personalisation | Yes (history can be switched off) |
 | Audio files (downloads are received, not sent) | No | No | — | — |
 | App info and performance → Crash logs | No (never sent by the app) | No | — | — |
 
