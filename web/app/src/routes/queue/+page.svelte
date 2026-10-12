@@ -8,7 +8,7 @@
 	import * as cmd from '$lib/lms/commands';
 	import type { Command } from '$lib/api/rpc';
 	import { duration, textOf } from '$lib/lms/format';
-	import { dropIndex, insertAt, isSwipe, removeAt, reorder, swipeRemoves, type RowBox } from '$lib/lms/queue-edit';
+	import { dropIndex, insertAt, isSwipe, removeAt, reorder, restoreTrack, swipeRemoves, type RowBox } from '$lib/lms/queue-edit';
 	import type { PlayerStatus, Track } from '$lib/lms/types';
 	import Art from '$lib/components/Art.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -150,22 +150,7 @@
 		await edit(
 			insertAt(tracks, u.index, u.track),
 			total + 1,
-			async (player) => {
-				// LMS may apply playlistcontrol a moment later: wait until the queue is exactly one
-				// longer, so the last track is the one just added, before moving it into place.
-				const count = async () => Number((await api.rpc<PlayerStatus>(player, cmd.status())).playlist_tracks);
-				const before = await count();
-				await api.rpc(player, cmd.enqueue({ track: u.track.id as number }, 'add'));
-				let after = await count();
-				for (let i = 0; i < UNDO_POLLS && after === before; i++) {
-					await new Promise((r) => setTimeout(r, UNDO_POLL_MS));
-					after = await count();
-				}
-				if (!Number.isInteger(before) || after !== before + 1) {
-					throw new Error('the queue changed meanwhile, so it was added at the end');
-				}
-				if (before > u.index) await api.rpc(player, cmd.moveInQueue(before, u.index));
-			},
+			(player) => restoreTrack((p, c) => api.rpc(p, c), player, u.track.id as number, u.index, UNDO_POLLS, UNDO_POLL_MS),
 			"Couldn't put the track back",
 		);
 	}

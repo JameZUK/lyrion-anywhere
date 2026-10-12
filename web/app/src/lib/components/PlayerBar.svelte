@@ -9,6 +9,8 @@
 	import PlayingElsewhere from './PlayingElsewhere.svelte';
 	import { device } from '$lib/player/device.svelte';
 	import { DEVICE_BUTTONS_NOTE } from '$lib/player/volume';
+	import { LONG_PRESS_MS, MiniGesture, miniKey, type MiniAction } from '$lib/player/gesture';
+	import { formatLeft, sleepLeft } from '$lib/lms/sleep';
 
 	let seeking = $state<number | null>(null);
 	let volume = $state<number | null>(null);
@@ -21,6 +23,86 @@
 	const title = $derived(textOf(track?.title ?? app.now?.current_title) || (app.current ? 'Nothing playing' : ''));
 	const sub = $derived([textOf(track?.artist), textOf(track?.album)].filter(Boolean).join(' · '));
 	const canSeek = $derived(total > 0 && app.now?.can_seek !== 0);
+	const sleepIn = $derived(sleepLeft(app.now));
+	const thumb = $derived(coverPath(track?.coverid ?? track?.artwork_track_id, 120));
+
+	// --- gestures on the mini player (gesture.ts): swipe for next/previous, up to open, a
+	// long-press for Play on…; each also has a button and a keyboard shortcut ---------------
+	let playOn = $state(false);
+	let nowEl = $state<HTMLAnchorElement>();
+	const gesture = new MiniGesture();
+	let pressTimer: ReturnType<typeof setTimeout> | undefined;
+	let follow = $state<{ dx: number; dy: number } | null>(null);
+	/** Set when a gesture ended the press, so the click that follows doesn't also open. */
+	let swallow = false;
+
+	function act(a: MiniAction) {
+		if (a === 'none') return;
+		if (a === 'next' || a === 'previous') {
+			navigator.vibrate?.(10);
+			void app.send(cmd.skip(a === 'next' ? 1 : -1));
+		} else if (a === 'long-press') {
+			navigator.vibrate?.(15);
+			playOn = true;
+		} else {
+			location.hash = '#/';
+		}
+	}
+
+	function pdown(e: PointerEvent) {
+		if (e.pointerType === 'mouse' && e.button !== 0) return;
+		swallow = false;
+		gesture.setWidth(nowEl?.getBoundingClientRect().width ?? 0);
+		gesture.down(e.clientX, e.clientY, e.timeStamp);
+		clearTimeout(pressTimer);
+		pressTimer = setTimeout(() => {
+			if (gesture.tick(e.timeStamp + LONG_PRESS_MS) === 'long-press') {
+				swallow = true;
+				act('long-press');
+			}
+		}, LONG_PRESS_MS);
+	}
+	function pmove(e: PointerEvent) {
+		if (gesture.move(e.clientX, e.clientY)) {
+			clearTimeout(pressTimer);
+			(e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+			const d = gesture.drag;
+			follow = d ? { dx: d.axis === 'x' ? d.dx : 0, dy: d.axis === 'y' ? Math.min(0, d.dy) : 0 } : null;
+		} else if (gesture.state !== 'pressed') {
+			clearTimeout(pressTimer);
+		}
+	}
+	function pup(e: PointerEvent) {
+		clearTimeout(pressTimer);
+		follow = null;
+		const a = gesture.up(e.clientX, e.clientY, e.timeStamp);
+		if (a === 'tap' || a === 'none') return; // a tap is the link's own click
+		swallow = true;
+		act(a);
+	}
+	function pcancel() {
+		clearTimeout(pressTimer);
+		follow = null;
+		gesture.cancel();
+	}
+	function onclick(e: MouseEvent) {
+		if (swallow) {
+			swallow = false;
+			e.preventDefault();
+		}
+	}
+	function onkeydown(e: KeyboardEvent) {
+		const a = miniKey(e);
+		if (a === 'none' || (a === 'open' && e.key === 'Enter')) return; // Enter: the link itself
+		e.preventDefault();
+		act(a);
+	}
+	function oncontextmenu(e: MouseEvent) {
+		// A right-click (or a touch long-press the browser reports): Play on…
+		e.preventDefault();
+		if (!swallow) act('long-press');
+		swallow = true;
+	}
 
 	function setVolume(v: number) {
 		volume = v;
@@ -33,14 +115,33 @@
 </script>
 
 <footer class="bar" aria-label="Player">
+	{#if thumb}<div class="tint" aria-hidden="true"><Art path={thumb} alt="" rounded="0" /></div>{/if}
 	<div class="strip"><PlayingElsewhere compact /></div>
-	<a class="now" href="#/" aria-label="Now playing">
-		<div class="thumb"><Art path={coverPath(track?.coverid ?? track?.artwork_track_id, 120)} alt="" label={title} /></div>
+	<a
+		class="now"
+		href="#/"
+		aria-label={`Now playing: ${title}${sleepIn !== null ? `. Sleep timer: ${formatLeft(sleepIn)}` : ''}`}
+		aria-describedby="mini-hint"
+		bind:this={nowEl}
+		style:transform={follow ? `translate(${follow.dx * 0.5}px, ${follow.dy * 0.4}px)` : undefined}
+		onpointerdown={pdown}
+		onpointermove={pmove}
+		onpointerup={pup}
+		onpointercancel={pcancel}
+		{onclick}
+		{onkeydown}
+		{oncontextmenu}
+		data-mini-player
+	>
+		<div class="thumb"><Art path={thumb} alt="" label={title} /></div>
 		<div class="meta">
 			<div class="title ellipsis">{title}</div>
-			<div class="sub ellipsis muted">{sub}</div>
+			<div class="sub ellipsis muted">
+				{#if sleepIn !== null}<span class="moon" title={`Sleep timer: ${formatLeft(sleepIn)}`}><Icon name="moon" size={13} /></span>{/if}{sub}
+			</div>
 		</div>
 	</a>
+	<span id="mini-hint" class="sr-only">Swipe left or right, or press Alt and an arrow key, for the next or previous track. Long-press, or press Shift and F10, for Play on.</span>
 
 	<div class="centre">
 		<div class="transport">
@@ -90,7 +191,7 @@
 				<input type="range" min="0" max="100" value={vol} oninput={(e) => setVolume(Number(e.currentTarget.value))} disabled={!app.now} />
 			</label>
 		{/if}
-		<OutputButton />
+		<OutputButton bind:open={playOn} />
 	</div>
 </footer>
 
@@ -116,6 +217,32 @@
 		align-items: center;
 		gap: 0.75rem;
 		min-width: 0;
+		touch-action: none;
+		user-select: none;
+		-webkit-touch-callout: none;
+	}
+	/* A faint wash of the cover behind the bar (its surface stays at least 94% opaque, so
+	   text keeps its contrast: tests/ambient.test.ts). */
+	.tint {
+		position: absolute;
+		inset: 0;
+		overflow: hidden;
+		opacity: 0.06;
+		pointer-events: none;
+		z-index: -1;
+	}
+	.tint :global(.art) {
+		position: absolute;
+		inset: -40%;
+		width: auto;
+		aspect-ratio: auto;
+		filter: blur(30px) saturate(1.4);
+	}
+	.moon {
+		display: inline-flex;
+		vertical-align: -2px;
+		margin-right: 0.3rem;
+		color: var(--accent);
 	}
 	.thumb {
 		width: 52px;
@@ -206,9 +333,17 @@
 			order: 3;
 		}
 		.progress,
-		.volume,
-		.transport .icon-btn:not(.play) {
+		.volume {
 			display: none;
+		}
+		/* Previous and next are swipes here; the buttons stay for screen readers and keys. */
+		.transport .icon-btn:not(.play) {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			padding: 0;
+			overflow: hidden;
+			clip: rect(0 0 0 0);
 		}
 		.thumb {
 			width: 46px;

@@ -22,6 +22,20 @@ import { refusalText, transfer } from '$lib/lms/transfer';
 import { textOf } from '$lib/lms/format';
 import { AnalysisClient } from '$lib/analysis/client';
 import { ApiError, CLIENT_HEADER, bearer } from '$lib/api/http';
+import {
+	armedOver,
+	choiceSeconds,
+	loadFade,
+	rearmSeconds,
+	remainingSeconds,
+	saveFade,
+	sleepLeft,
+	sleepTargets,
+	type Armed,
+	type SleepChoice,
+	type SleepScope,
+} from '$lib/lms/sleep';
+import type { Track } from '$lib/lms/types';
 
 const PLAYER_KEY = 'anywhere.player';
 /** The last player other than this device (for falling back when this device can't play). */
@@ -67,6 +81,15 @@ class AppState {
 	wantDevice = $state(false);
 	/** The player playback is being moved to, while a transfer runs. */
 	moving = $state('');
+	/** The sleep timer's fade-out (seconds; per user, kept in this browser for now). */
+	sleepFade = $state(30);
+	/** A sleep timer set to an end of the queue, kept in step with it (see sleep.ts). */
+	armed = $state<Armed | null>(null);
+	/** The queue after the current track, for the armed timer, and what it was read for. */
+	#upcoming: { key: string; tracks: Track[] } | null = null;
+	/** Fades this device's own output before its timer ends (set by the layout: device.setSleepFade). */
+	onDeviceSleep: (endsAt: number | null, fadeS: number) => void = () => {};
+	#sleepBusy = false;
 
 	/** A player to select as soon as LMS lists it (e.g. this device, just connected). */
 	#preferred = '';
@@ -183,6 +206,7 @@ class AppState {
 	}
 
 	async #started() {
+		this.sleepFade = loadFade(this.session?.user?.username ?? '');
 		this.#chooseStart();
 		// This device was the player before a reload: LMS lists it again only once it has
 		// reconnected, so hold the choice rather than switching to another player meanwhile.
@@ -216,6 +240,8 @@ class AppState {
 		this.notice = '';
 		this.wantDevice = false;
 		this.#preferred = '';
+		this.armed = null;
+		this.#upcoming = null;
 	}
 
 	#onVisible = () => {
@@ -336,6 +362,7 @@ class AppState {
 			this.elapsed = typeof s.time === 'number' ? s.time : 0;
 			this.#statusAt = performance.now();
 			this.error = '';
+			void this.#sleepCheck(id, s);
 		} catch (e) {
 			this.error = (e as Error).message;
 		}
@@ -370,7 +397,95 @@ class AppState {
 		this.queueVersion++;
 	}
 
-	/** Seek, updating the shown position at once. */
+	// --- sleep timer (docs/plans: Wave 1 §1) -------------------------------------------------
+
+	/** The queue after the current track (durations and albums), read once per queue state. */
+	async #readUpcoming(id: string, s: PlayerStatus): Promise<Track[]> {
+		const cur = Number(s.playlist_cur_index ?? 0);
+		const key = `${id}|${cur}|${s.playlist_tracks ?? 0}|${this.queueVersion}`;
+		if (this.#upcoming?.key === key) return this.#upcoming.tracks;
+		const r = await api.rpc<PlayerStatus>(id, cmd.queueTimes(cur + 1));
+		const tracks = r.playlist_loop ?? [];
+		this.#upcoming = { key, tracks };
+		return tracks;
+	}
+
+	/**
+	 * Set the sleep timer on the selected player, its sync group or every player. Resolves to
+	 * an error message, or '' when set.
+	 */
+	async setSleep(choice: SleepChoice, scope: SleepScope = 'player'): Promise<string> {
+		const id = this.playerId;
+		const s = this.now;
+		if (!id || !this.current) return 'Choose a player first.';
+		try {
+			const upcoming = choice.kind === 'album' || choice.kind === 'queue' ? await this.#readUpcoming(id, s ?? {}) : [];
+			const secs = choiceSeconds(choice, s, upcoming);
+			if (secs === null || secs <= 0) return "Can't tell when that ends (a stream with no set length?).";
+			const players = sleepTargets(scope, id, s, this.players);
+			await Promise.all(players.map((p) => api.rpc(p, cmd.sleep(secs))));
+			const now = Date.now();
+			this.armed = choice.kind === 'minutes' ? null : { end: choice.kind, players, endsAt: now + secs * 1000, setAt: now };
+			if (players.includes(this.deviceMac)) this.onDeviceSleep(now + secs * 1000, this.sleepFade);
+			this.soon();
+			return '';
+		} catch (e) {
+			return `Couldn't set the sleep timer: ${(e as Error).message}`;
+		}
+	}
+
+	/** Turn the timer off: on the players it was set on, and on the selected one. */
+	async cancelSleep(): Promise<string> {
+		const players = [...new Set([...(this.armed?.players ?? []), this.playerId].filter(Boolean))];
+		this.armed = null;
+		if (players.includes(this.deviceMac)) this.onDeviceSleep(null, 0);
+		try {
+			await Promise.all(players.map((p) => api.rpc(p, cmd.sleep(0))));
+			this.soon();
+			return '';
+		} catch (e) {
+			return `Couldn't turn the sleep timer off: ${(e as Error).message}`;
+		} finally {
+			this.soon();
+		}
+	}
+
+	/** Change the fade-out length (seconds). */
+	setSleepFade(seconds: number) {
+		saveFade(this.session?.user?.username ?? '', seconds);
+		this.sleepFade = loadFade(this.session?.user?.username ?? '');
+	}
+
+	/**
+	 * After each status: follow the timer on this device (its fade), and keep a timer set to
+	 * an end of the queue in step with it (a seek, skip, pause or queue edit moves the end).
+	 */
+	async #sleepCheck(id: string, s: PlayerStatus) {
+		const left = sleepLeft(s);
+		if (id === this.deviceMac) this.onDeviceSleep(left === null ? null : Date.now() + left * 1000, this.sleepFade);
+		const armed = this.armed;
+		if (!armed || armed.players[0] !== id || this.#sleepBusy) return;
+		const now = Date.now();
+		if (armedOver(armed, s.will_sleep_in, now)) {
+			this.armed = null;
+			return;
+		}
+		this.#sleepBusy = true;
+		try {
+			const upcoming = armed.end === 'track' ? [] : await this.#readUpcoming(id, s);
+			if (this.armed !== armed) return;
+			const secs = rearmSeconds(armed, remainingSeconds(armed.end, s, upcoming), now);
+			if (secs === null) return;
+			await Promise.all(armed.players.map((p) => api.rpc(p, cmd.sleep(secs))));
+			if (this.armed === armed) this.armed = { ...armed, endsAt: now + secs * 1000, setAt: now };
+			if (armed.players.includes(this.deviceMac)) this.onDeviceSleep(now + secs * 1000, this.sleepFade);
+		} catch {
+			/* tried again at the next status */
+		} finally {
+			this.#sleepBusy = false;
+		}
+	}
+
 	/** Seek, starting playback there if the player was paused or stopped. */
 	async seek(seconds: number) {
 		const mode = this.now?.mode;

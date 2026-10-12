@@ -101,6 +101,9 @@
 		};
 	});
 
+	// A sleep timer on this device fades its own output before the end.
+	app.onDeviceSleep = (endsAt, fadeS) => device.setSleepFade(endsAt, fadeS);
+
 	// When this browser becomes a player, control it.
 	device.onConnected = async (mac) => {
 		const point = loadResume();

@@ -5,8 +5,7 @@
 	import Icon from './Icon.svelte';
 	import PlayerSwitcher from './PlayerSwitcher.svelte';
 
-	let { size = 22, up = true }: { size?: number; up?: boolean } = $props();
-	let open = $state(false);
+	let { size = 22, up = true, open = $bindable(false) }: { size?: number; up?: boolean; open?: boolean } = $props();
 	const label = $derived(app.remote ? `Play on… (now ${app.nameOf(app.playerId) || 'another player'})` : 'Play on…');
 </script>
 

@@ -11,8 +11,19 @@
 	import SeekBar from '$lib/components/SeekBar.svelte';
 	import { device } from '$lib/player/device.svelte';
 	import { DEVICE_BUTTONS_NOTE } from '$lib/player/volume';
+	import Ambient from '$lib/components/Ambient.svelte';
+	import SleepSheet from '$lib/components/SleepSheet.svelte';
+	import SignalPath from '$lib/components/SignalPath.svelte';
+	import UpNext from '$lib/components/UpNext.svelte';
+	import { badgeText, quality } from '$lib/lms/quality';
+	import { formatLeft, sleepLeft } from '$lib/lms/sleep';
+	import { reducedMotion } from '$lib/theme/motion';
+	import { fade } from 'svelte/transition';
 
 	let showMore = $state(false);
+	let showSleep = $state(false);
+	let showPath = $state(false);
+	let sleepError = $state('');
 
 	let seeking = $state<number | null>(null);
 	let volume = $state<number | null>(null);
@@ -27,6 +38,11 @@
 	const shuffle = $derived(Number(app.now?.['playlist shuffle'] ?? 0));
 	const repeat = $derived(Number(app.now?.['playlist repeat'] ?? 0));
 	const vol = $derived(volume ?? app.now?.['mixer volume'] ?? 0);
+	const badge = $derived(quality(track));
+	const sleepIn = $derived(sleepLeft(app.now));
+	/** Art and title cross-fade between tracks (not under "reduce motion"). */
+	const trackKey = $derived(`${track?.id ?? ''}|${title}`);
+	const swap = { duration: reducedMotion() ? 0 : 350 };
 	const pos = $derived(
 		app.now?.playlist_tracks ? `${Number(app.now.playlist_cur_index ?? 0) + 1} of ${app.now.playlist_tracks}` : '',
 	);
@@ -42,8 +58,27 @@
 </script>
 
 <section class="np page">
+	<Ambient path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 120)} />
 	<div class="bar">
 		{#if app.remote || app.moving}<div class="where"><PlayingElsewhere /></div>{/if}
+		<span class="sleepgroup">
+			<button
+				class="btn act"
+				class:set={sleepIn !== null}
+				onclick={() => (showSleep = true)}
+				aria-haspopup="dialog"
+				aria-label={sleepIn !== null ? `Sleep timer: stops in ${formatLeft(sleepIn)}` : 'Sleep timer'}
+				disabled={!app.current}
+				data-sleep-button
+			>
+				<Icon name="moon" size={18} /><span class="label">{sleepIn !== null ? formatLeft(sleepIn) : 'Sleep'}</span>
+			</button>
+			{#if sleepIn !== null}
+				<button class="icon-btn cancel" aria-label="Turn the sleep timer off" onclick={async () => (sleepError = await app.cancelSleep())} data-sleep-cancel>
+					<Icon name="close" size={16} />
+				</button>
+			{/if}
+		</span>
 		<a class="btn act" href="#/queue" aria-label="Queue"><Icon name="queue" size={18} /><span class="label">Queue</span></a>
 		{#if typeof track?.id === 'number' && track.id > 0}
 			<button class="btn act" onclick={() => (showMore = true)} aria-label="More"><Icon name="more" size={18} /><span class="label">More</span></button>
@@ -51,9 +86,11 @@
 	</div>
 
 	<div class="art-wrap">
-		<div class="art-box">
-			<Art path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 800)} alt={title ? `Cover of ${textOf(track?.album)}` : ''} label={title} rounded="var(--radius)" eager />
-		</div>
+		{#key trackKey}
+			<div class="art-box" in:fade={swap}>
+				<Art path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 800)} alt={title ? `Cover of ${textOf(track?.album)}` : ''} label={title} rounded="var(--radius)" eager />
+			</div>
+		{/key}
 	</div>
 
 	<div class="info">
@@ -68,7 +105,7 @@
 			<h1>Nothing playing</h1>
 			<p class="muted">Pick an album to start. <a class="link" href="#/albums">Browse albums</a></p>
 		{:else}
-			<h1 class="title">{title}</h1>
+			{#key trackKey}<h1 class="title" in:fade={swap}>{title}</h1>{/key}
 			<p class="artist">
 				{#if artistHref}<a href={artistHref}>{textOf(track?.artist)}</a>{:else}{textOf(track?.artist)}{/if}
 			</p>
@@ -76,7 +113,11 @@
 				{#if albumHref}<a href={albumHref}>{textOf(track?.album)}</a>{:else}{textOf(track?.album)}{/if}
 				{#if track?.year}· {textOf(track.year)}{/if}
 			</p>
-			<p class="details muted">{formatDetails(track ?? {})}{pos ? ` · ${pos}` : ''}</p>
+			<p class="details muted">
+				{#if badge}
+					<button class="badge" class:hires={badge.hiRes} onclick={() => (showPath = true)} aria-haspopup="dialog" aria-label={`${badgeText(badge)}. Show the signal path`} data-quality-badge>{badgeText(badge)}</button>
+				{:else}{formatDetails(track ?? {})}{/if}{pos ? ` · ${pos}` : ''}
+			</p>
 		{/if}
 
 		<div class="progress">
@@ -115,6 +156,9 @@
 			</button>
 		</div>
 
+		<UpNext />
+		{#if sleepError}<p class="muted" role="alert">{sleepError}</p>{/if}
+
 		<div class="volrow">
 			{#if device.buttonsOnly(app.playerId)}
 				<p class="volume muted" data-volume-note><Icon name="volume" size={20} /><span>{DEVICE_BUTTONS_NOTE}</span></p>
@@ -130,6 +174,8 @@
 		</div>
 
 		{#if showMore && typeof track?.id === 'number'}<ContextMenu kind="track" id={track.id} title={title} onclose={() => (showMore = false)} />{/if}
+		{#if showSleep}<SleepSheet onclose={() => (showSleep = false)} />{/if}
+		{#if showPath}<SignalPath onclose={() => (showPath = false)} />{/if}
 	</div>
 </section>
 
@@ -167,6 +213,41 @@
 	}
 	.act {
 		flex: none;
+	}
+	.sleepgroup {
+		display: inline-flex;
+		align-items: center;
+		flex: none;
+	}
+	.act.set {
+		background: var(--accent-soft);
+		color: var(--accent-soft-fg);
+		font-variant-numeric: tabular-nums;
+	}
+	.cancel {
+		width: 32px;
+		height: 32px;
+		margin-left: 0.15rem;
+	}
+	.badge {
+		display: inline-flex;
+		align-items: center;
+		padding: 0.1rem 0.55rem;
+		border: 1px solid var(--line);
+		border-radius: 999px;
+		background: transparent;
+		color: var(--fg-muted);
+		font-size: 0.78rem;
+		font-weight: 650;
+		letter-spacing: 0.02em;
+		vertical-align: baseline;
+	}
+	.badge.hires {
+		border-color: var(--accent);
+		color: var(--fg);
+	}
+	.badge:hover {
+		background: color-mix(in srgb, var(--fg) 8%, transparent);
 	}
 	@container (max-width: 400px) {
 		.act {
@@ -305,12 +386,16 @@
 			padding: 0.5em;
 			border-radius: 50%;
 		}
-		.act .label {
+		.act:not(.set) .label {
 			position: absolute;
 			width: 1px;
 			height: 1px;
 			overflow: hidden;
 			clip: rect(0 0 0 0);
+		}
+		.act.set {
+			padding: 0.4em 0.75em;
+			border-radius: 999px;
 		}
 		.art-wrap {
 			flex: 1 1 0;

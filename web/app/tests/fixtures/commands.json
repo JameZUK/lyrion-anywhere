@@ -101,7 +101,7 @@
   "cmd": [
    "status",
    "-",
-   1,
+   2,
    "tags:aAlcdeJKjNoqrsTIyx"
   ]
  },
@@ -205,6 +205,29 @@
   "cmd": [
    "power",
    0
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "sleep",
+   1800
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "sleep",
+   0
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "status",
+   4,
+   500,
+   "tags:de"
   ]
  },
  {

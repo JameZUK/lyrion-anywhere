@@ -53,6 +53,10 @@ export interface PlayerStatus {
 	remote?: number | string;
 	current_title?: string;
 	playlist_loop?: Track[];
+	/** Seconds left on the sleep timer, while one is set. */
+	will_sleep_in?: number | string;
+	/** The sleep timer's length, in seconds, while one is set. */
+	sleep?: number | string;
 	/** Set while the player is in a sync group (only players the caller may control). */
 	sync_master?: string;
 	sync_slaves?: string;

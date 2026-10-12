@@ -39,6 +39,7 @@
 		// Cast-style: a screen with waves from its corner (where the sound plays).
 		output: 'M3.5 8V6a1 1 0 0 1 1-1h15a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-6M3.5 11.5a7.5 7.5 0 0 1 7.5 7.5M3.5 15a4 4 0 0 1 4 4M3.5 19h.01',
 		transfer: 'M4 12h14M13 7l5 5-5 5',
+		moon: 'M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z',
 		offline:'M3 8.5a13 13 0 0 1 18 0M6.5 12a8 8 0 0 1 11 0M10 15.5a3 3 0 0 1 4 0M4 4l16 16',
 	};
 	const SOLID = new Set(['play', 'pause', 'next', 'prev']);

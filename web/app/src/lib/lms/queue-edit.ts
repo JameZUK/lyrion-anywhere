@@ -1,4 +1,6 @@
 // Queue editing logic, kept free of the DOM so it can be tested on its own.
+import type { Command } from '$lib/api/rpc';
+import { enqueue, moveInQueue, status } from './commands';
 //
 // LMS's `playlist move <from> <to>` takes the track out at `from` and puts it back so that it
 // ends up at index `to` (in the new order). `reorder` does exactly the same to a local copy, so
@@ -65,4 +67,32 @@ export function swipeRemoves(dx: number, width: number): boolean {
  */
 export function isSwipe(dx: number, dy: number): boolean {
 	return Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.5;
+}
+
+/** How an edit reaches LMS (api.rpc). */
+export type Rpc = (player: string, cmd: Command) => Promise<unknown>;
+
+/** Undo waits up to this many checks, this far apart, for LMS to add the track back. */
+export const UNDO_POLLS = 10;
+export const UNDO_POLL_MS = 150;
+
+/**
+ * Put a removed library track back where it was (Undo): add it to the end, then move it into
+ * place. LMS may apply the add a moment later, so wait until the queue is exactly one longer
+ * (the last track is then the one just added) before moving it. Throws if the queue changed
+ * meanwhile (the track is then left at the end).
+ */
+export async function restoreTrack(rpc: Rpc, player: string, trackId: number, index: number, polls = UNDO_POLLS, pollMs = UNDO_POLL_MS): Promise<void> {
+	const count = async () => Number(((await rpc(player, status())) as { playlist_tracks?: unknown }).playlist_tracks);
+	const before = await count();
+	await rpc(player, enqueue({ track: trackId }, 'add'));
+	let after = await count();
+	for (let i = 0; i < polls && after === before; i++) {
+		await new Promise((r) => setTimeout(r, pollMs));
+		after = await count();
+	}
+	if (!Number.isInteger(before) || after !== before + 1) {
+		throw new Error('the queue changed meanwhile, so it was added at the end');
+	}
+	if (before > index) await rpc(player, moveInQueue(before, index));
 }

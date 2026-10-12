@@ -8,6 +8,7 @@ import { canPlayHere, detect } from './capabilities';
 import { MediaOutput, Timeline } from './media-output';
 import { MEDIA_TYPE, MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
 import { Reporter, buildReport, diagnosticsSender } from './diagnostics';
+import { fadeGain } from '$lib/lms/sleep';
 import { chooseVariant, loadCached, mediaFormatFor, mimeFor, runSelfTest, saveCached, type SelfTest } from './selftest';
 import {
 	ElementVolume,
@@ -79,6 +80,14 @@ class DevicePlayer {
 	volumePlan = $state<VolumePlan | null>(null);
 	/** LMS's volume for this player, as linear [left, right] gains. */
 	#lmsGains: [number, number] = [1, 1];
+	/** LMS's volume as a linear gain (the louder side), for the signal path. */
+	gain = $state(1);
+	/** The sleep timer's fade-out: a factor on the output, 1 when none runs. */
+	#fade = 1;
+	#fadeTimer: ReturnType<typeof setInterval> | undefined;
+	#fadeKey = '';
+	/** The output device's own sample rate (from a default AudioContext), once read. */
+	#deviceRate: number | null | undefined;
 	#mediaVolume: boolean | null = null;
 	#elementVolume: ElementVolume | null = null;
 	#node: AudioWorkletNode | null = null;
@@ -268,7 +277,8 @@ class DevicePlayer {
 	/** Apply LMS's volume (or full scale) at the output, after anything queued. */
 	#applyVolume() {
 		const plan = this.volumePlan;
-		const gains = outputGains(plan, this.#lmsGains);
+		const [l, r] = outputGains(plan, this.#lmsGains);
+		const gains: [number, number] = [l * this.#fade, r * this.#fade];
 		if (this.#media) this.#elementVolume?.set(elementVolume(gains));
 		else this.#node?.port.postMessage({ gain: gains });
 		if (plan && !plan.follow) this.#holdLmsAtFull();
@@ -287,6 +297,61 @@ class DevicePlayer {
 		if (now - this.#heldFullAt < HOLD_FULL_EVERY_MS) return;
 		this.#heldFullAt = now;
 		api.rpc(this.mac, ['mixer', 'volume', 100]).catch((e: Error) => this.#note(`could not set LMS volume to 100%: ${e.message}`));
+	}
+
+	/**
+	 * Fade this device's output out before its sleep timer ends (`endsAt`, ms on Date.now()'s
+	 * clock), over `fadeS` seconds; null cancels. The fade lifts by itself shortly after the
+	 * end, once LMS has stopped the player. LMS also lowers the volume over the last minute
+	 * (its own sleep fade), which this device follows when its volume follows LMS.
+	 */
+	setSleepFade(endsAt: number | null, fadeS: number) {
+		const key = endsAt === null || fadeS <= 0 ? '' : `${Math.round(endsAt / 1000)}:${fadeS}`;
+		if (key === this.#fadeKey) return;
+		this.#fadeKey = key;
+		clearInterval(this.#fadeTimer);
+		this.#fadeTimer = undefined;
+		const set = (f: number) => {
+			if (Math.abs(f - this.#fade) < 0.002 && f !== 0 && f !== 1) return;
+			if (f === this.#fade) return;
+			this.#fade = f;
+			this.#applyVolume();
+		};
+		if (!key || endsAt === null) {
+			set(1);
+			return;
+		}
+		this.#note(`sleep timer: fading out over ${fadeS} s before it ends`);
+		const step = () => {
+			const left = (endsAt - Date.now()) / 1000;
+			if (left < -10) {
+				// Well past the end: LMS has stopped the player. Back to full for next time.
+				clearInterval(this.#fadeTimer);
+				this.#fadeTimer = undefined;
+				this.#fadeKey = '';
+				set(1);
+				return;
+			}
+			set(fadeGain(left, fadeS));
+		};
+		step();
+		this.#fadeTimer = setInterval(step, 250);
+	}
+
+	/** The output device's own sample rate, or null if the browser won't say. */
+	deviceRate(): number | null {
+		if (this.#deviceRate !== undefined) return this.#deviceRate;
+		this.#deviceRate = null;
+		try {
+			if (typeof AudioContext === 'function') {
+				const ctx = new AudioContext();
+				this.#deviceRate = Number.isFinite(ctx.sampleRate) && ctx.sampleRate > 0 ? ctx.sampleRate : null;
+				ctx.close().catch(() => {});
+			}
+		} catch {
+			/* not available */
+		}
+		return this.#deviceRate;
 	}
 
 	get supported(): boolean {
@@ -660,6 +725,7 @@ class DevicePlayer {
 		if (typeof m.log === 'string') this.#note(m.log);
 		if (Array.isArray(m.volume)) {
 			this.#lmsGains = cleanGains(m.volume);
+			this.gain = Math.max(...this.#lmsGains);
 			this.#applyVolume();
 		}
 		if (m.media && typeof m.media === 'object') await this.#onMedia(m.media as Record<string, unknown>);
