@@ -15,6 +15,9 @@
 	import SleepSheet from '$lib/components/SleepSheet.svelte';
 	import SignalPath from '$lib/components/SignalPath.svelte';
 	import UpNext from '$lib/components/UpNext.svelte';
+	import LyricsView from '$lib/components/LyricsView.svelte';
+	import { lyrics } from '$lib/state/lyrics';
+	import { lineAt } from '$lib/lyrics/lyrics';
 	import { badgeText, quality } from '$lib/lms/quality';
 	import { formatLeft, sleepLeft } from '$lib/lms/sleep';
 	import { reducedMotion } from '$lib/theme/motion';
@@ -23,6 +26,7 @@
 	let showMore = $state(false);
 	let showSleep = $state(false);
 	let showPath = $state(false);
+	let showLyrics = $state(false);
 	let sleepError = $state('');
 
 	let seeking = $state<number | null>(null);
@@ -43,6 +47,12 @@
 	/** Art and title cross-fade between tracks (not under "reduce motion"). */
 	const trackKey = $derived(`${track?.id ?? ''}|${title}`);
 	const swap = { duration: reducedMotion() ? 0 : 350 };
+	/** Lyrics for library tracks (not streams). */
+	const lyricsId = $derived(typeof track?.id === 'number' && track.id > 0 && !isRemote(track.remote) ? track.id : null);
+	$effect(() => {
+		void lyrics.load(lyricsId);
+	});
+	const lyricLine = $derived(lyrics.peek && lyrics.lyrics?.synced ? lyrics.lyrics.lines[lineAt(lyrics.lyrics, app.elapsed * 1000)]?.text ?? '' : '');
 	const pos = $derived(
 		app.now?.playlist_tracks ? `${Number(app.now.playlist_cur_index ?? 0) + 1} of ${app.now.playlist_tracks}` : '',
 	);
@@ -79,6 +89,9 @@
 				</button>
 			{/if}
 		</span>
+		{#if lyrics.lyrics && lyricsId !== null}
+			<button class="btn act" onclick={() => (showLyrics = true)} aria-haspopup="dialog" aria-label="Lyrics" data-lyrics-button><Icon name="lyrics" size={18} /><span class="label">Lyrics</span></button>
+		{/if}
 		<a class="btn act" href="#/queue" aria-label="Queue"><Icon name="queue" size={18} /><span class="label">Queue</span></a>
 		{#if typeof track?.id === 'number' && track.id > 0}
 			<button class="btn act" onclick={() => (showMore = true)} aria-label="More"><Icon name="more" size={18} /><span class="label">More</span></button>
@@ -118,6 +131,9 @@
 					<button class="badge" class:hires={badge.hiRes} onclick={() => (showPath = true)} aria-haspopup="dialog" aria-label={`${badgeText(badge)}. Show the signal path`} data-quality-badge>{badgeText(badge)}</button>
 				{:else}{formatDetails(track ?? {})}{/if}{pos ? ` · ${pos}` : ''}
 			</p>
+			{#if lyricLine}
+				<button class="peek" onclick={() => (showLyrics = true)} aria-label={`Lyrics: ${lyricLine}. Show all the lyrics`} data-lyrics-peek>{lyricLine}</button>
+			{/if}
 		{/if}
 
 		<div class="progress">
@@ -176,6 +192,7 @@
 		{#if showMore && typeof track?.id === 'number'}<ContextMenu kind="track" id={track.id} title={title} onclose={() => (showMore = false)} />{/if}
 		{#if showSleep}<SleepSheet onclose={() => (showSleep = false)} />{/if}
 		{#if showPath}<SignalPath onclose={() => (showPath = false)} />{/if}
+		{#if showLyrics}<LyricsView {title} onclose={() => (showLyrics = false)} />{/if}
 	</div>
 </section>
 
@@ -245,6 +262,24 @@
 	.badge.hires {
 		border-color: var(--accent);
 		color: var(--fg);
+	}
+	/* The current lyric line, small, over the ambient background. */
+	.peek {
+		display: block;
+		max-width: 100%;
+		margin: 0.35rem 0 0;
+		padding: 0.2rem 0;
+		background: none;
+		border: 0;
+		color: var(--fg);
+		font: inherit;
+		font-size: 0.95rem;
+		font-style: italic;
+		text-align: inherit;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		cursor: pointer;
 	}
 	.badge:hover {
 		background: color-mix(in srgb, var(--fg) 8%, transparent);

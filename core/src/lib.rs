@@ -8,6 +8,7 @@ pub mod analysis;
 #[cfg(feature = "player")]
 pub mod decode;
 pub mod dsp;
+pub mod lyrics;
 pub mod mux;
 #[cfg(feature = "opus")]
 pub mod opus;

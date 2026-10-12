@@ -40,6 +40,7 @@ mod flac_strip;
 pub mod history;
 pub mod home;
 pub mod limits;
+pub mod lyrics;
 pub mod menu_actions;
 pub mod plays;
 mod relay;
@@ -264,6 +265,8 @@ pub struct Gateway {
     station_served: stations::Served,
     /// Pruning of listening history.
     history_upkeep: history::Upkeep,
+    /// Lyrics answers and the plugin lookup limit.
+    lyrics: lyrics::LyricsCache,
 }
 
 /// Renames a device may make of itself per [`RENAME_WINDOW`] (`PATCH /v1/devices/self`).
@@ -333,6 +336,7 @@ impl Gateway {
             ),
             station_served: Default::default(),
             history_upkeep: Default::default(),
+            lyrics: Default::default(),
             cfg,
         })
     }
@@ -460,6 +464,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/download/track/{id}/info", get(download::info))
         .route("/v1/download/track/{id}", get(download::track))
         .route("/v1/analysis/track/{id}", get(analysis::track))
+        .route("/v1/lyrics/track/{id}", get(lyrics::track))
         .route("/v1/plays", post(plays::record))
         .route(
             "/v1/me/history",

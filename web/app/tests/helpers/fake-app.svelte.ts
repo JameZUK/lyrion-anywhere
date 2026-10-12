@@ -67,6 +67,12 @@ class FakeApp {
 		await api.rpc(this.playerId, c);
 	}
 	libraryVersion = $state(0);
+	elapsed = $state(0);
+	seeks: number[] = [];
+	async seek(seconds: number) {
+		this.seeks.push(seconds);
+		this.elapsed = seconds;
+	}
 	sleepFade = $state(30);
 	armed = $state<null | { end: 'track' | 'album' | 'queue'; players: string[]; endsAt: number; setAt: number }>(null);
 	sleepCalls: { choice: unknown; scope: unknown }[] = [];

@@ -19,6 +19,7 @@ use serde_json::{Map, Value, json};
 
 use crate::commands::{self, Command};
 use crate::error::ApiError;
+use crate::lyrics::{TrackLyrics, parse_lyrics};
 use crate::menus::{self, MenuAction, MenuPage};
 use crate::model::clean_text;
 use crate::session::{Core, Session};
@@ -901,6 +902,32 @@ impl Me {
     }
 
     /// Open a pinned menu on `player`: the menu as LMS offers it now.
+    /// A library track's lyrics (from its tags, or the Music & Artist Information plugin on
+    /// the server), or `None` when it has none.
+    pub async fn lyrics(&self, track_id: i64) -> Result<Option<TrackLyrics>, ApiError> {
+        let path = format!("v1/lyrics/track/{}", check_id(track_id)?);
+        let core = self.core();
+        let url = core.server().endpoint(&path);
+        core.authed(|token| {
+            let req = core.http().get(url.clone()).bearer_auth(&token);
+            async move {
+                let resp = req.send().await?;
+                match resp.status().as_u16() {
+                    // "no lyrics" (or a track LMS doesn't know): nothing to show.
+                    404 => Ok(None),
+                    200 => {
+                        let bytes = resp.read_limited(transport::MAX_JSON).await?;
+                        let v: Value = serde_json::from_slice(&bytes)
+                            .map_err(|_| ApiError::bad_response("malformed answer"))?;
+                        Ok(parse_lyrics(&v))
+                    }
+                    _ => Err(transport::error_from_response(resp).await),
+                }
+            }
+        })
+        .await
+    }
+
     pub async fn open_menu(&self, id: i64, player: String) -> Result<MenuPage, ApiError> {
         let body = json!({"player": commands::player_id(&player)?});
         let path = format!("v1/me/menus/{}/open", check_id(id)?);

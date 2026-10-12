@@ -430,6 +430,13 @@ impl FakeLms {
         }
     }
 
+    /// Lyrics in a library track's tags (LMS's `lyrics`, tag `w`).
+    pub fn set_lyrics(&self, id: u64, text: &str) {
+        if let Some((item, _)) = self.library.lock().unwrap().get_mut(&id) {
+            item["lyrics"] = json!(text);
+        }
+    }
+
     /// A local library file the gateway may analyse (LMS type `kind`).
     pub fn add_track(&self, id: u64, kind: &str, file: Vec<u8>) {
         let item = json!({

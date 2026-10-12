@@ -66,6 +66,16 @@ class SettingsStoreTest {
         }
     }
 
+    /** The lyrics peek (Wave 1): on by default, and kept. */
+    @Test
+    fun lyricsPeekIsOnByDefaultAndSurvivesARestart() = runBlocking {
+        assertTrue(DataStoreSettings(store()).settings.first().lyricsPeek)
+        DataStoreSettings(restart()).setLyricsPeek(false)
+        assertFalse(DataStoreSettings(restart()).settings.first().lyricsPeek)
+        DataStoreSettings(restart()).setLyricsPeek(true)
+        assertTrue(DataStoreSettings(restart()).settings.first().lyricsPeek)
+    }
+
     @Test
     fun soundDefaultsToBitPerfect() = runBlocking {
         val s = DataStoreSettings(store()).settings.first().sound

@@ -766,6 +766,39 @@ Clients must treat both forms as untrusted: check the magic, the version, every 
 
 **Other answers:** 404 `not found` (a bad or unknown id, as for downloads), 404 `not analysable` (not a library file), 404 `analysis is not available on this server` (turned off with `--no-analysis` or the plugin's setting), 502/504 `music server unavailable`/`timed out` (not remembered).
 
+## Lyrics (`GET /v1/lyrics/track/{id}`)
+
+The lyrics of a library track, for Now playing (docs/plans/wave1-design.md §9).
+
+**Who may ask:** any signed-in user: a bearer access token (401 without one). It counts towards the per-user `/v1/me/…` allowance (429 with `Retry-After` beyond it).
+
+**Request:** the track id only: a positive integer, at most 12 digits, no leading zero. Anything else is 404, and any query string is 400 `unknown parameter`. No path, URL, artist or title is ever taken from the client.
+
+**Where the lyrics come from, in order:**
+1. **The file's tags**, as LMS read them (`titles … tags:w`): plain text or LRC.
+2. **The Music & Artist Information plugin**, if it is installed: `musicartistinfo lyrics track_id:<id>`. It returns that plugin's local and cached lyrics, and whatever online lyrics services the server's owner has enabled in it. The gateway itself never calls a lyrics service.
+
+**Answer:** 200, already parsed by the core (`core::lyrics`):
+
+```json
+{"source":"tags","synced":true,"lines":[{"t":8580,"text":"First line"},{"t":12230,"text":""}]}
+```
+
+- `source` is `tags` or `plugin`.
+- `synced` says whether the lines have times. `t` is the start of the line in ms; it is 0 for plain lyrics.
+- Synced lines are in time order. An empty `text` is an instrumental gap.
+- Enhanced-LRC word times, metadata lines (`[ar:…]`) and control characters are removed, and `[offset:…]` is applied.
+- **Limits:** at most 4,000 lines, 500 characters a line, from at most 256 KiB of text.
+- Lines that look like a server path or a LAN address are dropped, as in every other answer.
+
+**Refusals:**
+- 404 `no such track`: an unknown id.
+- 404 `no lyrics`: none from either source.
+- 429 with `Retry-After`: more than 4 plugin lookups are already running. The plugin may go online, so each lookup also has a 12 s limit.
+- 503: LMS didn't answer.
+
+**Caching:** answers, and "no lyrics", are remembered for 15 minutes, for up to 512 tracks. Every answer is `Cache-Control: private, no-store`.
+
 ## Events (`WS /v1/events`)
 
 **Connecting:** the first message is the access token, as text. The gateway replies `{"subscribed":true}`, then sends `{"player":"<mac>","event":[...]}` for the caller's permitted players and `{"player":null,"event":["rescan",...]}` for library rescans. `{"resync":true}` means some events were missed, so re-query state.

@@ -14,6 +14,7 @@ import io.github.jamezuk.lyrionanywhere.core.ShuffleMode
 import io.github.jamezuk.lyrionanywhere.core.SleepEnd
 import io.github.jamezuk.lyrionanywhere.core.SyncGroup
 import io.github.jamezuk.lyrionanywhere.core.Track
+import io.github.jamezuk.lyrionanywhere.core.TrackLyrics
 import io.github.jamezuk.lyrionanywhere.core.TransferOutcome
 import io.github.jamezuk.lyrionanywhere.core.TransferStage
 import io.github.jamezuk.lyrionanywhere.data.NowPlaying
@@ -32,6 +33,7 @@ import io.github.jamezuk.lyrionanywhere.data.SettingsStore
 import io.github.jamezuk.lyrionanywhere.data.StreamUpdate
 import io.github.jamezuk.lyrionanywhere.data.Waveform
 import io.github.jamezuk.lyrionanywhere.data.WaveformCache
+import io.github.jamezuk.lyrionanywhere.data.LyricsCache
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -81,6 +83,12 @@ data class PlayerUiState(
     val sleepFade: Int = io.github.jamezuk.lyrionanywhere.data.SLEEP_FADE_DEFAULT,
     /** A timer set to an end of the queue, kept in step with it (see [SleepTimer]). */
     val sleepArm: SleepArm? = null,
+    /** The current track's lyrics (null: none, or not known yet). */
+    val lyrics: TrackLyrics? = null,
+    /** The track [lyrics] belong to. */
+    val lyricsTrackId: Long? = null,
+    /** Show the current lyric line on Now playing (Settings). */
+    val lyricsPeek: Boolean = true,
 ) {
     val selected: Player? get() = players.firstOrNull { it.id == selectedId }
     val playing: Boolean get() = status?.mode == PlaybackMode.PLAYING
@@ -148,6 +156,8 @@ class PlayerViewModel(
     private val localPlayer: LocalPlayerRepository = NoLocalPlayer,
     /** Waveforms for the seek bar (none without). */
     private val waveforms: WaveformCache? = null,
+    /** Lyrics for Now playing (none without). */
+    private val lyrics: LyricsCache? = null,
     /** Where the home-screen widget and tile learn what plays (none in tests). */
     private val nowPlaying: NowPlayingHub? = null,
     private val clock: () -> Long,
@@ -197,6 +207,11 @@ class PlayerViewModel(
                 }
             }
             launch {
+                settings.settings.map { it.lyricsPeek }.distinctUntilChanged().collect { on ->
+                    _state.update { it.copy(lyricsPeek = on) }
+                }
+            }
+            launch {
                 // This phone is the default player: make sure it is on.
                 val s = settings.settings.first()
                 if (!started && PlayerChoice.wantsPhone(s) && !_state.value.local.enabled && !localPlayer.state.value.enabled) {
@@ -235,6 +250,17 @@ class PlayerViewModel(
                         if (id == null || id <= 0) return@collectLatest
                         val w = waveforms.load(id)
                         _state.update { s -> if (s.status?.current?.id == id) s.copy(waveform = w) else s }
+                    }
+                }
+            }
+            if (lyrics != null) {
+                launch {
+                    // The current track's lyrics, as for the waveform.
+                    state.map { it.status?.current?.id }.distinctUntilChanged().collectLatest { id ->
+                        _state.update { s -> if (s.lyricsTrackId == id) s else s.copy(lyrics = null, lyricsTrackId = null) }
+                        if (id == null || id <= 0) return@collectLatest
+                        val l = lyrics.load(id)
+                        _state.update { s -> if (s.status?.current?.id == id) s.copy(lyrics = l, lyricsTrackId = id) else s }
                     }
                 }
             }
@@ -820,6 +846,11 @@ class PlayerViewModel(
             _messages.trySend(failed?.let { PlayerMessage.Failed(it) } ?: PlayerMessage.SleepOff)
             refreshStatus()
         }
+    }
+
+    /** Show the current lyric line on Now playing (Settings). */
+    fun setLyricsPeek(on: Boolean) {
+        viewModelScope.launch { settings.setLyricsPeek(on) }
     }
 
     /** The fade-out length (Settings; checked before it is kept). */

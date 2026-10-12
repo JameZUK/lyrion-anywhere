@@ -48,6 +48,8 @@ When it signs in, the app also tells your gateway what it is, so its admins can 
 
 Nothing is sent to the project, Google or anyone else. The app contains no analytics, advertising or crash-reporting services, and no Google Play Services.
 
+**Lyrics:** the app asks your gateway for a track's lyrics by its id. The gateway reads them from the file's tags, or asks the *Music & Artist Information* plugin on your server if it is installed. That plugin may look lyrics up online, depending on how your server's owner has set it up. That is the plugin's own setting; Lyrion Anywhere never contacts a lyrics service itself.
+
 **Android Auto:** when you use the app in a car, Android Auto shows your library's titles, which the app hands to it on the phone. It is told the ids and names of items only, never addresses or files.
 
 ## What your gateway (the server) stores

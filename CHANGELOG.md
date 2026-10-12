@@ -2,6 +2,30 @@
 
 Dated entries, newest first.
 
+## 2026-10-12: Wave 1: lyrics (web and Android)
+
+- **Lyrics on Now playing**, from the file's tags (plain or synced LRC) or, when it is installed on the server, the **Music & Artist Information** plugin. Lyrion Anywhere itself never contacts a lyrics service; that plugin may, depending on its own settings.
+- **Full-screen view:** synced lyrics highlight the playing line and keep it in view (unless you have just scrolled), and tapping a line seeks there; plain lyrics scroll. A *Lyrics* button shows whenever the track has any.
+- **Peek:** the current line, small, under the track details, when a track has synced lyrics. It is on by default, can be switched off in Settings, and tapping it opens the full view.
+- **Gateway:** `GET /v1/lyrics/track/{id}` takes only the track id and answers with lines already parsed by the Rust core (`core::lyrics`):
+  - times checked, `[offset:]` applied, enhanced-LRC word times and metadata removed;
+  - at most 4,000 lines of 500 characters from 256 KiB;
+  - lines that look like a server path or LAN address dropped;
+  - answers cached for 15 minutes;
+  - at most 4 plugin lookups at once, each limited to 12 s.
+- **Tests:**
+  - **parser:** unit tests, and robustness runs over random, LRC-shaped, mutated and oversize input that never panic and always keep the limits;
+  - **gateway:** unit tests (answer shape, path and address redaction, bounded cache), and integration tests against the fake LMS:
+    - tags first, then the plugin with only the id;
+    - "no lyrics" remembered;
+    - unknown tracks;
+    - no token;
+    - hostile ids and parameters refused before LMS;
+    - the per-user allowance;
+  - **mobile layer:** checking of the answer, and a round trip through the real gateway;
+  - **web (Vitest):** checking of the answer, the current line, fetching once per track, races, bounded memory, the peek, the view, tap to seek, the setting, and hostile text shown as text;
+  - **Android (Robolectric):** the same on Now playing and in Settings, the view model following the track, and the cache.
+
 ## 2026-10-12: Wave 1 (part A): Now playing and the sleep timer
 
 - **Sleep timer** on every player, from a moon button on Now playing (the mini player shows a small moon while one runs; one tap turns it off):

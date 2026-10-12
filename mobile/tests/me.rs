@@ -375,3 +375,40 @@ async fn shelves_fetch_albums_and_tracks_by_id_through_the_allow_list() {
     assert!(lib.tracks_by_id(vec![-3]).await.is_err());
     assert!(lib.albums_by_id(vec![]).await.unwrap().is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lyrics_from_the_tags_through_the_gateway() {
+    let h = Harness::start().await;
+    h.lms.add_track(41, "flc", vec![0; 16]);
+    h.lms.add_track(42, "flc", vec![0; 16]);
+    h.lms.set_lyrics(
+        41,
+        "[ar:Artist]\n[00:12.50]Second\n[00:01.00]First\n[00:20.00]file:///srv/music/41.flac\n",
+    );
+    let (s, _) = h.alice().await;
+    let me = Me::new(s.clone());
+
+    let l = me.lyrics(41).await.unwrap().unwrap();
+    assert!(l.synced && !l.from_plugin);
+    let got: Vec<(u32, &str)> = l
+        .lines
+        .iter()
+        .map(|x| (x.time_ms, x.text.as_str()))
+        .collect();
+    assert_eq!(got, vec![(1000, "First"), (12500, "Second")]);
+
+    // None in the tags, and the plugin (not installed here) has none either.
+    assert_eq!(me.lyrics(42).await.unwrap(), None);
+    // Unknown to LMS.
+    assert_eq!(me.lyrics(999_999).await.unwrap(), None);
+
+    // Bad ids are refused before anything is sent.
+    let before = h.lms.rpc_calls().len();
+    for id in [0, -1, 1_000_000_000_000] {
+        assert!(
+            matches!(me.lyrics(id).await, Err(ApiError::InvalidInput { .. })),
+            "{id}"
+        );
+    }
+    assert_eq!(h.lms.rpc_calls().len(), before);
+}

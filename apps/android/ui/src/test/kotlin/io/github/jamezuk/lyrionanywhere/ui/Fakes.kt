@@ -366,6 +366,8 @@ class FakeSettings(initial: AppSettings = AppSettings()) : SettingsStore {
 
     override suspend fun setSleepFade(seconds: Int) =
         state.update { it.copy(sleepFadeSecs = io.github.jamezuk.lyrionanywhere.data.sanitiseSleepFade(seconds)) }
+
+    override suspend fun setLyricsPeek(on: Boolean) = state.update { it.copy(lyricsPeek = on) }
 }
 
 fun localStatus(id: String, connection: PlayerConnection = PlayerConnection.Connected) = LocalPlayerStatus(

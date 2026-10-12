@@ -63,6 +63,10 @@ pub const TRACK_URL: &str = "file:///srv/music/Artist/Album/01%20Track.flac";
 /// - 5: a local file of a type that is never transcoded
 /// - 6: a local file without a size, whose download ignores `Range`
 /// - 8: a local file whose download stalls after the first bytes
+/// - 9: a local file with synced (LRC) lyrics in its tags, some lines naming server paths
+///
+/// The fake Music & Artist Information plugin (`musicartistinfo lyrics`) has plain lyrics
+/// for track 1 only.
 ///
 /// Any other id is unknown (and its download hangs, as on a real LMS).
 pub fn fake_track(id: u64, size: usize) -> Option<serde_json::Value> {
@@ -91,6 +95,14 @@ pub fn fake_track(id: u64, size: usize) -> Option<serde_json::Value> {
             t
         }
         8 => local("file:///srv/music/8.flac", "flc"),
+        9 => {
+            let mut t = local("file:///srv/music/9.flac", "flc");
+            t["lyrics"] = json!(
+                "[ar:Artist]\r\n[00:12.50]Second line\r\n[00:01.00]First line\r\n\
+                                 [00:20.00]file:///srv/music/9.flac\r\n[00:21.00]/srv/music/Artist/9.lrc\r\n"
+            );
+            t
+        }
         _ => return None,
     })
 }
@@ -432,6 +444,13 @@ impl FakeLms {
                         _ if plugin_answer.is_some() => plugin_answer.unwrap(),
                         Some(_) if cmd == "titles" && added.is_some() => {
                             serde_json::json!({"count": 1, "titles_loop": [added.unwrap().0]})
+                        }
+                        Some(id) if cmd == "musicartistinfo" => {
+                            if id == 1 && words.len() == 3 {
+                                serde_json::json!({"lyrics": "Plain words\nfrom the plugin", "title": "Track"})
+                            } else {
+                                serde_json::json!({"error": "Not found"})
+                            }
                         }
                         Some(id) if cmd == "titles" => match fake_track(id, a.len()) {
                             Some(t) => serde_json::json!({"count": 1, "titles_loop": [t]}),

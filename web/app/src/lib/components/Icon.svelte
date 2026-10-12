@@ -45,6 +45,7 @@
 		up: 'M12 19V5M6 11l6-6 6 6',
 		down: 'M12 5v14M6 13l6 6 6-6',
 		moon: 'M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z',
+		lyrics: 'M4 5h16v11H9.5L5 20v-4H4zM8 9h8M8 12.5h5',
 		offline:'M3 8.5a13 13 0 0 1 18 0M6.5 12a8 8 0 0 1 11 0M10 15.5a3 3 0 0 1 4 0M4 4l16 16',
 	};
 	const SOLID = new Set(['play', 'pause', 'next', 'prev']);

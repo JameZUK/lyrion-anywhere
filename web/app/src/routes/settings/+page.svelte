@@ -21,6 +21,7 @@
 	import { isThisDevice } from '$lib/player/outputs';
 	import { textOf } from '$lib/lms/format';
 	import { FADE_CHOICES } from '$lib/lms/sleep';
+	import { lyrics } from '$lib/state/lyrics';
 
 	// Built in: every browser is checked, and the best playback mode chosen automatically.
 	const caps = detect();
@@ -343,6 +344,15 @@
 	</div>
 
 	<div class="card">
+		<h2>Lyrics</h2>
+		<label class="check">
+			<input type="checkbox" checked={lyrics.peek} onchange={(e) => lyrics.setPeek(e.currentTarget.checked)} data-lyrics-peek-setting />
+			<span>Show the current line on Now playing</span>
+		</label>
+		<p class="muted small">When a track has synced lyrics. All lyrics are always a tap away with the Lyrics button. Kept in this browser.</p>
+	</div>
+
+	<div class="card">
 		<h2>Appearance</h2>
 		<AppearancePicker />
 	</div>
@@ -405,6 +415,12 @@
 </section>
 
 <style>
+	.check {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin: 0.5rem 0;
+	}
 	.settings {
 		display: grid;
 		gap: 1.25rem;

@@ -639,4 +639,12 @@
     <string name="signal_source_lossy">lossy</string>
     <string name="mini_play_on">Play on…</string>
 
+    <!-- Lyrics (Wave 1 §9) -->
+    <string name="lyrics">Lyrics</string>
+    <string name="lyrics_close">Close lyrics</string>
+    <string name="lyrics_peek_label">Lyrics: %1$s. Show all the lyrics</string>
+    <string name="lyrics_from_plugin">From Music &amp; Artist Information</string>
+    <string name="lyrics_from_tags">From the file’s tags</string>
+    <string name="settings_lyrics_peek">Show the current lyric line</string>
+    <string name="settings_lyrics_peek_detail">On Now playing, when a track has synced lyrics. All lyrics are always a tap away with the Lyrics button.</string>
 </resources>

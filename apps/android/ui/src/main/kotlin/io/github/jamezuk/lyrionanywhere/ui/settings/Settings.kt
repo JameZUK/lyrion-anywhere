@@ -194,6 +194,8 @@ fun SettingsScreen(
     history: (@Composable () -> Unit)? = null,
     /** The sleep timer's fade-out setting (Wave 1), when the app has players. */
     sleepFade: (@Composable () -> Unit)? = null,
+    /** The lyrics peek setting (Wave 1), when the app has players. */
+    lyrics: (@Composable () -> Unit)? = null,
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var renaming by rememberSaveable { mutableStateOf(false) }
@@ -204,6 +206,10 @@ fun SettingsScreen(
         }
         if (sleepFade != null) {
             item { sleepFade() }
+            if (lyrics == null) item { HorizontalDivider() }
+        }
+        if (lyrics != null) {
+            item { lyrics() }
             item { HorizontalDivider() }
         }
         state.sound?.let { sound ->

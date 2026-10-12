@@ -39,6 +39,8 @@ data class AppSettings(
     val offlineOwner: String? = null,
     /** The sleep timer's fade-out on this phone's player, seconds (0–120; 0 is off). */
     val sleepFadeSecs: Int = SLEEP_FADE_DEFAULT,
+    /** The current lyric line, small, on Now playing (when a track has synced lyrics). */
+    val lyricsPeek: Boolean = true,
 )
 
 /** The sleep timer's fade-out: 30 s by default, at most 2 minutes. */
@@ -94,6 +96,9 @@ interface SettingsStore {
 
     /** The sleep timer's fade-out (seconds; checked before it is kept). */
     suspend fun setSleepFade(seconds: Int) {}
+
+    /** Show the current lyric line on Now playing. */
+    suspend fun setLyricsPeek(on: Boolean) {}
 }
 
 /** A user name fit to remember as the offline owner. */
@@ -113,11 +118,16 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
             downloads = readDownloads(it),
             offlineOwner = it[OFFLINE_OWNER]?.takeIf(::isOwnerName),
             sleepFadeSecs = sanitiseSleepFade(it[SLEEP_FADE]),
+            lyricsPeek = it[LYRICS_PEEK] ?: true,
         )
     }
 
     override suspend fun setSleepFade(seconds: Int) {
         store.edit { p -> p[SLEEP_FADE] = sanitiseSleepFade(seconds) }
+    }
+
+    override suspend fun setLyricsPeek(on: Boolean) {
+        store.edit { p -> p[LYRICS_PEEK] = on }
     }
 
     override suspend fun setDownloads(downloads: DownloadSettings) {
@@ -190,6 +200,7 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         val DEFAULT_PLAYER_ID = stringPreferencesKey("default_player_id")
         val OFFLINE_OWNER = stringPreferencesKey("offline_owner")
         val SLEEP_FADE = intPreferencesKey("sleep_fade_secs")
+        val LYRICS_PEEK = booleanPreferencesKey("lyrics_peek")
         val DL_WIFI = stringPreferencesKey("downloads_wifi_format")
         val DL_MOBILE = stringPreferencesKey("downloads_mobile_format")
         val DL_WIFI_ONLY = booleanPreferencesKey("downloads_wifi_only")

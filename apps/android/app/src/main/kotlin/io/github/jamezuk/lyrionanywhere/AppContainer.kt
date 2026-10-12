@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.preferencesDataStoreFile
 import io.github.jamezuk.lyrionanywhere.data.AccountRepository
 import io.github.jamezuk.lyrionanywhere.data.AnalysisRepository
+import io.github.jamezuk.lyrionanywhere.data.LyricsRepository
+import io.github.jamezuk.lyrionanywhere.data.RustLyricsRepository
 import io.github.jamezuk.lyrionanywhere.data.RustAnalysisRepository
 import io.github.jamezuk.lyrionanywhere.data.ArtRepository
 import io.github.jamezuk.lyrionanywhere.data.DataStoreSettings
@@ -87,6 +89,7 @@ class AppContainer(context: Context, scope: CoroutineScope) {
     val art: ArtRepository = RustArtRepository(accountImpl)
     val events: EventsRepository = RustEventsRepository(accountImpl)
     val analysis: AnalysisRepository = RustAnalysisRepository(accountImpl)
+    val lyrics: LyricsRepository = RustLyricsRepository(accountImpl)
     val menus: MenusRepository = RustMenusRepository(accountImpl)
 
     /** Listening history, the customisable Home and stations (Wave 1). */

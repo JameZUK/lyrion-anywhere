@@ -378,10 +378,12 @@ private fun NowPlayingControls(
     val track = status.current
     var showSleep by rememberSaveable { mutableStateOf(false) }
     var showPath by rememberSaveable { mutableStateOf(false) }
+    var showLyrics by rememberSaveable { mutableStateOf(false) }
     // Art and title cross-fade between tracks (Compose follows the system's animation
     // scale, so "Remove animations" turns this into a cut).
     val trackKey = track?.id ?: track?.title
     val elapsed = rememberElapsed(state, clock)
+    val lyrics = state.lyrics?.takeIf { track?.id != null && state.lyricsTrackId == track.id }
     val nextLabel = stringResource(R.string.action_next)
     val previousLabel = stringResource(R.string.action_previous)
     val coverLabel = stringResource(R.string.album_cover)
@@ -435,6 +437,10 @@ private fun NowPlayingControls(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         track?.quality?.let { q -> QualityBadge(q, onClick = { showPath = true }) }
+        if (state.lyricsPeek && lyrics?.synced == true) {
+            val line = lyrics.lines.getOrNull(lyricLineAt(lyrics, elapsed))?.text
+            if (!line.isNullOrEmpty()) LyricsPeek(line, onOpen = { showLyrics = true })
+        }
         SeekBar(
             elapsed = elapsed,
             duration = status.durationSecs,
@@ -490,6 +496,7 @@ private fun NowPlayingControls(
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f)) { VolumeBar(status.volume.toInt(), actions.onVolume) }
+            if (lyrics != null) LyricsButton(onOpen = { showLyrics = true })
             SleepButton(SleepTimer.left(status), onOpen = { showSleep = true }, onCancel = actions.onCancelSleep)
             OutputButton(state, actions.onOutputs)
             if (track?.id != null && actions.onMore != null) {
@@ -537,6 +544,16 @@ private fun NowPlayingControls(
         )
     }
     if (showPath) SignalPathSheet(state, onDismiss = { showPath = false })
+    if (showLyrics && lyrics != null) {
+        LyricsScreen(
+            lyrics = lyrics,
+            title = track?.title.orEmpty(),
+            elapsedSecs = elapsed,
+            canSeek = status.canSeek,
+            onSeek = actions.onSeek,
+            onDismiss = { showLyrics = false },
+        )
+    }
 }
 
 /** Space or the play/pause media key, on key down (not on release, or it would toggle twice). */

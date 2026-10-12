@@ -44,6 +44,7 @@ pub mod edits;
 pub mod error;
 pub mod events;
 pub mod library;
+pub mod lyrics;
 pub mod me;
 pub mod menus;
 pub mod model;
@@ -67,6 +68,7 @@ pub use discovery::{Discovery, DiscoveryOptions, DstmProvider, DstmState, RadioP
 pub use error::ApiError;
 pub use events::{EventListener, EventSubscription, Events, EventsState, ServerEvent};
 pub use library::{FavouriteLibraryItems, MusicLibrary};
+pub use lyrics::{LyricLine, TrackLyrics};
 pub use me::{
     HistoryEntry, HistoryPage, HomeLayout, HomeShelf, Me, MenuStep, PinnedMenu, RunnerUpdate,
     ShelfKind, Station, StationBatch, StationRunner, StationSpec,

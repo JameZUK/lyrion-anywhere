@@ -90,6 +90,7 @@ import io.github.jamezuk.lyrionanywhere.core.Selection
 import io.github.jamezuk.lyrionanywhere.core.libraryVersion
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AuthState
+import io.github.jamezuk.lyrionanywhere.data.LyricsCache
 import io.github.jamezuk.lyrionanywhere.data.WaveformCache
 import io.github.jamezuk.lyrionanywhere.playback.PlaybackService
 import io.github.jamezuk.lyrionanywhere.ui.R
@@ -156,6 +157,7 @@ import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnList
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayerMessage
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayerViewModel
 import io.github.jamezuk.lyrionanywhere.ui.player.SleepFadeSetting
+import io.github.jamezuk.lyrionanywhere.ui.player.LyricsPeekSetting
 import io.github.jamezuk.lyrionanywhere.ui.settings.LicencesScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsViewModel
@@ -296,6 +298,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
             container.settings,
             localPlayer = container.localPlayer,
             waveforms = WaveformCache(container.analysis),
+            lyrics = LyricsCache(container.lyrics),
             nowPlaying = nowPlayingHub,
             clock = clock,
         )
@@ -1096,6 +1099,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 )
                             },
                             sleepFade = { SleepFadeSetting(playerState.sleepFade, player::setSleepFade) },
+                            lyrics = { LyricsPeekSetting(playerState.lyricsPeek, player::setLyricsPeek) },
                         )
                     }
                 }

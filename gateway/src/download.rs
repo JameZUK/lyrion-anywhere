@@ -326,7 +326,7 @@ fn text(v: &Value, k: &str) -> String {
     }
 }
 
-fn int(v: &Value, k: &str) -> Option<i64> {
+pub(crate) fn int(v: &Value, k: &str) -> Option<i64> {
     match v.get(k)? {
         Value::Number(n) => n.as_i64(),
         Value::String(s) => s.trim().parse().ok(),
