@@ -51,6 +51,8 @@ const MAX_CAPABILITY_TOKENS: usize = 64;
 const MAX_NAME: usize = 64;
 /// Outstanding LMS name queries remembered (each allows one reply).
 const MAX_NAME_QUERIES: u8 = 4;
+/// Where a STAT payload holds the stream bytes received (big-endian `u64`).
+const STAT_BYTES_RECEIVED: std::ops::Range<usize> = 15..23;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachError {
@@ -109,6 +111,8 @@ struct State {
     stream_seq: u64,
     /// `None` when the current `strm` was refused by policy.
     stream_path: Option<String>,
+    /// The current `strm s` format code (`f` for FLAC).
+    stream_format: u8,
     relay: Option<Arc<Relay>>,
     /// Client → LMS framing; persists across sockets so a frame split by a drop is safe.
     from_client: ClientFrameReader,
@@ -179,6 +183,7 @@ impl Session {
                 ended: false,
                 stream_seq: 0,
                 stream_path: None,
+                stream_format: 0,
                 relay: None,
                 from_client: ClientFrameReader::default(),
                 last_stat: None,
@@ -442,7 +447,17 @@ impl Session {
         }
         match op {
             b"STAT" => {
-                let stat = Stat::parse(&payload).map_err(|_| "malformed STAT".to_string())?;
+                let mut stat = Stat::parse(&payload).map_err(|_| "malformed STAT".to_string())?;
+                let mut payload = payload;
+                // LMS counts the bytes it sent; the client counts what it received, which
+                // is less when the relay dropped FLAC artwork. Report LMS's count.
+                if let Some(relay) = &st.relay {
+                    let sent = relay.upstream_bytes(stat.bytes_received);
+                    if sent != stat.bytes_received {
+                        stat.bytes_received = sent;
+                        payload[STAT_BYTES_RECEIVED].copy_from_slice(&sent.to_be_bytes());
+                    }
+                }
                 match &stat.event {
                     b"STMs" | b"STMr" => st.playing = true,
                     b"STMp" | b"STMf" | b"STMu" | b"STMn" => st.playing = false,
@@ -487,15 +502,20 @@ impl Session {
         }
     }
 
-    /// The relay for stream `n`, created on first use.
-    pub fn relay(&self, n: u64, window: usize) -> Option<Arc<Relay>> {
+    /// The relay for stream `n`, created on first use. With `strip_flac`, a stream LMS
+    /// announced as FLAC has its artwork and padding dropped ([`crate::flac_strip`]).
+    pub fn relay(&self, n: u64, window: usize, strip_flac: bool) -> Option<Arc<Relay>> {
         let mut st = self.state.lock().unwrap();
         if st.ended || n != st.stream_seq || st.stream_path.is_none() {
             return None;
         }
+        let flac = strip_flac && st.stream_format == b'f';
         Some(
             st.relay
-                .get_or_insert_with(|| Arc::new(Relay::new(window)))
+                .get_or_insert_with(|| {
+                    let relay = Relay::new(window);
+                    Arc::new(if flac { relay.with_flac_strip() } else { relay })
+                })
                 .clone(),
         )
     }
@@ -644,6 +664,7 @@ impl Session {
         let mut st = self.state.lock().unwrap();
         st.stream_seq += 1;
         st.stream_path = path;
+        st.stream_format = s.format;
         st.relay = None; // the previous stream's upstream is abandoned
     }
 }

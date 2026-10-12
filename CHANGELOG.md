@@ -2,6 +2,18 @@
 
 Dated entries, newest first.
 
+## 2026-10-12
+
+### Faster start and seeks for FLAC with embedded artwork
+- **What:** the gateway now drops embedded artwork (PICTURE) and PADDING metadata from the start of FLAC streams, so the browser, iOS and Android players no longer download the cover before the first audio. The artwork is still shown: the apps get it from `/v1/art`, as before. It also saves that much mobile data per track start, and per seek when LMS sends the metadata again.
+- **Measured** (tests, a simulated 80 ms / 8 Mbit/s link, a FLAC with 480 KiB of artwork): bytes received before 0.5 s of audio is decoded (when quick start plays) fell from 704 KiB to 224 KiB, about 800 ms to about 310 ms, in line with MP3.
+- **Safety:**
+  - only streams LMS announces as FLAC; only the metadata chain changes, and the last-block flag is moved correctly; STREAMINFO, SEEKTABLE, VORBIS_COMMENT and the audio frames are forwarded byte for byte, so the audio decodes bit-identically;
+  - bounded (16 MiB of metadata, 1024 blocks), and anything unexpected (no `fLaC` marker, a bad or second STREAMINFO, reserved or invalid block types, no frame sync after the last block, a stream that ends early) passes the stream through unchanged;
+  - `?offset=` resume, acks and the replay window all count the stripped stream, which is made once per stream, so resuming is unchanged. LMS's byte count in STAT reports is converted back to what LMS sent.
+  - `--keep-flac-pictures` turns it off.
+- **Tests:** the metadata parser fuzzed (random, truncated, mutated, spliced and oversize streams, lying last-block flags, nested garbage; never panics, and the output is always either the input or a clean strip of it, whatever the chunking); stripped streams decode to the same PCM, bit for bit, over randomised layouts; through the gateway: artwork dropped with the audio identical, resume twice (inside the metadata and in the audio) giving the same bytes as one fetch, STAT counts converted, MP3, unusual FLAC and the switch passing through unchanged; and the before/after measurement.
+
 ## 2026-10-11
 
 ### Android: release readiness (A7)

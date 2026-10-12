@@ -70,6 +70,10 @@ enum Cmd {
         /// Disk space for transcoded downloads, in MiB (the least recently used go first).
         #[arg(long, default_value_t = 2048, value_parser = clap::value_parser!(u64).range(16..=1_048_576))]
         download_cache_mb: u64,
+        /// Send FLAC streams with their embedded artwork and padding, as LMS sends them
+        /// (by default the gateway drops them so playback starts sooner).
+        #[arg(long)]
+        keep_flac_pictures: bool,
         /// Turn off track analysis (waveforms and loudness): `/v1/analysis` answers 404.
         #[arg(long)]
         no_analysis: bool,
@@ -150,6 +154,7 @@ fn main() {
             ffmpeg,
             no_transcode,
             download_cache_mb,
+            keep_flac_pictures,
             no_analysis,
             analysis_cache_mb,
             max_connections,
@@ -188,6 +193,7 @@ fn main() {
                     Some(data_dir.join("analysis-cache"))
                 },
                 analysis_cache_bytes: analysis_cache_mb * 1024 * 1024,
+                strip_flac_pictures: !keep_flac_pictures,
                 // Plays are signed for the plugin with the secret it already reads.
                 plays_secret: Some(admin_secret.clone()),
                 ..Config::default()

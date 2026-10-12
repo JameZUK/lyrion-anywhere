@@ -22,10 +22,16 @@
 //! cancel, a newer request taking over) is an error, so the client can't mistake it for the
 //! end of the track: it resumes from `?offset=` instead, or reports the stream as failed.
 //!
+//! FLAC streams have their embedded artwork and padding dropped on the way in
+//! ([`crate::flac_strip`]), before anything is counted or remembered: every offset here
+//! (`?offset=`, acknowledgements, the replay window) is in the stripped stream's terms, so
+//! resuming works unchanged. LMS is asked for a stream only once, so the stripped stream is
+//! the same for every request.
+//!
 //! [`Config::replay_window`]: crate::Config::replay_window
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
@@ -40,6 +46,7 @@ use tokio::sync::{Notify, watch};
 use tracing::{debug, info, warn};
 
 use crate::AppState;
+use crate::flac_strip::{StripInfo, StripStream};
 
 const CHUNK: usize = 64 * 1024;
 
@@ -82,6 +89,9 @@ pub struct Relay {
     cancelled: watch::Sender<bool>,
     idle_timeout: Duration,
     read_timeout: Duration,
+    /// Set for FLAC streams: PICTURE and PADDING blocks are dropped, and this says how
+    /// many bytes that removed once the metadata has been seen.
+    flac: Option<Arc<OnceLock<StripInfo>>>,
 }
 
 impl RelayState {
@@ -134,6 +144,23 @@ impl Relay {
             cancelled: watch::channel(false).0,
             idle_timeout,
             read_timeout,
+            flac: None,
+        }
+    }
+
+    /// Drop embedded artwork and padding from the start of this (FLAC) stream.
+    pub fn with_flac_strip(mut self) -> Self {
+        self.flac = Some(Arc::new(OnceLock::new()));
+        self
+    }
+
+    /// The byte count LMS sent for `client` bytes the client received: they differ by
+    /// what stripping removed. Unchanged for other streams, and until the metadata has
+    /// been dealt with.
+    pub fn upstream_bytes(&self, client: u64) -> u64 {
+        match self.flac.as_ref().and_then(|f| f.get()) {
+            Some(info) => info.upstream_bytes(client),
+            None => client,
         }
     }
 
@@ -201,7 +228,10 @@ pub async fn stream(
         return StatusCode::NOT_FOUND.into_response();
     };
     let (_, path) = sess.stream();
-    let (Some(path), Some(relay)) = (path, sess.relay(n, gw.cfg.replay_window)) else {
+    let (Some(path), Some(relay)) = (
+        path,
+        sess.relay(n, gw.cfg.replay_window, gw.cfg.strip_flac_pictures),
+    ) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let offset = q.offset.unwrap_or(0);
@@ -227,7 +257,11 @@ pub async fn stream(
                         .filter(|ct| ct.starts_with("audio/") || *ct == "application/octet-stream")
                         .unwrap_or("application/octet-stream")
                         .to_string();
-                    up.stream = Some(resp.bytes_stream().boxed());
+                    let body = resp.bytes_stream();
+                    up.stream = Some(match &relay.flac {
+                        Some(info) => StripStream::new(body.boxed(), info.clone()).boxed(),
+                        None => body.boxed(),
+                    });
                     up.opened = true;
                 }
                 Ok(Ok(resp)) => {

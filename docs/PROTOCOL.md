@@ -196,6 +196,12 @@ Recommended client backoff: about 0.5, 1, 2 and 4 s, then every 5 s, with ±20 %
 - **Ownership:** the upstream LMS connection belongs to the session, not the HTTP request.
   - **Resume:** a broken download resumes with `?offset=k`, where `k` is the number of bytes the client has.
   - **Supersede:** a newer request for the same stream supersedes an older one.
+- **FLAC artwork is dropped:** for a stream LMS announced as FLAC (`strm` format `f`), the gateway removes PICTURE and PADDING metadata blocks from the start of the stream, so players needn't download embedded artwork (often 50–500 KB) before the first audio frame. Artwork is still served by `/v1/art`.
+  - Only the metadata chain changes: the last-block flag moves to the last block kept; STREAMINFO, SEEKTABLE, VORBIS_COMMENT, CUESHEET, APPLICATION blocks and every audio byte are forwarded unchanged, so the decoded audio is bit-identical.
+  - The metadata is held (at most 16 MiB and 1024 blocks) until its end has been checked. Anything unexpected sends the stream on exactly as LMS sent it: no `fLaC` marker (e.g. a stream that starts mid-file), a first block that isn't a 34-byte STREAMINFO, a second STREAMINFO, a reserved or invalid block type, a malformed SEEKTABLE length, too much metadata, no frame sync straight after the last block (a lying last-block flag), or the stream ending first.
+  - **Offsets** (`?offset=`, acks, the replay window, `416`) count the stream as the client receives it, stripped. The gateway asks LMS for each stream once and strips it once, so every request for it sees the same bytes, and resuming works as for any stream.
+  - **STAT:** LMS counts the bytes it sent, so the gateway adds the bytes it removed to `bytes_received` in the client's STATs once the count is past the stripped metadata.
+  - `--keep-flac-pictures` turns this off.
 - **Pacing:** the gateway reads from LMS at most one **replay window** (default 4 MiB) beyond the client's last ack. Network buffers therefore can't hold more than the window, and a resume always lands inside it.
 - **Ending:** a response ends cleanly only when LMS finished the stream cleanly and the client has had every byte. Every other end is an error (the connection breaks without a clean end), so a client never mistakes it for the end of the track:
   - the session ends (for example, the device is revoked), or a newer request for the stream takes over;

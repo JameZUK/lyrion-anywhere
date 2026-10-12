@@ -253,6 +253,8 @@ pub struct FakeLms {
     pub audio: Arc<Vec<u8>>,
     /// When set, `/stream.mp3` sends its first 1000 bytes and then stalls for ever.
     pub stall_stream: Arc<std::sync::atomic::AtomicBool>,
+    /// When set, `/stream.mp3` sends this instead of [`FakeLms::audio`].
+    pub stream_body: Arc<Mutex<Option<Arc<Vec<u8>>>>>,
     /// Tracks added by a test (see [`FakeLms::add_track`]): id → (titles item, file).
     pub extra: ExtraTracks,
     /// The plugin's `anywhere play_record`.
@@ -372,6 +374,8 @@ impl FakeLms {
         let stall_stream: Arc<std::sync::atomic::AtomicBool> = Default::default();
         let extra: ExtraTracks = Default::default();
         let plugin: Arc<Mutex<FakePlugin>> = Default::default();
+        let stream_body: Arc<Mutex<Option<Arc<Vec<u8>>>>> = Default::default();
+        let sb = stream_body.clone();
         let (r, a, stall, ex, pl) = (
             rec.clone(),
             audio.clone(),
@@ -380,8 +384,8 @@ impl FakeLms {
             plugin.clone(),
         );
         let app = Router::new().fallback(any(move |req: Request| {
-            let (r, a, stall, ex, pl) =
-                (r.clone(), a.clone(), stall.clone(), ex.clone(), pl.clone());
+            let (r, stall, ex, pl) = (r.clone(), stall.clone(), ex.clone(), pl.clone());
+            let a = sb.lock().unwrap().clone().unwrap_or_else(|| a.clone());
             async move {
                 let path = req
                     .uri()
@@ -542,6 +546,7 @@ impl FakeLms {
             conns,
             audio,
             stall_stream,
+            stream_body,
             extra,
             plugin,
         }
@@ -799,10 +804,15 @@ pub fn client_frame(op: &[u8; 4], payload: &[u8]) -> Vec<u8> {
 }
 
 pub fn strm(cmd: u8, ip: Ipv4Addr, request: &str) -> Vec<u8> {
+    strm_format(cmd, b'f', ip, request)
+}
+
+/// A `strm` with the given format code (`f` FLAC, `m` MP3, …).
+pub fn strm_format(cmd: u8, format: u8, ip: Ipv4Addr, request: &str) -> Vec<u8> {
     let mut p = vec![0u8; 24];
     p[0] = cmd;
     p[1] = b'1';
-    p[2] = b'f';
+    p[2] = format;
     p[18..20].copy_from_slice(&9000u16.to_be_bytes());
     p[20..24].copy_from_slice(&ip.octets());
     p.extend_from_slice(request.as_bytes());

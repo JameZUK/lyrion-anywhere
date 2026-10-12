@@ -36,6 +36,7 @@ mod auth;
 pub mod diagnostics;
 pub mod download;
 pub mod events;
+mod flac_strip;
 pub mod limits;
 pub mod menu_actions;
 pub mod plays;
@@ -97,6 +98,9 @@ pub struct Config {
     pub detached_queue_limit: usize,
     /// Audio bytes kept per stream so a download can resume from a slightly earlier offset.
     pub replay_window: usize,
+    /// Drop embedded artwork (PICTURE) and PADDING from the start of FLAC streams, so
+    /// players can start sooner (see `flac_strip`). On by default.
+    pub strip_flac_pictures: bool,
     /// Web app directory served at `/`, if any.
     pub static_dir: Option<PathBuf>,
     /// Ping interval on quiet WebSockets, so proxies with idle timeouts (Cloudflare drops
@@ -179,6 +183,7 @@ impl Default for Config {
             client_silence: Duration::from_secs(8),
             detached_queue_limit: 1024 * 1024,
             replay_window: 4 * 1024 * 1024,
+            strip_flac_pictures: true,
             static_dir: None,
             ws_keepalive: Duration::from_secs(30),
             ffmpeg: None,
