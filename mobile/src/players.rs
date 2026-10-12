@@ -119,6 +119,18 @@ impl Players {
         self.run(&player, commands::power(on)).await
     }
 
+    /// Set the sleep timer: stop (and turn off) after `seconds`, at most a day; 0 cancels.
+    pub async fn set_sleep(&self, player: String, seconds: u32) -> Result<(), ApiError> {
+        self.run(&player, commands::sleep(seconds)).await
+    }
+
+    /// The queue from `from` on, with durations and albums only (for "sleep at the end of
+    /// this album or the queue"): up to 500 entries.
+    pub async fn queue_times(&self, player: String, from: u32) -> Result<Vec<Track>, ApiError> {
+        let v = self.send(&player, commands::queue_times(from)).await?;
+        Ok(model::tracks_from(&v, "playlist_loop"))
+    }
+
     /// Take the queue entry at `index` out.
     pub async fn remove_from_queue(&self, player: String, index: u32) -> Result<(), ApiError> {
         self.run(&player, commands::remove_from_queue(index)).await

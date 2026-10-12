@@ -64,6 +64,13 @@ describe('time left', () => {
 		expect(remainingSeconds('queue', status(), [t(7, 180), { title: 'Radio' }, t(9, 300)])).toBeNull();
 	});
 
+	test('an end more than a day away is not offered', () => {
+		const long = Array.from({ length: 30 }, () => t(8, 3600));
+		expect(remainingSeconds('queue', status({ playlist_cur_index: 0, playlist_tracks: 31 }), long)).toBeNull();
+		expect(remainingSeconds('queue', status({ playlist_cur_index: 0, playlist_tracks: 24 }), long.slice(0, 23))).toBe(140 + 23 * 3600);
+		expect(remainingSeconds('track', status({ duration: 1e9 }))).toBeNull();
+	});
+
 	test('nothing playing, or a stream without a length: unknowable', () => {
 		expect(remainingSeconds('track', null)).toBeNull();
 		expect(remainingSeconds('track', status({ playlist_loop: [] }))).toBeNull();

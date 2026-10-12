@@ -663,6 +663,93 @@ async fn hold_silences_at_once_and_ducking_scales() {
     r.stop_pulling();
 }
 
+/// The sleep timer's fade (Wave 1): the engine lowers its own output before the timer's
+/// end, keeps it down past the end (LMS stops the player then), and cancelling restores
+/// full volume at once. Re-arming replaces the fade.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_sleep_fade_lowers_the_output_and_cancelling_restores_it() {
+    let mut r = rig(false).await;
+    let track = flac::encode(44_100, 16, &flac::noise(44_100 * 40, 16, 8));
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(track));
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    let pulled = r.pulled.clone();
+    wait_for("audio", move || pulled.frames() > 8_000).await;
+    let peak_from = |from: usize| -> f32 {
+        r.pulled.all()[from.min(r.pulled.all().len())..]
+            .iter()
+            .fold(0.0f32, |m, s| m.max(s.abs()))
+    };
+    let full = peak_from(0);
+    assert!(full > 0.1, "the noise is loud enough to measure ({full})");
+
+    // A timer far off: nothing changes yet.
+    r.player.clone().set_sleep_fade(Some(600.0), 30);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let mark = r.pulled.all().len();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(
+        peak_from(mark) > full * 0.5,
+        "full volume well before the fade"
+    );
+
+    // Re-armed to end almost now: faded to silence.
+    r.player.clone().set_sleep_fade(Some(0.05), 30);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mark = r.pulled.all().len();
+    let pulled = r.pulled.clone();
+    wait_for("more audio", move || pulled.all().len() > mark + 8_000).await;
+    assert!(
+        peak_from(mark) < full * 0.01,
+        "faded out ({} vs {full})",
+        peak_from(mark)
+    );
+    assert!(
+        !r.player.signal_path().unwrap().engine_bit_perfect,
+        "a fade is processing"
+    );
+
+    // Cancelled (or the timer turned off elsewhere): full volume again at once.
+    r.player.clone().set_sleep_fade(None, 30);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mark = r.pulled.all().len();
+    let pulled = r.pulled.clone();
+    wait_for("audio after cancelling", move || {
+        pulled.all().len() > mark + 8_000
+    })
+    .await;
+    assert!(
+        peak_from(mark) > full * 0.5,
+        "restored ({} vs {full})",
+        peak_from(mark)
+    );
+
+    // Hostile values: no fade rather than silence, and never a panic.
+    for (ends, fade) in [
+        (Some(f64::NAN), 30),
+        (Some(-5.0), 30),
+        (Some(f64::INFINITY), 30),
+        (Some(1e12), 30),
+        (Some(0.05), 0),
+    ] {
+        r.player.clone().set_sleep_fade(ends, fade);
+    }
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let mark = r.pulled.all().len();
+    let pulled = r.pulled.clone();
+    wait_for("audio after junk", move || {
+        pulled.all().len() > mark + 8_000
+    })
+    .await;
+    assert!(peak_from(mark) > full * 0.5, "junk leaves the output alone");
+    r.stop_pulling();
+}
+
 /// A stand-in for Android's `AudioManager` with a USB DAC attached: it offers what a
 /// typical DAC lists and records every mixer attribute the engine applies.
 struct FakeDac {

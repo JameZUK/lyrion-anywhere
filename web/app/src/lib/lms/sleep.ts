@@ -8,6 +8,7 @@
 //
 // The Android app has the same rules in Rust (mobile/src/sleep.rs); the tests share vectors.
 import type { PlayerInfo, PlayerStatus, Track } from './types';
+import { MAX_SLEEP_SECONDS } from './commands';
 
 /** The fixed lengths offered, in minutes. */
 export const SLEEP_MINUTES = [15, 30, 45, 60, 90] as const;
@@ -39,8 +40,8 @@ export const currentTrack = (s: PlayerStatus | null | undefined): Track | undefi
  * Seconds until the end of the current track, the current album (the run of tracks from the
  * same album that follows it in the queue) or the queue. `upcoming` is the queue after the
  * current track, in playing order. Null when it can't be known: nothing playing, a stream
- * with no length, a track in range without a duration, or (for the queue) a queue longer
- * than what was read.
+ * with no length, a track in range without a duration, (for the queue) a queue longer
+ * than what was read, or an end more than a day away (longer than LMS's timer is set).
  */
 export function remainingSeconds(end: SleepEnd, s: PlayerStatus | null | undefined, upcoming: readonly Track[] = []): number | null {
 	const cur = currentTrack(s);
@@ -49,9 +50,9 @@ export function remainingSeconds(end: SleepEnd, s: PlayerStatus | null | undefin
 	if (length === null) return null;
 	const elapsed = Math.max(0, finitePos(s.time) ?? 0);
 	let left = Math.max(0, length - elapsed);
-	if (end === 'track') return Math.ceil(left);
+	if (end === 'track') return withinADay(left);
 	const album = finitePos(cur.album_id);
-	if (end === 'album' && album === null) return Math.ceil(left);
+	if (end === 'album' && album === null) return withinADay(left);
 	if (end === 'queue') {
 		const index = Number(s.playlist_cur_index ?? 0);
 		const total = Number(s.playlist_tracks ?? 0);
@@ -64,7 +65,14 @@ export function remainingSeconds(end: SleepEnd, s: PlayerStatus | null | undefin
 		if (d === null) return null;
 		left += d;
 	}
-	return Math.ceil(left);
+	return withinADay(left);
+}
+
+/** Whole seconds (rounded up), if within a day (the longest timer LMS is given). */
+function withinADay(s: number): number | null {
+	if (!Number.isFinite(s)) return null;
+	const v = Math.ceil(Math.max(0, s));
+	return v <= MAX_SLEEP_SECONDS ? v : null;
 }
 
 /** Seconds for a choice (null when "end of …" can't be worked out). */

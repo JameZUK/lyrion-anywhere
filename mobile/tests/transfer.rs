@@ -69,7 +69,7 @@ async fn playback_moves_by_grouping_then_leaving() {
         ]
     );
     let calls = since(&h, before);
-    let status = json!(["status", "-", "1", "tags:aAlcdeJKjNoqrsTIyx"]);
+    let status = json!(["status", "-", "2", "tags:aAlcdeJKjNoqrsTIyx"]);
     assert_eq!(
         calls,
         vec![
