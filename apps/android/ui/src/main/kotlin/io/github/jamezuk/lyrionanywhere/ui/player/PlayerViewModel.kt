@@ -15,6 +15,8 @@ import io.github.jamezuk.lyrionanywhere.core.SleepEnd
 import io.github.jamezuk.lyrionanywhere.core.SyncGroup
 import io.github.jamezuk.lyrionanywhere.core.Track
 import io.github.jamezuk.lyrionanywhere.core.TrackLyrics
+import io.github.jamezuk.lyrionanywhere.core.TrackRating
+import io.github.jamezuk.lyrionanywhere.core.RatingStyle
 import io.github.jamezuk.lyrionanywhere.core.TransferOutcome
 import io.github.jamezuk.lyrionanywhere.core.TransferStage
 import io.github.jamezuk.lyrionanywhere.data.NowPlaying
@@ -34,6 +36,8 @@ import io.github.jamezuk.lyrionanywhere.data.StreamUpdate
 import io.github.jamezuk.lyrionanywhere.data.Waveform
 import io.github.jamezuk.lyrionanywhere.data.WaveformCache
 import io.github.jamezuk.lyrionanywhere.data.LyricsCache
+import io.github.jamezuk.lyrionanywhere.data.RatingsCache
+import io.github.jamezuk.lyrionanywhere.data.RatingsRepository
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -89,6 +93,12 @@ data class PlayerUiState(
     val lyricsTrackId: Long? = null,
     /** Show the current lyric line on Now playing (Settings). */
     val lyricsPeek: Boolean = true,
+    /** The current track's rating (null: not known yet, or not rateable). */
+    val rating: TrackRating? = null,
+    /** Stars or a heart (the user's choice, the same on every device). */
+    val ratingStyle: RatingStyle = RatingStyle.STARS,
+    /** The last rating couldn't be saved. */
+    val ratingFailed: Boolean = false,
 ) {
     val selected: Player? get() = players.firstOrNull { it.id == selectedId }
     val playing: Boolean get() = status?.mode == PlaybackMode.PLAYING
@@ -158,6 +168,8 @@ class PlayerViewModel(
     private val waveforms: WaveformCache? = null,
     /** Lyrics for Now playing (none without). */
     private val lyrics: LyricsCache? = null,
+    /** Ratings (none without). */
+    private val ratings: RatingsRepository? = null,
     /** Where the home-screen widget and tile learn what plays (none in tests). */
     private val nowPlaying: NowPlayingHub? = null,
     private val clock: () -> Long,
@@ -261,6 +273,20 @@ class PlayerViewModel(
                         if (id == null || id <= 0) return@collectLatest
                         val l = lyrics.load(id)
                         _state.update { s -> if (s.status?.current?.id == id) s.copy(lyrics = l, lyricsTrackId = id) else s }
+                    }
+                }
+            }
+            if (ratings != null) {
+                launch {
+                    (ratings.style() as? ApiResult.Ok)?.value?.let { st -> _state.update { it.copy(ratingStyle = st) } }
+                }
+                launch {
+                    // The current track's rating, as for the lyrics.
+                    state.map { it.status?.current?.id }.distinctUntilChanged().collectLatest { id ->
+                        _state.update { s -> if (s.rating?.trackId == id) s else s.copy(rating = null, ratingFailed = false) }
+                        if (id == null || id <= 0) return@collectLatest
+                        val r = ratingsCache?.get(id)
+                        _state.update { s -> if (s.status?.current?.id == id) s.copy(rating = r) else s }
                     }
                 }
             }
@@ -846,6 +872,30 @@ class PlayerViewModel(
             _messages.trySend(failed?.let { PlayerMessage.Failed(it) } ?: PlayerMessage.SleepOff)
             refreshStatus()
         }
+    }
+
+    private val ratingsCache = ratings?.let { RatingsCache(it) }
+
+    /** Rate the current track (0 clears): shown at once, put back if it can't be saved. */
+    fun rate(value: Int) {
+        val id = _state.value.status?.current?.id?.takeIf { it > 0 } ?: return
+        val cache = ratingsCache ?: return
+        val before = _state.value.rating
+        val v = ((value.coerceIn(0, 100) + 5) / 10) * 10
+        val mine = v.takeIf { it > 0 }?.toUInt()
+        _state.update { it.copy(rating = TrackRating(id, mine, before?.shared, mine ?: before?.shared), ratingFailed = false) }
+        viewModelScope.launch {
+            when (val r = cache.rate(id, v)) {
+                is ApiResult.Ok -> _state.update { s -> if (s.status?.current?.id == id) s.copy(rating = r.value ?: s.rating) else s }
+                is ApiResult.Err -> _state.update { s -> if (s.status?.current?.id == id) s.copy(rating = before, ratingFailed = true) else s }
+            }
+        }
+    }
+
+    /** Stars or a heart (kept on the server for this user). */
+    fun setRatingStyle(style: RatingStyle) {
+        _state.update { it.copy(ratingStyle = style) }
+        viewModelScope.launch { ratings?.setStyle(style) }
     }
 
     /** Show the current lyric line on Now playing (Settings). */

@@ -1,5 +1,6 @@
 package io.github.jamezuk.lyrionanywhere.data.offline
 
+import io.github.jamezuk.lyrionanywhere.core.syncRatings
 import io.github.jamezuk.lyrionanywhere.core.DownloadObserver
 import io.github.jamezuk.lyrionanywhere.core.DownloadPolicy
 import io.github.jamezuk.lyrionanywhere.core.DownloadRequest
@@ -39,6 +40,9 @@ interface OfflineStore : AutoCloseable {
     fun pendingPlays(): Int
 
     fun planSmart(wanted: List<DownloadRequest>): SmartPlan
+
+    /** Queue a rating made offline (sent with the plays); false if out of range. */
+    fun rateOffline(trackId: Long, trackKey: String, rating: Int, at: Long): Boolean = false
 }
 
 /** The download manager (a seam for tests). */
@@ -70,6 +74,9 @@ interface OnlineLink {
     ): DownloaderHandle
 
     suspend fun syncPlays(store: OfflineStore): PlaysSyncOutcome
+
+    /** Send ratings made offline. */
+    suspend fun syncRatings(store: OfflineStore) {}
 }
 
 /** The real store over the Rust library. */
@@ -95,6 +102,9 @@ class RustOfflineStore(val library: OfflineLibrary) : OfflineStore {
     override fun pendingPlays() = library.pendingPlays().toInt()
 
     override fun planSmart(wanted: List<DownloadRequest>) = planSmart(library, wanted)
+
+    override fun rateOffline(trackId: Long, trackKey: String, rating: Int, at: Long) =
+        rating in 0..100 && at >= 0 && library.rateOffline(trackId, trackKey, rating.toUInt(), at.toULong())
 
     override fun close() = library.close()
 
@@ -140,4 +150,8 @@ class RustOnlineLink(private val connection: Connection) : OnlineLink {
 
     override suspend fun syncPlays(store: OfflineStore): PlaysSyncOutcome =
         syncPlays(connection.session, (store as RustOfflineStore).library)
+
+    override suspend fun syncRatings(store: OfflineStore) {
+        syncRatings(connection.session, (store as RustOfflineStore).library)
+    }
 }

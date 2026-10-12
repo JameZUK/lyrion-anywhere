@@ -78,6 +78,8 @@ import androidx.compose.runtime.CompositionLocalProvider
 import io.github.jamezuk.lyrionanywhere.AppContainer
 import io.github.jamezuk.lyrionanywhere.BuildConfig
 import io.github.jamezuk.lyrionanywhere.LyrionApp
+import io.github.jamezuk.lyrionanywhere.ui.alarms.AlarmsViewModel
+import io.github.jamezuk.lyrionanywhere.ui.alarms.AlarmsScreen
 import io.github.jamezuk.lyrionanywhere.ui.components.ListDetail
 import io.github.jamezuk.lyrionanywhere.ui.components.LocalWindowLayout
 import io.github.jamezuk.lyrionanywhere.ui.components.WindowLayout
@@ -159,6 +161,7 @@ import io.github.jamezuk.lyrionanywhere.ui.player.PlayerMessage
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayerViewModel
 import io.github.jamezuk.lyrionanywhere.ui.player.SleepFadeSetting
 import io.github.jamezuk.lyrionanywhere.ui.player.LyricsPeekSetting
+import io.github.jamezuk.lyrionanywhere.ui.player.RatingsSetting
 import io.github.jamezuk.lyrionanywhere.ui.settings.StreamingQualitySetting
 import io.github.jamezuk.lyrionanywhere.ui.settings.LicencesScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsScreen
@@ -229,6 +232,8 @@ import kotlinx.serialization.Serializable
 @Serializable data class PinnedMenuRoute(val id: Long, val name: String)
 
 @Serializable data object HistoryRoute
+
+@Serializable data class AlarmsRoute(val player: String, val name: String)
 
 @Serializable data class AlbumRoute(val id: Long)
 
@@ -301,6 +306,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
             localPlayer = container.localPlayer,
             waveforms = WaveformCache(container.analysis),
             lyrics = LyricsCache(container.lyrics),
+            ratings = container.ratings,
             nowPlaying = nowPlayingHub,
             clock = clock,
         )
@@ -948,6 +954,13 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     LaunchedEffect(route, playerState.selectedId) { vm.openPinned(route.id, route.name, playerState.selectedId) }
                     MenuRouteScreen(route.name, vm, onBack = { nav.popBackStack() }, onEvent = { handleMenuEvent(it) { nav.popBackStack() } })
                 }
+                composable<AlarmsRoute> { entry ->
+                    val route = entry.toRoute<AlarmsRoute>()
+                    val vm = viewModel(key = "alarms-${route.player}") { AlarmsViewModel(container.alarms, route.player) }
+                    Screen(title = stringResource(R.string.alarms), onBack = { nav.popBackStack() }) {
+                        AlarmsScreen(vm, route.name)
+                    }
+                }
                 composable<HistoryRoute> {
                     val vm = viewModel { HistoryViewModel(container.me) }
                     val ui by vm.state.collectAsStateWithLifecycle()
@@ -999,6 +1012,8 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 onSleep = player::setSleep,
                                 onCancelSleep = player::cancelSleep,
                                 onRemoveUpNext = player::removeUpNext,
+                                onRate = player::rate,
+                                onAlarms = playerState.selected?.let { p -> { nav.navigate(AlarmsRoute(p.id, p.name)) } },
                             ),
                         )
                     }
@@ -1102,6 +1117,11 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             },
                             sleepFade = { SleepFadeSetting(playerState.sleepFade, player::setSleepFade) },
                             lyrics = { LyricsPeekSetting(playerState.lyricsPeek, player::setLyricsPeek) },
+                            ratings = {
+                                RatingsSetting(playerState.ratingStyle, player::setRatingStyle) {
+                                    (container.ratings.clear() as? io.github.jamezuk.lyrionanywhere.data.ApiResult.Ok)?.value
+                                }
+                            },
                             streaming = {
                                 val app by container.settings.settings.collectAsStateWithLifecycle(AppSettings())
                                 StreamingQualitySetting(app.streaming) { s -> scope.launch { container.settings.setStreaming(s) } }

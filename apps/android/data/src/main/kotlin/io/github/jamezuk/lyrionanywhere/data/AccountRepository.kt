@@ -1,5 +1,6 @@
 package io.github.jamezuk.lyrionanywhere.data
 
+import io.github.jamezuk.lyrionanywhere.core.Routine
 import io.github.jamezuk.lyrionanywhere.core.AccountInfo
 import io.github.jamezuk.lyrionanywhere.core.Analysis
 import io.github.jamezuk.lyrionanywhere.core.Art
@@ -58,9 +59,10 @@ class Connection(val server: ServerInfo, val session: Session) {
     val menus = Menus(session)
     val me = Me(session)
     val stations = StationRunner(me)
+    val routine = Routine(session)
 
     fun close() {
-        listOf(library, players, art, events, analysis, menus, stations, me, session).forEach { it.close() }
+        listOf(library, players, art, events, analysis, menus, stations, me, routine, session).forEach { it.close() }
     }
 }
 

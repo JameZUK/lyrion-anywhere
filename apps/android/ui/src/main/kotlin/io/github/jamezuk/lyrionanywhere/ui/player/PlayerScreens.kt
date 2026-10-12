@@ -11,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.outlined.Alarm
 import androidx.compose.material.icons.outlined.Bedtime
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
@@ -437,6 +438,7 @@ private fun NowPlayingControls(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         track?.quality?.let { q -> QualityBadge(q, onClick = { showPath = true }) }
+        if ((track?.id ?: 0) > 0) RatingControl(state.rating, state.ratingStyle, state.ratingFailed, actions.onRate)
         if (state.lyricsPeek && lyrics?.synced == true) {
             val line = lyrics.lines.getOrNull(lyricLineAt(lyrics, elapsed))?.text
             if (!line.isNullOrEmpty()) LyricsPeek(line, onOpen = { showLyrics = true })
@@ -497,6 +499,11 @@ private fun NowPlayingControls(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f)) { VolumeBar(status.volume.toInt(), actions.onVolume) }
             if (lyrics != null) LyricsButton(onOpen = { showLyrics = true })
+            actions.onAlarms?.let { open ->
+                IconButton(onClick = open, modifier = Modifier.testTag("alarms-button")) {
+                    Icon(Icons.Outlined.Alarm, contentDescription = stringResource(R.string.alarms))
+                }
+            }
             SleepButton(SleepTimer.left(status), onOpen = { showSleep = true }, onCancel = actions.onCancelSleep)
             OutputButton(state, actions.onOutputs)
             if (track?.id != null && actions.onMore != null) {
@@ -591,6 +598,10 @@ data class NowPlayingActions(
     val onCancelSleep: () -> Unit = {},
     /** Take the "Up next" track out of the queue (with Undo). */
     val onRemoveUpNext: () -> Unit = {},
+    /** Rate the current track (0–100; 0 clears). */
+    val onRate: (Int) -> Unit = {},
+    /** Open the selected player's alarms (null: not offered). */
+    val onAlarms: (() -> Unit)? = null,
 )
 
 /**

@@ -98,6 +98,9 @@ interface OfflineRepository {
      * downloads on this device (removing them too if asked). The caller then signs out.
      */
     suspend fun signOut(removeDownloads: Boolean)
+
+    /** Queue a rating of a downloaded track made while the server can't be reached. */
+    suspend fun rateOffline(trackId: Long, rating: Int): Boolean = false
 }
 
 /**
@@ -295,6 +298,8 @@ class RustOfflineRepository(
         val (l, s) = lock.withLock { link.value to _store.value }
         if (l == null || s == null) return null
         val r = runCatching { l.syncPlays(s) }.getOrNull()
+        // Ratings made offline go back with the plays.
+        runCatching { l.syncRatings(s) }
         reload()
         return r
     }
@@ -388,6 +393,12 @@ class RustOfflineRepository(
         lastSmartAt = clock()
         lastSmartSettings = d.downloads
         return ApiResult.Ok(Unit)
+    }
+
+    override suspend fun rateOffline(trackId: Long, rating: Int): Boolean {
+        val s = lock.withLock { _store.value } ?: return false
+        val key = s.tracks().firstOrNull { it.trackId == trackId }?.key ?: return false
+        return withContext(io) { s.rateOffline(trackId, key, rating, clock() / 1000) }
     }
 
     override suspend fun signOut(removeDownloads: Boolean) {

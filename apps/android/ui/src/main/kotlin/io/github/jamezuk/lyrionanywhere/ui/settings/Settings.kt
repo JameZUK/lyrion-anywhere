@@ -198,6 +198,8 @@ fun SettingsScreen(
     lyrics: (@Composable () -> Unit)? = null,
     /** The stream level on Wi-Fi and mobile data, when the app has players. */
     streaming: (@Composable () -> Unit)? = null,
+    /** Ratings: stars or a heart, and clearing them (Wave 2). */
+    ratings: (@Composable () -> Unit)? = null,
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var renaming by rememberSaveable { mutableStateOf(false) }
@@ -216,6 +218,10 @@ fun SettingsScreen(
         }
         if (streaming != null) {
             item { streaming() }
+            item { HorizontalDivider() }
+        }
+        if (ratings != null) {
+            item { ratings() }
             item { HorizontalDivider() }
         }
         state.sound?.let { sound ->

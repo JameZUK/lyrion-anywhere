@@ -2,6 +2,26 @@
 
 Dated entries, newest first.
 
+## 2026-10-12: Wave 2 (part 1): alarms and ratings (gateway, web, Android)
+
+- **Alarms:** LMS's own alarms for any player you may control, from an Alarms page (web) or screen (Android, from Now playing).
+  - **Settings per alarm:** time, days, once or weekly, what to play (the current queue, or the server's favourites, playlists, random mixes and sounds), shuffle and volume.
+  - **Managing:** an on/off switch for each alarm and one for all of a player's alarms. Deleting asks first, in the page.
+  - **Where they run:** alarms ring on hardware players too, with no app open.
+  - **Gateway:** typed endpoints with a strict grammar. Sounds are opaque ids resolved to LMS's own URLs on the server; no URL is ever taken from a client or sent to one. Other players are refused.
+- **Ratings:** stars (half steps from the keyboard or TalkBack) or a heart, as each user chooses (Settings; the same on every device), on Now playing.
+  - **Storage:** kept per user on the gateway by stable track key, so a rating survives a rescan.
+  - **Blending:** your own rating counts three times LMS's shared rating (set by Ratings Light or other apps).
+  - **Ratings Light:** where installed, it receives your rating too.
+  - **Offline (Android):** a downloaded track rated offline is queued and sent with the plays.
+  - **Settings:** "Clear my ratings".
+- **Privacy:** ratings are listed in `docs/PRIVACY.md`.
+- **Tests:**
+  - **gateway:** the alarm and rating grammars; sounds without URLs; other players and hostile bodies refused before LMS; raw RPC still refused; storage, blending, migration 11 and offline batches checked against stable keys;
+  - **mobile:** the checks, the offline queue, and both features through the real gateway;
+  - **web:** the checks, the values sent, the rating control and the Alarms page;
+  - **Android:** the cache, the offline fallback, the view model, the rating control (including the accessibility audit) and the Alarms screen.
+
 ## 2026-10-12: Streaming quality on mobile data (gateway, web, Android)
 
 - **Lower-data streams:** a player can ask for **High** (Opus 160 kbps, about 70 MB an hour) or **Data saver** (Opus 96 kbps, about 45 MB an hour) instead of **Original** (CD-quality FLAC is about 400 MB an hour). The gateway re-encodes FLAC streams on the way through with the `ffmpeg` it already uses for downloads; other formats are sent as they are.

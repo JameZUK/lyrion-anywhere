@@ -4,6 +4,10 @@ import android.content.Context
 import android.os.Build
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.preferencesDataStoreFile
+import io.github.jamezuk.lyrionanywhere.data.RustRatingsRepository
+import io.github.jamezuk.lyrionanywhere.data.RatingsRepository
+import io.github.jamezuk.lyrionanywhere.data.RustAlarmsRepository
+import io.github.jamezuk.lyrionanywhere.data.AlarmsRepository
 import io.github.jamezuk.lyrionanywhere.data.AccountRepository
 import io.github.jamezuk.lyrionanywhere.data.AnalysisRepository
 import io.github.jamezuk.lyrionanywhere.data.LyricsRepository
@@ -90,6 +94,7 @@ class AppContainer(context: Context, scope: CoroutineScope) {
     val events: EventsRepository = RustEventsRepository(accountImpl)
     val analysis: AnalysisRepository = RustAnalysisRepository(accountImpl)
     val lyrics: LyricsRepository = RustLyricsRepository(accountImpl)
+    val alarms: AlarmsRepository = RustAlarmsRepository(accountImpl)
     val menus: MenusRepository = RustMenusRepository(accountImpl)
 
     /** Listening history, the customisable Home and stations (Wave 1). */
@@ -134,6 +139,9 @@ class AppContainer(context: Context, scope: CoroutineScope) {
 
     /** Downloads, the offline library, smart downloads and plays sync-back (A5). */
     val offline: OfflineRepository = offlineImpl
+
+    /** Ratings (Wave 2); a downloaded track rated offline is queued and sent with the plays. */
+    val ratings: RatingsRepository = RustRatingsRepository(accountImpl) { id, v -> offlineImpl.rateOffline(id, v) }
 
     /** Downloads played on this phone from the app's own queue. */
     val offlinePlayer: OfflinePlayerRepository = RustOfflinePlayerRepository(
