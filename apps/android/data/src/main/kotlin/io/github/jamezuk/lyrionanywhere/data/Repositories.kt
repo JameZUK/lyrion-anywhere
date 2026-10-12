@@ -169,6 +169,14 @@ interface PlayersRepository {
     /** Put [other] in [current]'s sync group, or take [other] out of its group. */
     suspend fun setSynced(current: String, other: String, on: Boolean): ApiResult<Unit>
 
+    /** The sleep timer: stop (and turn off) after [seconds], at most a day; 0 cancels. */
+    suspend fun setSleep(player: String, seconds: Int): ApiResult<Unit> =
+        ApiResult.Err(AppError.InvalidInput("sleep timer not available"))
+
+    /** The queue from [from] on, durations and albums only (for "sleep at the end of …"). */
+    suspend fun queueTimes(player: String, from: Int): ApiResult<List<Track>> =
+        ApiResult.Err(AppError.InvalidInput("queue not available"))
+
     /**
      * Move playback from [source] to [target] (docs/PROTOCOL.md › Transfer), reporting each
      * stage to [onStage] (on a background thread).
@@ -194,6 +202,9 @@ interface EventsRepository {
 }
 
 private fun Int.u(): UInt = coerceAtLeast(0).toUInt()
+
+/** The longest sleep timer the app sets: a day (as the web app). */
+const val MAX_SLEEP_SECONDS = 24 * 60 * 60
 
 class RustLibraryRepository(private val source: ConnectionSource) : LibraryRepository {
     private suspend fun <T> withLibrary(block: suspend (io.github.jamezuk.lyrionanywhere.core.MusicLibrary) -> T): ApiResult<T> {
@@ -312,6 +323,11 @@ class RustPlayersRepository(private val source: ConnectionSource) : PlayersRepos
     override suspend fun setRepeat(player: String, mode: RepeatMode) = withPlayers { it.setRepeat(player, mode) }
 
     override suspend fun setPower(player: String, on: Boolean) = withPlayers { it.setPower(player, on) }
+
+    override suspend fun setSleep(player: String, seconds: Int) =
+        withPlayers { it.setSleep(player, seconds.coerceIn(0, MAX_SLEEP_SECONDS).toUInt()) }
+
+    override suspend fun queueTimes(player: String, from: Int) = withPlayers { it.queueTimes(player, from.u()) }
 
     override suspend fun enqueue(player: String, selection: Selection, placement: Placement, playIndex: Int?) =
         withPlayers { it.enqueue(player, selection, placement, playIndex?.u()) }

@@ -281,6 +281,17 @@ class FakePlayers : PlayersRepository {
 
     override suspend fun setPower(player: String, on: Boolean) = cmd("power $on $player")
 
+    override suspend fun setSleep(player: String, seconds: Int) = cmd("sleep $seconds $player")
+
+    /** The queue after the current track, for "sleep at the end of …". */
+    var upcoming: List<Track> = emptyList()
+    val queueTimesCalls = mutableListOf<Pair<String, Int>>()
+
+    override suspend fun queueTimes(player: String, from: Int): ApiResult<List<Track>> {
+        queueTimesCalls += player to from
+        return ApiResult.Ok(upcoming)
+    }
+
     override suspend fun enqueue(player: String, selection: Selection, placement: Placement, playIndex: Int?) =
         cmd("enqueue $selection $placement $playIndex $player")
 
@@ -352,6 +363,9 @@ class FakeSettings(initial: AppSettings = AppSettings()) : SettingsStore {
 
     override suspend fun setDefaultPlayer(choice: io.github.jamezuk.lyrionanywhere.data.DefaultPlayer, playerId: String?) =
         state.update { it.copy(defaultPlayer = choice, defaultPlayerId = playerId) }
+
+    override suspend fun setSleepFade(seconds: Int) =
+        state.update { it.copy(sleepFadeSecs = io.github.jamezuk.lyrionanywhere.data.sanitiseSleepFade(seconds)) }
 }
 
 fun localStatus(id: String, connection: PlayerConnection = PlayerConnection.Connected) = LocalPlayerStatus(
@@ -411,6 +425,13 @@ class FakeLocalPlayer : LocalPlayerRepository {
     override fun setHold(hold: Boolean) {}
 
     override fun setDuck(duck: Boolean) {}
+
+    /** The sleep fades asked of the engine: (seconds to the end, or null to cancel; fade). */
+    val fades = mutableListOf<Pair<Double?, Int>>()
+
+    override fun setSleepFade(endsInSecs: Double?, fadeSecs: Int) {
+        fades += endsInSecs to fadeSecs
+    }
 
     override fun setOutputRoute(route: OutputRoute) {}
 

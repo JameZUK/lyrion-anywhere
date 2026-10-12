@@ -193,10 +193,13 @@ export function infoMenu(kind: InfoKind, item: number): (from: number, n: number
 
 // --- playback (player commands) ----------------------------------------------------------
 
-export const status = (): Command => ['status', '-', 1, STATUS_TAGS];
+/** The current track and the one after it (for "Up next"). */
+export const status = (): Command => ['status', '-', 2, STATUS_TAGS];
 /** What a player is playing, in brief (for the player list). */
 export const nowPlaying = (): Command => ['status', '-', 1, 'tags:al'];
 export const queue = (from: number, n: number): Command => ['status', start(from), count(n), QUEUE_TAGS];
+/** Durations and albums of the queue from `from` on (for "sleep at the end of …"). */
+export const queueTimes = (from: number): Command => ['status', start(from), 500, 'tags:de'];
 export const play = (): Command => ['play'];
 export const pause = (on?: boolean): Command => (on === undefined ? ['pause'] : ['pause', on ? 1 : 0]);
 export const stop = (): Command => ['stop'];
@@ -206,6 +209,13 @@ export const seek = (seconds: number): Command => ['time', Math.max(0, Math.roun
 export const volume = (v: number): Command => ['mixer', 'volume', Math.max(0, Math.min(100, Math.round(v)))];
 export const mute = (): Command => ['mixer', 'muting', 'toggle'];
 export const power = (on: boolean): Command => ['power', on ? 1 : 0];
+/** The longest sleep timer the app sets: a day. */
+export const MAX_SLEEP_SECONDS = 24 * 60 * 60;
+/** Stop (and power off) after this many whole seconds; 0 cancels the timer. */
+export const sleep = (seconds: number): Command => {
+	const s = Number.isFinite(seconds) ? Math.max(0, Math.min(MAX_SLEEP_SECONDS, Math.ceil(seconds))) : 0;
+	return ['sleep', s];
+};
 export const removeFromQueue = (index: number): Command => ['playlist', 'delete', start(index)];
 export const moveInQueue = (from: number, to: number): Command => ['playlist', 'move', start(from), start(to)];
 export const clearQueue = (): Command => ['playlist', 'clear'];

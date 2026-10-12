@@ -163,6 +163,25 @@ pub struct Track {
     /// The file's format, e.g. "FLAC 24/96" or "MP3".
     pub format: Option<String>,
     pub year: Option<i32>,
+    /// The quality badge for Now playing ("FLAC 24/96 · Hi-Res"), when LMS gave a type.
+    #[uniffi(default = None)]
+    pub quality: Option<Quality>,
+}
+
+/// The quality badge (Wave 1 §5): codec and resolution, and whether it is Hi-Res (more than
+/// 16-bit or more than 48 kHz, on lossless sources only). The web app has the same rules
+/// (web/app/src/lib/lms/quality.ts) and the tests share vectors.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct Quality {
+    /// "FLAC", "MP3", …
+    pub codec: String,
+    /// "FLAC 24/96", "FLAC 44.1 kHz", "MP3 320", "DSD64", "Opus".
+    pub label: String,
+    pub lossless: bool,
+    pub hi_res: bool,
+    pub sample_rate: Option<u32>,
+    pub bits: Option<u32>,
+    pub kbps: Option<u32>,
 }
 
 /// Players playing in step: their ids (two or more), as LMS lists them.
@@ -283,6 +302,12 @@ pub struct PlayerStatus {
     pub queue_length: u32,
     pub can_seek: bool,
     pub current: Option<Track>,
+    /// The track after the current one ("Up next"), if one is queued and plays next.
+    #[uniffi(default = None)]
+    pub next: Option<Track>,
+    /// Seconds left on the sleep timer, while one is set.
+    #[uniffi(default = None)]
+    pub sleep_secs: Option<f64>,
 }
 
 pub(crate) fn album_from(v: &Value) -> Option<Album> {
@@ -371,7 +396,115 @@ pub(crate) fn track_from(v: &Value) -> Track {
         year: int_of(&v["year"])
             .filter(|y| *y > 0 && *y < 10_000)
             .map(|y| y as i32),
+        quality: quality_of(v),
     }
+}
+
+/// The quality badge for a track's format details, or `None` without a usable type.
+pub(crate) fn quality_of(v: &Value) -> Option<Quality> {
+    let kind = v["type"].as_str()?.trim().to_ascii_lowercase();
+    if kind.is_empty() || kind.len() > 12 {
+        return None;
+    }
+    let (codec, lossless) = match kind.as_str() {
+        "flc" | "flac" => ("FLAC".to_string(), true),
+        "alc" | "alac" => ("ALAC".into(), true),
+        "wav" => ("WAV".into(), true),
+        "aif" | "aiff" => ("AIFF".into(), true),
+        "pcm" => ("PCM".into(), true),
+        "ape" => ("APE".into(), true),
+        "wvp" => ("WavPack".into(), true),
+        "wmal" => ("WMA Lossless".into(), true),
+        "dsf" | "dff" => ("DSD".into(), true),
+        "mp3" => ("MP3".into(), false),
+        "aac" | "mp4" | "m4a" => ("AAC".into(), false),
+        "ogg" => ("Ogg Vorbis".into(), false),
+        "ops" | "opus" => ("Opus".into(), false),
+        "wma" | "wmap" => ("WMA".into(), false),
+        "mpc" => ("Musepack".into(), false),
+        k if (1..=6).contains(&k.len()) && k.bytes().all(|b| b.is_ascii_alphanumeric()) => {
+            (k.to_ascii_uppercase(), false)
+        }
+        _ => return None,
+    };
+    let rate = whole_in(&v["samplerate"], 1000, 50_000_000);
+    let bits = whole_in(&v["samplesize"], 1, 64);
+    let kbps = kbps_of(&v["bitrate"]);
+    let label = match (codec.as_str(), lossless, bits, rate, kbps) {
+        ("DSD", _, _, Some(r), _) => format!("DSD{}", (r as f64 / 44_100.0).round() as u32),
+        (_, true, Some(b), Some(r), _) => format!("{codec} {b}/{}", khz(r as i64)),
+        (_, true, None, Some(r), _) => format!("{codec} {} kHz", khz(r as i64)),
+        (_, false, _, _, Some(k)) => format!("{codec} {k}"),
+        _ => codec.clone(),
+    };
+    let hi_res = lossless && (bits.is_some_and(|b| b > 16) || rate.is_some_and(|r| r > 48_000));
+    Some(Quality {
+        codec,
+        label,
+        lossless,
+        hi_res,
+        sample_rate: rate,
+        bits,
+        kbps,
+    })
+}
+
+/// A whole number from LMS (a number or digits, optionally with a fraction) within
+/// `lo..=hi`, rounded; anything else is `None`.
+fn whole_in(v: &Value, lo: u32, hi: u32) -> Option<u32> {
+    let n = match v {
+        Value::Number(n) => n.as_f64()?,
+        Value::String(s) => {
+            let t = s.trim();
+            let (int, frac) = t.split_once('.').unwrap_or((t, ""));
+            let ok = (1..=9).contains(&int.len())
+                && int.bytes().all(|b| b.is_ascii_digit())
+                && frac.bytes().all(|b| b.is_ascii_digit())
+                && !(t.contains('.') && frac.is_empty());
+            if !ok {
+                return None;
+            }
+            t.parse::<f64>().ok()?
+        }
+        _ => return None,
+    };
+    (n.is_finite() && n >= lo as f64 && n <= hi as f64).then(|| n.round() as u32)
+}
+
+/// LMS's bit rate ("320kbps", "873kbps VBR", "320000") in kbps.
+fn kbps_of(v: &Value) -> Option<u32> {
+    let n = match v {
+        Value::Number(n) => {
+            let x = n.as_f64()?;
+            if x >= 8000.0 { x / 1000.0 } else { x }
+        }
+        Value::String(s) if s.len() <= 40 => {
+            let t = s.trim_start();
+            let digits: String = t
+                .bytes()
+                .take_while(u8::is_ascii_digit)
+                .map(char::from)
+                .collect();
+            if digits.is_empty() || digits.len() > 7 {
+                return None;
+            }
+            let rest =
+                t[digits.len()..].trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
+            let rest = rest.trim_start().to_ascii_lowercase();
+            let n: f64 = digits.parse().ok()?;
+            if rest.starts_with("kbps") {
+                n
+            } else if rest.starts_with("bps") || (rest.is_empty() && n >= 8000.0) {
+                n / 1000.0
+            } else if rest.is_empty() {
+                n
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+    (n.is_finite() && (8.0..=100_000.0).contains(&n)).then(|| n.round() as u32)
 }
 
 /// A count or number LMS lists (disc, disc count): 1–999.
@@ -631,6 +764,7 @@ pub(crate) fn search_from(v: &Value) -> SearchResults {
                     genre: None,
                     format: None,
                     year: None,
+                    quality: None,
                 })
             })
             .collect(),
@@ -685,13 +819,242 @@ pub(crate) fn status_from(v: &Value) -> PlayerStatus {
             .unwrap_or(0),
         can_seek: int_of(&v["can_seek"]).is_none_or(|c| c == 1) && int_of(&v["remote"]) != Some(1),
         current,
+        next: next_of(v),
+        sleep_secs: float_of(&v["will_sleep_in"]).filter(|s| s.is_finite() && *s > 0.0),
     }
+}
+
+/// "Up next": the second entry of a `status - 2` answer, if it is the track at the current
+/// index + 1. Not under "repeat this track" (the same track plays again).
+fn next_of(v: &Value) -> Option<Track> {
+    if int_of(&v["playlist repeat"]) == Some(1) {
+        return None;
+    }
+    let cur = int_of(&v["playlist_cur_index"]).filter(|i| *i >= 0)?;
+    let next = v["playlist_loop"].as_array()?.get(1)?;
+    if !next.is_object() {
+        return None;
+    }
+    if let Some(at) = next.get("playlist index").filter(|x| !x.is_null())
+        && int_of(at) != Some(cur + 1)
+    {
+        return None;
+    }
+    let mut t = track_from(next);
+    t.queue_index = u32::try_from(cur + 1).ok();
+    Some(t)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The quality badge: the web app's vectors (web/app/tests/quality.test.ts).
+    #[test]
+    fn quality_badge_and_the_hi_res_rule() {
+        let cases = [
+            (
+                json!({"type": "flc", "samplesize": "24", "samplerate": "96000"}),
+                "FLAC 24/96",
+                true,
+            ),
+            (
+                json!({"type": "flc", "samplesize": "16", "samplerate": "44100"}),
+                "FLAC 16/44.1",
+                false,
+            ),
+            (
+                json!({"type": "flc", "samplesize": 16, "samplerate": 48000}),
+                "FLAC 16/48",
+                false,
+            ),
+            (
+                json!({"type": "flc", "samplesize": "24", "samplerate": "44100"}),
+                "FLAC 24/44.1",
+                true,
+            ),
+            (
+                json!({"type": "flc", "samplesize": "16", "samplerate": "88200"}),
+                "FLAC 16/88.2",
+                true,
+            ),
+            (
+                json!({"type": "alc", "samplesize": "24", "samplerate": "192000"}),
+                "ALAC 24/192",
+                true,
+            ),
+            (
+                json!({"type": "wav", "samplerate": "44100"}),
+                "WAV 44.1 kHz",
+                false,
+            ),
+            (
+                json!({"type": "aif", "samplerate": "96000"}),
+                "AIFF 96 kHz",
+                true,
+            ),
+            (
+                json!({"type": "dsf", "samplesize": "1", "samplerate": "2822400"}),
+                "DSD64",
+                true,
+            ),
+            (json!({"type": "FLC "}), "FLAC", false),
+        ];
+        for (v, label, hi_res) in cases {
+            let q = quality_of(&v).unwrap();
+            assert_eq!(q.label, label, "{v}");
+            assert_eq!(q.hi_res, hi_res, "{v}");
+            assert!(q.lossless);
+        }
+        let lossy = [
+            (
+                json!({"type": "mp3", "bitrate": "320kbps", "samplerate": "44100"}),
+                "MP3 320",
+            ),
+            (json!({"type": "mp3", "bitrate": "873kbps VBR"}), "MP3 873"),
+            (json!({"type": "aac", "bitrate": "256000"}), "AAC 256"),
+            (json!({"type": "ops", "bitrate": 128}), "Opus 128"),
+            (json!({"type": "ogg"}), "Ogg Vorbis"),
+        ];
+        for (v, label) in lossy {
+            let q = quality_of(&v).unwrap();
+            assert_eq!(q.label, label, "{v}");
+            assert!(!q.lossless && !q.hi_res);
+        }
+        // High-rate lossy is never Hi-Res.
+        let q = quality_of(&json!({"type": "aac", "samplesize": "24", "samplerate": "96000", "bitrate": "512kbps"})).unwrap();
+        assert!(!q.hi_res && !q.lossless);
+    }
+
+    #[test]
+    fn hostile_format_details_give_no_badge_or_a_plain_one() {
+        for bad in [
+            json!(null),
+            json!({}),
+            json!({"type": ""}),
+            json!({"type": 42}),
+            json!({"type": "<script>"}),
+            json!({"type": "x".repeat(50)}),
+            json!({"type": "a b"}),
+            json!({"type": "flac;rm"}),
+        ] {
+            assert!(quality_of(&bad).is_none(), "{bad}");
+        }
+        let q =
+            quality_of(&json!({"type": "xyz", "samplesize": "24", "samplerate": "96000"})).unwrap();
+        assert_eq!(
+            (q.label.as_str(), q.lossless, q.hi_res),
+            ("XYZ", false, false)
+        );
+        assert_eq!(
+            quality_of(&json!({"type": "flc", "samplesize": "9999", "samplerate": "-1"}))
+                .unwrap()
+                .label,
+            "FLAC"
+        );
+        assert_eq!(
+            quality_of(&json!({"type": "flc", "samplesize": "NaN", "samplerate": "1e9"}))
+                .unwrap()
+                .label,
+            "FLAC"
+        );
+        assert_eq!(
+            quality_of(&json!({"type": "mp3", "bitrate": "<b>320</b>"}))
+                .unwrap()
+                .label,
+            "MP3"
+        );
+        for b in [
+            json!(""),
+            json!("fast"),
+            json!("kbps"),
+            json!("9".repeat(60)),
+            json!("-320kbps"),
+            json!(-5),
+            json!({}),
+        ] {
+            assert_eq!(kbps_of(&b), None, "{b}");
+        }
+        // Every label is short plain text.
+        for t in [
+            "flc", "alc", "wav", "aif", "ape", "wvp", "wmal", "dsf", "dff", "mp3", "aac", "ogg",
+            "ops", "wma", "mpc", "zz9",
+        ] {
+            for bits in [json!(null), json!("16"), json!("24"), json!("32")] {
+                for rate in [
+                    json!(null),
+                    json!("44100"),
+                    json!("96000"),
+                    json!("352800"),
+                    json!("11289600"),
+                ] {
+                    let q = quality_of(&json!({"type": t, "samplesize": bits, "samplerate": rate, "bitrate": "320kbps"})).unwrap();
+                    assert!(
+                        q.label.len() <= 40
+                            && q.label
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || " ./-".contains(c)),
+                        "{}",
+                        q.label
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn up_next_is_the_track_at_the_current_index_plus_one() {
+        let cur = json!({"id": 1, "title": "Now", "playlist index": 3});
+        let next = json!({"id": 2, "title": "Next", "playlist index": 4});
+        let s = |extra: Value| {
+            let mut v =
+                json!({"playlist_cur_index": "3", "playlist_loop": [cur.clone(), next.clone()]});
+            for (k, x) in extra.as_object().unwrap() {
+                v[k] = x.clone();
+            }
+            status_from(&v)
+        };
+        let n = s(json!({})).next.unwrap();
+        assert_eq!((n.title.as_str(), n.queue_index), ("Next", Some(4)));
+        assert_eq!(s(json!({"playlist_loop": [cur.clone()]})).next, None);
+        assert_eq!(
+            s(json!({"playlist_loop": [cur.clone(), {"id": 2, "playlist index": 9}]})).next,
+            None
+        );
+        assert_eq!(s(json!({"playlist repeat": 1})).next, None);
+        assert!(s(json!({"playlist repeat": 2})).next.is_some());
+        assert_eq!(s(json!({"playlist_cur_index": "x"})).next, None);
+        assert_eq!(s(json!({"playlist_cur_index": -1})).next, None);
+        // No index on the entry: trusted to be the next one.
+        assert!(
+            s(json!({"playlist_loop": [cur.clone(), {"id": 2, "title": "Next"}]}))
+                .next
+                .is_some()
+        );
+        for junk in [json!(null), json!(7), json!("x"), json!([])] {
+            assert_eq!(s(json!({"playlist_loop": [cur.clone(), junk]})).next, None);
+        }
+        // The current track is still the first entry.
+        assert_eq!(s(json!({})).current.unwrap().title, "Now");
+    }
+
+    #[test]
+    fn sleep_seconds_come_from_will_sleep_in() {
+        let st = |v: Value| status_from(&json!({"will_sleep_in": v}));
+        assert_eq!(st(json!(1799.4)).sleep_secs, Some(1799.4));
+        assert_eq!(st(json!("60")).sleep_secs, Some(60.0));
+        for none in [
+            json!(0),
+            json!("0"),
+            json!(-3),
+            json!("x"),
+            json!(null),
+            json!("inf"),
+        ] {
+            assert_eq!(st(none.clone()).sleep_secs, None, "{none}");
+        }
+    }
 
     #[test]
     fn albums_parse_leniently() {

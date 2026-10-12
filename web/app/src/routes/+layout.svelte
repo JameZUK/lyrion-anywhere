@@ -103,6 +103,9 @@
 		};
 	});
 
+	// A sleep timer on this device fades its own output before the end.
+	app.onDeviceSleep = (endsAt, fadeS) => device.setSleepFade(endsAt, fadeS);
+
 	// When this browser becomes a player, control it.
 	device.onConnected = async (mac) => {
 		const point = loadResume();
@@ -301,6 +304,11 @@
 	.content {
 		min-width: 0;
 		padding-bottom: calc(var(--bar-h) + var(--tabs-h) + 1rem);
+	}
+	/* Now playing's ambient background sits behind this area, inside it. */
+	.content.on-np {
+		position: relative;
+		isolation: isolate;
 	}
 	/* Room for the "Playing on …" strip above the player bar. Now playing shows the strip
 	   itself, so the bar's is hidden there. */

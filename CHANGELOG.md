@@ -2,6 +2,21 @@
 
 Dated entries, newest first.
 
+## 2026-10-12: Wave 1 (part A): Now playing and the sleep timer
+
+- **Sleep timer** on every player, from a moon button on Now playing (the mini player shows a small moon while one runs; one tap turns it off):
+  - 15, 30, 45, 60 or 90 minutes, a custom length (1 minute to a day), or the **end of this track, album or queue**;
+  - for this player, its **sync group**, or **all players** you may control;
+  - set as LMS's own `sleep <seconds>`, so it also works on hardware players and with the app closed. "End of …" is worked out from the queue (time left) and set again whenever a seek, skip, pause or queue edit moves that end; an end more than a day away is not offered;
+  - **fade-out:** this device's own player fades out before the end over a length you choose in Settings (off to 2 minutes, 30 seconds by default), in its engine (the Rust engine on Android, so it carries on in the background; the AudioWorklet or media element in the browser). Other players use LMS's own sleep behaviour, which fades the volume over the last minute (at most) and then stops the player and turns it off. The fade setting is kept per user on each device for now.
+- **Ambient Now playing:** the cover, blurred, drifting slowly behind Now playing (still under reduce motion, battery saver, low-power devices, and while the page is hidden). A colour filter bounds the art's brightness and a scrim worked out for each theme keeps every text colour at WCAG AA over any cover; the contrast tests cover it. Web: a small image with CSS blur; Android: RenderEffect blur on Android 12+ and a tiny scaled-up image below. Off in the high-contrast theme. The mini player takes a faint wash of the cover's colour.
+- **Up next:** a row under the transport with the next track and its cover. Tap for the queue; swipe it away (or Delete, or the Remove action) to take it out of the queue, with Undo. Art and title cross-fade between tracks (not under reduce motion).
+- **One mini-player gesture model** (web and Android): swipe left/right for next/previous (with a haptic tick on phones), swipe up or tap to open Now playing, long-press (or right-click) for *Play on…*. Every gesture is also a button, a TalkBack or screen-reader action, and on the web a key (Alt+→/←, Shift+F10 or the context-menu key).
+- **Quality badge** on Now playing, e.g. **FLAC 24/96 · Hi-Res** or **MP3 320** (Hi-Res: more than 16-bit or more than 48 kHz, lossless only). Tapping it opens the signal path: on Android the existing panel; on the web a new one showing the source, decoding, volume and processing, the output mode (Web Audio or media element) and rate, and whether the browser resamples.
+- **Status:** players are now asked for the current and the next track (`status - 2`); the gateway's allow-list already took that and `sleep`.
+- **Tests:** sleep timing (end of track, album and queue, re-arming, "armed and over", sleep all and group targets, the fade curve and setting) with the same vectors in TypeScript, Rust and Kotlin; the badge and Hi-Res rule (Rust and TypeScript, hostile input); Up next derivation; the gesture state machine (with a robustness run); the engine fade end to end (Rust integration test); the gateway's `sleep` allow-list with negative tests; Vitest component tests (badge and signal path, sleep sheet, Up next swipe/remove/Undo, ambient and reduce motion, mini-player gestures and keys); Robolectric tests for every gesture and its accessibility action, the sleep sheet, Up next and the fade setting; and contrast tests for the ambient scrim and the mini player's tint in every theme.
+- **Demo LMS** (`tools/demo`): `status - n` starts at the current track, `sleep` works, and the playing album is 24/96.
+
 ## 2026-10-12: Wave 1 (part B): listening history, stations and a customisable Home
 
 Agreed design: `docs/plans/wave1-design.md` §6–8; decision D23 in `SPEC.md`.

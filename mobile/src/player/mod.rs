@@ -13,8 +13,9 @@
 //! Playback state that LMS owns (play, pause, skip, volume) is changed through LMS, with
 //! the ordinary player commands for this player's id; LMS then drives the engine.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub mod clock;
 pub mod negotiate;
@@ -245,6 +246,10 @@ pub struct LocalPlayer {
     route: Mutex<OutputRoute>,
     hold: Mutex<bool>,
     duck: Mutex<bool>,
+    /// The sleep timer's fade-out: a factor on the output (`f32` bits), 1 when none runs.
+    fade: AtomicU32,
+    /// Bumped by every change to the fade, so an older fade's thread stops.
+    fade_gen: AtomicU64,
     negotiator: Mutex<Option<Arc<dyn OutputNegotiator>>>,
 }
 
@@ -272,6 +277,8 @@ impl LocalPlayer {
             route: Mutex::new(OutputRoute::default()),
             hold: Mutex::new(false),
             duck: Mutex::new(false),
+            fade: AtomicU32::new(1.0f32.to_bits()),
+            fade_gen: AtomicU64::new(0),
             negotiator: Mutex::new(None),
         })
     }
@@ -287,11 +294,7 @@ impl LocalPlayer {
         }
         let cfg = self.config.lock().unwrap().clone();
         let ring = Ring::new(RING_SAMPLES);
-        ring.set_gain(if *self.duck.lock().unwrap() {
-            DUCK_GAIN
-        } else {
-            1.0
-        });
+        ring.set_gain(output_gain(*self.duck.lock().unwrap(), self.fade_factor()));
         let shared = Arc::new(Shared {
             status: Mutex::new(LocalPlayerStatus::default()),
             signal: Mutex::new(None),
@@ -397,11 +400,49 @@ impl LocalPlayer {
     /// Lower the volume while another app speaks (audio focus "may duck").
     pub fn set_duck(&self, duck: bool) {
         *self.duck.lock().unwrap() = duck;
-        if let Some(r) = self.run.lock().unwrap().as_ref() {
-            r.shared
-                .out
-                .ring
-                .set_gain(if duck { DUCK_GAIN } else { 1.0 });
+        self.apply_gain();
+    }
+
+    /// Fade the output out before the sleep timer ends, `ends_in_secs` from now (as LMS
+    /// reports it), over `fade_secs` (0–120; 0 is no fade). `None` cancels and restores
+    /// full volume at once. The fade runs here, in the engine, so it keeps going with the
+    /// app in the background; it lifts by itself shortly after the end, once LMS has
+    /// stopped the player. Calling it again replaces the fade (the timer was re-armed).
+    pub fn set_sleep_fade(self: Arc<Self>, ends_in_secs: Option<f64>, fade_secs: u32) {
+        let generation = self.fade_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        let fade = f64::from(crate::sleep::sleep_fade_sanitise(i64::from(fade_secs)));
+        let ends = ends_in_secs.filter(|s| {
+            s.is_finite() && *s > 0.0 && *s <= f64::from(crate::commands::MAX_SLEEP_SECS)
+        });
+        let Some(left) = ends.filter(|_| fade > 0.0) else {
+            self.set_fade_factor(1.0);
+            return;
+        };
+        let end = Instant::now() + Duration::from_secs_f64(left);
+        let me = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("sleep-fade".into())
+            .spawn(move || {
+                loop {
+                    if me.fade_gen.load(Ordering::Acquire) != generation {
+                        return;
+                    }
+                    let now = Instant::now();
+                    let left = if now <= end {
+                        (end - now).as_secs_f64()
+                    } else {
+                        -(now - end).as_secs_f64()
+                    };
+                    let (gain, done) = fade_step(left, fade);
+                    me.set_fade_factor(gain);
+                    if done {
+                        return;
+                    }
+                    std::thread::sleep(FADE_STEP);
+                }
+            });
+        if spawned.is_err() {
+            self.set_fade_factor(1.0); // no thread: no fade, rather than silence
         }
     }
 
@@ -519,6 +560,56 @@ pub(crate) fn read_int(pull: Option<Arc<Mutex<PullSlot>>>, max_frames: u32) -> P
     }
 }
 
+impl LocalPlayer {
+    fn fade_factor(&self) -> f32 {
+        f32::from_bits(self.fade.load(Ordering::Acquire))
+    }
+
+    fn set_fade_factor(&self, f: f32) {
+        let f = if f.is_finite() {
+            f.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        if self.fade.swap(f.to_bits(), Ordering::AcqRel) != f.to_bits() {
+            self.apply_gain();
+        }
+    }
+
+    /// Ducking and the sleep fade, on the ring of the running player (if any).
+    fn apply_gain(&self) {
+        let g = output_gain(*self.duck.lock().unwrap(), self.fade_factor());
+        if let Some(r) = self.run.lock().unwrap().as_ref() {
+            r.shared.out.ring.set_gain(g);
+        }
+    }
+}
+
+/// How often the sleep fade moves the gain (small steps: no audible stairs).
+const FADE_STEP: Duration = Duration::from_millis(100);
+/// The fade lifts this long after the timer's end (LMS has stopped the player by then).
+const FADE_LIFT_AFTER_SECS: f64 = 10.0;
+
+/// The output gain for ducking and the sleep fade. Exactly 1.0 (a true bypass) when
+/// neither applies.
+pub(crate) fn output_gain(duck: bool, fade: f32) -> f32 {
+    let f = if fade.is_finite() {
+        fade.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    if duck { DUCK_GAIN * f } else { f }
+}
+
+/// One step of the sleep fade, `left` seconds before the end (negative after it): the gain,
+/// and whether the fade is over (lifted back to full, well after the end).
+pub(crate) fn fade_step(left: f64, fade: f64) -> (f32, bool) {
+    if left.is_nan() || left < -FADE_LIFT_AFTER_SECS {
+        return (1.0, true);
+    }
+    (crate::sleep::sleep_fade_gain(Some(left), fade), false)
+}
+
 impl Drop for LocalPlayer {
     fn drop(&mut self) {
         self.stop();
@@ -539,6 +630,29 @@ pub(crate) fn sanitise_config(c: LocalPlayerConfig) -> LocalPlayerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ducking_and_the_sleep_fade_combine_and_full_is_a_true_bypass() {
+        assert_eq!(output_gain(false, 1.0).to_bits(), 1.0f32.to_bits());
+        assert_eq!(output_gain(true, 1.0), DUCK_GAIN);
+        assert!((output_gain(true, 0.5) - DUCK_GAIN * 0.5).abs() < 1e-7);
+        assert_eq!(output_gain(false, 0.0), 0.0);
+        // Junk never amplifies or goes silent by accident.
+        assert_eq!(output_gain(false, f32::NAN), 1.0);
+        assert_eq!(output_gain(false, 7.0), 1.0);
+        assert_eq!(output_gain(false, -1.0), 0.0);
+    }
+
+    #[test]
+    fn the_sleep_fade_steps_down_then_lifts_after_the_end() {
+        assert_eq!(fade_step(100.0, 30.0), (1.0, false));
+        let (g, done) = fade_step(15.0, 30.0);
+        assert!((g - 0.25).abs() < 1e-6 && !done);
+        assert_eq!(fade_step(0.0, 30.0), (0.0, false));
+        assert_eq!(fade_step(-5.0, 30.0), (0.0, false)); // LMS stops the player meanwhile
+        assert_eq!(fade_step(-10.5, 30.0), (1.0, true)); // back to full for next time
+        assert_eq!(fade_step(f64::NAN, 30.0), (1.0, true));
+    }
 
     #[test]
     fn config_is_sanitised() {

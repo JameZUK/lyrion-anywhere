@@ -20,6 +20,7 @@
 	import { loadDefault, saveDefault, type DefaultSetting } from '$lib/player/default-player';
 	import { isThisDevice } from '$lib/player/outputs';
 	import { textOf } from '$lib/lms/format';
+	import { FADE_CHOICES } from '$lib/lms/sleep';
 
 	// Built in: every browser is checked, and the best playback mode chosen automatically.
 	const caps = detect();
@@ -329,6 +330,17 @@
 			{/if}
 		</div>
 	{/if}
+
+	<div class="card">
+		<h2>Sleep timer</h2>
+		<label class="field">
+			<span>Fade out before it stops</span>
+			<select value={app.sleepFade} onchange={(e) => app.setSleepFade(Number(e.currentTarget.value))} data-sleep-fade>
+				{#each FADE_CHOICES as f (f)}<option value={f}>{f === 0 ? 'Off' : f < 60 ? `${f} seconds` : f === 60 ? '1 minute' : `${f / 60} minutes`}</option>{/each}
+			</select>
+		</label>
+		<p class="muted small">For this browser's own player; kept for your account in this browser. Other players follow LMS: they fade over the last minute, then stop and turn off.</p>
+	</div>
 
 	<div class="card">
 		<h2>Appearance</h2>

@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +46,25 @@ class SettingsStoreTest {
 
     @After
     fun tearDown() = scopes.forEach { it.cancel() }
+
+    /** The sleep timer's fade-out (Wave 1): 30 s by default, kept, and checked when read. */
+    @Test
+    fun sleepFadeDefaultsSurvivesARestartAndRefusesNonsense() = runBlocking {
+        assertEquals(30, DataStoreSettings(store()).settings.first().sleepFadeSecs)
+        DataStoreSettings(restart()).setSleepFade(90)
+        assertEquals(90, DataStoreSettings(restart()).settings.first().sleepFadeSecs)
+        DataStoreSettings(restart()).setSleepFade(0)
+        assertEquals(0, DataStoreSettings(restart()).settings.first().sleepFadeSecs)
+        // Out of range when written: the default is kept instead.
+        DataStoreSettings(restart()).setSleepFade(5_000)
+        assertEquals(30, DataStoreSettings(restart()).settings.first().sleepFadeSecs)
+        // Stored nonsense (an older or tampered file) is never used.
+        for (bad in listOf(-1, 121, Int.MAX_VALUE, Int.MIN_VALUE)) {
+            val s = restart()
+            s.edit { it[intPreferencesKey("sleep_fade_secs")] = bad }
+            assertEquals("$bad", 30, DataStoreSettings(s).settings.first().sleepFadeSecs)
+        }
+    }
 
     @Test
     fun soundDefaultsToBitPerfect() = runBlocking {

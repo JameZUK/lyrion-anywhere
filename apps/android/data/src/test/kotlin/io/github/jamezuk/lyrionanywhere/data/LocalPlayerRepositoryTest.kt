@@ -88,6 +88,10 @@ private class FakeHandle : LocalPlayerHandle {
         calls += "duck $duck"
     }
 
+    override fun setSleepFade(endsInSecs: Double?, fadeSecs: UInt) {
+        calls += "fade $endsInSecs $fadeSecs"
+    }
+
     override fun setOutputRoute(route: OutputRoute) {
         calls += "route ${route.device}"
     }
@@ -119,13 +123,48 @@ class LocalPlayerRepositoryTest {
     private val handles = mutableListOf<FakeHandle>()
     private var failWith: Exception? = null
 
+    private var clockMs = 1_000_000L
+
     private fun TestScope.repo(): RustLocalPlayerRepository {
         val d = UnconfinedTestDispatcher(testScheduler)
         val scope = CoroutineScope(backgroundScope.coroutineContext + d)
         return RustLocalPlayerRepository(sessions, settings, scope, d, factory = {
             failWith?.let { throw it }
             FakeHandle().also { handles += it }
-        })
+        }, nowMs = { clockMs })
+    }
+
+    /** The sleep fade (Wave 1): passed to the engine once per change, checked, and again for a new engine. */
+    @Test
+    fun theSleepFadeReachesTheEngineOncePerChange() = runTest {
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        r.setSleepFade(600.0, 30)
+        // Every status repeats the timer: the same end (within polling drift) isn't passed again.
+        clockMs += 5_000
+        r.setSleepFade(595.5, 30)
+        assertEquals(listOf("fade 600.0 30"), handles[0].calls.filter { it.startsWith("fade") })
+        // Re-armed, a new length, cancelled: each passed on.
+        r.setSleepFade(20.0, 30)
+        r.setSleepFade(20.0, 60)
+        r.setSleepFade(null, 60)
+        r.setSleepFade(null, 60)
+        assertEquals(
+            listOf("fade 600.0 30", "fade 20.0 30", "fade 20.0 60", "fade null 60"),
+            handles[0].calls.filter { it.startsWith("fade") },
+        )
+        // Junk never reaches the engine as a timer; lengths are clamped.
+        for (bad in listOf(Double.NaN, Double.POSITIVE_INFINITY, -5.0, 0.0, 1e9)) r.setSleepFade(bad, 30)
+        r.setSleepFade(100.0, 5_000)
+        r.setSleepFade(200.0, -3)
+        val last = handles[0].calls.filter { it.startsWith("fade") }.takeLast(3)
+        assertEquals(listOf("fade null 30", "fade 100.0 120", "fade 200.0 0"), last)
+        // A new engine (restarted) is told again.
+        r.setEnabled(false)
+        r.setEnabled(true)
+        r.setSleepFade(200.0, 0)
+        assertEquals(listOf("fade 200.0 0"), handles.last().calls.filter { it.startsWith("fade") })
     }
 
     @Test

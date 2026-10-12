@@ -515,8 +515,22 @@ impl InfoKind {
 
 // --- playback (player commands) ----------------------------------------------------------
 
+/// The current track and the one after it (for "Up next").
 pub fn status() -> Command {
-    vec![json!("status"), json!("-"), json!(1), json!(STATUS_TAGS)]
+    vec![json!("status"), json!("-"), json!(2), json!(STATUS_TAGS)]
+}
+
+/// Durations and albums of the queue from `from` on (for "sleep at the end of …").
+pub fn queue_times(from: u32) -> Command {
+    vec![json!("status"), json!(from), json!(500), json!("tags:de")]
+}
+
+/// The longest sleep timer the app sets: a day.
+pub const MAX_SLEEP_SECS: u32 = 24 * 60 * 60;
+
+/// Stop (and power off) after `seconds`, at most a day; 0 cancels the timer.
+pub fn sleep(seconds: u32) -> Command {
+    vec![json!("sleep"), json!(seconds.min(MAX_SLEEP_SECS))]
 }
 
 pub fn queue(start: u32, n: u32) -> Command {
@@ -1038,6 +1052,21 @@ mod tests {
         assert!(InfoKind::Year.selector(-1).is_err());
         assert!(InfoKind::Year.selector(10_000).is_err());
         assert!(InfoKind::Track.selector(0).is_err());
+    }
+
+    #[test]
+    fn sleep_and_status_shapes_match_the_web_app() {
+        assert_eq!(sleep(1800), vec![json!("sleep"), json!(1800)]);
+        assert_eq!(sleep(0), vec![json!("sleep"), json!(0)]);
+        assert_eq!(sleep(u32::MAX), vec![json!("sleep"), json!(86_400)]);
+        assert_eq!(
+            status(),
+            vec![json!("status"), json!("-"), json!(2), json!(STATUS_TAGS)]
+        );
+        assert_eq!(
+            queue_times(4),
+            vec![json!("status"), json!(4), json!(500), json!("tags:de")]
+        );
     }
 
     #[test]

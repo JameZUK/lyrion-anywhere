@@ -21,6 +21,7 @@
 //! - [`Me`]: the user's listening history, customisable Home, stations and pinned menus;
 //!   [`StationRunner`] keeps a station going (docs/plans/wave1-design.md §6–8);
 //! - [`Events`]: the live event stream with reconnects and token renewal;
+//! - [`sleep`]: the sleep timer's rules (end of track/album/queue, re-arming, fade-out);
 //! - [`LocalPlayer`]: this phone as an LMS player (Slimproto through the gateway, the
 //!   core's decoders, optional DSP, a lock-free ring and AAudio output);
 //! - offline ([`offline`]): [`OfflineLibrary`] (downloads on the device, per user and
@@ -51,6 +52,7 @@ pub mod player;
 pub mod players;
 pub mod server;
 pub mod session;
+pub mod sleep;
 mod tls;
 pub mod transfer;
 mod transport;
@@ -91,6 +93,7 @@ pub use player::{
 pub use players::Players;
 pub use server::{PairingInvite, Server, parse_pairing_invite};
 pub use session::{SecureStore, Session, SessionObserver, StoreError, StoredCredentials};
+pub use sleep::SleepEnd;
 pub use transfer::{
     TransferMethod, TransferOutcome, TransferProgress, TransferRefusal, TransferStage,
 };

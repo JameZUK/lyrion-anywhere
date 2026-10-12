@@ -1669,6 +1669,37 @@ mod tests {
         assert!(check(&Who(Role::Admin), OTHER, &raw, &apps()).is_ok());
     }
 
+    /// The sleep timer (Wave 1): whole seconds, or `?`, on a player the caller may control;
+    /// "sleep all" is one command per player, each checked on its own.
+    #[test]
+    fn sleep_takes_whole_seconds_on_permitted_players_only() {
+        ok(MINE, json!(["sleep", 1800]));
+        ok(MINE, json!(["sleep", "0"]));
+        ok(MINE, json!(["sleep", "?"]));
+        ok(HOME, json!(["sleep", 86400]));
+        for cmd in [
+            json!(["sleep"]),
+            json!(["sleep", "-5"]),
+            json!(["sleep", "1.5"]),
+            json!(["sleep", "1e3"]),
+            json!(["sleep", "abc"]),
+            json!(["sleep", ""]),
+            json!(["sleep", " 900"]),
+            json!(["sleep", "900", "x"]),
+            json!(["sleep", "9999999999999"]),
+            json!(["sleep", "900;rescan"]),
+            json!(["sleep", json!({"a": 1})]),
+        ] {
+            denied(MINE, cmd);
+        }
+        denied(OTHER, json!(["sleep", 900]));
+        denied("", json!(["sleep", 900]));
+        // The status asked for with the timer's queue read (durations and albums only).
+        ok(MINE, json!(["status", "-", 2, "tags:aAlcdeJKjNoqrsTIyx"]));
+        ok(MINE, json!(["status", 4, 500, "tags:de"]));
+        denied(OTHER, json!(["status", 4, 500, "tags:de"]));
+    }
+
     /// Transfer (docs/PROTOCOL.md) uses only the existing allow-list: every step passes
     /// between two players the caller may control, and fails as soon as either one is not.
     #[test]

@@ -39,6 +39,9 @@ Lyrion Anywhere gives your phone, tablet or laptop secure access to your LMS lib
   - *the media element:* survives the screen locking on Android and iOS, with lock-screen controls.
 - **Picks up where you left off.** Reload the page and playback carries on, on the same track and at the same time.
 - **Waveform seek bar.** Now playing shows each track's waveform, analysed on your server, and tapping it jumps there (and starts playback if it was paused).
+- **Sleep timer** on any player: a length, or the end of this track, album or queue; for one player, its sync group or all of them. This device fades out first (you choose how long).
+- **Now playing that feels alive:** the cover blurred and drifting behind it (still if you prefer less motion), *Up next* with swipe to remove and Undo, and a quality badge (**FLAC 24/96 · Hi-Res**) that opens the signal path.
+- **Mini player gestures:** swipe for next and previous, up to open, long-press for *Play on…*, each also a button, key and screen-reader action.
 - **Offline.** Download albums to the device and play them with no connection. Plays are counted in LMS (play count, last played) once you're back online.
 
 **Your whole library and LMS**

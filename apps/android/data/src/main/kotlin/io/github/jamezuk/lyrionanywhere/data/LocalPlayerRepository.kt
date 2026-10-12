@@ -56,6 +56,13 @@ interface LocalPlayerRepository {
     /** Lower the volume while another app speaks. */
     fun setDuck(duck: Boolean)
 
+    /**
+     * Fade the output out before the sleep timer ends, [endsInSecs] from now, over
+     * [fadeSecs] (0–120; 0: no fade). Null cancels. The engine runs the fade, so it carries
+     * on in the background.
+     */
+    fun setSleepFade(endsInSecs: Double?, fadeSecs: Int) {}
+
     /** What Android says about the output route, for the signal path. */
     fun setOutputRoute(route: OutputRoute)
 
@@ -82,6 +89,8 @@ interface LocalPlayerHandle {
 
     fun setDuck(duck: Boolean)
 
+    fun setSleepFade(endsInSecs: Double?, fadeSecs: UInt) {}
+
     fun setOutputRoute(route: OutputRoute)
 
     fun setDsp(dsp: DspSettings)
@@ -92,6 +101,9 @@ interface LocalPlayerHandle {
 
     fun close()
 }
+
+/** A sleep timer end that moved less than this is the same timer (polling drift). */
+private const val FADE_SAME_MS = 2_000L
 
 /** Highest rate offered to LMS; it transcodes anything above. */
 const val MAX_SAMPLE_RATE = 192_000
@@ -109,6 +121,8 @@ private class RustHandle(session: Session) : LocalPlayerHandle {
     override fun setHold(hold: Boolean) = player.setHold(hold)
 
     override fun setDuck(duck: Boolean) = player.setDuck(duck)
+
+    override fun setSleepFade(endsInSecs: Double?, fadeSecs: UInt) = player.setSleepFade(endsInSecs, fadeSecs)
 
     override fun setOutputRoute(route: OutputRoute) = player.setOutputRoute(route)
 
@@ -142,6 +156,8 @@ class RustLocalPlayerRepository(
     private val io: CoroutineDispatcher,
     private val eqCheck: (String) -> EqCheck = ::rustEqCheck,
     private val factory: (Session) -> LocalPlayerHandle = { RustHandle(it) },
+    /** A monotonic clock (ms), for the sleep fade. */
+    private val nowMs: () -> Long = { System.nanoTime() / 1_000_000 },
 ) : LocalPlayerRepository {
     private val _state = MutableStateFlow(LocalPlayerState())
     override val state: StateFlow<LocalPlayerState> = _state.asStateFlow()
@@ -200,6 +216,7 @@ class RustLocalPlayerRepository(
             val h = factory(session)
             handle = h
             handleSession = session
+            fade = null // a new engine has no fade yet
             h.setOutputRoute(route)
             negotiator?.let { h.setOutputNegotiator(it) }
             // The engine starts bit-perfect; any DSP is set before any audio.
@@ -225,6 +242,25 @@ class RustLocalPlayerRepository(
 
     override fun setDuck(duck: Boolean) {
         handle?.setDuck(duck)
+    }
+
+    /** The fade last passed to the engine: when it ends (ms, [nowMs]'s clock) and its length. */
+    private var fade: Pair<Long?, Int>? = null
+
+    override fun setSleepFade(endsInSecs: Double?, fadeSecs: Int) {
+        val ends = endsInSecs?.takeIf { it.isFinite() && it > 0 && it <= MAX_SLEEP_SECONDS }
+        val length = fadeSecs.coerceIn(0, SLEEP_FADE_MAX)
+        val endsAt = ends?.let { nowMs() + (it * 1000).toLong() }
+        // Every status repeats the timer: pass it on only when it has changed (by more than
+        // the drift between polls), so the engine's fade isn't restarted each time.
+        val last = fade
+        if (last != null && last.second == length &&
+            (last.first == null && endsAt == null || last.first != null && endsAt != null && kotlin.math.abs(last.first!! - endsAt) < FADE_SAME_MS)
+        ) {
+            return
+        }
+        fade = endsAt to length
+        handle?.setSleepFade(ends, length.toUInt())
     }
 
     override fun setOutputRoute(route: OutputRoute) {

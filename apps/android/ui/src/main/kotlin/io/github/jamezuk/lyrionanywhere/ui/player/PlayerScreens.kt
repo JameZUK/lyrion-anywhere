@@ -1,7 +1,30 @@
 package io.github.jamezuk.lyrionanywhere.ui.player
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.outlined.Bedtime
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import io.github.jamezuk.lyrionanywhere.ui.theme.AmbientBackground
+import io.github.jamezuk.lyrionanywhere.ui.theme.isHighContrast
+import io.github.jamezuk.lyrionanywhere.ui.theme.rememberArtSeed
+import io.github.jamezuk.lyrionanywhere.ui.theme.tinted
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -106,7 +129,13 @@ fun rememberElapsed(state: PlayerUiState, clock: () -> Long): Double {
 /**
  * The bar shown above the navigation: what's playing, with play/pause, next and the output
  * button; above it, the "Playing on …" strip when another player is controlled (D20).
+ *
+ * Gestures (Wave 1 §4, as on the web): swipe left/right for the next/previous track (with a
+ * haptic tick), swipe up or tap to open Now playing, long-press for *Play on…*. TalkBack
+ * gets each as an action (Next, Previous, Play on…, and the click to open). A small moon
+ * shows while a sleep timer runs, and the bar takes a faint wash of the cover's colour.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MiniPlayer(
     state: PlayerUiState,
@@ -117,6 +146,7 @@ fun MiniPlayer(
     onBackToPhone: () -> Unit = {},
     onBringToPhone: (() -> Unit)? = null,
     onDismissTransfer: () -> Unit = {},
+    onPrevious: () -> Unit = {},
 ) {
     val track = state.status?.current
     if (track == null) {
@@ -126,33 +156,101 @@ fun MiniPlayer(
         }
         return
     }
-    val swipeMin = with(LocalDensity.current) { SWIPE_MIN.toPx() }
-    // A stable callback, so recompositions don't restart a swipe in progress.
+    val density = LocalDensity.current
+    val swipeMin = with(density) { SWIPE_MIN.toPx() }
+    val swipeUp = with(density) { SWIPE_UP_MIN.toPx() }
+    val haptics = LocalHapticFeedback.current
+    // Stable callbacks, so recompositions don't restart a swipe in progress.
     val latestOpen by rememberUpdatedState(onOpen)
-    val open = remember { { latestOpen() } }
-    Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
+    val latestNext by rememberUpdatedState(onNext)
+    val latestPrevious by rememberUpdatedState(onPrevious)
+    val swiped = remember {
+        { a: SwipeAction ->
+            when (a) {
+                SwipeAction.NEXT -> {
+                    haptics.performHapticFeedback(HapticFeedbackType.GestureEnd)
+                    latestNext()
+                }
+                SwipeAction.PREVIOUS -> {
+                    haptics.performHapticFeedback(HapticFeedbackType.GestureEnd)
+                    latestPrevious()
+                }
+                SwipeAction.OPEN -> latestOpen()
+                else -> {}
+            }
+        }
+    }
+    var follow by remember { mutableStateOf<Offset?>(null) }
+    val onDrag = remember { { o: Offset? -> follow = o } }
+    val nextLabel = stringResource(R.string.action_next)
+    val previousLabel = stringResource(R.string.action_previous)
+    val playOnLabel = stringResource(R.string.mini_play_on)
+    val context = LocalContext.current
+    val highContrast = remember(context) { isHighContrast(context) }
+    val seed = rememberArtSeed(track.artwork).takeUnless { highContrast }
+    val sleepLeft = SleepTimer.left(state.status)
+    Surface(
+        tonalElevation = 3.dp,
+        color = tinted(MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp), seed),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
       Column {
         TransferStatus(state.transfer, onDismissTransfer)
         PlayingOnStrip(state, onBackToPhone, onBringToPhone = onBringToPhone)
         Row(
             Modifier
                 .testTag("mini-player")
-                .swipeUpToOpen(swipeMin, open)
-                .clickable(onClickLabel = stringResource(R.string.open_now_playing), onClick = onOpen)
+                .miniPlayerSwipes(swipeMin, swipeUp, swiped, onDrag)
+                .combinedClickable(
+                    onClickLabel = stringResource(R.string.open_now_playing),
+                    onLongClickLabel = playOnLabel,
+                    onLongClick = {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onOutputs()
+                    },
+                    onClick = onOpen,
+                )
+                .semantics {
+                    customActions = listOf(
+                        CustomAccessibilityAction(nextLabel) { onNext(); true },
+                        CustomAccessibilityAction(previousLabel) { onPrevious(); true },
+                        CustomAccessibilityAction(playOnLabel) { onOutputs(); true },
+                    )
+                }
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            Row(
+                Modifier.weight(1f).graphicsLayer {
+                    translationX = (follow?.x ?: 0f) * 0.5f
+                    translationY = (follow?.y ?: 0f) * 0.4f
+                },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
             ArtworkImage(track.artwork, 120, contentDescription = null, modifier = Modifier.size(48.dp), corner = 6.dp)
             Column(Modifier.weight(1f)) {
                 Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
-                Text(
-                    listOfNotNull(track.artist, state.selected?.name).joinToString(" · "),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (sleepLeft != null) {
+                        val moon = stringResource(R.string.sleep_timer_left, sleepLeftText(sleepLeft))
+                        Icon(
+                            Icons.Outlined.Bedtime,
+                            contentDescription = moon,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(14.dp).padding(end = 2.dp).testTag("mini-moon"),
+                        )
+                    }
+                    Text(
+                        listOfNotNull(track.artist, state.selected?.name).joinToString(" · "),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             }
             OutputButton(state, onOutputs)
             PlayPauseButton(state.playing, onTogglePlay, filled = false)
@@ -210,11 +308,16 @@ fun NowPlayingScreen(
     val onClose by rememberUpdatedState(actions.onClose)
     val pull = remember(pullMin) { PullToClose(pullMin) { onClose?.invoke() } }
     val togglePlay by rememberUpdatedState(actions.onTogglePlay)
+    val list = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    // "Up next" opens the queue: on a phone it is further down this list.
+    val openQueue: () -> Unit = { if (!twoPane) scope.launch { list.animateScrollToItem(1) } }
     ArtTinted(track?.artwork) {
+    Box(modifier.fillMaxSize()) {
+    AmbientBackground(track?.artwork)
     Column(
-        modifier
+        Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
             // Space or the media key plays and pauses. Handled after the focused control (not
             // in preview), so Space on a focused button still presses that button.
             .onKeyEvent { e ->
@@ -234,7 +337,7 @@ fun NowPlayingScreen(
                 Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                NowPlayingControls(state, status, player.name, clock, actions)
+                NowPlayingControls(state, status, player.name, clock, actions, openQueue)
             }
             VerticalDivider()
             LazyColumn(Modifier.weight(1f).fillMaxHeight().testTag("queue-pane"), contentPadding = PaddingValues(vertical = 8.dp)) {
@@ -245,16 +348,18 @@ fun NowPlayingScreen(
     } else {
         LazyColumn(
             Modifier.fillMaxSize().nestedScroll(pull).testTag("now-playing-list"),
+            state = list,
             horizontalAlignment = Alignment.CenterHorizontally,
             contentPadding = PaddingValues(16.dp),
         ) {
-            item(key = "controls") { NowPlayingControls(state, status, player.name, clock, actions) }
+            item(key = "controls") { NowPlayingControls(state, status, player.name, clock, actions, openQueue) }
             item(key = "queue-header") {
                 HorizontalDivider()
                 QueueHeader(state.queue.size, player.name, actions.onClearQueue)
             }
             queueItems(state.queue, currentIndex, drag, queueActions)
         }
+    }
     }
     }
     }
@@ -268,8 +373,14 @@ private fun NowPlayingControls(
     playerName: String,
     clock: () -> Long,
     actions: NowPlayingActions,
+    onOpenQueue: () -> Unit = {},
 ) {
     val track = status.current
+    var showSleep by rememberSaveable { mutableStateOf(false) }
+    var showPath by rememberSaveable { mutableStateOf(false) }
+    // Art and title cross-fade between tracks (Compose follows the system's animation
+    // scale, so "Remove animations" turns this into a cut).
+    val trackKey = track?.id ?: track?.title
     val elapsed = rememberElapsed(state, clock)
     val nextLabel = stringResource(R.string.action_next)
     val previousLabel = stringResource(R.string.action_previous)
@@ -295,26 +406,35 @@ private fun NowPlayingControls(
                     )
                 },
         ) {
-            ArtworkImage(
-                track?.artwork,
-                800,
-                contentDescription = null,
-                modifier = Modifier.fillMaxWidth(),
-                corner = 16.dp,
+            Crossfade(targetState = track?.artwork, animationSpec = tween(350), label = "artwork") { art ->
+                ArtworkImage(
+                    art,
+                    800,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxWidth(),
+                    corner = 16.dp,
+                )
+            }
+        }
+        AnimatedContent(
+            targetState = trackKey to (track?.title ?: stringResource(R.string.nothing_playing)),
+            transitionSpec = { fadeIn(tween(300)) togetherWith fadeOut(tween(200)) },
+            label = "title",
+        ) { (_, title) ->
+            Text(
+                title,
+                style = MaterialTheme.typography.headlineSmall,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().semantics { heading() },
             )
         }
-        Text(
-            track?.title ?: stringResource(R.string.nothing_playing),
-            style = MaterialTheme.typography.headlineSmall,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.semantics { heading() },
-        )
         Text(
             listOfNotNull(track?.artist, track?.album).joinToString(" — "),
             style = MaterialTheme.typography.bodyLarge,
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        track?.quality?.let { q -> QualityBadge(q, onClick = { showPath = true }) }
         SeekBar(
             elapsed = elapsed,
             duration = status.durationSecs,
@@ -365,8 +485,12 @@ private fun NowPlayingControls(
                 )
             }
         }
+        status.next?.let { next ->
+            UpNextRow(next, onOpenQueue = onOpenQueue, onRemove = actions.onRemoveUpNext)
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f)) { VolumeBar(status.volume.toInt(), actions.onVolume) }
+            SleepButton(SleepTimer.left(status), onOpen = { showSleep = true }, onCancel = actions.onCancelSleep)
             OutputButton(state, actions.onOutputs)
             if (track?.id != null && actions.onMore != null) {
                 IconButton(onClick = { actions.onMore.invoke(track) }) {
@@ -399,6 +523,20 @@ private fun NowPlayingControls(
             SignalPathPanel(state.local.signalPath)
         }
     }
+    if (showSleep) {
+        val selected = state.selectedId
+        SleepSheet(
+            left = SleepTimer.left(status),
+            grouped = selected != null && state.syncGroups.any { selected in it.playerIds },
+            others = state.players.any { it.id != selected && it.connected },
+            canEnd = track?.id != null && ((status.durationSecs ?: track.durationSecs ?: 0.0) > 0.0),
+            fadeSecs = state.sleepFade,
+            onSet = actions.onSleep,
+            onCancel = actions.onCancelSleep,
+            onDismiss = { showSleep = false },
+        )
+    }
+    if (showPath) SignalPathSheet(state, onDismiss = { showPath = false })
 }
 
 /** Space or the play/pause media key, on key down (not on release, or it would toggle twice). */
@@ -431,6 +569,11 @@ data class NowPlayingActions(
     val onDismissTransfer: () -> Unit = {},
     /** Close Now playing (pulling it down from the top). */
     val onClose: (() -> Unit)? = null,
+    /** The sleep timer: set it, or turn it off. */
+    val onSleep: (SleepChoice, SleepScope) -> Unit = { _, _ -> },
+    val onCancelSleep: () -> Unit = {},
+    /** Take the "Up next" track out of the queue (with Undo). */
+    val onRemoveUpNext: () -> Unit = {},
 )
 
 /**

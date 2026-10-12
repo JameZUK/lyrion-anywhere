@@ -11,6 +11,7 @@ import io.github.jamezuk.lyrionanywhere.core.RepeatMode
 import io.github.jamezuk.lyrionanywhere.core.Selection
 import io.github.jamezuk.lyrionanywhere.core.ServerEvent
 import io.github.jamezuk.lyrionanywhere.core.ShuffleMode
+import io.github.jamezuk.lyrionanywhere.core.SleepEnd
 import io.github.jamezuk.lyrionanywhere.core.SyncGroup
 import io.github.jamezuk.lyrionanywhere.core.Track
 import io.github.jamezuk.lyrionanywhere.core.TransferOutcome
@@ -76,6 +77,10 @@ data class PlayerUiState(
     val waitingForPhone: Boolean = false,
     /** Moving playback to another player (docs/PROTOCOL.md › Transfer). */
     val transfer: TransferState = TransferState.Idle,
+    /** The sleep timer's fade-out on this phone's player (seconds; Settings). */
+    val sleepFade: Int = io.github.jamezuk.lyrionanywhere.data.SLEEP_FADE_DEFAULT,
+    /** A timer set to an end of the queue, kept in step with it (see [SleepTimer]). */
+    val sleepArm: SleepArm? = null,
 ) {
     val selected: Player? get() = players.firstOrNull { it.id == selectedId }
     val playing: Boolean get() = status?.mode == PlaybackMode.PLAYING
@@ -120,6 +125,15 @@ sealed interface PlayerMessage {
 
     /** Playback moved to [targetName], which is now controlled. */
     data class Moved(val targetName: String) : PlayerMessage
+
+    /** The sleep timer was set: the player stops in [seconds]. */
+    data class SleepSet(val seconds: Int) : PlayerMessage
+
+    /** The sleep timer was turned off. */
+    data object SleepOff : PlayerMessage
+
+    /** "End of …" can't be worked out (a stream with no set length, or over a day away). */
+    data object SleepUnknown : PlayerMessage
 }
 
 /**
@@ -175,6 +189,11 @@ class PlayerViewModel(
             launch {
                 settings.settings.map { it.defaultPlayer to it.defaultPlayerId }.distinctUntilChanged().collect { (d, id) ->
                     _state.update { it.copy(defaultPlayer = d, defaultPlayerId = id) }
+                }
+            }
+            launch {
+                settings.settings.map { it.sleepFadeSecs }.distinctUntilChanged().collect { f ->
+                    _state.update { it.copy(sleepFade = SleepTimer.fade(f)) }
                 }
             }
             launch {
@@ -325,9 +344,12 @@ class PlayerViewModel(
         val generation = changeGeneration
         val at = clock()
         when (val r = players.status(id)) {
-            is ApiResult.Ok -> _state.update {
-                if (it.selectedId != id || generation != changeGeneration) it
-                else it.copy(status = r.value, statusAt = at, error = null)
+            is ApiResult.Ok -> {
+                _state.update {
+                    if (it.selectedId != id || generation != changeGeneration) it
+                    else it.copy(status = r.value, statusAt = at, error = null)
+                }
+                sleepCheck(id, r.value)
             }
             is ApiResult.Err -> _state.update { if (it.selectedId == id) it.copy(error = r.error) else it }
         }
@@ -391,12 +413,28 @@ class PlayerViewModel(
     /** Take the entry at [index] out (swipe), offering Undo for library tracks. */
     fun removeFromQueue(index: Int) {
         val entry = _state.value.queue.getOrNull(index) ?: return
+        removeTrack(index, entry.track)
+    }
+
+    /**
+     * Take the "Up next" track out of the queue (swiped away on Now playing), offering Undo.
+     * It disappears at once; the next status says what follows now.
+     */
+    fun removeUpNext() {
+        val status = _state.value.status ?: return
+        val next = status.next ?: return
+        val index = next.queueIndex?.toInt() ?: ((status.queueIndex?.toInt() ?: return) + 1)
+        _state.update { s -> s.copy(status = s.status?.copy(next = null)) }
+        removeTrack(index, next)
+    }
+
+    private fun removeTrack(index: Int, track: Track) {
         undo = null
         edit(optimistic = { QueueEdit.removeAt(it, index) }, onDone = { id ->
-            val canUndo = QueueEdit.canRestore(entry.track)
+            val canUndo = QueueEdit.canRestore(track)
             val token = ++undoToken
-            undo = if (canUndo) Undo(id, entry.track, index, token) else null
-            _messages.trySend(PlayerMessage.Removed(entry.track.title, canUndo, token))
+            undo = if (canUndo) Undo(id, track, index, token) else null
+            _messages.trySend(PlayerMessage.Removed(track.title, canUndo, token))
         }) { id -> players.removeFromQueue(id, index) }
     }
 
@@ -697,7 +735,136 @@ class PlayerViewModel(
         }
     }
 
+    // --- sleep timer (Wave 1 §1) ---------------------------------------------------------------
+
+    /** The queue after the current track (durations and albums), read once per queue state. */
+    private var upcoming: Triple<String, Long, List<Track>>? = null
+    private var sleepBusy = false
+
+    private suspend fun upcoming(id: String, status: PlayerStatus?): ApiResult<List<Track>> {
+        val cur = status?.queueIndex?.toInt() ?: 0
+        val key = "$id|$cur|${status?.queueLength}"
+        val now = clock()
+        upcoming?.let { (k, at, list) -> if (k == key && now - at < UPCOMING_TTL_MS) return ApiResult.Ok(list) }
+        return when (val r = players.queueTimes(id, cur + 1)) {
+            is ApiResult.Ok -> {
+                upcoming = Triple(key, now, r.value)
+                r
+            }
+            is ApiResult.Err -> r
+        }
+    }
+
+    /**
+     * Set the sleep timer on the selected player, its sync group or every connected player.
+     * LMS's own `sleep` does the stopping (also on hardware players, with the app closed);
+     * "end of …" timers are kept in step afterwards ([sleepCheck]). This phone's player
+     * also fades out over the user's fade-out length.
+     */
+    fun setSleep(choice: SleepChoice, scope: SleepScope = SleepScope.PLAYER) {
+        val id = _state.value.selectedId
+        if (id == null) {
+            _messages.trySend(PlayerMessage.NoPlayer)
+            return
+        }
+        viewModelScope.launch {
+            val status = _state.value.status
+            val list = if (choice is SleepChoice.End && choice.end != SleepEnd.TRACK) {
+                when (val r = upcoming(id, status)) {
+                    is ApiResult.Ok -> r.value
+                    is ApiResult.Err -> {
+                        _messages.trySend(PlayerMessage.Failed(r.error))
+                        return@launch
+                    }
+                }
+            } else {
+                emptyList()
+            }
+            val secs = SleepTimer.seconds(choice, status, list)
+            if (secs == null || secs <= 0) {
+                _messages.trySend(PlayerMessage.SleepUnknown)
+                return@launch
+            }
+            val group = if (scope == SleepScope.GROUP) {
+                val groups = (players.syncGroups() as? ApiResult.Ok)?.value ?: _state.value.syncGroups
+                groups.firstOrNull { id in it.playerIds }?.playerIds.orEmpty()
+            } else {
+                emptyList()
+            }
+            val all = if (scope == SleepScope.ALL) _state.value.players.filter { it.connected }.map { it.id } else emptyList()
+            val targets = SleepTimer.targets(id, group, all)
+            var failed: AppError? = null
+            for (p in targets) (players.setSleep(p, secs) as? ApiResult.Err)?.let { failed = it.error }
+            val now = clock()
+            _state.update {
+                it.copy(sleepArm = if (choice is SleepChoice.End) SleepArm(choice.end, targets, now + secs * 1000L, now) else null)
+            }
+            val local = _state.value.local.playerId
+            if (local != null && local in targets) localPlayer.setSleepFade(secs.toDouble(), _state.value.sleepFade)
+            _messages.trySend(failed?.let { PlayerMessage.Failed(it) } ?: PlayerMessage.SleepSet(secs))
+            refreshStatus()
+        }
+    }
+
+    /** Turn the timer off (one tap): on the players it was set on, and the selected one. */
+    fun cancelSleep() {
+        val selected = _state.value.selectedId
+        val targets = (_state.value.sleepArm?.players.orEmpty() + listOfNotNull(selected)).distinct()
+        if (targets.isEmpty()) return
+        _state.update { it.copy(sleepArm = null) }
+        val local = _state.value.local.playerId
+        if (local != null && local in targets) localPlayer.setSleepFade(null, _state.value.sleepFade)
+        viewModelScope.launch {
+            var failed: AppError? = null
+            for (p in targets) (players.setSleep(p, 0) as? ApiResult.Err)?.let { failed = it.error }
+            _messages.trySend(failed?.let { PlayerMessage.Failed(it) } ?: PlayerMessage.SleepOff)
+            refreshStatus()
+        }
+    }
+
+    /** The fade-out length (Settings; checked before it is kept). */
+    fun setSleepFade(seconds: Int) {
+        viewModelScope.launch { settings.setSleepFade(SleepTimer.fade(seconds)) }
+    }
+
+    /**
+     * After each status: this phone's fade follows its timer (set from any controller), and
+     * a timer set to an end of the queue is set again when that end moves (a seek, skip,
+     * pause or queue edit), or forgotten once LMS no longer reports it.
+     */
+    private suspend fun sleepCheck(id: String, status: PlayerStatus) {
+        val local = _state.value.local.playerId
+        if (id == local) localPlayer.setSleepFade(status.sleepSecs, _state.value.sleepFade)
+        val arm = _state.value.sleepArm ?: return
+        if (arm.players.firstOrNull() != id || sleepBusy) return
+        val now = clock()
+        if (SleepTimer.over(arm, status.sleepSecs, now)) {
+            _state.update { if (it.sleepArm == arm) it.copy(sleepArm = null) else it }
+            return
+        }
+        sleepBusy = true
+        try {
+            val list = if (arm.end == SleepEnd.TRACK) {
+                emptyList()
+            } else {
+                (upcoming(id, status) as? ApiResult.Ok)?.value ?: return
+            }
+            if (_state.value.sleepArm != arm) return
+            val secs = SleepTimer.rearm(arm, SleepTimer.remaining(arm.end, status, list), now) ?: return
+            for (p in arm.players) players.setSleep(p, secs)
+            _state.update {
+                if (it.sleepArm == arm) it.copy(sleepArm = arm.copy(endsAtMs = now + secs * 1000L, setAtMs = now)) else it
+            }
+            if (local != null && local in arm.players) localPlayer.setSleepFade(secs.toDouble(), _state.value.sleepFade)
+        } finally {
+            sleepBusy = false
+        }
+    }
+
     companion object {
+        /** The queue read for an armed timer is used again for this long at most. */
+        const val UPCOMING_TTL_MS = 30_000L
+
         /** The position in the current track at time [now] (ticking while playing). */
         fun elapsedAt(state: PlayerUiState, now: Long): Double {
             val status = state.status ?: return 0.0

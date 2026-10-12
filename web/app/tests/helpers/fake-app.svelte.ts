@@ -67,9 +67,31 @@ class FakeApp {
 		await api.rpc(this.playerId, c);
 	}
 	libraryVersion = $state(0);
+	sleepFade = $state(30);
+	armed = $state<null | { end: 'track' | 'album' | 'queue'; players: string[]; endsAt: number; setAt: number }>(null);
+	sleepCalls: { choice: unknown; scope: unknown }[] = [];
+	async setSleep(choice: unknown, scope: unknown = 'player') {
+		this.sleepCalls.push({ choice, scope });
+		return '';
+	}
+	async cancelSleep() {
+		this.sleepCalls.push({ choice: 'off', scope: null });
+		return '';
+	}
+	setSleepFade(s: number) {
+		this.sleepFade = s;
+	}
+	onDeviceSleep = (_endsAt: number | null, _fade: number) => {};
 	async queueUp(sel: Selection, placement: Placement, playIndex?: number) {
 		await this.send(enqueue(sel, placement, playIndex));
 	}
 }
 
 export const app = new FakeApp();
+
+/** Track analyses (waveforms): none in component tests. */
+export const analyses = {
+	peek: () => undefined,
+	load: () => new Promise<never>(() => {}),
+	clear: () => {},
+};
