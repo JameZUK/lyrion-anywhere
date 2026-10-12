@@ -2608,11 +2608,27 @@ fn migrate(db: &Connection) -> Result<(), AuthError> {
              PRAGMA user_version = 10;",
         )?;
     }
+    if version < 11 {
+        // Wave 2 ratings (docs/plans/wave2-design.md §2), per user and never shared: one
+        // rating (0–100) per stable track key, the newest kept; and how the user rates
+        // (stars or a heart). See `crate::ratings`.
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS user_ratings (
+               user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+               track_key TEXT NOT NULL,
+               track_id INTEGER NOT NULL,
+               rating INTEGER NOT NULL,
+               rated_at INTEGER NOT NULL,
+               PRIMARY KEY (user_id, track_key));
+             ALTER TABLE user_prefs ADD COLUMN rating_style TEXT NOT NULL DEFAULT 'stars';
+             PRAGMA user_version = 11;",
+        )?;
+    }
     Ok(())
 }
 
 /// The schema version [`migrate`] brings a database to.
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -3964,6 +3980,34 @@ mod tests {
     /// Version 10 (Wave 1: history, Home and stations) upgrades a version-9 database in
     /// place: existing users and devices stay, the new per-user tables are there and
     /// empty, and they go with the user.
+    #[test]
+    fn migration_to_11_adds_ratings_and_keeps_prefs() {
+        let path = std::env::temp_dir().join(format!("anywhere-mig11-{}.db", crate::random_id()));
+        {
+            let a = Accounts::open(&path).unwrap();
+            a.create_user("alice", PW, Role::Listener).unwrap();
+            let alice = user_id(&a, "alice");
+            // As a version-10 gateway left it, with a saved preference.
+            a.with_db(|db| {
+                db.execute_batch(
+                    "DROP TABLE user_ratings; ALTER TABLE user_prefs DROP COLUMN rating_style;
+                     PRAGMA user_version = 10;",
+                )?;
+                db.execute("INSERT INTO user_prefs (user_id, history) VALUES (?1, 0)", [alice])?;
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(a.schema_version(), 10);
+        }
+        let a = Accounts::open(&path).unwrap();
+        assert_eq!(a.schema_version(), SCHEMA_VERSION);
+        let alice = user_id(&a, "alice");
+        assert!(!crate::history::enabled(&a, alice).unwrap(), "the saved preference survives");
+        assert_eq!(crate::ratings::style(&a, alice).unwrap(), "stars");
+        assert_eq!(crate::ratings::count(&a, alice).unwrap(), 0);
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn migration_to_10_adds_the_per_user_tables() {
         let path = std::env::temp_dir().join(format!("anywhere-mig10-{}.db", crate::random_id()));

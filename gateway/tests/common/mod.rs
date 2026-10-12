@@ -79,7 +79,13 @@ pub fn fake_track(id: u64, size: usize) -> Option<serde_json::Value> {
                "modificationTime": "Tuesday, 1 January 2030"})
     };
     Some(match id {
-        1 | 7 => local(TRACK_URL, "flc"),
+        // Track 1 has a shared rating in LMS (Ratings Light or another app set it).
+        1 => {
+            let mut t = local(TRACK_URL, "flc");
+            t["rating"] = json!("60");
+            t
+        }
+        7 => local(TRACK_URL, "flc"),
         2 => json!({"id": 2, "title": "Radio", "type": "mp3", "remote": 1,
                     "url": "http://stream.example.com/live.mp3"}),
         3 => {
@@ -448,6 +454,14 @@ impl FakeLms {
                         .filter_map(|p| p.as_str()?.strip_prefix("track_id:"))
                         .next()
                         .map(|id| id.parse::<u64>().unwrap_or(0));
+                    // `titles … track_id:1,2,3`: several tracks at once.
+                    let many: Option<Vec<u64>> = params[1]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|p| p.as_str()?.strip_prefix("track_id:"))
+                        .find(|ids| ids.contains(','))
+                        .map(|ids| ids.split(',').filter_map(|i| i.parse().ok()).collect());
                     r.lock().unwrap().rpc.push(params.clone());
                     let added = track_id.and_then(|id| ex.lock().unwrap().get(&id).cloned());
                     let words = params[1].as_array().cloned().unwrap_or_default();
@@ -466,6 +480,14 @@ impl FakeLms {
                     };
                     let result = match track_id {
                         _ if plugin_answer.is_some() => plugin_answer.unwrap(),
+                        _ if cmd == "titles" && many.is_some() => {
+                            let loop_: Vec<serde_json::Value> = many
+                                .unwrap()
+                                .into_iter()
+                                .filter_map(|id| fake_track(id, a.len()))
+                                .collect();
+                            serde_json::json!({"count": loop_.len(), "titles_loop": loop_})
+                        }
                         Some(_) if cmd == "titles" && added.is_some() => {
                             serde_json::json!({"count": 1, "titles_loop": [added.unwrap().0]})
                         }

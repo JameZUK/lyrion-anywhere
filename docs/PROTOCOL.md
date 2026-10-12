@@ -775,6 +775,64 @@ Clients must treat both forms as untrusted: check the magic, the version, every 
 
 **Other answers:** 404 `not found` (a bad or unknown id, as for downloads), 404 `not analysable` (not a library file), 404 `analysis is not available on this server` (turned off with `--no-analysis` or the plugin's setting), 502/504 `music server unavailable`/`timed out` (not remembered).
 
+## Alarms (`/v1/players/{player}/alarms`)
+
+LMS's own alarms for one player (docs/plans/wave2-design.md §1). They ring on hardware players too, with no app open.
+
+**Who:** anyone who may control the player (admins: every player); any other player is 403. Requests count towards the per-user `/v1/me/…` allowance.
+
+**Endpoints:**
+
+| Request | Body | Does |
+|---|---|---|
+| `GET …/alarms` | | Lists the alarms, the player's "all alarms" switch and the sounds an alarm can play |
+| `POST …/alarms` | `{"time", "days"?, "enabled"?, "repeat"?, "volume"?, "shuffle"?, "sound"?}` | Adds one |
+| `PATCH …/alarms/{id}` | any of the same fields | Changes one |
+| `DELETE …/alarms/{id}` | | Removes one |
+| `PUT …/alarms/enabled` | `{"enabled": true\|false}` | Switches all of the player's alarms on or off |
+
+Every change answers with the new listing; `POST` also gives the new alarm's `id`.
+
+**Values:**
+- `time`: seconds after midnight, 0–86 399;
+- `days`: 0–6 (0 is Sunday), each once, at least one; every day by default;
+- `enabled`, `repeat`: true or false;
+- `volume`: 0–100;
+- `shuffle`: 0 off, 1 songs, 2 albums;
+- `id`: 1–32 lowercase hex;
+- unknown fields are refused.
+
+**Sounds:**
+- An alarm's sound is an `id` from the listing's `sounds`: `current` (the queue as it is), or 16 hex characters naming one of LMS's own choices (favourites, saved playlists, random mixes, natural sounds), each with a `category` and `title`.
+- The gateway turns an id back into LMS's URL by asking LMS for the list again, so only what LMS offers can be set.
+- URLs are never accepted from clients and never returned: an alarm whose sound isn't in the list is reported with `"id": null`.
+
+**Listing:**
+
+```json
+{"enabled":true,
+ "alarms":[{"id":"1a2b3c4d","time":25200,"days":[1,2,3,4,5],"enabled":true,"repeat":true,"volume":40,"shuffle":0,
+            "sound":{"id":"9f3c…","category":"playlists","title":"Wake up"}}],
+ "sounds":[{"id":"current","category":"current","title":"Current queue"}, …]}
+```
+
+## Ratings (`/v1/me/ratings`)
+
+Each user's own ratings, blended with LMS's shared rating (docs/plans/wave2-design.md §2). Private to the user; any signed-in user, for themselves.
+
+- **Values:** 0–100 in steps of 10 (half stars); 0 clears. A heart is 100.
+- **Keyed by the stable track key,** so a rating survives a rescan that renumbers the track. Only local library tracks can be rated (streams have no stable key).
+- **The blend:** `rating` is (3 × `mine` + `shared`) / 4 where both exist, else whichever exists. `shared` is LMS's own rating (tag `R`), set by Ratings Light or other apps.
+- **Written through:** where the Ratings Light plugin is installed, a rating is also set there (`ratingslight setratingpercentnoclient`), so the shared rating follows the last user to rate. Clients can't send that command themselves.
+
+| Request | Body | Answer |
+|---|---|---|
+| `GET /v1/me/ratings?tracks=1,2,…` (at most 200) | | `{"ratings":[{"track","mine","shared","rating"}]}`, for the tracks LMS knows |
+| `PUT /v1/me/ratings/{track}` | `{"rating": n}` | The same, for that track (404 for a stream or an unknown track) |
+| `POST /v1/me/ratings` | `{"ratings":[{"track","key","rating","at"}]}` (at most 500) | `{"applied","skipped"}`. Ratings made offline: `key` must be the track's stable key as LMS knows it now; `at` (Unix seconds) can't be in the future or before 2020; the newest rating of a track wins, so a batch can be sent again |
+| `DELETE /v1/me/ratings` | | `{"removed": n}` |
+| `GET` / `PUT /v1/me/ratings/style` | `{"style":"stars"\|"heart"}` | How the user rates, on every device; `GET` also gives `count` |
+
 ## Lyrics (`GET /v1/lyrics/track/{id}`)
 
 The lyrics of a library track, for Now playing (docs/plans/wave1-design.md §9).

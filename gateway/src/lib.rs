@@ -45,6 +45,7 @@ pub mod live;
 pub mod lyrics;
 pub mod menu_actions;
 pub mod plays;
+pub mod ratings;
 mod relay;
 mod rpc;
 pub mod rpc_policy;
@@ -508,6 +509,17 @@ pub fn router(state: AppState) -> Router {
                 .patch(history::patch),
         )
         .route("/v1/me/shelves/{name}", get(history::shelf))
+        .route(
+            "/v1/me/ratings",
+            get(ratings::get)
+                .post(ratings::batch)
+                .delete(ratings::delete_all),
+        )
+        .route(
+            "/v1/me/ratings/style",
+            get(ratings::get_style).put(ratings::put_style),
+        )
+        .route("/v1/me/ratings/{track}", axum::routing::put(ratings::put))
         .route(
             "/v1/me/home",
             get(home::get).put(home::put).delete(home::reset),

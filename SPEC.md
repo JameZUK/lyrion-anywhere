@@ -270,6 +270,8 @@ This is the one contract used by the web app now and the native apps later. It i
 | `GET /v1/analysis/track/{id}[?format=json\|binary]` | Waveform, R128 loudness, peaks, silence and fades of a track (§5.7); 202 while it is being analysed | Access token + download permission |
 | `POST /v1/plays` | Batched offline plays (idempotent by a client key per play); ratings later (D6) | Access token |
 | `GET /v1/lyrics/track/{id}` | A library track's lyrics, parsed (D24) | Access token |
+| `GET/POST /v1/players/{player}/alarms`, `PATCH/DELETE …/{id}`, `PUT …/enabled` | LMS alarms for a player the caller may control; sounds by opaque id only (Wave 2) | Access token |
+| `GET/POST/DELETE /v1/me/ratings`, `PUT …/{track}`, `GET/PUT …/style` | The user's own ratings, blended with LMS's shared rating (Wave 2) | Access token |
 | `GET/DELETE/PATCH /v1/me/history` | The user's listening history: view (paged), clear, switch off (D23) | Access token |
 | `GET /v1/me/shelves/{recent\|most\|on_this_day}` | Album ids for Home's history shelves | Access token |
 | `GET/PUT/DELETE /v1/me/home` | The user's Home layout (§5.8) | Access token |
