@@ -131,7 +131,7 @@ pub fn set(
 }
 
 pub fn clear(a: &Accounts, user: i64) -> Result<usize, AuthError> {
-    a.with_db(|db| Ok(db.execute("DELETE FROM user_ratings WHERE user_id = ?1", [user])?))
+    a.with_db(|db| db.execute("DELETE FROM user_ratings WHERE user_id = ?1", [user]))
 }
 
 pub fn count(a: &Accounts, user: i64) -> Result<usize, AuthError> {
@@ -195,6 +195,8 @@ fn shared_of(item: &Value) -> Option<u32> {
 }
 
 /// Look `ids` up in LMS: local library files only (a stream has no stable key).
+// The refusal is the handler's own answer, built once on the error path.
+#[allow(clippy::result_large_err)]
 async fn lookup(gw: &AppState, ids: &[u64], salt: &str) -> Result<Vec<Known>, Response> {
     if ids.is_empty() {
         return Ok(vec![]);
@@ -557,13 +559,13 @@ mod tests {
             vec![Some(80), None]
         );
         assert_eq!(
-            get_mine(&a, bob, &[k.clone()]).unwrap(),
+            get_mine(&a, bob, std::slice::from_ref(&k)).unwrap(),
             vec![None],
             "private to each user"
         );
         assert!(set(&a, alice, &k, 7, 0, 2_000).unwrap());
         assert_eq!(
-            get_mine(&a, alice, &[k.clone()]).unwrap(),
+            get_mine(&a, alice, std::slice::from_ref(&k)).unwrap(),
             vec![None],
             "0 clears"
         );

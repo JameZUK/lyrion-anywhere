@@ -2619,10 +2619,20 @@ fn migrate(db: &Connection) -> Result<(), AuthError> {
                track_id INTEGER NOT NULL,
                rating INTEGER NOT NULL,
                rated_at INTEGER NOT NULL,
-               PRIMARY KEY (user_id, track_key));
-             ALTER TABLE user_prefs ADD COLUMN rating_style TEXT NOT NULL DEFAULT 'stars';
-             PRAGMA user_version = 11;",
+               PRIMARY KEY (user_id, track_key));",
         )?;
+        // Safe to run again (as every migration here): add the column only if it's missing.
+        let has_style: bool = db.query_row(
+            "SELECT count(*) FROM pragma_table_info('user_prefs') WHERE name = 'rating_style'",
+            [],
+            |r| r.get::<_, i64>(0).map(|n| n > 0),
+        )?;
+        if !has_style {
+            db.execute_batch(
+                "ALTER TABLE user_prefs ADD COLUMN rating_style TEXT NOT NULL DEFAULT 'stars';",
+            )?;
+        }
+        db.execute_batch("PRAGMA user_version = 11;")?;
     }
     Ok(())
 }
@@ -3993,7 +4003,10 @@ mod tests {
                     "DROP TABLE user_ratings; ALTER TABLE user_prefs DROP COLUMN rating_style;
                      PRAGMA user_version = 10;",
                 )?;
-                db.execute("INSERT INTO user_prefs (user_id, history) VALUES (?1, 0)", [alice])?;
+                db.execute(
+                    "INSERT INTO user_prefs (user_id, history) VALUES (?1, 0)",
+                    [alice],
+                )?;
                 Ok(())
             })
             .unwrap();
@@ -4002,7 +4015,10 @@ mod tests {
         let a = Accounts::open(&path).unwrap();
         assert_eq!(a.schema_version(), SCHEMA_VERSION);
         let alice = user_id(&a, "alice");
-        assert!(!crate::history::enabled(&a, alice).unwrap(), "the saved preference survives");
+        assert!(
+            !crate::history::enabled(&a, alice).unwrap(),
+            "the saved preference survives"
+        );
         assert_eq!(crate::ratings::style(&a, alice).unwrap(), "stars");
         assert_eq!(crate::ratings::count(&a, alice).unwrap(), 0);
         let _ = std::fs::remove_file(&path);
