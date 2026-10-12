@@ -309,6 +309,8 @@ fn player_for(
     Ok((player, salt))
 }
 
+// The refusal is the handler's own answer, built once on the error path.
+#[allow(clippy::result_large_err)]
 async fn lms(gw: &AppState, player: &str, cmd: Vec<String>) -> Result<Value, Response> {
     gw.lms_command(player, &cmd).await.map_err(|e| {
         tracing::warn!(error = %e, "alarm command failed");
@@ -316,6 +318,8 @@ async fn lms(gw: &AppState, player: &str, cmd: Vec<String>) -> Result<Value, Res
     })
 }
 
+// The refusal is the handler's own answer, built once on the error path.
+#[allow(clippy::result_large_err)]
 async fn sounds(gw: &AppState, player: &str, salt: &str) -> Result<Vec<Sound>, Response> {
     let v = lms(
         gw,
@@ -332,6 +336,8 @@ async fn sounds(gw: &AppState, player: &str, salt: &str) -> Result<Vec<Sound>, R
 }
 
 /// The player's alarms, switch and sounds, as clients see them.
+// The refusal is the handler's own answer, built once on the error path.
+#[allow(clippy::result_large_err)]
 async fn listing(gw: &AppState, player: &str, salt: &str) -> Result<Value, Response> {
     let sounds = sounds(gw, player, salt).await?;
     let v = lms(
@@ -372,6 +378,8 @@ async fn listing(gw: &AppState, player: &str, salt: &str) -> Result<Value, Respo
 }
 
 /// `sound` resolved to LMS's own URL parameter (`url:0` for the current queue).
+// The refusal is the handler's own answer, built once on the error path.
+#[allow(clippy::result_large_err)]
 async fn sound_param(
     gw: &AppState,
     player: &str,
