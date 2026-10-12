@@ -12,6 +12,8 @@ import io.github.jamezuk.lyrionanywhere.ui.player.SleepChoice
 import io.github.jamezuk.lyrionanywhere.ui.player.SleepScope
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import io.github.jamezuk.lyrionanywhere.data.DefaultPlayer
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -36,15 +38,33 @@ class Wave1ViewModelTest : MainDispatcherTest() {
             sampleStatus(elapsed = 100.0).copy(durationSecs = 300.0, queueIndex = 0u, queueLength = 3u, current = track(1, 7, 300.0)),
         )
         players.upcoming = listOf(track(2, 7, 200.0), track(3, 8, 400.0))
+        // Control the playing player from the start (not this phone, which LMS never lists here).
+        settings.state.update { it.copy(defaultPlayer = DefaultPlayer.LAST_USED, selectedPlayerId = me) }
         val vm = PlayerViewModel(players, FakeEvents(), settings, local) { now }
+        vms += vm
         vm.start()
         return Triple(vm, players, local)
+    }
+
+    private val vms = mutableListOf<PlayerViewModel>()
+
+    /**
+     * A test with view models stopped at the end even when an assertion fails: their poll
+     * loop runs on virtual time, so one left running would keep `runTest` going for ever
+     * and hide the failure.
+     */
+    private fun vmTest(body: suspend TestScope.() -> Unit) = runTest(dispatcher) {
+        try {
+            body()
+        } finally {
+            vms.forEach { it.stop() }
+        }
     }
 
     private fun sleeps(p: FakePlayers) = p.commands.filter { it.startsWith("sleep ") }
 
     @Test
-    fun aFixedLengthIsLmsSleepInSeconds() = runTest(dispatcher) {
+    fun aFixedLengthIsLmsSleepInSeconds() = vmTest {
         val (vm, players) = setup()
         val messages = mutableListOf<PlayerMessage>()
         val c = backgroundScope.launch { vm.messages.collect { messages += it } }
@@ -57,7 +77,7 @@ class Wave1ViewModelTest : MainDispatcherTest() {
     }
 
     @Test
-    fun endOfAlbumAndQueueAreWorkedOutFromTheQueue() = runTest(dispatcher) {
+    fun endOfAlbumAndQueueAreWorkedOutFromTheQueue() = vmTest {
         val (vm, players) = setup()
         vm.setSleep(SleepChoice.End(SleepEnd.ALBUM))
         assertEquals(listOf("sleep 400 $me"), sleeps(players))
@@ -70,7 +90,7 @@ class Wave1ViewModelTest : MainDispatcherTest() {
     }
 
     @Test
-    fun aStreamWithoutALengthIsRefusedWithAReason() = runTest(dispatcher) {
+    fun aStreamWithoutALengthIsRefusedWithAReason() = vmTest {
         val (vm, players) = setup()
         players.statusResult = ApiResult.Ok(sampleStatus().copy(durationSecs = null, current = track(1, 7, null).copy(id = null)))
         vm.refresh()
@@ -84,7 +104,7 @@ class Wave1ViewModelTest : MainDispatcherTest() {
     }
 
     @Test
-    fun anArmedTimerFollowsASeek() = runTest(dispatcher) {
+    fun anArmedTimerFollowsASeek() = vmTest {
         val (vm, players) = setup()
         vm.setSleep(SleepChoice.End(SleepEnd.TRACK))
         assertEquals(listOf("sleep 200 $me"), sleeps(players))
@@ -105,7 +125,7 @@ class Wave1ViewModelTest : MainDispatcherTest() {
     }
 
     @Test
-    fun cancelledElsewhereTheTimerIsForgotten() = runTest(dispatcher) {
+    fun cancelledElsewhereTheTimerIsForgotten() = vmTest {
         val (vm, players) = setup()
         vm.setSleep(SleepChoice.End(SleepEnd.TRACK))
         players.commands.clear()
@@ -117,7 +137,7 @@ class Wave1ViewModelTest : MainDispatcherTest() {
     }
 
     @Test
-    fun sleepAllAndTheSyncGroup() = runTest(dispatcher) {
+    fun sleepAllAndTheSyncGroup() = vmTest {
         val (vm, players) = setup()
         vm.setSleep(SleepChoice.Minutes(15), SleepScope.ALL)
         assertEquals(listOf("sleep 900 $me", "sleep 900 aa:00:00:00:00:01"), sleeps(players))
@@ -136,7 +156,7 @@ class Wave1ViewModelTest : MainDispatcherTest() {
     }
 
     @Test
-    fun thisPhonesTimerFadesItsOwnOutput() = runTest(dispatcher) {
+    fun thisPhonesTimerFadesItsOwnOutput() = vmTest {
         val local = FakeLocalPlayer()
         local.state.update { it.copy(enabled = true, status = localStatus(me)) }
         val (vm, players, _) = setup(local, FakeSettings(AppSettings(sleepFadeSecs = 60)))
@@ -154,7 +174,7 @@ class Wave1ViewModelTest : MainDispatcherTest() {
     }
 
     @Test
-    fun aRefusedTimerIsReported() = runTest(dispatcher) {
+    fun aRefusedTimerIsReported() = vmTest {
         val (vm, players) = setup()
         players.commandResult = ApiResult.Err(AppError.Forbidden("no"))
         val messages = mutableListOf<PlayerMessage>()
@@ -166,7 +186,7 @@ class Wave1ViewModelTest : MainDispatcherTest() {
     }
 
     @Test
-    fun theFadeSettingIsCheckedAndKept() = runTest(dispatcher) {
+    fun theFadeSettingIsCheckedAndKept() = vmTest {
         val settings = FakeSettings()
         val (vm, _) = setup(settings = settings)
         vm.setSleepFade(90)
@@ -178,7 +198,7 @@ class Wave1ViewModelTest : MainDispatcherTest() {
     }
 
     @Test
-    fun upNextIsRemovedWithUndo() = runTest(dispatcher) {
+    fun upNextIsRemovedWithUndo() = vmTest {
         val (vm, players) = setup()
         val next = track(2, 7, 200.0).copy(queueIndex = 1u)
         players.statusResult = ApiResult.Ok(sampleStatus().copy(queueIndex = 0u, next = next))
@@ -198,7 +218,7 @@ class Wave1ViewModelTest : MainDispatcherTest() {
     }
 
     @Test
-    fun noUpNextNothingRemoved() = runTest(dispatcher) {
+    fun noUpNextNothingRemoved() = vmTest {
         val (vm, players) = setup()
         players.statusResult = ApiResult.Ok(sampleStatus().copy(next = null))
         vm.refresh()
