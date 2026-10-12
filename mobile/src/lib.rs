@@ -51,6 +51,7 @@ pub mod model;
 pub mod offline;
 pub mod player;
 pub mod players;
+pub mod routine;
 pub mod server;
 pub mod session;
 pub mod sleep;
@@ -93,6 +94,10 @@ pub use player::{
     StreamQuality, TransitionMode, check_eq_profile, stream_quality_for,
 };
 pub use players::Players;
+pub use routine::{
+    AlarmChange, AlarmInfo, AlarmListing, AlarmSound, QueuedRating, RatingStyle,
+    RatingsSyncOutcome, Routine, TrackRating, next_alarm_in, sync_ratings,
+};
 pub use server::{PairingInvite, Server, parse_pairing_invite};
 pub use session::{SecureStore, Session, SessionObserver, StoreError, StoredCredentials};
 pub use sleep::SleepEnd;

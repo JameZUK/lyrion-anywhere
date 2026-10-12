@@ -49,6 +49,8 @@ pub struct OfflineAlbum {
 struct State {
     tracks: Vec<OfflineTrack>,
     plays: Vec<PlayRecord>,
+    /// Ratings made offline, waiting to be sent (see `crate::routine`).
+    ratings: Vec<crate::routine::QueuedRating>,
 }
 
 /// The offline library of one user on one server.
@@ -155,6 +157,30 @@ impl OfflineLibrary {
 
     fn plays_path(&self) -> PathBuf {
         self.dir.join("plays.json")
+    }
+
+    fn ratings_path(&self) -> PathBuf {
+        self.dir.join("ratings.json")
+    }
+
+    fn save_ratings(&self, q: &[crate::routine::QueuedRating]) {
+        // Best effort, as for plays.
+        let _ = write_atomic(
+            &self.ratings_path(),
+            &crate::routine::serialise_queue(q),
+            false,
+        );
+    }
+
+    pub(crate) fn queued_ratings(&self) -> Vec<crate::routine::QueuedRating> {
+        self.state.lock().unwrap().ratings.clone()
+    }
+
+    /// Drop ratings the server took (only if not rated again meanwhile).
+    pub(crate) fn drop_ratings(&self, sent: &[crate::routine::QueuedRating]) {
+        let mut st = self.state.lock().unwrap();
+        st.ratings.retain(|r| !sent.contains(r));
+        self.save_ratings(&st.ratings);
     }
 
     pub(crate) fn queue_path(&self) -> PathBuf {
@@ -399,6 +425,7 @@ impl OfflineLibrary {
             state: Mutex::new(State {
                 tracks: Vec::new(),
                 plays: Vec::new(),
+                ratings: Vec::new(),
             }),
         };
         lib.create_dirs()?;
@@ -409,8 +436,40 @@ impl OfflineLibrary {
         let plays = read_limited(&lib.plays_path(), 8 * 1024 * 1024)
             .map(|b| plays::parse(&b))
             .unwrap_or_default();
-        *lib.state.lock().unwrap() = State { tracks, plays };
+        let ratings = read_limited(&lib.ratings_path(), 4 * 1024 * 1024)
+            .map(|b| crate::routine::parse_queue(&b))
+            .unwrap_or_default();
+        *lib.state.lock().unwrap() = State {
+            tracks,
+            plays,
+            ratings,
+        };
         Ok(Arc::new(lib))
+    }
+
+    /// Rate a downloaded track while offline (0 clears): kept until [`crate::sync_ratings`]
+    /// sends it. The newest rating of a track replaces an older one. False if the values
+    /// are out of range.
+    pub fn rate_offline(&self, track_id: i64, track_key: String, rating: u32, at: u64) -> bool {
+        let mut st = self.state.lock().unwrap();
+        let ok = crate::routine::queue(
+            &mut st.ratings,
+            crate::routine::QueuedRating {
+                track_id,
+                track_key,
+                rating,
+                at,
+            },
+        );
+        if ok {
+            self.save_ratings(&st.ratings);
+        }
+        ok
+    }
+
+    /// Ratings made offline and not yet sent.
+    pub fn pending_ratings(&self) -> u32 {
+        self.state.lock().unwrap().ratings.len() as u32
     }
 
     /// Every downloaded track.

@@ -56,6 +56,25 @@ pub fn recorded_plays(lms: &FakeLms) -> Vec<(u64, u64, String)> {
 pub const HOME_PLAYER: &str = "aa:bb:cc:dd:ee:01";
 
 /// Canned LMS JSON-RPC results.
+/// The fake LMS's alarms for any player, and the sounds it offers (with LMS's own URLs,
+/// which must never reach the app).
+fn fake_alarm(words: &Value) -> Value {
+    let w = |i: usize| words[i].as_str().unwrap_or("");
+    match (w(0), w(1)) {
+        ("alarm", "playlists") => json!({"item_loop": [
+            {"category": "CURRENT_PLAYLIST", "title": "{ALARM_USE_CURRENT_PLAYLIST}"},
+            {"category": "FAVORITES", "title": "Morning radio", "url": "http://radio.example.com/stream"}
+        ]}),
+        ("alarms", _) => json!({"count": 1, "alarms_loop": [
+            {"id": "1a2b3c4d", "dow": "1,2,3,4,5", "enabled": "1", "repeat": "1", "time": "25200",
+             "volume": "40", "shufflemode": "0", "url": "http://radio.example.com/stream"}
+        ]}),
+        ("alarm", "add") => json!({"id": "5e6f7a8b"}),
+        ("playerpref", _) => json!({"_p2": "1"}),
+        _ => json!({}),
+    }
+}
+
 fn fake_result(cmd: &str) -> Value {
     match cmd {
         "albums" => json!({"count": 2, "albums_loop": [
@@ -287,12 +306,45 @@ impl FakeLms {
                         .find_map(|id| id.parse::<u64>().ok());
                     let player = params[0].as_str().unwrap_or("").to_string();
                     let arg1 = params[1][1].as_str().unwrap_or("").to_string();
-                    r.lock().unwrap().push(params);
+                    r.lock().unwrap().push(params.clone());
+                    // `titles … track_id:1,2,3`: several tracks at once.
+                    let many: Option<Vec<u64>> = params[1]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|p| p.as_str()?.strip_prefix("track_id:"))
+                        .find(|ids| ids.contains(','))
+                        .map(|ids| ids.split(',').filter_map(|i| i.parse().ok()).collect());
                     let mut result = match track_id {
+                        _ if cmd == "titles" && many.is_some() => {
+                            // Added tracks, then the canned ones (tracks 1 and 2).
+                            let l = lib.lock().unwrap();
+                            let canned = fake_result("titles");
+                            let items: Vec<Value> = many
+                                .unwrap()
+                                .iter()
+                                .filter_map(|id| {
+                                    l.get(id).map(|(i, _)| i.clone()).or_else(|| {
+                                        canned["titles_loop"]
+                                            .as_array()?
+                                            .iter()
+                                            .find(|t| t["id"].as_u64() == Some(*id))
+                                            .cloned()
+                                    })
+                                })
+                                .collect();
+                            json!({"count": items.len(), "titles_loop": items})
+                        }
                         Some(id) if cmd == "titles" => match lib.lock().unwrap().get(&id) {
                             Some((item, _)) => json!({"count": 1, "titles_loop": [item]}),
                             None => json!({"count": 0}),
                         },
+                        _ if cmd == "alarm"
+                            || cmd == "alarms"
+                            || (cmd == "playerpref" && arg1 == "alarmsEnabled") =>
+                        {
+                            fake_alarm(&params[1])
+                        }
                         _ => fake_result(&cmd),
                     };
                     if cmd == "sync" {

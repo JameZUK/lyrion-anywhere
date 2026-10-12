@@ -657,7 +657,7 @@ fn spec_json(spec: &StationSpec) -> Result<Value, ApiError> {
 // ---------------------------------------------------------------------------
 
 /// What a `/v1/me/…` call answered: status and JSON.
-async fn exchange(
+pub(crate) async fn exchange(
     core: &Arc<Core>,
     method: &str,
     path: &str,
