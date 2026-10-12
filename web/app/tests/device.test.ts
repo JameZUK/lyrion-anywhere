@@ -374,3 +374,40 @@ describe('autoStart', () => {
 		expect(FakeWorker.all).toHaveLength(1);
 	});
 });
+
+describe('streaming quality', () => {
+	afterEach(() => {
+		device.setQualityPreference('auto');
+		Object.defineProperty(navigator, 'connection', { value: undefined, configurable: true });
+	});
+
+	test('the level is sent at start and when the preference or the network changes', async () => {
+		const conn = Object.assign(new EventTarget(), { type: 'cellular', saveData: false });
+		Object.defineProperty(navigator, 'connection', { value: conn, configurable: true });
+		device.setQualityPreference('auto');
+		const w = await started();
+		expect(w.cmds('start')[0]!.quality).toBe('high'); // mobile connection
+		// Wi-Fi: Original from the next track.
+		conn.type = 'wifi';
+		conn.dispatchEvent(new Event('change'));
+		expect(w.cmds('quality').at(-1)).toEqual({ cmd: 'quality', quality: 'original' });
+		// The browser is asked to save data.
+		conn.saveData = true;
+		conn.dispatchEvent(new Event('change'));
+		expect(w.cmds('quality').at(-1)).toEqual({ cmd: 'quality', quality: 'low' });
+		// A chosen level wins, is kept, and an unchanged level isn't sent again.
+		device.setQualityPreference('high');
+		expect(localStorage.getItem('anywhere.stream.quality')).toBe('high');
+		const n = w.cmds('quality').length;
+		conn.dispatchEvent(new Event('change'));
+		expect(w.cmds('quality').length).toBe(n);
+		expect(w.cmds('quality').at(-1)).toEqual({ cmd: 'quality', quality: 'high' });
+	});
+
+	test('without the Network Information API (Safari), Automatic is Original', async () => {
+		Object.defineProperty(navigator, 'connection', { value: undefined, configurable: true });
+		device.setQualityPreference('auto');
+		const w = await started();
+		expect(w.cmds('start')[0]!.quality).toBe('original');
+	});
+});

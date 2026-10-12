@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { PREFERENCES, type QualityPreference } from '$lib/player/stream-quality';
+	const QUALITY_LABELS: Record<string, string> = { auto: 'Automatic', original: 'Original', high: 'High', low: 'Data saver' };
 	import { app, session } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
 	import * as auth from '$lib/api/auth';
@@ -331,6 +333,20 @@
 			{/if}
 		</div>
 	{/if}
+
+	<div class="card">
+		<h2>Streaming quality</h2>
+		<label class="field">
+			<span>In this browser</span>
+			<select value={device.qualityPreference} onchange={(e) => device.setQualityPreference(e.currentTarget.value as QualityPreference)} data-stream-quality>
+				{#each PREFERENCES as p (p)}<option value={p}>{QUALITY_LABELS[p]}</option>{/each}
+			</select>
+		</label>
+		<p class="muted small" data-stream-quality-now>
+			{#if device.qualityPreference === 'auto'}Now: {QUALITY_LABELS[device.quality]}. Automatic uses High on a mobile connection and Data saver when the browser is asked to save data, where the browser says (Safari doesn't: choose a level there).{/if}
+			High (Opus 160 kbps) and Data saver (Opus 96 kbps) re-encode lossless tracks on your server, when it offers this; other tracks are sent as they are. Applies from the next track.
+		</p>
+	</div>
 
 	<div class="card">
 		<h2>Sleep timer</h2>

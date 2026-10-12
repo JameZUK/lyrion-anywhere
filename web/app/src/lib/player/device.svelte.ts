@@ -10,6 +10,14 @@ import { PlayheadSmoother, outputClock } from './output-clock';
 import { MEDIA_TYPE, MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
 import { Reporter, buildReport, diagnosticsSender } from './diagnostics';
 import { fadeGain } from '$lib/lms/sleep';
+import {
+	connection,
+	effectiveQuality,
+	loadPreference as loadQualityPreference,
+	savePreference as saveQualityPreference,
+	type QualityPreference,
+	type StreamQuality,
+} from './stream-quality';
 import { chooseVariant, loadCached, mediaFormatFor, mimeFor, runSelfTest, saveCached, type SelfTest } from './selftest';
 import {
 	ElementVolume,
@@ -83,6 +91,10 @@ class DevicePlayer {
 	onConnected: ((mac: string) => void) | null = null;
 	/** "Volume on this device" in Settings. */
 	volumeSetting = $state<VolumeSetting>(loadVolumeSetting());
+	/** "Streaming quality in this browser" in Settings, and the level it means now. */
+	qualityPreference = $state<QualityPreference>(loadQualityPreference());
+	quality = $state<StreamQuality>('original');
+	#qualityWatch = false;
 	/** How volume works while this device plays (null when it isn't playing). */
 	volumePlan = $state<VolumePlan | null>(null);
 	/** LMS's volume for this player, as linear [left, right] gains. */
@@ -263,6 +275,27 @@ class DevicePlayer {
 		this.#mediaVolume ??= typeof Audio === 'function' ? detectMediaVolume() : false;
 		const mode = this.#worker && this.choice ? this.choice.mode : chooseMode(detect(), detectEnvironment(), loadPreference()).mode;
 		return { mode, mediaVolume: this.#mediaVolume };
+	}
+
+	/** Change "Streaming quality in this browser"; applies from the next track. */
+	setQualityPreference(p: QualityPreference) {
+		this.qualityPreference = p;
+		saveQualityPreference(p);
+		this.#updateQuality();
+	}
+
+	/** The level for the preference and the network now; tells the player when it changes. */
+	#updateQuality() {
+		const c = connection();
+		if (c && !this.#qualityWatch) {
+			// Follow the network (Wi-Fi to mobile data and back) while the page is open.
+			this.#qualityWatch = true;
+			c.addEventListener?.('change', () => this.#updateQuality());
+		}
+		const q = effectiveQuality(this.qualityPreference, c);
+		if (q === this.quality) return;
+		this.quality = q;
+		this.#worker?.postMessage({ cmd: 'quality', quality: q });
 	}
 
 	/** Change "Volume on this device"; applies at once if this device is playing. */
@@ -496,7 +529,8 @@ class DevicePlayer {
 				this.#note(`worker error: ${e.message}`);
 				this.stop('error');
 			};
-			w.postMessage({ cmd: 'start', token: session.token, port, mode: choice.mode, variant }, port ? [port] : []);
+			this.#updateQuality();
+			w.postMessage({ cmd: 'start', token: session.token, port, mode: choice.mode, variant, quality: this.quality }, port ? [port] : []);
 			this.#history.active = true;
 			if (port) {
 				w.postMessage({ cmd: 'rate-ready', rate: 44100 });

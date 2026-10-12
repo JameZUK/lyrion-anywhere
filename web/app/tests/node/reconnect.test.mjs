@@ -219,3 +219,34 @@ test('flush watch reports each flush once, however the state looked in between',
   assert.equal(w.changed(0), false, 'a new core player starts at zero');
   assert.equal(w.changed(1), true);
 });
+
+// --- Streaming quality ----------------------------------------------------------------
+
+import { QUALITIES, qualityMessage, sanitiseQuality, signInMessage } from '../../static/player/reconnect.js';
+
+test('levels are checked: anything else is original', () => {
+  assert.deepEqual(QUALITIES, ['original', 'high', 'low']);
+  for (const q of QUALITIES) assert.equal(sanitiseQuality(q), q);
+  for (const bad of ['HIGH', 'ultra', '', null, undefined, 1, {}, ['low'], 'low ', '__proto__']) {
+    assert.equal(sanitiseQuality(bad), 'original', String(bad));
+  }
+});
+
+test('the sign-in message: a bare token unless resuming or below original', () => {
+  assert.equal(signInMessage('tok', null, 'original'), 'tok');
+  assert.equal(signInMessage('tok', null, 'nonsense'), 'tok');
+  assert.deepEqual(JSON.parse(signInMessage('t"k', null, 'low')), { token: 't"k', quality: 'low' });
+  assert.deepEqual(JSON.parse(signInMessage('t', { session: 's', secret: 'x', received: 4 }, 'high')), {
+    token: 't',
+    resume: { session: 's', secret: 'x', received: 4 },
+    quality: 'high',
+  });
+  // Only the expected fields of the resume are sent.
+  const m = JSON.parse(signInMessage('t', { session: 's', secret: 'x', received: 4, extra: 'leak' }, 'original'));
+  assert.deepEqual(m, { token: 't', resume: { session: 's', secret: 'x', received: 4 } });
+});
+
+test('the control message', () => {
+  assert.equal(qualityMessage('low'), '{"quality":"low"}');
+  assert.equal(qualityMessage('evil"}'), '{"quality":"original"}');
+});

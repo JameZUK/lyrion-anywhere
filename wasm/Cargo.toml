@@ -10,7 +10,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-anywhere-core = { path = "../core" }
+anywhere-core = { path = "../core", features = ["opus"] }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 serde_json = "1"

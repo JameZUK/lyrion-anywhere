@@ -162,3 +162,33 @@ fn sync_corrections_are_handed_to_the_worker() {
     p.presented(f64::NAN, f64::INFINITY);
     p.presented(-5.0, -1.0);
 }
+
+/// The browser player decodes Ogg Opus (what the gateway sends at High and Data saver).
+#[wasm_bindgen_test]
+fn plays_ogg_opus() {
+    let opus = include_bytes!("../../core/tests/fixtures/sine-997hz-stereo.opus");
+    let mut p = WasmPlayer::new("02:00:00:00:00:01", "Web", "flc").unwrap();
+    p.connected(0.0);
+    p.on_control(&strm_s(b'u'), 1.0).unwrap();
+    p.on_stream_headers(b"HTTP/1.0 200 OK\r\nContent-Type: audio/ogg\r\n\r\n", 2.0);
+    p.on_stream_data(opus, 3.0);
+    p.on_stream_end(4.0);
+    let (mut frames, mut rates) = (0, Vec::new());
+    let mut buf = vec![0f32; 4096];
+    for t in 0..400 {
+        p.tick(5.0 + t as f64 * 10.0);
+        let rate = p.output_rate();
+        let n = p.pull(&mut buf);
+        if n > 0 && !rates.contains(&rate) {
+            rates.push(rate);
+        }
+        frames += n;
+        let _ = p.take_actions();
+    }
+    assert_eq!(rates, vec![48_000], "{}", p.status_json());
+    // The fixture is one second long.
+    assert!(
+        (47_000..=49_500).contains(&frames),
+        "pulled {frames} frames"
+    );
+}

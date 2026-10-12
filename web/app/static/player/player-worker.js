@@ -12,7 +12,7 @@ const V = new URL(self.location.href).searchParams.get('v');
 const early = [];
 onmessage = (e) => early.push(e);
 const VQ = V && /^[\w.-]{1,64}$/.test(V) ? `?v=${V}` : '';
-const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, closeAction, describeSeek, loadCore, socketSilent, streamFailureAction } =
+const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, closeAction, describeSeek, loadCore, qualityMessage, sanitiseQuality, signInMessage, socketSilent, streamFailureAction } =
   await import(`./reconnect.js${VQ}`);
 const { Presentation } = await import(`./presentation.js${VQ}`);
 
@@ -36,6 +36,10 @@ let core = null; // the WebAssembly core's module (classes, and its memory)
 let wasmMemory = null; // the core's linear memory (it only ever grows)
 let ws = null;
 let token = '';
+// The stream level wanted ('original', 'high' or 'low'), and whether the gateway lets a
+// session change it (null until known; docs/plans/streaming-quality.md).
+let quality = 'original';
+let qualityFeature = null;
 let session = '';
 let secret = '';
 let sink = null; // MessagePort to the AudioWorklet
@@ -148,6 +152,7 @@ onmessage = async (e) => {
   const msg = e.data;
   if (msg.cmd === 'start') {
     token = msg.token;
+    quality = sanitiseQuality(msg.quality);
     outputMode = msg.mode === 'media' ? 'media' : 'worklet';
     mediaVariant = Number.isInteger(msg.variant) ? msg.variant : 0;
     if (msg.port) attachSink(msg.port);
@@ -195,6 +200,13 @@ onmessage = async (e) => {
       postMessage({ media: { span: { at: segmenter.emitted_seconds(), rate: segmenter.rate() } } });
     }
     mediaWaiting = false;
+  } else if (msg.cmd === 'quality') {
+    // From the next stream on (the next track, or a seek).
+    const q = sanitiseQuality(msg.quality);
+    if (q !== quality) {
+      quality = q;
+      sendQuality();
+    }
   } else if (msg.cmd === 'token') {
     // A renewed access token from the page; reconnect if we were waiting for it, whether
     // it came with the page's reply to authFailed or later (a renewal retried after being
@@ -204,13 +216,35 @@ onmessage = async (e) => {
   }
 };
 
+/** Tell the gateway the level now, if it can take it mid-session; otherwise it is asked for at the next sign-in. */
+function sendQuality() {
+  if (open && qualityFeature === true && ws?.readyState === WebSocket.OPEN) ws.send(qualityMessage(quality));
+}
+
+/** Ask the gateway once whether a session may change its level. */
+async function learnQualityFeature() {
+  if (qualityFeature !== null) return;
+  try {
+    const r = await fetch(new URL('/v1/me', self.location.origin), {
+      headers: { Authorization: `Bearer ${token}`, 'X-Anywhere-Client': '1' },
+      cache: 'no-store',
+    });
+    if (!r.ok) return;
+    const me = await r.json();
+    qualityFeature = me?.features?.stream_quality === true;
+    sendQuality();
+  } catch {
+    // Offline or refused: asked again on the next connection.
+  }
+}
+
 function connect(resume) {
   const url = new URL('/v1/player', self.location.origin);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
-    ws.send(resume ? JSON.stringify({ token, resume: { session, secret, received } }) : token);
+    ws.send(signInMessage(token, resume ? { session, secret, received } : null, quality));
   };
   ws.onmessage = (m) => {
     lastHeard = now();
@@ -241,6 +275,7 @@ function onGreeting(g) {
   secret = g.secret;
   open = true;
   lastHeard = now();
+  void learnQualityFeature();
   attempt = 0;
   if (!g.resumed || !player) {
     // A fresh session: LMS sees a new connection, so start from a clean player.

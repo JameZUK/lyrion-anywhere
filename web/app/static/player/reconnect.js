@@ -235,3 +235,32 @@ export class FlushWatch {
     this.count = 0;
   }
 }
+
+// --- Streaming quality (docs/plans/streaming-quality.md) --------------------------------
+
+/** The levels a player may ask the gateway for. */
+export const QUALITIES = ['original', 'high', 'low'];
+
+/** A level from the page, checked: anything else is 'original'. */
+export function sanitiseQuality(q) {
+  return QUALITIES.includes(q) ? q : 'original';
+}
+
+/**
+ * The first message on the player socket: the bare token for a new session at the original
+ * level (as always), otherwise JSON with the session to resume and the level. Gateways
+ * ignore a level they don't know, so it is always safe to send here.
+ */
+export function signInMessage(token, resume, quality) {
+  const q = sanitiseQuality(quality);
+  if (!resume && q === 'original') return token;
+  const m = { token };
+  if (resume) m.resume = { session: resume.session, secret: resume.secret, received: resume.received };
+  if (q !== 'original') m.quality = q;
+  return JSON.stringify(m);
+}
+
+/** A change of level mid-session: only for a gateway listing `stream_quality` (older ones end the session on it). */
+export function qualityMessage(quality) {
+  return JSON.stringify({ quality: sanitiseQuality(quality) });
+}
