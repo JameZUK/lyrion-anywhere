@@ -108,7 +108,10 @@ class FakeAccount : AccountRepository {
 
     override suspend fun start() {}
 
-    override fun checkServerAddress(url: String) = useServerResult
+    /** What checking an address gives (by default [useServerResult], whatever the address). */
+    var checkServer: (String) -> ApiResult<ServerInfo> = { useServerResult }
+
+    override fun checkServerAddress(url: String) = checkServer(url)
 
     override suspend fun useServer(url: String) = useServerResult
 
@@ -119,14 +122,24 @@ class FakeAccount : AccountRepository {
         return signInResults.removeFirstOrNull() ?: ApiResult.Ok(Unit)
     }
 
-    /** Accepts `lyrion-anywhere://pair?…` style text or a code of 8+ letters and digits. */
+    /**
+     * A simplified stand-in for the Rust check: `lyrion-anywhere://pair?server=https://…&code=…`
+     * (server optional, nothing else), or a bare code of 8+ letters and digits.
+     */
     override fun readPairingCode(text: String): ApiResult<PairingInvite> {
-        val code = text.trim().uppercase()
-        return if (code.length >= 8 && code.all { it.isLetterOrDigit() }) {
-            ApiResult.Ok(PairingInvite(null, code))
-        } else {
-            ApiResult.Err(AppError.InvalidInput("that isn't a valid pairing code"))
-        }
+        val bad = ApiResult.Err(AppError.InvalidInput("that isn't a valid pairing code"))
+        fun code(c: String) = c.trim().uppercase().takeIf { it.length >= 8 && it.all { ch -> ch.isLetterOrDigit() && ch.code < 128 } }
+        val t = text.trim()
+        val prefix = "lyrion-anywhere://pair?"
+        if (!t.startsWith(prefix)) return code(t)?.let { ApiResult.Ok(PairingInvite(null, it)) } ?: bad
+        val params = t.removePrefix(prefix).split('&').map { it.substringBefore('=') to it.substringAfter('=', "") }
+        val keys = params.map { it.first }
+        if (keys.any { it != "server" && it != "code" } || keys.size != keys.toSet().size) return bad
+        val server = params.firstOrNull { it.first == "server" }?.second
+            ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+        if (server != null && !server.matches(Regex("https://[a-z0-9.-]+(:\\d+)?/?"))) return bad
+        val c = params.firstOrNull { it.first == "code" }?.second?.let(::code) ?: return bad
+        return ApiResult.Ok(PairingInvite(server?.trimEnd('/')?.plus("/"), c))
     }
 
     override suspend fun pair(invite: PairingInvite): ApiResult<Unit> {

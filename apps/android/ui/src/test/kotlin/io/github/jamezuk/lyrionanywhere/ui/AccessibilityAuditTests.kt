@@ -61,6 +61,9 @@ import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineNowPlayingActions
 import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineNowPlayingScreen
 import io.github.jamezuk.lyrionanywhere.ui.offline.OfflinePlayerUi
 import io.github.jamezuk.lyrionanywhere.ui.offline.StorageSettingsScreen
+import io.github.jamezuk.lyrionanywhere.ui.onboarding.PairConfirm
+import io.github.jamezuk.lyrionanywhere.ui.onboarding.PairScreen
+import io.github.jamezuk.lyrionanywhere.ui.onboarding.PairUiState
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.ServerScreen
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.ServerUiState
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.SignInScreen
@@ -277,6 +280,35 @@ class AccessibilityAuditTests {
 
     @Test
     fun server() = audit { ServerScreen(ServerUiState(address = "music.example.com"), onAddressChange = {}, onSubmit = {}) }
+
+    @Test
+    fun pair() = audit {
+        PairScreen(
+            state = PairUiState(code = "ABCDE"),
+            cameraPermitted = false,
+            onRequestCamera = {},
+            onScanned = {},
+            onCodeChange = {},
+            onSubmit = {},
+            onBack = {},
+        )
+    }
+
+    @Test
+    fun pairConfirmation() = audit {
+        PairScreen(
+            state = PairUiState(
+                scanning = false,
+                confirm = PairConfirm("ABCDE-FGHJK", "music.example.com", "https://music.example.com/", replaces = "lms.example.lan"),
+            ),
+            cameraPermitted = false,
+            onRequestCamera = {},
+            onScanned = {},
+            onCodeChange = {},
+            onSubmit = {},
+            onBack = {},
+        )
+    }
 
     /** The audit itself: a check that passes everything would prove nothing. */
     @Test

@@ -154,7 +154,7 @@ Open *Settings › Plugins › Lyrion Anywhere* in LMS. (Docker users: the same 
 Click *Apply*. The **Status** panel should show the gateway as running. If it shows an error, see [Troubleshooting](#9-troubleshooting).
 
 The same page has these sections:
-- **Users:** add users; for each one, *Disable*/*Enable*, *Delete*, set a *New password*, *Add a player…* (grant a home player), *Reset two-step*, *Pairing code*, and *Turn off downloads*/*Allow downloads* (offline downloads are allowed for every user by default; the *Downloads* column shows the formats each may use).
+- **Users:** add users; for each one, *Disable*/*Enable*, *Delete*, set a *New password*, *Add a player…* (grant a home player), *Reset two-step*, *Add a device* (a one-time code and QR code for the Android app, see section 5), and *Turn off downloads*/*Allow downloads* (offline downloads are allowed for every user by default; the *Downloads* column shows the formats each may use).
 - **Sign-in › Stay signed in:** how many days an unused device stays signed in (1–365, default 90). Every use renews it.
 - **Plugins › Admins only:** the plugins LMS offers remote devices. Tick one to hide it from listeners and refuse its use, e.g. a plugin with server maintenance actions.
 - **Devices:** every signed-in device: its user, what kind of client it is (*Installed web app*, *Browser tab* or *Android app*, with the browser or phone, and the browser's full identification underneath), the internet address it was last seen from (as your reverse proxy passed it on, so set *Trusted proxies* and, behind a CDN, *Client address header* correctly), when, its *Diagnostics*, *Rename* (its player in LMS is renamed too) and *Sign out* (e.g. for a lost phone). The address and browser details are kept only while the device stays signed in, and are shown only here. Users can rename their own device too: in the web app under *Settings › This device*, and in the Android app under *Settings › This phone*.
@@ -227,9 +227,20 @@ Passwords need at least 10 characters. Give each person their own account, so yo
 
 **Two-step verification.** Each user can turn it on in the app under *Settings › Account*: scan the QR code with an authenticator app and confirm with a code. Strongly recommended for admins. If someone loses their phone, use **Reset two-step** on the settings page.
 
-**Pairing codes** (for future native apps): **Pairing code** next to a user gives a one-time code, valid for 10 minutes, that signs a new app in without typing a password.
-
 Docker users run these from the command line instead, e.g. `docker exec -i lyrion-anywhere anywhere-gateway admin --data-dir /data create-user bob --role listener`.
+
+### Adding a device by QR code
+
+The Android app can sign in without anyone typing a password on the phone: it scans a QR code holding a one-time pairing code and your server's address. Each code works once, for one user, and expires after 10 minutes.
+
+- **As the admin:** click **Add a device** next to a user on the plugin's settings page. It shows the code in large letters, the QR code and how long the code has left. The QR code needs the **Public URL** setting (section 3) to be your `https://` address; without it you get the code alone and a note saying so (enter the server address in the app, then type the code).
+- **As a user:** in the web app, open *Settings › Account › Add another device*, enter your password and choose **Show a code**. Anyone can do this for their own account (a few times an hour); it never signs in as anyone else.
+- **On the phone:** in the Android app, choose **Scan QR code** on the welcome screen (or **Pair with a QR code instead** on the sign-in screen) and point the camera at the code (the app asks for camera access then, not before), or type the code. The app shows which server it will sign in to and asks you to confirm.
+- **Pairing links:** the same link the QR code holds, `lyrion-anywhere://pair?server=…&code=…`, opens the app's pairing screen when tapped on the phone (for example in a message to yourself). It only fills the screen in: the app still asks you to confirm, and if the phone is already signed in it first asks whether to sign out (downloads are kept).
+
+Treat a code like a password while it lasts: whoever uses it first gets a device on that account. If one goes astray, sign the extra device out under *Devices*.
+
+Docker users can make a code with `docker exec lyrion-anywhere anywhere-gateway admin --data-dir /data pair NAME`.
 
 ## 6. First sign-in, and installing the app
 

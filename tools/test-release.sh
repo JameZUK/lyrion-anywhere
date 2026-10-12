@@ -19,6 +19,7 @@ t "install.xml version matches the zip name" 'grep -q "<version>$VERSION</versio
 t "plugin module present" '[ -f "$X/Plugin.pm" ] && [ -f "$X/Gateway.pm" ]'
 t "settings page present" '[ -f "$X/HTML/EN/plugins/LyrionAnywhere/settings/basic.html" ]'
 t "settings page logo where LMS serves images" '[ -f "$X/HTML/EN/plugins/LyrionAnywhere/html/images/logo.png" ] && grep -q "src=\"/plugins/LyrionAnywhere/html/images/logo.png\"" "$X/HTML/EN/plugins/LyrionAnywhere/settings/basic.html"'
+t "settings page QR encoder present" '[ -f "$X/HTML/EN/plugins/LyrionAnywhere/settings/qr.js" ]'
 t "settings page files are ASCII (no mojibake)" '! LC_ALL=C grep -rlP "[^\x00-\x7f]" "$X/HTML" --include=*.html --include=*.js --include=*.css | grep -q .'
 t "web app present" '[ -f "$X/web/index.html" ] && [ -d "$X/web/_app/immutable" ] && [ -f "$X/web/player/pkg/anywhere_wasm_bg.wasm" ] && [ -f "$X/web/player/player-worker.js" ]'
 t "web app has no inline script (CSP)" '! grep -q -E "<script>|<script [^>]*>[^<]" "$X/web/index.html"'

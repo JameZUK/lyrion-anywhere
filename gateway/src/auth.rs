@@ -507,6 +507,50 @@ pub async fn totp_disable(
 }
 
 // ---------------------------------------------------------------------------
+// Adding another device
+// ---------------------------------------------------------------------------
+
+/// `POST /v1/devices/pair` `{"password"}`: a one-time pairing code that signs another
+/// device in as the caller (shown as a QR code holding a `lyrion-anywhere://pair` link).
+/// There is no user to name: the code is always for the access token's own user. Needs
+/// the password, and is limited per user (see [`crate::accounts::Accounts::create_own_pairing_code`]).
+pub async fn create_pairing_code(
+    State(gw): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if !csrf_ok(&gw, &headers) {
+        return error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Some(p) = principal(&gw, &headers) else {
+        return error(StatusCode::UNAUTHORIZED, "invalid credentials");
+    };
+    let req: PasswordRequest = match parse(&body) {
+        Ok(r) => r,
+        Err((status, msg)) => return error(status, msg),
+    };
+    let accounts = gw.accounts().clone();
+    let result = tokio::task::spawn_blocking(move || {
+        accounts.create_own_pairing_code(p.user_id, &p.username, p.device_id, &req.password)
+    })
+    .await;
+    match result {
+        Ok(Ok(code)) => {
+            let mut r = Json(json!({
+                "code": code,
+                "expires_in": crate::accounts::PAIRING_TTL.as_secs(),
+            }))
+            .into_response();
+            r.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            r
+        }
+        Ok(Err(e)) => auth_error(e),
+        Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // This device
 // ---------------------------------------------------------------------------
 

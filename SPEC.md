@@ -103,7 +103,7 @@ Native Android and iOS apps come after v1 and use the same documented protocol.
 
 - Enable/disable, public URL, a proxy self-test, and a warning if LMS ports are reachable from the public URL.
 - Users: create/disable/delete, role (`listener` / `admin`), permitted players, download permission and allowed formats. These are managed through the gateway's admin API (D12); the plugin stores no account data itself.
-- Devices: list, rename and revoke. Device pairing via QR code (public URL + one-time code, valid 10 minutes), for the later native apps.
+- Devices: list, rename and revoke. Device pairing via QR code (public URL + one-time code, valid 10 minutes, single use): admins make codes for any user (*Add a device*), users for themselves in the web app (*Add another device*, with their password, a few an hour). The QR code holds a `lyrion-anywhere://pair` link, drawn by the project's own encoder (2026-10-12).
 - Policy: default streaming quality (Wi-Fi/cellular), and the server-side transcode cache size.
 - Audit log viewer.
 
@@ -243,6 +243,7 @@ This is the one contract used by the web app now and the native apps later. It i
 |---|---|---|
 | `POST /v1/auth/login` | Username + password (+ TOTP) → session | Password |
 | `POST /v1/auth/pair` | Pairing code → device tokens (native apps) | Pairing code |
+| `POST /v1/devices/pair` | A one-time pairing code for another of the caller's own devices | Access token + password |
 | `POST /v1/auth/token` | Refresh token → 15-min access token | Refresh token |
 | `POST /v1/auth/logout` | Revoke this device and end its sessions | Access token |
 | `GET /v1/me` | User, role, permissions, assigned player MAC | Access token |
@@ -457,7 +458,7 @@ The detailed plan (scope, architecture, audio engine, track analysis, milestones
 
 Android (Kotlin + Jetpack Compose) and iOS (Swift + SwiftUI) are thin native UIs over the same Rust core (UniFFI) and the same protocol (§6). They reach feature parity with the web app, and add:
 
-- device pairing by QR code;
+- device pairing by QR code, and `lyrion-anywhere://pair` links that only fill in the pairing screen (the user confirms the server);
 - system background playback (Media3 `MediaSessionService` on Android, audio background mode + `MPNowPlayingInfoCenter` on iOS);
 - Android Auto and CarPlay;
 - downloads in the app sandbox, removed automatically when the device is revoked;

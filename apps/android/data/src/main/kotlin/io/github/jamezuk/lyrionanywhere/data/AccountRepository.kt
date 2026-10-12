@@ -112,6 +112,11 @@ class RustAccountRepository(
     private val secureStore: SecureStore,
     private val deviceName: String,
     private val io: CoroutineDispatcher,
+    /**
+     * Plain `http://` to a loopback host (a gateway on this device, for development). Debug
+     * builds only: a release build takes `https://` alone, typed, scanned or from a link.
+     */
+    private val allowPlainLoopback: Boolean = false,
 ) : AccountRepository, ConnectionSource {
     private val _state = MutableStateFlow<AuthState>(AuthState.Starting)
     override val state: StateFlow<AuthState> = _state.asStateFlow()
@@ -138,7 +143,9 @@ class RustAccountRepository(
     }
 
     override fun checkServerAddress(url: String): ApiResult<ServerInfo> = try {
-        Server(url).use { ApiResult.Ok(info(it)) }
+        Server(url).use { s ->
+            if (!s.isSecure() && !allowPlainLoopback) ApiResult.Err(PLAIN_HTTP_REFUSED) else ApiResult.Ok(info(s))
+        }
     } catch (e: Exception) {
         ApiResult.Err(e.toAppError())
     }
@@ -236,7 +243,8 @@ class RustAccountRepository(
     }
 
     override fun readPairingCode(text: String): ApiResult<PairingInvite> = try {
-        ApiResult.Ok(parsePairingInvite(text))
+        val invite = parsePairingInvite(text)
+        if (refusesPlainHttp(invite, allowPlainLoopback)) ApiResult.Err(PLAIN_HTTP_REFUSED) else ApiResult.Ok(invite)
     } catch (e: Exception) {
         ApiResult.Err(e.toAppError())
     }
@@ -280,3 +288,13 @@ class RustAccountRepository(
         return r
     }
 }
+
+/** Plain HTTP outside debug builds. */
+val PLAIN_HTTP_REFUSED = AppError.InvalidInput("use https:// \u2014 unencrypted connections are not allowed")
+
+/**
+ * Whether a pairing invite (already checked by the Rust layer: `https://`, or plain
+ * `http://` to loopback) must still be refused because this build allows only `https://`.
+ */
+fun refusesPlainHttp(invite: PairingInvite, allowPlainLoopback: Boolean): Boolean =
+    !allowPlainLoopback && invite.server?.startsWith("https://") == false

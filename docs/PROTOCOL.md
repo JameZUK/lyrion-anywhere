@@ -37,6 +37,7 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
 | `POST /v1/account/totp/confirm` | `{"code"}` | 204; two-step is now on |
 | `POST /v1/account/totp/disable` | `{"password","code"}` | 204; two-step is now off |
 | `PATCH /v1/devices/self` | `{"name"}`, bearer access token | `{id, name}`: renames the caller's own device (see **Devices**) |
+| `POST /v1/devices/pair` | `{"password"}`, bearer access token | `{code, expires_in}`: a one-time pairing code for another device of the caller's own (see [Pairing links](#pairing-links-native-apps)) |
 
 - **Access tokens:** random, valid for 15 minutes. Use them as `Authorization: Bearer …` for streams and `/v1/me`, and as the first message on the player socket. Keep them in memory only.
 - **Refresh tokens:**
@@ -80,15 +81,28 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
 
 ### Pairing links (native apps)
 
-A pairing code can be handed to a phone as a QR code holding a link:
+A pairing code can be handed to a phone as a QR code holding a link, or as the link itself (tapped in a message):
 
 ```
 lyrion-anywhere://pair?server=<percent-encoded server address>&code=<pairing code>
 ```
 
-- `code` is required: 4–32 letters and digits once spaces and dashes are removed (case-insensitive), then redeemed with `POST /v1/auth/pair`.
-- `server` is optional (`https://music.example.com`). Apps validate it exactly as a typed address: `https` only (plain `http` only for loopback), no user name or password, query, fragment or path.
-- Any other parameter, a repeated parameter or a fragment makes the link invalid. A bare code (no link) is also accepted.
+For example `lyrion-anywhere://pair?server=https%3A%2F%2Fmusic.example.com&code=ABCDEFGHJK`.
+
+- `code` is required: 4–32 letters and digits once spaces and dashes are removed (case-insensitive), then redeemed with `POST /v1/auth/pair`. The gateway makes 10-character codes from `A–Z` (without `I` and `O`) and `2–9`.
+- `server` is optional (`https://music.example.com`). Apps validate it exactly as a typed address: `https` only (plain `http` only for loopback, and only in development builds of the Android app), no user name or password, query, fragment or path.
+- The link itself is exactly `lyrion-anywhere://pair?…`: no user name, password or port on `pair`, no path, no fragment. Any other parameter, a repeated one or one without a name makes the link invalid. A bare code (no link) is also accepted when typed.
+- **The QR code** holds the link as UTF-8 in byte mode, error correction level M, version 10 or smaller (at most 213 bytes). The web app and the plugin's settings page make it with the project's own encoder (`web/app/src/lib/qr/qr.js`), with a quiet zone of four modules.
+- **Where codes come from:**
+  - an admin: *Add a device* next to a user in the plugin's settings (admin API `POST /admin/v1/users/{name}/pairing`), or `anywhere-gateway admin pair NAME`. The plugin builds the link from its *Public URL*; without one (or if it isn't an `https://` address with nothing after the host) it shows the code alone and says why;
+  - the user themselves: the web app's *Settings › Account › Add another device*, which calls `POST /v1/devices/pair` and builds the link from the page's own address.
+- **`POST /v1/devices/pair`** `{"password"}`, with a bearer access token and `X-Anywhere-Client` (like `/v1/auth/*`). Returns `{code, expires_in}` (600) with `Cache-Control: no-store`.
+  - The code is always for the token's own user: there is no field to name another (unknown fields are a 400).
+  - The account password is required, so a stolen access token alone (15 minutes) can't be turned into a lasting sign-in on another device. A wrong one is 401 and counts towards the per-user lock that also guards two-step changes (429 with `Retry-After` once locked; sign-in isn't affected).
+  - At most 5 codes an hour per user, and none while the user is at the new-device limit (10 an hour, see **Devices**), since such a code couldn't be redeemed: 429 with `Retry-After`. These are checked before the password.
+  - Codes are single use and valid for 10 minutes, wherever they were made; redeeming one is subject to the pairing lockouts (per client address, and across all clients). Only a hash is stored; expired codes are deleted as new ones are made.
+  - Audit events: `pairing.created` (detail `admin` or `self`, with the device that asked), `pairing.rate_limited`, `pairing.self_failed` (wrong password), and `pairing.ok` / `pairing.failed` on redemption. The code itself is never logged or audited.
+- **What apps do with a link:** it only fills in the pairing screen. The Android app shows the server (and the one it would replace) and pairs only when the user confirms; if a sign-in is kept, it first asks whether to sign out (downloads are kept). A link that isn't valid is ignored, and the user told.
 
 ### Admin API
 
@@ -101,7 +115,7 @@ Endpoints:
 - `DELETE /admin/v1/users/{name}`
 - `POST /admin/v1/users/{name}/password` (also revokes the user's devices, signing them out everywhere)
 - `POST /admin/v1/users/{name}/disabled`
-- `POST /admin/v1/users/{name}/pairing` (returns a one-time code, valid 10 minutes)
+- `POST /admin/v1/users/{name}/pairing` (returns `{code, expires_in}`: a one-time code, valid 10 minutes; see [Pairing links](#pairing-links-native-apps))
 - `POST /admin/v1/users/{name}/totp/reset` (removes two-step for a user who lost their authenticator)
 - `POST /admin/v1/users/{name}/downloads` `{"enabled": bool, "formats"?: ["original","mp3","opus"]}` (download permission; `formats` must name one to three of these and is kept as it was when left out). `GET /admin/v1/users` lists `downloads` and `download_formats` per user, and `GET /admin/v1/settings` lists the `download_formats` this server can produce
 - `GET/POST /admin/v1/users/{name}/players`, `DELETE /admin/v1/users/{name}/players/{mac}` (home players a listener may control)
