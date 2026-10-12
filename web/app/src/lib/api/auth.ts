@@ -188,6 +188,24 @@ export const renameDevice = (token: string, name: string) =>
 
 export const account = (token: string) => callJson<Account>('/v1/account', { headers: bearer(token) });
 
+export interface PairingCode {
+	/** One-time code: 10 letters and digits. */
+	code: string;
+	/** Seconds it stays valid (600). */
+	expires_in: number;
+}
+
+/**
+ * A one-time code that signs another device in as this user, e.g. the Android app scanning
+ * it as a QR code. The gateway asks for the account password, and allows a few an hour.
+ */
+export const createPairingCode = (token: string, password: string) =>
+	callJson<PairingCode>('/v1/devices/pair', {
+		method: 'POST',
+		headers: { ...bearer(token), 'Content-Type': 'application/json' },
+		body: JSON.stringify({ password }),
+	});
+
 /** Start two-step setup. The gateway asks for the account password first. */
 export const totpSetup = (token: string, password: string) =>
 	callJson<TotpSetup>('/v1/account/totp/setup', {

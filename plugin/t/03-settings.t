@@ -143,6 +143,25 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 	my $html = do { local $/; <$fh> };
 	like($html, qr{anywhere\.js\?v=\[% anywhere_assets \| uri %\]}, 'script URL is stamped');
 	like($html, qr{anywhere\.css\?v=\[% anywhere_assets \| uri %\]}, 'stylesheet URL is stamped');
+	like($html, qr{qr\.js\?v=\[% anywhere_assets \| uri %\]}, 'QR encoder URL is stamped');
+	like($html, qr{qr\.js[^\n]*\n<script src="/plugins/LyrionAnywhere/settings/anywhere\.js}, 'the encoder loads before the page script');
+}
+
+# "Add a device": the page gets the public URL for the QR code's link, only as an escaped
+# data attribute (the script checks it is an https address before using it).
+{
+	$prefs->set(public_url => 'https://music.example.com');
+	my $params = {};
+	Plugins::LyrionAnywhere::Settings->handler(undef, $params);
+	is($params->{anywhere_public_url}, 'https://music.example.com', 'page is given the public URL');
+	$prefs->set(public_url => '');
+	$params = {};
+	Plugins::LyrionAnywhere::Settings->handler(undef, $params);
+	is($params->{anywhere_public_url}, '', 'empty when unset');
+	open my $fh, '<', 'Plugins/LyrionAnywhere/HTML/EN/plugins/LyrionAnywhere/settings/basic.html' or die;
+	my $html = do { local $/; <$fh> };
+	like($html, qr/data-public-url="\[% anywhere_public_url \| html %\]"/, 'public URL goes in an escaped data attribute');
+	like($html, qr/id="aw-pair"[^>]*hidden/, 'the pairing panel starts hidden');
 }
 
 done_testing;

@@ -59,13 +59,14 @@
 	<label for="pref_analysis">Analyse tracks (waveforms and loudness)</label>
 [% END %]
 
-<div id="anywhere-app" class="anywhere" data-csrf="[% anywhere_csrf | html %]">
+<div id="anywhere-app" class="anywhere" data-csrf="[% anywhere_csrf | html %]" data-public-url="[% anywhere_public_url | html %]">
 	<h3>Status</h3>
 	<div id="aw-status" class="aw-panel">Loading&hellip;</div>
 
 	<h3>Users</h3>
-	<p class="aw-note">Admins can control every player. Listeners control their own devices plus the home players you grant them.</p>
+	<p class="aw-note">Admins can control every player. Listeners control their own devices plus the home players you grant them. To sign in a phone without typing a password, use Add a device: it shows a one-time code and a QR code for the app.</p>
 	<div id="aw-users" class="aw-panel"></div>
+	<div id="aw-pair" class="aw-panel aw-pair" role="region" aria-label="Add a device" hidden></div>
 	<fieldset class="aw-panel" id="aw-create">
 		<legend>Add a user</legend>
 		<label>Username <input id="aw-new-user" autocomplete="off" spellcheck="false"></label>
@@ -102,6 +103,7 @@
 	<p id="aw-message" class="aw-message" role="status" aria-live="polite"></p>
 </div>
 
+<script src="/plugins/LyrionAnywhere/settings/qr.js?v=[% anywhere_assets | uri %]"></script>
 <script src="/plugins/LyrionAnywhere/settings/anywhere.js?v=[% anywhere_assets | uri %]"></script>
 
 [% PROCESS settings/footer.html %]

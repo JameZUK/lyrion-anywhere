@@ -26,3 +26,9 @@
 }
 
 .aw-ua { font-size: 0.8em; max-width: 28em; overflow-wrap: anywhere; }
+
+.aw-pair { max-width: 36em; padding: 0.8em 1em; border: 1px solid rgba(128, 128, 128, 0.4); border-radius: 6px; }
+.aw-pair h4 { margin: 0 0 0.4em; }
+.aw-qr svg { display: block; width: 240px; height: 240px; max-width: 100%; }
+.aw-code { font-family: monospace; font-size: 2em; font-weight: bold; letter-spacing: 0.08em; margin: 0.3em 0; }
+.aw-expired { text-decoration: line-through; opacity: 0.5; }

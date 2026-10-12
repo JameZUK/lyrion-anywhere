@@ -423,6 +423,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/account/totp/confirm", post(auth::totp_confirm))
         .route("/v1/account/totp/disable", post(auth::totp_disable))
         .route("/v1/devices/self", axum::routing::patch(auth::rename_self))
+        .route("/v1/devices/pair", post(auth::create_pairing_code))
         .route("/v1/rpc", post(rpc::rpc))
         .route("/v1/diagnostics", post(diagnostics::report))
         .route("/v1/art/{*path}", get(art::art))

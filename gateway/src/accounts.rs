@@ -60,6 +60,9 @@ pub fn valid_plugin_command(s: &str) -> bool {
 /// suspended mid-request), not theft, provided its replacement hasn't been used either.
 pub const REUSE_GRACE_SECS: i64 = 60;
 pub const PAIRING_TTL: Duration = Duration::from_secs(10 * 60);
+/// Pairing codes a signed-in user may create for their own devices per hour
+/// (`POST /v1/devices/pair`). Admins are not limited.
+pub const SELF_PAIRING_PER_HOUR: i64 = 5;
 pub const MIN_PASSWORD: usize = 10;
 pub const MAX_PASSWORD: usize = 1024;
 /// Password checks (argon2id, 19 MiB each) that may run at once. Others wait up to
@@ -950,8 +953,10 @@ impl Accounts {
 
     /// Create a one-time pairing code for a user's new app (admin).
     pub fn create_pairing_code(&self, username: &str) -> Result<String, AuthError> {
-        let db = self.db.lock().unwrap();
-        let user: Option<i64> = db
+        let user: Option<i64> = self
+            .db
+            .lock()
+            .unwrap()
             .query_row(
                 "SELECT id FROM users WHERE username = ?1 AND disabled = 0",
                 [username],
@@ -959,21 +964,93 @@ impl Accounts {
             )
             .optional()?;
         let user = user.ok_or(AuthError::BadInput("no such enabled user"))?;
+        let code = self.insert_pairing_code(user)?;
+        // The code itself is never written anywhere but its hash.
+        self.audit("pairing.created", Some(username), None, "admin");
+        Ok(code)
+    }
+
+    /// A signed-in user creates a one-time pairing code for another device of their own
+    /// (`POST /v1/devices/pair`). The code signs in as this user only.
+    ///
+    /// - Needs the account password, so a stolen access token (15 minutes) alone can't be
+    ///   turned into a lasting sign-in on the thief's device. Wrong passwords count towards
+    ///   the per-user lock that guards other account changes ([`Self::totp_begin`]).
+    /// - At most [`SELF_PAIRING_PER_HOUR`] an hour per user, and none while the user is at
+    ///   the [`NEW_DEVICES_PER_HOUR`] limit (the code could not be redeemed anyway). Both
+    ///   are checked before the password, so a refused request costs no password check.
+    pub fn create_own_pairing_code(
+        &self,
+        user: i64,
+        username: &str,
+        device: i64,
+        password: &str,
+    ) -> Result<String, AuthError> {
+        let now = now_secs();
+        {
+            let db = self.db.lock().unwrap();
+            db.execute("DELETE FROM pairing_requests WHERE at <= ?1", [now - 3600])?;
+            let (made, oldest): (i64, Option<i64>) = db.query_row(
+                "SELECT COUNT(*), MIN(at) FROM pairing_requests WHERE user_id = ?1",
+                [user],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let (devices, oldest_device): (i64, Option<i64>) = db.query_row(
+                "SELECT COUNT(*), MIN(created_at) FROM devices
+                 WHERE user_id = ?1 AND created_at > ?2",
+                params![user, now - 3600],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let limited_since = if made >= SELF_PAIRING_PER_HOUR {
+                Some(oldest)
+            } else if devices >= NEW_DEVICES_PER_HOUR {
+                Some(oldest_device)
+            } else {
+                None
+            };
+            if let Some(since) = limited_since {
+                drop(db);
+                let wait = since.map_or(3600, |t| (t + 3600 - now).clamp(1, 3600));
+                self.audit("pairing.rate_limited", Some(username), Some(device), "");
+                return Err(AuthError::Locked(Duration::from_secs(wait as u64)));
+            }
+        }
+        match self.confirm_password(user, username, password) {
+            Ok(attempt) => drop(attempt),
+            Err(e) => {
+                if e == AuthError::Invalid {
+                    self.audit("pairing.self_failed", Some(username), Some(device), "");
+                }
+                return Err(e);
+            }
+        }
+        self.db.lock().unwrap().execute(
+            "INSERT INTO pairing_requests (user_id, at) VALUES (?1, ?2)",
+            params![user, now],
+        )?;
+        let code = self.insert_pairing_code(user)?;
+        self.audit("pairing.created", Some(username), Some(device), "self");
+        Ok(code)
+    }
+
+    /// Store a new code (only its hash) for a user, first dropping expired ones.
+    fn insert_pairing_code(&self, user: i64) -> Result<String, AuthError> {
         let raw = random_bytes::<10>();
         let code: String = raw
             .iter()
             .map(|b| PAIRING_ALPHABET[(*b as usize) % 32] as char)
             .collect();
+        let now = now_secs();
+        let db = self.db.lock().unwrap();
+        db.execute("DELETE FROM pairing_codes WHERE expires_at <= ?1", [now])?;
         db.execute(
             "INSERT INTO pairing_codes (code_hash, user_id, expires_at) VALUES (?1, ?2, ?3)",
             params![
                 sha256(&code).to_vec(),
                 user,
-                now_secs() + PAIRING_TTL.as_secs() as i64
+                now + PAIRING_TTL.as_secs() as i64
             ],
         )?;
-        drop(db);
-        self.audit("pairing.created", Some(username), None, "");
         Ok(code)
     }
 
@@ -2013,6 +2090,16 @@ impl Accounts {
         Ok((name, true))
     }
 
+    /// Make every outstanding pairing code expired (tests only).
+    #[doc(hidden)]
+    pub fn expire_pairing_codes_for_test(&self) {
+        let _ = self
+            .db
+            .lock()
+            .unwrap()
+            .execute("UPDATE pairing_codes SET expires_at = 0", []);
+    }
+
     /// The stored last address of a device, revoked or not (tests only).
     #[doc(hidden)]
     pub fn stored_address_for_test(&self, device_id: i64) -> Option<String> {
@@ -2446,6 +2533,17 @@ fn migrate(db: &Connection) -> Result<(), AuthError> {
              ALTER TABLE devices ADD COLUMN client_platform TEXT;
              ALTER TABLE devices ADD COLUMN user_agent TEXT;
              PRAGMA user_version = 8;",
+        )?;
+    }
+    if version < 9 {
+        // Pairing codes users create for their own devices: when, per user, for the hourly
+        // limit (rows older than an hour are dropped as new ones are made).
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pairing_requests (
+               user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+               at INTEGER NOT NULL);
+             CREATE INDEX IF NOT EXISTS pairing_requests_user ON pairing_requests(user_id, at);
+             PRAGMA user_version = 9;",
         )?;
     }
     Ok(())
@@ -3141,6 +3239,173 @@ mod tests {
         ));
     }
 
+    /// A signed-in user's own device: (user id, device id).
+    fn signed_in(a: &Accounts, username: &str) -> (i64, i64) {
+        let t = a.login(username, PW, None, "Laptop", None, "c").unwrap();
+        (t.principal.user_id, t.principal.device_id)
+    }
+
+    fn pairing_code_count(a: &Accounts) -> i64 {
+        a.db.lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM pairing_codes", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn users_create_pairing_codes_for_themselves_only() {
+        let a = store();
+        a.create_user("bob", PW, Role::Listener).unwrap();
+        let (alice, laptop) = signed_in(&a, "alice");
+        let code = a
+            .create_own_pairing_code(alice, "alice", laptop, PW)
+            .unwrap();
+        assert_eq!(code.len(), 10);
+        assert!(code.bytes().all(|b| PAIRING_ALPHABET.contains(&b)));
+        // The code signs in as alice, on a new device, and only once.
+        let t = a.pair(&code, "Phone", "c").unwrap();
+        assert_eq!(t.principal.username, "alice");
+        assert_ne!(t.principal.device_id, laptop);
+        assert_eq!(a.pair(&code, "Phone", "c"), Err(AuthError::Invalid));
+        // Expired codes are refused like any other.
+        let code = a
+            .create_own_pairing_code(alice, "alice", laptop, PW)
+            .unwrap();
+        a.db.lock()
+            .unwrap()
+            .execute("UPDATE pairing_codes SET expires_at = 0", [])
+            .unwrap();
+        assert_eq!(a.pair(&code, "Phone", "c"), Err(AuthError::Invalid));
+        // Audited with who made it and from which device, never with the code.
+        let log = a.audit_log(100).unwrap();
+        assert!(log.iter().any(|e| e.event == "pairing.created"
+            && e.detail == "self"
+            && e.username.as_deref() == Some("alice")
+            && e.device_id == Some(laptop)));
+        assert!(!log.iter().any(|e| e.detail.contains(&code)));
+        // Expired codes are cleared out as new ones are made.
+        let expired = a
+            .create_own_pairing_code(alice, "alice", laptop, PW)
+            .unwrap();
+        a.db.lock()
+            .unwrap()
+            .execute("UPDATE pairing_codes SET expires_at = 0", [])
+            .unwrap();
+        a.create_pairing_code("bob").unwrap();
+        assert_eq!(pairing_code_count(&a), 1);
+        assert_eq!(a.pair(&expired, "x", "c"), Err(AuthError::Invalid));
+    }
+
+    /// Regression guard: an access token alone (15 minutes) must not become a lasting
+    /// sign-in on another device.
+    #[test]
+    fn own_pairing_codes_need_the_password_and_wrong_ones_lock() {
+        let a = store();
+        let (alice, laptop) = signed_in(&a, "alice");
+        for _ in 0..MAX_FAILURES {
+            assert_eq!(
+                a.create_own_pairing_code(alice, "alice", laptop, "wrong password!"),
+                Err(AuthError::Invalid)
+            );
+        }
+        assert!(matches!(
+            a.create_own_pairing_code(alice, "alice", laptop, PW),
+            Err(AuthError::Locked(_))
+        ));
+        assert_eq!(pairing_code_count(&a), 0, "no code was made");
+        assert!(
+            a.audit_log(100)
+                .unwrap()
+                .iter()
+                .any(|e| e.event == "pairing.self_failed")
+        );
+        // The lock is the account-change one: signing in still works.
+        assert!(a.login("alice", PW, None, "x", None, "c2").is_ok());
+    }
+
+    #[test]
+    fn own_pairing_codes_are_rate_limited_per_user() {
+        let a = store();
+        a.create_user("bob", PW, Role::Listener).unwrap();
+        let (alice, laptop) = signed_in(&a, "alice");
+        for _ in 0..SELF_PAIRING_PER_HOUR {
+            a.create_own_pairing_code(alice, "alice", laptop, PW)
+                .unwrap();
+        }
+        let checks = a.password_checks();
+        match a.create_own_pairing_code(alice, "alice", laptop, PW) {
+            Err(AuthError::Locked(wait)) => {
+                assert!(wait > Duration::ZERO && wait <= Duration::from_secs(3600))
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(a.password_checks(), checks, "refused before the password");
+        assert!(
+            a.audit_log(100)
+                .unwrap()
+                .iter()
+                .any(|e| e.event == "pairing.rate_limited")
+        );
+        // Bob has his own allowance; admins aren't limited.
+        let (bob, phone) = signed_in(&a, "bob");
+        assert!(a.create_own_pairing_code(bob, "bob", phone, PW).is_ok());
+        assert!(a.create_pairing_code("alice").is_ok());
+        // An hour later, alice may again.
+        a.db.lock()
+            .unwrap()
+            .execute("UPDATE pairing_requests SET at = at - 3601", [])
+            .unwrap();
+        assert!(
+            a.create_own_pairing_code(alice, "alice", laptop, PW)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn no_own_pairing_codes_while_at_the_new_device_limit() {
+        let a = store();
+        let (alice, laptop) = signed_in(&a, "alice");
+        for i in 1..NEW_DEVICES_PER_HOUR {
+            a.login("alice", PW, None, &format!("d{i}"), None, "c")
+                .unwrap();
+        }
+        assert!(matches!(
+            a.create_own_pairing_code(alice, "alice", laptop, PW),
+            Err(AuthError::Locked(_))
+        ));
+        // A code made earlier still meets the same limit when it is redeemed.
+        a.db.lock()
+            .unwrap()
+            .execute("UPDATE devices SET created_at = created_at - 3601", [])
+            .unwrap();
+        let code = a
+            .create_own_pairing_code(alice, "alice", laptop, PW)
+            .unwrap();
+        for i in 0..NEW_DEVICES_PER_HOUR {
+            a.login("alice", PW, None, &format!("e{i}"), None, "c")
+                .unwrap();
+        }
+        assert!(matches!(a.pair(&code, "x", "c"), Err(AuthError::Locked(_))));
+    }
+
+    #[test]
+    fn own_pairing_codes_die_with_the_user() {
+        let a = store();
+        let (alice, laptop) = signed_in(&a, "alice");
+        let code = a
+            .create_own_pairing_code(alice, "alice", laptop, PW)
+            .unwrap();
+        a.set_disabled("alice", true).unwrap();
+        assert_eq!(a.pair(&code, "x", "c"), Err(AuthError::Invalid));
+        a.set_disabled("alice", false).unwrap();
+        let (alice, laptop) = signed_in(&a, "alice");
+        let code = a
+            .create_own_pairing_code(alice, "alice", laptop, PW)
+            .unwrap();
+        a.delete_user("alice").unwrap();
+        assert_eq!(a.pair(&code, "x", "c"), Err(AuthError::Invalid));
+    }
+
     #[test]
     fn input_validation() {
         let a = store();
@@ -3615,7 +3880,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
         // Version 3 added per-device diagnostics.
         let d = a.devices_for_test();
         a.save_diagnostics(d, r#"{"ok":true}"#).unwrap();
@@ -4082,7 +4347,7 @@ mod tests {
                 .unwrap()
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-        assert_eq!(v, 8);
+        assert_eq!(v, 9);
         a.create_user("alice", PW, Role::Listener).unwrap();
         let alice = a.user_id_by_name("alice").unwrap().unwrap();
         assert_eq!(a.stored_plays(alice).unwrap(), 0);
@@ -4115,7 +4380,7 @@ mod tests {
             let v: i64 = db
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(v, 8);
+            assert_eq!(v, 9);
             // Migrating again is a no-op.
             migrate(&db).unwrap();
         }

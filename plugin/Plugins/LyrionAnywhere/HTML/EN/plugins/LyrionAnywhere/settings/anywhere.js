@@ -134,7 +134,31 @@
     return formats.length ? `on (${formats.join(', ')})` : 'on';
   }
 
-  const api = { command, adminOnlyArg, pageToken, validDays, sessionDaysShown, validDeviceName, clientText, validUsername, validPassword, formatTime, formatUptime, diagnosticsText, downloadsText, DEFAULT_SESSION_DAYS };
+  /** Time left on a pairing code, e.g. "9:05". */
+  function formatCountdown(seconds) {
+    const s = Math.max(0, Math.floor(Number(seconds) || 0));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }
+
+  /**
+   * What the "Add a device" panel shows for a code from the gateway: the code grouped for
+   * typing, the pairing link for the QR code (null unless the public URL is a usable https
+   * address), and how many seconds it lasts. Null if the reply holds no valid code.
+   * `qr` is the shared encoder (qr.js, globalThis.AnywhereQR).
+   */
+  function pairingView(data, publicUrl, qr) {
+    const code = qr && data ? qr.normalisePairingCode(typeof data.code === 'string' ? data.code : '') : null;
+    if (!code) return null;
+    const secs = Number(data.expires_in);
+    return {
+      code: qr.groupPairingCode(code),
+      link: qr.pairingLink(publicUrl, code),
+      seconds: Number.isFinite(secs) && secs > 0 && secs <= 3600 ? Math.floor(secs) : 600,
+      publicUrlSet: typeof publicUrl === 'string' && publicUrl.trim() !== '',
+    };
+  }
+
+  const api = { command, adminOnlyArg, pageToken, validDays, sessionDaysShown, validDeviceName, clientText, validUsername, validPassword, formatTime, formatUptime, diagnosticsText, downloadsText, formatCountdown, pairingView, DEFAULT_SESSION_DAYS };
   if (typeof globalThis.__anywhereTest === 'object') {
     Object.assign(globalThis.__anywhereTest, api);
     return;
@@ -275,11 +299,14 @@
         }),
         el('button', {
           type: 'button',
-          text: 'Pairing code',
-          onclick: () => run(async () => {
-            const d = await admin('pairing', { username: u.username });
-            say(`Pairing code for ${u.username}: ${d.code} (valid ${Math.round(d.expires_in / 60)} minutes, single use)`);
-          }),
+          text: 'Add a device',
+          onclick: async () => {
+            try {
+              await showPairing(u.username);
+            } catch (e) {
+              say(e.message, true);
+            }
+          },
         }),
         ...(u.totp_enabled
           ? [confirmButton('Reset two-step', 'Confirm reset', () => run(() => admin('totp_reset', { username: u.username }), 'Two-step verification removed'))]
@@ -302,6 +329,83 @@
       }
     }
     box.replaceChildren(table);
+  }
+
+  // --- adding a device: a one-time pairing code, as text and as a QR code ------------------
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  let pairTimer = null;
+
+  function closePairing() {
+    if (pairTimer) clearInterval(pairTimer);
+    pairTimer = null;
+    const box = $('aw-pair');
+    box.replaceChildren();
+    box.setAttribute('hidden', '');
+  }
+
+  /** The QR code for a pairing link, drawn as one SVG path (black on white, quiet zone). */
+  function qrImage(link) {
+    const qr = globalThis.AnywhereQR.encodeQr(link);
+    const n = qr.size + 8;
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    for (const [k, v] of [['viewBox', `0 0 ${n} ${n}`], ['width', '240'], ['height', '240'], ['role', 'img'], ['aria-label', 'QR code for the Lyrion Anywhere app'], ['shape-rendering', 'crispEdges']]) {
+      svg.setAttribute(k, v);
+    }
+    const bg = document.createElementNS(SVG_NS, 'rect');
+    for (const [k, v] of [['width', String(n)], ['height', String(n)], ['fill', '#fff']]) bg.setAttribute(k, v);
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', globalThis.AnywhereQR.qrPath(qr, 4));
+    path.setAttribute('fill', '#000');
+    svg.append(bg, path);
+    return svg;
+  }
+
+  /**
+   * Make a code for `username` and show it: large, as a QR code holding the pairing link
+   * (when the public URL is set), and with the time it has left. The code is shown only
+   * here: it isn't put in the status line, and nothing logs it.
+   */
+  async function showPairing(username) {
+    closePairing();
+    const d = await admin('pairing', { username });
+    const view = pairingView(d, $('anywhere-app').getAttribute('data-public-url') || '', globalThis.AnywhereQR);
+    if (!view) throw new Error('The gateway did not return a pairing code.');
+    const qrBox = view.link
+      ? el('div', { className: 'aw-qr' }, [qrImage(view.link)])
+      : el('p', {
+          className: 'aw-note aw-error',
+          text: view.publicUrlSet
+            ? 'No QR code: the Public URL above must be an https:// address with nothing after the host name. Until it is, enter the server address in the app, then type this code.'
+            : 'No QR code: set the Public URL above (the https:// address people use) to show one. Until then, enter the server address in the app, then type this code.',
+        });
+    const code = el('p', { className: 'aw-code', text: view.code });
+    const countdown = el('p', { className: 'aw-note' });
+    const ends = Date.now() + view.seconds * 1000;
+    const tick = () => {
+      const left = Math.round((ends - Date.now()) / 1000);
+      if (left > 0) {
+        countdown.textContent = `Expires in ${formatCountdown(left)}. It works once, for ${username} only.`;
+        return;
+      }
+      clearInterval(pairTimer);
+      pairTimer = null;
+      qrBox.setAttribute('hidden', '');
+      code.className = 'aw-code aw-expired';
+      countdown.textContent = 'This code has expired. Make a new one if you still need it.';
+    };
+    const box = $('aw-pair');
+    box.replaceChildren(
+      el('h4', { text: `Add a device for ${username}` }),
+      el('p', { text: 'In the Lyrion Anywhere app on the new device, choose Scan QR code and point the camera at this code, or type the code by hand.' }),
+      qrBox,
+      code,
+      countdown,
+      el('button', { type: 'button', text: 'Done', onclick: closePairing }),
+    );
+    box.removeAttribute('hidden');
+    tick();
+    pairTimer = setInterval(tick, 1000);
   }
 
   async function showGrants(username, box, players) {

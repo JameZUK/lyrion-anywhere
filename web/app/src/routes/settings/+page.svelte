@@ -9,6 +9,7 @@
 	import { detect } from '$lib/player/capabilities';
 	import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, savePreference, type ModePreference } from '$lib/player/mode';
 	import SignOut from '$lib/components/SignOut.svelte';
+	import AddDevice from '$lib/components/AddDevice.svelte';
 	import { version as buildVersion } from '$app/environment';
 	import pkg from '../../../package.json';
 	import { VOLUME_LABELS, canFollow, planVolume, type VolumeSetting } from '$lib/player/volume';
@@ -282,6 +283,7 @@
 				<button class="btn" type="submit">Turn off</button>
 			</form>
 		{/if}
+		<AddDevice create={(pw) => session.authed((t) => auth.createPairingCode(t, pw))} server={globalThis.location?.origin ?? ''} />
 	</div>
 
 	<div class="card">

@@ -120,7 +120,7 @@ sub clean {
 sub assets_stamp {
 	my $dir = File::Spec->catdir(File::Basename::dirname(__FILE__), 'HTML', 'EN', 'plugins', 'LyrionAnywhere', 'settings');
 	my $latest = 0;
-	for my $f (qw(anywhere.js anywhere.css basic.html)) {
+	for my $f (qw(anywhere.js qr.js anywhere.css basic.html)) {
 		my $m = (stat(File::Spec->catfile($dir, $f)))[9] // 0;
 		$latest = $m if $m > $latest;
 	}
@@ -135,6 +135,8 @@ sub handler {
 	# LMS serves the page's script and stylesheet with a week-long cache; stamping their
 	# URLs with the files' modification time makes browsers fetch them again after an update.
 	$params->{anywhere_assets} = assets_stamp();
+	# The address the apps use, for pairing QR codes (the page checks it again).
+	$params->{anywhere_public_url} = $prefs->get('public_url') // '';
 	$params->{anywhere_gateway_path_allowed} =
 		($ENV{ Plugins::LyrionAnywhere::Gateway::ALLOW_GATEWAY_PATH_ENV() } // '') eq '1' ? 1 : 0;
 	if ($params->{saveSettings}) {
