@@ -379,7 +379,7 @@ impl Core {
     }
 
     /// An authenticated GET of a `/v1/…` JSON resource.
-    async fn get_json(self: &Arc<Self>, path: &str) -> Result<Value, ApiError> {
+    pub(crate) async fn get_json(self: &Arc<Self>, path: &str) -> Result<Value, ApiError> {
         let url = self.server.endpoint(path);
         self.authed(|token| transport::send_json(self.http.get(url.clone()).bearer_auth(&token)))
             .await

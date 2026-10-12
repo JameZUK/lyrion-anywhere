@@ -45,6 +45,7 @@ use super::ring::CHANNELS;
 use super::transitions::{TrackFacts, TransitionMode};
 use super::{
     LocalPlayback, LocalPlayerObserver, LocalPlayerStatus, PlayerConnection, SignalPathInfo,
+    StreamQuality,
 };
 use crate::error::ApiError;
 use crate::server::Server;
@@ -86,6 +87,8 @@ pub(crate) enum Cmd {
     SetDsp(DspSettings),
     /// The output device or the bit-perfect setting changed: negotiate the output again.
     Renegotiate,
+    /// The stream level for the streams that follow.
+    SetQuality(StreamQuality),
 }
 
 /// What the engine reacts to.
@@ -107,6 +110,8 @@ enum Ev {
         id: u64,
         content_type: String,
     },
+    /// Whether the gateway lets a session change its stream level (`/v1/me` features).
+    QualityFeature(bool),
     StreamData {
         id: u64,
         bytes: Vec<u8>,
@@ -178,6 +183,10 @@ pub(crate) struct Engine {
     /// A timed start is armed in the ring, which releases its hold at the exact frame.
     timed_start: bool,
     // Connection.
+    /// The stream level wanted, and whether the gateway can change it mid-session (`None`
+    /// until known).
+    quality: StreamQuality,
+    quality_feature: Option<bool>,
     session: Option<(String, String)>,
     received: u64,
     ws_gen: u64,
@@ -225,6 +234,7 @@ impl Engine {
         output: Box<dyn AudioOutput>,
         dsp: DspSettings,
         max_rate: u32,
+        quality: StreamQuality,
         cmds: mpsc::UnboundedReceiver<Cmd>,
     ) -> Result<Engine, ApiError> {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -240,6 +250,8 @@ impl Engine {
             cmds,
             start_ns: mono_ns(),
             timed_start: false,
+            quality,
+            quality_feature: None,
             session: None,
             received: 0,
             ws_gen: 0,
@@ -301,6 +313,7 @@ impl Engine {
     }
 
     pub(crate) async fn run(mut self) {
+        self.learn_quality_feature();
         self.connect(false);
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -313,6 +326,7 @@ impl Engine {
                         self.publish_signal(true);
                     }
                     Some(Cmd::Renegotiate) => self.audio.renegotiate = true,
+                    Some(Cmd::SetQuality(q)) => self.set_quality(q),
                     // The app let go of the player, or asked to stop.
                     Some(Cmd::Stop) | None => self.shutdown("stopped").await,
                 },
@@ -354,6 +368,34 @@ impl Engine {
 
     // --- Connection ---------------------------------------------------------------------
 
+    /// Ask the gateway (once) whether a session may change its stream level.
+    fn learn_quality_feature(&self) {
+        let core = self.core.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            if let Ok(v) = core.get_json("v1/me").await {
+                let on = v["features"]["stream_quality"].as_bool() == Some(true);
+                let _ = tx.send(Ev::QualityFeature(on));
+            }
+        });
+    }
+
+    fn set_quality(&mut self, q: StreamQuality) {
+        if q == self.quality {
+            return;
+        }
+        self.quality = q;
+        self.send_quality();
+    }
+
+    /// Tell the gateway the level now, if it can take it mid-session; otherwise it is asked
+    /// for when the player next connects.
+    fn send_quality(&mut self) {
+        if self.open && self.quality_feature == Some(true) {
+            self.send_ws(Out::Text(protocol::quality_message(self.quality)));
+        }
+    }
+
     fn connect(&mut self, resume: bool) {
         if let Some(t) = self.ws_task.take() {
             t.abort();
@@ -379,6 +421,7 @@ impl Engine {
             self.core.clone(),
             self.server.clone(),
             resume,
+            self.quality,
             self.tx.clone(),
             out_rx,
         ));
@@ -536,6 +579,10 @@ impl Engine {
             }
             Ev::WsClosed { conn, code, reason } if conn == self.ws_gen => {
                 self.on_closed(code, &reason)
+            }
+            Ev::QualityFeature(on) => {
+                self.quality_feature = Some(on);
+                self.send_quality();
             }
             Ev::StreamHeaders { id, content_type } if self.is_current(id) => {
                 let now = self.now_ms();
@@ -966,6 +1013,7 @@ async fn socket_task(
     core: Arc<Core>,
     server: Arc<Server>,
     resume: Option<(String, String, u64)>,
+    quality: StreamQuality,
     tx: mpsc::UnboundedSender<Ev>,
     mut out_rx: mpsc::UnboundedReceiver<Out>,
 ) {
@@ -1012,12 +1060,13 @@ async fn socket_task(
             return;
         }
     };
-    let first = match &resume {
-        Some((session, secret, received)) => {
-            protocol::resume_message(&token, session, secret, *received)
-        }
-        None => token.clone(),
-    };
+    let first = protocol::sign_in_message(
+        &token,
+        resume
+            .as_ref()
+            .map(|(s, k, n)| (s.as_str(), k.as_str(), *n)),
+        quality,
+    );
     if ws.send(Message::Text(first.into())).await.is_err() {
         let _ = tx.send(closed(None, ""));
         return;

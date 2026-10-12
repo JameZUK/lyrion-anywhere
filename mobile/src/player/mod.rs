@@ -237,6 +237,40 @@ struct Run {
     thread: std::thread::JoinHandle<()>,
 }
 
+/// The level of the live stream (docs/plans/streaming-quality.md): as LMS sends it, or FLAC
+/// re-encoded to Opus by the gateway for mobile data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, uniffi::Enum)]
+pub enum StreamQuality {
+    /// As LMS sends it (lossless stays lossless).
+    #[default]
+    Original,
+    /// Opus 160 kb/s.
+    High,
+    /// Opus 96 kb/s ("Data saver").
+    Low,
+}
+
+impl StreamQuality {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StreamQuality::Original => "original",
+            StreamQuality::High => "high",
+            StreamQuality::Low => "low",
+        }
+    }
+}
+
+/// The level to stream at: [`StreamQuality`] for Wi-Fi or for mobile data, by whether the
+/// network is metered.
+#[uniffi::export]
+pub fn stream_quality_for(
+    metered: bool,
+    on_wifi: StreamQuality,
+    on_mobile: StreamQuality,
+) -> StreamQuality {
+    if metered { on_mobile } else { on_wifi }
+}
+
 /// This phone as an LMS player.
 #[derive(uniffi::Object)]
 pub struct LocalPlayer {
@@ -251,6 +285,8 @@ pub struct LocalPlayer {
     /// Bumped by every change to the fade, so an older fade's thread stops.
     fade_gen: AtomicU64,
     negotiator: Mutex<Option<Arc<dyn OutputNegotiator>>>,
+    /// The stream level wanted (kept across restarts of the engine).
+    quality: Mutex<StreamQuality>,
 }
 
 pub(crate) fn make_output(
@@ -280,7 +316,21 @@ impl LocalPlayer {
             fade: AtomicU32::new(1.0f32.to_bits()),
             fade_gen: AtomicU64::new(0),
             negotiator: Mutex::new(None),
+            quality: Mutex::new(StreamQuality::Original),
         })
+    }
+
+    /// The level for the streams that follow (the next track, or a seek): asked for when
+    /// the player connects, and sent at once to a gateway that supports changing it.
+    pub fn set_stream_quality(&self, quality: StreamQuality) {
+        *self.quality.lock().unwrap() = quality;
+        if let Some(r) = self.run.lock().unwrap().as_ref() {
+            let _ = r.cmds.send(Cmd::SetQuality(quality));
+        }
+    }
+
+    pub fn stream_quality(&self) -> StreamQuality {
+        *self.quality.lock().unwrap()
     }
 
     /// Become a player in LMS. Does nothing if already running.
@@ -315,6 +365,7 @@ impl LocalPlayer {
             output,
             cfg.dsp,
             cfg.max_sample_rate,
+            *self.quality.lock().unwrap(),
             cmd_rx,
         )?;
         let thread = std::thread::Builder::new()

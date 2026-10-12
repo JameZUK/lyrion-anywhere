@@ -90,7 +90,7 @@ pub use player::{
     MixerOffer, NotBitPerfect, OfferBlocker, OfflinePlayer, OfflinePlayerObserver,
     OfflinePlayerStatus, OutputKind, OutputNegotiator, OutputOffers, OutputRoute, PcmBlock,
     PcmEncoding, PcmIntBlock, PlayerConnection, SignalPathInfo, SignalStage, SignalVerdict,
-    TransitionMode, check_eq_profile,
+    StreamQuality, TransitionMode, check_eq_profile, stream_quality_for,
 };
 pub use players::Players;
 pub use server::{PairingInvite, Server, parse_pairing_invite};

@@ -4,6 +4,7 @@
 //! Everything the gateway sends is treated as untrusted: the greeting is parsed strictly
 //! (bounded size, exact field shapes) because its values end up in URLs and in HELO.
 
+use super::StreamQuality;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -88,11 +89,38 @@ pub fn parse_greeting(text: &str) -> Option<Greeting> {
 
 /// The first message of a resumed session.
 pub fn resume_message(token: &str, session: &str, secret: &str, received: u64) -> String {
-    json!({
-        "token": token,
-        "resume": { "session": session, "secret": secret, "received": received }
-    })
-    .to_string()
+    sign_in_message(
+        token,
+        Some((session, secret, received)),
+        StreamQuality::Original,
+    )
+}
+
+/// The first message on the player socket: the token, the session to resume if any, and
+/// the stream level wanted (docs/plans/streaming-quality.md). A bare token for a new
+/// session at the original level, as before; gateways ignore a level they don't know.
+pub fn sign_in_message(
+    token: &str,
+    resume: Option<(&str, &str, u64)>,
+    quality: StreamQuality,
+) -> String {
+    if resume.is_none() && quality == StreamQuality::Original {
+        return token.to_string();
+    }
+    let mut v = json!({ "token": token });
+    if let Some((session, secret, received)) = resume {
+        v["resume"] = json!({ "session": session, "secret": secret, "received": received });
+    }
+    if quality != StreamQuality::Original {
+        v["quality"] = json!(quality.as_str());
+    }
+    v.to_string()
+}
+
+/// A change of stream level for the streams that follow (only to a gateway that lists
+/// `stream_quality` among its features: older ones end the session on it).
+pub fn quality_message(quality: StreamQuality) -> String {
+    json!({ "quality": quality.as_str() }).to_string()
 }
 
 /// A stream acknowledgement.
