@@ -110,3 +110,24 @@ fn corrupt_opus_never_panics() {
         assert!(pcm.iter().all(|s| s.is_finite()));
     }
 }
+
+/// Regression: `opus-decoder` 0.1.1 overflowed building a collapse mask for bands with more
+/// than 8 short blocks: a panic in debug builds, wrongly decoded transients in release
+/// builds (fixed in `third_party/opus-decoder`, see its `PATCHES.md`).
+///
+/// Fixture `fixtures/noise-96k.opus`: the last second and a half of what the gateway's live
+/// encoder (FFmpeg's libopus, 96 kb/s) made of its own synthetic test signal (pseudo-random
+/// FLAC frames, `gateway/tests/live.rs`), ending where the signal stops. Cut without
+/// re-encoding, so no third-party content:
+///
+/// ```text
+/// ffmpeg -ss 9 -i whole.opus -c copy -map_metadata -1 -fflags +bitexact noise-96k.opus
+/// ```
+#[test]
+fn a_transient_with_many_short_blocks_decodes() {
+    let (st, rate, pcm) = decode(include_bytes!("fixtures/noise-96k.opus"), b'u');
+    assert_eq!(st, DecodeStatus::Finished);
+    assert_eq!(rate, 48_000);
+    assert!(pcm.len() > 48_000 * 2, "{} samples", pcm.len());
+    assert!(pcm.iter().all(|s| s.is_finite() && s.abs() <= 2.0));
+}

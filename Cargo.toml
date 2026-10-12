@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["core", "cli", "gateway", "wasm", "mobile", "mobile/uniffi-bindgen"]
+# Vendored third-party code: built as a dependency, not linted or formatted as ours.
+exclude = ["third_party/opus-decoder"]
 
 [workspace.package]
 version = "0.0.1"
@@ -30,3 +32,8 @@ strip = "debuginfo"
 opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
+
+# opus-decoder 0.1.1 with a fix for an overflow in the CELT decoder (see
+# third_party/opus-decoder/PATCHES.md). Remove once a fixed release is published.
+[patch.crates-io]
+opus-decoder = { path = "third_party/opus-decoder" }
