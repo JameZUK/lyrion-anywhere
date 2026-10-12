@@ -225,7 +225,14 @@ pub fn parse_pairing_invite(text: String) -> Result<PairingInvite, ApiError> {
         });
     }
     let url = Url::parse(t).map_err(|_| ApiError::invalid("that isn't a pairing code"))?;
-    if url.host_str() != Some("pair") || !matches!(url.path(), "" | "/") || url.fragment().is_some()
+    // Exactly `lyrion-anywhere://pair?…`: no user name, password or port either (links
+    // arrive from outside the app, so nothing unexpected is let through, even if unused).
+    if url.host_str() != Some("pair")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || !matches!(url.path(), "" | "/")
+        || url.fragment().is_some()
     {
         return Err(ApiError::invalid("that isn't a pairing code"));
     }
@@ -389,6 +396,68 @@ mod tests {
                 "{bad:?} was accepted"
             );
         }
+    }
+
+    /// Links arrive from outside the app (QR codes, tapped links): anything but the exact
+    /// documented form is refused. Regression: user info and a port on the `pair` host were
+    /// accepted and ignored.
+    #[test]
+    fn hostile_pairing_links_are_refused() {
+        for bad in [
+            "lyrion-anywhere://user:pw@pair?code=ABCD2345",
+            "lyrion-anywhere://user@pair?code=ABCD2345",
+            "lyrion-anywhere://pair:8443?code=ABCD2345",
+            "lyrion-anywhere://PAIR?code=ABCD2345",
+            "lyrion-anywhere:pair?code=ABCD2345",
+            "lyrion-anywhere:///pair?code=ABCD2345",
+            "lyrion-anywhere://pair.evil.example?code=ABCD2345",
+            "lyrion-anywhere://pair?=x&code=ABCD2345",
+            "lyrion-anywhere://pair?code=ABCD2345&server=",
+            "lyrion-anywhere://pair?server=javascript%3Aalert(1)&code=ABCD2345",
+            "lyrion-anywhere://pair?server=file%3A%2F%2F%2Fetc%2Fpasswd&code=ABCD2345",
+            "lyrion-anywhere://pair?server=intent%3A%2F%2Fx%23Intent%3Bend&code=ABCD2345",
+            "lyrion-anywhere://pair?server=https%3A%2F%2Fmusic.example.com%2Fphish&code=ABCD2345",
+            "lyrion-anywhere://pair?server=https%3A%2F%2Fmusic.example.com%3Fx%3D1&code=ABCD2345",
+            "lyrion-anywhere://pair?server=https%3A%2F%2Fmusic.example.com%23x&code=ABCD2345",
+            "lyrion-anywhere://pair?server=https%3A%2F%2Fmusic.example.com%5C%40evil.example&code=ABCD2345",
+            "lyrion-anywhere://pair?server=https%3A%2F%2Fmusic.example.com%20&code=ABCD2345%00",
+            "lyrion-anywhere://pair?server=http%3A%2F%2F10.0.0.10&code=ABCD2345",
+            "lyrion-anywhere://pair?server=wss%3A%2F%2Fmusic.example.com&code=ABCD2345",
+            // Codes: letters and digits only (ASCII), 4 to 32 of them.
+            "lyrion-anywhere://pair?code=%EF%BC%A1%EF%BC%A2%EF%BC%A3%EF%BC%A4",
+            "lyrion-anywhere://pair?code=ABCD%E2%80%AE2345",
+            "lyrion-anywhere://pair?code=ABC",
+            "lyrion-anywhere://pair?code=%3Cscript%3E",
+            "lyrion-anywhere://pair?code=ABCD2345%26server%3Dhttps%3A%2F%2Fevil.example",
+        ] {
+            assert!(
+                matches!(
+                    parse_pairing_invite(bad.into()),
+                    Err(ApiError::InvalidInput { .. })
+                ),
+                "{bad:?} was accepted"
+            );
+        }
+        // Too long, whatever it holds.
+        let long = format!(
+            "lyrion-anywhere://pair?server=https%3A%2F%2Fmusic.example.com&code=ABCD2345&{}",
+            "x".repeat(MAX_URL)
+        );
+        assert!(parse_pairing_invite(long).is_err());
+        // The scheme is case-insensitive (as URLs are); loopback over plain HTTP is left to
+        // the app's build to allow or not.
+        let p = parse_pairing_invite(
+            "LYRION-ANYWHERE://pair?server=https%3A%2F%2Fmusic.example.com%3A8443&code=abcd-2345"
+                .into(),
+        )
+        .unwrap();
+        assert_eq!(p.server.as_deref(), Some("https://music.example.com:8443/"));
+        assert_eq!(p.code, "ABCD2345");
+        let p = parse_pairing_invite(
+            "lyrion-anywhere://pair?server=http%3A%2F%2F127.0.0.1%3A9443&code=ABCD2345".into(),
+        )
+        .unwrap();
+        assert_eq!(p.server.as_deref(), Some("http://127.0.0.1:9443/"));
     }
 
     #[test]

@@ -40,6 +40,7 @@ import io.github.jamezuk.lyrionanywhere.data.offline.RustOfflinePlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.offline.RustOfflineRepository
 import io.github.jamezuk.lyrionanywhere.data.offline.RustOnlineLink
 import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadActions
+import io.github.jamezuk.lyrionanywhere.ui.onboarding.PairingLinks
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -69,8 +70,16 @@ class AppContainer(context: Context, scope: CoroutineScope) {
         secureStore = secureStore,
         deviceName = deviceName(),
         io = Dispatchers.IO,
+        // A gateway on this device over plain HTTP: development builds only.
+        allowPlainLoopback = BuildConfig.DEBUG,
     )
     val account: AccountRepository = accountImpl
+
+    /**
+     * A `lyrion-anywhere://pair` link the app was opened with, held until the user confirms
+     * (or declines) on the pairing screen. Holding it changes nothing by itself.
+     */
+    val pairingLinks = PairingLinks(account::readPairingCode)
     val library: LibraryRepository = RustLibraryRepository(accountImpl)
     val players: PlayersRepository = RustPlayersRepository(accountImpl)
     val art: ArtRepository = RustArtRepository(accountImpl)

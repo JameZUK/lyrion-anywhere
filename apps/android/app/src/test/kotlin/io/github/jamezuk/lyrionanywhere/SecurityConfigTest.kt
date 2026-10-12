@@ -65,13 +65,48 @@ class SecurityConfigTest {
         assertEquals("0", info.getAttributeNS(android, "updatePeriodMillis"))
         // No content provider is exported (car artwork isn't served by one).
         assertTrue(exported.none { it.tagName == "provider" })
-        // The launcher, and voice "play …" (the query only; no data, no other actions).
+        // The launcher, voice "play …" (the query only) and pairing links (below).
         val main = exported.single { it.getAttributeNS(android, "name") == ".MainActivity" }
         assertEquals(
-            setOf("android.intent.action.MAIN", "android.media.action.MEDIA_PLAY_FROM_SEARCH"),
+            setOf(
+                "android.intent.action.MAIN",
+                "android.media.action.MEDIA_PLAY_FROM_SEARCH",
+                "android.intent.action.VIEW",
+            ),
             actions(main),
         )
-        assertTrue(main.children("data").isEmpty())
+    }
+
+    /**
+     * Pairing links: VIEW of `lyrion-anywhere://pair` only. No other scheme (http, https,
+     * content, file), host, path, MIME type or action reaches the app through it, and it
+     * claims no web domain.
+     */
+    @Test
+    fun pairingLinksAreTheOnlyDataTheAppOpens() {
+        val main = xml("src/main/AndroidManifest.xml").children("activity")
+            .single { it.getAttributeNS(android, "name") == ".MainActivity" }
+        val withData = main.children("intent-filter").filter { it.children("data").isNotEmpty() }
+        val filter = withData.single()
+        assertEquals(
+            listOf("android.intent.action.VIEW"),
+            filter.children("action").map { it.getAttributeNS(android, "name") },
+        )
+        assertEquals(
+            setOf("android.intent.category.DEFAULT", "android.intent.category.BROWSABLE"),
+            filter.children("category").map { it.getAttributeNS(android, "name") }.toSet(),
+        )
+        assertFalse("no App Links verification", filter.hasAttributeNS(android, "autoVerify"))
+        val data = filter.children("data").single()
+        assertEquals("lyrion-anywhere", data.getAttributeNS(android, "scheme"))
+        assertEquals("pair", data.getAttributeNS(android, "host"))
+        for (attr in listOf("port", "path", "pathPrefix", "pathPattern", "pathAdvancedPattern", "pathSuffix", "mimeType")) {
+            assertFalse("no $attr", data.hasAttributeNS(android, attr))
+        }
+        // Every other filter carries no data at all.
+        assertTrue(
+            main.children("intent-filter").filter { it !== filter }.all { it.children("data").isEmpty() },
+        )
     }
 
     /** The media library for cars (A6): exported only for the media browser actions; its

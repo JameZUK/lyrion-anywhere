@@ -17,6 +17,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,15 +38,18 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import io.github.jamezuk.lyrionanywhere.AppContainer
+import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AuthState
 import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.components.LoadingState
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.PairScreen
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.PairViewModel
+import io.github.jamezuk.lyrionanywhere.ui.onboarding.RefusedLinkDialog
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.ServerScreen
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.ServerViewModel
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.SignInScreen
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.SignInViewModel
+import io.github.jamezuk.lyrionanywhere.ui.onboarding.SwitchAccountDialog
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 
@@ -108,12 +112,57 @@ fun AppRoot(container: AppContainer) {
             is AuthState.SignedInState -> MainScreen(container, s)
         }
     }
+    PairingLinkPrompts(container, state)
+}
+
+/**
+ * A pairing link the app was opened with, while a sign-in is kept: ask before signing out
+ * (the onboarding screens then show the link and ask again before pairing). A link that
+ * isn't valid: say it was ignored.
+ */
+@Composable
+private fun PairingLinkPrompts(container: AppContainer, state: AuthState) {
+    val links = container.pairingLinks
+    val pending by links.pending.collectAsStateWithLifecycle()
+    val refused by links.refused.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    if (refused) RefusedLinkDialog(onDismiss = links::acknowledgeRefused)
+    val link = pending ?: return
+    val current = when (state) {
+        is AuthState.SignedInState -> state.server
+        is AuthState.Unreachable -> state.server
+        else -> return
+    }
+    val target = remember(link) {
+        link.server?.let { (container.account.checkServerAddress(it) as? ApiResult.Ok)?.value?.name }
+    }
+    var leaving by remember(link) { mutableStateOf(false) }
+    SwitchAccountDialog(
+        current = current.name,
+        target = target,
+        onContinue = {
+            if (!leaving) {
+                leaving = true
+                scope.launch {
+                    // As Settings' sign-out: downloads kept, plays sent first.
+                    container.offline.signOut(removeDownloads = false)
+                    container.account.signOut()
+                }
+            }
+        },
+        onCancel = links::dismiss,
+    )
 }
 
 @Composable
 private fun Onboarding(container: AppContainer, signedOut: AuthState.SignedOut?) {
     val nav = rememberNavController()
     val scope = rememberCoroutineScope()
+    // A pairing link the app was opened with goes to the pairing screen, to be confirmed.
+    val pendingLink by container.pairingLinks.pending.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingLink) {
+        if (pendingLink != null) nav.navigate(PairRoute) { launchSingleTop = true }
+    }
     NavHost(
         navController = nav,
         startDestination = if (signedOut == null) ServerRoute else SignInRoute,
@@ -127,6 +176,8 @@ private fun Onboarding(container: AppContainer, signedOut: AuthState.SignedOut?)
                 onAddressChange = vm::onAddressChange,
                 // Once the server is saved, the account state moves on to signing in.
                 onSubmit = { vm.submit {} },
+                // A QR code names the server too.
+                onScan = { nav.navigate(PairRoute) { launchSingleTop = true } },
             )
         }
         composable<SignInRoute> {
@@ -161,6 +212,10 @@ private fun Onboarding(container: AppContainer, signedOut: AuthState.SignedOut?)
             val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
                 cameraPermitted = it
             }
+            // A link waiting: shown here for the user to confirm (taken once).
+            LaunchedEffect(pendingLink) {
+                container.pairingLinks.take()?.let(vm::offer)
+            }
             PairScreen(
                 state = ui,
                 cameraPermitted = cameraPermitted,
@@ -169,6 +224,11 @@ private fun Onboarding(container: AppContainer, signedOut: AuthState.SignedOut?)
                 onCodeChange = vm::onCodeChange,
                 onSubmit = vm::submit,
                 onBack = { nav.popBackStack() },
+                onConfirm = vm::confirm,
+                onCancel = vm::cancel,
+                backLabel = stringResource(
+                    if (signedOut == null) R.string.action_back else R.string.action_back_to_sign_in,
+                ),
             )
         }
     }

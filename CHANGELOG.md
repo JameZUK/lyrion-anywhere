@@ -2,6 +2,23 @@
 
 Dated entries, newest first.
 
+## 2026-10-12
+
+### Adding devices by QR code, and pairing links
+- **Admins: Add a device** next to a user on the plugin's settings page (was *Pairing code*). It shows the one-time code in large letters, a QR code of the `lyrion-anywhere://pair?server=…&code=…` link built from the *Public URL* setting, and a countdown to its expiry. Without a usable `https://` Public URL it shows the code alone and says why. The code is no longer put in the page's status line.
+- **Users: Add another device** in the web app (*Settings › Account*): after the account password, a code and QR code for another device of the user's own, from the new `POST /v1/devices/pair` (`docs/PROTOCOL.md` › Pairing links):
+  - always for the caller's own user (there's no field to name another; unknown fields are refused);
+  - the password is required, so a stolen 15-minute access token can't become a lasting sign-in elsewhere; wrong ones count towards the per-user account-change lock;
+  - at most 5 codes an hour per user, and none while the user is at the 10-new-devices-an-hour limit;
+  - codes stay single use, valid 10 minutes, stored only as hashes and subject to the pairing lockouts; expired ones are now deleted as new ones are made. Audited (`pairing.created` with `admin` or `self`, `pairing.rate_limited`, `pairing.self_failed`), never with the code. Database migration 9 adds the per-user request log.
+- **QR codes made in-house:** a small encoder (byte mode, level M, versions 1–10) in `web/app/src/lib/qr/qr.js`, shared with the plugin's settings page as a generated classic script (`tools/sync-qr.mjs`); no third-party code runs in the browser. It matches the `qrcode` crate module for module for every mask (reference symbols made by a gateway test) and is read back by an independent test decoder.
+- **Android: Scan QR code** on the welcome screen as well as the sign-in screen (CameraX and ZXing core, no Google Play Services; the camera is asked for only when scanning). Typing the code still works. Whatever is read is shown first, *Sign in to music.example.com?* with the server it replaces, and sent only when confirmed.
+- **Android: pairing links.** Tapping a `lyrion-anywhere://pair` link opens the app's pairing screen with it filled in, and nothing more: the user confirms the server before anything is sent, and if the phone is signed in, is first asked whether to sign out (downloads kept). Links that aren't valid are dropped, and the user told. The intent filter takes VIEW of that scheme and host only, and only the link's text is read.
+- **Security:**
+  - pairing links with user info or a port on `pair` (`lyrion-anywhere://user@pair?…`) were accepted and ignored; they are now refused (regression test);
+  - Android release builds refuse plain `http://` to loopback in typed, scanned and linked addresses (debug builds still allow it, for a gateway on the device). The Rust layer allowed it in every build.
+- **Tests:** gateway (own codes for the caller only, the password and its lock, hourly and new-device limits, single use, expiry, lockouts on redemption, CSRF header and origin, signed-out tokens, nothing for another user), the QR encoder (reference symbols for every mask, decoding, arbitrary text, capacity limits, the ISO/IEC 18004 Reed–Solomon example, link and code validation), the plugin's panel (CSRF token, QR content decoded, countdown and expiry, no Public URL, hostile replies) and the web app's (refusals, expiry, no password kept), and on Android the confirmation step, hostile links, the dialogs, accessibility audits and the manifest's intent filter.
+
 ## 2026-10-11
 
 ### Android: release readiness (A7)

@@ -2,6 +2,7 @@ package io.github.jamezuk.lyrionanywhere.ui.onboarding
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import io.github.jamezuk.lyrionanywhere.core.PairingInvite
 import io.github.jamezuk.lyrionanywhere.data.AccountRepository
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
@@ -102,47 +103,124 @@ class SignInViewModel(private val account: AccountRepository) : ViewModel() {
     }
 }
 
+/** What the user is asked to confirm before pairing. */
+data class PairConfirm(
+    /** The code, grouped for reading ("ABCDE-FGHJK"). */
+    val code: String,
+    /** The server it signs in to, for display ("music.example.com"). */
+    val serverName: String,
+    val serverUrl: String,
+    /** The server this replaces, when the code names a different one. */
+    val replaces: String? = null,
+)
+
 data class PairUiState(
     val code: String = "",
     val busy: Boolean = false,
     val error: AppError? = null,
     /** The scanner is paused after a scan until the result is known. */
     val scanning: Boolean = true,
+    /** A code was read (scanned, typed or from a link): the user confirms the server first. */
+    val confirm: PairConfirm? = null,
 )
 
-/** Pair by scanning the QR code from the web app (or typing the code). */
+/**
+ * Pair by scanning the QR code from the web app or the LMS plugin (or typing the code, or
+ * from a pairing link the app was opened with). Nothing is sent until the user has seen the
+ * server and confirmed.
+ */
 class PairViewModel(private val account: AccountRepository) : ViewModel() {
     private val _state = MutableStateFlow(PairUiState())
     val state: StateFlow<PairUiState> = _state.asStateFlow()
 
+    /** The invite being confirmed. */
+    private var invite: PairingInvite? = null
+
     fun onCodeChange(v: String) = _state.update { it.copy(code = v.take(64), error = null) }
 
-    fun submit() = pairWith(_state.value.code)
+    fun submit() = review(_state.value.code)
 
     /** A QR code was read. */
     fun onScanned(text: String) {
-        if (!_state.value.scanning || _state.value.busy) return
-        pairWith(text)
+        val s = _state.value
+        if (!s.scanning || s.busy || s.confirm != null) return
+        review(text)
     }
 
-    private fun pairWith(text: String) {
+    /** A pairing link the app was opened with (already checked by [PairingLinks]). */
+    fun offer(link: PairingInvite) {
         if (_state.value.busy) return
-        val invite = when (val r = account.readPairingCode(text)) {
-            is ApiResult.Ok -> r.value
-            is ApiResult.Err -> {
-                _state.update { it.copy(error = r.error) }
-                return
-            }
+        show(link)
+    }
+
+    private fun review(text: String) {
+        if (_state.value.busy) return
+        when (val r = account.readPairingCode(text)) {
+            is ApiResult.Ok -> show(r.value)
+            is ApiResult.Err -> _state.update { it.copy(error = r.error) }
         }
-        _state.update { it.copy(busy = true, scanning = false, error = null) }
-        viewModelScope.launch {
-            val r = account.pair(invite)
-            _state.update {
-                when (r) {
-                    is ApiResult.Ok -> PairUiState(scanning = false)
-                    is ApiResult.Err -> it.copy(busy = false, scanning = true, error = r.error)
+    }
+
+    private fun show(link: PairingInvite) {
+        val current = (account.state.value as? AuthState.SignedOut)?.server
+        val target = when (val url = link.server) {
+            null -> current
+            else -> when (val checked = account.checkServerAddress(url)) {
+                is ApiResult.Ok -> checked.value
+                is ApiResult.Err -> {
+                    _state.update { it.copy(error = checked.error) }
+                    return
                 }
             }
         }
+        if (target == null) {
+            _state.update { it.copy(error = AppError.InvalidInput(NO_SERVER)) }
+            return
+        }
+        invite = link
+        _state.update {
+            it.copy(
+                error = null,
+                scanning = false,
+                confirm = PairConfirm(
+                    code = groupCode(link.code),
+                    serverName = target.name,
+                    serverUrl = target.url,
+                    replaces = current?.takeIf { c -> c.url != target.url }?.name,
+                ),
+            )
+        }
+    }
+
+    /** Not this one: back to scanning or typing. */
+    fun cancel() {
+        if (_state.value.busy) return
+        invite = null
+        _state.update { it.copy(confirm = null, scanning = true, error = null) }
+    }
+
+    /** The user confirmed the server: pair. */
+    fun confirm() {
+        val link = invite ?: return
+        if (_state.value.busy) return
+        _state.update { it.copy(busy = true, error = null) }
+        viewModelScope.launch {
+            val r = account.pair(link)
+            invite = null
+            _state.update {
+                when (r) {
+                    is ApiResult.Ok -> PairUiState(scanning = false)
+                    is ApiResult.Err -> it.copy(busy = false, scanning = true, confirm = null, error = r.error)
+                }
+            }
+        }
+    }
+
+    companion object {
+        const val NO_SERVER = "scan the QR code, or enter your server\u2019s address first"
+
+        /** "ABCDEFGHJK" as "ABCDE-FGHJK" (other lengths as they are). */
+        fun groupCode(code: String): String =
+            if (code.length == 10) "${code.take(5)}-${code.drop(5)}" else code
     }
 }

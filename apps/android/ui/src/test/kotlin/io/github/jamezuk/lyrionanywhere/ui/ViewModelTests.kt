@@ -1,6 +1,7 @@
 package io.github.jamezuk.lyrionanywhere.ui
 
 import io.github.jamezuk.lyrionanywhere.core.AlbumSort
+import io.github.jamezuk.lyrionanywhere.core.PairingInvite
 import io.github.jamezuk.lyrionanywhere.core.EventsState
 import io.github.jamezuk.lyrionanywhere.core.Placement
 import io.github.jamezuk.lyrionanywhere.core.PlaybackMode
@@ -9,6 +10,8 @@ import io.github.jamezuk.lyrionanywhere.core.ServerEvent
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.data.AppSettings
+import io.github.jamezuk.lyrionanywhere.data.AuthState
+import io.github.jamezuk.lyrionanywhere.data.ServerInfo
 import io.github.jamezuk.lyrionanywhere.data.StreamUpdate
 import io.github.jamezuk.lyrionanywhere.ui.library.AlbumsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.library.PagedViewModel
@@ -133,22 +136,103 @@ class PairViewModelTest : MainDispatcherTest() {
     }
 
     @Test
-    fun aScannedCodePairsOnce() = runTest(dispatcher) {
+    fun aScannedCodePairsOnceAfterConfirming() = runTest(dispatcher) {
         val account = FakeAccount().apply { pairResult = ApiResult.Err(AppError.SignedOut) }
         val vm = PairViewModel(account)
         vm.onScanned("abcd2345")
+        // Nothing is sent until the user has seen the server and confirmed.
+        assertTrue(account.paired.isEmpty())
+        val confirm = vm.state.value.confirm!!
+        assertEquals("music.example.com", confirm.serverName)
+        assertEquals("ABCD2345", confirm.code)
+        assertNull("the same server: nothing replaced", confirm.replaces)
+        assertFalse("the scanner pauses while asking", vm.state.value.scanning)
+        vm.onScanned("efgh2345")
+        assertEquals("another scan doesn't replace the question", "ABCD2345", vm.state.value.confirm!!.code)
+        vm.confirm()
         assertEquals("ABCD2345", account.paired.single().code)
         // Refused: scanning resumes so another code can be tried.
         assertEquals(AppError.SignedOut, vm.state.value.error)
         assertTrue(vm.state.value.scanning)
+        assertNull(vm.state.value.confirm)
+        vm.confirm()
+        assertEquals("a refused code isn't sent again", 1, account.paired.size)
         account.pairResult = ApiResult.Ok(Unit)
         vm.onCodeChange("efgh2345")
         vm.submit()
+        vm.confirm()
         assertEquals(2, account.paired.size)
         // Paired: the scanner stops, so the same QR code isn't redeemed again.
         assertFalse(vm.state.value.scanning)
         vm.onScanned("abcd2345")
+        vm.confirm()
         assertEquals(2, account.paired.size)
+    }
+
+    @Test
+    fun cancellingSendsNothing() = runTest(dispatcher) {
+        val account = FakeAccount()
+        val vm = PairViewModel(account)
+        vm.onScanned("lyrion-anywhere://pair?server=https%3A%2F%2Fmusic.example.com&code=ABCDEFGHJK")
+        assertEquals("ABCDE-FGHJK", vm.state.value.confirm!!.code)
+        vm.cancel()
+        assertNull(vm.state.value.confirm)
+        assertTrue(vm.state.value.scanning)
+        vm.confirm()
+        assertTrue(account.paired.isEmpty())
+    }
+
+    @Test
+    fun aCodeForAnotherServerSaysWhatItReplaces() = runTest(dispatcher) {
+        val other = ServerInfo("https://lms.example.lan/", "lms.example.lan", true)
+        val account = FakeAccount().apply { checkServer = { ApiResult.Ok(other) } }
+        val vm = PairViewModel(account)
+        vm.onScanned("lyrion-anywhere://pair?server=https%3A%2F%2Flms.example.lan&code=ABCDEFGHJK")
+        val confirm = vm.state.value.confirm!!
+        assertEquals("lms.example.lan", confirm.serverName)
+        assertEquals("https://lms.example.lan/", confirm.serverUrl)
+        assertEquals("music.example.com", confirm.replaces)
+        vm.confirm()
+        assertEquals("https://lms.example.lan/", account.paired.single().server)
+    }
+
+    @Test
+    fun aServerTheAppRefusesIsNeverShownOrUsed() = runTest(dispatcher) {
+        val account = FakeAccount().apply {
+            checkServer = { ApiResult.Err(AppError.InvalidInput("use https://")) }
+        }
+        val vm = PairViewModel(account)
+        vm.onScanned("lyrion-anywhere://pair?server=https%3A%2F%2Flms.example.lan&code=ABCDEFGHJK")
+        assertNull(vm.state.value.confirm)
+        assertTrue(vm.state.value.error is AppError.InvalidInput)
+        vm.confirm()
+        assertTrue(account.paired.isEmpty())
+    }
+
+    @Test
+    fun aBareCodeNeedsAServerFirst() = runTest(dispatcher) {
+        val account = FakeAccount().apply { _state.value = AuthState.NoServer }
+        val vm = PairViewModel(account)
+        vm.onCodeChange("ABCDEFGHJK")
+        vm.submit()
+        assertNull(vm.state.value.confirm)
+        assertEquals(AppError.InvalidInput(PairViewModel.NO_SERVER), vm.state.value.error)
+        // A QR code names its server, so it works from the welcome screen.
+        vm.onScanned("lyrion-anywhere://pair?server=https%3A%2F%2Fmusic.example.com&code=ABCDEFGHJK")
+        assertEquals("music.example.com", vm.state.value.confirm!!.serverName)
+        assertNull(vm.state.value.confirm!!.replaces)
+    }
+
+    @Test
+    fun aLinkTheAppWasOpenedWithIsShownForConfirmation() = runTest(dispatcher) {
+        val account = FakeAccount()
+        val vm = PairViewModel(account)
+        vm.offer(PairingInvite("https://music.example.com/", "ABCDEFGHJK"))
+        assertEquals("music.example.com", vm.state.value.confirm!!.serverName)
+        assertFalse(vm.state.value.scanning)
+        assertTrue(account.paired.isEmpty())
+        vm.confirm()
+        assertEquals(1, account.paired.size)
     }
 }
 

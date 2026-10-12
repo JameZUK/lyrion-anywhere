@@ -110,6 +110,7 @@ fun ServerScreen(
     state: ServerUiState,
     onAddressChange: (String) -> Unit,
     onSubmit: () -> Unit,
+    onScan: () -> Unit = {},
 ) {
     val addressFocus = remember { FocusRequester() }
     // Ready to type on first show, unless an address is already filled in.
@@ -149,6 +150,15 @@ fun ServerScreen(
             enabled = !state.busy && state.address.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
         ) { BusyLabel(state.busy, stringResource(R.string.action_continue)) }
+        OutlinedButton(onClick = onScan, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
+            Text(stringResource(R.string.action_scan_qr), Modifier.padding(start = 8.dp))
+        }
+        Text(
+            stringResource(R.string.server_scan_note),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Text(
             stringResource(R.string.server_https_note),
             style = MaterialTheme.typography.bodySmall,
@@ -276,7 +286,15 @@ fun PairScreen(
     onCodeChange: (String) -> Unit,
     onSubmit: () -> Unit,
     onBack: () -> Unit,
+    onConfirm: () -> Unit = {},
+    onCancel: () -> Unit = {},
+    backLabel: String = stringResource(R.string.action_back_to_sign_in),
 ) {
+    val confirm = state.confirm
+    if (confirm != null) {
+        PairConfirmation(confirm, busy = state.busy, onConfirm = onConfirm, onCancel = onCancel)
+        return
+    }
     FormColumn {
         Text(
             stringResource(R.string.pair_title),
@@ -316,9 +334,46 @@ fun PairScreen(
             onClick = onSubmit,
             enabled = !state.busy && state.code.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
-        ) { BusyLabel(state.busy, stringResource(R.string.action_pair)) }
+        ) { BusyLabel(state.busy, stringResource(R.string.action_continue)) }
         TextButton(onClick = onBack, enabled = !state.busy) {
-            Text(stringResource(R.string.action_back_to_sign_in))
+            Text(backLabel)
+        }
+    }
+}
+
+/**
+ * Before anything is sent: which server the code signs in to (and the one it replaces), so
+ * a QR code or link from someone else can't quietly sign this phone in somewhere else.
+ */
+@Composable
+private fun PairConfirmation(confirm: PairConfirm, busy: Boolean, onConfirm: () -> Unit, onCancel: () -> Unit) {
+    FormColumn {
+        Text(
+            stringResource(R.string.pair_confirm_title, confirm.serverName),
+            style = MaterialTheme.typography.headlineMedium,
+            modifier = Modifier.semantics { heading() },
+        )
+        Text(stringResource(R.string.pair_confirm_body), style = MaterialTheme.typography.bodyLarge)
+        Text(
+            stringResource(R.string.pair_confirm_server, confirm.serverUrl),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            stringResource(R.string.pair_confirm_code, confirm.code),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        if (confirm.replaces != null) {
+            Text(
+                stringResource(R.string.pair_confirm_replaces, confirm.replaces),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Button(onClick = onConfirm, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+            BusyLabel(busy, stringResource(R.string.action_sign_in))
+        }
+        TextButton(onClick = onCancel, enabled = !busy) {
+            Text(stringResource(R.string.action_cancel))
         }
     }
 }

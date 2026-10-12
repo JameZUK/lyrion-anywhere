@@ -249,6 +249,14 @@ Nothing here has run on hardware yet. With an Android 14+ phone and a USB DAC:
 
 Record the phone, Android version, DAC and results (in the A2 status of `docs/plans/native-apps.md`, without serial numbers or other personal details).
 
+### Pairing by QR code and links
+
+Besides signing in with a password, a phone can pair with a one-time code (10 minutes, single use) made by an admin (the plugin's *Add a device*) or by the user (the web app's *Settings › Account › Add another device*). Both show it as a QR code of a `lyrion-anywhere://pair?server=…&code=…` link.
+
+- **Scan QR code** on the welcome screen, or **Pair with a QR code instead** on the sign-in screen, opens the scanner: CameraX for the preview and ZXing core (Apache-2.0, pure Java) to read the code. No Google Play Services or ML Kit, so it suits F-Droid; neither adds an `androidx.startup` initialiser to the release manifest. The camera permission is asked for only when the user taps to scan; the code can always be typed instead.
+- Whatever was read (a QR code, a typed code or a tapped link) goes to a confirmation step first: *Sign in to music.example.com?*, with the code and the server it replaces, if any. Only **Sign in** sends it.
+- A tapped link (`PairingLinks`) waits for the user: signed out, the pairing screen opens with it filled in; signed in, a dialog asks whether to sign out first (downloads kept), and declining leaves everything as it was.
+
 ## Security
 
 - The refresh token and device id are the only secrets stored: sealed with AES-256-GCM under a key generated in the AndroidKeyStore (not exportable), in the app's no-backup directory. A blob that fails to open is deleted and the user signs in again. Access tokens live in memory only.
@@ -256,7 +264,8 @@ Record the phone, Android version, DAC and results (in the A2 status of `docs/pl
 - Downloads live in app-private storage only (`noBackupFilesDir/offline`), in a folder named by a hash of the server and user. Files are named by the gateway's stable key and a fixed extension; the index holds no tokens, addresses or paths and is checked entry by entry when read. Signing out asks whether to keep or remove them; a device the server revoked removes them.
 - No cleartext traffic and only system CAs (`network_security_config.xml`); debug builds also allow plain HTTP to loopback. The Rust layer independently refuses `http://` except to loopback.
 - Tokens and passwords are never logged or put in error messages; the password is dropped from memory after sign-in.
-- Pairing QR codes are parsed and validated in Rust (`lyrion-anywhere://pair?server=…&code=…`, see `docs/PROTOCOL.md`); the server address in one obeys the same rules as a typed one.
+- Pairing QR codes and links are parsed and validated in Rust (`lyrion-anywhere://pair?server=…&code=…`, see `docs/PROTOCOL.md`): exactly that form (no user info, port, path, fragment or other parameters), a code of letters and digits, and a server address obeying the same rules as a typed one. Release builds also refuse plain `http://` to loopback, typed, scanned or linked; only debug builds allow it.
+- Pairing links (the `lyrion-anywhere://pair` intent filter on the main activity; VIEW only, nothing but that scheme and host) only fill in the pairing screen. Only the link's text is read, never extras. The app shows the server (and the one it would replace) and pairs only when the user confirms; while signed in it first asks whether to sign out. Invalid links are dropped and the user told.
 - No Google Play Services, analytics or proprietary libraries (F-Droid compatible).
 - Crash reports stay on the phone and are only ever shared by the user. Each report is redacted before it is saved or shown: tokens, secrets, server and IP addresses and home folders are removed. Only the backtrace's names are kept from Android's record of a native crash, which holds memory dumps.
 - What the app and the gateway keep is in [`docs/PRIVACY.md`](../../docs/PRIVACY.md), linked from Settings › About. The A7 security review is [`docs/security/pentest-2026-10-android-1.0.md`](../../docs/security/pentest-2026-10-android-1.0.md).
@@ -266,12 +275,13 @@ Record the phone, Android version, DAC and results (in the A2 status of `docs/pl
 
 - `:data`: the secure-store sealing (tampering, wrong keys, strict encoding), error mapping.
 - `:ui`: view models with fakes (sign-in and two-step, pairing, paging, search debounce, player selection, events, optimistic transport), and Compose screens under Robolectric (labels for accessibility, error messages).
+- `:ui` (QR pairing): nothing is sent before the user confirms the server; cancelling sends nothing; a code for another server says what it replaces; a server the app refuses is never shown or used; hostile links (other schemes and hosts, `intent:` and `javascript:` tricks, extra or repeated parameters, overlong text, bare codes) are dropped without signing in or out; the confirmation and switch dialogs; accessibility audits of the pairing screens. `:data`: release builds refuse plain HTTP. `:app`: the intent filter takes VIEW of `lyrion-anywhere://pair` only.
 - `:ui` (A4): every browse view model (filters, virtual library, role chips, genre search, random batches, duplicate pages), album discs and details, artist grouping, Home's carousels, the menu navigator and Apps & Radio suitability.
 - `:ui` (A4): player-first rules and "Back to this phone".
 - `:ui` (A4): Compose tests for the "Playing on" strip, the "Play on…" sheet, the default-player setting, the Library page, the album page, the "More…" sheet and Apps & Radio, with 48 dp touch targets.
 - `:ui` (A4): WCAG contrast of the art-tinted colours for 511 covers in both themes.
 - `:data` (A4): the default-player and library settings (malformed stored values ignored), the virtual-library choice, and the suitability cache.
-- `:app`: regression tests for the manifest (only the launcher activity, the widget receiver, the system-bound tile and, since A6, the media library service are exported; the expected permissions only; no periodic widget updates), backup rules and network policy.
+- `:app`: regression tests for the manifest (only the launcher activity (with its pairing-link filter), the widget receiver, the system-bound tile and, since A6, the media library service are exported; the expected permissions only; no periodic widget updates), backup rules and network policy.
 - `:ui` and `:app` (A4 part 2):
   - transfer states, queue editing with Undo, and sync direction (view models and Compose);
   - layout selection by window size, gesture thresholds and pull-to-close;

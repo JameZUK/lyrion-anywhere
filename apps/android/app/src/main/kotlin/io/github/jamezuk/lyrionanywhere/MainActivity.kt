@@ -35,13 +35,31 @@ class MainActivity : ComponentActivity() {
                 AppRoot(app.container)
             }
         }
-        if (savedInstanceState == null) playFromSearch(intent)
+        if (savedInstanceState == null) {
+            playFromSearch(intent)
+            openPairingLink(intent)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         val app = application as LyrionApp
-        if (!app.safeMode && app.started) playFromSearch(intent)
+        if (!app.safeMode && app.started) {
+            playFromSearch(intent)
+            openPairingLink(intent)
+        }
+    }
+
+    /**
+     * A tapped `lyrion-anywhere://pair?…` link. Only the link's text is read (no extras), and
+     * it only fills in the pairing screen: PairingLinks checks it strictly, and the user
+     * confirms the server before anything is sent (or, if signed in, first agrees to sign out).
+     */
+    private fun openPairingLink(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VIEW) return
+        val link = runCatching { intent.dataString }.getOrNull() ?: return
+        if (!link.startsWith("lyrion-anywhere:", ignoreCase = true)) return
+        (application as LyrionApp).container.pairingLinks.offer(link)
     }
 
     /** "Play … on Lyrion Anywhere": only the spoken query is read (see [LyrionApp.playFromSearch]). */

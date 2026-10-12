@@ -53,6 +53,17 @@
                 <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+            <!-- Pairing links, lyrion-anywhere://pair?server=…&code=… (e.g. tapped in a
+                 message). A link only fills in the pairing screen: it is checked like a
+                 scanned QR code, and nothing signs in, signs out or changes server until the
+                 user confirms. Only the link's text is read (no extras). A custom scheme with
+                 no autoVerify: there is no web domain to verify for a self-hosted server. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="lyrion-anywhere" android:host="pair" />
+            </intent-filter>
         </activity>
         <!--
           The media session for "Play on this phone", and the media library for cars (A6).
