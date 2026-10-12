@@ -134,8 +134,9 @@ LMS's HTTP client cannot send `DELETE` or `PATCH`, so the rename has a `POST` fo
 
 The client's first message is text, sent within 5 s:
 
-- **New session:** the bare access token.
+- **New session:** the bare access token, or `{"token":"…"}`.
 - **Resume:** `{"token":"…","resume":{"session":"…","secret":"…","received":N}}`. `N` is the number of binary messages the client received in this session before the drop.
+- **Stream level (optional):** either form may add `"quality":"original"|"high"|"low"`, the level of the streams to come (see *Lower-data streams* below). An unknown level is taken as `original`, never refused. Gateways before this feature ignore the field.
 
 The gateway replies with a text greeting:
 
@@ -156,7 +157,9 @@ The gateway replies with a text greeting:
   - The gateway rewrites two things before LMS sees them:
     - HELO capabilities keep only well-formed tokens: printable ASCII, comma-separated, each a bare codec name (`flc`) or `Key=value`, at most 64 tokens and 1 KiB in all;
     - a SETD name that is empty, longer than 64 characters, has control characters, or looks like a URL or path is replaced by the device's name.
-- **Text messages:** only the stream acknowledgement `{"ack":{"stream":n,"bytes":b}}`. Send one at least every 1 MiB received on stream `n`, and once straight after resuming.
+- **Text messages:**
+  - The stream acknowledgement `{"ack":{"stream":n,"bytes":b}}`. Send one at least every 1 MiB received on stream `n`, and once straight after resuming.
+  - The stream level `{"quality":"original"|"high"|"low"}`, for the streams that follow (the next `strm s`). Only to a gateway whose `GET /v1/me` lists `"stream_quality": true` under `features`: older gateways end the session on it.
 
 **Gateway → client:**
 - One binary message per server → client Slimproto frame, length prefix included, exactly as LMS sent it.
@@ -174,7 +177,7 @@ Any of these ends the whole session, not just the socket:
 - a HELO with a device ID other than 12;
 - any client opcode outside the list above (IR, BUTN, KNOB, BODY, UREQ, SHUT, …), a SETD LMS didn't ask for, or a malformed STAT or DSCO;
 - a frame over 16 KiB;
-- any text message other than a well-formed ack.
+- any text message other than a well-formed ack or level: one of those two fields exactly, with a known level, at most 256 bytes.
 
 ### Close codes
 
@@ -216,6 +219,12 @@ Recommended client backoff: about 0.5, 1, 2 and 4 s, then every 5 s, with ±20 %
   - **Offsets** (`?offset=`, acks, the replay window, `416`) count the stream as the client receives it, stripped. The gateway asks LMS for each stream once and strips it once, so every request for it sees the same bytes, and resuming works as for any stream.
   - **STAT:** LMS counts the bytes it sent, so the gateway adds the bytes it removed to `bytes_received` in the client's STATs once the count is past the stripped metadata.
   - `--keep-flac-pictures` turns this off.
+- **Lower-data streams** (docs/plans/streaming-quality.md): when the session's level is `high` or `low` and LMS announces a FLAC stream (`strm` format `f`), the gateway re-encodes it to **Ogg Opus** (160 or 96 kb/s, 48 kHz stereo) on the way through.
+  - **What the player sees:** the `strm` it is sent says Ogg Opus: format `u`, PCM parameters `?`.
+  - **What is never re-encoded:** other formats pass through as they are, and so does everything when the gateway has no `ffmpeg` with libopus, or is already running `--live-transcode-jobs` encodes (default 4; 0 turns the feature off). The player can tell by the format code in the `strm` it received.
+  - **Offsets and STAT:** offsets, acks, the replay window and resume all count the Opus stream; LMS is asked once and the stream encoded once. In STATs, `bytes_received` is turned back into LMS's count, in proportion to what has been fed and produced, and in full once the client has the whole finished stream.
+  - **How `ffmpeg` runs:** with a fixed argument list, no shell and an empty environment, the input demuxer forced to FLAC, and only the `pipe` protocol allowed. It is killed when its stream is abandoned.
+  - **Failures:** a failed encode ends the stream with an error, never cleanly; if the encoder can't start at all, the response is 502.
 - **Pacing:** the gateway reads from LMS at most one **replay window** (default 4 MiB) beyond the client's last ack. Network buffers therefore can't hold more than the window, and a resume always lands inside it.
 - **Ending:** a response ends cleanly only when LMS finished the stream cleanly and the client has had every byte. Every other end is an error (the connection breaks without a clean end), so a client never mistakes it for the end of the track:
   - the session ends (for example, the device is revoked), or a newer request for the stream takes over;

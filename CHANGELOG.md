@@ -2,6 +2,25 @@
 
 Dated entries, newest first.
 
+## 2026-10-12: Streaming quality on mobile data (gateway, web, Android)
+
+- **Lower-data streams:** a player can ask for **High** (Opus 160 kbps, about 70 MB an hour) or **Data saver** (Opus 96 kbps, about 45 MB an hour) instead of **Original** (CD-quality FLAC is about 400 MB an hour). The gateway re-encodes FLAC streams on the way through with the `ffmpeg` it already uses for downloads; other formats are sent as they are.
+- **Android:** Settings › *Streaming quality* has a level for Wi-Fi (Original by default) and one for mobile data (High by default), following the network as it changes. The signal path says when the stream is re-encoded.
+- **Web:** Settings › *Streaming quality in this browser*: Automatic (High on a mobile connection, Data saver when the browser is asked to save data, where the browser says; Safari doesn't), or a fixed level. The browser player now decodes Opus.
+- **Gateway:**
+  - the level comes at sign-in or in a control message, and the `strm` is rewritten to Ogg Opus;
+  - resume, acknowledgements and back-pressure work on the Opus stream, and LMS hears its own byte counts;
+  - `ffmpeg` is hardened as for downloads and killed with its stream;
+  - at most `--live-transcode-jobs` encodes at once (default 4), the original beyond that;
+  - `/v1/me` lists `stream_quality`.
+- **Fixed:** the Opus decoder we use (`opus-decoder` 0.1.1) overflowed on some transients: a panic in debug builds, and wrongly decoded frames in release builds, including Android's offline Opus downloads. A patched copy is kept in `third_party/opus-decoder` until a fixed release.
+- **Tests:**
+  - **gateway:** the level grammar and hostile control messages; the `strm` rewrite (FLAC only); resume, LMS's byte counts, a failing or missing encoder, the slot limit, and the encoder being killed when its stream is abandoned (with a stand-in encoder); and the real `ffmpeg`, now required in CI, with its output decoded by the players' core, also after a seek;
+  - **core:** a regression fixture for the decoder fix;
+  - **mobile:** a phone plays Opus at Data saver, then FLAC after switching back mid-session, through the real gateway;
+  - **web:** the automatic choice, the preference, the worker's messages, and Opus decoding in WebAssembly;
+  - **Android:** the level following the network and the setting, the settings dialog and the signal path.
+
 ## 2026-10-12: Wave 1: lyrics (web and Android)
 
 - **Lyrics on Now playing**, from the file's tags (plain or synced LRC) or, when it is installed on the server, the **Music & Artist Information** plugin. Lyrion Anywhere itself never contacts a lyrics service; that plugin may, depending on its own settings.
