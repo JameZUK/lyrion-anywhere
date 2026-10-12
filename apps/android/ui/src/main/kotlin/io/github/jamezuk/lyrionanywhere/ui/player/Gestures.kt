@@ -1,5 +1,7 @@
 package io.github.jamezuk.lyrionanywhere.ui.player
 
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.runtime.Composable
@@ -15,6 +17,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -84,8 +87,92 @@ class PullToClose(private val minPx: Float, private val onClose: () -> Unit) : N
     }
 }
 
+/** Which way a drag goes, once decided. */
+enum class DragAxis { HORIZONTAL, VERTICAL }
+
+/**
+ * The mini player's gestures (Wave 1 §4), the same on web (`gesture.ts`), Android and iOS:
+ * swipe left/right for the next/previous track, swipe up to open Now playing, long-press for
+ * *Play on…*, tap to open. Taps and long-presses are the click's own (with their
+ * accessibility actions); these rules decide the swipes.
+ */
+object MiniGestures {
+    /** How much more along its axis than across it a swipe must move. */
+    const val AXIS_RATIO = 1.5f
+
+    /** A sideways swipe must travel [SWIPE_MIN], or this share of the bar's width (the larger). */
+    const val SWIPE_SHARE = 0.2f
+
+    /** The axis of a drag of ([dx], [dy]) past the touch slop; null for a diagonal (not ours). */
+    fun axis(dx: Float, dy: Float): DragAxis? {
+        if (!dx.isFinite() || !dy.isFinite()) return null
+        return when {
+            kotlin.math.abs(dx) > kotlin.math.abs(dy) * AXIS_RATIO -> DragAxis.HORIZONTAL
+            kotlin.math.abs(dy) > kotlin.math.abs(dx) * AXIS_RATIO -> DragAxis.VERTICAL
+            else -> null
+        }
+    }
+
+    /** What a finished drag along [axis] asks for. */
+    fun classify(axis: DragAxis?, dx: Float, dy: Float, widthPx: Float, minPx: Float, upPx: Float): SwipeAction {
+        if (axis == null || !dx.isFinite() || !dy.isFinite()) return SwipeAction.NONE
+        return when (axis) {
+            DragAxis.HORIZONTAL -> {
+                val w = if (widthPx.isFinite() && widthPx > 0f) widthPx else 0f
+                val need = maxOf(minPx, w * SWIPE_SHARE)
+                when {
+                    dx <= -need -> SwipeAction.NEXT
+                    dx >= need -> SwipeAction.PREVIOUS
+                    else -> SwipeAction.NONE
+                }
+            }
+            DragAxis.VERTICAL -> if (dy <= -upPx) SwipeAction.OPEN else SwipeAction.NONE
+        }
+    }
+}
+
 /** How far a swipe must go before it counts. */
 val SWIPE_MIN = 72.dp
+
+/** How far up the mini player must be swiped to open Now playing. */
+val SWIPE_UP_MIN = 40.dp
+
+/**
+ * The mini player's swipes ([MiniGestures]): sideways for next/previous, up to open. Once a
+ * drag is ours its moves are consumed, so the click (tap, long-press) underneath is
+ * cancelled. [onDrag] follows the finger (null when let go).
+ */
+fun Modifier.miniPlayerSwipes(
+    minPx: Float,
+    upPx: Float,
+    onAction: (SwipeAction) -> Unit,
+    onDrag: (Offset?) -> Unit = {},
+): Modifier = pointerInput(minPx, upPx, onAction, onDrag) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        var axis: DragAxis? = null
+        var decided = false
+        var delta = Offset.Zero
+        while (true) {
+            val event = awaitPointerEvent()
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            delta = change.position - down.position
+            if (change.changedToUpIgnoreConsumed() || !change.pressed) break
+            if (!decided && delta.getDistance() > viewConfiguration.touchSlop) {
+                decided = true
+                axis = MiniGestures.axis(delta.x, delta.y)
+                if (axis == null) break // a diagonal: leave it alone
+            }
+            if (axis != null) {
+                change.consume()
+                onDrag(if (axis == DragAxis.HORIZONTAL) Offset(delta.x, 0f) else Offset(0f, minOf(0f, delta.y)))
+            }
+        }
+        onDrag(null)
+        val action = MiniGestures.classify(axis, delta.x, delta.y, size.width.toFloat(), minPx, upPx)
+        if (action != SwipeAction.NONE) onAction(action)
+    }
+}
 
 /** The mini player: swipe up (at least [minPx]) to open Now playing. */
 fun Modifier.swipeUpToOpen(minPx: Float, onOpen: () -> Unit): Modifier = pointerInput(minPx, onOpen) {

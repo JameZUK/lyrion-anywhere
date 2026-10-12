@@ -146,6 +146,7 @@ import io.github.jamezuk.lyrionanywhere.ui.player.NowPlayingActions
 import io.github.jamezuk.lyrionanywhere.ui.player.NowPlayingScreen
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnActions
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnList
+import io.github.jamezuk.lyrionanywhere.ui.player.SleepFadeSetting
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayerMessage
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayerViewModel
 import io.github.jamezuk.lyrionanywhere.ui.settings.LicencesScreen
@@ -255,6 +256,18 @@ private fun messageText(res: Resources, m: PlayerMessage): String = when (m) {
     is PlayerMessage.QueueFailed ->
         res.getString(if (m.undo) R.string.queue_undo_failed else R.string.queue_failed) + "\n" + errorWithDetail(res, m.error)
     is PlayerMessage.Moved -> res.getString(R.string.transfer_done, m.targetName)
+    is PlayerMessage.SleepSet -> res.getString(R.string.sleep_set, sleepLeft(res, m.seconds))
+    PlayerMessage.SleepOff -> res.getString(R.string.sleep_cancelled)
+    PlayerMessage.SleepUnknown -> res.getString(R.string.sleep_unknown)
+}
+
+/** "45 s", "27 min", "1 h 5 min" (as the web app and Now playing). */
+private fun sleepLeft(res: Resources, seconds: Int): String {
+    val s = seconds.coerceAtLeast(0)
+    if (s < 60) return res.getString(R.string.sleep_left_seconds, s)
+    val m = (s + 59) / 60
+    if (m < 60) return res.getString(R.string.sleep_left_minutes, m)
+    return if (m % 60 == 0) res.getString(R.string.sleep_left_whole_hours, m / 60) else res.getString(R.string.sleep_left_hours, m / 60, m % 60)
 }
 
 /** The signed-in app: adaptive navigation (bar, rail or drawer by window size). */
@@ -502,6 +515,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                         onBackToPhone = player::backToPhone,
                         onBringToPhone = player::bringToPhone,
                         onDismissTransfer = player::dismissTransfer,
+                        onPrevious = player::previous,
                     )
                 }
               }
@@ -903,6 +917,9 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 onBringToPhone = player::bringToPhone,
                                 onDismissTransfer = player::dismissTransfer,
                                 onClose = { nav.popBackStack() },
+                                onSleep = player::setSleep,
+                                onCancelSleep = player::cancelSleep,
+                                onRemoveUpNext = player::removeUpNext,
                             ),
                         )
                     }
@@ -984,6 +1001,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             onDownloads = { nav.navigate(DownloadsRoute) },
                             onStorage = { nav.navigate(StorageRoute) },
                             defaultPlayer = { DefaultPlayerSetting(playerState, player::setDefaultPlayer) },
+                            sleepFade = { SleepFadeSetting(playerState.sleepFade, player::setSleepFade) },
                         )
                     }
                 }

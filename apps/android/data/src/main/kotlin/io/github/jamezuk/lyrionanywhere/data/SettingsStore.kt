@@ -37,7 +37,16 @@ data class AppSettings(
      * signing in (the last one signed in on this server). Forgotten at sign-out.
      */
     val offlineOwner: String? = null,
+    /** The sleep timer's fade-out on this phone's player, seconds (0–120; 0 is off). */
+    val sleepFadeSecs: Int = SLEEP_FADE_DEFAULT,
 )
+
+/** The sleep timer's fade-out: 30 s by default, at most 2 minutes. */
+const val SLEEP_FADE_DEFAULT = 30
+const val SLEEP_FADE_MAX = 120
+
+/** A stored fade-out length, checked: 0–120 seconds, else the default. */
+fun sanitiseSleepFade(v: Int?): Int = if (v != null && v in 0..SLEEP_FADE_MAX) v else SLEEP_FADE_DEFAULT
 
 /** Which player the app controls when it starts (per device). */
 enum class DefaultPlayer {
@@ -82,6 +91,9 @@ interface SettingsStore {
 
     /** Whose downloads offline mode may show (null: nobody's). */
     suspend fun setOfflineOwner(username: String?) {}
+
+    /** The sleep timer's fade-out (seconds; checked before it is kept). */
+    suspend fun setSleepFade(seconds: Int) {}
 }
 
 /** A user name fit to remember as the offline owner. */
@@ -100,7 +112,12 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
             defaultPlayerId = if (readDefault(it) == DefaultPlayer.SPECIFIC) it[DEFAULT_PLAYER_ID] else null,
             downloads = readDownloads(it),
             offlineOwner = it[OFFLINE_OWNER]?.takeIf(::isOwnerName),
+            sleepFadeSecs = sanitiseSleepFade(it[SLEEP_FADE]),
         )
+    }
+
+    override suspend fun setSleepFade(seconds: Int) {
+        store.edit { p -> p[SLEEP_FADE] = sanitiseSleepFade(seconds) }
     }
 
     override suspend fun setDownloads(downloads: DownloadSettings) {
@@ -172,6 +189,7 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         val DEFAULT_PLAYER = stringPreferencesKey("default_player")
         val DEFAULT_PLAYER_ID = stringPreferencesKey("default_player_id")
         val OFFLINE_OWNER = stringPreferencesKey("offline_owner")
+        val SLEEP_FADE = intPreferencesKey("sleep_fade_secs")
         val DL_WIFI = stringPreferencesKey("downloads_wifi_format")
         val DL_MOBILE = stringPreferencesKey("downloads_mobile_format")
         val DL_WIFI_ONLY = booleanPreferencesKey("downloads_wifi_only")

@@ -520,4 +520,48 @@
     </plurals>
     <string name="downloads_notification_waiting">Waiting for Wi-Fi</string>
 
+    <!-- Wave 1: sleep timer, Up next, quality badge, ambient Now playing, mini player gestures -->
+    <string name="sleep_timer">Sleep timer</string>
+    <string name="sleep_timer_left">Sleep timer: stops in %1$s</string>
+    <string name="sleep_off">Turn off</string>
+    <string name="sleep_turn_off">Turn the sleep timer off</string>
+    <string name="sleep_stops_in">Stops in %1$s</string>
+    <string name="sleep_minutes">%1$d min</string>
+    <string name="sleep_custom">Custom (minutes)</string>
+    <string name="sleep_custom_set">Set</string>
+    <string name="sleep_custom_invalid">Enter a whole number of minutes, 1 to 1440.</string>
+    <string name="sleep_end_track">End of this track</string>
+    <string name="sleep_end_album">End of this album</string>
+    <string name="sleep_end_queue">End of the queue</string>
+    <string name="sleep_end_unavailable">Not for a stream without a set length.</string>
+    <string name="sleep_scope">Stop</string>
+    <string name="sleep_scope_player">This player</string>
+    <string name="sleep_scope_group">This sync group</string>
+    <string name="sleep_scope_all">All players</string>
+    <string name="sleep_note_fade">Fades out over %1$d s on this phone (Settings). Other players fade over LMS\'s last minute, then stop and turn off.</string>
+    <string name="sleep_note_no_fade">No fade-out on this phone (Settings). Other players fade over LMS\'s last minute, then stop and turn off.</string>
+    <string name="sleep_set">Sleep timer set: stops in %1$s</string>
+    <string name="sleep_cancelled">Sleep timer off</string>
+    <string name="sleep_unknown">Can\'t tell when that ends (a stream with no set length?)</string>
+    <string name="sleep_left_seconds">%1$d s</string>
+    <string name="sleep_left_minutes">%1$d min</string>
+    <string name="sleep_left_hours">%1$d h %2$d min</string>
+    <string name="sleep_left_whole_hours">%1$d h</string>
+    <string name="settings_sleep_fade">Sleep timer fade-out</string>
+    <string name="settings_sleep_fade_detail">How long this phone\'s player fades out before the sleep timer stops it. Other players follow LMS: they fade over the last minute.</string>
+    <string name="sleep_fade_off">Off</string>
+    <string name="sleep_fade_seconds">%1$d seconds</string>
+    <string name="sleep_fade_one_minute">1 minute</string>
+    <string name="sleep_fade_minutes">%1$s minutes</string>
+    <string name="up_next">Up next</string>
+    <string name="up_next_label">Up next: %1$s</string>
+    <string name="up_next_open_queue">Open the queue</string>
+    <string name="up_next_remove">Remove from the queue</string>
+    <string name="quality_hi_res">%1$s · Hi-Res</string>
+    <string name="quality_show_path">%1$s. Show the signal path</string>
+    <string name="signal_path_other">Playing on %1$s: its decoding, volume and output are set by that player. The source is all that is known here.</string>
+    <string name="signal_source_lossless">lossless</string>
+    <string name="signal_source_lossy">lossy</string>
+    <string name="mini_play_on">Play on…</string>
+
 </resources>

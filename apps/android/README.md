@@ -117,9 +117,20 @@ To try a debug build against a gateway on your computer, forward the port with `
   - It is drawn from state the app already has (`NowPlayingHub`), once per change, with `GlanceRemoteViews`. No Glance session, WorkManager job, alarm or periodic update, so it never wakes the phone.
 - **Quick Settings tile:** play/pause for this phone's player (unavailable when the phone isn't a player). Only the system can bind it.
 - **Gestures:**
-  - swipe the mini player up to open Now playing;
+  - the mini player (as on the web, `ui/player/Gestures.kt`): swipe left/right for the next/previous track with a haptic tick, swipe up or tap to open Now playing, long-press for *Play on…*. TalkBack gets each as an action (Next track, Previous track, Play on…, and the click to open);
   - pull Now playing down from the top to close it;
   - swipe the artwork left for the next track and right for the previous one, with a haptic tick (TalkBack: actions on the artwork).
+
+### Now playing: sleep timer, ambient background, Up next, quality badge (Wave 1)
+
+- **Sleep timer** (moon button next to the volume; `ui/player/SleepTimer.kt`, `NowPlayingExtras.kt`):
+  - 15–90 minutes, a custom length, or the end of this track, album or queue; for this player, its sync group or all players;
+  - LMS's own `sleep` does the stopping (`Players.set_sleep`), so hardware players stop too, with the app closed. "End of …" timers are set again when the end moves; the view model checks after every status;
+  - this phone's player fades out in the Rust engine (`LocalPlayer.set_sleep_fade`), so the fade keeps going in the background. The length is in *Settings › Sleep timer fade-out* (off to 2 minutes, 30 s by default), kept on the phone for now. Other players fade the LMS way: over the last minute, then stop and turn off;
+  - the rules mirror the Rust core's `sleep` module (which iOS will use) in Kotlin, like `QueueEdit`, so the view model's tests run on the JVM with the same vectors.
+- **Ambient background** (`ui/theme/Ambient.kt`): the cover blurred (RenderEffect on Android 12+, a tiny scaled-up image below) and drifting behind Now playing. It holds still with animations off, battery saver or a low-RAM phone, and is off with the system's high-contrast text. A colour matrix bounds the art's brightness, and the scrim is worked out from the page's colours so text keeps WCAG AA over any cover (tested for the brand and art-tinted themes).
+- **Up next** under the transport: tap scrolls to the queue; swipe it away or use TalkBack's *Remove from the queue* to take it out, with Undo.
+- **Quality badge** (`Track.quality`, parsed in Rust): e.g. FLAC 24/96 · Hi-Res; a tap opens the signal path (this phone's full path, or the source for another player).
 
 ### Play on this phone
 

@@ -190,6 +190,8 @@ fun SettingsScreen(
     /** The default-player choice (D20), when the app has players to offer. */
     defaultPlayer: (@Composable () -> Unit)? = null,
     onRename: (String) -> Unit = {},
+    /** The sleep timer's fade-out setting (Wave 1), when the app has players. */
+    sleepFade: (@Composable () -> Unit)? = null,
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var renaming by rememberSaveable { mutableStateOf(false) }
@@ -197,6 +199,10 @@ fun SettingsScreen(
         if (defaultPlayer != null) {
             item { SectionHeader(stringResource(R.string.section_default_player)) }
             item { defaultPlayer() }
+        }
+        if (sleepFade != null) {
+            item { sleepFade() }
+            item { HorizontalDivider() }
         }
         state.sound?.let { sound ->
             item { SectionHeader(stringResource(R.string.section_playback)) }

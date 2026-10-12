@@ -6,6 +6,10 @@
 //! over the last minute (at most), then stops the player and turns it off.
 //!
 //! The web app has the same rules (web/app/src/lib/lms/sleep.ts); the tests share vectors.
+//! The engine's fade ([`crate::LocalPlayer::set_sleep_fade`]) uses [`sleep_fade_gain`]; the
+//! rest is exported for the apps. The Android app mirrors these few rules in Kotlin
+//! (`ui/player/SleepTimer.kt`, as it does the queue edits) so its view-model tests run on the
+//! JVM without the native library; the iOS app is to call them directly.
 
 use crate::commands::is_player_id;
 use crate::model::{PlayerStatus, Track};
