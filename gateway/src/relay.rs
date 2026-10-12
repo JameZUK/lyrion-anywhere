@@ -58,7 +58,7 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// How often a paused response re-checks its state (a backstop for missed wake-ups).
 const RECHECK: Duration = Duration::from_millis(500);
 
-type Upstream = BoxStream<'static, Result<Bytes, reqwest::Error>>;
+type Upstream = BoxStream<'static, Result<Bytes, std::io::Error>>;
 
 struct UpstreamSlot {
     stream: Option<Upstream>,
@@ -92,6 +92,17 @@ pub struct Relay {
     /// Set for FLAC streams: PICTURE and PADDING blocks are dropped, and this says how
     /// many bytes that removed once the metadata has been seen.
     flac: Option<Arc<OnceLock<StripInfo>>>,
+    /// Set for streams re-encoded to Opus ([`crate::live`]).
+    live: Option<LiveSetup>,
+}
+
+/// A live encode for this stream: `ffmpeg`, the bit rate, the slot it holds (handed to
+/// the encoder when the stream is opened) and its byte counts.
+struct LiveSetup {
+    ffmpeg: std::path::PathBuf,
+    bitrate_k: u32,
+    permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
+    counts: Arc<crate::live::Counts>,
 }
 
 impl RelayState {
@@ -145,7 +156,25 @@ impl Relay {
             idle_timeout,
             read_timeout,
             flac: None,
+            live: None,
         }
+    }
+
+    /// Re-encode this (FLAC) stream to Ogg Opus at `bitrate_k` ([`crate::live`]), holding
+    /// `permit` (a live-encode slot) while it runs.
+    pub fn with_live(
+        mut self,
+        ffmpeg: &std::path::Path,
+        bitrate_k: u32,
+        permit: tokio::sync::OwnedSemaphorePermit,
+    ) -> Self {
+        self.live = Some(LiveSetup {
+            ffmpeg: ffmpeg.to_path_buf(),
+            bitrate_k,
+            permit: Mutex::new(Some(permit)),
+            counts: Arc::default(),
+        });
+        self
     }
 
     /// Drop embedded artwork and padding from the start of this (FLAC) stream.
@@ -158,6 +187,9 @@ impl Relay {
     /// what stripping removed. Unchanged for other streams, and until the metadata has
     /// been dealt with.
     pub fn upstream_bytes(&self, client: u64) -> u64 {
+        if let Some(live) = &self.live {
+            return live.counts.upstream_bytes(client);
+        }
         match self.flac.as_ref().and_then(|f| f.get()) {
             Some(info) => info.upstream_bytes(client),
             None => client,
@@ -230,7 +262,12 @@ pub async fn stream(
     let (_, path) = sess.stream();
     let (Some(path), Some(relay)) = (
         path,
-        sess.relay(n, gw.cfg.replay_window, gw.cfg.strip_flac_pictures),
+        sess.relay(
+            n,
+            gw.cfg.replay_window,
+            gw.cfg.strip_flac_pictures,
+            gw.live_ffmpeg(),
+        ),
     ) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -257,10 +294,32 @@ pub async fn stream(
                         .filter(|ct| ct.starts_with("audio/") || *ct == "application/octet-stream")
                         .unwrap_or("application/octet-stream")
                         .to_string();
-                    let body = resp.bytes_stream();
-                    up.stream = Some(match &relay.flac {
-                        Some(info) => StripStream::new(body.boxed(), info.clone()).boxed(),
-                        None => body.boxed(),
+                    let body = resp
+                        .bytes_stream()
+                        .map(|r| r.map_err(std::io::Error::other));
+                    up.stream = Some(match (&relay.live, &relay.flac) {
+                        (Some(live), _) => {
+                            let permit = live.permit.lock().unwrap().take();
+                            match crate::live::encode(
+                                &live.ffmpeg,
+                                live.bitrate_k,
+                                body.boxed(),
+                                permit,
+                                live.counts.clone(),
+                            ) {
+                                Ok(s) => {
+                                    relay.state.lock().unwrap().content_type = "audio/ogg".into();
+                                    s
+                                }
+                                Err(e) => {
+                                    // The player was told Opus: it can't take the original.
+                                    warn!(error = %e, "cannot start the live encoder");
+                                    return StatusCode::BAD_GATEWAY.into_response();
+                                }
+                            }
+                        }
+                        (None, Some(info)) => StripStream::new(body.boxed(), info.clone()).boxed(),
+                        (None, None) => body.boxed(),
                     });
                     up.opened = true;
                 }
@@ -528,7 +587,7 @@ mod tests {
         assert_eq!(&st.replay(12, 2)[..], b"cd");
     }
 
-    type Feed = tokio::sync::mpsc::UnboundedSender<Result<Bytes, reqwest::Error>>;
+    type Feed = tokio::sync::mpsc::UnboundedSender<Result<Bytes, std::io::Error>>;
 
     /// A relay whose upstream is fed by hand, and one consumer's body.
     async fn rig(

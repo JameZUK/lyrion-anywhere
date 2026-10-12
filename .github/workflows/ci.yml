@@ -20,8 +20,8 @@ jobs:
           components: clippy, rustfmt
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: Install ALSA headers (cli audio output)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Install ALSA headers (cli audio output) and ffmpeg (live Opus encode tests)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev ffmpeg
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -30,6 +30,9 @@ jobs:
         run: cargo clippy -p anywhere-core --all-targets --all-features -- -D warnings
       - name: Tests
         run: cargo test --workspace
+        env:
+          # The live-encode tests with the real ffmpeg must run here, never skip.
+          ANYWHERE_REQUIRE_FFMPEG: '1'
       - name: Core tests with optional features (Opus, resampler)
         run: cargo test -p anywhere-core --all-features
       - name: Robustness, limiter, analysis and performance tests (release, full matrices)

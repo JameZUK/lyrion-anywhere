@@ -40,6 +40,7 @@ mod flac_strip;
 pub mod history;
 pub mod home;
 pub mod limits;
+pub mod live;
 pub mod lyrics;
 pub mod menu_actions;
 pub mod plays;
@@ -118,6 +119,9 @@ pub struct Config {
     pub download_cache_bytes: u64,
     /// ffmpeg jobs at once.
     pub transcode_jobs: usize,
+    /// Live streams re-encoded to Opus at once, for clients on mobile data (0: never;
+    /// docs/plans/streaming-quality.md).
+    pub live_transcode_jobs: usize,
     /// Longest a single transcode may run.
     pub transcode_timeout: Duration,
     /// Downloads one user may run at once.
@@ -197,6 +201,7 @@ impl Default for Config {
             download_cache_dir: None,
             download_cache_bytes: 2048 * 1024 * 1024,
             transcode_jobs: 1,
+            live_transcode_jobs: 4,
             transcode_timeout: Duration::from_secs(600),
             downloads_per_user: 3,
             download_lookup_timeout: Duration::from_secs(10),
@@ -267,6 +272,8 @@ pub struct Gateway {
     history_upkeep: history::Upkeep,
     /// Lyrics answers and the plugin lookup limit.
     lyrics: lyrics::LyricsCache,
+    /// Free slots for live Opus encodes.
+    live_slots: Arc<tokio::sync::Semaphore>,
 }
 
 /// Renames a device may make of itself per [`RENAME_WINDOW`] (`PATCH /v1/devices/self`).
@@ -337,8 +344,23 @@ impl Gateway {
             station_served: Default::default(),
             history_upkeep: Default::default(),
             lyrics: Default::default(),
+            live_slots: Arc::new(tokio::sync::Semaphore::new(cfg.live_transcode_jobs)),
             cfg,
         })
+    }
+
+    /// The `ffmpeg` that can make Opus, if live streams may be re-encoded at all.
+    pub(crate) fn live_ffmpeg(&self) -> Option<&std::path::Path> {
+        self.cfg
+            .ffmpeg
+            .as_ref()
+            .filter(|f| f.opus && self.cfg.live_transcode_jobs > 0)
+            .map(|f| f.path.as_path())
+    }
+
+    /// A slot for one live encode, if one is free.
+    pub(crate) fn live_slot(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.live_slots.clone().try_acquire_owned().ok()
     }
 
     pub fn session_count(&self) -> usize {

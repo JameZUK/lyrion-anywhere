@@ -357,7 +357,12 @@ pub async fn me(State(gw): State<AppState>, headers: HeaderMap) -> Response {
         "user": { "username": p.username, "role": p.role.as_str() },
         "device": { "id": p.device_id, "name": p.device_name, "mac": p.mac_string() },
         // Optional features this server offers (plan §7).
-        "features": { "analysis": gw.analysis().is_some() },
+        "features": {
+            "analysis": gw.analysis().is_some(),
+            // Lower-data live streams (docs/plans/streaming-quality.md): the levels a player
+            // may ask for when it connects, or later with a control message.
+            "stream_quality": gw.live_ffmpeg().is_some(),
+        },
     }))
     .into_response()
 }

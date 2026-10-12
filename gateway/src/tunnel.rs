@@ -23,12 +23,39 @@ const MAX_WS_MESSAGE: usize = ClientFrameReader::MAX_FRAME + 1024;
 const MAX_AUTH_MESSAGE: usize = 1024;
 const MAX_CONTROL_MESSAGE: usize = 256;
 
-/// The only text message allowed after authentication:
-/// `{"ack":{"stream":n,"bytes":b}}`: bytes of stream `n` the client has received.
+/// The text messages allowed after authentication, each exactly one of:
+/// - `{"ack":{"stream":n,"bytes":b}}`: bytes of stream `n` the client has received;
+/// - `{"quality":"original"|"high"|"low"}`: the level of the streams that follow
+///   (docs/plans/streaming-quality.md).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ControlMessage {
-    ack: StreamAck,
+    ack: Option<StreamAck>,
+    quality: Option<String>,
+}
+
+enum Control {
+    Ack(StreamAck),
+    Quality(crate::live::Quality),
+}
+
+/// A control message, or `None` for anything else (too long, malformed, unknown fields,
+/// both or neither field, an unknown level).
+fn parse_control(t: &str) -> Option<Control> {
+    if t.len() > MAX_CONTROL_MESSAGE {
+        return None;
+    }
+    match serde_json::from_str::<ControlMessage>(t).ok()? {
+        ControlMessage {
+            ack: Some(a),
+            quality: None,
+        } => Some(Control::Ack(a)),
+        ControlMessage {
+            ack: None,
+            quality: Some(q),
+        } => crate::live::Quality::parse(&q).map(Control::Quality),
+        _ => None,
+    }
 }
 
 #[derive(Deserialize)]
@@ -58,6 +85,9 @@ pub async fn player_upgrade(
 struct AuthMessage {
     token: String,
     resume: Option<ResumeRequest>,
+    /// The level of the streams to come (`original`, `high`, `low`); none means
+    /// `original`.
+    quality: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -71,6 +101,19 @@ struct ResumeRequest {
 enum Auth {
     New(Principal),
     Resume(Principal, ResumeRequest),
+}
+
+/// The level asked for at sign-in. An unknown one is taken as `original` (never refused:
+/// a refusal here would look like a failed sign-in).
+fn auth_quality(text: &str) -> crate::live::Quality {
+    if text.len() > MAX_AUTH_MESSAGE || !text.starts_with('{') {
+        return Default::default();
+    }
+    serde_json::from_str::<AuthMessage>(text)
+        .ok()
+        .and_then(|m| m.quality)
+        .and_then(|q| crate::live::Quality::parse(&q))
+        .unwrap_or_default()
 }
 
 fn parse_auth(gw: &AppState, text: &str) -> Option<Auth> {
@@ -100,9 +143,9 @@ async fn close(mut ws: WebSocket, code: u16, reason: &str) {
 
 async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
     let first = tokio::time::timeout(gw.cfg.auth_timeout, ws.recv()).await;
-    let auth = match first {
-        Ok(Some(Ok(Message::Text(t)))) => parse_auth(&gw, t.as_str()),
-        _ => None,
+    let (auth, quality) = match first {
+        Ok(Some(Ok(Message::Text(t)))) => (parse_auth(&gw, t.as_str()), auth_quality(t.as_str())),
+        _ => (None, Default::default()),
     };
     let Some(auth) = auth else {
         warn!("player authentication failed");
@@ -133,6 +176,7 @@ async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
         }
     };
 
+    session.set_quality(quality);
     let attached = match session.attach(received) {
         Ok(a) => a,
         Err(AttachError::Gap) => {
@@ -231,18 +275,17 @@ async fn read_loop(
         let data = match msg {
             Ok(Message::Binary(b)) => b,
             Ok(Message::Ping(_) | Message::Pong(_)) => continue,
-            Ok(Message::Text(t)) => {
-                let ack = (t.len() <= MAX_CONTROL_MESSAGE)
-                    .then(|| serde_json::from_str::<ControlMessage>(t.as_str()).ok())
-                    .flatten();
-                match ack {
-                    Some(m) => {
-                        session.ack(generation, m.ack.stream, m.ack.bytes);
-                        continue;
-                    }
-                    None => return ReadEnd::Policy("unexpected text message".into()),
+            Ok(Message::Text(t)) => match parse_control(t.as_str()) {
+                Some(Control::Ack(a)) => {
+                    session.ack(generation, a.stream, a.bytes);
+                    continue;
                 }
-            }
+                Some(Control::Quality(q)) => {
+                    session.set_quality(q);
+                    continue;
+                }
+                None => return ReadEnd::Policy("unexpected text message".into()),
+            },
             Ok(Message::Close(_)) | Err(_) => return ReadEnd::SocketGone,
         };
         if session.is_ended() {
@@ -304,5 +347,83 @@ async fn write_loop(
         }));
         let _ = tokio::time::timeout(CLOSE_SEND_TIMEOUT, sink.send(close)).await;
         return;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::live::Quality;
+
+    #[test]
+    fn control_messages() {
+        assert!(matches!(
+            parse_control(r#"{"ack":{"stream":3,"bytes":100}}"#),
+            Some(Control::Ack(StreamAck {
+                stream: 3,
+                bytes: 100
+            }))
+        ));
+        for (m, q) in [
+            ("original", Quality::Original),
+            ("high", Quality::High),
+            ("low", Quality::Low),
+        ] {
+            let msg = format!(r#"{{"quality":"{m}"}}"#);
+            assert!(
+                matches!(parse_control(&msg), Some(Control::Quality(x)) if x == q),
+                "{m}"
+            );
+        }
+        for bad in [
+            "",
+            "{}",
+            "null",
+            "[]",
+            r#"{"quality":"ultra"}"#,
+            r#"{"quality":"High"}"#,
+            r#"{"quality":""}"#,
+            r#"{"quality":1}"#,
+            r#"{"quality":["low"]}"#,
+            r#"{"quality":null}"#,
+            r#"{"ack":null}"#,
+            r#"{"quality":"low","ack":{"stream":1,"bytes":1}}"#,
+            r#"{"quality":"low","extra":true}"#,
+            r#"{"ack":{"stream":1,"bytes":1,"x":2}}"#,
+            r#"{"ack":{"stream":-1,"bytes":1}}"#,
+        ] {
+            assert!(parse_control(bad).is_none(), "{bad}");
+        }
+        let long = format!(
+            r#"{{"quality":"low","pad":"{}"}}"#,
+            "x".repeat(MAX_CONTROL_MESSAGE)
+        );
+        assert!(parse_control(&long).is_none());
+    }
+
+    #[test]
+    fn sign_in_level_defaults_to_original() {
+        assert_eq!(
+            auth_quality(r#"{"token":"t","quality":"low"}"#),
+            Quality::Low
+        );
+        assert_eq!(
+            auth_quality(r#"{"token":"t","quality":"high"}"#),
+            Quality::High
+        );
+        for text in [
+            r#"{"token":"t"}"#,
+            r#"{"token":"t","quality":"ultra"}"#,
+            r#"{"token":"t","quality":5}"#,
+            "a-bare-token",
+            "",
+        ] {
+            assert_eq!(auth_quality(text), Quality::Original, "{text}");
+        }
+        let long = format!(
+            r#"{{"token":"{}","quality":"low"}}"#,
+            "t".repeat(MAX_AUTH_MESSAGE)
+        );
+        assert_eq!(auth_quality(&long), Quality::Original);
     }
 }

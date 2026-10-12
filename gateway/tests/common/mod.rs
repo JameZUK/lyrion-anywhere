@@ -2,6 +2,8 @@
 //! with two users logged in.
 #![allow(dead_code, unused_imports)]
 
+pub mod flac;
+
 pub use std::net::{Ipv4Addr, SocketAddr};
 pub use std::sync::{Arc, Mutex};
 pub use std::time::Duration;

@@ -142,7 +142,8 @@ pub fn encoders(listing: &str) -> (bool, bool) {
     found
 }
 
-fn command(path: &Path) -> std::process::Command {
+/// `ffmpeg` with an empty environment (shared with [`crate::live`]).
+pub(crate) fn command(path: &Path) -> std::process::Command {
     let mut c = std::process::Command::new(path);
     c.env_clear();
     // Windows programs need SystemRoot to start at all.

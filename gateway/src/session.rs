@@ -113,6 +113,11 @@ struct State {
     stream_path: Option<String>,
     /// The current `strm s` format code (`f` for FLAC).
     stream_format: u8,
+    /// The level the client asked for (docs/plans/streaming-quality.md).
+    quality: crate::live::Quality,
+    /// The current stream is to be re-encoded: its bit rate and the slot it holds, until
+    /// its relay is made.
+    live: Option<(u32, tokio::sync::OwnedSemaphorePermit)>,
     relay: Option<Arc<Relay>>,
     /// Client → LMS framing; persists across sockets so a frame split by a drop is safe.
     from_client: ClientFrameReader,
@@ -191,6 +196,8 @@ impl Session {
                 stream_seq: 0,
                 stream_path: None,
                 stream_format: 0,
+                quality: Default::default(),
+                live: None,
                 relay: None,
                 from_client: ClientFrameReader::default(),
                 last_stat: None,
@@ -577,22 +584,37 @@ impl Session {
         }
     }
 
-    /// The relay for stream `n`, created on first use. With `strip_flac`, a stream LMS
-    /// announced as FLAC has its artwork and padding dropped ([`crate::flac_strip`]).
-    pub fn relay(&self, n: u64, window: usize, strip_flac: bool) -> Option<Arc<Relay>> {
+    /// The level of the streams that follow (from the next `strm`).
+    pub fn set_quality(&self, quality: crate::live::Quality) {
+        self.state.lock().unwrap().quality = quality;
+    }
+
+    /// The relay for stream `n`, created on first use. A stream chosen for re-encoding at
+    /// its `strm` goes through `live_ffmpeg` ([`crate::live`]); otherwise, with
+    /// `strip_flac`, a stream LMS announced as FLAC has its artwork and padding dropped
+    /// ([`crate::flac_strip`]).
+    pub fn relay(
+        &self,
+        n: u64,
+        window: usize,
+        strip_flac: bool,
+        live_ffmpeg: Option<&std::path::Path>,
+    ) -> Option<Arc<Relay>> {
         let mut st = self.state.lock().unwrap();
         if st.ended || n != st.stream_seq || st.stream_path.is_none() {
             return None;
         }
-        let flac = strip_flac && st.stream_format == b'f';
-        Some(
-            st.relay
-                .get_or_insert_with(|| {
-                    let relay = Relay::new(window);
-                    Arc::new(if flac { relay.with_flac_strip() } else { relay })
-                })
-                .clone(),
-        )
+        if st.relay.is_none() {
+            let relay = Relay::new(window);
+            let relay = match (st.live.take(), live_ffmpeg) {
+                (Some((bitrate, permit)), Some(ffmpeg)) => relay.with_live(ffmpeg, bitrate, permit),
+                // (The player was told Opus but gets FLAC: its core probes the content.)
+                _ if strip_flac && st.stream_format == b'f' => relay.with_flac_strip(),
+                _ => relay,
+            };
+            st.relay = Some(Arc::new(relay));
+        }
+        st.relay.clone()
     }
 
     fn detached_since(&self, generation: u64) -> bool {
@@ -720,11 +742,14 @@ impl Session {
         }
     }
 
-    /// Record the stream a `strm s` asks the player to fetch, if policy allows it.
-    fn note_strm(&self, gw: &Gateway, payload: &[u8]) {
-        let Ok(s) = Strm::parse(payload) else { return };
+    /// Record the stream a `strm s` asks the player to fetch, if policy allows it. Returns
+    /// the payload to pass on instead, when the stream is to be re-encoded to Opus.
+    fn note_strm(&self, gw: &Gateway, payload: &[u8]) -> Option<Vec<u8>> {
+        let Ok(s) = Strm::parse(payload) else {
+            return None;
+        };
         if s.command != b's' {
-            return;
+            return None;
         }
         let ip = Ipv4Addr::from(s.server_ip);
         let path = if ip.is_unspecified() || gw.cfg.lms_ips.contains(&ip) {
@@ -744,6 +769,16 @@ impl Session {
         st.stream_path = path;
         st.stream_format = s.format;
         st.relay = None; // the previous stream's upstream is abandoned
+        st.live = None; // and its encode slot given back
+        st.stream_path.as_ref()?;
+        let bitrate = crate::live::wanted(s.format, st.quality, gw.live_ffmpeg().is_some())?;
+        let Some(permit) = gw.live_slot() else {
+            info!(mac = %self.device.mac_string(), "no free live-encode slot; sending the stream as it is");
+            return None;
+        };
+        let rewritten = crate::live::rewrite_strm(payload)?;
+        st.live = Some((bitrate, permit));
+        Some(rewritten)
     }
 }
 
@@ -837,7 +872,7 @@ async fn read_lms(gw: AppState, session: Arc<Session>, mut rd: tokio::net::tcp::
         reader.push(&buf[..n]);
         let mut overflow = false;
         loop {
-            let (op, payload) = match reader.next_frame() {
+            let (op, mut payload) = match reader.next_frame() {
                 Ok(Some(f)) => f,
                 Ok(None) => break,
                 Err(e) => {
@@ -861,7 +896,9 @@ async fn read_lms(gw: AppState, session: Arc<Session>, mut rd: tokio::net::tcp::
                         session.heartbeat(s.replay_gain).await;
                         continue;
                     }
-                    session.note_strm(&gw, &payload);
+                    if let Some(p) = session.note_strm(&gw, &payload) {
+                        payload = p;
+                    }
                 }
                 b"setd" => session.note_setd(&payload),
                 _ => {}
