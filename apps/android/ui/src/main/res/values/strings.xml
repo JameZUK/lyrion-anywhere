@@ -42,7 +42,6 @@
     <string name="action_continue">Continue</string>
     <string name="action_sign_in">Sign in</string>
     <string name="action_sign_out">Sign out</string>
-    <string name="action_pair">Pair</string>
     <string name="action_pair_instead">Pair with a QR code instead</string>
     <string name="action_scan_qr">Scan QR code</string>
     <string name="action_back_to_sign_in">Back to sign in</string>

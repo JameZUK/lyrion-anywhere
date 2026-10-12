@@ -15,7 +15,7 @@ use Slim::Utils::Timers;
 use Plugins::LyrionAnywhere::Commands;
 use Plugins::LyrionAnywhere::Gateway;
 
-use constant VERSION => '0.1.0';
+use constant VERSION => '0.2.0';
 
 my $log = Slim::Utils::Log->addLogCategory({
 	category     => 'plugin.lyrionanywhere',

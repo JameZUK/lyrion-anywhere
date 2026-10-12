@@ -1,0 +1,1 @@
+1.1.0: stays in sync with your Squeezeboxes (reports what you actually hear, starts exactly on time), add this phone by scanning a QR code or opening a pairing link, faster FLAC starts with plugin 0.2.0.

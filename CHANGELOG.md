@@ -2,7 +2,7 @@
 
 Dated entries, newest first.
 
-## 2026-10-12
+## 2026-10-12: plugin 0.2.0 and Android 1.1.0
 
 ### Adding devices by QR code, and pairing links
 - **Admins: Add a device** next to a user on the plugin's settings page (was *Pairing code*). It shows the one-time code in large letters, a QR code of the `lyrion-anywhere://pair?server=…&code=…` link built from the *Public URL* setting, and a countdown to its expiry. Without a usable `https://` Public URL it shows the code alone and says why. The code is no longer put in the page's status line.
