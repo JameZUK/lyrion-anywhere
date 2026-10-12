@@ -845,5 +845,25 @@
    "folder_id:4321",
    "menu:1"
   ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   0,
+   3,
+   "tags:aljyS",
+   "album_id:7,12,3"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "titles",
+   0,
+   2,
+   "tags:adtlcJKj",
+   "track_id:101,102"
+  ]
  }
 ]

@@ -106,6 +106,27 @@ export const musicFolder = (from: number, n: number, folder?: number): Command =
 ];
 /** LMS's virtual libraries, if any. */
 export const libraries = (): Command => ['libraries'];
+/** Albums by id (Home shelves). LMS lists them in its own order: see `inOrder`. */
+export const albumsByIds = (ids: readonly number[]): Command => {
+	const list = ids.map(id).join(',');
+	if (!list || list.length > ID_LIST_MAX) throw new RangeError('bad album list');
+	return ['albums', 0, ids.length, ALBUM_TAGS, `album_id:${list}`];
+};
+/** Tracks by id (listening history). LMS lists them in its own order: see `inOrder`. */
+export const tracksByIds = (ids: readonly number[]): Command => {
+	const list = ids.map(id).join(',');
+	if (!list || list.length > ID_LIST_MAX) throw new RangeError('bad track list');
+	return ['titles', 0, ids.length, TRACK_TAGS, `track_id:${list}`];
+};
+/** Items put back in the order of `ids` (unknown ids dropped, extras left out). */
+export function inOrder<T extends { id?: unknown }>(items: readonly T[], ids: readonly number[]): T[] {
+	const by = new Map<number, T>();
+	for (const it of items) {
+		const n = typeof it.id === 'number' ? it.id : typeof it.id === 'string' ? Number(it.id) : NaN;
+		if (Number.isSafeInteger(n) && !by.has(n)) by.set(n, it);
+	}
+	return ids.map((i) => by.get(i)).filter((x): x is T => x !== undefined);
+}
 export const albumTracks = (album: number): Command => ['titles', 0, 500, TRACK_TAGS, 'sort:tracknum', `album_id:${id(album)}`];
 export const search = (term: string, n = 20): Command => ['search', 0, count(n), `term:${text(term)}`];
 

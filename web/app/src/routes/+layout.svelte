@@ -17,6 +17,8 @@
 	import { downloads, offlinePlayer, plays } from '$lib/offline/index.svelte';
 	import { forgetOwner, rememberOwner } from '$lib/offline/settings';
 	import { library } from '$lib/state/library.svelte';
+	// Keeps a playing station topped up wherever the user goes.
+	import '$lib/stations/active.svelte';
 
 	let { children } = $props();
 
@@ -134,6 +136,7 @@
 
 	const NAV = [
 		{ href: '#/', label: 'Now playing', icon: 'home', match: (p: string) => p === '/' },
+		{ href: '#/home', label: 'Home', icon: 'shelves', match: (p: string) => p.startsWith('/home') || p.startsWith('/stations') },
 		{ href: '#/library', label: 'Library', icon: 'library', match: (p: string) => MORE_LIBRARY.some((l) => p.startsWith(l)) },
 		{ href: '#/new', label: 'New Music', icon: 'new', match: (p: string) => p.startsWith('/new') },
 		{ href: '#/albums', label: 'Albums', icon: 'album', match: (p: string) => p.startsWith('/album') },
@@ -148,11 +151,11 @@
 	];
 	// Library sections without a sidebar entry of their own: under "Library".
 	const MORE_LIBRARY = ['/library', '/genre', '/year', '/folder', '/compilations', '/random'];
-	// Phones: five tabs; the library sections are one tap away on the Library page.
-	const LIBRARY = ['/album', '/artist', '/playlist', '/favourites', '/apps', '/browse', '/downloads', '/new', ...MORE_LIBRARY];
+	// Phones: five tabs; Home ends with the library, whose sections are one tap away there.
+	const LIBRARY = ['/home', '/stations', '/album', '/artist', '/playlist', '/favourites', '/apps', '/browse', '/downloads', '/new', ...MORE_LIBRARY];
 	const TABS = [
 		{ href: '#/', label: 'Playing', icon: 'home', match: (p: string) => p === '/' },
-		{ href: '#/library', label: 'Library', icon: 'library', match: (p: string) => LIBRARY.some((l) => p.startsWith(l)) },
+		{ href: '#/home', label: 'Home', icon: 'shelves', match: (p: string) => LIBRARY.some((l) => p.startsWith(l)) },
 		{ href: '#/search', label: 'Search', icon: 'search', match: (p: string) => p.startsWith('/search') },
 		{ href: '#/queue', label: 'Queue', icon: 'playnext', match: (p: string) => p.startsWith('/queue') },
 		{ href: '#/settings', label: 'Settings', icon: 'settings', match: (p: string) => p.startsWith('/settings') },

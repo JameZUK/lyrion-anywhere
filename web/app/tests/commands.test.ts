@@ -106,6 +106,8 @@ const examples = [
 	{ player: true, cmd: c.infoMenu('genre', 12)(0, 100) },
 	{ player: true, cmd: c.infoMenu('year', 1999)(0, 100) },
 	{ player: true, cmd: c.infoMenu('folder', 4321)(0, 100) },
+	{ player: false, cmd: c.albumsByIds([7, 12, 3]) },
+	{ player: false, cmd: c.tracksByIds([101, 102]) },
 ];
 
 test('builders match the fixture the gateway policy is tested against', () => {
@@ -293,4 +295,15 @@ test('app and info menus validate their names and ids', () => {
 	expect(() => c.appMenu('spotty items')).toThrow(RangeError);
 	expect(() => c.appMenu('../x')).toThrow(RangeError);
 	expect(() => c.infoMenu('track', -1)).toThrow(RangeError);
+});
+
+test('album and track lists by id are checked, bounded and put back in order', () => {
+	expect(c.albumsByIds([7, 3])).toEqual(['albums', 0, 2, c.ALBUM_TAGS, 'album_id:7,3']);
+	expect(c.tracksByIds([5])).toEqual(['titles', 0, 1, c.TRACK_TAGS, 'track_id:5']);
+	for (const bad of [[], [0], [-1], [1.5], ['1;rescan' as unknown as number], Array(60).fill(1234567)]) {
+		expect(() => c.albumsByIds(bad)).toThrow(RangeError);
+		expect(() => c.tracksByIds(bad)).toThrow(RangeError);
+	}
+	const items = [{ id: 3, t: 'c' }, { id: '7', t: 'a' }, { id: 9, t: 'x' }, { id: 3, t: 'dup' }];
+	expect(c.inOrder(items, [7, 3, 4]).map((x) => x.t)).toEqual(['a', 'c']);
 });

@@ -3,12 +3,16 @@
 	// Only actions the menus offered are run; the gateway enforces the same.
 	import { untrack } from 'svelte';
 	import { api, app } from '$lib/state/app.svelte';
+	import { me } from '$lib/state/me';
 	import type { Command } from '$lib/api/rpc';
+	import { ApiError } from '$lib/api/http';
+	import { add as addShelf } from '$lib/home/layout';
 	import { coverPath, imagePath } from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
 	import {
 		iconOf,
 		itemKind,
+		needsInput,
 		opensMenu,
 		resolveAction,
 		toCommand,
@@ -25,6 +29,7 @@
 		title,
 		onclose,
 		compact = false,
+		root,
 	}: {
 		/** First menu: a command builder taking paging… */
 		start?: (from: number, count: number) => Command;
@@ -33,6 +38,12 @@
 		title: string;
 		onclose?: () => void;
 		compact?: boolean;
+		/**
+		 * The menu request (of the gateway's fixed allow-list, e.g. the home menu) that offered
+		 * the first menu's items, when those came from it rather than from `start`: needed to
+		 * save items as stations or pin them, which the gateway replays from the root.
+		 */
+		root?: Command;
 	} = $props();
 
 	const PAGE = 100;
@@ -169,6 +180,85 @@
 		if (go && text) void run(item, go, textOf(item.text) || 'Search', text);
 	}
 
+	// --- Save as station / Pin to Home ------------------------------------------------------
+	// The gateway stores a reference to what the menu offered: the menu requests from the root
+	// to this item, and the item's own actions; it replays and re-checks them every time.
+
+	/** Most menu requests from the root to an item the gateway keeps. */
+	const MAX_STEPS = 4;
+
+	/** The menu requests from the root to the open menu, with the page holding item `i`. */
+	function steps(i: number): Command[] | null {
+		const out: Command[] = root ? [root] : [];
+		for (const [n, f] of stack.entries()) {
+			if (!f.source) {
+				// Only the first menu may come without a request, and only from `root`.
+				if (n === 0 && root) continue;
+				return null;
+			}
+			const from = n === stack.length - 1 ? Math.floor(i / PAGE) * PAGE : 0;
+			out.push(f.source.make(from, PAGE));
+		}
+		return out.length && out.length <= MAX_STEPS ? out : null;
+	}
+
+	/** A command the item runs (not a menu it opens, never one needing typed text). */
+	function command(menu: SBMenu, item: SBItem, name: string): Command | null {
+		const r = resolveAction(menu, item, name);
+		return r && !opensMenu(r) && !needsInput(r) ? toCommand(r) : null;
+	}
+
+	function stationOf(menu: SBMenu, item: SBItem, i: number) {
+		const play = command(menu, item, 'play') ?? command(menu, item, 'go');
+		const s = play ? steps(i) : null;
+		if (!play || !s) return null;
+		const add = command(menu, item, 'add');
+		return { kind: 'menu' as const, steps: s, play, ...(add ? { add } : {}) };
+	}
+
+	function pinOf(menu: SBMenu, item: SBItem, i: number): Command[] | null {
+		const go = resolveAction(menu, item, 'go');
+		if (!go || !opensMenu(go) || needsInput(go)) return null;
+		const s = steps(i);
+		return s && s.length < MAX_STEPS ? [...s, toCommand(go, { start: 0, count: PAGE })] : null;
+	}
+
+	const why = (e: unknown) => (e instanceof ApiError && e.status === 422 ? `This can’t be saved: ${e.message}` : (e as Error).message);
+
+	async function saveStation(menu: SBMenu, item: SBItem, i: number) {
+		const spec = stationOf(menu, item, i);
+		if (!spec) return;
+		if (!player()) {
+			note = 'Choose a player first.';
+			return;
+		}
+		try {
+			const name = (textOf(item.text) || 'Station').slice(0, 64);
+			await me.createStation(name, spec, player());
+			note = `Saved “${name}” as a station`;
+		} catch (e) {
+			note = why(e);
+		}
+	}
+
+	async function pin(menu: SBMenu, item: SBItem, i: number) {
+		const s = pinOf(menu, item, i);
+		if (!s) return;
+		if (!player()) {
+			note = 'Choose a player first.';
+			return;
+		}
+		try {
+			const name = (textOf(item.text) || 'Menu').slice(0, 64);
+			const pinned = await me.createMenu(name, s, player());
+			const home = await me.home();
+			await me.saveHome(addShelf(home, { type: 'menu', id: pinned.id }));
+			note = `Pinned “${name}” to Home`;
+		} catch (e) {
+			note = why(e);
+		}
+	}
+
 	function icon(item: SBItem): string | null {
 		const v = iconOf(item);
 		return imagePath(v, 96) ?? coverPath(v, 96);
@@ -215,6 +305,12 @@
 							{#if resolveAction(top.menu, item, 'add')}
 								<button class="icon-btn" aria-label={`Add ${textOf(item.text)} to the queue`} onclick={() => act(top.menu, item, 'add', 'Add to queue')}><Icon name="plus" size={18} /></button>
 							{/if}
+						{/if}
+						{#if (kind === 'playable' || kind === 'action') && stationOf(top.menu, item, i)}
+							<button class="icon-btn" aria-label={`Save ${textOf(item.text)} as a station`} onclick={() => saveStation(top.menu, item, i)}><Icon name="radio" size={18} /></button>
+						{/if}
+						{#if kind === 'folder' && pinOf(top.menu, item, i)}
+							<button class="icon-btn" aria-label={`Pin ${textOf(item.text)} to Home`} onclick={() => pin(top.menu, item, i)}><Icon name="shelves" size={18} /></button>
 						{/if}
 						{#if resolveAction(top.menu, item, 'more')}
 							<button class="icon-btn" aria-label={`More options for ${textOf(item.text)}`} onclick={() => act(top.menu, item, 'more', 'More')}><Icon name="more" size={18} /></button>
