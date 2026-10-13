@@ -173,6 +173,7 @@ pub(crate) fn describe(i: &Inputs) -> SignalPathInfo {
         verdict,
         summary: path.summary(),
         from_cache: false,
+        from_downloads: false,
     }
 }
 
