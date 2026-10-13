@@ -3,23 +3,24 @@
 	// is decorative: hidden from screen readers, with its on/off and style controls on the
 	// page. While it is mounted and the page is visible it asks this device's player for
 	// frames (the worker analyses the audio only then) and draws at most 30 times a second;
-	// when the page is hidden it stops both. Glow draws nothing here: it hands the bass to
-	// the page, whose blurred background pulses with it.
+	// when the page is hidden it stops both. Glow draws nothing here: it finds the beats in
+	// the bass (lib/visual/glow.ts) and hands the page the halo's pulse each frame.
 	import { device } from '$lib/player/device.svelte';
 	import { parseFrame, silentFrame, type VisualFrame } from '$lib/visual/frame';
 	import { drawBars, drawScope, drawVu, glowLevel, nextStyle, type Palette, type VisualStyle } from '$lib/visual/draw';
+	import { BeatDetector, GLOW_REST, PulseEnvelope, glowStyle, type GlowStyle } from '$lib/visual/glow';
 	import { VuBallistics, VuCalibration, fallBars } from '$lib/visual/vu';
 
 	let {
 		style,
 		onstyle,
-		onbass,
+		onglow,
 	}: {
 		style: VisualStyle;
 		/** A swipe across it asks for the next (or previous) style. */
 		onstyle?: (s: VisualStyle) => void;
-		/** Glow: the eased bass level, 0–1, each drawn frame (0 when it stops). */
-		onbass?: (level: number) => void;
+		/** Glow: the halo's size, opacity and the cover's scale, each drawn frame (at rest when it stops). */
+		onglow?: (g: GlowStyle) => void;
 	} = $props();
 
 	/** No frame for this long (paused, stopped, a gap): fall back to silence. */
@@ -37,6 +38,8 @@
 		const vu = [new VuBallistics(), new VuBallistics()];
 		const calibration = new VuCalibration();
 		let glow = 0;
+		const beats = new BeatDetector();
+		const pulse = new PulseEnvelope();
 		let palette: Palette | null = null;
 		let paletteAt = -Infinity;
 		let ctx: CanvasRenderingContext2D | null | undefined;
@@ -57,7 +60,7 @@
 			const s = style;
 			if (s === 'glow') {
 				glow = glowLevel(glow, frame, dt);
-				onbass?.(glow);
+				onglow?.(glowStyle(pulse.value(performance.now()), glow));
 				return;
 			}
 			const c = canvas;
@@ -110,6 +113,8 @@
 				if (p) {
 					frame = p;
 					frameAt = performance.now();
+					// Each new frame once: a beat kicks the halo's pulse.
+					if (style === 'glow' && beats.step(p.bands, frameAt)) pulse.kick(frameAt);
 				}
 			});
 			last = 0;
@@ -120,7 +125,9 @@
 			unwatch = null;
 			caf(raf);
 			raf = 0;
-			onbass?.(0);
+			beats.reset();
+			pulse.reset();
+			onglow?.(GLOW_REST);
 		}
 		const onVisible = () => (document.visibilityState === 'hidden' ? stop() : start());
 		onVisible();
@@ -173,6 +180,8 @@
 	.vis.glow {
 		position: absolute;
 		inset: 0;
+		/* Above the cover, so a swipe across it still changes the style. */
+		z-index: 2;
 		aspect-ratio: auto;
 		background: none;
 	}

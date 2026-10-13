@@ -139,3 +139,14 @@ test('a smart filter shelf: picked from the user’s filters, saved by id', asyn
 	await waitFor(() => expect(saves).toHaveLength(1));
 	expect(saves[0]!.shelves.at(-1)).toEqual({ type: 'filter', id: 6 });
 });
+
+test('Settings opens from the gear at the top of Home (it has no tab of its own)', async () => {
+	render(Home);
+	const gear = await screen.findByRole('link', { name: 'Settings' });
+	expect(gear.getAttribute('href')).toBe('#/settings');
+	expect(gear.getAttribute('title')).toBe('Settings');
+	// It sits in Home's header, beside its title, and stays while editing.
+	expect(gear.closest('header')?.querySelector('h1')?.textContent).toBe('Home');
+	await fireEvent.click(await screen.findByRole('button', { name: 'Edit Home' }));
+	expect(screen.getByRole('link', { name: 'Settings' })).toBeTruthy();
+});

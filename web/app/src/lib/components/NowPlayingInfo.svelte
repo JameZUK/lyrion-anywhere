@@ -1,6 +1,7 @@
 <script lang="ts">
-	// Now playing's Info layout (docs/plans/wave2-design.md §4.2): the quality badge and the
-	// signal path, the track's credits as links, its rating and an "Up next" card.
+	// Now playing's Info layout (docs/plans/wave2-design.md §4.2): the quality badge, the
+	// signal path behind a "Signal path" disclosure (closed until asked for, like the sheet
+	// the badge opens), the track's credits as links, its rating and an "Up next" card.
 	import { app } from '$lib/state/app.svelte';
 	import { isRemote } from '$lib/lms/format';
 	import { badgeText, quality } from '$lib/lms/quality';
@@ -11,6 +12,9 @@
 
 	const track = $derived(app.now?.playlist_loop?.[0]);
 	const badge = $derived(quality(track));
+	/** The signal path stays folded away until asked for. */
+	let pathOpen = $state(false);
+	const pathId = `np-info-path-${Math.random().toString(36).slice(2, 8)}`;
 	/** A library track (not a stream): it has credits and a rating. */
 	const libraryId = $derived(typeof track?.id === 'number' && track.id > 0 && !isRemote(track.remote) ? track.id : null);
 </script>
@@ -22,7 +26,12 @@
 		<section aria-labelledby="np-info-quality">
 			<h3 id="np-info-quality">Quality</h3>
 			{#if badge}<p class="badge" class:hires={badge.hiRes}>{badgeText(badge)}</p>{/if}
-			<SignalPathView />
+			<button class="disclose" aria-expanded={pathOpen} aria-controls={pathId} onclick={() => (pathOpen = !pathOpen)} data-signal-path-toggle>
+				<span class="chev" class:open={pathOpen} aria-hidden="true">›</span>Signal path
+			</button>
+			<div id={pathId} hidden={!pathOpen}>
+				{#if pathOpen}<SignalPathView />{/if}
+			</div>
 		</section>
 		{#if libraryId !== null}
 			<section aria-labelledby="np-info-rating">
@@ -66,5 +75,38 @@
 	}
 	.badge.hires {
 		border-color: var(--accent);
+	}
+	.disclose {
+		justify-self: start;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		min-height: 44px;
+		padding: 0 0.75rem 0 0.5rem;
+		border: 1px solid var(--line);
+		border-radius: 999px;
+		background: transparent;
+		color: var(--fg);
+		font: inherit;
+		font-size: 0.9rem;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.disclose:hover {
+		background: color-mix(in srgb, var(--fg) 8%, transparent);
+	}
+	.chev {
+		display: inline-block;
+		font-size: 1.1rem;
+		line-height: 1;
+		transition: transform 0.15s ease;
+	}
+	.chev.open {
+		transform: rotate(90deg);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.chev {
+			transition: none;
+		}
 	}
 </style>

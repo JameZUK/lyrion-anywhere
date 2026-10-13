@@ -2,6 +2,20 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Now playing tidy-up, four tabs and a new Glow (web)
+
+- **Signal path on demand:** Now playing no longer shows the signal path all the time. The quality badge (e.g. "FLAC 16/44.1") still opens it in a sheet, and the Info layout keeps it folded behind a "Signal path" disclosure button. Nothing is lost.
+- **The same four tabs as Android:** the phone tab bar is now **Home · Library · Search · Queue**. Now playing opens from the mini player (tap, or swipe up), as before; the "Playing" tab is gone. **Settings** moves to a gear button at the top right of Home (labelled "Settings"), and stays in the desktop sidebar.
+  - Tabs light up for the pages under them: albums, artists, genres, playlists, favourites, apps and downloads under Library; stations, Settings and Rooms under Home; Now playing, car mode and alarms under none.
+  - The desktop sidebar starts with the same four (Home, Library, Search, Queue), then Now playing, the library sections, Rooms, Downloads and Settings.
+  - "Edit Home" now has a grip icon, so the only gear on Home is Settings. Targets stay 44 px, with labels.
+- **A new Glow** (the same design and numbers as the Android app): a soft halo behind the cover in the artwork's own colours, instead of the background swelling with the level.
+  - The colours: the cover drawn small (32 × 32) and grouped by k-means into up to three dominant, saturated colours, worked out once per album; grey or black-and-white covers use the theme's accent.
+  - The halo: three overlapping radial lobes, turning once every 24 seconds while music plays and holding still when paused.
+  - Beat-reactive, not level-following: a beat is bass energy (bands 0–4) above 1.3 × its mean over the last 1.5 s and rising, at most one every 150 ms. Each beat kicks a pulse (30 ms attack, 350 ms exponential decay) that takes the halo from 1.0 to 1.25 × its size and 0.35 to 0.85 opacity, and the cover from 1.00 to 1.02 × its size. Between beats the halo breathes a little with the smoothed bass.
+  - Under "reduce motion" the halo is still, at rest, with no pulse or turning. It is hidden in the high-contrast theme. The scrim is unchanged, so text keeps its contrast. As before, only while this browser is the player and Glow is chosen; a remote player keeps the plain ambient background.
+- **Tests:** unit and robustness tests for the beat detector (a steady tone gives no repeated beats, a periodic kick one per kick, the refractory period, silence and NaN or garbage frames give none), the pulse envelope's timing, the halo's ranges, the colour clustering on synthetic pixels (and a grey image falling back to the accent) and the per-album cache; tab matching (with look-alike routes); component tests for the Home gear, the four-tab bar and sidebar order, the signal path disclosure, and the halo (turning only while playing, kicked by a beat in the frames, still under reduced motion, absent for a remote player).
+
 ## 2026-10-13: Loudness-compensated volume (Android)
 
 - **Loudness-compensated volume** for this phone's player: a switch in Settings › Sound, next to per-output EQ, off by default and remembered on the device. At low volume the ear hears less bass and treble (the ISO 226 equal-loudness contours), so the engine adds a low shelf at 100 Hz and a high shelf at 10 kHz that grow as the player's volume is turned down:
