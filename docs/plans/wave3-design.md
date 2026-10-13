@@ -93,7 +93,7 @@ Agreed with the owner on 2026-10-13:
 
 ## 2. Rolling cache (part 2)
 
-**Status:** design agreed on 2026-10-13 (see the decisions at the end). Phase A starts with spike S1.
+**Status:** design agreed on 2026-10-13 (see the decisions at the end). Spike S1 done; Phase A next.
 
 Investigation written up on 2026-10-13, for the Android player (D14: the phone is a real LMS player). The web player is unchanged. iOS takes the same design when its app is built.
 
@@ -208,6 +208,13 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
 - **`STMu` after a gap:** what a `STMu` arriving late after a gap does, compared with `STMo`.
 - **Background:** squeezelite users run very large output buffers, which send `STMd` early in the same way, so LMS is expected to cope.
 
+**S1 results (2026-10-13, LMS 9.x, test player; `tools/live/lms_read_ahead.py`):**
+- **Early `STMd` works.** The next `strm s` came within about 40 ms. LMS then held the track after it until the next track's `STMs`, so the phone is never more than one track ahead. LMS kept showing the current track as playing throughout.
+- **`STMc` and `STMh` matter.** LMS ignores `STMd` for a stream it never saw connect.
+- **Queue edits:** deleting or moving the received-but-not-started next track brings `strm f` and then a new `strm s` for the new next track, while LMS still shows the current track playing. So **`strm f` must drop only what was fetched beyond the audible track**, and `strm q` stops everything. Today the core treats `f` like `q`; that already cuts the last few seconds when the next track is edited, and must change in A2.
+- **`STMu` is harmful here.** With the next track received, `STMu` moved LMS to the next track and stopped it.
+- **`STMo` is safe.** LMS kept playing and sent nothing; a later `STMs` moved it on and released the next stream. A4's rule is confirmed.
+
 **A1. Disk spool for the live stream** (`mobile/src/player/engine.rs`, new `player/spool.rs`). Effort: M.
 - **Writing:**
   - `stream_task` writes what it receives to an app-private spool file and acks the network bytes as today.
@@ -230,7 +237,7 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
   - **Which track gets the bytes:** `open_stream()`, `wants_stream_data()` and STAT `bytes_received` refer to the track being fetched.
   - **Elapsed, `STMs`, segments, gapless:** unchanged, because they follow the audible track.
   - **`STMu`:** only when every track is drained and nothing is queued.
-  - **`strm q`/`f`:** clears everything.
+  - **`strm q`:** clears everything. **`strm f`:** drops the queued and fetching tracks, keeps the audible one (S1).
 - **Not before 20 s:** don't report ready before 20 s of the current track have been heard (to be tuned). This saves data for people who skip fast.
 
 **A3. Longer resume grace.** Effort: M.
