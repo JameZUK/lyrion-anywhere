@@ -35,7 +35,7 @@ You need:
 - **A domain name** you can point at your home, e.g. `music.example.com`. A free dynamic-DNS name works, as does a subdomain of a domain you own.
 - **A reverse proxy with an HTTPS certificate** for that name: nginx, Caddy, Traefik or similar. Let's Encrypt certificates are free. If you have nothing yet, [Caddy](https://caddyserver.com) is the quickest (§4.2): it gets and renews certificates by itself.
 - **Port 443 forwarded** from your router to the reverse proxy (and port 80, if your certificate tool uses HTTP validation).
-- **Optional: `ffmpeg`** on the machine running the gateway, for offline downloads as MP3 or Opus (e.g. `sudo apt install ffmpeg`; it needs the `libmp3lame` and `libopus` encoders, which distribution packages include). Without it, downloads are offered in their original format only. Lyrion Anywhere doesn't bundle ffmpeg.
+- **Optional: `ffmpeg`** on the machine running the gateway (e.g. `sudo apt install ffmpeg`; it needs the `libmp3lame` and `libopus` encoders, which distribution packages include). It is used for offline downloads as MP3 or Opus, and for the lower-data streams (*High* and *Data saver*) that phones can ask for on mobile data. Without it, downloads are offered in their original format only and streams are always sent as they are. Lyrion Anywhere doesn't bundle ffmpeg.
 
 What you must **not** do: forward or expose LMS's own ports (3483, 9000, 9090) to the internet. Lyrion Anywhere exists so that you never have to.
 
@@ -119,15 +119,18 @@ The main `serve` options:
 | `--client-ip-header` | | Behind a CDN, the header carrying the visitor's address, e.g. `CF-Connecting-IP` (see §4.3). |
 | `--admin-listen` | `127.0.0.1:9445` | The admin API, for the plugin and the `admin` commands. Never expose it. |
 | `--ffmpeg` | `ffmpeg` on `PATH` | ffmpeg for MP3/Opus downloads (an absolute path). |
-| `--no-transcode` | | Offer downloads in their original format only, even with ffmpeg installed. |
+| `--no-transcode` | | Don't use ffmpeg at all: downloads in their original format only, and no lower-data streams. |
 | `--download-cache-mb` | 2048 | Disk space (MiB, 16–1048576) for transcoded downloads, kept in `<data-dir>/download-cache`. The least recently used are removed first. |
+| `--live-transcode-jobs` | 4 | Live streams re-encoded to Opus at once for players that ask for *High* or *Data saver* (0–64; 0 turns lower-data streams off). Beyond it, streams are sent as they are. Needs ffmpeg with libopus. |
 | `--no-analysis` | | Turn off track analysis (the apps' waveform seek bar and R128 loudness levelling; see [`PROTOCOL.md`](PROTOCOL.md#track-analysis-get-v1analysistrackid)). The apps then show a plain seek bar and level from ReplayGain tags. |
 | `--keep-flac-pictures` | | Send FLAC streams with their embedded artwork and padding, as LMS sends them. By default the gateway drops them so playback starts sooner (see [`PROTOCOL.md`](PROTOCOL.md#streams)). |
 | `--analysis-cache-mb` | 64 | Disk space (MiB, 1–65536) for track analyses, kept in `<data-dir>/analysis-cache` (about 2 KiB a track). The least recently used are removed first. |
 | `--max-resume-grace` | 600 | The longest, in seconds (60–3600), a player session and its LMS connection are held for a phone that lost its connection, when the app asks for a longer grace (to ride out tunnels and lifts). Players that don't ask get 60 s. Each held session is still one LMS connection per device. |
 | `--max-connections` | 1024 | Open client connections at once (16–65536); beyond this, new ones wait. Request heads and bodies each have 15 s, and idle keep-alive connections close after 15 s. |
+| `--static-dir` | | The web app to serve at `/` (`/web` in the Docker image; the plugin passes its bundled copy). |
+| `--log-file` | | Append logs to this file instead of standard output (the plugin uses `lyrion-anywhere.log` in LMS's log folder). |
 
-The Docker image has no ffmpeg, so downloads from it are original-format only.
+The Docker image has no ffmpeg, so downloads from it are original-format only and streams are never re-encoded.
 
 Account commands: `docker exec lyrion-anywhere anywhere-gateway admin --data-dir /data <command>`, where `<command>` is `list-users`, `list-devices`, `create-user NAME --role admin|listener`, `set-password NAME`, `pair NAME` or `reset-totp NAME`.
 
@@ -144,13 +147,14 @@ Open *Settings › Plugins › Lyrion Anywhere* in LMS. (Docker users: the same 
 |---|---|
 | **Gateway: Enabled** | Ticked. |
 | **Listen address** | `127.0.0.1:9443` if the reverse proxy runs on the LMS machine. Otherwise the LMS machine's LAN address, e.g. `10.0.0.20:9443`; then firewall that port so only the proxy can reach it. |
-| **Public URL** | `https://music.example.com`, exactly as people will type it. |
+| **Public URL** | `https://music.example.com`, exactly as people will type it. An `http://` address is saved only if you also tick *Allow http:// anyway* (it sends passwords unencrypted; for testing on a private network only). |
 | **Trusted proxies** | The proxy's LAN address (e.g. `10.0.0.10`) if it runs on another machine; otherwise leave empty. |
 | **Client address header** | Leave empty, unless you're behind Cloudflare or another CDN: see §4.3. |
-| **Gateway path** | Leave empty. It's for development and ignored unless LMS is started with `ANYWHERE_ALLOW_GATEWAY_PATH=1`. |
-| **Transcoded downloads** | Ticked (the default) to offer MP3 and Opus downloads as well as the original. Needs ffmpeg (§1). |
+| **Gateway path** (under *Advanced (for developers)*) | Leave empty. It's for development and ignored unless LMS is started with `ANYWHERE_ALLOW_GATEWAY_PATH=1`. |
+| **Transcoded downloads** | *Offer MP3 and Opus* ticked (the default) to offer MP3 and Opus downloads as well as the original. Needs ffmpeg (§1). Unticking it also turns off the lower-data streams for mobile data, which use the same ffmpeg. |
 | **ffmpeg path** | Leave empty to use `ffmpeg` from the system path. Otherwise the absolute path to a program named `ffmpeg`, e.g. `/usr/local/bin/ffmpeg`. |
 | **Download cache (MiB)** | Disk space for transcoded downloads (default 2048), so repeat downloads cost nothing. |
+| **Track analysis** | *Analyse tracks* ticked (the default): the gateway works out each track's waveform and loudness the first time it is played, for the apps' waveform seek bar and loudness levelling. Untick it on a very slow server. |
 
 Click *Apply*. The **Status** panel should show the gateway as running. If it shows an error, see [Troubleshooting](#9-troubleshooting).
 
@@ -248,16 +252,18 @@ Docker users can make a code with `docker exec lyrion-anywhere anywhere-gateway 
 Open `https://music.example.com` on your phone and sign in.
 
 <p align="center">
-  <img src="images/web/sign-in-phone.png" alt="The sign-in page" width="250">
+  <img src="images/web/sign-in-phone.png" alt="The sign-in page on a phone: the logo, username and password fields and a Sign in button" width="250">
   &nbsp;
-  <img src="images/web/now-playing-phone.png" alt="Now playing" width="250">
+  <img src="images/web/now-playing-phone.png" alt="Now playing on a phone, with the Playing on chip at the top, the cover, a waveform seek bar and transport controls" width="250">
   &nbsp;
-  <img src="images/web/settings-phone.png" alt="Appearance settings" width="250">
+  <img src="images/web/settings-phone.png" alt="Settings on a phone: themes, light or dark mode and accent colours" width="250">
 </p>
 
-- **Choose a player:** tap the player name at the top of *Now playing*. To play on the phone itself, choose **Play on this device**. It then appears in LMS as a player called e.g. "Chrome on Android", which you can also control from your other LMS apps.
+- **It plays on the phone straight away:** once you are signed in, the phone is a player in its own right, so pressing Play starts the music right there. It appears in LMS as a player named after the device (e.g. "Chrome on Android"), which you can also control from your other LMS apps; rename it under *Settings › This device*. Browsers only let sound start after a tap, so the first tap turns it on.
+- **Control another player:** the *Playing on …* chip at the top of *Now playing*, the output button, or a long press on the mini player opens **Play on…**, which lists your other players, with *Move here* to carry playback across. *Settings › This device* can make the app start on another player instead.
 - **Install it:** *Settings › Install the app* offers an **Install** button on Android and desktop Chrome and Edge. On iPhone and iPad, tap **Share › Add to Home Screen**. The app then opens full screen, with its own icon.
 - **Make it yours:** *Settings › Appearance* has three themes (Material, Classic, High contrast), light/dark/automatic mode and an accent colour.
+- **The Android app:** install it from the project's [releases page](https://github.com/JameZUK/lyrion-anywhere/releases) (tags `android-v*`), then enter `https://music.example.com` and sign in, or choose **Scan QR code** and scan the code from *Add a device* (section 5).
 
 **Background playback.** When you play on the phone itself, the app picks the playback mode that keeps going with the screen locked, after a quick check of what that browser supports. *Settings › This device* shows the choice and why it was made.
 
