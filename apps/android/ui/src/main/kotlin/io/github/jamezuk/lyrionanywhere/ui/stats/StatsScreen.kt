@@ -162,10 +162,10 @@ private fun LazyListScope.content(state: StatsUiState, s: ListeningStats, action
                 s.topArtists.take(shown).forEachIndexed { i, a ->
                     TopRow(
                         rank = i + 1,
-                        title = a.name,
+                        title = artistLabel(a.name),
                         plays = a.plays,
                         seconds = a.seconds,
-                        art = { Initial(a.name) },
+                        art = { Initial(artistLabel(a.name)) },
                         onClick = { actions.onArtist(a.id, a.name) },
                     )
                 }
@@ -225,8 +225,8 @@ private fun LazyListScope.content(state: StatsUiState, s: ListeningStats, action
                 }
                 s.newArtists.take(SHORT_LIST).forEach { a ->
                     ListItem(
-                        leadingContent = { Initial(a.name) },
-                        headlineContent = { Text(a.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        leadingContent = { Initial(artistLabel(a.name)) },
+                        headlineContent = { Text(artistLabel(a.name), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         supportingContent = { Text(stringResource(R.string.stats_first_played, dayText(a.firstPlayed))) },
                         modifier = Modifier.clickable { actions.onArtist(a.id, a.name) },
                     )
@@ -408,3 +408,7 @@ fun ListeningCard(state: ListeningCardState, onOpen: () -> Unit, onStory: (Int) 
         }
     }
 }
+
+/** An artist's name, or a fallback when the server couldn't name it (it sends ""). */
+@Composable
+internal fun artistLabel(name: String): String = name.ifBlank { stringResource(R.string.stats_unknown_artist) }

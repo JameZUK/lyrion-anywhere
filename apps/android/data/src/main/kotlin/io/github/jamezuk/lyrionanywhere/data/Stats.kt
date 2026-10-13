@@ -160,10 +160,38 @@ const val STATS_NOT_AVAILABLE = "Listening stats are not available yet"
 /** The stats through the Rust layer for the signed-in server. */
 class RustStatsRepository(private val source: ConnectionSource) : StatsRepository {
     override suspend fun stats(period: StatsPeriod, tzMinutes: Int): ApiResult<ListeningStats> {
-        source.connection.value ?: return ApiResult.Err(AppError.SignedOut)
-        // TODO(stats-api): wire to the UniFFI call once the mobile layer has it, e.g.
-        //   apiCall { c.me.stats(period.toCore(), tzMinutes.coerceIn(-MAX_TZ_MINUTES, MAX_TZ_MINUTES)).toKotlin().normalised() }
-        // mapping the core `StatsPeriod` and `ListeningStats` records onto the classes above.
-        return ApiResult.Err(AppError.Unexpected(STATS_NOT_AVAILABLE))
+        val c = source.connection.value ?: return ApiResult.Err(AppError.SignedOut)
+        return apiCall {
+            c.me.stats(period.toCore(), tzMinutes.coerceIn(-MAX_TZ_MINUTES, MAX_TZ_MINUTES)).toKotlin().normalised()
+        }
     }
+}
+
+private typealias CoreListeningStats = io.github.jamezuk.lyrionanywhere.core.ListeningStats
+
+private fun StatsPeriod.toCore(): io.github.jamezuk.lyrionanywhere.core.StatsPeriod = when (this) {
+    is StatsPeriod.LastDays -> io.github.jamezuk.lyrionanywhere.core.StatsPeriod.Days(days.coerceIn(StatsPeriod.MIN_DAYS, StatsPeriod.MAX_DAYS).toUInt())
+    is StatsPeriod.Month -> io.github.jamezuk.lyrionanywhere.core.StatsPeriod.Month(year.coerceIn(0, 9999).toUInt(), month.coerceIn(1, 12).toUInt())
+    is StatsPeriod.Year -> io.github.jamezuk.lyrionanywhere.core.StatsPeriod.Year(year.coerceIn(0, 9999).toUInt())
+    StatsPeriod.All -> io.github.jamezuk.lyrionanywhere.core.StatsPeriod.All
+}
+
+/** The Rust layer's answer as the app's classes (counts beyond Long can't happen; clamped). */
+private fun CoreListeningStats.toKotlin(): ListeningStats {
+    fun ULong.l() = if (this > Long.MAX_VALUE.toULong()) Long.MAX_VALUE else toLong()
+    return ListeningStats(
+        enabled = enabled,
+        retentionDays = retentionDays.toInt(),
+        period = StatsRange(from, to),
+        totals = StatsTotals(totals.plays.l(), totals.seconds.l(), totals.tracks.l(), totals.albums.l(), totals.artists.l(), totals.days.l()),
+        topArtists = topArtists.map { TopArtist(it.id, it.name, it.plays.l(), it.seconds.l()) },
+        topAlbums = topAlbums.map { TopEntry(it.id, it.plays.l(), it.seconds.l()) },
+        topTracks = topTracks.map { TopEntry(it.id, it.plays.l(), it.seconds.l()) },
+        newArtists = newArtists.map { NewArtist(it.id, it.name, it.firstPlayed) },
+        byHour = byHour.map { it.l() },
+        byWeekday = byWeekday.map { it.l() },
+        byMonth = byMonth.map { MonthTotal(it.month, it.plays.l(), it.seconds.l()) },
+        longestStreak = longestStreak?.let { Streak(it.days.l().coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), it.from, it.to) },
+        busiestDay = busiestDay?.let { BusiestDay(it.date, it.seconds.l()) },
+    )
 }

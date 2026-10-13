@@ -274,7 +274,7 @@ private fun StoryCardView(card: StoryCard, year: Int, res: Resources, modifier: 
             }
             is StoryCard.TopArtistCard -> {
                 Title(stringResource(R.string.story_top_artist_title))
-                Big(card.artist.name)
+                Big(artistLabel(card.artist.name))
                 Body(stringResource(R.string.stats_plays_and_time, playsText(res, card.artist.plays), listenTime(res, card.artist.seconds)))
             }
             is StoryCard.TopAlbum -> {
@@ -295,7 +295,7 @@ private fun StoryCardView(card: StoryCard, year: Int, res: Resources, modifier: 
                 Title(stringResource(R.string.story_top_five_title))
                 card.artists.forEachIndexed { i, a ->
                     Text(
-                        stringResource(R.string.stats_rank, i + 1, a.name),
+                        stringResource(R.string.stats_rank, i + 1, artistLabel(a.name)),
                         style = MaterialTheme.typography.titleLarge,
                         color = on,
                         maxLines = 1,
@@ -306,7 +306,7 @@ private fun StoryCardView(card: StoryCard, year: Int, res: Resources, modifier: 
             }
             is StoryCard.Discovery -> {
                 Title(stringResource(R.string.story_discovery_title))
-                Big(card.artist.name)
+                Big(artistLabel(card.artist.name))
                 Body(stringResource(R.string.story_discovery_body, dayText(card.artist.firstPlayed)))
             }
             is StoryCard.BusiestHour -> {
@@ -324,7 +324,7 @@ private fun StoryCardView(card: StoryCard, year: Int, res: Resources, modifier: 
                 Big(listenTime(res, card.seconds))
                 Body(playsText(res, card.plays))
                 Body(stringResource(R.string.story_summary_artists, card.artists.toString(), card.albums.toString()))
-                card.topArtist?.let { Body(stringResource(R.string.story_summary_top, it)) }
+                card.topArtist?.let { Body(stringResource(R.string.story_summary_top, artistLabel(it))) }
             }
         }
         Spacer(Modifier.weight(1f))

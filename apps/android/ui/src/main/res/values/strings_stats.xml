@@ -99,4 +99,5 @@
     <string name="story_summary_top">Top artist: %1$s</string>
     <string name="story_share_subject">My year in sound %1$d</string>
     <string name="story_share_chooser">Share your card</string>
+    <string name="stats_unknown_artist">An unnamed artist</string>
 </resources>
