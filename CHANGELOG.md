@@ -2,6 +2,12 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Fresh web screenshots from a fuller demo
+
+- **Screenshots** (`docs/images/web/`): 19 shots of the current web app, phone and desktop, light and dark, all from the built-in demo. `tools/demo/shots.sh` takes them all in one go against a fresh demo; each waits for its screen's real content. The old top-level screenshots are gone (`docs/INSTALL.md` now uses the new ones).
+- **Demo LMS** (`tools/demo/fake_lms.py`, invented throughout): five rooms with their own queues and the Lounge and Kitchen in sync; queue edits and Play next take effect; artist biographies and photos, album reviews and synced lyrics through the Music & Artist Information plugin's commands; roles, A–Z index and richer search; varied generated covers with their titles; and the plugin's settings page with invented users, devices and activity (`/demo/admin`).
+- **Demo listening history:** `anywhere-gateway admin demo-seed-history <user>` seeds invented plays for the stats and Your year in sound. It exists only in debug builds, works only in a data directory holding the demo's marker file, only for a user with no history yet, and takes at most 20 000 bounded plays; `tools/demo/run.sh` uses it.
+
 ## 2026-10-13: Rolling cache, Phase A: Android, and restarting after a long gap
 
 The Android part (A5) of `docs/plans/wave3-design.md` §2, and the owner's decision 3 in the engine. Phase A is now built; what remains is the manual testing on a real phone.

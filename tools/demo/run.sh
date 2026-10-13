@@ -4,7 +4,7 @@
 #
 #   tools/demo/run.sh            # then open http://127.0.0.1:19443 (user demo, password below)
 #
-# Needs: a built gateway (cargo build -p anywhere-gateway), a built web app
+# Needs: a debug build of the gateway (cargo build -p anywhere-gateway), a built web app
 # (tools/build-web.sh), python3 with Pillow. Stops everything on Ctrl-C.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -20,6 +20,10 @@ trap cleanup EXIT
 
 python3 tools/demo/fake_lms.py --port 19000 &
 printf '%s\n' "$PASSWORD" | "$GW" admin --data-dir "$DATA" create-user demo --role admin >/dev/null
+# Invented listening history for the stats and "Your year in sound". The marker tells the
+# (debug-build-only) seeding command that this scratch directory is a demo's.
+touch "$DATA/demo-data-dir"
+python3 tools/demo/fake_lms.py --history-json | "$GW" admin --data-dir "$DATA" demo-seed-history demo >/dev/null
 "$GW" serve --data-dir "$DATA" --listen 127.0.0.1:19443 --admin-listen 127.0.0.1:19445 \
 	--lms 127.0.0.1 --lms-http-port 19000 --lms-cli-port 19090 --lms-slimproto-port 13483 \
 	--static-dir web/app/build >"$DATA/gateway.log" 2>&1 &

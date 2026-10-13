@@ -248,11 +248,11 @@ Docker users can make a code with `docker exec lyrion-anywhere anywhere-gateway 
 Open `https://music.example.com` on your phone and sign in.
 
 <p align="center">
-  <img src="images/sign-in-phone.png" alt="The sign-in page" width="250">
+  <img src="images/web/sign-in-phone.png" alt="The sign-in page" width="250">
   &nbsp;
-  <img src="images/now-playing-phone.png" alt="Now playing" width="250">
+  <img src="images/web/now-playing-phone.png" alt="Now playing" width="250">
   &nbsp;
-  <img src="images/appearance-phone.png" alt="Appearance settings" width="250">
+  <img src="images/web/settings-phone.png" alt="Appearance settings" width="250">
 </p>
 
 - **Choose a player:** tap the player name at the top of *Now playing*. To play on the phone itself, choose **Play on this device**. It then appears in LMS as a player called e.g. "Chrome on Android", which you can also control from your other LMS apps.
