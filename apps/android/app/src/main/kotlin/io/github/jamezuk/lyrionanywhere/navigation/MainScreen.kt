@@ -670,17 +670,17 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                     when (chip) {
                                         LibraryChip.ALBUMS -> {
                                             val vm = viewModel(key = "library-albums") {
-                                                LibraryAlbumsViewModel(container.library, p.albumSort, libraryId)
+                                                LibraryAlbumsViewModel(container.library, p.albumOrder, libraryId, container.me)
                                             }
                                             val ui by vm.state.collectAsStateWithLifecycle()
-                                            val sort by vm.sort.collectAsStateWithLifecycle()
+                                            val sort by vm.order.collectAsStateWithLifecycle()
                                             AlbumBrowser(
                                                 ui,
                                                 sort = sort,
                                                 grid = p.albumGrid,
                                                 onSort = { s ->
-                                                    vm.setSort(s)
-                                                    prefsVm.setSort(s)
+                                                    vm.setOrder(s)
+                                                    prefsVm.setOrder(s)
                                                 },
                                                 onGrid = prefsVm::setGrid,
                                                 onEnsure = vm::ensure,

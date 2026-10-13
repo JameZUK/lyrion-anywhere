@@ -49,14 +49,14 @@ class LibraryPrefsTest {
     @Test
     fun theLibraryChoiceSurvivesARestart() = runBlocking {
         assertEquals(LibraryPrefs(), DataStoreSettings(store()).settings.first().library)
-        DataStoreSettings(restart()).setLibraryPrefs(LibraryPrefs(LibraryChip.ARTISTS, AlbumSort.YEAR, albumGrid = false))
+        DataStoreSettings(restart()).setLibraryPrefs(LibraryPrefs(LibraryChip.ARTISTS, LibraryAlbumOrder.YEAR, albumGrid = false))
         assertEquals(
-            LibraryPrefs(LibraryChip.ARTISTS, AlbumSort.YEAR, albumGrid = false),
+            LibraryPrefs(LibraryChip.ARTISTS, LibraryAlbumOrder.YEAR, albumGrid = false),
             DataStoreSettings(restart()).settings.first().library,
         )
         // Back to the overview (no chip).
-        DataStoreSettings(restart()).setLibraryPrefs(LibraryPrefs(null, AlbumSort.NEWEST))
-        assertEquals(LibraryPrefs(null, AlbumSort.NEWEST), DataStoreSettings(restart()).settings.first().library)
+        DataStoreSettings(restart()).setLibraryPrefs(LibraryPrefs(null, LibraryAlbumOrder.NEWEST))
+        assertEquals(LibraryPrefs(null, LibraryAlbumOrder.NEWEST), DataStoreSettings(restart()).settings.first().library)
     }
 
     @Test
@@ -67,10 +67,73 @@ class LibraryPrefsTest {
             it[stringPreferencesKey("library_album_sort")] = "RANDOM"
             it[booleanPreferencesKey("library_album_grid")] = false
         }
-        assertEquals(LibraryPrefs(null, AlbumSort.TITLE, albumGrid = false), DataStoreSettings(s).settings.first().library)
-        // Random isn't a Library order, and isn't kept either.
-        DataStoreSettings(s).setLibraryPrefs(LibraryPrefs(LibraryChip.ALBUMS, AlbumSort.RANDOM))
-        assertEquals(AlbumSort.TITLE, DataStoreSettings(s).settings.first().library.albumSort)
+        assertEquals(LibraryPrefs(null, LibraryAlbumOrder.TITLE, albumGrid = false), DataStoreSettings(s).settings.first().library)
+    }
+
+    @Test
+    fun recentlyPlayedIsKeptAcrossARestart() = runBlocking {
+        DataStoreSettings(store()).setLibraryPrefs(LibraryPrefs(LibraryChip.ALBUMS, LibraryAlbumOrder.RECENTLY_PLAYED))
+        assertEquals(
+            LibraryPrefs(LibraryChip.ALBUMS, LibraryAlbumOrder.RECENTLY_PLAYED),
+            DataStoreSettings(restart()).settings.first().library,
+        )
+    }
+
+    @Test
+    fun choicesSavedBeforeRecentlyPlayedExistedStillLoad() = runBlocking {
+        // Older versions stored the LMS order's name.
+        for ((stored, order) in listOf(
+            "NEWEST" to LibraryAlbumOrder.NEWEST,
+            "TITLE" to LibraryAlbumOrder.TITLE,
+            "ARTIST" to LibraryAlbumOrder.ARTIST,
+            "YEAR" to LibraryAlbumOrder.YEAR,
+        )) {
+            val s = restart()
+            s.edit { it[stringPreferencesKey("library_album_sort")] = stored }
+            assertEquals(order, DataStoreSettings(s).settings.first().library.albumOrder)
+        }
+    }
+
+    @Test
+    fun unknownStoredOrdersFallBackToTheDefault() = runBlocking {
+        // LMS's server-wide "recently played", random, other spellings, junk: never used.
+        for (stored in listOf("RANDOM", "RECENTLYPLAYED", "recentlyplayed", "recently_played", "", " TITLE", "\u0000", "x".repeat(5000))) {
+            val s = restart()
+            s.edit { it[stringPreferencesKey("library_album_sort")] = stored }
+            assertEquals(stored, LibraryAlbumOrder.TITLE, DataStoreSettings(s).settings.first().library.albumOrder)
+        }
+    }
+
+    @Test
+    fun theOrdersAreOfferedInTheAgreedSequenceAndOnlyLmsOnesMapToAnLmsSort() {
+        assertEquals(
+            listOf(
+                LibraryAlbumOrder.NEWEST,
+                LibraryAlbumOrder.RECENTLY_PLAYED,
+                LibraryAlbumOrder.TITLE,
+                LibraryAlbumOrder.ARTIST,
+                LibraryAlbumOrder.YEAR,
+            ),
+            LibraryAlbumOrder.OFFERED,
+        )
+        assertEquals(null, LibraryAlbumOrder.RECENTLY_PLAYED.lmsSort)
+        assertEquals(AlbumSort.NEWEST, LibraryAlbumOrder.NEWEST.lmsSort)
+        assertEquals(AlbumSort.TITLE, LibraryAlbumOrder.TITLE.lmsSort)
+        assertEquals(AlbumSort.ARTIST, LibraryAlbumOrder.ARTIST.lmsSort)
+        assertEquals(AlbumSort.YEAR, LibraryAlbumOrder.YEAR.lmsSort)
+        // Never LMS's random (a page of its own) for the Library.
+        assertTrue(LibraryAlbumOrder.entries.none { it.lmsSort == AlbumSort.RANDOM })
+        assertEquals(50, LibraryAlbumOrder.RECENTLY_PLAYED_MAX)
+        assertEquals(LibraryAlbumOrder.TITLE, LibraryAlbumOrder.fromStored(null))
+    }
+
+    @Test
+    fun fromStoredNeverThrowsOnArbitraryInput() {
+        val r = Random(7)
+        repeat(2000) {
+            val s = String(CharArray(r.nextInt(0, 40)) { r.nextInt(0, 0x3000).toChar() })
+            assertTrue(LibraryAlbumOrder.fromStored(s) in LibraryAlbumOrder.OFFERED)
+        }
     }
 
     @Test

@@ -5,7 +5,6 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import io.github.jamezuk.lyrionanywhere.core.AlbumSort
 import io.github.jamezuk.lyrionanywhere.core.Artist
 import io.github.jamezuk.lyrionanywhere.core.ArtistRole
 import io.github.jamezuk.lyrionanywhere.core.Credit
@@ -16,6 +15,8 @@ import io.github.jamezuk.lyrionanywhere.core.SearchKind
 import io.github.jamezuk.lyrionanywhere.core.SearchResults
 import io.github.jamezuk.lyrionanywhere.core.ShuffleMode
 import io.github.jamezuk.lyrionanywhere.core.TopResult
+import io.github.jamezuk.lyrionanywhere.data.AppError
+import io.github.jamezuk.lyrionanywhere.data.LibraryAlbumOrder
 import io.github.jamezuk.lyrionanywhere.data.LibraryChip
 import io.github.jamezuk.lyrionanywhere.ui.library.AlbumBrowser
 import io.github.jamezuk.lyrionanywhere.ui.library.ArtistActions
@@ -72,18 +73,46 @@ class Wave2AccessibilityAuditTests {
     @Test
     fun albumsAsAGrid() = audit {
         LibraryScreen(emptyList(), null, {}, onNewMusic = {}, onOpen = {}, chip = LibraryChip.ALBUMS, onChip = {}, chipContent = {
-            AlbumBrowser(albums(), AlbumSort.TITLE, true, {}, {}, {}, {}, {}, {}, onQueue = { _, _ -> })
+            AlbumBrowser(albums(), LibraryAlbumOrder.TITLE, true, {}, {}, {}, {}, {}, {}, onQueue = { _, _ -> })
         })
     }
 
     @Test
     fun albumsAsAList() = audit {
-        AlbumBrowser(albums(), AlbumSort.TITLE, false, {}, {}, {}, {}, {}, {}, onQueue = { _, _ -> })
+        AlbumBrowser(albums(), LibraryAlbumOrder.TITLE, false, {}, {}, {}, {}, {}, {}, onQueue = { _, _ -> })
     }
 
     @Test
     fun albumsStillLoading() = audit {
-        AlbumBrowser(SparseState(total = 300, index = index), AlbumSort.TITLE, false, {}, {}, {}, {}, {}, {})
+        AlbumBrowser(SparseState(total = 300, index = index), LibraryAlbumOrder.TITLE, false, {}, {}, {}, {}, {}, {})
+    }
+
+    @Test
+    fun albumsRecentlyPlayedAsAGrid() = audit {
+        AlbumBrowser(albums(), LibraryAlbumOrder.RECENTLY_PLAYED, true, {}, {}, {}, {}, {}, {}, onQueue = { _, _ -> })
+    }
+
+    @Test
+    fun albumsRecentlyPlayedAsAList() = audit {
+        AlbumBrowser(albums(), LibraryAlbumOrder.RECENTLY_PLAYED, false, {}, {}, {}, {}, {}, {}, onQueue = { _, _ -> })
+    }
+
+    @Test
+    fun albumsNothingPlayedYet() = audit {
+        AlbumBrowser(SparseState(total = 0), LibraryAlbumOrder.RECENTLY_PLAYED, true, {}, {}, {}, {}, {}, {})
+    }
+
+    @Test
+    fun albumsRecentlyPlayedFailed() = audit {
+        AlbumBrowser(SparseState(error = AppError.Offline()), LibraryAlbumOrder.RECENTLY_PLAYED, true, {}, {}, {}, {}, {}, {})
+    }
+
+    @Test
+    fun albumSortMenuOpen() {
+        audit { AlbumBrowser(albums(), LibraryAlbumOrder.RECENTLY_PLAYED, true, {}, {}, {}, {}, {}, {}) }
+        compose.onNodeWithTag("album-sort").performClick()
+        compose.waitForIdle()
+        compose.assertAccessible()
     }
 
     @Test

@@ -771,6 +771,8 @@
     <string name="chip_downloaded">Downloaded</string>
     <string name="library_types">Show only</string>
     <string name="sort_recently_added">Recently added</string>
+    <string name="sort_recently_played">Recently played</string>
+    <string name="no_recently_played">Nothing played yet. What you play shows here.</string>
     <string name="sort_a_to_z">A–Z</string>
     <string name="sort_by_artist_short">Artist</string>
     <string name="sort_by_year_short">Year</string>

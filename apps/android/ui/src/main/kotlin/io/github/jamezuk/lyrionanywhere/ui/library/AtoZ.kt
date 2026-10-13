@@ -3,15 +3,17 @@ package io.github.jamezuk.lyrionanywhere.ui.library
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.jamezuk.lyrionanywhere.core.Album
-import io.github.jamezuk.lyrionanywhere.core.AlbumSort
 import io.github.jamezuk.lyrionanywhere.core.Artist
 import io.github.jamezuk.lyrionanywhere.core.IndexEntry
 import io.github.jamezuk.lyrionanywhere.core.LibraryFilter
+import io.github.jamezuk.lyrionanywhere.core.ShelfKind
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
+import io.github.jamezuk.lyrionanywhere.data.LibraryAlbumOrder
 import io.github.jamezuk.lyrionanywhere.data.LibraryChip
 import io.github.jamezuk.lyrionanywhere.data.LibraryPrefs
 import io.github.jamezuk.lyrionanywhere.data.LibraryRepository
+import io.github.jamezuk.lyrionanywhere.data.MeRepository
 import io.github.jamezuk.lyrionanywhere.data.SettingsStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -141,14 +143,20 @@ object AtoZ {
 /**
  * The Library's albums (Wave 2 §3.2): in the remembered order, read where they are looked
  * at, with the A–Z index when in title order.
+ *
+ * "Recently played" is the user's own: the albums from their listening history on the
+ * gateway ([MeRepository.shelfAlbums]), newest first, at most
+ * [LibraryAlbumOrder.RECENTLY_PLAYED_MAX], read by id in that order. LMS's `recentlyplayed`
+ * order is never asked for (it is the whole server's, everyone's listening).
  */
 class LibraryAlbumsViewModel(
     private val library: LibraryRepository,
-    sort: AlbumSort = AlbumSort.TITLE,
+    order: LibraryAlbumOrder = LibraryAlbumOrder.DEFAULT,
     libraryId: Flow<String?> = flowOf(null),
+    private val me: MeRepository? = null,
 ) : SparsePagedViewModel<Album>() {
-    private val _sort = MutableStateFlow(if (sort in LibraryPrefs.LIBRARY_SORTS) sort else AlbumSort.TITLE)
-    val sort: StateFlow<AlbumSort> = _sort.asStateFlow()
+    private val _order = MutableStateFlow(if (order in LibraryAlbumOrder.OFFERED) order else LibraryAlbumOrder.DEFAULT)
+    val order: StateFlow<LibraryAlbumOrder> = _order.asStateFlow()
     private var currentLibrary: String? = null
 
     init {
@@ -160,22 +168,43 @@ class LibraryAlbumsViewModel(
         }
     }
 
-    fun setSort(sort: AlbumSort) {
-        if (sort == _sort.value || sort !in LibraryPrefs.LIBRARY_SORTS) return
-        _sort.value = sort
+    fun setOrder(order: LibraryAlbumOrder) {
+        if (order == _order.value || order !in LibraryAlbumOrder.OFFERED) return
+        _order.value = order
         restart()
     }
 
     private val filter get() = LibraryFilter(libraryId = currentLibrary)
 
-    override suspend fun page(start: Int, count: Int): ApiResult<Pair<List<Album>, Int>> =
-        when (val r = library.albums(start, count, _sort.value, null, filter)) {
+    override suspend fun page(start: Int, count: Int): ApiResult<Pair<List<Album>, Int>> {
+        val sort = _order.value.lmsSort ?: return recentlyPlayed(start, count)
+        return when (val r = library.albums(start, count, sort, null, filter)) {
             is ApiResult.Ok -> ApiResult.Ok(r.value.items to r.value.total.toInt())
             is ApiResult.Err -> r
         }
+    }
+
+    /** The user's recently played albums, newest first (from their own history). */
+    private suspend fun recentlyPlayed(start: Int, count: Int): ApiResult<Pair<List<Album>, Int>> {
+        val m = me ?: return ApiResult.Ok(emptyList<Album>() to 0)
+        val ids = when (val r = m.shelfAlbums(ShelfKind.RECENT, LibraryAlbumOrder.RECENTLY_PLAYED_MAX)) {
+            is ApiResult.Ok -> r.value.distinct().take(LibraryAlbumOrder.RECENTLY_PLAYED_MAX)
+            is ApiResult.Err -> return r
+        }
+        val wanted = ids.drop(start.coerceAtLeast(0)).take(count.coerceAtLeast(0))
+        if (wanted.isEmpty()) return ApiResult.Ok(emptyList<Album>() to ids.size)
+        return when (val r = m.albums(wanted)) {
+            is ApiResult.Ok -> {
+                // In history order, whatever order they came back in; ones gone from the library are left out.
+                val byId = r.value.associateBy { it.id }
+                ApiResult.Ok(wanted.mapNotNull { byId[it] } to ids.size)
+            }
+            is ApiResult.Err -> r
+        }
+    }
 
     override suspend fun index(): ApiResult<List<IndexEntry>> =
-        if (_sort.value == AlbumSort.TITLE) library.albumIndex(filter) else ApiResult.Ok(emptyList())
+        if (_order.value == LibraryAlbumOrder.TITLE) library.albumIndex(filter) else ApiResult.Ok(emptyList())
 }
 
 /** The Library's artists, by role (as [ArtistsViewModel]), with the A–Z index. */
@@ -239,7 +268,7 @@ class LibraryPrefsViewModel(private val settings: SettingsStore) : ViewModel() {
     /** Choose a chip; choosing the one chosen goes back to the overview. */
     fun toggleChip(chip: LibraryChip) = change { it.copy(chip = if (it.chip == chip) null else chip) }
 
-    fun setSort(sort: AlbumSort) = change { it.copy(albumSort = sort) }
+    fun setOrder(order: LibraryAlbumOrder) = change { it.copy(albumOrder = order) }
 
     fun setGrid(grid: Boolean) = change { it.copy(albumGrid = grid) }
 }

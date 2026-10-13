@@ -78,12 +78,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.jamezuk.lyrionanywhere.core.Album
-import io.github.jamezuk.lyrionanywhere.core.AlbumSort
 import io.github.jamezuk.lyrionanywhere.core.Artist
 import io.github.jamezuk.lyrionanywhere.core.IndexEntry
 import io.github.jamezuk.lyrionanywhere.core.Placement
 import io.github.jamezuk.lyrionanywhere.data.LibraryChip
-import io.github.jamezuk.lyrionanywhere.data.LibraryPrefs
+import io.github.jamezuk.lyrionanywhere.data.LibraryAlbumOrder
 import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.components.ArtworkImage
 import io.github.jamezuk.lyrionanywhere.ui.components.EmptyState
@@ -131,18 +130,19 @@ fun LibraryChips(selected: LibraryChip?, onToggle: (LibraryChip) -> Unit, modifi
 }
 
 @Composable
-fun librarySortLabel(sort: AlbumSort): String = stringResource(
-    when (sort) {
-        AlbumSort.NEWEST -> R.string.sort_recently_added
-        AlbumSort.ARTIST -> R.string.sort_by_artist_short
-        AlbumSort.YEAR -> R.string.sort_by_year_short
-        else -> R.string.sort_a_to_z
+fun librarySortLabel(order: LibraryAlbumOrder): String = stringResource(
+    when (order) {
+        LibraryAlbumOrder.NEWEST -> R.string.sort_recently_added
+        LibraryAlbumOrder.RECENTLY_PLAYED -> R.string.sort_recently_played
+        LibraryAlbumOrder.TITLE -> R.string.sort_a_to_z
+        LibraryAlbumOrder.ARTIST -> R.string.sort_by_artist_short
+        LibraryAlbumOrder.YEAR -> R.string.sort_by_year_short
     },
 )
 
 /** The albums' order and view: "Sort: A–Z" (a menu) and grid or list. */
 @Composable
-fun AlbumBrowseBar(sort: AlbumSort, grid: Boolean, onSort: (AlbumSort) -> Unit, onGrid: (Boolean) -> Unit) {
+fun AlbumBrowseBar(sort: LibraryAlbumOrder, grid: Boolean, onSort: (LibraryAlbumOrder) -> Unit, onGrid: (Boolean) -> Unit) {
     var open by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.weight(1f)) {
@@ -156,7 +156,7 @@ fun AlbumBrowseBar(sort: AlbumSort, grid: Boolean, onSort: (AlbumSort) -> Unit, 
                 )
             }
             DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-                LibraryPrefs.LIBRARY_SORTS.forEach { s ->
+                LibraryAlbumOrder.OFFERED.forEach { s ->
                     DropdownMenuItem(
                         text = { Text(librarySortLabel(s)) },
                         onClick = {
@@ -168,7 +168,7 @@ fun AlbumBrowseBar(sort: AlbumSort, grid: Boolean, onSort: (AlbumSort) -> Unit, 
                         } else {
                             null
                         },
-                        modifier = Modifier.semantics { selected = s == sort },
+                        modifier = Modifier.semantics { selected = s == sort }.testTag("album-sort-${s.name.lowercase()}"),
                     )
                 }
             }
@@ -203,9 +203,9 @@ private fun EnsureVisible(first: () -> Int, last: () -> Int, retryKey: Any?, onE
 @Composable
 fun AlbumBrowser(
     state: SparseState<Album>,
-    sort: AlbumSort,
+    sort: LibraryAlbumOrder,
     grid: Boolean,
-    onSort: (AlbumSort) -> Unit,
+    onSort: (LibraryAlbumOrder) -> Unit,
     onGrid: (Boolean) -> Unit,
     onEnsure: (Int) -> Unit,
     onRetry: () -> Unit,
@@ -219,9 +219,12 @@ fun AlbumBrowser(
         when {
             state.failedEmpty -> ErrorState(state.error!!, onRetry)
             state.total == null -> LoadingState()
-            state.count == 0 -> EmptyState(stringResource(R.string.no_albums))
+            state.count == 0 -> EmptyState(
+                stringResource(if (sort == LibraryAlbumOrder.RECENTLY_PLAYED) R.string.no_recently_played else R.string.no_albums),
+            )
             else -> Box(Modifier.fillMaxSize()) {
-                val index = if (sort == AlbumSort.TITLE) state.index else emptyList()
+                // The A–Z scroller only in title order (never for recently played).
+                val index = if (sort == LibraryAlbumOrder.TITLE) state.index else emptyList()
                 if (grid) {
                     val g = rememberLazyGridState()
                     EnsureVisible(

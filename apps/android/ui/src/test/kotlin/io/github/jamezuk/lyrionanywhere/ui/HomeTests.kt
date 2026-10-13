@@ -101,13 +101,27 @@ class FakeMe : MeRepository {
     override suspend fun setHistoryEnabled(enabled: Boolean): ApiResult<Boolean> =
         enableResult ?: ApiResult.Ok(enabled).also { historyEnabled = enabled }
 
-    override suspend fun shelfAlbums(kind: ShelfKind, limit: Int): ApiResult<List<Long>> = when (kind) {
-        ShelfKind.RECENT -> ApiResult.Ok(listOf(7, 3))
-        ShelfKind.MOST -> ApiResult.Ok(listOf(3))
-        else -> ApiResult.Ok(emptyList())
+    /** The user's recently played album ids, newest first. */
+    var recent: ApiResult<List<Long>> = ApiResult.Ok(listOf(7, 3))
+    val shelfCalls = mutableListOf<Pair<ShelfKind, Int>>()
+    val albumIdCalls = mutableListOf<List<Long>>()
+
+    /** What reading albums by id gives (default: each id, in the order asked). */
+    var albumsById: (List<Long>) -> ApiResult<List<Album>> = { ids -> ApiResult.Ok(ids.map { sampleAlbum(it) }) }
+
+    override suspend fun shelfAlbums(kind: ShelfKind, limit: Int): ApiResult<List<Long>> {
+        shelfCalls += kind to limit
+        return when (kind) {
+            ShelfKind.RECENT -> recent
+            ShelfKind.MOST -> ApiResult.Ok(listOf(3))
+            else -> ApiResult.Ok(emptyList())
+        }
     }
 
-    override suspend fun albums(ids: List<Long>): ApiResult<List<Album>> = ApiResult.Ok(ids.map { sampleAlbum(it) })
+    override suspend fun albums(ids: List<Long>): ApiResult<List<Album>> {
+        albumIdCalls += ids
+        return albumsById(ids)
+    }
 
     override suspend fun tracks(ids: List<Long>): ApiResult<List<Track>> = ApiResult.Ok(ids.map { sampleTrack(it) })
 

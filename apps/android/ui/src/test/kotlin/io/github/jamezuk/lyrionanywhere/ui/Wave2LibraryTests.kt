@@ -26,11 +26,15 @@ import io.github.jamezuk.lyrionanywhere.core.Credit
 import io.github.jamezuk.lyrionanywhere.core.IndexEntry
 import io.github.jamezuk.lyrionanywhere.core.Placement
 import io.github.jamezuk.lyrionanywhere.core.RoleCount
+import io.github.jamezuk.lyrionanywhere.core.ShelfKind
 import io.github.jamezuk.lyrionanywhere.core.SearchKind
 import io.github.jamezuk.lyrionanywhere.core.SearchResults
 import io.github.jamezuk.lyrionanywhere.core.Selection
 import io.github.jamezuk.lyrionanywhere.core.TopResult
 import io.github.jamezuk.lyrionanywhere.data.AppSettings
+import io.github.jamezuk.lyrionanywhere.data.AppError
+import io.github.jamezuk.lyrionanywhere.data.ApiResult
+import io.github.jamezuk.lyrionanywhere.data.LibraryAlbumOrder
 import io.github.jamezuk.lyrionanywhere.data.LibraryChip
 import io.github.jamezuk.lyrionanywhere.data.LibraryPrefs
 import io.github.jamezuk.lyrionanywhere.ui.library.AlbumBrowser
@@ -79,7 +83,7 @@ class Wave2LibraryViewModelTest : MainDispatcherTest() {
     @Test
     fun aLetterFarDownReadsOnlyItsPage() = runTest(dispatcher) {
         val library = FakeLibrary(totalAlbums = 1000).apply { index = idx("A" to 400, "M" to 600) }
-        val vm = LibraryAlbumsViewModel(library, AlbumSort.TITLE)
+        val vm = LibraryAlbumsViewModel(library, LibraryAlbumOrder.TITLE)
         assertEquals(1000, vm.state.value.total)
         assertEquals(listOf(0), library.albumCalls.map { it.first })
         assertEquals(2, vm.state.value.index.size)
@@ -98,15 +102,69 @@ class Wave2LibraryViewModelTest : MainDispatcherTest() {
     @Test
     fun theIndexIsOnlyForTitleOrderAndASortStartsOver() = runTest(dispatcher) {
         val library = FakeLibrary(totalAlbums = 30).apply { index = idx("A" to 30) }
-        val vm = LibraryAlbumsViewModel(library, AlbumSort.NEWEST)
+        val vm = LibraryAlbumsViewModel(library, LibraryAlbumOrder.NEWEST)
         assertTrue(vm.state.value.index.isEmpty())
         assertTrue(library.indexCalls.isEmpty())
-        vm.setSort(AlbumSort.TITLE)
+        vm.setOrder(LibraryAlbumOrder.TITLE)
         assertEquals(AlbumSort.TITLE, library.albumCalls.last().third)
         assertEquals(1, vm.state.value.index.size)
-        // Random isn't a Library order.
-        vm.setSort(AlbumSort.RANDOM)
-        assertEquals(AlbumSort.TITLE, vm.sort.value)
+        assertEquals(LibraryAlbumOrder.TITLE, vm.order.value)
+    }
+
+    @Test
+    fun recentlyPlayedIsTheUsersOwnHistoryInOrderWithNoLmsSort() = runTest(dispatcher) {
+        val library = FakeLibrary(totalAlbums = 30).apply { index = idx("A" to 30) }
+        val me = FakeMe().apply {
+            recent = ApiResult.Ok(listOf(42, 7, 19, 3))
+            // The server may answer in any order: the list keeps the history's.
+            albumsById = { ids -> ApiResult.Ok(ids.sorted().map { sampleAlbum(it) }) }
+        }
+        val vm = LibraryAlbumsViewModel(library, LibraryAlbumOrder.RECENTLY_PLAYED, me = me)
+        assertEquals(listOf(ShelfKind.RECENT to 50), me.shelfCalls)
+        assertEquals(listOf(listOf(42L, 7L, 19L, 3L)), me.albumIdCalls)
+        assertEquals(4, vm.state.value.total)
+        assertEquals(listOf(42L, 7L, 19L, 3L), (0 until 4).map { vm.state.value[it]!!.id })
+        // Never LMS's albums order (its "recently played" is everyone's), and no A–Z.
+        assertTrue(library.albumCalls.isEmpty())
+        assertTrue(library.indexCalls.isEmpty())
+        assertTrue(vm.state.value.index.isEmpty())
+        // Back to an LMS order: asked of LMS again.
+        vm.setOrder(LibraryAlbumOrder.NEWEST)
+        assertEquals(AlbumSort.NEWEST, library.albumCalls.single().third)
+    }
+
+    @Test
+    fun recentlyPlayedIsCappedAtFiftyEachOnceAndSkipsAlbumsGone() = runTest(dispatcher) {
+        val me = FakeMe().apply {
+            recent = ApiResult.Ok((1L..80L).toList() + listOf(1L, 2L))
+            // Album 5 is no longer in the library.
+            albumsById = { ids -> ApiResult.Ok(ids.filter { it != 5L }.map { sampleAlbum(it) }) }
+        }
+        val vm = LibraryAlbumsViewModel(FakeLibrary(), LibraryAlbumOrder.RECENTLY_PLAYED, me = me)
+        assertEquals((1L..50L).toList(), me.albumIdCalls.single())
+        assertEquals(49, vm.state.value.total)
+        assertEquals(6L, vm.state.value[4]!!.id)
+        vm.ensure(60)
+        assertEquals(1, me.albumIdCalls.size)
+    }
+
+    @Test
+    fun nothingPlayedYetIsEmptyAndFailuresCanBeRetried() = runTest(dispatcher) {
+        val me = FakeMe().apply { recent = ApiResult.Ok(emptyList()) }
+        val vm = LibraryAlbumsViewModel(FakeLibrary(), LibraryAlbumOrder.RECENTLY_PLAYED, me = me)
+        assertEquals(0, vm.state.value.total)
+        assertTrue(me.albumIdCalls.isEmpty())
+
+        me.recent = ApiResult.Err(AppError.Offline())
+        val failing = LibraryAlbumsViewModel(FakeLibrary(), LibraryAlbumOrder.RECENTLY_PLAYED, me = me)
+        assertTrue(failing.state.value.failedEmpty)
+        me.recent = ApiResult.Ok(listOf(9))
+        me.albumsById = { ApiResult.Err(AppError.Server(500, "x")) }
+        failing.retry()
+        assertTrue(failing.state.value.failedEmpty)
+        me.albumsById = { ids -> ApiResult.Ok(ids.map { sampleAlbum(it) }) }
+        failing.retry()
+        assertEquals(9L, failing.state.value[0]!!.id)
     }
 
     @Test
@@ -179,14 +237,14 @@ class Wave2LibraryViewModelTest : MainDispatcherTest() {
         val settings = FakeSettings()
         val vm = LibraryPrefsViewModel(settings)
         vm.toggleChip(LibraryChip.ALBUMS)
-        vm.setSort(AlbumSort.YEAR)
+        vm.setOrder(LibraryAlbumOrder.YEAR)
         vm.setGrid(false)
-        assertEquals(LibraryPrefs(LibraryChip.ALBUMS, AlbumSort.YEAR, false), settings.state.value.library)
+        assertEquals(LibraryPrefs(LibraryChip.ALBUMS, LibraryAlbumOrder.YEAR, false), settings.state.value.library)
         // The chosen chip again: back to everything.
         vm.toggleChip(LibraryChip.ALBUMS)
         assertNull(settings.state.value.library.chip)
-        vm.setSort(AlbumSort.RANDOM)
-        assertEquals(AlbumSort.TITLE, settings.state.value.library.albumSort)
+        vm.setOrder(LibraryAlbumOrder.RECENTLY_PLAYED)
+        assertEquals(LibraryAlbumOrder.RECENTLY_PLAYED, settings.state.value.library.albumOrder)
     }
 
     @Test
@@ -280,18 +338,18 @@ class Wave2LibraryScreenTest {
 
     @Test
     fun albumsSortAndSwitchBetweenGridAndList() {
-        val sorts = mutableListOf<AlbumSort>()
+        val sorts = mutableListOf<LibraryAlbumOrder>()
         val grids = mutableListOf<Boolean>()
         show {
             AlbumBrowser(
-                albums(3), AlbumSort.TITLE, grid = true, onSort = { sorts += it }, onGrid = { grids += it },
+                albums(3), LibraryAlbumOrder.TITLE, grid = true, onSort = { sorts += it }, onGrid = { grids += it },
                 onEnsure = {}, onRetry = {}, onAlbum = {}, onMore = {},
             )
         }
         compose.onNodeWithTag("album-grid").assertIsDisplayed()
         compose.onNodeWithText("Sort: A–Z").performClick()
         compose.onNodeWithText("Recently added").performClick()
-        assertEquals(listOf(AlbumSort.NEWEST), sorts)
+        assertEquals(listOf(LibraryAlbumOrder.NEWEST), sorts)
         compose.onNodeWithContentDescription("Show as a list").performClick()
         assertEquals(listOf(false), grids)
     }
@@ -301,7 +359,7 @@ class Wave2LibraryScreenTest {
         val queued = mutableListOf<Pair<Long, Placement>>()
         show {
             AlbumBrowser(
-                albums(3), AlbumSort.NEWEST, grid = false, onSort = {}, onGrid = {},
+                albums(3), LibraryAlbumOrder.NEWEST, grid = false, onSort = {}, onGrid = {},
                 onEnsure = {}, onRetry = {}, onAlbum = {}, onMore = {},
                 onQueue = { a, p -> queued += a.id to p },
             )
@@ -320,7 +378,7 @@ class Wave2LibraryScreenTest {
         val ensured = mutableListOf<Int>()
         show {
             AlbumBrowser(
-                albums(1000, idx("A" to 400, "M" to 600)), AlbumSort.TITLE, grid = false,
+                albums(1000, idx("A" to 400, "M" to 600)), LibraryAlbumOrder.TITLE, grid = false,
                 onSort = {}, onGrid = {}, onEnsure = { ensured += it }, onRetry = {}, onAlbum = {}, onMore = {},
             )
         }
@@ -339,11 +397,76 @@ class Wave2LibraryScreenTest {
     fun noScrollerOutsideTitleOrder() {
         show {
             AlbumBrowser(
-                albums(1000, idx("A" to 400, "M" to 600)), AlbumSort.YEAR, grid = true,
+                albums(1000, idx("A" to 400, "M" to 600)), LibraryAlbumOrder.YEAR, grid = true,
                 onSort = {}, onGrid = {}, onEnsure = {}, onRetry = {}, onAlbum = {}, onMore = {},
             )
         }
         compose.onNodeWithTag("az-scroller").assertDoesNotExist()
+    }
+
+    @Test
+    fun theSortMenuOffersTheFiveOrdersInTurn() {
+        val sorts = mutableListOf<LibraryAlbumOrder>()
+        show {
+            AlbumBrowser(
+                albums(3), LibraryAlbumOrder.TITLE, grid = true, onSort = { sorts += it }, onGrid = {},
+                onEnsure = {}, onRetry = {}, onAlbum = {}, onMore = {},
+            )
+        }
+        compose.onNodeWithTag("album-sort").performClick()
+        val labels = listOf("Recently added", "Recently played", "A–Z", "Artist", "Year")
+        val tops = LibraryAlbumOrder.OFFERED.map { o ->
+            compose.onNodeWithTag("album-sort-${o.name.lowercase()}").fetchSemanticsNode().boundsInRoot.top
+        }
+        assertEquals(tops.sorted(), tops)
+        LibraryAlbumOrder.OFFERED.zip(labels).forEach { (o, label) ->
+            compose.onNodeWithTag("album-sort-${o.name.lowercase()}").assert(hasText(label))
+        }
+        compose.onNodeWithTag("album-sort-title").assert(SemanticsMatcher.expectValue(SemanticsProperties.Selected, true))
+        compose.onNodeWithTag("album-sort-recently_played").assert(SemanticsMatcher.expectValue(SemanticsProperties.Selected, false))
+        compose.onNodeWithTag("album-sort-recently_played").performClick()
+        assertEquals(listOf(LibraryAlbumOrder.RECENTLY_PLAYED), sorts)
+    }
+
+    @Test
+    fun recentlyPlayedShowsItsOwnLabelNoScrollerAndBothViews() {
+        val grid = androidx.compose.runtime.mutableStateOf(true)
+        show {
+            AlbumBrowser(
+                albums(1000, idx("A" to 400, "M" to 600)), LibraryAlbumOrder.RECENTLY_PLAYED, grid = grid.value,
+                onSort = {}, onGrid = { grid.value = it }, onEnsure = {}, onRetry = {}, onAlbum = {}, onMore = {},
+            )
+        }
+        compose.onNodeWithText("Sort: Recently played").assertIsDisplayed()
+        compose.onNodeWithTag("album-grid").assertIsDisplayed()
+        compose.onNodeWithTag("az-scroller").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Show as a list").performClick()
+        compose.onNodeWithTag("album-list").assertIsDisplayed()
+        compose.onNodeWithTag("az-scroller").assertDoesNotExist()
+    }
+
+    @Test
+    fun nothingPlayedYetSaysSo() {
+        show {
+            AlbumBrowser(
+                SparseState(total = 0), LibraryAlbumOrder.RECENTLY_PLAYED, grid = true,
+                onSort = {}, onGrid = {}, onEnsure = {}, onRetry = {}, onAlbum = {}, onMore = {},
+            )
+        }
+        compose.onNodeWithText("Nothing played yet. What you play shows here.").assertIsDisplayed()
+    }
+
+    @Test
+    fun aRecentlyPlayedFailureShowsTheErrorWithRetry() {
+        var retried = 0
+        show {
+            AlbumBrowser(
+                SparseState(error = AppError.Offline()), LibraryAlbumOrder.RECENTLY_PLAYED, grid = true,
+                onSort = {}, onGrid = {}, onEnsure = {}, onRetry = { retried++ }, onAlbum = {}, onMore = {},
+            )
+        }
+        compose.onNodeWithText("Try again").performClick()
+        assertEquals(1, retried)
     }
 
     @Test

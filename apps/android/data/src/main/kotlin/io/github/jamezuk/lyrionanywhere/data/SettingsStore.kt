@@ -151,7 +151,7 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
             ),
             library = LibraryPrefs(
                 chip = it[LIB_CHIP]?.let { c -> LibraryChip.entries.firstOrNull { e -> e.name == c } },
-                albumSort = enumOr(it[LIB_SORT], LibraryPrefs().albumSort),
+                albumOrder = LibraryAlbumOrder.fromStored(it[LIB_SORT]),
                 albumGrid = it[LIB_GRID] ?: true,
             ).sanitised(),
             recentSearches = RecentSearches.decode(it[RECENT_SEARCHES]),
@@ -162,7 +162,7 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         val p = prefs.sanitised()
         store.edit { e ->
             if (p.chip == null) e.remove(LIB_CHIP) else e[LIB_CHIP] = p.chip.name
-            e[LIB_SORT] = p.albumSort.name
+            e[LIB_SORT] = p.albumOrder.name
             e[LIB_GRID] = p.albumGrid
         }
     }

@@ -5,20 +5,49 @@ import io.github.jamezuk.lyrionanywhere.core.AlbumSort
 /** The Library page's type chips (Wave 2 §3.2). None chosen: the overview. */
 enum class LibraryChip { ALBUMS, ARTISTS, PLAYLISTS, FAVOURITES, DOWNLOADED }
 
+/**
+ * An album order the Library offers (Wave 2 §3.2): one of LMS's, or [RECENTLY_PLAYED], the
+ * user's own recently played albums from their listening history on the gateway. LMS's
+ * `recentlyplayed` order is never used: it is the whole server's, so it would show what
+ * everyone else in the household has been playing (and the gateway refuses it anyway).
+ *
+ * The names are what is stored; the LMS ones match the [AlbumSort] names stored before
+ * "Recently played" existed, so an older saved choice still loads.
+ */
+enum class LibraryAlbumOrder(
+    /** The LMS order to ask for; null for one that isn't LMS's. */
+    val lmsSort: AlbumSort?,
+) {
+    NEWEST(AlbumSort.NEWEST),
+    RECENTLY_PLAYED(null),
+    TITLE(AlbumSort.TITLE),
+    ARTIST(AlbumSort.ARTIST),
+    YEAR(AlbumSort.YEAR),
+    ;
+
+    companion object {
+        val DEFAULT = TITLE
+
+        /** The orders as offered: recently added, recently played, A–Z, artist and year. */
+        val OFFERED: List<LibraryAlbumOrder> = listOf(NEWEST, RECENTLY_PLAYED, TITLE, ARTIST, YEAR)
+
+        /** At most this many recently played albums are shown (newest first), as on the web. */
+        const val RECENTLY_PLAYED_MAX = 50
+
+        /** A stored name: anything unknown (an older or newer app's, or tampered) is the default. */
+        fun fromStored(name: String?): LibraryAlbumOrder = entries.firstOrNull { it.name == name } ?: DEFAULT
+    }
+}
+
 /** How the Library page was left, remembered on this device: chip, album order and view. */
 data class LibraryPrefs(
     val chip: LibraryChip? = null,
-    val albumSort: AlbumSort = AlbumSort.TITLE,
+    val albumOrder: LibraryAlbumOrder = LibraryAlbumOrder.DEFAULT,
     /** Albums as a grid (false: a list). */
     val albumGrid: Boolean = true,
 ) {
     /** Only orders the Library offers are kept (random has a page of its own). */
-    fun sanitised(): LibraryPrefs = if (albumSort in LIBRARY_SORTS) this else copy(albumSort = AlbumSort.TITLE)
-
-    companion object {
-        /** The album orders the Library offers: recently added, A–Z, artist and year. */
-        val LIBRARY_SORTS = listOf(AlbumSort.NEWEST, AlbumSort.TITLE, AlbumSort.ARTIST, AlbumSort.YEAR)
-    }
+    fun sanitised(): LibraryPrefs = if (albumOrder in LibraryAlbumOrder.OFFERED) this else copy(albumOrder = LibraryAlbumOrder.DEFAULT)
 }
 
 /**
