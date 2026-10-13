@@ -61,7 +61,11 @@ import io.github.jamezuk.lyrionanywhere.ui.player.VisualiserCanvas
 import io.github.jamezuk.lyrionanywhere.ui.player.VisualiserControls
 import io.github.jamezuk.lyrionanywhere.ui.player.rememberVisualBlock
 import io.github.jamezuk.lyrionanywhere.ui.player.rememberVisualState
-import io.github.jamezuk.lyrionanywhere.ui.theme.AmbientBackground
+import io.github.jamezuk.lyrionanywhere.ui.player.GlowHalo
+import io.github.jamezuk.lyrionanywhere.ui.player.NowPlayingCloseButton
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import io.github.jamezuk.lyrionanywhere.data.VisualStyle
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.mutableStateOf
@@ -150,12 +154,17 @@ fun OfflineNowPlayingScreen(
     actions: OfflineNowPlayingActions,
     modifier: Modifier = Modifier,
     visual: VisualSource? = null,
+    /** Close Now playing (the chevron at the top left); null for none. */
+    onClose: (() -> Unit)? = null,
 ) {
     val s = ui.state
     val status = s.status
     val track = s.current
     if (status == null || track == null) {
-        EmptyState(stringResource(R.string.offline_nothing_playing), modifier.padding(24.dp))
+        Box(modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
+            EmptyState(stringResource(R.string.offline_nothing_playing), Modifier.padding(24.dp))
+            onClose?.let { NowPlayingCloseButton(it, Modifier.align(Alignment.TopStart).padding(4.dp)) }
+        }
         return
     }
     val position = rememberOfflinePosition(ui, clock)
@@ -171,8 +180,9 @@ fun OfflineNowPlayingScreen(
     val visualShown = visual != null && visualOn && block == VisualBlock.NONE
     val visualState = rememberVisualState(visual, running = visualShown)
     val glow = visualShown && style == VisualStyle.GLOW
-    Box(modifier.fillMaxSize()) {
-    if (glow) AmbientBackground(artOf(track), pulse = { visualState.glow })
+    // Glow's halo around the cover; still in battery saver and with animations removed.
+    val haloShown = visual != null && visualOn && style == VisualStyle.GLOW
+    Box(modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
     LazyColumn(Modifier.fillMaxSize().testTag("offline-now-playing"), contentPadding = PaddingValues(bottom = 24.dp)) {
         item {
             Column(
@@ -196,6 +206,16 @@ fun OfflineNowPlayingScreen(
                 }
                 if (visualShown && !glow) {
                     VisualiserCanvas(style, visualState, setStyle, Modifier.widthIn(max = 360.dp).fillMaxWidth(0.8f))
+                } else if (haloShown) {
+                    GlowHalo(artOf(track), visualState, playing = s.playing, animate = glow, modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth(0.8f), fade = 6.dp) {
+                        ArtworkImage(
+                            artOf(track),
+                            600,
+                            contentDescription = stringResource(R.string.album_cover),
+                            modifier = Modifier.fillMaxWidth(),
+                            corner = 12.dp,
+                        )
+                    }
                 } else {
                     ArtworkImage(
                         artOf(track),
@@ -288,5 +308,6 @@ fun OfflineNowPlayingScreen(
             OfflineTrackRow(t, onClick = { actions.onJump(listIndex) }, highlighted = listIndex == status.index?.toInt())
         }
     }
+    onClose?.let { NowPlayingCloseButton(it, Modifier.align(Alignment.TopStart).padding(4.dp)) }
     }
 }

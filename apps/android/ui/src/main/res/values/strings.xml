@@ -60,8 +60,10 @@
     <!-- Navigation -->
     <string name="nav_home">Home</string>
     <string name="nav_search">Search</string>
+    <string name="nav_queue">Queue</string>
+    <string name="now_playing_close">Close Now playing</string>
+    <string name="signal_path_show">Show the signal path</string>
     <string name="title_settings">Settings</string>
-    <string name="title_now_playing">Now playing</string>
     <string name="title_licences">Open-source licences</string>
     <string name="title_album">Album</string>
 

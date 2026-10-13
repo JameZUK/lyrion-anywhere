@@ -115,6 +115,25 @@ object Ambient {
         return MAX_SCRIM
     }
 
+    /** The lightest a small control's own scrim (Now playing's close button) may be. */
+    const val MIN_ICON_SCRIM = 0.55f
+
+    /**
+     * The opacity of a small control's own scrim of [bg] (a disc behind an icon drawn over
+     * anything: art, the halo, the ambient background): the lowest (from [MIN_ICON_SCRIM],
+     * steps of 0.01) at which [fg] keeps 4.5:1 over anything from black to white beneath;
+     * fully opaque if nothing less will do.
+     */
+    fun iconScrimAlpha(fg: Int, bg: Int): Float {
+        var a = MIN_ICON_SCRIM
+        while (a <= 1f + 1e-6f) {
+            val r = kotlin.math.round(a * 100f) / 100f
+            if (worstContrast(fg, bg, r) >= ArtScheme.TEXT_CONTRAST) return r
+            a += 0.01f
+        }
+        return 1f
+    }
+
     /** The scrim for a colour scheme: its text and accent colours on its background. */
     fun scrimAlpha(scheme: ColorScheme, dark: Boolean): Float = scrimAlpha(
         scheme.background.toArgb(),
@@ -157,11 +176,6 @@ fun ColorScheme.isDark(): Boolean = background.luminance() < 0.5f
 fun AmbientBackground(
     artwork: String?,
     modifier: Modifier = Modifier,
-    /**
-     * The visualiser's Glow (Wave 2 §4.1): the bass level (0–1), read as each frame is
-     * drawn. The art swells with it; the scrim is unchanged, so text keeps its contrast.
-     */
-    pulse: (() -> Float)? = null,
 ) {
     val scheme = MaterialTheme.colorScheme
     val context = LocalContext.current
@@ -195,9 +209,8 @@ fun AmbientBackground(
                         .fillMaxSize()
                         .graphicsLayer {
                             val p = drift?.value ?: 0.5f
-                            val beat = pulse?.invoke()?.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
-                            scaleX = 1.35f + 0.12f * p + PULSE_SCALE * beat
-                            scaleY = 1.35f + 0.12f * p + PULSE_SCALE * beat
+                            scaleX = 1.35f + 0.12f * p
+                            scaleY = 1.35f + 0.12f * p
                             translationX = (p - 0.5f) * size.width * 0.08f
                             translationY = (0.5f - p) * size.height * 0.05f
                             rotationZ = (p - 0.5f) * 8f
@@ -218,9 +231,6 @@ fun AmbientBackground(
 
 /** The cover's size for the background: tiny, so it is cheap and (scaled up) already soft. */
 private const val AMBIENT_PX = 48
-
-/** How much the art swells at full bass (Glow). */
-private const val PULSE_SCALE = 0.35f
 
 /** One drift across and back takes twice this. */
 private const val DRIFT_MS = 40_000

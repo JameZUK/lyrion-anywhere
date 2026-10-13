@@ -172,9 +172,14 @@ fun OfflineApp(
                 }
             }
             composable<OfflineNowPlayingRoute> {
-                OfflineScreen(stringResource(R.string.title_now_playing), onBack = { nav.popBackStack() }) {
-                    OfflineNowPlayingScreen(player, offlineClock, offlineNowPlayingActions(playerVm), visual = playerVm)
-                }
+                // No top app bar: a small close chevron over the art instead.
+                OfflineNowPlayingScreen(
+                    player,
+                    offlineClock,
+                    offlineNowPlayingActions(playerVm),
+                    visual = playerVm,
+                    onClose = { nav.popBackStack() },
+                )
             }
         }
     }

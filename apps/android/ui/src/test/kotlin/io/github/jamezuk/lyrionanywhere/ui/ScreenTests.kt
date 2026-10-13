@@ -9,6 +9,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.isToggleable
@@ -179,7 +180,7 @@ class ScreenTests {
     }
 
     @Test
-    fun nowPlayingOnThisPhoneShowsTheSignalPath() {
+    fun nowPlayingOnThisPhoneShowsTheSignalPathOnDemand() {
         compose.setContent {
             LyrionTheme(dynamicColour = false) {
                 NowPlayingScreen(
@@ -193,12 +194,16 @@ class ScreenTests {
                             status = localStatus("02:4c:41:00:00:01"),
                             signalPath = signalPath(),
                         ),
+                        nowPlaying = io.github.jamezuk.lyrionanywhere.data.NowPlayingPrefs(layout = io.github.jamezuk.lyrionanywhere.data.NowPlayingLayout.INFO),
                     ),
                     clock = { 0L },
                     actions = NowPlayingActions({}, {}, {}, {}, {}, {}, {}, {}, {}, {}),
                 )
             }
         }
-        compose.onNodeWithText("Signal path").performScrollTo().assertIsDisplayed()
+        // Not on screen all the time: the Info layout's button opens it as a sheet.
+        compose.onNodeWithText("Signal path").assertDoesNotExist()
+        compose.onNodeWithTag("signal-path-button").performScrollTo().performClick()
+        compose.onNodeWithText("Signal path").assertIsDisplayed()
     }
 }
