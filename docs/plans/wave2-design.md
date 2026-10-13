@@ -286,6 +286,20 @@ Detailed on 2026-10-13. Android and web, as noted against each item.
   - as a Library view (a *Filters* chip);
   - as a Home shelf (a new `filter` shelf type);
   - played or shuffled. That means its first albums, up to 50, loaded through the existing album play path.
+- **The contract (gateway, web and Android build to it):**
+  - **A filter:** `{"id": n, "name": "…", "rules": [...], "sort": "album"|"artistalbum"|"yearalbum"|"new"|"random", "limit": 1–500}`.
+  - **Rules:**
+    - `{"field":"genre","in":[genre ids, 1–20]}`
+    - `{"field":"decade","is":1990}`, a multiple of 10 from 1900 to 2090
+    - `{"field":"artist","is":artist id}`, optionally with `"role"` set to one of the browse roles (ALBUMARTIST, ARTIST, COMPOSER, CONDUCTOR, BAND, TRACKARTIST)
+    - `{"field":"compilation","is":true|false}`
+  - **Limits:** 1–8 rules, each field at most once. The name is 1–64 characters, cleaned like device names. The body is at most 4 KiB, unknown keys are refused, and a user has at most 50 filters.
+  - **Endpoints:**
+    - `GET /v1/me/filters` → `{"filters":[…]}`
+    - `POST` (no `id`) → 201 `{"id"}`
+    - `PUT /v1/me/filters/{id}` replaces a filter, `DELETE` removes it; both 404 for someone else's
+    - `GET /v1/me/filters/{id}/albums?from=0&n=50` → `{"albums":[album ids], "count": total}`, where n is at most 100. Clients load details by id, as for shelves.
+  - **Home shelf:** `{"type":"filter","id":n}`.
 - **Later:** "any" rules, track-level fields (rating, play count, format) and download rules come in v2.
 - **Tests:** negative tests for every field and operator, and for oversize or nested specs. Robustness tests for the spec parser. Integration tests against the fake LMS.
 
