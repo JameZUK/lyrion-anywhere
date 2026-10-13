@@ -43,6 +43,7 @@ pub mod discovery;
 pub mod edits;
 pub mod error;
 pub mod events;
+pub mod info;
 pub mod library;
 pub mod lyrics;
 pub mod me;
@@ -68,6 +69,7 @@ pub use auto::{BrowseNode, PageWindow};
 pub use discovery::{Discovery, DiscoveryOptions, DstmProvider, DstmState, RadioPlan, RadioSeed};
 pub use error::ApiError;
 pub use events::{EventListener, EventSubscription, Events, EventsState, ServerEvent};
+pub use info::{AlbumInfo, ArtistInfo};
 pub use library::{FavouriteLibraryItems, MusicLibrary};
 pub use lyrics::{LyricLine, TrackLyrics};
 pub use me::{

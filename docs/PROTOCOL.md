@@ -477,7 +477,7 @@ Allowed paths (validated on the raw, still-encoded path):
 |---|---|
 | `music/<id>/cover[_WxH[_m]][.ext]`, `music/<id>/thumb…` | Numeric or hex track id |
 | `music/current/cover…?player=<mac>` | Only for players the caller may control; not cached |
-| `imageproxy/<url-encoded http(s) URL>/image[_WxH[_m]][.ext]` | Only for image URLs LMS itself returned in an image field (`image`, `icon`, `icon-id`, `artwork_url`, `coverart`, `cover`) of an earlier, filtered `/v1/rpc` response, and never for a URL on the home network or the server itself: the host must not be a local host (as defined under response filtering, which covers single-label names and wildcard-DNS names such as `10.0.0.5.nip.io`), and must not resolve, from the gateway within 2 s, to any local address. The lookup can't stop DNS rebinding (LMS resolves the name again when it fetches), and a name that doesn't resolve is judged by the name alone. Anything else would let a user make LMS fetch arbitrary URLs on the home network (SSRF): text such as track titles and player names can be set by users, so it never counts. |
+| `imageproxy/<url-encoded http(s) URL>/image[_WxH[_m]][.ext]` | Only for image URLs LMS itself returned in an image field (`image`, `icon`, `icon-id`, `artwork_url`, `coverart`, `cover`) of an earlier, filtered `/v1/rpc` response, or as an artist's photo in a `/v1/info/artist/{id}` answer, and never for a URL on the home network or the server itself: the host must not be a local host (as defined under response filtering, which covers single-label names and wildcard-DNS names such as `10.0.0.5.nip.io`), and must not resolve, from the gateway within 2 s, to any local address. The lookup can't stop DNS rebinding (LMS resolves the name again when it fetches), and a name that doesn't resolve is judged by the name alone. Anything else would let a user make LMS fetch arbitrary URLs on the home network (SSRF): text such as track titles and player names can be set by users, so it never counts. |
 | `plugins/<Name>/html/…`, `plugins/cache/icons/…`, `html/images/…` | Image files only (`png`, `jpg`, `gif`, `svg`); no `..`, `//` or `%` encodings |
 
 Rules for what is relayed:
@@ -920,6 +920,46 @@ The lyrics of a library track, for Now playing (docs/plans/wave1-design.md §9).
 - 503: LMS didn't answer.
 
 **Caching:** answers, and "no lyrics", are remembered for 15 minutes, for up to 512 tracks. Every answer is `Cache-Control: private, no-store`.
+
+## Artist and album information (`GET /v1/info/artist/{id}`, `GET /v1/info/album/{id}`)
+
+Artist biographies and photos, and album reviews, for the artist and album pages (docs/plans/ux-research.md X5, part 1).
+
+**Who may ask:** any signed-in user: a bearer access token (401 without one). It counts towards the per-user `/v1/me/…` allowance (429 with `Retry-After` beyond it).
+
+**Request:** a library artist or album id only: a positive integer, at most 12 digits, no leading zero. Anything else is 404, and any query string is 400 `unknown parameter`. No name, path or URL is ever taken from the client.
+
+**Where it comes from:** the Music & Artist Information plugin, if it is installed. The gateway sends exactly these commands, nothing else:
+- `musicartistinfo biography artist_id:<id>` and `musicartistinfo artistphoto artist_id:<id>` (at the same time);
+- `musicartistinfo albumreview album_id:<id>`.
+
+The plugin answers from its cache, local files and whatever online services the server's owner has enabled in it. The gateway itself never calls such a service.
+
+**Answers:** 200, always with every field (`null` when there is nothing):
+
+```json
+{"biography":"First paragraph.\n\nSecond paragraph.","photo":"/v1/art/imageproxy/https%3A%2F%2Fimages%2Eexample%2Ecom%2Fa%2Ejpg/image","credits":"Discogs"}
+{"review":"A fine record."}
+```
+
+- **Text** (`biography`, `review`, `credits`) is plain text, cleaned on the gateway. Clients must still show it as text, never as markup.
+  - HTML tags are removed, and so is the content of `script`, `style` and similar elements and of comments. Block elements become line and paragraph breaks.
+  - Common entities are decoded, once.
+  - Control characters and invisible formatting characters (bidirectional overrides, zero-width characters) are removed.
+  - Whitespace is collapsed. Lines are separated by `\n` and paragraphs by `\n\n`.
+  - Lines that look like a server path or a LAN address are dropped, as in every other answer.
+  - At most 20,000 characters (credits: 120), cut at a word with `…`. At most 512 KiB of the plugin's text is read.
+- **Photo:** the plugin names an image on another site. That URL is never handed to clients.
+  - If it is an http(s) URL whose host is not on the home network (the image proxy's rules under Artwork), the gateway adds it to the image proxy's allow-list. It answers with the proxy's path, `/v1/art/imageproxy/<url-encoded URL>/image`.
+  - Clients fetch that path like any artwork, with their bearer token. They may add a size (`image_600x600`). LMS fetches the image, and only after the image proxy's checks (including the DNS check).
+  - Anything else (a local or unusual URL, a path) means `photo` is `null`. `credits` is only given with a photo.
+
+**Refusals:**
+- 404 `no such artist` or `no such album`: a malformed id. An id the library doesn't have is a 200 with every field `null`.
+- 429 with `Retry-After`: 4 requests are already waiting on the plugin, which may go online. Each lookup also has a time limit (12 s by default).
+- 503 `the server didn't answer`: no lookup succeeded in time. For an artist, if only one of the two lookups succeeded, its part is answered and the other part is `null`.
+
+**Caching:** answers are remembered for 24 hours, and answers with nothing in them for 1 hour, for up to 1,024 artists and albums. Failures, timeouts and half answers are never remembered. A remembered photo is added to the image proxy's allow-list again each time it is answered. Every answer is `Cache-Control: private, no-store`.
 
 ## Events (`WS /v1/events`)
 

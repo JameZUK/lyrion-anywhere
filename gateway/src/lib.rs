@@ -41,6 +41,7 @@ pub mod filters;
 mod flac_strip;
 pub mod history;
 pub mod home;
+pub mod info;
 pub mod limits;
 pub mod live;
 pub mod lyrics;
@@ -134,6 +135,9 @@ pub struct Config {
     pub download_lookup_timeout: Duration,
     /// Time limit for LMS to start answering a download request.
     pub download_header_timeout: Duration,
+    /// Time limit for one Music & Artist Information lookup (biography, review, photo),
+    /// which may go online.
+    pub info_lookup_timeout: Duration,
     /// Longest LMS may pause mid-download.
     pub download_read_timeout: Duration,
     /// Event sockets one device may hold open; a newer one closes the oldest.
@@ -210,6 +214,7 @@ impl Default for Config {
             downloads_per_user: 3,
             download_lookup_timeout: Duration::from_secs(10),
             download_header_timeout: Duration::from_secs(20),
+            info_lookup_timeout: info::LOOKUP_TIMEOUT,
             download_read_timeout: Duration::from_secs(30),
             events_per_device: 4,
             events_per_user: 16,
@@ -280,6 +285,8 @@ pub struct Gateway {
     history_upkeep: history::Upkeep,
     /// Lyrics answers and the plugin lookup limit.
     lyrics: lyrics::LyricsCache,
+    /// Artist and album information answers and the lookup limit.
+    info: info::InfoCache,
     /// Free slots for live Opus encodes.
     live_slots: Arc<tokio::sync::Semaphore>,
 }
@@ -355,6 +362,7 @@ impl Gateway {
             filter_results: Default::default(),
             history_upkeep: Default::default(),
             lyrics: Default::default(),
+            info: Default::default(),
             live_slots: Arc::new(tokio::sync::Semaphore::new(cfg.live_transcode_jobs)),
             cfg,
         })
@@ -498,6 +506,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/download/track/{id}", get(download::track))
         .route("/v1/analysis/track/{id}", get(analysis::track))
         .route("/v1/lyrics/track/{id}", get(lyrics::track))
+        .route("/v1/info/artist/{id}", get(info::artist))
+        .route("/v1/info/album/{id}", get(info::album))
         .route(
             "/v1/players/{player}/alarms",
             get(alarms::list).post(alarms::add),

@@ -13,6 +13,8 @@
 	import AlbumGrid from '$lib/components/AlbumGrid.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
+	import InfoText from '$lib/components/InfoText.svelte';
+	import { NO_ARTIST_INFO, sanitiseArtistInfo, type ArtistInfo } from '$lib/info/info';
 
 	let showMore = $state(false);
 
@@ -89,6 +91,38 @@
 		return () => (live = false);
 	});
 
+	// Biography and photo (Music & Artist Information plugin, through the gateway): loaded
+	// lazily on the artist's own page; anything missing or failing is simply not shown.
+	let info = $state<ArtistInfo>(NO_ARTIST_INFO);
+	let photoSrc = $state('');
+	$effect(() => {
+		const id = artistId;
+		const r = role;
+		info = NO_ARTIST_INFO;
+		if (id === null || r !== undefined) return;
+		let live = true;
+		api.info?.('artist', id).then(
+			(v) => live && (info = sanitiseArtistInfo(v, 400)),
+			() => {},
+		);
+		return () => (live = false);
+	});
+	$effect(() => {
+		const p = info.photo;
+		photoSrc = '';
+		if (!p) return;
+		let live = true;
+		const release = api.retainArt?.(p);
+		api.art(p).then(
+			(u) => live && (photoSrc = u),
+			() => {},
+		);
+		return () => {
+			live = false;
+			release?.();
+		};
+	});
+
 	/** Chips are worth showing once there is more than the usual album artist / artist pair. */
 	const showRoles = $derived(!!role || roles.some((r) => r.role !== 'ALBUMARTIST' && r.role !== 'ARTIST'));
 	const roleLabel = $derived(role ? ROLE_LABELS[role] : '');
@@ -101,8 +135,18 @@
 		<p class="error">{error}</p>
 	{:else if artistId !== null}
 		{@const id = artistId}
-		<p class="kind muted">{roleLabel || 'Artist'}</p>
-		<h1>{textOf(name) || '…'}{#if roleLabel}<span class="sr-only">{` · ${roleLabel}`}</span>{/if}</h1>
+		<div class="head" class:with-photo={!!photoSrc}>
+			{#if photoSrc}
+				<figure class="photo" data-artist-photo>
+					<img src={photoSrc} alt={textOf(name) ? `Photo of ${textOf(name)}` : 'Artist photo'} draggable="false" onerror={() => (photoSrc = '')} />
+					{#if info.credits}<figcaption class="muted">Photo: {info.credits}</figcaption>{/if}
+				</figure>
+			{/if}
+			<div>
+				<p class="kind muted">{roleLabel || 'Artist'}</p>
+				<h1>{textOf(name) || '…'}{#if roleLabel}<span class="sr-only">{` · ${roleLabel}`}</span>{/if}</h1>
+			</div>
+		</div>
 		{#if showRoles && roles.length}
 			<nav class="roles" aria-label="Appears as" data-appears-as>
 				<span class="muted lead" aria-hidden="true">Appears as</span>
@@ -133,6 +177,9 @@
 				<button class="btn" onclick={() => (showMore = true)}><Icon name="more" size={18} />More</button>
 			</div>
 		{/if}
+		{#if !role && info.biography}
+			<InfoText heading="Biography" text={info.biography} />
+		{/if}
 		<h2>{albums.length} {albums.length === 1 ? 'album' : 'albums'}{roleLabel ? ` as ${roleLabel.toLowerCase()}` : ''}</h2>
 		<AlbumGrid {albums} showArtist={!!role} />
 		{#if showMore}<ContextMenu kind="artist" {id} title={textOf(name)} onclose={() => (showMore = false)} />{/if}
@@ -156,6 +203,30 @@
 		flex-wrap: wrap;
 		gap: 0.6rem;
 		margin-bottom: 2rem;
+	}
+	.head.with-photo {
+		display: flex;
+		align-items: center;
+		gap: 1.25rem;
+		margin-bottom: 0.8rem;
+	}
+	.photo {
+		margin: 0;
+		flex: none;
+		width: clamp(96px, 18vw, 160px);
+	}
+	.photo img {
+		display: block;
+		width: 100%;
+		aspect-ratio: 1;
+		object-fit: cover;
+		border-radius: 50%;
+		box-shadow: var(--shadow);
+	}
+	.photo figcaption {
+		font-size: 0.7rem;
+		text-align: center;
+		margin-top: 0.3rem;
 	}
 	h2 {
 		font-size: 1rem;

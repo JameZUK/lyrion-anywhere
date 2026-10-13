@@ -398,8 +398,16 @@ class AlbumViewModel(
     private val _state = MutableStateFlow<Loadable<AlbumDetail>>(Loadable.Loading)
     val state: StateFlow<Loadable<AlbumDetail>> = _state.asStateFlow()
 
+    /** The album's review (X5), once loaded; null while loading, when there is none, or on failure. */
+    private val _review = MutableStateFlow<String?>(null)
+    val review: StateFlow<String?> = _review.asStateFlow()
+
     init {
         load()
+        // Lazily, after the album itself: a slow online lookup never holds the page up.
+        viewModelScope.launch {
+            _review.value = (library.albumInfo(albumId) as? ApiResult.Ok)?.value?.review?.takeIf { it.isNotBlank() }
+        }
     }
 
     fun load() {
@@ -462,8 +470,16 @@ class ArtistViewModel(
     private val _state = MutableStateFlow<Loadable<ArtistDetail>>(Loadable.Loading)
     val state: StateFlow<Loadable<ArtistDetail>> = _state.asStateFlow()
 
+    /** The artist's biography and photo (X5), once loaded; null while loading or on failure. */
+    private val _info = MutableStateFlow<io.github.jamezuk.lyrionanywhere.core.ArtistInfo?>(null)
+    val info: StateFlow<io.github.jamezuk.lyrionanywhere.core.ArtistInfo?> = _info.asStateFlow()
+
     init {
         load()
+        // Lazily, after the albums: a slow online lookup never holds the page up.
+        viewModelScope.launch {
+            _info.value = (library.artistInfo(artistId) as? ApiResult.Ok)?.value
+        }
     }
 
     fun load() {

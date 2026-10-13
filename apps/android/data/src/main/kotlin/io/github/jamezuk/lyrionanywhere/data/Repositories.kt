@@ -1,6 +1,8 @@
 package io.github.jamezuk.lyrionanywhere.data
 
 import io.github.jamezuk.lyrionanywhere.core.Album
+import io.github.jamezuk.lyrionanywhere.core.AlbumInfo
+import io.github.jamezuk.lyrionanywhere.core.ArtistInfo
 import io.github.jamezuk.lyrionanywhere.core.AlbumPage
 import io.github.jamezuk.lyrionanywhere.core.AlbumSort
 import io.github.jamezuk.lyrionanywhere.core.AppEntry
@@ -103,6 +105,15 @@ interface LibraryRepository {
 
     /** The roles an artist has albums in, with how many ("Appears as"). */
     suspend fun roleCounts(artistId: Long, libraryId: String?): ApiResult<List<RoleCount>> = ApiResult.Ok(emptyList())
+
+    /**
+     * An artist's biography and photo, from the Music & Artist Information plugin on the
+     * server (X5); any part may be missing. Slow online lookups can fail: show nothing then.
+     */
+    suspend fun artistInfo(artistId: Long): ApiResult<ArtistInfo> = ApiResult.Ok(ArtistInfo(null, null, null))
+
+    /** An album's review, from the same plugin; it may be missing. */
+    suspend fun albumInfo(albumId: Long): ApiResult<AlbumInfo> = ApiResult.Ok(AlbumInfo(null))
 
     /** The A–Z index of albums in title order, narrowed as the list is (§3.2). */
     suspend fun albumIndex(filter: LibraryFilter): ApiResult<List<IndexEntry>> = ApiResult.Ok(emptyList())
@@ -340,6 +351,10 @@ class RustLibraryRepository(private val source: ConnectionSource) : LibraryRepos
     override suspend fun trackCredits(trackId: Long) = withLibrary { it.trackCredits(trackId) }
 
     override suspend fun roleCounts(artistId: Long, libraryId: String?) = withLibrary { it.roleCounts(artistId, libraryId) }
+
+    override suspend fun artistInfo(artistId: Long) = withLibrary { it.artistInfo(artistId) }
+
+    override suspend fun albumInfo(albumId: Long) = withLibrary { it.albumInfo(albumId) }
 
     override suspend fun albumIndex(filter: LibraryFilter) = withLibrary { it.albumIndex(filter) }
 

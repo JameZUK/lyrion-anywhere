@@ -55,6 +55,8 @@ Nothing is sent to the project, Google or anyone else. The app contains no analy
 
 **Lyrics:** the app asks your gateway for a track's lyrics by its id. The gateway reads them from the file's tags, or asks the *Music & Artist Information* plugin on your server if it is installed. That plugin may look lyrics up online, depending on how your server's owner has set it up. That is the plugin's own setting; Lyrion Anywhere never contacts a lyrics service itself.
 
+**Artist biographies, photos and album reviews:** on an artist's or album's page, the app asks your gateway for its biography, photo or review by the artist's or album's id. The gateway asks the *Music & Artist Information* plugin on your server, if it is installed. That plugin may look them up online (for example on Wikipedia, Last.fm or Discogs), depending on how your server's owner has set it up; the artist's or album's name then goes to those services from your server. Artist photos are fetched by your server, through your gateway, so your phone or browser never contacts the photo's site. Lyrion Anywhere never contacts these services itself.
+
 **Android Auto:** when you use the app in a car, Android Auto shows your library's titles, which the app hands to it on the phone. It is told the ids and names of items only, never addresses or files. Album covers reach it through the app's own private store on the phone: Android Auto is allowed to read each cover it is shown, and nothing else, and it never learns where a cover came from.
 
 ## What your gateway (the server) stores

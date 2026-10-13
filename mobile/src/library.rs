@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::commands::{self, AlbumSort, ArtistRole, Command, LibraryFilter};
 use crate::error::ApiError;
+use crate::info::{self, AlbumInfo, ArtistInfo};
 use crate::model::{
     self, Album, AlbumPage, ArtistPage, Credit, FavouritePage, FolderPage, Genre, GenrePage,
     IndexEntry, PlaylistPage, RoleCount, SearchResults, Track, TrackPage, VirtualLibrary, YearPage,
@@ -98,6 +99,27 @@ pub struct MusicLibrary {
 impl MusicLibrary {
     async fn query(&self, cmd: Command) -> Result<Value, ApiError> {
         self.session.core().rpc("", cmd).await
+    }
+}
+
+impl MusicLibrary {
+    /// `GET /v1/info/<kind>/<id>`: the answer, or `None` for the gateway's 404.
+    async fn info(&self, kind: &str, id: i64) -> Result<Option<Value>, ApiError> {
+        if !(1..=999_999_999_999).contains(&id) {
+            return Err(ApiError::invalid("bad id"));
+        }
+        match crate::me::exchange(
+            self.session.core(),
+            "GET",
+            &format!("v1/info/{kind}/{id}"),
+            None,
+        )
+        .await
+        {
+            Ok((_, v)) => Ok(Some(v)),
+            Err(ApiError::Server { status: 404, .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -336,6 +358,21 @@ impl MusicLibrary {
             .query(commands::search_playlists(&term, start, count)?)
             .await?;
         Ok(model::playlists_from(&v))
+    }
+
+    /// An artist's biography and photo, from the Music & Artist Information plugin on the
+    /// server (docs/plans/ux-research.md X5). Every part may be missing; apps hide what
+    /// is. Slow lookups can fail (`RateLimited`, `Server`): apps show nothing then.
+    pub async fn artist_info(&self, artist_id: i64) -> Result<ArtistInfo, ApiError> {
+        let v = self.info("artist", artist_id).await?;
+        Ok(v.map(|v| info::parse_artist_info(&v)).unwrap_or_default())
+    }
+
+    /// An album's review, from the Music & Artist Information plugin on the server; it may
+    /// be missing (see [`Self::artist_info`]).
+    pub async fn album_info(&self, album_id: i64) -> Result<AlbumInfo, ApiError> {
+        let v = self.info("album", album_id).await?;
+        Ok(v.map(|v| info::parse_album_info(&v)).unwrap_or_default())
     }
 
     /// Everyone credited on a library track, by role (empty if LMS doesn't know the track).

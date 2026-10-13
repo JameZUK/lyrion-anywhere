@@ -16,6 +16,37 @@ Dated entries, newest first.
   - Under "reduce motion" the halo is still, at rest, with no pulse or turning. It is hidden in the high-contrast theme. The scrim is unchanged, so text keeps its contrast. As before, only while this browser is the player and Glow is chosen; a remote player keeps the plain ambient background.
 - **Tests:** unit and robustness tests for the beat detector (a steady tone gives no repeated beats, a periodic kick one per kick, the refractory period, silence and NaN or garbage frames give none), the pulse envelope's timing, the halo's ranges, the colour clustering on synthetic pixels (and a grey image falling back to the accent) and the per-album cache; tab matching (with look-alike routes); component tests for the Home gear, the four-tab bar and sidebar order, the signal path disclosure, and the halo (turning only while playing, kicked by a beat in the frames, still under reduced motion, absent for a remote player).
 
+## 2026-10-13: Artist biographies, photos and album reviews (gateway, web, Android)
+
+Following `docs/plans/ux-research.md` X5, part 1 (booklets are part 2, later).
+
+- **Where they come from:** the *Music & Artist Information* plugin on the server, if it is installed. The gateway asks it with an id only: `musicartistinfo biography|artistphoto artist_id:<id>` or `musicartistinfo albumreview album_id:<id>`. The plugin may look these up online, under its owner's settings (docs/PRIVACY.md). Lyrion Anywhere calls no such service itself.
+- **Gateway:** `GET /v1/info/artist/{id}` answers `{"biography", "photo", "credits"}` and `GET /v1/info/album/{id}` answers `{"review"}`, each `null` when missing (docs/PROTOCOL.md, SPEC D26).
+  - Bearer token, the per-user allowance, and strict ids: a positive integer, otherwise 404; any query string is 400.
+  - **Text is cleaned to plain text:**
+    - HTML tags removed, with the content of scripts, styles and comments;
+    - entities decoded once;
+    - control and invisible formatting characters removed;
+    - whitespace collapsed, keeping paragraphs;
+    - lines naming a server path or a LAN address dropped;
+    - at most 20,000 characters.
+  - **Photos only through the image proxy:** the plugin's external image URL is never handed out. If it isn't on the home network, the gateway adds it to the image proxy's allow-list and answers with a `/v1/art/imageproxy/…` path. LMS fetches it only after the proxy's usual checks, DNS check included.
+  - At most 4 lookups at once (429 with `Retry-After`), each with a time limit (503 on a timeout). Answers are cached for 24 hours, and for 1 hour when nothing was found. Failures and half answers are never cached.
+- **Web:** the artist page shows the artist's photo (round, with its credit) and a Biography section. The album page shows a Review section.
+  - Both load after the page and are simply left out when missing or failing.
+  - Long text shows three lines and a "Read more" disclosure button (`aria-expanded`, `aria-controls`) under a proper heading.
+  - Text is always rendered as text.
+- **Android:** the same on the artist and album screens.
+  - The photo replaces the header art, and falls back to the album art if it can't be loaded.
+  - The text is expandable, with headings for TalkBack and a "Read more" button that says whether the text is collapsed or expanded.
+  - Loaded lazily, so a slow lookup never holds the page up; hidden on failure.
+- **Mobile core:** `MusicLibrary.artist_info(id)` and `album_info(id)`. Ids are checked on the device, and answers are checked again as untrusted input (the photo only as an image-proxy artwork key).
+- **Tests:**
+  - gateway: unit and fuzz-style tests for the text cleaning (HTML, entities, scripts and styles, control characters, huge and pathological input, never panicking) and the photo rules. Integration tests against the fake LMS cover success, missing data, local photo URLs, auth refusal, hostile ids (negative, zero, non-numeric, overflow, traversal, injection), that only the three plugin commands with an id reach LMS, that the photo is only a proxied path and is fetchable through it, caching, timeouts, the lookup limit and the allowance;
+  - mobile: unit and robustness tests, and an integration test through the gateway harness;
+  - web: the checks (hostile and random input), the API call, the disclosure, and both pages;
+  - Android: view models, screens and an accessibility audit.
+
 ## 2026-10-13: Loudness-compensated volume (Android)
 
 - **Loudness-compensated volume** for this phone's player: a switch in Settings › Sound, next to per-output EQ, off by default and remembered on the device. At low volume the ear hears less bass and treble (the ISO 226 equal-loudness contours), so the engine adds a low shelf at 100 Hz and a high shelf at 10 kHz that grow as the player's volume is turned down:

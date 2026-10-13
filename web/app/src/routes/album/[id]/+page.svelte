@@ -10,6 +10,8 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import TrackList from '$lib/components/TrackList.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
+	import InfoText from '$lib/components/InfoText.svelte';
+	import { sanitiseAlbumInfo } from '$lib/info/info';
 	import type { TrackBadge } from '$lib/components/track-badge';
 	import { downloads } from '$lib/offline/index.svelte';
 	import { defaultFormat, networkType } from '$lib/offline/settings';
@@ -47,6 +49,21 @@
 				if (!album) error = 'Album not found.';
 			},
 			(e) => live && (error = (e as Error).message),
+		);
+		return () => (live = false);
+	});
+
+	// The album's review (Music & Artist Information plugin, through the gateway): loaded
+	// lazily; none, or a failure, is simply not shown.
+	let review = $state<string | null>(null);
+	$effect(() => {
+		const id = albumId;
+		review = null;
+		if (id === null) return;
+		let live = true;
+		api.info?.('album', id).then(
+			(v) => live && (review = sanitiseAlbumInfo(v).review),
+			() => {},
 		);
 		return () => (live = false);
 	});
@@ -150,6 +167,9 @@
 				{/if}
 			</div>
 		</header>
+		{#if review}
+			<div class="review"><InfoText heading="Review" text={review} /></div>
+		{/if}
 		<TrackList
 			{tracks}
 			showArtist={many}
@@ -230,6 +250,9 @@
 		border-radius: var(--radius-sm);
 		background: var(--bg-raised);
 		color: var(--fg);
+	}
+	.review {
+		margin-top: -0.5rem;
 	}
 	.small {
 		font-size: 0.85rem;

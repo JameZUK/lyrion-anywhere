@@ -87,6 +87,25 @@ fn fake_credits() -> Value {
     }]})
 }
 
+/// The Music & Artist Information plugin (invented names): artist 3 has a biography with
+/// HTML and a photo on an external host; album 8 has a review; anything else has nothing.
+fn fake_mai(words: &Value) -> Value {
+    match (words[1].as_str(), words[2].as_str()) {
+        (Some("biography"), Some("artist_id:3")) => json!({
+            "artist_id": "3", "artist": "Invented Artist",
+            "biography": "<p>An invented artist &amp; friends.</p><script>x()</script><p>Second.</p>"
+        }),
+        (Some("artistphoto"), Some("artist_id:3")) => json!({
+            "artist_id": "3", "url": "https://images.example.com/a/3.jpg",
+            "credits": "Discogs", "width": "600", "height": "600"
+        }),
+        (Some("albumreview"), Some("album_id:8")) => json!({
+            "album_id": "8", "albumreview": "A <i>fine</i> record."
+        }),
+        _ => json!({"error": "No information found"}),
+    }
+}
+
 fn fake_result(cmd: &str) -> Value {
     match cmd {
         "albums" => json!({"count": 2, "albums_loop": [
@@ -373,6 +392,7 @@ impl FakeLms {
                         {
                             fake_alarm(&params[1])
                         }
+                        _ if cmd == "musicartistinfo" => fake_mai(&params[1]),
                         _ => fake_result(&cmd),
                     };
                     // The A–Z index (`tags:Z`) of albums and artists.
@@ -446,7 +466,10 @@ impl FakeLms {
                     return ([("content-type", "text/html")], "<script>alert(1)</script>")
                         .into_response();
                 }
-                if path.starts_with("/music/") || path.starts_with("/html/images/") {
+                if path.starts_with("/music/")
+                    || path.starts_with("/html/images/")
+                    || path.starts_with("/imageproxy/")
+                {
                     return (
                         [("content-type", "image/jpeg")],
                         Body::from(b"IMAGEDATA".to_vec()),
