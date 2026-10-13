@@ -197,6 +197,9 @@ pub(crate) struct Engine {
     disconnected_at: Option<Instant>,
     reconnect_at: Option<(Instant, bool)>,
     renewals_in_a_row: u32,
+    /// Protocol errors close together, and when the last was: each backs off further, so
+    /// a server that keeps sending a bad frame isn't reconnected to in a tight loop.
+    bad_frames: (u32, Option<Instant>),
     outbox: VecDeque<Vec<u8>>,
     connection: PlayerConnection,
     // Player.
@@ -262,6 +265,7 @@ impl Engine {
             disconnected_at: None,
             reconnect_at: None,
             renewals_in_a_row: 0,
+            bad_frames: (0, None),
             outbox: VecDeque::new(),
             connection: PlayerConnection::Connecting,
             player: None,
@@ -568,10 +572,14 @@ impl Engine {
                 let now = self.now_ms();
                 let Some(p) = &mut self.player else { return };
                 if p.on_control_data(&bytes, now).is_err() {
-                    // A protocol error: drop the socket and resume.
+                    // A protocol error: drop the socket and resume, backing off more for
+                    // each one close to the last (up to the usual most).
                     if let Some(t) = self.ws_task.take() {
                         t.abort();
                     }
+                    let n = bad_frame_streak(self.bad_frames, Instant::now());
+                    self.bad_frames = (n, Some(Instant::now()));
+                    self.attempt = self.attempt.max(n - 1);
                     self.on_closed(None, "");
                 }
                 self.run_actions();
@@ -994,6 +1002,17 @@ impl Engine {
 }
 
 /// A content type from the gateway, made safe to put in a header line for LMS.
+/// Protocol errors this close together count as one streak.
+const BAD_FRAME_WINDOW: Duration = Duration::from_secs(300);
+
+/// The streak a protocol error at `now` makes, after `(streak, last)`.
+fn bad_frame_streak((n, last): (u32, Option<Instant>), now: Instant) -> u32 {
+    match last {
+        Some(t) if now.saturating_duration_since(t) < BAD_FRAME_WINDOW => n.saturating_add(1),
+        _ => 1,
+    }
+}
+
 fn clean_content_type(ct: &str) -> String {
     let ok =
         !ct.is_empty() && ct.len() <= 100 && ct.bytes().all(|b| b.is_ascii_graphic() || b == b' ');
@@ -1252,6 +1271,33 @@ async fn stream_task(job: StreamJob) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bad_frames_close_together_back_off_further() {
+        // Regression: a server sending a bad frame after every resume was reconnected to
+        // at once, for ever (the greeting reset the backoff each time).
+        let t0 = Instant::now();
+        assert_eq!(bad_frame_streak((0, None), t0), 1);
+        let n2 = bad_frame_streak((1, Some(t0)), t0 + Duration::from_secs(2));
+        assert_eq!(n2, 2);
+        assert_eq!(
+            bad_frame_streak((n2, Some(t0)), t0 + Duration::from_secs(4)),
+            3
+        );
+        // Long after: a new streak.
+        assert_eq!(
+            bad_frame_streak(
+                (7, Some(t0)),
+                t0 + BAD_FRAME_WINDOW + Duration::from_secs(1)
+            ),
+            1
+        );
+        // The streak sets the backoff: it grows with each one.
+        assert!(
+            protocol::backoff(2, 0.5) > protocol::backoff(0, 0.5),
+            "later attempts wait longer"
+        );
+    }
 
     #[test]
     fn content_types_are_made_header_safe() {

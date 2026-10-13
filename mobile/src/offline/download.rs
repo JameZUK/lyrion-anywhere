@@ -1422,8 +1422,14 @@ impl Downloader {
             last_publish: None,
         };
         for (req, choice, paused) in saved {
+            let before = actor.items.len();
             actor.enqueue(vec![req], choice);
-            if paused && let Some(it) = actor.items.last_mut() {
+            // Only if this one was queued: one skipped (already on the device, say) must
+            // not pause the one before it.
+            if paused
+                && actor.items.len() > before
+                && let Some(it) = actor.items.last_mut()
+            {
                 it.state = DownloadState::Paused;
             }
         }

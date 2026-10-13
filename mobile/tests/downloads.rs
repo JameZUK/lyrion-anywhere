@@ -788,6 +788,53 @@ async fn the_queue_survives_a_restart() {
     dl.shutdown();
 }
 
+/// Regression: a paused entry that was skipped on restart (already on the device) paused
+/// the entry before it instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_skipped_paused_entry_never_pauses_another() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let s = setup(audio(20_000), vec![], DownloadPolicy::default()).await;
+    s.dl.enqueue(vec![manual(5)], FormatChoice::Original);
+    wait_state(&s.seen, 5, DownloadState::Done, 10).await;
+    s.dl.shutdown();
+    s.fake.script.lock().unwrap().steps = vec![Step::Stall(gate.clone())].into();
+    // Track 6 to fetch, then 5 (on the device already) saved as paused.
+    std::fs::write(
+        std::path::Path::new(&s.root)
+            .join(scope_name(&s.url, "alice"))
+            .join("queue.json"),
+        serde_json::to_vec(&json!([
+            {"id": 6, "choice": "original", "origin": "manual", "paused": false},
+            {"id": 5, "choice": "original", "origin": "manual", "paused": true},
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+    let seen = Arc::new(Seen::default());
+    let dl = Downloader::new(
+        s.fake.session().await,
+        s.lib.clone(),
+        DownloadPolicy::default(),
+        NetworkKind::Wifi,
+        seen.clone(),
+    )
+    .unwrap();
+    for _ in 0..250 {
+        if seen.state_of(6).is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let state = seen.state_of(6);
+    assert!(
+        matches!(state, Some(s) if s != DownloadState::Paused),
+        "track 6: {state:?}"
+    );
+    dl.shutdown();
+    gate.notify_waiters();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plays_are_sent_once_and_kept_by_an_older_server() {
     let s = setup(audio(10), vec![], DownloadPolicy::default()).await;
