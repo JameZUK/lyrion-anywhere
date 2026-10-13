@@ -186,7 +186,13 @@ impl Relay {
     /// The byte count LMS sent for `client` bytes the client received: they differ by
     /// what stripping removed. Unchanged for other streams, and until the metadata has
     /// been dealt with.
+    ///
+    /// The client's count is first clamped to what this relay has produced: a player that
+    /// played the rest of a track from its replay cache (rolling cache B2) reports the whole
+    /// stream while the relay read only its start, and LMS must never hear of bytes it
+    /// didn't send (spike S4).
     pub fn upstream_bytes(&self, client: u64) -> u64 {
+        let client = client.min(self.state.lock().unwrap().received);
         if let Some(live) = &self.live {
             return live.counts.upstream_bytes(client);
         }

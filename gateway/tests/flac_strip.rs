@@ -196,7 +196,8 @@ async fn lms_hears_the_bytes_it_sent() {
         })
         .encode()
     };
-    // (A hostile count can't overflow: it saturates.)
+    // A count beyond what the relay sent (a hostile one, or a replay cache that played the
+    // rest from the phone) is clamped to what LMS sent.
     for b in [0, header - 1, header, got.len() as u64, u64::MAX] {
         ws.send(Message::Binary(stat(b).into())).await.unwrap();
     }
@@ -204,9 +205,73 @@ async fn lms_hears_the_bytes_it_sent() {
     let seen: Vec<u64> = h.lms.stats().iter().map(|s| s.bytes_received).collect();
     assert_eq!(
         seen,
-        [0, header - 1, header + removed, file.len() as u64, u64::MAX],
+        [
+            0,
+            header - 1,
+            header + removed,
+            file.len() as u64,
+            file.len() as u64
+        ],
         "past the metadata, LMS's own count"
     );
+}
+
+/// Spike S4 (rolling cache): a player whose replay cache served the rest of a track reports
+/// the whole stream in STAT `bytes_received`, though the relay read only its start. LMS is
+/// told only what it sent, the session carries on, and the next `strm` replaces the
+/// half-read relay.
+#[tokio::test]
+async fn counts_beyond_what_the_relay_sent_are_clamped() {
+    for format in [b'm', b'f'] {
+        // A small window, so the relay reads well short of the whole stream.
+        let mut h = harness_with(|c| c.replay_window = 128 * 1024).await;
+        let file = library_flac(0, 400);
+        *h.lms.stream_body.lock().unwrap() = Some(Arc::new(file.clone()));
+        let (mut ws, sid, mut lms) = announce(&mut h, format).await;
+        let stat = |bytes: u64| {
+            ClientMsg::Stat(Stat {
+                event: *b"STMt",
+                bytes_received: bytes,
+                ..Default::default()
+            })
+            .encode()
+        };
+        // Read the first 64 KiB, then stop, as a cache hit does.
+        let mut resp = h.get_stream(&sid, 1, Some(&h.tok_a)).await;
+        let mut got = 0usize;
+        while got < 64 * 1024 {
+            got += resp.chunk().await.unwrap().unwrap().len();
+        }
+        drop(resp);
+        ws.send(Message::Binary(stat(file.len() as u64).into()))
+            .await
+            .unwrap();
+        wait_for(|| h.lms.stats().len() == 1).await;
+        let told = h.lms.stats()[0].bytes_received;
+        assert!(told >= got as u64, "{told} < {got}");
+        assert!(
+            told < file.len() as u64,
+            "LMS is never told of bytes it didn't send"
+        );
+        // The session is unharmed: the next stream is relayed.
+        lms.write_all(&strm_format(
+            b's',
+            format,
+            Ipv4Addr::UNSPECIFIED,
+            &stream_req(h.mac_a),
+        ))
+        .await
+        .unwrap();
+        let mut resp = loop {
+            let r = h.get_stream(&sid, 2, Some(&h.tok_a)).await;
+            if r.status() == 200 {
+                break r;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let first = resp.chunk().await.unwrap().unwrap();
+        assert_eq!(first[..4], file[..4], "{}", format as char);
+    }
 }
 
 #[tokio::test]
