@@ -126,7 +126,13 @@ dependencies {
     implementation(libs.compose.material3.adaptive.navigation.suite)
     // The home-screen widget.
     implementation(libs.androidx.glance.appwidget)
+    // Foreground or not, for offline mode (its start-up initialiser is already merged in).
+    implementation(libs.androidx.lifecycle.process)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.junit)
+    testImplementation(platform(libs.compose.bom))
+    testImplementation(libs.compose.ui.test.junit4)
 }

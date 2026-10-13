@@ -242,6 +242,30 @@ class LocalPlayerRepositoryTest {
         assertEquals(listOf(false), handles.last().networks)
     }
 
+    /**
+     * Back in the foreground: a player waiting to reconnect tries again at once (its back-off
+     * reset by "network gone, back"); a connected one, or one without a network, is left alone.
+     */
+    @Test
+    fun reconnectNowOnlyKicksAReconnectingPlayer() = runTest {
+        val r = repo()
+        r.reconnectNow() // no player: nothing to do, no crash
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        val h = handles[0]
+        h.observer!!.onStatus(status())
+        r.reconnectNow()
+        assertEquals("connected: untouched", listOf(true), h.networks)
+        h.observer!!.onStatus(status(connection = PlayerConnection.Reconnecting(8_000uL)))
+        r.reconnectNow()
+        assertEquals(listOf(true, false, true), h.networks)
+        // No network: nothing to reconnect over (the engine waits for the network itself).
+        network.value = NetworkKind.OFFLINE
+        val before = h.networks.toList()
+        r.reconnectNow()
+        assertEquals(before, h.networks)
+    }
+
     /** Spools go at sign-out, revocation and a change of server or user, not when the player is merely switched off. */
     @Test
     fun spoolsAreClearedWhenTheSignInEnds() = runTest {

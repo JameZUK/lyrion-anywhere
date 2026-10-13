@@ -428,6 +428,22 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
   - play logging in IndexedDB, with sync-back and backoff. The Downloads page shows "N plays waiting to sync".
 - _Android, A6 (2026-10-11):_ Android Auto browses the library and the downloads and plays on this phone (D20); "Start radio" and "More like this" use AudioMuse-AI's menus or LMS's Don't Stop The Music; optional crossfades between albums (off by default, gapless and bit-perfect otherwise). See docs/plans/native-apps.md › A6.
 - _Android, A5 (2026-10-11):_ downloads (a Rust download manager, app-private storage), offline mode, and the local queue played through the same Rust engine as streaming (D14), with the Media3 session. Plays are logged and sent to `POST /v1/plays` as on the web. A revoked device deletes its downloads on its next connection. See docs/plans/native-apps.md › A5.
+- _Android, when offline mode takes the screen (2026-10-13, the owner's decisions):_
+  - Android cuts the network of an app that is in the background and not playing, so the phone's player drops there. That doesn't count as the server being away:
+    - The player's trouble counts only while the app is in use (in the foreground, after a 10 s grace on return) or while it plays.
+    - On return to the foreground, the player retries at once instead of waiting out its back-off. A sign-in that couldn't be checked is tried again.
+    - No network at all (flight mode, no signal) counts at once, foreground or not, after 3 s to ride out a handover.
+  - **On the current screen:** while reconnecting, a small "Reconnecting…" pill. After 5 s of counted trouble, or with no network, a banner: "Can’t reach your server · Downloads". Tapping it opens the downloads. Lists keep what they last loaded: a reload that fails doesn't replace them with an error.
+  - **Offline mode takes the whole screen** only:
+    - when there's no network as the app opens;
+    - when the server stays unreachable for 15 s while the app is in use;
+    - when the saved sign-in can't be checked at start-up (as before).
+    It keeps the screen until the link is back.
+  - **The place is kept:** the signed-in app's navigation back stack, each screen's saved state and scroll positions are held in a `SaveableStateHolder` above the switch (`AppPlaces`, keyed by server and device). Offline mode, a sign-in check or the "Signing in…" screen in between give the screen back where the user left it.
+    - This holds across a configuration change.
+    - After the process is killed, the app reopens on the same screen with its back stack. Each screen's own saved state, scroll included, starts afresh, as with any NavHost.
+    - Another account, or signing out, starts at Home.
+  - The connection is not kept alive in the background: there is no foreground service unless playing.
 
 ### 8.5 Security
 

@@ -596,19 +596,19 @@ class HomeFeedViewModel(
         val lib = LibraryFilter(libraryId = currentLibrary)
         viewModelScope.launch {
             val r = library.albums(0, CAROUSEL, AlbumSort.NEWEST, null, lib)
-            _state.update { it.copy(recent = r.loadable().mapReady { p -> p.items }) }
+            _state.update { it.copy(recent = r.loadable().mapReady { p -> p.items }.orKeep(it.recent)) }
         }
         viewModelScope.launch {
             val r = library.albums(0, CAROUSEL, AlbumSort.RANDOM, null, lib)
-            _state.update { it.copy(random = r.loadable().mapReady { p -> p.items }) }
+            _state.update { it.copy(random = r.loadable().mapReady { p -> p.items }.orKeep(it.random)) }
         }
         viewModelScope.launch {
             val r = library.favourites(0, CAROUSEL)
-            _state.update { it.copy(favourites = r.loadable().mapReady { p -> p.items }) }
+            _state.update { it.copy(favourites = r.loadable().mapReady { p -> p.items }.orKeep(it.favourites)) }
         }
         viewModelScope.launch {
             val r = library.playlists(0, CAROUSEL)
-            _state.update { it.copy(playlists = r.loadable().mapReady { p -> p.items }) }
+            _state.update { it.copy(playlists = r.loadable().mapReady { p -> p.items }.orKeep(it.playlists)) }
         }
         val m = me ?: return
         viewModelScope.launch {
@@ -641,8 +641,8 @@ class HomeFeedViewModel(
 
     private suspend fun loadStations(m: MeRepository) {
         val st = m.stations()
-        val menus = (m.menus() as? ApiResult.Ok)?.value.orEmpty()
-        _state.update { it.copy(stations = st.loadable(), menus = menus) }
+        val menus = (m.menus() as? ApiResult.Ok)?.value
+        _state.update { it.copy(stations = st.loadable().orKeep(it.stations), menus = menus ?: it.menus) }
     }
 
     /** Load what the shelves in [layout] show (only those not loaded yet, unless [all]). */
@@ -657,7 +657,7 @@ class HomeFeedViewModel(
                             is ApiResult.Ok -> m.albums(ids.value)
                             is ApiResult.Err -> ids
                         }
-                        _state.update { it.copy(history = it.history + (shelf.kind to r.loadable())) }
+                        _state.update { it.copy(history = it.history + (shelf.kind to r.loadable().orKeep(it.history[shelf.kind]))) }
                     }
                 }
                 ShelfKind.GENRE -> {
@@ -668,7 +668,7 @@ class HomeFeedViewModel(
                         val name = (library.genre(id) as? ApiResult.Ok)?.value?.name
                         _state.update {
                             it.copy(
-                                genres = it.genres + (id to r.loadable().mapReady { p -> p.items }),
+                                genres = it.genres + (id to r.loadable().mapReady { p -> p.items }.orKeep(it.genres[id])),
                                 genreNames = if (name != null) it.genreNames + (id to name) else it.genreNames,
                             )
                         }
@@ -685,7 +685,7 @@ class HomeFeedViewModel(
                             is ApiResult.Ok -> m.albums(ids.value.albums.filter(FilterLimits::validId))
                             is ApiResult.Err -> ids
                         }
-                        _state.update { it.copy(filterAlbums = it.filterAlbums + (id to r.loadable())) }
+                        _state.update { it.copy(filterAlbums = it.filterAlbums + (id to r.loadable().orKeep(it.filterAlbums[id]))) }
                     }
                 }
                 else -> {}
@@ -822,6 +822,13 @@ class HomeFeedViewModel(
         const val CAROUSEL = 20
     }
 }
+
+/**
+ * A reload that failed keeps what was shown before: a list that loaded stays on screen
+ * through a reconnect rather than turning into an error (SPEC §8.4).
+ */
+fun <T> Loadable<T>.orKeep(previous: Loadable<T>?): Loadable<T> =
+    if (this is Loadable.Failed && previous is Loadable.Ready) previous else this
 
 fun <T, R> Loadable<T>.mapReady(f: (T) -> R): Loadable<R> = when (this) {
     Loadable.Loading -> Loadable.Loading

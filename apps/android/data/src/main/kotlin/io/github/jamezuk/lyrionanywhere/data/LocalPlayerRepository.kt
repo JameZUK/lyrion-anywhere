@@ -129,6 +129,13 @@ interface LocalPlayerRepository {
      * player's level in LMS alone counts. Kept across restarts of the engine.
      */
     fun setLoudnessReferenceDb(db: Double?) {}
+
+    /**
+     * The app is back in the foreground: a player waiting out its reconnect back-off (as it
+     * does after Android cut the backgrounded app's network) tries again now. Nothing
+     * happens while it is connected or there is no network.
+     */
+    fun reconnectNow() {}
 }
 
 /** The engine's DSP for [sound] on [output], with the EQ left out while [bypass]. */
@@ -495,6 +502,16 @@ class RustLocalPlayerRepository(
         bypass = on
         _state.update { it.copy(eqBypass = on) }
         applyDsp()
+    }
+
+    override fun reconnectNow() {
+        if (!networkUp) return
+        if (_state.value.status?.connection !is io.github.jamezuk.lyrionanywhere.core.PlayerConnection.Reconnecting) return
+        val h = handle ?: return
+        // The engine retries at once (its back-off reset) when the network comes back: a
+        // brief "gone, back" says so. It has no connection to lose while reconnecting.
+        h.setNetworkAvailable(false)
+        h.setNetworkAvailable(true)
     }
 }
 

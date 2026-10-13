@@ -508,6 +508,10 @@
     <string name="offline_stop">Stop playing downloads</string>
     <string name="offline_banner">Offline: can’t reach %1$s. Showing your downloads.</string>
     <string name="offline_banner_signed_in">Offline. Showing your downloads.</string>
+    <string name="connection_unreachable_downloads">Can’t reach your server · Downloads</string>
+    <string name="connection_unreachable_description">Can’t reach your server. Open your downloads</string>
+    <string name="connection_open_downloads">open your downloads</string>
+    <string name="connection_reconnecting">Reconnecting…</string>
     <string name="playing_downloads">Downloads</string>
     <string name="playing_downloads_on_phone">Playing downloads on this phone</string>
     <string name="format_original">Original (as in your library)</string>

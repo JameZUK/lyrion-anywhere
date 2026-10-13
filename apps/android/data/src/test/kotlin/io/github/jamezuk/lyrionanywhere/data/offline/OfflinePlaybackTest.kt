@@ -396,9 +396,8 @@ class OfflineModeTest {
             auth,
             network,
             trouble,
-        ) {
-            retries++
-        }
+            retry = { retries++ },
+        )
 
         init {
             c.start()

@@ -151,7 +151,12 @@ class ListeningCardViewModel(
         job = viewModelScope.launch {
             val d = today()
             val offset = tz()
-            val month = (stats.stats(StatsPeriod.Month(d.year, d.monthValue), offset) as? ApiResult.Ok)?.value?.normalised()
+            val answer = stats.stats(StatsPeriod.Month(d.year, d.monthValue), offset)
+            // Couldn't reach the server (a reconnect, say): the card stays as it was.
+            if (answer is ApiResult.Err && answer.error is io.github.jamezuk.lyrionanywhere.data.AppError.Offline && _state.value.loaded) {
+                return@launch
+            }
+            val month = (answer as? ApiResult.Ok)?.value?.normalised()
             if (month == null || !month.enabled) {
                 _state.value = ListeningCardState(loaded = true)
                 return@launch

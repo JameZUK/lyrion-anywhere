@@ -23,6 +23,7 @@ import io.github.jamezuk.lyrionanywhere.ui.library.ArtistsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.library.GenresViewModel
 import io.github.jamezuk.lyrionanywhere.ui.library.HomeFeedViewModel
 import io.github.jamezuk.lyrionanywhere.ui.library.Loadable
+import io.github.jamezuk.lyrionanywhere.ui.library.orKeep
 import io.github.jamezuk.lyrionanywhere.ui.library.SearchViewModel
 import io.github.jamezuk.lyrionanywhere.ui.menus.AppsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.menus.MenuEvent
@@ -170,11 +171,28 @@ class BrowseViewModelTest : MainDispatcherTest() {
         assertEquals(setOf(AlbumSort.NEWEST, AlbumSort.RANDOM), library.albumCalls.map { it.third }.toSet())
         vm.reshuffle()
         assertEquals(AlbumSort.RANDOM, library.albumCalls.last().third)
-        // One failing carousel doesn't take the others with it.
+        // A reload that fails (a reconnect) keeps what was shown rather than an error.
+        val shown = vm.state.value.recent
         library.fail = AppError.Offline("down")
         vm.refresh()
-        assertTrue(vm.state.value.recent is Loadable.Failed)
+        assertEquals(shown, vm.state.value.recent)
         assertTrue(vm.state.value.favourites is Loadable.Ready)
+        // Nothing shown yet: the error is shown, and one failing carousel doesn't take the
+        // others with it.
+        val fresh = HomeFeedViewModel(library)
+        assertTrue(fresh.state.value.recent is Loadable.Failed)
+        assertTrue(fresh.state.value.favourites is Loadable.Ready)
+    }
+
+    @Test
+    fun aFailedReloadKeepsWhatWasShown() {
+        val ready: Loadable<Int> = Loadable.Ready(1)
+        val failed: Loadable<Int> = Loadable.Failed(AppError.Offline("down"))
+        assertEquals(ready, failed.orKeep(ready))
+        assertEquals(failed, failed.orKeep(null))
+        assertEquals(failed, failed.orKeep(Loadable.Loading))
+        assertEquals(Loadable.Ready(2), Loadable.Ready(2).orKeep(ready))
+        assertEquals(Loadable.Loading, (Loadable.Loading as Loadable<Int>).orKeep(ready))
     }
 }
 
