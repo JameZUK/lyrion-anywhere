@@ -254,6 +254,34 @@ describe('alarms page', () => {
 		expect(sent).toEqual([]);
 	});
 
+	// Regression: a slow listing for the previous player replaced the new player's.
+	test('switching players mid-request never shows the old player’s alarms', async () => {
+		const OTHER = '02:00:00:00:00:02';
+		fake.app.players = [
+			{ playerid: P, name: 'Kitchen' },
+			{ playerid: OTHER, name: 'Bedroom' },
+		];
+		const waiting: { path: string; answer: (body: unknown) => void }[] = [];
+		vi.stubGlobal('fetch', (path: string) => {
+			sent.push({ method: 'GET', path, body: undefined });
+			return new Promise<Response>((res) => waiting.push({ path, answer: (b) => res(new Response(JSON.stringify(b), { status: 200 })) }));
+		});
+		const alarm = (id: string, time: number) => ({ id, time, days: [1], enabled: true, repeat: true, volume: null, shuffle: 0, sound: null });
+		const r = render(AlarmsPage);
+		await waitFor(() => expect(waiting).toHaveLength(1));
+		fake.app.playerId = OTHER;
+		await waitFor(() => expect(waiting).toHaveLength(2));
+		expect(waiting[1]!.path).toBe(`/v1/players/${OTHER}/alarms`);
+		waiting[1]!.answer(listing([alarm('bbbbbbbb', 7200)]));
+		await waitFor(() => expect(r.container.querySelector('[data-alarm="bbbbbbbb"]')).not.toBeNull());
+		// The first player's answer arrives late: ignored.
+		waiting[0]!.answer(listing([alarm('aaaaaaaa', 3600)]));
+		await new Promise((res) => setTimeout(res, 10));
+		expect(r.container.querySelector('[data-alarm="aaaaaaaa"]')).toBeNull();
+		expect(r.container.querySelector('[data-alarm="bbbbbbbb"]')).not.toBeNull();
+		expect(r.container.textContent).toContain('On Bedroom');
+	});
+
 	test('a refusal is shown', async () => {
 		route = () => ({ status: 403, body: { error: 'you may not control this player' } });
 		const r = render(AlarmsPage);
