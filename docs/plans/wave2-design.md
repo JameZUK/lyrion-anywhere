@@ -199,7 +199,23 @@ As before:
 - British English;
 - placeholder names in fixtures.
 
-## 5 (outline; detailed before it starts)
+## 5. Car, platform and filters (part 4)
+
+Detailed on 2026-10-13. Android and web, as noted against each item.
+
+### 5.1 Car mode (U8)
+
+- **The driving screen (Android and web):**
+  - huge art;
+  - three giant buttons: previous, play/pause and next. A long press on play/pause stops;
+  - "Start radio" from the current track;
+  - a large elapsed time;
+  - on Android, voice search (the existing voice-search intent);
+  - one level of Favourites and Stations, with no deeper lists.
+  - It stays on (keep-screen-on) while playing. Touch targets are at least 76 dp/px, there is high contrast, and no visualiser.
+- **Opening it:**
+  - by a button on Now playing (both apps);
+  - on Android, automatically, as agreed:
 
 - **Car mode:** opens automatically when the phone connects to a car's Bluetooth, configurable in Settings:
   - *Off*;
@@ -207,4 +223,82 @@ As before:
   - *This device*, chosen from paired devices.
 
   This needs Android's `BLUETOOTH_CONNECT` permission (Android 12+). It is asked for only when automatic opening is first used, and the privacy policy says so. Without it, car mode is a button.
-- **The rest follow `ux-research.md` §4,** with the usual rules: negative tests for every new gateway grammar, fuzz tests for every parser, British English, and no real names in fixtures.
+- **How "automatically" works on Android:**
+  - **When it opens:** while the app is open, or when it is next opened, and a matching car device is connected over Bluetooth. Android doesn't allow opening an app from the background, and Android Auto covers the head unit itself.
+  - **When it leaves:** car mode opened automatically leaves when that car disconnects.
+  - **What is stored:** the chosen car's name and address stay on the phone only, and are never sent anywhere.
+  - **Permission:** `BLUETOOTH_CONNECT` is asked for when *Any car audio* or *This device* is first chosen. Without it, the setting goes back to *Off* with a note.
+  - **Privacy:** `docs/PRIVACY.md` says this.
+
+### 5.2 Android Auto artwork (U9, Android)
+
+- **What changes:** browse items in Android Auto get their album art.
+- **How:** a content provider that is **not exported**. Each art URI is granted to the Android Auto host package for that one URI only, read-only. The provider:
+  - serves only artwork the app already fetched through the gateway (cached by opaque key);
+  - never serves a path, a file outside its cache, or anything for an ungranted caller.
+- **Tests:** refused cases (unknown key, traversal, wrong caller, write modes) and the grant.
+
+### 5.3 Per-output EQ (H2, Android)
+
+- **Profiles:** each EQ profile can be bound to an output: built-in speaker, wired headphones, a USB DAC (by product name) or a Bluetooth device (by name).
+- **Switching:** profiles switch automatically when the output changes. A small "EQ: <profile>" chip on the signal path says which is in use.
+- **Editing:**
+  - the profile editor shows the curve;
+  - an **A/B** button bypasses the EQ while held, or toggles it with TalkBack.
+- **Privacy:** output names are kept on the phone only.
+- **Not included:** loudness-compensated volume waits for a later wave.
+
+### 5.4 Haptics (D6)
+
+- **When it ticks:** light ticks on:
+  - a track skip by swipe;
+  - waveform scrub detents (every 10 %);
+  - volume steps;
+  - drag pick-up and drop;
+  - setting a rating;
+  - setting a sleep timer.
+- **Turning it off:** one "Haptics" switch, on by default on Android, following the system's touch-feedback setting.
+- **Web:** `navigator.vibrate` where it exists (Android browsers), off by default, with the same switch.
+
+### 5.5 System surfaces (U11)
+
+- **Android:**
+  - a second, larger resizable widget: art, title, a progress line and the transport;
+  - app shortcuts: *Start radio* and *Sleep 30 min*;
+  - dynamic colour as a theme option, where it isn't one already.
+- **Web:**
+  - manifest shortcuts: Resume, Radio and Search;
+  - Media Session for every action the player supports, including seek;
+  - keyboard shortcuts: space, the arrow keys, `/` for search and `L` for lyrics, listed in a help sheet (`?`). They never fire while typing.
+
+### 5.6 Smart filters, v1 (X7)
+
+- **A rule builder** that produces albums. All rules must match.
+- **Rule fields:**
+  - genre is one of …;
+  - decade is …;
+  - artist is … (in a role, optionally);
+  - compilation is / isn't.
+- **Sort and limit:** sort by A–Z, Artist, Year, Recently added or Random; a limit of up to 500.
+- **Saved per user on the gateway:** `GET`/`POST /v1/me/filters` and `PUT`/`DELETE /v1/me/filters/{id}`. Each filter is size-capped and schema-checked, with at most 50 a user.
+- **Results:** `/v1/me/filters/{id}/albums?from&n` runs a filter on the gateway, translating it into allowed LMS `albums` queries only. A decade becomes one query per year, merged. Nothing a client sends reaches LMS unchecked.
+- **Using a filter:**
+  - as a Library view (a *Filters* chip);
+  - as a Home shelf (a new `filter` shelf type);
+  - played or shuffled. That means its first albums, up to 50, loaded through the existing album play path.
+- **Later:** "any" rules, track-level fields (rating, play count, format) and download rules come in v2.
+- **Tests:** negative tests for every field and operator, and for oversize or nested specs. Robustness tests for the spec parser. Integration tests against the fake LMS.
+
+### 5.7 Also in this part
+
+- **Offline visualiser:** the visualiser on the offline Now playing screen. The engine already supports it.
+
+### 5.8 Rules
+
+As before:
+- tests at every level;
+- negative tests for every new gateway grammar;
+- fuzz/robustness tests for every parser;
+- accessibility tests for every new control;
+- British English;
+- placeholder names in fixtures.
