@@ -67,6 +67,8 @@ beforeEach(() => {
 	queueLen = 8;
 	fake.handler.rpc = async (_p, cmd) => {
 		if (cmd[0] === 'status' && cmd[1] === '-') return { playlist_tracks: queueLen };
+		// One entry of the queue (removals check the track is still there): the next song at 4.
+		if (cmd[0] === 'status' && cmd[2] === 1) return Number(cmd[1]) === 4 ? { playlist_loop: [{ id: 12, title: 'Next song', 'playlist index': 4 }] } : { playlist_loop: [] };
 		if (cmd[0] === 'playlistcontrol') queueLen++;
 		if (cmd[0] === 'playlist' && cmd[1] === 'delete') queueLen--;
 		return {};
@@ -201,6 +203,20 @@ describe('Now playing', () => {
 		await tick();
 		await fireEvent.keyDown(r.container.querySelector('[data-up-next] a')!, { key: 'Delete' });
 		await waitFor(() => expect(sent()).toEqual([['playlist', 'delete', 4]]));
+		r.unmount();
+	});
+
+	// Regression: removal is by position; if the queue changed since the status was read, it
+	// removed whichever track had moved into that position.
+	test('Up next removes nothing if another track is now in its place', async () => {
+		const base = fake.handler.rpc;
+		fake.handler.rpc = async (p, c) => (c[0] === 'status' && c[2] === 1 ? { playlist_loop: [{ id: 99, title: 'Someone else', 'playlist index': Number(c[1]) }] } : base(p, c));
+		const r = render(NowPlaying);
+		await tick();
+		await fireEvent.click(r.getByRole('button', { name: 'Remove Next song from the queue' }));
+		await waitFor(() => expect(r.container.textContent).toContain('the queue changed meanwhile'));
+		expect(sent()).toEqual([]);
+		expect(r.container.querySelector('[data-up-next]')).not.toBeNull(); // shown again
 		r.unmount();
 	});
 

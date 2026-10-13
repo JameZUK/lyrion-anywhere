@@ -5,7 +5,7 @@
 	import { api, app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
-	import { isSwipe, restoreTrack } from '$lib/lms/queue-edit';
+	import { isSwipe, removeChecked, restoreTrack } from '$lib/lms/queue-edit';
 	import { upNext } from '$lib/lms/upnext';
 	import type { Track } from '$lib/lms/types';
 	import Art from './Art.svelte';
@@ -36,7 +36,7 @@
 		undo = null;
 		notice = '';
 		try {
-			await api.rpc(player, cmd.removeFromQueue(n.index));
+			await removeChecked((p, c) => api.rpc(p, c), player, n.index, n.track);
 			const canUndo = Number.isSafeInteger(n.track.id) && (n.track.id as number) > 0;
 			undo = canUndo ? { track: n.track, index: n.index, player } : null;
 			notice = `Removed ${textOf(n.track.title, 80) || 'track'}`;
