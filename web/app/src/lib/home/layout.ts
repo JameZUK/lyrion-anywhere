@@ -10,7 +10,7 @@ export const WITH_ID: readonly ShelfType[] = ['station', 'menu', 'genre'];
 export const SHELF_LABELS: Record<ShelfType, string> = {
 	recent: 'Recently played',
 	stations: 'Stations',
-	new: 'New Music',
+	new: 'New music',
 	most: 'Most played',
 	on_this_day: 'On this day',
 	random: 'Random albums',

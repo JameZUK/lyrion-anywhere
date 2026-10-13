@@ -206,6 +206,16 @@ describe('Now playing', () => {
 		r.unmount();
 	});
 
+	test('removing Up next from the keyboard puts focus on Undo, not the page', async () => {
+		const r = render(NowPlaying);
+		await tick();
+		const rm = r.getByRole('button', { name: 'Remove Next song from the queue' });
+		rm.focus();
+		await fireEvent.click(rm);
+		await waitFor(() => expect(document.activeElement?.textContent).toBe('Undo'));
+		r.unmount();
+	});
+
 	// Regression: removal is by position; if the queue changed since the status was read, it
 	// removed whichever track had moved into that position.
 	test('Up next removes nothing if another track is now in its place', async () => {

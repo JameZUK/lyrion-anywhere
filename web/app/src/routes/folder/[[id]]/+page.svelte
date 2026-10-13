@@ -42,7 +42,7 @@
 	});
 	$effect(() => whenNear(sentinel, () => list.more()));
 
-	const title = $derived(folder === undefined ? 'Music Folder' : folder === null ? '' : (folderName(folder) ?? 'Folder'));
+	const title = $derived(folder === undefined ? 'Music folder' : folder === null ? '' : (folderName(folder) ?? 'Folder'));
 	const hasAudio = $derived(list.items.some((x) => x.kind !== 'other'));
 	useDetailTitle(() => folder === undefined ? '' : title);
 </script>
@@ -52,7 +52,7 @@
 	{#if folder === null}
 		<p class="error">Not a folder.</p>
 	{:else}
-		{#if folder !== undefined}<p class="kind muted"><a href="#/folder">Music Folder</a></p>{/if}
+		{#if folder !== undefined}<p class="kind muted"><a href="#/folder">Music folder</a></p>{/if}
 		<h1>{title}</h1>
 		{#if folder !== undefined}
 			{@const f = folder}

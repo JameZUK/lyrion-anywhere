@@ -164,6 +164,21 @@ test('status refreshes during a drag are held back, then applied', async () => {
 	await waitFor(() => expect(titles(r.container)[0]).toBe('Song 9'));
 });
 
+test('removing with the button keeps focus in the list; the message is in a live region that was already there', async () => {
+	const r = await setup();
+	// The live region exists (empty) before anything is said, so screen readers announce it.
+	const live = r.container.ownerDocument.querySelector('[data-snackbar] [role="status"]')!;
+	expect(live.getAttribute('aria-live')).toBe('polite');
+	expect(live.textContent).toBe('');
+	const rm = r.getByRole('button', { name: 'Remove Song 2' });
+	rm.focus();
+	await fireEvent.click(rm);
+	await settle();
+	expect(document.activeElement?.getAttribute('aria-label')).toBe('Play Song 3');
+	expect(r.container.ownerDocument.querySelector('[data-snackbar] [role="status"]')).toBe(live);
+	expect(live.textContent).toBe('Removed Song 2');
+});
+
 test('swiping a row left past the threshold removes it, with Undo', async () => {
 	const r = await setup();
 	const main = r.getByRole('button', { name: 'Play Song 3' });

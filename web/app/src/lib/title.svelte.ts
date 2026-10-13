@@ -30,7 +30,7 @@ const SECTIONS: Record<string, string> = {
 	genre: 'Genre',
 	years: 'Years',
 	year: 'Year',
-	folder: 'Music folders',
+	folder: 'Music folder',
 	compilations: 'Compilations',
 	random: 'Random albums',
 };

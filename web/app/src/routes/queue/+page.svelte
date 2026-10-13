@@ -136,7 +136,16 @@
 		if (!t) return;
 		dismiss();
 		const player = app.playerId;
-		const ok = await edit(removeAt(tracks, i), Math.max(0, total - 1), (player) => removeChecked(rpc, player, i, t), "Couldn't remove the track");
+		// The removed row had focus (its Remove button): keep focus in the list, on the row
+		// that takes its place (or the one before), rather than losing it to the page.
+		const hadFocus = !!list?.contains(document.activeElement);
+		const done = edit(removeAt(tracks, i), Math.max(0, total - 1), (player) => removeChecked(rpc, player, i, t), "Couldn't remove the track");
+		if (hadFocus) {
+			await tick();
+			const rows = list?.querySelectorAll<HTMLElement>('.main');
+			(rows?.[i] ?? rows?.[i - 1])?.focus();
+		}
+		const ok = await done;
 		if (!ok) return;
 		const canUndo = Number.isSafeInteger(t.id) && (t.id as number) > 0;
 		undo = canUndo ? { track: t, index: i, player } : null;
@@ -352,9 +361,7 @@
 	{/if}
 </section>
 
-{#if notice}
-	<Snackbar message={notice} action={undo ? 'Undo' : ''} onaction={restore} ondismiss={dismiss} />
-{/if}
+<Snackbar message={notice} action={undo ? 'Undo' : ''} onaction={restore} ondismiss={dismiss} />
 
 <style>
 	header {
