@@ -372,7 +372,14 @@ For a phone streaming over patchy mobile data (design: [`plans/wave3-design.md`]
 - **The cushion:** the signal path and *Play on…* show how much listening is held on the phone.
 - **History stays honest:** the gateway judges elapsed steps by the player's own clock, so reports queued during a gap and sent together count for what was really heard, and never more than wall time allows.
 
-**Phase B, designed and next:** keep finished spools in a bounded LRU cache (1 GB by default, needing the download permission), match a new stream by a fingerprint of its first 64 KiB and play the rest from the cache. **Phase C:** reuse downloaded FLAC originals for Original-level streams, matched on STREAMINFO.
+**Phase B, built (replay cache):**
+- **Store:** cleanly finished spools move into a bounded LRU cache on the phone (`mobile/src/player/cache.rs`; Off, 500 MB, 1 GB by default, 2 GB or 5 GB). Files are named by hash only, with a strictly validated index; entries in use are never evicted.
+- **Permission:** the cache is used only while the user has the download permission (`/v1/account`), and is emptied when it is lost, on sign-out, on revocation and on *Clear*.
+- **Matching:** a new stream is fingerprinted on its header plus 64 KiB. When the cache may hold it, the phone first asks the gateway for only a short probe (`/v1/stream/…?limit=`). On a hit, the whole file's length and SHA-256 are checked before the rest is played from it, and checked again at the end; any doubt means the network. A replay costs about 98 KiB instead of the whole track, and the signal path says *From cache*.
+- **Deterministic Opus:** the gateway encodes live Opus bit-exactly, so the same track at the same level gives the same bytes and can be matched.
+- **Honest byte counts:** the relay caps the byte count it reports to LMS at what it actually sent.
+
+**Phase C (in progress):** reuse downloaded FLAC originals for Original-level streams, matched on STREAMINFO.
 
 ## 6. The sans-IO core and its hosts
 
