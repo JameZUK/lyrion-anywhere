@@ -47,24 +47,35 @@ class SecurityConfigTest {
             setOf(
                 ".MainActivity",
                 ".widget.NowPlayingWidgetReceiver",
+                ".widget.NowPlayingLargeWidgetReceiver",
                 ".widget.PlayPauseTileService",
                 "io.github.jamezuk.lyrionanywhere.playback.PlaybackService",
             ),
             exported.map { it.getAttributeNS(android, "name") }.toSet(),
         )
         fun actions(e: Element) = e.children("action").map { it.getAttributeNS(android, "name") }.toSet()
-        // The widget receiver takes only the widget update broadcast.
-        val widget = exported.single { it.getAttributeNS(android, "name").endsWith("NowPlayingWidgetReceiver") }
-        assertEquals(setOf("android.appwidget.action.APPWIDGET_UPDATE"), actions(widget))
+        // The widget receivers take only the widget update broadcast.
+        for (name in listOf(".widget.NowPlayingWidgetReceiver", ".widget.NowPlayingLargeWidgetReceiver")) {
+            val widget = exported.single { it.getAttributeNS(android, "name") == name }
+            assertEquals(setOf("android.appwidget.action.APPWIDGET_UPDATE"), actions(widget))
+        }
         // Only the system can bind the tile.
         val tile = exported.single { it.getAttributeNS(android, "name").endsWith("PlayPauseTileService") }
         assertEquals("android.permission.BIND_QUICK_SETTINGS_TILE", tile.getAttributeNS(android, "permission"))
         assertEquals(setOf("android.service.quicksettings.action.QS_TILE"), actions(tile))
         // No periodic widget updates: nothing wakes the phone for it.
-        val info = xml("src/main/res/xml/now_playing_widget.xml")
-        assertEquals("0", info.getAttributeNS(android, "updatePeriodMillis"))
-        // No content provider is exported (car artwork isn't served by one).
+        for (file in listOf("now_playing_widget.xml", "now_playing_widget_large.xml")) {
+            val info = xml("src/main/res/xml/$file")
+            assertEquals("0", info.getAttributeNS(android, "updatePeriodMillis"))
+        }
+        // No content provider is exported (car artwork's provider is reached by grants only).
         assertTrue(exported.none { it.tagName == "provider" })
+        // No receiver is declared for Bluetooth: car mode listens only while the app is open.
+        assertTrue(
+            manifest.children("receiver").none { r ->
+                r.children("action").any { it.getAttributeNS(android, "name").startsWith("android.bluetooth") }
+            },
+        )
         // The launcher, voice "play …" (the query only) and pairing links (below).
         val main = exported.single { it.getAttributeNS(android, "name") == ".MainActivity" }
         assertEquals(
@@ -155,6 +166,56 @@ class SecurityConfigTest {
         assertEquals(listOf("media"), desc.children("uses").map { it.getAttribute("name") })
     }
 
+    /**
+     * Android Auto's album art (Wave 2 §5.2): its provider is not exported, reads only by
+     * per-URI grants, and has no permissions or paths that would open it wider.
+     */
+    @Test
+    fun theCarArtProviderIsReachedOnlyByGrants() {
+        val providers = xml("src/main/AndroidManifest.xml").children("provider")
+        val art = providers.single { it.getAttributeNS(android, "name").endsWith(".AutoArtProvider") }
+        assertEquals("false", art.getAttributeNS(android, "exported"))
+        assertEquals("true", art.getAttributeNS(android, "grantUriPermissions"))
+        assertEquals("\${applicationId}.autoart", art.getAttributeNS(android, "authorities"))
+        for (attr in listOf("permission", "readPermission", "writePermission", "multiprocess")) {
+            assertFalse("no $attr", art.hasAttributeNS(android, attr))
+        }
+        assertTrue(art.children("grant-uri-permission").isEmpty() && art.children("path-permission").isEmpty())
+        // The only providers: this one and the start-up one whose WorkManager entry is removed.
+        assertEquals(
+            setOf("io.github.jamezuk.lyrionanywhere.playback.auto.AutoArtProvider", "androidx.startup.InitializationProvider"),
+            providers.map { it.getAttributeNS(android, "name") }.toSet(),
+        )
+    }
+
+    /**
+     * App shortcuts (Wave 2 §5.5): they land on a private activity, and name only its two
+     * actions, in release and debug alike (the debug package has its own copy).
+     */
+    @Test
+    fun shortcutsLandOnAPrivateActivity() {
+        val manifest = xml("src/main/AndroidManifest.xml")
+        val activity = manifest.children("activity").single { it.getAttributeNS(android, "name") == ".ShortcutActivity" }
+        assertEquals("false", activity.getAttributeNS(android, "exported"))
+        assertTrue("no intent filter", activity.children("intent-filter").isEmpty())
+        val main = manifest.children("activity").single { it.getAttributeNS(android, "name") == ".MainActivity" }
+        val meta = main.children("meta-data").single { it.getAttributeNS(android, "name") == "android.app.shortcuts" }
+        assertEquals("@xml/shortcuts", meta.getAttributeNS(android, "resource"))
+        for ((file, pkg) in listOf(
+            "src/main/res/xml/shortcuts.xml" to "io.github.jamezuk.lyrionanywhere",
+            "src/debug/res/xml/shortcuts.xml" to "io.github.jamezuk.lyrionanywhere.debug",
+        )) {
+            val intents = xml(file).children("intent")
+            assertEquals(
+                setOf(Shortcuts.ACTION_START_RADIO, Shortcuts.ACTION_SLEEP_30),
+                intents.map { it.getAttributeNS(android, "action") }.toSet(),
+            )
+            assertTrue(intents.all { it.getAttributeNS(android, "targetClass") == "io.github.jamezuk.lyrionanywhere.ShortcutActivity" })
+            assertTrue(intents.all { it.getAttributeNS(android, "targetPackage") == pkg })
+            assertTrue(intents.all { !it.hasAttributeNS(android, "data") })
+        }
+    }
+
     @Test
     fun theDownloadServiceIsPrivateAndADataSyncForegroundService() {
         val services = xml("src/main/AndroidManifest.xml").children("service")
@@ -192,9 +253,18 @@ class SecurityConfigTest {
                 // Offline downloads (A5).
                 "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
                 "android.permission.POST_NOTIFICATIONS",
+                // Car mode opening by itself (Wave 2 §5.1), asked for when first chosen.
+                "android.permission.BLUETOOTH_CONNECT",
+                "android.permission.BLUETOOTH",
             ),
             perms,
         )
+        // The old BLUETOOTH permission only where BLUETOOTH_CONNECT doesn't exist; nothing
+        // that scans, advertises or reads location.
+        val legacy = xml("src/main/AndroidManifest.xml").children("uses-permission")
+            .single { it.getAttributeNS(android, "name") == "android.permission.BLUETOOTH" }
+        assertEquals("30", legacy.getAttributeNS(android, "maxSdkVersion"))
+        assertFalse(perms.any { it.contains("SCAN") || it.contains("ADVERTISE") || it.contains("LOCATION") || it.contains("ADMIN") })
         // The data module adds only the network state (normal, install-time).
         val dataPerms = xml("../data/src/main/AndroidManifest.xml").children("uses-permission")
             .map { it.getAttributeNS(android, "name") }

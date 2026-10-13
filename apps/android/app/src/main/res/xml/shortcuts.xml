@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- App shortcuts (Wave 2 §5.5). Each lands on ShortcutActivity (not exported: the launcher
+     starts shortcuts as this app), which hands the request to the signed-in app's player
+     controller. Only these two actions are recognised. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="start_radio"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_radio"
+        android:shortcutShortLabel="@string/shortcut_radio_short"
+        android:shortcutLongLabel="@string/shortcut_radio_long">
+        <intent
+            android:action="io.github.jamezuk.lyrionanywhere.shortcut.START_RADIO"
+            android:targetPackage="io.github.jamezuk.lyrionanywhere"
+            android:targetClass="io.github.jamezuk.lyrionanywhere.ShortcutActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="sleep_30"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_sleep"
+        android:shortcutShortLabel="@string/shortcut_sleep_short"
+        android:shortcutLongLabel="@string/shortcut_sleep_long">
+        <intent
+            android:action="io.github.jamezuk.lyrionanywhere.shortcut.SLEEP_30"
+            android:targetPackage="io.github.jamezuk.lyrionanywhere"
+            android:targetClass="io.github.jamezuk.lyrionanywhere.ShortcutActivity" />
+    </shortcut>
+</shortcuts>

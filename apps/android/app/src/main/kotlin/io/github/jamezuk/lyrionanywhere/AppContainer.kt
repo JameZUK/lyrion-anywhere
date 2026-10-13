@@ -91,6 +91,9 @@ class AppContainer(context: Context, scope: CoroutineScope) {
 
     /** Where the hardware volume keys go while the app is in front (see [VolumeKeys]). */
     val volumeKeys = VolumeKeys()
+
+    /** The launcher's app shortcuts, waiting for the signed-in app (Wave 2 §5.5). */
+    val shortcuts = AppShortcuts { android.os.SystemClock.elapsedRealtime() }
     val library: LibraryRepository = RustLibraryRepository(accountImpl)
     val players: PlayersRepository = RustPlayersRepository(accountImpl)
     val art: ArtRepository = RustArtRepository(accountImpl)

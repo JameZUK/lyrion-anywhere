@@ -10,6 +10,15 @@
     <string name="widget_play">Play</string>
     <string name="widget_pause">Pause</string>
     <string name="widget_next">Next track</string>
+    <string name="widget_previous">Previous track</string>
+    <string name="widget_large_name">Now playing (large)</string>
+    <string name="widget_large_description">Art, what’s playing, how far through, and the transport</string>
+
+    <!-- App shortcuts (long-press the app's icon) -->
+    <string name="shortcut_radio_short">Start radio</string>
+    <string name="shortcut_radio_long">Start radio from what’s playing</string>
+    <string name="shortcut_sleep_short">Sleep 30 min</string>
+    <string name="shortcut_sleep_long">Stop playing in 30 minutes</string>
 
     <!-- Quick Settings tile -->
     <string name="tile_label">Play/pause</string>
