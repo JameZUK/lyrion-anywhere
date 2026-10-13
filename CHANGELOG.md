@@ -2,6 +2,12 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Documentation rewritten
+
+- **README:** a new introduction (who it is for, what makes it different), screenshot rows for the web and Android apps, an architecture diagram, features at a glance, quick start, security and privacy summaries, a platform support matrix, status and roadmap, and a documentation index.
+- **New:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (components, trust boundary, request flows as sequence diagrams, the core and its hosts, the Android app, the plugin, storage, configuration and testing), [`docs/FEATURES.md`](docs/FEATURES.md) (every feature by area, with its platforms) and a docs index, [`docs/README.md`](docs/README.md).
+- **INSTALL and DEPLOY:** `--live-transcode-jobs`, `--static-dir` and `--log-file` listed; ffmpeg's part in lower-data streams (and that *Transcoded downloads* off turns them off too); the *Track analysis* and *Allow http://* settings; first sign-in now describes playing on the device by default and the Android app; long-lived sessions (`--max-resume-grace`).
+
 ## 2026-10-13: Rolling cache, Phase A: Android, and restarting after a long gap
 
 The Android part (A5) of `docs/plans/wave3-design.md` §2, and the owner's decision 3 in the engine. Phase A is now built; what remains is the manual testing on a real phone.
