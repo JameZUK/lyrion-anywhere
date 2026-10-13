@@ -164,6 +164,7 @@ dependencies = [
  "ndk",
  "percent-encoding",
  "ring",
+ "rusqlite",
  "rustls",
  "rustls-platform-verifier",
  "serde",

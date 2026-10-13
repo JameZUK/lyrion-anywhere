@@ -49,5 +49,7 @@ ndk = { version = "0.9", default-features = false, features = ["audio", "api-lev
 [dev-dependencies]
 webpki-root-certs = "1"
 anywhere-gateway = { path = "../gateway" }
+# The live sync check (tests/live_sync.rs) gives its gateway device the test player's MAC.
+rusqlite = { version = "0.40", features = ["bundled"] }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
