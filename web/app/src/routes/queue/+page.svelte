@@ -3,12 +3,22 @@
 	// at once and are then sent to LMS one at a time, in order; the next load reconciles. A
 	// failed edit is undone locally and reported. Loads that land mid-gesture or mid-edit are
 	// dropped (and repeated afterwards) so the 2-second refreshes never fight the user.
+	//
+	// Wave 2 §3.4: sections (Now playing, Up next — what this device added with Play next —
+	// and Then), shown flat whenever the tracker can't vouch for them; swipe right to play
+	// next and left to remove, each also in the row's menu and on keys (N, Delete); Clear
+	// upcoming; and gapless markers between consecutive tracks of one album (§3.5).
 	import { tick, untrack } from 'svelte';
 	import { api, app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import type { Command } from '$lib/api/rpc';
 	import { duration, textOf } from '$lib/lms/format';
-	import { dropIndex, insertAt, isSwipe, moveChecked, removeAt, removeChecked, reorder, restoreTrack, swipeRemoves, type RowBox } from '$lib/lms/queue-edit';
+	import { CLEAR_UPCOMING_MAX, clearAfter, dropIndex, insertAt, isSwipe, moveChecked, playNextTarget, removeAt, removeChecked, reorder, restoreTrack, swipeAction, type RowBox } from '$lib/lms/queue-edit';
+	import { rowShortcut } from '$lib/gestures/swipe';
+	import { gaplessLinks, stateOf } from '$lib/queue/tracker';
+	import { trackerVersion, upNextTracker } from '$lib/queue/upnext.svelte';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import RowMenu from '$lib/components/RowMenu.svelte';
 	import type { PlayerStatus, Track } from '$lib/lms/types';
 	import Art from '$lib/components/Art.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -26,7 +36,11 @@
 	/** Why the last edit failed; kept until the next edit (a reload doesn't clear it). */
 	let editError = $state('');
 	let confirmClear = $state(false);
-	let list = $state<HTMLOListElement>();
+	/** Clear upcoming's confirmation, while it is open. */
+	let askUpcoming = $state(false);
+	/** Clear upcoming's progress, for screen readers. */
+	let clearing = $state('');
+	let list = $state<HTMLDivElement>();
 
 	type Drag = { from: number; to: number; pointerId: number; startY: number; dy: number; rows: RowBox[] };
 	type Swipe = { index: number; pointerId: number; startX: number; startY: number; dx: number; active: boolean; width: number };
@@ -63,6 +77,10 @@
 			tracks = r.playlist_loop ?? [];
 			total = r.playlist_tracks ?? tracks.length;
 			error = '';
+			// Check Up next against the tracks LMS actually has there.
+			upNextTracker.observe(id, stateOf(r));
+			const cur = Number(r.playlist_cur_index ?? app.now?.playlist_cur_index ?? -1);
+			if (Number.isInteger(cur) && cur >= 0) upNextTracker.verify(id, cur, tracks.map((t) => (typeof t.id === 'number' ? t.id : null)));
 		} catch (e) {
 			error = (e as Error).message;
 		}
@@ -90,6 +108,25 @@
 	});
 
 	const current = $derived(Number(app.now?.playlist_cur_index ?? -1));
+	const links = $derived(gaplessLinks(tracks));
+	/** Up next, as tracked on this device; null shows the queue flat. */
+	const sections = $derived.by(() => {
+		void trackerVersion();
+		return app.playerId && current >= 0 ? upNextTracker.sections(app.playerId, current, tracks.length) : null;
+	});
+	type Group = { key: string; title: string; start: number; end: number };
+	/** The rows in groups: one untitled group when flat. */
+	const groups = $derived.by((): Group[] => {
+		const n = tracks.length;
+		if (!sections || current >= n) return [{ key: 'all', title: '', start: 0, end: n - 1 }];
+		const out: Group[] = [];
+		if (current > 0) out.push({ key: 'played', title: 'Played', start: 0, end: current - 1 });
+		out.push({ key: 'now', title: 'Now playing', start: current, end: current });
+		out.push({ key: 'next', title: 'Up next', start: sections.from, end: sections.to });
+		if (sections.to + 1 < n) out.push({ key: 'then', title: 'Then', start: sections.to + 1, end: n - 1 });
+		return out;
+	});
+	const upcoming = $derived(current >= 0 ? Math.max(0, total - current - 1) : 0);
 
 	/**
 	 * Show `optimistic` now and send the commands (in order, after any earlier edit). On
@@ -139,7 +176,10 @@
 		// The removed row had focus (its Remove button): keep focus in the list, on the row
 		// that takes its place (or the one before), rather than losing it to the page.
 		const hadFocus = !!list?.contains(document.activeElement);
-		const done = edit(removeAt(tracks, i), Math.max(0, total - 1), (player) => removeChecked(rpc, player, i, t), "Couldn't remove the track");
+		const done = edit(removeAt(tracks, i), Math.max(0, total - 1), async (player) => {
+			await removeChecked(rpc, player, i, t);
+			upNextTracker.removed(player, i);
+		}, "Couldn't remove the track");
 		if (hadFocus) {
 			await tick();
 			const rows = list?.querySelectorAll<HTMLElement>('.main');
@@ -160,7 +200,12 @@
 		await edit(
 			insertAt(tracks, u.index, u.track),
 			total + 1,
-			(player) => restoreTrack((p, c) => api.rpc(p, c), player, u.track.id as number, u.index, UNDO_POLLS, UNDO_POLL_MS),
+			async (player) => {
+				const before = total - 1;
+				await restoreTrack((p, c) => api.rpc(p, c), player, u.track.id as number, u.index, UNDO_POLLS, UNDO_POLL_MS);
+				upNextTracker.appended(player);
+				if (before > u.index) upNextTracker.moved(player, before, u.index);
+			},
 			"Couldn't put the track back",
 		);
 	}
@@ -173,7 +218,50 @@
 	async function move(from: number, to: number) {
 		if (from === to || from < 0 || to < 0 || from >= tracks.length || to >= tracks.length) return;
 		const t = tracks[from]!;
-		await edit(reorder(tracks, from, to), total, (player) => moveChecked(rpc, player, from, to, t), "Couldn't move the track");
+		await edit(reorder(tracks, from, to), total, async (player) => {
+			await moveChecked(rpc, player, from, to, t);
+			upNextTracker.moved(player, from, to);
+		}, "Couldn't move the track");
+	}
+
+	/** Play the track at `i` next: move it to just after the current one (it joins Up next). */
+	async function playNext(i: number) {
+		const t = tracks[i];
+		const player = app.playerId;
+		if (!t || !player || current < 0) return;
+		dismiss();
+		if (i === current) {
+			notice = `${textOf(t.title, 80) || 'That track'} is playing now`;
+			return;
+		}
+		const to = playNextTarget(i, current);
+		if (to === i) upNextTracker.moved(player, i, i);
+		else await move(i, to);
+		if (!editError) notice = `${textOf(t.title, 80) || 'Track'} will play next`;
+	}
+
+	/** Clear upcoming: every track after the current one, from the end, each one checked. */
+	async function clearUpcoming() {
+		askUpcoming = false;
+		const player = app.playerId;
+		if (!player || current < 0) return;
+		dismiss();
+		const cur = current;
+		const shown = tracks;
+		clearing = 'Clearing upcoming tracks…';
+		const ok = await edit(shown.slice(0, cur + 1), cur + 1, async (p) => {
+			await clearAfter(rpc, p, shown, cur, (n) => (clearing = `Removed ${n} of ${shown.length - cur - 1}`));
+			upNextTracker.truncated(p, cur + 1);
+		}, "Couldn't clear upcoming");
+		clearing = ok ? 'Cleared upcoming tracks' : '';
+	}
+
+	async function clearAll() {
+		askUpcoming = false;
+		dismiss();
+		const player = app.playerId;
+		await edit([], 0, send(cmd.clearQueue()), "Couldn't clear the queue");
+		if (player) upNextTracker.truncated(player, 0);
 	}
 
 	async function clear() {
@@ -184,12 +272,15 @@
 		}
 		confirmClear = false;
 		dismiss();
+		const player = app.playerId;
 		await edit([], 0, send(cmd.clearQueue()), "Couldn't clear the queue");
+		if (player) upNextTracker.truncated(player, 0);
 	}
 
 	// --- keyboard: Alt+ArrowUp/Down moves the focused row ---------------------------------
 
 	async function onRowKey(e: KeyboardEvent, i: number) {
+		if (rowShortcut(e, { next: () => void playNext(i), remove: () => void remove(i) })) return;
 		if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
 		e.preventDefault();
 		const to = i + (e.key === 'ArrowUp' ? -1 : 1);
@@ -203,7 +294,7 @@
 	// --- drag to reorder, from the handle (mouse, pen or touch) ----------------------------
 
 	function rowBoxes(): RowBox[] {
-		return [...(list?.children ?? [])].map((li) => {
+		return [...(list?.querySelectorAll('li[data-index]') ?? [])].map((li) => {
 			const r = li.getBoundingClientRect();
 			return { top: r.top, height: r.height };
 		});
@@ -256,7 +347,7 @@
 			if (!isSwipe(dx, dy)) return;
 			swipe = { ...swipe, active: true };
 		}
-		swipe = { ...swipe, dx: Math.min(0, dx) };
+		swipe = { ...swipe, dx };
 	}
 
 	function swipeEnd(e: PointerEvent, cancelled = false) {
@@ -266,7 +357,13 @@
 		if (!s.active) return;
 		swallowClick = true;
 		setTimeout(() => (swallowClick = false), 400);
-		if (cancelled || !swipeRemoves(s.dx, s.width)) {
+		const way = cancelled ? null : swipeAction(s.dx, s.width);
+		if (way === 'right') {
+			void playNext(s.index);
+			settle();
+			return;
+		}
+		if (way !== 'left') {
 			settle();
 			return;
 		}
@@ -289,6 +386,67 @@
 	}
 </script>
 
+{#snippet row(t: Track, i: number)}
+	<li
+		data-index={i}
+		class:now={i === current}
+		class:lifted={drag?.from === i}
+		class:swiping={swipe?.active && swipe.index === i}
+		class:leaving={leaving === i}
+		class:drop-before={dropMark(i) === 'before'}
+		class:drop-after={dropMark(i) === 'after'}
+		style:transform={rowShift(i)}
+	>
+		<span
+			class="handle"
+			aria-hidden="true"
+			title="Drag to reorder"
+			onpointerdown={(e) => dragStart(e, i)}
+			onpointermove={dragMove}
+			onpointerup={(e) => dragEnd(e)}
+			onpointercancel={(e) => dragEnd(e, true)}
+			onlostpointercapture={(e) => dragEnd(e, true)}
+		>
+			<svg width="16" height="16" viewBox="0 0 24 24"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" /></svg>
+		</span>
+		<button
+			class="main"
+			onclick={() => play(i)}
+			onkeydown={(e) => onRowKey(e, i)}
+			onpointerdown={(e) => swipeStart(e, i)}
+			onpointermove={swipeMove}
+			onpointerup={(e) => swipeEnd(e)}
+			onpointercancel={(e) => swipeEnd(e, true)}
+			aria-label={`Play ${textOf(t.title)}`}
+			aria-current={i === current ? 'true' : undefined}
+		>
+			<div class="thumb"><Art path={cmd.coverPath(t.coverid ?? t.artwork_track_id, 96)} alt="" label={textOf(t.title)} /></div>
+			<span class="text">
+				<span class="title ellipsis">{textOf(t.title)}</span>
+				<span class="sub ellipsis muted">{[textOf(t.artist), textOf(t.album)].filter(Boolean).join(' · ')}</span>
+			</span>
+			<span class="dur muted">{duration(t.duration)}</span>
+		</button>
+		<div class="ops">
+			<button class="icon-btn mv" aria-label={`Move ${textOf(t.title)} up`} onclick={() => move(i, i - 1)} onkeydown={(e) => onRowKey(e, i)} disabled={i === 0}><Icon name="back" size={16} /></button>
+			<button class="icon-btn mv" aria-label={`Move ${textOf(t.title)} down`} onclick={() => move(i, i + 1)} onkeydown={(e) => onRowKey(e, i)} disabled={i === tracks.length - 1}><Icon name="chevron" size={16} /></button>
+			<button class="icon-btn" aria-label={`Remove ${textOf(t.title)}`} onclick={() => remove(i)}><Icon name="close" size={16} /></button>
+			<RowMenu
+				label={`More options for ${textOf(t.title) || 'this track'}`}
+				actions={[
+					{ label: 'Play next', icon: 'playnext', run: () => void playNext(i), shortcut: 'N' },
+					{ label: 'Remove from queue', icon: 'trash', run: () => void remove(i), shortcut: 'Delete' },
+				]}
+			/>
+		</div>
+		{#if links[i]}
+			<span class="gapless" title="Runs straight on into the next track" data-gapless>
+				<Icon name="link" size={14} /><span class="sr-only">Runs straight on into the next track, from the same album.</span>
+			</span>
+		{/if}
+	</li>
+{/snippet}
+
 <section class="page">
 	<header>
 		<div>
@@ -296,7 +454,12 @@
 			<p class="muted">{textOf(app.current?.name)}{total ? ` · ${total} tracks` : ''}</p>
 		</div>
 		{#if tracks.length}
+			<div class="clears">
+			{#if upcoming > 0}
+				<button class="btn" onclick={() => (askUpcoming = true)} aria-haspopup="dialog" data-clear-upcoming><Icon name="trash" size={18} />Clear upcoming</button>
+			{/if}
 			<button class="btn" class:danger={confirmClear} onclick={clear}><Icon name="trash" size={18} />{confirmClear ? 'Tap again to clear' : 'Clear'}</button>
+			</div>
 		{/if}
 	</header>
 	{#if editError}<p class="error" role="alert">{editError}</p>{/if}
@@ -306,60 +469,43 @@
 	{:else if !tracks.length}
 		<p class="muted">The queue is empty. <a class="link" href="#/albums">Find something to play</a></p>
 	{:else}
-		<p class="sr-only">To reorder, focus a track and press Alt with the up or down arrow, or use the move buttons.</p>
-		<ol class="q" class:dragging={drag !== null} bind:this={list}>
-			{#each tracks as t, i (`${i}:${t.id}`)}
-				<li
-					data-index={i}
-					class:now={i === current}
-					class:lifted={drag?.from === i}
-					class:swiping={swipe?.active && swipe.index === i}
-					class:leaving={leaving === i}
-					class:drop-before={dropMark(i) === 'before'}
-					class:drop-after={dropMark(i) === 'after'}
-					style:transform={rowShift(i)}
-				>
-					<span
-						class="handle"
-						aria-hidden="true"
-						title="Drag to reorder"
-						onpointerdown={(e) => dragStart(e, i)}
-						onpointermove={dragMove}
-						onpointerup={(e) => dragEnd(e)}
-						onpointercancel={(e) => dragEnd(e, true)}
-						onlostpointercapture={(e) => dragEnd(e, true)}
-					>
-						<svg width="16" height="16" viewBox="0 0 24 24"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" /></svg>
-					</span>
-					<button
-						class="main"
-						onclick={() => play(i)}
-						onkeydown={(e) => onRowKey(e, i)}
-						onpointerdown={(e) => swipeStart(e, i)}
-						onpointermove={swipeMove}
-						onpointerup={(e) => swipeEnd(e)}
-						onpointercancel={(e) => swipeEnd(e, true)}
-						aria-label={`Play ${textOf(t.title)}`}
-						aria-current={i === current ? 'true' : undefined}
-					>
-						<div class="thumb"><Art path={cmd.coverPath(t.coverid ?? t.artwork_track_id, 96)} alt="" label={textOf(t.title)} /></div>
-						<span class="text">
-							<span class="title ellipsis">{textOf(t.title)}</span>
-							<span class="sub ellipsis muted">{[textOf(t.artist), textOf(t.album)].filter(Boolean).join(' · ')}</span>
-						</span>
-						<span class="dur muted">{duration(t.duration)}</span>
-					</button>
-					<div class="ops">
-						<button class="icon-btn mv" aria-label={`Move ${textOf(t.title)} up`} onclick={() => move(i, i - 1)} onkeydown={(e) => onRowKey(e, i)} disabled={i === 0}><Icon name="back" size={16} /></button>
-						<button class="icon-btn mv" aria-label={`Move ${textOf(t.title)} down`} onclick={() => move(i, i + 1)} onkeydown={(e) => onRowKey(e, i)} disabled={i === tracks.length - 1}><Icon name="chevron" size={16} /></button>
-						<button class="icon-btn" aria-label={`Remove ${textOf(t.title)}`} onclick={() => remove(i)}><Icon name="close" size={16} /></button>
-					</div>
-				</li>
+		<p class="sr-only">To reorder, focus a track and press Alt with the up or down arrow, or use the move buttons. Press N to play a track next, or Delete to remove it.</p>
+		{#if clearing}<p class="sr-only" role="status">{clearing}</p>{/if}
+		<div class="q" class:dragging={drag !== null} bind:this={list} data-sections={sections ? 'on' : 'off'}>
+			{#each groups as g (g.key)}
+				{#if g.title}<h2 class="section" id={`q-${g.key}`}>{g.title}</h2>{/if}
+				<ol start={g.start + 1} aria-labelledby={g.title ? `q-${g.key}` : undefined} data-group={g.key}>
+					{#each tracks.slice(g.start, g.end + 1) as t, k (`${g.start + k}:${t.id}`)}
+						{@render row(t, g.start + k)}
+					{/each}
+				</ol>
 			{/each}
-		</ol>
+		</div>
 		{#if total > tracks.length}<p class="muted">Showing the first {tracks.length} of {total}.</p>{/if}
 	{/if}
 </section>
+
+{#if askUpcoming}
+	{#if upcoming > CLEAR_UPCOMING_MAX || upcoming > tracks.length - current - 1}
+		<ConfirmDialog
+			title="Clear the whole queue?"
+			message={`There are ${upcoming.toLocaleString('en-GB')} tracks after this one: taking them out one at a time would take a while. Clear the whole queue instead? Playback stops.`}
+			confirmLabel="Clear all"
+			danger
+			onconfirm={clearAll}
+			oncancel={() => (askUpcoming = false)}
+		/>
+	{:else}
+		<ConfirmDialog
+			title="Clear upcoming?"
+			message={`Take out the ${upcoming === 1 ? 'track' : `${upcoming} tracks`} after the one playing now?`}
+			confirmLabel="Clear upcoming"
+			danger
+			onconfirm={clearUpcoming}
+			oncancel={() => (askUpcoming = false)}
+		/>
+	{/if}
+{/if}
 
 <Snackbar message={notice} action={undo ? 'Undo' : ''} onaction={restore} ondismiss={dismiss} />
 
@@ -379,10 +525,37 @@
 		border-color: var(--danger);
 		color: var(--danger);
 	}
-	.q {
+	.q ol {
 		list-style: none;
 		margin: 0;
 		padding: 0;
+	}
+	.section {
+		margin: 1rem 0 0.35rem;
+		font-size: 0.8rem;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--fg-muted);
+	}
+	.clears {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: 0.5rem;
+	}
+	.gapless {
+		position: absolute;
+		left: 6px;
+		bottom: -8px;
+		z-index: 1;
+		display: grid;
+		place-items: center;
+		width: 16px;
+		height: 16px;
+		border-radius: 50%;
+		background: var(--bg);
+		color: var(--accent);
+		pointer-events: none;
 	}
 	.q.dragging {
 		user-select: none;

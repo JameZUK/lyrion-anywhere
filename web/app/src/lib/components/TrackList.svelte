@@ -3,6 +3,7 @@
 	import type { TrackBadge } from './track-badge';
 	import { duration, textOf } from '$lib/lms/format';
 	import Icon from './Icon.svelte';
+	import { rowShortcut, swipeRow } from '$lib/gestures/swipe';
 
 	let {
 		tracks,
@@ -95,10 +96,17 @@
 	});
 </script>
 
+{#if onnext || onadd}<p class="sr-only">On a track, press N to play it next or A to add it to the queue.</p>{/if}
 <ol class="tracks">
 	{#each tracks as t, i (t.id ?? i)}
-		<li class="row">
-			<button class="main" onclick={() => onplay(t, i)} aria-label={`Play ${textOf(t.title)}`}>
+		<li class="row" use:swipeRow={{ onright: onnext ? () => onnext(t) : undefined, onleft: onadd ? () => onadd(t) : undefined }}>
+			<button
+				class="main"
+				onclick={() => onplay(t, i)}
+				onkeydown={(e) => rowShortcut(e, { next: onnext ? () => onnext(t) : undefined, add: onadd ? () => onadd(t) : undefined })}
+				aria-label={`Play ${textOf(t.title)}`}
+				aria-keyshortcuts={[onnext ? 'N' : '', onadd ? 'A' : ''].filter(Boolean).join(' ') || undefined}
+			>
 				<span class="num muted">{textOf(t.tracknum) || i + 1}</span>
 				<span class="text">
 					<span class="title ellipsis">{textOf(t.title)}</span>
@@ -149,6 +157,16 @@
 		display: flex;
 		align-items: center;
 		border-radius: var(--radius-sm);
+		background: var(--bg);
+		transition: transform 0.15s ease;
+	}
+	.row:global([data-swiping]) {
+		transition: none;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.row {
+			transition: none;
+		}
 	}
 	.row:hover {
 		background: var(--bg-sunken);

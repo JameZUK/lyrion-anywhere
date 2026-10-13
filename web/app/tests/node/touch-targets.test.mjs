@@ -29,6 +29,21 @@ test('rating stars and the heart are 44 px targets', () => {
 	assert.ok(px(d, 'min-width') >= 44 && px(d, 'min-height') >= 44, d);
 });
 
+test('Wave 2 library and queue controls keep 44 px targets', () => {
+	const chip = rule(read('lib/components/Chips.svelte'), 'button {');
+	assert.ok(px(chip, 'min-height') >= 44, chip);
+	assert.ok(px(rule(read('lib/components/RowMenu.svelte'), '.menu button {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('lib/components/ShuffleButton.svelte'), '.menu button {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('lib/components/TrackCredits.svelte'), '\ta {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('routes/artist/[id]/[[role]]/+page.svelte'), '.chip {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('routes/search/+page.svelte'), '.term {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('lib/components/SearchHit.svelte'), '.main {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('lib/components/QueuePeek.svelte'), 'li button {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('routes/library/+page.svelte'), '.browse a {'), 'min-height') >= 44);
+	// The A–Z strip is 44 px wide; dragging along it picks a letter (and the keyboard reaches each).
+	assert.ok(px(rule(read('lib/components/AzScroller.svelte'), '.strip {'), 'width') >= 44);
+});
+
 test('Up next, the sleep timer and track menus keep 44 px targets', () => {
 	const rm = rule(read('lib/components/UpNext.svelte'), '.rm {');
 	assert.ok(px(rm, 'width') >= 44 && px(rm, 'height') >= 44);

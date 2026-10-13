@@ -15,6 +15,8 @@
 	import SleepSheet from '$lib/components/SleepSheet.svelte';
 	import SignalPath from '$lib/components/SignalPath.svelte';
 	import UpNext from '$lib/components/UpNext.svelte';
+	import QueuePeek from '$lib/components/QueuePeek.svelte';
+	import ShuffleButton from '$lib/components/ShuffleButton.svelte';
 	import DeviceWait from '$lib/components/DeviceWait.svelte';
 	import LyricsView from '$lib/components/LyricsView.svelte';
 	import RatingControl from '$lib/components/RatingControl.svelte';
@@ -29,6 +31,22 @@
 	let showSleep = $state(false);
 	let showPath = $state(false);
 	let showLyrics = $state(false);
+	let showQueue = $state(false);
+	/** A swipe up over the cover peeks at the queue (touch and pen). */
+	let peekSwipe: { id: number; x: number; y: number } | null = null;
+	function peekDown(e: PointerEvent) {
+		if (e.pointerType === 'mouse') return;
+		peekSwipe = { id: e.pointerId, x: e.clientX, y: e.clientY };
+	}
+	function peekUp(e: PointerEvent) {
+		const s = peekSwipe;
+		peekSwipe = null;
+		if (!s || s.id !== e.pointerId) return;
+		const dx = e.clientX - s.x;
+		const dy = e.clientY - s.y;
+		if (dy <= -SWIPE_UP_PX && Math.abs(dy) > Math.abs(dx) * 1.5 && app.current) showQueue = true;
+	}
+	const SWIPE_UP_PX = 60;
 	let sleepError = $state('');
 
 	let seeking = $state<number | null>(null);
@@ -41,7 +59,6 @@
 	const title = $derived(textOf(track?.title ?? app.now?.current_title));
 	const artistHref = $derived(cmd.link('artist', track?.artist_id));
 	const albumHref = $derived(cmd.link('album', track?.album_id));
-	const shuffle = $derived(Number(app.now?.['playlist shuffle'] ?? 0));
 	const repeat = $derived(Number(app.now?.['playlist repeat'] ?? 0));
 	const vol = $derived(volume ?? app.now?.['mixer volume'] ?? 0);
 	const badge = $derived(quality(track));
@@ -95,13 +112,13 @@
 			<button class="btn act" onclick={() => (showLyrics = true)} aria-haspopup="dialog" aria-label="Lyrics" data-lyrics-button><Icon name="lyrics" size={18} /><span class="label">Lyrics</span></button>
 		{/if}
 		{#if app.current}<a class="btn act" href="#/alarms" aria-label="Alarms" data-alarms-link><Icon name="alarm" size={18} /><span class="label">Alarms</span></a>{/if}
-		<a class="btn act" href="#/queue" aria-label="Queue"><Icon name="queue" size={18} /><span class="label">Queue</span></a>
+		<button class="btn act" onclick={() => (showQueue = true)} aria-haspopup="dialog" aria-label="Queue" disabled={!app.current} data-queue-peek><Icon name="queue" size={18} /><span class="label">Queue</span></button>
 		{#if typeof track?.id === 'number' && track.id > 0}
 			<button class="btn act" onclick={() => (showMore = true)} aria-label="More"><Icon name="more" size={18} /><span class="label">More</span></button>
 		{/if}
 	</div>
 
-	<div class="art-wrap">
+	<div class="art-wrap" onpointerdown={peekDown} onpointerup={peekUp} onpointercancel={() => (peekSwipe = null)} role="presentation" data-peek-area>
 		{#key trackKey}
 			<div class="art-box" in:fade={swap}>
 				<Art path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 800)} alt={title ? `Cover of ${textOf(track?.album)}` : ''} label={title} rounded="var(--radius)" eager />
@@ -155,9 +172,7 @@
 		</div>
 
 		<div class="transport">
-			<button class="icon-btn" class:on={shuffle > 0} aria-pressed={shuffle > 0} aria-label="Shuffle" onclick={() => app.send(cmd.shuffle(shuffle ? 0 : 1))} disabled={!app.now}>
-				<Icon name="shuffle" />
-			</button>
+			<ShuffleButton value={app.now?.['playlist shuffle']} onchange={(m) => app.send(cmd.shuffle(m))} disabled={!app.now} />
 			<button class="icon-btn big" aria-label="Previous" onclick={() => app.send(cmd.skip(-1))} disabled={!app.now}><Icon name="prev" size={30} /></button>
 			<button class="icon-btn play" aria-label={app.playing ? 'Pause' : 'Play'} onclick={() => app.send(app.playing ? cmd.pause(true) : cmd.play())} disabled={!app.now}>
 				<Icon name={app.playing ? 'pause' : 'play'} size={34} />
@@ -195,6 +210,7 @@
 		{#if showMore && typeof track?.id === 'number'}<ContextMenu kind="track" id={track.id} title={title} onclose={() => (showMore = false)} />{/if}
 		{#if showSleep}<SleepSheet onclose={() => (showSleep = false)} />{/if}
 		{#if showPath}<SignalPath onclose={() => (showPath = false)} />{/if}
+		{#if showQueue}<QueuePeek onclose={() => (showQueue = false)} />{/if}
 		{#if showLyrics}<LyricsView {title} onclose={() => (showLyrics = false)} />{/if}
 	</div>
 </section>
@@ -303,6 +319,8 @@
 		}
 	}
 	.art-wrap {
+		/* Swiping up over the cover peeks at the queue; sideways stays the browser's. */
+		touch-action: pan-x pinch-zoom;
 		grid-area: art;
 		align-self: center;
 		justify-self: end;
