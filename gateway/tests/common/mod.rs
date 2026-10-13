@@ -200,6 +200,55 @@ pub fn fake_alarm(words: &[serde_json::Value]) -> serde_json::Value {
     }
 }
 
+/// The fake Music & Artist Information plugin's `biography`, `artistphoto` and
+/// `albumreview` (`None`: it never answers). All names are invented.
+/// - artist 1: an HTML biography (with a script and a line naming a server path) and a
+///   photo on an external host;
+/// - artist 2: a plain biography, no photo;
+/// - artist 3: no biography, and a photo on the home network (never handed out);
+/// - artist 5: a biography, but the photo lookup never answers;
+/// - artists and albums 900 and up: never answer;
+/// - album 1: an HTML review; album 2: an empty one;
+/// - anything else: the plugin's "nothing found".
+pub fn fake_mai(words: &[serde_json::Value]) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let what = words.get(1)?.as_str()?;
+    let param = words.get(2).and_then(|w| w.as_str()).unwrap_or("");
+    let (kind, id) = param.split_once(':')?;
+    let id: u64 = id.parse().ok()?;
+    if id >= 900 {
+        return None;
+    }
+    Some(match (what, kind, id) {
+        ("biography", "artist_id", 1) => json!({
+            "artist_id": "1", "artist": "The Invented Band",
+            "biography": "<p>The Invented Band formed in 1990 &amp; played <b>everywhere</b>.</p>\
+                          <script>alert('x')</script>\
+                          <p>Local notes: /srv/music/The Invented Band/bio.txt</p>\
+                          <p>Second paragraph.<br>Last line.</p>"
+        }),
+        ("biography", "artist_id", 2 | 5) => json!({
+            "artist_id": id.to_string(), "artist": "Example Singer",
+            "biography": "Plain words\r\n\r\nabout a singer."
+        }),
+        ("artistphoto", "artist_id", 1) => json!({
+            "artist_id": "1", "url": "https://images.example.com/artist/1.jpg",
+            "credits": "Discogs", "width": "600", "height": "600"
+        }),
+        ("artistphoto", "artist_id", 3) => json!({
+            "artist_id": "3", "url": "http://10.0.0.10:9000/plugins/x/artist.jpg",
+            "credits": "Local"
+        }),
+        ("artistphoto", "artist_id", 5) => return None,
+        ("albumreview", "album_id", 1) => json!({
+            "album_id": "1", "album": "Invented Album", "artist": "The Invented Band",
+            "albumreview": "<div><i>A fine record</i> &mdash; five stars.<style>p{}</style></div>"
+        }),
+        ("albumreview", "album_id", 2) => json!({"album_id": "2", "albumreview": ""}),
+        _ => json!({"error": "No information found"}),
+    })
+}
+
 /// Canned LMS JSON-RPC results, deliberately full of things that must not leak.
 pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
     use serde_json::json;
@@ -580,6 +629,20 @@ impl FakeLms {
                         }
                         _ if cmd == "alarm" || cmd == "alarms" || (cmd == "playerpref" && words.get(1).and_then(|w| w.as_str()) == Some("alarmsEnabled")) => {
                             fake_alarm(&words)
+                        }
+                        _ if cmd == "musicartistinfo"
+                            && matches!(
+                                words.get(1).and_then(|w| w.as_str()),
+                                Some("biography" | "albumreview" | "artistphoto")
+                            ) =>
+                        {
+                            match fake_mai(&words) {
+                                Some(v) => v,
+                                None => {
+                                    futures_util::future::pending::<()>().await;
+                                    serde_json::Value::Null
+                                }
+                            }
                         }
                         Some(id) if cmd == "musicartistinfo" => {
                             if id == 1 && words.len() == 3 {

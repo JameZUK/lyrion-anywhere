@@ -205,7 +205,7 @@ pub(crate) fn proxy_target(s: &str) -> Option<String> {
 /// The host is judged as written (see `rpc_policy::host_is_local`: private addresses in
 /// any spelling, single-label and local names, wildcard-DNS names such as
 /// `10.0.0.5.nip.io`), and the whole URL must not hold a path or LAN address either.
-fn local_url(url: &str) -> bool {
+pub(crate) fn local_url(url: &str) -> bool {
     url_host(url).is_none_or(crate::rpc_policy::host_is_local)
         || crate::rpc_policy::sensitive_text(url)
 }
