@@ -145,7 +145,7 @@ Detailed on 2026-10-13. Web and Android together. No gateway change: player stat
     - a bass level (0–1) for the glow.
   - **Implementation:** a small radix-2 FFT (2048 points, Hann window) written in the core. No new dependency.
   - **Bad input:** NaN or infinite samples count as silence. Any input is bounded and never panics.
-- **Styles:** *Bars*, *Scope*, *Glow* (the blurred-art background pulsing with the bass) and *VU* (two needle meters with ballistics drawn by the client: about 300 ms rise and fall, peak hold).
+- **Styles:** *Bars*, *Scope*, *Glow* (reworked 2026-10-13: a halo behind the cover in the album's own colours, slowly turning, pulsing on detected beats rather than following the level; the parameters live in `web/app/src/lib/visual/glow.ts`, mirrored on Android) and *VU* (two needle meters with ballistics drawn by the client: about 300 ms rise and fall, peak hold).
   - **Choosing:** swipe across the visualiser, or use its button.
   - **Remembered:** per device.
 - **Off unless chosen:** the visualiser is off by default (Settings, or the Now playing layout button).
