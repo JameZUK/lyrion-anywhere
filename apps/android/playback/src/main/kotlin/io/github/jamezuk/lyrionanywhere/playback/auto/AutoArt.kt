@@ -113,23 +113,28 @@ class AutoArtCache(
         if (!AutoArtAccess.isImage(bytes)) return null
         val key = newKey()
         val target = File(dir, key)
+        val tmp = File(dir, "$key.tmp")
         val written = runCatching {
-            val tmp = File(dir, "$key.tmp")
             tmp.writeBytes(bytes!!)
             tmp.renameTo(target)
         }.getOrDefault(false)
-        if (!written) return null
-        val evicted = synchronized(keys) {
+        if (!written) {
+            tmp.delete()
+            return null
+        }
+        val (kept, evicted) = synchronized(keys) {
+            // Fetched twice at once: keep the first (its URI may already be out), drop ours.
+            keys[artKey]?.let { return@synchronized it to listOf(key) }
             keys[artKey] = key
             val out = mutableListOf<String>()
             while (keys.size > MAX_FILES) {
                 val oldest = keys.keys.first()
                 keys.remove(oldest)?.let(out::add)
             }
-            out
+            key to out
         }
         evicted.forEach { File(dir, it).delete() }
-        return uri(key)
+        return uri(kept)
     }
 
     /** The cached file for an opaque [key], only inside the cache (null: none). */
