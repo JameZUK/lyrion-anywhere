@@ -8,7 +8,7 @@
 	import { device } from '$lib/player/device.svelte';
 	import { parseFrame, silentFrame, type VisualFrame } from '$lib/visual/frame';
 	import { drawBars, drawScope, drawVu, glowLevel, nextStyle, type Palette, type VisualStyle } from '$lib/visual/draw';
-	import { VuBallistics, fallBars } from '$lib/visual/vu';
+	import { VuBallistics, VuCalibration, fallBars } from '$lib/visual/vu';
 
 	let {
 		style,
@@ -35,6 +35,7 @@
 		let frameAt = 0;
 		const bars = new Float32Array(frame.bands.length);
 		const vu = [new VuBallistics(), new VuBallistics()];
+		const calibration = new VuCalibration();
 		let glow = 0;
 		let palette: Palette | null = null;
 		let paletteAt = -Infinity;
@@ -88,7 +89,9 @@
 				const now = performance.now();
 				vu[0]!.step(frame.rmsDb[0], frame.peakDb[0], dt, now);
 				vu[1]!.step(frame.rmsDb[1], frame.peakDb[1], dt, now);
-				drawVu(ctx, w, h, [vu[0]!.level, vu[1]!.level], [vu[0]!.peak, vu[1]!.peak], palette);
+				// Only while music is heard (a stale frame is silence, which it ignores).
+				const ref = calibration.step(frame.rmsDb, dt);
+				drawVu(ctx, w, h, [vu[0]!.level, vu[1]!.level], [vu[0]!.peak, vu[1]!.peak], palette, ref);
 			}
 		}
 

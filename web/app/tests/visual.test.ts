@@ -1,7 +1,7 @@
 // The visualiser's client side (Wave 2 §4.1) and Now playing's remembered choices (§4.2):
 // frames from the worker, VU ballistics, drawing, and the per-device preferences.
 import { BANDS, FLOOR_DB, FRAME_LEN, SCOPE_POINTS, parseFrame, silentFrame } from '$lib/visual/frame';
-import { BAR_FALL_PER_S, PEAK_HOLD_MS, VU_RESPONSE_MS, VuBallistics, fallBars, needlePosition } from '$lib/visual/vu';
+import { BAR_FALL_PER_S, PEAK_HOLD_MS, VU_REFERENCE_MAX, VU_REFERENCE_MIN, VU_RESPONSE_MS, VuBallistics, VuCalibration, fallBars, needlePosition } from '$lib/visual/vu';
 import { STYLES, drawBars, drawScope, drawVu, glowLevel, nextStyle, type Ctx, type Palette } from '$lib/visual/draw';
 import {
 	DEFAULT_NOW_PLAYING,
@@ -142,6 +142,40 @@ describe('VU ballistics', () => {
 		expect(needlePosition(-15)).toBe(1);
 		expect(needlePosition(0)).toBe(1);
 		expect(needlePosition(NaN)).toBe(0);
+	});
+
+	test('the calibration follows the mastering level, so the needle swings rather than pins', () => {
+		// Regression: a fixed −18 dBFS reference left the needles at the end stop on modern
+		// masters (an average near −9 dBFS).
+		const settle = (c: VuCalibration, db: number, ms: number) => {
+			for (let t = 0; t < ms; t += 33) c.step([db, db], 33);
+			return c.reference;
+		};
+		const loud = new VuCalibration();
+		const ref = settle(loud, -9, 15_000);
+		expect(ref).toBeCloseTo(-6, 0);
+		expect(needlePosition(-9, ref)).toBeCloseTo(17 / 23, 1); // about −3 VU
+		expect(needlePosition(-9, ref)).toBeLessThan(needlePosition(-5, ref));
+		expect(needlePosition(-4, ref)).toBeGreaterThan(20 / 23); // loud passages reach the red
+		// A quiet recording sits in the same place.
+		const quiet = new VuCalibration();
+		const qref = settle(quiet, -24, 15_000);
+		expect(needlePosition(-24, qref)).toBeCloseTo(needlePosition(-9, ref), 1);
+		// Silence and gaps leave it alone; garbage is ignored; it stays within its limits.
+		settle(loud, -90, 20_000);
+		expect(loud.reference).toBeCloseTo(ref, 1);
+		loud.step([NaN, Infinity], 33);
+		expect(Number.isFinite(loud.reference)).toBe(true);
+		expect(settle(new VuCalibration(), -1, 20_000)).toBe(VU_REFERENCE_MAX);
+		expect(settle(new VuCalibration(), -50, 20_000)).toBe(VU_REFERENCE_MIN);
+		// It settles within a few seconds, then moves slowly (a quiet bar doesn't swing it).
+		const c = new VuCalibration();
+		settle(c, -9, 3_000);
+		expect(c.reference).toBeCloseTo(-6, 0);
+		settle(c, -20, 1_000);
+		expect(c.reference).toBeGreaterThan(-8);
+		c.reset();
+		expect(c.reference).toBe(-18);
 	});
 
 	test('bars jump up and fall smoothly', () => {

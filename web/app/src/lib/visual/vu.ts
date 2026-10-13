@@ -14,8 +14,22 @@ export const PEAK_FALL_DB_PER_S = 20;
 /** Longest step taken at once (after the page was hidden, say): the needle just settles. */
 const MAX_STEP_MS = 1000;
 
-/** 0 VU on the scale is this many dBFS (the usual digital reference). */
+/** 0 VU before the calibration has heard anything (the usual digital reference). */
 export const VU_REFERENCE_DBFS = -18;
+/**
+ * The calibration puts 0 VU this far above the music's running average, so the needle sits
+ * a little below 0 VU and loud passages swing into the red, whatever the mastering level.
+ */
+export const VU_HEADROOM_DB = 3;
+/** The running average's time constant, much quicker while it first settles. */
+export const VU_CALIBRATION_MS = 8000;
+const SETTLE_MS = 3000;
+const SETTLE_TAU_MS = 800;
+/** Where 0 VU may sit (dBFS). */
+export const VU_REFERENCE_MIN = -26;
+export const VU_REFERENCE_MAX = -6;
+/** Quieter than this is a gap, not music: it doesn't move the calibration. */
+const SILENCE_DB = -60;
 /** The scale runs from −20 VU to +3 VU. */
 export const VU_MIN = -20;
 export const VU_MAX = 3;
@@ -57,9 +71,41 @@ export class VuBallistics {
 	}
 }
 
-/** Where a level (dBFS) sits on the VU scale, 0 (−20 VU) to 1 (+3 VU). */
-export function needlePosition(db: number): number {
-	const vu = clean(db) - VU_REFERENCE_DBFS;
+/**
+ * Where 0 VU sits, following the music: a fixed −18 dBFS reference pinned the needles at
+ * the end stop on modern masters (whose average is nearer −9 dBFS), and would leave quiet
+ * recordings at the bottom. Fed both channels' RMS each frame; `reference` is in dBFS.
+ */
+export class VuCalibration {
+	reference = VU_REFERENCE_DBFS;
+	#power = 0;
+	#heardMs = 0;
+
+	step(rmsDb: readonly number[], dtMs: number): number {
+		const dt = Number.isFinite(dtMs) ? Math.min(MAX_STEP_MS, Math.max(0, dtMs)) : 0;
+		const levels = rmsDb.map(clean);
+		if (!levels.length || dt <= 0) return this.reference;
+		const power = levels.reduce((a, db) => a + 10 ** (db / 10), 0) / levels.length;
+		if (10 * Math.log10(power) < SILENCE_DB) return this.reference;
+		const tau = this.#heardMs < SETTLE_MS ? SETTLE_TAU_MS : VU_CALIBRATION_MS;
+		this.#power = this.#heardMs === 0 ? power : this.#power + (power - this.#power) * (1 - Math.exp(-dt / tau));
+		this.#heardMs += dt;
+		const avg = 10 * Math.log10(this.#power);
+		this.reference = Math.min(VU_REFERENCE_MAX, Math.max(VU_REFERENCE_MIN, avg + VU_HEADROOM_DB));
+		return this.reference;
+	}
+
+	reset() {
+		this.reference = VU_REFERENCE_DBFS;
+		this.#power = 0;
+		this.#heardMs = 0;
+	}
+}
+
+/** Where a level (dBFS) sits on the VU scale, 0 (−20 VU) to 1 (+3 VU), with 0 VU at `reference`. */
+export function needlePosition(db: number, reference: number = VU_REFERENCE_DBFS): number {
+	const ref = Number.isFinite(reference) ? reference : VU_REFERENCE_DBFS;
+	const vu = clean(db) - ref;
 	return Math.min(1, Math.max(0, (vu - VU_MIN) / (VU_MAX - VU_MIN)));
 }
 

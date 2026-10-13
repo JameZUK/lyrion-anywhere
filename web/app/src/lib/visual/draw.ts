@@ -90,15 +90,15 @@ function angleAt(pos: number): number {
 	return -Math.PI / 2 - SWING + pos * 2 * SWING;
 }
 
-/** One needle meter in the box (x, y, w, h). `level` and `peak` in dBFS. */
-function meter(ctx: Ctx, x: number, y: number, w: number, h: number, level: number, peak: number, label: string, p: Palette) {
+/** One needle meter in the box (x, y, w, h). `level` and `peak` in dBFS; 0 VU at `ref` dBFS. */
+function meter(ctx: Ctx, x: number, y: number, w: number, h: number, level: number, peak: number, label: string, p: Palette, ref: number) {
 	const cx = x + w / 2;
 	const cy = y + h * 0.92;
 	const r = Math.min(w * 0.46, h * 0.8);
 	ctx.lineWidth = Math.max(1, r / 60);
 	ctx.lineCap = 'round';
 	for (const m of MARKS) {
-		const a = angleAt(needlePosition(m + VU_REFERENCE_DBFS));
+		const a = angleAt((m - VU_MIN) / (VU_MAX - VU_MIN));
 		ctx.strokeStyle = m >= 0 ? p.danger : p.muted;
 		ctx.beginPath();
 		ctx.moveTo(cx + Math.cos(a) * r * 0.86, cy + Math.sin(a) * r * 0.86);
@@ -116,12 +116,12 @@ function meter(ctx: Ctx, x: number, y: number, w: number, h: number, level: numb
 	ctx.arc(cx, cy, r * 0.93, zero, angleAt(1));
 	ctx.stroke();
 	// The peak marker, then the needle.
-	const pa = angleAt(needlePosition(peak));
-	ctx.fillStyle = peak > VU_REFERENCE_DBFS ? p.danger : p.accent;
+	const pa = angleAt(needlePosition(peak, ref));
+	ctx.fillStyle = peak > ref ? p.danger : p.accent;
 	ctx.beginPath();
 	ctx.arc(cx + Math.cos(pa) * r * 0.78, cy + Math.sin(pa) * r * 0.78, Math.max(2, r / 30), 0, Math.PI * 2);
 	ctx.fill();
-	const na = angleAt(needlePosition(level));
+	const na = angleAt(needlePosition(level, ref));
 	ctx.strokeStyle = p.fg;
 	ctx.lineWidth = Math.max(1.5, r / 45);
 	ctx.beginPath();
@@ -135,15 +135,15 @@ function meter(ctx: Ctx, x: number, y: number, w: number, h: number, level: numb
 }
 
 /** Two needle meters, left and right, stacked when the box is tall and side by side when wide. */
-export function drawVu(ctx: Ctx, w: number, h: number, levels: [number, number], peaks: [number, number], p: Palette) {
+export function drawVu(ctx: Ctx, w: number, h: number, levels: [number, number], peaks: [number, number], p: Palette, ref: number = VU_REFERENCE_DBFS) {
 	ctx.clearRect(0, 0, w, h);
 	if (w <= 0 || h <= 0) return;
 	if (w >= h * 1.3) {
-		meter(ctx, 0, 0, w / 2, h, levels[0], peaks[0], 'L', p);
-		meter(ctx, w / 2, 0, w / 2, h, levels[1], peaks[1], 'R', p);
+		meter(ctx, 0, 0, w / 2, h, levels[0], peaks[0], 'L', p, ref);
+		meter(ctx, w / 2, 0, w / 2, h, levels[1], peaks[1], 'R', p, ref);
 	} else {
-		meter(ctx, 0, 0, w, h / 2, levels[0], peaks[0], 'L', p);
-		meter(ctx, 0, h / 2, w, h / 2, levels[1], peaks[1], 'R', p);
+		meter(ctx, 0, 0, w, h / 2, levels[0], peaks[0], 'L', p, ref);
+		meter(ctx, 0, h / 2, w, h / 2, levels[1], peaks[1], 'R', p, ref);
 	}
 }
 

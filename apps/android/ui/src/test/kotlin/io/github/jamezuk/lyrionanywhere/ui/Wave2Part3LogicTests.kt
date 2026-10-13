@@ -24,6 +24,7 @@ import io.github.jamezuk.lyrionanywhere.ui.player.RoomsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.player.VisualBlock
 import io.github.jamezuk.lyrionanywhere.ui.player.VisualMotion
 import io.github.jamezuk.lyrionanywhere.ui.player.VisualState
+import io.github.jamezuk.lyrionanywhere.ui.player.VuCalibration
 import io.github.jamezuk.lyrionanywhere.ui.player.VuMeter
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -58,17 +59,58 @@ class VisualiserLogicTest {
 
     @Test
     fun theVuScaleAndJunkLevels() {
+        // −20 VU to +3 VU, 0 VU at the reference (−18 dBFS until calibrated).
         assertEquals(0f, VuMeter.position(-90f))
-        assertEquals(0f, VuMeter.position(-40f))
-        assertEquals(0.5f, VuMeter.position(-20f))
-        assertEquals(1f, VuMeter.position(0f))
+        assertEquals(0f, VuMeter.position(-38f))
+        assertEquals(VuMeter.ZERO_VU, VuMeter.position(-18f), 1e-4f)
+        assertEquals(1f, VuMeter.position(-15f))
         assertEquals(1f, VuMeter.position(12f))
         assertEquals(0f, VuMeter.position(Float.NaN))
+        assertEquals(VuMeter.ZERO_VU, VuMeter.position(-6f, -6f), 1e-4f)
+        assertEquals(VuMeter.ZERO_VU, VuMeter.position(-18f, Float.NaN), 1e-4f)
         val m = VuMeter()
         m.step(Float.NaN, 100)
         m.step(0f, Long.MAX_VALUE)
         m.step(0f, -5)
         assertTrue(m.needle in 0f..1f && m.peak in 0f..1f)
+    }
+
+    @Test
+    fun theVuCalibrationFollowsTheMasteringLevel() {
+        // Regression: a fixed scale left the needles at the end stop on modern masters.
+        fun settle(c: VuCalibration, db: Float, ms: Long): Float {
+            var t = 0L
+            while (t < ms) { c.step(floatArrayOf(db, db), 33); t += 33 }
+            return c.referenceDb
+        }
+        val loud = VuCalibration()
+        val ref = settle(loud, -9f, 15_000)
+        assertEquals(-6f, ref, 0.5f)
+        val pos = VuMeter.position(-9f, ref)
+        assertTrue("about −3 VU: $pos", pos in 0.65f..0.8f)
+        assertTrue("loud passages reach the red", VuMeter.position(-4f, ref) > VuMeter.ZERO_VU)
+        val quiet = VuCalibration()
+        val qref = settle(quiet, -24f, 15_000)
+        assertEquals(pos, VuMeter.position(-24f, qref), 0.05f)
+        // Silence, garbage and the limits.
+        settle(loud, -90f, 20_000)
+        assertEquals(ref, loud.referenceDb, 0.1f)
+        loud.step(floatArrayOf(Float.NaN, Float.POSITIVE_INFINITY), 33)
+        assertTrue(loud.referenceDb.isFinite())
+        assertEquals(VuCalibration.MAX_REFERENCE_DB, settle(VuCalibration(), -1f, 20_000))
+        assertEquals(VuCalibration.MIN_REFERENCE_DB, settle(VuCalibration(), -50f, 20_000))
+        // Quick to settle, then slow: a one-second quiet bar barely moves it.
+        val c = VuCalibration()
+        settle(c, -9f, 3_000)
+        assertEquals(-6f, c.referenceDb, 0.5f)
+        settle(c, -20f, 1_000)
+        assertTrue("${c.referenceDb}", c.referenceDb > -8f)
+        c.reset()
+        assertEquals(VuMeter.DEFAULT_REFERENCE_DB, c.referenceDb)
+        // Through VisualState: the meters stop pinning.
+        val st = VisualState()
+        repeat(450) { st.update(frame(0.5f).let { f -> VisualFrame(f.bands, f.scope, floatArrayOf(-9f, -9f), floatArrayOf(-3f, -3f), 0f) }, 33) }
+        assertTrue("needle ${st.vu[0].needle}", st.vu[0].needle < 0.9f)
     }
 
     private fun frame(level: Float, bass: Float = 0f) = VisualFrame(

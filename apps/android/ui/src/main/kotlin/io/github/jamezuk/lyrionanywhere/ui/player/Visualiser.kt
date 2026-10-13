@@ -70,6 +70,8 @@ import io.github.jamezuk.lyrionanywhere.ui.R
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.log10
+import kotlin.math.pow
 import kotlin.math.sin
 
 /**
@@ -106,8 +108,9 @@ object VisualMotion {
 
 /**
  * A VU needle (Wave 2 §4.1): about 300 ms to rise and to fall (to 99 %), and a peak mark that
- * holds for [holdMs] before falling with the needle. Positions are 0–1 over [VuMeter.RANGE_DB]
- * dB below full scale. Plain Kotlin, so its ballistics are tested on the JVM.
+ * holds for [holdMs] before falling with the needle. Positions are 0–1 over the classic scale,
+ * −20 VU to +3 VU, with 0 VU at the reference [VuCalibration] keeps in step with the music.
+ * Plain Kotlin, so its ballistics are tested on the JVM.
  */
 class VuMeter(private val riseMs: Float = 300f, private val fallMs: Float = 300f, private val holdMs: Long = 1_500) {
     var needle = 0f
@@ -116,10 +119,10 @@ class VuMeter(private val riseMs: Float = 300f, private val fallMs: Float = 300f
         private set
     private var held = 0L
 
-    /** Move towards [levelDb] (dBFS) over [dtMs] milliseconds. */
-    fun step(levelDb: Float, dtMs: Long) {
+    /** Move towards [levelDb] (dBFS) over [dtMs] milliseconds, with 0 VU at [referenceDb]. */
+    fun step(levelDb: Float, dtMs: Long, referenceDb: Float = DEFAULT_REFERENCE_DB) {
         val dt = dtMs.coerceIn(0, 1_000).toFloat()
-        val target = position(levelDb)
+        val target = position(levelDb, referenceDb)
         val tau = (if (target > needle) riseMs else fallMs) / 4.6f // 99 % in riseMs/fallMs
         needle += (target - needle) * (1f - exp(-dt / tau))
         needle = needle.coerceIn(0f, 1f)
@@ -140,10 +143,61 @@ class VuMeter(private val riseMs: Float = 300f, private val fallMs: Float = 300f
     }
 
     companion object {
-        /** The meter shows this many dB below full scale. */
-        const val RANGE_DB = 40f
+        /** 0 VU before the calibration has heard anything (the usual digital reference). */
+        const val DEFAULT_REFERENCE_DB = -18f
+        const val VU_MIN = -20f
+        const val VU_MAX = 3f
+        /** Where 0 VU sits on the scale (the red starts there). */
+        const val ZERO_VU = -VU_MIN / (VU_MAX - VU_MIN)
 
-        fun position(db: Float): Float = if (db.isFinite()) ((db + RANGE_DB) / RANGE_DB).coerceIn(0f, 1f) else 0f
+        /** Where [db] (dBFS) sits, 0 (−20 VU) to 1 (+3 VU), with 0 VU at [referenceDb]. */
+        fun position(db: Float, referenceDb: Float = DEFAULT_REFERENCE_DB): Float {
+            if (!db.isFinite()) return 0f
+            val ref = if (referenceDb.isFinite()) referenceDb else DEFAULT_REFERENCE_DB
+            return ((db - ref - VU_MIN) / (VU_MAX - VU_MIN)).coerceIn(0f, 1f)
+        }
+    }
+}
+
+/**
+ * Where 0 VU sits, following the music (as the web app's): a fixed reference pinned the
+ * needles on modern masters (an average near −9 dBFS) and would leave quiet recordings at the
+ * bottom. A running average of both channels' RMS (time constant [TAU_MS], quicker while it
+ * first settles) puts 0 VU [HEADROOM_DB] above it, so the needle sits a little below 0 VU and
+ * loud passages reach the red. Silence and gaps leave it alone.
+ */
+class VuCalibration {
+    var referenceDb = VuMeter.DEFAULT_REFERENCE_DB
+        private set
+    private var power = 0.0
+    private var heardMs = 0L
+
+    fun step(rmsDb: FloatArray, dtMs: Long): Float {
+        val dt = dtMs.coerceIn(0, 1_000)
+        if (rmsDb.isEmpty() || dt <= 0) return referenceDb
+        val p = rmsDb.map { db -> if (db.isFinite()) 10.0.pow(db.coerceIn(VisualFrame.FLOOR_DB, 0f) / 10.0) else 0.0 }.average()
+        if (p <= 0.0 || 10 * log10(p) < SILENCE_DB) return referenceDb
+        val tau = if (heardMs < SETTLE_MS) SETTLE_TAU_MS else TAU_MS
+        power = if (heardMs == 0L) p else power + (p - power) * (1 - exp(-dt.toDouble() / tau))
+        heardMs += dt
+        referenceDb = (10 * log10(power) + HEADROOM_DB).toFloat().coerceIn(MIN_REFERENCE_DB, MAX_REFERENCE_DB)
+        return referenceDb
+    }
+
+    fun reset() {
+        referenceDb = VuMeter.DEFAULT_REFERENCE_DB
+        power = 0.0
+        heardMs = 0
+    }
+
+    companion object {
+        const val HEADROOM_DB = 3.0
+        const val TAU_MS = 8_000.0
+        const val SETTLE_MS = 3_000L
+        const val SETTLE_TAU_MS = 800.0
+        const val MIN_REFERENCE_DB = -26f
+        const val MAX_REFERENCE_DB = -6f
+        private const val SILENCE_DB = -60.0
     }
 }
 
@@ -157,6 +211,7 @@ class VisualState {
     val bars = FloatArray(VisualFrame.BANDS)
     val scope = FloatArray(VisualFrame.SCOPE)
     val vu = arrayOf(VuMeter(), VuMeter())
+    val calibration = VuCalibration()
     var glow by mutableFloatStateOf(0f)
         private set
     var tick by mutableLongStateOf(0L)
@@ -179,9 +234,10 @@ class VisualState {
             if (abs(v - scope[i]) > 1e-4f) moved = true
             scope[i] = v
         }
+        val ref = frame?.rmsDb?.let { calibration.step(it, dtMs) } ?: calibration.referenceDb
         for (side in 0..1) {
             val before = vu[side].needle to vu[side].peak
-            vu[side].step(frame?.rmsDb?.getOrNull(side) ?: VisualFrame.FLOOR_DB, dtMs)
+            vu[side].step(frame?.rmsDb?.getOrNull(side) ?: VisualFrame.FLOOR_DB, dtMs, ref)
             if (abs(vu[side].needle - before.first) > 1e-4f || abs(vu[side].peak - before.second) > 1e-4f) moved = true
         }
         val g = frame?.bass ?: 0f
@@ -196,6 +252,7 @@ class VisualState {
         bars.fill(0f)
         scope.fill(0f)
         vu.forEach { it.reset() }
+        calibration.reset()
         glow = 0f
         tick++
     }
@@ -398,10 +455,10 @@ private fun DrawScope.drawVu(
             val a = Math.toRadians((-90f - sweep / 2 + sweep * pos).toDouble())
             return Offset(cx + radius * cos(a).toFloat(), cy + radius * sin(a).toFloat())
         }
-        // The scale, red over the last fifth (the loudest 8 dB).
-        for (t in 0..20) {
-            val pos = t / 20f
-            drawLine(if (pos > 0.8f) hot else scale, at(pos, r * 0.86f), at(pos, r), strokeWidth = if (t % 5 == 0) 4f else 2f)
+        // The scale, red from 0 VU.
+        for (t in 0..23) {
+            val pos = t / 23f
+            drawLine(if (pos > VuMeter.ZERO_VU) hot else scale, at(pos, r * 0.86f), at(pos, r), strokeWidth = if (t == 20 || t % 5 == 0) 4f else 2f)
         }
         val meter = meters[m]
         drawLine(peakColour, at(meter.peak, r * 0.8f), at(meter.peak, r), strokeWidth = 6f, cap = StrokeCap.Round)
