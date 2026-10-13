@@ -60,7 +60,7 @@ sub initPlugin {
 }
 
 sub shutdownPlugin {
-	Plugins::LyrionAnywhere::Gateway->stop;
+	Plugins::LyrionAnywhere::Gateway->stop_for_shutdown;
 }
 
 1;

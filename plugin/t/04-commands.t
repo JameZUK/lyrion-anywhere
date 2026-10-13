@@ -6,6 +6,10 @@ use Plugins::LyrionAnywhere::Commands;
 use Slim::Control::Request;
 use Slim::Networking::SimpleAsyncHTTP;
 use Slim::Utils::Prefs;
+use Slim::Utils::Timers;
+use Proc::Background;
+use lib 't/lib';
+use AnywhereTest qw(start_stub_gateway);
 
 Plugins::LyrionAnywhere::Commands::register();
 ok($Slim::Control::Request::DISPATCH{'anywhere status'}, 'status registered');
@@ -17,6 +21,7 @@ my $dir = tempdir(CLEANUP => 1);
 $Slim::Utils::Prefs::DIR = $dir;
 mkdir "$dir/lyrion-anywhere";
 open my $fh, '>', "$dir/lyrion-anywhere/admin.secret" or die; print $fh 'cd' x 32; close $fh;
+start_stub_gateway($dir);
 
 # Invalid input: an error result, and nothing reaches the gateway.
 my $before = @Slim::Networking::SimpleAsyncHTTP::REQUESTS;
@@ -147,6 +152,30 @@ for my $op (sort keys %read_only_args) {
 	Plugins::LyrionAnywhere::Commands::status($req);
 	is($req->{status}, 'done', 'status needs no token');
 	ok(!grep({ ($_ // '') eq $token } values %{ $req->{results} }), 'status does not reveal the token');
+}
+
+# Restart never starts a gateway that is turned off (it is stopped and stays stopped).
+{
+	my $prefs = preferences('plugin.lyrionanywhere');
+	$prefs->set(enabled => 0);
+	my $n = @Proc::Background::STARTED;
+	my $req = Slim::Control::Request->new(['anywhere', 'restart'], { csrf => $token });
+	Plugins::LyrionAnywhere::Commands::restart($req);
+	is($req->{status}, 'done');
+	is($req->{results}{started}, 0, 'turned off: not started');
+	like($req->{results}{message}, qr/turned off/, 'and the reply says why');
+	is(scalar @Proc::Background::STARTED, $n, 'nothing was launched');
+	is(Plugins::LyrionAnywhere::Gateway->state->{running}, 0, 'the running gateway was stopped');
+	ok(!grep({ $_->[1] == \&Plugins::LyrionAnywhere::Gateway::_launch || $_->[1] == \&Plugins::LyrionAnywhere::Gateway::_check } @Slim::Utils::Timers::TIMERS),
+		'and no start or restart is pending');
+	$prefs->set(enabled => 1);
+	$req = Slim::Control::Request->new(['anywhere', 'restart'], { csrf => $token });
+	Plugins::LyrionAnywhere::Commands::restart($req);
+	is($req->{results}{started}, 1, 'turned on: restarted');
+	is(scalar @Proc::Background::STARTED, $n + 1, 'one gateway launched');
+	is(Plugins::LyrionAnywhere::Gateway->state->{running}, 1);
+	Plugins::LyrionAnywhere::Gateway->stop;
+	start_stub_gateway($dir);
 }
 
 # Regression: `anywhere session_days days:N` always failed (days was never read).

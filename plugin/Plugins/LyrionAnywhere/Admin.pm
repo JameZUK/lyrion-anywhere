@@ -165,8 +165,11 @@ sub call {
 		return $err->($m);
 	}
 	my $secret = secret() or return $err->('the gateway has not started yet (no admin secret)');
-	# admin_listen() is always 127.0.0.1 and a validated port: the secret stays on this host.
-	my $url = 'http://' . Plugins::LyrionAnywhere::Gateway::admin_listen() . $path;
+	# Only to the gateway this plugin started, on the loopback port it started it with (never
+	# a port from a later pref change): the secret stays with the gateway.
+	my $target = Plugins::LyrionAnywhere::Gateway::admin_target()
+		or return $err->('the gateway is not running');
+	my $url = 'http://' . $target . $path;
 	my $http = Slim::Networking::SimpleAsyncHTTP->new(
 		sub {
 			my $res = shift;
@@ -175,9 +178,9 @@ sub call {
 			$ok->($data // {});
 		},
 		sub {
-			my ($res, $error) = @_;
+			my ($http, $error, $res) = @_;
 			$log->warn("admin API $op failed: " . ($error // 'unknown error'));
-			$err->(_friendly($error));
+			$err->(_friendly($error, gateway_message($res, $http)));
 		},
 		{ timeout => TIMEOUT },
 	);
@@ -190,9 +193,32 @@ sub call {
 	}
 }
 
+# The gateway's own explanation from an error reply ({"error": "..."}), if there is one:
+# a single line of at most 200 characters, control characters removed. SimpleAsyncHTTP
+# passes the response to the error callback (or keeps it on the request object).
+sub gateway_message {
+	for my $r (@_) {
+		next unless ref $r;
+		my $res = eval { $r->can('content') ? $r : $r->can('response') ? $r->response : undef } or next;
+		my $content = eval { $res->content };
+		next unless defined $content && length $content && length $content <= 65536;
+		my $data = eval { decode_json($content) };
+		next unless ref $data eq 'HASH' && defined $data->{error} && !ref $data->{error};
+		my $m = "$data->{error}";
+		$m =~ s/[\x00-\x1f\x7f]+/ /g;
+		$m =~ s/\A\s+|\s+\z//g;
+		next unless length $m;
+		$m = substr($m, 0, 200) if length $m > 200;
+		return $m;
+	}
+	return undef;
+}
+
 sub _friendly {
-	my $e = shift // '';
+	my ($e, $message) = @_;
+	$e //= '';
 	return 'the gateway is not running'               if $e =~ /connect|refused|timed? ?out/i;
+	return "refused by the gateway: $message"         if defined $message && $e !~ /403/;
 	return 'not found'                                if $e =~ /404/;
 	return 'refused by the gateway (check the input)' if $e =~ /400/;
 	return 'the gateway refused the admin secret'     if $e =~ /403/;

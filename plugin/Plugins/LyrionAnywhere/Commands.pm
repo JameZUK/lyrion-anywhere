@@ -108,7 +108,15 @@ sub status {
 sub restart {
 	my $request = shift;
 	return _refuse($request, 'restart') unless token_ok($request->getParam('csrf'));
-	Plugins::LyrionAnywhere::Gateway->restart;
+	# A gateway that is turned off is stopped, never started: only Enabled (and Save) turns
+	# remote access on.
+	unless (Plugins::LyrionAnywhere::Gateway->restart) {
+		$request->addResult('started', 0);
+		$request->addResult('message', 'Remote access is turned off, so the gateway was not started. Tick Enabled and save the settings to turn it on.');
+		$request->setStatusDone;
+		return;
+	}
+	$request->addResult('started', 1);
 	$request->setStatusDone;
 }
 
