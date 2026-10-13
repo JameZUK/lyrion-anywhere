@@ -154,6 +154,9 @@ interface PlayersRepository {
 
     suspend fun setPaused(player: String, paused: Boolean): ApiResult<Unit>
 
+    /** Stop playback (car mode's long press on play/pause). */
+    suspend fun stop(player: String): ApiResult<Unit> = setPaused(player, true)
+
     suspend fun next(player: String): ApiResult<Unit>
 
     suspend fun previous(player: String): ApiResult<Unit>
@@ -368,6 +371,8 @@ class RustPlayersRepository(private val source: ConnectionSource) : PlayersRepos
     override suspend fun play(player: String) = withPlayers { it.play(player) }
 
     override suspend fun setPaused(player: String, paused: Boolean) = withPlayers { it.setPaused(player, paused) }
+
+    override suspend fun stop(player: String) = withPlayers { it.stop(player) }
 
     override suspend fun next(player: String) = withPlayers { it.next(player) }
 

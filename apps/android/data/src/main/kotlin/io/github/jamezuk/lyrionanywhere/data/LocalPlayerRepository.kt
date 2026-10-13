@@ -41,7 +41,17 @@ data class LocalPlayerState(
     val streamQuality: StreamQuality = StreamQuality.ORIGINAL,
     /** On mobile data (a metered network). */
     val metered: Boolean = false,
+    /** Where the sound goes now (null: not known yet), for per-output EQ (Wave 2 §5.3). */
+    val output: AudioOutput? = null,
+    /** The EQ is bypassed for a comparison (A/B), until released. */
+    val eqBypass: Boolean = false,
 ) {
+    /** The Sound settings as they apply on the current output. */
+    val effectiveSound: SoundSettings get() = sound.forOutput(output)
+
+    /** The EQ profile in use now (null: none, off, or bypassed). */
+    val eqInUse: EqProfile? get() = if (eqBypass) null else effectiveSound.let { if (it.eqEnabled) it.eq else null }
+
     /** The player's id in LMS, once connected. */
     val playerId: String? get() = status?.playerId?.takeIf { it.isNotEmpty() }
 
@@ -92,6 +102,18 @@ interface LocalPlayerRepository {
 
     /** The newest visualiser frame since the last call (null: none, or off). */
     fun visualFrame(): VisualFrame? = null
+
+    /** The output changed (Wave 2 §5.3): the EQ bound to it, if any, applies from now. */
+    fun setOutput(output: AudioOutput?) {}
+
+    /** Bypass the EQ for a comparison (A/B), or stop. Never remembered. */
+    fun setEqBypass(on: Boolean) {}
+}
+
+/** The engine's DSP for [sound] on [output], with the EQ left out while [bypass]. */
+fun dspOn(sound: SoundSettings, output: AudioOutput?, bypass: Boolean): DspSettings {
+    val s = sound.forOutput(output)
+    return dspFor(if (bypass) s.copy(eqEnabled = false) else s)
 }
 
 /** The parts of the Rust [LocalPlayer] the repository uses (a seam for tests). */
@@ -202,6 +224,24 @@ class RustLocalPlayerRepository(
     @Volatile private var negotiator: OutputNegotiator? = null
     @Volatile private var quality = StreamQuality.ORIGINAL
     @Volatile private var visualiser = false
+    @Volatile private var output: AudioOutput? = null
+    @Volatile private var bypass = false
+
+    /** The DSP last given to the engine (or that it started with). */
+    @Volatile private var applied: DspSettings = DEFAULT_DSP
+
+    private fun dspNow() = dspOn(sound, output, bypass)
+
+    /** Give the engine the DSP for the settings, output and bypass now, if it changed. */
+    @Synchronized
+    private fun applyDsp() {
+        val h = handle ?: return
+        val dsp = dspNow()
+        if (dsp != applied) {
+            applied = dsp
+            h.setDsp(dsp)
+        }
+    }
 
     /** Ignores updates from a player that has since been replaced. */
     private inner class Observer(private val owner: LocalPlayerHandle) : LocalPlayerObserver {
@@ -228,8 +268,7 @@ class RustLocalPlayerRepository(
                 _state.update { it.copy(sound = s) }
                 withContext(io) {
                     val h = handle ?: return@withContext
-                    val dsp = dspFor(s)
-                    if (dsp != dspFor(before)) h.setDsp(dsp)
+                    applyDsp()
                     // Turning bit-perfect USB on or off changes what the output may ask for.
                     if (s.bitPerfectUsb != before.bitPerfectUsb) h.renegotiateOutput()
                 }
@@ -261,6 +300,8 @@ class RustLocalPlayerRepository(
             sound = sound,
             streamQuality = quality,
             metered = _state.value.metered,
+            output = output,
+            eqBypass = bypass,
         )
         if (session == null) return@withContext
         try {
@@ -271,7 +312,8 @@ class RustLocalPlayerRepository(
             h.setOutputRoute(route)
             negotiator?.let { h.setOutputNegotiator(it) }
             // The engine starts bit-perfect; any DSP is set before any audio.
-            val dsp = dspFor(sound)
+            val dsp = dspNow()
+            applied = dsp
             if (dsp != DEFAULT_DSP) h.setDsp(dsp)
             h.setStreamQuality(quality)
             h.setVisualiser(visualiser)
@@ -347,4 +389,19 @@ class RustLocalPlayerRepository(
     }
 
     override fun visualFrame(): VisualFrame? = if (visualiser) VisualFrame.parse(handle?.visualFrame()) else null
+
+    override fun setOutput(output: AudioOutput?) {
+        val o = output?.let { AudioOutput.of(it.kind, it.name) }
+        if (o == this.output) return
+        this.output = o
+        _state.update { it.copy(output = o) }
+        applyDsp()
+    }
+
+    override fun setEqBypass(on: Boolean) {
+        if (on == bypass) return
+        bypass = on
+        _state.update { it.copy(eqBypass = on) }
+        applyDsp()
+    }
 }

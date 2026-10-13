@@ -128,8 +128,82 @@ private class FakeOfflineHandle(val dsp: DspSettings) : OfflinePlayerHandle {
         calls += "renegotiate"
     }
 
+    /** The visualiser (Wave 2 §5.7): switches in order, and the next frame handed over. */
+    val visual = mutableListOf<Boolean>()
+    var frame: ByteArray? = null
+    val eq = mutableListOf<String?>()
+
+    override fun setVisualiser(on: Boolean) {
+        visual += on
+    }
+
+    override fun visualFrame(): ByteArray? = frame
+
     override fun shutdown() {
         shutDown = true
+    }
+
+    init {
+        eq += dsp.eqProfile
+    }
+}
+
+/** The offline player's visualiser (Wave 2 §5.7) and per-output EQ (§5.3). */
+@OptIn(ExperimentalCoroutinesApi::class)
+class OfflineVisualiserAndEqTest {
+    private val store = MutableStateFlow<OfflineStore?>(null)
+    private val settings = MemSettings()
+    private val handles = mutableListOf<FakeOfflineHandle>()
+
+    private fun TestScope.repo(): RustOfflinePlayerRepository {
+        val d = UnconfinedTestDispatcher(testScheduler)
+        return RustOfflinePlayerRepository(
+            store,
+            settings,
+            CoroutineScope(backgroundScope.coroutineContext + d),
+            d,
+            factory = { _, dsp -> FakeOfflineHandle(dsp).also { handles += it } },
+        )
+    }
+
+    @Test
+    fun theVisualiserIsOffByDefaultRememberedAndChecked() = runTest {
+        val r = repo()
+        store.value = FakeStore(Owner(SERVER.url, "alice"))
+        // Asked for before the engine runs: it starts with it on.
+        r.setVisualiser(true)
+        r.play(listOf(offlineTrack(1)), 0, false)
+        val h = handles.single()
+        assertEquals(listOf(true), h.visual)
+        h.frame = ByteArray(io.github.jamezuk.lyrionanywhere.data.VisualFrame.BYTES)
+        assertEquals(32, r.visualFrame()!!.bands.size)
+        // A frame of the wrong size is refused; off, no frames at all.
+        h.frame = ByteArray(7)
+        assertNull(r.visualFrame())
+        h.frame = ByteArray(io.github.jamezuk.lyrionanywhere.data.VisualFrame.BYTES)
+        r.setVisualiser(false)
+        assertEquals(listOf(true, false), h.visual)
+        assertNull(r.visualFrame())
+    }
+
+    @Test
+    fun theOutputsProfileAppliesToDownloadsToo() = runTest {
+        val main = io.github.jamezuk.lyrionanywhere.data.EqProfile("Main", "Filter 1: ON PK Fc 1000 Hz Gain -3 dB Q 1", 1, 0.0)
+        val wired = main.copy(name = "Wired", text = "Filter 1: ON PK Fc 2000 Hz Gain -3 dB Q 1")
+        settings.setSound(
+            SoundSettings(
+                eqEnabled = true,
+                eq = main,
+                outputEq = listOf(io.github.jamezuk.lyrionanywhere.data.OutputEq(io.github.jamezuk.lyrionanywhere.data.OutputClass.WIRED, "", wired)),
+            ),
+        )
+        val r = repo()
+        r.setOutput(io.github.jamezuk.lyrionanywhere.data.AudioOutput(io.github.jamezuk.lyrionanywhere.data.OutputClass.WIRED))
+        store.value = FakeStore(Owner(SERVER.url, "alice"))
+        r.play(listOf(offlineTrack(1)), 0, false)
+        // The engine starts with the wired profile.
+        assertEquals(wired.text, handles.single().dsp.eqProfile)
+        assertEquals(io.github.jamezuk.lyrionanywhere.data.OutputClass.WIRED, r.state.value.output?.kind)
     }
 }
 
