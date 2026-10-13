@@ -2,7 +2,7 @@
 // status (polled, and refreshed at once on events), and smooth progress between polls.
 import { SessionManager, type SessionStatus } from '$lib/api/session';
 import { Api } from '$lib/api/rpc';
-import { EventsClient, type EventsState } from '$lib/api/events';
+import { EventsClient, type EventsState, type LmsEvent } from '$lib/api/events';
 import type { Session } from '$lib/api/auth';
 import * as cmd from '$lib/lms/commands';
 import type { PlayerInfo, PlayersResult, PlayerStatus } from '$lib/lms/types';
@@ -100,12 +100,15 @@ class AppState {
 	#statusAt = 0;
 	#pending: ReturnType<typeof setTimeout> | undefined;
 	#events: EventsClient;
+	/** Views that follow every player's events (Rooms), with 'resync' when some were missed. */
+	#watchers = new Set<(e: LmsEvent | 'resync') => void>();
 	/** Bumped by every start and stop of the signed-in session. */
 	#run = 0;
 
 	constructor() {
 		this.#events = new EventsClient(session, {
 			onEvent: (e) => {
+				for (const w of this.#watchers) w(e);
 				if (e.player === null) {
 					if (e.event[0] === 'rescan') this.libraryVersion++;
 					return;
@@ -117,6 +120,7 @@ class AppState {
 				}
 			},
 			onResync: () => {
+				for (const w of this.#watchers) w('resync');
 				void this.loadPlayers();
 				this.queueVersion++;
 				this.soon();
@@ -130,6 +134,12 @@ class AppState {
 			if (st === 'signed-in' && was !== 'signed-in') this.#started();
 			if (st === 'signed-out' && was === 'signed-in') this.#stopped();
 		});
+	}
+
+	/** Follow every event (any player's), until the returned function is called. */
+	watchEvents(cb: (e: LmsEvent | 'resync') => void): () => void {
+		this.#watchers.add(cb);
+		return () => void this.#watchers.delete(cb);
 	}
 
 	get current(): PlayerInfo | undefined {

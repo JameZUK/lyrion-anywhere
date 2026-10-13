@@ -152,6 +152,7 @@
 		{ href: '#/apps', label: 'Apps & radio', icon: 'radio', match: (p: string) => p.startsWith('/apps') || p.startsWith('/browse') },
 		{ href: '#/search', label: 'Search', icon: 'search', match: (p: string) => p.startsWith('/search') },
 		{ href: '#/queue', label: 'Queue', icon: 'playnext', match: (p: string) => p.startsWith('/queue') },
+		{ href: '#/rooms', label: 'Rooms', icon: 'rooms', match: (p: string) => p.startsWith('/rooms') },
 		{ href: '#/downloads', label: 'Downloads', icon: 'download', match: (p: string) => p.startsWith('/downloads') },
 		{ href: '#/settings', label: 'Settings', icon: 'settings', match: (p: string) => p.startsWith('/settings') },
 	];

@@ -229,6 +229,9 @@
 			{#if !app.players.length}<li class="muted empty">No other players you can control.</li>{/if}
 		{/each}
 	</ul>
+	{#if app.players.length > 1}
+		<a class="btn rooms" href="#/rooms" onclick={onclose} data-rooms-link><Icon name="rooms" size={16} />All rooms</a>
+	{/if}
 	{#if canMove && (others.length || !hereSelected)}
 		<p class="hint muted">Move here: playback carries on there from the same point, and stops where it was. That player's own queue is replaced.</p>
 	{/if}
@@ -359,6 +362,9 @@
 		font-size: 0.8rem;
 		padding: 0.35em 0.7em;
 		white-space: nowrap;
+	}
+	.rooms {
+		margin: 0.4rem 0.75rem 0.2rem;
 	}
 	.hint {
 		margin: 0.4rem 0.75rem 0.2rem;

@@ -4,6 +4,7 @@
 	// players too and with no app open.
 	import { app } from '$lib/state/app.svelte';
 	import { routine } from '$lib/state/me';
+	import { alarmChanges } from '$lib/rooms/alarm-changes.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import {
 		DAY_NAMES,
@@ -58,13 +59,15 @@
 	 * Ask `p`'s alarms something; show the answer only if it is still the latest request and
 	 * `p` is still the selected player (the user may switch players while it is on its way).
 	 */
-	async function run(p: string, fn: (p: string) => Promise<AlarmListing>) {
+	async function run(p: string, fn: (p: string) => Promise<AlarmListing>, change = true) {
 		const mine = ++request;
 		const current = () => mine === request && p === app.playerId;
 		busy = true;
 		error = '';
 		try {
 			const l = await fn(p);
+			// Rooms shows each player's next alarm: it reads them again after a change.
+			if (change) alarmChanges.bump();
 			if (!current()) return false;
 			listing = l;
 			return true;
@@ -82,7 +85,7 @@
 		editing = null;
 		confirmDelete = null;
 		error = '';
-		if (p) void run(p, (q) => routine.alarms(q));
+		if (p) void run(p, (q) => routine.alarms(q), false);
 		else request++; // nothing on its way is wanted any more
 	});
 

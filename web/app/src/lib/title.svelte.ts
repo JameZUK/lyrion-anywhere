@@ -25,6 +25,7 @@ const SECTIONS: Record<string, string> = {
 	downloads: 'Downloads',
 	settings: 'Settings',
 	alarms: 'Alarms',
+	rooms: 'Rooms',
 	stations: 'Stations',
 	genres: 'Genres',
 	genre: 'Genre',

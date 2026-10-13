@@ -19,6 +19,7 @@ const { ratings } = await import('$lib/state/ratings');
 const { default: RatingControl } = await import('$lib/components/RatingControl.svelte');
 const { default: AlarmsPage } = await import('../src/routes/alarms/+page.svelte');
 const { default: RatingsSettings } = await import('$lib/components/RatingsSettings.svelte');
+const { alarmChanges } = await import('$lib/rooms/alarm-changes.svelte');
 
 const P = '02:00:00:00:00:01';
 
@@ -237,10 +238,14 @@ describe('alarms page', () => {
 		route = (m) => ({ body: m === 'DELETE' ? listing([]) : listing([alarm]) });
 		const r = render(AlarmsPage);
 		await waitFor(() => expect(r.container.querySelector('[data-alarm="1a2b3c4d"]')).not.toBeNull());
+		// Reading them changes nothing; a change tells Rooms to read the next alarms again.
+		const before = alarmChanges.version;
 		await fireEvent.click(r.container.querySelector('[aria-label="Delete the 01:00 alarm"]')!);
+		expect(alarmChanges.version).toBe(before);
 		expect(sent.some((s) => s.method === 'DELETE')).toBe(false);
 		await fireEvent.click(r.container.querySelector('[data-confirm-delete]')!);
 		await waitFor(() => expect(sent.some((s) => s.method === 'DELETE' && s.path === `/v1/players/${P}/alarms/1a2b3c4d`)).toBe(true));
+		await waitFor(() => expect(alarmChanges.version).toBe(before + 1));
 		await fireEvent.click(r.container.querySelector('[data-all-alarms]')!);
 		await waitFor(() => expect(sent.at(-1)).toMatchObject({ method: 'PUT', path: `/v1/players/${P}/alarms/enabled`, body: { enabled: false } }));
 	});

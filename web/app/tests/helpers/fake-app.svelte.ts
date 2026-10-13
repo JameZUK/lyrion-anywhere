@@ -36,6 +36,15 @@ class FakeApp {
 	queueVersion = $state(0);
 	error = $state('');
 	soon = () => {};
+	/** Event watchers (Rooms); tests call `emit` to deliver one. */
+	watchers = new Set<(e: { player: string | null; event: string[] } | 'resync') => void>();
+	watchEvents(cb: (e: { player: string | null; event: string[] } | 'resync') => void) {
+		this.watchers.add(cb);
+		return () => void this.watchers.delete(cb);
+	}
+	emit(e: { player: string | null; event: string[] } | 'resync') {
+		for (const w of this.watchers) w(e);
+	}
 	get current() {
 		return this.players.find((p) => p.playerid === this.playerId);
 	}

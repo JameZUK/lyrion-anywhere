@@ -55,4 +55,10 @@ test('Up next, the sleep timer and track menus keep 44 px targets', () => {
 test('Now playing layouts, the visualiser and Rooms keep 44 px targets', () => {
 	assert.ok(px(rule(read('routes/+page.svelte'), '.segbtn {'), 'min-height') >= 44);
 	assert.ok(px(rule(read('lib/components/LyricsLines.svelte'), '.line {'), 'min-height') >= 44);
+	const card = read('lib/components/RoomCard.svelte');
+	const icon = rule(card, '.icon-btn {');
+	assert.ok(px(icon, 'width') >= 44 && px(icon, 'height') >= 44, icon);
+	assert.ok(px(rule(card, '.vol {'), 'min-height') >= 44);
+	assert.ok(px(rule(card, '.main {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('routes/rooms/+page.svelte'), '.choose .btn {'), 'min-height') >= 44);
 });
