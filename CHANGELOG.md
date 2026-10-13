@@ -2,6 +2,18 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Rolling cache, Phase A: the phone's player engine
+
+The mobile engine's part of A1, A3 and A6 in `docs/plans/wave3-design.md` §2, and `strm f`. The Android settings and cushion display come separately.
+
+- **Disk spool:** with a cache folder (`LocalPlayerConfig.cache_dir`), each live stream is written to an app-private file as fast as the network allows, and fed to the decoder as it wants it. At most 256 MiB per stream and 512 MiB in all; beyond that, on a full disk or without a folder, streams are held in memory as before. Spools are deleted as soon as their track is fed, and on a flush, stop, sign-out, revocation, new session or start-up.
+- **Read-ahead** (on by default; `LocalPlayer::set_read_ahead`): a track is reported ready once it is fully received, so LMS sends the next one long before the current one ends. A gap in the signal is then covered by the rest of the current track and the whole of the next.
+- **Longer gaps:** the player asks for a 600 s resume grace where the gateway offers it, resumes until 5 s before the grant runs out (55 s with an older gateway), and retries stream downloads for as long as the grant lasts. Held reports drop heartbeats first, so track starts and ends reach LMS after a long gap.
+- **No network** (`LocalPlayer::set_network_available`): no reconnect attempts until the network is back, then one at once.
+- **`strm f`** (LMS dropped the already-received next track): the current track plays on to its end, and nothing of the dropped track is heard.
+- **Sync groups:** after a stall, a grouped player skips what the others played meanwhile, or, with too little buffered, asks LMS to restart the group where it is.
+- **For the app:** `LocalPlayerStatus` gains `cushion_ms` (listening held ahead), `resume_window_ms` and `read_ahead`; `remove_stream_spools(cache_dir)` clears spools when no player runs.
+
 ## 2026-10-13: Rolling cache, Phase A: the gateway's side
 
 The gateway's part of A3 and A4 in `docs/plans/wave3-design.md` §2. The Android side comes separately.

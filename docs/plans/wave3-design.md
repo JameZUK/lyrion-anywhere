@@ -93,7 +93,11 @@ Agreed with the owner on 2026-10-13:
 
 ## 2. Rolling cache (part 2)
 
-**Status:** design agreed on 2026-10-13 (see the decisions at the end). Spike S1 done; Phase A under way: the gateway's side of A3 (grace negotiation, `--max-resume-grace`) and A4 (history from jiffies, heartbeats capped at the track's end) is built.
+**Status:** design agreed on 2026-10-13 (see the decisions at the end). Spike S1 done; Phase A under way:
+- **Gateway** (A3, A4): grace negotiation, `--max-resume-grace`, history from jiffies, heartbeats capped at the track's end. Built.
+- **Core** (A2, A4, A6 in the core): built (see "Core built" under A2).
+- **Mobile engine** (A1, the client's A3, A6, `strm f`): built on 2026-10-13 (see "Mobile engine built" under A1).
+- **Android** (A5): to do.
 
 Investigation written up on 2026-10-13, for the Android player (D14: the phone is a real LMS player). The web player is unchanged. iOS takes the same design when its app is built.
 
@@ -239,6 +243,17 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
   - over a cap, on a full disk, or with no cache directory, it falls back to today's back-pressure in memory.
 - **Configuration:** `LocalPlayerConfig` gains `cache_dir: Option<String>`. Android passes a folder under `noBackupFilesDir`, scoped like downloads (`store::scope_name`). Tests and the web pass `None`.
 - **Retry budget:** fetch retries become time-based and last until the session's grace runs out, instead of 12 tries. A gap no longer cuts a track short.
+- **Mobile engine built (2026-10-13)** (`mobile/src/player/spool.rs`, `engine.rs`):
+  - **Spools:** `<cache_dir>/<scope>/spool/<n>.spool`, with the scope as for downloads. Each stream gets one when it opens. The engine keeps a spool for exactly the streams the core still takes input for (a new core call, `Player::fed_streams()`), so a flush, a `strm f` or a replaced stream deletes the others' files at once. The feeder follows the oldest; the fetch writes the newest.
+  - **Fallback in memory:** with no cache folder, over a cap (256 MiB per stream, 512 MiB in all) or after a write error (a full disk), the rest of that stream stays in memory, and the fetch pauses while more than 256 KiB waits for the decoder: today's back-pressure. A spool file shorter than what was written (truncated or replaced) ends the track with what was fed. The root must be absolute, without `..`, and not a symlink; spool files are created exclusively and never opened through a symlink.
+  - **Deleted:** when the track has been fed, on a flush, on stop, on sign-out or revocation (the socket's 1008), on a new session, and at start-up (every scope's spool folder, which covers a crash and a change of server or user). `remove_stream_spools(cache_dir)` does the same for the app when no player runs.
+  - **Read-ahead** (`LocalPlayerConfig.read_ahead`, default on; `LocalPlayer::set_read_ahead`) is in force only with a cache folder.
+  - **Retry budget:** the granted grace, counted from the first failure in a row (60 s without a grant).
+  - **Client A3:** grace asked for only when `/v1/me` says `resume_grace` (the first connection waits up to 2 s for `/v1/me`); the resume window is the grant less 5 s (55 s without one). The outbox drops `STMt` first. `LocalPlayer::set_network_available` (from `ConnectivityManager`): with no network the socket is dropped, nothing is tried, and the core's link is down (so running dry sends `STMo`); when it returns, the player reconnects at once. The core's link also follows the socket.
+  - **`strm f`:** on `trim_count()` the engine drops what it holds of tracks after `keep_track`: a hold or crossfade in the transitions, the pipeline's pending block, and the ring from the first sample of the later track (a new partial discard in the ring: the output plays up to that point, then jumps past it).
+  - **A6:** sync membership comes from the status query already made for each new stream (and again on resume). After a stall, a lone player carries on at once; a grouped one waits up to 2 s for enough audio to skip the stall, then calls `resume_after_stall`. On `NotEnoughBuffered` it asks LMS for the group's position (`time ?`) and sends `time <that>`, so LMS restarts the group in step (the others hear a short pause). Minimal by design; the live check of the rejoin (S1's sync scenario extended) is still to do.
+  - **For Android (A5):** `LocalPlayerStatus.cushion_ms` (and `LocalPlayer::cushion_ms()`): decoded audio plus spooled bytes at the byte rate seen so far. Also `resume_window_ms` and `read_ahead`.
+  - **Not done here:** restarting the same track at the same position after a gap longer than the grace (decision 3); the 20 s wait before read-ahead is the core's default.
 
 **A2. Ready once received, with a queue of tracks in the core** (`core/src/player.rs`). Effort: M–L.
 - **Switch:** a new `Player::set_ready_when_received(bool)`, off by default (web and CLI unchanged).

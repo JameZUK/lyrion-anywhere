@@ -214,6 +214,12 @@ When the socket drops (anything other than a policy close):
 
 Recommended client backoff: about 0.5, 1, 2 and 4 s, then every 5 s, with ±20 % jitter. Stop resuming shortly before the grace expires, then start a new session.
 
+What the Android player does (`mobile/src/player/engine.rs`), as an example:
+- **Grace:** it asks for `"grace":600` when `/v1/me` lists `resume_grace`, and resumes until 5 s before the grace in the greeting runs out (55 s when the greeting has none, or an out-of-range one).
+- **Stream downloads:** a broken download is retried from its offset, with the backoff above, until the granted grace has run out since the first failure in a row (60 s without a grant). A 4xx other than an expired token fails the track at once.
+- **No network:** when the phone reports no network, it drops the socket, stops trying until the network is back, then tries at once (the grace still counts from the drop).
+- **While detached:** its STATs wait in an outbox of 2000 frames. When it is full, `STMt` heartbeats go first, so `STMs`, `STMd`, `STMo`, `STMr` and `STMu` survive a long gap.
+
 ## Streams
 
 - **Numbering:** stream `n` is the n-th `strm s` frame the client received in the session, counting from 1. Refused streams count too.
