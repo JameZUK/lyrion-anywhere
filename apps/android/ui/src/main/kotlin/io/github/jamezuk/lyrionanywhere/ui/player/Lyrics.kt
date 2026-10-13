@@ -149,16 +149,6 @@ internal fun LyricsScreen(
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize().testTag("lyrics-view")) {
             val current = currentLine ?: lyricLineAt(lyrics, elapsedSecs)
-            val list = rememberLazyListState()
-            val dragged by list.interactionSource.collectIsDraggedAsState()
-            var manualAt by remember { mutableLongStateOf(Long.MIN_VALUE / 2) }
-            LaunchedEffect(dragged) { if (dragged) manualAt = now() }
-            LaunchedEffect(current) {
-                if (current >= 0 && !dragged && now() - manualAt > MANUAL_SCROLL_MS) {
-                    // Keep a couple of lines above the playing one.
-                    list.animateScrollToItem((current - 2).coerceAtLeast(0))
-                }
-            }
             Column(Modifier.fillMaxSize()) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp)) {
                     Text(
@@ -173,46 +163,76 @@ internal fun LyricsScreen(
                     }
                 }
                 HorizontalDivider()
-                LazyColumn(
-                    state = list,
-                    modifier = Modifier.fillMaxSize().testTag("lyrics-list"),
-                    contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 240.dp),
-                    verticalArrangement = Arrangement.spacedBy(if (lyrics.synced) 8.dp else 0.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    itemsIndexed(lyrics.lines) { i, line ->
-                        val mod = Modifier.widthIn(max = 640.dp).fillMaxWidth()
-                        if (lyrics.synced) {
-                            val playing = i == current
-                            Text(
-                                line.text.ifEmpty { "♪" },
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = if (playing) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = mod
-                                    .clickable(enabled = canSeek, role = Role.Button) { onSeek(line.timeMs.toDouble() / 1000.0) }
-                                    .semantics { selected = playing }
-                                    .padding(vertical = 4.dp)
-                                    .testTag("lyrics-line-$i"),
-                            )
-                        } else {
-                            Text(
-                                line.text,
-                                style = MaterialTheme.typography.bodyLarge,
-                                modifier = mod.testTag("lyrics-line-$i"),
-                            )
-                        }
-                    }
-                    item {
-                        Text(
-                            stringResource(if (lyrics.fromPlugin) R.string.lyrics_from_plugin else R.string.lyrics_from_tags),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.widthIn(max = 640.dp).fillMaxWidth().padding(top = 24.dp),
-                        )
-                    }
-                }
+                LyricsList(lyrics, current, canSeek, onSeek, Modifier.fillMaxSize(), now = now)
             }
+        }
+    }
+}
+
+/**
+ * The lines of [lyrics]: synced lyrics highlight the [current] line and keep it in view
+ * (unless the listener scrolled in the last few seconds), and tapping a line seeks there;
+ * plain lyrics just scroll. Used full screen and as Now playing's Lyrics layout.
+ */
+@Composable
+internal fun LyricsList(
+    lyrics: TrackLyrics,
+    current: Int,
+    canSeek: Boolean,
+    onSeek: (Double) -> Unit,
+    modifier: Modifier = Modifier,
+    now: () -> Long = System::currentTimeMillis,
+    bottomPadding: androidx.compose.ui.unit.Dp = 240.dp,
+) {
+    val list = rememberLazyListState()
+    val dragged by list.interactionSource.collectIsDraggedAsState()
+    var manualAt by remember { mutableLongStateOf(Long.MIN_VALUE / 2) }
+    LaunchedEffect(dragged) { if (dragged) manualAt = now() }
+    LaunchedEffect(current) {
+        if (current >= 0 && !dragged && now() - manualAt > MANUAL_SCROLL_MS) {
+            // Keep a couple of lines above the playing one.
+            list.animateScrollToItem((current - 2).coerceAtLeast(0))
+        }
+    }
+    val playFrom = stringResource(R.string.lyrics_play_from)
+    LazyColumn(
+        state = list,
+        modifier = modifier.testTag("lyrics-list"),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 24.dp, bottom = bottomPadding),
+        verticalArrangement = Arrangement.spacedBy(if (lyrics.synced) 8.dp else 0.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        itemsIndexed(lyrics.lines) { i, line ->
+            val mod = Modifier.widthIn(max = 640.dp).fillMaxWidth()
+            if (lyrics.synced) {
+                val playing = i == current
+                Text(
+                    line.text.ifEmpty { "♪" },
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (playing) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = mod
+                        // A line to seek to (not a "selected button": the playing line is selected).
+                        .clickable(enabled = canSeek, onClickLabel = playFrom) { onSeek(line.timeMs.toDouble() / 1000.0) }
+                        .semantics { selected = playing }
+                        .padding(vertical = 4.dp)
+                        .testTag("lyrics-line-$i"),
+                )
+            } else {
+                Text(
+                    line.text,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = mod.testTag("lyrics-line-$i"),
+                )
+            }
+        }
+        item {
+            Text(
+                stringResource(if (lyrics.fromPlugin) R.string.lyrics_from_plugin else R.string.lyrics_from_tags),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.widthIn(max = 640.dp).fillMaxWidth().padding(top = 24.dp),
+            )
         }
     }
 }

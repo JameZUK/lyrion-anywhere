@@ -134,6 +134,8 @@ data class PlayOnActions(
     val onDismissTransfer: () -> Unit = {},
     /** Extra actions for a player row, after the built-in ones. */
     val rowActions: @Composable RowScope.(Player) -> Unit = {},
+    /** Every room at a glance (Wave 2 §4.3); null: not offered. */
+    val onAllRooms: (() -> Unit)? = null,
 )
 
 /** A player row's actions: "Move playback here" and "Play in sync with …". */
@@ -171,6 +173,7 @@ fun PlayOnList(state: PlayerUiState, actions: PlayOnActions, modifier: Modifier 
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp).semantics { heading() },
         )
         TransferStatus(state.transfer, actions.onDismissTransfer)
+        actions.onAllRooms?.let { AllRoomsButton(it, Modifier.padding(horizontal = 16.dp)) }
         if (actions.onMoveHere != null && state.otherPlayers.isNotEmpty()) {
             Text(
                 stringResource(R.string.move_replaces_queue),

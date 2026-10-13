@@ -20,6 +20,11 @@ import io.github.jamezuk.lyrionanywhere.core.RatingStyle
 import io.github.jamezuk.lyrionanywhere.core.TransferOutcome
 import io.github.jamezuk.lyrionanywhere.core.TransferStage
 import io.github.jamezuk.lyrionanywhere.data.NowPlaying
+import io.github.jamezuk.lyrionanywhere.data.NowPlayingLayout
+import io.github.jamezuk.lyrionanywhere.data.NowPlayingPrefs
+import io.github.jamezuk.lyrionanywhere.data.VisualFrame
+import io.github.jamezuk.lyrionanywhere.data.VisualStyle
+import io.github.jamezuk.lyrionanywhere.core.Credit
 import io.github.jamezuk.lyrionanywhere.data.NowPlayingHub
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -104,6 +109,12 @@ data class PlayerUiState(
     val ratingFailed: Boolean = false,
     /** What this device added with Play next (Wave 2 §3.4); null: the queue shows flat. */
     val upNext: UpNext? = null,
+    /** Now playing's layout, visualiser and queue panel (this device's choices, Wave 2 §4). */
+    val nowPlaying: NowPlayingPrefs = NowPlayingPrefs(),
+    /** The current track's credits, for the Info layout (null: not read). */
+    val credits: List<Credit>? = null,
+    /** The track [credits] belong to. */
+    val creditsTrackId: Long? = null,
 ) {
     /** The queue's sections (Now playing, Up next, Then), or null for a flat queue. */
     val sections: QueueSections? get() = QueueSections.of(queue.size, status?.queueIndex?.toInt(), upNext)
@@ -203,8 +214,10 @@ class PlayerViewModel(
     private val nowPlaying: NowPlayingHub? = null,
     /** Stations kept going (none without). */
     private val me: io.github.jamezuk.lyrionanywhere.data.MeRepository? = null,
+    /** Credits for the Info layout (none without). */
+    private val library: io.github.jamezuk.lyrionanywhere.data.LibraryRepository? = null,
     private val clock: () -> Long,
-) : ViewModel() {
+) : ViewModel(), VisualSource {
     /** The last removal, for Undo (only for the player it was removed from). */
     private data class Undo(val player: String, val track: Track, val index: Int, val token: Long, val upNext: Boolean = false)
 
@@ -252,6 +265,11 @@ class PlayerViewModel(
             launch {
                 settings.settings.map { it.lyricsPeek }.distinctUntilChanged().collect { on ->
                     _state.update { it.copy(lyricsPeek = on) }
+                }
+            }
+            launch {
+                settings.settings.map { it.nowPlaying }.distinctUntilChanged().collect { p ->
+                    _state.update { it.copy(nowPlaying = p) }
                 }
             }
             launch {
@@ -1231,6 +1249,46 @@ class PlayerViewModel(
     fun setRatingStyle(style: RatingStyle) {
         _state.update { it.copy(ratingStyle = style) }
         viewModelScope.launch { ratings?.setStyle(style) }
+    }
+
+    // --- Now playing's layouts and visualiser (Wave 2 §4) --------------------------------------
+
+    private fun setPrefs(change: (NowPlayingPrefs) -> NowPlayingPrefs) {
+        val p = change(_state.value.nowPlaying)
+        _state.update { it.copy(nowPlaying = p) }
+        viewModelScope.launch { settings.setNowPlayingPrefs(p) }
+    }
+
+    /** Now playing's layout (remembered on this device). */
+    fun setLayout(layout: NowPlayingLayout) = setPrefs { it.copy(layout = layout) }
+
+    /** The visualiser on or off (remembered on this device). */
+    fun setVisualiser(on: Boolean) = setPrefs { it.copy(visualiser = on) }
+
+    fun setVisualStyle(style: VisualStyle) = setPrefs { it.copy(visualStyle = style) }
+
+    /** Wide windows: show or hide the queue panel. */
+    fun setQueuePanel(shown: Boolean) = setPrefs { it.copy(queuePanel = shown) }
+
+    /** The visualiser on screen asks this phone's player to analyse (or stop). */
+    override fun setActive(on: Boolean) = localPlayer.setVisualiser(on)
+
+    override fun frame(): VisualFrame? = localPlayer.visualFrame()
+
+    private var creditsLoading: Long? = null
+
+    /** The current track's credits, for the Info layout: read once per track while shown. */
+    fun loadCredits() {
+        val repo = library ?: return
+        val id = _state.value.status?.current?.id?.takeIf { it > 0 } ?: return
+        if (_state.value.creditsTrackId == id || creditsLoading == id) return
+        creditsLoading = id
+        viewModelScope.launch {
+            val r = repo.trackCredits(id)
+            creditsLoading = null
+            val list = (r as? ApiResult.Ok)?.value ?: return@launch
+            _state.update { s -> if (s.status?.current?.id == id) s.copy(credits = list, creditsTrackId = id) else s }
+        }
     }
 
     /** Show the current lyric line on Now playing (Settings). */

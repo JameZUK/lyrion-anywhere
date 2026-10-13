@@ -199,8 +199,10 @@ fun Modifier.swipeUpToOpen(minPx: Float, onOpen: () -> Unit): Modifier = pointer
 }
 
 /**
- * The artwork: swipe left for the next track and right for the previous one, with a
- * haptic tick. It follows the finger a little while dragging.
+ * The artwork's sideways swipes, with a haptic tick: left calls [onNext], right
+ * [onPrevious]. On Now playing these move between its layouts (Wave 2 §4.2); the track's
+ * Next and Previous stay on the buttons, the mini player's swipes and TalkBack actions. It
+ * follows the finger a little while dragging.
  */
 @Composable
 fun SwipeableArtwork(

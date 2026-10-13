@@ -81,6 +81,10 @@ internal class FakeAlarms : AlarmsRepository {
     val calls = mutableListOf<String>()
     var fail: AppError? = null
 
+    /** Changes said to have been made (the Rooms view re-reads that player's alarms). */
+    val changeFlow = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 8)
+    override val changes: kotlinx.coroutines.flow.Flow<String> = changeFlow
+
     private fun answer(call: String): ApiResult<AlarmListing> {
         calls += call
         return fail?.let { ApiResult.Err(it) } ?: ApiResult.Ok(current)
