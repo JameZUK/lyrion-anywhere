@@ -192,3 +192,37 @@ fn plays_ogg_opus() {
         "pulled {frames} frames"
     );
 }
+
+#[wasm_bindgen_test]
+fn visualiser_frames_have_the_documented_layout() {
+    use anywhere_wasm::{VISUAL_FRAME_LEN, WasmVisualiser};
+    let mut v = WasmVisualiser::new(44_100, 2);
+    assert!(v.take().is_none());
+    // 0.1 s of a full-scale 1 kHz tone, stereo.
+    let pcm: Vec<f32> = (0..4410)
+        .flat_map(|i| {
+            let x = (i as f32 * 2.0 * std::f32::consts::PI * 1000.0 / 44_100.0).sin();
+            [x, x]
+        })
+        .collect();
+    v.push(&pcm);
+    let f = v.take().expect("a frame after 0.1 s");
+    assert_eq!(f.len(), VISUAL_FRAME_LEN);
+    assert_eq!(WasmVisualiser::frame_len(), VISUAL_FRAME_LEN);
+    assert!(f.iter().all(|x| x.is_finite()));
+    // RMS of a full-scale sine is about −3 dBFS.
+    assert!((f[160] + 3.0).abs() < 1.0, "{}", f[160]);
+    v.reset();
+    assert!(v.take().is_none());
+}
+
+#[wasm_bindgen_test]
+fn visualiser_takes_bad_input() {
+    use anywhere_wasm::WasmVisualiser;
+    let mut v = WasmVisualiser::new(0, 0);
+    v.push(&[f32::NAN, f32::INFINITY, -f32::INFINITY, 1e30, 0.5]);
+    v.push(&[f32::NAN; 3000]);
+    if let Some(f) = v.take() {
+        assert!(f.iter().all(|x| x.is_finite()));
+    }
+}

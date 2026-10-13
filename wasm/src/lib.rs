@@ -287,3 +287,72 @@ impl WasmSegmenter {
         self.inner.pending_frames() as u32
     }
 }
+
+/// Values in each visualiser frame from [`WasmVisualiser::take`]: the spectrum bands, then
+/// the oscilloscope points, then left and right RMS (dBFS), left and right peak (dBFS) and
+/// the bass level (0–1).
+pub const VISUAL_FRAME_LEN: usize =
+    anywhere_core::visual::BANDS + anywhere_core::visual::SCOPE_POINTS + 5;
+
+/// The visualiser's analysis (see `anywhere_core::visual`), fed with the PCM the worker pulls.
+#[wasm_bindgen]
+pub struct WasmVisualiser {
+    inner: anywhere_core::visual::Visualiser,
+}
+
+#[wasm_bindgen]
+impl WasmVisualiser {
+    /// For interleaved PCM of `channels` at `rate` Hz (the core clamps odd values).
+    #[wasm_bindgen(constructor)]
+    pub fn new(rate: u32, channels: u16) -> WasmVisualiser {
+        WasmVisualiser {
+            inner: anywhere_core::visual::Visualiser::new(rate, channels),
+        }
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate()
+    }
+
+    /// Values per frame (see [`VISUAL_FRAME_LEN`]).
+    pub fn frame_len() -> usize {
+        VISUAL_FRAME_LEN
+    }
+
+    /// Add interleaved samples.
+    pub fn push(&mut self, pcm: &[f32]) {
+        self.inner.push(pcm);
+    }
+
+    /// The newest frame since the last call as one flat array (see [`VISUAL_FRAME_LEN`]), or
+    /// `undefined`.
+    pub fn take(&mut self) -> Option<Vec<f32>> {
+        self.inner.take().map(|f| flatten(&f))
+    }
+
+    /// Forget the history (a flush).
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
+}
+
+/// One frame as the flat layout the worker sends to the page.
+pub fn flatten(f: &anywhere_core::visual::VisualFrame) -> Vec<f32> {
+    let mut out = Vec::with_capacity(VISUAL_FRAME_LEN);
+    out.extend(f.bands.iter().copied().take(anywhere_core::visual::BANDS));
+    out.resize(anywhere_core::visual::BANDS, 0.0);
+    out.extend(
+        f.scope
+            .iter()
+            .copied()
+            .take(anywhere_core::visual::SCOPE_POINTS),
+    );
+    out.resize(
+        anywhere_core::visual::BANDS + anywhere_core::visual::SCOPE_POINTS,
+        0.0,
+    );
+    out.extend_from_slice(&f.rms_db);
+    out.extend_from_slice(&f.peak_db);
+    out.push(f.bass);
+    out
+}
