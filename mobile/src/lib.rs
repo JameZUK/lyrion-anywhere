@@ -56,6 +56,7 @@ pub mod routine;
 pub mod server;
 pub mod session;
 pub mod sleep;
+pub mod stats;
 mod tls;
 pub mod transfer;
 mod transport;
@@ -105,6 +106,10 @@ pub use routine::{
 pub use server::{PairingInvite, Server, parse_pairing_invite};
 pub use session::{SecureStore, Session, SessionObserver, StoreError, StoredCredentials};
 pub use sleep::SleepEnd;
+pub use stats::{
+    ListeningStats, StatsArtist, StatsDay, StatsItem, StatsMonth, StatsNewArtist, StatsPeriod,
+    StatsStreak, StatsTotals,
+};
 pub use transfer::{
     TransferMethod, TransferOutcome, TransferProgress, TransferRefusal, TransferStage,
 };
