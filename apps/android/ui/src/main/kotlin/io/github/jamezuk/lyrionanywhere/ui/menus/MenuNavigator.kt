@@ -16,6 +16,7 @@ import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.data.MeRepository
 import io.github.jamezuk.lyrionanywhere.ui.home.HomeLayouts
+import io.github.jamezuk.lyrionanywhere.ui.library.SearchDirectory
 import io.github.jamezuk.lyrionanywhere.data.MenusRepository
 import io.github.jamezuk.lyrionanywhere.data.SuitabilityCache
 import kotlinx.coroutines.CoroutineScope
@@ -101,6 +102,17 @@ class MenuNavigator(
     fun start(title: String, action: MenuAction) {
         _stack.value = emptyList()
         push(title, action, null)
+    }
+
+    /**
+     * Start over with an app's results for [text], from its search box [action] ("Search on").
+     * The text is sent as typed text only: the action fills it into its one `search:` value.
+     */
+    fun startSearch(title: String, action: MenuAction, text: String) {
+        val t = text.trim()
+        if (t.isEmpty() || !action.opensMenu || !action.needsInput) return
+        _stack.value = emptyList()
+        push(title, action, t)
     }
 
     /**
@@ -359,6 +371,20 @@ class MenuViewModel(
                 is ApiResult.Ok -> navigator.startWith(name, r.value.items)
                 is ApiResult.Err -> _missing.value = true
             }
+        }
+    }
+
+    /**
+     * An app's own results for [query] ("Search on" from Search): its search box is read
+     * again from its top menu first, so the search runs through what LMS offers now.
+     */
+    fun openSearch(directory: SearchDirectory, cmd: String, title: String, query: String, player: String?) {
+        if (started || player == null) return
+        started = true
+        val q = query.trim()
+        viewModelScope.launch {
+            val app = if (q.isEmpty()) null else directory.find(player, cmd)
+            if (app == null) _missing.value = true else navigator.startSearch(title, app.search, q)
         }
     }
 

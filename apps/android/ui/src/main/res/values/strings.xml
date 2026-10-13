@@ -794,6 +794,12 @@
     <string name="search_all">All</string>
     <string name="section_playlists">Playlists</string>
     <string name="search_filter">Show results</string>
+    <!-- Search on plugins: the library search's text in an app's own search -->
+    <string name="search_on">Search on…</string>
+    <string name="search_on_row">Search %1$s for “%2$s”</string>
+    <string name="search_on_open">Open results</string>
+    <string name="search_on_title">%1$s: “%2$s”</string>
+    <string name="search_on_missing">This app doesn\'t offer a search here any more.</string>
     <!-- Wave 2 part 3: visualiser, Now playing layouts, Rooms -->
     <string name="visualiser">Visualiser</string>
     <string name="visualiser_style">Visualiser style: %1$s. Change style</string>

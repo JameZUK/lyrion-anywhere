@@ -77,7 +77,7 @@ pub use me::{
 };
 pub use menus::{
     AppEntry, MenuAction, MenuItem, MenuItemKind, MenuOutcome, MenuPage, MenuParam, Menus,
-    PluginEntry, Suitability, app_menu, info_menu,
+    PluginEntry, SearchableApp, Suitability, app_menu, info_menu, is_search_box, search_box,
 };
 pub use model::*;
 pub use offline::{

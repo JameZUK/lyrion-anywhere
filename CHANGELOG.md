@@ -13,6 +13,22 @@ Dated entries, newest first.
 - **Core:** a new pure DSP stage, `core::dsp::loudness`, in the chain between EQ and crossfeed.
 - **Tests:** the curve (0 dB at full volume, monotonic, bounded, finite for NaN, infinite, negative and tiny volumes), the shelves' responses, smoothness across volume steps, no clipping at full scale through the chain and the pipeline (with and without an EQ boost), and the bypass on a bit-perfect route (unit tests, and end to end with a fake LMS and a fake DAC); on Android, the setting and its persistence, the engine settings it produces, the switch, the signal-path stages and an accessibility audit of the new control.
 
+## 2026-10-13: Search on plugins (web, Android)
+
+Following `docs/plans/wave2-design.md` §3.3 (U7), which had left plugin searches for later.
+
+- **Search on…:** below the library results (shown once something is typed, even when the library has nothing), one row per app or radio service that offers a search: "Search <app> for “<text>”". A row opens that app's own results in the plugin menu browser, where play, add and the rest work as for any app item.
+- **Found generically:** an app qualifies when its own top menu lists a search box whose action opens a menu with the typed text as its `search:` parameter, and nowhere else. Nothing is hard-coded per plugin.
+  - The apps come from LMS's `apps` and `radios` lists, as the gateway filters them, so plugins reserved for admins stay hidden for listeners.
+  - What was found is kept for the session and looked at again when the apps listed change (and on the web, when the user changes).
+- **Only what LMS offered:** before searching, the app's top menu is read again. The text then goes only through that search box's action, as its `search:` value (control characters blanked, at most 200 characters, empty text refused). The gateway runs it because LMS offered it to this device and checks the text as it checks any search text, so paths and local addresses never reach LMS. No gateway change was needed.
+- **Recent searches** stay on the device; choosing a row keeps the search as a recent one.
+- **Accessibility:** rows are links on the web (keyboard reachable) and labelled rows with an "Open results" action for TalkBack on Android.
+- **Tests:**
+  - web: unit, negative and robustness tests for finding search boxes and building the command (a hostile query stays one `search:` value; lookalike actions are refused), the per-session directory, and component tests for the rows and the results page;
+  - mobile: unit tests for the detection, and an integration test through the gateway harness (a hostile query sent only as the search value; paths and LAN addresses refused before LMS; empty text and bad players refused on the device; an admin-only app neither listed nor searchable for a listener);
+  - Android: view model tests for the directory, Search and the results menu, screen tests and an accessibility audit.
+
 ## 2026-10-13: Car, system surfaces, haptics and smart filters (Wave 2 part 4, web)
 
 Following `docs/plans/wave2-design.md` §5.1, §5.4, §5.5 and §5.6.

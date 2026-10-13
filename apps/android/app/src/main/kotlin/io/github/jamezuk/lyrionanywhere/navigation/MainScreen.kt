@@ -256,6 +256,9 @@ import kotlinx.serialization.Serializable
 
 @Serializable data class PluginMenuRoute(val id: String, val name: String)
 
+/** An app's own results for a library search ("Search on"). */
+@Serializable data class AppSearchRoute(val cmd: String, val name: String, val query: String)
+
 @Serializable data class PinnedMenuRoute(val id: Long, val name: String)
 
 @Serializable data object HistoryRoute
@@ -819,7 +822,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     }
                 }
                 composable<SearchRoute> {
-                    val vm = viewModel { SearchViewModel(container.library, container.settings) }
+                    val vm = viewModel { SearchViewModel(container.library, container.settings, container.searchDirectory, player::target) }
                     val ui by vm.state.collectAsStateWithLifecycle()
                     val typed by vm.typed.collectAsStateWithLifecycle()
                     Screen(title = stringResource(R.string.nav_search)) {
@@ -852,6 +855,10 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                     player.enqueue(sel, placement)
                                 },
                                 onMore = openMore,
+                                onSearchOn = { app ->
+                                    vm.remember()
+                                    nav.navigate(AppSearchRoute(app.cmd, app.name, ui.query.trim()))
+                                },
                             ),
                         )
                     }
@@ -1164,6 +1171,21 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     val vm = viewModel { MenuViewModel(container.menus, container.me, player::target) }
                     LaunchedEffect(route, playerState.selectedId) { vm.openPlugin(route.id, playerState.selectedId) }
                     MenuRouteScreen(route.name, vm, onBack = { nav.popBackStack() }, onEvent = { handleMenuEvent(it) { nav.popBackStack() } })
+                }
+                composable<AppSearchRoute> { entry ->
+                    val route = entry.toRoute<AppSearchRoute>()
+                    val vm = viewModel { MenuViewModel(container.menus, container.me, player::target) }
+                    val title = stringResource(R.string.search_on_title, route.name, route.query)
+                    LaunchedEffect(route, playerState.selectedId) {
+                        vm.openSearch(container.searchDirectory, route.cmd, title, route.query, playerState.selectedId)
+                    }
+                    MenuRouteScreen(
+                        title,
+                        vm,
+                        onBack = { nav.popBackStack() },
+                        onEvent = { handleMenuEvent(it) { nav.popBackStack() } },
+                        missingText = stringResource(R.string.search_on_missing),
+                    )
                 }
                 composable<PinnedMenuRoute> { entry ->
                     val route = entry.toRoute<PinnedMenuRoute>()
@@ -1580,11 +1602,17 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
 private const val RANDOM_BATCH = 60
 
 @Composable
-private fun MenuRouteScreen(title: String, vm: MenuViewModel, onBack: () -> Unit, onEvent: (MenuEvent) -> Unit) {
+private fun MenuRouteScreen(
+    title: String,
+    vm: MenuViewModel,
+    onBack: () -> Unit,
+    onEvent: (MenuEvent) -> Unit,
+    missingText: String = stringResource(R.string.menu_missing),
+) {
     val missing by vm.missing.collectAsStateWithLifecycle()
     LaunchedEffect(vm) { vm.navigator.events.collect(onEvent) }
     Screen(title = title, onBack = { if (!vm.navigator.back()) onBack() }) {
-        if (missing) EmptyState(stringResource(R.string.menu_missing)) else MenuBrowser(vm.navigator)
+        if (missing) EmptyState(missingText) else MenuBrowser(vm.navigator)
     }
 }
 

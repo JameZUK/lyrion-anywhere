@@ -105,6 +105,9 @@ class AppContainer(context: Context, scope: CoroutineScope) {
     val alarms: AlarmsRepository = RustAlarmsRepository(accountImpl)
     val menus: MenusRepository = RustMenusRepository(accountImpl)
 
+    /** Which apps the library search can hand its text to ("Search on"), found once per session. */
+    val searchDirectory = io.github.jamezuk.lyrionanywhere.ui.library.SearchDirectory(menus)
+
     /** Listening history, the customisable Home and stations (Wave 1). */
     val me: MeRepository = RustMeRepository(accountImpl)
 

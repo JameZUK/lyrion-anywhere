@@ -9,6 +9,7 @@ import io.github.jamezuk.lyrionanywhere.core.MenuOutcome
 import io.github.jamezuk.lyrionanywhere.core.MenuPage
 import io.github.jamezuk.lyrionanywhere.core.MenuParam
 import io.github.jamezuk.lyrionanywhere.core.PluginEntry
+import io.github.jamezuk.lyrionanywhere.core.SearchableApp
 import io.github.jamezuk.lyrionanywhere.core.Suitability
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
@@ -69,6 +70,22 @@ class FakeMenus : MenusRepository {
     override suspend fun probe(player: String, action: MenuAction): Suitability {
         probes++
         return fits[action.cmd.first()] ?: Suitability.Usable
+    }
+
+    /** Each `searchable` call: the player and the apps asked about. */
+    val searchableCalls = mutableListOf<Pair<String, List<String>>>()
+
+    /** As the Rust layer: an app whose top menu has a search box for `search:` text. */
+    override suspend fun searchable(player: String, apps: List<AppEntry>): ApiResult<List<SearchableApp>> {
+        searchableCalls += player to apps.map { it.cmd }
+        return ApiResult.Ok(
+            apps.mapNotNull { a ->
+                val box = pages[a.cmd].orEmpty().firstOrNull { i ->
+                    i.kind == MenuItemKind.SEARCH && i.go?.params?.singleOrNull { p -> p.value == "__TAGGEDINPUT__" }?.key == "search"
+                }?.go ?: return@mapNotNull null
+                SearchableApp(a.cmd, a.name, a.icon, box)
+            },
+        )
     }
 
     override fun appMenu(cmd: String): ApiResult<MenuAction> = ApiResult.Ok(action(cmd, "items"))

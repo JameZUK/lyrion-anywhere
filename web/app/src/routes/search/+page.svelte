@@ -14,6 +14,7 @@
 	import Chips from '$lib/components/Chips.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import SearchHit from '$lib/components/SearchHit.svelte';
+	import PluginSearch from '$lib/components/PluginSearch.svelte';
 
 	/** Rows of each type under All before "See all". */
 	const PREVIEW = 5;
@@ -177,6 +178,8 @@
 			{#if !paged.done}<div bind:this={sentinel} aria-hidden="true"></div>{/if}
 		{/if}
 	</div>
+	<!-- The same text in each app that offers a search (below the library's own results). -->
+	<PluginSearch query={search.type === 'all' && search.term.trim().length >= MIN_TERM ? search.term.trim() : ''} onpick={() => remember(search.term)} />
 </section>
 
 <style>
