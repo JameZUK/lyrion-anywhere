@@ -39,6 +39,7 @@ import io.github.jamezuk.lyrionanywhere.ui.components.EmptyState
 import io.github.jamezuk.lyrionanywhere.ui.components.ErrorState
 import io.github.jamezuk.lyrionanywhere.ui.components.LoadingState
 import io.github.jamezuk.lyrionanywhere.ui.components.errorMessage
+import io.github.jamezuk.lyrionanywhere.ui.stats.StatsSettingsItem
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.channels.Channel
@@ -144,7 +145,13 @@ class HistoryViewModel(private val me: MeRepository) : ViewModel() {
 
 /** The Settings rows: the on/off switch, View history and Clear history. */
 @Composable
-fun HistorySettings(state: HistoryUiState, onEnabled: (Boolean) -> Unit, onView: () -> Unit, onClear: () -> Unit) {
+fun HistorySettings(
+    state: HistoryUiState,
+    onEnabled: (Boolean) -> Unit,
+    onView: () -> Unit,
+    onClear: () -> Unit,
+    onStats: (() -> Unit)? = null,
+) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     val on = state.enabled ?: true
     Column {
@@ -159,6 +166,8 @@ fun HistorySettings(state: HistoryUiState, onEnabled: (Boolean) -> Unit, onView:
             headlineContent = { Text(stringResource(R.string.history_view)) },
             modifier = Modifier.clickable(onClick = onView),
         )
+        // "Your listening" (docs/plans/wave3-design.md §1).
+        if (onStats != null) StatsSettingsItem(onStats)
         ListItem(
             leadingContent = { Icon(Icons.Outlined.DeleteSweep, contentDescription = null) },
             headlineContent = { Text(stringResource(R.string.history_clear)) },

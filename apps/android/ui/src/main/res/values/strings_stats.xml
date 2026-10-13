@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Your listening and Your year in sound (docs/plans/wave3-design.md §1). British English. -->
+<resources>
+    <string name="stats_title">Your listening</string>
+    <string name="stats_open">Your listening</string>
+    <string name="stats_open_body">Hours, most played, and when you listen</string>
+    <string name="stats_period_month">This month</string>
+    <plurals name="stats_period_days">
+        <item quantity="one">Last %1$d day</item>
+        <item quantity="other">Last %1$d days</item>
+    </plurals>
+    <string name="stats_period_year">This year</string>
+    <string name="stats_period_all">Everything kept</string>
+    <string name="stats_off">Your listening history is switched off, so there is nothing to count. Switch it on in Settings › Listening history.</string>
+    <string name="stats_off_action">Listening history settings</string>
+    <string name="stats_empty">Nothing played in this period yet. Your listening shows here within 5 minutes of playing something.</string>
+    <string name="stats_unavailable">Your server doesn\'t offer listening stats yet. They arrive with a newer Lyrion Anywhere gateway.</string>
+    <string name="stats_totals">Totals</string>
+    <string name="stats_total_time">Listened</string>
+    <string name="stats_total_plays">Plays</string>
+    <string name="stats_total_tracks">Tracks</string>
+    <string name="stats_total_albums">Albums</string>
+    <string name="stats_total_artists">Artists</string>
+    <string name="stats_tile">%1$s: %2$s</string>
+    <string name="stats_top_artists">Most played artists</string>
+    <string name="stats_top_albums">Most played albums</string>
+    <string name="stats_top_tracks">Most played tracks</string>
+    <string name="stats_show_more">Show 20</string>
+    <string name="stats_show_fewer">Show 10</string>
+    <string name="stats_rank">%1$d. %2$s</string>
+    <string name="stats_plays_and_time">%1$s · %2$s</string>
+    <string name="stats_new_artists">New this period</string>
+    <string name="stats_new_artists_since">First played since %1$s</string>
+    <string name="stats_first_played">First played %1$s</string>
+    <string name="stats_when">When you listen</string>
+    <string name="stats_by_hour">By hour of the day</string>
+    <string name="stats_by_weekday">By day of the week</string>
+    <string name="stats_by_month">By month</string>
+    <string name="stats_streaks">Streaks</string>
+    <string name="stats_longest_streak">Longest streak</string>
+    <string name="stats_streak_range">%1$s, %2$s to %3$s</string>
+    <string name="stats_busiest_day">Busiest day</string>
+    <string name="stats_busiest_day_value">%1$s: %2$s</string>
+    <string name="stats_unknown_album">Album no longer in the library</string>
+    <string name="stats_unknown_track">Track no longer in the library</string>
+    <string name="stats_story_open">Your year in sound %1$d</string>
+    <string name="stats_story_open_body">Your year, card by card, to keep or share</string>
+
+    <!-- Durations: "45 min", "2 h 15 min", "23 h" -->
+    <string name="stats_minutes">%1$d min</string>
+    <string name="stats_hours_minutes">%1$d h %2$d min</string>
+    <string name="stats_hours">%1$d h</string>
+    <plurals name="stats_plays">
+        <item quantity="one">%1$d play</item>
+        <item quantity="other">%1$d plays</item>
+    </plurals>
+    <plurals name="stats_days">
+        <item quantity="one">%1$d day</item>
+        <item quantity="other">%1$d days</item>
+    </plurals>
+
+    <!-- Chart summaries (read by TalkBack instead of the bars) -->
+    <string name="stats_chart_none">%1$s: nothing played.</string>
+    <string name="stats_chart_hours">Plays by hour of the day. Busiest from %1$s to %2$s, %3$s. Next busiest: %4$s.</string>
+    <string name="stats_chart_hours_short">Plays by hour of the day. Busiest from %1$s to %2$s, %3$s.</string>
+    <string name="stats_chart_entry">%1$s, %2$s</string>
+    <string name="stats_chart_weekday">Plays by day of the week. Most on %1$s, fewest on %2$s. %3$s.</string>
+    <string name="stats_chart_month">Plays by month. Most in %1$s, %2$s. %3$s.</string>
+
+    <!-- Home card -->
+    <string name="stats_card_title">Your listening</string>
+    <string name="stats_card_month">This month: %1$s · %2$s</string>
+    <string name="stats_card_story">Your year in sound %1$d</string>
+
+    <!-- Your year in sound -->
+    <string name="story_title">Your year in sound %1$d</string>
+    <string name="story_close">Close</string>
+    <string name="story_share">Share this card</string>
+    <string name="story_share_failed">Couldn\'t make an image of this card</string>
+    <string name="story_previous">Previous card</string>
+    <string name="story_next">Next card</string>
+    <string name="story_position">Card %1$d of %2$d</string>
+    <string name="story_empty">Nothing played in %1$d, so there is no story to tell yet. Come back once you have listened for a while.</string>
+    <string name="story_footer">Lyrion Anywhere · %1$d</string>
+    <string name="story_hours_title">You listened for</string>
+    <string name="story_hours_body">%1$s across %2$s</string>
+    <string name="story_top_artist_title">Your top artist</string>
+    <string name="story_top_album_title">Your top album</string>
+    <string name="story_top_track_title">Your top track</string>
+    <string name="story_top_five_title">Your top five artists</string>
+    <string name="story_discovery_title">A new discovery</string>
+    <string name="story_discovery_body">First played on %1$s</string>
+    <string name="story_hour_title">Your busiest hour</string>
+    <string name="story_hour_value">%1$s to %2$s</string>
+    <string name="story_streak_title">Your longest streak</string>
+    <string name="story_streak_body">%1$s to %2$s</string>
+    <string name="story_summary_title">Your %1$d in sound</string>
+    <string name="story_summary_artists">%1$s artists, %2$s albums</string>
+    <string name="story_summary_top">Top artist: %1$s</string>
+    <string name="story_share_subject">My year in sound %1$d</string>
+    <string name="story_share_chooser">Share your card</string>
+</resources>

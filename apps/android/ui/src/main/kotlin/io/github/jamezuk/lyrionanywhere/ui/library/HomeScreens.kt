@@ -109,6 +109,8 @@ fun HomeScreen(
     modifier: Modifier = Modifier,
     playerCard: @Composable () -> Unit = {},
     edit: HomeEditActions? = null,
+    /** The last thing on Home (the "Your listening" card); it may draw nothing. */
+    footer: @Composable () -> Unit = {},
 ) {
     val draft = feed.draft
     if (draft != null && edit != null) {
@@ -124,12 +126,14 @@ fun HomeScreen(
             item { RandomShelf(feed, actions) }
             item { FavouritesShelf(feed, actions) }
             item { PlaylistsShelf(feed, actions) }
+            item(key = "home-footer") { footer() }
         } else {
             for (shelf in layout.shelves.filterNot { it.hidden }) {
                 item(key = "${shelf.kind}-${shelf.id}") {
                     Shelf(shelf, feed, actions, onNewStation = { creating = true })
                 }
             }
+            item(key = "home-footer") { footer() }
             if (edit != null && feed.layoutLoaded) {
                 item {
                     Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.Center) {

@@ -138,6 +138,15 @@ import io.github.jamezuk.lyrionanywhere.ui.settings.HistoryMessage
 import io.github.jamezuk.lyrionanywhere.ui.settings.HistoryScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.HistorySettings
 import io.github.jamezuk.lyrionanywhere.ui.settings.HistoryViewModel
+import io.github.jamezuk.lyrionanywhere.ui.stats.AndroidCardSharer
+import io.github.jamezuk.lyrionanywhere.ui.stats.ListeningCard
+import io.github.jamezuk.lyrionanywhere.ui.stats.ListeningCardViewModel
+import io.github.jamezuk.lyrionanywhere.ui.stats.ShareImages
+import io.github.jamezuk.lyrionanywhere.ui.stats.StatsActions
+import io.github.jamezuk.lyrionanywhere.ui.stats.StatsScreen
+import io.github.jamezuk.lyrionanywhere.ui.stats.StatsViewModel
+import io.github.jamezuk.lyrionanywhere.ui.stats.YearStoryScreen
+import io.github.jamezuk.lyrionanywhere.ui.stats.YearStoryViewModel
 import io.github.jamezuk.lyrionanywhere.ui.library.HomeScreen
 import io.github.jamezuk.lyrionanywhere.ui.library.LibraryDestination
 import io.github.jamezuk.lyrionanywhere.ui.library.LibraryScreen
@@ -215,7 +224,9 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 
 @Serializable data object HomeRoute
@@ -264,6 +275,12 @@ import kotlinx.serialization.Serializable
 @Serializable data class PinnedMenuRoute(val id: Long, val name: String)
 
 @Serializable data object HistoryRoute
+
+/** "Your listening" (Wave 3 §1). */
+@Serializable data object StatsRoute
+
+/** "Your year in sound" for [year]: full screen. */
+@Serializable data class YearStoryRoute(val year: Int)
 
 /** One smart filter's albums (Wave 2 §5.6). */
 @Serializable data class FilterRoute(val id: Long, val name: String)
@@ -567,12 +584,14 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
     val bottomBarNav = suiteType == NavigationSuiteType.NavigationBar
     // Car mode (Wave 2 §5.1): opened by its button, or by itself for a car (Settings).
     val inCar = destination?.hasRoute(CarModeRoute::class) == true
+    // "Your year in sound" has the whole screen too.
+    val inStory = destination?.hasRoute(YearStoryRoute::class) == true
     val car = rememberCarMode(container, scope, inCar, onOpen = { nav.navigate(CarModeRoute) { launchSingleTop = true } }, onLeave = { nav.popBackStack() })
     // "Start radio" and "Sleep 30 min" from the launcher (Wave 2 §5.5).
     ShortcutRequests(container, player, snackbar) { e -> discoveryText(e) }
     NavigationSuiteScaffold(
         // Car mode has the whole screen.
-        layoutType = if (inCar) NavigationSuiteType.None else suiteType,
+        layoutType = if (inCar || inStory) NavigationSuiteType.None else suiteType,
         navigationSuiteItems = {
             MainTab.entries.forEach { tab ->
                 val route = tab.route()
@@ -599,7 +618,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
             bottomBar = {
               Column(if (bottomBarNav) Modifier else Modifier.navigationBarsPadding()) {
                 val onNowPlaying = destination?.hasRoute(NowPlayingRoute::class) == true ||
-                    destination?.hasRoute(OfflineNowPlayingRoute::class) == true || inCar
+                    destination?.hasRoute(OfflineNowPlayingRoute::class) == true || inCar || inStory
                 if (!onNowPlaying && offlineUi.state.active) {
                     // Downloads have this phone: their own mini player.
                     OfflineMiniPlayer(
@@ -647,6 +666,9 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             )
                         }
                     }
+                    val listening = viewModel { ListeningCardViewModel(container.stats) }
+                    val listeningUi by listening.state.collectAsStateWithLifecycle()
+                    LaunchedEffect(listening) { listening.refresh() }
                     Screen(
                         title = stringResource(R.string.nav_home),
                         actions = {
@@ -684,6 +706,13 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 onSave = vm::save,
                                 onCancel = vm::cancelEdit,
                             ),
+                            footer = {
+                                ListeningCard(
+                                    listeningUi,
+                                    onOpen = { nav.navigate(StatsRoute) },
+                                    onStory = { nav.navigate(YearStoryRoute(it)) },
+                                )
+                            },
                         )
                     }
                 }
@@ -1257,6 +1286,42 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                         HistoryScreen(ui, onMore = vm::loadMore, onRetry = vm::load)
                     }
                 }
+                composable<StatsRoute> {
+                    val vm = viewModel { StatsViewModel(container.stats, container.me) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    val cache = LocalContext.current.applicationContext
+                    // Shared card images are kept an hour for the app that received them.
+                    LaunchedEffect(Unit) {
+                        withContext(Dispatchers.IO) { ShareImages.prune(ShareImages.dir(cache), System.currentTimeMillis()) }
+                    }
+                    Screen(title = stringResource(R.string.stats_title), onBack = { nav.popBackStack() }) {
+                        StatsScreen(
+                            ui,
+                            StatsActions(
+                                onPeriod = vm::select,
+                                onRetry = vm::retry,
+                                onArtist = { id, name -> nav.navigate(ArtistRoute(id, name)) },
+                                onAlbum = openAlbum,
+                                onStory = { nav.navigate(YearStoryRoute(it)) },
+                                onHistorySettings = { nav.navigate(SettingsRoute) { launchSingleTop = true } },
+                            ),
+                        )
+                    }
+                }
+                composable<YearStoryRoute> { entry ->
+                    val route = entry.toRoute<YearStoryRoute>()
+                    val vm = viewModel(key = "story-${route.year}") { YearStoryViewModel(container.stats, container.me, route.year) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    val shareContext = LocalContext.current
+                    val sharer = remember(shareContext) { AndroidCardSharer(shareContext) }
+                    YearStoryScreen(
+                        ui,
+                        onClose = { nav.popBackStack() },
+                        onRetry = vm::retry,
+                        sharer = sharer,
+                        onHistorySettings = { nav.navigate(SettingsRoute) { launchSingleTop = true } },
+                    )
+                }
                 composable<AlbumRoute> { entry ->
                     val route = entry.toRoute<AlbumRoute>()
                     Screen(title = stringResource(R.string.title_album), onBack = { nav.popBackStack() }) {
@@ -1474,6 +1539,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                     onEnabled = historyVm::setEnabled,
                                     onView = { nav.navigate(HistoryRoute) },
                                     onClear = historyVm::clear,
+                                    onStats = { nav.navigate(StatsRoute) },
                                 )
                             },
                             sleepFade = { SleepFadeSetting(playerState.sleepFade, player::setSleepFade) },

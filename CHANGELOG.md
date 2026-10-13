@@ -39,6 +39,34 @@ The web app's side of `docs/plans/wave3-design.md` §1, built to the `GET /v1/me
   - **The story:** buttons, keys, swipes, Escape, focus and no autoplay, and its offer window.
   - **Share and export:** with a fake canvas and a fake `navigator.share` (shared, cancelled, refused, unsupported).
 
+## 2026-10-13: Your listening and Your year in sound (Android)
+
+The Android side of `docs/plans/wave3-design.md` §1, built to the `/v1/me/stats` contract. The Rust call (`Me.stats`) is being added separately; until it is wired, the app says the server doesn't offer stats yet. The one place to wire it is `RustStatsRepository` in `apps/android/data/.../Stats.kt` (marked `TODO(stats-api)`).
+
+- **Your listening:** opened from a card at the end of Home and from Settings › Listening history.
+  - **Period picker:** this month, last 30 days, this year, each past year the history reaches, and everything kept.
+  - **Totals:** hours, plays, tracks, albums and artists.
+  - **Most played:** artists, albums and tracks, top 10 with "Show 20". Each shows its plays and time. Albums and tracks are loaded by id with their covers; a tap opens the artist or album (a track opens its album).
+  - **New this period:** artists first played in it. Long periods say "First played since …", as the history only reaches back so far.
+  - **When you listen:** hour, weekday and (for long periods) month charts, drawn on a Canvas. Each has a TalkBack summary with the key facts, such as the busiest hour and the next two, the most and fewest days with every day's plays, and the busiest month with every month.
+  - **Streaks:** the longest streak and the busiest day.
+  - **Other states:** history switched off (with a button to its setting); nothing played yet ("within 5 minutes of playing something"); an error with Try again; and a gateway without stats.
+  - **Time zone:** the device's offset is sent as minutes east of UTC. It is read again for every load, so summer time is followed, and clamped to ±840.
+- **Home card:** "This month: 23 h · 412 plays". It is hidden while loading, with history off, with nothing played, and on any error. From 1 December to 31 January it also offers "Your year in sound": in January it offers last year, even before this month's first play.
+- **Your year in sound:**
+  - **Cards:** full-screen cards for total hours, top artist, top album, top track, top five, a new discovery, the busiest hour, the longest streak and a summary. Cards with nothing to show are left out.
+  - **Moving between cards:** swipe, use the Previous and Next buttons, or use TalkBack's actions on each card. Nothing moves on its own, and Back closes. The navigation bar and mini player give way while it is open.
+  - **Opening it:** for any year with history, from the year's stats page.
+- **Sharing a card:** the card on screen is drawn to a bitmap on the phone (a graphics layer) and saved as a PNG in the cache's `shared/` folder. It is offered to the system share sheet with a read-only grant for that one URI. Nothing is uploaded.
+  - **The provider (`ShareImageProvider`):** a FileProvider that is not exported. It serves only `cache/shared/` and opens files read-only, whatever the caller asks for; it deletes nothing.
+  - **Clean-up:** cards are deleted after an hour, on the next share or when the stats open.
+- **Tests:**
+  - **Data:** period strings, including clamping and ASCII digits in every locale; offsets east and west, half and quarter hours, ±840, summer time and clamping; the period choices against retention; the 1 December to 31 January window; and normalising answers, with a fuzz test that never throws and is idempotent.
+  - **View models:** periods, retries, a late answer never replacing the chosen period, the offset sent, ids resolved, the unavailable state, the Home card's states and season, and the story's cards and states.
+  - **Screens (Robolectric):** every state; the charts' descriptions; Show 20; the rows' links; the Home card and its place on Home; the Settings entry; the story's Previous/Next, TalkBack actions, no autoplay, Back and Close; and Share making an image the size of the card for a fake sharer.
+  - **Sharing:** the file is in `cache/shared/`; the intent carries one read-only grant (no write, persistable or prefix grant); files elsewhere and `..` traversal are refused; every write mode is refused; old files are pruned; and the manifest and paths checks (not exported, grants only, one cache path).
+  - **Accessibility audit:** every new screen and state, including each story card and a wide, short window.
+
 ## 2026-10-13: Now playing redesigned for phones (web)
 
 Phones and narrow windows (up to 840 px wide) get a new Now playing in which nothing is squashed. Tablets and desktops (over 840 px) keep their layout.

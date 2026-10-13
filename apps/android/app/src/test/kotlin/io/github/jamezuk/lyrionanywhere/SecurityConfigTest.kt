@@ -189,6 +189,36 @@ class SecurityConfigTest {
     }
 
     /**
+     * Sharing a "Your year in sound" card (Wave 3 §1): the UI library brings one provider,
+     * not exported, reached only by the read grant given with the share, serving only the
+     * cache's shared/ folder. The libraries bring no other component.
+     */
+    @Test
+    fun theCardShareProviderIsReachedOnlyByGrants() {
+        val ui = xml("../ui/src/main/AndroidManifest.xml")
+        for (tag in listOf("activity", "service", "receiver")) assertTrue("no $tag in :ui", ui.children(tag).isEmpty())
+        val share = ui.children("provider").single()
+        assertEquals("io.github.jamezuk.lyrionanywhere.ui.stats.ShareImageProvider", share.getAttributeNS(android, "name"))
+        assertEquals("false", share.getAttributeNS(android, "exported"))
+        assertEquals("true", share.getAttributeNS(android, "grantUriPermissions"))
+        assertEquals("\${applicationId}.share", share.getAttributeNS(android, "authorities"))
+        for (attr in listOf("permission", "readPermission", "writePermission", "multiprocess")) {
+            assertFalse("no $attr", share.hasAttributeNS(android, attr))
+        }
+        assertTrue(share.children("intent-filter").isEmpty() && share.children("path-permission").isEmpty())
+        val paths = xml("../ui/src/main/res/xml/share_paths.xml")
+        val roots = (0 until paths.childNodes.length).map { paths.childNodes.item(it) }.filterIsInstance<Element>()
+        assertEquals(listOf("cache-path"), roots.map { it.tagName })
+        assertEquals("shared/", roots.single().getAttribute("path"))
+        for (module in listOf("data", "playback")) {
+            val f = File("../$module/src/main/AndroidManifest.xml")
+            if (!f.exists()) continue
+            val m = xml(f.path)
+            for (tag in listOf("activity", "service", "receiver", "provider")) assertTrue("no $tag in :$module", m.children(tag).isEmpty())
+        }
+    }
+
+    /**
      * App shortcuts (Wave 2 §5.5): they land on a private activity, and name only its two
      * actions, in release and debug alike (the debug package has its own copy).
      */

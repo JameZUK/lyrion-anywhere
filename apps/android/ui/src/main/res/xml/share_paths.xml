@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What ShareImageProvider may serve: the story card images being shared, in the cache's
+     shared/ folder, and nothing else. -->
+<paths>
+    <cache-path name="shared" path="shared/" />
+</paths>

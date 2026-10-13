@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+          Sharing a "Your year in sound" card (docs/plans/wave3-design.md §1). NOT exported:
+          the receiving app reads the one image through a read-only grant for that URI, given
+          with the share. Serves only cache/shared/ (res/xml/share_paths.xml); nothing can be
+          written. The image is made on the device and nothing is uploaded.
+        -->
+        <provider
+            android:name="io.github.jamezuk.lyrionanywhere.ui.stats.ShareImageProvider"
+            android:authorities="${applicationId}.share"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/share_paths" />
+        </provider>
+    </application>
+</manifest>
