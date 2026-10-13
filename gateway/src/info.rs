@@ -40,7 +40,10 @@ use crate::{art, download, rpc_policy};
 /// Requests with plugin lookups running at once, for everyone.
 pub const LOOKUPS: usize = 4;
 /// Default time allowed for one plugin lookup.
-pub const LOOKUP_TIMEOUT: Duration = Duration::from_secs(12);
+pub const LOOKUP_TIMEOUT: Duration = Duration::from_secs(8);
+/// A lookup that failed or timed out (the plugin's online source hanging for that artist)
+/// is remembered this long, so each visit doesn't wait for the time limit again.
+pub const STALL_TTL: Duration = Duration::from_secs(10 * 60);
 /// How long an answer with something in it is remembered.
 pub const HIT_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long "nothing found" is remembered.
@@ -95,6 +98,17 @@ impl InfoCache {
     }
 
     fn put(&self, key: Key, value: Arc<Value>, photo: Option<String>, hit: bool, now: Instant) {
+        self.put_for(key, value, photo, if hit { HIT_TTL } else { MISS_TTL }, now);
+    }
+
+    fn put_for(
+        &self,
+        key: Key,
+        value: Arc<Value>,
+        photo: Option<String>,
+        ttl: Duration,
+        now: Instant,
+    ) {
         let mut e = self.entries.lock().unwrap();
         if e.len() >= CACHE_ENTRIES && !e.contains_key(&key) {
             e.retain(|_, x| now.duration_since(x.at) < x.ttl);
@@ -105,7 +119,6 @@ impl InfoCache {
                 }
             }
         }
-        let ttl = if hit { HIT_TTL } else { MISS_TTL };
         e.insert(
             key,
             Entry {
@@ -580,9 +593,6 @@ pub async fn artist(
         lookup(&gw, ask("biography")),
         lookup(&gw, ask("artistphoto"))
     );
-    if bio.is_none() && photo.is_none() {
-        return error(StatusCode::SERVICE_UNAVAILABLE, "the server didn't answer");
-    }
     let complete = bio.is_some() && photo.is_some();
     let (v, url) = artist_answer(bio.as_ref(), photo.as_ref());
     learn_photo(&gw, url.as_deref());
@@ -590,6 +600,11 @@ pub async fn artist(
         let hit = has_something(&v);
         gw.info
             .put(key, Arc::new(v.clone()), url, hit, Instant::now());
+    } else {
+        // Failed or timed out (in part): what there is, briefly, so the page doesn't wait
+        // for the time limit on every visit.
+        gw.info
+            .put_for(key, Arc::new(v.clone()), url, STALL_TTL, Instant::now());
     }
     ok(v)
 }
@@ -618,7 +633,10 @@ pub async fn album(
         format!("album_id:{id}"),
     ];
     let Some(r) = lookup(&gw, cmd).await else {
-        return error(StatusCode::SERVICE_UNAVAILABLE, "the server didn't answer");
+        let v = album_answer(&Value::Null);
+        gw.info
+            .put_for(key, Arc::new(v.clone()), None, STALL_TTL, Instant::now());
+        return ok(v);
     };
     let v = album_answer(&r);
     let hit = has_something(&v);

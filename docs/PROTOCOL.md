@@ -956,8 +956,8 @@ The plugin answers from its cache, local files and whatever online services the 
 
 **Refusals:**
 - 404 `no such artist` or `no such album`: a malformed id. An id the library doesn't have is a 200 with every field `null`.
-- 429 with `Retry-After`: 4 requests are already waiting on the plugin, which may go online. Each lookup also has a time limit (12 s by default).
-- 503 `the server didn't answer`: no lookup succeeded in time. For an artist, if only one of the two lookups succeeded, its part is answered and the other part is `null`.
+- 429 with `Retry-After`: 4 requests are already waiting on the plugin, which may go online. Each lookup also has a time limit (8 s by default).
+- **A lookup that fails or runs out of time** is not an error. Its part of the answer is `null`, so the app hides it, and the answer is remembered for 10 minutes. The plugin's online source can hang for one artist, and without this every visit to that artist would wait the full time limit. (Found answers are remembered for 24 hours, and "nothing found" for an hour.)
 
 **Caching:** answers are remembered for 24 hours, and answers with nothing in them for 1 hour, for up to 1,024 artists and albums. Failures, timeouts and half answers are never remembered. A remembered photo is added to the image proxy's allow-list again each time it is answered. Every answer is `Cache-Control: private, no-store`.
 

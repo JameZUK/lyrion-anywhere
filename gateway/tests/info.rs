@@ -268,19 +268,25 @@ async fn hostile_ids_and_parameters_are_refused_before_lms() {
 }
 
 #[tokio::test]
-async fn timeouts_are_503_and_never_remembered() {
+async fn a_stalled_lookup_is_empty_and_remembered_briefly() {
+    // The plugin's online source can hang for one artist: the answer is empty (the app
+    // hides the section) and remembered for a while, so each visit doesn't wait again.
     let h = harness_with(|c| c.info_lookup_timeout = Duration::from_millis(300)).await;
     for _ in 0..2 {
         let (s, v) = get(&h, "/v1/info/artist/900", Some(&h.tok_a)).await;
-        assert_eq!(s, S::SERVICE_UNAVAILABLE);
-        assert_eq!(v, json!({"error": "the server didn't answer"}));
-        let (s, _) = get(&h, "/v1/info/album/900", Some(&h.tok_a)).await;
-        assert_eq!(s, S::SERVICE_UNAVAILABLE);
+        assert_eq!(s, S::OK);
+        assert_eq!(
+            v,
+            json!({"biography": null, "photo": null, "credits": null})
+        );
+        let (s, v) = get(&h, "/v1/info/album/900", Some(&h.tok_a)).await;
+        assert_eq!(s, S::OK);
+        assert_eq!(v, json!({"review": null}));
     }
-    // Asked again each time.
-    assert_eq!(mai_calls(&h).len(), 6);
+    // Asked once each (both artist lookups, the review), then remembered.
+    assert_eq!(mai_calls(&h).len(), 3);
 
-    // Half an answer is given, but not remembered.
+    // Half an answer is given, and remembered as briefly.
     for _ in 0..2 {
         let (s, v) = get(&h, "/v1/info/artist/5", Some(&h.tok_a)).await;
         assert_eq!(s, S::OK);
@@ -289,7 +295,8 @@ async fn timeouts_are_503_and_never_remembered() {
             json!({"biography": "Plain words\n\nabout a singer.", "photo": null, "credits": null})
         );
     }
-    assert_eq!(mai_calls(&h).len(), 10);
+    assert_eq!(mai_calls(&h).len(), 5);
+    assert!(anywhere_gateway::info::STALL_TTL < anywhere_gateway::info::MISS_TTL);
 }
 
 #[tokio::test]
@@ -330,7 +337,7 @@ async fn plugin_lookups_are_limited() {
     assert_eq!(s, S::TOO_MANY_REQUESTS);
     assert_eq!(mai_calls(&h).len(), n);
     for t in slow {
-        assert_eq!(t.await.unwrap(), S::SERVICE_UNAVAILABLE);
+        assert_eq!(t.await.unwrap(), S::OK, "timed out: an empty answer");
     }
     // Free again.
     let (s, _) = get(&h, "/v1/info/album/1", Some(&h.tok_b)).await;
