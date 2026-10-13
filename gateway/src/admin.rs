@@ -135,6 +135,8 @@ async fn create_user(State(st): State<AdminState>, Json(u): Json<NewUser>) -> Re
 async fn delete_user(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
     match st.gw.accounts().delete_user(&name) {
         Ok(devices) => {
+            // Its remembered stats go with it (a later user could get the same id).
+            st.gw.stats.forget_name(&name);
             st.gw.end_sessions_for(&devices).await;
             StatusCode::NO_CONTENT.into_response()
         }

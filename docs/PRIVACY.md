@@ -8,7 +8,7 @@
 
 - **Nothing goes to us.** The app talks only to the server you type in or scan (your Lyrion Anywhere gateway). The project has no servers, accounts, analytics, advertising, tracking or third-party SDKs, and receives no data from the app.
 - **Your server keeps what it needs to sign you in and keep you safe:** your account, your devices, and an audit log. Its administrator (usually you or your household) can see it.
-- **Your server also keeps your listening history** (for Recently played, Most played and stations), your Home layout, your stations and your smart filters: yours only, for 13 months for history, and you can see it, clear it or switch it off.
+- **Your server also keeps your listening history** (for Recently played, Most played, stations and your listening stats), your Home layout, your stations and your smart filters: yours only, for 13 months for history, and you can see it, clear it or switch it off.
 - **Your phone keeps your sign-in (sealed by the Android Keystore), your settings and your downloads.** Signing out removes the sign-in and, if you choose, the downloads. A device the server revokes deletes its downloads.
 
 ## What the Android app stores on your phone
@@ -79,6 +79,7 @@ The gateway runs on your server, next to Lyrion Music Server. Its data stays the
 - **Who sees it:** the gateway's admins, through Lyrion Music Server's settings page (which needs a token only that page has). Listeners see only their own account and devices. Nothing is shared with anyone else.
 - **Play counts** themselves are kept by Lyrion Music Server, as when you play a track on any LMS player.
 - **Your listening history is yours:** no screen or API shows it to anyone else, admins included. It is stored in the gateway's database on the server, like your account, so someone with access to the server's files could read it. See it in Settings › Listening history (*View history*), delete it all with *Clear history*, or switch it off there: nothing more is recorded until you switch it back on. Clearing or switching it off doesn't change LMS's own play counts.
+- **Your listening stats** (the "Your listening" page and "Your year in sound") are worked out from that same history, for you only. Nothing new is stored for them. The server keeps a worked-out page for up to 5 minutes, and drops it at once when you clear or switch off your history. With history switched off, the page shows nothing. The images you share from it are made on your device, not uploaded.
 - **The reverse proxy** (for example nginx) that you put in front of the gateway may keep its own access logs. That is your proxy's configuration, not this software's.
 
 ## Deleting your data

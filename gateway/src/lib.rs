@@ -54,6 +54,7 @@ mod rpc;
 pub mod rpc_policy;
 mod session;
 pub mod stations;
+pub mod stats;
 mod status_fix;
 pub mod totp;
 pub mod transcode;
@@ -184,6 +185,8 @@ pub struct Config {
     /// After a player starts a track, how long to wait before asking LMS which track it is
     /// (for listening history; LMS needs a moment to move on to it).
     pub history_lookup_delay: Duration,
+    /// Time limit for looking one artist's name up for the listening stats.
+    pub stats_lookup_timeout: Duration,
 }
 
 impl Default for Config {
@@ -237,6 +240,7 @@ impl Default for Config {
             plays_requests_per_minute: 30,
             plays_budget: Duration::from_secs(30),
             history_lookup_delay: Duration::from_millis(1500),
+            stats_lookup_timeout: stats::LOOKUP_TIMEOUT,
         }
     }
 }
@@ -283,6 +287,8 @@ pub struct Gateway {
     filter_results: filters::Results,
     /// Pruning of listening history.
     history_upkeep: history::Upkeep,
+    /// Listening stats answers and artist names.
+    stats: stats::StatsCache,
     /// Lyrics answers and the plugin lookup limit.
     lyrics: lyrics::LyricsCache,
     /// Artist and album information answers and the lookup limit.
@@ -361,6 +367,7 @@ impl Gateway {
             filter_slots: limits::Limiter::new(filters::RUNS_PER_USER, filters::RUNS_TOTAL),
             filter_results: Default::default(),
             history_upkeep: Default::default(),
+            stats: Default::default(),
             lyrics: Default::default(),
             info: Default::default(),
             live_slots: Arc::new(tokio::sync::Semaphore::new(cfg.live_transcode_jobs)),
@@ -529,6 +536,7 @@ pub fn router(state: AppState) -> Router {
                 .patch(history::patch),
         )
         .route("/v1/me/shelves/{name}", get(history::shelf))
+        .route("/v1/me/stats", get(stats::get))
         .route(
             "/v1/me/ratings",
             get(ratings::get)

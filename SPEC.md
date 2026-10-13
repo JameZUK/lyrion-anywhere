@@ -277,6 +277,7 @@ This is the one contract used by the web app now and the native apps later. It i
 | `GET/POST/DELETE /v1/me/ratings`, `PUT …/{track}`, `GET/PUT …/style` | The user's own ratings, blended with LMS's shared rating (Wave 2) | Access token |
 | `GET/DELETE/PATCH /v1/me/history` | The user's listening history: view (paged), clear, switch off (D23) | Access token |
 | `GET /v1/me/shelves/{recent\|most\|on_this_day}` | Album ids for Home's history shelves | Access token |
+| `GET /v1/me/stats?period=&tz=` | Listening stats worked out from the user's own history: totals, top artists/albums/tracks, new artists, hour/weekday/month charts, streaks (Wave 3 §1) | Access token |
 | `GET/PUT/DELETE /v1/me/home` | The user's Home layout (§5.8) | Access token |
 | `GET/POST /v1/me/stations`, `DELETE …/{id}`, `POST …/{id}/next` | Stations: list, add, remove, next batch (§5.8) | Access token |
 | `GET/POST /v1/me/menus`, `DELETE …/{id}`, `POST …/{id}/open` | Menus pinned to Home (§5.8) | Access token |
