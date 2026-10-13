@@ -5,14 +5,21 @@ import { enqueue, type Placement, type Selection } from '$lib/lms/commands';
 
 export type Rpc = (player: string, cmd: (string | number)[]) => Promise<unknown>;
 export const calls: { player: string; cmd: (string | number)[] }[] = [];
-export const handler: { rpc: Rpc } = { rpc: async () => ({}) };
+export type Info = (kind: 'artist' | 'album', id: number) => Promise<unknown>;
+export const infoCalls: { kind: 'artist' | 'album'; id: number }[] = [];
+/** By default the gateway has no information (as without the plugin). */
+export const handler: { rpc: Rpc; info: Info } = { rpc: async () => ({}), info: async () => ({}) };
 
 export const api = {
 	rpc: async (player: string, cmd: (string | number)[]) => {
 		calls.push({ player, cmd: [...cmd] });
 		return handler.rpc(player, cmd);
 	},
-	art: () => new Promise<string>(() => {}),
+	art: (_path: string) => new Promise<string>(() => {}),
+	info: async (kind: 'artist' | 'album', id: number) => {
+		infoCalls.push({ kind, id });
+		return handler.info(kind, id);
+	},
 };
 
 /** The signed-in session, as far as components read it. */

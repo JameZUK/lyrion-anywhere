@@ -135,6 +135,15 @@ export class Api {
 		);
 	}
 
+	/**
+	 * An artist's biography and photo, or an album's review (GET /v1/info/…), unchecked: see
+	 * $lib/info/info for the checks. Rejects for a bad id without asking.
+	 */
+	info(kind: 'artist' | 'album', id: number): Promise<unknown> {
+		if (!Number.isSafeInteger(id) || id <= 0 || id > 999_999_999_999) return Promise.reject(new ApiError(400, 'bad id'));
+		return this.session.authed((token) => callJson<unknown>(`/v1/info/${kind}/${id}`, { headers: bearer(token) }));
+	}
+
 	clearArt() {
 		for (const p of this.#art.values()) p.then((u) => URL.revokeObjectURL(u), () => {});
 		this.#art.clear();
