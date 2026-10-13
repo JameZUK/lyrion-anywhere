@@ -1,4 +1,5 @@
 <script lang="ts">
+	import BackButton from '$lib/components/BackButton.svelte';
 	// A plugin's entry in LMS's home menu (e.g. under My Music), opened as a menu.
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
@@ -39,7 +40,7 @@
 </script>
 
 <section class="page">
-	<a class="back muted" href="#/apps">‹ Apps &amp; Radio</a>
+	<BackButton parent="/apps" />
 	{#if !app.playerId}
 		<p class="muted">Choose a player first: plugins browse and play for a player.</p>
 	{:else if status === 'loading'}
@@ -56,8 +57,4 @@
 </section>
 
 <style>
-	.back {
-		display: inline-block;
-		margin-bottom: 0.5rem;
-	}
 </style>

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import BackButton from '$lib/components/BackButton.svelte';
 	import { untrack } from 'svelte';
 	import { api, app } from '$lib/state/app.svelte';
 	import { library } from '$lib/state/library.svelte';
@@ -32,6 +33,7 @@
 </script>
 
 <section class="page">
+	<BackButton parent="/library" />
 	<h1>Years</h1>
 	<LibraryNote />
 	{#if list.error}<p class="error">{list.error}</p>{/if}

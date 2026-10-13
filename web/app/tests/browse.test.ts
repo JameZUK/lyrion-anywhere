@@ -271,8 +271,8 @@ test('genres and years link to their albums, with empty states', async () => {
 	expect(g.container.textContent).not.toContain('Bad');
 	g.unmount();
 	const y = render(Years);
-	await waitFor(() => expect(y.container.querySelectorAll('a').length).toBe(2));
-	expect([...y.container.querySelectorAll('a')].map((a) => a.getAttribute('href'))).toEqual(['#/year/1999', '#/year/0']);
+	await waitFor(() => expect(y.container.querySelectorAll('a:not([data-back])').length).toBe(2));
+	expect([...y.container.querySelectorAll('a:not([data-back])')].map((a) => a.getAttribute('href'))).toEqual(['#/year/1999', '#/year/0']);
 	expect(y.container.textContent).toContain('No year');
 	expect(sent('years')[0]).toEqual(['years', 0, 500, 'hasAlbums:1']);
 	y.unmount();

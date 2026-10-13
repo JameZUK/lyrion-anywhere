@@ -2,6 +2,9 @@
 	import '../app.css';
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
+	import { afterNavigate } from '$app/navigation';
+	import { noteNavigation } from '$lib/nav';
+	import { documentTitle, pageTitle } from '$lib/title.svelte';
 	import { api, app, session } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
 	import { appearance } from '$lib/theme/appearance.svelte';
@@ -164,7 +167,15 @@
 		{ href: '#/settings', label: 'Settings', icon: 'settings', match: (p: string) => p.startsWith('/settings') },
 	];
 	const path = $derived(page.url.hash.replace(/^#/, '') || '/');
+
+	// Back on detail pages needs to know whether there is an app page behind this one.
+	afterNavigate((n) => noteNavigation({ type: n.type, delta: n.delta }));
 </script>
+
+<svelte:head>
+	<!-- SvelteKit announces the new title after each navigation. -->
+	<title>{app.status === 'signed-in' ? documentTitle(path, pageTitle.detail) : 'Lyrion Anywhere'}</title>
+</svelte:head>
 
 {#if app.status === 'unknown'}
 	<div class="splash" aria-busy="true"><span class="dot"></span></div>

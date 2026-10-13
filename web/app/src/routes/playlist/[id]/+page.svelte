@@ -1,4 +1,6 @@
 <script lang="ts">
+	import BackButton from '$lib/components/BackButton.svelte';
+	import { useDetailTitle } from '$lib/title.svelte';
 	import { go } from '$lib/nav';
 	import { page } from '$app/state';
 	import { untrack } from 'svelte';
@@ -75,10 +77,11 @@
 		}
 	}
 	const totalTime = $derived(tracks.reduce((s, t) => s + (Number(t.duration) || 0), 0));
+	useDetailTitle(() => textOf(info?.playlist));
 </script>
 
 <section class="page">
-	<a class="back" href="#/playlists"><Icon name="back" size={18} />Playlists</a>
+	<BackButton parent="/playlists" />
 	{#if error}<p class="error">{error}</p>{/if}
 	{#if info && listId !== null}
 		{@const id = listId}
@@ -131,12 +134,6 @@
 </section>
 
 <style>
-	.back {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.3rem;
-		color: var(--fg-muted);
-	}
 	header {
 		margin: 0.75rem 0 1.5rem;
 	}

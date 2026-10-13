@@ -1,4 +1,6 @@
 <script lang="ts">
+	import BackButton from '$lib/components/BackButton.svelte';
+	import { useDetailTitle } from '$lib/title.svelte';
 	import { page } from '$app/state';
 	import { api, app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
@@ -42,9 +44,11 @@
 		);
 		return () => (live = false);
 	});
+	useDetailTitle(() => textOf(name));
 </script>
 
 <section class="page">
+	<BackButton parent="/artists" />
 	{#if error}
 		<p class="error">{error}</p>
 	{:else if artistId !== null}

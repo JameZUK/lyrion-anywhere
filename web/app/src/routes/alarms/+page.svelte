@@ -1,4 +1,5 @@
 <script lang="ts">
+	import BackButton from '$lib/components/BackButton.svelte';
 	// Alarms for the selected player (Wave 2 §1): LMS's own, so they ring on hardware
 	// players too and with no app open.
 	import { app } from '$lib/state/app.svelte';
@@ -120,7 +121,7 @@
 </script>
 
 <section class="page alarms">
-	<a class="back muted" href="#/">‹ Now playing</a>
+	<BackButton parent="/" />
 	<header>
 		<h1>Alarms</h1>
 		{#if player && listing && editing === null}

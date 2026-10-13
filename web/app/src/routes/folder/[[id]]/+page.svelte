@@ -1,4 +1,6 @@
 <script lang="ts">
+	import BackButton from '$lib/components/BackButton.svelte';
+	import { useDetailTitle } from '$lib/title.svelte';
 	import { page } from '$app/state';
 	import { untrack } from 'svelte';
 	import { api, app } from '$lib/state/app.svelte';
@@ -42,9 +44,11 @@
 
 	const title = $derived(folder === undefined ? 'Music Folder' : folder === null ? '' : (folderName(folder) ?? 'Folder'));
 	const hasAudio = $derived(list.items.some((x) => x.kind !== 'other'));
+	useDetailTitle(() => folder === undefined ? '' : title);
 </script>
 
 <section class="page">
+	<BackButton parent={folder === undefined ? '/library' : '/folder'} />
 	{#if folder === null}
 		<p class="error">Not a folder.</p>
 	{:else}

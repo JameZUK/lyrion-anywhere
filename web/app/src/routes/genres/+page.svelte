@@ -1,4 +1,5 @@
 <script lang="ts">
+	import BackButton from '$lib/components/BackButton.svelte';
 	import { untrack } from 'svelte';
 	import { api, app } from '$lib/state/app.svelte';
 	import { library } from '$lib/state/library.svelte';
@@ -31,6 +32,7 @@
 </script>
 
 <section class="page">
+	<BackButton parent="/library" />
 	<h1>Genres</h1>
 	<LibraryNote />
 	<label class="filter"><Icon name="search" size={18} /><span class="sr-only">Find a genre</span><input type="search" bind:value={filter} placeholder="Find a genre" maxlength="200" /></label>
