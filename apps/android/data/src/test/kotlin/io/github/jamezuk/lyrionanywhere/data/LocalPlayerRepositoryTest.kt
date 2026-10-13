@@ -124,6 +124,16 @@ private class FakeHandle : LocalPlayerHandle {
         qualities += quality
     }
 
+    /** Visualiser switches, in order; and the next frame the engine hands over. */
+    val visual = mutableListOf<Boolean>()
+    var frame: ByteArray? = null
+
+    override fun setVisualiser(on: Boolean) {
+        visual += on
+    }
+
+    override fun visualFrame(): ByteArray? = frame
+
     override fun close() {
         closed = true
     }
@@ -178,6 +188,29 @@ class LocalPlayerRepositoryTest {
         r.setEnabled(true)
         assertEquals(listOf(StreamQuality.LOW), handles.last().qualities)
         assertEquals(1, handles.last().qualitiesAtStart)
+    }
+
+    /** The visualiser (Wave 2 §4.1): off by default, remembered for a new engine, frames only while on and well-formed. */
+    @Test
+    fun theVisualiserIsOffByDefaultAndRemembered() = runTest {
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        assertEquals(listOf(false), handles[0].visual)
+        handles[0].frame = ByteArray(VisualFrame.BYTES)
+        assertNull("off: no frames", r.visualFrame())
+        r.setVisualiser(true)
+        assertEquals(listOf(false, true), handles[0].visual)
+        assertEquals(VisualFrame.BANDS, r.visualFrame()!!.bands.size)
+        // A frame of the wrong size is refused.
+        handles[0].frame = ByteArray(VisualFrame.BYTES - 1)
+        assertNull(r.visualFrame())
+        // A new engine starts with it on.
+        r.setEnabled(false)
+        r.setEnabled(true)
+        assertEquals(listOf(true), handles.last().visual)
+        r.setVisualiser(false)
+        assertEquals(listOf(true, false), handles.last().visual)
     }
 
     @Test

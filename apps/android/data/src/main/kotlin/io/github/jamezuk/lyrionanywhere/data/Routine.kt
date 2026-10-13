@@ -4,6 +4,10 @@ import io.github.jamezuk.lyrionanywhere.core.AlarmChange
 import io.github.jamezuk.lyrionanywhere.core.AlarmListing
 import io.github.jamezuk.lyrionanywhere.core.RatingStyle
 import io.github.jamezuk.lyrionanywhere.core.TrackRating
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -92,22 +96,60 @@ interface AlarmsRepository {
     suspend fun delete(player: String, id: String): ApiResult<AlarmListing>
 
     suspend fun setAll(player: String, enabled: Boolean): ApiResult<AlarmListing>
+
+    /** The player whose alarms this app just changed (for views that show the next alarm). */
+    val changes: Flow<String> get() = emptyFlow()
 }
 
 class RustAlarmsRepository(private val source: ConnectionSource) : AlarmsRepository {
+    private val changed = MutableSharedFlow<String>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    override val changes: Flow<String> = changed
+
     private suspend fun <T> withRoutine(block: suspend (Connection) -> T): ApiResult<T> {
         val c = source.connection.value ?: return ApiResult.Err(AppError.SignedOut)
         return apiCall { block(c) }
     }
 
+    /** A change that went through: say so. */
+    private fun <T> ApiResult<T>.told(player: String): ApiResult<T> = also { if (it is ApiResult.Ok) changed.tryEmit(player) }
+
     override suspend fun alarms(player: String) = withRoutine { it.routine.alarms(player) }
 
-    override suspend fun add(player: String, change: AlarmChange) = withRoutine { it.routine.addAlarm(player, change) }
+    override suspend fun add(player: String, change: AlarmChange) = withRoutine { it.routine.addAlarm(player, change) }.told(player)
 
     override suspend fun change(player: String, id: String, change: AlarmChange) =
-        withRoutine { it.routine.changeAlarm(player, id, change) }
+        withRoutine { it.routine.changeAlarm(player, id, change) }.told(player)
 
-    override suspend fun delete(player: String, id: String) = withRoutine { it.routine.deleteAlarm(player, id) }
+    override suspend fun delete(player: String, id: String) = withRoutine { it.routine.deleteAlarm(player, id) }.told(player)
 
-    override suspend fun setAll(player: String, enabled: Boolean) = withRoutine { it.routine.setAllAlarms(player, enabled) }
+    override suspend fun setAll(player: String, enabled: Boolean) =
+        withRoutine { it.routine.setAllAlarms(player, enabled) }.told(player)
+}
+
+/**
+ * When a player's alarms next ring (Wave 2 §4.3, Rooms): the soonest enabled alarm with a
+ * day, as seconds from now, counted from [weekdayNow] (0 Sunday, as LMS numbers days) and
+ * [secsToday] (since local midnight). Null when none is set, or the player's alarms are
+ * all off. (The same rule as the Rust layer's `next_alarm_in`.)
+ */
+fun nextAlarmIn(listing: AlarmListing?, weekdayNow: Int, secsToday: Int): Int? {
+    if (listing == null || !listing.enabled) return null
+    val today = Math.floorMod(weekdayNow, 7)
+    val now = secsToday.coerceIn(0, 86_399)
+    var best: Int? = null
+    for (a in listing.alarms) {
+        if (!a.enabled || a.days.isEmpty()) continue
+        val days = a.days.map { it.toInt() }.toSet()
+        val time = a.timeSecs.toLong().coerceIn(0, 86_399).toInt()
+        for (ahead in 0..7) {
+            if ((today + ahead) % 7 !in days) continue
+            val at = ahead * 86_400 + time
+            if (at > now) {
+                val wait = at - now
+                best = if (best == null) wait else minOf(best, wait)
+                break
+            }
+        }
+    }
+    return best
 }

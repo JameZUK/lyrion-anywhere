@@ -32,6 +32,7 @@ import io.github.jamezuk.lyrionanywhere.core.EventsState
 import io.github.jamezuk.lyrionanywhere.core.Placement
 import io.github.jamezuk.lyrionanywhere.core.Player
 import io.github.jamezuk.lyrionanywhere.core.PlayerStatus
+import io.github.jamezuk.lyrionanywhere.core.RoomStatus
 import io.github.jamezuk.lyrionanywhere.core.RepeatMode
 import io.github.jamezuk.lyrionanywhere.core.SearchResults
 import io.github.jamezuk.lyrionanywhere.core.Selection
@@ -206,7 +207,28 @@ interface PlayersRepository {
      * stage to [onStage] (on a background thread).
      */
     suspend fun transfer(source: String, target: String, onStage: (TransferStage) -> Unit): ApiResult<TransferOutcome>
+
+    /**
+     * Several players' statuses at once, for the Rooms view (Wave 2 §4.3): at most
+     * [ROOMS_MAX]; each player's failure is in its own entry. The default reads them one
+     * by one (for fakes); the Rust repository reads them together.
+     */
+    suspend fun statuses(players: List<String>): ApiResult<List<RoomStatus>> {
+        val ids = players.distinct()
+        if (ids.size > ROOMS_MAX || ids.any { !isPlayerId(it) }) return ApiResult.Err(AppError.InvalidInput("bad players"))
+        return ApiResult.Ok(
+            ids.map { id ->
+                when (val r = status(id)) {
+                    is ApiResult.Ok -> RoomStatus(id, r.value, null)
+                    is ApiResult.Err -> RoomStatus(id, null, r.error.toString())
+                }
+            },
+        )
+    }
 }
+
+/** The most players the Rooms view reads (as the Rust layer allows). */
+const val ROOMS_MAX = 20
 
 /** Artwork bytes by key (from a record), for the image loader. */
 interface ArtRepository {
@@ -337,6 +359,8 @@ class RustPlayersRepository(private val source: ConnectionSource) : PlayersRepos
     override suspend fun syncGroups() = withPlayers { it.syncGroups() }
 
     override suspend fun status(player: String) = withPlayers { it.status(player) }
+
+    override suspend fun statuses(players: List<String>) = withPlayers { it.statuses(players) }
 
     override suspend fun queue(player: String, start: Int, count: Int) =
         withPlayers { it.queue(player, start.u(), count.u()) }

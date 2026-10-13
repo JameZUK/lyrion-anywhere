@@ -83,6 +83,15 @@ interface LocalPlayerRepository {
 
     /** The output device changed (a USB DAC came or went): negotiate the output again. */
     fun renegotiateOutput() {}
+
+    /**
+     * Analyse what this phone plays for a visualiser (Wave 2 §4.1), or stop. Off by default;
+     * on only while a visualiser is on screen. Remembered across restarts of the engine.
+     */
+    fun setVisualiser(on: Boolean) {}
+
+    /** The newest visualiser frame since the last call (null: none, or off). */
+    fun visualFrame(): VisualFrame? = null
 }
 
 /** The parts of the Rust [LocalPlayer] the repository uses (a seam for tests). */
@@ -106,6 +115,11 @@ interface LocalPlayerHandle {
     fun renegotiateOutput()
 
     fun setStreamQuality(quality: StreamQuality) {}
+
+    fun setVisualiser(on: Boolean) {}
+
+    /** The engine's packed frame (see [VisualFrame.parse]). */
+    fun visualFrame(): ByteArray? = null
 
     fun close()
 }
@@ -145,6 +159,10 @@ private class RustHandle(session: Session) : LocalPlayerHandle {
 
     override fun setStreamQuality(quality: StreamQuality) = player.setStreamQuality(quality)
 
+    override fun setVisualiser(on: Boolean) = player.setVisualiser(on)
+
+    override fun visualFrame(): ByteArray? = player.visualFrame()
+
     override fun close() = player.close()
 }
 
@@ -183,6 +201,7 @@ class RustLocalPlayerRepository(
     @Volatile private var sound = SoundSettings()
     @Volatile private var negotiator: OutputNegotiator? = null
     @Volatile private var quality = StreamQuality.ORIGINAL
+    @Volatile private var visualiser = false
 
     /** Ignores updates from a player that has since been replaced. */
     private inner class Observer(private val owner: LocalPlayerHandle) : LocalPlayerObserver {
@@ -255,6 +274,7 @@ class RustLocalPlayerRepository(
             val dsp = dspFor(sound)
             if (dsp != DEFAULT_DSP) h.setDsp(dsp)
             h.setStreamQuality(quality)
+            h.setVisualiser(visualiser)
             h.start(Observer(h))
         } catch (e: Exception) {
             handle = null
@@ -320,4 +340,11 @@ class RustLocalPlayerRepository(
     override fun renegotiateOutput() {
         handle?.renegotiateOutput()
     }
+
+    override fun setVisualiser(on: Boolean) {
+        visualiser = on
+        handle?.setVisualiser(on)
+    }
+
+    override fun visualFrame(): VisualFrame? = if (visualiser) VisualFrame.parse(handle?.visualFrame()) else null
 }

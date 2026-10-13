@@ -48,6 +48,8 @@ data class AppSettings(
     val library: LibraryPrefs = LibraryPrefs(),
     /** Recent searches, newest first (on this device only; Wave 2 §3.3). */
     val recentSearches: List<String> = emptyList(),
+    /** Now playing's layout, visualiser and queue panel (on this device; Wave 2 §4). */
+    val nowPlaying: NowPlayingPrefs = NowPlayingPrefs(),
 )
 
 /** This phone's stream level by network: as sent on Wi-Fi, Opus 160 on mobile data. */
@@ -125,6 +127,9 @@ interface SettingsStore {
     suspend fun removeRecentSearch(term: String) {}
 
     suspend fun clearRecentSearches() {}
+
+    /** Now playing's layout, visualiser and queue panel. */
+    suspend fun setNowPlayingPrefs(prefs: NowPlayingPrefs) {}
 }
 
 /** A user name fit to remember as the offline owner. */
@@ -155,7 +160,22 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
                 albumGrid = it[LIB_GRID] ?: true,
             ).sanitised(),
             recentSearches = RecentSearches.decode(it[RECENT_SEARCHES]),
+            nowPlaying = NowPlayingPrefs(
+                layout = enumOr(it[NP_LAYOUT], NowPlayingLayout.ART),
+                visualiser = it[NP_VISUALISER] ?: false,
+                visualStyle = enumOr(it[NP_STYLE], VisualStyle.BARS),
+                queuePanel = it[NP_QUEUE_PANEL] ?: true,
+            ),
         )
+    }
+
+    override suspend fun setNowPlayingPrefs(prefs: NowPlayingPrefs) {
+        store.edit { e ->
+            e[NP_LAYOUT] = prefs.layout.name
+            e[NP_VISUALISER] = prefs.visualiser
+            e[NP_STYLE] = prefs.visualStyle.name
+            e[NP_QUEUE_PANEL] = prefs.queuePanel
+        }
     }
 
     override suspend fun setLibraryPrefs(prefs: LibraryPrefs) {
@@ -273,6 +293,10 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         val LIB_SORT = stringPreferencesKey("library_album_sort")
         val LIB_GRID = booleanPreferencesKey("library_album_grid")
         val RECENT_SEARCHES = stringPreferencesKey("recent_searches")
+        val NP_LAYOUT = stringPreferencesKey("now_playing_layout")
+        val NP_VISUALISER = booleanPreferencesKey("now_playing_visualiser")
+        val NP_STYLE = stringPreferencesKey("now_playing_visual_style")
+        val NP_QUEUE_PANEL = booleanPreferencesKey("now_playing_queue_panel")
         val DL_WIFI = stringPreferencesKey("downloads_wifi_format")
         val DL_MOBILE = stringPreferencesKey("downloads_mobile_format")
         val DL_WIFI_ONLY = booleanPreferencesKey("downloads_wifi_only")
