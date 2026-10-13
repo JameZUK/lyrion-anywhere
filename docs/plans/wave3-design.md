@@ -93,7 +93,7 @@ Agreed with the owner on 2026-10-13:
 
 ## 2. Rolling cache (part 2)
 
-**Status:** design, not started. Phase A waits for spike S1.
+**Status:** design agreed on 2026-10-13 (see the decisions at the end). Phase A starts with spike S1.
 
 Investigation written up on 2026-10-13, for the Android player (D14: the phone is a real LMS player). The web player is unchanged. iOS takes the same design when its app is built.
 
@@ -388,7 +388,15 @@ Phase A comes to about 3 weeks, Phase B about 1.5–2 weeks and Phase C about 1 
 
 ### Open questions for the owner
 
-Asked on 2026-10-13; answers to be recorded here.
+**Decided by the owner on 2026-10-13:**
+1. **Download permission:** yes. The replay cache needs it. Without it, only the current and next track are spooled, and they are deleted after playing.
+2. **Mobile data:** read-ahead is on by default on mobile data, at every level including Original, with the 20 s wait.
+3. **Grace and recovery:** the gateway's maximum is 10 min. After a gap longer than the grace, the app restarts the same track at the same position on the new session.
+4. **Cache size and label:** 1 GB by default. "From cache" shows in the signal path.
+5. **Recently played offline:** no.
+6. **Phase C:** yes, built after Phase B.
+
+The questions as asked:
 
 1. **Download permission and the replay cache:** should the cache (Phase B) need the download permission? An admin who turned downloads off may not expect copies kept on the device. My suggestion is yes. Without the permission, only the current and next track are spooled, and they are deleted after playing.
 2. **Data on mobile data:** is reading ahead acceptable on mobile data by default (about 5 MB wasted per early skip at High), and is the 20 s wait before fetching the next track right? At Original on mobile data, should read-ahead stay on?
