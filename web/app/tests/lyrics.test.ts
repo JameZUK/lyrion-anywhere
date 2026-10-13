@@ -1,6 +1,6 @@
 // Lyrics (wave 1 §9): the gateway's answer checked as untrusted input, the current line by
 // position, fetching once per track, and the view: the Lyrics button, the peek, tap to seek,
-// and the setting that hides the peek.
+// and the setting that hides the peek (wide windows), and the pager's Lyrics page (phones).
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { lineAt, loadPeek, lyricsPath, sanitiseLyrics, savePeek, MAX_LINES, MAX_LINE_CHARS } from '$lib/lyrics/lyrics';
@@ -230,6 +230,8 @@ describe('LyricsState', () => {
 });
 
 describe('Now playing', () => {
+	/** Wide windows have the Lyrics button and the peek; phones have the pager's Lyrics page. */
+	let wide = true;
 	class NoObserver {
 		observe() {}
 		unobserve() {}
@@ -238,6 +240,7 @@ describe('Now playing', () => {
 	beforeAll(() => {
 		vi.stubGlobal('IntersectionObserver', NoObserver);
 		vi.stubGlobal('ResizeObserver', NoObserver);
+		vi.stubGlobal('matchMedia', (q: string) => ({ matches: q.includes('min-width') ? wide : false, addEventListener() {}, removeEventListener() {} }));
 		HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) {
 			this.setAttribute('open', '');
 		};
@@ -249,6 +252,7 @@ describe('Now playing', () => {
 
 	let answers: Record<string, { status: number; body: unknown }> = {};
 	beforeEach(() => {
+		wide = true;
 		lyrics.reset();
 		lyrics.setPeek(true);
 		fake.app.seeks.length = 0;
@@ -328,5 +332,35 @@ describe('Now playing', () => {
 		expect(r.container.querySelector('[data-lyrics-peek]')!.textContent).toContain('<img');
 		expect((globalThis as Record<string, unknown>).pwned).toBeUndefined();
 		r.unmount();
+	});
+
+	test('phones: the pager’s Lyrics page shows them; tapping a line seeks; hostile text stays text', async () => {
+		wide = false;
+		const r = render(NowPlaying);
+		await tick();
+		await fireEvent.click(r.getByRole('tab', { name: 'Lyrics' }));
+		const page = r.container.querySelector('[data-page-panel="lyrics"]')!;
+		const lines = await waitFor(() => {
+			const l = [...page.querySelectorAll<HTMLButtonElement>('button.line')];
+			expect(l).toHaveLength(3);
+			return l;
+		});
+		expect(lines.map((b) => b.textContent)).toEqual(['First line', 'Second line', '♪']);
+		await fireEvent.click(lines[1]!);
+		expect(fake.app.seeks).toEqual([12.5]);
+		// No peek and no separate Lyrics button on phones.
+		expect(r.container.querySelector('[data-lyrics-peek]')).toBeNull();
+		expect(r.container.querySelector('[data-lyrics-button]')).toBeNull();
+		r.unmount();
+
+		answers['/v1/lyrics/track/9'] = { status: 200, body: { source: 'tags', synced: true, lines: [{ t: 0, text: '<img src=x onerror="globalThis.pwned=1">' }] } };
+		lyrics.reset();
+		const h = render(NowPlaying);
+		await tick();
+		await fireEvent.keyDown(document.body, { key: '2' });
+		await waitFor(() => expect(h.container.querySelector('[data-page-panel="lyrics"] button.line')?.textContent).toContain('<img'));
+		expect(h.container.querySelector('img[src="x"]')).toBeNull();
+		expect((globalThis as Record<string, unknown>).pwned).toBeUndefined();
+		h.unmount();
 	});
 });

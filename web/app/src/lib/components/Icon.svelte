@@ -58,6 +58,7 @@
 		filter: 'M4 5h16l-6 7.5V19l-4-2v-4.5z',
 		keyboard: 'M3 6.5h18v11H3zM6.5 10h.01M10 10h.01M13.5 10h.01M17 10h.01M7.5 14h9',
 		stop: 'M6.5 6.5h11v11h-11z',
+		signal: 'M3 12h4l2-6 4 12 2-6h6',
 	};
 	const SOLID = new Set(['play', 'pause', 'next', 'prev', 'stop']);
 

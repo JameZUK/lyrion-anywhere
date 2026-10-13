@@ -2,6 +2,9 @@
 	// Now playing's Info layout (docs/plans/wave2-design.md §4.2): the quality badge, the
 	// signal path behind a "Signal path" disclosure (closed until asked for, like the sheet
 	// the badge opens), the track's credits as links, its rating and an "Up next" card.
+	// `compact` (phones, where it is a page of the pager): just the quality and the credits;
+	// the rating and Up next are on the screen already, and the signal path opens from the
+	// quality badge, never here.
 	import { app } from '$lib/state/app.svelte';
 	import { isRemote } from '$lib/lms/format';
 	import { badgeText, quality } from '$lib/lms/quality';
@@ -9,6 +12,8 @@
 	import SignalPathView from './SignalPathView.svelte';
 	import TrackCredits from './TrackCredits.svelte';
 	import UpNext from './UpNext.svelte';
+
+	let { compact = false }: { compact?: boolean } = $props();
 
 	const track = $derived(app.now?.playlist_loop?.[0]);
 	const badge = $derived(quality(track));
@@ -26,21 +31,25 @@
 		<section aria-labelledby="np-info-quality">
 			<h3 id="np-info-quality">Quality</h3>
 			{#if badge}<p class="badge" class:hires={badge.hiRes}>{badgeText(badge)}</p>{/if}
-			<button class="disclose" aria-expanded={pathOpen} aria-controls={pathId} onclick={() => (pathOpen = !pathOpen)} data-signal-path-toggle>
-				<span class="chev" class:open={pathOpen} aria-hidden="true">›</span>Signal path
-			</button>
-			<div id={pathId} hidden={!pathOpen}>
-				{#if pathOpen}<SignalPathView />{/if}
-			</div>
+			{#if !compact}
+				<button class="disclose" aria-expanded={pathOpen} aria-controls={pathId} onclick={() => (pathOpen = !pathOpen)} data-signal-path-toggle>
+					<span class="chev" class:open={pathOpen} aria-hidden="true">›</span>Signal path
+				</button>
+				<div id={pathId} hidden={!pathOpen}>
+					{#if pathOpen}<SignalPathView />{/if}
+				</div>
+			{/if}
 		</section>
 		{#if libraryId !== null}
-			<section aria-labelledby="np-info-rating">
-				<h3 id="np-info-rating">Rating</h3>
-				<RatingControl track={libraryId} />
-			</section>
+			{#if !compact}
+				<section aria-labelledby="np-info-rating">
+					<h3 id="np-info-rating">Rating</h3>
+					<RatingControl track={libraryId} />
+				</section>
+			{/if}
 			<TrackCredits track={libraryId} />
 		{/if}
-		<UpNext />
+		{#if !compact}<UpNext />{/if}
 	{/if}
 </div>
 

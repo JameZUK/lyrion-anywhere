@@ -5,7 +5,8 @@
 	import { ratings } from '$lib/state/ratings';
 	import { haptics } from '$lib/haptics/haptics.svelte';
 
-	let { track, size = 22 }: { track: number | null | undefined; size?: number } = $props();
+	// `compact`: narrower stars (36 × 44 px each, side by side), to share a row with a title.
+	let { track, size = 22, compact = false }: { track: number | null | undefined; size?: number; compact?: boolean } = $props();
 	const uid = $props.id();
 
 	$effect(() => {
@@ -64,6 +65,7 @@
 		<div
 			class="stars"
 			class:own
+			class:compact
 			role="slider"
 			tabindex="0"
 			aria-label="Your rating"
@@ -114,6 +116,9 @@
 		cursor: pointer;
 		color: var(--fg-muted);
 		line-height: 0;
+	}
+	.compact .star {
+		min-width: 36px;
 	}
 	.outline {
 		fill: none;

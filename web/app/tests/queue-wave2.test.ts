@@ -276,14 +276,14 @@ test('Now playing: the Queue button and a swipe up over the cover open the peek'
 	await fireEvent.click(doc.querySelector('dialog [aria-label="Close"]')!);
 	await settle();
 	expect(doc.querySelector('[data-peek="now"]')).toBeNull();
-	const art = r.container.querySelector('[data-peek-area]')!;
+	const art = r.container.querySelector('[data-pager]')!;
 	pointer(art, 'pointerdown', { clientX: 100, clientY: 300, pointerType: 'touch' });
 	pointer(art, 'pointerup', { clientX: 105, clientY: 200, pointerType: 'touch' });
 	await waitFor(() => expect(doc.querySelector('[data-peek="now"]')).not.toBeNull());
 	r.unmount();
 	// A sideways or short movement, or a mouse, doesn't.
 	const s = render(NowPlaying);
-	const art2 = s.container.querySelector('[data-peek-area]')!;
+	const art2 = s.container.querySelector('[data-pager]')!;
 	pointer(art2, 'pointerdown', { clientX: 100, clientY: 300, pointerType: 'touch' });
 	pointer(art2, 'pointerup', { clientX: 250, clientY: 260, pointerType: 'touch' });
 	pointer(art2, 'pointerdown', { clientX: 100, clientY: 300, pointerType: 'mouse' });

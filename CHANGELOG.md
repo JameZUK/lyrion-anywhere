@@ -2,6 +2,24 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Now playing redesigned for phones (web)
+
+Phones and narrow windows (up to 840 px wide) get a new Now playing in which nothing is squashed. Tablets and desktops (over 840 px) keep their layout.
+
+- **One screen, no scrolling:** the page is exactly the visible height (100dvh) above the tab bar. Only the hero grows or shrinks; the cover stays square and shrinks to fit. At 360 × 640 the transport and every action stay fully on screen. Below 600 px tall, Up next makes room for the cover. A phone on its side (under 460 px tall) scrolls inside the column, never the page.
+- **Top row:** Close (back to the previous page, or Home), a **Playing on …** chip that opens the player picker, and **⋮**. The ⋮ sheet holds this track's menu, Car mode, Alarms, All rooms, Signal path and Visualiser style.
+- **Hero pager:** Cover, Lyrics and Track info replace the Art/Lyrics/Info segmented control. Move between them by swiping (touch, pen or mouse), with ← and → on the pager, or with the dots underneath (a tab list with the usual tab keys). The 1, 2 and 3 keys still work, and a swipe up over the cover still peeks at the queue. Lyrics and track info scroll inside their own page. A page's content is made when it is first shown, and hidden pages are inert. Under reduced motion the pager doesn't slide.
+- **Under the hero:** the title on one line (ellipsis) with the rating beside it. Under that, artist · album and the quality badge, which opens the signal path; the signal path is never shown inline on phones. Then the waveform seek bar with times, the transport (shuffle Off → Tracks → Albums, previous, a large play/pause, next, repeat) and Up next on one compact line (✕ to remove, with Undo).
+- **Four actions:** Sleep (shows the time left when set), Queue, Visualiser and Volume.
+  - **Visualiser** is one button. A tap switches it on or off (going to the cover). A long press, a right-click or Shift+F10 opens the style chooser. A swipe across the visualiser changes the style (over Glow, or with it off, a swipe moves the pager). The style's name shows briefly and is read out. It is hidden for a remote player, and disabled with an explanation under reduced motion.
+  - **Volume** opens a small popover with a vertical slider, labelled "Volume on <player>". It sets the volume of the player in use: another player's LMS volume, or this browser's own when it is the player, as the slider did. When the device's own buttons set the level (iPhone, iPad), the popover says so instead. Escape or a tap outside closes it, and focus returns to the button.
+- **Removed on phones:** the separate visualiser style button, the full-width volume row, the car, alarms, lyrics and More buttons (now in ⋮ or the pager), and the lyric peek line.
+- **Tests:**
+  - Component tests for the layout's order (and what is gone), the top row, the ⋮ sheet (and focus returning to it), the pager (dots as tabs tied to their panels, arrow keys on tabs and pager, swipes by touch and mouse, a right-button drag ignored, a swipe over a visualiser versus Glow, content made on first view, no sliding under reduced motion), the Visualiser button (tap, the read-out name and its timeout, long press without a toggle, a short press, right-click, Shift+F10, Switch off, a remote player, reduced motion, a stale long press not swallowing a later tap) and the Volume popover (a remote player versus this browser, Escape, a tap outside, clamped values).
+  - Unit tests for the pager gestures and keys, including junk input.
+  - Node tests on the CSS: no page scroll, 100dvh, only the hero flexible, a square cover, a height budget at 360 × 640 that leaves at least 120 px of cover, and 44 px targets.
+  - Updated the existing Now playing, lyrics, queue and volume tests for both layouts.
+
 ## 2026-10-13: Now playing tidy-up, four tabs and a new Glow (web)
 
 - **Signal path on demand:** Now playing no longer shows the signal path all the time. The quality badge (e.g. "FLAC 16/44.1") still opens it in a sheet, and the Info layout keeps it folded behind a "Signal path" disclosure button. Nothing is lost.

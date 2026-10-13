@@ -1,7 +1,8 @@
-// Wave 2 part 3 on Now playing: the Art, Lyrics and Info layouts (segmented control, keys 1–3,
-// sideways swipes), wide windows (pane beside the art, queue pinned on the right), and the
-// visualiser's controls (only when this browser is the player, off under reduced motion,
-// decorative, watching the player only while shown).
+// Wave 2 part 3 on Now playing: the Art, Lyrics and Info layouts (the segmented control in wide
+// windows, the pager on phones, keys 1–3, sideways swipes), wide windows (pane beside the art,
+// queue pinned on the right), and the visualiser's controls (only when this browser is the
+// player, off under reduced motion, decorative, watching the player only while shown). The
+// phone layout's own controls are in now-playing-phone.test.ts.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
 import type { PlayerStatus } from '$lib/lms/types';
@@ -80,7 +81,9 @@ beforeEach(() => {
 });
 
 const layoutButtons = (c: Element) => [...c.querySelectorAll<HTMLButtonElement>('[data-layout-button]')];
-const pressed = (c: Element) => layoutButtons(c).find((b) => b.getAttribute('aria-pressed') === 'true')?.dataset.layoutButton;
+/** The layout shown: the segmented control's choice (wide), or the pager's page (phones). */
+const pressed = (c: Element) =>
+	layoutButtons(c).find((b) => b.getAttribute('aria-pressed') === 'true')?.dataset.layoutButton ?? c.querySelector<HTMLElement>('[data-pager]')?.dataset.page;
 
 function pointer(el: Element, type: string, init: PointerEventInit) {
 	el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'touch', ...init }));
@@ -92,7 +95,8 @@ function swipe(el: Element, dx: number, dy = 0) {
 }
 
 describe('layouts', () => {
-	test('a labelled segmented control picks Art, Lyrics or Info, remembered on this device', async () => {
+	test('wide windows: a labelled segmented control picks Art, Lyrics or Info, remembered on this device', async () => {
+		width = 1300;
 		const r = render(NowPlaying);
 		await tick();
 		const group = r.container.querySelector('[data-layouts]')!;
@@ -112,35 +116,37 @@ describe('layouts', () => {
 		await tick();
 		await fireEvent.keyDown(document.body, { key: '2' });
 		expect(pressed(r.container)).toBe('lyrics');
-		expect(r.container.querySelector('[data-lyrics-pane]')).not.toBeNull();
+		expect(r.container.querySelector('[data-page-panel="lyrics"] [data-lyrics-pane]')).not.toBeNull();
 		await fireEvent.keyDown(document.body, { key: '3' });
 		expect(pressed(r.container)).toBe('info');
 		await fireEvent.keyDown(document.body, { key: '1', ctrlKey: true });
 		expect(pressed(r.container)).toBe('info');
-		const volume = r.container.querySelector<HTMLInputElement>('input[type=range]')!;
-		await fireEvent.keyDown(volume, { key: '1' });
+		const seek = r.container.querySelector<HTMLInputElement>('input[type=range]')!;
+		await fireEvent.keyDown(seek, { key: '1' });
 		expect(pressed(r.container)).toBe('info');
 		await fireEvent.keyDown(document.body, { key: '1' });
 		expect(pressed(r.container)).toBe('art');
 		r.unmount();
 	});
 
-	test('a sideways swipe on the art area moves between layouts; a swipe up still peeks at the queue', async () => {
+	test('a sideways swipe on the pager moves between layouts; a swipe up still peeks at the queue', async () => {
 		const r = render(NowPlaying);
 		await tick();
-		const area = r.container.querySelector('[data-peek-area]')!;
+		const area = r.container.querySelector('[data-pager]')!;
 		swipe(area, -100);
 		expect(pressed(r.container)).toBe('lyrics');
-		// The lyrics take the art's place (narrow window): a swipe there goes on to Info.
-		swipe(r.container.querySelector('[data-peek-area]')!, -100);
+		// A swipe over the lyrics goes on to Info.
+		swipe(r.container.querySelector('[data-page-panel="lyrics"]')!, -100);
 		expect(pressed(r.container)).toBe('info');
-		swipe(r.container.querySelector('[data-peek-area]')!, 100);
-		swipe(r.container.querySelector('[data-peek-area]')!, 100);
+		swipe(area, -100);
+		expect(pressed(r.container)).toBe('info'); // the last page
+		swipe(area, 100);
+		swipe(area, 100);
 		expect(pressed(r.container)).toBe('art');
 		// Too short, or mostly vertical: not a layout swipe.
-		swipe(r.container.querySelector('[data-peek-area]')!, -30);
+		swipe(area, -30);
 		expect(pressed(r.container)).toBe('art');
-		swipe(r.container.querySelector('[data-peek-area]')!, 10, -100);
+		swipe(area, 10, -100);
 		expect(pressed(r.container)).toBe('art');
 		await waitFor(() => expect(document.querySelector('[data-full-queue]')).not.toBeNull());
 		r.unmount();
@@ -158,7 +164,8 @@ describe('layouts', () => {
 		r.unmount();
 	});
 
-	test('Info: quality, the signal path on demand, rating, credits and Up next', async () => {
+	test('Info (wide): quality, the signal path on demand, rating, credits and Up next', async () => {
+		width = 1300;
 		fake.handler.rpc = async (_p, cmd) => (cmd[0] === 'titles' ? { titles_loop: [{ id: 11, composer: 'A Composer', composer_ids: '7' }] } : {});
 		const r = render(NowPlaying);
 		await tick();
@@ -179,6 +186,24 @@ describe('layouts', () => {
 		// Up next and the rating move into the pane rather than appearing twice.
 		expect(r.container.querySelectorAll('[data-up-next]')).toHaveLength(1);
 		expect(fake.calls.some((c) => c.cmd[0] === 'titles' && c.cmd.includes('track_id:11'))).toBe(true);
+		r.unmount();
+	});
+
+	test('Track info (phones): quality and credits; no signal path inline, and nothing twice', async () => {
+		fake.handler.rpc = async (_p, cmd) => (cmd[0] === 'titles' ? { titles_loop: [{ id: 11, composer: 'A Composer', composer_ids: '7' }] } : {});
+		const r = render(NowPlaying);
+		await tick();
+		// Not asked for until the page is shown.
+		expect(fake.calls.some((c) => c.cmd[0] === 'titles')).toBe(false);
+		await fireEvent.keyDown(document.body, { key: '3' });
+		const pane = r.container.querySelector('[data-page-panel="info"] [data-info-pane]')!;
+		expect(pane.textContent).toContain('FLAC 16/44.1');
+		expect(pane.querySelector('[data-signal-path-toggle]')).toBeNull();
+		expect(r.container.querySelector('[data-signal-path]')).toBeNull();
+		// The rating and Up next stay where they always are, once each.
+		expect(pane.querySelector('[data-rating-stars], [data-rating-heart]')).toBeNull();
+		expect(r.container.querySelectorAll('[data-up-next]')).toHaveLength(1);
+		await waitFor(() => expect(fake.calls.some((c) => c.cmd[0] === 'titles' && c.cmd.includes('track_id:11'))).toBe(true));
 		r.unmount();
 	});
 
@@ -214,7 +239,33 @@ describe('layouts', () => {
 });
 
 describe('visualiser', () => {
-	test('off by default; the toggle and style button are labelled and remembered', async () => {
+	test('phones: off by default; one button switches it, its chooser picks the style, remembered', async () => {
+		const r = render(NowPlaying);
+		await tick();
+		expect(r.container.querySelector('[data-visualiser]')).toBeNull();
+		const btn = r.container.querySelector<HTMLButtonElement>('[data-visualiser-button]')!;
+		expect(btn.getAttribute('aria-label')).toBe('Visualiser');
+		expect(btn.getAttribute('aria-pressed')).toBe('false');
+		// One button only: no separate style button, toggle or volume row on phones.
+		expect(r.container.querySelector('[data-visualiser-style]')).toBeNull();
+		expect(r.container.querySelector('[data-visualiser-toggle]')).toBeNull();
+		await fireEvent.click(btn);
+		expect(btn.getAttribute('aria-pressed')).toBe('true');
+		expect(btn.getAttribute('aria-label')).toBe('Visualiser: Bars');
+		const vis = r.container.querySelector('[data-visualiser]')!;
+		expect(vis.getAttribute('aria-hidden')).toBe('true');
+		expect(vis.getAttribute('data-visualiser')).toBe('bars');
+		expect(device.visualWatchers).toBe(1);
+		await fireEvent.contextMenu(btn);
+		await fireEvent.click(document.querySelector('[data-style-choice="scope"]')!);
+		expect(r.container.querySelector('[data-visualiser]')!.getAttribute('data-visualiser')).toBe('scope');
+		expect(JSON.parse(localStorage.getItem(NOW_PLAYING_KEY)!)).toMatchObject({ visualiser: true, style: 'scope' });
+		r.unmount();
+		expect(device.visualWatchers).toBe(0);
+	});
+
+	test('wide windows: off by default; the toggle and style button are labelled and remembered', async () => {
+		width = 1300;
 		const r = render(NowPlaying);
 		await tick();
 		expect(r.container.querySelector('[data-visualiser]')).toBeNull();
@@ -358,7 +409,7 @@ describe('visualiser', () => {
 		await tick();
 		expect(r.container.querySelector('[data-visualiser]')).toBeNull();
 		expect(device.visualWatchers).toBe(0);
-		const toggle = r.container.querySelector<HTMLButtonElement>('[data-visualiser-toggle]')!;
+		const toggle = r.container.querySelector<HTMLButtonElement>('[data-visualiser-button]')!;
 		expect(toggle.disabled).toBe(true);
 		expect(toggle.getAttribute('aria-label')).toMatch(/reduced motion/);
 		expect(r.container.querySelector('[data-visualiser-style]')).toBeNull();
@@ -371,6 +422,7 @@ describe('visualiser', () => {
 		const r = render(NowPlaying);
 		await tick();
 		expect(r.container.querySelector('[data-visualiser]')).toBeNull();
+		expect(r.container.querySelector('[data-visualiser-button]')).toBeNull();
 		expect(r.container.querySelector('[data-visualiser-toggle]')).toBeNull();
 		expect(r.container.querySelector('[data-ambient]')).not.toBeNull();
 		expect(device.visualWatchers).toBe(0);
@@ -388,7 +440,8 @@ describe('visualiser', () => {
 	});
 });
 
-test('car mode opens from a named button on Now playing (Wave 2 §5.1)', () => {
+test('car mode opens from a named button on Now playing (Wave 2 §5.1)', async () => {
+	width = 1300;
 	const r = render(NowPlaying);
 	const link = r.getByRole('link', { name: 'Car mode' });
 	expect(link.getAttribute('href')).toBe('#/car');
@@ -397,4 +450,12 @@ test('car mode opens from a named button on Now playing (Wave 2 §5.1)', () => {
 	const none = render(NowPlaying);
 	expect(none.queryByRole('link', { name: 'Car mode' })).toBeNull();
 	none.unmount();
+});
+
+test('car mode, on phones: in the ⋮ menu', async () => {
+	const r = render(NowPlaying);
+	expect(r.queryByRole('link', { name: /Car mode/ })).toBeNull();
+	await fireEvent.click(r.getByRole('button', { name: 'More options' }));
+	expect(r.getByRole('link', { name: /Car mode/ }).getAttribute('href')).toBe('#/car');
+	r.unmount();
 });

@@ -421,17 +421,22 @@
 			background: var(--accent-soft);
 			color: var(--accent-soft-fg);
 		}
-		/* The Now playing page has its own controls: no mini bar there. */
+	}
+	/* Phones and narrow windows (Now playing's phone layout, up to 840 px): the page has its
+	   own controls, so no mini bar there… */
+	@media (max-width: 840px) {
 		.barwrap.on-np {
 			display: none;
 		}
-		/* …so no room is kept for it either: the page ends at the tab bar. Banners (a notice,
-		   "tap to turn the sound on") take their room from Now playing, which fills the rest. */
+		/* …so no room is kept for it either: the page is exactly the visible height (100dvh)
+		   and ends at the tab bar. Banners (a notice, "tap to turn the sound on") take their
+		   room from Now playing, which fills the rest and never scrolls the page. */
 		.content.on-np {
 			display: flex;
 			flex-direction: column;
 			height: var(--app-h);
 			padding-bottom: var(--tabs-h);
+			overflow: hidden;
 		}
 	}
 </style>

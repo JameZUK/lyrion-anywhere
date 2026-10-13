@@ -171,6 +171,47 @@ h2 {
 		min-height: 44px;
 	}
 }
+/* Now playing on phones: the bottom row of actions (Sleep, Queue, Visualiser, Volume), each
+   an icon over a short label, at least 52 px tall and a quarter of the row wide. */
+.np-act {
+	display: grid;
+	justify-items: center;
+	align-content: center;
+	gap: 2px;
+	width: 100%;
+	min-width: 44px;
+	min-height: 52px;
+	padding: 4px 2px;
+	border: 0;
+	border-radius: var(--radius-sm);
+	background: transparent;
+	color: var(--fg-muted);
+	font: inherit;
+	font-size: 0.75rem;
+	cursor: pointer;
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-touch-callout: none;
+}
+.np-act:hover {
+	background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.np-act[aria-pressed='true'],
+.np-act.set {
+	color: var(--accent);
+}
+.np-act:disabled {
+	opacity: 0.4;
+	cursor: default;
+	background: transparent;
+}
+.np-act-label {
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-variant-numeric: tabular-nums;
+}
 /* Back, at the top of detail pages (see BackButton). */
 .back-btn {
 	display: inline-flex;

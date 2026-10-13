@@ -1,9 +1,10 @@
 <script lang="ts">
 	// Now playing: large art, track details, full transport. Three layouts (Wave 2 §4.2): Art,
-	// Lyrics and Info, from the segmented control, a sideways swipe on the art area, or the
-	// keys 1, 2 and 3; in wide windows the art stays on the left with lyrics or info beside
-	// it, and the queue can be pinned on the right. The visualiser (§4.1) takes the art's
-	// place while this browser is the player and it is switched on.
+	// Lyrics and Info, from the segmented control or the keys 1, 2 and 3; in wide windows
+	// (over 840 px) the art stays on the left with lyrics or info beside it, and the queue can
+	// be pinned on the right. The visualiser (§4.1) takes the art's place while this browser
+	// is the player and it is switched on. Phones and narrow windows have a layout of their
+	// own (NowPlayingPhone), whose pager shows the same three layouts.
 	import { app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { duration, formatDetails, isRemote, textOf } from '$lib/lms/format';
@@ -41,6 +42,7 @@
 	import { STYLE_LABELS, nextStyle } from '$lib/visual/draw';
 	import { isThisDevice } from '$lib/player/outputs';
 	import { haptics } from '$lib/haptics/haptics.svelte';
+	import NowPlayingPhone from '$lib/components/NowPlayingPhone.svelte';
 
 	let showMore = $state(false);
 	let showSleep = $state(false);
@@ -172,6 +174,9 @@
 
 <svelte:window {onkeydown} />
 
+{#if !wide}
+	<NowPlayingPhone {reduce} />
+{:else}
 <section class="np page" class:wide class:has-side={!!side} class:has-queue={queueSide} bind:this={section} data-layout={layout}>
 	<Ambient path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 120)} />
 	<div class="bar">
@@ -378,6 +383,7 @@
 		{#if showLyrics}<LyricsView {title} onclose={() => (showLyrics = false)} />{/if}
 	</div>
 </section>
+{/if}
 
 <style>
 	/* Wide screens: cover on the left; player, actions and details on the right. */
@@ -712,171 +718,5 @@
 		width: 2.5ch;
 		font-size: 0.85rem;
 		font-variant-numeric: tabular-nums;
-	}
-
-	/* Phones: one column that fills the screen above the tab bar without scrolling. The
-	   player and actions sit at the top; the cover takes the height the details and
-	   controls leave (up to the full width), and everything below it is centred. */
-	@media (max-width: 760px) {
-		.np {
-			display: flex;
-			flex-direction: column;
-			flex: 1 1 0;
-			height: calc(var(--app-h) - var(--tabs-h));
-			min-height: 0;
-			padding: max(0.75rem, env(safe-area-inset-top)) 1.25rem 1rem;
-			overflow: hidden;
-		}
-		.bar {
-			flex: none;
-			max-width: none;
-			margin-bottom: 1rem;
-		}
-		.modes {
-			flex: none;
-			max-width: none;
-			justify-content: center;
-			margin-bottom: 0.6rem;
-		}
-		.act:not(.set) {
-			padding: 0.5em;
-			border-radius: 50%;
-		}
-		.act:not(.set) .label {
-			position: absolute;
-			width: 1px;
-			height: 1px;
-			overflow: hidden;
-			clip: rect(0 0 0 0);
-		}
-		.act.set {
-			padding: 0.4em 0.75em;
-			border-radius: 999px;
-		}
-		.art-wrap {
-			flex: 1 1 0;
-			min-height: 120px;
-			max-width: none;
-			display: grid;
-			place-items: center;
-			container-type: size;
-		}
-		.art-box {
-			width: min(100cqw, 100cqh);
-			box-shadow: 0 24px 48px -24px rgb(0 0 0 / 50%);
-		}
-		.art-wrap.pane-stage {
-			display: flex;
-			place-items: stretch;
-			max-height: none;
-		}
-		.art-wrap.pane-stage .pane {
-			width: 100%;
-			height: 100%;
-		}
-		.info {
-			flex: none;
-			max-width: none;
-			margin-top: 1.25rem;
-			gap: 0.3rem;
-			text-align: center;
-		}
-		.title {
-			font-size: clamp(1.35rem, 6vw, 1.75rem);
-			display: -webkit-box;
-			-webkit-line-clamp: 2;
-			line-clamp: 2;
-			-webkit-box-orient: vertical;
-			overflow: hidden;
-		}
-		.artist,
-		.album,
-		.details {
-			white-space: nowrap;
-			overflow: hidden;
-			text-overflow: ellipsis;
-		}
-		.progress {
-			margin-top: 0.9rem;
-		}
-		.transport {
-			max-width: 400px;
-			width: 100%;
-			justify-self: center;
-			margin: 0.35rem 0 0.5rem;
-		}
-		.volrow {
-			max-width: 400px;
-			width: 100%;
-			justify-self: center;
-		}
-	}
-	/* Short phone screens (e.g. 360 × 640): everything has to fit above the tab bar with
-	   room left for the cover. Drop the quality line, put the album on the artist line, one
-	   line of title, smaller transport, and tighter spacing. */
-	@media (max-width: 760px) and (max-height: 700px) {
-		.np {
-			padding-top: max(0.5rem, env(safe-area-inset-top));
-			padding-bottom: 0.5rem;
-		}
-		.bar {
-			margin-bottom: 0.5rem;
-		}
-		.modes {
-			margin-bottom: 0.3rem;
-		}
-		.details,
-		.album {
-			display: none;
-		}
-		.album-inline {
-			display: inline;
-		}
-		.title {
-			-webkit-line-clamp: 1;
-			line-clamp: 1;
-		}
-		.info {
-			margin-top: 0.6rem;
-			gap: 0.15rem;
-		}
-		.rating {
-			margin-top: 0;
-		}
-		.progress {
-			margin-top: 0.4rem;
-		}
-		.transport {
-			margin: 0.15rem 0 0.25rem;
-		}
-		.big {
-			width: 46px;
-			height: 46px;
-		}
-		.play {
-			width: 56px;
-			height: 56px;
-		}
-		.art-wrap {
-			min-height: 64px;
-		}
-	}
-	/* Very short: the lyric line gives way to the cover. */
-	@media (max-width: 760px) and (max-height: 660px) {
-		.peek {
-			display: none;
-		}
-	}
-	/* Very short screens (landscape phones): let the page scroll rather than squash. */
-	@media (max-width: 760px) and (max-height: 520px) {
-		.np {
-			flex: none;
-			height: auto;
-			overflow: visible;
-		}
-		.art-wrap {
-			flex: none;
-			height: 50vh;
-		}
 	}
 </style>

@@ -159,14 +159,16 @@ describe('Now playing', () => {
 		r.unmount();
 	});
 
-	test('a running timer shows the time left, and one tap turns it off', async () => {
+	test('a running timer shows the time left on Sleep, and its sheet turns it off', async () => {
 		fake.app.now = status({ will_sleep_in: 1620 });
 		const r = render(NowPlaying);
 		await tick();
 		const moon = r.container.querySelector('[data-sleep-button]')!;
 		expect(moon.getAttribute('aria-label')).toBe('Sleep timer: stops in 27 min');
 		expect(moon.textContent).toContain('27 min');
-		await fireEvent.click(r.container.querySelector('[data-sleep-cancel]')!);
+		expect(moon.classList.contains('set')).toBe(true);
+		await fireEvent.click(moon);
+		await fireEvent.click(await waitFor(() => r.container.querySelector('[data-sleep-off]')!));
 		expect(fake.app.sleepCalls).toEqual([{ choice: 'off', scope: null }]);
 		r.unmount();
 	});
