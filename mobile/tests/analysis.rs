@@ -190,6 +190,7 @@ async fn play_levelled(file: Vec<u8>, in_library: bool) -> (Vec<f32>, Option<Sig
             max_sample_rate: 192_000,
             cache_dir: None,
             read_ahead: true,
+            stream_cache_bytes: 0,
             dsp: DspSettings {
                 enabled: true,
                 levelling: Levelling::Track,

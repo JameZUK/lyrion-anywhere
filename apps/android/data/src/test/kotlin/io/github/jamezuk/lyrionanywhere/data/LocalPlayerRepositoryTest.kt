@@ -65,6 +65,8 @@ private class MemSettings : SettingsStore {
 
     override suspend fun setReadAhead(readAhead: ReadAheadSettings) = state.update { it.copy(readAhead = readAhead) }
 
+    override suspend fun setReplayCacheBytes(bytes: Long) = state.update { it.copy(replayCacheBytes = ReplayCache.sanitise(bytes)) }
+
     override suspend fun setLibrary(id: String?) = state.update { it.copy(libraryId = id) }
 
     override suspend fun setDefaultPlayer(choice: io.github.jamezuk.lyrionanywhere.data.DefaultPlayer, playerId: String?) =
@@ -79,6 +81,7 @@ private class FakeHandle : LocalPlayerHandle {
 
     override fun start(observer: LocalPlayerObserver) {
         calls += "start"
+        cacheSizesAtStart = cacheSizes.size
         qualitiesAtStart = qualities.size
         readAheadsAtStart = readAheads.size
         this.observer = observer
@@ -150,6 +153,14 @@ private class FakeHandle : LocalPlayerHandle {
         networks += available
     }
 
+    /** Replay-cache sizes set, in order, and how many came before start. */
+    val cacheSizes = mutableListOf<Long>()
+    var cacheSizesAtStart: Int? = null
+
+    override fun setStreamCacheBytes(bytes: Long) {
+        cacheSizes += bytes
+    }
+
     override fun close() {
         closed = true
     }
@@ -169,13 +180,65 @@ class LocalPlayerRepositoryTest {
     /** Folders whose spools were cleared, in order. */
     private val cleared = mutableListOf<String>()
 
+    /** The replay cache as the seams see it, and the folders it was emptied in. */
+    private var cacheUsage = ReplayCacheUsage(0, 0)
+    private val cacheCleared = mutableListOf<String>()
+
     private fun TestScope.repo(): RustLocalPlayerRepository {
         val d = UnconfinedTestDispatcher(testScheduler)
         val scope = CoroutineScope(backgroundScope.coroutineContext + d)
         return RustLocalPlayerRepository(sessions, settings, scope, d, factory = {
             failWith?.let { throw it }
             FakeHandle().also { handles += it }
-        }, nowMs = { clockMs }, network = network, cacheDir = "/data/app/stream-cache", clearSpools = { cleared += it })
+        }, nowMs = { clockMs }, network = network, cacheDir = "/data/app/stream-cache", clearSpools = { cleared += it },
+            cacheTotals = { _, _ -> cacheUsage },
+            cacheClear = { _, dir ->
+                cacheCleared += dir
+                cacheUsage = ReplayCacheUsage(0, 0)
+            })
+    }
+
+    /** The replay cache's size reaches a new engine before it starts, and a running one at once. */
+    @Test
+    fun theReplayCacheSizeReachesTheEngine() = runTest {
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        assertEquals(listOf(ReplayCache.GB), handles[0].cacheSizes)
+        assertEquals(1, handles[0].cacheSizesAtStart)
+        settings.setReplayCacheBytes(5 * ReplayCache.GB)
+        assertEquals(5 * ReplayCache.GB, handles[0].cacheSizes.last())
+        settings.setReplayCacheBytes(0)
+        assertEquals(0L, handles[0].cacheSizes.last())
+        assertEquals("the engine empties it itself", emptyList<String>(), cacheCleared)
+        // A new engine starts with the size wanted now.
+        r.setEnabled(false)
+        r.setEnabled(true)
+        assertEquals(listOf(0L), handles.last().cacheSizes)
+    }
+
+    /** "Off" empties the cache even with this phone's player off; usage and "Clear" go through the seams. */
+    @Test
+    fun theReplayCacheCanBeReadClearedAndTurnedOffWithoutAPlayer() = runTest {
+        val r = repo()
+        // Signed out: nothing to show, nothing to clear.
+        r.refreshReplayCache()
+        assertNull(r.state.value.replayCache)
+        r.clearReplayCache()
+        assertEquals(emptyList<String>(), cacheCleared)
+        sessions.value = Session(NoHandle)
+        cacheUsage = ReplayCacheUsage(700L * 1024 * 1024, 9)
+        r.refreshReplayCache()
+        assertEquals(ReplayCacheUsage(700L * 1024 * 1024, 9), r.state.value.replayCache)
+        r.clearReplayCache()
+        assertEquals(listOf("/data/app/stream-cache"), cacheCleared)
+        assertEquals(ReplayCacheUsage(0, 0), r.state.value.replayCache)
+        // Off, with no player running: emptied at once.
+        cacheUsage = ReplayCacheUsage(1, 1)
+        settings.setReplayCacheBytes(0)
+        assertEquals(2, cacheCleared.size)
+        assertEquals(ReplayCacheUsage(0, 0), r.state.value.replayCache)
+        assertTrue(handles.isEmpty())
     }
 
     /** Gaps in the signal: read ahead when the setting is on, and on mobile data only if allowed there. */

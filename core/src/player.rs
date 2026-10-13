@@ -116,6 +116,8 @@ pub enum Action {
         /// 1-based count of every `strm s` received on this connection, including ones
         /// refused locally, so it matches the gateway's numbering exactly.
         stream_number: u64,
+        /// The `strm` format byte (`f` FLAC, `u` Ogg Opus, `m` MP3, …).
+        format: u8,
     },
     /// Abandon the current HTTP stream.
     CloseStream,
@@ -1150,6 +1152,7 @@ impl Player {
             port: s.server_port,
             request: s.request,
             stream_number: seq as u64 + 1,
+            format: s.format,
         });
         self.send_stat(*b"STMc", 0);
         if matches!(self.output, OutputState::Stopped) {

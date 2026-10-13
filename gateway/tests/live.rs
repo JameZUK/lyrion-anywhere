@@ -655,6 +655,37 @@ async fn real_ffmpeg_makes_opus_the_players_can_decode() {
     );
 }
 
+/// Rolling cache S3: the replay cache matches a stream by its first bytes, so two encodes
+/// of the same track at the same level must be the same bytes (no random Ogg serial, no
+/// version strings).
+#[tokio::test]
+async fn real_ffmpeg_encodes_the_same_track_to_the_same_bytes() {
+    let Some(ff) = system_ffmpeg() else {
+        assert!(
+            std::env::var("ANYWHERE_REQUIRE_FFMPEG").is_err(),
+            "ffmpeg with libopus is required here"
+        );
+        eprintln!("skipping: no ffmpeg with libopus");
+        return;
+    };
+    let mut h = harness_with(|c| c.ffmpeg = Some(ff)).await;
+    let file = library_flac(0, 200);
+    *h.lms.stream_body.lock().unwrap() = Some(Arc::new(file.clone()));
+    let tok = h.tok_a.clone();
+    let (mut ws, sid, mut lms, strm) = announce(&mut h, auth(&tok, Some("high")), A, b'f').await;
+    assert_eq!(strm[2], b'u');
+    let (first, _) = fetch_all(&h, &sid, 1, &tok).await;
+    assert_eq!(restream(&mut ws, &mut lms, h.mac_a, b'f').await[2], b'u');
+    let (second, _) = fetch_all(&h, &sid, 2, &tok).await;
+    assert!(first.len() > 1000);
+    assert!(first == second, "two encodes of one track differ");
+    // A different track is different bytes (the check above isn't vacuous).
+    *h.lms.stream_body.lock().unwrap() = Some(Arc::new(library_flac(0, 150)));
+    restream(&mut ws, &mut lms, h.mac_a, b'f').await;
+    let (other, _) = fetch_all(&h, &sid, 3, &tok).await;
+    assert!(other != first);
+}
+
 #[tokio::test]
 async fn real_ffmpeg_ends_a_corrupt_stream_with_an_error() {
     let Some(ff) = system_ffmpeg() else {

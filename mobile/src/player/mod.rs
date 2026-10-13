@@ -26,6 +26,7 @@ pub mod ring;
 pub mod transitions;
 
 mod audio;
+mod cache;
 mod engine;
 mod local;
 mod offline;
@@ -82,6 +83,11 @@ pub struct LocalPlayerConfig {
     /// the next one arrives long before the current one ends (needs `cache_dir`).
     #[uniffi(default = true)]
     pub read_ahead: bool,
+    /// The replay cache's size in bytes (0: off): streams received whole are kept, so a
+    /// replay or a skip back plays from the phone after its first bytes. Needs `cache_dir`,
+    /// and is used only while the account may download.
+    #[uniffi(default = 0)]
+    pub stream_cache_bytes: u64,
 }
 
 /// The player's link to LMS.
@@ -138,6 +144,9 @@ pub struct LocalPlayerStatus {
     /// Read-ahead is in force (the setting is on and there is somewhere to spool).
     #[uniffi(default = false)]
     pub read_ahead: bool,
+    /// The track heard now is playing from the replay cache.
+    #[uniffi(default = false)]
+    pub from_cache: bool,
 }
 
 impl Default for LocalPlayerStatus {
@@ -159,6 +168,7 @@ impl Default for LocalPlayerStatus {
             cushion_ms: 0,
             resume_window_ms: 0,
             read_ahead: false,
+            from_cache: false,
         }
     }
 }
@@ -214,6 +224,10 @@ pub struct SignalPathInfo {
     pub verdict: SignalVerdict,
     /// One line, e.g. "FLAC 96 kHz/24-bit → Decode (lossless) → AAudio 96 kHz/float".
     pub summary: String,
+    /// The audio comes from the replay cache on the phone (its first bytes came from the
+    /// network, the rest from the cache).
+    #[uniffi(default = false)]
+    pub from_cache: bool,
 }
 
 /// What the app knows about the output route (from `AudioManager`). Whether the route is
@@ -326,6 +340,60 @@ pub struct LocalPlayer {
     ready_after_ms: Mutex<Option<u64>>,
 }
 
+/// How much the replay cache holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, uniffi::Record)]
+pub struct StreamCacheTotals {
+    pub bytes: u64,
+    pub count: u64,
+}
+
+/// The replay cache's scope for a session: its server and user, as for downloads.
+fn cache_scope(session: &Session) -> Option<String> {
+    let who = session.current()?;
+    Some(crate::offline::scope_name(
+        &session.server().url(),
+        &who.user.username,
+    ))
+}
+
+/// The signed-in user's replay cache under `cache_dir` (`None`: nobody is signed in, or
+/// the folder can't be used).
+fn session_cache(
+    session: &Session,
+    cache_dir: &str,
+    cap: Option<u64>,
+) -> Option<cache::SharedCache> {
+    let scope = cache_scope(session)?;
+    cache::shared(cache_dir, &scope, cap).ok()
+}
+
+/// How much the signed-in user's replay cache under `cache_dir` holds (the folder passed as
+/// [`LocalPlayerConfig::cache_dir`]); zero when there is none. Only totals: never a path or
+/// what is in it.
+#[uniffi::export]
+pub fn stream_cache_totals(session: Arc<Session>, cache_dir: String) -> StreamCacheTotals {
+    session_cache(&session, &cache_dir, None)
+        .map(|c| {
+            let t = c.lock().unwrap().totals();
+            StreamCacheTotals {
+                bytes: t.bytes,
+                count: t.count,
+            }
+        })
+        .unwrap_or_default()
+}
+
+/// Empty the signed-in user's replay cache under `cache_dir` (Settings' "Clear"). A track
+/// playing from it carries on to its end.
+#[uniffi::export]
+pub fn clear_stream_cache(session: Arc<Session>, cache_dir: String) -> Result<(), ApiError> {
+    spool::validate_root(&cache_dir)?;
+    if let Some(c) = session_cache(&session, &cache_dir, None) {
+        c.lock().unwrap().clear();
+    }
+    Ok(())
+}
+
 pub(crate) fn make_output(
     kind: OutputKind,
     pull: &Arc<Mutex<PullSlot>>,
@@ -359,6 +427,43 @@ impl LocalPlayer {
             network: Mutex::new(true),
             ready_after_ms: Mutex::new(None),
         })
+    }
+
+    /// The replay cache's size in bytes (0: off, which empties it); see
+    /// [`LocalPlayerConfig::stream_cache_bytes`]. Applies at once.
+    pub fn set_stream_cache_bytes(&self, bytes: u64) {
+        let bytes = bytes.min(cache::MAX_CAP);
+        let dir = {
+            let mut c = self.config.lock().unwrap();
+            c.stream_cache_bytes = bytes;
+            c.cache_dir.clone()
+        };
+        match self.run.lock().unwrap().as_ref() {
+            Some(r) => {
+                let _ = r.cmds.send(Cmd::SetCacheBytes(bytes));
+            }
+            None => {
+                // Not playing: keep to the new size now (off empties it).
+                if let Some(d) = dir {
+                    session_cache(&self.session, &d, Some(bytes));
+                }
+            }
+        }
+    }
+
+    /// How much the replay cache holds (zero without a cache folder).
+    pub fn stream_cache_totals(&self) -> StreamCacheTotals {
+        match self.config.lock().unwrap().cache_dir.clone() {
+            Some(d) => stream_cache_totals(self.session.clone(), d),
+            None => StreamCacheTotals::default(),
+        }
+    }
+
+    /// Empty the replay cache.
+    pub fn clear_stream_cache(&self) {
+        if let Some(d) = self.config.lock().unwrap().cache_dir.clone() {
+            let _ = clear_stream_cache(self.session.clone(), d);
+        }
     }
 
     /// Read the next track ahead (see [`LocalPlayerConfig::read_ahead`]); takes effect
@@ -467,12 +572,21 @@ impl LocalPlayer {
             let who = self.session.current()?;
             let scope =
                 crate::offline::scope_name(&self.session.server().url(), &who.user.username);
-            // Leftovers of a crash, or of another server or user, go first.
+            // Leftovers of a crash, or of another server or user, go first: every spool,
+            // and every other user's or server's replay cache.
             if let Ok(r) = spool::validate_root(root) {
                 let _ = spool::remove_all(&r);
+                let _ = cache::remove_all_except(&r, Some(&scope));
             }
             SpoolDir::open(root, &scope).ok()
         });
+        let stream_cache = match (&spool_dir, cfg.cache_dir.as_deref()) {
+            (Some(_), Some(root)) => {
+                session_cache(&self.session, root, Some(cfg.stream_cache_bytes))
+                    .map(|c| (c, cfg.stream_cache_bytes))
+            }
+            _ => None,
+        };
         let engine = Engine::new(
             self.session.core().clone(),
             shared.clone(),
@@ -482,6 +596,7 @@ impl LocalPlayer {
             *self.quality.lock().unwrap(),
             spool_dir,
             cfg.read_ahead,
+            stream_cache,
             cmd_rx,
         )?;
         let thread = std::thread::Builder::new()
@@ -737,15 +852,18 @@ pub(crate) fn read_int(pull: Option<Arc<Mutex<PullSlot>>>, max_frames: u32) -> P
     }
 }
 
-/// Delete every stream spool kept under `cache_dir` (the folder passed as
-/// [`LocalPlayerConfig::cache_dir`]), for every server and user: at sign-out, when the
-/// device was revoked, or on a change of server. Downloads are left alone. A running player
-/// deletes its own spools as it goes; this is for when none is running.
+/// Delete every stream spool and the whole replay cache kept under `cache_dir` (the folder
+/// passed as [`LocalPlayerConfig::cache_dir`]), for every server and user: at sign-out, when
+/// the device was revoked, or on a change of server. Downloads are left alone. A running
+/// player deletes its own spools as it goes; this is for when none is running.
 #[uniffi::export]
 pub fn remove_stream_spools(cache_dir: String) -> Result<(), ApiError> {
     let root = spool::validate_root(&cache_dir)?;
-    spool::remove_all(&root)
-        .map_err(|e| ApiError::invalid(format!("could not clear the stream cache: {}", e.kind())))
+    let failed = |e: std::io::Error| {
+        ApiError::invalid(format!("could not clear the stream cache: {}", e.kind()))
+    };
+    spool::remove_all(&root).map_err(failed)?;
+    cache::remove_all_except(&root, None).map_err(failed)
 }
 
 impl LocalPlayer {
@@ -825,6 +943,7 @@ pub(crate) fn sanitise_config(c: LocalPlayerConfig) -> LocalPlayerConfig {
         // A folder that isn't acceptable means no spooling, never a failure to play.
         cache_dir: c.cache_dir.filter(|d| spool::validate_root(d).is_ok()),
         read_ahead: c.read_ahead,
+        stream_cache_bytes: c.stream_cache_bytes.min(cache::MAX_CAP),
     }
 }
 
@@ -866,7 +985,9 @@ mod tests {
             },
             cache_dir: Some("relative/cache".into()),
             read_ahead: true,
+            stream_cache_bytes: u64::MAX,
         });
+        assert_eq!(c.stream_cache_bytes, cache::MAX_CAP, "the size is bounded");
         assert_eq!(c.max_sample_rate, 44_100);
         assert_eq!(c.dsp.preamp_db, 12.0);
         assert_eq!(c.cache_dir, None, "an unacceptable folder means no spool");
@@ -877,6 +998,7 @@ mod tests {
                 dsp: DspSettings::default(),
                 cache_dir: Some(bad.into()),
                 read_ahead: true,
+                stream_cache_bytes: 0,
             });
             assert_eq!(c.cache_dir, None, "{bad}");
         }
@@ -887,8 +1009,10 @@ mod tests {
             dsp: DspSettings::default(),
             cache_dir: Some(root.to_string_lossy().into_owned()),
             read_ahead: false,
+            stream_cache_bytes: 1 << 30,
         });
         assert!(c.cache_dir.is_some() && !c.read_ahead);
+        assert_eq!(c.stream_cache_bytes, 1 << 30);
     }
 
     #[test]

@@ -172,6 +172,7 @@ pub(crate) fn describe(i: &Inputs) -> SignalPathInfo {
         not_bit_perfect: reasons,
         verdict,
         summary: path.summary(),
+        from_cache: false,
     }
 }
 

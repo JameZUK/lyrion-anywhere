@@ -117,6 +117,7 @@ impl Rig {
                 max_sample_rate: 192_000,
                 cache_dir: None,
                 read_ahead: true,
+                stream_cache_bytes: 0,
                 dsp,
             },
         );

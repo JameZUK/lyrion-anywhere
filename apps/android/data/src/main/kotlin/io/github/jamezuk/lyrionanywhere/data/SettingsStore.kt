@@ -46,6 +46,8 @@ data class AppSettings(
     val streaming: StreamingSettings = StreamingSettings(),
     /** Gaps in the signal: reading the next track ahead (rolling cache, Phase A). */
     val readAhead: ReadAheadSettings = ReadAheadSettings(),
+    /** The replay cache's size in bytes (rolling cache, Phase B; 0 is off). */
+    val replayCacheBytes: Long = ReplayCache.DEFAULT_BYTES,
     /** The Library page's chip, album order and view (Wave 2 §3.2). */
     val library: LibraryPrefs = LibraryPrefs(),
     /** Recent searches, newest first (on this device only; Wave 2 §3.3). */
@@ -122,6 +124,23 @@ data class ReadAheadSettings(
     fun effective(metered: Boolean): Boolean = enabled && (!metered || onMobileData)
 }
 
+/**
+ * The replay cache (docs/plans/wave3-design.md, "Rolling cache", Phase B): tracks this
+ * phone streamed whole are kept, so a replay or a skip back plays from the phone. Kept only
+ * while the account may download (the owner's decision 1); 1 GB by default (decision 4).
+ */
+object ReplayCache {
+    const val MB = 1024L * 1024
+    const val GB = 1024L * MB
+    const val DEFAULT_BYTES = 1 * GB
+
+    /** Off, 500 MB, 1 GB, 2 GB, 5 GB. */
+    val CHOICES = listOf(0L, 500 * MB, 1 * GB, 2 * GB, 5 * GB)
+
+    /** A stored or chosen size, checked: one of [CHOICES], else the default. */
+    fun sanitise(bytes: Long?): Long = if (bytes != null && bytes in CHOICES) bytes else DEFAULT_BYTES
+}
+
 /** The sleep timer's fade-out: 30 s by default, at most 2 minutes. */
 const val SLEEP_FADE_DEFAULT = 30
 const val SLEEP_FADE_MAX = 120
@@ -185,6 +204,9 @@ interface SettingsStore {
     /** Reading the next track ahead, and whether on mobile data too. */
     suspend fun setReadAhead(readAhead: ReadAheadSettings) {}
 
+    /** The replay cache's size (one of [ReplayCache.CHOICES]; anything else is the default). */
+    suspend fun setReplayCacheBytes(bytes: Long) {}
+
     /** The Library page's chip, album order and view (checked before they are kept). */
     suspend fun setLibraryPrefs(prefs: LibraryPrefs) {}
 
@@ -228,6 +250,7 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
                 enabled = it[READ_AHEAD] ?: true,
                 onMobileData = it[READ_AHEAD_MOBILE] ?: true,
             ),
+            replayCacheBytes = ReplayCache.sanitise(it[REPLAY_CACHE]),
             library = LibraryPrefs(
                 chip = it[LIB_CHIP]?.let { c -> LibraryChip.entries.firstOrNull { e -> e.name == c } },
                 albumOrder = LibraryAlbumOrder.fromStored(it[LIB_SORT]),
@@ -317,6 +340,10 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         }
     }
 
+    override suspend fun setReplayCacheBytes(bytes: Long) {
+        store.edit { p -> p[REPLAY_CACHE] = ReplayCache.sanitise(bytes) }
+    }
+
     override suspend fun setLyricsPeek(on: Boolean) {
         store.edit { p -> p[LYRICS_PEEK] = on }
     }
@@ -398,6 +425,7 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         val STREAM_MOBILE = stringPreferencesKey("stream_quality_mobile")
         val READ_AHEAD = booleanPreferencesKey("read_ahead")
         val READ_AHEAD_MOBILE = booleanPreferencesKey("read_ahead_mobile_data")
+        val REPLAY_CACHE = longPreferencesKey("replay_cache_bytes")
         val LIB_CHIP = stringPreferencesKey("library_chip")
         val LIB_SORT = stringPreferencesKey("library_album_sort")
         val LIB_GRID = booleanPreferencesKey("library_album_grid")

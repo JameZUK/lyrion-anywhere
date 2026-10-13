@@ -845,6 +845,9 @@ pub struct Proxy {
     freeze: tokio::sync::broadcast::Sender<()>,
     pub accepted: Arc<AtomicUsize>,
     down: Arc<std::sync::atomic::AtomicBool>,
+    /// Bytes passed from the gateway to the client, when counting (see
+    /// [`Proxy::start_counting`]): what a phone would download.
+    pub down_bytes: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Copy `from` to `to`, replacing `find` with `replace` (same length) within each piece.
@@ -852,6 +855,7 @@ async fn copy_rewriting(
     mut from: tokio::net::tcp::OwnedReadHalf,
     mut to: tokio::net::tcp::OwnedWriteHalf,
     rewrite: Option<(Vec<u8>, Vec<u8>)>,
+    counter: Option<Arc<std::sync::atomic::AtomicU64>>,
 ) {
     let mut buf = vec![0u8; 64 * 1024];
     loop {
@@ -873,6 +877,9 @@ async fn copy_rewriting(
         if to.write_all(&buf[..n]).await.is_err() {
             return;
         }
+        if let Some(c) = &counter {
+            c.fetch_add(n as u64, Ordering::SeqCst);
+        }
     }
 }
 
@@ -883,7 +890,20 @@ impl Proxy {
 
     /// A proxy that also replaces `find` with `replace` (the same length) in what the
     /// gateway sends: to make it look like an older gateway.
+    /// A proxy that counts the bytes the gateway sends ([`Proxy::down_bytes`]).
+    pub async fn start_counting(target: SocketAddr) -> Proxy {
+        Self::start_with(target, None, true).await
+    }
+
     pub async fn start_rewriting(target: SocketAddr, rewrite: Option<(Vec<u8>, Vec<u8>)>) -> Proxy {
+        Self::start_with(target, rewrite, false).await
+    }
+
+    async fn start_with(
+        target: SocketAddr,
+        rewrite: Option<(Vec<u8>, Vec<u8>)>,
+        count: bool,
+    ) -> Proxy {
         if let Some((a, b)) = &rewrite {
             assert_eq!(a.len(), b.len());
         }
@@ -893,7 +913,9 @@ impl Proxy {
         let (freeze, _) = tokio::sync::broadcast::channel::<()>(4);
         let accepted = Arc::new(AtomicUsize::new(0));
         let down = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let down_bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let (c, f, a, d) = (cut.clone(), freeze.clone(), accepted.clone(), down.clone());
+        let counter = count.then(|| down_bytes.clone());
         tokio::spawn(async move {
             while let Ok((mut client, _)) = listener.accept().await {
                 a.fetch_add(1, Ordering::SeqCst);
@@ -904,16 +926,17 @@ impl Proxy {
                 let mut stop = c.subscribe();
                 let mut frozen = f.subscribe();
                 let rewrite = rewrite.clone();
+                let counter = counter.clone();
                 tokio::spawn(async move {
                     let Ok(mut upstream) = tokio::net::TcpStream::connect(target).await else {
                         return;
                     };
-                    if rewrite.is_some() {
+                    if rewrite.is_some() || counter.is_some() {
                         let (cr, cw) = client.into_split();
                         let (ur, uw) = upstream.into_split();
                         tokio::select! {
-                            _ = copy_rewriting(cr, uw, None) => {}
-                            _ = copy_rewriting(ur, cw, rewrite) => {}
+                            _ = copy_rewriting(cr, uw, None, None) => {}
+                            _ = copy_rewriting(ur, cw, rewrite, counter) => {}
                             _ = stop.recv() => {}
                         }
                         return;
@@ -937,6 +960,7 @@ impl Proxy {
             freeze,
             accepted,
             down,
+            down_bytes,
         }
     }
 

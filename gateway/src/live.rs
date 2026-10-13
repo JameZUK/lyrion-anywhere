@@ -126,6 +126,13 @@ pub fn args(bitrate_k: u32) -> Vec<OsString> {
         "1",
         "-flush_packets",
         "1",
+        // Deterministic output (rolling cache S3): no encoder or muxer version strings and
+        // a fixed Ogg stream serial instead of a random one, so the same track at the same
+        // level is the same bytes every time and a replay can be matched by its first bytes.
+        "-fflags",
+        "+bitexact",
+        "-flags:a",
+        "+bitexact",
         "-f",
         "ogg",
         "pipe:1",
@@ -358,6 +365,10 @@ mod tests {
         assert_eq!(a[pos("-b:a") + 1], "96k");
         assert_eq!(a[pos("-c:a") + 1], "libopus");
         assert_eq!(a[pos("-map_metadata") + 1], "-1");
+        // Deterministic output, as output options (after the input).
+        assert_eq!(a[pos("-fflags") + 1], "+bitexact");
+        assert_eq!(a[pos("-flags:a") + 1], "+bitexact");
+        assert!(pos("-fflags") > pos("-i") && pos("-fflags") < pos("pipe:1"));
         // Bit rates are clamped to something sane whatever is asked.
         let b: Vec<String> = args(100_000)
             .iter()

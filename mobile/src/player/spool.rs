@@ -66,7 +66,7 @@ pub(crate) fn validate_root(root: &str) -> Result<PathBuf, ApiError> {
 }
 
 /// A folder that is ours: create it if missing, and refuse a symlink or a non-folder.
-fn own_dir(path: &Path) -> io::Result<()> {
+pub(crate) fn own_dir(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(m) if m.file_type().is_symlink() || !m.is_dir() => {
             Err(io::Error::new(io::ErrorKind::InvalidInput, "not a folder"))
@@ -188,7 +188,7 @@ impl SpoolDir {
 
 /// `O_NOFOLLOW`: never open a file through a symlink.
 #[cfg(unix)]
-fn libc_nofollow() -> i32 {
+pub(crate) fn libc_nofollow() -> i32 {
     libc::O_NOFOLLOW
 }
 
@@ -203,6 +203,8 @@ struct DiskPart {
     read: u64,
     /// New bytes still go to the file (false once over a cap or after a write error).
     open: bool,
+    /// The file now belongs to the replay cache (`super::cache`): never deleted here.
+    kept: bool,
 }
 
 /// Why a spool can't give the decoder its next bytes.
@@ -228,6 +230,8 @@ pub(crate) struct Spool {
     pub failed: bool,
     /// Whether this spool ever went to disk (for the cushion and tests).
     spooled: bool,
+    /// The replay-cache entry this spool's file became, held in use while it is read.
+    pin: Option<super::cache::Pin>,
 }
 
 impl std::fmt::Debug for Spool {
@@ -255,6 +259,7 @@ impl Spool {
             complete: false,
             failed: false,
             spooled: false,
+            pin: None,
         }
     }
 
@@ -275,6 +280,7 @@ impl Spool {
             len: 0,
             read: 0,
             open: true,
+            kept: false,
         });
         self.spooled = true;
     }
@@ -359,13 +365,35 @@ impl Spool {
         Ok(out)
     }
 
-    /// Delete the file now (the spool is done with).
+    /// The file, when it holds the whole stream: the network stream ended cleanly and
+    /// nothing fell back to memory. Only such a spool may become a replay-cache entry.
+    pub(crate) fn whole_file(&self) -> Option<&Path> {
+        let d = self.disk.as_ref()?;
+        (self.complete && !self.failed && d.open && !d.kept && d.len > 0 && d.len == self.received)
+            .then_some(d.path.as_path())
+    }
+
+    /// The file was moved into the replay cache (now at `path`): it is still read from
+    /// there, held in use by `pin`, and no longer deleted by the spool.
+    pub(crate) fn kept_by_cache(&mut self, path: PathBuf, pin: super::cache::Pin) {
+        if let Some(d) = &mut self.disk {
+            d.path = path;
+            d.kept = true;
+            self.pin = Some(pin);
+        }
+    }
+
+    /// Delete the file now (the spool is done with), unless the replay cache kept it.
     pub(crate) fn remove(&mut self) {
         if let Some(d) = self.disk.take() {
             drop(d.writer);
-            let _ = fs::remove_file(&d.path);
+            if !d.kept {
+                let _ = fs::remove_file(&d.path);
+            }
         }
         self.mem.clear();
+        // Released last, and never with the cache's lock held (it takes it).
+        self.pin = None;
     }
 }
 
@@ -517,6 +545,28 @@ pub(crate) mod tests {
         want.extend([2u8; 100]);
         want.extend([3u8; 100]);
         assert_eq!(all, want);
+    }
+
+    #[test]
+    fn only_a_whole_clean_stream_on_disk_can_be_kept() {
+        let (_root, d) = dir();
+        let mut s = Spool::create(1, Some(&d), 11);
+        s.write(&[1u8; 1000], 0);
+        assert!(s.whole_file().is_none(), "not finished");
+        s.complete = true;
+        assert!(s.whole_file().is_some());
+        // Failed, or partly in memory: never.
+        s.failed = true;
+        assert!(s.whole_file().is_none());
+        let mut m = Spool::create(2, Some(&d), 12);
+        m.write(&[1u8; 100], MAX_TOTAL_BYTES);
+        m.complete = true;
+        assert!(m.whole_file().is_none(), "fell back to memory");
+        assert!(Spool::memory(3).whole_file().is_none());
+        // Empty: nothing to keep.
+        let mut e = Spool::create(4, Some(&d), 13);
+        e.complete = true;
+        assert!(e.whole_file().is_none());
     }
 
     #[test]

@@ -19,6 +19,9 @@
 //!   fed to the decoder as it wants it, so a gap in the signal is covered by what is
 //!   spooled; in read-ahead mode the next track is fetched long before the current one
 //!   ends (docs/plans/wave3-design.md, "Rolling cache", Phase A);
+//! - streams received whole are kept in the replay cache (`super::cache`, Phase B) when
+//!   the account may download; a stream whose first bytes match a kept one, checked by its
+//!   hash, is played from the phone instead of the rest of the download;
 //! - the resume grace is negotiated (asked for when `/v1/me` offers it), and the app says
 //!   when the phone has no network: reconnecting then waits for it, and starts at once
 //!   when it returns;
@@ -52,6 +55,7 @@ use anywhere_core::player::{
 use anywhere_core::proto::{ClientMsg, format_mac};
 
 use super::audio::{AudioPath, AudioSource, OutputShared, dsp_transitions};
+use super::cache::{self, Digest, Pin, SharedCache, StreamHash};
 use super::clock::mono_ns;
 use super::output::AudioOutput;
 use super::pipeline::{DspSettings, Levelling};
@@ -114,6 +118,8 @@ pub(crate) enum Cmd {
     SetReadAhead(bool),
     /// How much of a track must be heard before read-ahead fetches the next one (ms).
     SetReadyAfter(u64),
+    /// The replay cache's size (bytes; 0: off).
+    SetCacheBytes(u64),
 }
 
 /// Most bytes handed to the decoder per call of the feeder (a tick is 20 ms: 50 MB/s).
@@ -227,6 +233,17 @@ enum Ev {
     },
     StreamEnd {
         id: u64,
+        /// The stream's fingerprint and hash, for the replay cache (when it is in use).
+        digest: Option<StreamDigest>,
+    },
+    /// The rest of stream `id` comes from the replay cache.
+    FromCache {
+        id: u64,
+    },
+    /// Whether the account may download (`/v1/account`; `None`: it couldn't be asked).
+    Downloads {
+        player_gen: u64,
+        allowed: Option<bool>,
     },
     StreamFailed {
         id: u64,
@@ -349,6 +366,15 @@ pub(crate) struct Engine {
     /// the cushion's byte rate).
     fed_total: u64,
     heard_ms: f64,
+    // The replay cache (Phase B).
+    /// This user's cache on this server (`None`: no cache folder).
+    cache: Option<SharedCache>,
+    /// Its size (0: off).
+    cache_bytes: u64,
+    /// The account may download (`None` until known): the cache is used only when it may.
+    downloads_allowed: Option<bool>,
+    /// Streams (by number) whose rest came from the cache, newest last.
+    from_cache: VecDeque<u64>,
     // Sync groups (A6).
     in_sync_group: bool,
     /// A stall in a group waiting for enough audio, since then.
@@ -392,6 +418,7 @@ impl Engine {
         quality: StreamQuality,
         spool_dir: Option<SpoolDir>,
         read_ahead: bool,
+        cache: Option<(SharedCache, u64)>,
         cmds: mpsc::UnboundedReceiver<Cmd>,
     ) -> Result<Engine, ApiError> {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -409,6 +436,10 @@ impl Engine {
             spools: VecDeque::new(),
             read_ahead,
             ready_after_ms: None,
+            cache_bytes: cache.as_ref().map_or(0, |(_, b)| *b),
+            cache: cache.map(|(c, _)| c),
+            downloads_allowed: None,
+            from_cache: VecDeque::new(),
             fed_total: 0,
             heard_ms: 0.0,
             in_sync_group: false,
@@ -492,6 +523,7 @@ impl Engine {
 
     pub(crate) async fn run(mut self) {
         self.learn_features();
+        self.learn_downloads();
         // The first connection waits (briefly) to know whether to ask for a longer grace.
         self.connect_at = Some(Instant::now() + FEATURES_WAIT);
         let mut tick = tokio::time::interval(TICK);
@@ -518,6 +550,12 @@ impl Engine {
                     Some(Cmd::SetReadyAfter(ms)) => {
                         self.ready_after_ms = Some(ms);
                         self.apply_read_ahead();
+                    }
+                    Some(Cmd::SetCacheBytes(b)) => {
+                        self.cache_bytes = b;
+                        if let Some(c) = &self.cache {
+                            c.lock().unwrap().set_cap(b);
+                        }
                     }
                     // The app let go of the player, or asked to stop.
                     Some(Cmd::Stop) | None => self.shutdown("stopped").await,
@@ -578,6 +616,34 @@ impl Engine {
                 .map(|v| protocol::parse_features(&v));
             let _ = tx.send(Ev::Features(features));
         });
+    }
+
+    /// Ask whether the account may download: the replay cache needs it (the owner's
+    /// decision 1). Asked when the player starts and with every new session.
+    fn learn_downloads(&self) {
+        if self.cache.is_none() {
+            return;
+        }
+        let (core, tx, player_gen) = (self.core.clone(), self.tx.clone(), self.player_gen);
+        tokio::spawn(async move {
+            let allowed = core
+                .get_json("v1/account")
+                .await
+                .ok()
+                .map(|v| v["downloads"]["enabled"].as_bool() == Some(true));
+            let _ = tx.send(Ev::Downloads {
+                player_gen,
+                allowed,
+            });
+        });
+    }
+
+    /// The replay cache, when it is in use: a cache folder, a size, the download
+    /// permission, and spooling to disk.
+    fn active_cache(&self) -> Option<&SharedCache> {
+        self.cache.as_ref().filter(|_| {
+            self.cache_bytes > 0 && self.downloads_allowed == Some(true) && self.spool_dir.is_some()
+        })
     }
 
     /// Read-ahead is in force with the setting on and somewhere to spool.
@@ -719,6 +785,7 @@ impl Engine {
             self.received = 0;
             self.fed_total = 0;
             self.heard_ms = 0.0;
+            self.from_cache.clear();
             self.in_sync_group = false;
             self.stall_wait = None;
             if let Some(t) = self.rejoin.take() {
@@ -755,6 +822,8 @@ impl Engine {
             self.last_trim = p.trim_count();
             self.player = Some(p);
             self.apply_read_ahead();
+            // The permission may have changed since the last session.
+            self.learn_downloads();
             self.mac = Some(g.mac);
             self.name = g.name;
             if let Some(point) = restart_at {
@@ -801,6 +870,12 @@ impl Engine {
                 self.shared.out.ring.set_hold(true);
                 self.player = None;
                 self.drop_spools();
+                if code == Some(1008)
+                    && let Some(c) = &self.cache
+                {
+                    // Refused or revoked: nothing of this account's streams stays.
+                    c.lock().unwrap().clear();
+                }
                 self.connection = PlayerConnection::Stopped {
                     reason: if reason.is_empty() {
                         "refused".into()
@@ -950,19 +1025,24 @@ impl Engine {
                 {
                     p.stream_bytes_received(got);
                 }
+                // Acknowledged as received from the network (not what the cache supplies).
                 if (n != self.last_ack.0 || got - self.last_ack.1 >= protocol::ACK_EVERY)
                     && self.open
+                    && !self.from_cache.contains(&n)
                 {
                     self.last_ack = (n, got);
                     self.send_ws(Out::Text(protocol::ack_message(n, got)));
                 }
                 self.feed();
             }
-            Ev::StreamEnd { id } if self.is_current(id) => {
+            Ev::StreamEnd { id, digest } if self.is_current(id) => {
                 let n = self.stream.take().map(|s| s.n);
                 let now = self.now_ms();
                 if let Some(spool) = self.spools.iter_mut().find(|s| Some(s.n) == n) {
                     spool.complete = true;
+                }
+                if let (Some(n), Some(d)) = (n, digest) {
+                    self.keep_in_cache(n, d);
                 }
                 // The whole stream is in (`DSCO`; in read-ahead mode `STMd` may go now).
                 if let Some(p) = &mut self.player
@@ -972,6 +1052,30 @@ impl Engine {
                 }
                 self.run_actions();
                 self.feed();
+            }
+            Ev::FromCache { id } if self.is_current(id) => {
+                if let Some(n) = self.stream.as_ref().map(|s| s.n) {
+                    self.from_cache.retain(|x| *x != n);
+                    self.from_cache.push_back(n);
+                    while self.from_cache.len() > POSITIONS_KEEP {
+                        self.from_cache.pop_front();
+                    }
+                }
+                self.publish_signal(true);
+            }
+            Ev::Downloads {
+                player_gen,
+                allowed,
+            } if player_gen == self.player_gen => {
+                if allowed.is_some() {
+                    self.downloads_allowed = allowed;
+                }
+                if allowed == Some(false)
+                    && let Some(c) = &self.cache
+                {
+                    // No download permission: no copies are kept on the phone.
+                    c.lock().unwrap().clear();
+                }
             }
             Ev::StreamFailed { id } if self.is_current(id) => {
                 let n = self.stream.take().map(|s| s.n);
@@ -1287,8 +1391,12 @@ impl Engine {
                 Action::Send(b) => self.send_ws(Out::Binary(b)),
                 // The gateway fetches exactly what LMS asked for; we fetch it from the
                 // gateway by number.
-                Action::OpenStream { stream_number, .. } => {
-                    self.open_stream(stream_number);
+                Action::OpenStream {
+                    stream_number,
+                    format,
+                    ..
+                } => {
+                    self.open_stream(stream_number, format);
                     self.look_up_loudness(stream_number);
                 }
                 Action::CloseStream => self.close_stream(),
@@ -1297,7 +1405,7 @@ impl Engine {
         self.reconcile_spools();
     }
 
-    fn open_stream(&mut self, n: u64) {
+    fn open_stream(&mut self, n: u64, format: u8) {
         self.close_stream();
         let Some((session, _)) = self.session.clone() else {
             return;
@@ -1320,6 +1428,18 @@ impl Engine {
             want: want.clone(),
             budget: protocol::stream_retry_budget(self.grace),
             net: self.net_tx.subscribe(),
+            // Every stream is fingerprinted while a cache may be used (whether to keep it
+            // is decided when it ends); it is looked up only while the cache is in use.
+            cache: self
+                .cache
+                .as_ref()
+                .filter(|_| self.cache_bytes > 0 && self.spool_dir.is_some())
+                .map(|c| CacheJob {
+                    cache: c.clone(),
+                    level: cache::level_byte(self.quality),
+                    format,
+                    look_up: self.active_cache().is_some(),
+                }),
         }));
         self.last_ack = (n, 0);
         self.stream = Some(StreamTask {
@@ -1337,6 +1457,42 @@ impl Engine {
     }
 
     // --- Spools -------------------------------------------------------------------------
+
+    /// Stream `n` ended cleanly: move its spool into the replay cache, if the whole stream
+    /// is in the file and the cache is in use. Its file is then read from the cache.
+    fn keep_in_cache(&mut self, n: u64, d: StreamDigest) {
+        let Some(c) = self.active_cache().cloned() else {
+            return;
+        };
+        let track = self
+            .positions
+            .iter()
+            .find(|(seq, _, _)| u64::from(*seq) + 1 == n)
+            .map(|(_, p, _)| p.track_id);
+        let Some(spool) = self.spools.iter_mut().find(|s| s.n == n) else {
+            return;
+        };
+        let Some(from) = spool.whole_file().map(std::path::Path::to_path_buf) else {
+            return;
+        };
+        if spool.received != d.len {
+            return;
+        }
+        let kept = c.lock().unwrap().adopt(
+            &from,
+            cache::NewEntry {
+                fp: d.fp,
+                level: d.level,
+                format: d.format,
+                len: d.len,
+                sha256: d.sha256,
+                track,
+            },
+        );
+        if let Some(to) = kept {
+            spool.kept_by_cache(to, Pin::adopted(&c, d.fp));
+        }
+    }
 
     /// Keep a spool only for the streams the core still takes (a flush, a partial flush or
     /// a replaced stream drops the others, and their files go).
@@ -1656,7 +1812,16 @@ impl Engine {
             cushion_ms: cushion,
             resume_window_ms: protocol::resume_for(self.grace).as_millis() as u64,
             read_ahead: self.read_ahead && self.spool_dir.is_some(),
+            from_cache: self.hearing_from_cache(),
         }
+    }
+
+    /// The track heard now came from the replay cache.
+    fn hearing_from_cache(&self) -> bool {
+        self.player
+            .as_ref()
+            .and_then(Player::playing_track)
+            .is_some_and(|seq| self.from_cache.contains(&(u64::from(seq) + 1)))
     }
 
     fn publish_status(&mut self, force: bool) {
@@ -1678,7 +1843,10 @@ impl Engine {
 
     fn publish_signal(&mut self, force: bool) {
         let force = force || self.audio.take_signal_dirty();
-        let path = self.player.as_ref().and_then(|p| self.audio.signal_path(p));
+        let mut path = self.player.as_ref().and_then(|p| self.audio.signal_path(p));
+        if let Some(p) = &mut path {
+            p.from_cache = self.hearing_from_cache();
+        }
         if !force && path == self.last_signal {
             return;
         }
@@ -1868,6 +2036,213 @@ struct StreamJob {
     budget: Duration,
     /// Whether the phone has a network.
     net: tokio::sync::watch::Receiver<bool>,
+    /// The replay cache, when it is in use.
+    cache: Option<CacheJob>,
+}
+
+/// What a stream task needs of the replay cache.
+struct CacheJob {
+    cache: SharedCache,
+    /// The stream level ([`cache::level_byte`]) and the `strm` format byte.
+    level: u8,
+    format: u8,
+    /// Look the stream up (the cache is in use now); otherwise only fingerprint it.
+    look_up: bool,
+}
+
+/// A finished stream's fingerprint and hash, for the replay cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StreamDigest {
+    pub fp: Digest,
+    pub sha256: Digest,
+    pub len: u64,
+    pub level: u8,
+    pub format: u8,
+}
+
+/// With something in the cache it could be, a stream's first request asks for only this
+/// much (`?limit=`): enough for the fingerprint after a usual header. On a hit nothing more
+/// is downloaded; on a miss the rest follows with `?offset=` (one more request).
+const PREFIX_BYTES: u64 = cache::FINGERPRINT_BYTES as u64 + 32 * 1024;
+
+/// Most first bytes held while waiting to know a stream's fingerprint window.
+const MAX_HEAD: usize = cache::MAX_HEADER + cache::FINGERPRINT_BYTES + 512 * 1024;
+
+/// Follows a stream as it arrives: its whole hash, and its fingerprint once enough of its
+/// first bytes are in ([`cache::window`]).
+pub(crate) struct Fingerprinter {
+    level: u8,
+    format: u8,
+    /// Every byte so far, until the fingerprint is known (or never will be).
+    head: Option<Vec<u8>>,
+    fp: Option<Digest>,
+    hash: StreamHash,
+    len: u64,
+}
+
+impl Fingerprinter {
+    pub(crate) fn new(level: u8, format: u8) -> Fingerprinter {
+        Fingerprinter {
+            level,
+            format,
+            head: Some(Vec::new()),
+            fp: None,
+            hash: StreamHash::new(),
+            len: 0,
+        }
+    }
+
+    /// Take the next bytes of the stream. True when this made the fingerprint known: the
+    /// moment to look in the cache, with [`Fingerprinter::take_head`].
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> bool {
+        self.hash.update(bytes);
+        self.len += bytes.len() as u64;
+        let Some(head) = &mut self.head else {
+            return false;
+        };
+        head.extend_from_slice(bytes);
+        match cache::window(head, false) {
+            cache::Window::More if head.len() <= MAX_HEAD => false,
+            cache::Window::At(w) => {
+                self.fp = Some(cache::fingerprint(self.level, self.format, &head[..w]));
+                true
+            }
+            // Never matched (a header too long), or too much held without knowing.
+            _ => {
+                self.head = None;
+                false
+            }
+        }
+    }
+
+    /// The bytes received so far (all of them), once the fingerprint is known; held no
+    /// longer after this.
+    pub(crate) fn take_head(&mut self) -> Vec<u8> {
+        self.head.take().unwrap_or_default()
+    }
+
+    pub(crate) fn fingerprint(&self) -> Option<Digest> {
+        self.fp
+    }
+
+    /// The stream ended: its digest (a short stream's fingerprint is the whole stream).
+    pub(crate) fn finish(self) -> Option<StreamDigest> {
+        let fp = match (self.fp, &self.head) {
+            (Some(fp), _) => fp,
+            (None, Some(head)) => match cache::window(head, true) {
+                cache::Window::At(w) => cache::fingerprint(self.level, self.format, &head[..w]),
+                _ => return None,
+            },
+            (None, None) => return None,
+        };
+        Some(StreamDigest {
+            fp,
+            sha256: self.hash.finish(),
+            len: self.len,
+            level: self.level,
+            format: self.format,
+        })
+    }
+}
+
+/// A checked cache entry to play the rest of a stream from.
+struct Hit {
+    file: std::fs::File,
+    entry: cache::Entry,
+    _pin: Pin,
+}
+
+/// Look in the cache for the stream whose first bytes are `received` (fingerprint `fp`).
+/// A hit is used only once the whole file has been read and matches the entry's length
+/// and hash and starts with `received`; a file that doesn't is deleted. `None`: carry on
+/// from the network.
+async fn look_in_cache(job: &CacheJob, fp: Digest, received: Vec<u8>) -> Option<Hit> {
+    let (entry, path) = {
+        let c = job.cache.lock().unwrap();
+        let e = c.lookup(&fp)?;
+        // Nothing to gain from an entry no longer than what has arrived.
+        if e.len <= received.len() as u64 || e.level != job.level || e.format != job.format {
+            return None;
+        }
+        let path = c.path_of(&fp);
+        (e, path)
+    };
+    let pin = Pin::new(&job.cache, fp);
+    let e = entry.clone();
+    let checked = tokio::task::spawn_blocking(move || cache::verify(&path, &e, &received)).await;
+    match checked {
+        Ok(Ok(file)) => Some(Hit {
+            file,
+            entry,
+            _pin: pin,
+        }),
+        _ => {
+            // Corrupt or tampered with: it goes, and the network is used.
+            job.cache.lock().unwrap().remove(&fp);
+            drop(pin);
+            None
+        }
+    }
+}
+
+/// How a response body ended.
+enum BodyEnd {
+    /// The stream ended cleanly.
+    Clean,
+    /// Broken mid-download, or stalled: resume from what was received.
+    Broken,
+    /// The engine is gone.
+    Gone,
+    /// The rest is in the cache.
+    Hit(Hit),
+}
+
+/// Play the rest of stream `id` from a checked cache entry, at the decoder's pace, then
+/// end it as the network would have. The stream's own hash is checked again at the end.
+async fn play_from_cache(
+    hit: Hit,
+    id: u64,
+    tx: &mpsc::UnboundedSender<Ev>,
+    want: &AtomicBool,
+    cache: &CacheJob,
+    mut fpr: Fingerprinter,
+) {
+    use std::io::Read;
+    let Hit {
+        mut file,
+        entry,
+        _pin,
+    } = hit;
+    let _ = tx.send(Ev::FromCache { id });
+    loop {
+        while !want.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let mut buf = vec![0u8; cache::READ_CHUNK];
+        let k = match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(k) => k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        buf.truncate(k);
+        fpr.push(&buf);
+        if tx.send(Ev::StreamData { id, bytes: buf }).is_err() {
+            return;
+        }
+        // Let the engine take each piece before the next (they share a thread).
+        tokio::task::yield_now().await;
+    }
+    let digest = fpr.finish();
+    if digest.is_some_and(|d| d.len == entry.len && d.sha256 == entry.sha256) {
+        cache.cache.lock().unwrap().touch(&entry.fp);
+        let _ = tx.send(Ev::StreamEnd { id, digest });
+    } else {
+        // The file changed under us: what was fed stands, the track ends there, and the
+        // entry goes.
+        cache.cache.lock().unwrap().remove(&entry.fp);
+        let _ = tx.send(Ev::StreamFailed { id });
+    }
 }
 
 /// Before retrying a failed fetch: the backoff, or, with no network, until it comes back
@@ -1887,6 +2262,9 @@ async fn pause_before_retry(
 /// Fetch stream `n` of the session, resuming at the byte offset already delivered after a
 /// network failure or a 5xx, with backoff, for as long as the gateway holds the session
 /// (`budget`, from the first failure in a row); anything else fails the track.
+///
+/// With the replay cache in use, the stream's first bytes are fingerprinted as they
+/// arrive; on a checked hit the download stops and the rest comes from the cache.
 async fn stream_task(job: StreamJob) {
     let StreamJob {
         id,
@@ -1899,12 +2277,21 @@ async fn stream_task(job: StreamJob) {
         want,
         budget,
         mut net,
+        cache,
     } = job;
     let mut got = 0u64;
     let mut headers_seen = false;
     let mut tries = 0u32;
     let mut failing_since: Option<Instant> = None;
     let mut renewed = false;
+    let mut fpr = cache
+        .as_ref()
+        .map(|c| Fingerprinter::new(c.level, c.format));
+    // Ask for the first bytes only when the cache holds something this could be.
+    let mut prefix_end = cache
+        .as_ref()
+        .filter(|c| c.look_up && c.cache.lock().unwrap().holds_any(c.level, c.format))
+        .map(|_| PREFIX_BYTES);
     loop {
         let token = match core.access_token().await {
             Ok(t) => t,
@@ -1914,7 +2301,7 @@ async fn stream_task(job: StreamJob) {
             }
             Err(_) => String::new(), // fails as a network error below and is retried
         };
-        let url = server.stream_url(&session, n, got);
+        let url = server.stream_url(&session, n, got, prefix_end.map(|e| e - got));
         let status = match http.get(url).bearer_auth(&token).send().await {
             Ok(resp) if resp.status().as_u16() == 200 => {
                 if !headers_seen {
@@ -1931,39 +2318,67 @@ async fn stream_task(job: StreamJob) {
                     });
                 }
                 let mut body = resp.into_body();
-                loop {
+                let end = loop {
                     // Back-pressure: stop reading while the core's input is full.
                     while !want.load(Ordering::Acquire) {
                         tokio::time::sleep(Duration::from_millis(20)).await;
                     }
                     match tokio::time::timeout(STREAM_READ_TIMEOUT, body.frame()).await {
                         Ok(Some(Ok(frame))) => {
-                            if let Ok(data) = frame.into_data()
-                                && !data.is_empty()
+                            let Ok(data) = frame.into_data() else {
+                                continue;
+                            };
+                            if data.is_empty() {
+                                continue;
+                            }
+                            got += data.len() as u64;
+                            tries = 0;
+                            failing_since = None;
+                            let known = fpr.as_mut().is_some_and(|f| f.push(&data));
+                            if tx
+                                .send(Ev::StreamData {
+                                    id,
+                                    bytes: data.to_vec(),
+                                })
+                                .is_err()
                             {
-                                got += data.len() as u64;
-                                tries = 0;
-                                failing_since = None;
-                                if tx
-                                    .send(Ev::StreamData {
-                                        id,
-                                        bytes: data.to_vec(),
-                                    })
-                                    .is_err()
-                                {
-                                    return;
-                                }
+                                break BodyEnd::Gone;
+                            }
+                            if known
+                                && let (Some(c), Some(f)) = (&cache, &mut fpr)
+                                && c.look_up
+                                && let Some(fp) = f.fingerprint()
+                                && let Some(hit) = look_in_cache(c, fp, f.take_head()).await
+                            {
+                                break BodyEnd::Hit(hit);
                             }
                         }
-                        Ok(None) => {
-                            let _ = tx.send(Ev::StreamEnd { id });
-                            return;
-                        }
-                        // Broken mid-download, or stalled: resume from `got`.
-                        _ => break,
+                        Ok(None) => break BodyEnd::Clean,
+                        _ => break BodyEnd::Broken,
                     }
+                };
+                // A hit stops the download here; the next `strm` ends the gateway's relay.
+                drop(body);
+                match end {
+                    BodyEnd::Gone => return,
+                    BodyEnd::Clean if prefix_end == Some(got) => {
+                        // The first bytes, and no hit: the rest from the network.
+                        prefix_end = None;
+                        continue;
+                    }
+                    BodyEnd::Clean => {
+                        let digest = fpr.and_then(Fingerprinter::finish);
+                        let _ = tx.send(Ev::StreamEnd { id, digest });
+                        return;
+                    }
+                    BodyEnd::Hit(hit) => {
+                        if let (Some(c), Some(f)) = (&cache, fpr) {
+                            play_from_cache(hit, id, &tx, &want, c, f).await;
+                        }
+                        return;
+                    }
+                    BodyEnd::Broken => 0,
                 }
-                0
             }
             Ok(resp) if resp.status().as_u16() == 401 && !renewed => {
                 // An expired token: renew once and try again straight away.
@@ -2110,6 +2525,78 @@ mod tests {
             assert!(t.elapsed() >= Duration::from_millis(90));
             assert!(t.elapsed() < Duration::from_secs(2));
         });
+    }
+
+    /// Feed `bytes` in `chunk`-sized pieces; the fingerprint, the bytes held when it became
+    /// known, and the final digest.
+    fn run_fingerprinter(
+        bytes: &[u8],
+        chunk: usize,
+        level: u8,
+        format: u8,
+    ) -> (Option<Digest>, usize, Option<StreamDigest>) {
+        let mut f = Fingerprinter::new(level, format);
+        let mut held = 0;
+        for c in bytes.chunks(chunk.max(1)) {
+            if f.push(c) {
+                held = f.take_head().len();
+            }
+        }
+        let fp = f.fingerprint();
+        (fp, held, f.finish())
+    }
+
+    #[test]
+    fn fingerprints_same_different_short_and_seeked_streams() {
+        let track: Vec<u8> = (0..400_000u32).map(|i| (i * 31 % 251) as u8).collect();
+        // The same stream, however it is cut up on the way: the same fingerprint and hash.
+        let (a, held, da) = run_fingerprinter(&track, 16 * 1024, 1, b'u');
+        let (b, _, db) = run_fingerprinter(&track, 7_777, 1, b'u');
+        assert!(a.is_some());
+        assert_eq!(a, b);
+        assert_eq!(da, db);
+        let d = da.unwrap();
+        assert_eq!(d.len, track.len() as u64);
+        assert_eq!((d.level, d.format), (1, b'u'));
+        assert_eq!(Some(d.fp), a);
+        // Known after the first 64 KiB (plus the rest of the piece that crossed it), and
+        // nothing held after that.
+        assert!((cache::FINGERPRINT_BYTES..cache::FINGERPRINT_BYTES + 16 * 1024).contains(&held));
+        // Another stream, another level, another format: different.
+        let mut other = track.clone();
+        other[100] ^= 1;
+        assert_ne!(run_fingerprinter(&other, 16 * 1024, 1, b'u').0, a);
+        assert_ne!(run_fingerprinter(&track, 16 * 1024, 2, b'u').0, a);
+        assert_ne!(run_fingerprinter(&track, 16 * 1024, 1, b'f').0, a);
+        // A change past the window: the same fingerprint, a different hash (which a hit
+        // must match).
+        let mut tail = track.clone();
+        tail[300_000] ^= 1;
+        let (t, _, dt) = run_fingerprinter(&tail, 16 * 1024, 1, b'u');
+        assert_eq!(t, a);
+        assert_ne!(dt.unwrap().sha256, d.sha256);
+        // A short stream: never known while it arrives (nothing to match), but its digest
+        // covers all of it.
+        let short = &track[..10_000];
+        let (s, _, ds) = run_fingerprinter(short, 4096, 1, b'u');
+        assert_eq!(s, None);
+        let ds = ds.unwrap();
+        assert_eq!(ds.len, 10_000);
+        assert_eq!(ds.fp, cache::fingerprint(1, b'u', short));
+        // A stream after a seek starts elsewhere in the track: different.
+        assert_ne!(run_fingerprinter(&track[50_000..], 16 * 1024, 1, b'u').0, a);
+        // An empty stream: a digest of nothing, never a panic.
+        assert_eq!(run_fingerprinter(&[], 1, 0, b'f').2.unwrap().len, 0);
+    }
+
+    #[test]
+    fn a_header_too_long_is_never_matched_but_still_hashed() {
+        let mut flac = b"fLaC".to_vec();
+        flac.extend([0x86, 0x20, 0, 0]); // 2 MiB of metadata
+        flac.extend(vec![0u8; 3 * 1024 * 1024]);
+        let (fp, _, d) = run_fingerprinter(&flac, 64 * 1024, 0, b'f');
+        assert_eq!(fp, None);
+        assert_eq!(d, None, "nothing to keep it under");
     }
 
     #[test]

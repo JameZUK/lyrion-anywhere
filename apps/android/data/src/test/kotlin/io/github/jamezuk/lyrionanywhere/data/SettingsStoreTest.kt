@@ -81,6 +81,25 @@ class SettingsStoreTest {
         assertEquals(StreamingSettings(), DataStoreSettings(s).settings.first().streaming)
     }
 
+    /** The replay cache's size (rolling cache, Phase B): 1 GB by default, kept, and checked. */
+    @Test
+    fun theReplayCacheIs1GbByDefaultSurvivesARestartAndRefusesNonsense() = runBlocking {
+        assertEquals(ReplayCache.GB, DataStoreSettings(store()).settings.first().replayCacheBytes)
+        DataStoreSettings(restart()).setReplayCacheBytes(0)
+        assertEquals(0L, DataStoreSettings(restart()).settings.first().replayCacheBytes)
+        DataStoreSettings(restart()).setReplayCacheBytes(5 * ReplayCache.GB)
+        assertEquals(5 * ReplayCache.GB, DataStoreSettings(restart()).settings.first().replayCacheBytes)
+        // Not one of the choices when written: the default is kept instead.
+        DataStoreSettings(restart()).setReplayCacheBytes(123)
+        assertEquals(ReplayCache.GB, DataStoreSettings(restart()).settings.first().replayCacheBytes)
+        // Stored nonsense (another app version, damage) reads as the default.
+        val s = restart()
+        s.edit { it[androidx.datastore.preferences.core.longPreferencesKey("replay_cache_bytes")] = -5 }
+        assertEquals(ReplayCache.GB, DataStoreSettings(s).settings.first().replayCacheBytes)
+        assertEquals(listOf(0L, 500 * ReplayCache.MB, ReplayCache.GB, 2 * ReplayCache.GB, 5 * ReplayCache.GB), ReplayCache.CHOICES)
+        for (v in listOf(null, -1L, 1L, Long.MAX_VALUE, 10 * ReplayCache.GB)) assertEquals(ReplayCache.GB, ReplayCache.sanitise(v))
+    }
+
     /** Gaps in the signal (rolling cache): reading ahead on, also on mobile data, by default; both kept. */
     @Test
     fun readAheadIsOnByDefaultAndSurvivesARestart() = runBlocking {

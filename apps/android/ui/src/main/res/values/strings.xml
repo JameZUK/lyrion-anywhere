@@ -1011,13 +1011,24 @@
     <string name="sound_player_level_off">Turn on Play on this phone to set its level.</string>
     <!-- Gaps in the signal: reading ahead (rolling cache, Phase A) -->
     <string name="gaps_title">Gaps in the signal</string>
-    <string name="gaps_explain">This phone fetches the next track well before the current one ends, so tunnels, lifts and patchy mobile data don\'t stop the music. What it fetches is kept only until it has played.</string>
+    <string name="gaps_explain">This phone fetches the next track well before the current one ends, so tunnels, lifts and patchy mobile data don\'t stop the music. What it fetches is deleted once it has played, unless the replay cache keeps it.</string>
     <string name="read_ahead">Read ahead the next track</string>
     <string name="read_ahead_detail">Keeps up to a track in hand on this phone</string>
     <string name="read_ahead_mobile">On mobile data too</string>
     <string name="read_ahead_mobile_detail">A track skipped early still uses its data</string>
     <string name="read_ahead_mobile_off">Turn on reading ahead first</string>
     <string name="cushion_ahead">%1$s buffered ahead</string>
+    <!-- The replay cache (rolling cache, Phase B) -->
+    <string name="replay_cache_title">Replay cache</string>
+    <string name="replay_cache_explain">Tracks this phone has streamed in full are kept on it, so playing one again or skipping back uses almost no data. The least recently played go first when it is full.</string>
+    <string name="replay_cache_not_allowed">Your account isn\'t allowed to download, so nothing is kept on this phone: tracks fetched ahead are deleted once they have played.</string>
+    <plurals name="replay_cache_used">
+        <item quantity="one">%1$s for %2$d track</item>
+        <item quantity="other">%1$s for %2$d tracks</item>
+    </plurals>
+    <string name="replay_cache_empty">Nothing kept yet</string>
+    <string name="replay_cache_clear">Clear</string>
+    <string name="stage_from_cache">From cache</string>
     <plurals name="cushion_hours">
         <item quantity="one">%1$d hour</item>
         <item quantity="other">%1$d hours</item>

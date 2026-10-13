@@ -7,7 +7,7 @@ The protocol a client (web app, native app or test CLI) uses to act as an LMS pl
 | Endpoint | Purpose |
 |---|---|
 | `WS /v1/player` | Slimproto tunnel, plus session control |
-| `GET /v1/stream/<session>/<n>[?offset=k]` | Audio for the session's n-th stream |
+| `GET /v1/stream/<session>/<n>[?offset=k][&limit=m]` | Audio for the session's n-th stream |
 
 Requirements for both endpoints:
 - They must be reached over TLS through a trusted reverse proxy. Plain HTTP is accepted only from loopback.
@@ -226,18 +226,21 @@ What the Android player does (`mobile/src/player/engine.rs`), as an example:
 - **What the gateway fetches:** only the request LMS itself put in that `strm`, after checking it is exactly `GET /stream.mp3?player=<this MAC>` on an LMS address.
 - **Ownership:** the upstream LMS connection belongs to the session, not the HTTP request.
   - **Resume:** a broken download resumes with `?offset=k`, where `k` is the number of bytes the client has.
+  - **First bytes only:** `?limit=m` (1 to 16 MiB) sends at most `m` bytes from the offset and then ends the response cleanly; the rest follows with `?offset=`, from the same upstream. A `limit` of 0, above 16 MiB or not a whole number is `400`. Older gateways ignore it and send everything. The phone's replay cache uses it to fetch a stream's first 96 KiB, look them up, and fetch nothing more on a hit.
   - **Supersede:** a newer request for the same stream supersedes an older one.
 - **FLAC artwork is dropped:** for a stream LMS announced as FLAC (`strm` format `f`), the gateway removes PICTURE and PADDING metadata blocks from the start of the stream, so players needn't download embedded artwork (often 50–500 KB) before the first audio frame. Artwork is still served by `/v1/art`.
   - Only the metadata chain changes: the last-block flag moves to the last block kept; STREAMINFO, SEEKTABLE, VORBIS_COMMENT, CUESHEET, APPLICATION blocks and every audio byte are forwarded unchanged, so the decoded audio is bit-identical.
   - The metadata is held (at most 16 MiB and 1024 blocks) until its end has been checked. Anything unexpected sends the stream on exactly as LMS sent it: no `fLaC` marker (e.g. a stream that starts mid-file), a first block that isn't a 34-byte STREAMINFO, a second STREAMINFO, a reserved or invalid block type, a malformed SEEKTABLE length, too much metadata, no frame sync straight after the last block (a lying last-block flag), or the stream ending first.
   - **Offsets** (`?offset=`, acks, the replay window, `416`) count the stream as the client receives it, stripped. The gateway asks LMS for each stream once and strips it once, so every request for it sees the same bytes, and resuming works as for any stream.
   - **STAT:** LMS counts the bytes it sent, so the gateway adds the bytes it removed to `bytes_received` in the client's STATs once the count is past the stripped metadata.
+- **STAT `bytes_received` is clamped** to what the stream's relay has sent the client (then mapped to LMS's count as below). A player that played the rest of a track from its replay cache reports the whole stream, though the relay read only its start; LMS is never told of bytes it didn't send. The next `strm` cancels the half-read relay as usual.
   - `--keep-flac-pictures` turns this off.
 - **Lower-data streams** (docs/plans/streaming-quality.md): when the session's level is `high` or `low` and LMS announces a FLAC stream (`strm` format `f`), the gateway re-encodes it to **Ogg Opus** (160 or 96 kb/s, 48 kHz stereo) on the way through.
   - **What the player sees:** the `strm` it is sent says Ogg Opus: format `u`, PCM parameters `?`.
   - **What is never re-encoded:** other formats pass through as they are, and so does everything when the gateway has no `ffmpeg` with libopus, or is already running `--live-transcode-jobs` encodes (default 4; 0 turns the feature off). The player can tell by the format code in the `strm` it received.
   - **Offsets and STAT:** offsets, acks, the replay window and resume all count the Opus stream; LMS is asked once and the stream encoded once. In STATs, `bytes_received` is turned back into LMS's count, in proportion to what has been fed and produced, and in full once the client has the whole finished stream.
   - **How `ffmpeg` runs:** with a fixed argument list, no shell and an empty environment, the input demuxer forced to FLAC, and only the `pipe` protocol allowed. It is killed when its stream is abandoned.
+  - **Deterministic:** the encode is bit-exact (`-fflags +bitexact -flags:a +bitexact`: no version strings, a fixed Ogg stream serial), so the same track at the same level is the same bytes every time and the phone's replay cache can match it.
   - **Failures:** a failed encode ends the stream with an error, never cleanly; if the encoder can't start at all, the response is 502.
 - **Pacing:** the gateway reads from LMS at most one **replay window** (default 4 MiB) beyond the client's last ack. Network buffers therefore can't hold more than the window, and a resume always lands inside it.
 - **Ending:** a response ends cleanly only when LMS finished the stream cleanly and the client has had every byte. Every other end is an error (the connection breaks without a clean end), so a client never mistakes it for the end of the track:

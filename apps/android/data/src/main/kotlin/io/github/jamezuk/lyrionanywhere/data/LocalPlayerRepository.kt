@@ -15,7 +15,9 @@ import io.github.jamezuk.lyrionanywhere.core.PlayerConnection
 import io.github.jamezuk.lyrionanywhere.core.Session
 import io.github.jamezuk.lyrionanywhere.core.SignalPathInfo
 import io.github.jamezuk.lyrionanywhere.core.checkEqProfile
+import io.github.jamezuk.lyrionanywhere.core.clearStreamCache
 import io.github.jamezuk.lyrionanywhere.core.removeStreamSpools
+import io.github.jamezuk.lyrionanywhere.core.streamCacheTotals
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,6 +52,8 @@ data class LocalPlayerState(
     val readAhead: Boolean = true,
     /** The phone has a network (as Android says). */
     val networkAvailable: Boolean = true,
+    /** What the replay cache holds (null: not known yet, or nowhere to keep it). */
+    val replayCache: ReplayCacheUsage? = null,
 ) {
     /**
      * How much listening is on the phone ahead of what is heard (ms), to show as "4 min
@@ -73,8 +77,17 @@ data class LocalPlayerState(
         get() = enabled && status != null && status.connection !is PlayerConnection.Stopped
 }
 
+/** What the replay cache holds: only totals, never what is in it. */
+data class ReplayCacheUsage(val bytes: Long, val tracks: Long)
+
 interface LocalPlayerRepository {
     val state: StateFlow<LocalPlayerState>
+
+    /** Read what the replay cache holds now (into [LocalPlayerState.replayCache]). */
+    suspend fun refreshReplayCache() {}
+
+    /** Empty the replay cache (Settings' "Clear"). */
+    suspend fun clearReplayCache() {}
 
     /** Turn "Play on this phone" on or off (remembered across restarts). */
     suspend fun setEnabled(on: Boolean): ApiResult<Unit>
@@ -172,6 +185,9 @@ interface LocalPlayerHandle {
     /** Whether the phone has a network (no reconnecting without one). */
     fun setNetworkAvailable(available: Boolean) {}
 
+    /** The replay cache's size in bytes (0: off, which empties it). */
+    fun setStreamCacheBytes(bytes: Long) {}
+
     fun close()
 }
 
@@ -183,6 +199,15 @@ fun rustClearSpools(cacheDir: String) {
     runCatching { removeStreamSpools(cacheDir) }
 }
 
+/** The replay cache's totals for the signed-in user (zero when there is none). */
+fun rustCacheTotals(session: Session, cacheDir: String): ReplayCacheUsage =
+    streamCacheTotals(session, cacheDir).let { ReplayCacheUsage(it.bytes.toLong(), it.count.toLong()) }
+
+/** Empty the signed-in user's replay cache, ignoring what can't be done. */
+fun rustCacheClear(session: Session, cacheDir: String) {
+    runCatching { clearStreamCache(session, cacheDir) }
+}
+
 /** The stream level for the network: the mobile-data setting on a metered network. */
 fun streamQualityFor(metered: Boolean, s: StreamingSettings): StreamQuality = if (metered) s.mobile else s.wifi
 
@@ -192,10 +217,17 @@ private const val FADE_SAME_MS = 2_000L
 /** Highest rate offered to LMS; it transcodes anything above. */
 const val MAX_SAMPLE_RATE = 192_000
 
-private class RustHandle(session: Session, cacheDir: String?, readAhead: Boolean) : LocalPlayerHandle {
+private class RustHandle(session: Session, cacheDir: String?, readAhead: Boolean, cacheBytes: Long) : LocalPlayerHandle {
     private val player = LocalPlayer(
         session,
-        LocalPlayerConfig(OutputKind.A_AUDIO, MAX_SAMPLE_RATE.toUInt(), DEFAULT_DSP, cacheDir, readAhead),
+        LocalPlayerConfig(
+            OutputKind.A_AUDIO,
+            MAX_SAMPLE_RATE.toUInt(),
+            DEFAULT_DSP,
+            cacheDir,
+            readAhead,
+            cacheBytes.coerceAtLeast(0).toULong(),
+        ),
     )
 
     override fun start(observer: LocalPlayerObserver) = player.start(observer)
@@ -227,6 +259,8 @@ private class RustHandle(session: Session, cacheDir: String?, readAhead: Boolean
     override fun setReadAhead(on: Boolean) = player.setReadAhead(on)
 
     override fun setNetworkAvailable(available: Boolean) = player.setNetworkAvailable(available)
+
+    override fun setStreamCacheBytes(bytes: Long) = player.setStreamCacheBytes(bytes.coerceAtLeast(0).toULong())
 
     override fun close() = player.close()
 }
@@ -262,8 +296,15 @@ class RustLocalPlayerRepository(
      * spools live streams; null keeps them in memory (and reads nothing ahead).
      */
     private val cacheDir: String? = null,
-    /** Deletes every spool under the folder (at sign-out, revocation and server change). */
+    /**
+     * Deletes every spool and the whole replay cache under the folder (at sign-out,
+     * revocation and server change).
+     */
     private val clearSpools: (String) -> Unit = ::rustClearSpools,
+    /** The replay cache's totals for a session (a seam for tests). */
+    private val cacheTotals: (Session, String) -> ReplayCacheUsage = ::rustCacheTotals,
+    /** Empties a session's replay cache (a seam for tests). */
+    private val cacheClear: (Session, String) -> Unit = ::rustCacheClear,
 ) : LocalPlayerRepository {
     private val _state = MutableStateFlow(LocalPlayerState())
     override val state: StateFlow<LocalPlayerState> = _state.asStateFlow()
@@ -280,6 +321,7 @@ class RustLocalPlayerRepository(
     @Volatile private var loudnessReference: Double? = null
     @Volatile private var readAhead = true
     @Volatile private var networkUp = true
+    @Volatile private var cacheBytes = ReplayCache.DEFAULT_BYTES
 
     /** The session the player last followed (null: signed out), to notice a change of it. */
     private var lastSession: Session? = null
@@ -354,6 +396,23 @@ class RustLocalPlayerRepository(
                 }
         }
         scope.launch {
+            // The replay cache's size, applied live; "Off" empties it even with no player.
+            settings.settings.map { it.replayCacheBytes }.distinctUntilChanged().collect { b ->
+                cacheBytes = b
+                withContext(io) {
+                    val h = handle
+                    if (h != null) {
+                        h.setStreamCacheBytes(b)
+                    } else if (b == 0L) {
+                        val s = sessions.value
+                        val dir = cacheDir
+                        if (s != null && dir != null) cacheClear(s, dir)
+                    }
+                }
+                refreshReplayCache()
+            }
+        }
+        scope.launch {
             // No network: the player stops trying to reconnect until it is back.
             (network ?: MutableStateFlow(NetworkKind.WIFI)).map(::networkAvailable).distinctUntilChanged().collect { up ->
                 networkUp = up
@@ -384,10 +443,13 @@ class RustLocalPlayerRepository(
             eqBypass = bypass,
             readAhead = readAhead,
             networkAvailable = networkUp,
+            replayCache = _state.value.replayCache,
         )
+        // Signed out or another account: what the cache holds now (nothing, once cleared).
+        if (changed) refreshReplayCache()
         if (session == null) return@withContext
         try {
-            val h = factory?.invoke(session) ?: RustHandle(session, cacheDir, readAhead)
+            val h = factory?.invoke(session) ?: RustHandle(session, cacheDir, readAhead, cacheBytes)
             handle = h
             handleSession = session
             fade = null // a new engine has no fade yet
@@ -402,12 +464,31 @@ class RustLocalPlayerRepository(
             h.setLoudnessReferenceDb(loudnessReference)
             h.setReadAhead(readAhead)
             h.setNetworkAvailable(networkUp)
+            h.setStreamCacheBytes(cacheBytes)
             h.start(Observer(h))
         } catch (e: Exception) {
             handle = null
             handleSession = null
             _state.update { it.copy(error = e.toAppError()) }
         }
+    }
+
+    override suspend fun refreshReplayCache() {
+        val s = sessions.value
+        val dir = cacheDir
+        val usage = if (s != null && dir != null) {
+            withContext(io) { runCatching { cacheTotals(s, dir) }.getOrNull() }
+        } else {
+            null
+        }
+        _state.update { it.copy(replayCache = usage) }
+    }
+
+    override suspend fun clearReplayCache() {
+        val s = sessions.value ?: return
+        val dir = cacheDir ?: return
+        withContext(io) { cacheClear(s, dir) }
+        refreshReplayCache()
     }
 
     override suspend fun setEnabled(on: Boolean): ApiResult<Unit> {

@@ -134,6 +134,7 @@ async fn data_saver_plays_opus_then_original_plays_flac() {
             max_sample_rate: 192_000,
             cache_dir: None,
             read_ahead: true,
+            stream_cache_bytes: 0,
             dsp: Default::default(),
         },
     );
@@ -251,6 +252,7 @@ async fn changing_level_without_the_feature_keeps_the_session() {
             max_sample_rate: 192_000,
             cache_dir: None,
             read_ahead: true,
+            stream_cache_bytes: 0,
             dsp: Default::default(),
         },
     );

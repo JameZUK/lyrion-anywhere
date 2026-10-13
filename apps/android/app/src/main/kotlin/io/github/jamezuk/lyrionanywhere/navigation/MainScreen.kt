@@ -202,6 +202,7 @@ import io.github.jamezuk.lyrionanywhere.ui.player.LyricsPeekSetting
 import io.github.jamezuk.lyrionanywhere.ui.player.RatingsSetting
 import io.github.jamezuk.lyrionanywhere.ui.settings.StreamingQualitySetting
 import io.github.jamezuk.lyrionanywhere.ui.settings.ReadAheadSetting
+import io.github.jamezuk.lyrionanywhere.ui.settings.ReplayCacheSetting
 import io.github.jamezuk.lyrionanywhere.ui.settings.LicencesScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsViewModel
@@ -1564,6 +1565,15 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             gaps = {
                                 val app by container.settings.settings.collectAsStateWithLifecycle(AppSettings())
                                 ReadAheadSetting(app.readAhead) { s -> scope.launch { container.settings.setReadAhead(s) } }
+                                val local by container.localPlayer.state.collectAsStateWithLifecycle()
+                                LaunchedEffect(Unit) { container.localPlayer.refreshReplayCache() }
+                                ReplayCacheSetting(
+                                    bytes = app.replayCacheBytes,
+                                    usage = local.replayCache,
+                                    downloadsAllowed = ui.account?.downloadsEnabled,
+                                    onSize = { b -> scope.launch { container.settings.setReplayCacheBytes(b) } },
+                                    onClear = { scope.launch { container.localPlayer.clearReplayCache() } },
+                                )
                             },
                         )
                     }
