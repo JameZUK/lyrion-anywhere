@@ -133,6 +133,8 @@ struct State {
     speaking_for_silent: bool,
     /// What the client's player is heard playing, for the user's listening history.
     tracker: crate::history::Tracker,
+    /// How long the session is held for a detached client (granted at sign-in).
+    grace: Duration,
     /// Tracker steps to carry out once the state lock is released.
     steps: Vec<crate::history::Step>,
 }
@@ -206,6 +208,7 @@ impl Session {
                 last_heard: Instant::now(),
                 speaking_for_silent: false,
                 tracker: Default::default(),
+                grace: crate::Config::default().resume_grace,
                 steps: Vec::new(),
             }),
         }
@@ -222,6 +225,7 @@ impl Session {
         let _ = lms.set_nodelay(true);
         let (rd, wr) = lms.into_split();
         let session = Arc::new(Session::new(device, wr, Arc::downgrade(gw)));
+        session.set_grace(gw.cfg.resume_grace);
 
         // One session per device: LMS would otherwise see two players with the same MAC.
         let previous: Vec<Arc<Session>> = {
@@ -259,6 +263,17 @@ impl Session {
     /// The device was renamed: LMS's name queries get the new name from now on.
     pub fn set_name(&self, name: &str) {
         *self.name.lock().unwrap() = name.to_string();
+    }
+
+    /// How long the session is held for a detached client.
+    pub fn grace(&self) -> Duration {
+        self.state.lock().unwrap().grace
+    }
+
+    /// Set the resume grace (granted at sign-in; a resume may change it). It applies from
+    /// the next time the client's socket drops.
+    pub fn set_grace(&self, grace: Duration) {
+        self.state.lock().unwrap().grace = grace;
     }
 
     pub fn is_ended(&self) -> bool {
@@ -376,8 +391,9 @@ impl Session {
             }
         });
         let (gw, me) = (gw.clone(), self.clone());
+        let grace = self.grace();
         tokio::spawn(async move {
-            tokio::time::sleep(gw.cfg.resume_grace).await;
+            tokio::time::sleep(grace).await;
             let expired = {
                 let st = me.state.lock().unwrap();
                 !st.ended && st.attached.is_none() && st.next_generation == generation
@@ -541,6 +557,7 @@ impl Session {
                 let steps = st.tracker.on_stat(
                     stat.event,
                     stat.elapsed_milliseconds,
+                    stat.jiffies,
                     Instant::now(),
                     crate::history::unix_now(),
                 );
@@ -628,7 +645,9 @@ impl Session {
     }
 
     /// A status report on behalf of the detached client: its last real STAT, with the
-    /// clock (and, if it was playing, the elapsed time) advanced by wall time.
+    /// clock (and, if it was playing, the elapsed time) advanced by wall time. The elapsed
+    /// time never passes the end of the track, once LMS has said which track it is (the
+    /// client stops there, or moves on to the next track, which only it can report).
     fn synthesised_stat(&self, server_timestamp: u32) -> Option<Vec<u8>> {
         let st = self.state.lock().unwrap();
         if !st.seen_helo {
@@ -639,7 +658,12 @@ impl Session {
         stat.event = *b"STMt";
         stat.jiffies = stat.jiffies.wrapping_add(dt as u32);
         if st.playing {
-            let ms = stat.elapsed_milliseconds as u64 + dt;
+            let reported = stat.elapsed_milliseconds as u64;
+            let mut ms = reported + dt;
+            if let Some(end) = st.tracker.duration_ms() {
+                ms = ms.min(end.max(reported));
+            }
+            let ms = ms.min(u32::MAX as u64);
             stat.elapsed_milliseconds = ms as u32;
             stat.elapsed_seconds = (ms / 1000) as u32;
         }
@@ -1178,6 +1202,102 @@ mod tests {
             *first.kick.borrow(),
             Some((4000, "replaced by a newer connection"))
         );
+    }
+
+    fn stat_frame(event: &[u8; 4], jiffies: u32, elapsed_ms: u32) -> Vec<u8> {
+        ClientMsg::Stat(Stat {
+            event: *event,
+            jiffies,
+            elapsed_seconds: elapsed_ms / 1000,
+            elapsed_milliseconds: elapsed_ms,
+            ..Default::default()
+        })
+        .encode()
+    }
+
+    /// The last report was `ago` before now.
+    fn age_last_stat(s: &Session, ago: Duration) {
+        let mut st = s.state.lock().unwrap();
+        let (stat, _) = st.last_stat.clone().unwrap();
+        st.last_stat = Some((stat, Instant::now().checked_sub(ago).unwrap()));
+    }
+
+    fn heartbeat_elapsed(s: &Session) -> (u32, u32) {
+        let f = s.synthesised_stat(0).unwrap();
+        let stat = Stat::parse(&f[8..]).unwrap();
+        (stat.elapsed_milliseconds, stat.elapsed_seconds)
+    }
+
+    /// While the client is away (the rolling cache lets that be minutes), heartbeats advance
+    /// the elapsed time, but never past the end of the track LMS said is playing.
+    #[tokio::test]
+    async fn heartbeats_never_run_past_the_end_of_the_track() {
+        let (s, g) = session().await;
+        s.client_bytes(g, &helo(b"flc")).await;
+        let r = s
+            .client_bytes(g, &stat_frame(b"STMs", 1_000, 100_000))
+            .await;
+        assert!(matches!(r, ClientInput::Ok));
+        age_last_stat(&s, Duration::from_secs(30));
+        // The track isn't known yet: elapsed advances by wall time.
+        assert!(heartbeat_elapsed(&s).0 >= 130_000);
+        // LMS says it is a two-minute track.
+        let track = crate::history::TrackInfo {
+            id: 7,
+            key: "0".repeat(64),
+            album_id: None,
+            artist_id: None,
+            year: None,
+            duration: Some(120.0),
+        };
+        s.state
+            .lock()
+            .unwrap()
+            .tracker
+            .resolved(1, Some(track.clone()), Instant::now());
+        assert_eq!(heartbeat_elapsed(&s), (120_000, 120));
+        age_last_stat(&s, Duration::from_secs(600));
+        assert_eq!(heartbeat_elapsed(&s), (120_000, 120));
+        // Elapsed the client itself reported past the end is passed on, never lowered.
+        let r = s
+            .client_bytes(g, &stat_frame(b"STMt", 2_000, 125_000))
+            .await;
+        assert!(matches!(r, ClientInput::Ok));
+        age_last_stat(&s, Duration::from_secs(10));
+        assert_eq!(heartbeat_elapsed(&s), (125_000, 125));
+        // A track without a sensible duration (radio, or a bad value) isn't capped.
+        for d in [
+            None,
+            Some(0.0),
+            Some(-5.0),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+        ] {
+            let (s, g) = session().await;
+            s.client_bytes(g, &helo(b"flc")).await;
+            s.client_bytes(g, &stat_frame(b"STMs", 1_000, 100_000))
+                .await;
+            let t = crate::history::TrackInfo {
+                duration: d,
+                ..track.clone()
+            };
+            s.state
+                .lock()
+                .unwrap()
+                .tracker
+                .resolved(1, Some(t), Instant::now());
+            age_last_stat(&s, Duration::from_secs(30));
+            assert!(heartbeat_elapsed(&s).0 >= 130_000, "{d:?}");
+        }
+        // Paused: frozen, as before.
+        let (s, g) = session().await;
+        s.client_bytes(g, &helo(b"flc")).await;
+        s.client_bytes(g, &stat_frame(b"STMs", 1_000, 100_000))
+            .await;
+        s.client_bytes(g, &stat_frame(b"STMp", 2_000, 101_000))
+            .await;
+        age_last_stat(&s, Duration::from_secs(30));
+        assert_eq!(heartbeat_elapsed(&s), (101_000, 101));
     }
 
     /// Small deterministic PRNG (xorshift64*), so failures are reproducible from the seed.

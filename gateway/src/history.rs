@@ -17,7 +17,10 @@
 //! - **Live, on the user's own devices' players.** Each player session (`crate::session`)
 //!   belongs to one device, so to one user. Its client's STAT reports drive a [`Tracker`]:
 //!   a track starts at `STMs`, and time heard is the elapsed time the player reports while
-//!   playing, counted only as far as wall time allows (a seek forward is not "heard"). The
+//!   playing, counted only as far as the player's own clock (the STAT's jiffies) allows (a
+//!   seek forward is not "heard"), so reports queued during a network gap and sent together
+//!   on resume still count. In all, a session is never credited more than the wall time
+//!   since its first report plus a little slack, whatever the reports claim. The
 //!   track itself is asked of LMS (`status - 1`) just after it starts, and must be a local
 //!   library track. A seek (LMS restarts the stream) continues the same listen. Hardware
 //!   players and other users' devices have no session here, so they are never attributed
@@ -427,9 +430,17 @@ impl crate::Gateway {
 // Live plays: following one player's reports
 // ---------------------------------------------------------------------------
 
-/// Elapsed time may run this much ahead of wall time between two reports and still count
-/// (reports are about a second apart; a seek jumps much further).
+/// Elapsed time may run this much ahead of the player's clock between two reports and still
+/// count (reports are about a second apart; a seek jumps much further).
 const SLACK_MS: u64 = 3000;
+/// Over a whole session, the time heard may run this much ahead of the wall time since the
+/// player's first report (the clocks start a moment apart). A player can't claim more than
+/// this, however its reports are timed.
+const BUDGET_SLACK_MS: u64 = 10_000;
+/// A step of the player's clock (jiffies, ms, wrapping at 2^32) beyond this is not time that
+/// passed: the clock went backwards or was reset, or the value is absurd. Nothing is heard
+/// over such a step. (A session survives at most an hour detached.)
+const MAX_CLOCK_STEP_MS: u32 = 2 * 3600 * 1000;
 /// A seek restarts the stream: a new start of the same track this soon after the last one
 /// ended continues the same listen.
 const MERGE_WITHIN: Duration = Duration::from_secs(15);
@@ -471,21 +482,35 @@ pub struct Tracker {
     /// The listen before a track change, kept until the new track is known (a seek starts
     /// the same track again).
     prev: Option<(Listen, Instant)>,
-    /// The last report: elapsed milliseconds and when.
-    last: Option<(u32, Instant)>,
+    /// The last report: elapsed milliseconds and the player's clock (jiffies).
+    last: Option<(u32, u32)>,
     playing: bool,
+    /// When the first report arrived (the start of the wall-time budget).
+    first_report: Option<Instant>,
+    /// Milliseconds heard so far in the session, over every listen.
+    credited_ms: u64,
 }
 
 impl Tracker {
-    /// A status report (STAT) from the player.
+    /// A status report (STAT) from the player: its event, elapsed milliseconds and clock
+    /// (`jiffies`, ms), with the wall time it arrived (`now`, `unix`).
+    ///
+    /// An elapsed step counts as heard if it is no bigger than the player's own clock step
+    /// plus [`SLACK_MS`]: reports held back during a network gap and sent in a burst are
+    /// judged by when they were made, not when they arrived. A clock that went backwards
+    /// (other than wrapping) or jumped absurdly counts nothing. Whatever the reports say, the
+    /// session's total heard never exceeds the wall time since its first report plus
+    /// [`BUDGET_SLACK_MS`].
     pub fn on_stat(
         &mut self,
         event: [u8; 4],
         elapsed_ms: u32,
+        jiffies: u32,
         now: Instant,
         unix: u64,
     ) -> Vec<Step> {
         let mut out = Vec::new();
+        let first = *self.first_report.get_or_insert(now);
         if &event == b"STMs" {
             // A new track has started. The listen so far waits until LMS says which track
             // this is (it may be the same one, restarted by a seek).
@@ -504,25 +529,29 @@ impl Tracker {
                 row: None,
                 recording: false,
             });
-            self.last = Some((elapsed_ms, now));
+            self.last = Some((elapsed_ms, jiffies));
             self.playing = true;
             out.push(Step::Lookup(self.serial));
             return out;
         }
         if self.playing
-            && let Some((last_ms, at)) = self.last
+            && let Some((last_ms, last_jiffies)) = self.last
             && let Some(l) = self.listen.as_mut()
         {
-            let wall = now.saturating_duration_since(at).as_millis() as u64;
-            let delta = elapsed_ms as u64;
-            if delta > last_ms as u64 {
-                let d = delta - last_ms as u64;
-                if d <= wall + SLACK_MS {
+            // Wrapping: the clock passing 2^32 is a small step; going backwards is huge.
+            let clock = jiffies.wrapping_sub(last_jiffies);
+            if clock <= MAX_CLOCK_STEP_MS && elapsed_ms > last_ms {
+                let d = (elapsed_ms - last_ms) as u64;
+                if d <= clock as u64 + SLACK_MS {
+                    let wall = now.saturating_duration_since(first).as_millis() as u64;
+                    let budget = (wall + BUDGET_SLACK_MS).saturating_sub(self.credited_ms);
+                    let d = d.min(budget);
                     l.heard_ms = l.heard_ms.saturating_add(d);
+                    self.credited_ms = self.credited_ms.saturating_add(d);
                 }
             }
         }
-        self.last = Some((elapsed_ms, now));
+        self.last = Some((elapsed_ms, jiffies));
         match &event {
             b"STMr" => self.playing = true,
             b"STMp" | b"STMf" | b"STMu" | b"STMn" => self.playing = false,
@@ -585,6 +614,13 @@ impl Tracker {
         self.listen
             .as_ref()
             .map_or(0.0, |l| l.heard_ms as f64 / 1000.0)
+    }
+
+    /// The duration of the current listen's track, once LMS has said which it is and if it
+    /// has a sensible one (for capping heartbeats while the client is away).
+    pub fn duration_ms(&self) -> Option<u64> {
+        let d = self.listen.as_ref()?.track.as_ref()?.duration?;
+        (d.is_finite() && d > 0.0).then(|| (d.min(crate::plays::MAX_SECONDS) * 1000.0) as u64)
     }
 
     fn check(&mut self) -> Option<Step> {
@@ -1297,12 +1333,8 @@ mod tests {
     ) -> Vec<Step> {
         let mut out = Vec::new();
         for s in 1..=seconds {
-            out.extend(t.on_stat(
-                *b"STMt",
-                elapsed0 + s * 1000,
-                c.at(from_ms + s as u64 * 1000),
-                0,
-            ));
+            let wall = from_ms + s as u64 * 1000;
+            out.extend(t.on_stat(*b"STMt", elapsed0 + s * 1000, wall as u32, c.at(wall), 0));
         }
         out
     }
@@ -1311,7 +1343,10 @@ mod tests {
     fn a_play_is_recorded_once_it_counts() {
         let c = Clock(Instant::now());
         let mut t = Tracker::default();
-        assert_eq!(t.on_stat(*b"STMs", 0, c.at(0), 1000), vec![Step::Lookup(1)]);
+        assert_eq!(
+            t.on_stat(*b"STMs", 0, 0, c.at(0), 1000),
+            vec![Step::Lookup(1)]
+        );
         assert!(
             t.resolved(1, Some(track(5, 1, 100.0)), c.at(1500))
                 .is_empty()
@@ -1333,7 +1368,7 @@ mod tests {
         // Only once.
         assert!(play_for(&mut t, &c, 50_000, 50_000, 30).is_empty());
         // The next track ends it: the seconds heard are stored.
-        let steps = t.on_stat(*b"STMs", 0, c.at(81_000), 2000);
+        let steps = t.on_stat(*b"STMs", 0, 81_000, c.at(81_000), 2000);
         assert_eq!(steps, vec![Step::Lookup(2)]);
         let steps = t.resolved(2, Some(track(6, 1, 100.0)), c.at(82_000));
         assert_eq!(
@@ -1349,23 +1384,23 @@ mod tests {
     fn short_plays_seeks_forward_and_pauses_are_not_heard() {
         let c = Clock(Instant::now());
         let mut t = Tracker::default();
-        t.on_stat(*b"STMs", 0, c.at(0), 1);
+        t.on_stat(*b"STMs", 0, 0, c.at(0), 1);
         t.resolved(1, Some(track(5, 1, 600.0)), c.at(100));
         play_for(&mut t, &c, 0, 0, 10);
         assert_eq!(t.heard(), 10.0);
         // Elapsed jumps 200 s in one second: a seek, not listening.
-        t.on_stat(*b"STMt", 210_000, c.at(11_000), 0);
+        t.on_stat(*b"STMt", 210_000, 11_000, c.at(11_000), 0);
         assert_eq!(t.heard(), 10.0);
         // Paused: reports go on but nothing is heard, even if elapsed creeps.
-        t.on_stat(*b"STMp", 210_000, c.at(12_000), 0);
-        t.on_stat(*b"STMt", 211_000, c.at(13_000), 0);
+        t.on_stat(*b"STMp", 210_000, 12_000, c.at(12_000), 0);
+        t.on_stat(*b"STMt", 211_000, 13_000, c.at(13_000), 0);
         assert_eq!(t.heard(), 10.0);
-        t.on_stat(*b"STMr", 211_000, c.at(14_000), 0);
-        t.on_stat(*b"STMt", 212_000, c.at(15_000), 0);
+        t.on_stat(*b"STMr", 211_000, 14_000, c.at(14_000), 0);
+        t.on_stat(*b"STMt", 212_000, 15_000, c.at(15_000), 0);
         assert_eq!(t.heard(), 11.0);
         // Elapsed going backwards (a seek back) counts nothing but carries on from there.
-        t.on_stat(*b"STMt", 5_000, c.at(16_000), 0);
-        t.on_stat(*b"STMt", 6_000, c.at(17_000), 0);
+        t.on_stat(*b"STMt", 5_000, 16_000, c.at(16_000), 0);
+        t.on_stat(*b"STMt", 6_000, 17_000, c.at(17_000), 0);
         assert_eq!(t.heard(), 12.0);
         // Never recorded: 12 s of a 600 s track.
         assert!(t.finish().is_empty());
@@ -1375,12 +1410,12 @@ mod tests {
     fn a_seek_that_restarts_the_stream_continues_the_listen() {
         let c = Clock(Instant::now());
         let mut t = Tracker::default();
-        t.on_stat(*b"STMs", 0, c.at(0), 500);
+        t.on_stat(*b"STMs", 0, 0, c.at(0), 500);
         t.resolved(1, Some(track(5, 1, 400.0)), c.at(100));
         play_for(&mut t, &c, 0, 0, 100);
         // LMS restarts the stream at the seek point: a new STMs of the same track.
         assert_eq!(
-            t.on_stat(*b"STMs", 0, c.at(101_000), 600),
+            t.on_stat(*b"STMs", 0, 101_000, c.at(101_000), 600),
             vec![Step::Lookup(2)]
         );
         assert!(
@@ -1405,11 +1440,11 @@ mod tests {
     fn radio_and_unknown_tracks_are_never_recorded() {
         let c = Clock(Instant::now());
         let mut t = Tracker::default();
-        t.on_stat(*b"STMs", 0, c.at(0), 1);
+        t.on_stat(*b"STMs", 0, 0, c.at(0), 1);
         assert!(t.resolved(1, None, c.at(100)).is_empty());
         assert!(play_for(&mut t, &c, 0, 0, 600).is_empty());
         // A lookup for an older listen is ignored.
-        t.on_stat(*b"STMs", 0, c.at(601_000), 2);
+        t.on_stat(*b"STMs", 0, 601_000, c.at(601_000), 2);
         assert!(
             t.resolved(1, Some(track(1, 1, 10.0)), c.at(601_500))
                 .is_empty()
@@ -1421,7 +1456,7 @@ mod tests {
     fn the_session_ending_finishes_the_listen() {
         let c = Clock(Instant::now());
         let mut t = Tracker::default();
-        t.on_stat(*b"STMs", 0, c.at(0), 1);
+        t.on_stat(*b"STMs", 0, 0, c.at(0), 1);
         t.resolved(1, Some(track(5, 1, 60.0)), c.at(100));
         let steps = play_for(&mut t, &c, 0, 0, 40);
         assert!(matches!(steps.as_slice(), [Step::Record { .. }]));
@@ -1436,15 +1471,127 @@ mod tests {
         assert!(t.finish().is_empty());
     }
 
+    /// Regression (rolling cache, A4): reports queued during a network gap arrive together
+    /// on resume. Judged by arrival time, all but the first counted nothing; judged by the
+    /// player's own clock they count what was really heard.
     #[test]
-    fn hostile_reports_never_panic_or_overcount() {
-        let mut x: u64 = 0x1234_5678_9abc_def1;
-        let mut rnd = move || {
+    fn a_burst_of_reports_after_a_gap_counts_by_the_players_clock() {
+        let c = Clock(Instant::now());
+        let mut t = Tracker::default();
+        t.on_stat(*b"STMs", 0, 1_000, c.at(0), 1);
+        t.resolved(1, Some(track(5, 1, 100.0)), c.at(100));
+        for s in 1..=10u32 {
+            let wall = s as u64 * 1000;
+            t.on_stat(*b"STMt", s * 1000, 1_000 + s * 1000, c.at(wall), 0);
+        }
+        assert_eq!(t.heard(), 10.0);
+        // 60 s gap, then 12 reports made 5 s apart (more than the slack) arrive within a few
+        // milliseconds.
+        let mut steps = Vec::new();
+        for s in 1..=12u32 {
+            steps.extend(t.on_stat(
+                *b"STMt",
+                10_000 + s * 5000,
+                11_000 + s * 5000,
+                c.at(70_000 + s as u64),
+                0,
+            ));
+        }
+        assert_eq!(t.heard(), 70.0);
+        assert!(
+            matches!(steps.as_slice(), [Step::Record { seconds, .. }] if *seconds == 50.0),
+            "{steps:?}"
+        );
+    }
+
+    #[test]
+    fn the_players_clock_wraps_but_never_runs_backwards() {
+        let c = Clock(Instant::now());
+        let mut t = Tracker::default();
+        let j0 = u32::MAX - 1_500;
+        t.on_stat(*b"STMs", 0, j0, c.at(0), 1);
+        // Across the wrap: 1 s steps still count.
+        for s in 1..=3u32 {
+            t.on_stat(
+                *b"STMt",
+                s * 1000,
+                j0.wrapping_add(s * 1000),
+                c.at(s as u64 * 1000),
+                0,
+            );
+        }
+        assert_eq!(t.heard(), 3.0);
+        // Backwards (not a wrap): nothing, and the next step is judged from there.
+        t.on_stat(*b"STMt", 4_000, 100, c.at(4_000), 0);
+        assert_eq!(t.heard(), 3.0);
+        t.on_stat(*b"STMt", 5_000, 1_100, c.at(5_000), 0);
+        assert_eq!(t.heard(), 4.0);
+        // An absurd jump of the clock (days): nothing.
+        t.on_stat(*b"STMt", 6_000, 1_100 + 3 * 86_400_000, c.at(6_000), 0);
+        assert_eq!(t.heard(), 4.0);
+        // A clock that stands still allows only the slack: a seek of 200 s is not heard.
+        t.on_stat(*b"STMt", 206_000, 1_100 + 3 * 86_400_000, c.at(7_000), 0);
+        assert_eq!(t.heard(), 4.0);
+        // A step bigger than the clock's (plus slack) is a seek, even after a long gap.
+        t.on_stat(
+            *b"STMt",
+            306_000,
+            1_100 + 3 * 86_400_000 + 1_000,
+            c.at(600_000),
+            0,
+        );
+        assert_eq!(t.heard(), 4.0);
+    }
+
+    #[test]
+    fn a_player_claiming_more_clock_than_wall_time_is_capped() {
+        let c = Clock(Instant::now());
+        let mut t = Tracker::default();
+        t.on_stat(*b"STMs", 0, 0, c.at(0), 1);
+        t.resolved(1, Some(track(5, 1, 3600.0)), c.at(100));
+        // Jiffies and elapsed both race ahead: an hour claimed within one second of wall time.
+        let mut steps = Vec::new();
+        for s in 1..=3600u32 {
+            steps.extend(t.on_stat(*b"STMt", s * 1000, s * 1000, c.at(s as u64 / 4), 0));
+        }
+        assert!(
+            t.heard() * 1000.0 <= (900 + BUDGET_SLACK_MS) as f64,
+            "{}",
+            t.heard()
+        );
+        assert!(steps.is_empty(), "never counts as a play: {steps:?}");
+        // Time that really passes is heard again, but never beyond the wall time.
+        for s in 1..=5u32 {
+            let wall = 60_000 + s as u64 * 1000;
+            t.on_stat(
+                *b"STMt",
+                3_600_000 + s * 1000,
+                3_600_000 + s * 1000,
+                c.at(wall),
+                0,
+            );
+        }
+        assert!(t.heard() > 10.0);
+        assert!(t.heard() * 1000.0 <= (65_000 + BUDGET_SLACK_MS) as f64);
+    }
+
+    /// Small deterministic PRNG (xorshift64), so failures are reproducible from the seed.
+    fn rng(seed: u64) -> impl FnMut() -> u64 {
+        let mut x = seed | 1;
+        move || {
             x ^= x << 13;
             x ^= x >> 7;
             x ^= x << 17;
             x
-        };
+        }
+    }
+
+    /// Security: whatever a player reports (random values, clocks racing, backwards or
+    /// wrapping, many reports in one millisecond), nothing panics, and the time heard over
+    /// the whole session, and in all the plays recorded, never exceeds the wall time since
+    /// its first report plus the budget slack.
+    #[test]
+    fn hostile_reports_never_panic_or_overcount() {
         let events = [
             *b"STMs",
             *b"STMt",
@@ -1453,30 +1600,85 @@ mod tests {
             *b"STMf",
             *b"STMu",
             *b"STMd",
+            *b"STMo",
             *b"\0\0\0\0",
         ];
-        let start = Instant::now();
-        let mut t = Tracker::default();
-        let mut wall = 0u64;
-        for _ in 0..50_000 {
-            wall += rnd() % 3000;
-            let ev = events[(rnd() % events.len() as u64) as usize];
-            let elapsed = rnd() as u32;
-            for s in t.on_stat(ev, elapsed, start + Duration::from_millis(wall), rnd()) {
-                if let Step::Lookup(g) = s
-                    && rnd() % 2 == 0
-                {
-                    t.resolved(
-                        g,
-                        Some(track(1, 1, (rnd() % 1000) as f64)),
-                        start + Duration::from_millis(wall),
-                    );
+        for seed in 1..=40u64 {
+            let mut rnd = rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+            let start = Instant::now();
+            let mut t = Tracker::default();
+            let mut wall = 0u64;
+            let (mut elapsed, mut jiffies) = (0u32, rnd() as u32);
+            let mut first_wall = None;
+            let mut rows: HashMap<i64, f64> = HashMap::new();
+            let mut next_row = 1;
+            for _ in 0..5_000 {
+                // Wall time: often none at all (a burst), sometimes a long gap.
+                wall += match rnd() % 4 {
+                    0 => 0,
+                    1 => rnd() % 3,
+                    2 => rnd() % 3000,
+                    _ => rnd() % 120_000,
+                };
+                let ev = match rnd() % 6 {
+                    0 => events[(rnd() % events.len() as u64) as usize],
+                    _ => *b"STMt",
+                };
+                // Clock and elapsed: honest, racing together, random or backwards.
+                match rnd() % 5 {
+                    0 => (elapsed, jiffies) = (rnd() as u32, rnd() as u32),
+                    1 => {
+                        let d = (rnd() % 600_000) as u32;
+                        elapsed = elapsed.wrapping_add(d);
+                        jiffies = jiffies.wrapping_add(d);
+                    }
+                    2 => jiffies = jiffies.wrapping_sub((rnd() % 5000) as u32),
+                    _ => {
+                        let d = (rnd() % 4000) as u32;
+                        elapsed = elapsed.wrapping_add(d);
+                        jiffies = jiffies.wrapping_add(d);
+                    }
+                }
+                let first = *first_wall.get_or_insert(wall);
+                let now = start + Duration::from_millis(wall);
+                let mut steps = t.on_stat(ev, elapsed, jiffies, now, rnd());
+                while let Some(s) = steps.pop() {
+                    match s {
+                        Step::Lookup(g) => {
+                            if !rnd().is_multiple_of(3) {
+                                let dur = (rnd() % 1000) as f64;
+                                steps.extend(t.resolved(g, Some(track(1, 1, dur)), now));
+                            }
+                        }
+                        Step::Record {
+                            serial, seconds, ..
+                        } => {
+                            rows.insert(next_row, seconds);
+                            t.recorded(serial, Some(next_row));
+                            next_row += 1;
+                        }
+                        Step::Update { row, seconds } => {
+                            rows.insert(row, seconds);
+                        }
+                    }
+                }
+                let budget = (wall - first + BUDGET_SLACK_MS) as f64;
+                assert!(t.credited_ms as f64 <= budget, "seed {seed}");
+                // (+1: seconds are floating point.)
+                assert!(t.heard() * 1000.0 <= budget + 1.0, "seed {seed}");
+                // Plays are separate listens: together they fit the budget too.
+                let total: f64 = rows.values().sum();
+                assert!(total * 1000.0 <= budget + 1.0, "seed {seed}: {total}");
+            }
+            for s in t.finish() {
+                if let Step::Update { row, seconds } = s {
+                    rows.insert(row, seconds);
                 }
             }
-            // Heard time can never run ahead of wall time (plus the slack per report).
-            assert!(t.heard() * 1000.0 <= (wall + SLACK_MS * 50_000) as f64);
+            let total: f64 = rows.values().sum();
+            let budget = (wall - first_wall.unwrap() + BUDGET_SLACK_MS) as f64;
+            assert!(total * 1000.0 <= budget + 1.0, "seed {seed}: {total}");
         }
-        let _ = t.finish();
     }
 
     // -- scoring --------------------------------------------------------------

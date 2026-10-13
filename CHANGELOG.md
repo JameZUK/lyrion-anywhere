@@ -2,6 +2,21 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Rolling cache, Phase A: the gateway's side
+
+The gateway's part of A3 and A4 in `docs/plans/wave3-design.md` §2. The Android side comes separately.
+
+- **Longer resume grace, on request:**
+  - The player socket's sign-in takes an optional `"grace":S` (whole seconds, 0–3600). The gateway grants `min(S, --max-resume-grace)` and says what it granted in the greeting's new `"grace"` field.
+  - **New flag `--max-resume-grace`:** 600 s by default, 60–3600. Players that don't ask still get 60 s; a resume without the field keeps the grace granted before.
+  - A `grace` that isn't a whole number in range (a string, a fraction, a negative or larger number, `null`) is a policy violation: close 1008, nothing is opened, and a resumable session is ended.
+  - `GET /v1/me` lists `"resume_grace": true` under `features`.
+  - Unchanged by a longer grace: one LMS connection per device (a new session still ends a held one), revocation ends a held session at once, and the frame log keeps its 1 MiB bound (status polls while detached are answered, never queued).
+- **Listening history judged by the player's clock:** an elapsed step counts if it is no bigger than the STAT's own jiffies step (plus 3 s), not the time between arrivals. So the reports a phone queues during a gap and sends together on resume count for what was really heard.
+  - A clock that runs backwards (other than wrapping at 2^32) or jumps by more than 2 hours counts nothing.
+  - **Security:** however the reports are timed, a session is never credited more than the wall time since its first report plus 10 s. Fuzz tests check this over random, racing, backwards and burst reports.
+- **Heartbeats while detached** stop the elapsed time at the end of the track LMS says is playing, instead of running on past it.
+
 ## 2026-10-13: Your listening and Your year in sound (web)
 
 The web app's side of `docs/plans/wave3-design.md` §1, built to the `GET /v1/me/stats` contract.

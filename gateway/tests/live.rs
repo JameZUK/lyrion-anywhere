@@ -451,6 +451,7 @@ async fn no_encoder_means_no_feature_and_no_rewrite() {
         .unwrap();
     assert_eq!(me["features"]["stream_quality"], true);
     assert_eq!(me["features"]["queue_edit"], true);
+    assert_eq!(me["features"]["resume_grace"], true);
 }
 
 #[tokio::test]

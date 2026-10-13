@@ -93,7 +93,7 @@ Agreed with the owner on 2026-10-13:
 
 ## 2. Rolling cache (part 2)
 
-**Status:** design agreed on 2026-10-13 (see the decisions at the end). Spike S1 done; Phase A next.
+**Status:** design agreed on 2026-10-13 (see the decisions at the end). Spike S1 done; Phase A under way: the gateway's side of A3 (grace negotiation, `--max-resume-grace`) and A4 (history from jiffies, heartbeats capped at the track's end) is built.
 
 Investigation written up on 2026-10-13, for the Android player (D14: the phone is a real LMS player). The web player is unchanged. iOS takes the same design when its app is built.
 

@@ -31,7 +31,7 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
 | `POST /v1/auth/pair` | `{"code","device_name"}`, plus the optional client fields | Same, with `refresh_token` in the body (native apps) |
 | `POST /v1/auth/refresh` | none (cookie), or `{"refresh_token"}`; either may add the optional client fields | A new access token and a **rotated** refresh token |
 | `POST /v1/auth/logout` | bearer access token | 204; revokes this device and ends its sessions. Sends `Clear-Site-Data: "cache"` |
-| `GET /v1/me` | bearer access token | `{user, device, features}` (`features.analysis`: the server offers track analysis) |
+| `GET /v1/me` | bearer access token | `{user, device, features}` (`features.analysis`: the server offers track analysis; `features.resume_grace`: the player socket's sign-in takes `grace`) |
 | `GET /v1/account` | bearer access token | `{username, role, totp_enabled, downloads: {enabled, formats}}` (`formats`: what this user may download that this server can produce; see [Downloads](#downloads)) |
 | `POST /v1/account/totp/setup` | `{"password"}` | `{secret, uri, qr_svg}`: a new secret, active once confirmed. A wrong password is 401 and counts towards a lockout of its own (per user), separate from sign-in |
 | `POST /v1/account/totp/confirm` | `{"code"}` | 204; two-step is now on |
@@ -139,15 +139,17 @@ The client's first message is text, sent within 5 s:
 - **New session:** the bare access token, or `{"token":"…"}`.
 - **Resume:** `{"token":"…","resume":{"session":"…","secret":"…","received":N}}`. `N` is the number of binary messages the client received in this session before the drop.
 - **Stream level (optional):** either form may add `"quality":"original"|"high"|"low"`, the level of the streams to come (see *Lower-data streams* below). An unknown level is taken as `original`, never refused. Gateways before this feature ignore the field.
+- **Resume grace (optional):** either form may add `"grace":S`, the seconds the client would like the session held after its socket drops (see *Resume*). `S` must be a whole number from 0 to 3600; anything else (a string, a fraction such as `60.0`, a negative or larger number, `null`, …) is a policy violation (close 1008): a new session isn't opened, and a resumable session (right device and secret) is ended. The gateway grants `min(S, its maximum)`; the maximum is 600 s unless the operator sets `--max-resume-grace` (60–3600 s). Without the field, a new session gets the default of 60 s and a resumed one keeps what it was granted before. Send it only to a gateway whose `GET /v1/me` lists `"resume_grace": true` under `features`; older gateways ignore it and hold sessions for 60 s.
 
 The gateway replies with a text greeting:
 
 ```json
-{"session":"<32 hex>","secret":"<32 hex>","mac":"02:…","name":"…","resumed":false}
+{"session":"<32 hex>","secret":"<32 hex>","mac":"02:…","name":"…","resumed":false,"grace":60}
 ```
 
 - `mac` and `name` are the player identity assigned to this device. The client must use that MAC in HELO.
 - `secret` is needed to resume this session. Treat it like a credential.
+- `grace` is the resume grace granted, in whole seconds (older gateways leave it out: assume 60). A client should stop resuming a little before it runs out and start a new session instead.
 
 ### Messages after the greeting
 
@@ -180,7 +182,8 @@ Any of these ends the whole session, not just the socket:
 - a HELO with a device ID other than 12;
 - any client opcode outside the list above (IR, BUTN, KNOB, BODY, UREQ, SHUT, …), a SETD LMS didn't ask for, or a malformed STAT or DSCO;
 - a frame over 16 KiB;
-- any text message other than a well-formed ack or level: one of those two fields exactly, with a known level, at most 256 bytes.
+- any text message other than a well-formed ack or level: one of those two fields exactly, with a known level, at most 256 bytes;
+- a sign-in `grace` that isn't a whole number from 0 to 3600 (see *Opening*).
 
 ### Close codes
 
@@ -197,8 +200,9 @@ Any of these ends the whole session, not just the socket:
 
 When the socket drops (anything other than a policy close):
 
-1. The gateway keeps the session and its LMS connection for the **resume grace** (default 60 s). LMS never sees the player leave.
-2. While detached, the gateway reports to LMS on the player's behalf every second, and answers LMS status polls. It replays the client's last STAT with refreshed timestamps: elapsed time advances by wall time if the client was playing, and stays frozen if it was paused. Without this, LMS drops a silent player after about 15 s.
+1. The gateway keeps the session and its LMS connection for the **resume grace**: 60 s, or what the client asked for at sign-in, up to the server's maximum (600 s by default; see *Opening*). LMS never sees the player leave.
+   - A longer grace changes nothing else: the session still holds one LMS connection, a new (non-resume) session for the device still ends it at once, revoking the device ends it at once, and the frame log below keeps its bound.
+2. While detached, the gateway reports to LMS on the player's behalf every second, and answers LMS status polls. It replays the client's last STAT with refreshed timestamps: elapsed time advances by wall time if the client was playing, and stays frozen if it was paused. Once LMS has said which library track is playing (as for listening history), the elapsed time stops at the end of that track and never passes it; elapsed time the client itself reported beyond it is kept. Without this, LMS drops a silent player after about 15 s.
    - It does the same for a socket that is still attached but has sent nothing for 8 s. A working client answers LMS's status polls every 5 s, so silence means its socket may have died without either side noticing (a phone changing networks). The heartbeats stop as soon as the client sends anything.
    - **Clients:** LMS polls every player every 5 s, so a working socket never stays quiet for long. Treat about 20–25 s with nothing received as a dead socket: abandon it and resume. Count only what arrives; your own messages going out prove nothing.
 3. Frames LMS sends meanwhile are kept in a numbered log, together with recently sent frames, which may have been lost in flight. On resume the gateway re-sends every frame after the client's `received` count, in order.
@@ -647,7 +651,7 @@ Listening history, the customisable Home, stations, pinned menus and smart filte
 ### Listening history
 
 The gateway records each play that counts (the rule of `POST /v1/plays`: half the track or 240 s, whichever is less) of a local library track:
-- **live**, on the user's own devices' players (the gateway follows each player session's status reports; time heard is elapsed time while playing, never more than wall time allows, so a seek forward isn't "heard"; a seek that restarts the stream continues the same play; the track is asked of LMS just after it starts). Hardware players and other users' devices are never attributed to anyone;
+- **live**, on the user's own devices' players (the gateway follows each player session's status reports; time heard is elapsed time while playing, never more than the player's own clock (each STAT's jiffies) allows, so a seek forward isn't "heard" while reports held back during a network gap and sent together on resume still count; over a whole session, no more than the wall time since its first report plus 10 s is ever counted, whatever the reports claim; a seek that restarts the stream continues the same play; the track is asked of LMS just after it starts). Hardware players and other users' devices are never attributed to anyone;
 - **offline**, when `POST /v1/plays` has LMS record a play.
 
 Each play keeps the stable track key, the LMS track, album and artist ids and year at the time, when it started, the seconds heard (updated when a live play ends), and `live` or `offline`. Plays are kept **13 months** (396 days), at most 50,000 per user (the newest). Nothing is recorded while the user has history switched off.

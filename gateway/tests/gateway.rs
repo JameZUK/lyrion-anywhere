@@ -1251,3 +1251,250 @@ async fn app_files_are_revalidated_except_hashed_ones() {
     assert_eq!(cache_control(&h, "/").await, "no-cache");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// ---------------------------------------------------------------------------
+// Resume grace negotiated at sign-in (rolling cache, docs/plans/wave3-design.md A3)
+// ---------------------------------------------------------------------------
+
+fn sign_in_with(token: &str, grace: serde_json::Value) -> Message {
+    Message::Text(
+        serde_json::json!({ "token": token, "grace": grace })
+            .to_string()
+            .into(),
+    )
+}
+
+fn resume_with(token: &str, sid: &str, secret: &str, grace: serde_json::Value) -> Message {
+    Message::Text(
+        serde_json::json!({
+            "token": token,
+            "resume": { "session": sid, "secret": secret, "received": 0 },
+            "grace": grace,
+        })
+        .to_string()
+        .into(),
+    )
+}
+
+#[tokio::test]
+async fn grace_is_granted_up_to_the_servers_maximum() {
+    use serde_json::json;
+    // Not asked: today's 60 s, in either form of the sign-in.
+    let mut h = harness().await;
+    let mut ws = h.dial().await;
+    ws.send(Message::Text(h.tok_a.clone().into()))
+        .await
+        .unwrap();
+    assert_eq!(greeting(&mut ws).await["grace"], 60);
+    let _lms = h.lms.accept().await;
+    let mut ws = h.dial().await;
+    ws.send(Message::Text(
+        json!({ "token": h.tok_b }).to_string().into(),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(greeting(&mut ws).await["grace"], 60);
+
+    // Asked: granted up to the maximum (600 s by default).
+    for (asked, granted) in [
+        (0, 0),
+        (1, 1),
+        (300, 300),
+        (600, 600),
+        (601, 600),
+        (3600, 600),
+    ] {
+        let h = harness().await;
+        let mut ws = h.dial().await;
+        ws.send(sign_in_with(&h.tok_a, json!(asked))).await.unwrap();
+        let g = greeting(&mut ws).await;
+        assert_eq!(g["resumed"], false);
+        assert_eq!(g["grace"], granted, "asked {asked}");
+    }
+    // A server set to a lower maximum.
+    let h = harness_with(|c| c.max_resume_grace = Duration::from_secs(120)).await;
+    let mut ws = h.dial().await;
+    ws.send(sign_in_with(&h.tok_a, json!(3600))).await.unwrap();
+    assert_eq!(greeting(&mut ws).await["grace"], 120);
+}
+
+#[tokio::test]
+async fn malformed_grace_is_a_policy_violation_and_opens_nothing() {
+    use serde_json::json;
+    let bad = [
+        json!(-1),
+        json!(3601),
+        json!(1_000_000_000_000u64),
+        json!(60.5),
+        json!(60.0),
+        json!("600"),
+        json!(null),
+        json!(true),
+        json!([600]),
+        json!({ "seconds": 600 }),
+    ];
+    for grace in bad {
+        let mut h = harness().await;
+        let mut ws = h.dial().await;
+        ws.send(sign_in_with(&h.tok_a, grace.clone()))
+            .await
+            .unwrap();
+        expect_close(&mut ws, CloseCode::Policy).await;
+        h.lms.assert_no_conn().await;
+        assert_eq!(h.gw.session_count(), 0, "{grace}");
+    }
+}
+
+#[tokio::test]
+async fn malformed_grace_on_resume_ends_the_session() {
+    let mut h = harness().await;
+    let mut ws = h.dial().await;
+    let (sid, secret) = open_session(&mut ws, &h.tok_a).await;
+    let _lms = h.lms.accept().await;
+    drop(ws);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut ws = h.dial().await;
+    ws.send(resume_with(&h.tok_a, &sid, &secret, serde_json::json!("x")))
+        .await
+        .unwrap();
+    expect_close(&mut ws, CloseCode::Policy).await;
+    wait_for(|| h.lms.closed() == 1).await;
+    assert_eq!(h.gw.session_count(), 0);
+    let mut ws = h.dial().await;
+    ws.send(resume_msg(&h.tok_a, &sid, &secret)).await.unwrap();
+    expect_close(&mut ws, CloseCode::Library(4404)).await;
+}
+
+#[tokio::test]
+async fn malformed_grace_with_a_wrong_secret_does_not_end_the_owners_session() {
+    let mut h = harness().await;
+    let mut ws = h.dial().await;
+    let (sid, secret) = open_session(&mut ws, &h.tok_a).await;
+    let _lms = h.lms.accept().await;
+    drop(ws);
+    // Another device, or a wrong secret, can't end A's session with a bad grace.
+    let wrong = "0".repeat(32);
+    for (tok, sec) in [(&h.tok_b, secret.as_str()), (&h.tok_a, wrong.as_str())] {
+        let mut ws = h.dial().await;
+        ws.send(resume_with(tok, &sid, sec, serde_json::json!(-5)))
+            .await
+            .unwrap();
+        expect_close(&mut ws, CloseCode::Policy).await;
+    }
+    assert_eq!(h.lms.closed(), 0);
+    let mut ws = h.dial().await;
+    ws.send(resume_msg(&h.tok_a, &sid, &secret)).await.unwrap();
+    assert_eq!(greeting(&mut ws).await["resumed"], true);
+    h.lms.assert_no_conn().await;
+}
+
+#[tokio::test]
+async fn the_granted_grace_is_the_one_applied() {
+    use serde_json::json;
+    // The default is short here; the session asked for 2 s and outlives it.
+    let mut h = harness_with(|c| c.resume_grace = Duration::from_millis(200)).await;
+    let mut ws = h.dial().await;
+    ws.send(sign_in_with(&h.tok_a, json!(2))).await.unwrap();
+    let g = greeting(&mut ws).await;
+    assert_eq!(g["grace"], 2);
+    let (sid, secret) = (
+        g["session"].as_str().unwrap().to_string(),
+        g["secret"].as_str().unwrap().to_string(),
+    );
+    let _lms = h.lms.accept().await;
+    drop(ws);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(h.gw.session_count(), 1, "held for the granted grace");
+    assert_eq!(h.lms.closed(), 0);
+
+    // A resume without "grace" keeps what was granted; one with it changes it.
+    let mut ws = h.dial().await;
+    ws.send(resume_msg(&h.tok_a, &sid, &secret)).await.unwrap();
+    let g = greeting(&mut ws).await;
+    assert_eq!((&g["resumed"], &g["grace"]), (&json!(true), &json!(2)));
+    drop(ws);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut ws = h.dial().await;
+    ws.send(resume_with(&h.tok_a, &sid, &secret, json!(0)))
+        .await
+        .unwrap();
+    let g = greeting(&mut ws).await;
+    assert_eq!((&g["resumed"], &g["grace"]), (&json!(true), &json!(0)));
+    // Grace 0: the session goes as soon as the socket does.
+    drop(ws);
+    wait_for(|| h.lms.closed() == 1).await;
+    assert_eq!(h.gw.session_count(), 0);
+}
+
+#[tokio::test]
+async fn a_long_grace_still_holds_one_lms_connection_per_device() {
+    use serde_json::json;
+    let mut h = harness().await;
+    let mut ws = h.dial().await;
+    ws.send(sign_in_with(&h.tok_a, json!(600))).await.unwrap();
+    assert_eq!(greeting(&mut ws).await["grace"], 600);
+    let _lms1 = h.lms.accept().await;
+    drop(ws);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // A new session for the same device (not a resume) ends the detached one at once.
+    let mut ws = h.dial().await;
+    ws.send(sign_in_with(&h.tok_a, json!(600))).await.unwrap();
+    assert_eq!(greeting(&mut ws).await["resumed"], false);
+    let _lms2 = h.lms.accept().await;
+    wait_for(|| h.lms.closed() == 1).await;
+    assert_eq!(h.gw.session_count(), 1);
+    drop(ws);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Revoking the device ends a detached session at once, whatever its grace.
+    let dev = h.accounts.authenticate(&h.tok_a).unwrap().device_id;
+    h.accounts.revoke_device(dev).unwrap();
+    h.gw.end_sessions_for(&[dev]).await;
+    wait_for(|| h.lms.closed() == 2).await;
+    assert_eq!(h.gw.session_count(), 0);
+}
+
+/// Ten minutes' worth of LMS status polls while detached (one every 5 s) are answered by
+/// the gateway and never fill the detached frame log, however small it is.
+#[tokio::test]
+async fn a_long_detached_spell_of_status_polls_never_fills_the_log() {
+    let mut h = harness_with(|c| c.detached_queue_limit = 4096).await;
+    let mut ws = h.dial().await;
+    ws.send(sign_in_with(&h.tok_a, serde_json::json!(600)))
+        .await
+        .unwrap();
+    let g = greeting(&mut ws).await;
+    let (sid, secret) = (
+        g["session"].as_str().unwrap().to_string(),
+        g["secret"].as_str().unwrap().to_string(),
+    );
+    let mut lms = h.lms.accept().await;
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
+    ws.send(Message::Binary(stat_frame(b"STMs", 1_000, 5_000).into()))
+        .await
+        .unwrap();
+    wait_for(|| h.lms.frames() == ["HELO", "STAT"]).await;
+    drop(ws);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    for i in 1..=120u32 {
+        let mut poll = vec![0u8; 24];
+        poll[0] = b't';
+        poll[14..18].copy_from_slice(&i.to_be_bytes());
+        lms.write_all(&encode_server_frame(*b"strm", &poll))
+            .await
+            .unwrap();
+    }
+    wait_for(|| h.lms.stats().iter().any(|s| s.server_timestamp == 120)).await;
+    assert_eq!(h.lms.closed(), 0);
+    let mut ws = h.dial().await;
+    ws.send(resume_msg(&h.tok_a, &sid, &secret)).await.unwrap();
+    assert_eq!(greeting(&mut ws).await["resumed"], true);
+    lms.write_all(&encode_server_frame(*b"vers", b"after"))
+        .await
+        .unwrap();
+    match next(&mut ws).await {
+        Message::Binary(b) => assert_eq!(&b[2..6], b"vers", "no poll was queued"),
+        m => panic!("{m:?}"),
+    }
+}

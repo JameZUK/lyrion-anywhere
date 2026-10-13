@@ -1150,3 +1150,75 @@ async fn pinned_menus_reopen_what_lms_offers_now() {
         .await;
     assert_eq!(s, S::NOT_FOUND);
 }
+
+fn stat_at(event: &[u8; 4], elapsed_ms: u32, jiffies: u32) -> Vec<u8> {
+    ClientMsg::Stat(Stat {
+        event: *event,
+        jiffies,
+        elapsed_seconds: elapsed_ms / 1000,
+        elapsed_milliseconds: elapsed_ms,
+        ..Stat::default()
+    })
+    .encode()
+}
+
+/// Regression (rolling cache, A4): a phone that lost its connection queues its reports and
+/// sends them together on resume. They are judged by the player's own clock, so the
+/// listening they describe counts, though they all arrive at once.
+#[tokio::test]
+async fn reports_sent_together_after_a_gap_count_by_the_players_clock() {
+    let h = harness_with(live_harness()).await;
+    let alice = h.accounts.user_id_by_name("alice").unwrap().unwrap();
+    // A 20 s track: it counts after 10 s heard.
+    h.lms.add_track(43, "flc", b"audio".to_vec(), 20.0);
+    *h.lms.status_track.lock().unwrap() = Some(43);
+    let mut ws = h.dial().await;
+    connect(&mut ws, &h.tok_a).await;
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
+    ws.send(Message::Binary(stat_at(b"STMs", 0, 50_000).into()))
+        .await
+        .unwrap();
+    // The "gap": 2.5 s of wall time, then three reports made 4 s apart, sent at once.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let mut burst = Vec::new();
+    for i in 1..=3u32 {
+        burst.extend(stat_at(b"STMt", i * 4000, 50_000 + i * 4000));
+    }
+    ws.send(Message::Binary(burst.into())).await.unwrap();
+    wait_for(|| anywhere_gateway::history::count(&h.accounts, alice).unwrap() == 1).await;
+    let _ = ws.close(None).await;
+}
+
+/// Security: a player whose clock races ahead with its elapsed time (claiming minutes in
+/// a fraction of a second) is held to the wall time since its first report.
+#[tokio::test]
+async fn a_racing_player_clock_cannot_inflate_listening() {
+    let h = harness_with(live_harness()).await;
+    let alice = h.accounts.user_id_by_name("alice").unwrap().unwrap();
+    // A 60 s track: it would count after 30 s.
+    h.lms.add_track(44, "flc", b"audio".to_vec(), 60.0);
+    *h.lms.status_track.lock().unwrap() = Some(44);
+    let mut ws = h.dial().await;
+    connect(&mut ws, &h.tok_a).await;
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
+    ws.send(Message::Binary(stat_at(b"STMs", 0, 0).into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let mut burst = Vec::new();
+    for i in 1..=60u32 {
+        burst.extend(stat_at(b"STMt", i * 1000, i * 1000));
+    }
+    ws.send(Message::Binary(burst.into())).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let _ = ws.close(None).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        anywhere_gateway::history::count(&h.accounts, alice).unwrap(),
+        0
+    );
+}

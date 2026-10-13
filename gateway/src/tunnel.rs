@@ -22,6 +22,9 @@ use crate::{AppState, origin_allowed};
 const MAX_WS_MESSAGE: usize = ClientFrameReader::MAX_FRAME + 1024;
 const MAX_AUTH_MESSAGE: usize = 1024;
 const MAX_CONTROL_MESSAGE: usize = 256;
+/// The longest resume grace a client may ask for at sign-in, in seconds. The gateway grants
+/// at most its own maximum ([`crate::Config::max_resume_grace`]).
+pub const MAX_GRACE_REQUEST: u64 = 3600;
 
 /// The text messages allowed after authentication, each exactly one of:
 /// - `{"ack":{"stream":n,"bytes":b}}`: bytes of stream `n` the client has received;
@@ -108,6 +111,12 @@ enum Auth {
     Resume(Principal, ResumeRequest),
 }
 
+fn auth_device(a: &Auth) -> &Principal {
+    match a {
+        Auth::New(p) | Auth::Resume(p, _) => p,
+    }
+}
+
 /// The level asked for at sign-in. An unknown one is taken as `original` (never refused:
 /// a refusal here would look like a failed sign-in).
 fn auth_quality(text: &str) -> crate::live::Quality {
@@ -119,6 +128,31 @@ fn auth_quality(text: &str) -> crate::live::Quality {
         .and_then(|m| m.quality)
         .and_then(|q| crate::live::Quality::parse(&q))
         .unwrap_or_default()
+}
+
+/// The resume grace asked for at sign-in (`"grace"`, whole seconds): `Ok(None)` when not
+/// asked (or for the bare-token form), `Err` for anything but an integer 0–3600 (a string,
+/// a fraction, a negative or too large a number, `null`, …), which is a policy violation.
+/// (A message that isn't valid JSON fails authentication anyway.)
+fn auth_grace(text: &str) -> Result<Option<u64>, ()> {
+    if text.len() > MAX_AUTH_MESSAGE || !text.starts_with('{') {
+        return Ok(None);
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Ok(None);
+    };
+    match v.get("grace") {
+        None => Ok(None),
+        Some(g) => match g.as_u64() {
+            Some(n) if n <= MAX_GRACE_REQUEST => Ok(Some(n)),
+            _ => Err(()),
+        },
+    }
+}
+
+/// The grace granted for `asked` seconds: at most the server's maximum.
+fn granted_grace(gw: &AppState, asked: u64) -> Duration {
+    Duration::from_secs(asked).min(gw.cfg.max_resume_grace)
 }
 
 fn parse_auth(gw: &AppState, text: &str) -> Option<Auth> {
@@ -148,13 +182,33 @@ async fn close(mut ws: WebSocket, code: u16, reason: &str) {
 
 async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
     let first = tokio::time::timeout(gw.cfg.auth_timeout, ws.recv()).await;
-    let (auth, quality) = match first {
-        Ok(Some(Ok(Message::Text(t)))) => (parse_auth(&gw, t.as_str()), auth_quality(t.as_str())),
-        _ => (None, Default::default()),
+    let (auth, quality, grace) = match first {
+        Ok(Some(Ok(Message::Text(t)))) => (
+            parse_auth(&gw, t.as_str()),
+            auth_quality(t.as_str()),
+            auth_grace(t.as_str()),
+        ),
+        _ => (None, Default::default(), Ok(None)),
     };
     let Some(auth) = auth else {
         warn!("player authentication failed");
         return close(ws, close_code::POLICY, "unauthorised").await;
+    };
+    let grace = match grace {
+        Ok(g) => g,
+        Err(()) => {
+            // A policy violation: nothing is opened, and a session this client could resume
+            // is ended, as for any other violation.
+            if let Auth::Resume(device, r) = &auth
+                && let Some(s) = gw.session(&r.session).filter(|s| {
+                    s.device.device_id == device.device_id && s.secret_matches(&r.secret)
+                })
+            {
+                s.end(&gw, EndReason::Policy).await;
+            }
+            warn!(mac = %auth_device(&auth).mac_string(), "player sign-in with a malformed resume grace");
+            return close(ws, close_code::POLICY, "policy violation").await;
+        }
     };
 
     let (session, resumed, received) = match auth {
@@ -190,6 +244,11 @@ async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
     }
 
     session.set_quality(quality);
+    // Asked for: at most the server's maximum. Not asked: a new session keeps the default
+    // and a resumed one what it was granted before.
+    if let Some(asked) = grace {
+        session.set_grace(granted_grace(&gw, asked));
+    }
     let attached = match session.attach(received) {
         Ok(a) => a,
         Err(AttachError::Gap) => {
@@ -210,6 +269,8 @@ async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
         "mac": session.device.mac_string(),
         "name": session.name(),
         "resumed": resumed,
+        // The resume grace granted, in whole seconds.
+        "grace": session.grace().as_secs(),
     })
     .to_string();
     if ws.send(Message::Text(greeting.into())).await.is_err() {
@@ -412,6 +473,39 @@ mod tests {
             "x".repeat(MAX_CONTROL_MESSAGE)
         );
         assert!(parse_control(&long).is_none());
+    }
+
+    #[test]
+    fn sign_in_grace_is_an_integer_up_to_an_hour() {
+        assert_eq!(auth_grace("bare-token"), Ok(None));
+        assert_eq!(auth_grace(r#"{"token":"t"}"#), Ok(None));
+        assert_eq!(auth_grace(r#"{"token":"t","grace":0}"#), Ok(Some(0)));
+        assert_eq!(auth_grace(r#"{"token":"t","grace":600}"#), Ok(Some(600)));
+        assert_eq!(auth_grace(r#"{"token":"t","grace":3600}"#), Ok(Some(3600)));
+        assert_eq!(
+            auth_grace(
+                r#"{"token":"t","resume":{"session":"s","secret":"x","received":1},"grace":120}"#
+            ),
+            Ok(Some(120))
+        );
+        // Not valid JSON: authentication fails anyway, so no verdict here.
+        assert_eq!(auth_grace(r#"{"token":"t","grace":"#), Ok(None));
+        for bad in [
+            r#"{"token":"t","grace":3601}"#,
+            r#"{"token":"t","grace":-1}"#,
+            r#"{"token":"t","grace":60.0}"#,
+            r#"{"token":"t","grace":60.5}"#,
+            r#"{"token":"t","grace":6e2}"#,
+            r#"{"token":"t","grace":"600"}"#,
+            r#"{"token":"t","grace":null}"#,
+            r#"{"token":"t","grace":true}"#,
+            r#"{"token":"t","grace":[600]}"#,
+            r#"{"token":"t","grace":{"s":600}}"#,
+            r#"{"token":"t","grace":18446744073709551615}"#,
+            r#"{"token":"t","grace":99999999999999999999999}"#,
+        ] {
+            assert_eq!(auth_grace(bad), Err(()), "{bad}");
+        }
     }
 
     #[test]

@@ -389,6 +389,9 @@ pub async fn me(State(gw): State<AppState>, headers: HeaderMap) -> Response {
             "stream_quality": gw.live_ffmpeg().is_some(),
             // POST /v1/players/{player}/queue/edit (checked queue edits).
             "queue_edit": true,
+            // The player socket's sign-in takes "grace" (seconds to hold the session for a
+            // client that lost its connection); the greeting says what was granted.
+            "resume_grace": true,
         },
     }))
     .into_response()

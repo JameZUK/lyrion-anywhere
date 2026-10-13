@@ -124,6 +124,7 @@ The main `serve` options:
 | `--no-analysis` | | Turn off track analysis (the apps' waveform seek bar and R128 loudness levelling; see [`PROTOCOL.md`](PROTOCOL.md#track-analysis-get-v1analysistrackid)). The apps then show a plain seek bar and level from ReplayGain tags. |
 | `--keep-flac-pictures` | | Send FLAC streams with their embedded artwork and padding, as LMS sends them. By default the gateway drops them so playback starts sooner (see [`PROTOCOL.md`](PROTOCOL.md#streams)). |
 | `--analysis-cache-mb` | 64 | Disk space (MiB, 1–65536) for track analyses, kept in `<data-dir>/analysis-cache` (about 2 KiB a track). The least recently used are removed first. |
+| `--max-resume-grace` | 600 | The longest, in seconds (60–3600), a player session and its LMS connection are held for a phone that lost its connection, when the app asks for a longer grace (to ride out tunnels and lifts). Players that don't ask get 60 s. Each held session is still one LMS connection per device. |
 | `--max-connections` | 1024 | Open client connections at once (16–65536); beyond this, new ones wait. Request heads and bodies each have 15 s, and idle keep-alive connections close after 15 s. |
 
 The Docker image has no ffmpeg, so downloads from it are original-format only.

@@ -97,8 +97,13 @@ pub struct Config {
     pub client_ip_header: Option<axum::http::HeaderName>,
     pub auth_timeout: Duration,
     pub dial_timeout: Duration,
-    /// How long a session (and its LMS connection) survives without a client socket.
+    /// How long a session (and its LMS connection) survives without a client socket, unless
+    /// the client asked for another grace when it signed in.
     pub resume_grace: Duration,
+    /// The longest resume grace a client may ask for (`"grace"` in the player socket's
+    /// sign-in message). Each detached session holds one LMS connection, still one per
+    /// device.
+    pub max_resume_grace: Duration,
     /// A connected client that has sent nothing for this long (it answers LMS's status
     /// polls every 5 s) is reported to LMS by the gateway until it speaks again, as while
     /// detached: LMS drops a player it hasn't heard from for about 15 s, which would end the
@@ -202,6 +207,7 @@ impl Default for Config {
             auth_timeout: Duration::from_secs(5),
             dial_timeout: Duration::from_secs(5),
             resume_grace: Duration::from_secs(60),
+            max_resume_grace: Duration::from_secs(600),
             client_silence: Duration::from_secs(8),
             detached_queue_limit: 1024 * 1024,
             replay_window: 4 * 1024 * 1024,

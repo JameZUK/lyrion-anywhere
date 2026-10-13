@@ -88,6 +88,11 @@ enum Cmd {
         /// Open client connections at once (beyond this, new ones wait).
         #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u64).range(16..=65_536))]
         max_connections: u64,
+        /// The longest a player session (and its LMS connection) is held for a client that
+        /// lost its connection, in seconds, when the client asks for a longer grace (players
+        /// that don't ask get 60 s).
+        #[arg(long, default_value_t = 600, value_parser = clap::value_parser!(u64).range(60..=3600))]
+        max_resume_grace: u64,
     },
     /// Administer accounts directly (before the LMS plugin is set up).
     Admin {
@@ -163,6 +168,7 @@ fn main() {
             no_analysis,
             analysis_cache_mb,
             max_connections,
+            max_resume_grace,
         } => {
             if !admin_listen.ip().is_loopback() {
                 fail("--admin-listen must be a loopback address");
@@ -200,6 +206,7 @@ fn main() {
                 analysis_cache_bytes: analysis_cache_mb * 1024 * 1024,
                 strip_flac_pictures: !keep_flac_pictures,
                 live_transcode_jobs: live_transcode_jobs as usize,
+                max_resume_grace: std::time::Duration::from_secs(max_resume_grace),
                 // Plays are signed for the plugin with the secret it already reads.
                 plays_secret: Some(admin_secret.clone()),
                 ..Config::default()
