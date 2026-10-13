@@ -30,6 +30,8 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DragHandle
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Favorite
+import androidx.compose.material.icons.outlined.FilterAlt
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Radio
 import androidx.compose.material.icons.outlined.Shuffle
@@ -213,8 +215,40 @@ private fun Shelf(shelf: HomeShelf, feed: HomeFeed, actions: HomeActions, onNewS
                 hideWhenEmpty = true,
             ) { a -> AlbumCard(a, actions) }
         }
-        // Smart filters (Wave 2 §5.6): shown once their screens arrive.
-        ShelfKind.FILTER -> {}
+        ShelfKind.FILTER -> FilterShelf(shelf, feed, actions)
+    }
+}
+
+/**
+ * A smart filter's shelf (Wave 2 §5.6): its first albums, Play and Shuffle (its first 50),
+ * and See all for its page. A deleted filter's shelf is left out.
+ */
+@Composable
+private fun FilterShelf(shelf: HomeShelf, feed: HomeFeed, actions: HomeActions) {
+    val id = shelf.id ?: return
+    val filter = feed.filters.firstOrNull { it.id == id }
+    if (filter == null && feed.filtersLoaded) return
+    val name = filter?.name ?: stringResource(R.string.home_shelf_filter)
+    val state = feed.filterAlbums[id] ?: Loadable.Loading
+    val playable = (state as? Loadable.Ready)?.value?.isNotEmpty() == true && !feed.filterPlaying
+    Box(Modifier.testTag("shelf-filter-$id")) {
+        Carousel(
+            title = name,
+            state = state,
+            onSeeAll = { actions.onFilter(id, name) },
+            onRetry = actions.onRetry,
+            empty = stringResource(R.string.filter_no_albums),
+            extra = {
+                if (playable) {
+                    IconButton(onClick = { actions.onPlayFilter(id, name, false) }, modifier = Modifier.testTag("shelf-filter-play-$id")) {
+                        Icon(Icons.Outlined.PlayArrow, stringResource(R.string.filter_play, name))
+                    }
+                    IconButton(onClick = { actions.onPlayFilter(id, name, true) }, modifier = Modifier.testTag("shelf-filter-shuffle-$id")) {
+                        Icon(Icons.Outlined.Shuffle, stringResource(R.string.filter_shuffle, name))
+                    }
+                }
+            },
+        ) { a -> AlbumCard(a, actions) }
     }
 }
 
@@ -388,6 +422,8 @@ private fun shelfName(shelf: HomeShelf, feed: HomeFeed): String {
         ShelfKind.MENU -> feed.menus.firstOrNull { it.id == shelf.id }?.name
             ?.let { stringResource(R.string.home_shelf_named, generic, it) } ?: generic
         ShelfKind.GENRE -> feed.genreNames[shelf.id]?.let { stringResource(R.string.home_shelf_named, generic, it) } ?: generic
+        ShelfKind.FILTER -> feed.filters.firstOrNull { it.id == shelf.id }?.name
+            ?.let { stringResource(R.string.home_shelf_named, generic, it) } ?: generic
         else -> generic
     }
 }
@@ -584,6 +620,15 @@ private fun AddShelfDialog(
                         headlineContent = { Text(m.name) },
                         supportingContent = { Text(stringResource(R.string.home_shelf_menu)) },
                         modifier = Modifier.clickable { onAdd(HomeShelf(ShelfKind.MENU, m.id, false)) },
+                    )
+                }
+                for (f in feed.filters.filterNot { HomeLayouts.has(draft, ShelfKind.FILTER, it.id) }) {
+                    ListItem(
+                        leadingContent = { Icon(Icons.Outlined.FilterAlt, contentDescription = null) },
+                        headlineContent = { Text(f.name) },
+                        supportingContent = { Text(stringResource(R.string.home_shelf_filter)) },
+                        modifier = Modifier.clickable { onAdd(HomeShelf(ShelfKind.FILTER, f.id, false)) }
+                            .testTag("home-add-filter-${f.id}"),
                     )
                 }
                 ListItem(

@@ -583,6 +583,10 @@ data class HomeActions(
     val onEdit: () -> Unit = {},
     /** Genres to choose from (new stations, genre shelves). */
     val genreChoices: suspend () -> List<Genre> = { emptyList() },
+    /** Open a smart filter's page (id, name). */
+    val onFilter: (Long, String) -> Unit = { _, _ -> },
+    /** Play or shuffle a smart filter (id, name, shuffle). */
+    val onPlayFilter: (Long, String, Boolean) -> Unit = { _, _, _ -> },
 )
 
 /**
@@ -637,6 +641,8 @@ fun <T> Carousel(
     hideWhenEmpty: Boolean = false,
     extra: @Composable () -> Unit = {},
     showSeeAll: Boolean = true,
+    /** What an empty row says (default: nothing here). */
+    empty: String? = null,
     card: @Composable (T) -> Unit,
 ) {
     if (hideWhenEmpty && (state as? Loadable.Ready)?.value?.isEmpty() == true) return
@@ -668,7 +674,7 @@ fun <T> Carousel(
                 OutlinedButton(onClick = onRetry) { Text(stringResource(R.string.action_retry)) }
             }
             is Loadable.Ready -> if (state.value.isEmpty()) {
-                Text(stringResource(R.string.nothing_here), Modifier.padding(horizontal = 16.dp))
+                Text(empty ?: stringResource(R.string.nothing_here), Modifier.padding(horizontal = 16.dp))
             } else {
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 16.dp),

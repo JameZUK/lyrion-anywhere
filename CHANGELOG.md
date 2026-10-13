@@ -23,9 +23,9 @@ Following `docs/plans/wave2-design.md` §5.1, §5.4, §5.5 and §5.6.
   - play and shuffle load the first 50 albums through the album play path.
 - **Tests:** unit, negative and robustness tests for the filter contract checks and the API wrapper, Start radio's parsing and the shortcut rules; component tests for car mode (controls, long press, wake lock with a fake), haptics (switch, events, no API), shortcuts (each key, ignored while typing or in dialogs, the help sheet), the Media Session (a fake `navigator.mediaSession`) and the filters UI; node tests for the manifest shortcuts and the 44 px and 76 px targets.
 
-## 2026-10-13: Wave 2 part 4 on Android: car, platform and the offline visualiser
+## 2026-10-13: Wave 2 part 4 on Android: car, platform, smart filters and the offline visualiser
 
-Following `docs/plans/wave2-design.md` §5 (smart filters, §5.6, follow separately).
+Following `docs/plans/wave2-design.md` §5, smart filters (§5.6) included.
 
 - **Car mode (U8):**
   - a driving screen: huge art, giant previous / play-pause / next (a long press on play/pause stops), "Start radio" from the playing track, a large elapsed time, voice search, and one level of Favourites and Stations;
@@ -46,6 +46,7 @@ Following `docs/plans/wave2-design.md` §5 (smart filters, §5.6, follow separat
   - app shortcuts *Start radio* and *Sleep 30 min*, through the same player controller as the app's buttons (they land on a private, non-exported activity);
   - *Wallpaper colours* as a setting (on by default, Android 12+).
 - **Offline visualiser:** the visualiser on the downloads' Now playing, from the offline engine's own analysis, with the same styles, switch and limits as streaming.
+- **Smart filters (X7, §5.6):** a *Filters* chip in Library (play, shuffle, edit, delete after asking), a rule builder (name, 1–20 genres, decade, artist with an optional role, compilations, order and up to 500 albums; checked by the Rust layer's own check before anything is sent, problems announced), each filter's albums paged from the gateway, and a Home `filter` shelf with Play and Shuffle (addable in edit mode; a deleted filter's shelf is left out). Play and shuffle load the first 50 albums through the album play path, shuffle setting track shuffle first, as on the web. Tested with fakes (repository refusals, play order and bounds, view models, screens, Home shelves) and in the accessibility audit in every state.
 - **Tests:**
   - the Auto art provider's refusals (unknown key, traversal, wrong caller, write modes, safe mode), the per-URI read-only grant to Android Auto only, the opaque-key cache (bounds, images only, timeouts) and the manifest (not exported, grants only);
   - the Bluetooth side under Robolectric: only the two connection broadcasts with a device are read, nothing is registered or read without the permission, Android 11 and earlier need none, and the automatic opening and leaving end to end;

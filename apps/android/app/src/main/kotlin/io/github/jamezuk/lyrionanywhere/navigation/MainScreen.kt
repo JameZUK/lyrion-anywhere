@@ -123,6 +123,15 @@ import io.github.jamezuk.lyrionanywhere.ui.library.HomeActions
 import io.github.jamezuk.lyrionanywhere.ui.library.HomeEditActions
 import io.github.jamezuk.lyrionanywhere.ui.library.HomeFeedViewModel
 import io.github.jamezuk.lyrionanywhere.ui.library.HomeMessage
+import io.github.jamezuk.lyrionanywhere.ui.library.FilterAlbumsActions
+import io.github.jamezuk.lyrionanywhere.ui.library.FilterAlbumsScreen
+import io.github.jamezuk.lyrionanywhere.ui.library.FilterAlbumsViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.FilterEditorHost
+import io.github.jamezuk.lyrionanywhere.ui.library.FilterEditorViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.FiltersActions
+import io.github.jamezuk.lyrionanywhere.ui.library.FiltersScreen
+import io.github.jamezuk.lyrionanywhere.ui.library.FiltersViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.filterMessageText
 import io.github.jamezuk.lyrionanywhere.ui.settings.HistoryMessage
 import io.github.jamezuk.lyrionanywhere.ui.settings.HistoryScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.HistorySettings
@@ -250,6 +259,9 @@ import kotlinx.serialization.Serializable
 @Serializable data class PinnedMenuRoute(val id: Long, val name: String)
 
 @Serializable data object HistoryRoute
+
+/** One smart filter's albums (Wave 2 §5.6). */
+@Serializable data class FilterRoute(val id: Long, val name: String)
 
 @Serializable data class AlarmsRoute(val player: String, val name: String)
 
@@ -604,7 +616,9 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
             CompositionLocalProvider(LocalWindowLayout provides layout) {
             NavHost(nav, startDestination = HomeRoute) {
                 composable<HomeRoute> {
-                    val vm = viewModel { HomeFeedViewModel(container.library, libraryId, container.me, player::target) }
+                    val vm = viewModel {
+                        HomeFeedViewModel(container.library, libraryId, container.me, player::target, container.filters, container.players)
+                    }
                     val feed by vm.state.collectAsStateWithLifecycle()
                     LaunchedEffect(vm) {
                         vm.messages.collect { m ->
@@ -614,6 +628,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                     is HomeMessage.StationBroken -> res.getString(R.string.station_broken, m.reason)
                                     HomeMessage.NoPlayer -> res.getString(R.string.station_no_player)
                                     is HomeMessage.StationStarted -> res.getString(R.string.station_started, m.name)
+                                    is HomeMessage.Filter -> filterMessageText(res, m.message)
                                 },
                             )
                         }
@@ -645,6 +660,8 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 onGenre = { id, name -> nav.navigate(GenreRoute(id, name)) },
                                 onEdit = vm::edit,
                                 genreChoices = vm::genreChoices,
+                                onFilter = { id, name -> nav.navigate(FilterRoute(id, name)) },
+                                onPlayFilter = vm::playFilter,
                             ),
                             edit = HomeEditActions(
                                 onMove = vm::move,
@@ -743,6 +760,49 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                                 onFolder = { nav.navigate(FavouritesRoute(it.id, it.name)) },
                                                 onPlay = { f, placement -> player.playFavourite(f.id, placement) },
                                             )
+                                        }
+                                        LibraryChip.FILTERS -> {
+                                            val vm = viewModel(key = "library-filters") {
+                                                FiltersViewModel(container.filters, container.players, player::target)
+                                            }
+                                            val ui by vm.state.collectAsStateWithLifecycle()
+                                            LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(filterMessageText(res, it)) } }
+                                            // Back from a filter's page (edited or deleted there): read the list again.
+                                            LaunchedEffect(Unit) { vm.load() }
+                                            // The filter being edited: 0 for a new one, null when the builder is closed.
+                                            var editing by rememberSaveable { mutableStateOf<Long?>(null) }
+                                            var session by rememberSaveable { mutableIntStateOf(0) }
+                                            FiltersScreen(
+                                                ui,
+                                                FiltersActions(
+                                                    onOpen = { nav.navigate(FilterRoute(it.id, it.name)) },
+                                                    onNew = {
+                                                        session++
+                                                        editing = 0L
+                                                    },
+                                                    onEdit = {
+                                                        session++
+                                                        editing = it.id
+                                                    },
+                                                    onPlay = vm::play,
+                                                    onDelete = vm::delete,
+                                                    onRetry = vm::load,
+                                                ),
+                                            )
+                                            editing?.let { id ->
+                                                val initial = (ui.filters as? Loadable.Ready)?.value?.firstOrNull { it.id == id }
+                                                if (id == 0L || initial != null) {
+                                                    FilterEditorHost(
+                                                        key = "filter-editor-$session",
+                                                        make = { FilterEditorViewModel(container.filters, container.library, initial) },
+                                                        onSaved = { f ->
+                                                            editing = null
+                                                            vm.saved(f, added = id == 0L)
+                                                        },
+                                                        onClose = { editing = null },
+                                                    )
+                                                }
+                                            }
                                         }
                                         LibraryChip.DOWNLOADED -> OfflineLibraryScreen(
                                             offlineState.albums,
@@ -1116,6 +1176,47 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     val vm = viewModel(key = "alarms-${route.player}") { AlarmsViewModel(container.alarms, route.player) }
                     Screen(title = stringResource(R.string.alarms), onBack = { nav.popBackStack() }) {
                         AlarmsScreen(vm, route.name)
+                    }
+                }
+                composable<FilterRoute> { entry ->
+                    val route = entry.toRoute<FilterRoute>()
+                    val vm = viewModel(key = "filter-${route.id}") {
+                        FilterAlbumsViewModel(container.filters, container.me, container.players, player::target, route.id)
+                    }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(filterMessageText(res, it)) } }
+                    LaunchedEffect(ui.deleted) { if (ui.deleted) nav.popBackStack() }
+                    var editing by rememberSaveable { mutableStateOf(false) }
+                    var session by rememberSaveable { mutableIntStateOf(0) }
+                    val title = ((ui.filter as? Loadable.Ready)?.value?.name) ?: route.name
+                    Screen(title = title, onBack = { nav.popBackStack() }) {
+                        FilterAlbumsScreen(
+                            ui,
+                            FilterAlbumsActions(
+                                onAlbum = { openAlbum(it.id) },
+                                onLoadMore = vm::loadMore,
+                                onMore = openMore,
+                                onPlay = vm::play,
+                                onEdit = {
+                                    session++
+                                    editing = true
+                                },
+                                onDelete = vm::delete,
+                                onRetry = vm::reload,
+                            ),
+                        )
+                    }
+                    val initial = (ui.filter as? Loadable.Ready)?.value
+                    if (editing && initial != null) {
+                        FilterEditorHost(
+                            key = "filter-editor-${route.id}-$session",
+                            make = { FilterEditorViewModel(container.filters, container.library, initial) },
+                            onSaved = {
+                                editing = false
+                                vm.saved(it)
+                            },
+                            onClose = { editing = false },
+                        )
                     }
                 }
                 composable<HistoryRoute> {

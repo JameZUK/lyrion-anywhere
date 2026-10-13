@@ -101,6 +101,7 @@ fun libraryChipLabel(c: LibraryChip): String = stringResource(
         LibraryChip.ARTISTS -> R.string.lib_artists
         LibraryChip.PLAYLISTS -> R.string.lib_playlists
         LibraryChip.FAVOURITES -> R.string.lib_favourites
+        LibraryChip.FILTERS -> R.string.lib_filters
         LibraryChip.DOWNLOADED -> R.string.chip_downloaded
     },
 )

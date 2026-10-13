@@ -3,7 +3,7 @@ package io.github.jamezuk.lyrionanywhere.data
 import io.github.jamezuk.lyrionanywhere.core.AlbumSort
 
 /** The Library page's type chips (Wave 2 §3.2). None chosen: the overview. */
-enum class LibraryChip { ALBUMS, ARTISTS, PLAYLISTS, FAVOURITES, DOWNLOADED }
+enum class LibraryChip { ALBUMS, ARTISTS, PLAYLISTS, FAVOURITES, FILTERS, DOWNLOADED }
 
 /**
  * An album order the Library offers (Wave 2 §3.2): one of LMS's, or [RECENTLY_PLAYED], the

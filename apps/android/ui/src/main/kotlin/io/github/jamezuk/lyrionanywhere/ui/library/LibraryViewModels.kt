@@ -17,12 +17,16 @@ import io.github.jamezuk.lyrionanywhere.core.PinnedMenu
 import io.github.jamezuk.lyrionanywhere.core.SavedPlaylist
 import io.github.jamezuk.lyrionanywhere.core.SearchResults
 import io.github.jamezuk.lyrionanywhere.core.ShelfKind
+import io.github.jamezuk.lyrionanywhere.core.SmartFilter
 import io.github.jamezuk.lyrionanywhere.core.Station
 import io.github.jamezuk.lyrionanywhere.core.StationBatch
 import io.github.jamezuk.lyrionanywhere.core.StationSpec
 import io.github.jamezuk.lyrionanywhere.core.Track
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
+import io.github.jamezuk.lyrionanywhere.data.FilterLimits
+import io.github.jamezuk.lyrionanywhere.data.FiltersRepository
+import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
 import io.github.jamezuk.lyrionanywhere.data.LibraryRepository
 import io.github.jamezuk.lyrionanywhere.data.MeRepository
 import io.github.jamezuk.lyrionanywhere.ui.home.HomeLayouts
@@ -509,6 +513,17 @@ data class HomeFeed(
     val saving: Boolean = false,
     /** The station kept going, if any. */
     val activeStation: Long? = null,
+    /** The user's smart filters (Wave 2 §5.6), for filter shelves and the shelf picker. */
+    val filters: List<SmartFilter> = emptyList(),
+    /**
+     * [filters] is the list the server holds (it loaded): only then is a filter shelf whose
+     * filter isn't in it known to be deleted, and left out.
+     */
+    val filtersLoaded: Boolean = false,
+    /** Albums of each filter shelf, by filter id. */
+    val filterAlbums: Map<Long, Loadable<List<Album>>> = emptyMap(),
+    /** A filter shelf's play or shuffle is on its way. */
+    val filterPlaying: Boolean = false,
 )
 
 /** What Home has to say (a snackbar). */
@@ -520,6 +535,9 @@ sealed interface HomeMessage {
     data object NoPlayer : HomeMessage
 
     data class StationStarted(val name: String) : HomeMessage
+
+    /** A filter shelf's play or shuffle (Wave 2 §5.6). */
+    data class Filter(val message: FilterMessage) : HomeMessage
 }
 
 class HomeFeedViewModel(
@@ -529,6 +547,10 @@ class HomeFeedViewModel(
     private val me: MeRepository? = null,
     /** The player stations start on. */
     private val player: () -> String? = { null },
+    /** Smart filters (none: no filter shelves). */
+    private val filters: FiltersRepository? = null,
+    /** Where a filter shelf plays. */
+    private val players: PlayersRepository? = null,
 ) : ViewModel() {
     private val _state = MutableStateFlow(HomeFeed())
     val state: StateFlow<HomeFeed> = _state.asStateFlow()
@@ -585,9 +607,19 @@ class HomeFeedViewModel(
                     }
                 }
             }
+            loadFilters()
             loadShelves(m, _state.value.layout ?: HomeLayouts.DEFAULT)
         }
         viewModelScope.launch { loadStations(m) }
+    }
+
+    private suspend fun loadFilters() {
+        val f = filters ?: return
+        when (val r = f.filters()) {
+            is ApiResult.Ok -> _state.update { it.copy(filters = r.value, filtersLoaded = true) }
+            // Unknown: filter shelves still try to load (and say why they can't).
+            is ApiResult.Err -> _state.update { it.copy(filtersLoaded = false) }
+        }
     }
 
     private suspend fun loadStations(m: MeRepository) {
@@ -625,7 +657,36 @@ class HomeFeedViewModel(
                         }
                     }
                 }
+                ShelfKind.FILTER -> {
+                    val id = shelf.id ?: continue
+                    val f = filters ?: continue
+                    if (!all && _state.value.filterAlbums[id] is Loadable.Ready) continue
+                    // A deleted filter's shelf is left out: nothing to ask for.
+                    if (_state.value.filtersLoaded && _state.value.filters.none { it.id == id }) continue
+                    viewModelScope.launch {
+                        val r = when (val ids = f.albums(id, 0, CAROUSEL)) {
+                            is ApiResult.Ok -> m.albums(ids.value.albums.filter(FilterLimits::validId))
+                            is ApiResult.Err -> ids
+                        }
+                        _state.update { it.copy(filterAlbums = it.filterAlbums + (id to r.loadable())) }
+                    }
+                }
                 else -> {}
+            }
+        }
+    }
+
+    /** Play or shuffle a filter shelf's first albums (up to 50) on the player. */
+    fun playFilter(id: Long, name: String, shuffle: Boolean) {
+        val f = filters ?: return
+        val p = players ?: return
+        if (_state.value.filterPlaying) return
+        _state.update { it.copy(filterPlaying = true) }
+        viewModelScope.launch {
+            try {
+                _messages.trySend(HomeMessage.Filter(playFilterOn(f, p, player(), id, name, shuffle)))
+            } finally {
+                _state.update { it.copy(filterPlaying = false) }
             }
         }
     }
@@ -729,6 +790,7 @@ class HomeFeedViewModel(
             when (r) {
                 is ApiResult.Ok -> {
                     _state.update { it.copy(layout = r.value, draft = null, saving = false) }
+                    if (r.value.shelves.any { it.kind == ShelfKind.FILTER }) loadFilters()
                     loadShelves(m, r.value, all = false)
                 }
                 is ApiResult.Err -> {
