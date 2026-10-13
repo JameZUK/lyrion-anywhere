@@ -669,13 +669,27 @@ class PlayerViewModel(
             },
             failed = { e -> if (changed) PlayerMessage.QueueChanged else PlayerMessage.QueueFailed(e) },
         ) { id ->
-            when (val at = players.queue(id, index, 1)) {
-                is ApiResult.Err -> at
-                is ApiResult.Ok -> if (QueueEdit.sameTrack(at.value.firstOrNull(), track)) {
-                    players.removeFromQueue(id, index)
-                } else {
-                    changed = true
-                    ApiResult.Err(AppError.InvalidInput("the queue changed"))
+            val trackId = track.id
+            if (trackId != null && trackId != 0L) {
+                // Checked and removed in one step on the gateway.
+                when (val r = players.removeIfStill(id, index, trackId)) {
+                    is ApiResult.Err -> r
+                    is ApiResult.Ok -> if (r.value) {
+                        ApiResult.Ok(Unit)
+                    } else {
+                        changed = true
+                        ApiResult.Err(AppError.InvalidInput("the queue changed"))
+                    }
+                }
+            } else {
+                when (val at = players.queue(id, index, 1)) {
+                    is ApiResult.Err -> at
+                    is ApiResult.Ok -> if (QueueEdit.sameTrack(at.value.firstOrNull(), track)) {
+                        players.removeFromQueue(id, index)
+                    } else {
+                        changed = true
+                        ApiResult.Err(AppError.InvalidInput("the queue changed"))
+                    }
                 }
             }
         }
@@ -715,7 +729,17 @@ class PlayerViewModel(
                 val cur = s.status?.queueIndex?.toInt()
                 UpNextTracker.moved(s.upNext, from, to, cur, movedId) to cur?.let { QueueEdit.indexAfterMove(it, from, to) }
             },
-        ) { id -> players.moveInQueue(id, from, to) }
+        ) { id ->
+            if (movedId != null && movedId != 0L) {
+                // Only while it is still the track that was dragged (checked on the gateway).
+                when (val r = players.moveIfStill(id, from, to, movedId)) {
+                    is ApiResult.Err -> r
+                    is ApiResult.Ok -> if (r.value) ApiResult.Ok(Unit) else ApiResult.Err(AppError.InvalidInput("the queue changed"))
+                }
+            } else {
+                players.moveInQueue(id, from, to)
+            }
+        }
     }
 
     /**
@@ -777,6 +801,15 @@ class PlayerViewModel(
                     is ApiResult.Err -> return s
                     is ApiResult.Ok -> if (!same(s.value, index + 1)) return changed.also { onChanged() }
                 }
+            }
+            val trackId = expected[i].id
+            if (trackId != null && trackId != 0L) {
+                // Checked and removed in one step on the gateway.
+                when (val r = players.removeIfStill(id, index, trackId)) {
+                    is ApiResult.Err -> return r
+                    is ApiResult.Ok -> if (!r.value) return changed.also { onChanged() }
+                }
+                continue
             }
             when (val at = players.queue(id, index, 1)) {
                 is ApiResult.Err -> return at

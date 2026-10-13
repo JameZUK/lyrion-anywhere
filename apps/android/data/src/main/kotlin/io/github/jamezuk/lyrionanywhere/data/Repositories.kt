@@ -189,6 +189,37 @@ interface PlayersRepository {
     /** Move the queue entry at [from] so that it ends up at [to]. */
     suspend fun moveInQueue(player: String, from: Int, to: Int): ApiResult<Unit>
 
+    /**
+     * Take out the entry at [index] only while it is still [trackId], checked and changed in
+     * one step on the gateway: Ok(false), with nothing changed, if another track is there now.
+     */
+    suspend fun removeIfStill(player: String, index: Int, trackId: Long): ApiResult<Boolean> =
+        when (val at = queue(player, index, 1)) {
+            is ApiResult.Err -> at
+            is ApiResult.Ok -> if (at.value.firstOrNull()?.id == trackId) {
+                when (val r = removeFromQueue(player, index)) {
+                    is ApiResult.Err -> r
+                    is ApiResult.Ok -> ApiResult.Ok(true)
+                }
+            } else {
+                ApiResult.Ok(false)
+            }
+        }
+
+    /** Move the entry at [from] to [to] only while it is still [trackId] (as [removeIfStill]). */
+    suspend fun moveIfStill(player: String, from: Int, to: Int, trackId: Long): ApiResult<Boolean> =
+        when (val at = queue(player, from, 1)) {
+            is ApiResult.Err -> at
+            is ApiResult.Ok -> if (at.value.firstOrNull()?.id == trackId) {
+                when (val r = moveInQueue(player, from, to)) {
+                    is ApiResult.Err -> r
+                    is ApiResult.Ok -> ApiResult.Ok(true)
+                }
+            } else {
+                ApiResult.Ok(false)
+            }
+        }
+
     suspend fun clearQueue(player: String): ApiResult<Unit>
 
     /** Undo a removal: put library track [trackId] back at [index]. */
@@ -407,6 +438,12 @@ class RustPlayersRepository(private val source: ConnectionSource) : PlayersRepos
 
     override suspend fun moveInQueue(player: String, from: Int, to: Int) =
         withPlayers { it.moveInQueue(player, from.u(), to.u()) }
+
+    override suspend fun removeIfStill(player: String, index: Int, trackId: Long) =
+        withPlayers { it.removeIfStill(player, index.u(), trackId) }
+
+    override suspend fun moveIfStill(player: String, from: Int, to: Int, trackId: Long) =
+        withPlayers { it.moveIfStill(player, from.u(), to.u(), trackId) }
 
     override suspend fun clearQueue(player: String) = withPlayers { it.clearQueue(player) }
 

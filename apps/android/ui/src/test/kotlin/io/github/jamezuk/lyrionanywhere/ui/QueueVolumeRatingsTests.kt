@@ -76,9 +76,11 @@ class QueueVolumeRatingsTests : MainDispatcherTest() {
         // Keys stay unique, so the list keeps each row's state.
         assertEquals(450, vm.state.value.queue.map { it.key }.toSet().size)
         // Nothing more to read: no further calls.
-        val calls = players.queueCalls.size
+        // (Page reads only: the move's own one-entry check is not a page.)
+        fun pages() = players.queueCalls.count { it.second > 1 }
+        val calls = pages()
         vm.loadMoreQueue()
-        assertEquals(calls, players.queueCalls.size)
+        assertEquals(calls, pages())
     }
 
     @Test
@@ -278,5 +280,10 @@ private class HeldPlayers(
     override suspend fun moveInQueue(player: String, from: Int, to: Int): ApiResult<Unit> {
         gate.await()
         return inner.moveInQueue(player, from, to)
+    }
+
+    override suspend fun moveIfStill(player: String, from: Int, to: Int, trackId: Long): ApiResult<Boolean> {
+        gate.await()
+        return inner.moveIfStill(player, from, to, trackId)
     }
 }
