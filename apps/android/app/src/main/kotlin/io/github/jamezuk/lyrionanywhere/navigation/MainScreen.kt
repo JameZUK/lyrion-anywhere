@@ -22,9 +22,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.LibraryMusic
-import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shuffle
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -49,7 +46,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
@@ -81,6 +78,11 @@ import io.github.jamezuk.lyrionanywhere.LyrionApp
 import io.github.jamezuk.lyrionanywhere.ui.alarms.AlarmsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.alarms.AlarmsScreen
 import io.github.jamezuk.lyrionanywhere.ui.components.ListDetail
+import io.github.jamezuk.lyrionanywhere.ui.components.MainTab
+import io.github.jamezuk.lyrionanywhere.ui.components.HomeSettingsButton
+import io.github.jamezuk.lyrionanywhere.ui.player.QueueActions
+import io.github.jamezuk.lyrionanywhere.ui.player.QueueScreen
+import io.github.jamezuk.lyrionanywhere.ui.player.QueueScreenActions
 import io.github.jamezuk.lyrionanywhere.ui.components.LocalWindowLayout
 import io.github.jamezuk.lyrionanywhere.ui.components.WindowLayout
 import io.github.jamezuk.lyrionanywhere.ui.player.TransferState
@@ -293,13 +295,16 @@ import kotlinx.serialization.Serializable
 
 @Serializable data object StorageRoute
 
-private data class TopLevel(val route: Any, val label: Int, val icon: ImageVector)
+/** The Queue tab: the selected player's queue. */
+@Serializable data object QueueRoute
 
-private val TOP_LEVEL = listOf(
-    TopLevel(HomeRoute, R.string.nav_home, Icons.Outlined.Home),
-    TopLevel(LibraryRoute, R.string.nav_library, Icons.Outlined.LibraryMusic),
-    TopLevel(SearchRoute, R.string.nav_search, Icons.Outlined.Search),
-)
+/** Each tab's route (the four tabs, as the web app: Home, Library, Search, Queue). */
+internal fun MainTab.route(): Any = when (this) {
+    MainTab.HOME -> HomeRoute
+    MainTab.LIBRARY -> LibraryRoute
+    MainTab.SEARCH -> SearchRoute
+    MainTab.QUEUE -> QueueRoute
+}
 
 private val clock: () -> Long = SystemClock::elapsedRealtime
 
@@ -569,13 +574,15 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
         // Car mode has the whole screen.
         layoutType = if (inCar) NavigationSuiteType.None else suiteType,
         navigationSuiteItems = {
-            TOP_LEVEL.forEach { item ->
-                val selected = destination?.hierarchy?.any { it.hasRoute(item.route::class) } == true
+            MainTab.entries.forEach { tab ->
+                val route = tab.route()
+                val selected = destination?.hierarchy?.any { it.hasRoute(route::class) } == true
                 item(
                     selected = selected,
-                    onClick = { nav.navigateTopLevel(item.route) },
-                    icon = { Icon(item.icon, contentDescription = null) },
-                    label = { Text(stringResource(item.label)) },
+                    onClick = { nav.navigateTopLevel(route) },
+                    icon = { Icon(tab.icon, contentDescription = null) },
+                    label = { Text(stringResource(tab.label)) },
+                    modifier = Modifier.testTag(tab.tag),
                 )
             }
         },
@@ -643,9 +650,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     Screen(
                         title = stringResource(R.string.nav_home),
                         actions = {
-                            IconButton(onClick = { nav.navigate(SettingsRoute) }) {
-                                Icon(Icons.Outlined.Settings, contentDescription = stringResource(R.string.title_settings))
-                            }
+                            HomeSettingsButton(onClick = { nav.navigate(SettingsRoute) })
                         },
                     ) {
                         HomeScreen(
@@ -1268,50 +1273,73 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     LaunchedEffect(playerState.selectedId, playerState.status?.queueIndex, playerState.status?.queueLength) {
                         player.loadQueue()
                     }
-                    Screen(title = stringResource(R.string.title_now_playing), onBack = { nav.popBackStack() }) {
-                        NowPlayingScreen(
-                            state = playerState,
-                            clock = clock,
-                            twoPane = LocalWindowLayout.current.nowPlayingTwoPane,
-                            wide = LocalWindowLayout.current.nowPlayingWide,
-                            visual = player,
-                            actions = NowPlayingActions(
-                                onTogglePlay = player::togglePlay,
-                                onNext = player::next,
-                                onPrevious = player::previous,
-                                onSeek = player::seek,
-                                onVolume = player::setVolume,
-                                onShuffle = player::cycleShuffle,
-                                onRepeat = player::cycleRepeat,
-                                onPower = player::setPower,
-                                onJump = player::jumpTo,
-                                onRetry = player::refresh,
-                                onOutputs = openOutputs,
-                                onBackToPhone = player::backToPhone,
-                                onMore = { t -> More.track(t)?.let(openMore) },
-                                onRemove = player::removeFromQueue,
-                                onMove = player::moveInQueue,
-                                onClearQueue = player::clearQueue,
-                                onBringToPhone = player::bringToPhone,
-                                onDismissTransfer = player::dismissTransfer,
-                                onClose = { nav.popBackStack() },
-                                onSleep = player::setSleep,
-                                onCancelSleep = player::cancelSleep,
-                                onRemoveUpNext = player::removeUpNext,
-                                onRate = player::rate,
-                                onAlarms = playerState.selected?.let { p -> { nav.navigate(AlarmsRoute(p.id, p.name)) } },
-                                onLoadMoreQueue = player::loadMoreQueue,
-                                onPlayNextInQueue = player::playNextInQueue,
+                    // No top app bar: a small close chevron over the art instead (back and the
+                    // swipe down close too).
+                    NowPlayingScreen(
+                        state = playerState,
+                        clock = clock,
+                        twoPane = LocalWindowLayout.current.nowPlayingTwoPane,
+                        wide = LocalWindowLayout.current.nowPlayingWide,
+                        visual = player,
+                        actions = NowPlayingActions(
+                            onTogglePlay = player::togglePlay,
+                            onNext = player::next,
+                            onPrevious = player::previous,
+                            onSeek = player::seek,
+                            onVolume = player::setVolume,
+                            onShuffle = player::cycleShuffle,
+                            onRepeat = player::cycleRepeat,
+                            onPower = player::setPower,
+                            onJump = player::jumpTo,
+                            onRetry = player::refresh,
+                            onOutputs = openOutputs,
+                            onBackToPhone = player::backToPhone,
+                            onMore = { t -> More.track(t)?.let(openMore) },
+                            onRemove = player::removeFromQueue,
+                            onMove = player::moveInQueue,
+                            onClearQueue = player::clearQueue,
+                            onBringToPhone = player::bringToPhone,
+                            onDismissTransfer = player::dismissTransfer,
+                            onClose = { nav.popBackStack() },
+                            onSleep = player::setSleep,
+                            onCancelSleep = player::cancelSleep,
+                            onRemoveUpNext = player::removeUpNext,
+                            onRate = player::rate,
+                            onAlarms = playerState.selected?.let { p -> { nav.navigate(AlarmsRoute(p.id, p.name)) } },
+                            onLoadMoreQueue = player::loadMoreQueue,
+                            onPlayNextInQueue = player::playNextInQueue,
+                            onClearUpcoming = player::clearUpcoming,
+                            onShuffleMode = player::setShuffle,
+                            onLayout = player::setLayout,
+                            onVisualiser = player::setVisualiser,
+                            onVisualStyle = player::setVisualStyle,
+                            onQueuePanel = player::setQueuePanel,
+                            onCredits = player::loadCredits,
+                            onCredit = { c -> c.artistId?.let { id -> nav.navigate(ContributorRoute(id, c.name, c.role.name)) } },
+                            onRooms = { nav.navigate(RoomsRoute) },
+                            onCarMode = car::openByHand,
+                        ),
+                    )
+                }
+                composable<QueueRoute> {
+                    LaunchedEffect(playerState.selectedId, playerState.status?.queueIndex, playerState.status?.queueLength) {
+                        player.loadQueue()
+                    }
+                    Screen(title = stringResource(R.string.nav_queue)) {
+                        QueueScreen(
+                            playerState,
+                            QueueScreenActions(
+                                queue = QueueActions(
+                                    onJump = player::jumpTo,
+                                    onRemove = player::removeFromQueue,
+                                    onMove = player::moveInQueue,
+                                    onClear = player::clearQueue,
+                                    onLoadMore = player::loadMoreQueue,
+                                    onPlayNext = player::playNextInQueue,
+                                ),
                                 onClearUpcoming = player::clearUpcoming,
-                                onShuffleMode = player::setShuffle,
-                                onLayout = player::setLayout,
-                                onVisualiser = player::setVisualiser,
-                                onVisualStyle = player::setVisualStyle,
-                                onQueuePanel = player::setQueuePanel,
-                                onCredits = player::loadCredits,
-                                onCredit = { c -> c.artistId?.let { id -> nav.navigate(ContributorRoute(id, c.name, c.role.name)) } },
-                                onRooms = { nav.navigate(RoomsRoute) },
-                                onCarMode = car::openByHand,
+                                onChoosePlayer = openOutputs,
+                                onRetry = player::refresh,
                             ),
                         )
                     }
@@ -1405,9 +1433,13 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     }
                 }
                 composable<OfflineNowPlayingRoute> {
-                    Screen(title = stringResource(R.string.title_now_playing), onBack = { nav.popBackStack() }) {
-                        OfflineNowPlayingScreen(offlineUi, offlineClock, offlineNowPlayingActions(offlineVm), visual = offlineVm)
-                    }
+                    OfflineNowPlayingScreen(
+                        offlineUi,
+                        offlineClock,
+                        offlineNowPlayingActions(offlineVm),
+                        visual = offlineVm,
+                        onClose = { nav.popBackStack() },
+                    )
                 }
                 composable<SettingsRoute> {
                     val vm = viewModel { SettingsViewModel(container.account, container.localPlayer, container.offline) }

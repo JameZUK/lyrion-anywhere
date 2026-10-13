@@ -27,6 +27,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -345,6 +348,22 @@ fun NowPlayingScreen(
 ) {
     val status = state.status
     val player = state.selected
+    if (player == null || status == null) {
+        // Nothing to show yet: the close button still sits at the top left.
+        Box(modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
+            NowPlayingPlaceholder(state, actions)
+            actions.onClose?.let { close -> NowPlayingCloseButton(close, Modifier.align(Alignment.TopStart).padding(4.dp)) }
+        }
+        return
+    }
+    NowPlayingContent(state, status, player, clock, actions, modifier, twoPane, wide, visual)
+}
+
+/** Now playing without a player chosen, or before its status has come. */
+@Composable
+private fun NowPlayingPlaceholder(state: PlayerUiState, actions: NowPlayingActions, modifier: Modifier = Modifier) {
+    val status = state.status
+    val player = state.selected
     if (player == null) {
         if (state.waitingForPhone) {
             LoadingState(modifier)
@@ -369,8 +388,21 @@ fun NowPlayingScreen(
     }
     if (status == null) {
         if (state.error != null) ErrorState(state.error, actions.onRetry, modifier) else LoadingState(modifier)
-        return
     }
+}
+
+@Composable
+private fun NowPlayingContent(
+    state: PlayerUiState,
+    status: io.github.jamezuk.lyrionanywhere.core.PlayerStatus,
+    player: io.github.jamezuk.lyrionanywhere.core.Player,
+    clock: () -> Long,
+    actions: NowPlayingActions,
+    modifier: Modifier,
+    twoPane: Boolean,
+    wide: Boolean,
+    visual: VisualSource?,
+) {
     val track = status.current
     val drag = remember { QueueDrag() }
     val queueActions = actions.queueActions()
@@ -408,6 +440,14 @@ fun NowPlayingScreen(
     val visualShown = state.localSelected && visualOn && block == VisualBlock.NONE && (wide || layout == NowPlayingLayout.ART)
     val visualState = rememberVisualState(visual, running = visualShown)
     val glow = visualShown && style == VisualStyle.GLOW
+    // Glow's halo: shown whenever Glow is chosen for the cover; still (no turn, no pulse) in
+    // battery saver and with animations removed, as the visualiser is off then.
+    val haloShown = state.localSelected && visualOn && style == VisualStyle.GLOW && (wide || layout == NowPlayingLayout.ART)
+    val halo: (@Composable (Modifier, @Composable () -> Unit) -> Unit)? = if (haloShown) {
+        { m, cover -> GlowHalo(track?.artwork, visualState, playing = state.playing, animate = glow, modifier = m, content = cover) }
+    } else {
+        null
+    }
     val visualiserControls: (@Composable () -> Unit)? = if (state.localSelected) {
         {
             VisualiserControls(
@@ -440,7 +480,7 @@ fun NowPlayingScreen(
         if (wide) {
             visualiserControls?.let { c -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { c() } }
         } else {
-            LayoutRow(layout, setLayout, visualiserControls)
+            LayoutRow(layout, setLayout, visualiserControls, leading = if (actions.onClose != null) CLOSE_INSET else 0.dp)
         }
         ArtArea(
             ArtAreaModel(
@@ -453,16 +493,19 @@ fun NowPlayingScreen(
                 onNext = actions.onNext,
                 onPrevious = actions.onPrevious,
                 onPeek = openPeek,
+                halo = halo,
             ),
             Modifier.fillMaxWidth(0.85f),
         )
     }
     ArtTinted(track?.artwork) {
     Box(modifier.fillMaxSize()) {
-    AmbientBackground(track?.artwork, pulse = if (glow) ({ visualState.glow }) else null)
+    AmbientBackground(track?.artwork)
     Column(
         Modifier
             .fillMaxSize()
+            // No top app bar: the page runs under the status bar, its content below it.
+            .windowInsetsPadding(WindowInsets.statusBars)
             // Space or the media key plays and pauses. Handled after the focused control (not
             // in preview), so Space on a focused button still presses that button.
             .onKeyEvent { e ->
@@ -476,6 +519,7 @@ fun NowPlayingScreen(
     ) {
     TransferStatus(state.transfer, actions.onDismissTransfer)
     PlayingOnStrip(state, actions.onBackToPhone, onBringToPhone = actions.onBringToPhone)
+    Box(Modifier.fillMaxSize()) {
     if (wide) {
         Row(Modifier.fillMaxSize().testTag("now-playing-wide")) {
             Column(
@@ -558,6 +602,10 @@ fun NowPlayingScreen(
             }
             queueItems(state.queue, currentIndex, drag, queueActions, hasMore = state.queueMore, sections = state.sections)
         }
+    }
+    // Close: a small chevron over the art area's top left (system back and the swipe down
+    // close too).
+    actions.onClose?.let { close -> NowPlayingCloseButton(close, Modifier.align(Alignment.TopStart).padding(4.dp)) }
     }
     }
     }
@@ -723,9 +771,6 @@ private fun NowPlayingControls(
                     contentDescription = stringResource(R.string.power_named, playerName),
                 )
             }
-        }
-        if (state.localSelected) {
-            SignalPathPanel(state.local.signalPath, quality = state.local.streamQuality, metered = state.local.metered, eq = state.local.eqInUse?.name)
         }
     }
     if (showSleep) {

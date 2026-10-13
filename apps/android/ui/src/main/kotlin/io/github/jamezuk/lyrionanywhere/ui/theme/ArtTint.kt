@@ -85,6 +85,36 @@ fun rememberArtSeed(key: String?): Int? {
     return seed
 }
 
+/** Halo colours already worked out, by artwork key. */
+private val palettes = LruCache<String, List<Int>>(100)
+
+/**
+ * The cover's dominant colours for Glow's halo ([ArtPalette.dominant]), once its small image
+ * has loaded: empty until then, and for a grey cover (the caller uses the theme's accent).
+ */
+@Composable
+fun rememberArtPalette(key: String?): List<Int> {
+    val context = LocalPlatformContext.current
+    var colours by remember(key) { mutableStateOf(key?.let { palettes.get(it) }.orEmpty()) }
+    LaunchedEffect(key) {
+        if (key == null || palettes.get(key) != null) return@LaunchedEffect
+        val request = ImageRequest.Builder(context)
+            .data(Artwork(key, SEED_PX))
+            .allowHardware(false)
+            .build()
+        val result = SingletonImageLoader.get(context).execute(request) as? SuccessResult ?: return@LaunchedEffect
+        val found = withContext(Dispatchers.Default) {
+            val bmp = result.image.toBitmap()
+            val pixels = IntArray(bmp.width * bmp.height)
+            bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+            ArtPalette.dominant(pixels, io.github.jamezuk.lyrionanywhere.ui.player.Glow.MAX_COLOURS)
+        }
+        palettes.put(key, found)
+        colours = found
+    }
+    return colours
+}
+
 /** System contrast above this counts as "high contrast" (medium is 0.5, high 1.0). */
 private const val HIGH_CONTRAST = 0.3f
 

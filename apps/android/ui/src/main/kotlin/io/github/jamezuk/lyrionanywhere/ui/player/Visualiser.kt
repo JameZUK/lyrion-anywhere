@@ -203,7 +203,8 @@ class VuCalibration {
 
 /**
  * What the visualiser draws, smoothed between frames: bars fall back gently, the scope fades,
- * the meters follow their ballistics, and the glow follows the bass. [tick] changes whenever
+ * the meters follow their ballistics, the glow follows the bass, and the beat [pulse] follows
+ * the bass's onsets. [tick] changes whenever
  * something moved, so only the drawing is redone (no recomposition).
  */
 @Stable
@@ -214,6 +215,12 @@ class VisualState {
     val calibration = VuCalibration()
     var glow by mutableFloatStateOf(0f)
         private set
+
+    /** Glow's beat pulse (0–1): kicked by each bass onset, then decaying ([GlowDriver]). */
+    var pulse by mutableFloatStateOf(0f)
+        private set
+    private val beats = GlowDriver()
+    private var clockMs = 0L
     var tick by mutableLongStateOf(0L)
         private set
 
@@ -244,6 +251,10 @@ class VisualState {
         val newGlow = if (g >= glow) glow + (g - glow) * 0.6f else glow + (g - glow) * (1f - exp(-dt / GLOW_FALL_S))
         if (abs(newGlow - glow) > 1e-4f) moved = true
         glow = newGlow
+        clockMs += dtMs.coerceIn(0, 1_000)
+        val newPulse = beats.step(frame?.bands, clockMs)
+        if (abs(newPulse - pulse) > 1e-4f) moved = true
+        pulse = newPulse
         if (moved) tick++
         return moved
     }
@@ -254,6 +265,9 @@ class VisualState {
         vu.forEach { it.reset() }
         calibration.reset()
         glow = 0f
+        pulse = 0f
+        beats.reset()
+        clockMs = 0L
         tick++
     }
 

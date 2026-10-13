@@ -434,10 +434,14 @@ class OutputEqScreenTests {
 
     @Test
     fun theSignalPathSaysWhichProfileIsInUse() {
-        val base = phonePlayingState()
+        val base = phonePlayingState(NowPlayingPrefs(layout = io.github.jamezuk.lyrionanywhere.data.NowPlayingLayout.INFO))
         val playing = base.copy(local = base.local.copy(signalPath = signalPath(), sound = SoundSettings(eqEnabled = true, eq = mainEq)))
         var state by mutableStateOf(playing)
         show { NowPlayingScreen(state, clock = { 0L }, actions = nowPlayingActions()) }
+        // Not shown all the time: the Info layout's button opens the signal path as a sheet.
+        compose.onNodeWithTag("eq-chip").assertDoesNotExist()
+        compose.onNodeWithTag("signal-path-button").performClick()
+        compose.onNodeWithTag("signal-path-sheet").assertExists()
         compose.onNodeWithTag("eq-chip").assertExists()
         compose.onNodeWithText("EQ: Example profile").assertExists()
         // Bypassed for a comparison: no chip.
@@ -577,10 +581,25 @@ class OfflineVisualiserAndCarButtonTests {
                 )
             }
         }
-        // The art stays (no visualiser in its place), and the analysis runs for the glow.
+        // The art stays (no visualiser in its place) with the halo behind it, and the analysis
+        // runs for the glow.
         compose.onNodeWithTag("visualiser").assertDoesNotExist()
+        compose.onNodeWithTag("glow-halo").assertExists()
         compose.onNodeWithTag("visualiser-style").assertExists()
         assertEquals(listOf(true), source.active)
+    }
+
+    @Test
+    fun offlineNowPlayingClosesWithTheChevron() {
+        var closed = 0
+        compose.setContent {
+            LyrionTheme(dynamicColour = false) {
+                OfflineNowPlayingScreen(offlineUi(), clock = { 0L }, actions = OfflineNowPlayingActions(), onClose = { closed++ })
+            }
+        }
+        compose.onNodeWithContentDescription("Close Now playing").performClick()
+        assertEquals(1, closed)
+        compose.assertAccessible()
     }
 
     @Test

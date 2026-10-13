@@ -68,6 +68,105 @@ object ArtPalette {
         return average(k, count, sumR, sumG, sumB)
     }
 
+    /** A colour counts for Glow's halo only this saturated, and within this lightness. */
+    const val HALO_MIN_SATURATION = 0.25
+    const val HALO_MIN_LIGHTNESS = 0.12
+    const val HALO_MAX_LIGHTNESS = 0.9
+
+    /**
+     * A halo colour must cover at least this share of the colourful pixels; and unless this
+     * share of the whole image is colourful, there are none (the theme's accent is used).
+     */
+    const val HALO_MIN_SHARE = 0.05
+
+    /**
+     * Up to [k] dominant, sufficiently saturated colours of a cover (Glow's halo), most
+     * prominent first: a small k-means over the colourful pixels (grey, near-black and
+     * near-white ones are left out). Empty for a grey, empty or transparent cover (the caller
+     * falls back to the theme's accent). Deterministic: the same pixels give the same colours.
+     */
+    fun dominant(pixels: IntArray, k: Int = 3): List<Int> {
+        val want = k.coerceIn(1, 8)
+        val step = max(1, pixels.size / MAX_PIXELS)
+        // The colourful pixels, as RGB floats.
+        val pts = ArrayList<FloatArray>()
+        var i = 0
+        var sampled = 0
+        while (i < pixels.size) {
+            val p = pixels[i]
+            i += step
+            sampled++
+            if ((p ushr 24) < 128) continue
+            val hsl = Hsl.of(p)
+            if (hsl.s < HALO_MIN_SATURATION || hsl.l < HALO_MIN_LIGHTNESS || hsl.l > HALO_MAX_LIGHTNESS) continue
+            pts += floatArrayOf(((p shr 16) and 0xff).toFloat(), ((p shr 8) and 0xff).toFloat(), (p and 0xff).toFloat())
+        }
+        if (pts.isEmpty() || pts.size < sampled * HALO_MIN_SHARE) return emptyList()
+        // Seeds: the first colourful pixel, then each time the pixel farthest from every seed.
+        val centres = ArrayList<FloatArray>()
+        centres += pts[0].copyOf()
+        while (centres.size < want) {
+            var far = -1
+            var farD = 0f
+            for ((j, q) in pts.withIndex()) {
+                val d = centres.minOf { dist2(it, q) }
+                if (d > farD) {
+                    farD = d
+                    far = j
+                }
+            }
+            // Nothing left that differs: fewer colours.
+            if (far < 0 || farD < MIN_SEED_DIST2) break
+            centres += pts[far].copyOf()
+        }
+        val assign = IntArray(pts.size)
+        repeat(KMEANS_ROUNDS) {
+            for ((j, q) in pts.withIndex()) {
+                var best = 0
+                var bestD = Float.MAX_VALUE
+                for ((c, centre) in centres.withIndex()) {
+                    val d = dist2(centre, q)
+                    if (d < bestD) {
+                        bestD = d
+                        best = c
+                    }
+                }
+                assign[j] = best
+            }
+            val sums = Array(centres.size) { FloatArray(3) }
+            val counts = IntArray(centres.size)
+            for ((j, q) in pts.withIndex()) {
+                val c = assign[j]
+                sums[c][0] += q[0]
+                sums[c][1] += q[1]
+                sums[c][2] += q[2]
+                counts[c]++
+            }
+            for (c in centres.indices) {
+                if (counts[c] > 0) centres[c] = floatArrayOf(sums[c][0] / counts[c], sums[c][1] / counts[c], sums[c][2] / counts[c])
+            }
+        }
+        val counts = IntArray(centres.size)
+        assign.forEach { counts[it]++ }
+        return centres.indices
+            .filter { counts[it] >= pts.size * HALO_MIN_SHARE }
+            .sortedByDescending { counts[it] }
+            .map { c -> argb(kotlin.math.round(centres[c][0]).toInt(), kotlin.math.round(centres[c][1]).toInt(), kotlin.math.round(centres[c][2]).toInt()) }
+            .filter { Hsl.of(it).s >= HALO_MIN_SATURATION }
+    }
+
+    private const val KMEANS_ROUNDS = 10
+
+    /** Seeds closer than this (squared RGB distance, about 40 apart) are one colour. */
+    private const val MIN_SEED_DIST2 = 1_600f
+
+    private fun dist2(a: FloatArray, b: FloatArray): Float {
+        val dr = a[0] - b[0]
+        val dg = a[1] - b[1]
+        val db = a[2] - b[2]
+        return dr * dr + dg * dg + db * db
+    }
+
     private fun average(k: Int, count: IntArray, r: LongArray, g: LongArray, b: LongArray): Int {
         val n = count[k].toLong()
         return argb((r[k] / n).toInt(), (g[k] / n).toInt(), (b[k] / n).toInt())

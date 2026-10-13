@@ -16,12 +16,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Album
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Lyrics
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -139,6 +141,8 @@ internal class ArtAreaModel(
     val onNext: () -> Unit,
     val onPrevious: () -> Unit,
     val onPeek: () -> Unit,
+    /** Glow's halo around the cover (Art layout, Glow chosen), wrapping it; null for none. */
+    val halo: (@Composable (Modifier, @Composable () -> Unit) -> Unit)? = null,
 )
 
 /**
@@ -175,11 +179,13 @@ internal fun ArtArea(m: ArtAreaModel, modifier: Modifier = Modifier) {
                 // Decorative and hidden from screen readers; its controls are buttons.
                 Box(modifier.fillMaxWidth()) { vis() }
             } else {
+                val halo = m.halo
+                val cover: @Composable (Modifier) -> Unit = { outer ->
                 SwipeableArtwork(
                     onNext = { swipe(true) },
                     onPrevious = { swipe(false) },
                     onSwipeUp = m.onPeek,
-                    modifier = modifier
+                    modifier = outer
                         .fillMaxWidth()
                         .testTag("artwork")
                         // One node, labelled as the cover (with or without an image), carrying
@@ -197,6 +203,8 @@ internal fun ArtArea(m: ArtAreaModel, modifier: Modifier = Modifier) {
                         ArtworkImage(art, 800, contentDescription = null, modifier = Modifier.fillMaxWidth(), corner = 16.dp)
                     }
                 }
+                }
+                if (halo != null) halo(modifier) { cover(Modifier) } else cover(modifier)
             }
         }
         NowPlayingLayout.LYRICS, NowPlayingLayout.INFO -> {
@@ -236,7 +244,8 @@ internal fun LyricsPanel(lyrics: TrackLyrics?, line: Int, canSeek: Boolean, onSe
 }
 
 /**
- * The Info layout (Wave 2 §4.2): the quality badge and signal path, the credits (each a link
+ * The Info layout (Wave 2 §4.2): the quality badge and a button for the signal path (both
+ * open it as a sheet), the credits (each a link
  * to that person's albums in that role), the rating, and an "Up next" card.
  */
 @Composable
@@ -255,8 +264,10 @@ internal fun InfoPanel(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         track?.quality?.let { q -> QualityBadge(q, onClick = onShowPath) }
-        if (state.localSelected) {
-            SignalPathPanel(state.local.signalPath, quality = state.local.streamQuality, metered = state.local.metered, eq = state.local.eqInUse?.name)
+        // The full signal path (with the EQ profile in use) opens as a sheet, on demand.
+        OutlinedButton(onClick = onShowPath, modifier = Modifier.testTag("signal-path-button")) {
+            Icon(Icons.Outlined.GraphicEq, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text(stringResource(R.string.signal_path_show), Modifier.padding(start = 8.dp))
         }
         if ((track?.id ?: 0) > 0) RatingControl(state.rating, state.ratingStyle, state.ratingFailed, actions.onRate)
         val credits = state.credits?.takeIf { track?.id != null && state.creditsTrackId == track.id }.orEmpty()
@@ -296,8 +307,11 @@ internal fun LayoutRow(
     visualiserControls: (@Composable () -> Unit)?,
     modifier: Modifier = Modifier,
     choices: List<NowPlayingLayout> = NowPlayingLayout.entries,
+    /** Room kept at the start for Now playing's close button (over this row). */
+    leading: androidx.compose.ui.unit.Dp = 0.dp,
 ) {
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+        if (leading > 0.dp) androidx.compose.foundation.layout.Spacer(Modifier.size(leading))
         LayoutSelector(layout, onLayout, Modifier.weight(1f, fill = false), choices)
         visualiserControls?.invoke()
     }
