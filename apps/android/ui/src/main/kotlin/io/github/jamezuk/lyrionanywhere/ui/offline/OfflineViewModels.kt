@@ -10,7 +10,13 @@ import io.github.jamezuk.lyrionanywhere.core.OfflineAlbum
 import io.github.jamezuk.lyrionanywhere.core.OfflineTrack
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
+import io.github.jamezuk.lyrionanywhere.data.NowPlayingPrefs
+import io.github.jamezuk.lyrionanywhere.data.SettingsStore
+import io.github.jamezuk.lyrionanywhere.data.VisualFrame
+import io.github.jamezuk.lyrionanywhere.data.VisualStyle
 import io.github.jamezuk.lyrionanywhere.data.offline.DownloadSettings
+import io.github.jamezuk.lyrionanywhere.ui.player.VisualSource
+import kotlinx.coroutines.flow.distinctUntilChanged
 import io.github.jamezuk.lyrionanywhere.data.offline.OfflinePlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.offline.OfflinePlayerState
 import io.github.jamezuk.lyrionanywhere.data.offline.OfflineRepository
@@ -225,6 +231,8 @@ data class OfflinePlayerUi(
     val state: OfflinePlayerState = OfflinePlayerState(),
     /** When the state arrived (the screen's clock). */
     val at: Long = 0,
+    /** Now playing's choices on this device: the visualiser and its style (Wave 2 §5.7). */
+    val nowPlaying: NowPlayingPrefs = NowPlayingPrefs(),
 ) {
     /** The position now (ms), extrapolated while playing. */
     fun positionAt(now: Long): Long {
@@ -239,13 +247,20 @@ data class OfflinePlayerUi(
 class OfflinePlayerViewModel(
     private val player: OfflinePlayerRepository,
     private val clock: () -> Long,
-) : ViewModel() {
+    /** Where the visualiser's choices are kept (none: not remembered). */
+    private val settings: SettingsStore? = null,
+) : ViewModel(), VisualSource {
     private val _state = MutableStateFlow(OfflinePlayerUi(player.state.value, clock()))
     val state: StateFlow<OfflinePlayerUi> = _state.asStateFlow()
 
     init {
         viewModelScope.launch {
-            player.state.collect { s -> _state.update { OfflinePlayerUi(s, clock()) } }
+            player.state.collect { s -> _state.update { it.copy(state = s, at = clock()) } }
+        }
+        settings?.let { store ->
+            viewModelScope.launch {
+                store.settings.map { it.nowPlaying }.distinctUntilChanged().collect { p -> _state.update { it.copy(nowPlaying = p) } }
+            }
         }
     }
 
@@ -271,4 +286,21 @@ class OfflinePlayerViewModel(
     )
 
     fun stop() = player.stop()
+
+    // The visualiser (Wave 2 §5.7): the same engine analysis as streaming, from the downloads.
+    override fun setActive(on: Boolean) = player.setVisualiser(on)
+
+    override fun frame(): VisualFrame? = player.visualFrame()
+
+    /** The visualiser on or off (remembered on this device, as on the online Now playing). */
+    fun setVisualiser(on: Boolean) = savePrefs { it.copy(visualiser = on) }
+
+    fun setVisualStyle(style: VisualStyle) = savePrefs { it.copy(visualStyle = style) }
+
+    private fun savePrefs(change: (NowPlayingPrefs) -> NowPlayingPrefs) {
+        val p = change(_state.value.nowPlaying)
+        _state.update { it.copy(nowPlaying = p) }
+        val store = settings ?: return
+        viewModelScope.launch { store.setNowPlayingPrefs(p) }
+    }
 }

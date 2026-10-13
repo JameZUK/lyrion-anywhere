@@ -46,7 +46,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
@@ -67,6 +66,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import io.github.jamezuk.lyrionanywhere.ui.R
+import io.github.jamezuk.lyrionanywhere.ui.components.HapticSteps
 import io.github.jamezuk.lyrionanywhere.ui.library.SectionHeader
 import io.github.jamezuk.lyrionanywhere.ui.library.TrackRow
 import kotlinx.coroutines.launch
@@ -345,12 +345,13 @@ private fun QueueRow(
                     .pointerInput(index, size) {
                         detectDragGesturesAfterLongPress(
                             onDragStart = {
-                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                haptics.performHapticFeedback(HapticSteps.pickUp)
                                 drag.from = index
                                 drag.offset = 0f
                             },
                             onDragEnd = {
                                 val to = QueueEdit.dropIndex(index, drag.offset, drag.rowPx, size)
+                                haptics.performHapticFeedback(HapticSteps.drop)
                                 drag.from = -1
                                 drag.offset = 0f
                                 if (to != index) actions.onMove(index, to)

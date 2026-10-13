@@ -44,6 +44,26 @@ sealed interface DiscoveryEvent {
 
     /** Nothing to play on: no player is chosen. */
     data object NoPlayer : DiscoveryEvent
+
+    /** The server offers no radio for it (or nothing is playing to start from). */
+    data object NoRadio : DiscoveryEvent
+}
+
+/**
+ * Start radio from [seed] straight away, on [player] (car mode and the app shortcut, Wave 2
+ * §5.1 and §5.5): asks what the server offers, then starts it.
+ */
+suspend fun startRadioFrom(discovery: DiscoveryRepository, player: String?, seed: RadioSeed?): DiscoveryEvent {
+    if (player == null) return DiscoveryEvent.NoPlayer
+    if (seed == null) return DiscoveryEvent.NoRadio
+    val plan = when (val o = discovery.options(player, seed)) {
+        is ApiResult.Ok -> o.value.radio
+        is ApiResult.Err -> return DiscoveryEvent.Failed(o.error)
+    } ?: return DiscoveryEvent.NoRadio
+    return when (val r = discovery.startRadio(player, seed, plan)) {
+        is ApiResult.Ok -> DiscoveryEvent.RadioStarted(plan.dstm != null)
+        is ApiResult.Err -> DiscoveryEvent.Failed(r.error)
+    }
 }
 
 /**

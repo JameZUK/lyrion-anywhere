@@ -256,7 +256,7 @@ internal fun InfoPanel(
     ) {
         track?.quality?.let { q -> QualityBadge(q, onClick = onShowPath) }
         if (state.localSelected) {
-            SignalPathPanel(state.local.signalPath, quality = state.local.streamQuality, metered = state.local.metered)
+            SignalPathPanel(state.local.signalPath, quality = state.local.streamQuality, metered = state.local.metered, eq = state.local.eqInUse?.name)
         }
         if ((track?.id ?: 0) > 0) RatingControl(state.rating, state.ratingStyle, state.ratingFailed, actions.onRate)
         val credits = state.credits?.takeIf { track?.id != null && state.creditsTrackId == track.id }.orEmpty()

@@ -58,6 +58,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -73,6 +74,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import io.github.jamezuk.lyrionanywhere.ui.R
+import io.github.jamezuk.lyrionanywhere.ui.components.HapticSteps
 import io.github.jamezuk.lyrionanywhere.ui.alarms.currentLocale
 import io.github.jamezuk.lyrionanywhere.ui.alarms.dayName
 import io.github.jamezuk.lyrionanywhere.ui.alarms.is24Hour
@@ -128,6 +130,7 @@ fun RoomsScreen(
         state.error != null && state.rooms.isEmpty() -> return ErrorState(state.error, actions.onRetry, modifier)
         state.rooms.isEmpty() -> return EmptyState(stringResource(R.string.rooms_empty), modifier)
     }
+    val haptics = LocalHapticFeedback.current
     val cards = remember { mutableStateMapOf<String, Rect>() }
     val handles = remember { mutableMapOf<String, Offset>() }
     var dragging by remember { mutableStateOf<String?>(null) }
@@ -179,6 +182,7 @@ fun RoomsScreen(
                         .pointerInput(room.id) {
                             detectDragGestures(
                                 onDragStart = { start ->
+                                    haptics.performHapticFeedback(HapticSteps.pickUp)
                                     dragging = room.id
                                     dragBy = Offset.Zero
                                     // Where the finger is, in the same coordinates as the cards.
@@ -186,6 +190,7 @@ fun RoomsScreen(
                                 },
                                 onDragEnd = {
                                     val target = RoomDrop.target(dragAt, cards, room.id)
+                                    haptics.performHapticFeedback(HapticSteps.drop)
                                     dragging = null
                                     dragBy = Offset.Zero
                                     if (target != null) actions.onSync(room.id, target)
@@ -392,9 +397,11 @@ private fun RoomControls(room: Room, actions: RoomsActions) {
         var value by remember { mutableFloatStateOf(0f) }
         val shown = if (dragging) value else s.volume.toFloat()
         val label = stringResource(R.string.room_volume, name)
+        val haptics = LocalHapticFeedback.current
         Slider(
             value = shown,
             onValueChange = {
+                if (HapticSteps.crossed(if (dragging) value else shown, it, HapticSteps.VOLUME)) haptics.performHapticFeedback(HapticSteps.tick)
                 dragging = true
                 value = it
             },

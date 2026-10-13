@@ -12,6 +12,7 @@ import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Surface
+import androidx.compose.ui.platform.testTag
 import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -62,6 +63,8 @@ fun SignalPathPanel(
     /** The stream level asked for, and whether on mobile data (Streaming quality). */
     quality: StreamQuality = StreamQuality.ORIGINAL,
     metered: Boolean = false,
+    /** The EQ profile in use on this output (Wave 2 §5.3; null: none). */
+    eq: String? = null,
 ) {
     Card(modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -110,6 +113,7 @@ fun SignalPathPanel(
                 )
             }
             path.stages.forEach { StageRow(it) }
+            if (eq != null) EqChip(eq)
             LabelledLine(
                 stringResource(R.string.signal_output),
                 listOf(path.outputDevice, formatRate(path.outputRate), path.outputFormat).joinToString(" · "),
@@ -164,6 +168,25 @@ fun reasonText(r: NotBitPerfect): Int = when (r) {
     NotBitPerfect.LOSSY_SOURCE -> R.string.reason_lossy_source
     NotBitPerfect.OTHER_PROCESSING -> R.string.reason_other_processing
     NotBitPerfect.CROSSFADE -> R.string.reason_crossfade
+}
+
+/** "EQ: <profile>": which profile this output uses (per-output EQ). */
+@Composable
+private fun EqChip(name: String) {
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        modifier = Modifier.testTag("eq-chip"),
+    ) {
+        Text(
+            stringResource(R.string.signal_eq_chip, name),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onTertiaryContainer,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+        )
+    }
 }
 
 @Composable

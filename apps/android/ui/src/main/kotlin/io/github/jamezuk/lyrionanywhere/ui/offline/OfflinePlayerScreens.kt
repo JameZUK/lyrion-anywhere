@@ -55,6 +55,16 @@ import io.github.jamezuk.lyrionanywhere.ui.components.ArtworkImage
 import io.github.jamezuk.lyrionanywhere.ui.components.EmptyState
 import io.github.jamezuk.lyrionanywhere.ui.library.SectionHeader
 import io.github.jamezuk.lyrionanywhere.ui.player.SeekBar
+import io.github.jamezuk.lyrionanywhere.ui.player.VisualBlock
+import io.github.jamezuk.lyrionanywhere.ui.player.VisualSource
+import io.github.jamezuk.lyrionanywhere.ui.player.VisualiserCanvas
+import io.github.jamezuk.lyrionanywhere.ui.player.VisualiserControls
+import io.github.jamezuk.lyrionanywhere.ui.player.rememberVisualBlock
+import io.github.jamezuk.lyrionanywhere.ui.player.rememberVisualState
+import io.github.jamezuk.lyrionanywhere.ui.theme.AmbientBackground
+import io.github.jamezuk.lyrionanywhere.data.VisualStyle
+import androidx.compose.foundation.layout.Box
+import androidx.compose.runtime.mutableStateOf
 import kotlinx.coroutines.delay
 
 private fun artOf(t: OfflineTrack?): String? =
@@ -123,11 +133,24 @@ data class OfflineNowPlayingActions(
     val onRepeat: () -> Unit = {},
     val onJump: (Int) -> Unit = {},
     val onStop: () -> Unit = {},
+    /** The visualiser on or off, and its style (Wave 2 §5.7; remembered by the caller). */
+    val onVisualiser: (Boolean) -> Unit = {},
+    val onVisualStyle: (VisualStyle) -> Unit = {},
 )
 
-/** Now playing, for downloads: art, title, the seek bar, controls and the queue. */
+/**
+ * Now playing, for downloads: art, title, the seek bar, controls and the queue. With a
+ * [visual] source, the visualiser (Wave 2 §5.7) can take the art's place, as on the online
+ * Now playing: off unless chosen, and off in battery saver and with animations removed.
+ */
 @Composable
-fun OfflineNowPlayingScreen(ui: OfflinePlayerUi, clock: () -> Long, actions: OfflineNowPlayingActions, modifier: Modifier = Modifier) {
+fun OfflineNowPlayingScreen(
+    ui: OfflinePlayerUi,
+    clock: () -> Long,
+    actions: OfflineNowPlayingActions,
+    modifier: Modifier = Modifier,
+    visual: VisualSource? = null,
+) {
     val s = ui.state
     val status = s.status
     val track = s.current
@@ -136,20 +159,52 @@ fun OfflineNowPlayingScreen(ui: OfflinePlayerUi, clock: () -> Long, actions: Off
         return
     }
     val position = rememberOfflinePosition(ui, clock)
-    LazyColumn(modifier.fillMaxSize().testTag("offline-now-playing"), contentPadding = PaddingValues(bottom = 24.dp)) {
+    // This device's visualiser choices: shown at once, kept by the caller.
+    val prefs = ui.nowPlaying
+    var visualOn by remember(prefs.visualiser) { mutableStateOf(prefs.visualiser) }
+    var style by remember(prefs.visualStyle) { mutableStateOf(prefs.visualStyle) }
+    val setStyle: (VisualStyle) -> Unit = {
+        style = it
+        actions.onVisualStyle(it)
+    }
+    val block = rememberVisualBlock()
+    val visualShown = visual != null && visualOn && block == VisualBlock.NONE
+    val visualState = rememberVisualState(visual, running = visualShown)
+    val glow = visualShown && style == VisualStyle.GLOW
+    Box(modifier.fillMaxSize()) {
+    if (glow) AmbientBackground(artOf(track), pulse = { visualState.glow })
+    LazyColumn(Modifier.fillMaxSize().testTag("offline-now-playing"), contentPadding = PaddingValues(bottom = 24.dp)) {
         item {
             Column(
                 Modifier.fillMaxWidth().padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                ArtworkImage(
-                    artOf(track),
-                    600,
-                    contentDescription = stringResource(R.string.album_cover),
-                    modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth(0.8f),
-                    corner = 12.dp,
-                )
+                if (visual != null) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        VisualiserControls(
+                            on = visualOn,
+                            style = style,
+                            block = block,
+                            onToggle = {
+                                visualOn = it
+                                actions.onVisualiser(it)
+                            },
+                            onStyle = setStyle,
+                        )
+                    }
+                }
+                if (visualShown && !glow) {
+                    VisualiserCanvas(style, visualState, setStyle, Modifier.widthIn(max = 360.dp).fillMaxWidth(0.8f))
+                } else {
+                    ArtworkImage(
+                        artOf(track),
+                        600,
+                        contentDescription = stringResource(R.string.album_cover),
+                        modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth(0.8f),
+                        corner = 12.dp,
+                    )
+                }
                 Text(track.title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.semantics { heading() })
                 Text(
                     listOf(track.artist, track.album).filter { it.isNotEmpty() }.joinToString(" · "),
@@ -232,5 +287,6 @@ fun OfflineNowPlayingScreen(ui: OfflinePlayerUi, clock: () -> Long, actions: Off
             val t = status.keys.getOrNull(listIndex)?.let { s.tracks[it] } ?: return@items
             OfflineTrackRow(t, onClick = { actions.onJump(listIndex) }, highlighted = listIndex == status.index?.toInt())
         }
+    }
     }
 }
