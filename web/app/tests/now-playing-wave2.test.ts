@@ -146,14 +146,35 @@ describe('layouts', () => {
 		r.unmount();
 	});
 
-	test('Info: quality and signal path, rating, credits and Up next', async () => {
+	test('the signal path is never on screen until asked for', async () => {
+		width = 1300;
+		const r = render(NowPlaying);
+		await tick();
+		expect(r.container.querySelector('[data-signal-path]')).toBeNull();
+		await fireEvent.keyDown(document.body, { key: '3' });
+		expect(r.container.querySelector('[data-side-pane="info"]')).not.toBeNull();
+		expect(r.container.querySelector('[data-signal-path]')).toBeNull();
+		expect(r.container.querySelector('[data-signal-path-toggle]')).not.toBeNull();
+		r.unmount();
+	});
+
+	test('Info: quality, the signal path on demand, rating, credits and Up next', async () => {
 		fake.handler.rpc = async (_p, cmd) => (cmd[0] === 'titles' ? { titles_loop: [{ id: 11, composer: 'A Composer', composer_ids: '7' }] } : {});
 		const r = render(NowPlaying);
 		await tick();
 		await fireEvent.click(layoutButtons(r.container)[2]!);
 		const pane = r.container.querySelector('[data-info-pane]')!;
 		expect(pane.textContent).toContain('FLAC 16/44.1');
-		expect(pane.querySelector('[data-signal-path]')).not.toBeNull();
+		// The signal path is on demand: folded away behind its disclosure until asked for.
+		expect(pane.querySelector('[data-signal-path]')).toBeNull();
+		const disclose = pane.querySelector<HTMLButtonElement>('[data-signal-path-toggle]')!;
+		expect(disclose.textContent).toContain('Signal path');
+		expect(disclose.getAttribute('aria-expanded')).toBe('false');
+		await fireEvent.click(disclose);
+		expect(disclose.getAttribute('aria-expanded')).toBe('true');
+		expect(pane.querySelector('[data-signal-path]')?.textContent).toContain('Source');
+		await fireEvent.click(disclose);
+		expect(pane.querySelector('[data-signal-path]')).toBeNull();
 		expect(pane.querySelector('[data-up-next]')?.textContent).toContain('Next song');
 		// Up next and the rating move into the pane rather than appearing twice.
 		expect(r.container.querySelectorAll('[data-up-next]')).toHaveLength(1);
@@ -236,6 +257,85 @@ describe('visualiser', () => {
 		expect(r.container.querySelector('[data-visualiser="glow"]')).not.toBeNull();
 		expect(r.container.querySelector('.art-box img, .art-box [data-art], .art-box')).not.toBeNull();
 		expect(device.visualWatchers).toBe(1);
+		r.unmount();
+	});
+
+	test('Glow: a halo behind the cover, turning only while playing; frames with a beat kick it', async () => {
+		nowPlaying.setVisualiser(true);
+		nowPlaying.setStyle('glow');
+		let feed: ((f: Float32Array) => void) | null = null;
+		const watch = vi.spyOn(device, 'watchVisual').mockImplementation((cb) => {
+			feed = cb;
+			return () => (feed = null);
+		});
+		const r = render(NowPlaying);
+		await tick();
+		const halo = r.container.querySelector('.art-box [data-glow-halo]')!;
+		expect(halo).not.toBeNull();
+		expect(halo.getAttribute('aria-hidden')).toBe('true');
+		// Behind the cover, which keeps its own layer above it.
+		expect(halo.nextElementSibling?.classList.contains('cover')).toBe(true);
+		expect(halo.classList.contains('spinning')).toBe(true);
+		// No art to read in jsdom: the theme's accent colours it.
+		expect(halo.getAttribute('data-colours')).toBe('0');
+		expect(halo.querySelectorAll('.lobe')).toHaveLength(3);
+		// The old level-following glow is gone: nothing scales the background.
+		const section = r.container.querySelector<HTMLElement>('section.np')!;
+		expect(section.style.getPropertyValue('--np-bass')).toBe('');
+		expect(feed).not.toBeNull();
+		// A quiet bed, then a kick in the low bands: the halo grows and brightens.
+		const frame = (bass: number) => {
+			const f = new Float32Array(32 + 128 + 5);
+			for (let i = 0; i < 32; i++) f[i] = i < 5 ? bass : 0.1;
+			f.fill(-30, 160, 164);
+			f[164] = bass;
+			return f;
+		};
+		for (let i = 0; i < 6; i++) {
+			feed!(frame(0.1));
+			await new Promise((res) => setTimeout(res, 20));
+		}
+		feed!(frame(0.9));
+		await waitFor(() => expect(Number(section.style.getPropertyValue('--glow-radius'))).toBeGreaterThan(1.1));
+		expect(Number(section.style.getPropertyValue('--glow-opacity'))).toBeGreaterThan(0.5);
+		expect(Number(section.style.getPropertyValue('--glow-cover'))).toBeGreaterThan(1);
+		expect(Number(section.style.getPropertyValue('--glow-cover'))).toBeLessThanOrEqual(1.02);
+		// Paused: the halo stops turning.
+		fake.app.now = status({ mode: 'pause' });
+		flushSync();
+		expect(r.container.querySelector('[data-glow-halo]')!.classList.contains('spinning')).toBe(false);
+		r.unmount();
+		watch.mockRestore();
+	});
+
+	test('Glow under reduced motion: a still halo, no pulse and no turning', async () => {
+		reduceMotion = true;
+		nowPlaying.setVisualiser(true);
+		nowPlaying.setStyle('glow');
+		const r = render(NowPlaying);
+		await tick();
+		const halo = r.container.querySelector('[data-glow-halo]')!;
+		expect(halo.classList.contains('still')).toBe(true);
+		expect(halo.classList.contains('spinning')).toBe(false);
+		expect(r.container.querySelector('[data-visualiser]')).toBeNull();
+		expect(device.visualWatchers).toBe(0);
+		r.unmount();
+	});
+
+	test('Glow: none for a remote player, nor for the other styles', async () => {
+		nowPlaying.setVisualiser(true);
+		nowPlaying.setStyle('glow');
+		fake.app.playerId = KITCHEN;
+		let r = render(NowPlaying);
+		await tick();
+		expect(r.container.querySelector('[data-glow-halo]')).toBeNull();
+		expect(r.container.querySelector('[data-ambient]')).not.toBeNull();
+		r.unmount();
+		fake.app.playerId = HERE;
+		nowPlaying.setStyle('bars');
+		r = render(NowPlaying);
+		await tick();
+		expect(r.container.querySelector('[data-glow-halo]')).toBeNull();
 		r.unmount();
 	});
 

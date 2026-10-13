@@ -4,6 +4,7 @@
 	import { page } from '$app/state';
 	import { afterNavigate } from '$app/navigation';
 	import { noteNavigation } from '$lib/nav';
+	import { MAIN_TABS, tabFor } from '$lib/nav-tabs';
 	import { documentTitle, pageTitle } from '$lib/title.svelte';
 	import { api, app, session } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
@@ -141,33 +142,29 @@
 		app.soon();
 	};
 
+	// The same four destinations lead on every screen size (and in the Android app): Home,
+	// Library, Search and Queue. Now playing opens from the mini player; Settings from the
+	// gear on Home (and the sidebar). See lib/nav-tabs.ts for what each one covers.
 	const NAV = [
-		{ href: '#/', label: 'Now playing', icon: 'home', match: (p: string) => p === '/' },
 		{ href: '#/home', label: 'Home', icon: 'shelves', match: (p: string) => p.startsWith('/home') || p.startsWith('/stations') },
 		{ href: '#/library', label: 'Library', icon: 'library', match: (p: string) => MORE_LIBRARY.some((l) => p.startsWith(l)) },
+		{ href: '#/search', label: 'Search', icon: 'search', match: (p: string) => tabFor(p) === 'search' },
+		{ href: '#/queue', label: 'Queue', icon: 'playnext', match: (p: string) => tabFor(p) === 'queue' },
+		{ href: '#/', label: 'Now playing', icon: 'home', match: (p: string) => p === '/' },
 		{ href: '#/new', label: 'New music', icon: 'new', match: (p: string) => p.startsWith('/new') },
 		{ href: '#/albums', label: 'Albums', icon: 'album', match: (p: string) => p.startsWith('/album') },
 		{ href: '#/artists', label: 'Artists', icon: 'artist', match: (p: string) => p.startsWith('/artist') },
 		{ href: '#/playlists', label: 'Playlists', icon: 'queue', match: (p: string) => p.startsWith('/playlist') },
 		{ href: '#/favourites', label: 'Favourites', icon: 'heart', match: (p: string) => p.startsWith('/favourites') },
-		{ href: '#/apps', label: 'Apps & radio', icon: 'radio', match: (p: string) => p.startsWith('/apps') || p.startsWith('/browse') },
-		{ href: '#/search', label: 'Search', icon: 'search', match: (p: string) => p.startsWith('/search') },
-		{ href: '#/queue', label: 'Queue', icon: 'playnext', match: (p: string) => p.startsWith('/queue') },
+		{ href: '#/apps', label: 'Apps & radio', icon: 'radio', match: (p: string) => p.startsWith('/apps') || p.startsWith('/browse') || p.startsWith('/plugin') },
 		{ href: '#/rooms', label: 'Rooms', icon: 'rooms', match: (p: string) => p.startsWith('/rooms') },
 		{ href: '#/downloads', label: 'Downloads', icon: 'download', match: (p: string) => p.startsWith('/downloads') },
 		{ href: '#/settings', label: 'Settings', icon: 'settings', match: (p: string) => p.startsWith('/settings') },
 	];
 	// Library sections without a sidebar entry of their own: under "Library".
 	const MORE_LIBRARY = ['/library', '/genre', '/year', '/folder', '/compilations', '/random', '/filter'];
-	// Phones: five tabs; Home ends with the library, whose sections are one tap away there.
-	const LIBRARY = ['/home', '/stations', '/album', '/artist', '/playlist', '/favourites', '/apps', '/browse', '/downloads', '/new', ...MORE_LIBRARY];
-	const TABS = [
-		{ href: '#/', label: 'Playing', icon: 'home', match: (p: string) => p === '/' },
-		{ href: '#/home', label: 'Home', icon: 'shelves', match: (p: string) => LIBRARY.some((l) => p.startsWith(l)) },
-		{ href: '#/search', label: 'Search', icon: 'search', match: (p: string) => p.startsWith('/search') },
-		{ href: '#/queue', label: 'Queue', icon: 'playnext', match: (p: string) => p.startsWith('/queue') },
-		{ href: '#/settings', label: 'Settings', icon: 'settings', match: (p: string) => p.startsWith('/settings') },
-	];
+	// Phones: the four tabs.
+	const TABS = MAIN_TABS.map((t) => ({ ...t, match: (p: string) => tabFor(p) === t.id }));
 	const path = $derived(page.url.hash.replace(/^#/, '') || '/');
 
 	// Back on detail pages needs to know whether there is an app page behind this one.
@@ -386,7 +383,7 @@
 			height: var(--tabs-h);
 			padding-bottom: env(safe-area-inset-bottom);
 			display: grid;
-			grid-template-columns: repeat(5, 1fr);
+			grid-template-columns: repeat(4, 1fr);
 			background: var(--bg-raised);
 			border-top: 1px solid var(--line);
 			z-index: 21;

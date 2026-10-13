@@ -34,6 +34,8 @@
 	import NowPlayingInfo from '$lib/components/NowPlayingInfo.svelte';
 	import QueueList from '$lib/components/QueueList.svelte';
 	import Visualiser from '$lib/components/Visualiser.svelte';
+	import GlowHalo from '$lib/components/GlowHalo.svelte';
+	import { GLOW_REST, type GlowStyle } from '$lib/visual/glow';
 	import { nowPlaying } from '$lib/nowplaying/store.svelte';
 	import { LAYOUTS, LAYOUT_LABELS, layoutForKey, swipeLayout, type Layout } from '$lib/nowplaying/prefs';
 	import { STYLE_LABELS, nextStyle } from '$lib/visual/draw';
@@ -114,12 +116,19 @@
 	/** This browser is the player (a remote player keeps the blurred-art background only). */
 	const local = $derived(!!app.current && isThisDevice(app.playerId) && (device.state === 'connected' || device.state === 'reconnecting'));
 	const visualising = $derived(local && nowPlaying.visualiser && !reduce && stage === 'art');
+	/** Glow: a halo in the cover's colours behind it (still, at rest, under reduced motion). */
+	const glowing = $derived(local && nowPlaying.visualiser && nowPlaying.style === 'glow' && stage === 'art');
 	let section = $state<HTMLElement>();
-	function onbass(level: number) {
-		section?.style.setProperty('--np-bass', level > 0.001 ? level.toFixed(3) : '0');
+	/** Each frame, the visualiser's beat pulse sizes the halo and (just) the cover. */
+	function onglow(g: GlowStyle) {
+		const s = section?.style;
+		if (!s) return;
+		s.setProperty('--glow-radius', g.radius.toFixed(3));
+		s.setProperty('--glow-opacity', g.opacity.toFixed(3));
+		s.setProperty('--glow-cover', g.cover.toFixed(4));
 	}
 	$effect(() => {
-		if (!visualising || nowPlaying.style !== 'glow') onbass(0);
+		if (!visualising || nowPlaying.style !== 'glow') onglow(GLOW_REST);
 	});
 	let sleepError = $state('');
 
@@ -255,9 +264,12 @@
 				</div>
 			{:else}
 				{#key trackKey}
-					<div class="art-box" in:fade={swap}>
-						<Art path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 800)} alt={title ? `Cover of ${textOf(track?.album)}` : ''} label={title} rounded="var(--radius)" eager />
-						{#if visualising}<Visualiser style="glow" onstyle={(s) => nowPlaying.setStyle(s)} {onbass} />{/if}
+					<div class="art-box" class:glowing in:fade={swap}>
+						{#if glowing}<GlowHalo path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 120)} playing={app.playing} still={reduce} />{/if}
+						<div class="cover">
+							<Art path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 800)} alt={title ? `Cover of ${textOf(track?.album)}` : ''} label={title} rounded="var(--radius)" eager />
+						</div>
+						{#if visualising}<Visualiser style="glow" onstyle={(s) => nowPlaying.setStyle(s)} {onglow} />{/if}
 					</div>
 				{/key}
 			{/if}
@@ -584,11 +596,26 @@
 	}
 	.art-box {
 		position: relative;
-		/* The visualiser's Glow: a halo in the accent colour that swells with the bass. */
-		box-shadow:
-			0 30px 60px -20px rgb(0 0 0 / 45%),
-			0 0 calc(var(--np-bass, 0) * 90px) calc(var(--np-bass, 0) * 14px) color-mix(in srgb, var(--accent) 50%, transparent);
+		box-shadow: 0 30px 60px -20px rgb(0 0 0 / 45%);
 		border-radius: var(--radius);
+	}
+	/* Glow: the halo (GlowHalo) sits behind the cover, which kicks very slightly on a beat. */
+	.cover {
+		position: relative;
+		z-index: 1;
+		border-radius: var(--radius);
+	}
+	.glowing {
+		box-shadow: none;
+	}
+	.glowing .cover {
+		transform: scale(var(--glow-cover, 1));
+		box-shadow: 0 30px 60px -20px rgb(0 0 0 / 45%);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.glowing .cover {
+			transform: none;
+		}
 	}
 	.info {
 		grid-area: info;
@@ -736,9 +763,7 @@
 		}
 		.art-box {
 			width: min(100cqw, 100cqh);
-			box-shadow:
-				0 24px 48px -24px rgb(0 0 0 / 50%),
-				0 0 calc(var(--np-bass, 0) * 70px) calc(var(--np-bass, 0) * 10px) color-mix(in srgb, var(--accent) 50%, transparent);
+			box-shadow: 0 24px 48px -24px rgb(0 0 0 / 50%);
 		}
 		.art-wrap.pane-stage {
 			display: flex;

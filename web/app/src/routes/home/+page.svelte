@@ -164,9 +164,13 @@
 <section class="page home">
 	<header>
 		<h1>Home</h1>
-		{#if layout && !editing}
-			<button class="btn" onclick={startEditing}><Icon name="settings" size={18} />Edit Home</button>
-		{/if}
+		<div class="tools">
+			{#if layout && !editing}
+				<button class="btn" onclick={startEditing}><Icon name="grip" size={18} />Edit Home</button>
+			{/if}
+			<!-- Settings: no tab of its own on phones, so it lives here (and in the sidebar). -->
+			<a class="icon-btn gear" href="#/settings" aria-label="Settings" title="Settings" data-settings-link><Icon name="settings" size={22} /></a>
+		</div>
 	</header>
 	{#if message}<p class="banner" role="status">{message}</p>{/if}
 	{#if error}
@@ -246,6 +250,17 @@
 	}
 	h1 {
 		margin: 0;
+	}
+	.tools {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin-left: auto;
+	}
+	.gear {
+		width: 44px;
+		height: 44px;
+		color: var(--fg);
 	}
 	.banner {
 		padding: 0.5rem 0.75rem;
