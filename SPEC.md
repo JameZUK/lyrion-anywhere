@@ -240,10 +240,11 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
 
 docs/plans/wave1-design.md §6–8; full detail in docs/PROTOCOL.md › Your own things.
 - **History (D23):** per user, 13 months, view/clear/switch off. Shelves (`recent`, `most`, `on_this_day`) answer album ids only.
-- **Home:** a small JSON layout per user (version 1, at most 24 shelves and 4 KiB), shelf types from a fixed set plus ids of the user's own stations and pinned menus; strictly validated, the default when none is saved.
+- **Home:** a small JSON layout per user (version 1, at most 24 shelves and 4 KiB), shelf types from a fixed set plus ids of the user's own stations, pinned menus and smart filters (`filter`, Wave 2); strictly validated, the default when none is saved.
 - **Stations:** built-in ones computed on the gateway as track-id batches (forgotten favourites, fresh, deep cuts, several genres, a decade), avoiding the user's last 200 plays and what the station served lately; a single genre plays as LMS's Random Mix, through a fixed `randomplay` grammar in the allow-list. Clients refill when fewer than about 5 tracks are left (shared rules: `web/app/src/lib/stations/refill.ts`, `mobile/src/me.rs`).
 - **Pinned from menus:** stations and menus are stored as references to actions LMS offered (the menu requests to the item, and its `play`/`add`), never as free commands. Each use replays them under the user's own role and players with the learned-action check; anything no longer offered marks the station broken and nothing runs.
 - **Storage:** database migration 10 (`history`, `user_prefs`, `user_pins`), all deleted with the user.
+- **Smart filters (Wave 2 part 4, 2026-10-13; `docs/plans/wave2-design.md` §5.6):** saved per user (`user_filters`, migration 12, deleted with the user; at most 50, each at most 4 KiB, schema-checked with unknown keys refused). A filter is 1–8 rules that must all match (genre is one of 1–20 ids; decade; artist, optionally in a browse role; compilation or not), a sort (A–Z, artist, year, recently added, random) and a limit (1–500). Running one (`GET /v1/me/filters/{id}/albums`) builds LMS `albums` queries from the parsed rules only (a decade is one query per year, merged, de-duplicated and sorted again); each must also pass the `/v1/rpc` allow-list. Results are album ids, kept 2 minutes so later pages and a random order hold together. Runs count under the `/v1/me` allowance, at most 30 a minute and 2 at once per user (8 in all).
 
 ---
 
@@ -277,6 +278,7 @@ This is the one contract used by the web app now and the native apps later. It i
 | `GET/PUT/DELETE /v1/me/home` | The user's Home layout (§5.8) | Access token |
 | `GET/POST /v1/me/stations`, `DELETE …/{id}`, `POST …/{id}/next` | Stations: list, add, remove, next batch (§5.8) | Access token |
 | `GET/POST /v1/me/menus`, `DELETE …/{id}`, `POST …/{id}/open` | Menus pinned to Home (§5.8) | Access token |
+| `GET/POST /v1/me/filters`, `PUT/DELETE …/{id}`, `GET …/{id}/albums` | Smart filters: list, add, replace, remove, run (§5.8, Wave 2) | Access token |
 | `GET /v1/account/devices`, `DELETE …/{id}` | User's own sessions/devices | Access token |
 | `GET /healthz` | Liveness | None |
 

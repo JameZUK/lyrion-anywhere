@@ -284,7 +284,91 @@ pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
     }
 }
 
+/// An album in the fake library used by `albums` queries (see [`FakeLms::set_albums`]).
+#[derive(Clone, Debug)]
+pub struct FakeAlbum {
+    pub id: u64,
+    pub title: &'static str,
+    pub artist: &'static str,
+    pub year: u32,
+    pub genres: Vec<u64>,
+    /// (artist id, role) contributions.
+    pub credits: Vec<(u64, &'static str)>,
+    pub compilation: bool,
+}
+
+/// The fake LMS's answer to an `albums` query over `library`: the filters LMS applies
+/// (`genre_id` lists, `artist_id` with an optional `role_id`, `compilation`, `year`), its
+/// sorts and paging. `random` is LMS's choice: reversed id order here, so tests can tell.
+pub fn fake_albums(library: &[FakeAlbum], words: &[serde_json::Value]) -> serde_json::Value {
+    let arg = |name: &str| {
+        words
+            .iter()
+            .filter_map(|w| w.as_str()?.strip_prefix(&format!("{name}:")))
+            .next()
+            .map(str::to_string)
+    };
+    let num = |i: usize| -> usize {
+        words
+            .get(i)
+            .and_then(|w| {
+                w.as_str()
+                    .map(str::to_string)
+                    .or_else(|| w.as_u64().map(|n| n.to_string()))
+            })
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    };
+    let genres: Option<Vec<u64>> =
+        arg("genre_id").map(|g| g.split(',').filter_map(|x| x.parse().ok()).collect());
+    let artist: Option<u64> = arg("artist_id").and_then(|a| a.parse().ok());
+    let role = arg("role_id");
+    let compilation = arg("compilation");
+    let year: Option<u32> = arg("year").and_then(|y| y.parse().ok());
+    let mut hits: Vec<&FakeAlbum> = library
+        .iter()
+        .filter(|a| {
+            genres
+                .as_ref()
+                .is_none_or(|g| a.genres.iter().any(|x| g.contains(x)))
+        })
+        .filter(|a| {
+            artist.is_none_or(|id| {
+                a.credits
+                    .iter()
+                    .any(|(c, r)| *c == id && role.as_deref().is_none_or(|want| want == *r))
+            })
+        })
+        .filter(|a| match compilation.as_deref() {
+            Some("1") => a.compilation,
+            Some("0") => !a.compilation,
+            _ => true,
+        })
+        .filter(|a| year.is_none_or(|y| a.year == y))
+        .collect();
+    match arg("sort").as_deref() {
+        Some("artistalbum") => hits.sort_by_key(|a| (a.artist, a.title)),
+        Some("yearalbum") => hits.sort_by_key(|a| (a.year, a.title)),
+        Some("new") => hits.sort_by_key(|a| std::cmp::Reverse(a.id)),
+        Some("random") => hits.sort_by_key(|a| std::cmp::Reverse(a.id)),
+        _ => hits.sort_by_key(|a| a.title),
+    }
+    let count = hits.len();
+    let page: Vec<serde_json::Value> = hits
+        .into_iter()
+        .skip(num(1))
+        .take(num(2))
+        .map(|a| {
+            serde_json::json!({"id": a.id, "album": a.title, "artist": a.artist, "year": a.year,
+                "url": "file:///srv/music/secret"})
+        })
+        .collect();
+    serde_json::json!({"count": count, "albums_loop": page})
+}
+
 pub struct FakeLms {
+    /// When set, `albums` queries are answered from this library ([`fake_albums`]).
+    pub albums: Arc<Mutex<Option<Vec<FakeAlbum>>>>,
     pub slim_addr: SocketAddr,
     pub http_addr: SocketAddr,
     /// Fake CLI (notifications): lines sent with `cli_send` go to every listener.
@@ -422,6 +506,8 @@ impl FakeLms {
         let sb = stream_body.clone();
         let status_track: Arc<Mutex<Option<u64>>> = Default::default();
         let st_track = status_track.clone();
+        let albums: Arc<Mutex<Option<Vec<FakeAlbum>>>> = Default::default();
+        let lib = albums.clone();
         let (r, a, stall, ex, pl) = (
             rec.clone(),
             audio.clone(),
@@ -432,6 +518,7 @@ impl FakeLms {
         let app = Router::new().fallback(any(move |req: Request| {
             let (r, stall, ex, pl) = (r.clone(), stall.clone(), ex.clone(), pl.clone());
             let playing = *st_track.lock().unwrap();
+            let library = lib.lock().unwrap().clone();
             let a = sb.lock().unwrap().clone().unwrap_or_else(|| a.clone());
             async move {
                 let path = req
@@ -505,6 +592,9 @@ impl FakeLms {
                             Some(t) => serde_json::json!({"count": 1, "titles_loop": [t]}),
                             None => serde_json::json!({"count": 0}),
                         },
+                        _ if cmd == "albums" && library.is_some() => {
+                            fake_albums(library.as_deref().unwrap(), &words)
+                        }
                         _ if cmd == "status" && playing.is_some() => serde_json::json!({
                             "mode": "play",
                             "playlist_loop": [{"playlist index": 0, "id": playing.unwrap()}]
@@ -615,6 +705,7 @@ impl FakeLms {
         });
 
         FakeLms {
+            albums,
             slim_addr,
             http_addr,
             cli_addr,
@@ -628,6 +719,11 @@ impl FakeLms {
             plugin,
             status_track,
         }
+    }
+
+    /// Answer `albums` queries from this library from now on.
+    pub fn set_albums(&self, library: Vec<FakeAlbum>) {
+        *self.albums.lock().unwrap() = Some(library);
     }
 
     /// Add a local library track of LMS type `kind` whose file is `file`. Its URL is

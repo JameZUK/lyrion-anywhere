@@ -2718,11 +2718,27 @@ fn migrate_steps(db: &Connection) -> Result<(), AuthError> {
         }
         db.execute_batch("PRAGMA user_version = 11;")?;
     }
+    if version < 12 {
+        // Wave 2 smart filters (docs/plans/wave2-design.md §5.6), per user and never
+        // shared: each a name and a validated JSON spec (rules, sort, limit; see
+        // `crate::filters`). Safe to run again.
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS user_filters (
+               id INTEGER PRIMARY KEY,
+               user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+               name TEXT NOT NULL,
+               spec TEXT NOT NULL,
+               created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL);
+             CREATE INDEX IF NOT EXISTS user_filters_user ON user_filters(user_id);
+             PRAGMA user_version = 12;",
+        )?;
+    }
     Ok(())
 }
 
 /// The schema version [`migrate`] brings a database to.
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -4214,6 +4230,47 @@ mod tests {
         assert_eq!(crate::ratings::style(&a, alice).unwrap(), "stars");
         assert_eq!(crate::ratings::count(&a, alice).unwrap(), 0);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Version 12 (smart filters) upgrades a version-11 database in place, is safe to run
+    /// again, and filters go with their user.
+    #[test]
+    fn migration_to_12_adds_filters() {
+        let path = std::env::temp_dir().join(format!("anywhere-mig12-{}.db", crate::random_id()));
+        {
+            let a = Accounts::open(&path).unwrap();
+            a.create_user("alice", PW, Role::Listener).unwrap();
+            a.with_db(|db| db.execute_batch("DROP TABLE user_filters; PRAGMA user_version = 11;"))
+                .unwrap();
+            assert_eq!(a.schema_version(), 11);
+        }
+        let a = Accounts::open(&path).unwrap();
+        assert_eq!(a.schema_version(), SCHEMA_VERSION);
+        let alice = user_id(&a, "alice");
+        assert!(crate::filters::list(&a, alice).unwrap().is_empty());
+        // Running the step again (as after a half-finished upgrade) changes nothing.
+        a.with_db(|db| {
+            db.execute_batch("PRAGMA user_version = 11;")?;
+            migrate(db).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(a.schema_version(), SCHEMA_VERSION);
+        let d = crate::filters::parse_draft(
+            &serde_json::json!({"name": "F", "rules": [{"field": "compilation", "is": true}], "sort": "album", "limit": 5}),
+            None,
+        )
+        .unwrap();
+        crate::filters::add(&a, alice, &d).unwrap();
+        a.delete_user("alice").unwrap();
+        let left: i64 = a
+            .with_db(|db| db.query_row("SELECT count(*) FROM user_filters", [], |r| r.get(0)))
+            .unwrap();
+        assert_eq!(left, 0, "filters go with the user");
+        drop(a);
+        for ext in ["db", "db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(ext));
+        }
     }
 
     #[test]

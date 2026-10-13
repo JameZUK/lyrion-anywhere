@@ -641,7 +641,7 @@ Any other field, or a wrong type, makes that play `invalid`.
 
 ## Your own things (`/v1/me/…`)
 
-Listening history, the customisable Home, stations and pinned menus (docs/plans/wave1-design.md §6–8; SPEC D23). Everything is per user: the same on every device of the user's, and never shown to anyone else. Each needs a bearer access token (401 without); a user may make 120 of these requests a minute (429 with `Retry-After` beyond). Answers are JSON with `Cache-Control: private, no-store`; refusals are `{"error": "<reason>"}`. Bodies are JSON objects whose unknown fields are refused (400), at most 4 KiB (413), 256 bytes for `PATCH /v1/me/history`. Ids in paths are plain positive decimal numbers; anything else, and another user's id, is 404.
+Listening history, the customisable Home, stations, pinned menus and smart filters (docs/plans/wave1-design.md §6–8, docs/plans/wave2-design.md §5.6; SPEC D23). Everything is per user: the same on every device of the user's, and never shown to anyone else. Each needs a bearer access token (401 without); a user may make 120 of these requests a minute (429 with `Retry-After` beyond). Answers are JSON with `Cache-Control: private, no-store`; refusals are `{"error": "<reason>"}`. Bodies are JSON objects whose unknown fields are refused (400), at most 4 KiB (413), 256 bytes for `PATCH /v1/me/history`. Ids in paths are plain positive decimal numbers; anything else, and another user's id, is 404.
 
 ### Listening history
 
@@ -675,11 +675,11 @@ LMS before 9.1 has no play-count sorts: the server side is then empty.
 `PUT /v1/me/home` with `{"version": 1, "shelves": [...]}` saves one (answering it as `GET` would); `DELETE /v1/me/home` goes back to the default. A layout is refused (400) unless:
 - `version` is 1 and there are no other fields;
 - `shelves` is a list of at most 24, each `{"type", "id"?, "hidden"?}` and nothing else;
-- `type` is one of `recent`, `stations`, `new`, `most`, `on_this_day`, `random`, `favourites`, `playlists` (no id), or `station`, `menu` (one of the user's own stations or pinned menus, checked when saved) or `genre` (an LMS genre id), which need an `id` (1 to 999 999 999 999);
+- `type` is one of `recent`, `stations`, `new`, `most`, `on_this_day`, `random`, `favourites`, `playlists` (no id), or `station`, `menu`, `filter` (one of the user's own stations, pinned menus or smart filters, checked when saved: 400 `no such station or pinned menu` / `no such filter` otherwise) or `genre` (an LMS genre id), which need an `id` (1 to 999 999 999 999);
 - `hidden` is `true` or `false`;
 - no shelf appears twice, and the whole document is at most 4 KiB.
 
-Shelves of stations or pinned menus deleted since are left out when the layout is read.
+Shelves of stations, pinned menus or filters deleted since are left out when the layout is read.
 
 ### Stations
 
@@ -723,6 +723,43 @@ Every time the station is saved or plays, the gateway replays the steps under th
 | `POST /v1/me/menus` `{"name", "steps", "player"}` | 201; 422 if LMS doesn't offer it now, on `player` |
 | `DELETE /v1/me/menus/{id}` | `{"removed": true}`, or 404 |
 | `POST /v1/me/menus/{id}/open` `{"player"}` | `{"result": <the last menu, filtered as /v1/rpc would>}`; the device may then run what it offers (its actions are learned for the device). 409 `{"broken": true}` if LMS no longer offers it |
+
+### Smart filters
+
+A filter is saved rules that produce albums; every rule must match. Filters are the user's own: another user's id is 404 everywhere, exactly as an id that doesn't exist.
+
+```json
+{"id": 3, "name": "Late jazz",
+ "rules": [{"field": "genre", "in": [4, 9]}, {"field": "decade", "is": 1960},
+           {"field": "artist", "is": 12, "role": "COMPOSER"}, {"field": "compilation", "is": false}],
+ "sort": "yearalbum", "limit": 200}
+```
+
+| Request | Answer |
+|---|---|
+| `GET /v1/me/filters` | `{"filters": [<filter>, …]}`, oldest first |
+| `POST /v1/me/filters` `{"name", "rules", "sort", "limit"}` | 201 with the filter (with its new `id`); 400 for a bad filter; 409 `too many filters` beyond 50 |
+| `PUT /v1/me/filters/{id}` `{"name", "rules", "sort", "limit", "id"?}` | 200 with the filter, replaced; `id` may be sent only if it is the path's; 400 for a bad filter; 404 if it isn't the caller's |
+| `DELETE /v1/me/filters/{id}` | `{"removed": true}`, or 404 |
+| `GET /v1/me/filters/{id}/albums[?from=0–500][&n=1–100]` | `{"albums": [<album id>, …], "count": <total>}`: the albums from `from` (0 by default), at most `n` (50 by default), and how many the filter produces in all (at most its limit). Clients load details by id (`albums 0 <n> album_id:<id,id,…>`), as for shelves. 400 for any other query parameter or value; 404 if it isn't the caller's; 429 beyond 30 runs a minute or 2 at once (`Retry-After: 5`); 502 if LMS can't be reached |
+
+A filter is refused (400, with the reason) unless:
+- it is an object with `name`, `rules`, `sort` and `limit`, and nothing else (`POST` takes no `id`);
+- `name` is 1–64 characters, cleaned like device names;
+- `rules` is a list of 1–8 rules, each field at most once, each exactly one of:
+  - `{"field": "genre", "in": [<genre id>, …]}`: 1–20 distinct ids, each 1 to 999 999 999;
+  - `{"field": "decade", "is": 1990}`: a multiple of 10 from 1900 to 2090;
+  - `{"field": "artist", "is": <artist id>, "role"?: "<role>"}`: the role one of `ALBUMARTIST`, `ARTIST`, `COMPOSER`, `CONDUCTOR`, `BAND`, `TRACKARTIST`;
+  - `{"field": "compilation", "is": true|false}`;
+- `sort` is `album` (A–Z), `artistalbum`, `yearalbum`, `new` (recently added) or `random`;
+- `limit` is 1–500;
+- the body is at most 4 KiB (413 beyond).
+
+Ids are JSON integers (not strings or decimals); a rule with any other key is refused.
+
+**Running a filter.** The gateway builds LMS `albums` queries from the parsed rules (`genre_id:<id,…>`, `artist_id:<id>` with `role_id:<role>`, `compilation:0|1`, `year:<y>`, `sort:<sort>`, `tags:lay`); nothing a client sends is passed on as text, and each query must also pass the `/v1/rpc` allow-list. A decade is one query per year, merged and de-duplicated, then sorted again: A–Z by title, by artist then title, by year (the years in order), newest first by album id (LMS numbers albums as it adds them), or shuffled. Without a decade it is one query in LMS's own order (`random` is shuffled again). The result is cut to the limit. It is kept for 2 minutes: `from=0` always runs the filter afresh (a new shuffle for `random`), and later pages continue the kept result, so a random order holds together while paging. Runs count under the `/v1/me` allowance above, and at most 30 a minute and 2 at once per user (8 at once for everyone); pages served from a kept result don't count as runs.
+
+**Playing a filter** (clients): its first albums, up to 50, through the existing album play path.
 
 ## Track analysis (`GET /v1/analysis/track/{id}`)
 

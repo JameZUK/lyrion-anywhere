@@ -7,9 +7,9 @@
 //!
 //! - `version` is 1.
 //! - `shelves`: at most [`MAX_SHELVES`], in order. Each is `{"type", "id"?, "hidden"?}`
-//!   with `type` from a fixed set ([`ShelfType`]). `station` and `menu` name one of the
-//!   user's own stations or pinned menus (checked when saved, and ones since deleted are
-//!   left out when read); `genre` names an LMS genre id. Nothing else is accepted, and a
+//!   with `type` from a fixed set ([`ShelfType`]). `station`, `menu` and `filter` name one
+//!   of the user's own stations, pinned menus or smart filters (checked when saved, and
+//!   ones since deleted are left out when read); `genre` names an LMS genre id. Nothing else is accepted, and a
 //!   shelf may appear only once.
 //! - The whole document is at most [`MAX_BYTES`].
 //!
@@ -27,6 +27,7 @@ use serde_json::{Map, Value, json};
 
 use crate::AppState;
 use crate::accounts::{Accounts, AuthError};
+use crate::filters;
 use crate::history::{body_json, caller, error, ok};
 use crate::stations::{self, PinKind};
 
@@ -62,6 +63,8 @@ pub enum ShelfType {
     Menu,
     /// Albums of one genre (`id`, an LMS genre id).
     Genre,
+    /// One of the user's smart filters (`id`).
+    Filter,
 }
 
 impl ShelfType {
@@ -78,6 +81,7 @@ impl ShelfType {
             "station" => ShelfType::Station,
             "menu" => ShelfType::Menu,
             "genre" => ShelfType::Genre,
+            "filter" => ShelfType::Filter,
             _ => return None,
         })
     }
@@ -95,6 +99,7 @@ impl ShelfType {
             ShelfType::Station => "station",
             ShelfType::Menu => "menu",
             ShelfType::Genre => "genre",
+            ShelfType::Filter => "filter",
         }
     }
 
@@ -102,7 +107,7 @@ impl ShelfType {
     pub fn takes_id(self) -> bool {
         matches!(
             self,
-            ShelfType::Station | ShelfType::Menu | ShelfType::Genre
+            ShelfType::Station | ShelfType::Menu | ShelfType::Genre | ShelfType::Filter
         )
     }
 }
@@ -166,6 +171,14 @@ impl Layout {
             (ShelfType::Menu, Some(id)) => Some((PinKind::Menu, id)),
             _ => None,
         })
+    }
+
+    /// Smart filter shelves: the user must own the filter.
+    pub fn filter_refs(&self) -> impl Iterator<Item = i64> + '_ {
+        self.shelves
+            .iter()
+            .filter(|s| s.kind == ShelfType::Filter)
+            .filter_map(|s| s.id)
     }
 }
 
@@ -265,8 +278,8 @@ pub fn save(a: &Accounts, user: i64, layout: Option<&Layout>) -> Result<(), Auth
     })
 }
 
-/// The layout as the user sees it: saved or default, without shelves for stations or
-/// pinned menus they no longer have.
+/// The layout as the user sees it: saved or default, without shelves for stations,
+/// pinned menus or filters they no longer have.
 pub fn current(a: &Accounts, user: i64) -> Result<(Layout, bool), AuthError> {
     let (mut layout, default) = match load(a, user)? {
         Some(l) => (l, false),
@@ -277,6 +290,7 @@ pub fn current(a: &Accounts, user: i64) -> Result<(Layout, bool), AuthError> {
         let ok = match (s.kind, s.id) {
             (ShelfType::Station, Some(id)) => stations::owns(a, user, PinKind::Station, id)?,
             (ShelfType::Menu, Some(id)) => stations::owns(a, user, PinKind::Menu, id)?,
+            (ShelfType::Filter, Some(id)) => filters::owns(a, user, id)?,
             _ => true,
         };
         if ok {
@@ -328,6 +342,13 @@ pub async fn put(State(gw): State<AppState>, headers: HeaderMap, body: Body) -> 
         match stations::owns(gw.accounts(), p.user_id, kind, id) {
             Ok(true) => {}
             Ok(false) => return error(StatusCode::BAD_REQUEST, "no such station or pinned menu"),
+            Err(_) => return internal(),
+        }
+    }
+    for id in layout.filter_refs() {
+        match filters::owns(gw.accounts(), p.user_id, id) {
+            Ok(true) => {}
+            Ok(false) => return error(StatusCode::BAD_REQUEST, "no such filter"),
             Err(_) => return internal(),
         }
     }
@@ -416,6 +437,13 @@ mod tests {
             shelf(json!({"type": "recent", "hidden": 1})),
             shelf(json!({"type": "recent", "title": "<script>"})),
             shelf(json!({"type": "menu", "id": 1, "cmd": ["pref"]})),
+            shelf(json!({"type": "filter"})),
+            shelf(json!({"type": "filter", "id": 0})),
+            shelf(json!({"type": "filter", "id": "3"})),
+            shelf(json!({"type": "filter", "id": -3})),
+            shelf(json!({"type": "filter", "id": 3, "rules": []})),
+            shelf(json!({"type": "Filter", "id": 3})),
+            json!({"version": 1, "shelves": [{"type": "filter", "id": 3}, {"type": "filter", "id": 3}]}),
             json!({"version": 1, "shelves": [{"type": "recent"}, {"type": "recent"}]}),
             json!({"version": 1, "shelves": [{"type": "station", "id": 3}, {"type": "station", "id": 3, "hidden": true}]}),
             json!({"version": 1, "shelves": vec![json!({"type": "genre", "id": 1}); 2]}),
@@ -477,6 +505,45 @@ mod tests {
         assert!(current(&a, alice).unwrap().1);
     }
 
+    #[test]
+    fn filter_shelves_name_the_users_own_filters() {
+        let a = Accounts::in_memory().unwrap();
+        a.create_user(
+            "alice",
+            "correct horse battery",
+            crate::accounts::Role::Listener,
+        )
+        .unwrap();
+        let alice = a.user_id_by_name("alice").unwrap().unwrap();
+        let d = filters::parse_draft(
+            &json!({"name": "F", "rules": [{"field": "decade", "is": 1970}], "sort": "random", "limit": 50}),
+            None,
+        )
+        .unwrap();
+        let f = filters::add(&a, alice, &d).unwrap();
+        let l = parse(json!({"version": 1, "shelves": [
+            {"type": "filter", "id": f}, {"type": "filter", "id": f + 1, "hidden": true},
+            {"type": "station", "id": f}, {"type": "recent"}
+        ]}))
+        .unwrap();
+        assert_eq!(parse(l.to_json()), Ok(l.clone()));
+        assert_eq!(l.filter_refs().collect::<Vec<_>>(), [f, f + 1]);
+        assert_eq!(l.owned_refs().collect::<Vec<_>>(), [(PinKind::Station, f)]);
+        // Shelves of filters (and stations) the user doesn't have are left out when read.
+        save(&a, alice, Some(&l)).unwrap();
+        let (seen, _) = current(&a, alice).unwrap();
+        assert_eq!(
+            seen.shelves
+                .iter()
+                .map(|s| (s.kind, s.id))
+                .collect::<Vec<_>>(),
+            [(ShelfType::Filter, Some(f)), (ShelfType::Recent, None)]
+        );
+        filters::remove(&a, alice, f).unwrap();
+        let (seen, _) = current(&a, alice).unwrap();
+        assert_eq!(seen.shelves.len(), 1);
+    }
+
     /// Robustness: arbitrary bytes and arbitrary JSON never panic the parser, and whatever
     /// it accepts is within the limits and reads back the same.
     #[test]
@@ -530,6 +597,7 @@ mod tests {
             "station",
             "menu",
             "genre",
+            "filter",
             "x",
         ];
         for _ in 0..20_000 {

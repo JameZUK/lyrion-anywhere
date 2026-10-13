@@ -8,7 +8,7 @@
 
 - **Nothing goes to us.** The app talks only to the server you type in or scan (your Lyrion Anywhere gateway). The project has no servers, accounts, analytics, advertising, tracking or third-party SDKs, and receives no data from the app.
 - **Your server keeps what it needs to sign you in and keep you safe:** your account, your devices, and an audit log. Its administrator (usually you or your household) can see it.
-- **Your server also keeps your listening history** (for Recently played, Most played and stations), your Home layout and your stations: yours only, for 13 months for history, and you can see it, clear it or switch it off.
+- **Your server also keeps your listening history** (for Recently played, Most played and stations), your Home layout, your stations and your smart filters: yours only, for 13 months for history, and you can see it, clear it or switch it off.
 - **Your phone keeps your sign-in (sealed by the Android Keystore), your settings and your downloads.** Signing out removes the sign-in and, if you choose, the downloads. A device the server revokes deletes its downloads.
 
 ## What the Android app stores on your phone
@@ -39,7 +39,7 @@ The app sends data **only to your gateway**, over HTTPS (plain HTTP is refused, 
 - streaming and downloading music;
 - waveform analysis;
 - sending plays heard offline;
-- your Home layout, stations and listening-history settings.
+- your Home layout, stations, smart filters and listening-history settings.
 
 When it signs in, the app also tells your gateway what it is, so its admins can recognise the device:
 - the client type (`android`);
@@ -67,6 +67,7 @@ The gateway runs on your server, next to Lyrion Music Server. Its data stays the
 | **Listening history** | What you played through Lyrion Anywhere, on your own devices or offline: the track (by a salted key, and its library ids at the time), when it started and how long you listened. Nothing about players that aren't yours (hardware players, other people's devices). Not recorded while you have it switched off | **13 months**, at most the newest 50,000 plays; until you clear it, or the account is deleted |
 | **Ratings** | Your own rating of tracks (by a salted key, and the library id at the time), when you rated them, and whether you rate with stars or a heart. Where the server has the Ratings Light plugin, your rating also becomes LMS's shared rating for that track, which other users of the server can see there | Until you clear them (or the account is deleted); at most 100,000 |
 | **Home and stations** | Your Home layout (which shelves, in what order), your stations (their names and what they play: genres, a decade, or a reference to a plugin menu item you saved) and menus you pinned | Until you change or delete them, or the account is deleted |
+| **Smart filters** | Your saved filters: their names and rules (genres, a decade, an artist, compilations), sort and size. Only you can see or use them | Until you change or delete them, or the account is deleted; at most 50 |
 
 - **Who sees it:** the gateway's admins, through Lyrion Music Server's settings page (which needs a token only that page has). Listeners see only their own account and devices. Nothing is shared with anyone else.
 - **Play counts** themselves are kept by Lyrion Music Server, as when you play a track on any LMS player.
@@ -79,7 +80,7 @@ The gateway runs on your server, next to Lyrion Music Server. Its data stays the
 - **Revoked by the server** (an admin revokes the device, or too many devices signed in): the phone deletes its sign-in and all its downloads the next time it connects.
 - **Uninstall:** Android deletes everything the app stored.
 - **Listening history:** Settings › Listening history › *Clear history* deletes it from the server at once; switching it off stops recording.
-- **On the server:** ask its admin to delete your account. That deletes your devices, sign-ins, play keys, listening history, Home layout and stations at once. The audit log keeps its entries naming your username until they expire (one year), as a security record.
+- **On the server:** ask its admin to delete your account. That deletes your devices, sign-ins, play keys, listening history, Home layout, stations and smart filters at once. The audit log keeps its entries naming your username until they expire (one year), as a security record.
 
 ## Children
 
@@ -118,7 +119,7 @@ For the Play Console's *Data safety* form. Google defines "collected" as data **
 | Personal info → User IDs (username) | Yes | No | Account management, app functionality | No |
 | Device or other IDs (device id) | Yes | No | App functionality, security | No |
 | App activity → Other actions (offline plays) | Yes | No | App functionality | Yes (only when offline playback is used) |
-| App activity → App interactions (listening history, Home layout, stations) | Yes | No | App functionality, personalisation | Yes (history can be switched off) |
+| App activity → App interactions (listening history, Home layout, stations, smart filters) | Yes | No | App functionality, personalisation | Yes (history can be switched off) |
 | Audio files (downloads are received, not sent) | No | No | — | — |
 | App info and performance → Crash logs | No (never sent by the app) | No | — | — |
 

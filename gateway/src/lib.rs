@@ -37,6 +37,7 @@ mod auth;
 pub mod diagnostics;
 pub mod download;
 pub mod events;
+pub mod filters;
 mod flac_strip;
 pub mod history;
 pub mod home;
@@ -270,6 +271,10 @@ pub struct Gateway {
     station_batches: plays::Window,
     /// Tracks each station served lately (never repeated soon).
     station_served: stations::Served,
+    /// Smart filter runs per user a minute, runs in flight, and recent results.
+    filter_runs: plays::Window,
+    filter_slots: Arc<limits::Limiter>,
+    filter_results: filters::Results,
     /// Pruning of listening history.
     history_upkeep: history::Upkeep,
     /// Lyrics answers and the plugin lookup limit.
@@ -344,6 +349,9 @@ impl Gateway {
                 Duration::from_secs(60),
             ),
             station_served: Default::default(),
+            filter_runs: plays::Window::new(filters::RUNS_PER_MINUTE, Duration::from_secs(60)),
+            filter_slots: limits::Limiter::new(filters::RUNS_PER_USER, filters::RUNS_TOTAL),
+            filter_results: Default::default(),
             history_upkeep: Default::default(),
             lyrics: Default::default(),
             live_slots: Arc::new(tokio::sync::Semaphore::new(cfg.live_transcode_jobs)),
@@ -542,6 +550,15 @@ pub fn router(state: AppState) -> Router {
             axum::routing::delete(stations::delete_menu),
         )
         .route("/v1/me/menus/{id}/open", post(stations::open_menu))
+        .route(
+            "/v1/me/filters",
+            get(filters::list_filters).post(filters::create),
+        )
+        .route(
+            "/v1/me/filters/{id}",
+            axum::routing::put(filters::update).delete(filters::delete),
+        )
+        .route("/v1/me/filters/{id}/albums", get(filters::albums))
         .route("/v1/events", get(events::events_upgrade))
         .route("/v1/player", get(tunnel::player_upgrade))
         .route("/v1/stream/{session}/{n}", get(relay::stream))
