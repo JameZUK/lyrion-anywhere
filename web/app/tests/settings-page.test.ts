@@ -15,7 +15,7 @@ test('user settings first; diagnostics last and collapsed', async () => {
 	const { default: Settings } = await import('../src/routes/settings/+page.svelte');
 	const r = render(Settings);
 	const headings = [...r.container.querySelectorAll('.card > h2, details.developer > summary')].map((h) => h.textContent?.trim());
-	expect(headings.slice(0, 8)).toEqual(['Appearance', 'Ratings', 'Lyrics', 'Visualiser', 'Sleep timer', 'Streaming quality', 'Downloads', 'This device']);
+	expect(headings.slice(0, 8)).toEqual(['Appearance', 'Ratings', 'Lyrics', 'Visualiser', 'Haptics', 'Keyboard', 'Sleep timer', 'Streaming quality']);
 	expect(headings.at(-2)).toBe('Diagnostics');
 	expect(headings.at(-1)).toBe('About');
 	const dev = r.container.querySelector<HTMLDetailsElement>('details[data-developer]')!;

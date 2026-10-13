@@ -12,6 +12,7 @@
 	import { DEVICE_BUTTONS_NOTE } from '$lib/player/volume';
 	import { LONG_PRESS_MS, MiniGesture, miniKey, type MiniAction } from '$lib/player/gesture';
 	import { formatLeft, sleepLeft } from '$lib/lms/sleep';
+	import { haptics } from '$lib/haptics/haptics.svelte';
 
 	let seeking = $state<number | null>(null);
 	let volume = $state<number | null>(null);
@@ -40,10 +41,10 @@
 	function act(a: MiniAction) {
 		if (a === 'none') return;
 		if (a === 'next' || a === 'previous') {
-			navigator.vibrate?.(10);
+			haptics.tick('skip');
 			void app.send(cmd.skip(a === 'next' ? 1 : -1));
 		} else if (a === 'long-press') {
-			navigator.vibrate?.(15);
+			haptics.tick('press');
 			playOn = true;
 		} else {
 			void go('/');
@@ -106,6 +107,7 @@
 	}
 
 	function setVolume(v: number) {
+		haptics.volume(vol, v);
 		volume = v;
 		clearTimeout(volTimer);
 		volTimer = setTimeout(async () => {

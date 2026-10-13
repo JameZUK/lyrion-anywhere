@@ -38,6 +38,7 @@
 	import { LAYOUTS, LAYOUT_LABELS, layoutForKey, swipeLayout, type Layout } from '$lib/nowplaying/prefs';
 	import { STYLE_LABELS, nextStyle } from '$lib/visual/draw';
 	import { isThisDevice } from '$lib/player/outputs';
+	import { haptics } from '$lib/haptics/haptics.svelte';
 
 	let showMore = $state(false);
 	let showSleep = $state(false);
@@ -150,6 +151,7 @@
 	);
 
 	function setVolume(v: number) {
+		haptics.volume(vol, v);
 		volume = v;
 		clearTimeout(volTimer);
 		volTimer = setTimeout(async () => {
@@ -186,6 +188,7 @@
 		{#if lyrics.lyrics && lyricsId !== null}
 			<button class="btn act" onclick={() => (showLyrics = true)} aria-haspopup="dialog" aria-label="Lyrics" data-lyrics-button><Icon name="lyrics" size={18} /><span class="label">Lyrics</span></button>
 		{/if}
+		{#if app.current}<a class="btn act" href="#/car" aria-label="Car mode" data-car-link><Icon name="car" size={18} /><span class="label">Car</span></a>{/if}
 		{#if app.current}<a class="btn act" href="#/alarms" aria-label="Alarms" data-alarms-link><Icon name="alarm" size={18} /><span class="label">Alarms</span></a>{/if}
 		<button class="btn act" onclick={() => (showQueue = true)} aria-haspopup="dialog" aria-label="Queue" disabled={!app.current} data-queue-peek><Icon name="queue" size={18} /><span class="label">Queue</span></button>
 		{#if typeof track?.id === 'number' && track.id > 0}

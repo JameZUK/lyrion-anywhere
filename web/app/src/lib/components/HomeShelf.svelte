@@ -6,7 +6,9 @@
 	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
 	import type { Album, AlbumsResult, FavouritesResult, MenuItem, Playlist, PlaylistsResult } from '$lib/lms/types';
-	import type { HomeShelf, PinnedMenu, Station } from '$lib/api/me';
+	import type { HomeShelf, PinnedMenu, SmartFilter, Station } from '$lib/api/me';
+	import { startFilter } from '$lib/filters/run';
+	import Icon from './Icon.svelte';
 	import type { SBMenu } from '$lib/lms/slimbrowse';
 	import { SHELF_LABELS } from '$lib/home/layout';
 	import AlbumShelf from './AlbumShelf.svelte';
@@ -17,8 +19,9 @@
 		shelf,
 		stations,
 		menus,
+		filters = [],
 		onstationremoved,
-	}: { shelf: HomeShelf; stations: Station[]; menus: PinnedMenu[]; onstationremoved?: (id: number) => void } = $props();
+	}: { shelf: HomeShelf; stations: Station[]; menus: PinnedMenu[]; filters?: SmartFilter[]; onstationremoved?: (id: number) => void } = $props();
 
 	const COUNT = 20;
 	let albums = $state<Album[] | null>(null);
@@ -30,15 +33,31 @@
 
 	const station = $derived(shelf.type === 'station' ? stations.find((s) => s.id === shelf.id) : undefined);
 	const pinned = $derived(shelf.type === 'menu' ? menus.find((m) => m.id === shelf.id) : undefined);
+	const smart = $derived(shelf.type === 'filter' ? filters.find((f) => f.id === shelf.id) : undefined);
 	const title = $derived(
-		shelf.type === 'station' ? (station?.name ?? 'Station') : shelf.type === 'menu' ? (pinned?.name ?? 'Pinned menu') : shelf.type === 'genre' ? genreName || 'Genre' : SHELF_LABELS[shelf.type],
+		shelf.type === 'station'
+			? (station?.name ?? 'Station')
+			: shelf.type === 'menu'
+				? (pinned?.name ?? 'Pinned menu')
+				: shelf.type === 'genre'
+					? genreName || 'Genre'
+					: shelf.type === 'filter'
+						? (smart?.name ?? 'Smart filter')
+						: SHELF_LABELS[shelf.type],
 	);
+	let playMessage = $state('');
+	async function playSmart(shuffle: boolean) {
+		if (shelf.type !== 'filter' || shelf.id === undefined) return;
+		playMessage = '';
+		playMessage = await startFilter(shelf.id, shuffle);
+	}
 	const EMPTY: Partial<Record<HomeShelf['type'], string>> = {
 		recent: 'Nothing played yet. What you play shows here.',
 		most: 'Play some music and your favourites show here.',
 		new: 'Nothing has been added to the library yet.',
 		random: 'No albums in the library yet.',
 		genre: 'No albums in this genre.',
+		filter: 'No albums match this filter.',
 	};
 
 	async function byIds(ids: number[]): Promise<Album[]> {
@@ -69,6 +88,9 @@
 					genreName = textOf(g.genres_loop?.[0]?.genre);
 					break;
 				}
+				case 'filter':
+					albums = await byIds((await me.filterAlbums(s.id!, 0, COUNT)).albums);
+					break;
 				case 'favourites':
 					favourites = ((await api.rpc<FavouritesResult>('', cmd.favourites(0, COUNT))).loop_loop ?? []).filter((f) => typeof f.id === 'string');
 					break;
@@ -97,7 +119,18 @@
 
 {#if !hide}
 	<section class="shelf" aria-labelledby={`shelf-${shelf.type}-${shelf.id ?? 0}`}>
-		<h2 id={`shelf-${shelf.type}-${shelf.id ?? 0}`}>{title}</h2>
+		{#if shelf.type === 'filter'}
+			<div class="head">
+				<h2 id={`shelf-${shelf.type}-${shelf.id ?? 0}`}><a href={`#/filter/${shelf.id}`}>{title}</a></h2>
+				{#if albums?.length}
+					<button class="icon-btn" aria-label={`Play ${title}`} onclick={() => playSmart(false)} data-shelf-filter-play><Icon name="play" size={18} /></button>
+					<button class="icon-btn" aria-label={`Shuffle ${title}`} onclick={() => playSmart(true)} data-shelf-filter-shuffle><Icon name="shuffle" size={18} /></button>
+				{/if}
+			</div>
+			{#if playMessage}<p class="error" role="alert">{playMessage}</p>{/if}
+		{:else}
+			<h2 id={`shelf-${shelf.type}-${shelf.id ?? 0}`}>{title}</h2>
+		{/if}
 		{#if error}
 			<p class="error">{error}</p>
 		{:else if shelf.type === 'stations'}
@@ -161,6 +194,20 @@
 	h2 {
 		font-size: 1.2rem;
 		margin: 0 0 0.5rem;
+	}
+	.head {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+	}
+	.head h2 {
+		flex: 1;
+		min-width: 0;
+		margin: 0;
+	}
+	.head .icon-btn {
+		width: 44px;
+		height: 44px;
 	}
 	.small {
 		font-size: 0.9rem;

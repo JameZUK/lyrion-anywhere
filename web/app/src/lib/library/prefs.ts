@@ -3,15 +3,16 @@
 // odd gives the defaults.
 import type { BrowseSort } from '$lib/components/AlbumBrowser.svelte';
 
-export type LibraryChip = 'albums' | 'artists' | 'playlists' | 'favourites';
+export type LibraryChip = 'albums' | 'artists' | 'playlists' | 'favourites' | 'filters';
 export type AlbumView = 'grid' | 'list';
 
-export const CHIPS: readonly LibraryChip[] = ['albums', 'artists', 'playlists', 'favourites'];
+export const CHIPS: readonly LibraryChip[] = ['albums', 'artists', 'playlists', 'favourites', 'filters'];
 export const CHIP_LABELS: Record<LibraryChip, string> = {
 	albums: 'Albums',
 	artists: 'Artists',
 	playlists: 'Playlists',
 	favourites: 'Favourites',
+	filters: 'Filters',
 };
 
 /**

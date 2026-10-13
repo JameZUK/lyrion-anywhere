@@ -152,7 +152,7 @@ test('Library chips are tabs: arrows move and choose; the choice is remembered',
 	fake.handler.rpc = async () => ({ count: 0 });
 	const first = render(LibraryPage);
 	const tabs = () => [...first.container.querySelectorAll<HTMLButtonElement>('[role="tab"][data-chip]')];
-	expect(tabs().map((t) => t.textContent?.trim())).toEqual(['Albums', 'Artists', 'Playlists', 'Favourites']);
+	expect(tabs().map((t) => t.textContent?.trim())).toEqual(['Albums', 'Artists', 'Playlists', 'Favourites', 'Filters']);
 	// No Downloaded chip on the web.
 	expect(first.container.textContent).not.toContain('Downloaded');
 	expect(tabs()[0]!.getAttribute('aria-selected')).toBe('true');
@@ -164,6 +164,9 @@ test('Library chips are tabs: arrows move and choose; the choice is remembered',
 	expect(document.activeElement).toBe(tabs()[1]);
 	expect(first.container.querySelector('[role="tabpanel"]')?.getAttribute('data-library-panel')).toBe('artists');
 	await fireEvent.keyDown(tabs()[1]!, { key: 'End' });
+	await settle();
+	expect(first.container.querySelector('[data-library-panel]')?.getAttribute('data-library-panel')).toBe('filters');
+	await fireEvent.keyDown(tabs()[4]!, { key: 'ArrowLeft' });
 	await settle();
 	expect(first.container.querySelector('[data-library-panel]')?.getAttribute('data-library-panel')).toBe('favourites');
 	expect(JSON.parse(localStorage.getItem(LIBRARY_KEY)!).chip).toBe('favourites');

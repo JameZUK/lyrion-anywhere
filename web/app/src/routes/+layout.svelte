@@ -14,6 +14,7 @@
 	import Login from '$lib/components/Login.svelte';
 	import PlayerBar from '$lib/components/PlayerBar.svelte';
 	import MediaSession from '$lib/components/MediaSession.svelte';
+	import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import OfflineBar from '$lib/components/OfflineBar.svelte';
 	import OfflineMode from '$lib/components/OfflineMode.svelte';
@@ -157,7 +158,7 @@
 		{ href: '#/settings', label: 'Settings', icon: 'settings', match: (p: string) => p.startsWith('/settings') },
 	];
 	// Library sections without a sidebar entry of their own: under "Library".
-	const MORE_LIBRARY = ['/library', '/genre', '/year', '/folder', '/compilations', '/random'];
+	const MORE_LIBRARY = ['/library', '/genre', '/year', '/folder', '/compilations', '/random', '/filter'];
 	// Phones: five tabs; Home ends with the library, whose sections are one tap away there.
 	const LIBRARY = ['/home', '/stations', '/album', '/artist', '/playlist', '/favourites', '/apps', '/browse', '/downloads', '/new', ...MORE_LIBRARY];
 	const TABS = [
@@ -186,52 +187,58 @@
 	<Login />
 {:else}
 	<MediaSession />
-	<div class="shell">
-		<nav class="side" aria-label="Main">
-			<div class="brand"><img class="logo" src="./icons/icon.svg" alt="" width="28" height="28" />Lyrion Anywhere</div>
-			{#each NAV as n (n.href)}
+	<KeyboardShortcuts />
+	{#if path === '/car'}
+		<!-- Car mode fills the screen: no navigation, player bar or tabs around it. -->
+		<main class="car-shell">{@render children()}</main>
+	{:else}
+		<div class="shell">
+			<nav class="side" aria-label="Main">
+				<div class="brand"><img class="logo" src="./icons/icon.svg" alt="" width="28" height="28" />Lyrion Anywhere</div>
+				{#each NAV as n (n.href)}
+					<a href={n.href} class:active={n.match(path)} aria-current={n.match(path) ? 'page' : undefined}>
+						<Icon name={n.icon} size={20} />{n.label}
+					</a>
+				{/each}
+				{#if app.events !== 'live' && app.events !== 'stopped'}
+					<p class="conn muted">Reconnecting…</p>
+				{/if}
+			</nav>
+			<main class="content" class:has-strip={app.remote && !offlinePlayer.active} class:on-np={path === '/' && !offlinePlayer.active}>
+				{#if heldBack}
+					<button class="banner resume tap" onclick={() => {}}>
+						<Icon name="play" size={16} /><span>Playing on this device. Tap here (or anywhere) to turn the sound on.</span>
+					</button>
+				{:else if device.wasActive && (device.state === 'off' || device.state === 'stopped' || device.state === 'error')}
+					<div class="banner resume" role="status">
+						<span>This device was playing before the page reloaded.</span>
+						<button class="btn primary" onclick={() => device.start()}><Icon name="play" size={16} />Resume playing here</button>
+						<button class="btn" onclick={() => device.stop()}>Dismiss</button>
+					</div>
+				{/if}
+				{#if app.notice}
+					<div class="banner resume notice" role="status">
+						<span>{app.notice}</span>
+						<button class="btn" onclick={() => (app.notice = '')}>OK</button>
+					</div>
+				{/if}
+				{#if app.error}<p class="banner error" role="alert">{app.error}</p>{/if}
+				{@render children()}
+			</main>
+		</div>
+		{#if offlinePlayer.active}
+			<div class="barwrap"><OfflineBar /></div>
+		{:else}
+			<div class="barwrap" class:on-np={path === '/'}><PlayerBar /></div>
+		{/if}
+		<nav class="tabs" aria-label="Main">
+			{#each TABS as n (n.href)}
 				<a href={n.href} class:active={n.match(path)} aria-current={n.match(path) ? 'page' : undefined}>
-					<Icon name={n.icon} size={20} />{n.label}
+					<span class="ico"><Icon name={n.icon} size={22} /></span><span>{n.label}</span>
 				</a>
 			{/each}
-			{#if app.events !== 'live' && app.events !== 'stopped'}
-				<p class="conn muted">Reconnecting…</p>
-			{/if}
 		</nav>
-		<main class="content" class:has-strip={app.remote && !offlinePlayer.active} class:on-np={path === '/' && !offlinePlayer.active}>
-			{#if heldBack}
-				<button class="banner resume tap" onclick={() => {}}>
-					<Icon name="play" size={16} /><span>Playing on this device. Tap here (or anywhere) to turn the sound on.</span>
-				</button>
-			{:else if device.wasActive && (device.state === 'off' || device.state === 'stopped' || device.state === 'error')}
-				<div class="banner resume" role="status">
-					<span>This device was playing before the page reloaded.</span>
-					<button class="btn primary" onclick={() => device.start()}><Icon name="play" size={16} />Resume playing here</button>
-					<button class="btn" onclick={() => device.stop()}>Dismiss</button>
-				</div>
-			{/if}
-			{#if app.notice}
-				<div class="banner resume notice" role="status">
-					<span>{app.notice}</span>
-					<button class="btn" onclick={() => (app.notice = '')}>OK</button>
-				</div>
-			{/if}
-			{#if app.error}<p class="banner error" role="alert">{app.error}</p>{/if}
-			{@render children()}
-		</main>
-	</div>
-	{#if offlinePlayer.active}
-		<div class="barwrap"><OfflineBar /></div>
-	{:else}
-		<div class="barwrap" class:on-np={path === '/'}><PlayerBar /></div>
 	{/if}
-	<nav class="tabs" aria-label="Main">
-		{#each TABS as n (n.href)}
-			<a href={n.href} class:active={n.match(path)} aria-current={n.match(path) ? 'page' : undefined}>
-				<span class="ico"><Icon name={n.icon} size={22} /></span><span>{n.label}</span>
-			</a>
-		{/each}
-	</nav>
 {/if}
 
 <style>

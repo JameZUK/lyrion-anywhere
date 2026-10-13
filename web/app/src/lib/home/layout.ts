@@ -4,8 +4,8 @@
 import { SHELF_TYPES, type HomeLayout, type HomeShelf, type ShelfType } from '$lib/api/me';
 
 export const MAX_SHELVES = 24;
-/** Shelves that name something by id: one of the user's stations or pinned menus, or a genre. */
-export const WITH_ID: readonly ShelfType[] = ['station', 'menu', 'genre'];
+/** Shelves that name something by id: one of the user's stations, pinned menus or smart filters, or a genre. */
+export const WITH_ID: readonly ShelfType[] = ['station', 'menu', 'genre', 'filter'];
 
 export const SHELF_LABELS: Record<ShelfType, string> = {
 	recent: 'Recently played',
@@ -19,6 +19,7 @@ export const SHELF_LABELS: Record<ShelfType, string> = {
 	station: 'Station',
 	menu: 'Pinned menu',
 	genre: 'Genre',
+	filter: 'Smart filter',
 };
 
 /** The Home every user starts with. */

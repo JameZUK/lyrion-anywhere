@@ -5,15 +5,17 @@
 	import { api } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
-	import type { HomeLayout, HomeShelf as Shelf, PinnedMenu, ShelfType, Station } from '$lib/api/me';
+	import type { HomeLayout, HomeShelf as Shelf, PinnedMenu, ShelfType, SmartFilter, Station } from '$lib/api/me';
 	import * as L from '$lib/home/layout';
 	import HomeShelf from '$lib/components/HomeShelf.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import { haptics } from '$lib/haptics/haptics.svelte';
 
 	let layout = $state<HomeLayout | null>(null);
 	let stations = $state<Station[]>([]);
 	let menus = $state<PinnedMenu[]>([]);
+	let filters = $state<SmartFilter[]>([]);
 	let error = $state('');
 	let editing = $state(false);
 	/** The layout as saved, to go back to if a save fails or editing is cancelled. */
@@ -28,11 +30,17 @@
 	async function load() {
 		error = '';
 		try {
-			const [l, s, m] = await Promise.all([me.home(), me.stations(), me.menus().catch(() => [] as PinnedMenu[])]);
+			const [l, s, m, f] = await Promise.all([
+				me.home(),
+				me.stations(),
+				me.menus().catch(() => [] as PinnedMenu[]),
+				me.filters().catch(() => [] as SmartFilter[]),
+			]);
 			layout = l;
 			saved = l;
 			stations = s;
 			menus = m;
+			filters = f;
 		} catch (e) {
 			error = (e as Error).message;
 		}
@@ -46,7 +54,9 @@
 				? `Pinned: ${menus.find((x) => x.id === s.id)?.name ?? s.id}`
 				: s.type === 'genre'
 					? `Genre: ${genres.find((x) => x.id === s.id)?.genre ?? s.id}`
-					: L.SHELF_LABELS[s.type];
+					: s.type === 'filter'
+						? `Smart filter: ${filters.find((x) => x.id === s.id)?.name ?? s.id}`
+						: L.SHELF_LABELS[s.type];
 
 	function change(next: HomeLayout) {
 		layout = next;
@@ -131,6 +141,7 @@
 	// Pointer drag by the handle; Move up/down does the same for keyboards and screen readers.
 	function dragStart(e: PointerEvent, i: number) {
 		dragFrom = i;
+		haptics.tick('pickup');
 		(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
 	}
 	function dragMove(e: PointerEvent) {
@@ -143,6 +154,7 @@
 		}
 	}
 	function dragEnd() {
+		if (dragFrom !== null) haptics.tick('drop');
 		dragFrom = null;
 	}
 
@@ -191,7 +203,7 @@
 					{#each choices as t (t)}<option value={t}>{L.SHELF_LABELS[t]}</option>{/each}
 				</select>
 			</label>
-			{#if adding === 'station' || adding === 'menu' || adding === 'genre'}
+			{#if adding === 'station' || adding === 'menu' || adding === 'genre' || adding === 'filter'}
 				<label class="field"
 					><span>Which</span>
 					<select bind:value={addId}>
@@ -199,6 +211,7 @@
 						{#if adding === 'station'}{#each stations as s (s.id)}<option value={s.id}>{s.name}</option>{/each}{/if}
 						{#if adding === 'menu'}{#each menus as m (m.id)}<option value={m.id}>{m.name}</option>{/each}{/if}
 						{#if adding === 'genre'}{#each genres as g (g.id)}<option value={g.id}>{g.genre}</option>{/each}{/if}
+						{#if adding === 'filter'}{#each filters as f (f.id)}<option value={f.id}>{f.name}</option>{/each}{/if}
 					</select>
 				</label>
 			{/if}
@@ -214,7 +227,7 @@
 		</div>
 	{:else}
 		{#each layout.shelves.filter((s) => !s.hidden) as s (L.shelfKey(s))}
-			<HomeShelf shelf={s} {stations} {menus} onstationremoved={(id) => (stations = stations.filter((x) => x.id !== id))} />
+			<HomeShelf shelf={s} {stations} {menus} {filters} onstationremoved={(id) => (stations = stations.filter((x) => x.id !== id))} />
 		{:else}
 			<p class="muted">Your Home is empty. Use Edit Home to add shelves.</p>
 		{/each}

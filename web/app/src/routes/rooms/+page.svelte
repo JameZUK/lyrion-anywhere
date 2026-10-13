@@ -20,6 +20,7 @@
 	import type { RowAction } from '$lib/components/RowMenu.svelte';
 	import RoomCard from '$lib/components/RoomCard.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
+	import { haptics } from '$lib/haptics/haptics.svelte';
 
 	const poller = new RoomsPoller({
 		rpc: (p, c) => api.rpc(p, c),
@@ -123,6 +124,7 @@
 		e.preventDefault();
 		(e.currentTarget as Element).setPointerCapture?.(e.pointerId);
 		drag = { id: key(p), pointer: e.pointerId, over: null };
+		haptics.tick('pickup');
 	}
 	function roomAt(x: number, y: number): string | null {
 		const el = typeof document.elementFromPoint === 'function' ? document.elementFromPoint(x, y) : null;
@@ -138,6 +140,7 @@
 		const over = roomAt(e.clientX, e.clientY) ?? drag.over;
 		const from = drag.id;
 		drag = null;
+		haptics.tick('drop');
 		if (over && over !== from) void syncInto(over, from);
 	}
 

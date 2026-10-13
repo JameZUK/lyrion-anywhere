@@ -3,6 +3,9 @@
 // shared with other users.
 import { bearer, callJson } from './http';
 import type { Command } from './rpc';
+import { FILTER_LIMITS, cleanSpec, filterFrom, filterProblem, validId, type FilterSpec, type SmartFilter } from './filters';
+
+export type { FilterRule, FilterSort, FilterSpec, SmartFilter } from './filters';
 
 /** Runs `fn` with a valid access token (see SessionManager.authed). */
 export type Authed = <T>(fn: (token: string) => Promise<T>) => Promise<T>;
@@ -29,7 +32,7 @@ export interface HistoryPage {
 
 export type ShelfName = 'recent' | 'most' | 'on_this_day';
 
-export const SHELF_TYPES = ['recent', 'stations', 'new', 'most', 'on_this_day', 'random', 'favourites', 'playlists', 'station', 'menu', 'genre'] as const;
+export const SHELF_TYPES = ['recent', 'stations', 'new', 'most', 'on_this_day', 'random', 'favourites', 'playlists', 'station', 'menu', 'genre', 'filter'] as const;
 export type ShelfType = (typeof SHELF_TYPES)[number];
 
 export interface HomeShelf {
@@ -83,6 +86,12 @@ export interface NextRequest {
 	start?: boolean;
 	count?: number;
 	exclude?: number[];
+}
+
+/** A page of a filter's albums: ids only (details are loaded by id, as for shelves). */
+export interface FilterAlbums {
+	albums: number[];
+	count: number;
 }
 
 const PLAYER = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/;
@@ -196,4 +205,53 @@ export class MeApi {
 		const r = await this.#call<{ result?: T }>(`/v1/me/menus/${pinId(id)}/open`, 'POST', { player: player(playerId) });
 		return (r.result ?? {}) as T;
 	}
+
+	// --- smart filters (wave2-design.md §5.6) ------------------------------------------
+
+	/** The user's filters (malformed ones from the server are left out). */
+	async filters(): Promise<SmartFilter[]> {
+		const r = await this.#call<{ filters?: unknown }>('/v1/me/filters');
+		return (Array.isArray(r.filters) ? r.filters : []).map(filterFrom).filter((f): f is SmartFilter => f !== null).slice(0, FILTER_LIMITS.maxFilters);
+	}
+
+	/** Save a new filter; resolves to the id the gateway gave it. Throws before sending if invalid. */
+	async createFilter(spec: FilterSpec): Promise<number> {
+		const body = checked(spec);
+		const r = await this.#call<{ id?: unknown }>('/v1/me/filters', 'POST', body);
+		if (!validId(r.id)) throw new Error('The server gave no id for the new filter.');
+		return r.id;
+	}
+
+	/** Replace a filter. Throws before sending if invalid. */
+	async updateFilter(id: number, spec: FilterSpec): Promise<unknown> {
+		const body = checked(spec);
+		return this.#call(`/v1/me/filters/${pinId(id)}`, 'PUT', body);
+	}
+
+	async deleteFilter(id: number): Promise<unknown> {
+		return this.#call(`/v1/me/filters/${pinId(id)}`, 'DELETE');
+	}
+
+	/** Album ids the filter gives, from `from`, at most `n` (≤ 100), and how many in all. */
+	async filterAlbums(id: number, from = 0, n = 50): Promise<FilterAlbums> {
+		const f = Math.max(0, Math.min(1_000_000, Math.floor(Number(from) || 0)));
+		const k = Math.max(1, Math.min(FILTER_LIMITS.pageMax, Math.floor(Number(n) || 1)));
+		const r = await this.#call<{ albums?: unknown; count?: unknown }>(`/v1/me/filters/${pinId(id)}/albums?from=${f}&n=${k}`);
+		const albums = (Array.isArray(r.albums) ? r.albums : []).filter(validId).slice(0, k);
+		const count = typeof r.count === 'number' && Number.isSafeInteger(r.count) && r.count >= 0 ? r.count : albums.length;
+		return { albums, count };
+	}
+}
+
+/** The body to send for a filter: cleaned, then checked against the contract. */
+function checked(spec: FilterSpec): FilterSpec {
+	let body: FilterSpec;
+	try {
+		body = cleanSpec(spec);
+	} catch {
+		throw new RangeError('not a filter');
+	}
+	const p = filterProblem(body);
+	if (p) throw new RangeError(p);
+	return body;
 }

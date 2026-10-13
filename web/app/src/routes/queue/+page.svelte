@@ -23,6 +23,7 @@
 	import Art from '$lib/components/Art.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import Snackbar from '$lib/components/Snackbar.svelte';
+	import { haptics } from '$lib/haptics/haptics.svelte';
 
 	/** How long a swiped row takes to slide out before it is removed. */
 	const SLIDE_MS = 180;
@@ -305,6 +306,7 @@
 		e.preventDefault();
 		(e.currentTarget as Element).setPointerCapture?.(e.pointerId);
 		drag = { from: i, to: i, pointerId: e.pointerId, startY: e.clientY, dy: 0, rows: rowBoxes() };
+		haptics.tick('pickup');
 	}
 
 	function dragMove(e: PointerEvent) {
@@ -320,6 +322,7 @@
 		if (!drag || e.pointerId !== drag.pointerId) return;
 		const { from, to } = drag;
 		drag = null;
+		haptics.tick('drop');
 		if (!cancelled && from !== to) void move(from, to);
 		else settle();
 	}
