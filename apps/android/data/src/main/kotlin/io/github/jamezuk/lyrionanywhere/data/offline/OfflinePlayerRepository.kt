@@ -16,7 +16,9 @@ import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.data.MAX_SAMPLE_RATE
 import io.github.jamezuk.lyrionanywhere.data.SettingsStore
 import io.github.jamezuk.lyrionanywhere.data.SoundSettings
-import io.github.jamezuk.lyrionanywhere.data.dspFor
+import io.github.jamezuk.lyrionanywhere.data.AudioOutput
+import io.github.jamezuk.lyrionanywhere.data.VisualFrame
+import io.github.jamezuk.lyrionanywhere.data.dspOn
 import io.github.jamezuk.lyrionanywhere.data.toAppError
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -40,6 +42,8 @@ data class OfflinePlayerState(
     val error: AppError? = null,
     /** The Sound settings (applied to downloads as to streaming). */
     val sound: SoundSettings = SoundSettings(),
+    /** Where the sound goes now (per-output EQ, Wave 2 §5.3). */
+    val output: AudioOutput? = null,
 ) {
     /** A queue is loaded (playing, paused or ended at a track). */
     val active: Boolean get() = status?.index != null
@@ -94,6 +98,18 @@ interface OfflinePlayerRepository {
     fun setOutputNegotiator(negotiator: OutputNegotiator?) {}
 
     fun renegotiateOutput() {}
+
+    /** The output changed: the EQ bound to it, if any, applies (Wave 2 §5.3). */
+    fun setOutput(output: AudioOutput?) {}
+
+    /** Bypass the EQ for a comparison (A/B), or stop. */
+    fun setEqBypass(on: Boolean) {}
+
+    /** Analyse what plays for the visualiser (Wave 2 §5.7), or stop. Off by default. */
+    fun setVisualiser(on: Boolean) {}
+
+    /** The newest visualiser frame since the last call (null: none, or off). */
+    fun visualFrame(): VisualFrame? = null
 }
 
 /** The parts of the Rust [OfflinePlayer] used here (a seam for tests). */
@@ -131,6 +147,11 @@ interface OfflinePlayerHandle {
     fun setOutputNegotiator(negotiator: OutputNegotiator?)
 
     fun renegotiateOutput()
+
+    fun setVisualiser(on: Boolean) {}
+
+    /** The engine's packed frame (see [VisualFrame.parse]). */
+    fun visualFrame(): ByteArray? = null
 
     fun shutdown()
 }
@@ -176,6 +197,10 @@ private class RustOfflinePlayer(store: OfflineStore, dsp: DspSettings) : Offline
 
     override fun renegotiateOutput() = p.renegotiateOutput()
 
+    override fun setVisualiser(on: Boolean) = p.setVisualiser(on)
+
+    override fun visualFrame(): ByteArray? = p.visualFrame()
+
     override fun shutdown() {
         p.shutdown()
         p.close()
@@ -205,6 +230,11 @@ class RustOfflinePlayerRepository(
     @Volatile private var negotiator: OutputNegotiator? = null
     @Volatile private var hold = false
     @Volatile private var duck = false
+    @Volatile private var output: AudioOutput? = null
+    @Volatile private var bypass = false
+    @Volatile private var visualiser = false
+
+    private fun dspNow() = dspOn(sound, output, bypass)
 
     /** Ignores updates from an engine that has since been replaced. */
     private inner class Observer(private val owner: OfflinePlayerHandle) : OfflinePlayerObserver {
@@ -228,7 +258,7 @@ class RustOfflinePlayerRepository(
                 sound = s
                 _state.update { it.copy(sound = s) }
                 val h = handle ?: return@collect
-                withContext(io) { h.setDsp(dspFor(s)) }
+                withContext(io) { h.setDsp(dspNow()) }
             }
         }
     }
@@ -237,7 +267,7 @@ class RustOfflinePlayerRepository(
         val h = handle
         handle = null
         handleStore = null
-        _state.update { OfflinePlayerState(sound = it.sound) }
+        _state.update { OfflinePlayerState(sound = it.sound, output = it.output) }
         if (h != null) withContext(io) { runCatching { h.shutdown() } }
     }
 
@@ -248,10 +278,11 @@ class RustOfflinePlayerRepository(
         release()
         val h = withContext(io) {
             runCatching {
-                factory(s, dspFor(sound)).also {
+                factory(s, dspNow()).also {
                     it.setOutputRoute(route)
                     negotiator?.let(it::setOutputNegotiator)
                     if (duck) it.setDuck(true)
+                    if (visualiser) it.setVisualiser(true)
                     it.start(Observer(it))
                 }
             }
@@ -323,4 +354,25 @@ class RustOfflinePlayerRepository(
     override fun renegotiateOutput() {
         handle?.renegotiateOutput()
     }
+
+    override fun setOutput(output: AudioOutput?) {
+        val o = output?.let { AudioOutput.of(it.kind, it.name) }
+        if (o == this.output) return
+        this.output = o
+        _state.update { it.copy(output = o) }
+        send { it.setDsp(dspNow()) }
+    }
+
+    override fun setEqBypass(on: Boolean) {
+        if (on == bypass) return
+        bypass = on
+        send { it.setDsp(dspNow()) }
+    }
+
+    override fun setVisualiser(on: Boolean) {
+        visualiser = on
+        handle?.setVisualiser(on)
+    }
+
+    override fun visualFrame(): VisualFrame? = if (visualiser) VisualFrame.parse(handle?.visualFrame()) else null
 }

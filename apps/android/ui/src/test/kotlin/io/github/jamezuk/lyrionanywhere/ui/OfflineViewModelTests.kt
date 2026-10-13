@@ -172,7 +172,7 @@ class OfflinePlayerViewModelTest : MainDispatcherTest() {
         var now = 1_000L
         val tracks = listOf(dlTrack(1), dlTrack(2))
         val player = FakeOfflinePlayer(OfflinePlayerState(status = dlStatus(), tracks = tracks.associateBy { it.key }))
-        val vm = OfflinePlayerViewModel(player) { now }
+        val vm = OfflinePlayerViewModel(player, { now })
         assertEquals(10_000L, vm.state.value.positionAt(1_000))
         assertEquals(12_500L, vm.state.value.positionAt(3_500))
         assertEquals("never past the end", 125_000L, vm.state.value.positionAt(1_000_000))

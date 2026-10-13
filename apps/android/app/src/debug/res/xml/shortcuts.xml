@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds (package suffix .debug): src/main/res/xml/shortcuts.xml, with the debug
+     package as the target. Keep the two in step (SecurityConfigTest checks both). -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="start_radio"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_radio"
+        android:shortcutShortLabel="@string/shortcut_radio_short"
+        android:shortcutLongLabel="@string/shortcut_radio_long">
+        <intent
+            android:action="io.github.jamezuk.lyrionanywhere.shortcut.START_RADIO"
+            android:targetPackage="io.github.jamezuk.lyrionanywhere.debug"
+            android:targetClass="io.github.jamezuk.lyrionanywhere.ShortcutActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="sleep_30"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_sleep"
+        android:shortcutShortLabel="@string/shortcut_sleep_short"
+        android:shortcutLongLabel="@string/shortcut_sleep_long">
+        <intent
+            android:action="io.github.jamezuk.lyrionanywhere.shortcut.SLEEP_30"
+            android:targetPackage="io.github.jamezuk.lyrionanywhere.debug"
+            android:targetClass="io.github.jamezuk.lyrionanywhere.ShortcutActivity" />
+    </shortcut>
+</shortcuts>

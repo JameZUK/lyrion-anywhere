@@ -16,6 +16,16 @@
          13+). The data module adds ACCESS_NETWORK_STATE (Wi-Fi or mobile data). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Car mode opening by itself (Wave 2 §5.1): seeing which Bluetooth device connects and
+         whether it is car audio. Asked for only when an automatic option is first chosen in
+         Settings (Android 12+); refused, car mode is only a button. Names and addresses stay
+         on the phone. Before Android 12 the older BLUETOOTH permission (granted at install)
+         covers the same reads. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
 
     <!--
       Security:
@@ -64,7 +74,23 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="lyrion-anywhere" android:host="pair" />
             </intent-filter>
+            <!-- App shortcuts: Start radio and Sleep 30 min (Wave 2 §5.5). -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+        <!--
+          Where the app shortcuts land. Not exported: the launcher starts a shortcut as this
+          app, so nothing else can reach it. It notes the request and opens the app, whose
+          player controller acts on it.
+        -->
+        <activity
+            android:name=".ShortcutActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay" />
         <!--
           The media session for "Play on this phone", and the media library for cars (A6).
           Exported, because Android Auto (and Android Automotive's media centre) bind to it
@@ -114,6 +140,31 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/now_playing_widget" />
         </receiver>
+        <!--
+          The larger widget (Wave 2 §5.5), as the one above: exported for the launcher's widget
+          host, taking only the widget update broadcast.
+        -->
+        <receiver
+            android:name=".widget.NowPlayingLargeWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_large_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/now_playing_widget_large" />
+        </receiver>
+        <!--
+          Android Auto's album art (Wave 2 §5.2). NOT exported: Android Auto reads a cover only
+          through a read-only grant for that one URI, given as its lists are sent. Serves only
+          covers already fetched through the gateway, by opaque key; nothing can be written.
+        -->
+        <provider
+            android:name="io.github.jamezuk.lyrionanywhere.playback.auto.AutoArtProvider"
+            android:authorities="${applicationId}.autoart"
+            android:exported="false"
+            android:grantUriPermissions="true" />
         <!--
           Quick Settings play/pause. Exported for the system UI, and only the system can bind
           it (BIND_QUICK_SETTINGS_TILE is a signature permission).

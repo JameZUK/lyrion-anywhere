@@ -111,6 +111,68 @@ class SettingsStoreTest {
         assertTrue(read.visualiser)
     }
 
+    /**
+     * This device's choices (Wave 2 §5): haptics and wallpaper colours on, car mode Off by
+     * default; kept; a chosen car needs a real address; nonsense refused.
+     */
+    @Test
+    fun devicePrefsDefaultSurviveARestartAndRefuseNonsense() = runBlocking {
+        assertEquals(DevicePrefs(), DataStoreSettings(store()).settings.first().device)
+        assertTrue(DevicePrefs().haptics)
+        assertTrue(DevicePrefs().dynamicColour)
+        assertEquals(CarAutoOpen.OFF, DevicePrefs().car.auto)
+        val car = CarModeSetting(CarAutoOpen.THIS_DEVICE, "Example Car Kit", "0a:1b:2c:3d:4e:5f")
+        DataStoreSettings(restart()).setDevicePrefs(DevicePrefs(haptics = false, dynamicColour = false, car = car))
+        val read = DataStoreSettings(restart()).settings.first().device
+        assertFalse(read.haptics)
+        assertFalse(read.dynamicColour)
+        assertEquals(CarModeSetting(CarAutoOpen.THIS_DEVICE, "Example Car Kit", "0A:1B:2C:3D:4E:5F"), read.car)
+        // Choosing Any car forgets the device.
+        DataStoreSettings(restart()).setDevicePrefs(read.copy(car = CarModeSetting(CarAutoOpen.ANY_CAR, "Example Car Kit", "0A:1B:2C:3D:4E:5F")))
+        assertEquals(CarModeSetting(CarAutoOpen.ANY_CAR), DataStoreSettings(restart()).settings.first().device.car)
+        // A device with a bad address isn't kept: Off.
+        for (bad in listOf("", "0A:1B:2C:3D:4E", "0A:1B:2C:3D:4E:5G", "../../etc", "0A-1B-2C-3D-4E-5F")) {
+            DataStoreSettings(restart()).setDevicePrefs(DevicePrefs(car = CarModeSetting(CarAutoOpen.THIS_DEVICE, "Car", bad)))
+            assertEquals(bad, CarModeSetting(), DataStoreSettings(restart()).settings.first().device.car)
+        }
+        // Stored nonsense reads as the defaults.
+        val s = restart()
+        s.edit {
+            it[stringPreferencesKey("car_mode_auto")] = "ALWAYS"
+            it[stringPreferencesKey("car_mode_device_address")] = "not an address"
+        }
+        assertEquals(CarModeSetting(), DataStoreSettings(s).settings.first().device.car)
+        s.edit {
+            it[stringPreferencesKey("car_mode_auto")] = "THIS_DEVICE"
+            it[stringPreferencesKey("car_mode_device_name")] = "Car\u0000\n" + "x".repeat(200)
+            it[stringPreferencesKey("car_mode_device_address")] = "0a:1b:2c:3d:4e:5f"
+        }
+        val messy = DataStoreSettings(s).settings.first().device.car
+        assertEquals("0A:1B:2C:3D:4E:5F", messy.deviceAddress)
+        assertTrue(messy.deviceName.none { it.isISOControl() } && messy.deviceName.length <= 64)
+    }
+
+    /** Per-output EQ bindings (Wave 2 §5.3) are kept with the Sound settings. */
+    @Test
+    fun outputEqSurvivesARestart() = runBlocking {
+        val p = EqProfile("Example profile", "Preamp: -3 dB\nFilter 1: ON PK Fc 1000 Hz Gain -3 dB Q 1\n", 1, -3.0)
+        val sound = SoundSettings(
+            eqEnabled = true,
+            outputEq = listOf(OutputEq(OutputClass.BLUETOOTH, "Example Headphones", p), OutputEq(OutputClass.SPEAKER, "", null)),
+        )
+        DataStoreSettings(store()).setSound(sound)
+        val read = DataStoreSettings(restart()).settings.first().sound
+        assertEquals(sound.outputEq, read.outputEq)
+        assertTrue(read.eqEnabled)
+        // Removing every binding removes the stored value too.
+        DataStoreSettings(restart()).setSound(read.copy(outputEq = emptyList()))
+        assertTrue(DataStoreSettings(restart()).settings.first().sound.outputEq.isEmpty())
+        // Junk stored there is skipped.
+        val s = restart()
+        s.edit { it[stringPreferencesKey("sound_output_eq")] = "\u001E\u001FWIRED\u001F" }
+        assertTrue(DataStoreSettings(s).settings.first().sound.outputEq.isEmpty())
+    }
+
     @Test
     fun soundDefaultsToBitPerfect() = runBlocking {
         val s = DataStoreSettings(store()).settings.first().sound

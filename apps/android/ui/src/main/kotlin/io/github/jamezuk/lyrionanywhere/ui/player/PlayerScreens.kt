@@ -45,6 +45,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Devices
+import androidx.compose.material.icons.outlined.DirectionsCar
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -115,6 +116,7 @@ import androidx.compose.material.icons.outlined.SpeakerGroup
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.semantics.onClick
 import io.github.jamezuk.lyrionanywhere.ui.R
+import io.github.jamezuk.lyrionanywhere.ui.components.HapticSteps
 import io.github.jamezuk.lyrionanywhere.ui.theme.ArtTinted
 import io.github.jamezuk.lyrionanywhere.ui.components.ArtworkImage
 import io.github.jamezuk.lyrionanywhere.ui.components.EmptyState
@@ -695,6 +697,11 @@ private fun NowPlayingControls(
                 }
             }
             SleepButton(SleepTimer.left(status), onOpen = { showSleep = true }, onCancel = actions.onCancelSleep)
+            actions.onCarMode?.let { open ->
+                IconButton(onClick = open, modifier = Modifier.testTag("car-mode-button")) {
+                    Icon(Icons.Outlined.DirectionsCar, contentDescription = stringResource(R.string.car_mode))
+                }
+            }
             OutputButton(state, actions.onOutputs)
             if (track?.id != null && actions.onMore != null) {
                 IconButton(onClick = { actions.onMore.invoke(track) }) {
@@ -718,7 +725,7 @@ private fun NowPlayingControls(
             }
         }
         if (state.localSelected) {
-            SignalPathPanel(state.local.signalPath, quality = state.local.streamQuality, metered = state.local.metered)
+            SignalPathPanel(state.local.signalPath, quality = state.local.streamQuality, metered = state.local.metered, eq = state.local.eqInUse?.name)
         }
     }
     if (showSleep) {
@@ -805,6 +812,8 @@ data class NowPlayingActions(
     val onCredit: ((io.github.jamezuk.lyrionanywhere.core.Credit) -> Unit)? = null,
     /** Open the Rooms view (Wave 2 §4.3; null: not offered). */
     val onRooms: (() -> Unit)? = null,
+    /** Open car mode (Wave 2 §5.1; null: not offered). */
+    val onCarMode: (() -> Unit)? = null,
 )
 
 /**
@@ -849,10 +858,16 @@ internal fun SeekBar(
     val label = if (waveform != null) "$position. $waveformLabel" else position
     val range = 0f..(if (total > 0) total.toFloat() else 1f)
     val interaction = remember { MutableInteractionSource() }
+    val haptics = LocalHapticFeedback.current
     Column(Modifier.fillMaxWidth()) {
         Slider(
             value = if (total > 0) shown.toFloat().coerceIn(0f, total.toFloat()) else 0f,
             onValueChange = {
+                // A light tick at every tenth of the track (Wave 2 §5.4).
+                val before = if (dragging) dragValue else shown.toFloat()
+                if (total > 0 && HapticSteps.crossed(before / total.toFloat(), it / total.toFloat(), HapticSteps.SCRUB)) {
+                    haptics.performHapticFeedback(HapticSteps.tick)
+                }
                 dragging = true
                 dragValue = it
             },
@@ -890,11 +905,16 @@ private fun VolumeBar(volume: Int, onVolume: (Int) -> Unit) {
     var dragValue by remember { mutableFloatStateOf(0f) }
     val shown = if (dragging) dragValue else volume.toFloat()
     val label = stringResource(R.string.volume)
+    val haptics = LocalHapticFeedback.current
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Icon(Icons.AutoMirrored.Outlined.VolumeDown, contentDescription = null)
         Slider(
             value = shown,
             onValueChange = {
+                // A light tick at every volume step (Wave 2 §5.4).
+                if (HapticSteps.crossed(if (dragging) dragValue else shown, it, HapticSteps.VOLUME)) {
+                    haptics.performHapticFeedback(HapticSteps.tick)
+                }
                 dragging = true
                 dragValue = it
             },

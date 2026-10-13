@@ -78,6 +78,24 @@ class WidgetModelTest {
         assertEquals(120, m.title.length)
     }
 
+    /** The large widget's progress line (Wave 2 §5.5): coarse, and only for a track. */
+    @Test
+    fun theProgressLineIsCoarseAndOnlyForATrack() {
+        assertEquals(0.5f, WidgetModel.from(np().copy(progress = 0.5f)).progress)
+        assertNull(WidgetModel.from(np(title = "").copy(progress = 0.5f)).progress)
+        assertNull(WidgetModel.from(np().copy(progress = Float.NaN)).progress)
+        assertEquals(1f, WidgetModel.from(np().copy(progress = 7f)).progress)
+        assertEquals(0f, WidgetModel.from(np().copy(progress = -1f)).progress)
+        // From a status: rounded down to a step, so the widget redraws a few dozen times a track.
+        assertEquals(0.5f, NowPlaying.progressOf(90.0, 180.0))
+        assertEquals(0.475f, NowPlaying.progressOf(89.9, 180.0)!!, 1e-6f)
+        assertEquals(1f, NowPlaying.progressOf(500.0, 180.0))
+        assertEquals(0f, NowPlaying.progressOf(-5.0, 180.0))
+        for ((e, d) in listOf(null to 180.0, 10.0 to null, 10.0 to 0.0, 10.0 to -1.0, Double.NaN to 180.0, 10.0 to Double.POSITIVE_INFINITY)) {
+            assertNull("$e of $d", NowPlaying.progressOf(e, d))
+        }
+    }
+
     @Test
     fun artworkIsDecodedSmall() {
         assertEquals(1, NowPlayingWidget.sampleSize(192, 192, 192))
@@ -155,6 +173,9 @@ class ControlsTest {
         assertEquals(true, hub.phone.value?.playing)
         controls.run(PHONE, Control.NEXT)
         assertEquals("next $PHONE", players.sent.last())
+        // The large widget's previous button.
+        controls.run(PHONE, Control.PREVIOUS)
+        assertEquals("previous $PHONE", players.sent.last())
     }
 
     @Test

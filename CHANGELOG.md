@@ -23,6 +23,37 @@ Following `docs/plans/wave2-design.md` §5.1, §5.4, §5.5 and §5.6.
   - play and shuffle load the first 50 albums through the album play path.
 - **Tests:** unit, negative and robustness tests for the filter contract checks and the API wrapper, Start radio's parsing and the shortcut rules; component tests for car mode (controls, long press, wake lock with a fake), haptics (switch, events, no API), shortcuts (each key, ignored while typing or in dialogs, the help sheet), the Media Session (a fake `navigator.mediaSession`) and the filters UI; node tests for the manifest shortcuts and the 44 px and 76 px targets.
 
+## 2026-10-13: Wave 2 part 4 on Android: car, platform and the offline visualiser
+
+Following `docs/plans/wave2-design.md` §5 (smart filters, §5.6, follow separately).
+
+- **Car mode (U8):**
+  - a driving screen: huge art, giant previous / play-pause / next (a long press on play/pause stops), "Start radio" from the playing track, a large elapsed time, voice search, and one level of Favourites and Stations;
+  - white and amber on black (every pair over 7:1), every target at least 76 dp, no visualiser, and the screen stays on while playing; Back leaves it;
+  - opened from Now playing's car button, or by itself (Settings › This device): *Off*, *Any car audio* or *This device* (chosen from the paired devices);
+  - it opens while the app is in front, or when it is next opened, with a matching car connected, and leaves when the car that opened it disconnects; left by hand, it stays closed until that car reconnects;
+  - Android's `BLUETOOTH_CONNECT` permission is asked for only when an automatic option is first chosen; refused (or later withdrawn), the setting goes back to Off with a note;
+  - Bluetooth is watched only while the app is in front, by a receiver registered at run time (not in the manifest, not exported). The car's name and address stay on the phone (`docs/PRIVACY.md`).
+- **Android Auto artwork (U9):** album lists in the car carry their covers. A new content provider serves them, **not exported**: each cover's URI is granted to the verified Android Auto app alone, read-only, as its list is sent. It serves only covers already fetched through the gateway (or the downloads), kept under random 128-bit keys in the app's cache (at most 300, emptied each run and at sign-out, grants revoked). Paths, other files, write modes and callers without a grant are refused.
+- **Per-output EQ (H2):**
+  - an EQ profile can be bound to the built-in speaker, wired headphones, a USB DAC (by product name) or a Bluetooth device (by name), or "no EQ" there; other outputs use the main profile;
+  - it switches by itself as the output changes (streaming and downloads alike), and an "EQ: <profile>" chip on the signal path says which is in use;
+  - the editor shows the profile's curve (20 Hz–20 kHz) and has an A/B button that bypasses the EQ while held, or toggles it with TalkBack; the bypass never outlives the screen;
+  - device names stay on the phone; no change to the Rust engine was needed.
+- **Haptics (D6):** light ticks on a skip by swipe, every 10 % while scrubbing, volume steps (5 %), picking up and dropping in the queue and Rooms, setting a rating and setting a sleep timer. One *Haptics* switch (on by default) covers every tick the app makes, and Android's own touch-feedback setting still applies.
+- **System surfaces (U11):**
+  - a second, larger resizable widget: art, title and artist, a progress line and previous / play-pause / next (drawn only when what it shows changes, the progress in coarse steps);
+  - app shortcuts *Start radio* and *Sleep 30 min*, through the same player controller as the app's buttons (they land on a private, non-exported activity);
+  - *Wallpaper colours* as a setting (on by default, Android 12+).
+- **Offline visualiser:** the visualiser on the downloads' Now playing, from the offline engine's own analysis, with the same styles, switch and limits as streaming.
+- **Tests:**
+  - the Auto art provider's refusals (unknown key, traversal, wrong caller, write modes, safe mode), the per-URI read-only grant to Android Auto only, the opaque-key cache (bounds, images only, timeouts) and the manifest (not exported, grants only);
+  - the Bluetooth side under Robolectric: only the two connection broadcasts with a device are read, nothing is registered or read without the permission, Android 11 and earlier need none, and the automatic opening and leaving end to end;
+  - car mode's state machine and permission flow, its screen (long-press stop, TalkBack's Stop action, one-level lists, keep-screen-on, Back) and a check that every target is at least 76 dp;
+  - per-output EQ: binding rules, storage (round trip and fuzzed stored strings), the engine getting the right profile as the output changes, and the bypass; the curve reader fuzzed;
+  - haptics' steps and switch, the shortcuts' strict actions, the widget's progress and previous button;
+  - the accessibility audit extended to car mode (each view, wide), its setting (refusal note, device picker), the Sound screen with per-output EQ, Now playing with the EQ chip and car button, the offline visualiser in each style and the device settings.
+
 ## 2026-10-13: Now playing and players (Wave 2 part 3, web)
 
 Following `docs/plans/wave2-design.md` §4.

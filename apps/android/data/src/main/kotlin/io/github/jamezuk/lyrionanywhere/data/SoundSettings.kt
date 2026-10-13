@@ -67,6 +67,11 @@ data class SoundSettings(
     val transitions: TransitionsMode = TransitionsMode.OFF,
     /** The crossfade's length (the most a smart transition uses), seconds. */
     val crossfadeSecs: Double = DEFAULT_CROSSFADE_SECS,
+    /**
+     * EQ profiles bound to outputs (Wave 2 §5.3): used instead of [eq] while that output
+     * plays. Device names stay on this phone.
+     */
+    val outputEq: List<OutputEq> = emptyList(),
 ) {
     /** The stages that change samples (empty: bit-perfect). The limiter and dither only
      *  ever act with one of these. */
@@ -87,13 +92,33 @@ data class SoundSettings(
     fun sanitised(): SoundSettings {
         fun clamp(v: Double, default: Double, range: ClosedFloatingPointRange<Double>) =
             if (v.isFinite()) v.coerceIn(range) else default
+        val general = eq?.takeIf { it.text.length <= MAX_EQ_CHARS }
+        val bound = OutputEq.sanitise(outputEq)
         return copy(
             preampDb = clamp(preampDb, 0.0, PREAMP_RANGE),
             limiterCeilingDb = clamp(limiterCeilingDb, -1.0, CEILING_RANGE),
-            eq = eq?.takeIf { it.text.length <= MAX_EQ_CHARS },
-            eqEnabled = eqEnabled && eq != null && eq.text.length <= MAX_EQ_CHARS,
+            eq = general,
+            // The switch needs a profile somewhere: the general one or an output's.
+            eqEnabled = eqEnabled && (general != null || bound.any { it.profile != null }),
             crossfadeSecs = clamp(crossfadeSecs, DEFAULT_CROSSFADE_SECS, CROSSFADE_RANGE),
+            outputEq = bound,
         )
+    }
+
+    /** The binding for [output]: its own device's first, else any of its kind (null: none). */
+    fun bindingFor(output: AudioOutput?): OutputEq? {
+        if (output == null) return null
+        return outputEq.firstOrNull { it.kind == output.kind && it.deviceName.isNotEmpty() && it.deviceName == output.name }
+            ?: outputEq.firstOrNull { it.kind == output.kind && it.deviceName.isEmpty() }
+    }
+
+    /**
+     * These settings as they apply on [output]: a bound profile replaces the general one
+     * (a binding with no profile means no EQ there). Unbound outputs use the general one.
+     */
+    fun forOutput(output: AudioOutput?): SoundSettings {
+        val b = bindingFor(output) ?: return this
+        return copy(eq = b.profile, eqEnabled = eqEnabled && b.profile != null)
     }
 
     companion object {
@@ -108,6 +133,111 @@ data class SoundSettings(
 }
 
 enum class SoundStage { PREAMP, LEVELLING, EQ, CROSSFEED, CROSSFADE }
+
+/** The kinds of output an EQ profile can be bound to (Wave 2 §5.3). */
+enum class OutputClass {
+    SPEAKER,
+    WIRED,
+
+    /** A USB DAC, by its product name. */
+    USB,
+
+    /** A Bluetooth device, by its name. */
+    BLUETOOTH,
+    ;
+
+    /** Only USB DACs and Bluetooth devices are told apart by name. */
+    val named: Boolean get() = this == USB || this == BLUETOOTH
+}
+
+/** Where the sound goes now: the kind of output and, for a named kind, the device's name. */
+data class AudioOutput(val kind: OutputClass, val name: String = "") {
+    companion object {
+        /** A device name fit to keep and compare: printable, trimmed, at most 64 characters. */
+        fun cleanName(name: String?): String = name.orEmpty().filter { !it.isISOControl() }.trim().take(64)
+
+        fun of(kind: OutputClass, name: String?): AudioOutput = AudioOutput(kind, if (kind.named) cleanName(name) else "")
+    }
+}
+
+/**
+ * An EQ profile bound to an output: a kind of output and, for USB or Bluetooth, one
+ * device's name (empty: any of that kind). A null [profile] means no EQ on that output.
+ */
+data class OutputEq(val kind: OutputClass, val deviceName: String = "", val profile: EqProfile?) {
+    companion object {
+        /** At most this many bindings are kept. */
+        const val MAX = 8
+
+        /**
+         * Bindings fit to keep: names cleaned (and dropped where the kind has none), profiles
+         * over the size limit or holding the stored form's separators dropped, one binding
+         * per output (the last wins), at most [MAX].
+         */
+        fun sanitise(list: List<OutputEq>): List<OutputEq> {
+            val out = LinkedHashMap<Pair<OutputClass, String>, OutputEq>()
+            for (b in list) {
+                val name = if (b.kind.named) AudioOutput.cleanName(b.deviceName) else ""
+                val profile = b.profile
+                    ?.takeIf { it.text.length <= SoundSettings.MAX_EQ_CHARS && it.text.none { c -> c == RECORD || c == FIELD } }
+                    ?.let { it.copy(name = it.name.filter { c -> !c.isISOControl() }.trim().take(64).ifEmpty { "EQ" }) }
+                if (b.profile != null && profile == null) continue
+                val key = b.kind to name
+                out.remove(key)
+                out[key] = OutputEq(b.kind, name, profile)
+            }
+            return out.values.toList().takeLast(MAX)
+        }
+
+        private const val RECORD = '\u001E'
+        private const val FIELD = '\u001F'
+
+        /**
+         * Bindings as one stored string: records of kind, device name, whether there is a
+         * profile, its name, filter count, preamp and text. The separators are control
+         * characters, which no kept name or profile holds.
+         */
+        fun encode(list: List<OutputEq>): String = sanitise(list).joinToString(RECORD.toString()) { b ->
+            val p = b.profile
+            listOf(
+                b.kind.name,
+                b.deviceName,
+                if (p == null) "0" else "1",
+                p?.name.orEmpty(),
+                (p?.filters ?: 0).toString(),
+                (p?.preampDb ?: 0.0).toString(),
+                p?.text.orEmpty(),
+            ).joinToString(FIELD.toString())
+        }
+
+        /** The longest stored string read: anything longer is ignored. */
+        const val MAX_STORED = (SoundSettings.MAX_EQ_CHARS + 1024) * MAX
+
+        /** Stored bindings, read defensively: anything malformed is skipped. */
+        fun decode(stored: String?): List<OutputEq> {
+            if (stored.isNullOrEmpty() || stored.length > MAX_STORED) return emptyList()
+            val out = mutableListOf<OutputEq>()
+            for (record in stored.split(RECORD)) {
+                if (out.size >= MAX) break
+                val f = record.split(FIELD)
+                if (f.size != 7) continue
+                val kind = OutputClass.entries.firstOrNull { it.name == f[0] } ?: continue
+                val profile = when (f[2]) {
+                    "0" -> null
+                    "1" -> {
+                        val filters = f[4].toIntOrNull()?.takeIf { it in 0..1_000 } ?: continue
+                        val preamp = f[5].toDoubleOrNull()?.takeIf { it.isFinite() } ?: continue
+                        if (f[6].isEmpty()) continue
+                        EqProfile(f[3], f[6], filters, preamp)
+                    }
+                    else -> continue
+                }
+                out += OutputEq(kind, f[1], profile)
+            }
+            return sanitise(out)
+        }
+    }
+}
 
 /** The levelling target, LUFS (ReplayGain's reference, so tagged and analysed tracks agree). */
 const val LEVELLING_TARGET_LUFS = -18.0

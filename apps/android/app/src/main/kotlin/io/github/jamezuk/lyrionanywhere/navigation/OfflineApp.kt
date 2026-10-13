@@ -88,7 +88,7 @@ fun OfflineApp(
 ) {
     val nav = rememberNavController()
     var askSignOut by rememberSaveable { mutableStateOf(false) }
-    val playerVm = viewModel(key = "offline-player") { OfflinePlayerViewModel(container.offlinePlayer, offlineClock) }
+    val playerVm = viewModel(key = "offline-player") { OfflinePlayerViewModel(container.offlinePlayer, offlineClock, container.settings) }
     val player by playerVm.state.collectAsStateWithLifecycle()
     val offline by container.offline.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -173,7 +173,7 @@ fun OfflineApp(
             }
             composable<OfflineNowPlayingRoute> {
                 OfflineScreen(stringResource(R.string.title_now_playing), onBack = { nav.popBackStack() }) {
-                    OfflineNowPlayingScreen(player, offlineClock, offlineNowPlayingActions(playerVm))
+                    OfflineNowPlayingScreen(player, offlineClock, offlineNowPlayingActions(playerVm), visual = playerVm)
                 }
             }
         }
@@ -201,6 +201,8 @@ internal fun offlineNowPlayingActions(vm: OfflinePlayerViewModel) = OfflineNowPl
     onRepeat = vm::cycleRepeat,
     onJump = vm::jumpTo,
     onStop = vm::stop,
+    onVisualiser = vm::setVisualiser,
+    onVisualStyle = vm::setVisualStyle,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)

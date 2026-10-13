@@ -15,6 +15,8 @@ data class WidgetModel(
     val playerId: String?,
     val artwork: String?,
     val playing: Boolean,
+    /** How far through the track (0–1, coarse), for the large widget's line (null: unknown). */
+    val progress: Float? = null,
 ) {
     enum class Kind {
         /** Nothing known (signed out, or the app hasn't run yet): tap to open the app. */
@@ -42,6 +44,7 @@ data class WidgetModel(
                 playerId = n.playerId,
                 artwork = n.artwork.takeIf { kind == Kind.TRACK },
                 playing = n.playing && kind == Kind.TRACK,
+                progress = n.progress?.takeIf { kind == Kind.TRACK && it.isFinite() }?.coerceIn(0f, 1f),
             )
         }
 
@@ -71,7 +74,7 @@ data class TileModel(val state: State, val title: String?, val playing: Boolean)
     }
 }
 
-enum class Control { TOGGLE, NEXT }
+enum class Control { TOGGLE, NEXT, PREVIOUS }
 
 /**
  * Runs the widget's and tile's buttons through the same repository as the app (so the
@@ -83,6 +86,7 @@ class Controls(private val players: () -> PlayersRepository, private val hub: No
         val p = players()
         return when (control) {
             Control.NEXT -> p.next(playerId)
+            Control.PREVIOUS -> p.previous(playerId)
             Control.TOGGLE -> {
                 val playing = listOf(hub.phone.value, hub.selected.value).firstOrNull { it?.playerId == playerId }?.playing == true
                 val r = if (playing) p.setPaused(playerId, true) else p.play(playerId)

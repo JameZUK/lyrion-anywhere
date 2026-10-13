@@ -954,6 +954,9 @@ class PlayerViewModel(
 
     fun next() = command { players.next(it) }
 
+    /** Stop playback (car mode's long press on play/pause). */
+    fun stopPlayback() = command(optimistic = { it.copy(mode = PlaybackMode.STOPPED) }) { players.stop(it) }
+
     fun previous() = command { players.previous(it) }
 
     /**

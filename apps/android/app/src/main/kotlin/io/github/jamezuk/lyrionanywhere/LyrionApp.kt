@@ -28,7 +28,12 @@ import io.github.jamezuk.lyrionanywhere.data.offline.OfflinePlayerRepository
 import io.github.jamezuk.lyrionanywhere.downloads.DownloadService
 import io.github.jamezuk.lyrionanywhere.auto.AppAutoSource
 import io.github.jamezuk.lyrionanywhere.playback.PlaybackHost
+import io.github.jamezuk.lyrionanywhere.playback.auto.AutoArtCache
+import io.github.jamezuk.lyrionanywhere.playback.auto.AutoArtUris
 import io.github.jamezuk.lyrionanywhere.playback.auto.AutoCatalogue
+import io.github.jamezuk.lyrionanywhere.data.ApiResult
+import android.content.Intent
+import java.io.File
 import io.github.jamezuk.lyrionanywhere.playback.auto.AutoSource
 import io.github.jamezuk.lyrionanywhere.playback.auto.ResourceLabels
 import io.github.jamezuk.lyrionanywhere.rust.NativeInit
@@ -90,7 +95,14 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
         container = AppContainer(this, appScope)
         appScope.launch { container.account.start() }
         appScope.launch {
-            container.account.state.collect { if (it is AuthState.SignedOut) nowPlaying.clear() }
+            container.account.state.collect {
+                if (it is AuthState.SignedOut) {
+                    nowPlaying.clear()
+                    // The car's covers belong to the account: their grants go, then the files.
+                    autoArt.uris().forEach { u -> runCatching { revokeUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
+                    autoArt.clear()
+                }
+            }
         }
         // Redraw the widget and tile only when what they show changes. This follows state
         // the app has anyway; it never wakes the app or schedules work.
@@ -129,6 +141,23 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
 
     /** The car's browse tree (Android Auto). */
     override val autoSource: AutoSource by lazy { AppAutoSource(container) }
+
+    /**
+     * Covers for Android Auto's lists (Wave 2 §5.2): fetched through the gateway (or read from
+     * the downloads), kept under opaque keys in the app's cache, and served by its own
+     * non-exported provider to Android Auto alone.
+     */
+    override val autoArt: AutoArtCache by lazy {
+        AutoArtCache(File(cacheDir, "auto-art"), AutoArtCache.authorityFor(packageName), fetch = { key: String ->
+            if (!started) {
+                null
+            } else if (key.startsWith(AutoArtUris.OFFLINE_PREFIX)) {
+                container.offline.artwork(key.removePrefix(AutoArtUris.OFFLINE_PREFIX))
+            } else {
+                (container.art.image(key, AutoArtCache.SIZE_PX) as? ApiResult.Ok)?.value?.bytes
+            }
+        })
+    }
 
     /**
      * A spoken "play …" from outside the app (the assistant): the best match in the library

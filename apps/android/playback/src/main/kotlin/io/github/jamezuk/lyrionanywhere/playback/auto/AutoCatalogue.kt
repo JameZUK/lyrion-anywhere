@@ -111,6 +111,8 @@ class AutoCatalogue(
     private val source: AutoSource,
     private val labels: AutoLabels,
     private val codec: NodeCodec = RustNodeCodec,
+    /** Album covers as URIs of the app's own provider (none: no art). */
+    private val art: AutoArtUris? = null,
 ) {
     /** The tree's root (its children are the tabs). */
     fun root(): MediaItem = folder(BrowseNode.Root, labels.title(BrowseNode.Root))!!
@@ -131,9 +133,9 @@ class AutoCatalogue(
                 .slice(start, count).mapNotNull(::fixed)
             BrowseNode.Home -> codec.home(source.hasQueue()).slice(start, count).mapNotNull(::fixed)
             BrowseNode.Library -> codec.library().slice(start, count).mapNotNull(::fixed)
-            BrowseNode.Downloads -> source.downloadedAlbums().slice(start, count).mapNotNull(::downloadedAlbum)
-            BrowseNode.NewMusic -> ok(lib.albums(start, count, AlbumSort.NEWEST))?.items?.mapNotNull(::album)
-            BrowseNode.Albums -> ok(lib.albums(start, count, AlbumSort.TITLE))?.items?.mapNotNull(::album)
+            BrowseNode.Downloads -> downloadedAlbums(source.downloadedAlbums().slice(start, count))
+            BrowseNode.NewMusic -> ok(lib.albums(start, count, AlbumSort.NEWEST))?.items?.let { albums(it) }
+            BrowseNode.Albums -> ok(lib.albums(start, count, AlbumSort.TITLE))?.items?.let { albums(it) }
             BrowseNode.Artists -> ok(lib.artists(start, count))?.items?.mapNotNull { a ->
                 folder(BrowseNode.Artist(a.id), a.name, type = MediaMetadata.MEDIA_TYPE_ARTIST)
             }
@@ -154,7 +156,7 @@ class AutoCatalogue(
                     )
                 }
             }
-            is BrowseNode.Artist -> ok(lib.artistAlbums(node.id))?.slice(start, count)?.mapNotNull(::album)
+            is BrowseNode.Artist -> ok(lib.artistAlbums(node.id))?.slice(start, count)?.let { albums(it) }
             is BrowseNode.Playlist -> ok(lib.playlistTracks(node.id))?.let { tracks ->
                 tracks.withIndex().toList().slice(start, count).mapNotNull { (i, t) ->
                     item(
@@ -188,8 +190,8 @@ class AutoCatalogue(
         fixed(node)?.let { return it }
         return when (node) {
             is BrowseNode.DownloadedAlbum -> source.downloadedAlbums().firstOrNull { it.albumRef == node.albumRef }
-                ?.let(::downloadedAlbum)
-            is BrowseNode.Album -> if (source.online()) ok(source.library.album(node.id))?.let(::album) else null
+                ?.let { downloadedAlbums(listOf(it)).firstOrNull() }
+            is BrowseNode.Album -> if (source.online()) ok(source.library.album(node.id))?.let { albums(listOf(it)).firstOrNull() } else null
             else -> null
         }
     }
@@ -215,7 +217,7 @@ class AutoCatalogue(
                     item(BrowseNode.Track(id), t.title, t.artist, browsable = false, playable = true, MediaMetadata.MEDIA_TYPE_MUSIC)
                         ?.let(out::add)
                 }
-                r.albums.forEach { a -> album(a)?.let(out::add) }
+                out += albums(r.albums)
                 r.artists.forEach { a ->
                     folder(BrowseNode.Artist(a.id), a.name, type = MediaMetadata.MEDIA_TYPE_ARTIST)?.let(out::add)
                 }
@@ -298,6 +300,24 @@ class AutoCatalogue(
         else -> null
     }
 
+    /** Albums as items, with their covers where there is art. */
+    private suspend fun albums(list: List<io.github.jamezuk.lyrionanywhere.core.Album>): List<MediaItem> =
+        withArt(list.mapNotNull { a -> album(a)?.let { it to a.artwork } })
+
+    private suspend fun downloadedAlbums(list: List<OfflineAlbum>): List<MediaItem> =
+        withArt(list.mapNotNull { a -> downloadedAlbum(a)?.let { it to AutoArtUris.OFFLINE_PREFIX + a.albumRef } })
+
+    /** Each item with its cover's URI (from the app's provider), where one could be had. */
+    private suspend fun withArt(items: List<Pair<MediaItem, String?>>): List<MediaItem> {
+        val a = art ?: return items.map { it.first }
+        val uris = runCatching { a.urisFor(items.map { it.second }) }.getOrNull()
+        if (uris == null || uris.size != items.size) return items.map { it.first }
+        return items.mapIndexed { i, (item, _) ->
+            val uri = uris[i] ?: return@mapIndexed item
+            item.buildUpon().setMediaMetadata(item.mediaMetadata.buildUpon().setArtworkUri(uri).build()).build()
+        }
+    }
+
     private fun album(a: io.github.jamezuk.lyrionanywhere.core.Album): MediaItem? =
         item(BrowseNode.Album(a.id), a.title, a.artist, browsable = true, playable = true, MediaMetadata.MEDIA_TYPE_ALBUM)
 
@@ -307,7 +327,8 @@ class AutoCatalogue(
     private fun folder(node: BrowseNode, title: String, type: Int = MediaMetadata.MEDIA_TYPE_FOLDER_MIXED): MediaItem? =
         item(node, title, null, browsable = true, playable = codec.playable(node), type)
 
-    /** A media item: an id, text and flags only. No URI, artwork URI or extras. */
+    /** A media item: an id, text and flags only. No URI or extras (an album's artwork URI,
+     *  added after, is only ever one of the app's own provider: [withArt]). */
     private fun item(
         node: BrowseNode,
         title: String,

@@ -202,6 +202,8 @@ fun SettingsScreen(
     ratings: (@Composable () -> Unit)? = null,
     /** The visualiser on Now playing and its style (Wave 2 part 3), when the app has players. */
     visualiser: (@Composable () -> Unit)? = null,
+    /** This device: haptics, the theme's colours and car mode (Wave 2 §5). */
+    device: (@Composable () -> Unit)? = null,
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var renaming by rememberSaveable { mutableStateOf(false) }
@@ -228,6 +230,11 @@ fun SettingsScreen(
         }
         if (ratings != null) {
             item { ratings() }
+            item { HorizontalDivider() }
+        }
+        if (device != null) {
+            item { SectionHeader(stringResource(R.string.section_this_device)) }
+            item { device() }
             item { HorizontalDivider() }
         }
         state.sound?.let { sound ->

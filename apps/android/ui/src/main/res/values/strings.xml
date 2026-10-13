@@ -839,4 +839,69 @@
     <string name="room_alarm">Alarm %1$s</string>
     <string name="room_nothing">Nothing playing</string>
     <string name="room_unreadable">Couldn’t read this room</string>
+
+    <!-- Wave 2 part 4: car mode (§5.1) -->
+    <string name="car_mode">Car mode</string>
+    <string name="car_leave">Leave car mode</string>
+    <string name="car_back_to_playing">Back to what’s playing</string>
+    <string name="car_favourites">Favourites</string>
+    <string name="car_stations">Stations</string>
+    <string name="car_voice">Voice search</string>
+    <string name="car_loading">Loading…</string>
+    <string name="car_no_favourites">No favourites to play</string>
+    <string name="car_no_stations">No stations yet</string>
+    <string name="car_elapsed">%1$s of %2$s</string>
+    <string name="car_stop">Stop</string>
+    <string name="car_auto_title">Open car mode by itself</string>
+    <string name="car_auto_detail">When this phone connects to a car over Bluetooth, car mode opens while the app is open, or when you next open it. It leaves when that car disconnects. The car’s name and address stay on this phone.</string>
+    <string name="car_auto_off">Off (only from Now playing)</string>
+    <string name="car_auto_any">Any car audio</string>
+    <string name="car_auto_device">This device</string>
+    <string name="car_auto_refused">Car mode can’t open by itself without permission to see Bluetooth devices. You can still open it from Now playing.</string>
+    <string name="car_pick_title">Choose your car</string>
+    <string name="car_pick_none">No paired Bluetooth devices. Pair the car in Android’s Bluetooth settings first.</string>
+    <string name="car_unnamed_device">Unnamed device</string>
+    <string name="car_audio_device">Car audio</string>
+    <string name="radio_none">There’s no radio to start from this track</string>
+    <string name="voice_unavailable">Voice search isn’t available on this phone</string>
+
+    <!-- Haptics (§5.4) -->
+    <string name="section_this_device">This device</string>
+    <string name="settings_haptics">Haptics</string>
+    <string name="settings_haptics_detail">Light ticks when you skip by swiping, scrub, change the volume, drag, rate and set a sleep timer. Follows your phone’s touch feedback setting.</string>
+    <string name="settings_haptics_system_off">Light ticks when you skip by swiping, scrub, change the volume, drag, rate and set a sleep timer. Touch feedback is off in your phone’s settings, so there are none now.</string>
+
+    <!-- Dynamic colour (§5.5) -->
+    <string name="settings_dynamic_colour">Wallpaper colours</string>
+    <string name="settings_dynamic_colour_detail">Colour the app from your wallpaper</string>
+    <string name="settings_dynamic_colour_unavailable">Needs Android 12 or later</string>
+
+    <!-- Per-output EQ (§5.3) -->
+    <string name="signal_eq_chip">EQ: %1$s</string>
+    <string name="eq_curve_title">Curve: %1$s</string>
+    <string name="eq_curve_described">The curve of %1$s, from %2$s to %3$s</string>
+    <string name="eq_compare">Compare without EQ (A/B)</string>
+    <string name="eq_compare_with">With EQ</string>
+    <string name="eq_compare_without">Without EQ</string>
+    <string name="eq_compare_hint">Hold to hear the music without the EQ; let go to hear it again</string>
+    <string name="eq_compare_unavailable">Play something on this phone to compare</string>
+    <string name="output_speaker">Built-in speaker</string>
+    <string name="output_wired">Wired headphones</string>
+    <string name="output_usb_any">Any USB DAC</string>
+    <string name="output_usb_named">USB DAC · %1$s</string>
+    <string name="output_bluetooth_any">Any Bluetooth device</string>
+    <string name="output_bluetooth_named">Bluetooth · %1$s</string>
+    <string name="output_eq_title">EQ for each output</string>
+    <string name="output_eq_detail">An output can have its own profile, or none. It switches by itself when the output changes; other outputs use the main profile. Device names stay on this phone.</string>
+    <string name="output_eq_now">Playing through %1$s</string>
+    <string name="output_eq_using">Using %1$s</string>
+    <string name="output_eq_using_none">No EQ here</string>
+    <string name="output_eq_off_here">No EQ</string>
+    <string name="output_eq_remove">Remove the EQ for %1$s</string>
+    <string name="output_eq_bind">Set the EQ for an output</string>
+    <string name="output_eq_current">In use now</string>
+    <string name="output_eq_use_main">Use the main profile</string>
+    <string name="output_eq_none">No EQ here</string>
+    <string name="output_eq_paste">Paste one for it</string>
+    <string name="output_eq_file">A file for it</string>
 </resources>

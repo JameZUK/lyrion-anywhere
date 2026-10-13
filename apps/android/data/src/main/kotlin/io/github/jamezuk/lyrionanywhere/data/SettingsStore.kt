@@ -50,6 +50,53 @@ data class AppSettings(
     val recentSearches: List<String> = emptyList(),
     /** Now playing's layout, visualiser and queue panel (on this device; Wave 2 §4). */
     val nowPlaying: NowPlayingPrefs = NowPlayingPrefs(),
+    /** Haptics, the theme's colours and car mode (on this device; Wave 2 §5). */
+    val device: DevicePrefs = DevicePrefs(),
+)
+
+/** How car mode opens by itself (Wave 2 §5.1). */
+enum class CarAutoOpen {
+    /** Only from its button. */
+    OFF,
+
+    /** When the phone connects to any car audio over Bluetooth. */
+    ANY_CAR,
+
+    /** When the phone connects to one chosen paired device. */
+    THIS_DEVICE,
+}
+
+/**
+ * Car mode's automatic opening. The chosen device's name and address are kept on this phone
+ * only and never sent anywhere.
+ */
+data class CarModeSetting(
+    val auto: CarAutoOpen = CarAutoOpen.OFF,
+    val deviceName: String = "",
+    val deviceAddress: String = "",
+) {
+    /** Checked: names cleaned, an address only for [CarAutoOpen.THIS_DEVICE] (else Off). */
+    fun sanitised(): CarModeSetting = when (auto) {
+        CarAutoOpen.THIS_DEVICE -> if (isBluetoothAddress(deviceAddress)) {
+            CarModeSetting(auto, AudioOutput.cleanName(deviceName), deviceAddress.uppercase())
+        } else {
+            CarModeSetting()
+        }
+        else -> CarModeSetting(auto)
+    }
+}
+
+/** A Bluetooth device address, `AA:BB:CC:DD:EE:FF`. */
+fun isBluetoothAddress(v: String?): Boolean = isPlayerId(v?.lowercase())
+
+/** This device's own choices that aren't about playback. */
+data class DevicePrefs(
+    /** Light ticks on skips, scrubbing, volume steps, drags, ratings and the sleep timer
+     *  (on by default; the system's touch-feedback setting still applies). */
+    val haptics: Boolean = true,
+    /** The wallpaper's colours (Android 12+), else the app's own. */
+    val dynamicColour: Boolean = true,
+    val car: CarModeSetting = CarModeSetting(),
 )
 
 /** This phone's stream level by network: as sent on Wi-Fi, Opus 160 on mobile data. */
@@ -130,6 +177,9 @@ interface SettingsStore {
 
     /** Now playing's layout, visualiser and queue panel. */
     suspend fun setNowPlayingPrefs(prefs: NowPlayingPrefs) {}
+
+    /** Haptics, the theme's colours and car mode (checked before they are kept). */
+    suspend fun setDevicePrefs(prefs: DevicePrefs) {}
 }
 
 /** A user name fit to remember as the offline owner. */
@@ -166,7 +216,33 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
                 visualStyle = enumOr(it[NP_STYLE], VisualStyle.BARS),
                 queuePanel = it[NP_QUEUE_PANEL] ?: true,
             ),
+            device = DevicePrefs(
+                haptics = it[HAPTICS] ?: true,
+                dynamicColour = it[DYNAMIC_COLOUR] ?: true,
+                car = CarModeSetting(
+                    auto = enumOr(it[CAR_AUTO], CarAutoOpen.OFF),
+                    deviceName = it[CAR_NAME].orEmpty(),
+                    deviceAddress = it[CAR_ADDRESS].orEmpty(),
+                ).sanitised(),
+            ),
         )
+    }
+
+    override suspend fun setDevicePrefs(prefs: DevicePrefs) {
+        val car = prefs.car.sanitised()
+        store.edit { e ->
+            e[HAPTICS] = prefs.haptics
+            e[DYNAMIC_COLOUR] = prefs.dynamicColour
+            e[CAR_AUTO] = car.auto.name
+            if (car.auto == CarAutoOpen.THIS_DEVICE) {
+                e[CAR_NAME] = car.deviceName
+                e[CAR_ADDRESS] = car.deviceAddress
+            } else {
+                // A device no longer chosen isn't kept.
+                e.remove(CAR_NAME)
+                e.remove(CAR_ADDRESS)
+            }
+        }
     }
 
     override suspend fun setNowPlayingPrefs(prefs: NowPlayingPrefs) {
@@ -297,6 +373,12 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         val NP_VISUALISER = booleanPreferencesKey("now_playing_visualiser")
         val NP_STYLE = stringPreferencesKey("now_playing_visual_style")
         val NP_QUEUE_PANEL = booleanPreferencesKey("now_playing_queue_panel")
+        val HAPTICS = booleanPreferencesKey("haptics")
+        val DYNAMIC_COLOUR = booleanPreferencesKey("dynamic_colour")
+        val CAR_AUTO = stringPreferencesKey("car_mode_auto")
+        val CAR_NAME = stringPreferencesKey("car_mode_device_name")
+        val CAR_ADDRESS = stringPreferencesKey("car_mode_device_address")
+        val OUTPUT_EQ = stringPreferencesKey("sound_output_eq")
         val DL_WIFI = stringPreferencesKey("downloads_wifi_format")
         val DL_MOBILE = stringPreferencesKey("downloads_mobile_format")
         val DL_WIFI_ONLY = booleanPreferencesKey("downloads_wifi_only")
@@ -371,6 +453,7 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
                 bitPerfectUsb = p[BIT_PERFECT_USB] ?: d.bitPerfectUsb,
                 transitions = enumOr(p[TRANSITIONS], d.transitions),
                 crossfadeSecs = p[CROSSFADE_SECS] ?: d.crossfadeSecs,
+                outputEq = OutputEq.decode(p[OUTPUT_EQ]),
             ).sanitised()
         }
 
@@ -398,6 +481,7 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
             p[BIT_PERFECT_USB] = s.bitPerfectUsb
             p[TRANSITIONS] = s.transitions.name
             p[CROSSFADE_SECS] = s.crossfadeSecs
+            if (s.outputEq.isEmpty()) p.remove(OUTPUT_EQ) else p[OUTPUT_EQ] = OutputEq.encode(s.outputEq)
         }
     }
 }

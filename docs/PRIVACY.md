@@ -2,7 +2,7 @@
 
 **Lyrion Anywhere** (the Android app, the web app and the gateway plugin for Lyrion Music Server) is free software for listening to **your own** music library on **your own** server. This policy says what each part keeps, where, and for how long.
 
-*Last updated: 12 October 2026.*
+*Last updated: 13 October 2026.*
 
 ## In short
 
@@ -20,6 +20,9 @@ All of this is in the app's private storage. Other apps can't read it, and none 
 | **Your server's address** | To connect | Until you sign out of that server |
 | **Your sign-in:** the refresh token and the server's id for this phone | To stay signed in | Until you sign out or the server revokes the device |
 | **Settings:** sound, downloads, default player, library choice, the last user signed in on this server (for offline mode) | Your preferences | Until you uninstall, or sign out (the offline owner) |
+| **Output names for EQ:** the name of a USB DAC or Bluetooth device you gave its own EQ profile | So the right profile switches in when that output plays | Until you remove that EQ, or uninstall |
+| **Car mode's car:** if you choose *This device*, that Bluetooth device's name and address | So car mode opens for that car only | Until you choose another option, or uninstall |
+| **Covers for Android Auto:** album covers already fetched from your server, under random names | So Android Auto can show them in its lists | Until the app restarts or you sign out |
 | **Downloads:** audio files, covers, and an index of titles, artists, albums, durations and formats | Offline listening | Until you remove them, choose to remove them at sign-out, the server revokes the device, or you uninstall |
 | **Plays heard offline:** track id, when it started and how long it played | To update play counts on your server when you're back online | Until the server has them (then deleted) |
 | **Crash reports** (only after a crash) | So you can see what went wrong and choose to share it | Until you dismiss the report |
@@ -29,6 +32,8 @@ All of this is in the app's private storage. Other apps can't read it, and none 
 - **Crash reports** stay on the phone. The app never sends them anywhere: you see the report the next time the app opens, and only you can copy or share it. Reports hold the app version, Android version, phone model and the error's stack trace. Before a report is saved or shown, the app removes tokens, secrets, server addresses, IP addresses and folder names. From a native crash, it keeps only the names of the code that crashed, never the memory dump Android records.
 - **Artwork** is cached in memory only.
 - **The camera** is used only to scan a pairing QR code, when you choose to. Frames are read on the phone and never stored or sent.
+- **Bluetooth (car mode):** only if you set car mode to open by itself (*Any car audio* or *This device*), the app asks for Android's *Nearby devices* permission (`BLUETOOTH_CONNECT`, Android 12 and later). With it, while the app is open, it sees which Bluetooth devices connect, their names and addresses, and whether each is car audio. It uses that only to open or leave car mode. It never scans for devices, never reads your location, and never sends any of it anywhere. Refuse the permission, and car mode stays a button on Now playing. You can withdraw it in Android's settings at any time.
+- **Per-output EQ** reads the name Android gives the output (a USB DAC's product name or a Bluetooth device's name) to pick the profile. The names stay on the phone.
 
 ## What the app sends, and to whom
 
@@ -50,7 +55,7 @@ Nothing is sent to the project, Google or anyone else. The app contains no analy
 
 **Lyrics:** the app asks your gateway for a track's lyrics by its id. The gateway reads them from the file's tags, or asks the *Music & Artist Information* plugin on your server if it is installed. That plugin may look lyrics up online, depending on how your server's owner has set it up. That is the plugin's own setting; Lyrion Anywhere never contacts a lyrics service itself.
 
-**Android Auto:** when you use the app in a car, Android Auto shows your library's titles, which the app hands to it on the phone. It is told the ids and names of items only, never addresses or files.
+**Android Auto:** when you use the app in a car, Android Auto shows your library's titles, which the app hands to it on the phone. It is told the ids and names of items only, never addresses or files. Album covers reach it through the app's own private store on the phone: Android Auto is allowed to read each cover it is shown, and nothing else, and it never learns where a cover came from.
 
 ## What your gateway (the server) stores
 

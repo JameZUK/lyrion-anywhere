@@ -20,6 +20,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import io.github.jamezuk.lyrionanywhere.navigation.AppRoot
 import io.github.jamezuk.lyrionanywhere.ui.theme.LyrionTheme
+import io.github.jamezuk.lyrionanywhere.ui.components.ProvideHaptics
+import io.github.jamezuk.lyrionanywhere.data.DevicePrefs
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.map
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -32,8 +37,13 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         setContent {
-            LyrionTheme {
-                AppRoot(app.container)
+            // This device's choices (Wave 2 §5.4, §5.5): the wallpaper's colours and haptics.
+            val prefs = androidx.compose.runtime.remember { app.container.settings.settings.map { it.device } }
+            val device by prefs.collectAsStateWithLifecycle(DevicePrefs())
+            LyrionTheme(dynamicColour = device.dynamicColour) {
+                ProvideHaptics(device.haptics) {
+                    AppRoot(app.container)
+                }
             }
         }
         if (savedInstanceState == null) handleOnce(intent)

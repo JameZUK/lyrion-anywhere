@@ -61,6 +61,9 @@ import io.github.jamezuk.lyrionanywhere.data.CrossfeedMode
 import io.github.jamezuk.lyrionanywhere.data.DitherMode
 import io.github.jamezuk.lyrionanywhere.data.EqCheck
 import io.github.jamezuk.lyrionanywhere.data.EqProfile
+import io.github.jamezuk.lyrionanywhere.data.AudioOutput
+import io.github.jamezuk.lyrionanywhere.data.OutputClass
+import io.github.jamezuk.lyrionanywhere.data.OutputEq
 import io.github.jamezuk.lyrionanywhere.data.LevellingMode
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.SoundSettings
@@ -93,7 +96,17 @@ data class SoundUiState(
     /** Android 14+: bit-perfect USB output is possible at all. */
     val bitPerfectAvailable: Boolean = true,
     val message: EqMessage? = null,
-)
+    /** Where the sound goes now (null: not known: this phone isn't playing). */
+    val output: AudioOutput? = null,
+    /** The EQ is bypassed for a comparison (A/B). */
+    val bypass: Boolean = false,
+) {
+    /** The settings as they apply on the current output (per-output EQ). */
+    val effective: SoundSettings get() = sound.forOutput(output)
+
+    /** The profile the curve shows: the one in use here, else the main one. */
+    val shownProfile: EqProfile? get() = effective.eq ?: sound.eq
+}
 
 /** The Sound settings: every change is saved and applied to the engine at once. */
 class SoundViewModel(
@@ -107,7 +120,7 @@ class SoundViewModel(
 
     init {
         viewModelScope.launch {
-            local.state.collect { l -> _state.update { it.copy(sound = l.sound) } }
+            local.state.collect { l -> _state.update { it.copy(sound = l.sound, output = l.output, bypass = l.eqBypass) } }
         }
     }
 
@@ -125,7 +138,51 @@ class SoundViewModel(
 
     fun setCeiling(db: Double) = change { it.copy(limiterCeilingDb = roundTo(db, 0.1)) }
 
-    fun setEqEnabled(on: Boolean) = change { it.copy(eqEnabled = on && it.eq != null) }
+    fun setEqEnabled(on: Boolean) = change { it.copy(eqEnabled = on && (it.eq != null || it.outputEq.any { b -> b.profile != null })) }
+
+    /** Bind [profile] (null: no EQ) to an output: a kind, and a device's name for USB or Bluetooth. */
+    fun bindOutput(kind: OutputClass, name: String, profile: EqProfile?) =
+        change { it.copy(outputEq = it.outputEq + OutputEq(kind, name, profile), eqEnabled = it.eqEnabled || profile != null) }
+
+    /** Forget an output's binding: the main profile applies there again. */
+    fun unbindOutput(kind: OutputClass, name: String) {
+        val n = if (kind.named) AudioOutput.cleanName(name) else ""
+        change { it.copy(outputEq = it.outputEq.filterNot { b -> b.kind == kind && b.deviceName == n }) }
+    }
+
+    /** Import an AutoEq profile for one output (as [importEq], but bound to it). */
+    fun importEqFor(kind: OutputClass, deviceName: String, name: String, text: String) {
+        val message = when (val p = checked(name, text)) {
+            is EqMessage.Imported -> {
+                bindOutput(kind, deviceName, imported)
+                p
+            }
+            else -> p
+        }
+        _state.update { it.copy(message = message) }
+    }
+
+    /** The A/B comparison: bypass the EQ while held (or toggled with TalkBack). */
+    fun setBypass(on: Boolean) = local.setEqBypass(on)
+
+    override fun onCleared() {
+        // A comparison never outlives the screen.
+        local.setEqBypass(false)
+    }
+
+    /** The last profile [checked] accepted. */
+    private var imported: EqProfile? = null
+
+    private fun checked(name: String, text: String): EqMessage = when (val c = local.checkEq(text)) {
+        is EqCheck.Invalid -> EqMessage.Invalid(c.reason)
+        is EqCheck.Ok -> if (c.flat || c.filters == 0) {
+            EqMessage.Flat
+        } else {
+            val profile = EqProfile(cleanName(name), text, c.filters, c.preampDb)
+            imported = profile
+            EqMessage.Imported(profile.name)
+        }
+    }
 
     fun setCrossfeed(mode: CrossfeedMode) = change { it.copy(crossfeed = mode) }
 
@@ -188,6 +245,14 @@ interface SoundActions {
 
     fun removeEq() {}
 
+    fun bindOutput(kind: OutputClass, name: String, profile: EqProfile?) {}
+
+    fun unbindOutput(kind: OutputClass, name: String) {}
+
+    fun importEqFor(kind: OutputClass, deviceName: String, name: String, text: String) {}
+
+    fun eqBypass(on: Boolean) {}
+
     fun crossfeed(mode: CrossfeedMode) {}
 
     fun dither(mode: DitherMode) {}
@@ -217,6 +282,15 @@ fun SoundViewModel.actions(): SoundActions = object : SoundActions {
     override fun eqUnreadable() = this@actions.eqUnreadable()
 
     override fun removeEq() = this@actions.removeEq()
+
+    override fun bindOutput(kind: OutputClass, name: String, profile: EqProfile?) = this@actions.bindOutput(kind, name, profile)
+
+    override fun unbindOutput(kind: OutputClass, name: String) = this@actions.unbindOutput(kind, name)
+
+    override fun importEqFor(kind: OutputClass, deviceName: String, name: String, text: String) =
+        this@actions.importEqFor(kind, deviceName, name, text)
+
+    override fun eqBypass(on: Boolean) = setBypass(on)
 
     override fun crossfeed(mode: CrossfeedMode) = setCrossfeed(mode)
 
@@ -257,7 +331,7 @@ fun SoundScreen(state: SoundUiState, actions: SoundActions, modifier: Modifier =
     val s = state.sound
     var pasting by rememberSaveable { mutableStateOf(false) }
     LazyColumn(modifier.fillMaxSize()) {
-        item { BitPerfectIndicator(s) }
+        item { BitPerfectIndicator(state.effective) }
         state.message?.let { m -> item { EqMessageLine(m, actions) } }
 
         item { SectionHeader(stringResource(R.string.sound_section_output)) }
@@ -340,11 +414,16 @@ fun SoundScreen(state: SoundUiState, actions: SoundActions, modifier: Modifier =
                     )
                 },
                 checked = s.eqEnabled,
-                enabled = eq != null,
+                enabled = eq != null || s.outputEq.any { it.profile != null },
                 onChange = actions::eqEnabled,
             )
         }
         item { EqButtons(hasProfile = s.eq != null, onPaste = { pasting = !pasting }, actions = actions) }
+        state.shownProfile?.let { profile ->
+            item { EqCurveView(profile) }
+            item { EqCompareButton(state.bypass, enabled = state.output != null && state.effective.eqEnabled, onBypass = actions::eqBypass) }
+        }
+        item { OutputEqSection(state, actions) }
         if (pasting) {
             item {
                 val pastedName = stringResource(R.string.sound_eq_pasted_name)
@@ -594,7 +673,7 @@ private fun EqButtons(hasProfile: Boolean, onPaste: () -> Unit, actions: SoundAc
 }
 
 /** A picked profile file's name and text, read with a hard size limit; null if unreadable. */
-private fun readProfile(context: Context, uri: Uri): Pair<String, String>? = try {
+internal fun readProfile(context: Context, uri: Uri): Pair<String, String>? = try {
     val resolver = context.contentResolver
     val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
         if (c.moveToFirst()) c.getString(0) else null
@@ -617,7 +696,7 @@ private fun readProfile(context: Context, uri: Uri): Pair<String, String>? = try
 
 /** Paste a profile in place (a text field under the buttons). */
 @Composable
-private fun PasteBox(onCancel: () -> Unit, onImport: (String) -> Unit) {
+internal fun PasteBox(onCancel: () -> Unit, onImport: (String) -> Unit) {
     var text by rememberSaveable { mutableStateOf("") }
     Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
         Text(

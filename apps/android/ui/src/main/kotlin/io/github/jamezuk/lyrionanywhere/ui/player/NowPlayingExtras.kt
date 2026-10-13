@@ -58,6 +58,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -77,6 +78,7 @@ import io.github.jamezuk.lyrionanywhere.core.Quality
 import io.github.jamezuk.lyrionanywhere.core.SleepEnd
 import io.github.jamezuk.lyrionanywhere.core.Track
 import io.github.jamezuk.lyrionanywhere.ui.R
+import io.github.jamezuk.lyrionanywhere.ui.components.HapticSteps
 import io.github.jamezuk.lyrionanywhere.ui.components.ArtworkImage
 import kotlinx.coroutines.launch
 
@@ -174,12 +176,18 @@ fun SleepChoices(
     onSet: (SleepChoice, SleepScope) -> Unit,
     onCancel: () -> Unit,
 ) {
+    // A light tick as the timer is set (Wave 2 §5.4).
+    val haptics = LocalHapticFeedback.current
+    val chosen: (SleepChoice, SleepScope) -> Unit = { c, s ->
+        haptics.performHapticFeedback(HapticSteps.confirm)
+        onSet(c, s)
+    }
     var scope by rememberSaveable { mutableStateOf(SleepScope.PLAYER) }
     var custom by rememberSaveable { mutableStateOf("") }
     var invalid by remember { mutableStateOf(false) }
     val submitCustom = {
         val m = SleepTimer.customMinutes(custom)
-        if (m == null) invalid = true else onSet(SleepChoice.Minutes(m), scope)
+        if (m == null) invalid = true else chosen(SleepChoice.Minutes(m), scope)
     }
     Column(
         Modifier
@@ -226,7 +234,7 @@ fun SleepChoices(
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SleepTimer.MINUTES.forEach { m ->
-                OutlinedButton(onClick = { onSet(SleepChoice.Minutes(m), scope) }, modifier = Modifier.testTag("sleep-$m")) {
+                OutlinedButton(onClick = { chosen(SleepChoice.Minutes(m), scope) }, modifier = Modifier.testTag("sleep-$m")) {
                     Text(stringResource(R.string.sleep_minutes, m))
                 }
             }
@@ -255,7 +263,7 @@ fun SleepChoices(
             SleepEnd.QUEUE to R.string.sleep_end_queue,
         ).forEach { (end, label) ->
             OutlinedButton(
-                onClick = { onSet(SleepChoice.End(end), scope) },
+                onClick = { chosen(SleepChoice.End(end), scope) },
                 enabled = canEnd,
                 modifier = Modifier.fillMaxWidth().testTag("sleep-end-${end.name.lowercase()}"),
             ) { Text(stringResource(label), Modifier.fillMaxWidth()) }
@@ -348,7 +356,7 @@ fun SignalPathSheet(state: PlayerUiState, onDismiss: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (state.localSelected) {
-                SignalPathPanel(state.local.signalPath, quality = state.local.streamQuality, metered = state.local.metered)
+                SignalPathPanel(state.local.signalPath, quality = state.local.streamQuality, metered = state.local.metered, eq = state.local.eqInUse?.name)
             } else {
                 val q = state.status?.current?.quality
                 Card(Modifier.fillMaxWidth()) {

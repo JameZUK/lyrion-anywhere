@@ -20,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -31,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import io.github.jamezuk.lyrionanywhere.core.RatingStyle
 import io.github.jamezuk.lyrionanywhere.core.TrackRating
 import io.github.jamezuk.lyrionanywhere.ui.R
+import io.github.jamezuk.lyrionanywhere.ui.components.HapticSteps
 
 /**
  * Rate the current track (docs/plans/wave2-design.md §2): five stars or a heart, as the user
@@ -39,7 +41,13 @@ import io.github.jamezuk.lyrionanywhere.ui.R
  * clears it; TalkBack also offers "Half a star more/less".
  */
 @Composable
-internal fun RatingControl(rating: TrackRating?, style: RatingStyle, failed: Boolean, onRate: (Int) -> Unit) {
+internal fun RatingControl(rating: TrackRating?, style: RatingStyle, failed: Boolean, onRated: (Int) -> Unit) {
+    // A light tick as a rating is set (Wave 2 §5.4).
+    val haptics = LocalHapticFeedback.current
+    val onRate: (Int) -> Unit = {
+        haptics.performHapticFeedback(HapticSteps.confirm)
+        onRated(it)
+    }
     val mine = rating?.mine?.toInt()
     val shown = rating?.rating?.toInt() ?: 0
     if (style == RatingStyle.HEART) {

@@ -50,7 +50,16 @@ class LibraryCallback(
     private val access: (MediaSession.ControllerInfo) -> CallerAccess,
     private val catalogue: () -> AutoCatalogue?,
     private val scope: CoroutineScope,
+    /** Read grants for the items' artwork URIs (Android Auto only; none: no art). */
+    private val grants: AutoArtGrants? = null,
 ) : MediaLibrarySession.Callback {
+    /** Let the browser read the covers of [items] (only Android Auto, verified, gets any). */
+    private fun grantArt(browser: MediaSession.ControllerInfo, items: List<MediaItem>) {
+        val g = grants ?: return
+        val uris = items.mapNotNull { it.mediaMetadata.artworkUri }
+        if (uris.isNotEmpty()) g.grantFor(browser.packageName, access(browser), uris)
+    }
+
     /** The last search's results, per caller and query (the car pages through them). */
     private val searches = LinkedHashMap<Pair<Int, String>, List<MediaItem>>()
 
@@ -94,7 +103,10 @@ class LibraryCallback(
         return scope.listenable({ LibraryResult.ofError(SessionError.ERROR_IO) }) {
             when (val items = c.children(parentId, page, pageSize)) {
                 null -> LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
-                else -> LibraryResult.ofItemList(items, params)
+                else -> {
+                    grantArt(browser, items)
+                    LibraryResult.ofItemList(items, params)
+                }
             }
         }
     }
@@ -107,7 +119,10 @@ class LibraryCallback(
         if (!allowed(browser)) return denied()
         val c = catalogue() ?: return Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_INVALID_STATE))
         return scope.listenable({ LibraryResult.ofError(SessionError.ERROR_IO) }) {
-            c.item(mediaId)?.let { LibraryResult.ofItem(it, null) } ?: LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
+            c.item(mediaId)?.let {
+                grantArt(browser, listOf(it))
+                LibraryResult.ofItem(it, null)
+            } ?: LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
         }
     }
 
@@ -144,6 +159,7 @@ class LibraryCallback(
         val size = pageSize.coerceIn(1, PAGE_MAX)
         val start = page.coerceAtLeast(0).toLong() * size
         val items = if (start >= found.size) emptyList() else found.subList(start.toInt(), minOf(found.size, start.toInt() + size))
+        grantArt(browser, items)
         return Futures.immediateFuture(LibraryResult.ofItemList(items, params))
     }
 

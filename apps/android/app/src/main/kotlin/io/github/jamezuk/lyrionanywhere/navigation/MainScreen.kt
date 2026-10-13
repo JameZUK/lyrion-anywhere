@@ -265,6 +265,9 @@ import kotlinx.serialization.Serializable
 /** Every room at a glance (Wave 2 §4.3). */
 @Serializable data object RoomsRoute
 
+/** The driving screen (Wave 2 §5.1). */
+@Serializable data object CarModeRoute
+
 @Serializable data object SettingsRoute
 
 @Serializable data object LicencesRoute
@@ -350,7 +353,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
         if (playerState.local.enabled) startPlaybackService(context)
     }
     // Downloads playing on this phone (they can be played online too).
-    val offlineVm = viewModel(key = "offline-player") { OfflinePlayerViewModel(container.offlinePlayer, offlineClock) }
+    val offlineVm = viewModel(key = "offline-player") { OfflinePlayerViewModel(container.offlinePlayer, offlineClock, container.settings) }
     val offlineUi by offlineVm.state.collectAsStateWithLifecycle()
     LaunchedEffect(offlineUi.state.active) {
         if (offlineUi.state.active) startPlaybackService(context)
@@ -456,6 +459,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
         DiscoveryEvent.Played -> res.getString(R.string.similar_playing)
         is DiscoveryEvent.Failed -> errorText(res, e.error)
         DiscoveryEvent.NoPlayer -> res.getString(R.string.no_player_selected)
+        DiscoveryEvent.NoRadio -> res.getString(R.string.radio_none)
     }
 
     // Album, artist and playlist pages: full screen, or beside their list on wide windows.
@@ -537,8 +541,14 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
     // content (and the mini player) must keep clear of it.
     val suiteType = NavigationSuiteScaffoldDefaults.calculateFromAdaptiveInfo(currentWindowAdaptiveInfo())
     val bottomBarNav = suiteType == NavigationSuiteType.NavigationBar
+    // Car mode (Wave 2 §5.1): opened by its button, or by itself for a car (Settings).
+    val inCar = destination?.hasRoute(CarModeRoute::class) == true
+    val car = rememberCarMode(container, scope, inCar, onOpen = { nav.navigate(CarModeRoute) { launchSingleTop = true } }, onLeave = { nav.popBackStack() })
+    // "Start radio" and "Sleep 30 min" from the launcher (Wave 2 §5.5).
+    ShortcutRequests(container, player, snackbar) { e -> discoveryText(e) }
     NavigationSuiteScaffold(
-        layoutType = suiteType,
+        // Car mode has the whole screen.
+        layoutType = if (inCar) NavigationSuiteType.None else suiteType,
         navigationSuiteItems = {
             TOP_LEVEL.forEach { item ->
                 val selected = destination?.hierarchy?.any { it.hasRoute(item.route::class) } == true
@@ -563,7 +573,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
             bottomBar = {
               Column(if (bottomBarNav) Modifier else Modifier.navigationBarsPadding()) {
                 val onNowPlaying = destination?.hasRoute(NowPlayingRoute::class) == true ||
-                    destination?.hasRoute(OfflineNowPlayingRoute::class) == true
+                    destination?.hasRoute(OfflineNowPlayingRoute::class) == true || inCar
                 if (!onNowPlaying && offlineUi.state.active) {
                     // Downloads have this phone: their own mini player.
                     OfflineMiniPlayer(
@@ -1174,6 +1184,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 onCredits = player::loadCredits,
                                 onCredit = { c -> c.artistId?.let { id -> nav.navigate(ContributorRoute(id, c.name, c.role.name)) } },
                                 onRooms = { nav.navigate(RoomsRoute) },
+                                onCarMode = car::openByHand,
                             ),
                         )
                     }
@@ -1268,7 +1279,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                 }
                 composable<OfflineNowPlayingRoute> {
                     Screen(title = stringResource(R.string.title_now_playing), onBack = { nav.popBackStack() }) {
-                        OfflineNowPlayingScreen(offlineUi, offlineClock, offlineNowPlayingActions(offlineVm))
+                        OfflineNowPlayingScreen(offlineUi, offlineClock, offlineNowPlayingActions(offlineVm), visual = offlineVm)
                     }
                 }
                 composable<SettingsRoute> {
@@ -1323,8 +1334,12 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 val app by container.settings.settings.collectAsStateWithLifecycle(AppSettings())
                                 StreamingQualitySetting(app.streaming) { s -> scope.launch { container.settings.setStreaming(s) } }
                             },
+                            device = { DeviceSettings(container, scope) },
                         )
                     }
+                }
+                composable<CarModeRoute> {
+                    CarModeContent(container, player, playerState, clock, snackbar, onExit = car::leaveByHand) { e -> discoveryText(e) }
                 }
                 composable<SoundRoute> {
                     val vm = viewModel { SoundViewModel(container.localPlayer) }

@@ -22,6 +22,9 @@ data class NowPlaying(
     val playing: Boolean,
     /** This phone's own player. */
     val isPhone: Boolean,
+    /** How far through the track, as a fraction 0–1 in steps of [PROGRESS_STEPS] (null:
+     *  unknown, or a stream with no length). Coarse, so the widget is redrawn rarely. */
+    val progress: Float? = null,
 ) {
     companion object {
         /** From a player's status (null: nothing known about it). */
@@ -36,7 +39,18 @@ data class NowPlaying(
                 artwork = track?.artwork,
                 playing = status.mode == PlaybackMode.PLAYING,
                 isPhone = isPhone,
+                progress = progressOf(status.elapsedSecs, status.durationSecs ?: track?.durationSecs),
             )
+        }
+
+        /** The large widget's progress line moves in this many steps over a track. */
+        const val PROGRESS_STEPS = 40
+
+        /** [elapsed] of [duration] as a fraction, rounded down to a step (null: unknown). */
+        fun progressOf(elapsed: Double?, duration: Double?): Float? {
+            if (elapsed == null || duration == null || !elapsed.isFinite() || !duration.isFinite() || duration <= 0) return null
+            val f = (elapsed / duration).coerceIn(0.0, 1.0)
+            return (kotlin.math.floor(f * PROGRESS_STEPS) / PROGRESS_STEPS).toFloat()
         }
     }
 }
