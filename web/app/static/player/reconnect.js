@@ -146,7 +146,9 @@ export async function loadCore(workerUrl, importer) {
   const q = v && /^[\w.-]{1,64}$/.test(v) ? `?v=${v}` : '';
   const mod = await importer(new URL(`./pkg/anywhere_wasm.js${q}`, workerUrl).href);
   const wasm = await mod.default({ module_or_path: new URL(`./pkg/anywhere_wasm_bg.wasm${q}`, workerUrl).href });
-  return { wasm, WasmPlayer: mod.WasmPlayer, WasmSegmenter: mod.WasmSegmenter };
+  // Every class the module exports (a list of names here once left out the visualiser's).
+  const classes = Object.fromEntries(Object.entries(mod).filter(([k, c]) => /^Wasm[A-Z]\w*$/.test(k) && typeof c === 'function'));
+  return { ...classes, wasm };
 }
 
 /**

@@ -133,6 +133,8 @@ test('the core loads with the build version on both of its files', async () => {
     },
     WasmPlayer: class {},
     WasmSegmenter: class {},
+    WasmVisualiser: class {},
+    notAClass: 7,
   };
   const core = await loadCore('https://music.example.com/player/player-worker.js?v=1791659999', async (u) => {
     asked.push(u);
@@ -144,6 +146,9 @@ test('the core loads with the build version on both of its files', async () => {
   ]);
   assert.equal(core.wasm.memory, 'mem');
   assert.equal(core.WasmSegmenter, fake.WasmSegmenter);
+  // Regression: the visualiser's class was left out, so the worker could never build it.
+  assert.equal(core.WasmVisualiser, fake.WasmVisualiser);
+  assert.equal(core.notAClass, undefined);
   // A missing or odd version is left out rather than passed through.
   asked.length = 0;
   await loadCore('https://music.example.com/player/player-worker.js?v=../../x', async (u) => (asked.push(u), fake));
