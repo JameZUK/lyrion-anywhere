@@ -8,7 +8,8 @@
 		albums,
 		more = null,
 		showArtist = true,
-	}: { albums: Album[]; more?: (() => void) | null; showArtist?: boolean } = $props();
+		offset = 0,
+	}: { albums: Album[]; more?: (() => void) | null; showArtist?: boolean; /** Where the first album sits in the whole list. */ offset?: number } = $props();
 
 	let sentinel = $state<HTMLDivElement>();
 	$effect(() => {
@@ -21,8 +22,8 @@
 </script>
 
 <ul class="grid">
-	{#each albums as a (a.id)}
-		<li>
+	{#each albums as a, i (a.id)}
+		<li data-pos={offset + i}>
 			<a href={link('album', a.id) ?? '#/albums'} class="tile">
 				<Art path={coverPath(a.artwork_track_id, 300)} alt="" label={textOf(a.album)} />
 				<span class="name ellipsis">{textOf(a.album)}</span>

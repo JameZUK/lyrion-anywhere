@@ -178,7 +178,7 @@ test('with no virtual libraries the picker is hidden and nothing is narrowed', a
 	expect(library.available).toEqual([]);
 	expect(library.id).toBeNull();
 	const { container } = render(LibraryPage);
-	expect(container.querySelector('select')).toBeNull();
+	expect(container.querySelector('.picker select')).toBeNull();
 	expect(container.textContent).toContain('New music');
 	expect(container.textContent).toContain('Music folder');
 });
@@ -188,7 +188,7 @@ test('a chosen library narrows the album lists, and can be picked on the Library
 		cmd[0] === 'libraries' ? { folder_loop: [{ id: '1a2b3c4d', name: 'Lossless' }] } : { count: 0, albums_loop: [] };
 	await library.start('alice', (c) => fake.api.rpc('', c));
 	const page = render(LibraryPage);
-	const select = page.container.querySelector('select')!;
+	const select = page.container.querySelector<HTMLSelectElement>('.picker select')!;
 	expect(select).not.toBeNull();
 	await fireEvent.change(select, { target: { value: '1a2b3c4d' } });
 	expect(library.id).toBe('1a2b3c4d');
@@ -251,12 +251,13 @@ test('artists default to album artists, and other roles show only where the libr
 	await waitFor(() => expect(getByText('Composers')).toBeTruthy());
 	expect(queryByText('Conductors')).toBeNull();
 	expect(queryByText('Bands')).toBeNull();
-	expect(sent('artists')[0]).toEqual(['artists', 0, 200, 'role_id:ALBUMARTIST']);
+	// The first page asks for LMS's A–Z index too (tags:Z).
+	expect(sent('artists')[0]).toEqual(['artists', 0, 200, 'tags:Z', 'role_id:ALBUMARTIST']);
 	assertInert(container);
 	await fireEvent.click(getByText('All artists'));
-	await waitFor(() => expect(sent('artists').at(-1)).toEqual(['artists', 0, 200]));
+	await waitFor(() => expect(sent('artists').at(-1)).toEqual(['artists', 0, 200, 'tags:Z']));
 	await fireEvent.click(getByText('Composers'));
-	await waitFor(() => expect(sent('artists').at(-1)).toEqual(['artists', 0, 200, 'role_id:COMPOSER']));
+	await waitFor(() => expect(sent('artists').at(-1)).toEqual(['artists', 0, 200, 'tags:Z', 'role_id:COMPOSER']));
 	await fireEvent.click(getByText('Album artists')); // back to the default for other tests
 });
 

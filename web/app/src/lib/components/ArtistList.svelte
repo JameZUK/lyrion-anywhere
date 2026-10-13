@@ -3,12 +3,12 @@
 	import { textOf } from '$lib/lms/format';
 	import type { Artist } from '$lib/lms/types';
 
-	let { artists }: { artists: Artist[] } = $props();
+	let { artists, offset = 0 }: { artists: Artist[]; /** Where the first artist sits in the whole list. */ offset?: number } = $props();
 </script>
 
 <ul class="list">
-	{#each artists as a (a.id)}
-		<li><a href={cmd.link('artist', a.id) ?? '#/artists'}><span class="avatar" aria-hidden="true">{textOf(a.artist).charAt(0).toUpperCase()}</span><span class="ellipsis">{textOf(a.artist)}</span></a></li>
+	{#each artists as a, i (a.id)}
+		<li data-pos={offset + i}><a href={cmd.link('artist', a.id) ?? '#/artists'}><span class="avatar" aria-hidden="true">{textOf(a.artist).charAt(0).toUpperCase()}</span><span class="ellipsis">{textOf(a.artist)}</span></a></li>
 	{/each}
 </ul>
 
@@ -25,6 +25,8 @@
 		display: flex;
 		align-items: center;
 		gap: 0.75rem;
+		min-height: 44px;
+		box-sizing: border-box;
 		padding: 0.45rem 0.5rem;
 		border-radius: var(--radius-sm);
 		min-width: 0;
