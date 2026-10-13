@@ -531,3 +531,34 @@ fn read_ahead_player_survives_random_frames_and_host_calls() {
         }
     }
 }
+
+/// The FLAC check that decides whether a download may stand in for a stream: random bytes,
+/// a FLAC marker over junk, and headers with bogus lengths never panic, and never pass.
+#[test]
+fn flac_verification_survives_random_and_hostile_files() {
+    use anywhere_core::decode::verify_flac;
+    use std::io::Cursor;
+    let mut r = Rng(0x00c0_ffee);
+    let check = |bytes: Vec<u8>| verify_flac(Box::new(Cursor::new(bytes)));
+    for _ in 0..300 {
+        let n = r.below(4096) as usize;
+        assert!(check(r.bytes(n)).is_err());
+        let mut marked = b"fLaC".to_vec();
+        marked.extend(r.bytes(n));
+        assert!(!check(marked).is_ok_and(|c| c.md5_ok));
+    }
+    // A STREAMINFO with an MD5 but no audio, one whose length runs far past the end, and
+    // one followed by junk after a frame sync: never verified.
+    let mut si = b"fLaC\x80\x00\x00\x22".to_vec();
+    si.extend([0x10, 0, 0x10, 0, 0, 0, 0, 0, 0, 0]);
+    si.extend(((44_100u64 << 44) | (1 << 41) | (15 << 36) | 1000).to_be_bytes());
+    si.extend([0xab; 16]);
+    assert!(!check(si.clone()).is_ok_and(|c| c.md5_ok));
+    let mut long = si.clone();
+    long[5..8].copy_from_slice(&[0xff, 0xff, 0xff]);
+    assert!(!check(long).is_ok_and(|c| c.md5_ok));
+    let mut junk_frames = si;
+    junk_frames.extend([0xff, 0xf8]);
+    junk_frames.extend(r.bytes(20_000));
+    assert!(!check(junk_frames).is_ok_and(|c| c.md5_ok));
+}
