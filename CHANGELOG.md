@@ -2,6 +2,29 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Library and queue (Wave 2 part 2, web)
+
+- **Credits:** a track's "More…" lists every role LMS reports (album artist, artist, track artist, composer, conductor, band). Each name links to that contributor's albums in that role ("Name · Composer"). Artist pages show "Appears as" chips with album counts.
+- **Library:**
+  - chips for Albums, Artists, Playlists and Favourites;
+  - album orders: Recently added, A–Z, Artist and Year;
+  - a grid or list view;
+  - an A–Z fast scroller from LMS's index, which jumps without loading the list up to the letter and works from the keyboard and screen readers.
+
+  The choice is remembered on the device. *Recently played* waits for the gateway to allow that sort.
+- **Search:**
+  - recent searches, kept on the device only;
+  - results grouped under a Top result, with type chips that page through one type;
+  - play, play next or add from any result.
+- **Queue:**
+  - sections: Now playing, Up next (this device's Play next, best effort) and Then;
+  - swipe right to play next and left to remove, with menu items and keys (N, Delete) as alternatives;
+  - Clear upcoming, from the end with each removal checked, or Clear all for a long queue;
+  - a queue peek on Now playing;
+  - browse lists swipe too: right plays next, left adds.
+- **Shuffle:** cycles Off, Tracks and Albums, named for its state. A long press offers the three. Gapless markers link consecutive tracks of one album in the queue.
+- **Tests:** unit and robustness tests for every new parser (credits, the A–Z index, search results, recent searches, the Up next tracker), and component tests for each new control and its keyboard and screen-reader use.
+
 ## 2026-10-13: Review fixes (gateway, native apps, web)
 
 - **Gateway:**
