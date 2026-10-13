@@ -60,7 +60,58 @@ impl Players {
     async fn run(&self, player: &str, cmd: commands::Command) -> Result<(), ApiError> {
         self.send(player, cmd).await.map(|_| ())
     }
+
+    /// The gateway's checked edit (docs/PROTOCOL.md "Checked queue edits").
+    async fn checked_edit(&self, player: &str, body: Value) -> Result<Checked, ApiError> {
+        let p = commands::player_id(player)?;
+        let core = self.session.core();
+        let url = core
+            .server()
+            .endpoint(&format!("v1/players/{p}/queue/edit"));
+        core.authed(|token| {
+            let req = core
+                .http()
+                .post(url.clone())
+                .bearer_auth(&token)
+                .json(&body);
+            async move {
+                let resp = req.send().await?;
+                match resp.status().as_u16() {
+                    s if (200..300).contains(&s) => Ok(Checked::Done),
+                    409 => Ok(Checked::Changed),
+                    404 | 405 => Ok(Checked::Unsupported),
+                    _ => Err(crate::transport::error_from_response(resp).await),
+                }
+            }
+        })
+        .await
+    }
+
+    /// Whether `track_id` is (still) the entry at `index`: the app's own check, for a gateway
+    /// without checked edits.
+    async fn still_at(&self, player: &str, index: u32, track_id: i64) -> Result<bool, ApiError> {
+        let v = self.send(player, commands::queue_list(index, 1)).await?;
+        let at = model::tracks_from(&v, "playlist_loop");
+        Ok(at
+            .first()
+            .is_some_and(|t| t.id == Some(track_id) && t.queue_index.is_none_or(|i| i == index)))
+    }
 }
+
+enum Checked {
+    Done,
+    Changed,
+    Unsupported,
+}
+
+fn edit_track(track_id: i64) -> Result<i64, ApiError> {
+    if track_id == 0 || track_id.unsigned_abs() > 999_999_999_999 {
+        return Err(ApiError::invalid("not a track id"));
+    }
+    Ok(track_id)
+}
+
+const MAX_QUEUE_INDEX: u32 = 100_000;
 
 #[uniffi::export(async_runtime = "tokio")]
 impl Players {
@@ -196,6 +247,61 @@ impl Players {
     /// Take the queue entry at `index` out.
     pub async fn remove_from_queue(&self, player: String, index: u32) -> Result<(), ApiError> {
         self.run(&player, commands::remove_from_queue(index)).await
+    }
+
+    /// Take the entry at `index` out, only if it is still `track_id`: the gateway checks and
+    /// removes in one step (an older gateway: checked here first). False, with nothing
+    /// changed, if another track is there now.
+    pub async fn remove_if_still(
+        &self,
+        player: String,
+        index: u32,
+        track_id: i64,
+    ) -> Result<bool, ApiError> {
+        let track = edit_track(track_id)?;
+        if index > MAX_QUEUE_INDEX {
+            return Err(ApiError::invalid("not a queue position"));
+        }
+        let body = serde_json::json!({"op": "remove", "index": index, "track": track});
+        match self.checked_edit(&player, body).await? {
+            Checked::Done => Ok(true),
+            Checked::Changed => Ok(false),
+            Checked::Unsupported => {
+                if !self.still_at(&player, index, track).await? {
+                    return Ok(false);
+                }
+                self.run(&player, commands::remove_from_queue(index))
+                    .await?;
+                Ok(true)
+            }
+        }
+    }
+
+    /// Move the entry at `from` to `to`, only if it is still `track_id` (as
+    /// [`Self::remove_if_still`]).
+    pub async fn move_if_still(
+        &self,
+        player: String,
+        from: u32,
+        to: u32,
+        track_id: i64,
+    ) -> Result<bool, ApiError> {
+        let track = edit_track(track_id)?;
+        if from > MAX_QUEUE_INDEX || to > MAX_QUEUE_INDEX || from == to {
+            return Err(ApiError::invalid("not a queue move"));
+        }
+        let body = serde_json::json!({"op": "move", "index": from, "to": to, "track": track});
+        match self.checked_edit(&player, body).await? {
+            Checked::Done => Ok(true),
+            Checked::Changed => Ok(false),
+            Checked::Unsupported => {
+                if !self.still_at(&player, from, track).await? {
+                    return Ok(false);
+                }
+                self.run(&player, commands::move_in_queue(from, to)).await?;
+                Ok(true)
+            }
+        }
     }
 
     /// Move the queue entry at `from` so that it ends up at `to`.

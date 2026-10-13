@@ -383,3 +383,53 @@ async fn sync_groups_join_in_the_right_direction() {
     ));
     assert!(since(&h, before).is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn checked_queue_edits_change_only_the_entry_seen() {
+    // The gateway checks and changes in one step (the fake queue has track 1 at position 0).
+    let h = Harness::start().await;
+    let (s, _) = h.alice().await;
+    let me = s.current().unwrap().device.player_id;
+    let players = Players::new(s.clone());
+    assert!(players.remove_if_still(me.clone(), 0, 1).await.unwrap());
+    assert!(players.move_if_still(me.clone(), 0, 1, 1).await.unwrap());
+    let calls = h.lms.rpc_calls();
+    for want in [
+        json!([me, ["playlist", "delete", "0"]]),
+        json!([me, ["playlist", "move", "0", "1"]]),
+    ] {
+        assert!(calls.contains(&want), "{want} not sent");
+    }
+    // Another track there now: nothing is changed.
+    let before = h
+        .lms
+        .rpc_calls()
+        .iter()
+        .filter(|c| c[1][0] == "playlist")
+        .count();
+    assert!(!players.remove_if_still(me.clone(), 0, 2).await.unwrap());
+    assert!(!players.move_if_still(me.clone(), 0, 1, 2).await.unwrap());
+    let after = h
+        .lms
+        .rpc_calls()
+        .iter()
+        .filter(|c| c[1][0] == "playlist")
+        .count();
+    assert_eq!(before, after);
+    // Another account's player, and bad input (never sent).
+    let bobs = bob(&h).await.current().unwrap().device.player_id;
+    assert!(matches!(
+        players.remove_if_still(bobs, 0, 1).await,
+        Err(ApiError::Forbidden { .. })
+    ));
+    let n = h.lms.rpc_calls().len();
+    for r in [
+        players.remove_if_still(me.clone(), 0, 0).await,
+        players.remove_if_still(me.clone(), 200_000, 1).await,
+        players.move_if_still(me.clone(), 2, 2, 1).await,
+        players.remove_if_still("not a player".into(), 0, 1).await,
+    ] {
+        assert!(matches!(r, Err(ApiError::InvalidInput { .. })), "{r:?}");
+    }
+    assert_eq!(h.lms.rpc_calls().len(), n);
+}
