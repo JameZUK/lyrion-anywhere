@@ -42,5 +42,5 @@ These record the agreed designs and what was built, milestone by milestone. The 
 | [`plans/ux-research.md`](plans/ux-research.md) | Research into other players, and the waves of UX work that followed |
 | [`plans/wave1-design.md`](plans/wave1-design.md) | Wave 1: sleep timer, Now playing, listening history, Home, stations, lyrics |
 | [`plans/wave2-design.md`](plans/wave2-design.md) | Wave 2: alarms, ratings, library and queue, Now playing layouts, visualiser, Rooms, car mode, smart filters |
-| [`plans/wave3-design.md`](plans/wave3-design.md) | Wave 3: listening stats and Your year; the rolling cache (Phases A and B built, Phase C in progress) |
+| [`plans/wave3-design.md`](plans/wave3-design.md) | Wave 3: listening stats and Your year; the rolling cache (Phases A, B and C built) |
 | [`phase0-report.md`](phase0-report.md) | The Phase 0 spike that proved the approach |

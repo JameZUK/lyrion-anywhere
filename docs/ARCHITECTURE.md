@@ -379,7 +379,11 @@ For a phone streaming over patchy mobile data (design: [`plans/wave3-design.md`]
 - **Deterministic Opus:** the gateway encodes live Opus bit-exactly, so the same track at the same level gives the same bytes and can be matched.
 - **Honest byte counts:** the relay caps the byte count it reports to LMS at what it actually sent.
 
-**Phase C (in progress):** reuse downloaded FLAC originals for Original-level streams, matched on STREAMINFO.
+**Phase C, built (downloaded originals):**
+- **When:** an Original-level FLAC stream while the phone holds Original FLAC downloads. The stream starts with a short probe.
+- **Matching:** the stream's STREAMINFO must equal a download's in full (audio MD5, sample count, rate, channels, depth); an unset MD5 never matches.
+- **Checks:** the download must pass the offline store's own file checks, the audio already received must equal the file's bytes at the same point, and the whole file must decode to its STREAMINFO MD5 (checked once per file version). Any failure means the network.
+- **Splice:** the rest of the stream is fed from the downloaded file at the first audio frame, so the decoded audio is bit-identical; the signal path says *From downloads*.
 
 ## 6. The sans-IO core and its hosts
 

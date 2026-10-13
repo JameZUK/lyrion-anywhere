@@ -185,7 +185,7 @@ The full policy, including Google Play's Data safety answers, is [`docs/PRIVACY.
 ## Project status and roadmap
 
 - **Built and in use:** the gateway and LMS plugin, the web app, and the Android app (releases tagged `android-v*`). See [`CHANGELOG.md`](CHANGELOG.md) for what changed and when.
-- **Rolling cache for patchy mobile data:** *Phase A* (whole-track read-ahead to disk and a resume grace of up to ten minutes) is built on Android and awaiting testing on real phones. *Phase B*, a replay cache so replays and skips back don't re-download, is built too. *Phase C* (reusing downloaded FLAC originals for streams) is in progress. Design: [`docs/plans/wave3-design.md`](docs/plans/wave3-design.md) §2.
+- **Rolling cache for patchy mobile data:** *Phase A* (whole-track read-ahead to disk and a resume grace of up to ten minutes) is built on Android and awaiting testing on real phones. *Phase B*, a replay cache so replays and skips back don't re-download, and *Phase C*, which plays Original-quality streams from FLAC files already downloaded, are built too. Design: [`docs/plans/wave3-design.md`](docs/plans/wave3-design.md) §2.
 - **iOS app:** planned, on the same Rust layer and protocol, with CarPlay. It will be licensed GPL with an App Store exception for the project's own code (SPEC D17).
 - **Later:** passkeys, a cryptographic release signature for the plugin's bundled gateways, smart filters with track-level rules, a guest queue, album booklets. Store listings for the Android app (Google Play, F-Droid) are being prepared.
 
