@@ -75,3 +75,19 @@ test('smart filters keep 44 px targets', () => {
 	assert.ok(px(shelf, 'width') >= 44 && px(shelf, 'height') >= 44, shelf);
 	assert.ok(px(rule(read('routes/filter/[id]/+page.svelte'), '.actions .btn {'), 'min-height') >= 44);
 });
+
+test('car mode: every target at least 76 px', () => {
+	const car = read('routes/car/+page.svelte');
+	const big = rule(car, '.big {');
+	assert.ok(px(big, 'min-width') >= 76 && px(big, 'min-height') >= 76, big);
+	const exit = rule(car, '.exit {');
+	assert.ok(px(exit, 'min-width') >= 76 && px(exit, 'min-height') >= 76, exit);
+	assert.ok(px(rule(car, '.wide {'), 'min-height') >= 76);
+	assert.ok(px(rule(car, '.item {'), 'min-height') >= 76);
+	// High contrast in every theme: its own black and white, not the theme's colours.
+	const root = rule(car, '.car {');
+	assert.match(root, /--car-bg:\s*#000/);
+	assert.match(root, /--car-fg:\s*#fff/);
+	// No visualiser in car mode.
+	assert.doesNotMatch(car, /Visualiser/);
+});

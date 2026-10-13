@@ -287,3 +287,14 @@ describe('visualiser', () => {
 		r.unmount();
 	});
 });
+
+test('car mode opens from a named button on Now playing (Wave 2 §5.1)', () => {
+	const r = render(NowPlaying);
+	const link = r.getByRole('link', { name: 'Car mode' });
+	expect(link.getAttribute('href')).toBe('#/car');
+	r.unmount();
+	fake.app.playerId = '';
+	const none = render(NowPlaying);
+	expect(none.queryByRole('link', { name: 'Car mode' })).toBeNull();
+	none.unmount();
+});
