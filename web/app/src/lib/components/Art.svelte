@@ -17,7 +17,8 @@
 	let visible = $state(false);
 
 	$effect(() => {
-		if (eager) {
+		// Without IntersectionObserver (older browsers, tests): load at once.
+		if (eager || typeof IntersectionObserver === 'undefined') {
 			visible = true;
 			return;
 		}

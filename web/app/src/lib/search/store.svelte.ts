@@ -2,25 +2,28 @@
 // to a result and back finds the search as it was. Answers that arrive out of order (a slow
 // one for an earlier term) are dropped: only the latest term's answer is ever shown.
 import type { SearchResult } from '$lib/lms/types';
+import type { SearchType } from './results';
 
 /** Shortest term searched for. */
 export const MIN_TERM = 2;
 /** Typing pause before searching, in ms. */
 export const DEBOUNCE_MS = 250;
 
-export class SearchState {
+export class SearchState<T = SearchResult> {
 	/** What is in the box. */
 	term = $state('');
-	result = $state<SearchResult | null>(null);
+	result = $state<T | null>(null);
 	/** The term `result` is for. */
 	shownFor = $state('');
 	busy = $state(false);
 	error = $state('');
+	/** The type chip chosen on the Search page (kept with the search). */
+	type = $state<SearchType>('all');
 	#seq = 0;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(
-		private ask: (term: string) => Promise<SearchResult>,
+		private ask: (term: string) => Promise<T>,
 		private delay = DEBOUNCE_MS,
 	) {}
 
@@ -70,5 +73,6 @@ export class SearchState {
 		this.shownFor = '';
 		this.busy = false;
 		this.error = '';
+		this.type = 'all';
 	}
 }
