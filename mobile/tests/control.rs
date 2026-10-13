@@ -298,3 +298,93 @@ async fn artwork_is_fetched_with_the_token_and_capped() {
     s.debug_invalidate_access_token();
     art.fetch("music/abcdef12/cover".into(), 100).await.unwrap();
 }
+
+/// The Rooms view (Wave 2 §4.3): several statuses at once, each player's failure in its
+/// own entry, every id checked before anything is sent, at most 20 players; and the
+/// per-room controls (volume, power, sync, unsync) pass the allow-list for permitted
+/// players and are refused for others.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rooms_read_every_permitted_player_and_refuse_bad_input() {
+    let h = Harness::start().await;
+    let (s, _) = h.alice().await;
+    let me = s.current().unwrap().device.player_id;
+    h.accounts.grant_player("alice", HOME_PLAYER).unwrap();
+    let players = Players::new(s.clone());
+    let (bob, _) = {
+        let store = MemStore::new();
+        let b = h.session(store.clone());
+        b.login("bob".into(), PW.into(), None).await.unwrap();
+        (b, store)
+    };
+    let bobs = bob.current().unwrap().device.player_id;
+
+    let rooms = players
+        .statuses(vec![
+            me.clone(),
+            HOME_PLAYER.into(),
+            bobs.clone(),
+            me.clone(),
+        ])
+        .await
+        .unwrap();
+    assert_eq!(rooms.len(), 3, "a repeat is read once");
+    assert_eq!(rooms[0].player_id, me);
+    assert!(rooms[0].status.is_some() && rooms[0].error.is_none());
+    assert_eq!(rooms[1].player_id, HOME_PLAYER);
+    assert!(rooms[1].status.is_some());
+    // Someone else's phone: refused by the gateway, reported in its own entry.
+    assert_eq!(rooms[2].player_id, bobs);
+    assert!(rooms[2].status.is_none() && rooms[2].error.is_some());
+
+    // Bad input never leaves the device.
+    let before = h.lms.rpc_calls().len();
+    for bad in [
+        vec![me.clone(), "../../x".to_string()],
+        vec!["".to_string()],
+        (0..21).map(|n| format!("02:00:00:00:01:{n:02x}")).collect(),
+    ] {
+        assert!(matches!(
+            players.statuses(bad).await,
+            Err(ApiError::InvalidInput { .. })
+        ));
+    }
+    assert!(players.statuses(vec![]).await.unwrap().is_empty());
+    assert_eq!(h.lms.rpc_calls().len(), before, "nothing sent");
+
+    // A room's controls: volume, power, joining a group and leaving it.
+    players.set_volume(HOME_PLAYER.into(), 40).await.unwrap();
+    players.set_power(HOME_PLAYER.into(), false).await.unwrap();
+    players
+        .set_synced(HOME_PLAYER.into(), me.clone(), true)
+        .await
+        .unwrap();
+    players
+        .set_synced(HOME_PLAYER.into(), me.clone(), false)
+        .await
+        .unwrap();
+    players.sync_groups().await.unwrap();
+    let calls = h.lms.rpc_calls();
+    for want in [
+        json!([HOME_PLAYER, ["mixer", "volume", "40"]]),
+        json!([HOME_PLAYER, ["power", "0"]]),
+        json!([HOME_PLAYER, ["sync", me]]),
+        json!([me, ["sync", "-"]]),
+    ] {
+        assert!(calls.contains(&want), "{want} not sent");
+    }
+    // Joining someone else's player, or a player to itself: refused.
+    assert!(matches!(
+        players
+            .set_synced(HOME_PLAYER.into(), bobs.clone(), true)
+            .await,
+        Err(ApiError::Forbidden { .. })
+    ));
+    assert!(matches!(
+        players.set_synced(me.clone(), me.clone(), true).await,
+        Err(ApiError::InvalidInput { .. })
+    ));
+    assert!(matches!(
+        players.set_volume(bobs, 10).await,
+        Err(ApiError::Forbidden { .. })
+    ));
+}

@@ -91,7 +91,8 @@ pub use player::{
     MixerOffer, NotBitPerfect, OfferBlocker, OfflinePlayer, OfflinePlayerObserver,
     OfflinePlayerStatus, OutputKind, OutputNegotiator, OutputOffers, OutputRoute, PcmBlock,
     PcmEncoding, PcmIntBlock, PlayerConnection, SignalPathInfo, SignalStage, SignalVerdict,
-    StreamQuality, TransitionMode, check_eq_profile, stream_quality_for,
+    StreamQuality, TransitionMode, VISUAL_FRAME_BYTES, VISUAL_FRAME_FLOATS, check_eq_profile,
+    stream_quality_for,
 };
 pub use players::Players;
 pub use routine::{
