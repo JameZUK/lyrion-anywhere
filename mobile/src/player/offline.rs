@@ -378,6 +378,8 @@ pub struct OfflinePlayer {
     hold: Mutex<bool>,
     duck: Mutex<bool>,
     negotiator: Mutex<Option<Arc<dyn OutputNegotiator>>>,
+    /// The visualiser (kept across restarts of the engine; off by default).
+    visual: Arc<super::visual::VisualShared>,
 }
 
 impl OfflinePlayer {
@@ -400,7 +402,18 @@ impl OfflinePlayer {
             hold: Mutex::new(false),
             duck: Mutex::new(false),
             negotiator: Mutex::new(None),
+            visual: Arc::new(super::visual::VisualShared::default()),
         })
+    }
+
+    /// See [`super::LocalPlayer::set_visualiser`].
+    pub fn set_visualiser(&self, on: bool) {
+        self.visual.set_enabled(on);
+    }
+
+    /// See [`super::LocalPlayer::visual_frame`].
+    pub fn visual_frame(&self) -> Option<Vec<u8>> {
+        self.visual.take()
     }
 
     /// Start the engine (idle until a queue is set). Does nothing if already running.
@@ -422,6 +435,7 @@ impl OfflinePlayer {
             hold: std::sync::atomic::AtomicBool::new(*self.hold.lock().unwrap()),
             route: Mutex::new(self.route.lock().unwrap().clone()),
             negotiator: Mutex::new(self.negotiator.lock().unwrap().clone()),
+            visual: self.visual.clone(),
         });
         let shared = Arc::new(Shared {
             status: Mutex::new(OfflinePlayerStatus::default()),

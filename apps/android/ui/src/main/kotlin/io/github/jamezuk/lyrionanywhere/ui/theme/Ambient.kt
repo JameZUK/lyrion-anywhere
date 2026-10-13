@@ -154,7 +154,15 @@ fun ColorScheme.isDark(): Boolean = background.luminance() < 0.5f
  * the system's high-contrast setting: the plain page colour.
  */
 @Composable
-fun AmbientBackground(artwork: String?, modifier: Modifier = Modifier) {
+fun AmbientBackground(
+    artwork: String?,
+    modifier: Modifier = Modifier,
+    /**
+     * The visualiser's Glow (Wave 2 §4.1): the bass level (0–1), read as each frame is
+     * drawn. The art swells with it; the scrim is unchanged, so text keeps its contrast.
+     */
+    pulse: (() -> Float)? = null,
+) {
     val scheme = MaterialTheme.colorScheme
     val context = LocalContext.current
     val dark = scheme.isDark()
@@ -187,8 +195,9 @@ fun AmbientBackground(artwork: String?, modifier: Modifier = Modifier) {
                         .fillMaxSize()
                         .graphicsLayer {
                             val p = drift?.value ?: 0.5f
-                            scaleX = 1.35f + 0.12f * p
-                            scaleY = 1.35f + 0.12f * p
+                            val beat = pulse?.invoke()?.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
+                            scaleX = 1.35f + 0.12f * p + PULSE_SCALE * beat
+                            scaleY = 1.35f + 0.12f * p + PULSE_SCALE * beat
                             translationX = (p - 0.5f) * size.width * 0.08f
                             translationY = (0.5f - p) * size.height * 0.05f
                             rotationZ = (p - 0.5f) * 8f
@@ -209,6 +218,9 @@ fun AmbientBackground(artwork: String?, modifier: Modifier = Modifier) {
 
 /** The cover's size for the background: tiny, so it is cheap and (scaled up) already soft. */
 private const val AMBIENT_PX = 48
+
+/** How much the art swells at full bass (Glow). */
+private const val PULSE_SCALE = 0.35f
 
 /** One drift across and back takes twice this. */
 private const val DRIFT_MS = 40_000

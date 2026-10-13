@@ -32,6 +32,12 @@ data class WindowLayout(val width: WidthClass, val heightDp: Float) {
     val nowPlayingTwoPane: Boolean
         get() = width == WidthClass.EXPANDED || (width == WidthClass.MEDIUM && heightDp < SHORT_HEIGHT_DP)
 
+    /**
+     * Now playing's wide layout (Wave 2 §4.2): art on the left, lyrics or info on the right,
+     * the queue as a side panel. Windows over 840 dp (tablets, and landscape on large phones).
+     */
+    val nowPlayingWide: Boolean get() = width == WidthClass.EXPANDED
+
     companion object {
         const val MEDIUM_DP = 600f
         const val EXPANDED_DP = 840f

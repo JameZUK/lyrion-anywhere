@@ -91,6 +91,26 @@ class SettingsStoreTest {
         assertTrue(DataStoreSettings(restart()).settings.first().lyricsPeek)
     }
 
+    /** Now playing's choices (Wave 2 §4): Art, visualiser off, queue panel shown by default; kept; nonsense refused. */
+    @Test
+    fun nowPlayingPrefsDefaultSurviveARestartAndRefuseNonsense() = runBlocking {
+        assertEquals(NowPlayingPrefs(), DataStoreSettings(store()).settings.first().nowPlaying)
+        assertEquals(NowPlayingLayout.ART, NowPlayingPrefs().layout)
+        assertFalse(NowPlayingPrefs().visualiser)
+        val chosen = NowPlayingPrefs(NowPlayingLayout.INFO, visualiser = true, visualStyle = VisualStyle.VU, queuePanel = false)
+        DataStoreSettings(restart()).setNowPlayingPrefs(chosen)
+        assertEquals(chosen, DataStoreSettings(restart()).settings.first().nowPlaying)
+        val s = restart()
+        s.edit {
+            it[stringPreferencesKey("now_playing_layout")] = "KARAOKE"
+            it[stringPreferencesKey("now_playing_visual_style")] = ""
+        }
+        val read = DataStoreSettings(s).settings.first().nowPlaying
+        assertEquals(NowPlayingLayout.ART, read.layout)
+        assertEquals(VisualStyle.BARS, read.visualStyle)
+        assertTrue(read.visualiser)
+    }
+
     @Test
     fun soundDefaultsToBitPerfect() = runBlocking {
         val s = DataStoreSettings(store()).settings.first().sound

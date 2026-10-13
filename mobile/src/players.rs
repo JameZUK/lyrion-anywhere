@@ -13,6 +13,39 @@ use crate::model::{self, Player, PlayerStatus, Track};
 use crate::session::Session;
 use crate::transfer::{self, TransferOutcome, TransferProgress};
 
+/// The most players the Rooms view reads at once (docs/plans/wave2-design.md §4.3).
+pub const ROOMS_MAX: usize = 20;
+/// Status reads in flight at once for the Rooms view.
+const ROOMS_PARALLEL: usize = 4;
+
+/// One room's status for the Rooms view, or why it couldn't be read.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct RoomStatus {
+    pub player_id: String,
+    pub status: Option<PlayerStatus>,
+    /// Why the status couldn't be read (a refusal, a disconnected player, the network).
+    pub error: Option<String>,
+}
+
+/// The players to read for the Rooms view: every id well-formed (else nothing is sent),
+/// at most [`ROOMS_MAX`] after repeats are dropped, in the order given.
+pub fn room_ids(players: &[String]) -> Result<Vec<String>, ApiError> {
+    if players.len() > ROOMS_MAX * 4 {
+        return Err(ApiError::invalid("too many players"));
+    }
+    let mut out: Vec<String> = Vec::new();
+    for p in players {
+        let id = commands::player_id(p)?;
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    if out.len() > ROOMS_MAX {
+        return Err(ApiError::invalid("at most 20 players at once"));
+    }
+    Ok(out)
+}
+
 #[derive(uniffi::Object)]
 pub struct Players {
     session: Arc<Session>,
@@ -46,6 +79,32 @@ impl Players {
     pub async fn sync_groups(&self) -> Result<Vec<model::SyncGroup>, ApiError> {
         let v = self.session.core().rpc("", commands::sync_groups()).await?;
         Ok(model::sync_groups_from(&v))
+    }
+
+    /// Several players' statuses at once, for the Rooms view: at most [`ROOMS_MAX`]
+    /// players; every id is checked before anything is sent. One player's failure is
+    /// reported in its entry and doesn't stop the others.
+    pub async fn statuses(&self, players: Vec<String>) -> Result<Vec<RoomStatus>, ApiError> {
+        use futures_util::StreamExt;
+        let ids = room_ids(&players)?;
+        let reads = ids.into_iter().map(|id| async move {
+            match self.send(&id, commands::status()).await {
+                Ok(v) => RoomStatus {
+                    player_id: id,
+                    status: Some(model::status_from(&v)),
+                    error: None,
+                },
+                Err(e) => RoomStatus {
+                    player_id: id,
+                    status: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        });
+        Ok(futures_util::stream::iter(reads)
+            .buffered(ROOMS_PARALLEL)
+            .collect()
+            .await)
     }
 
     pub async fn status(&self, player: String) -> Result<PlayerStatus, ApiError> {
@@ -223,5 +282,53 @@ impl Players {
             commands::enqueue(selection, placement, play_index)?,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(n: usize) -> String {
+        format!("02:00:00:00:00:{n:02x}")
+    }
+
+    #[test]
+    fn room_ids_are_checked_deduplicated_and_capped() {
+        let ids: Vec<String> = (0..20).map(id).collect();
+        assert_eq!(room_ids(&ids).unwrap(), ids);
+        // Repeats count once, case-insensitively, in the order first given.
+        let twice = vec![id(1), id(2), id(1).to_uppercase(), id(2)];
+        assert_eq!(room_ids(&twice).unwrap(), vec![id(1), id(2)]);
+        assert!(room_ids(&[]).unwrap().is_empty());
+        // Twenty-one players: refused.
+        let many: Vec<String> = (0..21).map(id).collect();
+        assert!(matches!(
+            room_ids(&many),
+            Err(ApiError::InvalidInput { .. })
+        ));
+        // A huge list is refused before anything is looked at.
+        let huge = vec![id(1); 10_000];
+        assert!(matches!(
+            room_ids(&huge),
+            Err(ApiError::InvalidInput { .. })
+        ));
+    }
+
+    #[test]
+    fn one_bad_id_refuses_the_lot() {
+        for bad in [
+            "",
+            "../../x",
+            "aa:bb:cc:dd:ee",
+            "AA-BB-CC-DD-EE-01",
+            "02:00:00:00:00:0g",
+        ] {
+            let ids = vec![id(1), bad.to_string()];
+            assert!(
+                matches!(room_ids(&ids), Err(ApiError::InvalidInput { .. })),
+                "{bad:?} accepted"
+            );
+        }
     }
 }

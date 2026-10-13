@@ -108,6 +108,12 @@ import io.github.jamezuk.lyrionanywhere.core.Track
 import io.github.jamezuk.lyrionanywhere.core.RepeatMode
 import io.github.jamezuk.lyrionanywhere.core.ShuffleMode
 import io.github.jamezuk.lyrionanywhere.data.Waveform
+import io.github.jamezuk.lyrionanywhere.data.NowPlayingLayout
+import io.github.jamezuk.lyrionanywhere.data.VisualStyle
+import androidx.compose.material3.AssistChip
+import androidx.compose.material.icons.outlined.SpeakerGroup
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.semantics.onClick
 import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.theme.ArtTinted
 import io.github.jamezuk.lyrionanywhere.ui.components.ArtworkImage
@@ -316,7 +322,14 @@ private fun PlayPauseButton(playing: Boolean, onClick: () -> Unit, filled: Boole
 /**
  * Full remote control for the selected player. On a phone the controls and the queue
  * scroll as one column (pull down at the top to close); with [twoPane] the queue sits
- * beside the controls (tablets, and phones held sideways).
+ * beside the controls (phones held sideways). With [wide] (windows over 840 dp, Wave 2
+ * §4.2) the art sits on the left, the lyrics or info on the right, and the queue in a side
+ * panel that can be hidden.
+ *
+ * Above the art: the layout buttons (Art, Lyrics, Info; a sideways swipe on the art area
+ * does the same) and, while this phone is the player, the visualiser's switch and style
+ * button. The visualiser (from [visual]) shows where the art is; it is off unless chosen,
+ * and stays off in battery saver and with animations removed.
  */
 @Composable
 fun NowPlayingScreen(
@@ -325,6 +338,8 @@ fun NowPlayingScreen(
     actions: NowPlayingActions,
     modifier: Modifier = Modifier,
     twoPane: Boolean = false,
+    wide: Boolean = false,
+    visual: VisualSource? = null,
 ) {
     val status = state.status
     val player = state.selected
@@ -359,6 +374,7 @@ fun NowPlayingScreen(
     val queueActions = actions.queueActions()
     val currentIndex = status.queueIndex?.toInt()
     var peek by rememberSaveable { mutableStateOf(false) }
+    var showPath by rememberSaveable { mutableStateOf(false) }
     val openPeek: () -> Unit = { peek = true }
     val pullMin = with(LocalDensity.current) { SWIPE_MIN.toPx() * 1.5f }
     // Kept across recompositions (the caller's lambda changes each time), so a pull in
@@ -369,10 +385,79 @@ fun NowPlayingScreen(
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     // "Up next" opens the queue: on a phone it is further down this list.
-    val openQueue: () -> Unit = { if (!twoPane) scope.launch { list.animateScrollToItem(1) } }
+    val openQueue: () -> Unit = { if (!twoPane && !wide) scope.launch { list.animateScrollToItem(1) } }
+
+    // This device's choices: shown at once, kept by the caller.
+    val prefs = state.nowPlaying
+    var layout by remember(prefs.layout) { mutableStateOf(prefs.layout) }
+    var visualOn by remember(prefs.visualiser) { mutableStateOf(prefs.visualiser) }
+    var style by remember(prefs.visualStyle) { mutableStateOf(prefs.visualStyle) }
+    var queuePanel by remember(prefs.queuePanel) { mutableStateOf(prefs.queuePanel) }
+    val setLayout: (NowPlayingLayout) -> Unit = {
+        layout = it
+        actions.onLayout(it)
+    }
+    val setStyle: (VisualStyle) -> Unit = {
+        style = it
+        actions.onVisualStyle(it)
+    }
+    val block = rememberVisualBlock()
+    // Only while this phone is the player (a remote player keeps the ambient background).
+    val visualShown = state.localSelected && visualOn && block == VisualBlock.NONE && (wide || layout == NowPlayingLayout.ART)
+    val visualState = rememberVisualState(visual, running = visualShown)
+    val glow = visualShown && style == VisualStyle.GLOW
+    val visualiserControls: (@Composable () -> Unit)? = if (state.localSelected) {
+        {
+            VisualiserControls(
+                on = visualOn,
+                style = style,
+                block = block,
+                onToggle = {
+                    visualOn = it
+                    actions.onVisualiser(it)
+                },
+                onStyle = setStyle,
+            )
+        }
+    } else {
+        null
+    }
+    val visualiserView: (@Composable () -> Unit)? = if (visualShown && !glow) {
+        { VisualiserCanvas(style, visualState, setStyle) }
+    } else {
+        null
+    }
+    val infoShown = if (wide) NowPlayingLayouts.widePane(layout) == NowPlayingLayout.INFO else layout == NowPlayingLayout.INFO
+    val lyricsShown = if (wide) NowPlayingLayouts.widePane(layout) == NowPlayingLayout.LYRICS else layout == NowPlayingLayout.LYRICS
+    LaunchedEffect(infoShown, track?.id) { if (infoShown) actions.onCredits() }
+    val lyricsPanel: @Composable () -> Unit = { CurrentLyrics(state, status, clock, actions.onSeek) }
+    val infoPanel: @Composable () -> Unit = {
+        InfoPanel(state, status, actions, onShowPath = { showPath = true }, onOpenQueue = { if (wide && !queuePanel) peek = true else openQueue() })
+    }
+    val artArea: @Composable () -> Unit = {
+        if (wide) {
+            visualiserControls?.let { c -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { c() } }
+        } else {
+            LayoutRow(layout, setLayout, visualiserControls)
+        }
+        ArtArea(
+            ArtAreaModel(
+                layout = if (wide) NowPlayingLayout.ART else layout,
+                onLayout = if (wide) ({ l -> setLayout(NowPlayingLayouts.widePane(l)) }) else setLayout,
+                artwork = track?.artwork,
+                visualiser = visualiserView,
+                lyrics = lyricsPanel,
+                info = infoPanel,
+                onNext = actions.onNext,
+                onPrevious = actions.onPrevious,
+                onPeek = openPeek,
+            ),
+            Modifier.fillMaxWidth(0.85f),
+        )
+    }
     ArtTinted(track?.artwork) {
     Box(modifier.fillMaxSize()) {
-    AmbientBackground(track?.artwork)
+    AmbientBackground(track?.artwork, pulse = if (glow) ({ visualState.glow }) else null)
     Column(
         Modifier
             .fillMaxSize()
@@ -389,13 +474,65 @@ fun NowPlayingScreen(
     ) {
     TransferStatus(state.transfer, actions.onDismissTransfer)
     PlayingOnStrip(state, actions.onBackToPhone, onBringToPhone = actions.onBringToPhone)
-    if (twoPane) {
+    if (wide) {
+        Row(Modifier.fillMaxSize().testTag("now-playing-wide")) {
+            Column(
+                Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                NowPlayingControls(state, status, player.name, clock, actions, openQueue, openPeek, { showPath = true }, artArea, lyricsShown)
+            }
+            VerticalDivider()
+            Column(Modifier.weight(1f).fillMaxHeight().padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    LayoutSelector(
+                        NowPlayingLayouts.widePane(layout),
+                        setLayout,
+                        Modifier.weight(1f, fill = false),
+                        NowPlayingLayouts.WIDE,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    val queueState = stringResource(if (queuePanel) R.string.queue_panel_shown else R.string.queue_panel_hidden)
+                    IconToggleButton(
+                        checked = queuePanel,
+                        onCheckedChange = {
+                            queuePanel = it
+                            actions.onQueuePanel(it)
+                        },
+                        modifier = Modifier.testTag("queue-panel-toggle").semantics { stateDescription = queueState },
+                    ) {
+                        Icon(Icons.AutoMirrored.Outlined.QueueMusic, contentDescription = stringResource(R.string.queue_panel))
+                    }
+                }
+                val minSwipe = with(LocalDensity.current) { SWIPE_MIN.toPx() }
+                val pane = NowPlayingLayouts.widePane(layout)
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .testTag("wide-pane-${pane.name}")
+                        .layoutSwipes(minSwipe) { forward -> setLayout(NowPlayingLayouts.next(pane, forward, NowPlayingLayouts.WIDE)) },
+                ) {
+                    if (pane == NowPlayingLayout.LYRICS) lyricsPanel() else infoPanel()
+                }
+            }
+            if (queuePanel) {
+                VerticalDivider()
+                LazyColumn(Modifier.width(360.dp).fillMaxHeight().testTag("queue-pane"), contentPadding = PaddingValues(vertical = 8.dp)) {
+                    item(key = "queue-header") {
+                        QueueHeader(state.queue.size, player.name, actions.onClearQueue, state.upcoming, actions.onClearUpcoming)
+                    }
+                    queueItems(state.queue, currentIndex, drag, queueActions, hasMore = state.queueMore, sections = state.sections)
+                }
+            }
+        }
+    } else if (twoPane) {
         Row(Modifier.fillMaxSize().testTag("now-playing-two-pane")) {
             Column(
                 Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                NowPlayingControls(state, status, player.name, clock, actions, openQueue, openPeek)
+                NowPlayingControls(state, status, player.name, clock, actions, openQueue, openPeek, { showPath = true }, artArea, lyricsShown)
             }
             VerticalDivider()
             LazyColumn(Modifier.weight(1f).fillMaxHeight().testTag("queue-pane"), contentPadding = PaddingValues(vertical = 8.dp)) {
@@ -412,7 +549,7 @@ fun NowPlayingScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             contentPadding = PaddingValues(16.dp),
         ) {
-            item(key = "controls") { NowPlayingControls(state, status, player.name, clock, actions, openQueue, openPeek) }
+            item(key = "controls") { NowPlayingControls(state, status, player.name, clock, actions, openQueue, openPeek, { showPath = true }, artArea, lyricsShown) }
             item(key = "queue-header") {
                 HorizontalDivider()
                 QueueHeader(state.queue.size, player.name, actions.onClearQueue, state.upcoming, actions.onClearUpcoming)
@@ -424,6 +561,21 @@ fun NowPlayingScreen(
     }
     }
     if (peek) QueuePeekSheet(state, actions, onDismiss = { peek = false })
+    if (showPath) SignalPathSheet(state, onDismiss = { showPath = false })
+}
+
+/** The current track's lyrics as Now playing's Lyrics layout, following the song. */
+@Composable
+private fun CurrentLyrics(
+    state: PlayerUiState,
+    status: io.github.jamezuk.lyrionanywhere.core.PlayerStatus,
+    clock: () -> Long,
+    onSeek: (Double) -> Unit,
+) {
+    val track = status.current
+    val lyrics = state.lyrics?.takeIf { track?.id != null && state.lyricsTrackId == track.id }
+    val line = rememberLyricLine(lyrics, state, clock)
+    LyricsPanel(lyrics, line, status.canSeek, onSeek)
 }
 
 /** Artwork, track details, seek bar and buttons. */
@@ -436,10 +588,14 @@ private fun NowPlayingControls(
     actions: NowPlayingActions,
     onOpenQueue: () -> Unit = {},
     onPeek: () -> Unit = {},
+    onShowPath: () -> Unit = {},
+    /** The art area (layout buttons, art, lyrics, info or the visualiser). */
+    art: @Composable () -> Unit = {},
+    /** The lyrics are showing as a layout (so no lyric line under the title). */
+    lyricsShown: Boolean = false,
 ) {
     val track = status.current
     var showSleep by rememberSaveable { mutableStateOf(false) }
-    var showPath by rememberSaveable { mutableStateOf(false) }
     var showLyrics by rememberSaveable { mutableStateOf(false) }
     // Art and title cross-fade between tracks (Compose follows the system's animation
     // scale, so "Remove animations" turns this into a cut).
@@ -450,41 +606,12 @@ private fun NowPlayingControls(
     val lyricLine = rememberLyricLine(lyrics, state, clock)
     val nextLabel = stringResource(R.string.action_next)
     val previousLabel = stringResource(R.string.action_previous)
-    val coverLabel = stringResource(R.string.album_cover)
     Column(
         Modifier.widthIn(max = 560.dp).fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        val peekLabel = stringResource(R.string.queue_peek)
-        SwipeableArtwork(
-            onNext = actions.onNext,
-            onPrevious = actions.onPrevious,
-            onSwipeUp = onPeek,
-            modifier = Modifier
-                .fillMaxWidth(0.85f)
-                .testTag("artwork")
-                // One node, labelled as the cover (with or without an image), carrying Next,
-                // Previous and the queue peek (its swipes).
-                .semantics(mergeDescendants = true) {
-                    contentDescription = coverLabel
-                    customActions = listOf(
-                        CustomAccessibilityAction(nextLabel) { actions.onNext(); true },
-                        CustomAccessibilityAction(previousLabel) { actions.onPrevious(); true },
-                        CustomAccessibilityAction(peekLabel) { onPeek(); true },
-                    )
-                },
-        ) {
-            Crossfade(targetState = track?.artwork, animationSpec = tween(350), label = "artwork") { art ->
-                ArtworkImage(
-                    art,
-                    800,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxWidth(),
-                    corner = 16.dp,
-                )
-            }
-        }
+        art()
         AnimatedContent(
             targetState = trackKey to (track?.title ?: stringResource(R.string.nothing_playing)),
             transitionSpec = { fadeIn(tween(300)) togetherWith fadeOut(tween(200)) },
@@ -503,9 +630,9 @@ private fun NowPlayingControls(
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        track?.quality?.let { q -> QualityBadge(q, onClick = { showPath = true }) }
+        track?.quality?.let { q -> QualityBadge(q, onClick = onShowPath) }
         if ((track?.id ?: 0) > 0) RatingControl(state.rating, state.ratingStyle, state.ratingFailed, actions.onRate)
-        if (state.lyricsPeek && lyrics?.synced == true) {
+        if (state.lyricsPeek && lyrics?.synced == true && !lyricsShown) {
             val line = lyrics.lines.getOrNull(lyricLine)?.text
             if (!line.isNullOrEmpty()) LyricsPeek(line, onOpen = { showLyrics = true })
         }
@@ -576,13 +703,7 @@ private fun NowPlayingControls(
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                playerName,
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
+            PlayerChip(playerName, actions.onRooms ?: actions.onOutputs, rooms = actions.onRooms != null, Modifier.weight(1f))
             // A constant name, with on/off as its state (a toggle's label mustn't flip).
             val powerState = stringResource(if (status.powered) R.string.toggle_on else R.string.mode_off)
             IconToggleButton(
@@ -613,7 +734,6 @@ private fun NowPlayingControls(
             onDismiss = { showSleep = false },
         )
     }
-    if (showPath) SignalPathSheet(state, onDismiss = { showPath = false })
     if (showLyrics && lyrics != null) {
         LyricsScreen(
             lyrics = lyrics,
@@ -674,7 +794,37 @@ data class NowPlayingActions(
     val onClearUpcoming: () -> Unit = {},
     /** One shuffle mode (the shuffle button's long-press choice). */
     val onShuffleMode: (ShuffleMode) -> Unit = {},
+    /** Now playing's layout, visualiser and queue panel were changed (to remember them). */
+    val onLayout: (NowPlayingLayout) -> Unit = {},
+    val onVisualiser: (Boolean) -> Unit = {},
+    val onVisualStyle: (VisualStyle) -> Unit = {},
+    val onQueuePanel: (Boolean) -> Unit = {},
+    /** The Info layout is showing: read the current track's credits. */
+    val onCredits: () -> Unit = {},
+    /** Follow a credit to that person's albums in that role (null: credits aren't links). */
+    val onCredit: ((io.github.jamezuk.lyrionanywhere.core.Credit) -> Unit)? = null,
+    /** Open the Rooms view (Wave 2 §4.3; null: not offered). */
+    val onRooms: (() -> Unit)? = null,
 )
+
+/**
+ * The player's name as a chip: it opens every room at a glance ("All rooms"), or "Play on…"
+ * where there is no Rooms view.
+ */
+@Composable
+private fun PlayerChip(name: String, onClick: () -> Unit, rooms: Boolean, modifier: Modifier = Modifier) {
+    val label = stringResource(if (rooms) R.string.rooms_all else R.string.play_on_title)
+    Box(modifier) {
+        AssistChip(
+            onClick = onClick,
+            label = { Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            leadingIcon = { Icon(Icons.Outlined.SpeakerGroup, contentDescription = null, modifier = Modifier.size(18.dp)) },
+            modifier = Modifier
+                .testTag("player-chip")
+                .semantics { onClick(label = label) { onClick(); true } },
+        )
+    }
+}
 
 /**
  * The seek bar. With the track's waveform (from the gateway's analysis) the slider's track

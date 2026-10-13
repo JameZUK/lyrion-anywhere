@@ -31,6 +31,7 @@ mod local;
 mod offline;
 mod queue;
 mod signal;
+mod visual;
 
 use audio::OutputShared;
 use engine::{Cmd, Engine, Shared};
@@ -46,6 +47,7 @@ pub use pipeline::{
 };
 pub use queue::LocalRepeat;
 pub use transitions::TransitionMode;
+pub use visual::{VISUAL_FRAME_BYTES, VISUAL_FRAME_FLOATS};
 
 use crate::error::ApiError;
 use crate::session::Session;
@@ -287,6 +289,8 @@ pub struct LocalPlayer {
     negotiator: Mutex<Option<Arc<dyn OutputNegotiator>>>,
     /// The stream level wanted (kept across restarts of the engine).
     quality: Mutex<StreamQuality>,
+    /// The visualiser (kept across restarts of the engine; off by default).
+    visual: Arc<visual::VisualShared>,
 }
 
 pub(crate) fn make_output(
@@ -317,7 +321,22 @@ impl LocalPlayer {
             fade_gen: AtomicU64::new(0),
             negotiator: Mutex::new(None),
             quality: Mutex::new(StreamQuality::Original),
+            visual: Arc::new(visual::VisualShared::default()),
         })
+    }
+
+    /// Analyse the audio for a visualiser (docs/plans/wave2-design.md §4.1), or stop. Off
+    /// by default; while off nothing is analysed. Turn it on only while a visualiser is on
+    /// screen.
+    pub fn set_visualiser(&self, on: bool) {
+        self.visual.set_enabled(on);
+    }
+
+    /// The newest visualiser frame since the last call, as [`VISUAL_FRAME_BYTES`] bytes
+    /// (see `visual::pack` for the layout); `None` when there is none, or it is off. Frames
+    /// arrive as their audio is heard, at most 30 a second; poll at the display's pace.
+    pub fn visual_frame(&self) -> Option<Vec<u8>> {
+        self.visual.take()
     }
 
     /// The level for the streams that follow (the next track, or a seek): asked for when
@@ -354,6 +373,7 @@ impl LocalPlayer {
                 hold: std::sync::atomic::AtomicBool::new(*self.hold.lock().unwrap()),
                 route: Mutex::new(self.route.lock().unwrap().clone()),
                 negotiator: Mutex::new(self.negotiator.lock().unwrap().clone()),
+                visual: self.visual.clone(),
             }),
         });
         let pull = Arc::new(Mutex::new(PullSlot::default()));

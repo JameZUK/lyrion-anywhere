@@ -171,6 +171,10 @@ import io.github.jamezuk.lyrionanywhere.ui.player.NowPlayingActions
 import io.github.jamezuk.lyrionanywhere.ui.player.NowPlayingScreen
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnActions
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnList
+import io.github.jamezuk.lyrionanywhere.ui.player.RoomsActions
+import io.github.jamezuk.lyrionanywhere.ui.player.RoomsScreen
+import io.github.jamezuk.lyrionanywhere.ui.player.RoomsViewModel
+import io.github.jamezuk.lyrionanywhere.ui.player.VisualiserSetting
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayerMessage
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayerViewModel
 import io.github.jamezuk.lyrionanywhere.ui.player.SleepFadeSetting
@@ -258,6 +262,9 @@ import kotlinx.serialization.Serializable
 
 @Serializable data object NowPlayingRoute
 
+/** Every room at a glance (Wave 2 §4.3). */
+@Serializable data object RoomsRoute
+
 @Serializable data object SettingsRoute
 
 @Serializable data object LicencesRoute
@@ -330,6 +337,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
             nowPlaying = nowPlayingHub,
             me = container.me,
             clock = clock,
+            library = container.library,
         )
     }
     LifecycleStartEffect(player) {
@@ -1128,6 +1136,8 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             state = playerState,
                             clock = clock,
                             twoPane = LocalWindowLayout.current.nowPlayingTwoPane,
+                            wide = LocalWindowLayout.current.nowPlayingWide,
+                            visual = player,
                             actions = NowPlayingActions(
                                 onTogglePlay = player::togglePlay,
                                 onNext = player::next,
@@ -1157,7 +1167,45 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 onPlayNextInQueue = player::playNextInQueue,
                                 onClearUpcoming = player::clearUpcoming,
                                 onShuffleMode = player::setShuffle,
+                                onLayout = player::setLayout,
+                                onVisualiser = player::setVisualiser,
+                                onVisualStyle = player::setVisualStyle,
+                                onQueuePanel = player::setQueuePanel,
+                                onCredits = player::loadCredits,
+                                onCredit = { c -> c.artistId?.let { id -> nav.navigate(ContributorRoute(id, c.name, c.role.name)) } },
+                                onRooms = { nav.navigate(RoomsRoute) },
                             ),
+                        )
+                    }
+                }
+                composable<RoomsRoute> {
+                    val vm = viewModel { RoomsViewModel(container.players, container.events, container.alarms) }
+                    LifecycleStartEffect(vm) {
+                        vm.start()
+                        onStopOrDispose { vm.stop() }
+                    }
+                    LaunchedEffect(vm) { vm.messages.collect { e -> snackbar.showSnackbar(errorText(res, e)) } }
+                    val rooms by vm.state.collectAsStateWithLifecycle()
+                    Screen(title = stringResource(R.string.rooms_title), onBack = { nav.popBackStack() }) {
+                        RoomsScreen(
+                            rooms,
+                            RoomsActions(
+                                onControl = { id ->
+                                    if (id == playerState.local.playerId) player.backToPhone() else player.select(id)
+                                    if (!nav.popBackStack(NowPlayingRoute, inclusive = false)) nav.navigate(NowPlayingRoute)
+                                },
+                                onTogglePlay = vm::togglePlay,
+                                onVolume = vm::setVolume,
+                                onPower = vm::setPower,
+                                onSync = vm::sync,
+                                onUnsync = vm::unsync,
+                                onRetry = vm::retry,
+                                onTransfer = player::moveTo,
+                                onAlarms = { id, name -> nav.navigate(AlarmsRoute(id, name)) },
+                            ),
+                            selectedId = playerState.selectedId,
+                            transfer = playerState.transfer,
+                            onDismissTransfer = player::dismissTransfer,
                         )
                     }
                 }
@@ -1260,6 +1308,14 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             },
                             sleepFade = { SleepFadeSetting(playerState.sleepFade, player::setSleepFade) },
                             lyrics = { LyricsPeekSetting(playerState.lyricsPeek, player::setLyricsPeek) },
+                            visualiser = {
+                                VisualiserSetting(
+                                    playerState.nowPlaying.visualiser,
+                                    playerState.nowPlaying.visualStyle,
+                                    player::setVisualiser,
+                                    player::setVisualStyle,
+                                )
+                            },
                             ratings = {
                                 RatingsSetting(playerState.ratingStyle, player::setRatingStyle, player::clearRatings)
                             },
@@ -1386,6 +1442,10 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                         onBringToPhone = player::bringToPhone,
                         onSync = player::setSynced,
                         onDismissTransfer = player::dismissTransfer,
+                        onAllRooms = {
+                            outputs = false
+                            nav.navigate(RoomsRoute)
+                        },
                     ),
                 )
             }

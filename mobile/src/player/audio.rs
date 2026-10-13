@@ -32,6 +32,7 @@ use super::protocol;
 use super::ring::{CHANNELS, Producer, Ring};
 use super::signal;
 use super::transitions::{TrackFacts, TrackFactsSource, Transitions};
+use super::visual::{VisualShared, VisualTap};
 use crate::error::ApiError;
 
 /// Audio queued in the ring ahead of the output. Enough to ride out a slow tick, small
@@ -102,6 +103,8 @@ pub(crate) struct OutputShared {
     pub route: Mutex<OutputRoute>,
     /// Bit-perfect output negotiation (the host's `AudioManager`), if any.
     pub negotiator: Mutex<Option<Arc<dyn OutputNegotiator>>>,
+    /// The visualiser: whether the app wants frames, and the newest one due.
+    pub visual: Arc<VisualShared>,
 }
 
 /// The pipeline, ring producer, output and its negotiated route.
@@ -136,6 +139,8 @@ pub(crate) struct AudioPath {
     pub transitions: Transitions,
     /// The ring position last reported as heard (positions only move forward).
     heard_pos: u64,
+    /// The visualiser's analysis (nothing while the app hasn't asked for it).
+    visual: VisualTap,
 }
 
 /// What the transitions ask about tracks, from the engine's lookups and the pipeline.
@@ -189,6 +194,7 @@ impl AudioPath {
             error: None,
             transitions: Transitions::new(transitions),
             heard_pos: 0,
+            visual: VisualTap::default(),
         })
     }
 
@@ -220,7 +226,9 @@ impl AudioPath {
         let dev = self.heard_frame(now_ns);
         let pos = ring.presented_pos(dev).max(self.heard_pos);
         self.heard_pos = pos;
-        self.pipeline.played(pos)
+        let played = self.pipeline.played(pos);
+        self.visual.heard(&self.out.visual, played);
+        played
     }
 
     /// The device frame being heard at `now_ns`.
@@ -276,6 +284,7 @@ impl AudioPath {
         self.producer.discard_all();
         self.pipeline.reset();
         self.transitions.reset();
+        self.visual.flush();
     }
 
     /// Nothing waits between the source and the ring (no pending block, nothing held).
@@ -423,14 +432,19 @@ impl AudioPath {
             };
             let source = src.track_audio(seq).and_then(|t| t.source);
             let tags = source.map(|s| s.replay_gain);
+            let block = &self.block[..frames * CHANNELS];
             self.pipeline.push_counted(
-                &self.block[..frames * CHANNELS],
+                block,
                 seq,
                 tags.as_ref(),
                 analysis(seq),
                 source_bits(source),
                 src_frames,
             );
+            // The visualiser sees the decoded audio (before our DSP), on this thread.
+            let block_rate = self.pipeline.src_rate().unwrap_or(rate);
+            self.visual
+                .pushed(&self.out.visual, block, seq, block_rate, src_frames);
         }
     }
 

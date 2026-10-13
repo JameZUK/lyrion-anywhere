@@ -200,6 +200,8 @@ fun SettingsScreen(
     streaming: (@Composable () -> Unit)? = null,
     /** Ratings: stars or a heart, and clearing them (Wave 2). */
     ratings: (@Composable () -> Unit)? = null,
+    /** The visualiser on Now playing and its style (Wave 2 part 3), when the app has players. */
+    visualiser: (@Composable () -> Unit)? = null,
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var renaming by rememberSaveable { mutableStateOf(false) }
@@ -214,6 +216,10 @@ fun SettingsScreen(
         }
         if (lyrics != null) {
             item { lyrics() }
+            if (streaming == null) item { HorizontalDivider() }
+        }
+        if (visualiser != null) {
+            item { visualiser() }
             if (streaming == null) item { HorizontalDivider() }
         }
         if (streaming != null) {

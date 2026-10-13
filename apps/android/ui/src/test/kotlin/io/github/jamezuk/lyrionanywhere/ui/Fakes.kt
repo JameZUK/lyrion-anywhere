@@ -309,6 +309,22 @@ class FakePlayers : PlayersRepository {
         return statusResult
     }
 
+    /** Rooms (Wave 2 §4.3): each player's own status, if set (else [statusResult]). */
+    val roomStatus = mutableMapOf<String, PlayerStatus>()
+    val statusesCalls = mutableListOf<List<String>>()
+
+    override suspend fun statuses(players: List<String>): ApiResult<List<io.github.jamezuk.lyrionanywhere.core.RoomStatus>> {
+        statusesCalls += players
+        return ApiResult.Ok(
+            players.map { id ->
+                when (val r = roomStatus[id]?.let { ApiResult.Ok(it) } ?: statusResult) {
+                    is ApiResult.Ok -> io.github.jamezuk.lyrionanywhere.core.RoomStatus(id, r.value, null)
+                    is ApiResult.Err -> io.github.jamezuk.lyrionanywhere.core.RoomStatus(id, null, "unreadable")
+                }
+            },
+        )
+    }
+
     /** The queue, read a page at a time as LMS does. */
     var queueTracks: List<Track> = listOf(sampleTrack(1, 0), sampleTrack(2, 1))
     val queueCalls = mutableListOf<Pair<Int, Int>>()
@@ -470,6 +486,9 @@ class FakeSettings(initial: AppSettings = AppSettings()) : SettingsStore {
         state.update { it.copy(recentSearches = io.github.jamezuk.lyrionanywhere.data.RecentSearches.remove(it.recentSearches, term)) }
 
     override suspend fun clearRecentSearches() = state.update { it.copy(recentSearches = emptyList()) }
+
+    override suspend fun setNowPlayingPrefs(prefs: io.github.jamezuk.lyrionanywhere.data.NowPlayingPrefs) =
+        state.update { it.copy(nowPlaying = prefs) }
 }
 
 fun localStatus(id: String, connection: PlayerConnection = PlayerConnection.Connected) = LocalPlayerStatus(
@@ -545,6 +564,16 @@ class FakeLocalPlayer : LocalPlayerRepository {
         sounds += sound
         state.update { it.copy(sound = sound) }
     }
+
+    /** The visualiser switches asked of the engine, in order; and the next frame it hands over. */
+    val visual = mutableListOf<Boolean>()
+    var frame: io.github.jamezuk.lyrionanywhere.data.VisualFrame? = null
+
+    override fun setVisualiser(on: Boolean) {
+        visual += on
+    }
+
+    override fun visualFrame() = frame
 
     /** What the engine says about a profile: anything with "Filter" in it is good. */
     override fun checkEq(text: String): EqCheck =

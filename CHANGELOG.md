@@ -33,6 +33,32 @@ Following `docs/plans/wave2-design.md` §4.
   - component tests for the layouts (keys and swipe alternatives), the visualiser's controls (reduced motion, remote player) and Rooms (labelled controls, sync by menu, keyboard and drag, polling that stops when closed);
   - 44 px target checks for the new controls.
 
+## 2026-10-13: Wave 2 part 3 on Android: Now playing and players
+
+Following `docs/plans/wave2-design.md` §4.
+
+- **Visualiser (D4):** Bars, Scope, Glow (the blurred-art background swells with the bass) and VU (two needle meters, about 300 ms rise and fall, with peak hold).
+  - **Where:** in the art's place on Now playing, only while this phone is the player. A remote player keeps the ambient background.
+  - **Analysis:** the engine taps the decoded audio into the core's analyser only while a visualiser is on screen. Nothing exists while it is off. Frames are released as their audio is heard, through a single latest-frame slot the audio thread never waits on, at most 30 a second.
+  - **Choosing:** off by default. Switch it on with its button on Now playing or in Settings; change the style with its button or a swipe across it. Both are remembered on the device.
+  - **When it stops:** in battery saver and when animations are removed (followed as they change), and whenever Now playing isn't showing.
+  - **Accessibility:** decorative and hidden from TalkBack. Its switch says why it is off.
+- **Now playing layouts (D2):** Art, Lyrics (the synced lyrics large) and Info (quality badge and signal path, credits as links, the rating, an Up next card).
+  - **Choosing:** layout buttons, or a sideways swipe across the art area, which now changes the layout. The track's next and previous stay on the buttons, the mini player's swipes and TalkBack actions. TalkBack also gets the other layouts as actions. The choice is remembered on the device.
+  - **Wide windows (over 840 dp):** the art (or visualiser) and controls on the left, lyrics or info on the right, and the queue as a side panel that can be hidden.
+- **Rooms (U10):** every room at a glance, from the player chip on Now playing ("All rooms") and from "Play on…".
+  - **Each card:** art, title and artist, play/pause, volume, power, sleep remaining and the next alarm.
+  - **Actions:** tap a card to control that room; long-press to move playback there (Transfer). Drag a card by its handle onto another to sync them. "Sync with…" in the card's menu and a TalkBack action per room do the same. Leave the group from the menu.
+  - **Kept fresh:** statuses are read every 5 s (at once when an event arrives) for at most 20 players, only while the screen shows. Alarms are read once, then again when this app changes them.
+  - **Layout:** a list on phones, a grid on wider windows. Each card is one group for TalkBack, its controls named with the room ("Kitchen volume").
+  - **Mobile layer:** `Players::statuses` reads up to 20 statuses together. Every id is checked before anything is sent.
+- **Tests:**
+  - the analysis tap: timing, keeping step with what is heard, flushes, rate and track changes, hostile blocks and its cost; the offline player end to end;
+  - Rooms reads and controls through the real gateway, with refusals;
+  - the frame parser, including random bytes;
+  - VU ballistics, the Rooms view model's polling, sync and alarms;
+  - UI tests for every new control, and the accessibility audit over each new screen and state.
+
 ## 2026-10-13: Library and queue (Wave 2 part 2, web)
 
 - **Credits:** a track's "More…" lists every role LMS reports (album artist, artist, track artist, composer, conductor, band). Each name links to that contributor's albums in that role ("Name · Composer"). Artist pages show "Appears as" chips with album counts.

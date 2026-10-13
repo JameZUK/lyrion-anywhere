@@ -16,7 +16,7 @@ use anywhere_mobile::offline::store::scope_name;
 use anywhere_mobile::{
     DownloadFormat, DownloadOrigin, DspSettings, LocalPlayback, LocalPlayerConfig, LocalRepeat,
     NotBitPerfect, OfflineLibrary, OfflinePlayer, OfflinePlayerObserver, OfflinePlayerStatus,
-    OfflineTrack, OutputKind, SignalPathInfo, SignalVerdict, TransitionMode,
+    OfflineTrack, OutputKind, SignalPathInfo, SignalVerdict, TransitionMode, VISUAL_FRAME_BYTES,
 };
 use common::flac;
 use common::wait_for;
@@ -458,4 +458,61 @@ async fn transitions_keep_an_album_gapless() {
     .await;
     assert!(rig.audio() == want, "bit-exact, gapless within the album");
     wait_for("the plays", || lib.pending_plays() == 2).await;
+}
+
+/// The visualiser (Wave 2 §4.1): off by default, frames only while asked for and while
+/// audio is heard, each of the fixed size, and none once turned off. (The pull output
+/// here takes audio faster than real time, so each phase plays the track through.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_visualiser_gives_frames_only_while_asked_and_as_audio_is_heard() {
+    let (lib, tracks, _) = library(vec![song(4.0, 9)], 4.0);
+    let rig = Rig::start(&lib, DspSettings::default());
+    let keys: Vec<String> = tracks.iter().map(|t| t.key.clone()).collect();
+    let play_through = |collect: bool| {
+        let (rig, keys) = (&rig, keys.clone());
+        async move {
+            rig.clear();
+            rig.player.play_tracks(keys, 0, false, true).unwrap();
+            let mut got = Vec::new();
+            for _ in 0..3000 {
+                if let Some(f) = rig.player.visual_frame() {
+                    got.push(f);
+                }
+                if rig.audio().len() >= 4 * 44_100 * 2
+                    && rig.status().playback == LocalPlayback::Stopped
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(if collect { 1 } else { 5 })).await;
+            }
+            got
+        }
+    };
+    assert!(play_through(false).await.is_empty(), "off by default");
+    rig.player.set_visualiser(true);
+    let got = play_through(true).await;
+    assert!(got.len() >= 3, "only {} frames", got.len());
+    for f in &got {
+        assert_eq!(f.len(), VISUAL_FRAME_BYTES);
+        let v: Vec<f32> = f
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .collect();
+        assert!(v.iter().all(|x| x.is_finite()));
+        // Noise fills the spectrum: some band is well above the floor.
+        assert!(v[..32].iter().any(|b| *b > 0.3), "{:?}", &v[..32]);
+    }
+    // Stopped at the end: nothing more is heard, so no new frames.
+    let _ = rig.player.visual_frame();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        rig.player.visual_frame(),
+        None,
+        "no frames once nothing plays"
+    );
+    // Off again: none, even while playing.
+    rig.player.set_visualiser(false);
+    assert!(play_through(false).await.is_empty(), "off again");
 }
