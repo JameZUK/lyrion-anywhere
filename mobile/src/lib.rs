@@ -71,8 +71,9 @@ pub use events::{EventListener, EventSubscription, Events, EventsState, ServerEv
 pub use library::{FavouriteLibraryItems, MusicLibrary};
 pub use lyrics::{LyricLine, TrackLyrics};
 pub use me::{
-    HistoryEntry, HistoryPage, HomeLayout, HomeShelf, Me, MenuStep, PinnedMenu, RunnerUpdate,
-    ShelfKind, Station, StationBatch, StationRunner, StationSpec,
+    FilterAlbums, FilterRule, HistoryEntry, HistoryPage, HomeLayout, HomeShelf, Me, MenuStep,
+    PinnedMenu, RunnerUpdate, ShelfKind, SmartFilter, Station, StationBatch, StationRunner,
+    StationSpec,
 };
 pub use menus::{
     AppEntry, MenuAction, MenuItem, MenuItemKind, MenuOutcome, MenuPage, MenuParam, Menus,

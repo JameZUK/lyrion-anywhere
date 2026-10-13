@@ -7,6 +7,9 @@
 //! - Home layout editing ([`move_shelf`], [`set_hidden`], [`add_shelf`], [`remove_shelf`],
 //!   [`layout_problem`]): pure, shared with the app's edit mode, checked as the gateway
 //!   checks (`gateway/src/home.rs`).
+//! - Smart filters ([`Me::filters`], [`Me::create_filter`], [`Me::update_filter`],
+//!   [`Me::delete_filter`], [`Me::filter_albums`]; docs/plans/wave2-design.md §5.6): every
+//!   filter is checked here as the gateway checks it ([`filter_problem`]) before it is sent.
 //! - [`StationRunner`]: keeps a station going on a player. It starts the station, and on
 //!   every status update asks for another batch when fewer than [`REFILL_BELOW`] tracks are
 //!   left after the current one ([`refill_due`]), never two at once. The gateway leaves
@@ -17,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
 
-use crate::commands::{self, Command};
+use crate::commands::{self, AlbumSort, ArtistRole, Command};
 use crate::error::ApiError;
 use crate::lyrics::{TrackLyrics, parse_lyrics};
 use crate::menus::{self, MenuAction, MenuPage};
@@ -85,6 +88,8 @@ pub enum ShelfKind {
     Menu,
     /// Albums of one genre (`id`).
     Genre,
+    /// One of the user's smart filters (`id`).
+    Filter,
 }
 
 impl ShelfKind {
@@ -101,6 +106,7 @@ impl ShelfKind {
             ShelfKind::Station => "station",
             ShelfKind::Menu => "menu",
             ShelfKind::Genre => "genre",
+            ShelfKind::Filter => "filter",
         }
     }
 
@@ -117,6 +123,7 @@ impl ShelfKind {
             "station" => ShelfKind::Station,
             "menu" => ShelfKind::Menu,
             "genre" => ShelfKind::Genre,
+            "filter" => ShelfKind::Filter,
             _ => return None,
         })
     }
@@ -125,7 +132,7 @@ impl ShelfKind {
     pub fn takes_id(self) -> bool {
         matches!(
             self,
-            ShelfKind::Station | ShelfKind::Menu | ShelfKind::Genre
+            ShelfKind::Station | ShelfKind::Menu | ShelfKind::Genre | ShelfKind::Filter
         )
     }
 }
@@ -722,6 +729,24 @@ impl Me {
             .await
             .map(|(_, v)| v)
     }
+
+    /// A filter call: the gateway's 409 (too many filters) is a refusal like any other 4xx.
+    async fn filter_call(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Value, ApiError> {
+        match exchange(self.core(), method, path, body).await? {
+            (409, v) => Err(ApiError::invalid(
+                v.get("error")
+                    .and_then(Value::as_str)
+                    .map(|e| clean_text(e).chars().take(200).collect::<String>())
+                    .unwrap_or_else(|| "too many filters".into()),
+            )),
+            (_, v) => Ok(v),
+        }
+    }
 }
 
 fn check_id(id: i64) -> Result<i64, ApiError> {
@@ -901,6 +926,68 @@ impl Me {
             .map(|_| ())
     }
 
+    /// The user's smart filters, oldest first.
+    pub async fn filters(&self) -> Result<Vec<SmartFilter>, ApiError> {
+        Ok(parse_filters(
+            &self.call("GET", "v1/me/filters", None).await?,
+        ))
+    }
+
+    /// Save a new smart filter (checked here first, see [`filter_problem`]). Returns it as
+    /// saved, with its id.
+    pub async fn create_filter(
+        &self,
+        name: String,
+        rules: Vec<FilterRule>,
+        sort: AlbumSort,
+        limit: u32,
+    ) -> Result<SmartFilter, ApiError> {
+        let body = filter_json(&name, &rules, sort, limit)?;
+        let v = self
+            .filter_call("POST", "v1/me/filters", Some(&body))
+            .await?;
+        filter_from(&v).ok_or_else(|| ApiError::bad_response("unexpected filter answer"))
+    }
+
+    /// Replace one of the user's smart filters (checked here first).
+    pub async fn update_filter(
+        &self,
+        id: i64,
+        name: String,
+        rules: Vec<FilterRule>,
+        sort: AlbumSort,
+        limit: u32,
+    ) -> Result<SmartFilter, ApiError> {
+        let path = format!("v1/me/filters/{}", check_id(id)?);
+        let body = filter_json(&name, &rules, sort, limit)?;
+        let v = self.filter_call("PUT", &path, Some(&body)).await?;
+        filter_from(&v).ok_or_else(|| ApiError::bad_response("unexpected filter answer"))
+    }
+
+    pub async fn delete_filter(&self, id: i64) -> Result<(), ApiError> {
+        self.call("DELETE", &format!("v1/me/filters/{}", check_id(id)?), None)
+            .await
+            .map(|_| ())
+    }
+
+    /// A page of a filter's albums: `count` (1–100) from `from` (0–500). The first page
+    /// runs the filter afresh (a new order for a random one); later pages continue it.
+    pub async fn filter_albums(
+        &self,
+        id: i64,
+        from: u32,
+        count: u32,
+    ) -> Result<FilterAlbums, ApiError> {
+        if from > MAX_FILTER_LIMIT || !(1..=MAX_FILTER_PAGE).contains(&count) {
+            return Err(ApiError::invalid("bad page"));
+        }
+        let path = format!(
+            "v1/me/filters/{}/albums?from={from}&n={count}",
+            check_id(id)?
+        );
+        parse_filter_albums(&self.call("GET", &path, None).await?)
+    }
+
     /// Open a pinned menu on `player`: the menu as LMS offers it now.
     /// A library track's lyrics (from its tags, or the Music & Artist Information plugin on
     /// the server), or `None` when it has none.
@@ -943,6 +1030,283 @@ impl Me {
         }
         Ok(menus::page_from(v.get("result").unwrap_or(&Value::Null)))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Smart filters (pure)
+// ---------------------------------------------------------------------------
+
+/// Filters one user may keep (as the gateway).
+pub const MAX_FILTERS: usize = 50;
+/// Rules in one filter, at most (as the gateway).
+pub const MAX_FILTER_RULES: usize = 8;
+/// Genres in one genre rule, at most (as the gateway).
+pub const MAX_FILTER_GENRES: usize = 20;
+/// Albums one filter produces, at most (as the gateway).
+pub const MAX_FILTER_LIMIT: u32 = 500;
+/// Albums in one page of a filter's results, at most (as the gateway).
+pub const MAX_FILTER_PAGE: u32 = 100;
+/// Largest genre or artist id a rule may name (as the gateway).
+pub const MAX_RULE_ID: i64 = 999_999_999;
+
+/// One rule of a smart filter. Every rule must match.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum FilterRule {
+    /// The album has any of these genres (1–20 LMS genre ids).
+    Genre { genres: Vec<i64> },
+    /// The album's year is in this decade (1900, 1910, … 2090).
+    Decade { decade: u32 },
+    /// By this artist (an LMS contributor id), in a role if given.
+    Artist {
+        artist: i64,
+        role: Option<ArtistRole>,
+    },
+    /// It is (or isn't) a compilation.
+    Compilation { compilation: bool },
+}
+
+impl FilterRule {
+    fn field(&self) -> &'static str {
+        match self {
+            FilterRule::Genre { .. } => "genre",
+            FilterRule::Decade { .. } => "decade",
+            FilterRule::Artist { .. } => "artist",
+            FilterRule::Compilation { .. } => "compilation",
+        }
+    }
+}
+
+/// A saved smart filter.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SmartFilter {
+    pub id: i64,
+    pub name: String,
+    pub rules: Vec<FilterRule>,
+    pub sort: AlbumSort,
+    /// Albums it produces, at most (1–500).
+    pub limit: u32,
+}
+
+/// A page of a filter's albums.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FilterAlbums {
+    /// Album ids, in the filter's order; load details by id, as for shelves.
+    pub albums: Vec<i64>,
+    /// How many albums the filter produces in all (at most its limit).
+    pub count: u32,
+}
+
+fn sort_word(s: AlbumSort) -> &'static str {
+    match s {
+        AlbumSort::Title => "album",
+        AlbumSort::Artist => "artistalbum",
+        AlbumSort::Year => "yearalbum",
+        AlbumSort::Newest => "new",
+        AlbumSort::Random => "random",
+    }
+}
+
+fn sort_of(s: &str) -> Option<AlbumSort> {
+    Some(match s {
+        "album" => AlbumSort::Title,
+        "artistalbum" => AlbumSort::Artist,
+        "yearalbum" => AlbumSort::Year,
+        "new" => AlbumSort::Newest,
+        "random" => AlbumSort::Random,
+        _ => return None,
+    })
+}
+
+const ROLES: [ArtistRole; 6] = [
+    ArtistRole::AlbumArtist,
+    ArtistRole::Artist,
+    ArtistRole::Composer,
+    ArtistRole::Conductor,
+    ArtistRole::Band,
+    ArtistRole::TrackArtist,
+];
+
+fn role_of(s: &str) -> Option<ArtistRole> {
+    ROLES.into_iter().find(|r| r.lms() == s)
+}
+
+fn rule_id_ok(id: i64) -> bool {
+    (1..=MAX_RULE_ID).contains(&id)
+}
+
+/// A filter name as it will be sent: control and invisible formatting characters removed
+/// and trimmed. `None` if nothing is left or it is over 64 characters.
+fn filter_name(name: &str) -> Option<String> {
+    let n: String = clean_text(name)
+        .chars()
+        .filter(|c| !is_format(*c))
+        .collect();
+    let n = n.trim();
+    (!n.is_empty() && n.chars().count() <= 64).then(|| n.to_string())
+}
+
+/// What the gateway would refuse in this filter (`None`: nothing), checked before it is
+/// sent. Every sort is allowed.
+#[uniffi::export]
+pub fn filter_problem(name: String, rules: Vec<FilterRule>, limit: u32) -> Option<String> {
+    if filter_name(&name).is_none() {
+        return Some("a filter needs a name of 1 to 64 characters".into());
+    }
+    if rules.is_empty() || rules.len() > MAX_FILTER_RULES {
+        return Some("a filter has 1 to 8 rules".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for r in &rules {
+        if !seen.insert(r.field()) {
+            return Some("each kind of rule can be used once".into());
+        }
+        match r {
+            FilterRule::Genre { genres } => {
+                if genres.is_empty() || genres.len() > MAX_FILTER_GENRES {
+                    return Some("choose 1 to 20 genres".into());
+                }
+                if !genres.iter().all(|g| rule_id_ok(*g)) {
+                    return Some("bad genre".into());
+                }
+                let distinct: std::collections::HashSet<_> = genres.iter().collect();
+                if distinct.len() != genres.len() {
+                    return Some("a genre is chosen twice".into());
+                }
+            }
+            FilterRule::Decade { decade } => {
+                if !(1900..=2090).contains(decade) || decade % 10 != 0 {
+                    return Some("choose a decade".into());
+                }
+            }
+            FilterRule::Artist { artist, .. } => {
+                if !rule_id_ok(*artist) {
+                    return Some("bad artist".into());
+                }
+            }
+            FilterRule::Compilation { .. } => {}
+        }
+    }
+    if !(1..=MAX_FILTER_LIMIT).contains(&limit) {
+        return Some("a filter shows 1 to 500 albums".into());
+    }
+    None
+}
+
+/// A filter as the gateway takes it; refused here first if [`filter_problem`] finds one.
+pub fn filter_json(
+    name: &str,
+    rules: &[FilterRule],
+    sort: AlbumSort,
+    limit: u32,
+) -> Result<Value, ApiError> {
+    if let Some(p) = filter_problem(name.to_string(), rules.to_vec(), limit) {
+        return Err(ApiError::invalid(p));
+    }
+    let rules: Vec<Value> = rules
+        .iter()
+        .map(|r| match r {
+            FilterRule::Genre { genres } => json!({"field": "genre", "in": genres}),
+            FilterRule::Decade { decade } => json!({"field": "decade", "is": decade}),
+            FilterRule::Artist { artist, role: None } => json!({"field": "artist", "is": artist}),
+            FilterRule::Artist {
+                artist,
+                role: Some(role),
+            } => json!({"field": "artist", "is": artist, "role": role.lms()}),
+            FilterRule::Compilation { compilation } => {
+                json!({"field": "compilation", "is": compilation})
+            }
+        })
+        .collect();
+    Ok(json!({
+        "name": filter_name(name).unwrap_or_default(),
+        "rules": rules,
+        "sort": sort_word(sort),
+        "limit": limit,
+    }))
+}
+
+fn rule_from(v: &Value) -> Option<FilterRule> {
+    let o = v.as_object()?;
+    let id = |x: &Value| x.as_i64().filter(|n| rule_id_ok(*n));
+    Some(match o.get("field")?.as_str()? {
+        "genre" => FilterRule::Genre {
+            genres: o
+                .get("in")?
+                .as_array()?
+                .iter()
+                .map(id)
+                .collect::<Option<Vec<_>>>()
+                .filter(|g| (1..=MAX_FILTER_GENRES).contains(&g.len()))?,
+        },
+        "decade" => FilterRule::Decade {
+            decade: o
+                .get("is")?
+                .as_u64()
+                .filter(|d| (1900..=2090).contains(d) && d % 10 == 0)? as u32,
+        },
+        "artist" => FilterRule::Artist {
+            artist: id(o.get("is")?)?,
+            role: match o.get("role") {
+                None | Some(Value::Null) => None,
+                Some(r) => Some(role_of(r.as_str()?)?),
+            },
+        },
+        "compilation" => FilterRule::Compilation {
+            compilation: o.get("is")?.as_bool()?,
+        },
+        _ => return None,
+    })
+}
+
+/// One filter as the gateway answers it. A filter with a rule this app doesn't know (a
+/// newer gateway's) is left out rather than shown in part.
+pub fn filter_from(v: &Value) -> Option<SmartFilter> {
+    let rules: Vec<FilterRule> = v
+        .get("rules")?
+        .as_array()?
+        .iter()
+        .map(rule_from)
+        .collect::<Option<_>>()?;
+    if rules.is_empty() || rules.len() > MAX_FILTER_RULES {
+        return None;
+    }
+    Some(SmartFilter {
+        id: pos_id(v.get("id")?)?,
+        name: name_of(v)?,
+        rules,
+        sort: sort_of(v.get("sort")?.as_str()?)?,
+        limit: v
+            .get("limit")?
+            .as_u64()
+            .filter(|l| (1..=MAX_FILTER_LIMIT as u64).contains(l))? as u32,
+    })
+}
+
+/// The gateway's filter list, read strictly.
+pub fn parse_filters(v: &Value) -> Vec<SmartFilter> {
+    v.get("filters")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(filter_from).take(MAX_FILTERS).collect())
+        .unwrap_or_default()
+}
+
+/// A page of a filter's albums, read strictly.
+pub fn parse_filter_albums(v: &Value) -> Result<FilterAlbums, ApiError> {
+    let bad = || ApiError::bad_response("unexpected filter answer");
+    let albums: Vec<i64> = v
+        .get("albums")
+        .and_then(Value::as_array)
+        .ok_or_else(bad)?
+        .iter()
+        .filter_map(pos_id)
+        .take(MAX_FILTER_PAGE as usize)
+        .collect();
+    let count = v
+        .get("count")
+        .and_then(Value::as_u64)
+        .filter(|c| *c <= MAX_FILTER_LIMIT as u64)
+        .ok_or_else(bad)? as u32;
+    Ok(FilterAlbums { albums, count })
 }
 
 // ---------------------------------------------------------------------------
@@ -1502,6 +1866,257 @@ mod tests {
             let _ = parse_menus(&v);
             let _ = parse_batch(&v);
             let _ = parse_albums(&v);
+        }
+    }
+
+    fn rules() -> Vec<FilterRule> {
+        vec![
+            FilterRule::Genre { genres: vec![4, 9] },
+            FilterRule::Decade { decade: 1990 },
+            FilterRule::Artist {
+                artist: 12,
+                role: Some(ArtistRole::Composer),
+            },
+            FilterRule::Compilation { compilation: false },
+        ]
+    }
+
+    #[test]
+    fn filters_are_sent_in_the_gateways_shape() {
+        let v = filter_json(" Late\u{200b} jazz ", &rules(), AlbumSort::Year, 200).unwrap();
+        assert_eq!(
+            v,
+            json!({"name": "Late jazz", "rules": [
+                {"field": "genre", "in": [4, 9]}, {"field": "decade", "is": 1990},
+                {"field": "artist", "is": 12, "role": "COMPOSER"},
+                {"field": "compilation", "is": false}
+            ], "sort": "yearalbum", "limit": 200})
+        );
+        let plain = filter_json(
+            "A",
+            &[FilterRule::Artist {
+                artist: 3,
+                role: None,
+            }],
+            AlbumSort::Random,
+            1,
+        )
+        .unwrap();
+        assert_eq!(plain["rules"], json!([{"field": "artist", "is": 3}]));
+        // What is sent reads back the same.
+        let mut back = v.clone();
+        back["id"] = json!(7);
+        let f = filter_from(&back).unwrap();
+        assert_eq!(f.rules, rules());
+        assert_eq!((f.id, f.sort, f.limit), (7, AlbumSort::Year, 200));
+        for (sort, word) in [
+            (AlbumSort::Title, "album"),
+            (AlbumSort::Artist, "artistalbum"),
+            (AlbumSort::Year, "yearalbum"),
+            (AlbumSort::Newest, "new"),
+            (AlbumSort::Random, "random"),
+        ] {
+            assert_eq!(sort_word(sort), word);
+            assert_eq!(sort_of(word), Some(sort));
+        }
+        for role in ROLES {
+            assert_eq!(role_of(role.lms()), Some(role));
+        }
+    }
+
+    #[test]
+    fn bad_filters_are_refused_before_sending() {
+        let ok = |name: &str, r: Vec<FilterRule>, limit| filter_problem(name.into(), r, limit);
+        assert_eq!(ok("Mine", rules(), 500), None);
+        let g = |genres: Vec<i64>| vec![FilterRule::Genre { genres }];
+        let long = "x".repeat(65);
+        let cases: Vec<(&str, Vec<FilterRule>, u32)> = vec![
+            ("", rules(), 10),
+            ("   ", rules(), 10),
+            ("\u{202e}\u{200b}", rules(), 10),
+            (&long, rules(), 10),
+            ("F", vec![], 10),
+            ("F", rules(), 0),
+            ("F", rules(), 501),
+            ("F", g(vec![]), 10),
+            ("F", g((1..=21).collect()), 10),
+            ("F", g(vec![0]), 10),
+            ("F", g(vec![-4]), 10),
+            ("F", g(vec![1_000_000_000]), 10),
+            ("F", g(vec![3, 3]), 10),
+            ("F", vec![FilterRule::Decade { decade: 1985 }], 10),
+            ("F", vec![FilterRule::Decade { decade: 1890 }], 10),
+            ("F", vec![FilterRule::Decade { decade: 2100 }], 10),
+            (
+                "F",
+                vec![FilterRule::Artist {
+                    artist: 0,
+                    role: None,
+                }],
+                10,
+            ),
+            (
+                "F",
+                vec![
+                    FilterRule::Compilation { compilation: true },
+                    FilterRule::Compilation { compilation: false },
+                ],
+                10,
+            ),
+            (
+                "F",
+                (0..9)
+                    .map(|i| FilterRule::Decade {
+                        decade: 1900 + i * 10,
+                    })
+                    .collect(),
+                10,
+            ),
+        ];
+        for (name, r, limit) in cases {
+            assert!(
+                ok(name, r.clone(), limit).is_some(),
+                "{name:?} {r:?} {limit}"
+            );
+            assert!(matches!(
+                filter_json(name, &r, AlbumSort::Title, limit),
+                Err(ApiError::InvalidInput { .. })
+            ));
+        }
+        assert_eq!(ok("F", g((1..=20).collect()), 1), None);
+        assert_eq!(ok(&"x".repeat(64), rules(), 1), None);
+    }
+
+    #[test]
+    fn filter_answers_are_read_strictly() {
+        let good = json!({"id": 3, "name": "F", "rules": [{"field": "decade", "is": 1970}],
+            "sort": "new", "limit": 20});
+        assert!(filter_from(&good).is_some());
+        let with = |k: &str, v: Value| {
+            let mut g = good.clone();
+            g[k] = v;
+            g
+        };
+        for bad in [
+            with("id", json!(0)),
+            with("id", json!("3")),
+            with("name", json!("")),
+            with("sort", json!("title")),
+            with("limit", json!(0)),
+            with("limit", json!(501)),
+            with("rules", json!([])),
+            with("rules", json!([{"field": "rating", "is": 5}])),
+            with("rules", json!([{"field": "decade", "is": 1975}])),
+            with("rules", json!([{"field": "genre", "in": []}])),
+            with("rules", json!([{"field": "genre", "in": ["4"]}])),
+            with(
+                "rules",
+                json!([{"field": "artist", "is": 4, "role": "PRODUCER"}]),
+            ),
+            with("rules", json!([{"field": "compilation", "is": 1}])),
+            json!(null),
+        ] {
+            assert_eq!(filter_from(&bad), None, "{bad}");
+        }
+        // A list leaves out what it can't read.
+        let list = json!({"filters": [good.clone(), with("sort", json!("x")), good]});
+        assert_eq!(parse_filters(&list).len(), 2);
+        assert!(parse_filters(&json!({"filters": 5})).is_empty());
+        assert_eq!(
+            parse_filter_albums(&json!({"albums": [5, -1, "x", 7], "count": 9})).unwrap(),
+            FilterAlbums {
+                albums: vec![5, 7],
+                count: 9
+            }
+        );
+        assert!(parse_filter_albums(&json!({"albums": [1]})).is_err());
+        assert!(parse_filter_albums(&json!({"albums": [1], "count": 501})).is_err());
+        assert!(parse_filter_albums(&json!({"count": 1})).is_err());
+        let many: Vec<i64> = (1..=150).collect();
+        assert_eq!(
+            parse_filter_albums(&json!({"albums": many, "count": 150}))
+                .unwrap()
+                .albums
+                .len(),
+            100
+        );
+    }
+
+    #[test]
+    fn filter_shelves_name_a_filter() {
+        assert!(ShelfKind::Filter.takes_id());
+        assert_eq!(ShelfKind::parse("filter"), Some(ShelfKind::Filter));
+        let l = parse_layout(
+            &json!({"version": 1, "shelves": [{"type": "filter", "id": 4}, {"type": "filter"}]}),
+        )
+        .unwrap();
+        assert_eq!(l.shelves, vec![s(ShelfKind::Filter, Some(4))]);
+        assert_eq!(
+            layout_json(&l)["shelves"],
+            json!([{"type": "filter", "id": 4}])
+        );
+        assert!(
+            layout_problem(HomeLayout {
+                shelves: vec![s(ShelfKind::Filter, None)],
+                is_default: false
+            })
+            .is_some()
+        );
+    }
+
+    /// Robustness: hostile filter answers never panic the readers.
+    #[test]
+    fn hostile_filter_answers_never_panic() {
+        let mut x: u64 = 0xfeed_f00d_1234_5678;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let atoms = [
+            json!(null),
+            json!(1),
+            json!(-1),
+            json!(1970),
+            json!(500),
+            json!(1e300),
+            json!("genre"),
+            json!("decade"),
+            json!("artist"),
+            json!("compilation"),
+            json!("COMPOSER"),
+            json!("album"),
+            json!(true),
+            json!([]),
+            json!([1, 2]),
+            json!({}),
+        ];
+        let keys = [
+            "filters", "id", "name", "rules", "sort", "limit", "field", "in", "is", "role",
+            "albums", "count",
+        ];
+        for _ in 0..20_000 {
+            let mut obj = |n: u64| -> Value {
+                let mut o = Map::new();
+                for _ in 0..(rnd() % (n + 1)) {
+                    let k = keys[(rnd() % keys.len() as u64) as usize];
+                    o.insert(
+                        k.into(),
+                        atoms[(rnd() % atoms.len() as u64) as usize].clone(),
+                    );
+                }
+                Value::Object(o)
+            };
+            let rule = obj(3);
+            let mut f = obj(5);
+            f["rules"] = json!([rule]);
+            let other = obj(4);
+            let v = json!({"filters": [f.clone(), other], "albums": [1, "2"], "count": 3});
+            let _ = parse_filters(&v);
+            let _ = filter_from(&f);
+            let _ = parse_filter_albums(&f);
+            let _ = parse_filter_albums(&v);
         }
     }
 }
