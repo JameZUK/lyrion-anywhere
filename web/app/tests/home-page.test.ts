@@ -23,6 +23,13 @@ const fakeMe = {
 	deleteStation: vi.fn(),
 	next: vi.fn(),
 	openMenu: vi.fn(),
+	statsOn: false,
+	stats: vi.fn(async () => {
+		const { emptyStats } = await import('$lib/api/me');
+		const s = emptyStats(fakeMe.statsOn, 396);
+		if (fakeMe.statsOn) s.totals = { plays: 412, seconds: 82800, tracks: 301, albums: 64, artists: 41, days: 27 };
+		return s;
+	}),
 };
 vi.mock('$lib/state/me', () => ({ me: { ...fakeMe, stations: async () => fakeMe.stations } }));
 const fake = await import('./helpers/fake-app.svelte');
@@ -45,6 +52,7 @@ beforeAll(() => {
 beforeEach(() => {
 	saves.length = 0;
 	fakeMe.failSave = false;
+	fakeMe.statsOn = false;
 	fake.calls.length = 0;
 	fake.app.playerId = '02:00:00:00:00:01';
 	fake.handler.rpc = async (_p, cmd) => {
@@ -149,4 +157,23 @@ test('Settings opens from the gear at the top of Home (it has no tab of its own)
 	expect(gear.closest('header')?.querySelector('h1')?.textContent).toBe('Home');
 	await fireEvent.click(await screen.findByRole('button', { name: 'Edit Home' }));
 	expect(screen.getByRole('link', { name: 'Settings' })).toBeTruthy();
+});
+
+test('this month’s listening is the last thing on Home, and only when there is some', async () => {
+	render(Home);
+	await waitFor(() => expect(headings()).toEqual(['Recently played', 'Stations', 'New music']));
+	await waitFor(() => expect(fakeMe.stats).toHaveBeenCalled());
+	expect(document.querySelector('[data-stats-card]')).toBeNull();
+});
+
+test('the listening card links to Your listening, after everything else on Home', async () => {
+	fakeMe.statsOn = true;
+	const r = render(Home);
+	const link = await screen.findByRole('link', { name: 'This month: 23 h · 412 plays' });
+	expect(link.getAttribute('href')).toBe('#/stats');
+	const page = r.container.querySelector('section.home')!;
+	expect(page.lastElementChild).toBe(document.querySelector('[data-stats-card]'));
+	// Out of the way while editing Home.
+	await fireEvent.click(screen.getByRole('button', { name: 'Edit Home' }));
+	expect(document.querySelector('[data-stats-card]')).toBeNull();
 });

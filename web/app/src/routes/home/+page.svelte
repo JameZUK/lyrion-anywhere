@@ -10,6 +10,7 @@
 	import HomeShelf from '$lib/components/HomeShelf.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import StatsCard from '$lib/components/StatsCard.svelte';
 	import { haptics } from '$lib/haptics/haptics.svelte';
 
 	let layout = $state<HomeLayout | null>(null);
@@ -237,6 +238,7 @@
 		{/each}
 	{/if}
 	<a class="browse" href="#/library"><Icon name="library" size={20} />Browse the library<span class="chev" aria-hidden="true">›</span></a>
+	{#if !editing}<StatsCard />{/if}
 </section>
 
 <style>

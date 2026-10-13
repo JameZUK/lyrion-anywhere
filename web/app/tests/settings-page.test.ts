@@ -25,3 +25,13 @@ test('user settings first; diagnostics last and collapsed', async () => {
 	for (const card of r.container.querySelectorAll('.card:not(.developer)')) expect(card.textContent).not.toContain('Playback capabilities');
 	r.unmount();
 });
+
+test('Settings › Listening history links to Your listening', async () => {
+	const { default: Settings } = await import('../src/routes/settings/+page.svelte');
+	const r = render(Settings);
+	const card = [...r.container.querySelectorAll('.card')].find((c) => c.querySelector('h2')?.textContent === 'Listening history')!;
+	const a = card.querySelector<HTMLAnchorElement>('a[data-stats-link]')!;
+	expect(a.textContent).toBe('Your listening');
+	expect(a.getAttribute('href')).toBe('#/stats');
+	r.unmount();
+});

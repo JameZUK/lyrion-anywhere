@@ -271,6 +271,18 @@ export class MeApi {
 		const count = typeof r.count === 'number' && Number.isSafeInteger(r.count) && r.count >= 0 ? r.count : albums.length;
 		return { albums, count };
 	}
+
+	// --- listening stats (wave3-design.md §1) ------------------------------------------
+
+	/**
+	 * Listening stats for a period (`days-N`, `month-YYYY-MM`, `year-YYYY` or `all`) and the
+	 * device's offset in minutes east of UTC. The answer is checked field by field: anything
+	 * malformed is clamped or left out, ids come only from the server and names stay text.
+	 */
+	async stats(period: string, tz = 0): Promise<ListeningStats> {
+		const q = new URLSearchParams({ period: statsPeriod(period), tz: String(statsTz(tz)) });
+		return parseStats(await this.#call<unknown>(`/v1/me/stats?${q}`));
+	}
 }
 
 /** The body to send for a filter: cleaned, then checked against the contract. */
@@ -284,4 +296,197 @@ function checked(spec: FilterSpec): FilterSpec {
 	const p = filterProblem(body);
 	if (p) throw new RangeError(p);
 	return body;
+}
+
+// --- listening stats -------------------------------------------------------------------
+
+export interface StatsTotals {
+	plays: number;
+	seconds: number;
+	tracks: number;
+	albums: number;
+	artists: number;
+	days: number;
+}
+export interface StatsArtist {
+	id: number;
+	/** Plain text, as the gateway cleaned it ('' when it had none). */
+	name: string;
+	plays: number;
+	seconds: number;
+}
+export interface StatsItem {
+	id: number;
+	plays: number;
+	seconds: number;
+}
+export interface StatsNewArtist {
+	id: number;
+	name: string;
+	/** Unix seconds, or null when the answer had none. */
+	first_played: number | null;
+}
+export interface StatsMonth {
+	/** "YYYY-MM". */
+	month: string;
+	plays: number;
+	seconds: number;
+}
+export interface ListeningStats {
+	enabled: boolean;
+	retention_days: number;
+	period: { from: number; to: number } | null;
+	totals: StatsTotals;
+	top_artists: StatsArtist[];
+	top_albums: StatsItem[];
+	top_tracks: StatsItem[];
+	new_artists: StatsNewArtist[];
+	/** 24 entries, midnight first, in the device's time. */
+	by_hour: number[];
+	/** 7 entries, Monday first. */
+	by_weekday: number[];
+	by_month: StatsMonth[];
+	longest_streak: { days: number; from: string; to: string } | null;
+	busiest_day: { date: string; seconds: number } | null;
+}
+
+/** The contract's limits on the answer and the request. */
+export const STATS_LIMITS = { list: 20, months: 600, nameMax: 200, daysMin: 7, daysMax: 400, tzMax: 840 } as const;
+
+const PERIOD = /^(?:days-([1-9]\d{0,2})|month-(\d{4})-(?:0[1-9]|1[0-2])|year-(\d{4})|all)$/;
+const MONTH = /^\d{4}-(?:0[1-9]|1[0-2])$/;
+const DATE = /^(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+/** Control characters and bidi overrides: never shown as part of a name. */
+// eslint-disable-next-line no-control-regex
+const UNSHOWN = /[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/g;
+
+/** A period the gateway accepts, or a RangeError (nothing else is ever sent). */
+export function statsPeriod(v: unknown): string {
+	if (typeof v !== 'string') throw new RangeError('bad period');
+	const m = v.match(PERIOD);
+	if (!m) throw new RangeError('bad period');
+	if (m[1] !== undefined) {
+		const n = Number(m[1]);
+		if (n < STATS_LIMITS.daysMin || n > STATS_LIMITS.daysMax) throw new RangeError('bad period');
+	}
+	const y = m[2] ?? m[3];
+	if (y !== undefined && Number(y) < 1970) throw new RangeError('bad period');
+	return v;
+}
+
+/** A tz offset the gateway accepts: whole minutes east of UTC, −840 to 840. */
+export function statsTz(v: unknown): number {
+	if (typeof v !== 'number' || !Number.isInteger(v) || Math.abs(v) > STATS_LIMITS.tzMax) throw new RangeError('bad tz');
+	return v === 0 ? 0 : v;
+}
+
+const count = (v: unknown, max = 1e12): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.min(Math.floor(v), max) : 0);
+const goodId = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
+const obj = (v: unknown): Record<string, unknown> | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
+const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+
+/** A name from the server as plain text: no control characters, bounded length. */
+export function statsName(v: unknown): string {
+	if (typeof v !== 'string') return '';
+	const t = v.replace(UNSHOWN, '').trim();
+	return t.length > STATS_LIMITS.nameMax ? `${t.slice(0, STATS_LIMITS.nameMax - 1)}…` : t;
+}
+
+/** A real calendar date "YYYY-MM-DD", or null. */
+export function statsDate(v: unknown): string | null {
+	if (typeof v !== 'string') return null;
+	const m = v.match(DATE);
+	if (!m) return null;
+	const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+	return d.getUTCDate() === Number(m[3]) ? v : null;
+}
+
+/** Entries with a good id, each id once, at most the contract's 20. */
+function byId<T extends { id: number }>(v: unknown, make: (o: Record<string, unknown>, id: number) => T): T[] {
+	const out: T[] = [];
+	const seen = new Set<number>();
+	for (const x of list(v)) {
+		const o = obj(x);
+		if (!o || !goodId(o.id) || seen.has(o.id)) continue;
+		seen.add(o.id);
+		out.push(make(o, o.id));
+		if (out.length >= STATS_LIMITS.list) break;
+	}
+	return out;
+}
+
+function buckets(v: unknown, n: number): number[] {
+	const a = list(v);
+	return Array.from({ length: n }, (_, i) => count(a[i]));
+}
+
+/** The empty answer (history off, or nothing kept). */
+export function emptyStats(enabled = false, retention = 0): ListeningStats {
+	return {
+		enabled,
+		retention_days: retention,
+		period: null,
+		totals: { plays: 0, seconds: 0, tracks: 0, albums: 0, artists: 0, days: 0 },
+		top_artists: [],
+		top_albums: [],
+		top_tracks: [],
+		new_artists: [],
+		by_hour: Array(24).fill(0),
+		by_weekday: Array(7).fill(0),
+		by_month: [],
+		longest_streak: null,
+		busiest_day: null,
+	};
+}
+
+/** The gateway's answer, checked (see `MeApi.stats`). Throws only when it isn't an object. */
+export function parseStats(raw: unknown): ListeningStats {
+	const r = obj(raw);
+	if (!r) throw new Error('The server sent listening stats this app can’t read.');
+	const retention = count(r.retention_days, 36500);
+	// Switched off: nothing else in the answer is shown, whatever it says.
+	if (r.enabled !== true) return emptyStats(false, retention);
+	const out = emptyStats(true, retention);
+	const p = obj(r.period);
+	if (p && Number.isSafeInteger(p.from) && Number.isSafeInteger(p.to) && (p.from as number) >= 0 && (p.to as number) >= (p.from as number)) {
+		out.period = { from: p.from as number, to: p.to as number };
+	}
+	const t = obj(r.totals) ?? {};
+	out.totals = {
+		plays: count(t.plays),
+		seconds: count(t.seconds),
+		tracks: count(t.tracks),
+		albums: count(t.albums),
+		artists: count(t.artists),
+		days: count(t.days, 100000),
+	};
+	out.top_artists = byId(r.top_artists, (o, id) => ({ id, name: statsName(o.name), plays: count(o.plays), seconds: count(o.seconds) }));
+	const item = (o: Record<string, unknown>, id: number): StatsItem => ({ id, plays: count(o.plays), seconds: count(o.seconds) });
+	out.top_albums = byId(r.top_albums, item);
+	out.top_tracks = byId(r.top_tracks, item);
+	out.new_artists = byId(r.new_artists, (o, id) => ({
+		id,
+		name: statsName(o.name),
+		first_played: typeof o.first_played === 'number' && Number.isSafeInteger(o.first_played) && o.first_played >= 0 ? o.first_played : null,
+	}));
+	out.by_hour = buckets(r.by_hour, 24);
+	out.by_weekday = buckets(r.by_weekday, 7);
+	const months = new Set<string>();
+	for (const x of list(r.by_month)) {
+		const o = obj(x);
+		if (!o || typeof o.month !== 'string' || !MONTH.test(o.month) || months.has(o.month)) continue;
+		months.add(o.month);
+		out.by_month.push({ month: o.month, plays: count(o.plays), seconds: count(o.seconds) });
+		if (out.by_month.length >= STATS_LIMITS.months) break;
+	}
+	out.by_month.sort((a, b) => (a.month < b.month ? -1 : 1));
+	const s = obj(r.longest_streak);
+	const from = statsDate(s?.from);
+	const to = statsDate(s?.to);
+	const days = count(s?.days, 100000);
+	if (from && to && from <= to && days >= 1) out.longest_streak = { days, from, to };
+	const b = obj(r.busiest_day);
+	const date = statsDate(b?.date);
+	if (b && date) out.busiest_day = { date, seconds: count(b.seconds, 2 * 86400) };
+	return out;
 }

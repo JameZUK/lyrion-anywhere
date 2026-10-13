@@ -389,6 +389,7 @@
 	<div class="card">
 		<h2>Listening history</h2>
 		<HistorySettings />
+		<a class="btn stats-link" href="#/stats" data-stats-link>Your listening</a>
 	</div>
 
 	<div class="card">
@@ -483,6 +484,10 @@
 </section>
 
 <style>
+	.stats-link {
+		margin-top: 0.75rem;
+		min-height: 44px;
+	}
 	.check {
 		display: flex;
 		align-items: center;

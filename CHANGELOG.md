@@ -2,6 +2,43 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Your listening and Your year in sound (web)
+
+The web app's side of `docs/plans/wave3-design.md` §1, built to the `GET /v1/me/stats` contract.
+
+- **Your listening** (`#/stats`), opened from a card at the end of Home and from Settings › Listening history:
+  - **Period picker:** this month, the last 30 days, this year, each past year the history reaches, and everything kept.
+  - **Totals:** hours, plays, and different tracks, albums and artists.
+  - **Most played:** artists, albums and tracks (top 10, "Show 20"), each linked to its page, with plays and hours. Albums and tracks are named by id from LMS, as for shelves. A track LMS no longer knows is still listed.
+  - **New artists:** says "first played since your history began" for years and long periods.
+  - **When you listen:** charts by hour, by weekday and (for a year or a long period) by month. Each chart has a summary sentence and a visually hidden table of every value.
+  - **Streaks:** the longest run of days with music, and the busiest day.
+  - **Empty states:** with history off, the page says so and links to the setting. With nothing played yet, it says that plays show within five minutes.
+- **Home card:** "This month: 23 h · 412 plays", linking to the page. It is hidden when history is off, empty or unavailable, and while Home is being edited.
+- **Your year in sound:**
+  - **Offered:** from 1 December to 31 January on the Home card (for the year, or the year just ended). It is also there on demand from any year in the period picker.
+  - **The story:** full-screen cards, one at a time: hours, top artist, top album, top track, top five artists, a new discovery, the busiest hour, the longest streak and a summary.
+  - **Moving through it:** Previous and Next buttons, the arrow keys and sideways swipes. Nothing moves on its own.
+  - **Closing and focus:** Escape, Close or Done closes it, and focus returns to what opened it. Focus starts on the first card and stays on a usable button. The card's entrance animation is off under reduced motion.
+  - **Too little history:** it says how many more days with music are needed (a week of listening).
+- **Share:** draws the current card onto a canvas on the device, as text only. Where the browser can share files, the PNG goes to the share sheet; otherwise it is saved as a download. Nothing is uploaded.
+- **API:**
+  - `MeApi.stats(period, tz)` checks the period and tz before sending: no request goes out for a bad value.
+  - The device's offset is sent as minutes east of UTC. JavaScript's `getTimezoneOffset` counts west, so the sign is flipped and the value clamped to ±840.
+  - The answer is parsed strictly:
+    - With history off, everything shows as zero.
+    - Bad or duplicate ids are dropped, and lists are capped at 20.
+    - Counts are clamped, hour and weekday lists are padded or cut to 24 and 7, and dates must be real.
+    - Names are plain text, with control and bidi characters removed and the length bounded.
+- **Tests:** 48 new:
+  - **API:** requests, refused periods and offsets (and a fuzz test of the period parser), hostile and malformed answers, and a fuzz test that any object parses safely.
+  - **Period and tz maths:** fixed offsets, including +5:45 and ±14 h.
+  - **The page's states:** loading, off, empty, error and data, and a slow old answer never replacing a newer one.
+  - **Charts:** their text alternatives.
+  - **Home card:** plus the Settings link.
+  - **The story:** buttons, keys, swipes, Escape, focus and no autoplay, and its offer window.
+  - **Share and export:** with a fake canvas and a fake `navigator.share` (shared, cancelled, refused, unsupported).
+
 ## 2026-10-13: Now playing redesigned for phones (web)
 
 Phones and narrow windows (up to 840 px wide) get a new Now playing in which nothing is squashed. Tablets and desktops (over 840 px) keep their layout.
