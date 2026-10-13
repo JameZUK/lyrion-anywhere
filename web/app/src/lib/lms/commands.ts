@@ -3,7 +3,8 @@
 import type { Command } from '$lib/api/rpc';
 
 export const STATUS_TAGS = 'tags:aAlcdeJKjNoqrsTIyx';
-export const QUEUE_TAGS = 'tags:alcdJKj';
+// `e` (album id) and `t` (track number) mark gapless runs from one album in the queue.
+export const QUEUE_TAGS = 'tags:alcdeJKjt';
 export const ALBUM_TAGS = 'tags:aljyS';
 export const TRACK_TAGS = 'tags:adtlcJKj';
 
@@ -78,17 +79,33 @@ function filterParams(f: Filter, allowed: (keyof Filter)[]): string[] {
 }
 
 export const players = (): Command => ['players', 0, 100];
-export const albums = (from: number, n: number, sort: AlbumSort = 'album', search?: string, filter: Filter = {}): Command => {
+/**
+ * A page of albums. `index` asks LMS for its A–Z index too (`tags:Z`: each first character
+ * and its count, see azindex.ts); it only makes sense sorted by title.
+ */
+export const albums = (from: number, n: number, sort: AlbumSort = 'album', search?: string, filter: Filter = {}, index = false): Command => {
 	if (!SORTS.includes(sort)) throw new RangeError('bad sort');
 	return [
-		'albums', start(from), count(n), ALBUM_TAGS, `sort:${sort}`, ...(search ? [`search:${text(search)}`] : []),
-		...filterParams(filter, ['genre', 'year', 'artist', 'compilation', 'library']),
+		'albums', start(from), count(n), index && sort === 'album' ? `${ALBUM_TAGS}Z` : ALBUM_TAGS, `sort:${sort}`,
+		...(search ? [`search:${text(search)}`] : []),
+		...filterParams(filter, ['genre', 'year', 'artist', 'compilation', 'library', 'role']),
 	];
 };
-export const artistAlbums = (artist: number): Command => ['albums', 0, 500, ALBUM_TAGS, 'sort:yearalbum', `artist_id:${id(artist)}`];
+/** An artist's albums; with a role, only those where they are, say, the composer. */
+export const artistAlbums = (artist: number, r?: Role): Command => [
+	'albums', 0, 500, ALBUM_TAGS, 'sort:yearalbum', `artist_id:${id(artist)}`, ...(r ? [`role_id:${role(r)}`] : []),
+];
+/** How many albums an artist has in a role (the answer's `count`; one row is enough). */
+export const roleAlbumCount = (artist: number, r: Role): Command => ['albums', 0, 1, `artist_id:${id(artist)}`, `role_id:${role(r)}`];
+/** Tag letters for a track's credits: every contributor role (`A`) and their ids (`S`). */
+export const CREDIT_TAGS = 'tags:AS';
+/** One track's credits (see credits.ts). */
+export const trackCredits = (track: number): Command => ['titles', 0, 1, CREDIT_TAGS, `track_id:${id(track)}`];
+/** One of an artist's tracks in a role, to learn the artist's name as LMS credits it. */
+export const roleTrack = (artist: number, r: Role): Command => ['titles', 0, 1, CREDIT_TAGS, `artist_id:${id(artist)}`, `role_id:${role(r)}`];
 export const albumById = (album: number): Command => ['albums', 0, 1, ALBUM_TAGS, `album_id:${id(album)}`];
-export const artists = (from: number, n: number, search?: string, filter: Filter = {}): Command => [
-	'artists', start(from), count(n), ...(search ? [`search:${text(search)}`] : []),
+export const artists = (from: number, n: number, search?: string, filter: Filter = {}, index = false): Command => [
+	'artists', start(from), count(n), ...(index ? ['tags:Z'] : []), ...(search ? [`search:${text(search)}`] : []),
 	...filterParams(filter, ['genre', 'role', 'library']),
 ];
 /** Does the library have any artists in this role? (One row is enough to tell.) */
@@ -129,6 +146,15 @@ export function inOrder<T extends { id?: unknown }>(items: readonly T[], ids: re
 }
 export const albumTracks = (album: number): Command => ['titles', 0, 500, TRACK_TAGS, 'sort:tracknum', `album_id:${id(album)}`];
 export const search = (term: string, n = 20): Command => ['search', 0, count(n), `term:${text(term)}`];
+/** One search for artists, albums and tracks at once (`extended:1` adds their counts). */
+export const searchAll = (term: string, n = 20): Command => ['search', 0, count(n), `term:${text(term)}`, 'extended:1'];
+/** A page of one kind of search result (the Search page's type chips). */
+export const searchTracks = (term: string, from: number, n: number): Command => [
+	'titles', start(from), count(n), TRACK_TAGS, `search:${text(term)}`,
+];
+export const searchPlaylists = (term: string, from: number, n: number): Command => [
+	'playlists', start(from), count(n), `search:${text(term)}`,
+];
 
 /** LMS favourite / menu item ids, e.g. "f047f379.3". */
 export function itemId(v: unknown): string {

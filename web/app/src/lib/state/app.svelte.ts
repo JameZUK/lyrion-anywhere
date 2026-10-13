@@ -36,6 +36,8 @@ import {
 	type SleepScope,
 } from '$lib/lms/sleep';
 import type { Track } from '$lib/lms/types';
+import { upNextTracker } from '$lib/queue/upnext.svelte';
+import { stateOf } from '$lib/queue/tracker';
 
 const PLAYER_KEY = 'anywhere.player';
 /** The last player other than this device (for falling back when this device can't play). */
@@ -242,6 +244,7 @@ class AppState {
 		this.#preferred = '';
 		this.armed = null;
 		this.#upcoming = null;
+		upNextTracker.reset();
 	}
 
 	#onVisible = () => {
@@ -359,6 +362,7 @@ class AppState {
 			const s = await api.rpc<PlayerStatus>(id, cmd.status());
 			if (id !== this.playerId) return; // switched meanwhile
 			this.now = s;
+			upNextTracker.observe(id, stateOf(s));
 			this.elapsed = typeof s.time === 'number' ? s.time : 0;
 			this.#statusAt = performance.now();
 			this.error = '';
@@ -393,6 +397,8 @@ class AppState {
 			this.error = 'Choose a player first: tap the Play on… button by the volume.';
 			return;
 		}
+		// Play next from this device: the queue's Up next section follows it.
+		if (placement === 'next') upNextTracker.expectInsert(this.playerId, stateOf(this.now));
 		await this.send(cmd.enqueue(sel, placement, playIndex));
 		this.queueVersion++;
 	}

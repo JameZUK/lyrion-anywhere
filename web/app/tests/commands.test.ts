@@ -111,6 +111,22 @@ const examples = [
 	{ player: true, cmd: c.infoMenu('folder', 4321)(0, 100) },
 	{ player: false, cmd: c.albumsByIds([7, 12, 3]) },
 	{ player: false, cmd: c.tracksByIds([101, 102]) },
+	// Wave 2 part 2: credits and contributor roles, A–Z indexes, grouped search.
+	{ player: false, cmd: c.trackCredits(9) },
+	{ player: false, cmd: c.roleTrack(12, 'COMPOSER') },
+	{ player: false, cmd: c.roleTrack(12, 'TRACKARTIST') },
+	{ player: false, cmd: c.roleAlbumCount(12, 'CONDUCTOR') },
+	{ player: false, cmd: c.artistAlbums(12, 'BAND') },
+	{ player: false, cmd: c.albums(0, 120, 'album', undefined, { library: '1a2b3c4d' }, true) },
+	{ player: false, cmd: c.albums(0, 120, 'album', undefined, { artist: 12, role: 'COMPOSER' }) },
+	{ player: false, cmd: c.artists(0, 200, undefined, { role: 'ALBUMARTIST' }, true) },
+	{ player: false, cmd: c.searchAll('blue train') },
+	{ player: false, cmd: c.searchTracks('blue train', 20, 40) },
+	{ player: false, cmd: c.searchPlaylists('blue train', 0, 40) },
+	{ player: false, cmd: c.albums(40, 40, 'album', 'blue train') },
+	{ player: false, cmd: c.artists(40, 40, 'blue train') },
+	{ player: true, cmd: c.shuffle(2) },
+	{ player: true, cmd: c.shuffle(0) },
 ];
 
 test('builders match the fixture the gateway policy is tested against', () => {
@@ -270,7 +286,8 @@ test('browse filters take only well-formed values', () => {
 	expect(c.genres(0, 10, null)).toEqual(['genres', 0, 10]);
 	// Filters an album list doesn't take are not sent with artists, and vice versa.
 	expect(c.artists(0, 10, undefined, { compilation: true, year: 1999 })).toEqual(['artists', 0, 10]);
-	expect(c.albums(0, 10, 'album', undefined, { role: 'COMPOSER' })).toEqual(['albums', 0, 10, c.ALBUM_TAGS, 'sort:album']);
+	// A role narrows albums too (a contributor's albums in that role).
+	expect(c.albums(0, 10, 'album', undefined, { role: 'COMPOSER' })).toEqual(['albums', 0, 10, c.ALBUM_TAGS, 'sort:album', 'role_id:COMPOSER']);
 	for (const r of c.ROLES) expect(c.role(r)).toBe(r);
 });
 

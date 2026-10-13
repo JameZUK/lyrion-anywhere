@@ -63,6 +63,22 @@ export function swipeRemoves(dx: number, width: number): boolean {
 }
 
 /**
+ * Which way a finished sideways swipe of `dx` over a row `width` wide went far enough to act:
+ * 'left', 'right', or null (it springs back). The same distance applies both ways.
+ */
+export function swipeAction(dx: number, width: number): 'left' | 'right' | null {
+	if (!Number.isFinite(dx)) return null;
+	const w = Number.isFinite(width) && width > 0 ? width : 0;
+	const need = Math.max(SWIPE_MIN_PX, w * SWIPE_SHARE);
+	return dx <= -need ? 'left' : dx >= need ? 'right' : null;
+}
+
+/** Where `playlist move` must put the track at `index` so it plays just after the current one. */
+export function playNextTarget(index: number, cur: number): number {
+	return index < cur ? cur : cur + 1;
+}
+
+/**
  * Whether a touch that has moved (dx, dy) is a sideways swipe (ours) rather than a scroll
  * (the browser's): clearly more sideways than up or down, and past a small dead zone.
  */
@@ -132,6 +148,37 @@ export async function checkAt(rpc: Rpc, player: string, index: number, track: Tr
 export async function removeChecked(rpc: Rpc, player: string, index: number, track: Track): Promise<void> {
 	await checkAt(rpc, player, index, track);
 	await rpc(player, removeFromQueue(index));
+}
+
+/** Clear upcoming takes tracks out one at a time; past this many it offers Clear all instead. */
+export const CLEAR_UPCOMING_MAX = 100;
+
+/** Clear upcoming stopped part way: `removed` tracks went before the queue changed. */
+export class ClearStopped extends Error {
+	constructor(readonly removed: number) {
+		super(`the queue changed meanwhile, so it stopped after removing ${removed} ${removed === 1 ? 'track' : 'tracks'}`);
+		this.name = 'ClearStopped';
+	}
+}
+
+/**
+ * Clear upcoming: take out every track after `cur`, from the end backwards (so earlier
+ * positions never shift), each checked against what was shown at that position. Stops at
+ * the first that no longer matches (ClearStopped). Resolves to how many were removed.
+ */
+export async function clearAfter(rpc: Rpc, player: string, tracks: readonly Track[], cur: number, progress?: (removed: number) => void): Promise<number> {
+	let removed = 0;
+	for (let i = tracks.length - 1; i > cur; i--) {
+		try {
+			await removeChecked(rpc, player, i, tracks[i]!);
+		} catch (e) {
+			if (e instanceof QueueChanged) throw new ClearStopped(removed);
+			throw e;
+		}
+		removed++;
+		progress?.(removed);
+	}
+	return removed;
 }
 
 /** Move `track` from position `from` so it ends up at `to`, if it is still at `from`. */

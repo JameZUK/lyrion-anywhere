@@ -111,7 +111,7 @@
    "status",
    0,
    100,
-   "tags:alcdJKj"
+   "tags:alcdeJKjt"
   ]
  },
  {
@@ -332,7 +332,7 @@
    "status",
    0,
    500,
-   "tags:alcdJKj"
+   "tags:alcdeJKjt"
   ]
  },
  {
@@ -887,6 +887,158 @@
    2,
    "tags:adtlcJKj",
    "track_id:101,102"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "titles",
+   0,
+   1,
+   "tags:AS",
+   "track_id:9"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "titles",
+   0,
+   1,
+   "tags:AS",
+   "artist_id:12",
+   "role_id:COMPOSER"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "titles",
+   0,
+   1,
+   "tags:AS",
+   "artist_id:12",
+   "role_id:TRACKARTIST"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   0,
+   1,
+   "artist_id:12",
+   "role_id:CONDUCTOR"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   0,
+   500,
+   "tags:aljyS",
+   "sort:yearalbum",
+   "artist_id:12",
+   "role_id:BAND"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   0,
+   120,
+   "tags:aljySZ",
+   "sort:album",
+   "library_id:1a2b3c4d"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   0,
+   120,
+   "tags:aljyS",
+   "sort:album",
+   "artist_id:12",
+   "role_id:COMPOSER"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "artists",
+   0,
+   200,
+   "tags:Z",
+   "role_id:ALBUMARTIST"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "search",
+   0,
+   20,
+   "term:blue train",
+   "extended:1"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "titles",
+   20,
+   40,
+   "tags:adtlcJKj",
+   "search:blue train"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "playlists",
+   0,
+   40,
+   "search:blue train"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "albums",
+   40,
+   40,
+   "tags:aljyS",
+   "sort:album",
+   "search:blue train"
+  ]
+ },
+ {
+  "player": false,
+  "cmd": [
+   "artists",
+   40,
+   40,
+   "search:blue train"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlist",
+   "shuffle",
+   2
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playlist",
+   "shuffle",
+   0
   ]
  }
 ]
