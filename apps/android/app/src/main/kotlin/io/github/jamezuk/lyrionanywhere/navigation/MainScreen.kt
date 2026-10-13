@@ -168,6 +168,10 @@ import io.github.jamezuk.lyrionanywhere.ui.library.PagedState
 import io.github.jamezuk.lyrionanywhere.ui.library.roleLabel
 import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineLibraryScreen
 import io.github.jamezuk.lyrionanywhere.ui.components.ErrorState
+import io.github.jamezuk.lyrionanywhere.ui.components.ReconnectingPill
+import io.github.jamezuk.lyrionanywhere.ui.components.ServerUnreachableBanner
+import io.github.jamezuk.lyrionanywhere.data.offline.ConnectionUi
+import androidx.compose.ui.Alignment
 import io.github.jamezuk.lyrionanywhere.ui.components.LoadingState
 import io.github.jamezuk.lyrionanywhere.data.LibraryChip
 import io.github.jamezuk.lyrionanywhere.core.ArtistRole
@@ -362,7 +366,12 @@ private fun sleepLeft(res: Resources, seconds: Int): String {
 /** The signed-in app: adaptive navigation (bar, rail or drawer by window size). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
+fun MainScreen(
+    container: AppContainer,
+    signedIn: AuthState.SignedInState,
+    /** The link to the server: the "can't reach" banner and the reconnecting pill. */
+    connection: ConnectionUi = ConnectionUi(),
+) {
     val nav = rememberNavController()
     val nowPlayingHub = (LocalContext.current.applicationContext as? LyrionApp)?.nowPlaying
     // One player controller for every screen, per sign-in. Which player it controls is
@@ -621,6 +630,10 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
               Column(if (bottomBarNav) Modifier else Modifier.navigationBarsPadding()) {
                 val onNowPlaying = destination?.hasRoute(NowPlayingRoute::class) == true ||
                     destination?.hasRoute(OfflineNowPlayingRoute::class) == true || inCar || inStory
+                // The server can't be reached: say so here, on the screen the user is on.
+                if (connection.unreachable && !inCar && !inStory && destination?.hasRoute(DownloadsRoute::class) != true) {
+                    ServerUnreachableBanner(onDownloads = { nav.navigate(DownloadsRoute) { launchSingleTop = true } })
+                }
                 if (!onNowPlaying && offlineUi.state.active) {
                     // Downloads have this phone: their own mini player.
                     OfflineMiniPlayer(
@@ -1595,6 +1608,10 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     }
                 }
             }
+            }
+            // A reconnect under way: a small pill over the screen, which stays as it was.
+            if (connection.reconnecting && !inCar && !inStory) {
+                ReconnectingPill(Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp))
             }
             }
         }

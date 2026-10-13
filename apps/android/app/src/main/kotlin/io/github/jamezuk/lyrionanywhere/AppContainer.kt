@@ -182,6 +182,12 @@ class AppContainer(context: Context, scope: CoroutineScope) {
         network = network.kind,
         serverTrouble = localPlayer.state.map(OfflineModeController::troubleOf),
         retry = { accountImpl.retry() },
+        // Android cuts a backgrounded app's network when it isn't playing: the phone's
+        // player losing the server then doesn't count, and it reconnects on return.
+        foreground = AppForeground().foreground,
+        playing = localPlayer.state.map(OfflineModeController::playingOf),
+        reconnectNow = { localPlayer.reconnectNow() },
+        now = { android.os.SystemClock.elapsedRealtime() },
     ).also { it.start() }
 
     init {

@@ -2,6 +2,31 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Android: offline mode no longer takes over after time in the background, and the app keeps your place
+
+Before, after the app sat in the background without playing, switching back to it showed the offline screen for a few seconds and then came back at Home. Android cuts such an app's network, so the phone's player had dropped, and that counted as the server being away.
+
+- **Background-aware decision** (`ConnectionJudge`, `OfflineModeController.ui`):
+  - The phone's player failing counts only while the app is in use, or while it plays.
+  - On return to the foreground there is a 10 s grace, and the player reconnects at once (`LocalPlayerRepository.reconnectNow`). A sign-in that couldn't be checked is retried.
+  - No network at all is still noticed at once (after 3 s), in the background too.
+  - The foreground comes from `ProcessLifecycleOwner`, whose start-up initialiser was already merged in. No initialiser is added: the merged manifest still has exactly EmojiCompat, ProcessLifecycle and ProfileInstaller.
+- **The screen stays put:**
+  - While reconnecting, a "Reconnecting…" pill shows over the current screen.
+  - After 5 s of counted trouble, or with no network, a banner shows above the mini player: "Can’t reach your server · Downloads". It is one button that opens the downloads, and TalkBack announces it.
+  - Offline mode takes the whole screen only with no network as the app opens, or when the server stays unreachable for 15 s while the app is in use.
+  - Home's carousels and shelves, and the listening card, keep what they last loaded when a reload fails.
+  - Android Auto's offline measure is unchanged.
+- **Your place is kept:** `AppPlaces` holds the signed-in app's saved state (navigation back stack, each screen's state, scroll positions) in a `SaveableStateHolder` above the switch between the app, offline mode and "Signing in…". That state is saved with the activity.
+  - When offline mode hands back, or after a sign-in check, the app returns to the screen you were on, scrolled where you left it.
+  - After a configuration change, the same.
+  - After the process is killed, the app reopens on the same screen with its back stack.
+  - Another account or signing out starts at Home.
+- **Tests:**
+  - JVM tests for the decision: background ignored, the foreground grace, the network lost at once, the 15 s rule, playing in the background, the sign-in states, deadlines, and a seeded robustness run on arbitrary inputs and times.
+  - Tests for the controller over virtual time, and for the player's reconnect kick.
+  - Robolectric/Compose tests: on an album during a reconnect (pill, then banner); the banner's single labelled button, its 48 dp target and that it opens the downloads; offline mode taking over and handing back to the album; a sign-in check in between; another account; state restoration through "Signing in…"; the activity recreated; and the process killed with its state parcelled.
+
 ## 2026-10-13: Web player: `strm f` keeps the current track and drops the next
 
 LMS sends `strm f` when the next track, already streamed, is deleted or moved in its queue, and keeps the current track playing. The core already kept the audible track. The web player only followed full flushes, so it could still play the audio of the dropped track that it had queued.

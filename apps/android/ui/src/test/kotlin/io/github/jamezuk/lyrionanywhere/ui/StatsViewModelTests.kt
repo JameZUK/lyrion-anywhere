@@ -204,6 +204,23 @@ class StatsViewModelTests : MainDispatcherTest() {
     }
 
     @Test
+    fun homeCardStaysThroughAReconnect() = runTest(dispatcher) {
+        var answer: ApiResult<ListeningStats> = ApiResult.Ok(sampleStats())
+        val vm = ListeningCardViewModel(FakeStats { answer }, today = { october }, tz = { 0 })
+        vm.refresh()
+        assertTrue(vm.state.value.visible)
+        // Home shown again while the server can't be reached: the card is kept.
+        answer = ApiResult.Err(AppError.Offline())
+        vm.refresh()
+        assertTrue(vm.state.value.visible)
+        assertEquals(412L, vm.state.value.monthPlays)
+        // The server saying history is off is an answer, though: the card goes.
+        answer = ApiResult.Ok(emptyStats(enabled = false))
+        vm.refresh()
+        assertFalse(vm.state.value.visible)
+    }
+
+    @Test
     fun homeCardOffersThisYearInDecember() = runTest(dispatcher) {
         val stats = FakeStats()
         val vm = ListeningCardViewModel(stats, today = { LocalDate.of(2026, 12, 1) }, tz = { 0 })

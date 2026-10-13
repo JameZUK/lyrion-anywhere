@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.launch
@@ -40,6 +41,12 @@ fun Flow<Boolean>.sustained(ms: Long): Flow<Boolean> = distinctUntilChanged().tr
  * signed in, the phone has no network, or this phone's player has been unable to reach the
  * server for a while. While offline before sign-in, the sign-in is retried now and then and
  * as soon as the network comes back.
+ *
+ * What the screen shows is decided separately ([ui], by [ConnectionJudge]): the phone's
+ * player losing the server while the app is in the background and not playing doesn't
+ * count (Android cuts such an app's network), and offline mode takes the whole screen only
+ * when there's no network as the app opens or the server stays away while it is in use;
+ * otherwise a banner on the current screen says the server can't be reached.
  */
 class OfflineModeController(
     private val scope: CoroutineScope,
@@ -49,11 +56,64 @@ class OfflineModeController(
     private val serverTrouble: Flow<Boolean>,
     /** Try the saved sign-in again. */
     private val retry: suspend () -> Unit,
+    /** The app is in the foreground (an activity started). */
+    private val foreground: StateFlow<Boolean> = MutableStateFlow(true),
+    /** This phone's LMS player is playing (its link matters even in the background). */
+    private val playing: Flow<Boolean> = flowOf(false),
+    /** Back in the foreground while signed in: have the phone's player reconnect now. */
+    private val reconnectNow: () -> Unit = {},
+    /** A monotonic clock (ms). */
+    private val now: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val _offline = MutableStateFlow(false)
+
+    /**
+     * The server can't be reached, by the old measure (no network for a moment, or the
+     * phone's player failing for a while, foreground or not): for Android Auto, which
+     * browses the downloads instead. The screen follows [ui].
+     */
     val offline: StateFlow<Boolean> = _offline.asStateFlow()
 
+    private val _ui = MutableStateFlow(ConnectionUi())
+
+    /** What the screen shows: offline mode, the "can't reach" banner or the reconnecting pill. */
+    val ui: StateFlow<ConnectionUi> = _ui.asStateFlow()
+
+    private val judge = ConnectionJudge()
+
     fun start() {
+        scope.launch {
+            val inputs = combine(
+                auth,
+                network.map { it == NetworkKind.OFFLINE },
+                serverTrouble,
+                foreground,
+                playing,
+            ) { a, down, t, fg, p -> ConnectionInputs(a, down, t, fg, p) }.distinctUntilChanged()
+            inputs.collectLatest { i ->
+                // Decide now, and again whenever a grace period runs out on the same inputs.
+                while (true) {
+                    val t = now()
+                    _ui.value = judge.update(t, i)
+                    val wait = judge.nextCheckIn(t) ?: break
+                    delay(wait)
+                }
+            }
+        }
+        scope.launch {
+            // Back in the foreground: reconnect now rather than at the end of a back-off.
+            var was = foreground.value
+            foreground.collect { fg ->
+                if (fg && !was) {
+                    when (auth.value) {
+                        is AuthState.Unreachable -> if (network.value != NetworkKind.OFFLINE) retry()
+                        is AuthState.SignedInState -> reconnectNow()
+                        else -> {}
+                    }
+                }
+                was = fg
+            }
+        }
         scope.launch {
             val netDown = network.map { it == NetworkKind.OFFLINE }.sustained(NETWORK_GRACE_MS)
             val trouble = serverTrouble.sustained(TROUBLE_GRACE_MS)
@@ -106,6 +166,10 @@ class OfflineModeController(
         /** The phone's player can't reach the server (it is reconnecting). */
         fun troubleOf(local: LocalPlayerState): Boolean =
             local.enabled && local.status?.connection is io.github.jamezuk.lyrionanywhere.core.PlayerConnection.Reconnecting
+
+        /** The phone's player is playing (or filling its buffer to): it needs the server even in the background. */
+        fun playingOf(local: LocalPlayerState): Boolean =
+            local.enabled && local.status?.playback.let { it == LocalPlayback.PLAYING || it == LocalPlayback.BUFFERING }
     }
 }
 

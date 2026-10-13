@@ -74,14 +74,22 @@ private data object PairRoute
 
 /**
  * Chooses between signing in, the app, and offline mode (the server can't be reached: the
- * downloaded library, played on this phone), from the account state and the network.
+ * downloaded library, played on this phone), from the account state and the connection
+ * (OfflineModeController.ui). The signed-in app's place (screen, back stack, scroll) is
+ * kept in [AppPlaces] across offline mode, a sign-in check and the process being killed.
  */
 @Composable
 fun AppRoot(container: AppContainer) {
     val state by container.account.state.collectAsStateWithLifecycle()
-    val offline by container.offlineMode.offline.collectAsStateWithLifecycle()
+    val connection by container.offlineMode.ui.collectAsStateWithLifecycle()
     val downloads by container.offline.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    // Composed whatever is shown, so the signed-in app's place outlives the others.
+    val places = rememberAppPlaces()
+    LaunchedEffect(state) {
+        val s = state
+        if (s is AuthState.SignedOut || s is AuthState.NoServer) places.forget()
+    }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         val s = state
         val server = when (s) {
@@ -90,8 +98,8 @@ fun AppRoot(container: AppContainer) {
             is AuthState.SignedInState -> s.server
             else -> null
         }
-        // Offline with downloads to show (whose they are is known): offline mode.
-        if (offline && server != null && downloads.owner != null) {
+        // Offline mode has the screen, with downloads to show (whose they are is known).
+        if (connection.takeover && server != null && downloads.owner != null) {
             OfflineApp(
                 container,
                 bannerText = if (s is AuthState.SignedInState) {
@@ -143,7 +151,7 @@ fun AppRoot(container: AppContainer) {
                     },
                 )
             }
-            is AuthState.SignedInState -> MainScreen(container, s)
+            is AuthState.SignedInState -> places.Keep(AppPlaces.keyOf(s)) { MainScreen(container, s, connection) }
         }
     }
     PairingLinkPrompts(container, state)
