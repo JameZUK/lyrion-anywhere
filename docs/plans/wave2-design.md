@@ -92,9 +92,13 @@ Detailed on 2026-10-13. Web and Android together. The gateway needs one change: 
 - **Top result:** an exact (or else prefix) name match, preferring an artist, then an album, then a track.
 - **Filter chips:** All, Artists, Albums, Tracks and Playlists. Picking a type pages through that type alone.
 - **Playing from results:** a track plays from its row. An album row has a play button. A long press or the menu offers Play next and Add to queue.
-- **Out of scope:**
-  - plugin searches ("Search on …") need each plugin's search menu replayed and are left to a later part;
-  - LMS search has no fuzzy matching, so there are no typo suggestions.
+- **Search on plugins (added 2026-10-13):** below the library results, a "Search on…" section has one row per app that offers a search ("Search <app> for “<text>”"):
+  - an app or radio service qualifies when its own top menu lists a search box whose action opens a menu with the typed text as its `search:` parameter and nowhere else. Nothing is hard-coded per plugin;
+  - the apps come from LMS's `apps` and `radios` lists, which the gateway already filters (plugins reserved for admins are left out for listeners);
+  - discovery is cached per session and looked at again when the apps listed change;
+  - a row opens the app's results in the plugin menu browser, so play and add work as for any app item. The app's top menu is read again first, so the search runs only through the action LMS offers now. The gateway allows it because LMS offered it to this device (`menu_actions.rs`), and it checks the text as it checks any search text;
+  - no gateway change was needed.
+- **Out of scope:** LMS search has no fuzzy matching, so there are no typo suggestions.
 
 ### 3.4 Queue sections and list swipes (U4)
 
