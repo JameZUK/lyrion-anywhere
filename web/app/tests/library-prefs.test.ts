@@ -52,5 +52,5 @@ test('blocked storage never throws', () => {
 
 test('Recently played is not offered while the gateway refuses that sort', () => {
 	expect(LIBRARY_SORTS).not.toContain('recentlyplayed');
-	expect(LIBRARY_SORTS).toEqual(['new', 'album', 'artistalbum', 'yearalbum']);
+	expect(LIBRARY_SORTS).toEqual(['new', 'played', 'album', 'artistalbum', 'yearalbum']);
 });

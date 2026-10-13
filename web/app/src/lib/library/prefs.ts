@@ -1,7 +1,7 @@
 // What Library shows (Wave 2 §3.2): the type chip, the album order and grid or list. Kept per
 // device in local storage (never sent anywhere); storage that is blocked or holds something
 // odd gives the defaults.
-import type { AlbumSort } from '$lib/lms/commands';
+import type { BrowseSort } from '$lib/components/AlbumBrowser.svelte';
 
 export type LibraryChip = 'albums' | 'artists' | 'playlists' | 'favourites';
 export type AlbumView = 'grid' | 'list';
@@ -15,14 +15,14 @@ export const CHIP_LABELS: Record<LibraryChip, string> = {
 };
 
 /**
- * Album orders Library offers. LMS's "recently played" (`recentlyplayed`) isn't among them:
- * the gateway doesn't pass that sort on yet.
+ * Album orders Library offers. "Recently played" is the user's own (their listening history
+ * on the gateway), never LMS's `recentlyplayed`, which is everyone's.
  */
-export const LIBRARY_SORTS: readonly AlbumSort[] = ['new', 'album', 'artistalbum', 'yearalbum'];
+export const LIBRARY_SORTS: readonly BrowseSort[] = ['new', 'played', 'album', 'artistalbum', 'yearalbum'];
 
 export interface LibraryPrefs {
 	chip: LibraryChip;
-	sort: AlbumSort;
+	sort: BrowseSort;
 	view: AlbumView;
 }
 

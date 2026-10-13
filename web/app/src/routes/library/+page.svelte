@@ -10,7 +10,7 @@
 	import FavouritesView from '$lib/components/FavouritesView.svelte';
 	import { library } from '$lib/state/library.svelte';
 	import { CHIPS, CHIP_LABELS, LIBRARY_SORTS, loadLibraryPrefs, saveLibraryPrefs, type AlbumView, type LibraryChip } from '$lib/library/prefs';
-	import type { AlbumSort } from '$lib/lms/commands';
+	import type { BrowseSort } from '$lib/components/AlbumBrowser.svelte';
 
 	const BROWSE = [
 		{ href: '#/new', icon: 'new', label: 'New music' },
@@ -25,7 +25,7 @@
 
 	const saved = loadLibraryPrefs();
 	let chip = $state<LibraryChip>(saved.chip);
-	let sort = $state<AlbumSort>(saved.sort);
+	let sort = $state<BrowseSort>(saved.sort);
 	let view = $state<AlbumView>(saved.view);
 	const panel = 'library-panel';
 

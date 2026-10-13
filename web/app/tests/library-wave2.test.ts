@@ -178,7 +178,7 @@ test('album order and grid or list are remembered; sorts offered are the gateway
 	const first = render(LibraryPage);
 	await waitFor(() => expect(first.container.querySelector('[data-pos="0"]')).not.toBeNull());
 	const select = first.container.querySelector<HTMLSelectElement>('[data-library-panel] select')!;
-	expect([...select.options].map((o) => o.textContent)).toEqual(['Recently added', 'A–Z', 'Artist', 'Year']);
+	expect([...select.options].map((o) => o.textContent)).toEqual(['Recently added', 'Recently played', 'A–Z', 'Artist', 'Year']);
 	await fireEvent.change(select, { target: { value: 'yearalbum' } });
 	await waitFor(() => expect(sent('albums').at(-1)).toContain('sort:yearalbum'));
 	const list = first.container.querySelector<HTMLButtonElement>('[data-view="list"]')!;

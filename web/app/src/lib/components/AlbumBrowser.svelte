@@ -1,6 +1,12 @@
 <script lang="ts" module>
 	import type { AlbumSort } from '$lib/lms/commands';
-	export const SORT_LABELS: Record<AlbumSort, string> = {
+	/**
+	 * An album order: one of LMS's, or `played`, the user's own recently played albums (from
+	 * their listening history on the gateway; LMS's `recentlyplayed` is everyone's).
+	 */
+	export type BrowseSort = AlbumSort | 'played';
+	export const SORT_LABELS: Record<BrowseSort, string> = {
+		played: 'Recently played',
 		album: 'A–Z',
 		artistalbum: 'Artist',
 		yearalbum: 'Year',
@@ -23,6 +29,7 @@
 	import { WindowPager } from '$lib/lms/pager.svelte';
 	import type { Album, AlbumsResult } from '$lib/lms/types';
 	import type { AlbumView } from '$lib/library/prefs';
+	import { me } from '$lib/state/me';
 	import AlbumGrid from './AlbumGrid.svelte';
 	import AlbumList from './AlbumList.svelte';
 	import AzScroller from './AzScroller.svelte';
@@ -42,9 +49,9 @@
 		az = false,
 	}: {
 		filter?: cmd.Filter;
-		sort?: AlbumSort;
+		sort?: BrowseSort;
 		/** Orders to offer; none for a fixed order. */
-		sorts?: AlbumSort[] | readonly AlbumSort[] | null;
+		sorts?: BrowseSort[] | readonly BrowseSort[] | null;
 		/** Page as the list scrolls; otherwise one batch of `pageSize`. */
 		paged?: boolean;
 		pageSize?: number;
@@ -61,7 +68,15 @@
 
 	let root = $state<HTMLDivElement>();
 	const key = (a: Album) => (typeof a?.id === 'number' ? a.id : null);
-	const query = (s: AlbumSort, f: cmd.Filter, lib: string | null, wantIndex: boolean) => async (from: number, n: number, first: boolean) => {
+	/** The user's recently played albums: at most this many (newest first). */
+	const PLAYED_MAX = 50;
+	const query = (s: BrowseSort, f: cmd.Filter, lib: string | null, wantIndex: boolean) => async (from: number, n: number, first: boolean) => {
+		if (s === 'played') {
+			const all = await me.shelf('recent', PLAYED_MAX);
+			const ids = all.slice(from, from + n);
+			const rows = ids.length ? cmd.inOrder((await api.rpc<AlbumsResult>('', cmd.albumsByIds(ids)))?.albums_loop ?? [], ids) : [];
+			return { rows, count: paged ? all.length : undefined };
+		}
 		const r = await api.rpc<AlbumsResult & { indexList?: unknown }>('', cmd.albums(from, n, s, undefined, { ...f, library: lib }, wantIndex && first));
 		return { rows: r?.albums_loop ?? [], count: paged ? r?.count : undefined, ...(wantIndex && first ? { indexList: r?.indexList } : {}) };
 	};
