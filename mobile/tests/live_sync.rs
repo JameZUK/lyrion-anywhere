@@ -603,6 +603,7 @@ async fn start_engine(env: &LiveEnv, device_name: &str) -> Engine {
             // FLAC), not the whole track, so a gap of a minute or so is a stall.
             cache_dir: None,
             read_ahead: false,
+            stream_cache_bytes: 0,
         },
     );
     player.start(Arc::new(NoObs)).unwrap();
