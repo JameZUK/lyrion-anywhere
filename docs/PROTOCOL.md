@@ -171,6 +171,7 @@ The gateway replies with a text greeting:
 - A refused `strm s` (another address, or a request that isn't this player's own LMS stream) is still forwarded so the client stays in step, but with its address zeroed and its HTTP request removed; fetching it is a 404.
 - **Client notes:**
   - On a seek LMS sends `strm q` and the new `strm s` back to back (about 2 ms apart for MP3), so a client sees them together. Drop queued audio on the `strm q` itself, not on a later check of the player state.
+  - `strm f` is not a full flush. LMS sends it when the next track, already streamed, is deleted or moved in its queue, and it keeps the current track playing. Drop only what came after the audible track, keep playing, and answer `STMf`.
   - `audg` carries LMS's volume as linear gains (16.16) on LMS's own curve. A client applying it should do so at its output, after any queued audio.
 
 ### Policy violations (close 1008, session ended)

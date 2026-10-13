@@ -141,8 +141,10 @@ impl WasmPlayer {
         self.inner.audio_exhausted()
     }
 
-    /// How many times LMS has flushed the player (`strm q`/`strm f`, e.g. for a seek). When it
-    /// changes, audio queued ahead of the output belongs to the old position.
+    /// How many times LMS has flushed the player (`strm q`, e.g. for a seek; `strm f` only
+    /// when nothing is audible). When it changes, audio queued ahead of the output belongs to
+    /// the old position. A `strm f` while a track is audible keeps that track playing and
+    /// is not counted here.
     pub fn flush_count(&self) -> f64 {
         self.inner.flush_count() as f64
     }
