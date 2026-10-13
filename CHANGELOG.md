@@ -2,6 +2,27 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Car, system surfaces, haptics and smart filters (Wave 2 part 4, web)
+
+Following `docs/plans/wave2-design.md` §5.1, §5.4, §5.5 and §5.6.
+
+- **Car mode:** a *Car* button on Now playing opens a driving screen:
+  - huge art, a large elapsed time, and giant previous, play/pause and next (hold play/pause to stop; the context-menu key or Shift+F10 also stops);
+  - *Start radio* from the current track: AudioMuse-AI's mix where the server offers one, run as offered, with Don't Stop The Music switched on only when it is off; the app says so when there is no radio;
+  - one level of Favourites (those that play at once) and Stations;
+  - white on black in every theme, targets of at least 76 px, no visualiser, and an obvious *Exit* (or Escape);
+  - the screen stays on while playing (Screen Wake Lock API where available), released on pause, when hidden and on leaving.
+- **Haptics:** light ticks through `navigator.vibrate` where the browser has it (Android), off by default, with one *Haptics* switch in Settings. They tick on a skip by swipe, scrub detents (every tenth), volume steps, drag pick-up and drop, ratings and the sleep timer.
+- **System surfaces:**
+  - manifest shortcuts: *Resume*, *Radio* and *Search*;
+  - Media Session: play, pause, stop, previous, next and seeking (to a point, back and forward), with the position for the system's progress bar;
+  - keyboard shortcuts: Space, the arrow keys on Now playing and in car mode (seek, Shift for previous/next, volume), `/` for search, `L` for lyrics and `?` for a help sheet (also in Settings). They never act while typing, in a dialog or menu, or on a control that uses the key.
+- **Smart filters:** a rule builder (genre, decade, artist in an optional role, compilation; order and a limit of up to 500), saved per user through `/v1/me/filters` exactly as the contract has it, and checked against its limits before anything is sent:
+  - a *Filters* chip in Library, with play, shuffle, edit and delete (with a confirmation), and a page per filter with its albums;
+  - a `filter` Home shelf with Play and Shuffle;
+  - play and shuffle load the first 50 albums through the album play path.
+- **Tests:** unit, negative and robustness tests for the filter contract checks and the API wrapper, Start radio's parsing and the shortcut rules; component tests for car mode (controls, long press, wake lock with a fake), haptics (switch, events, no API), shortcuts (each key, ignored while typing or in dialogs, the help sheet), the Media Session (a fake `navigator.mediaSession`) and the filters UI; node tests for the manifest shortcuts and the 44 px and 76 px targets.
+
 ## 2026-10-13: Now playing and players (Wave 2 part 3, web)
 
 Following `docs/plans/wave2-design.md` §4.

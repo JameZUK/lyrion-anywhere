@@ -335,6 +335,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 - Track/album/artist info menus from LMS plugins (bios, reviews, lyrics where available).
 - **Home** (Wave 1, §5.8): the user's own shelves (recently played, stations, new music, most played, on this day, and any they add), edited in place: reorder by dragging or Move up/down, hide, add, remove; the same layout on every device.
 - **Stations:** endless stations from the library (genres, a decade, forgotten favourites, fresh, deep cuts) and "Save as station" / "Pin to Home" on plugin menu items; listening history in Settings (view, clear, switch off).
+- **Wave 2 part 4 on the web (2026-10-13, `docs/plans/wave2-design.md` §5):** car mode (a driving screen from Now playing: giant transport, hold play to stop, Start radio, one level of Favourites and Stations, 76 px targets, high contrast, the screen kept on while playing); haptics through `navigator.vibrate`, off by default; manifest shortcuts (Resume, Radio, Search), a full Media Session including seeking, and keyboard shortcuts (Space, arrows on Now playing and in car mode, `/`, `L`, `?`); smart filters (a rule builder, a Library chip, a `filter` Home shelf, play/shuffle of the first 50 albums), built to the §5.6 contract.
 
 **Offline (§8)**
 - Download buttons on track/album/playlist, a downloads page with progress, and storage usage.
