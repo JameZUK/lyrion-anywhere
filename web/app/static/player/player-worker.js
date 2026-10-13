@@ -621,7 +621,8 @@ function mediaTick(output) {
       break;
     }
     const pcm = buf.subarray(0, frames * 2);
-    visual.feed(pcm, rate, pulled);
+    // Kept while off: the element plays seconds behind what is pulled here.
+    visual.feed(pcm, rate, pulled, true);
     segmenter.push(pcm);
     pulled += frames;
   }

@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { FRAME_LEN, MAX_QUEUED, MIN_GAP_MS, VisualTap } from '../../static/player/visual.js';
+import { FRAME_LEN, MAX_QUEUED, MIN_GAP_MS, RETAIN_SECS, VisualTap } from '../../static/player/visual.js';
 
 /** A stand-in for the core's analyser: a frame every `hop` frames of audio, numbered. */
 function fakeAnalyser(log = []) {
@@ -70,6 +70,34 @@ test('frames wait until the output has played that far', () => {
   const g = tap.due(3 * 1600, 200);
   assert.equal(g[0], 3);
   assert.equal(tap.queue.length, 27);
+});
+
+test('turned on mid-track in media mode, it starts from what is about to be heard', () => {
+  // Regression: the element plays seconds behind what the worker pulls, so a visualiser
+  // turned on mid-track had nothing due until the newly pulled audio was heard (up to 8 s).
+  const made = [];
+  const tap = new VisualTap(fakeAnalyser(made));
+  // Playing, visualiser off: 8 s pulled ahead of the element, kept by reference.
+  for (let s = 0; s < 8; s++) tap.feed(pcm(48_000), 48_000, s * 48_000, true);
+  assert.equal(made.length, 0, 'nothing analysed while off');
+  tap.setOn(true);
+  // The element is at 0.5 s: a frame is due at once.
+  assert.ok(tap.due(24_000, 0) instanceof Float32Array);
+  // Without retain (Web Audio: its chunks are handed to the worklet), nothing is kept.
+  const wa = new VisualTap(fakeAnalyser());
+  wa.feed(pcm(48_000), 48_000, 0);
+  wa.setOn(true);
+  assert.equal(wa.queue.length, 0);
+});
+
+test('what is kept while off is bounded, and a flush drops it', () => {
+  const tap = new VisualTap(fakeAnalyser());
+  for (let s = 0; s < 60; s++) tap.feed(pcm(48_000), 48_000, s * 48_000, true);
+  assert.ok(tap.aheadFrames <= 48_000 * (RETAIN_SECS + 1), `${tap.aheadFrames}`);
+  tap.flush();
+  assert.equal(tap.ahead.length, 0);
+  tap.setOn(true);
+  assert.equal(tap.queue.length, 0);
 });
 
 test('a long chunk still gives a frame for every thirtieth of a second', () => {

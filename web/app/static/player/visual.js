@@ -12,6 +12,8 @@ export const MAX_QUEUED = 512;
 /** At most 30 frames a second to the page. */
 export const MAX_FPS = 30;
 export const MIN_GAP_MS = 1000 / MAX_FPS - 3;
+/** Audio kept while off in media mode: what the element may still have to play. */
+export const RETAIN_SECS = 10;
 
 export class VisualTap {
   /** `make(rate, channels)` builds the analyser (the core's WasmVisualiser). */
@@ -22,6 +24,9 @@ export class VisualTap {
     this.rate = 0;
     this.queue = [];
     this.lastSent = -Infinity;
+    /** Media mode, while off: the PCM already sent ahead (see `feed`'s `retain`). */
+    this.ahead = [];
+    this.aheadFrames = 0;
   }
 
   /** The page wants frames (true) or not (false): off drops everything, analyser included. */
@@ -29,7 +34,16 @@ export class VisualTap {
     const want = on === true;
     if (want === this.on) return;
     this.on = want;
-    if (!want) this.#drop();
+    if (!want) {
+      this.#drop();
+      return;
+    }
+    // The media element plays from seconds of audio already sent ahead: analyse that now,
+    // or nothing would be due until the newly pulled audio is heard (up to 8 s later).
+    const kept = this.ahead;
+    this.ahead = [];
+    this.aheadFrames = 0;
+    for (const k of kept) this.feed(k.pcm, k.rate, k.at);
   }
 
   #drop() {
@@ -48,6 +62,8 @@ export class VisualTap {
   /** The output was flushed (a seek, a stop, a new session): forget what was queued. */
   flush() {
     this.queue.length = 0;
+    this.ahead = [];
+    this.aheadFrames = 0;
     try {
       this.vis?.reset();
     } catch {
@@ -58,9 +74,21 @@ export class VisualTap {
   /**
    * Interleaved stereo PCM at `rate`, about to go to the output; `at` is how many frames
    * were pulled before it (the output's position when its first frame is heard).
+   * `retain`: while off, keep it (by reference: the caller never reuses it) so turning on
+   * can start from what is about to be heard; at most RETAIN_SECS of it.
    */
-  feed(pcm, rate, at) {
-    if (!this.on || !(rate > 0) || !pcm || !(pcm.length >= 2) || !Number.isFinite(at)) return;
+  feed(pcm, rate, at, retain = false) {
+    if (!(rate > 0) || !pcm || !(pcm.length >= 2) || !Number.isFinite(at)) return;
+    if (!this.on) {
+      if (retain) {
+        this.ahead.push({ pcm, rate, at });
+        this.aheadFrames += pcm.length / 2;
+        while (this.ahead.length > 1 && this.aheadFrames - this.ahead[0].pcm.length / 2 > rate * RETAIN_SECS) {
+          this.aheadFrames -= this.ahead.shift().pcm.length / 2;
+        }
+      }
+      return;
+    }
     if (!this.vis || this.rate !== rate) {
       this.#drop();
       try {
