@@ -44,6 +44,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -197,6 +198,8 @@ fun MenuBrowser(navigator: MenuNavigator, modifier: Modifier = Modifier) {
     val stack by navigator.stack.collectAsStateWithLifecycle()
     val frame = stack.lastOrNull()
     val inputs = remember(frame?.id) { mutableStateMapOf<Int, String>() }
+    // System back goes up a menu level first; at the first level it leaves as before.
+    BackHandler(enabled = stack.size > 1) { navigator.back() }
     when {
         frame == null -> LoadingState(modifier)
         frame.items.isEmpty() && frame.loading -> LoadingState(modifier)
@@ -250,6 +253,8 @@ fun ItemSheetContent(
     val stack by navigator.stack.collectAsStateWithLifecycle()
     val frame = stack.lastOrNull()
     val inputs = remember(frame?.id) { mutableStateMapOf<Int, String>() }
+    // System back goes up a menu level first; at the first level it leaves as before.
+    BackHandler(enabled = stack.size > 1) { navigator.back() }
     LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 24.dp)) {
         item {
             ListItem(

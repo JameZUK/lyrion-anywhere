@@ -68,7 +68,13 @@ import io.github.jamezuk.lyrionanywhere.ui.onboarding.ServerScreen
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.ServerUiState
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.SignInScreen
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.SignInUiState
+import io.github.jamezuk.lyrionanywhere.core.RatingStyle
+import io.github.jamezuk.lyrionanywhere.core.TrackRating
+import io.github.jamezuk.lyrionanywhere.ui.alarms.AlarmsScreen
+import io.github.jamezuk.lyrionanywhere.ui.alarms.AlarmsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.player.MiniPlayer
+import io.github.jamezuk.lyrionanywhere.ui.player.RatingControl
+import io.github.jamezuk.lyrionanywhere.ui.player.RatingsSetting
 import io.github.jamezuk.lyrionanywhere.ui.player.NowPlayingScreen
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnActions
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnList
@@ -308,6 +314,47 @@ class AccessibilityAuditTests {
             onSubmit = {},
             onBack = {},
         )
+    }
+
+    @Test
+    fun alarms() {
+        setClock24(true)
+        val vm = AlarmsViewModel(FakeAlarms(), KITCHEN)
+        audit { AlarmsScreen(vm, "Kitchen") }
+    }
+
+    /** The alarm editor (in its dialog): days, repeat, sound, shuffle and the labelled volume. */
+    @Test
+    fun alarmEditor() {
+        setClock24(true)
+        val vm = AlarmsViewModel(FakeAlarms(), KITCHEN)
+        audit { AlarmsScreen(vm, "Kitchen") }
+        compose.onNodeWithTag("alarm-1a2b3c4d").performClick()
+        compose.assertAccessible()
+    }
+
+    @Test
+    fun ratingsSetting() {
+        audit { RatingsSetting(RatingStyle.STARS, onStyle = {}) { 3 } }
+        // Its confirmation too.
+        compose.onNodeWithTag("clear-ratings").performClick()
+        compose.assertAccessible()
+    }
+
+    @Test
+    fun ratingControls() = audit {
+        androidx.compose.foundation.layout.Column {
+            RatingControl(TrackRating(9, 80u, 60u, 80u), RatingStyle.STARS, failed = false) {}
+            RatingControl(TrackRating(9, null, 60u, 60u), RatingStyle.STARS, failed = true) {}
+            RatingControl(TrackRating(9, 100u, null, 100u), RatingStyle.HEART, failed = false) {}
+        }
+    }
+
+    @Test
+    fun nothingPlayingOffersAPlayer() = audit {
+        androidx.compose.foundation.layout.Column {
+            MiniPlayer(PlayerUiState(players = listOf(samplePlayer(KITCHEN)), loading = false), {}, {}, {})
+        }
     }
 
     /** The audit itself: a check that passes everything would prove nothing. */

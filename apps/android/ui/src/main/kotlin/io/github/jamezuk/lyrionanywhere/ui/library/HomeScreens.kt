@@ -1,7 +1,9 @@
 package io.github.jamezuk.lyrionanywhere.ui.library
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -126,13 +128,28 @@ fun HomeScreen(
                     Shelf(shelf, feed, actions, onNewStation = { creating = true })
                 }
             }
-            if (edit != null) {
+            if (edit != null && feed.layoutLoaded) {
                 item {
                     Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.Center) {
-                        OutlinedButton(onClick = actions.onEdit) {
+                        OutlinedButton(onClick = actions.onEdit, modifier = Modifier.testTag("home-edit")) {
                             Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
                             Text(stringResource(R.string.home_edit), Modifier.padding(start = 8.dp))
                         }
+                    }
+                }
+            } else if (edit != null && feed.layoutError != null) {
+                // The default is shown, but it isn't the user's: no editing until it loads.
+                item {
+                    Column(
+                        Modifier.fillMaxWidth().padding(16.dp).testTag("home-layout-failed"),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(
+                            stringResource(R.string.home_layout_failed),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        TextButton(onClick = actions.onRetry) { Text(stringResource(R.string.action_retry)) }
                     }
                 }
             }
@@ -387,6 +404,30 @@ fun HomeEditor(
     modifier: Modifier = Modifier,
 ) {
     var adding by rememberSaveable { mutableStateOf(false) }
+    var askDiscard by rememberSaveable { mutableStateOf(false) }
+    val changed = draft != (feed.layout ?: HomeLayouts.DEFAULT)
+    // Back (and Cancel) leave edit mode, asking first when there are changes to lose.
+    val leave = { if (changed) askDiscard = true else edit.onCancel() }
+    BackHandler(enabled = !askDiscard) { leave() }
+    if (askDiscard) {
+        AlertDialog(
+            onDismissRequest = { askDiscard = false },
+            title = { Text(stringResource(R.string.home_discard_title)) },
+            text = { Text(stringResource(R.string.home_discard_body)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        askDiscard = false
+                        edit.onCancel()
+                    },
+                    modifier = Modifier.testTag("home-discard"),
+                ) { Text(stringResource(R.string.action_discard)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { askDiscard = false }) { Text(stringResource(R.string.action_keep_editing)) }
+            },
+        )
+    }
     val rowHeight = with(LocalDensity.current) { 64.dp.toPx() }
     Column(modifier.fillMaxSize()) {
         Text(
@@ -409,7 +450,7 @@ fun HomeEditor(
         Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(onClick = edit.onReset) { Text(stringResource(R.string.home_reset)) }
             Box(Modifier.weight(1f))
-            OutlinedButton(onClick = edit.onCancel) { Text(stringResource(R.string.action_cancel)) }
+            OutlinedButton(onClick = leave) { Text(stringResource(R.string.action_cancel)) }
             Button(onClick = edit.onSave, enabled = !saving) { Text(stringResource(R.string.action_save)) }
         }
     }
