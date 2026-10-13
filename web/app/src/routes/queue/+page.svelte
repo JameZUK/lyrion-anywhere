@@ -8,7 +8,7 @@
 	import * as cmd from '$lib/lms/commands';
 	import type { Command } from '$lib/api/rpc';
 	import { duration, textOf } from '$lib/lms/format';
-	import { dropIndex, insertAt, isSwipe, removeAt, reorder, restoreTrack, swipeRemoves, type RowBox } from '$lib/lms/queue-edit';
+	import { dropIndex, insertAt, isSwipe, moveChecked, removeAt, removeChecked, reorder, restoreTrack, swipeRemoves, type RowBox } from '$lib/lms/queue-edit';
 	import type { PlayerStatus, Track } from '$lib/lms/types';
 	import Art from '$lib/components/Art.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -129,13 +129,23 @@
 	}
 
 	const send = (c: Command) => (player: string) => api.rpc(player, c);
+	const rpc = (p: string, c: Command) => api.rpc(p, c);
 
 	async function remove(i: number) {
 		const t = tracks[i];
 		if (!t) return;
 		dismiss();
 		const player = app.playerId;
-		const ok = await edit(removeAt(tracks, i), Math.max(0, total - 1), send(cmd.removeFromQueue(i)), "Couldn't remove the track");
+		// The removed row had focus (its Remove button): keep focus in the list, on the row
+		// that takes its place (or the one before), rather than losing it to the page.
+		const hadFocus = !!list?.contains(document.activeElement);
+		const done = edit(removeAt(tracks, i), Math.max(0, total - 1), (player) => removeChecked(rpc, player, i, t), "Couldn't remove the track");
+		if (hadFocus) {
+			await tick();
+			const rows = list?.querySelectorAll<HTMLElement>('.main');
+			(rows?.[i] ?? rows?.[i - 1])?.focus();
+		}
+		const ok = await done;
 		if (!ok) return;
 		const canUndo = Number.isSafeInteger(t.id) && (t.id as number) > 0;
 		undo = canUndo ? { track: t, index: i, player } : null;
@@ -162,7 +172,8 @@
 
 	async function move(from: number, to: number) {
 		if (from === to || from < 0 || to < 0 || from >= tracks.length || to >= tracks.length) return;
-		await edit(reorder(tracks, from, to), total, send(cmd.moveInQueue(from, to)), "Couldn't move the track");
+		const t = tracks[from]!;
+		await edit(reorder(tracks, from, to), total, (player) => moveChecked(rpc, player, from, to, t), "Couldn't move the track");
 	}
 
 	async function clear() {
@@ -350,9 +361,7 @@
 	{/if}
 </section>
 
-{#if notice}
-	<Snackbar message={notice} action={undo ? 'Undo' : ''} onaction={restore} ondismiss={dismiss} />
-{/if}
+<Snackbar message={notice} action={undo ? 'Undo' : ''} onaction={restore} ondismiss={dismiss} />
 
 <style>
 	header {

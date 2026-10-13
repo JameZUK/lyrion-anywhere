@@ -24,6 +24,7 @@
 			return;
 		}
 		let live = true;
+		const release = api.retainArt?.(p);
 		api.art(p).then(
 			(src) => {
 				if (!live || layers.at(-1)?.src === src) return;
@@ -31,7 +32,10 @@
 			},
 			() => {},
 		);
-		return () => (live = false);
+		return () => {
+			live = false;
+			release?.();
+		};
 	});
 
 	$effect(() => {

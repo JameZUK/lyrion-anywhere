@@ -1,4 +1,5 @@
 <script lang="ts">
+	import BackButton from '$lib/components/BackButton.svelte';
 	// Alarms for the selected player (Wave 2 §1): LMS's own, so they ring on hardware
 	// players too and with no app open.
 	import { app } from '$lib/state/app.svelte';
@@ -50,17 +51,28 @@
 		return [...g.entries()];
 	});
 
-	async function run(fn: () => Promise<AlarmListing>) {
+	/** Bumped by every request: only the latest one's answer is shown. */
+	let request = 0;
+
+	/**
+	 * Ask `p`'s alarms something; show the answer only if it is still the latest request and
+	 * `p` is still the selected player (the user may switch players while it is on its way).
+	 */
+	async function run(p: string, fn: (p: string) => Promise<AlarmListing>) {
+		const mine = ++request;
+		const current = () => mine === request && p === app.playerId;
 		busy = true;
 		error = '';
 		try {
-			listing = await fn();
+			const l = await fn(p);
+			if (!current()) return false;
+			listing = l;
 			return true;
 		} catch (e) {
-			error = (e as Error).message;
+			if (current()) error = (e as Error).message;
 			return false;
 		} finally {
-			busy = false;
+			if (mine === request) busy = false;
 		}
 	}
 
@@ -68,7 +80,10 @@
 		const p = player;
 		listing = null;
 		editing = null;
-		if (p) void run(() => routine.alarms(p));
+		confirmDelete = null;
+		error = '';
+		if (p) void run(p, (q) => routine.alarms(q));
+		else request++; // nothing on its way is wanted any more
 	});
 
 	function edit(a: Alarm | null) {
@@ -100,13 +115,13 @@
 		if (!p) return;
 		const change: AlarmChange = { time, days: fDays, repeat: fRepeat, volume: fVolume, shuffle: fShuffle, sound: fSound };
 		const id = editing;
-		const ok = await run(() => (id === 'new' ? routine.addAlarm(p, { ...change, enabled: true }) : routine.changeAlarm(p, id!, change)));
+		const ok = await run(p, (q) => (id === 'new' ? routine.addAlarm(q, { ...change, enabled: true }) : routine.changeAlarm(q, id!, change)));
 		if (ok) editing = null;
 	}
 </script>
 
 <section class="page alarms">
-	<a class="back muted" href="#/">‹ Now playing</a>
+	<BackButton parent="/" />
 	<header>
 		<h1>Alarms</h1>
 		{#if player && listing && editing === null}
@@ -122,7 +137,7 @@
 			<p class="muted">{busy ? 'Loading…' : ''}</p>
 		{:else}
 			<label class="switch">
-				<input type="checkbox" checked={listing.enabled} disabled={busy} onchange={(e) => run(() => routine.setAllAlarms(player, e.currentTarget.checked))} data-all-alarms />
+				<input type="checkbox" checked={listing.enabled} disabled={busy} onchange={(e) => run(player, (q) => routine.setAllAlarms(q, e.currentTarget.checked))} data-all-alarms />
 				<span>Alarms on this player</span>
 			</label>
 			{#if next}
@@ -188,10 +203,10 @@
 								aria-label={`${timeText(a.time)} alarm on`}
 								checked={a.enabled}
 								disabled={busy}
-								onchange={(e) => run(() => routine.changeAlarm(player, a.id, { enabled: e.currentTarget.checked }))}
+								onchange={(e) => run(player, (q) => routine.changeAlarm(q, a.id, { enabled: e.currentTarget.checked }))}
 							/>
 							{#if confirmDelete === a.id}
-								<button class="btn small danger" onclick={() => run(() => routine.deleteAlarm(player, a.id)).then(() => (confirmDelete = null))} data-confirm-delete>Delete</button>
+								<button class="btn small danger" onclick={() => run(player, (q) => routine.deleteAlarm(q, a.id)).then(() => (confirmDelete = null))} data-confirm-delete>Delete</button>
 								<button class="btn small" onclick={() => (confirmDelete = null)}>Keep</button>
 							{:else}
 								<button class="icon-btn" aria-label={`Delete the ${timeText(a.time)} alarm`} onclick={() => (confirmDelete = a.id)}><Icon name="close" size={18} /></button>

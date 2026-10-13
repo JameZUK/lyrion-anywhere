@@ -469,6 +469,55 @@ describe('rpc and art', () => {
 		await Promise.resolve();
 		expect(revoke).toHaveBeenCalledWith('blob:1');
 	});
+
+	// Regression: the LRU revoked blob: URLs that images on screen were still showing.
+	test('art held on screen is never revoked; it goes once released', async () => {
+		vi.stubGlobal('fetch', async () => new Response(new TextEncoder().encode('x'), { headers: { 'content-type': 'image/jpeg' } }));
+		let n = 0;
+		const revoke = vi.fn();
+		vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: () => `blob:${++n}`, revokeObjectURL: revoke }));
+		const a = await api(); // cache size 2
+		const r1 = a.retainArt('music/1/cover');
+		await a.art('music/1/cover');
+		const r2 = a.retainArt('music/2/cover');
+		await a.art('music/2/cover');
+		const r3 = a.retainArt('music/3/cover');
+		await a.art('music/3/cover'); // over the size, but every one is on screen
+		await a.art('music/4/cover'); // not held: may go, but not while it is the one just asked for
+		await Promise.resolve();
+		expect(revoke).not.toHaveBeenCalled();
+		// Asked again, a held one comes from the cache (same URL, no new fetch).
+		expect(await a.art('music/1/cover')).toBe('blob:1');
+		// Released: the oldest unheld ones go until the cache fits.
+		r2();
+		r2(); // twice does nothing more
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(revoke.mock.calls.map((c) => c[0]).sort()).toEqual(['blob:2', 'blob:4']);
+		expect(await a.art('music/3/cover')).toBe('blob:3');
+		r1();
+		r3();
+	});
+
+	test('two views of the same art: it stays until both let go', async () => {
+		vi.stubGlobal('fetch', async () => new Response(new TextEncoder().encode('x'), { headers: { 'content-type': 'image/jpeg' } }));
+		let n = 0;
+		const revoke = vi.fn();
+		vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: () => `blob:${++n}`, revokeObjectURL: revoke }));
+		const a = await api();
+		const one = a.retainArt('music/1/cover');
+		const two = a.retainArt('music/1/cover');
+		await a.art('music/1/cover');
+		one();
+		await a.art('music/2/cover');
+		await a.art('music/3/cover');
+		await Promise.resolve();
+		expect(revoke).not.toHaveBeenCalledWith('blob:1');
+		two();
+		await a.art('music/4/cover'); // now it is the oldest nobody holds
+		await Promise.resolve();
+		expect(revoke).toHaveBeenCalledWith('blob:1');
+	});
 });
 
 describe('events', () => {

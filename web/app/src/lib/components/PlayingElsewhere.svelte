@@ -19,7 +19,7 @@
 {:else if app.remote}
 	<div class="strip" class:compact role="status" data-strip>
 		<Icon name="output" size={16} />
-		<span class="text">Playing on <strong>{name}</strong></span>
+		<span class="text"><span class="on-label">Playing on</span> <strong>{name}</strong></span>
 		{#if device.supported}
 			{#if hasQueue}
 				<button class="link-btn" onclick={() => void bringHere()} aria-label="Bring playback to this device">Bring here</button>
@@ -81,7 +81,28 @@
 			display: inline;
 		}
 		.strip {
+			flex-wrap: nowrap;
 			font-size: 0.8rem;
+		}
+		/* The player's name matters most: "Playing on" is left to the icon (and read out). */
+		.on-label {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			overflow: hidden;
+			clip: rect(0 0 0 0);
+			white-space: nowrap;
+		}
+	}
+	/* Touch: the small pills still take a 44 px tall tap. */
+	@media (pointer: coarse) {
+		.link-btn {
+			position: relative;
+		}
+		.link-btn::after {
+			content: '';
+			position: absolute;
+			inset: -8px -2px;
 		}
 	}
 </style>

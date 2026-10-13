@@ -1,6 +1,6 @@
 // Queue editing logic: the optimistic list must match what LMS does with `playlist move`, and
 // the gesture maths must be sane for any input.
-import { SWIPE_MIN_PX, dropIndex, insertAt, isSwipe, removeAt, reorder, swipeRemoves } from '$lib/lms/queue-edit';
+import { QueueChanged, SWIPE_MIN_PX, checkAt, dropIndex, insertAt, isSwipe, moveChecked, removeAt, removeChecked, reorder, sameTrack, swipeRemoves } from '$lib/lms/queue-edit';
 
 /** What LMS's playlist move does: take the item out, put it in so it ends up at `to`. */
 function lmsMove<T>(list: T[], from: number, to: number): T[] {
@@ -80,4 +80,47 @@ test('robust on arbitrary input: never throws, always a permutation', () => {
 		expect(d).toBeGreaterThanOrEqual(0);
 		expect(d).toBeLessThanOrEqual(Math.max(0, len));
 	}
+});
+
+describe('checked edits', () => {
+	const at = (q: { id?: number; title?: string }[]) => async (_p: string, c: (string | number)[]) => {
+		if (c[0] === 'status') {
+			const from = Number(c[1]);
+			return { playlist_loop: q.slice(from, from + Number(c[2])).map((t, i) => ({ ...t, 'playlist index': from + i })) };
+		}
+		return {};
+	};
+
+	test('same track: by id, or by title for entries without one', () => {
+		expect(sameTrack({ id: 3, title: 'a' }, { id: 3, title: 'b' })).toBe(true);
+		expect(sameTrack({ id: 3 }, { id: 4 })).toBe(false);
+		expect(sameTrack({ id: 3 }, { title: 'x' })).toBe(false);
+		expect(sameTrack({ title: 'Radio' }, { title: 'Radio' })).toBe(true);
+		expect(sameTrack(undefined, { id: 1 })).toBe(false);
+	});
+
+	test('removes only when the track is still at that position', async () => {
+		const sent: (string | number)[][] = [];
+		const q = [{ id: 1 }, { id: 2 }, { id: 3 }];
+		const rpc = async (p: string, c: (string | number)[]) => (sent.push(c), at(q)(p, c));
+		await removeChecked(rpc, 'p', 1, { id: 2 });
+		expect(sent.at(-1)).toEqual(['playlist', 'delete', 1]);
+		sent.length = 0;
+		await expect(removeChecked(rpc, 'p', 1, { id: 3 })).rejects.toBeInstanceOf(QueueChanged);
+		await expect(removeChecked(rpc, 'p', 7, { id: 3 })).rejects.toBeInstanceOf(QueueChanged);
+		await expect(moveChecked(rpc, 'p', 0, 2, { id: 2 })).rejects.toBeInstanceOf(QueueChanged);
+		expect(sent.filter((c) => c[0] !== 'status')).toEqual([]);
+		await moveChecked(rpc, 'p', 0, 2, { id: 1 });
+		expect(sent.at(-1)).toEqual(['playlist', 'move', 0, 2]);
+	});
+
+	test('bad positions and odd answers are refused, never sent', async () => {
+		const sent: (string | number)[][] = [];
+		const rpc = async (_p: string, c: (string | number)[]) => (sent.push(c), null);
+		for (const i of [-1, 1.5, NaN]) await expect(checkAt(rpc, 'p', i, { id: 1 })).rejects.toBeInstanceOf(QueueChanged);
+		await expect(removeChecked(rpc, 'p', 0, { id: 1 })).rejects.toBeInstanceOf(QueueChanged);
+		const wrongPos = async () => ({ playlist_loop: [{ id: 1, 'playlist index': 5 }] });
+		await expect(checkAt(wrongPos, 'p', 0, { id: 1 })).rejects.toBeInstanceOf(QueueChanged);
+		expect(sent.filter((c) => c[0] !== 'status')).toEqual([]);
+	});
 });

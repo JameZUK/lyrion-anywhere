@@ -1,4 +1,5 @@
 <script lang="ts">
+	import BackButton from '$lib/components/BackButton.svelte';
 	import { page } from '$app/state';
 	import * as cmd from '$lib/lms/commands';
 	import MenuView from '$lib/components/MenuView.svelte';
@@ -13,7 +14,7 @@
 </script>
 
 <section class="page">
-	<a class="back muted" href="#/apps">‹ Apps &amp; Radio</a>
+	<BackButton parent="/apps" />
 	{#if appName}
 		{#key appName}
 			<MenuView start={cmd.appMenu(appName)} title="" />
@@ -24,8 +25,4 @@
 </section>
 
 <style>
-	.back {
-		display: inline-block;
-		margin-bottom: 0.5rem;
-	}
 </style>

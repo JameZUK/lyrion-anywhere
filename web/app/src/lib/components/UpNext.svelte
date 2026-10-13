@@ -5,12 +5,13 @@
 	import { api, app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
-	import { isSwipe, restoreTrack } from '$lib/lms/queue-edit';
+	import { isSwipe, removeChecked, restoreTrack } from '$lib/lms/queue-edit';
 	import { upNext } from '$lib/lms/upnext';
 	import type { Track } from '$lib/lms/types';
 	import Art from './Art.svelte';
 	import Icon from './Icon.svelte';
 	import Snackbar from './Snackbar.svelte';
+	import { tick } from 'svelte';
 
 	/** A swipe must travel this far (px) to remove. */
 	const SWIPE_REMOVE_PX = 90;
@@ -22,6 +23,8 @@
 	let notice = $state('');
 	let swipe = $state<{ id: number; x: number; y: number; dx: number; active: boolean } | null>(null);
 	let swallowClick = false;
+	let box = $state<HTMLDivElement>();
+	let snack = $state<ReturnType<typeof Snackbar>>();
 
 	const key = (t: Track | undefined, i: number) => `${app.playerId}|${i}|${t?.id ?? t?.title ?? ''}`;
 	const shown = $derived(next && key(next.track, next.index) !== removed ? next : null);
@@ -32,14 +35,20 @@
 		const n = shown;
 		const player = app.playerId;
 		if (!n || !player) return;
+		// Removing hides the row: focus goes to the snackbar's Undo rather than being lost.
+		const hadFocus = !!box?.contains(document.activeElement);
 		removed = key(n.track, n.index);
 		undo = null;
 		notice = '';
 		try {
-			await api.rpc(player, cmd.removeFromQueue(n.index));
+			await removeChecked((p, c) => api.rpc(p, c), player, n.index, n.track);
 			const canUndo = Number.isSafeInteger(n.track.id) && (n.track.id as number) > 0;
 			undo = canUndo ? { track: n.track, index: n.index, player } : null;
 			notice = `Removed ${textOf(n.track.title, 80) || 'track'}`;
+			if (hadFocus) {
+				await tick();
+				snack?.focusAction();
+			}
 		} catch (e) {
 			removed = null;
 			notice = `Couldn't remove the track: ${(e as Error).message}`;
@@ -110,7 +119,7 @@
 </script>
 
 {#if shown}
-	<div class="upnext" data-up-next>
+	<div class="upnext" bind:this={box} data-up-next>
 		<a
 			class="row"
 			href="#/queue"
@@ -133,9 +142,7 @@
 		<button class="icon-btn rm" aria-label={`Remove ${title} from the queue`} onclick={remove}><Icon name="close" size={18} /></button>
 	</div>
 {/if}
-{#if notice}
-	<Snackbar message={notice} action={undo ? 'Undo' : ''} onaction={restore} ondismiss={dismiss} />
-{/if}
+<Snackbar bind:this={snack} message={notice} action={undo ? 'Undo' : ''} onaction={restore} ondismiss={dismiss} />
 
 <style>
 	.upnext {
@@ -185,8 +192,8 @@
 	}
 	.rm {
 		flex: none;
-		width: 36px;
-		height: 36px;
+		width: 44px;
+		height: 44px;
 		color: var(--fg-muted);
 	}
 	@media (prefers-reduced-motion: no-preference) {

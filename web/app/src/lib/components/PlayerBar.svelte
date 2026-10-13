@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { go } from '$lib/nav';
 	import { app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { coverPath } from '$lib/lms/commands';
@@ -45,7 +46,7 @@
 			navigator.vibrate?.(15);
 			playOn = true;
 		} else {
-			location.hash = '#/';
+			void go('/');
 		}
 	}
 
@@ -346,7 +347,7 @@
 			clip: rect(0 0 0 0);
 		}
 		.thumb {
-			width: 46px;
+			width: 42px;
 		}
 		/* The bar's backdrop filter makes it the frame for the Play on… sheet. */
 		.bar {

@@ -1,4 +1,6 @@
 <script lang="ts">
+	import BackButton from '$lib/components/BackButton.svelte';
+	import { useDetailTitle } from '$lib/title.svelte';
 	import { page } from '$app/state';
 	import { app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
@@ -16,9 +18,11 @@
 	});
 	let sort = $state<cmd.AlbumSort>('artistalbum');
 	let showMore = $state(false);
+	useDetailTitle(() => y === null ? '' : y === 0 ? 'No year' : String(y));
 </script>
 
 <section class="page">
+	<BackButton parent="/years" />
 	{#if y === null}
 		<p class="error">Not a year.</p>
 	{:else}

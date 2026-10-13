@@ -2,6 +2,7 @@
 	// A generic LMS menu (apps, radio, plugin and context menus), with its own back stack.
 	// Only actions the menus offered are run; the gateway enforces the same.
 	import { untrack } from 'svelte';
+	import { go as navigate } from '$lib/nav';
 	import { api, app } from '$lib/state/app.svelte';
 	import { me } from '$lib/state/me';
 	import type { Command } from '$lib/api/rpc';
@@ -134,7 +135,7 @@
 	}
 
 	function after(r: Resolved) {
-		if (r.nextWindow === 'nowPlaying') location.hash = '#/';
+		if (r.nextWindow === 'nowPlaying') void navigate('/');
 		else if (r.nextWindow === 'parent' || r.nextWindow === 'grandparent') back();
 		else if (r.nextWindow === 'refresh' && top) void load(top, 0);
 		app.soon();

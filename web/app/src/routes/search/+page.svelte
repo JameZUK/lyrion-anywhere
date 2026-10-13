@@ -1,44 +1,19 @@
 <script lang="ts">
-	import { api, app } from '$lib/state/app.svelte';
+	// Library search. The term and results live in `search` (not the page), so going to a
+	// result and back finds them as they were.
+	import { app } from '$lib/state/app.svelte';
+	import { search } from '$lib/state/search';
 	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
-	import type { SearchResult } from '$lib/lms/types';
 	import Icon from '$lib/components/Icon.svelte';
 
-	let term = $state('');
-	let result = $state<SearchResult | null>(null);
-	let busy = $state(false);
-	let error = $state('');
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	let seq = 0;
-
-	$effect(() => {
-		const q = term.trim();
-		clearTimeout(timer);
-		if (q.length < 2) {
-			result = null;
-			return;
-		}
-		timer = setTimeout(async () => {
-			const mine = ++seq;
-			busy = true;
-			try {
-				const r = await api.rpc<SearchResult>('', cmd.search(q, 30));
-				if (mine === seq) {
-					result = r;
-					error = '';
-				}
-			} catch (e) {
-				if (mine === seq) error = (e as Error).message;
-			} finally {
-				if (mine === seq) busy = false;
-			}
-		}, 250);
-	});
-
-	const empty = $derived(
-		result && !result.contributors_loop?.length && !result.albums_loop?.length && !result.tracks_loop?.length,
-	);
+	const result = $derived(search.result);
+	const found = $derived(result ? (result.contributors_loop?.length ?? 0) + (result.albums_loop?.length ?? 0) + (result.tracks_loop?.length ?? 0) : 0);
+	const empty = $derived(!!result && found === 0);
+	/** What a screen reader hears once a search is answered. */
+	const said = $derived(search.busy || !result ? '' : empty ? `Nothing found for “${search.shownFor}”.` : `${found} ${found === 1 ? 'result' : 'results'} for “${search.shownFor}”.`);
+	// Back from a result: don't pop the keyboard up over the results.
+	const focusBox = !search.term;
 </script>
 
 <section class="page">
@@ -47,11 +22,21 @@
 		<Icon name="search" />
 		<span class="sr-only">Search the library</span>
 		<!-- svelte-ignore a11y_autofocus -->
-		<input type="search" bind:value={term} placeholder="Artists, albums and tracks" autocomplete="off" spellcheck="false" autofocus />
-		{#if busy}<span class="spin" aria-label="Searching"></span>{/if}
+		<input
+			type="search"
+			value={search.term}
+			oninput={(e) => search.set(e.currentTarget.value)}
+			placeholder="Artists, albums and tracks"
+			autocomplete="off"
+			spellcheck="false"
+			autofocus={focusBox}
+			data-search-input
+		/>
+		{#if search.busy}<span class="spin" role="img" aria-label="Searching"></span>{/if}
 	</label>
-	{#if error}<p class="error">{error}</p>{/if}
-	{#if empty}<p class="muted">Nothing found for “{term.trim()}”.</p>{/if}
+	{#if search.error}<p class="error" role="alert">{search.error}</p>{/if}
+	<p class="sr-only" role="status">{said}</p>
+	{#if empty}<p class="muted" aria-hidden="true">Nothing found for “{search.shownFor}”.</p>{/if}
 
 	{#if result?.contributors_loop?.length}
 		<h2>Artists</h2>

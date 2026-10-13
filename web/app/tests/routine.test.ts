@@ -18,6 +18,7 @@ const fake = await import('./helpers/fake-app.svelte');
 const { ratings } = await import('$lib/state/ratings');
 const { default: RatingControl } = await import('$lib/components/RatingControl.svelte');
 const { default: AlarmsPage } = await import('../src/routes/alarms/+page.svelte');
+const { default: RatingsSettings } = await import('$lib/components/RatingsSettings.svelte');
 
 const P = '02:00:00:00:00:01';
 
@@ -167,6 +168,35 @@ describe('rating control', () => {
 	});
 });
 
+describe('ratings settings', () => {
+	test('clearing asks first, in the app; cancelling sends nothing', async () => {
+		route = (m, p) => (p === '/v1/me/ratings/style' ? { body: { style: 'stars' } } : m === 'DELETE' ? { body: { removed: 4 } } : { body: {} });
+		const native = vi.spyOn(window, 'confirm');
+		const r = render(RatingsSettings);
+		await fireEvent.click(r.container.querySelector('[data-clear-ratings]')!);
+		const dialog = document.querySelector('[data-confirm-dialog]')!;
+		expect(dialog.getAttribute('role')).toBe('alertdialog');
+		await fireEvent.click(dialog.querySelector('[data-confirm-cancel]')!);
+		expect(sent.some((s) => s.method === 'DELETE')).toBe(false);
+		expect(document.querySelector('[data-confirm-dialog]')).toBeNull();
+		await fireEvent.click(r.container.querySelector('[data-clear-ratings]')!);
+		await fireEvent.click(document.querySelector('[data-confirm-ok]')!);
+		await waitFor(() => expect(r.container.querySelector('[data-ratings-note]')!.textContent).toBe('4 ratings cleared.'));
+		expect(sent.filter((s) => s.method === 'DELETE').map((s) => s.path)).toEqual(['/v1/me/ratings']);
+		expect(native).not.toHaveBeenCalled();
+	});
+
+	test('a refused style change is put back and says why', async () => {
+		route = (m, p) => (p === '/v1/me/ratings/style' && m === 'PUT' ? { status: 503, body: { error: 'busy' } } : { body: { style: 'stars' } });
+		const r = render(RatingsSettings);
+		const select = r.container.querySelector<HTMLSelectElement>('[data-rating-style]')!;
+		await waitFor(() => expect(sent.some((s) => s.path === '/v1/me/ratings/style')).toBe(true));
+		await fireEvent.change(select, { target: { value: 'heart' } });
+		await waitFor(() => expect(r.container.querySelector('[data-ratings-note]')!.textContent).toContain('Couldn’t change how you rate'));
+		expect(ratings.style).toBe('stars');
+	});
+});
+
 describe('alarms page', () => {
 	const listing = (alarms: unknown[] = [], enabled = true) => ({
 		enabled,
@@ -222,6 +252,34 @@ describe('alarms page', () => {
 		expect(r.container.textContent).toContain('Choose a player first');
 		await new Promise((res) => setTimeout(res, 0));
 		expect(sent).toEqual([]);
+	});
+
+	// Regression: a slow listing for the previous player replaced the new player's.
+	test('switching players mid-request never shows the old player’s alarms', async () => {
+		const OTHER = '02:00:00:00:00:02';
+		fake.app.players = [
+			{ playerid: P, name: 'Kitchen' },
+			{ playerid: OTHER, name: 'Bedroom' },
+		];
+		const waiting: { path: string; answer: (body: unknown) => void }[] = [];
+		vi.stubGlobal('fetch', (path: string) => {
+			sent.push({ method: 'GET', path, body: undefined });
+			return new Promise<Response>((res) => waiting.push({ path, answer: (b) => res(new Response(JSON.stringify(b), { status: 200 })) }));
+		});
+		const alarm = (id: string, time: number) => ({ id, time, days: [1], enabled: true, repeat: true, volume: null, shuffle: 0, sound: null });
+		const r = render(AlarmsPage);
+		await waitFor(() => expect(waiting).toHaveLength(1));
+		fake.app.playerId = OTHER;
+		await waitFor(() => expect(waiting).toHaveLength(2));
+		expect(waiting[1]!.path).toBe(`/v1/players/${OTHER}/alarms`);
+		waiting[1]!.answer(listing([alarm('bbbbbbbb', 7200)]));
+		await waitFor(() => expect(r.container.querySelector('[data-alarm="bbbbbbbb"]')).not.toBeNull());
+		// The first player's answer arrives late: ignored.
+		waiting[0]!.answer(listing([alarm('aaaaaaaa', 3600)]));
+		await new Promise((res) => setTimeout(res, 10));
+		expect(r.container.querySelector('[data-alarm="aaaaaaaa"]')).toBeNull();
+		expect(r.container.querySelector('[data-alarm="bbbbbbbb"]')).not.toBeNull();
+		expect(r.container.textContent).toContain('On Bedroom');
 	});
 
 	test('a refusal is shown', async () => {

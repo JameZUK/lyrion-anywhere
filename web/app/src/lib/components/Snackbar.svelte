@@ -1,6 +1,9 @@
 <script lang="ts">
 	// A short message above the player bar, with an optional action (e.g. Undo). It goes away
-	// on its own after `timeout` ms; the parent removes it then (ondismiss).
+	// on its own after `timeout` ms; the parent clears it then (ondismiss).
+	//
+	// Keep it mounted with an empty message: its live region (role=status, polite) has to be in
+	// the page before a message arrives, or screen readers may not announce it.
 	let {
 		message,
 		action = '',
@@ -9,19 +12,29 @@
 		timeout = 6000,
 	}: { message: string; action?: string; onaction?: () => void; ondismiss: () => void; timeout?: number } = $props();
 
+	let actionBtn = $state<HTMLButtonElement>();
+
 	$effect(() => {
-		void message; // a new message restarts the clock
+		if (!message) return;
 		const t = setTimeout(() => ondismiss(), timeout);
 		return () => clearTimeout(t);
 	});
+
+	/** Put focus on the action (e.g. after the control that was used has gone). */
+	export function focusAction(): boolean {
+		actionBtn?.focus();
+		return !!actionBtn;
+	}
 </script>
 
-<div class="snack" role="status" aria-live="polite">
-	<span class="msg">{message}</span>
-	{#if action && onaction}<button class="act" onclick={onaction}>{action}</button>{/if}
-	<button class="icon-btn" aria-label="Dismiss" onclick={ondismiss}>
-		<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
-	</button>
+<div class="snack" class:empty={!message} data-snackbar>
+	<span class="msg" role="status" aria-live="polite">{message}</span>
+	{#if message}
+		{#if action && onaction}<button class="act" bind:this={actionBtn} onclick={onaction}>{action}</button>{/if}
+		<button class="icon-btn" aria-label="Dismiss" onclick={ondismiss}>
+			<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+		</button>
+	{/if}
 </div>
 
 <style>
@@ -41,6 +54,17 @@
 		color: var(--bg);
 		box-shadow: var(--shadow);
 	}
+	/* No message: nothing to see or touch, but the live region stays in the page. */
+	.snack.empty {
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		overflow: hidden;
+		clip: rect(0 0 0 0);
+		background: none;
+		box-shadow: none;
+		pointer-events: none;
+	}
 	.msg {
 		flex: 1;
 		min-width: 0;
@@ -54,7 +78,7 @@
 		color: var(--accent-soft);
 		font-weight: 650;
 		padding: 0.6rem 0.8rem;
-		min-height: 40px;
+		min-height: 44px;
 		border-radius: var(--radius-sm);
 	}
 	.icon-btn {

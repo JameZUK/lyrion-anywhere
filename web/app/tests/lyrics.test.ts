@@ -4,7 +4,7 @@
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { lineAt, loadPeek, lyricsPath, sanitiseLyrics, savePeek, MAX_LINES, MAX_LINE_CHARS } from '$lib/lyrics/lyrics';
-import { LyricsState, REMEMBERED } from '$lib/lyrics/store.svelte';
+import { LyricsState, REMEMBERED, RETRY_MS } from '$lib/lyrics/store.svelte';
 
 vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
@@ -147,6 +147,54 @@ describe('LyricsState', () => {
 		await s.load(9);
 		expect(s.lyrics?.synced).toBe(true);
 		expect(paths.length).toBe(2);
+	});
+
+	// Regression: after a transient failure the same track was never asked about again.
+	test('a failure is tried again for the same track, at once when asked and by itself later', async () => {
+		vi.useFakeTimers();
+		try {
+			let status = 503;
+			const paths = stubFetch(() => ({ status, body: status === 200 ? SYNCED : { error: 'busy' } }));
+			const s = new LyricsState(authed);
+			await s.load(9);
+			expect(s.lyrics).toBeNull();
+			// Asked again for the same track (e.g. Now playing re-opened): tried at once.
+			await s.load(9);
+			expect(paths.length).toBe(2);
+			// And by itself after a while, while the track is still wanted.
+			status = 200;
+			await vi.advanceTimersByTimeAsync(RETRY_MS[1]!);
+			expect(paths.length).toBe(3);
+			expect(s.lyrics?.synced).toBe(true);
+			// Once found, nothing more is asked.
+			await vi.advanceTimersByTimeAsync(RETRY_MS.reduce((a, b) => a + b, 0));
+			await s.load(9);
+			expect(paths.length).toBe(3);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test('retries stop after a few tries, when the track changes, and on reset', async () => {
+		vi.useFakeTimers();
+		try {
+			const paths = stubFetch(() => ({ status: 503, body: { error: 'busy' } }));
+			const s = new LyricsState(authed);
+			await s.load(9);
+			await vi.advanceTimersByTimeAsync(RETRY_MS.reduce((a, b) => a + b, 0) * 2);
+			expect(paths.length).toBe(1 + RETRY_MS.length);
+			paths.length = 0;
+			await s.load(8);
+			await s.load(7); // the track changed: no retries for 8
+			await vi.advanceTimersByTimeAsync(RETRY_MS[0]!);
+			expect(paths).toEqual(['/v1/lyrics/track/8', '/v1/lyrics/track/7', '/v1/lyrics/track/7']);
+			s.reset();
+			paths.length = 0;
+			await vi.advanceTimersByTimeAsync(RETRY_MS.reduce((a, b) => a + b, 0));
+			expect(paths).toEqual([]);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	test('bad ids are never fetched', async () => {

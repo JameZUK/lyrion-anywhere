@@ -1,4 +1,6 @@
 <script lang="ts">
+	import BackButton from '$lib/components/BackButton.svelte';
+	import { useDetailTitle } from '$lib/title.svelte';
 	import { page } from '$app/state';
 	import { api, app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
@@ -84,9 +86,11 @@
 		if (it.status === 'active' && it.total) return { kind: 'busy', label: `Downloading ${Math.round((100 * it.received) / it.total)}%` };
 		return { kind: 'busy', label: 'Waiting to download' };
 	}
+	useDetailTitle(() => textOf(album?.album));
 </script>
 
 <section class="page">
+	<BackButton parent="/albums" />
 	{#if error}
 		<p class="error">{error}</p>
 	{:else if album && albumId !== null}

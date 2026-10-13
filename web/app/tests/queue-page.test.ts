@@ -49,7 +49,11 @@ beforeEach(() => {
 		const key = cmd.slice(0, 2).join(' ');
 		if (refuse.some((r) => key.startsWith(r))) throw new Error('refused');
 		if (cmd[0] === 'status' && cmd[1] === '-') return { playlist_tracks: queue.length };
-		if (cmd[0] === 'status') return { playlist_loop: queue, playlist_tracks: queue.length };
+		if (cmd[0] === 'status') {
+			const from = Number(cmd[1]);
+			const loop = queue.slice(from, from + Number(cmd[2])).map((t, i) => ({ ...t, 'playlist index': from + i }));
+			return { playlist_loop: loop, playlist_tracks: queue.length };
+		}
 		// A tiny LMS: apply the edits to its queue.
 		if (key === 'playlist move') queue = reorder(queue, Number(cmd[2]), Number(cmd[3]));
 		if (key === 'playlist delete') queue = removeAt(queue, Number(cmd[2]));
@@ -158,6 +162,21 @@ test('status refreshes during a drag are held back, then applied', async () => {
 	expect(titles(r.container)).toEqual(['Song 1', 'Song 2', 'Song 3', 'Song 4']);
 	pointer(handle, 'pointercancel', {});
 	await waitFor(() => expect(titles(r.container)[0]).toBe('Song 9'));
+});
+
+test('removing with the button keeps focus in the list; the message is in a live region that was already there', async () => {
+	const r = await setup();
+	// The live region exists (empty) before anything is said, so screen readers announce it.
+	const live = r.container.ownerDocument.querySelector('[data-snackbar] [role="status"]')!;
+	expect(live.getAttribute('aria-live')).toBe('polite');
+	expect(live.textContent).toBe('');
+	const rm = r.getByRole('button', { name: 'Remove Song 2' });
+	rm.focus();
+	await fireEvent.click(rm);
+	await settle();
+	expect(document.activeElement?.getAttribute('aria-label')).toBe('Play Song 3');
+	expect(r.container.ownerDocument.querySelector('[data-snackbar] [role="status"]')).toBe(live);
+	expect(live.textContent).toBe('Removed Song 2');
 });
 
 test('swiping a row left past the threshold removes it, with Undo', async () => {
@@ -326,4 +345,30 @@ test('hostile track titles stay text in rows, labels and the snackbar', async ()
 	await settle();
 	expect(document.querySelectorAll('img').length).toBe(0);
 	expect(r.getByRole('status').textContent).toContain('<img src=x');
+});
+
+// Regression: removal is by position, and the queue can change under the user (another app,
+// a station topping it up). It removed whichever track had moved into that position.
+test('a track no longer at its position is not removed (nor is anything else)', async () => {
+	const r = await setup();
+	// Another app puts a track at the front: Song 3 is now at index 3, not 2.
+	queue = [track(9), ...queue];
+	await fireEvent.click(r.getByRole('button', { name: 'Remove Song 3' }));
+	await settle();
+	expect(sent().filter((c) => c[1] === 'delete')).toEqual([]);
+	expect(queue.map((t) => t.title)).toEqual(['Song 9', 'Song 1', 'Song 2', 'Song 3', 'Song 4']);
+	expect(r.getByRole('alert').textContent).toContain('the queue changed meanwhile');
+	// …and the page shows the queue as it is now.
+	await waitFor(() => expect(titles(r.container)).toEqual(['Song 9', 'Song 1', 'Song 2', 'Song 3', 'Song 4']));
+});
+
+test('a move checks the track is still where it was', async () => {
+	const r = await setup();
+	queue = [track(9), ...queue];
+	const row = r.getByRole('button', { name: 'Play Song 2' });
+	row.focus();
+	await fireEvent.keyDown(row, { key: 'ArrowDown', altKey: true });
+	await settle();
+	expect(sent().filter((c) => c[1] === 'move')).toEqual([]);
+	await waitFor(() => expect(titles(r.container)[0]).toBe('Song 9'));
 });

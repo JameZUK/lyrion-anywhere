@@ -55,7 +55,7 @@ const headings = () => screen.getAllByRole('heading', { level: 2 }).map((h) => h
 
 test('shelves show in the saved order, with albums by id', async () => {
 	render(Home);
-	await waitFor(() => expect(headings()).toEqual(['Recently played', 'Stations', 'New Music']));
+	await waitFor(() => expect(headings()).toEqual(['Recently played', 'Stations', 'New music']));
 	await waitFor(() => expect(screen.getAllByText('Blue Album').length).toBeGreaterThan(0));
 	// The recent shelf asked for its ids, then those albums by id.
 	expect(fake.calls.some((c) => c.cmd[0] === 'albums' && String(c.cmd.at(-1)) === 'album_id:7')).toBe(true);
@@ -68,7 +68,7 @@ test('edit mode: move, hide and add with accessible controls, then save', async 
 	await fireEvent.click(await screen.findByRole('button', { name: 'Edit Home' }));
 	expect(screen.getByRole('button', { name: 'Move Recently played up' }).hasAttribute('disabled')).toBe(true);
 	await fireEvent.click(screen.getByRole('button', { name: 'Move Recently played down' }));
-	await fireEvent.click(screen.getByRole('button', { name: 'Hide New Music' }));
+	await fireEvent.click(screen.getByRole('button', { name: 'Hide New music' }));
 	const pick = screen.getByLabelText('Add a shelf') as HTMLSelectElement;
 	await fireEvent.change(pick, { target: { value: 'most' } });
 	await fireEvent.click(screen.getByRole('button', { name: 'Add' }));

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { go } from '$lib/nav';
 	import { untrack } from 'svelte';
 	import { api, app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
@@ -38,7 +39,7 @@
 			newName = '';
 			creating = false;
 			await load();
-			if (r.playlist_id) location.hash = `#/playlist/${r.playlist_id}`;
+			if (r.playlist_id) await go(`/playlist/${r.playlist_id}`);
 		} catch (err) {
 			error = (err as Error).message;
 		}

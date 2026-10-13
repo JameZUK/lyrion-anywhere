@@ -47,8 +47,13 @@
 			if (live) ms.metadata = title ? new MediaMetadata({ title, artist, album, artwork }) : null;
 		};
 		set([]);
+		// The system's media controls show this art: keep its blob: URL while it is current.
+		const release = path ? api.retainArt?.(path) : undefined;
 		if (path) api.art(path).then((src) => set([{ src, sizes: '512x512' }]), () => {});
-		return () => (live = false);
+		return () => {
+			live = false;
+			release?.();
+		};
 	});
 
 	$effect(() => {

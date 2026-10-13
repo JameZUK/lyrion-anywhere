@@ -1,4 +1,6 @@
 <script lang="ts">
+	import BackButton from '$lib/components/BackButton.svelte';
+	import { useDetailTitle } from '$lib/title.svelte';
 	import { page } from '$app/state';
 	import { untrack } from 'svelte';
 	import { api, app } from '$lib/state/app.svelte';
@@ -50,9 +52,11 @@
 		untrack(() => void artists.reset(artistsOf(id, lib)));
 	});
 	$effect(() => whenNear(sentinel, () => artists.more()));
+	useDetailTitle(() => name);
 </script>
 
 <section class="page">
+	<BackButton parent="/genres" />
 	{#if genreId === null}
 		<p class="error">Not a genre.</p>
 	{:else}

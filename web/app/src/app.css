@@ -161,6 +161,32 @@ h2 {
 .icon-btn:hover {
 	background: var(--bg-sunken);
 }
+/* Touch screens: every control at least 44 × 44 CSS px (WCAG 2.5.5, Apple's HIG). */
+@media (pointer: coarse) {
+	.icon-btn {
+		width: 44px;
+		height: 44px;
+	}
+	.btn {
+		min-height: 44px;
+	}
+}
+/* Back, at the top of detail pages (see BackButton). */
+.back-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.25rem;
+	min-height: 44px;
+	margin: 0 0 0.25rem -0.5rem;
+	padding: 0 0.75rem 0 0.4rem;
+	border-radius: 999px;
+	color: var(--fg-muted);
+	font-weight: 550;
+}
+.back-btn:hover {
+	background: var(--bg-sunken);
+	color: var(--fg);
+}
 .icon-btn:disabled {
 	opacity: 0.35;
 	cursor: default;

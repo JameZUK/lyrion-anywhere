@@ -9,6 +9,7 @@
 	import * as L from '$lib/home/layout';
 	import HomeShelf from '$lib/components/HomeShelf.svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 
 	let layout = $state<HomeLayout | null>(null);
 	let stations = $state<Station[]>([]);
@@ -87,8 +88,9 @@
 		}
 	}
 
+	let confirmReset = $state(false);
 	async function reset() {
-		if (!confirm('Put Home back to how it started?')) return;
+		confirmReset = false;
 		try {
 			layout = await me.resetHome();
 			saved = layout;
@@ -205,7 +207,10 @@
 		<div class="actions">
 			<button class="btn primary" onclick={save} disabled={saving}>Save</button>
 			<button class="btn" onclick={cancel}>Cancel</button>
-			<button class="btn" onclick={reset}>Reset to default</button>
+			<button class="btn" onclick={() => (confirmReset = true)}>Reset to default</button>
+			{#if confirmReset}
+				<ConfirmDialog title="Put Home back to how it started?" message="Your shelves and pins are replaced by the default ones." confirmLabel="Reset" onconfirm={reset} oncancel={() => (confirmReset = false)} />
+			{/if}
 		</div>
 	{:else}
 		{#each layout.shelves.filter((s) => !s.hidden) as s (L.shelfKey(s))}

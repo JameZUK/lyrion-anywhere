@@ -1,4 +1,5 @@
 <script lang="ts">
+	import BackButton from '$lib/components/BackButton.svelte';
 	// Stations: endless mixes from the library, refilled as they play.
 	import { me } from '$lib/state/me';
 	import type { Station } from '$lib/api/me';
@@ -22,7 +23,7 @@
 </script>
 
 <section class="page">
-	<a class="back muted" href="#/home">‹ Home</a>
+	<BackButton parent="/home" />
 	<header>
 		<h1>Stations</h1>
 		{#if !making}<button class="btn" onclick={() => (making = true)}><Icon name="plus" size={18} />New station</button>{/if}
@@ -62,10 +63,6 @@
 	}
 	h1 {
 		margin: 0;
-	}
-	.back {
-		display: inline-block;
-		margin-bottom: 0.5rem;
 	}
 	.lead {
 		margin: 0.25rem 0 1rem;

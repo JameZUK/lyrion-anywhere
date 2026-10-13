@@ -1,4 +1,5 @@
 <script lang="ts">
+	import BackButton from '$lib/components/BackButton.svelte';
 	import { page } from '$app/state';
 	import { untrack } from 'svelte';
 	import { api, app } from '$lib/state/app.svelte';
@@ -56,7 +57,7 @@
 </script>
 
 <section class="page">
-	{#if folder}<a class="back" href="#/favourites"><Icon name="back" size={18} />Favourites</a>{/if}
+	{#if folder}<BackButton parent="/favourites" />{/if}
 	<h1>{folder ? title : 'Favourites'}</h1>
 	{#if error}<p class="error">{error}</p>{/if}
 	{#if loaded && !items.length}<p class="muted">No favourites here yet. Add them in LMS or any LMS app.</p>{/if}
@@ -83,13 +84,6 @@
 </section>
 
 <style>
-	.back {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.3rem;
-		color: var(--fg-muted);
-		margin-bottom: 0.5rem;
-	}
 	.list {
 		list-style: none;
 		margin: 1rem 0 0;

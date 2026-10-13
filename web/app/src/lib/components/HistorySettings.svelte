@@ -6,6 +6,7 @@
 	import { textOf } from '$lib/lms/format';
 	import type { HistoryEntry } from '$lib/api/me';
 	import type { TitlesResult, Track } from '$lib/lms/types';
+	import ConfirmDialog from './ConfirmDialog.svelte';
 
 	let enabled = $state<boolean | null>(null);
 	let days = $state(396);
@@ -85,8 +86,9 @@
 		}
 	}
 
+	let confirmClear = $state(false);
 	async function clear() {
-		if (!confirm('Clear your listening history? This can’t be undone.')) return;
+		confirmClear = false;
 		try {
 			const r = await me.clearHistory();
 			items = [];
@@ -113,7 +115,10 @@
 {/if}
 <div class="buttons">
 	<button class="btn" onclick={show} disabled={busy}>View history</button>
-	<button class="btn" onclick={clear}>Clear history</button>
+	<button class="btn" onclick={() => (confirmClear = true)}>Clear history</button>
+	{#if confirmClear}
+		<ConfirmDialog title="Clear your listening history?" message="This can’t be undone." confirmLabel="Clear history" danger onconfirm={clear} oncancel={() => (confirmClear = false)} />
+	{/if}
 </div>
 {#if message}<p class="note" role="status">{message}</p>{/if}
 {#if open}

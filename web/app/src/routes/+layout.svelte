@@ -2,6 +2,9 @@
 	import '../app.css';
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
+	import { afterNavigate } from '$app/navigation';
+	import { noteNavigation } from '$lib/nav';
+	import { documentTitle, pageTitle } from '$lib/title.svelte';
 	import { api, app, session } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
 	import { appearance } from '$lib/theme/appearance.svelte';
@@ -141,12 +144,12 @@
 		{ href: '#/', label: 'Now playing', icon: 'home', match: (p: string) => p === '/' },
 		{ href: '#/home', label: 'Home', icon: 'shelves', match: (p: string) => p.startsWith('/home') || p.startsWith('/stations') },
 		{ href: '#/library', label: 'Library', icon: 'library', match: (p: string) => MORE_LIBRARY.some((l) => p.startsWith(l)) },
-		{ href: '#/new', label: 'New Music', icon: 'new', match: (p: string) => p.startsWith('/new') },
+		{ href: '#/new', label: 'New music', icon: 'new', match: (p: string) => p.startsWith('/new') },
 		{ href: '#/albums', label: 'Albums', icon: 'album', match: (p: string) => p.startsWith('/album') },
 		{ href: '#/artists', label: 'Artists', icon: 'artist', match: (p: string) => p.startsWith('/artist') },
 		{ href: '#/playlists', label: 'Playlists', icon: 'queue', match: (p: string) => p.startsWith('/playlist') },
 		{ href: '#/favourites', label: 'Favourites', icon: 'heart', match: (p: string) => p.startsWith('/favourites') },
-		{ href: '#/apps', label: 'Apps & Radio', icon: 'radio', match: (p: string) => p.startsWith('/apps') || p.startsWith('/browse') },
+		{ href: '#/apps', label: 'Apps & radio', icon: 'radio', match: (p: string) => p.startsWith('/apps') || p.startsWith('/browse') },
 		{ href: '#/search', label: 'Search', icon: 'search', match: (p: string) => p.startsWith('/search') },
 		{ href: '#/queue', label: 'Queue', icon: 'playnext', match: (p: string) => p.startsWith('/queue') },
 		{ href: '#/downloads', label: 'Downloads', icon: 'download', match: (p: string) => p.startsWith('/downloads') },
@@ -164,7 +167,15 @@
 		{ href: '#/settings', label: 'Settings', icon: 'settings', match: (p: string) => p.startsWith('/settings') },
 	];
 	const path = $derived(page.url.hash.replace(/^#/, '') || '/');
+
+	// Back on detail pages needs to know whether there is an app page behind this one.
+	afterNavigate((n) => noteNavigation({ type: n.type, delta: n.delta }));
 </script>
+
+<svelte:head>
+	<!-- SvelteKit announces the new title after each navigation. -->
+	<title>{app.status === 'signed-in' ? documentTitle(path, pageTitle.detail) : 'Lyrion Anywhere'}</title>
+</svelte:head>
 
 {#if app.status === 'unknown'}
 	<div class="splash" aria-busy="true"><span class="dot"></span></div>
@@ -347,8 +358,11 @@
 	}
 	@media (max-width: 760px) {
 		:global(:root) {
-			--tabs-h: calc(58px + env(safe-area-inset-bottom));
-			--bar-h: 64px;
+			/* Bottom chrome kept tight (tabs, mini player, "Playing on" strip): each control
+			   still has a 44 px target. */
+			--tabs-h: calc(52px + env(safe-area-inset-bottom));
+			--bar-h: 58px;
+			--strip-h: 30px;
 		}
 		.shell {
 			grid-template-columns: minmax(0, 1fr);
@@ -387,7 +401,7 @@
 			display: grid;
 			place-items: center;
 			width: 56px;
-			height: 30px;
+			height: 28px;
 			border-radius: 999px;
 		}
 		/* Material: a navigation bar with a pill behind the active icon. */
@@ -406,8 +420,12 @@
 		.barwrap.on-np {
 			display: none;
 		}
-		/* …so no room is kept for it either: the page ends at the tab bar. */
+		/* …so no room is kept for it either: the page ends at the tab bar. Banners (a notice,
+		   "tap to turn the sound on") take their room from Now playing, which fills the rest. */
 		.content.on-np {
+			display: flex;
+			flex-direction: column;
+			height: var(--app-h);
 			padding-bottom: var(--tabs-h);
 		}
 	}

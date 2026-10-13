@@ -1,6 +1,7 @@
 // Queue editing logic, kept free of the DOM so it can be tested on its own.
 import type { Command } from '$lib/api/rpc';
-import { enqueue, moveInQueue, status } from './commands';
+import { enqueue, moveInQueue, queue, removeFromQueue, status } from './commands';
+import type { PlayerStatus, Track } from './types';
 //
 // LMS's `playlist move <from> <to>` takes the track out at `from` and puts it back so that it
 // ends up at index `to` (in the new order). `reorder` does exactly the same to a local copy, so
@@ -95,4 +96,46 @@ export async function restoreTrack(rpc: Rpc, player: string, trackId: number, in
 		throw new Error('the queue changed meanwhile, so it was added at the end');
 	}
 	if (before > index) await rpc(player, moveInQueue(before, index));
+}
+
+// --- checked edits ----------------------------------------------------------------------
+// LMS edits the queue by position only (`playlist delete <index>`; `playlistcontrol cmd:delete
+// track_id:…` would take out every copy of the track). The queue can change under the user
+// (another app, a station topping it up, the track ending), so an edit first checks that the
+// track it was meant for is still at that position, and refuses otherwise.
+
+/** The queue no longer has the expected track at that position: nothing was changed. */
+export class QueueChanged extends Error {
+	constructor() {
+		super('the queue changed meanwhile, so nothing was changed');
+		this.name = 'QueueChanged';
+	}
+}
+
+/** Whether two queue entries are the same track (by id, or by title for entries without one). */
+export function sameTrack(a: Track | undefined, b: Track | undefined): boolean {
+	if (!a || !b) return false;
+	if (a.id !== undefined || b.id !== undefined) return a.id === b.id;
+	return (a.title ?? '') === (b.title ?? '');
+}
+
+/** Throws QueueChanged unless `track` is (still) at `index` in `player`'s queue. */
+export async function checkAt(rpc: Rpc, player: string, index: number, track: Track): Promise<void> {
+	if (!Number.isInteger(index) || index < 0) throw new QueueChanged();
+	const r = (await rpc(player, queue(index, 1))) as PlayerStatus | null;
+	const at = r?.playlist_loop?.[0];
+	const pos = at?.['playlist index'];
+	if (!sameTrack(at, track) || (pos !== undefined && Number(pos) !== index)) throw new QueueChanged();
+}
+
+/** Remove `track` from position `index`, if it is still there. */
+export async function removeChecked(rpc: Rpc, player: string, index: number, track: Track): Promise<void> {
+	await checkAt(rpc, player, index, track);
+	await rpc(player, removeFromQueue(index));
+}
+
+/** Move `track` from position `from` so it ends up at `to`, if it is still at `from`. */
+export async function moveChecked(rpc: Rpc, player: string, from: number, to: number, track: Track): Promise<void> {
+	await checkAt(rpc, player, from, track);
+	await rpc(player, moveInQueue(from, to));
 }

@@ -91,7 +91,7 @@
 <style>
 	.stars {
 		display: inline-flex;
-		gap: 0.1rem;
+		gap: 0;
 		border-radius: var(--radius-sm);
 		vertical-align: middle;
 	}
@@ -99,11 +99,16 @@
 		outline: 2px solid var(--accent);
 		outline-offset: 2px;
 	}
+	/* Each star (and the heart) is a 44 × 44 px target, however small it is drawn. */
 	.star,
 	.heart {
+		display: inline-grid;
+		place-items: center;
+		min-width: 44px;
+		min-height: 44px;
 		background: none;
 		border: 0;
-		padding: 0.15rem;
+		padding: 0;
 		cursor: pointer;
 		color: var(--fg-muted);
 		line-height: 0;

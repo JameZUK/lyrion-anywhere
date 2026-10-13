@@ -9,13 +9,13 @@
 		{ href: '#/genres', icon: 'genre', label: 'Genres' },
 		{ href: '#/years', icon: 'calendar', label: 'Years' },
 		{ href: '#/compilations', icon: 'stack', label: 'Compilations' },
-		{ href: '#/random', icon: 'shuffle', label: 'Random Albums' },
-		{ href: '#/folder', icon: 'folder', label: 'Music Folder' },
+		{ href: '#/random', icon: 'shuffle', label: 'Random albums' },
+		{ href: '#/folder', icon: 'folder', label: 'Music folder' },
 	];
 	const MORE = [
 		{ href: '#/playlists', icon: 'queue', label: 'Playlists' },
 		{ href: '#/favourites', icon: 'heart', label: 'Favourites' },
-		{ href: '#/apps', icon: 'radio', label: 'Apps & Radio' },
+		{ href: '#/apps', icon: 'radio', label: 'Apps & radio' },
 		{ href: '#/downloads', icon: 'download', label: 'Downloads' },
 	];
 </script>
@@ -33,7 +33,7 @@
 	{/if}
 	<a class="hero" href="#/new">
 		<span class="glyph"><Icon name="new" size={26} /></span>
-		<span class="words"><strong>New Music</strong><span class="muted">Recently added albums</span></span>
+		<span class="words"><strong>New music</strong><span class="muted">Recently added albums</span></span>
 		<span class="chev" aria-hidden="true">›</span>
 	</a>
 	<ul>

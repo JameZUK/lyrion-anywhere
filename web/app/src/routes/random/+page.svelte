@@ -1,4 +1,5 @@
 <script lang="ts">
+	import BackButton from '$lib/components/BackButton.svelte';
 	import AlbumBrowser from '$lib/components/AlbumBrowser.svelte';
 	import LibraryNote from '$lib/components/LibraryNote.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -7,8 +8,9 @@
 </script>
 
 <section class="page">
+	<BackButton parent="/library" />
 	<header>
-		<h1>Random Albums</h1>
+		<h1>Random albums</h1>
 		<button class="btn" onclick={() => version++}><Icon name="shuffle" size={18} />Shuffle again</button>
 	</header>
 	<LibraryNote />

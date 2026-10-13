@@ -47,6 +47,8 @@ export function artUrl(path: string): string | null {
 
 export class Api {
 	#art = new Map<string, Promise<string>>();
+	/** How many views show each path's art now. */
+	#artRefs = new Map<string, number>();
 	// LMS resizes artwork on its single thread: don't flood it (HTTP/2 has no per-host cap).
 	#artLimit = new Limiter(6);
 
@@ -69,7 +71,9 @@ export class Api {
 
 	/**
 	 * Artwork as a blob: URL. Art needs the bearer token, so it can't be a plain <img src>;
-	 * fetching it also keeps tokens out of URLs. Cached, oldest dropped first.
+	 * fetching it also keeps tokens out of URLs. Cached, least recently used dropped first, but
+	 * never while something on screen holds it (see `retainArt`): revoking a blob: URL an <img>
+	 * still shows breaks it the next time the browser needs the image again.
 	 */
 	art(path: string): Promise<string> {
 		const hit = this.#art.get(path);
@@ -79,14 +83,39 @@ export class Api {
 			return hit;
 		}
 		const p = this.artBlob(path).then((b) => URL.createObjectURL(b));
-		p.catch(() => this.#art.delete(path)); // don't cache failures
+		// Don't cache failures (unless a newer request has replaced this one meanwhile).
+		p.catch(() => this.#art.get(path) === p && this.#art.delete(path));
 		this.#art.set(path, p);
-		while (this.#art.size > this.artCacheSize) {
-			const [oldest, old] = this.#art.entries().next().value!;
-			this.#art.delete(oldest);
-			old.then((u) => URL.revokeObjectURL(u), () => {});
-		}
+		this.#trim(path);
 		return p;
+	}
+
+	/**
+	 * Keep `path`'s blob: URL alive while it is shown; call the returned function when it no
+	 * longer is (calling it again does nothing).
+	 */
+	retainArt(path: string): () => void {
+		this.#artRefs.set(path, (this.#artRefs.get(path) ?? 0) + 1);
+		let done = false;
+		return () => {
+			if (done) return;
+			done = true;
+			const n = (this.#artRefs.get(path) ?? 0) - 1;
+			if (n > 0) this.#artRefs.set(path, n);
+			else this.#artRefs.delete(path);
+			this.#trim();
+		};
+	}
+
+	/** Drop the least recently used art nobody holds until the cache fits (keeping `keep`). */
+	#trim(keep?: string) {
+		if (this.#art.size <= this.artCacheSize) return;
+		for (const [path, p] of this.#art) {
+			if (this.#art.size <= this.artCacheSize) break;
+			if (path === keep || this.#artRefs.has(path)) continue;
+			this.#art.delete(path);
+			p.then((u) => URL.revokeObjectURL(u), () => {});
+		}
 	}
 
 	/** Artwork as an image Blob (not cached here): e.g. to keep with offline downloads. */

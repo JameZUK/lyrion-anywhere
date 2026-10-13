@@ -40,11 +40,16 @@
 		failed = false;
 		if (!p || !visible) return;
 		let live = true;
+		// Keep this art's blob: URL from being revoked while it is on screen.
+		const release = api.retainArt?.(p);
 		api.art(p).then(
 			(u) => live && (src = u),
 			() => live && (failed = true),
 		);
-		return () => (live = false);
+		return () => {
+			live = false;
+			release?.();
+		};
 	});
 
 	const initial = $derived((label || alt).trim().charAt(0).toUpperCase() || '♪');

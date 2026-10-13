@@ -1,4 +1,4 @@
-// The My Music browse pages (New Music, Random Albums, genres, years, artists by role, the
+// The My Music browse pages (New music, Random albums, genres, years, artists by role, the
 // music folder, virtual libraries): what they ask LMS for, that hostile answers stay inert
 // text, and that the paging and the remembered library choice cope with odd input.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
@@ -179,8 +179,8 @@ test('with no virtual libraries the picker is hidden and nothing is narrowed', a
 	expect(library.id).toBeNull();
 	const { container } = render(LibraryPage);
 	expect(container.querySelector('select')).toBeNull();
-	expect(container.textContent).toContain('New Music');
-	expect(container.textContent).toContain('Music Folder');
+	expect(container.textContent).toContain('New music');
+	expect(container.textContent).toContain('Music folder');
 });
 
 test('a chosen library narrows the album lists, and can be picked on the Library page', async () => {
@@ -206,7 +206,7 @@ test('a chosen library narrows the album lists, and can be picked on the Library
 
 // --- pages --------------------------------------------------------------------------------
 
-test('New Music lists recently added albums, newest first, with an empty state', async () => {
+test('New music lists recently added albums, newest first, with an empty state', async () => {
 	fake.handler.rpc = async () => ({ count: 0, albums_loop: [] });
 	const { container } = render(NewMusic);
 	await waitFor(() => expect(container.textContent).toContain('Nothing has been added'));
@@ -231,7 +231,7 @@ test('album lists show hostile names as text and repeated albums once', async ()
 	expect(container.textContent).not.toContain('Again');
 });
 
-test('Random Albums asks for one batch and shuffles again on request', async () => {
+test('Random albums asks for one batch and shuffles again on request', async () => {
 	fake.handler.rpc = async () => ({ count: 1000, albums_loop: [{ id: 5, album: 'Five' }] });
 	const { getByText } = render(RandomAlbums);
 	await waitFor(() => expect(sent('albums').length).toBe(1));
@@ -271,8 +271,8 @@ test('genres and years link to their albums, with empty states', async () => {
 	expect(g.container.textContent).not.toContain('Bad');
 	g.unmount();
 	const y = render(Years);
-	await waitFor(() => expect(y.container.querySelectorAll('a').length).toBe(2));
-	expect([...y.container.querySelectorAll('a')].map((a) => a.getAttribute('href'))).toEqual(['#/year/1999', '#/year/0']);
+	await waitFor(() => expect(y.container.querySelectorAll('a:not([data-back])').length).toBe(2));
+	expect([...y.container.querySelectorAll('a:not([data-back])')].map((a) => a.getAttribute('href'))).toEqual(['#/year/1999', '#/year/0']);
 	expect(y.container.textContent).toContain('No year');
 	expect(sent('years')[0]).toEqual(['years', 0, 500, 'hasAlbums:1']);
 	y.unmount();

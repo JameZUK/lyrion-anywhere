@@ -87,7 +87,7 @@
 {/snippet}
 
 <section class="page">
-	<h1>Apps &amp; Radio</h1>
+	<h1>Apps &amp; radio</h1>
 	{#if error}<p class="error">{error}</p>{/if}
 	{#if !app.playerId}<p class="muted">Tip: choose a player first; some apps need one to browse.</p>{/if}
 	{#if radios.length}<h2>Radio</h2>{@render grid(radios)}{/if}

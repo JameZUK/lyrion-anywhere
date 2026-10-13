@@ -67,6 +67,8 @@ beforeEach(() => {
 	queueLen = 8;
 	fake.handler.rpc = async (_p, cmd) => {
 		if (cmd[0] === 'status' && cmd[1] === '-') return { playlist_tracks: queueLen };
+		// One entry of the queue (removals check the track is still there): the next song at 4.
+		if (cmd[0] === 'status' && cmd[2] === 1) return Number(cmd[1]) === 4 ? { playlist_loop: [{ id: 12, title: 'Next song', 'playlist index': 4 }] } : { playlist_loop: [] };
 		if (cmd[0] === 'playlistcontrol') queueLen++;
 		if (cmd[0] === 'playlist' && cmd[1] === 'delete') queueLen--;
 		return {};
@@ -204,6 +206,30 @@ describe('Now playing', () => {
 		r.unmount();
 	});
 
+	test('removing Up next from the keyboard puts focus on Undo, not the page', async () => {
+		const r = render(NowPlaying);
+		await tick();
+		const rm = r.getByRole('button', { name: 'Remove Next song from the queue' });
+		rm.focus();
+		await fireEvent.click(rm);
+		await waitFor(() => expect(document.activeElement?.textContent).toBe('Undo'));
+		r.unmount();
+	});
+
+	// Regression: removal is by position; if the queue changed since the status was read, it
+	// removed whichever track had moved into that position.
+	test('Up next removes nothing if another track is now in its place', async () => {
+		const base = fake.handler.rpc;
+		fake.handler.rpc = async (p, c) => (c[0] === 'status' && c[2] === 1 ? { playlist_loop: [{ id: 99, title: 'Someone else', 'playlist index': Number(c[1]) }] } : base(p, c));
+		const r = render(NowPlaying);
+		await tick();
+		await fireEvent.click(r.getByRole('button', { name: 'Remove Next song from the queue' }));
+		await waitFor(() => expect(r.container.textContent).toContain('the queue changed meanwhile'));
+		expect(sent()).toEqual([]);
+		expect(r.container.querySelector('[data-up-next]')).not.toBeNull(); // shown again
+		r.unmount();
+	});
+
 	test('a short or vertical swipe on Up next removes nothing', async () => {
 		const r = render(NowPlaying);
 		await tick();
@@ -274,8 +300,20 @@ describe('mini player gestures', () => {
 	test('swipe up opens Now playing', async () => {
 		const r = render(PlayerBar);
 		await tick();
+		// Regression: it set location.hash, which SvelteKit's hash router answers with a full
+		// page reload (stopping this device's sound). It navigates client-side now.
+		await new Promise((res) => setTimeout(res, 0)); // the set-up's own hashchange
+		let hashChanges = 0;
+		const count = () => hashChanges++;
+		addEventListener('hashchange', count);
+		const { goto } = await import('$app/navigation');
+		vi.mocked(goto).mockClear();
 		drag(mini(r), 3, -80);
+		expect(goto).toHaveBeenCalledWith('#/', {});
 		expect(location.hash).toBe('#/');
+		await new Promise((res) => setTimeout(res, 0));
+		expect(hashChanges).toBe(0);
+		removeEventListener('hashchange', count);
 		r.unmount();
 	});
 
