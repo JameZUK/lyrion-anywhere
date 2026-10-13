@@ -170,6 +170,13 @@ fun SignalPathPanel(
                     StageRow(SignalStage(stringResource(R.string.stage_from_cache), bitTransparent = true, resamples = false))
                 }
             }
+            if (path.fromDownloads) {
+                // A downloaded original: its first bytes came from the network, the rest from
+                // the download, whose audio was checked to be the same.
+                Box(Modifier.testTag("signal-from-downloads")) {
+                    StageRow(SignalStage(stringResource(R.string.stage_from_downloads), bitTransparent = true, resamples = false))
+                }
+            }
             path.stages.forEach { StageRow(it) }
             if (eq != null) EqChip(eq)
             LabelledLine(

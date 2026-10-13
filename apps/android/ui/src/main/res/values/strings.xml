@@ -1033,6 +1033,7 @@
     <string name="replay_cache_empty">Nothing kept yet</string>
     <string name="replay_cache_clear">Clear</string>
     <string name="stage_from_cache">From cache</string>
+    <string name="stage_from_downloads">From downloads</string>
     <plurals name="cushion_hours">
         <item quantity="one">%1$d hour</item>
         <item quantity="other">%1$d hours</item>
