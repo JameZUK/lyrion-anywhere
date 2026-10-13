@@ -109,6 +109,29 @@ class SecurityConfigTest {
         )
     }
 
+    /**
+     * Voice "play …": the MEDIA_PLAY_FROM_SEARCH filter carries no data and is not BROWSABLE,
+     * so a web page can't start playback through it; only the query text is read (bounded,
+     * plain text: LaunchIntentsTest).
+     */
+    @Test
+    fun voiceSearchCanNotBeReachedFromTheBrowser() {
+        val main = xml("src/main/AndroidManifest.xml").children("activity")
+            .single { it.getAttributeNS(android, "name") == ".MainActivity" }
+        val filter = main.children("intent-filter").single { f ->
+            f.children("action").any { it.getAttributeNS(android, "name") == "android.media.action.MEDIA_PLAY_FROM_SEARCH" }
+        }
+        assertEquals(
+            listOf("android.media.action.MEDIA_PLAY_FROM_SEARCH"),
+            filter.children("action").map { it.getAttributeNS(android, "name") },
+        )
+        assertEquals(
+            listOf("android.intent.category.DEFAULT"),
+            filter.children("category").map { it.getAttributeNS(android, "name") },
+        )
+        assertTrue(filter.children("data").isEmpty())
+    }
+
     /** The media library for cars (A6): exported only for the media browser actions; its
      *  callers are checked in code (CallerPolicy, tested in :playback). */
     @Test

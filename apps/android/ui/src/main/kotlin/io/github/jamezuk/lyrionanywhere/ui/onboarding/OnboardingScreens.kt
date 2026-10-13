@@ -26,6 +26,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.platform.testTag
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -289,6 +290,9 @@ fun PairScreen(
     onConfirm: () -> Unit = {},
     onCancel: () -> Unit = {},
     backLabel: String = stringResource(R.string.action_back_to_sign_in),
+    /** The camera was refused for good: explain, and offer the app's settings instead. */
+    cameraBlocked: Boolean = false,
+    onOpenSettings: () -> Unit = {},
 ) {
     val confirm = state.confirm
     if (confirm != null) {
@@ -308,6 +312,17 @@ fun PairScreen(
                 onScanned = onScanned,
                 modifier = Modifier.fillMaxWidth(),
             )
+        } else if (cameraBlocked) {
+            // Android won't ask again: say why there is no scanner, and where to turn it on.
+            // Typing the code (below) still works.
+            Text(
+                stringResource(R.string.camera_denied),
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.testTag("camera-denied"),
+            )
+            OutlinedButton(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth().testTag("camera-settings")) {
+                Text(stringResource(R.string.action_open_settings))
+            }
         } else {
             OutlinedButton(onClick = onRequestCamera, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)

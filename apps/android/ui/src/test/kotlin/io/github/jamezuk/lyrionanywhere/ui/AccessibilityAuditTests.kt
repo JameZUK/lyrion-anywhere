@@ -72,6 +72,7 @@ import io.github.jamezuk.lyrionanywhere.core.RatingStyle
 import io.github.jamezuk.lyrionanywhere.core.TrackRating
 import io.github.jamezuk.lyrionanywhere.ui.alarms.AlarmsScreen
 import io.github.jamezuk.lyrionanywhere.ui.alarms.AlarmsViewModel
+import io.github.jamezuk.lyrionanywhere.ui.onboarding.UnreachableScreen
 import io.github.jamezuk.lyrionanywhere.ui.player.MiniPlayer
 import io.github.jamezuk.lyrionanywhere.ui.player.RatingControl
 import io.github.jamezuk.lyrionanywhere.ui.player.RatingsSetting
@@ -354,6 +355,7 @@ class AccessibilityAuditTests {
     fun nothingPlayingOffersAPlayer() = audit {
         androidx.compose.foundation.layout.Column {
             MiniPlayer(PlayerUiState(players = listOf(samplePlayer(KITCHEN)), loading = false), {}, {}, {})
+            UnreachableScreen("music.example.com", "", 2, 1_000, onRetry = {}, onSignOut = {})
         }
     }
 
