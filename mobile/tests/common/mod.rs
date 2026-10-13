@@ -75,6 +75,18 @@ fn fake_alarm(words: &Value) -> Value {
     }
 }
 
+/// A track's credits as LMS gives them for `tags:AS` (invented names).
+fn fake_credits() -> Value {
+    json!({"count": 1, "titles_loop": [{
+        "id": 1, "title": "One",
+        "albumartist": "Example Ensemble", "albumartist_ids": "3",
+        "artist": "Singer One, Singer Two", "artist_ids": "21,22",
+        "composer": "Some Composer", "composer_ids": "41",
+        "conductor": "A Conductor", "conductor_ids": "51",
+        "url": "file:///srv/music/x/1.flac"
+    }]})
+}
+
 fn fake_result(cmd: &str) -> Value {
     match cmd {
         "albums" => json!({"count": 2, "albums_loop": [
@@ -88,9 +100,10 @@ fn fake_result(cmd: &str) -> Value {
         "artists" => json!({"count": 1, "artists_loop": [{"id": 3, "artist": "Artist"}]}),
         "genres" => json!({"count": 1, "genres_loop": [{"id": 4, "genre": "Jazz"}]}),
         "search" => json!({"count": 3,
+            "contributors_count": 1, "albums_count": 4, "tracks_count": 30,
             "contributors_loop": [{"contributor": "Artist", "contributor_id": 3}],
-            "albums_loop": [{"album": "First Album", "album_id": 7}],
-            "tracks_loop": [{"track": "One", "track_id": 1}]}),
+            "albums_loop": [{"album": "First Album", "album_id": 7, "artist": "Artist"}],
+            "tracks_loop": [{"track": "One", "track_id": 1, "url": "file:///srv/music/x/1.flac"}]}),
         "players" => json!({"count": 1, "players_loop": [
             {"playerid": HOME_PLAYER, "name": "Home One", "ip": "10.0.0.31:4000", "connected": 1}
         ]}),
@@ -315,7 +328,22 @@ impl FakeLms {
                         .filter_map(|p| p.as_str()?.strip_prefix("track_id:"))
                         .find(|ids| ids.contains(','))
                         .map(|ids| ids.split(',').filter_map(|i| i.parse().ok()).collect());
+                    let has = |want: &str| {
+                        params[1]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .any(|p| p.as_str() == Some(want))
+                    };
+                    let role = params[1]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find_map(|p| p.as_str()?.strip_prefix("role_id:"))
+                        .map(str::to_string);
                     let mut result = match track_id {
+                        // A track's credits (`tags:AS`), with LMS's comma-joined names and ids.
+                        Some(_) if cmd == "titles" && has("tags:AS") => fake_credits(),
                         _ if cmd == "titles" && many.is_some() => {
                             // Added tracks, then the canned ones (tracks 1 and 2).
                             let l = lib.lock().unwrap();
@@ -347,6 +375,18 @@ impl FakeLms {
                         }
                         _ => fake_result(&cmd),
                     };
+                    // The A–Z index (`tags:Z`) of albums and artists.
+                    if (cmd == "albums" || cmd == "artists") && has("tags:Z") {
+                        result["indexList"] = json!([["A", 2], ["B", 1], ["Ö", 3]]);
+                    }
+                    // "Appears as": one row of an artist's albums in a role, and the count.
+                    if cmd == "albums" && params[1][2] == json!("1") && role.is_some() {
+                        result["count"] = json!(match role.as_deref() {
+                            Some("COMPOSER") => 12,
+                            Some("CONDUCTOR") => 3,
+                            _ => 0,
+                        });
+                    }
                     if cmd == "sync" {
                         sy.apply(&player, &arg1);
                     }

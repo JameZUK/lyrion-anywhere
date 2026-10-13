@@ -265,6 +265,64 @@ pub struct SearchResults {
     pub artists: Vec<Artist>,
     pub albums: Vec<Album>,
     pub tracks: Vec<Track>,
+    /// How many of each LMS found (at least as many as listed).
+    #[uniffi(default = 0)]
+    pub artists_total: u32,
+    #[uniffi(default = 0)]
+    pub albums_total: u32,
+    #[uniffi(default = 0)]
+    pub tracks_total: u32,
+    /// The "Top result": an exact (or else prefix) name match, preferring an artist, then an
+    /// album, then a track (see [`top_result`]).
+    #[uniffi(default = None)]
+    pub top: Option<TopResult>,
+}
+
+/// What kind of result a "Top result" is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SearchKind {
+    Artist,
+    Album,
+    Track,
+}
+
+/// The "Top result" of a search: the result at `index` in the list of its `kind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct TopResult {
+    pub kind: SearchKind,
+    pub index: u32,
+}
+
+/// A page of tracks (search, paged by type).
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct TrackPage {
+    pub total: u32,
+    pub items: Vec<Track>,
+}
+
+/// One entry of an A–Z index: the list's items starting with `key` are the `count` items
+/// from `offset` on (LMS's `indexList`, counts added up in list order).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct IndexEntry {
+    pub key: String,
+    pub offset: u32,
+    pub count: u32,
+}
+
+/// Someone credited on a track, in a role. Without an id (LMS's names and ids didn't line
+/// up) the name is shown but can't be followed.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct Credit {
+    pub role: ArtistRole,
+    pub name: String,
+    pub artist_id: Option<i64>,
+}
+
+/// How many albums an artist has in a role ("Appears as: Composer (12)").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct RoleCount {
+    pub role: ArtistRole,
+    pub albums: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -722,53 +780,258 @@ pub(crate) fn tracks_from(v: &Value, key: &str) -> Vec<Track> {
     loop_of(v, key).map(track_from).collect()
 }
 
+/// Most rows of each kind taken from one search answer.
+const MAX_SEARCH_ROWS: usize = 500;
+
+/// A count LMS reports (`*_count`), as a `u32`; never fewer than the rows listed.
+fn count_of(v: &Value, key: &str, listed: usize) -> u32 {
+    let listed = u32::try_from(listed).unwrap_or(u32::MAX);
+    int_of(&v[key])
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0)
+        .max(listed)
+}
+
+/// LMS's `search` answer (`extended:1` adds counts and, depending on the version, more
+/// detail per row; everything beyond the id and name is optional).
 pub(crate) fn search_from(v: &Value) -> SearchResults {
+    let artists: Vec<Artist> = loop_of(v, "contributors_loop")
+        .take(MAX_SEARCH_ROWS)
+        .filter_map(|a| {
+            Some(Artist {
+                id: positive_id(&a["contributor_id"]).or_else(|| positive_id(&a["id"]))?,
+                name: text_of(&a["contributor"])
+                    .or_else(|| text_of(&a["artist"]))
+                    .unwrap_or_default(),
+            })
+        })
+        .collect();
+    let albums: Vec<Album> = loop_of(v, "albums_loop")
+        .take(MAX_SEARCH_ROWS)
+        .filter_map(|a| {
+            Some(Album {
+                id: positive_id(&a["album_id"]).or_else(|| positive_id(&a["id"]))?,
+                title: text_of(&a["album"]).unwrap_or_default(),
+                artist: text_of(&a["artist"]),
+                artist_id: positive_id(&a["artist_id"]),
+                year: int_of(&a["year"])
+                    .filter(|y| *y > 0 && *y < 10_000)
+                    .map(|y| y as i32),
+                artwork: a
+                    .get("artwork_track_id")
+                    .and_then(cover_key)
+                    .or_else(|| a.get("artwork").and_then(cover_key))
+                    .or_else(|| a.get("coverid").and_then(cover_key)),
+                compilation: int_of(&a["compilation"]) == Some(1),
+            })
+        })
+        .collect();
+    let tracks: Vec<Track> = loop_of(v, "tracks_loop")
+        .take(MAX_SEARCH_ROWS)
+        .filter_map(|t| {
+            let id = positive_id(&t["track_id"]).or_else(|| positive_id(&t["id"]))?;
+            Some(Track {
+                id: Some(id),
+                title: text_of(&t["track"])
+                    .or_else(|| text_of(&t["title"]))
+                    .unwrap_or_default(),
+                artist: text_of(&t["artist"]),
+                album: text_of(&t["album"]),
+                album_id: positive_id(&t["album_id"]),
+                artist_id: positive_id(&t["artist_id"]),
+                duration_secs: float_of(&t["duration"]).filter(|d| *d > 0.0),
+                track_number: int_of(&t["tracknum"]).and_then(|n| u32::try_from(n).ok()),
+                artwork: t
+                    .get("coverid")
+                    .and_then(cover_key)
+                    .or_else(|| cover_key(&Value::from(id))),
+                queue_index: None,
+                disc_number: None,
+                disc_count: None,
+                genre: None,
+                format: None,
+                year: None,
+                quality: None,
+            })
+        })
+        .collect();
     SearchResults {
-        artists: loop_of(v, "contributors_loop")
-            .filter_map(|a| {
-                Some(Artist {
-                    id: positive_id(&a["contributor_id"])?,
-                    name: text_of(&a["contributor"]).unwrap_or_default(),
-                })
-            })
-            .collect(),
-        albums: loop_of(v, "albums_loop")
-            .filter_map(|a| {
-                Some(Album {
-                    id: positive_id(&a["album_id"])?,
-                    title: text_of(&a["album"]).unwrap_or_default(),
-                    artist: None,
-                    artist_id: None,
-                    year: None,
-                    artwork: None,
-                    compilation: false,
-                })
-            })
-            .collect(),
-        tracks: loop_of(v, "tracks_loop")
-            .filter_map(|t| {
-                let id = positive_id(&t["track_id"])?;
-                Some(Track {
-                    id: Some(id),
-                    title: text_of(&t["track"]).unwrap_or_default(),
-                    artist: None,
-                    album: None,
-                    album_id: None,
-                    artist_id: None,
-                    duration_secs: None,
-                    track_number: None,
-                    artwork: cover_key(&Value::from(id)),
-                    queue_index: None,
-                    disc_number: None,
-                    disc_count: None,
-                    genre: None,
-                    format: None,
-                    year: None,
-                    quality: None,
-                })
-            })
-            .collect(),
+        artists_total: count_of(v, "contributors_count", artists.len()),
+        albums_total: count_of(v, "albums_count", albums.len()),
+        tracks_total: count_of(v, "tracks_count", tracks.len()),
+        top: None,
+        artists,
+        albums,
+        tracks,
     }
+}
+
+/// A name or term as compared for the "Top result": case and spacing don't matter.
+fn fold(s: &str) -> String {
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// The "Top result" for `term`: an exact name match, or else one the name starts with;
+/// an artist before an album before a track. None if nothing matches either way.
+pub fn top_result(
+    term: &str,
+    artists: &[Artist],
+    albums: &[Album],
+    tracks: &[Track],
+) -> Option<TopResult> {
+    let t = fold(term);
+    if t.is_empty() {
+        return None;
+    }
+    let lists: [(SearchKind, Vec<String>); 3] = [
+        (
+            SearchKind::Artist,
+            artists.iter().map(|a| fold(&a.name)).collect(),
+        ),
+        (
+            SearchKind::Album,
+            albums.iter().map(|a| fold(&a.title)).collect(),
+        ),
+        (
+            SearchKind::Track,
+            tracks.iter().map(|x| fold(&x.title)).collect(),
+        ),
+    ];
+    let exact = |n: &String| *n == t;
+    let prefix = |n: &String| n.starts_with(&t);
+    for test in [&exact as &dyn Fn(&String) -> bool, &prefix] {
+        for (kind, names) in &lists {
+            if let Some(i) = names.iter().position(test) {
+                return Some(TopResult {
+                    kind: *kind,
+                    index: u32::try_from(i).ok()?,
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Most entries read from an A–Z index (LMS has one per first character).
+const MAX_INDEX: usize = 1000;
+
+/// LMS's `indexList` (`tags:Z`): `[first character, count]` pairs in list order, made into
+/// offsets. Reading stops at the first malformed pair, since every later offset would be
+/// wrong; empty keys read as "#".
+pub(crate) fn index_from(v: &Value) -> Vec<IndexEntry> {
+    let Some(list) = v.get("indexList").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut offset: u32 = 0;
+    for e in list.iter().take(MAX_INDEX) {
+        let Some(p) = e.as_array().filter(|p| p.len() == 2) else {
+            break;
+        };
+        let (k, n) = (&p[0], &p[1]);
+        let key = match k {
+            Value::String(s) => clean_text(s).trim().chars().take(4).collect::<String>(),
+            Value::Number(n) => n.to_string().chars().take(4).collect(),
+            Value::Null => String::new(),
+            _ => break,
+        };
+        let Some(count) = int_of(n).and_then(|c| u32::try_from(c).ok()) else {
+            break;
+        };
+        if count == 0 {
+            continue;
+        }
+        // The end must fit too, or the entry would point past anything LMS can list.
+        let Some(end) = offset.checked_add(count) else {
+            break;
+        };
+        out.push(IndexEntry {
+            key: if key.is_empty() { "#".into() } else { key },
+            offset,
+            count,
+        });
+        offset = end;
+    }
+    out
+}
+
+/// The roles credited on a track, in the order shown, with LMS's field names.
+const CREDIT_ROLES: [(ArtistRole, &str); 6] = [
+    (ArtistRole::AlbumArtist, "albumartist"),
+    (ArtistRole::Artist, "artist"),
+    (ArtistRole::TrackArtist, "trackartist"),
+    (ArtistRole::Composer, "composer"),
+    (ArtistRole::Conductor, "conductor"),
+    (ArtistRole::Band, "band"),
+];
+/// Most people read per role, and in all.
+const MAX_PER_ROLE: usize = 50;
+const MAX_CREDITS: usize = 200;
+
+/// A role's ids (`"12,34"` or a number): all of them, or None if any is malformed.
+fn credit_ids(v: &Value) -> Option<Vec<i64>> {
+    match v {
+        Value::Number(_) => positive_id(v).map(|i| vec![i]),
+        Value::String(s) => s
+            .split(',')
+            .take(MAX_PER_ROLE + 1)
+            .map(|p| {
+                let p = p.trim();
+                (!p.is_empty() && p.len() <= 15 && p.bytes().all(|b| b.is_ascii_digit()))
+                    .then(|| p.parse::<i64>().ok())
+                    .flatten()
+                    .filter(|i| *i > 0)
+            })
+            .collect(),
+        _ => None,
+    }
+}
+
+/// Everyone credited on a track (`titles … tags:AS`), role by role. LMS joins a role's
+/// names with ", " and its ids with ","; where they don't line up (a name with a comma in
+/// it), the role's names are kept together, without an id.
+pub(crate) fn credits_from(v: &Value) -> Vec<Credit> {
+    let Some(t) = loop_of(v, "titles_loop").next() else {
+        return Vec::new();
+    };
+    let mut out: Vec<Credit> = Vec::new();
+    for (role, field) in CREDIT_ROLES {
+        let Some(names) = text_of(&t[field]) else {
+            continue;
+        };
+        let ids = credit_ids(&t[format!("{field}_ids").as_str()]).unwrap_or_default();
+        let parts: Vec<&str> = names.split(", ").map(str::trim).collect();
+        let pairs: Vec<(String, Option<i64>)> = if ids.len() == 1 {
+            vec![(names.trim().to_string(), Some(ids[0]))]
+        } else if ids.len() > 1 && ids.len() == parts.len() && ids.len() <= MAX_PER_ROLE {
+            parts
+                .into_iter()
+                .zip(ids)
+                .map(|(n, i)| (n.to_string(), Some(i)))
+                .collect()
+        } else {
+            vec![(names.trim().to_string(), None)]
+        };
+        for (name, artist_id) in pairs.into_iter().take(MAX_PER_ROLE) {
+            if name.is_empty() || out.len() >= MAX_CREDITS {
+                continue;
+            }
+            let dup = out
+                .iter()
+                .any(|c| c.role == role && c.artist_id == artist_id && c.name == name);
+            if !dup {
+                out.push(Credit {
+                    role,
+                    name,
+                    artist_id,
+                });
+            }
+        }
+    }
+    out
 }
 
 pub(crate) fn players_from(v: &Value) -> Vec<Player> {
@@ -1280,8 +1543,297 @@ mod tests {
             let _ = favourites_from(&v);
             let _ = playlists_from(&v);
             let _ = sync_groups_from(&v);
+            let _ = index_from(&v);
+            let _ = credits_from(&v);
             let s = status_from(&v);
             assert!(s.volume <= 100);
+        }
+    }
+
+    #[test]
+    fn index_lists_become_offsets() {
+        let idx = index_from(
+            &json!({"count": 9, "indexList": [["A", 3], ["B", "2"], ["", 1], [7, 0], ["Ö", 3]]}),
+        );
+        assert_eq!(
+            idx,
+            vec![
+                IndexEntry {
+                    key: "A".into(),
+                    offset: 0,
+                    count: 3
+                },
+                IndexEntry {
+                    key: "B".into(),
+                    offset: 3,
+                    count: 2
+                },
+                IndexEntry {
+                    key: "#".into(),
+                    offset: 5,
+                    count: 1
+                },
+                IndexEntry {
+                    key: "Ö".into(),
+                    offset: 6,
+                    count: 3
+                },
+            ]
+        );
+        // A malformed pair ends the index: every offset after it would be wrong.
+        for bad in [
+            json!(["C", -1]),
+            json!(["C"]),
+            json!(["C", 1, 2]),
+            json!({"C": 1}),
+            json!([["C"], 1]),
+            json!(["C", "x"]),
+        ] {
+            let v = json!({"indexList": [["A", 2], bad, ["D", 4]]});
+            assert_eq!(index_from(&v).len(), 1, "{v}");
+        }
+        // Counts that would overflow stop the index rather than wrap.
+        let v = json!({"indexList": [["A", u32::MAX - 1], ["B", 1], ["C", 1]]});
+        let idx = index_from(&v);
+        assert_eq!(idx.len(), 2);
+        assert_eq!(idx[1].offset, u32::MAX - 1);
+        assert_eq!(
+            index_from(&json!({"indexList": [["A", u64::MAX]]})).len(),
+            0
+        );
+        // Keys are display text: control characters gone, short.
+        let v = json!({"indexList": [["\u{0}\u{1b}[2JLONGKEY", 1]]});
+        assert_eq!(index_from(&v)[0].key, "[2JL");
+        // Bounded however long LMS's list is.
+        let long: Vec<Value> = (0..5000).map(|i| json!([format!("{i}"), 1])).collect();
+        assert_eq!(index_from(&json!({ "indexList": long })).len(), MAX_INDEX);
+        assert!(index_from(&json!({"indexList": "A"})).is_empty());
+    }
+
+    #[test]
+    fn credits_by_role_with_ids_lined_up() {
+        let v = json!({"titles_loop": [{
+            "id": 7, "title": "Song",
+            "albumartist": "Some Band", "albumartist_ids": "11",
+            "artist": "Singer One, Singer Two", "artist_ids": "21,22",
+            "trackartist": "Guest", "trackartist_ids": 31,
+            "composer": "Writer, Jr., Other Writer", "composer_ids": "41,42",
+            "conductor": "Maestro", "conductor_ids": "x",
+            "band": "", "band_ids": "61"
+        }]});
+        let c = credits_from(&v);
+        let got: Vec<(ArtistRole, &str, Option<i64>)> = c
+            .iter()
+            .map(|c| (c.role, c.name.as_str(), c.artist_id))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (ArtistRole::AlbumArtist, "Some Band", Some(11)),
+                (ArtistRole::Artist, "Singer One", Some(21)),
+                (ArtistRole::Artist, "Singer Two", Some(22)),
+                (ArtistRole::TrackArtist, "Guest", Some(31)),
+                // Three names for two ids: kept together, not guessed.
+                (ArtistRole::Composer, "Writer, Jr., Other Writer", None),
+                // A malformed id: shown, but not followable.
+                (ArtistRole::Conductor, "Maestro", None),
+            ]
+        );
+        // A single id takes the whole name, commas and all.
+        let v = json!({"titles_loop": [{"composer": "Earth, Wind", "composer_ids": "5"}]});
+        assert_eq!(credits_from(&v)[0].name, "Earth, Wind");
+        assert_eq!(credits_from(&v)[0].artist_id, Some(5));
+        // Hostile ids never become ids.
+        for bad in ["-1", "0", "1;2", "1,,2", "99999999999999999999", "1 OR 1=1"] {
+            let v = json!({"titles_loop": [{"artist": "A, B", "artist_ids": bad}]});
+            assert!(
+                credits_from(&v).iter().all(|c| c.artist_id.is_none()),
+                "{bad}"
+            );
+        }
+        assert!(credits_from(&json!({"titles_loop": []})).is_empty());
+        // Bounded however many names a role has.
+        let names: Vec<String> = (0..500).map(|i| format!("N{i}")).collect();
+        let ids: Vec<String> = (1..=500).map(|i| i.to_string()).collect();
+        let v = json!({"titles_loop": [{"artist": names.join(", "), "artist_ids": ids.join(",")}]});
+        assert!(credits_from(&v).len() <= MAX_PER_ROLE);
+    }
+
+    #[test]
+    fn extended_search_rows_and_counts() {
+        let v = json!({
+            "contributors_count": 12, "albums_count": "3", "tracks_count": -4,
+            "contributors_loop": [{"contributor": "Blue Band", "contributor_id": 3}],
+            "albums_loop": [{"album": "Blue", "album_id": "7", "artist": "Blue Band", "artwork_track_id": "abcdef12", "year": 1999}],
+            "tracks_loop": [
+                {"track": "Blue Moon", "track_id": 1, "album": "Blue", "artist": "Blue Band", "duration": "61.5", "coverid": "abcdef12"},
+                {"track": "Nobody", "track_id": "x"}
+            ]
+        });
+        let r = search_from(&v);
+        assert_eq!(
+            (r.artists_total, r.albums_total, r.tracks_total),
+            (12, 3, 1)
+        );
+        assert_eq!(r.albums[0].artist.as_deref(), Some("Blue Band"));
+        assert_eq!(r.albums[0].year, Some(1999));
+        assert!(r.albums[0].artwork.is_some());
+        assert_eq!(r.tracks.len(), 1);
+        assert_eq!(r.tracks[0].duration_secs, Some(61.5));
+        // The older, plain shape still reads.
+        let plain = search_from(&json!({"tracks_loop": [{"track": "One", "track_id": 4}]}));
+        assert_eq!(plain.tracks[0].title, "One");
+        assert_eq!(plain.tracks_total, 1);
+    }
+
+    fn artist(name: &str) -> Artist {
+        Artist {
+            id: 1,
+            name: name.into(),
+        }
+    }
+
+    fn album(title: &str) -> Album {
+        Album {
+            id: 1,
+            title: title.into(),
+            artist: None,
+            artist_id: None,
+            year: None,
+            artwork: None,
+            compilation: false,
+        }
+    }
+
+    fn track(title: &str) -> Track {
+        let mut t = track_from(&json!({"id": 1}));
+        t.title = title.into();
+        t
+    }
+
+    #[test]
+    fn the_top_result_prefers_exact_then_artist_album_track() {
+        let top = |term: &str, ar: &[&str], al: &[&str], tr: &[&str]| {
+            top_result(
+                term,
+                &ar.iter().map(|n| artist(n)).collect::<Vec<_>>(),
+                &al.iter().map(|n| album(n)).collect::<Vec<_>>(),
+                &tr.iter().map(|n| track(n)).collect::<Vec<_>>(),
+            )
+        };
+        let at = |kind, index| Some(TopResult { kind, index });
+        // An exact track beats a prefix artist.
+        assert_eq!(
+            top("blue", &["Bluegrass Band"], &[], &["Red", "Blue"]),
+            at(SearchKind::Track, 1)
+        );
+        // Exact everywhere: the artist.
+        assert_eq!(
+            top(" BLUE  ", &["Blue"], &["blue"], &["Blue"]),
+            at(SearchKind::Artist, 0)
+        );
+        // An exact album beats an exact track.
+        assert_eq!(
+            top("blue", &["Red"], &["Blue"], &["Blue"]),
+            at(SearchKind::Album, 0)
+        );
+        // Prefixes only: artist first.
+        assert_eq!(
+            top("blu", &["Red", "Blues Trio"], &["Blue"], &[]),
+            at(SearchKind::Artist, 1)
+        );
+        assert_eq!(top("blue", &["Red"], &["Green"], &["True blue"]), None);
+        assert_eq!(top("   ", &["Blue"], &[], &[]), None);
+    }
+
+    /// A small deterministic generator of arbitrary JSON (xorshift), shaped like LMS's
+    /// answers often enough to reach the parsers' inner paths.
+    struct Gen(u64);
+
+    impl Gen {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn pick<'a>(&mut self, xs: &[&'a str]) -> &'a str {
+            xs[(self.next() % xs.len() as u64) as usize]
+        }
+
+        fn value(&mut self, depth: u32) -> Value {
+            const KEYS: &[&str] = &[
+                "indexList",
+                "titles_loop",
+                "contributors_loop",
+                "albums_loop",
+                "tracks_loop",
+                "artist",
+                "artist_ids",
+                "composer",
+                "composer_ids",
+                "albumartist",
+                "albumartist_ids",
+                "band_ids",
+                "count",
+                "tracks_count",
+                "album_id",
+                "track_id",
+                "contributor_id",
+                "track",
+                "album",
+                "duration",
+                "coverid",
+                "year",
+            ];
+            match self.next() % if depth > 4 { 5 } else { 8 } {
+                0 => Value::Null,
+                1 => json!(self.next().is_multiple_of(2)),
+                2 => json!(self.next() as i64),
+                3 => json!(f64::from_bits(self.next())),
+                4 => {
+                    let s = self.pick(&["", "A", "12,34", "-1", "x, y", "\u{0}", "1e309", "Ö"]);
+                    json!(s.repeat((self.next() % 3) as usize + 1))
+                }
+                5 | 6 => {
+                    let n = self.next() % 6;
+                    Value::Array((0..n).map(|_| self.value(depth + 1)).collect())
+                }
+                _ => {
+                    let n = self.next() % 6;
+                    let mut m = serde_json::Map::new();
+                    for _ in 0..n {
+                        let k = self.pick(KEYS).to_string();
+                        m.insert(k, self.value(depth + 1));
+                    }
+                    Value::Object(m)
+                }
+            }
+        }
+    }
+
+    /// The new parsers never panic on anything, and keep their bounds.
+    #[test]
+    fn new_parsers_survive_arbitrary_input() {
+        let mut g = Gen(0x9E37_79B9_7F4A_7C15);
+        for _ in 0..20_000 {
+            let v = g.value(0);
+            let idx = index_from(&v);
+            assert!(idx.len() <= MAX_INDEX);
+            assert!(
+                idx.windows(2)
+                    .all(|w| w[1].offset >= w[0].offset + w[0].count)
+            );
+            let c = credits_from(&v);
+            assert!(c.len() <= MAX_CREDITS);
+            assert!(c.iter().all(|c| c.artist_id.is_none_or(|i| i > 0)));
+            let s = search_from(&v);
+            assert!(s.tracks_total as usize >= s.tracks.len());
+            let _ = top_result("a", &s.artists, &s.albums, &s.tracks);
+            // Wrapped where LMS puts them.
+            let _ = credits_from(&json!({ "titles_loop": [v.clone()] }));
+            let _ = index_from(&json!({ "indexList": v }));
         }
     }
 }
