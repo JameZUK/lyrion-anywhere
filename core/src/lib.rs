@@ -15,3 +15,4 @@ pub mod opus;
 #[cfg(feature = "player")]
 pub mod player;
 pub mod proto;
+pub mod visual;

@@ -125,7 +125,81 @@ Detailed on 2026-10-13. Web and Android together. The gateway needs one change: 
 - **Tests:** negative tests for the new `role_id` on `titles`. Fuzz/robustness tests for any new parsing (`indexList`, search results, credit roles). UI and accessibility tests for every new control.
 - **Language and fixtures:** British English; no real names in fixtures (use placeholders).
 
-## 4–5 (outline; detailed before each part starts)
+## 4. Now playing and players (part 3)
+
+Detailed on 2026-10-13. Web and Android together. No gateway change: player status, `power`, `mixer`, `sync`, `syncgroups` and the alarms endpoint are already allowed.
+
+### 4.1 Visualiser (D4)
+
+- **Where it runs:** only while this device is the player (Android's own player or the browser). On a remote player, Now playing keeps the blurred-art background (D1).
+- **One analyser for everyone:** `core::visual`, sans-IO and shared by Android (through the mobile engine) and the web (through WASM).
+  - **Input:** the decoded PCM the player already has.
+  - **Output:** at most 30 frames a second of audio. Each frame holds:
+    - 32 log-spaced spectrum bands (40 Hz–16 kHz, 0–1 on a 70 dB scale);
+    - 128 oscilloscope points;
+    - left and right RMS and peak in dBFS;
+    - a bass level (0–1) for the glow.
+  - **Implementation:** a small radix-2 FFT (2048 points, Hann window) written in the core. No new dependency.
+  - **Bad input:** NaN or infinite samples count as silence. Any input is bounded and never panics.
+- **Styles:** *Bars*, *Scope*, *Glow* (the blurred-art background pulsing with the bass) and *VU* (two needle meters with ballistics drawn by the client: about 300 ms rise and fall, peak hold).
+  - **Choosing:** swipe across the visualiser, or use its button.
+  - **Remembered:** per device.
+- **Off unless chosen:** the visualiser is off by default (Settings, or the Now playing layout button).
+  - It stops automatically in battery saver (Android) and with *reduce motion* (both apps).
+  - It draws at most 30 fps, and only while Now playing is visible.
+  - The analysis runs only while something is shown, so it costs nothing otherwise.
+- **Accessibility:** decorative. Hidden from screen readers apart from its on/off and style controls.
+
+### 4.2 Now playing layouts (D2)
+
+- **Three layouts:**
+  - *Art*: today's layout;
+  - *Lyrics*: synced lyrics large (Wave 1);
+  - *Info*:
+    - the quality badge and signal path;
+    - credits (part 2), as links;
+    - the rating;
+    - an "Up next" card.
+- **Choosing:** a layout button (a segmented control), and a horizontal swipe on the art area. Remembered per device. Swipes keep their alternatives (the buttons, TalkBack/VoiceOver actions, and the keys `1`, `2`, `3` on the web).
+- **Wide windows** (tablets, desktop, landscape over 840 dp):
+  - art on the left, lyrics or info on the right;
+  - the queue as a pinned side panel that can be hidden.
+- **Visualiser:** where the art is, when it is on.
+- **Out of scope:** the MAI biography (X5) is left out, as the server has no MAI.
+
+### 4.3 Rooms (U10)
+
+- **What it shows:** a *Rooms* view of every player the user may control. Each card shows:
+  - art, title and artist;
+  - play/pause;
+  - a volume slider;
+  - power;
+  - sleep remaining;
+  - the next alarm.
+- **Where:**
+  - **Android:** from Now playing's player chip ("All rooms") and the "Play on…" sheet.
+  - **Web:** a Rooms page in the menu, and the player picker.
+- **Actions:**
+  - **Tap a card:** control that player.
+  - **Sync:** drag one card onto another. Every drag has an alternative: a "Sync with…" menu item and a TalkBack/VoiceOver action.
+  - **Unsync:** from the card's menu.
+  - **Long-press:** *Transfer* (Wave 1).
+- **Keeping it fresh:**
+  - **While open:** each card's status is read every 5 s (event-driven where events arrive), for at most 20 players.
+  - **Alarms:** read once on opening, then when the alarms change.
+  - **When it closes:** nothing is polled.
+- **Layout:** a grid on wide screens, a list on phones. Each card is one accessible group with its controls labelled with the room's name ("Kitchen volume").
+
+### 4.4 Rules
+
+As before:
+- tests at every level;
+- robustness tests for the analyser (random, silent, NaN, clipped and odd-rate input), plus timing so it stays cheap;
+- UI and accessibility tests for every new control;
+- British English;
+- placeholder names in fixtures.
+
+## 5 (outline; detailed before it starts)
 
 - **Car mode:** opens automatically when the phone connects to a car's Bluetooth, configurable in Settings:
   - *Off*;
