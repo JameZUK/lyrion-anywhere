@@ -2,20 +2,28 @@ package io.github.jamezuk.lyrionanywhere.ui.player
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
 import androidx.compose.material.icons.outlined.ClearAll
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DragHandle
+import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SwipeToDismissBox
@@ -23,19 +31,17 @@ import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberSwipeToDismissBoxState
-import androidx.compose.foundation.layout.size
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
-import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,9 +57,11 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -61,6 +69,7 @@ import androidx.compose.ui.zIndex
 import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.library.SectionHeader
 import io.github.jamezuk.lyrionanywhere.ui.library.TrackRow
+import kotlinx.coroutines.launch
 
 /** What the queue can do. */
 data class QueueActions(
@@ -70,6 +79,8 @@ data class QueueActions(
     val onClear: () -> Unit = {},
     /** The list reached its end and the queue has more: read the next page. */
     val onLoadMore: () -> Unit = {},
+    /** Move the entry at an index to just after the current track (Wave 2 §3.4). */
+    val onPlayNext: (Int) -> Unit = {},
 )
 
 /** Which row is being dragged, and how far (shared by the rows of one list). */
@@ -80,42 +91,88 @@ class QueueDrag {
     var rowPx by mutableFloatStateOf(0f)
 }
 
-/** The queue's heading, with "Clear queue" (asks first). */
+/**
+ * The queue's heading, with "Clear upcoming" (the tracks after the current one) and "Clear
+ * queue", each asking first. For a long queue, Clear upcoming offers Clear all instead.
+ */
 @Composable
-fun QueueHeader(count: Int, playerName: String, onClear: () -> Unit) {
+fun QueueHeader(
+    count: Int,
+    playerName: String,
+    onClear: () -> Unit,
+    /** Tracks after the current one (null: not known, so not offered). */
+    upcoming: Int? = null,
+    onClearUpcoming: () -> Unit = {},
+) {
     var confirm by rememberSaveable { mutableStateOf(false) }
+    var confirmUpcoming by rememberSaveable { mutableStateOf(false) }
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Box(Modifier.weight(1f)) { SectionHeader(stringResource(R.string.section_queue)) }
-        if (count > 0) {
-            TextButton(onClick = { confirm = true }) {
-                Icon(Icons.Outlined.ClearAll, contentDescription = null)
-                Text(stringResource(R.string.queue_clear), Modifier.padding(start = 4.dp))
+        FlowRow(horizontalArrangement = Arrangement.End) {
+            if (upcoming != null && upcoming > 0) {
+                TextButton(onClick = { confirmUpcoming = true }, modifier = Modifier.testTag("clear-upcoming")) {
+                    Text(stringResource(R.string.queue_clear_upcoming))
+                }
+            }
+            if (count > 0) {
+                TextButton(onClick = { confirm = true }) {
+                    Icon(Icons.Outlined.ClearAll, contentDescription = null)
+                    Text(stringResource(R.string.queue_clear), Modifier.padding(start = 4.dp))
+                }
             }
         }
     }
     if (confirm) {
-        AlertDialog(
-            onDismissRequest = { confirm = false },
-            title = { Text(stringResource(R.string.queue_clear_confirm_title)) },
-            text = {
-                // Scrolls when large text makes it taller than the dialog.
-                Text(stringResource(R.string.queue_clear_confirm, playerName), Modifier.verticalScroll(rememberScrollState()))
+        ConfirmDialog(
+            title = stringResource(R.string.queue_clear_confirm_title),
+            text = stringResource(R.string.queue_clear_confirm, playerName),
+            confirm = stringResource(R.string.action_clear),
+            onConfirm = {
+                confirm = false
+                onClear()
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirm = false
-                    onClear()
-                }) { Text(stringResource(R.string.action_clear)) }
+            onDismiss = { confirm = false },
+        )
+    }
+    if (confirmUpcoming && upcoming != null) {
+        val long = upcoming > PlayerViewModel.CLEAR_UPCOMING_MAX
+        ConfirmDialog(
+            title = stringResource(R.string.queue_clear_upcoming_title),
+            text = if (long) {
+                LocalResources.current.getQuantityString(R.plurals.queue_clear_upcoming_long, upcoming, upcoming, playerName)
+            } else {
+                LocalResources.current.getQuantityString(R.plurals.queue_clear_upcoming_confirm, upcoming, upcoming, playerName)
             },
-            dismissButton = { TextButton(onClick = { confirm = false }) { Text(stringResource(R.string.action_cancel)) } },
+            confirm = stringResource(if (long) R.string.action_clear_all else R.string.queue_clear_upcoming),
+            onConfirm = {
+                confirmUpcoming = false
+                if (long) onClear() else onClearUpcoming()
+            },
+            onDismiss = { confirmUpcoming = false },
         )
     }
 }
 
+@Composable
+private fun ConfirmDialog(title: String, text: String, confirm: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        // Scrolls when large text makes it taller than the dialog.
+        text = { Text(text, Modifier.verticalScroll(rememberScrollState())) },
+        confirmButton = { TextButton(onClick = onConfirm) { Text(confirm) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
+    )
+}
+
 /**
- * The queue's rows: tap to play, swipe left to remove, long-press the handle and drag to
- * reorder. TalkBack users get Move up, Move down and Remove as actions on each row; with a
- * keyboard, Alt+Up and Alt+Down move the focused row and Delete removes it.
+ * The queue's rows: tap to play; swipe right to play next, left to remove (with Undo);
+ * long-press the handle and drag to reorder. Each row's menu, and TalkBack's actions on it,
+ * offer the same (Play next, Move up, Move down, Remove); with a keyboard, Alt+Up and
+ * Alt+Down move the focused row and Delete removes it.
+ *
+ * With [sections] the queue shows Now playing, Up next and Then; without, it is flat.
+ * Consecutive tracks of an album get a small link mark between them (gapless).
  */
 fun LazyListScope.queueItems(
     entries: List<QueueEntry>,
@@ -123,12 +180,24 @@ fun LazyListScope.queueItems(
     drag: QueueDrag,
     actions: QueueActions,
     hasMore: Boolean = false,
+    sections: QueueSections? = null,
 ) {
     if (entries.isEmpty() && !hasMore) {
         item(key = "queue-empty") { Text(stringResource(R.string.queue_empty), Modifier.padding(16.dp)) }
     }
     itemsIndexed(entries, key = { _, e -> e.key }) { i, e ->
-        QueueRow(i, e, entries.size, i == currentIndex, drag, actions)
+        Box(Modifier.fillMaxWidth()) {
+            androidx.compose.foundation.layout.Column {
+                when {
+                    sections == null -> {}
+                    i == sections.current -> SectionHeader(stringResource(R.string.now_playing), Modifier.testTag("section-now"))
+                    i == sections.upNext.first -> SectionHeader(stringResource(R.string.up_next), Modifier.testTag("section-up-next"))
+                    i == sections.thenFrom -> SectionHeader(stringResource(R.string.section_then), Modifier.testTag("section-then"))
+                }
+                if (i > 0 && Gapless.follows(entries[i - 1].track, e.track)) GaplessMark(i)
+                QueueRow(i, e, entries.size, currentIndex, drag, actions)
+            }
+        }
     }
     if (hasMore) {
         // Shown once the list is scrolled to its end: it asks for the next page (again
@@ -143,12 +212,32 @@ fun LazyListScope.queueItems(
     }
 }
 
+/** The link mark between two tracks that play straight on (presentation only). */
+@Composable
+private fun GaplessMark(index: Int) {
+    val label = stringResource(R.string.gapless_marker)
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 36.dp)
+            .testTag("gapless-$index")
+            .semantics { contentDescription = label },
+    ) {
+        Icon(
+            Icons.Outlined.Link,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(14.dp),
+        )
+    }
+}
+
 @Composable
 private fun QueueRow(
     index: Int,
     entry: QueueEntry,
     size: Int,
-    current: Boolean,
+    currentIndex: Int?,
     drag: QueueDrag,
     actions: QueueActions,
 ) {
@@ -156,23 +245,39 @@ private fun QueueRow(
     val dismiss = rememberSwipeToDismissBoxState()
     val scope = rememberCoroutineScope()
     val dragging = drag.from == index
+    val canPlayNext = currentIndex != null && QueueEdit.playNextTarget(index, currentIndex) != null
+    val playNext = stringResource(R.string.action_play_next)
     val moveUp = stringResource(R.string.queue_move_up)
     val moveDown = stringResource(R.string.queue_move_down)
     val remove = stringResource(R.string.queue_remove)
+    var menu by remember { mutableStateOf(false) }
     SwipeToDismissBox(
         state = dismiss,
-        enableDismissFromStartToEnd = false,
+        enableDismissFromStartToEnd = canPlayNext,
         onDismiss = {
-            if (it == SwipeToDismissBoxValue.EndToStart) actions.onRemove(index)
-            // A removal that LMS refuses puts the same entry back: it must not stay swiped away.
+            when (it) {
+                SwipeToDismissBoxValue.EndToStart -> actions.onRemove(index)
+                SwipeToDismissBoxValue.StartToEnd -> actions.onPlayNext(index)
+                else -> {}
+            }
+            // The row's place follows the queue: it must never stay swiped away (a refused
+            // removal puts the same entry back; play next moves it).
             scope.launch { dismiss.snapTo(SwipeToDismissBoxValue.Settled) }
         },
         backgroundContent = {
+            val right = dismiss.dismissDirection == SwipeToDismissBoxValue.StartToEnd
             Box(
-                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer).padding(horizontal = 24.dp),
-                contentAlignment = Alignment.CenterEnd,
+                Modifier
+                    .fillMaxSize()
+                    .background(if (right) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer)
+                    .padding(horizontal = 24.dp),
+                contentAlignment = if (right) Alignment.CenterStart else Alignment.CenterEnd,
             ) {
-                Icon(Icons.Outlined.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer)
+                if (right) {
+                    Icon(Icons.AutoMirrored.Outlined.PlaylistPlay, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                } else {
+                    Icon(Icons.Outlined.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer)
+                }
             }
         },
         modifier = Modifier
@@ -190,19 +295,45 @@ private fun QueueRow(
                 TrackRow(
                     entry.track,
                     onClick = { actions.onJump(index) },
-                    highlighted = current,
+                    highlighted = index == currentIndex,
                     showArt = true,
+                    onMore = { menu = true },
                     modifier = Modifier
                         .testTag("queue-track-$index")
                         .onPreviewKeyEvent { e -> e.type == KeyEventType.KeyDown && queueKey(e, index, size, actions) }
                         .semantics {
                             customActions = buildList {
+                                if (canPlayNext) add(CustomAccessibilityAction(playNext) { actions.onPlayNext(index); true })
                                 if (index > 0) add(CustomAccessibilityAction(moveUp) { actions.onMove(index, index - 1); true })
                                 if (index < size - 1) add(CustomAccessibilityAction(moveDown) { actions.onMove(index, index + 1); true })
                                 add(CustomAccessibilityAction(remove) { actions.onRemove(index); true })
                             }
                         },
                 )
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    if (canPlayNext) {
+                        DropdownMenuItem(text = { Text(playNext) }, onClick = {
+                            menu = false
+                            actions.onPlayNext(index)
+                        })
+                    }
+                    if (index > 0) {
+                        DropdownMenuItem(text = { Text(moveUp) }, onClick = {
+                            menu = false
+                            actions.onMove(index, index - 1)
+                        })
+                    }
+                    if (index < size - 1) {
+                        DropdownMenuItem(text = { Text(moveDown) }, onClick = {
+                            menu = false
+                            actions.onMove(index, index + 1)
+                        })
+                    }
+                    DropdownMenuItem(text = { Text(remove) }, onClick = {
+                        menu = false
+                        actions.onRemove(index)
+                    })
+                }
             }
             // Touch only: screen-reader and keyboard users have the row's actions instead.
             Icon(

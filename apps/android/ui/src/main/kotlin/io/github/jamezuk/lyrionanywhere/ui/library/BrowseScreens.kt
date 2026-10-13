@@ -144,8 +144,23 @@ fun LibraryScreen(
     onNewMusic: () -> Unit,
     onOpen: (LibraryDestination) -> Unit,
     modifier: Modifier = Modifier,
+    /** The type chip chosen (Wave 2 §3.2); null: the overview below. */
+    chip: io.github.jamezuk.lyrionanywhere.data.LibraryChip? = null,
+    onChip: ((io.github.jamezuk.lyrionanywhere.data.LibraryChip) -> Unit)? = null,
+    /** What a chip shows. */
+    chipContent: @Composable (io.github.jamezuk.lyrionanywhere.data.LibraryChip) -> Unit = {},
 ) {
+    if (chip != null && onChip != null) {
+        Column(modifier.fillMaxSize()) {
+            LibraryChips(chip, onChip, Modifier.padding(vertical = 4.dp))
+            Box(Modifier.weight(1f)) { chipContent(chip) }
+        }
+        return
+    }
     LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+        if (onChip != null) {
+            item { LibraryChips(null, onChip, Modifier.padding(vertical = 4.dp)) }
+        }
         if (libraries.isNotEmpty()) {
             item { LibraryPicker(libraries, chosenLibrary, onChooseLibrary) }
         }
@@ -461,6 +476,8 @@ fun PlaylistScreen(
     /** Download the playlist (offline); null where downloads aren't offered. */
     onDownload: (() -> Unit)? = null,
     downloaded: Set<Long> = emptySet(),
+    /** Play a track next or add it to the queue (its row's swipes); null: no swipes. */
+    onQueueTrack: ((Track, Placement) -> Unit)? = null,
 ) {
     when (state) {
         Loadable.Loading -> LoadingState(modifier)
@@ -481,12 +498,16 @@ fun PlaylistScreen(
             }
             if (state.value.isEmpty()) item { Text(stringResource(R.string.playlist_empty), Modifier.padding(16.dp)) }
             itemsIndexed(state.value, key = { i, t -> "$i-${t.id}" }) { i, t ->
-                TrackRow(
-                    t,
-                    onClick = { onPlay(Placement.PLAY_NOW, i) },
-                    showArt = true,
-                    onMore = More.track(t)?.let { r -> { onMore(r) } },
-                )
+                val queue = onQueueTrack?.takeIf { t.id != null }
+                BrowseSwipe(queue?.let { q -> { p: Placement -> q(t, p) } }) { m ->
+                    TrackRow(
+                        t,
+                        onClick = { onPlay(Placement.PLAY_NOW, i) },
+                        showArt = true,
+                        onMore = More.track(t)?.let { r -> { onMore(r) } },
+                        modifier = m,
+                    )
+                }
             }
         }
     }

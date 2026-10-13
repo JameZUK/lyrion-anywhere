@@ -46,6 +46,24 @@ object QueueEdit {
         return (from + moved).coerceIn(0, size - 1)
     }
 
+    /** Where the entry at [current] is after the entry at [from] moves to [to] (as LMS does it). */
+    fun indexAfterMove(current: Int, from: Int, to: Int): Int = when {
+        from == current -> to
+        from < current && to >= current -> current - 1
+        from > current && to <= current -> current + 1
+        else -> current
+    }
+
+    /**
+     * Where the entry at [index] goes to play next, with [current] playing: just after it
+     * (in the order after the move). Null for the current track and the one already next.
+     */
+    fun playNextTarget(index: Int, current: Int): Int? = when {
+        index < 0 || current < 0 || index == current || index == current + 1 -> null
+        index < current -> current
+        else -> current + 1
+    }
+
     /** Only library tracks can be put back after a removal (radio and app items can't). */
     fun canRestore(track: Track): Boolean = (track.id ?: 0) > 0
 

@@ -727,4 +727,65 @@
     <string name="action_open_settings">Open settings</string>
     <!-- The queue changed before a removal. -->
     <string name="queue_changed">The queue changed, so nothing was removed.</string>
+
+    <!-- Wave 2 part 2: library and queue. -->
+    <!-- Queue sections and swipes. -->
+    <string name="section_then">Then</string>
+    <string name="queue_clear_upcoming">Clear upcoming</string>
+    <string name="queue_clear_upcoming_title">Clear upcoming tracks?</string>
+    <plurals name="queue_clear_upcoming_confirm">
+        <item quantity="one">This removes the track after the current one from the queue of %2$s.</item>
+        <item quantity="other">This removes the %1$d tracks after the current one from the queue of %2$s.</item>
+    </plurals>
+    <plurals name="queue_clear_upcoming_long">
+        <item quantity="one">There is %1$d track after the current one: too many to take out one at a time. Clear the whole queue of %2$s instead?</item>
+        <item quantity="other">There are %1$d tracks after the current one: too many to take out one at a time. Clear the whole queue of %2$s instead?</item>
+    </plurals>
+    <string name="action_clear_all">Clear all</string>
+    <string name="queue_clear_stopped">The queue changed, so clearing stopped part-way.</string>
+    <string name="gapless_marker">Plays straight on from the track before</string>
+    <string name="queue_peek">Show the queue</string>
+    <!-- Shuffle (Off, Tracks, Albums). -->
+    <string name="shuffle_choose">Choose how to shuffle</string>
+    <string name="shuffle_option_off">Don\'t shuffle</string>
+    <string name="shuffle_option_tracks">Shuffle tracks</string>
+    <string name="shuffle_option_albums">Shuffle albums</string>
+    <!-- Credits and roles. -->
+    <string name="section_credits">Credits</string>
+    <string name="role_album_artist">Album artist</string>
+    <string name="role_artist">Artist</string>
+    <string name="role_track_artist">Track artist</string>
+    <string name="role_composer">Composer</string>
+    <string name="role_conductor">Conductor</string>
+    <string name="role_band">Band</string>
+    <string name="credit_open">Open their albums as %1$s</string>
+    <string name="contributor_title">%1$s · %2$s</string>
+    <string name="appears_as">Appears as</string>
+    <string name="appears_as_chip">%1$s (%2$d)</string>
+    <plurals name="appears_as_chip_description">
+        <item quantity="one">%1$s: %2$d album</item>
+        <item quantity="other">%1$s: %2$d albums</item>
+    </plurals>
+    <string name="no_albums_role">No albums in this role.</string>
+    <!-- Library chips, sort, view and A–Z. -->
+    <string name="chip_downloaded">Downloaded</string>
+    <string name="library_types">Show only</string>
+    <string name="sort_recently_added">Recently added</string>
+    <string name="sort_a_to_z">A–Z</string>
+    <string name="sort_by_artist_short">Artist</string>
+    <string name="sort_by_year_short">Year</string>
+    <string name="sort_label">Sort: %1$s</string>
+    <string name="view_as_grid">Show as a grid</string>
+    <string name="view_as_list">Show as a list</string>
+    <string name="az_scroller">Jump to letter</string>
+    <string name="row_loading">Loading</string>
+    <!-- Search. -->
+    <string name="search_recent">Recent searches</string>
+    <string name="search_recent_remove">Remove %1$s from recent searches</string>
+    <string name="search_recent_clear">Clear all</string>
+    <string name="search_recent_open">Search again</string>
+    <string name="search_top">Top result</string>
+    <string name="search_all">All</string>
+    <string name="section_playlists">Playlists</string>
+    <string name="search_filter">Show results</string>
 </resources>

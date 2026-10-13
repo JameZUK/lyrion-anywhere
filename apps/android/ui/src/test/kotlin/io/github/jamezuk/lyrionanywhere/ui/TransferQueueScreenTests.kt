@@ -332,7 +332,7 @@ class QueueScreenTest {
     @Test
     fun clearingAsksFirst() {
         var cleared = 0
-        compose.setContent { LyrionTheme(dynamicColour = false) { QueueHeader(3, "Kitchen") { cleared++ } } }
+        compose.setContent { LyrionTheme(dynamicColour = false) { QueueHeader(3, "Kitchen", onClear = { cleared++ }) } }
         compose.onNodeWithText("Clear queue").performClick()
         compose.onNodeWithText("This removes every track from the queue of Kitchen.").assertIsDisplayed()
         compose.onNodeWithText("Cancel").performClick()
@@ -344,7 +344,7 @@ class QueueScreenTest {
 
     @Test
     fun anEmptyQueueOffersNoClear() {
-        compose.setContent { LyrionTheme(dynamicColour = false) { QueueHeader(0, "Kitchen") {} } }
+        compose.setContent { LyrionTheme(dynamicColour = false) { QueueHeader(0, "Kitchen", onClear = {}) } }
         compose.onNodeWithText("Clear queue").assertDoesNotExist()
     }
 }

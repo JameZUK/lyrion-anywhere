@@ -43,6 +43,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Pause
@@ -355,8 +356,10 @@ fun NowPlayingScreen(
     }
     val track = status.current
     val drag = remember { QueueDrag() }
-    val queueActions = QueueActions(actions.onJump, actions.onRemove, actions.onMove, actions.onClearQueue, actions.onLoadMoreQueue)
+    val queueActions = actions.queueActions()
     val currentIndex = status.queueIndex?.toInt()
+    var peek by rememberSaveable { mutableStateOf(false) }
+    val openPeek: () -> Unit = { peek = true }
     val pullMin = with(LocalDensity.current) { SWIPE_MIN.toPx() * 1.5f }
     // Kept across recompositions (the caller's lambda changes each time), so a pull in
     // progress isn't lost.
@@ -392,12 +395,14 @@ fun NowPlayingScreen(
                 Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                NowPlayingControls(state, status, player.name, clock, actions, openQueue)
+                NowPlayingControls(state, status, player.name, clock, actions, openQueue, openPeek)
             }
             VerticalDivider()
             LazyColumn(Modifier.weight(1f).fillMaxHeight().testTag("queue-pane"), contentPadding = PaddingValues(vertical = 8.dp)) {
-                item(key = "queue-header") { QueueHeader(state.queue.size, player.name, actions.onClearQueue) }
-                queueItems(state.queue, currentIndex, drag, queueActions, hasMore = state.queueMore)
+                item(key = "queue-header") {
+                    QueueHeader(state.queue.size, player.name, actions.onClearQueue, state.upcoming, actions.onClearUpcoming)
+                }
+                queueItems(state.queue, currentIndex, drag, queueActions, hasMore = state.queueMore, sections = state.sections)
             }
         }
     } else {
@@ -407,17 +412,18 @@ fun NowPlayingScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             contentPadding = PaddingValues(16.dp),
         ) {
-            item(key = "controls") { NowPlayingControls(state, status, player.name, clock, actions, openQueue) }
+            item(key = "controls") { NowPlayingControls(state, status, player.name, clock, actions, openQueue, openPeek) }
             item(key = "queue-header") {
                 HorizontalDivider()
-                QueueHeader(state.queue.size, player.name, actions.onClearQueue)
+                QueueHeader(state.queue.size, player.name, actions.onClearQueue, state.upcoming, actions.onClearUpcoming)
             }
-            queueItems(state.queue, currentIndex, drag, queueActions, hasMore = state.queueMore)
+            queueItems(state.queue, currentIndex, drag, queueActions, hasMore = state.queueMore, sections = state.sections)
         }
     }
     }
     }
     }
+    if (peek) QueuePeekSheet(state, actions, onDismiss = { peek = false })
 }
 
 /** Artwork, track details, seek bar and buttons. */
@@ -429,6 +435,7 @@ private fun NowPlayingControls(
     clock: () -> Long,
     actions: NowPlayingActions,
     onOpenQueue: () -> Unit = {},
+    onPeek: () -> Unit = {},
 ) {
     val track = status.current
     var showSleep by rememberSaveable { mutableStateOf(false) }
@@ -449,19 +456,22 @@ private fun NowPlayingControls(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        val peekLabel = stringResource(R.string.queue_peek)
         SwipeableArtwork(
             onNext = actions.onNext,
             onPrevious = actions.onPrevious,
+            onSwipeUp = onPeek,
             modifier = Modifier
                 .fillMaxWidth(0.85f)
                 .testTag("artwork")
-                // One node, labelled as the cover (with or without an image), carrying Next
-                // and Previous.
+                // One node, labelled as the cover (with or without an image), carrying Next,
+                // Previous and the queue peek (its swipes).
                 .semantics(mergeDescendants = true) {
                     contentDescription = coverLabel
                     customActions = listOf(
                         CustomAccessibilityAction(nextLabel) { actions.onNext(); true },
                         CustomAccessibilityAction(previousLabel) { actions.onPrevious(); true },
+                        CustomAccessibilityAction(peekLabel) { onPeek(); true },
                     )
                 },
         ) {
@@ -511,19 +521,7 @@ private fun NowPlayingControls(
             horizontalArrangement = Arrangement.SpaceEvenly,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            val shuffleLabel = stringResource(R.string.shuffle)
-            val shuffleState = stringResource(
-                when (status.shuffle) {
-                    ShuffleMode.OFF -> R.string.mode_off
-                    ShuffleMode.SONGS -> R.string.shuffle_songs
-                    ShuffleMode.ALBUMS -> R.string.shuffle_albums
-                },
-            )
-            IconToggleButton(
-                checked = status.shuffle != ShuffleMode.OFF,
-                onCheckedChange = { actions.onShuffle() },
-                modifier = Modifier.semantics { stateDescription = shuffleState },
-            ) { Icon(Icons.Outlined.Shuffle, contentDescription = shuffleLabel) }
+            ShuffleButton(status.shuffle, onCycle = actions.onShuffle, onChoose = actions.onShuffleMode)
             IconButton(onClick = actions.onPrevious) {
                 Icon(Icons.Outlined.SkipPrevious, contentDescription = previousLabel)
             }
@@ -560,6 +558,9 @@ private fun NowPlayingControls(
             horizontalArrangement = Arrangement.SpaceEvenly,
             modifier = Modifier.fillMaxWidth().testTag("now-playing-actions"),
         ) {
+            IconButton(onClick = onPeek, modifier = Modifier.testTag("queue-peek-button")) {
+                Icon(Icons.AutoMirrored.Outlined.QueueMusic, contentDescription = stringResource(R.string.queue_peek))
+            }
             if (lyrics != null) LyricsButton(onOpen = { showLyrics = true })
             actions.onAlarms?.let { open ->
                 IconButton(onClick = open, modifier = Modifier.testTag("alarms-button")) {
@@ -667,6 +668,12 @@ data class NowPlayingActions(
     val onAlarms: (() -> Unit)? = null,
     /** The queue list reached its end and there is more: read the next page. */
     val onLoadMoreQueue: () -> Unit = {},
+    /** Move a queue entry to just after the current track (Wave 2 §3.4). */
+    val onPlayNextInQueue: (Int) -> Unit = {},
+    /** Take out every track after the current one (after asking). */
+    val onClearUpcoming: () -> Unit = {},
+    /** One shuffle mode (the shuffle button's long-press choice). */
+    val onShuffleMode: (ShuffleMode) -> Unit = {},
 )
 
 /**

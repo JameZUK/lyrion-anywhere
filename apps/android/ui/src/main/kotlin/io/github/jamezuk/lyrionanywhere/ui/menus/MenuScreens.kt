@@ -249,6 +249,9 @@ fun ItemSheetContent(
     discovery: io.github.jamezuk.lyrionanywhere.ui.discovery.DiscoveryUiState? = null,
     onStartRadio: () -> Unit = {},
     onSimilar: (MenuItem) -> Unit = {},
+    /** A track's credits (Wave 2 §3.1), each followable to that person's albums in that role. */
+    credits: List<io.github.jamezuk.lyrionanywhere.core.Credit> = emptyList(),
+    onCredit: (io.github.jamezuk.lyrionanywhere.core.Credit) -> Unit = {},
 ) {
     val stack by navigator.stack.collectAsStateWithLifecycle()
     val frame = stack.lastOrNull()
@@ -320,6 +323,12 @@ fun ItemSheetContent(
                     io.github.jamezuk.lyrionanywhere.ui.discovery.StartRadioButton(discovery, onStartRadio)
                     io.github.jamezuk.lyrionanywhere.ui.discovery.MoreLikeThisShelf(discovery, onSimilar)
                 }
+                HorizontalDivider(Modifier.padding(top = 8.dp))
+            }
+        }
+        if (stack.size <= 1 && credits.isNotEmpty()) {
+            item(key = "credits") {
+                io.github.jamezuk.lyrionanywhere.ui.library.CreditsSection(credits, onCredit)
                 HorizontalDivider(Modifier.padding(top = 8.dp))
             }
         }
