@@ -4,14 +4,17 @@ Started on 2026-10-13, from `docs/plans/ux-research.md` §6 (Wave 3). The aim is
 
 ## Order
 
-1. **Listening stats and "Your year"** (D7). Built on the per-user listening history the gateway already keeps.
-2. **Smart filters v2** (X7): "any" rules, track-level rules (rating, play count, last played, format, sample rate, length, year range), and filters as download rules.
-3. **Smart Shuffle and DJ styles** (X3), with Sonic path (X2) only if AudioMuse-AI offers it.
-4. **Guest queue ("Jam")** (D8). It needs a threat model first, as it is a new kind of access.
-5. **Album booklets** (X5 part 2). It needs a security design for resolving an album's folder without exposing paths.
-6. **Investigate the rolling cache** (H3).
+Agreed with the owner on 2026-10-13:
 
-Deferred: timed lyrics from LRCLIB (see `ux-research.md`, Deferred).
+1. **Listening stats and "Your year"** (D7). Built on the per-user listening history the gateway already keeps.
+2. **Rolling cache** (H3), for the Android player on patchy mobile data. It starts as an investigation, written up here before it is built.
+
+**Later**, by the owner's choice:
+- **Smart filters v2** (X7): "any" rules, track-level rules and download rules. Picked up if a need for track-level rules appears; v1 covers albums by genre, decade, artist and compilation.
+- **Smart Shuffle and DJ styles** (X3): largely covered by Start radio, More like this and stations.
+- **Guest queue ("Jam")** (D8): it needs a threat model first, as it is a new kind of access.
+- **Album booklets** (X5 part 2): it needs a security design for resolving an album's folder without exposing paths.
+- **Timed lyrics from LRCLIB** (see `ux-research.md`, Deferred).
 
 ## 1. Listening stats and "Your year" (part 1)
 
