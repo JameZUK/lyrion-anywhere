@@ -20,7 +20,7 @@ object HomeLayouts {
     )
 
     /** Shelves of these kinds name something by id. */
-    fun takesId(kind: ShelfKind) = kind == ShelfKind.STATION || kind == ShelfKind.MENU || kind == ShelfKind.GENRE
+    fun takesId(kind: ShelfKind) = kind == ShelfKind.STATION || kind == ShelfKind.MENU || kind == ShelfKind.GENRE || kind == ShelfKind.FILTER
 
     /** Shelves of these kinds can be added once each, without an id. */
     val SINGLES = listOf(

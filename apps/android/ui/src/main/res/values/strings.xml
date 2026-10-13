@@ -554,6 +554,7 @@
     <string name="home_shelf_station">Station</string>
     <string name="home_shelf_menu">Pinned menu</string>
     <string name="home_shelf_genre">Genre</string>
+    <string name="home_shelf_filter">Smart filter</string>
     <string name="home_shelf_named">%1$s: %2$s</string>
     <string name="stations_none">No stations yet.</string>
     <string name="station_new">New station</string>

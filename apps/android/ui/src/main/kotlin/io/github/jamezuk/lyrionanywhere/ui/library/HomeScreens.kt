@@ -213,6 +213,8 @@ private fun Shelf(shelf: HomeShelf, feed: HomeFeed, actions: HomeActions, onNewS
                 hideWhenEmpty = true,
             ) { a -> AlbumCard(a, actions) }
         }
+        // Smart filters (Wave 2 §5.6): shown once their screens arrive.
+        ShelfKind.FILTER -> {}
     }
 }
 
@@ -374,6 +376,7 @@ fun shelfTitle(kind: ShelfKind): Int = when (kind) {
     ShelfKind.STATION -> R.string.home_shelf_station
     ShelfKind.MENU -> R.string.home_shelf_menu
     ShelfKind.GENRE -> R.string.home_shelf_genre
+    ShelfKind.FILTER -> R.string.home_shelf_filter
 }
 
 @Composable
