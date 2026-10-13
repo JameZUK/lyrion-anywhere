@@ -9,7 +9,7 @@ Lyrion Anywhere gives secure internet access to a home Lyrion Music Server (LMS)
 - a gateway, a small Rust binary the plugin runs;
 - a feature-rich web app (an installable PWA) with a built-in browser player and offline downloads.
 
-Native Android and iOS apps come after v1 and use the same documented protocol.
+Native apps use the same documented protocol: the Android app is built (`apps/android`); an iOS app is planned.
 
 ---
 
@@ -99,7 +99,7 @@ Native Android and iOS apps come after v1 and use the same documented protocol.
 
 ## 4. Plugin (`Plugins::LyrionAnywhere`)
 
-**Built (0.1.0, 2026-10-10):** settings (enable, listen address, public URL, trusted proxies, development gateway path), user/role/two-step/grant/device/audit management, `anywhere …` LMS commands, gateway supervision with restart backoff. **Release (2026-10-10):** `tools/build-release.sh` builds the zip and `repo.xml`. It includes static gateways for x86_64/aarch64/armhf Linux, which the plugin checks against `Bin/SHA256SUMS` before running, and the browser player. **Still to come:** a cryptographic release signature (the checksums catch corruption and partial updates, not a malicious repository), macOS/Windows gateways, proxy self-test, device rename, streaming policy, player integration, packaging.
+**Built (0.1.0, 2026-10-10):** settings (enable, listen address, public URL, trusted proxies, development gateway path), user/role/two-step/grant/device/audit management, `anywhere …` LMS commands, gateway supervision with restart backoff. **Release (2026-10-10):** `tools/build-release.sh` builds the zip and `repo.xml`. It includes static gateways for x86_64/aarch64/armhf Linux, which the plugin checks against `Bin/SHA256SUMS` before running, and the browser player. **Still to come:** a cryptographic release signature (the checksums catch corruption and partial updates, not a malicious repository), macOS/Windows gateways, proxy self-test, streaming policy, player integration, packaging.
 
 **Trust boundary.** Account management runs through LMS's own JSON-RPC/CLI (`anywhere …` commands) and its settings page. LMS's JSON-RPC (9000) and CLI (9090) are unauthenticated on the LAN by default, and `/jsonrpc.js` accepts cross-origin `text/plain` POSTs, so any web page a LAN user opens could send `anywhere …` commands blind. Every admin command therefore needs `csrf:<token>`: 128 random bits made when LMS starts, kept in memory only, and given only to the settings page, which other sites cannot read. That includes the read-only ones (users, devices with their last addresses and browsers, diagnostics, the audit log), since 2026-10; only `anywhere status` needs no token. The settings form carries the same token and nothing is saved without it (LMS's own anti-CSRF check is off by default, 2026-10-13). The admin secret goes only to the gateway the plugin started, on the port it started it with (on Linux, a port that process holds): changing `admin_port` through `pref` never redirects it. `anywhere restart` never starts a gateway that is turned off. The plugin keeps the gateway's pid in its data directory and, after an LMS crash, stops a gateway left running only when `/proc/<pid>/cmdline` shows it is ours, serving our data directory. Someone with direct LAN access to an open LMS can still read the page and so manage accounts, just as they can already control LMS; the settings page says to turn on LMS's password protection. Prefs get the same validation through LMS's `pref` command as through the page, and the development gateway path is honoured only when LMS runs with `ANYWHERE_ALLOW_GATEWAY_PATH=1`. Remote users can never reach these commands: the gateway's RPC allow-list reserves `anywhere`.
 
@@ -563,7 +563,7 @@ Other rules:
 - **Language:** British English in all docs and UI strings.
 - **Repo layout:**
   - `core/` (Rust), `cli/` (native test player), `gateway/` (Rust), `plugin/` (Perl), `web/` (SvelteKit), `docs/`
-  - `docs/` holds `USAGE.md`, `SETTINGS.md`, `PROTOCOL.md`, `TROUBLESHOOTING.md`, and runbooks, each runbook with a "Gotchas" section.
+  - `docs/` holds the user and operator documentation (see `docs/README.md`): installation, deployment, architecture, features, protocol, privacy and release runbooks, each runbook with a "Gotchas" section.
 - **Changelog:** `CHANGELOG.md` with dated entries, newest first.
 - **Plugin release:**
   - tag `vX.Y.Z`; `tools/build-release.sh` builds the plugin zip, gateway binaries and `repo.xml`, and is run by GitHub Actions

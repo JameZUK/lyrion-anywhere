@@ -191,7 +191,7 @@ Android Auto ──bind──► PlaybackService (MediaLibraryService, exported)
   - **browse and play:** Android Auto (`com.google.android.projection.gearhead`) and the Google assistants, **only** when signed with their release certificates (SHA-256 pinned, both of Android Auto's release keys); apps signed with the platform key or holding `MEDIA_CONTENT_CONTROL` (system UI, Bluetooth, Android Automotive's media centre); and this app;
   - **transport only** (play, pause, skip; no library, no playing by id): other controllers Media3 trusts, such as a watch app given notification access;
   - **refused:** everyone else, any caller whose package doesn't belong to its uid, and a known package name with the wrong certificate. In safe mode (after a crash) the session accepts no one.
-- **Artwork:** the now-playing cover is sent as bytes, as before. Browse lists have no artwork: serving it would need a content provider, which wasn't strictly needed (see the A6 status in the plan).
+- **Artwork:** the now-playing cover is sent as bytes. Browse lists show covers through `AutoArtProvider` (`playback/…/auto/AutoArt.kt`), a content provider that is not exported: the car can read only the URIs the app granted it, read-only. It serves covers the app has already fetched through the gateway, cached under random, opaque keys, never a path or server address.
 - `automotive_app_desc.xml` declares a media app; the activity also takes `MEDIA_PLAY_FROM_SEARCH` (voice "play … on Lyrion Anywhere"), reading only the query.
 
 ### Discovery: radio and "more like this" (A6)

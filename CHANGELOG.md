@@ -91,7 +91,7 @@ The web app's side of `docs/plans/wave3-design.md` §1, built to the `GET /v1/me
 
 ## 2026-10-13: Your listening and Your year in sound (Android)
 
-The Android side of `docs/plans/wave3-design.md` §1, built to the `/v1/me/stats` contract. The Rust call (`Me.stats`) is being added separately; until it is wired, the app says the server doesn't offer stats yet. The one place to wire it is `RustStatsRepository` in `apps/android/data/.../Stats.kt` (marked `TODO(stats-api)`).
+The Android side of `docs/plans/wave3-design.md` §1, built to the `/v1/me/stats` contract. The Rust call (`Me.stats`) was added separately and wired into `RustStatsRepository` the same day.
 
 - **Your listening:** opened from a card at the end of Home and from Settings › Listening history.
   - **Period picker:** this month, last 30 days, this year, each past year the history reaches, and everything kept.
