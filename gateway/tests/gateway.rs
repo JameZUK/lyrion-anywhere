@@ -823,6 +823,62 @@ async fn stream_download_resumes_from_an_offset() {
     assert_eq!(beyond.status(), 416);
 }
 
+/// `?limit=` (the replay cache's look at a stream's first bytes): at most that many bytes,
+/// ending cleanly; the rest follows with `?offset=`, byte-identical, and LMS is asked once.
+/// A limit that is zero, too large or not a number is refused.
+#[tokio::test]
+async fn a_limited_request_sends_the_first_bytes_and_the_rest_follows() {
+    let mut h = harness().await;
+    let mut ws = h.dial().await;
+    let (sid, _) = open_session(&mut ws, &h.tok_a).await;
+    let mut lms = h.lms.accept().await;
+    lms.write_all(&strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(h.mac_a)))
+        .await
+        .unwrap();
+    next(&mut ws).await;
+    let get = |q: String| {
+        let url = h.url(&format!("/v1/stream/{sid}/1?{q}"));
+        let tok = h.tok_a.clone();
+        async move {
+            reqwest::Client::new()
+                .get(url)
+                .bearer_auth(tok)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    for bad in [
+        "limit=0",
+        "limit=-1",
+        "limit=abc",
+        "limit=16777217",
+        "limit=1e3",
+    ] {
+        assert_eq!(get(bad.into()).await.status(), 400, "{bad}");
+    }
+    let audio = h.lms.audio.clone();
+    assert!(audio.len() > 100_000);
+    // Not a multiple of the relay's pieces.
+    let first = get("limit=70001".into()).await;
+    assert_eq!(first.status(), 200);
+    let mut got = first.bytes().await.unwrap().to_vec();
+    assert_eq!(got.len(), 70_001, "exactly the limit, ending cleanly");
+    // A limited request from an offset.
+    let mid = get(format!("offset={}&limit=10", got.len())).await;
+    assert_eq!(mid.bytes().await.unwrap().to_vec(), audio[70_001..70_011]);
+    let rest = get(format!("offset={}", got.len())).await;
+    got.extend_from_slice(&rest.bytes().await.unwrap());
+    assert_eq!(got, *audio, "byte-identical");
+    assert_eq!(h.lms.http_paths().len(), 1, "LMS asked once");
+    // A limit beyond the end: what there is, ending cleanly.
+    let tail = get(format!("offset={}&limit=1000000", audio.len() - 5)).await;
+    assert_eq!(
+        tail.bytes().await.unwrap().to_vec(),
+        audio[audio.len() - 5..]
+    );
+}
+
 #[tokio::test]
 async fn stream_resume_outside_the_replay_window_is_gone() {
     let mut h = harness_with(|c| c.replay_window = 1000).await;

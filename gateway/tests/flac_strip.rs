@@ -222,7 +222,7 @@ async fn lms_hears_the_bytes_it_sent() {
 /// half-read relay.
 #[tokio::test]
 async fn counts_beyond_what_the_relay_sent_are_clamped() {
-    for format in [b'm', b'f'] {
+    for format in *b"mf" {
         // A small window, so the relay reads well short of the whole stream.
         let mut h = harness_with(|c| c.replay_window = 128 * 1024).await;
         let file = library_flac(0, 400);

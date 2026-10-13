@@ -235,7 +235,14 @@ async fn cancelled(rx: &mut watch::Receiver<bool>) {
 #[derive(Deserialize)]
 pub struct StreamQuery {
     offset: Option<u64>,
+    /// Send at most this many bytes, then end the response cleanly (the player's replay
+    /// cache asks for a stream's first bytes this way, to look them up before fetching
+    /// the rest with `?offset=`). 1 to [`MAX_LIMIT`].
+    limit: Option<u64>,
 }
+
+/// Largest `?limit=`.
+pub const MAX_LIMIT: u64 = 16 * 1024 * 1024;
 
 pub async fn stream(
     State(gw): State<AppState>,
@@ -265,6 +272,9 @@ pub async fn stream(
     let Ok(n) = n.parse::<u64>() else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    if q.limit.is_some_and(|l| l == 0 || l > MAX_LIMIT) {
+        return (StatusCode::BAD_REQUEST, "bad limit\n").into_response();
+    }
     let (_, path) = sess.stream();
     let (Some(path), Some(relay)) = (
         path,
@@ -373,7 +383,12 @@ pub async fn stream(
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CACHE_CONTROL, "no-store")
-        .body(Body::from_stream(body(relay, offset, my_turn)))
+        .body(Body::from_stream(body(
+            relay,
+            offset,
+            my_turn,
+            q.limit.map(|l| offset.saturating_add(l)),
+        )))
         .unwrap()
 }
 
@@ -385,6 +400,17 @@ struct Cursor {
     /// When the client last had a full window unacknowledged with no progress.
     stalled_since: Option<Instant>,
     last_acked: u64,
+    /// The response ends cleanly here (`?limit=`).
+    end: Option<u64>,
+}
+
+impl Cursor {
+    /// How much this response may still send.
+    fn room(&self) -> usize {
+        self.end.map_or(CHUNK, |e| {
+            e.saturating_sub(self.pos).min(CHUNK as u64) as usize
+        })
+    }
 }
 
 enum Step {
@@ -406,6 +432,7 @@ fn body(
     relay: Arc<Relay>,
     offset: u64,
     my_turn: u64,
+    end: Option<u64>,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static {
     let cancel = relay.cancelled.subscribe();
     let cur = Cursor {
@@ -415,6 +442,7 @@ fn body(
         cancel,
         stalled_since: None,
         last_acked: 0,
+        end,
     };
     futures_util::stream::unfold(cur, |mut cur| async move {
         next_chunk(&mut cur).await.map(|item| (item, cur))
@@ -428,12 +456,16 @@ fn step(cur: &mut Cursor) -> Step {
         debug!(pos = cur.pos, "stream request superseded");
         return Step::Fail("superseded by a newer request");
     }
+    if cur.room() == 0 {
+        // As much as was asked for: the client fetches the rest with `?offset=`.
+        return Step::End;
+    }
     if cur.pos < st.received {
         if cur.pos < st.window_start() {
             // Another request read on past this one's replay window.
             return Step::Fail("past the replay window");
         }
-        let chunk = st.replay(cur.pos, CHUNK);
+        let chunk = st.replay(cur.pos, cur.room());
         cur.pos += chunk.len() as u64;
         cur.stalled_since = None;
         return Step::Yield(chunk);
@@ -534,6 +566,8 @@ async fn read_upstream(cur: &mut Cursor) -> Option<Option<Result<Bytes, std::io:
     match next {
         Ok(Some(Ok(chunk))) => {
             st.remember(&chunk);
+            // Within the limit; the rest stays in the window for the next request.
+            let chunk = chunk.slice(..chunk.len().min(cur.room()));
             cur.pos += chunk.len() as u64;
             cur.stalled_since = None;
             Some(Some(Ok(chunk)))
@@ -623,7 +657,7 @@ mod tests {
             slot.opened = true;
         }
         state(&relay).consumer = 1;
-        let b = Box::pin(body(relay.clone(), 0, 1));
+        let b = Box::pin(body(relay.clone(), 0, 1, None));
         (relay, tx, b)
     }
 
@@ -679,7 +713,7 @@ mod tests {
         assert_eq!((n, err), (4, true));
         // The client resumes where it was: the rest arrives once it acknowledges.
         state(&relay).consumer = 2;
-        let mut again = Box::pin(body(relay.clone(), 4, 2));
+        let mut again = Box::pin(body(relay.clone(), 4, 2, None));
         relay.ack(4);
         feed.send(Ok(Bytes::from_static(b"ijkl"))).unwrap();
         drop(feed);
@@ -694,7 +728,7 @@ mod tests {
     type BoxBody = std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
 
     fn boxed_body(relay: Arc<Relay>, offset: u64, turn: u64) -> BoxBody {
-        Box::pin(body(relay, offset, turn))
+        Box::pin(body(relay, offset, turn, None))
     }
 
     /// Regression: after LMS's stream failed, a resumed request was served the replay and
