@@ -1,17 +1,5 @@
 <script lang="ts">
-	import { ratings } from '$lib/state/ratings';
-	let ratingsNote = $state('');
-	async function clearRatings() {
-		try {
-			const n = await ratings.clearAll();
-			ratingsNote = n === 1 ? '1 rating cleared.' : `${n} ratings cleared.`;
-		} catch (e) {
-			ratingsNote = (e as Error).message;
-		}
-	}
-	$effect(() => {
-		void ratings.load([]);
-	});
+	import RatingsSettings from '$lib/components/RatingsSettings.svelte';
 	import { PREFERENCES, type QualityPreference } from '$lib/player/stream-quality';
 	const QUALITY_LABELS: Record<string, string> = { auto: 'Automatic', original: 'Original', high: 'High', low: 'Data saver' };
 	import { app, session } from '$lib/state/app.svelte';
@@ -349,18 +337,7 @@
 
 	<div class="card">
 		<h2>Ratings</h2>
-		<label class="field">
-			<span>Rate with</span>
-			<select value={ratings.style} onchange={(e) => void ratings.setStyle(e.currentTarget.value === 'heart' ? 'heart' : 'stars')} data-rating-style>
-				<option value="stars">Stars</option>
-				<option value="heart">A heart</option>
-			</select>
-		</label>
-		<p class="muted small">
-			Your ratings are yours: kept on your server for your account and used for your shelves and stations. Where the server has the Ratings Light plugin, your rating also becomes its shared rating for the track.
-		</p>
-		<button class="btn" onclick={clearRatings} data-clear-ratings>Clear my ratings</button>
-		{#if ratingsNote}<p class="muted small" role="status">{ratingsNote}</p>{/if}
+		<RatingsSettings />
 	</div>
 
 	<div class="card">

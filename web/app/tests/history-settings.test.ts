@@ -75,10 +75,20 @@ test('the history lists titles by track id, older pages on request', async () =>
 
 test('clearing asks first', async () => {
 	render(HistorySettings);
-	vi.spyOn(window, 'confirm').mockReturnValueOnce(false);
-	await fireEvent.click(screen.getByRole('button', { name: 'Clear history' }));
+	const native = vi.spyOn(window, 'confirm');
+	const open = screen.getByRole('button', { name: 'Clear history' });
+	open.focus();
+	await fireEvent.click(open);
+	// An in-app dialog, not the browser's confirm(); focus starts on Cancel.
+	let dialog = screen.getByRole('alertdialog', { name: 'Clear your listening history?' });
+	expect(document.activeElement?.textContent).toBe('Cancel');
+	await fireEvent.click(dialog.querySelector('[data-confirm-cancel]')!);
+	expect(screen.queryByRole('alertdialog')).toBeNull();
+	expect(document.activeElement).toBe(open);
 	expect(state.cleared).toBe(0);
-	vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
-	await fireEvent.click(screen.getByRole('button', { name: 'Clear history' }));
+	await fireEvent.click(open);
+	dialog = screen.getByRole('alertdialog');
+	await fireEvent.click(dialog.querySelector('[data-confirm-ok]')!);
 	await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Cleared 3 plays.'));
+	expect(native).not.toHaveBeenCalled();
 });

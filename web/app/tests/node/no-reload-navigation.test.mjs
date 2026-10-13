@@ -29,6 +29,21 @@ test('no page-reloading navigation in the app', () => {
 	assert.deepEqual(found, []);
 });
 
+// Native confirm()/alert()/prompt() show badly (or not at all) in installed web apps and
+// can't be styled or made part of the page: use ConfirmDialog.
+const NATIVE_DIALOG = /(?<![\w.$])(?:window\.)?(?:confirm|alert)\s*\(|\bwindow\.prompt\s*\(/;
+
+test('no native browser dialogs in the app', () => {
+	const found = [];
+	for (const f of files(ROOT)) {
+		const code = readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+		if (NATIVE_DIALOG.test(code)) found.push(f);
+	}
+	assert.deepEqual(found, []);
+	for (const s of ['if (!confirm("x")) return', 'window.alert(1)', 'window.prompt("name")']) assert.ok(NATIVE_DIALOG.test(s), s);
+	for (const s of ['confirmTotp(e)', 'x.confirm(1)', 'async function confirmTotp(', 'onconfirm={clear}', 'prompt(): Promise<void>']) assert.ok(!NATIVE_DIALOG.test(s), s);
+});
+
 test('the check itself catches each pattern', () => {
 	for (const s of ["location.hash = '#/'", 'window.location.href = u', 'location.assign(u)']) {
 		assert.ok(BANNED.some(([re]) => re.test(s)), s);

@@ -3,6 +3,7 @@
 	import type { Station, StationKind } from '$lib/api/me';
 	import { activeStation } from '$lib/stations/active.svelte';
 	import { me } from '$lib/state/me';
+	import ConfirmDialog from './ConfirmDialog.svelte';
 	import Icon from './Icon.svelte';
 
 	let {
@@ -21,6 +22,7 @@
 	};
 	let busy = $state<number | null>(null);
 	let note = $state('');
+	let deleting = $state<Station | null>(null);
 
 	async function play(s: Station) {
 		busy = s.id;
@@ -31,7 +33,7 @@
 	}
 
 	async function remove(s: Station) {
-		if (!confirm(`Delete the station “${s.name}”?`)) return;
+		deleting = null;
 		try {
 			await me.deleteStation(s.id);
 			onremoved?.(s.id);
@@ -42,6 +44,10 @@
 </script>
 
 {#if note}<p class="note" role="status">{note}</p>{/if}
+{#if deleting}
+	{@const s = deleting}
+	<ConfirmDialog title={`Delete the station “${s.name}”?`} confirmLabel="Delete" danger onconfirm={() => remove(s)} oncancel={() => (deleting = null)} />
+{/if}
 <ul class="cards">
 	{#each stations as s (s.id)}
 		<li class:broken={!!s.broken} class:on={activeStation.playing && activeStation.station?.id === s.id}>
@@ -54,7 +60,7 @@
 				{#if busy === s.id}<span class="muted small">Starting…</span>{/if}
 			</button>
 			{#if removable}
-				<button class="icon-btn" aria-label={`Delete the station ${s.name}`} onclick={() => remove(s)}><Icon name="trash" size={18} /></button>
+				<button class="icon-btn" aria-label={`Delete the station ${s.name}`} onclick={() => (deleting = s)}><Icon name="trash" size={18} /></button>
 			{/if}
 		</li>
 	{:else}

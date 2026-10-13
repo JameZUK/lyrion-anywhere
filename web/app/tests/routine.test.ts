@@ -18,6 +18,7 @@ const fake = await import('./helpers/fake-app.svelte');
 const { ratings } = await import('$lib/state/ratings');
 const { default: RatingControl } = await import('$lib/components/RatingControl.svelte');
 const { default: AlarmsPage } = await import('../src/routes/alarms/+page.svelte');
+const { default: RatingsSettings } = await import('$lib/components/RatingsSettings.svelte');
 
 const P = '02:00:00:00:00:01';
 
@@ -164,6 +165,35 @@ describe('rating control', () => {
 		await fireEvent.click(r.container.querySelector('[data-star="5"]')!);
 		await waitFor(() => expect(r.container.querySelector('[role="alert"]')?.textContent).toContain('Couldn’t save'));
 		expect(r.container.querySelector('[data-rating-stars]')!.getAttribute('aria-valuenow')).toBe('0');
+	});
+});
+
+describe('ratings settings', () => {
+	test('clearing asks first, in the app; cancelling sends nothing', async () => {
+		route = (m, p) => (p === '/v1/me/ratings/style' ? { body: { style: 'stars' } } : m === 'DELETE' ? { body: { removed: 4 } } : { body: {} });
+		const native = vi.spyOn(window, 'confirm');
+		const r = render(RatingsSettings);
+		await fireEvent.click(r.container.querySelector('[data-clear-ratings]')!);
+		const dialog = document.querySelector('[data-confirm-dialog]')!;
+		expect(dialog.getAttribute('role')).toBe('alertdialog');
+		await fireEvent.click(dialog.querySelector('[data-confirm-cancel]')!);
+		expect(sent.some((s) => s.method === 'DELETE')).toBe(false);
+		expect(document.querySelector('[data-confirm-dialog]')).toBeNull();
+		await fireEvent.click(r.container.querySelector('[data-clear-ratings]')!);
+		await fireEvent.click(document.querySelector('[data-confirm-ok]')!);
+		await waitFor(() => expect(r.container.querySelector('[data-ratings-note]')!.textContent).toBe('4 ratings cleared.'));
+		expect(sent.filter((s) => s.method === 'DELETE').map((s) => s.path)).toEqual(['/v1/me/ratings']);
+		expect(native).not.toHaveBeenCalled();
+	});
+
+	test('a refused style change is put back and says why', async () => {
+		route = (m, p) => (p === '/v1/me/ratings/style' && m === 'PUT' ? { status: 503, body: { error: 'busy' } } : { body: { style: 'stars' } });
+		const r = render(RatingsSettings);
+		const select = r.container.querySelector<HTMLSelectElement>('[data-rating-style]')!;
+		await waitFor(() => expect(sent.some((s) => s.path === '/v1/me/ratings/style')).toBe(true));
+		await fireEvent.change(select, { target: { value: 'heart' } });
+		await waitFor(() => expect(r.container.querySelector('[data-ratings-note]')!.textContent).toContain('Couldn’t change how you rate'));
+		expect(ratings.style).toBe('stars');
 	});
 });
 
