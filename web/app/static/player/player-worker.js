@@ -15,6 +15,7 @@ const VQ = V && /^[\w.-]{1,64}$/.test(V) ? `?v=${V}` : '';
 const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, closeAction, describeSeek, loadCore, qualityMessage, sanitiseQuality, signInMessage, socketSilent, streamFailureAction } =
   await import(`./reconnect.js${VQ}`);
 const { Presentation } = await import(`./presentation.js${VQ}`);
+const { VisualTap } = await import(`./visual.js${VQ}`);
 
 const TICK_MS = 20;
 // PCM queued in the worklet ahead of playback. Small, so pause/stop feel immediate.
@@ -86,6 +87,8 @@ const MEDIA_AHEAD_SECS = 8;
 let segmenter = null;
 let mediaVariant = 0; // init-segment variant the browser's self-test accepted
 let mediaWaiting = false; // flushed; waiting for the main thread's new timeline position
+// The visualiser (Wave 2 §4.1): analyses the PCM going out, only while the page shows it.
+const visual = new VisualTap((rate, channels) => new core.WasmVisualiser(rate, channels));
 
 const now = () => performance.now();
 // Absolute time (ms), comparable with the page's: each has its own performance.now().
@@ -103,6 +106,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function attachSink(port) {
   sink = port;
   pulled = played = 0;
+  visual.flush();
   // A new AudioContext: its frames count from 0 again, and its clock comes with it.
   presentation.reset();
   timedStart = false;
@@ -125,6 +129,7 @@ function attachSink(port) {
  */
 function flushOutput() {
   pulled = played = 0;
+  visual.flush();
   epoch++;
   presentation.dropRuns();
   timedStart = false;
@@ -160,6 +165,9 @@ onmessage = async (e) => {
     core = await loadCore(self.location.href, (u) => import(u));
     wasmMemory = core.wasm.memory ?? null;
     connect(false);
+  } else if (msg.cmd === 'visual') {
+    // The page shows the visualiser (or stopped showing it).
+    visual.setOn(msg.on === true);
   } else if (msg.cmd === 'start-sink') {
     attachSink(msg.port);
   } else if (msg.cmd === 'rate-ready') {
@@ -528,6 +536,9 @@ function tick() {
     workletTick();
   }
   lastOutput = status.output;
+  // The newest visualiser frame now being heard.
+  const frame = visual.due(played, now());
+  if (frame) postMessage({ visual: frame }, [frame.buffer]);
   status.connection = open ? 'connected' : 'reconnecting';
   // Memory diagnostics: iOS reloads a page whose process uses too much memory.
   status.wasm_bytes = wasmMemory ? wasmMemory.buffer.byteLength : 0;
@@ -564,6 +575,7 @@ function workletTick() {
       const frames = player.pull(buf);
       if (!frames) break;
       const chunk = buf.slice(0, frames * 2);
+      visual.feed(chunk, rate, pulled);
       sink.postMessage({ pcm: chunk }, [chunk.buffer]);
       seekMark('queued');
       pulled += frames;
@@ -608,7 +620,9 @@ function mediaTick(output) {
       exhausted = player.audio_exhausted();
       break;
     }
-    segmenter.push(buf.subarray(0, frames * 2));
+    const pcm = buf.subarray(0, frames * 2);
+    visual.feed(pcm, rate, pulled);
+    segmenter.push(pcm);
     pulled += frames;
   }
   postSegment(segmenter.segment());

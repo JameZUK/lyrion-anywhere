@@ -38,7 +38,7 @@ test('Wave 2 library and queue controls keep 44 px targets', () => {
 	assert.ok(px(rule(read('routes/artist/[id]/[[role]]/+page.svelte'), '.chip {'), 'min-height') >= 44);
 	assert.ok(px(rule(read('routes/search/+page.svelte'), '.term {'), 'min-height') >= 44);
 	assert.ok(px(rule(read('lib/components/SearchHit.svelte'), '.main {'), 'min-height') >= 44);
-	assert.ok(px(rule(read('lib/components/QueuePeek.svelte'), 'li button {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('lib/components/QueueList.svelte'), 'li button {'), 'min-height') >= 44);
 	assert.ok(px(rule(read('routes/library/+page.svelte'), '.browse a {'), 'min-height') >= 44);
 	// The A–Z strip is 44 px wide; dragging along it picks a letter (and the keyboard reaches each).
 	assert.ok(px(rule(read('lib/components/AzScroller.svelte'), '.strip {'), 'width') >= 44);
@@ -50,4 +50,9 @@ test('Up next, the sleep timer and track menus keep 44 px targets', () => {
 	const cancel = rule(read('routes/+page.svelte'), '.cancel {');
 	assert.ok(px(cancel, 'width') >= 44 && px(cancel, 'height') >= 44);
 	assert.ok(px(rule(read('lib/components/TrackList.svelte'), '.menu button {'), 'min-height') >= 44);
+});
+
+test('Now playing layouts, the visualiser and Rooms keep 44 px targets', () => {
+	assert.ok(px(rule(read('routes/+page.svelte'), '.segbtn {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('lib/components/LyricsLines.svelte'), '.line {'), 'min-height') >= 44);
 });

@@ -1,0 +1,289 @@
+// Wave 2 part 3 on Now playing: the Art, Lyrics and Info layouts (segmented control, keys 1–3,
+// sideways swipes), wide windows (pane beside the art, queue pinned on the right), and the
+// visualiser's controls (only when this browser is the player, off under reduced motion,
+// decorative, watching the player only while shown).
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { flushSync, tick } from 'svelte';
+import type { PlayerStatus } from '$lib/lms/types';
+
+vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+const fake = await import('./helpers/fake-app.svelte');
+const { device } = await import('$lib/player/device.svelte');
+const { nowPlaying } = await import('$lib/nowplaying/store.svelte');
+const { NOW_PLAYING_KEY } = await import('$lib/nowplaying/prefs');
+const { default: NowPlaying } = await import('../src/routes/+page.svelte');
+
+const HERE = '02:00:00:00:00:0a';
+const KITCHEN = '02:00:00:00:00:0b';
+
+class NoObserver {
+	observe() {}
+	unobserve() {}
+	disconnect() {}
+}
+let reduceMotion = false;
+let width = 600;
+beforeAll(() => {
+	vi.stubGlobal('IntersectionObserver', NoObserver);
+	vi.stubGlobal('ResizeObserver', NoObserver);
+	vi.stubGlobal('matchMedia', (q: string) => {
+		const min = q.match(/min-width:\s*(\d+)px/);
+		return {
+			matches: q.includes('reduced-motion') ? reduceMotion : min ? width >= Number(min[1]) : false,
+			addEventListener() {},
+			removeEventListener() {},
+		};
+	});
+	// jsdom has no canvas: drawing is tested on its own (visual.test.ts).
+	HTMLCanvasElement.prototype.getContext = (() => null) as typeof HTMLCanvasElement.prototype.getContext;
+});
+afterAll(() => vi.unstubAllGlobals());
+
+function status(over: Partial<PlayerStatus> = {}): PlayerStatus {
+	return {
+		mode: 'play',
+		time: 30,
+		duration: 240,
+		playlist_cur_index: 0,
+		playlist_tracks: 2,
+		'mixer volume': 50,
+		playlist_loop: [
+			{ id: 11, title: 'Current song', artist: 'Band', album: 'Record', album_id: 5, type: 'flc', samplesize: '16', samplerate: '44100' },
+			{ id: 12, title: 'Next song', artist: 'Other band', duration: 200 },
+		],
+		...over,
+	};
+}
+
+function setVisibility(v: 'visible' | 'hidden') {
+	Object.defineProperty(document, 'visibilityState', { value: v, configurable: true });
+	document.dispatchEvent(new Event('visibilitychange'));
+}
+
+beforeEach(() => {
+	localStorage.removeItem(NOW_PLAYING_KEY);
+	nowPlaying.reload();
+	fake.calls.length = 0;
+	fake.app.players = [
+		{ playerid: HERE, name: 'This browser' },
+		{ playerid: KITCHEN, name: 'Kitchen' },
+	];
+	fake.app.deviceMac = HERE;
+	fake.app.playerId = HERE;
+	fake.app.now = status();
+	device.mac = HERE;
+	device.state = 'connected';
+	reduceMotion = false;
+	width = 600;
+	setVisibility('visible');
+	fake.handler.rpc = async () => ({});
+});
+
+const layoutButtons = (c: Element) => [...c.querySelectorAll<HTMLButtonElement>('[data-layout-button]')];
+const pressed = (c: Element) => layoutButtons(c).find((b) => b.getAttribute('aria-pressed') === 'true')?.dataset.layoutButton;
+
+function pointer(el: Element, type: string, init: PointerEventInit) {
+	el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'touch', ...init }));
+	flushSync();
+}
+function swipe(el: Element, dx: number, dy = 0) {
+	pointer(el, 'pointerdown', { clientX: 200, clientY: 200 });
+	pointer(el, 'pointerup', { clientX: 200 + dx, clientY: 200 + dy });
+}
+
+describe('layouts', () => {
+	test('a labelled segmented control picks Art, Lyrics or Info, remembered on this device', async () => {
+		const r = render(NowPlaying);
+		await tick();
+		const group = r.container.querySelector('[data-layouts]')!;
+		expect(group.getAttribute('role')).toBe('group');
+		expect(group.getAttribute('aria-label')).toBe('Now playing layout');
+		expect(layoutButtons(r.container).map((b) => b.textContent?.trim())).toEqual(['Art', 'Lyrics', 'Info']);
+		expect(layoutButtons(r.container).map((b) => b.getAttribute('aria-keyshortcuts'))).toEqual(['1', '2', '3']);
+		expect(pressed(r.container)).toBe('art');
+		await fireEvent.click(layoutButtons(r.container)[2]!);
+		expect(pressed(r.container)).toBe('info');
+		expect(JSON.parse(localStorage.getItem(NOW_PLAYING_KEY)!).layout).toBe('info');
+		r.unmount();
+	});
+
+	test('keys 1, 2 and 3 choose the layout, but not while typing or with a modifier', async () => {
+		const r = render(NowPlaying);
+		await tick();
+		await fireEvent.keyDown(document.body, { key: '2' });
+		expect(pressed(r.container)).toBe('lyrics');
+		expect(r.container.querySelector('[data-lyrics-pane]')).not.toBeNull();
+		await fireEvent.keyDown(document.body, { key: '3' });
+		expect(pressed(r.container)).toBe('info');
+		await fireEvent.keyDown(document.body, { key: '1', ctrlKey: true });
+		expect(pressed(r.container)).toBe('info');
+		const volume = r.container.querySelector<HTMLInputElement>('input[type=range]')!;
+		await fireEvent.keyDown(volume, { key: '1' });
+		expect(pressed(r.container)).toBe('info');
+		await fireEvent.keyDown(document.body, { key: '1' });
+		expect(pressed(r.container)).toBe('art');
+		r.unmount();
+	});
+
+	test('a sideways swipe on the art area moves between layouts; a swipe up still peeks at the queue', async () => {
+		const r = render(NowPlaying);
+		await tick();
+		const area = r.container.querySelector('[data-peek-area]')!;
+		swipe(area, -100);
+		expect(pressed(r.container)).toBe('lyrics');
+		// The lyrics take the art's place (narrow window): a swipe there goes on to Info.
+		swipe(r.container.querySelector('[data-peek-area]')!, -100);
+		expect(pressed(r.container)).toBe('info');
+		swipe(r.container.querySelector('[data-peek-area]')!, 100);
+		swipe(r.container.querySelector('[data-peek-area]')!, 100);
+		expect(pressed(r.container)).toBe('art');
+		// Too short, or mostly vertical: not a layout swipe.
+		swipe(r.container.querySelector('[data-peek-area]')!, -30);
+		expect(pressed(r.container)).toBe('art');
+		swipe(r.container.querySelector('[data-peek-area]')!, 10, -100);
+		expect(pressed(r.container)).toBe('art');
+		await waitFor(() => expect(document.querySelector('[data-full-queue]')).not.toBeNull());
+		r.unmount();
+	});
+
+	test('Info: quality and signal path, rating, credits and Up next', async () => {
+		fake.handler.rpc = async (_p, cmd) => (cmd[0] === 'titles' ? { titles_loop: [{ id: 11, composer: 'A Composer', composer_ids: '7' }] } : {});
+		const r = render(NowPlaying);
+		await tick();
+		await fireEvent.click(layoutButtons(r.container)[2]!);
+		const pane = r.container.querySelector('[data-info-pane]')!;
+		expect(pane.textContent).toContain('FLAC 16/44.1');
+		expect(pane.querySelector('[data-signal-path]')).not.toBeNull();
+		expect(pane.querySelector('[data-up-next]')?.textContent).toContain('Next song');
+		// Up next and the rating move into the pane rather than appearing twice.
+		expect(r.container.querySelectorAll('[data-up-next]')).toHaveLength(1);
+		expect(fake.calls.some((c) => c.cmd[0] === 'titles' && c.cmd.includes('track_id:11'))).toBe(true);
+		r.unmount();
+	});
+
+	test('wide windows: the art stays, the pane sits beside it, and the queue can be pinned or hidden', async () => {
+		width = 1300;
+		fake.handler.rpc = async (_p, cmd) => (cmd[0] === 'status' && cmd[1] === 0 ? { playlist_loop: status().playlist_loop } : {});
+		const r = render(NowPlaying);
+		await tick();
+		expect(r.container.querySelector('[data-side-pane]')).toBeNull();
+		await fireEvent.keyDown(document.body, { key: '2' });
+		expect(r.container.querySelector('[data-side-pane="lyrics"]')).not.toBeNull();
+		// The cover is still shown on the left.
+		expect(r.container.querySelector('.art-box')).not.toBeNull();
+		const q = r.container.querySelector('[data-queue-side]')!;
+		expect(q.getAttribute('aria-label')).toBe('Queue');
+		await waitFor(() => expect(q.querySelector('[data-side-queue="now"]')).not.toBeNull());
+		const toggle = r.container.querySelector<HTMLButtonElement>('[data-queue-panel-toggle]')!;
+		expect(toggle.getAttribute('aria-pressed')).toBe('true');
+		await fireEvent.click(toggle);
+		expect(r.container.querySelector('[data-queue-side]')).toBeNull();
+		expect(JSON.parse(localStorage.getItem(NOW_PLAYING_KEY)!).queuePanel).toBe(false);
+		r.unmount();
+	});
+
+	test('a medium window has no queue panel or its button', async () => {
+		width = 900;
+		const r = render(NowPlaying);
+		await tick();
+		expect(r.container.querySelector('[data-queue-side]')).toBeNull();
+		expect(r.container.querySelector('[data-queue-panel-toggle]')).toBeNull();
+		r.unmount();
+	});
+});
+
+describe('visualiser', () => {
+	test('off by default; the toggle and style button are labelled and remembered', async () => {
+		const r = render(NowPlaying);
+		await tick();
+		expect(r.container.querySelector('[data-visualiser]')).toBeNull();
+		const toggle = r.container.querySelector<HTMLButtonElement>('[data-visualiser-toggle]')!;
+		expect(toggle.getAttribute('aria-label')).toBe('Visualiser');
+		expect(toggle.getAttribute('aria-pressed')).toBe('false');
+		await fireEvent.click(toggle);
+		expect(toggle.getAttribute('aria-pressed')).toBe('true');
+		const vis = r.container.querySelector('[data-visualiser]')!;
+		expect(vis.getAttribute('aria-hidden')).toBe('true');
+		expect(vis.getAttribute('data-visualiser')).toBe('bars');
+		// It asks this device's player for frames only while shown.
+		expect(device.visualWatchers).toBe(1);
+		const style = r.container.querySelector<HTMLButtonElement>('[data-visualiser-style]')!;
+		expect(style.getAttribute('aria-label')).toBe('Visualiser style: Bars. Change style');
+		await fireEvent.click(style);
+		expect(r.container.querySelector('[data-visualiser]')!.getAttribute('data-visualiser')).toBe('scope');
+		expect(JSON.parse(localStorage.getItem(NOW_PLAYING_KEY)!)).toMatchObject({ visualiser: true, style: 'scope' });
+		r.unmount();
+		expect(device.visualWatchers).toBe(0);
+	});
+
+	test('a swipe across it changes the style, not the layout', async () => {
+		nowPlaying.setVisualiser(true);
+		const r = render(NowPlaying);
+		await tick();
+		swipe(r.container.querySelector('[data-visualiser]')!, -100);
+		expect(r.container.querySelector('[data-visualiser]')!.getAttribute('data-visualiser')).toBe('scope');
+		expect(pressed(r.container)).toBe('art');
+		swipe(r.container.querySelector('[data-visualiser]')!, 100);
+		expect(r.container.querySelector('[data-visualiser]')!.getAttribute('data-visualiser')).toBe('bars');
+		r.unmount();
+	});
+
+	test('Glow keeps the cover and pulses the background; frames reach it', async () => {
+		nowPlaying.setVisualiser(true);
+		nowPlaying.setStyle('glow');
+		const r = render(NowPlaying);
+		await tick();
+		expect(r.container.querySelector('[data-visualiser="glow"]')).not.toBeNull();
+		expect(r.container.querySelector('.art-box img, .art-box [data-art], .art-box')).not.toBeNull();
+		expect(device.visualWatchers).toBe(1);
+		r.unmount();
+	});
+
+	test('it stops watching while the page is hidden, and starts again when shown', async () => {
+		nowPlaying.setVisualiser(true);
+		const r = render(NowPlaying);
+		await tick();
+		expect(device.visualWatchers).toBe(1);
+		setVisibility('hidden');
+		expect(device.visualWatchers).toBe(0);
+		setVisibility('visible');
+		expect(device.visualWatchers).toBe(1);
+		r.unmount();
+	});
+
+	test('reduced motion: off, and its toggle says why', async () => {
+		reduceMotion = true;
+		nowPlaying.setVisualiser(true);
+		const r = render(NowPlaying);
+		await tick();
+		expect(r.container.querySelector('[data-visualiser]')).toBeNull();
+		expect(device.visualWatchers).toBe(0);
+		const toggle = r.container.querySelector<HTMLButtonElement>('[data-visualiser-toggle]')!;
+		expect(toggle.disabled).toBe(true);
+		expect(toggle.getAttribute('aria-label')).toMatch(/reduced motion/);
+		expect(r.container.querySelector('[data-visualiser-style]')).toBeNull();
+		r.unmount();
+	});
+
+	test('a remote player: no visualiser and no controls for it; the ambient background stays', async () => {
+		nowPlaying.setVisualiser(true);
+		fake.app.playerId = KITCHEN;
+		const r = render(NowPlaying);
+		await tick();
+		expect(r.container.querySelector('[data-visualiser]')).toBeNull();
+		expect(r.container.querySelector('[data-visualiser-toggle]')).toBeNull();
+		expect(r.container.querySelector('[data-ambient]')).not.toBeNull();
+		expect(device.visualWatchers).toBe(0);
+		r.unmount();
+	});
+
+	test('not shown in the Lyrics or Info layouts on a narrow screen (the art is not there)', async () => {
+		nowPlaying.setVisualiser(true);
+		const r = render(NowPlaying);
+		await tick();
+		await fireEvent.keyDown(document.body, { key: '2' });
+		expect(r.container.querySelector('[data-visualiser]')).toBeNull();
+		expect(device.visualWatchers).toBe(0);
+		r.unmount();
+	});
+});

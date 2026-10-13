@@ -49,6 +49,10 @@
 		alarm: 'M12 8v4.5l3 2M12 21a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM5 3 2 6M19 3l3 3',
 		link: 'M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1',
 		offline:'M3 8.5a13 13 0 0 1 18 0M6.5 12a8 8 0 0 1 11 0M10 15.5a3 3 0 0 1 4 0M4 4l16 16',
+		visualiser: 'M4 20v-5M8 20V9M12 20V4M16 20v-8M20 20v-4',
+		rooms: 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z',
+		art: 'M4 4h16v16H4zM4 16l5-5 4 4 2-2 5 5M15.5 8.5h.01',
+		info: 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM12 11v6M12 7.5h.01',
 	};
 	const SOLID = new Set(['play', 'pause', 'next', 'prev']);
 

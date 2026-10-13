@@ -121,6 +121,8 @@ class DevicePlayer {
 	#smoother = new PlayheadSmoother();
 
 	#worker: Worker | null = null;
+	/** Who wants visualiser frames (Wave 2 §4.1); the worker analyses only while someone does. */
+	#visualWatchers = new Set<(frame: Float32Array) => void>();
 	#ctx: AudioContext | null = null;
 	#unsubscribe: (() => void) | null = null;
 	#detailAt = 0;
@@ -531,6 +533,7 @@ class DevicePlayer {
 			};
 			this.#updateQuality();
 			w.postMessage({ cmd: 'start', token: session.token, port, mode: choice.mode, variant, quality: this.quality }, port ? [port] : []);
+			if (this.#visualWatchers.size) w.postMessage({ cmd: 'visual', on: true });
 			this.#history.active = true;
 			if (port) {
 				w.postMessage({ cmd: 'rate-ready', rate: 44100 });
@@ -810,7 +813,29 @@ class DevicePlayer {
 		}
 	}
 
+	/**
+	 * Visualiser frames (see static/player/visual.js) while `cb` watches: the worker analyses
+	 * the audio only while at least one watcher is registered. Returns the unwatch function.
+	 */
+	watchVisual(cb: (frame: Float32Array) => void): () => void {
+		this.#visualWatchers.add(cb);
+		if (this.#visualWatchers.size === 1) this.#worker?.postMessage({ cmd: 'visual', on: true });
+		return () => {
+			if (!this.#visualWatchers.delete(cb)) return;
+			if (!this.#visualWatchers.size) this.#worker?.postMessage({ cmd: 'visual', on: false });
+		};
+	}
+
+	/** How many watch the visualiser (for tests and diagnostics). */
+	get visualWatchers(): number {
+		return this.#visualWatchers.size;
+	}
+
 	async #onMessage(m: Record<string, unknown>) {
+		if (m.visual instanceof Float32Array) {
+			for (const cb of this.#visualWatchers) cb(m.visual);
+			return;
+		}
 		if (typeof m.log === 'string') this.#note(m.log);
 		if (Array.isArray(m.volume)) {
 			this.#lmsGains = cleanGains(m.volume);

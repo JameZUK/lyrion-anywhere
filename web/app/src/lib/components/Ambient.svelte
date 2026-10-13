@@ -4,7 +4,9 @@
 	// the art's filter come from the theme (theme/ambient.ts), so every text colour keeps
 	// WCAG AA over any cover.
 	// It holds still under "reduce motion", on low-power devices, and while the page is
-	// hidden; a new cover cross-fades in.
+	// hidden; a new cover cross-fades in. The visualiser's Glow style (Wave 2 §4.1) sets
+	// `--np-bass` (0–1) on Now playing, and the art swells with it; the scrim, and so the
+	// text's contrast, stays as it is.
 	import { api } from '$lib/state/app.svelte';
 	import { ambientStill } from '$lib/theme/motion';
 
@@ -54,8 +56,10 @@
 </script>
 
 <div class="ambient" class:still class:paused={hidden} aria-hidden="true" data-ambient>
-	<div class="drift">
-		{#each layers as l (l.key)}<img class="layer" src={l.src} alt="" draggable="false" />{/each}
+	<div class="pulse">
+		<div class="drift">
+			{#each layers as l (l.key)}<img class="layer" src={l.src} alt="" draggable="false" />{/each}
+		</div>
 	</div>
 	<div class="scrim"></div>
 </div>
@@ -70,6 +74,11 @@
 		overflow: hidden;
 		pointer-events: none;
 		background: var(--bg);
+	}
+	.pulse {
+		position: absolute;
+		inset: 0;
+		transform: scale(calc(1 + var(--np-bass, 0) * 0.12));
 	}
 	.drift {
 		position: absolute;

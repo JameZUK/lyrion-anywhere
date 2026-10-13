@@ -25,6 +25,8 @@
 	import { textOf } from '$lib/lms/format';
 	import { FADE_CHOICES } from '$lib/lms/sleep';
 	import { lyrics } from '$lib/state/lyrics';
+	import { nowPlaying } from '$lib/nowplaying/store.svelte';
+	import { STYLES, STYLE_LABELS, type VisualStyle } from '$lib/visual/draw';
 
 	// Built in: every browser is checked, and the best playback mode chosen automatically.
 	const caps = detect();
@@ -216,6 +218,21 @@
 			<span>Show the current line on Now playing</span>
 		</label>
 		<p class="muted small">When a track has synced lyrics. All lyrics are always a tap away with the Lyrics button. Kept in this browser.</p>
+	</div>
+
+	<div class="card">
+		<h2>Visualiser</h2>
+		<label class="check">
+			<input type="checkbox" checked={nowPlaying.visualiser} onchange={(e) => nowPlaying.setVisualiser(e.currentTarget.checked)} data-visualiser-setting />
+			<span>Show the visualiser on Now playing</span>
+		</label>
+		<label class="field">
+			<span>Style</span>
+			<select value={nowPlaying.style} onchange={(e) => nowPlaying.setStyle(e.currentTarget.value as VisualStyle)} data-visualiser-style-setting>
+				{#each STYLES as st (st)}<option value={st}>{STYLE_LABELS[st]}</option>{/each}
+			</select>
+		</label>
+		<p class="muted small">In place of the cover, while this browser is the player and Now playing is on screen. Off while your device asks for reduced motion. Kept in this browser.</p>
 	</div>
 
 	<div class="card">
