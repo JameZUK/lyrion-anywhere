@@ -7,8 +7,8 @@ mod common;
 
 use anywhere_mobile::{
     AlbumSort, ApiError, ArtistRole, FolderKind, InfoKind, LibraryFilter, MenuAction, MenuItemKind,
-    MenuOutcome, MenuParam, Menus, MusicLibrary, Placement, Players, Selection, Suitability,
-    app_menu, info_menu,
+    MenuOutcome, MenuParam, Menus, MusicLibrary, Placement, Players, SearchKind, Selection,
+    Suitability, TopResult, app_menu, info_menu,
 };
 use anywhere_mobile::{Discovery, RadioSeed};
 use common::*;
@@ -528,4 +528,148 @@ async fn discovery_runs_through_the_gateway() {
             .is_err()
     );
     assert!(d.dont_stop_the_music(HOME_PLAYER.into()).await.is_none());
+}
+
+/// Wave 2 part 2 (docs/plans/wave2-design.md §3): credits, "Appears as", the A–Z indexes,
+/// grouped search and the queue's extra tags all pass the real gateway's allow-list and
+/// read back from LMS's shapes; bad input is refused before anything is sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn credits_indexes_and_search_pass_the_allow_list() {
+    let h = Harness::start().await;
+    let (s, _) = h.alice().await;
+    let me = s.current().unwrap().device.player_id;
+    let lib = MusicLibrary::new(s.clone());
+    let players = Players::new(s.clone());
+
+    // Track credits, by role, each followable by id.
+    let credits = lib.track_credits(1).await.unwrap();
+    let got: Vec<(ArtistRole, &str, Option<i64>)> = credits
+        .iter()
+        .map(|c| (c.role, c.name.as_str(), c.artist_id))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (ArtistRole::AlbumArtist, "Example Ensemble", Some(3)),
+            (ArtistRole::Artist, "Singer One", Some(21)),
+            (ArtistRole::Artist, "Singer Two", Some(22)),
+            (ArtistRole::Composer, "Some Composer", Some(41)),
+            (ArtistRole::Conductor, "A Conductor", Some(51)),
+        ]
+    );
+    assert!(!format!("{credits:?}").contains("/srv/"));
+
+    // "Appears as": only the roles with albums, in order.
+    let roles = lib.role_counts(3, Some("ab12".into())).await.unwrap();
+    let roles: Vec<(ArtistRole, u32)> = roles.iter().map(|r| (r.role, r.albums)).collect();
+    assert_eq!(
+        roles,
+        vec![(ArtistRole::Composer, 12), (ArtistRole::Conductor, 3)]
+    );
+    // Following a credit: that contributor's albums in that role.
+    lib.artist_albums(41, Some(ArtistRole::Composer))
+        .await
+        .unwrap();
+
+    // The A–Z indexes, as offsets.
+    let filter = LibraryFilter {
+        compilation: Some(true),
+        library_id: Some("ab12".into()),
+        ..Default::default()
+    };
+    let idx = lib.album_index(filter).await.unwrap();
+    let offsets: Vec<(&str, u32, u32)> = idx
+        .iter()
+        .map(|e| (e.key.as_str(), e.offset, e.count))
+        .collect();
+    assert_eq!(offsets, vec![("A", 0, 2), ("B", 2, 1), ("Ö", 3, 3)]);
+    let artists = LibraryFilter {
+        role: Some(ArtistRole::AlbumArtist),
+        ..Default::default()
+    };
+    assert_eq!(lib.artist_index(artists).await.unwrap().len(), 3);
+
+    // Grouped search: counts, the top result, and each type paged on its own.
+    let r = lib.search("artist".into(), 5).await.unwrap();
+    assert_eq!(
+        (r.artists_total, r.albums_total, r.tracks_total),
+        (1, 4, 30)
+    );
+    assert_eq!(
+        r.top,
+        Some(TopResult {
+            kind: SearchKind::Artist,
+            index: 0
+        })
+    );
+    assert!(!format!("{r:?}").contains("/srv/"));
+    let tracks = lib.search_tracks("blue".into(), 50, 50).await.unwrap();
+    assert_eq!(tracks.total, 2);
+    let pl = lib.search_playlists("road".into(), 0, 20).await.unwrap();
+    assert_eq!(pl.items[0].name, "Road trip");
+
+    // The queue as listed, with album ids and track and disc numbers.
+    players.queue(me.clone(), 0, 200).await.unwrap();
+
+    let calls = h.lms.rpc_calls();
+    for want in [
+        json!(["", ["titles", "0", "1", "track_id:1", "tags:AS"]]),
+        json!([
+            "",
+            [
+                "albums",
+                "0",
+                "1",
+                "artist_id:3",
+                "role_id:COMPOSER",
+                "library_id:ab12"
+            ]
+        ]),
+        json!([
+            "",
+            [
+                "albums",
+                "0",
+                "1",
+                "tags:Z",
+                "sort:album",
+                "compilation:1",
+                "library_id:ab12"
+            ]
+        ]),
+        json!(["", ["artists", "0", "1", "tags:Z", "role_id:ALBUMARTIST"]]),
+        json!(["", ["search", "0", "5", "term:artist", "extended:1"]]),
+        json!([
+            "",
+            [
+                "titles",
+                "50",
+                "50",
+                "tags:adtlcJKjegiqosITy",
+                "search:blue"
+            ]
+        ]),
+        json!(["", ["playlists", "0", "20", "search:road"]]),
+        json!([me, ["status", "0", "200", "tags:alcdJKjeti"]]),
+    ] {
+        assert!(calls.contains(&want), "{want} not sent");
+    }
+
+    // Bad input never leaves the device.
+    let before = h.lms.rpc_calls().len();
+    assert!(matches!(
+        lib.track_credits(0).await,
+        Err(ApiError::InvalidInput { .. })
+    ));
+    assert!(lib.role_counts(-3, None).await.is_err());
+    assert!(lib.role_counts(3, Some("../x".into())).await.is_err());
+    assert!(lib.search_tracks("  ".into(), 0, 10).await.is_err());
+    assert!(lib.search_playlists("\u{0}".into(), 0, 10).await.is_err());
+    let hostile = LibraryFilter {
+        library_id: Some("ab12 library_id:cd".into()),
+        ..Default::default()
+    };
+    assert!(lib.album_index(hostile.clone()).await.is_err());
+    assert!(lib.artist_index(hostile).await.is_err());
+    assert_eq!(h.lms.rpc_calls().len(), before, "nothing was sent");
 }

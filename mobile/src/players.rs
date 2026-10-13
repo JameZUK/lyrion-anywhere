@@ -54,14 +54,17 @@ impl Players {
         ))
     }
 
-    /// A page of the player's queue (`count` at most 500).
+    /// A page of the player's queue (`count` at most 500), with album ids and track and disc
+    /// numbers (for gapless markers).
     pub async fn queue(
         &self,
         player: String,
         start: u32,
         count: u32,
     ) -> Result<Vec<Track>, ApiError> {
-        let v = self.send(&player, commands::queue(start, count)).await?;
+        let v = self
+            .send(&player, commands::queue_list(start, count))
+            .await?;
         Ok(model::tracks_from(&v, "playlist_loop"))
     }
 

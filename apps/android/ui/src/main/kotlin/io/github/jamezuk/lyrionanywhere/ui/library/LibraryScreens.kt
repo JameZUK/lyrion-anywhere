@@ -422,6 +422,8 @@ data class AlbumActions(
         io.github.jamezuk.lyrionanywhere.ui.discovery.DiscoveryUiState(),
     val onStartRadio: () -> Unit = {},
     val onSimilar: (io.github.jamezuk.lyrionanywhere.core.MenuItem) -> Unit = {},
+    /** Play a track next or add it to the queue (its row's swipes); null: no swipes. */
+    val onQueueTrack: ((Track, Placement) -> Unit)? = null,
 )
 
 /** The album page: large art, details, Play/Shuffle/Add/More, and tracks by disc. */
@@ -484,12 +486,16 @@ fun AlbumScreen(state: Loadable<AlbumDetail>, actions: AlbumActions, modifier: M
                             }
                         }
                         items(disc.tracks, key = { t -> "${disc.number}-${t.id}-${t.trackNumber}-${t.title}" }) { track ->
-                            TrackRow(
-                                track,
-                                onClick = { actions.onPlayTrack(track) },
-                                showArtist = d.variousArtists,
-                                onMore = More.track(track)?.let { r -> { actions.onMore(r) } },
-                            )
+                            val queue = actions.onQueueTrack?.takeIf { track.id != null }
+                            BrowseSwipe(queue?.let { q -> { p: Placement -> q(track, p) } }) { m ->
+                                TrackRow(
+                                    track,
+                                    onClick = { actions.onPlayTrack(track) },
+                                    showArtist = d.variousArtists,
+                                    onMore = More.track(track)?.let { r -> { actions.onMore(r) } },
+                                    modifier = m,
+                                )
+                            }
                         }
                     }
                     if (actions.discovery.similar.isNotEmpty()) {
@@ -580,6 +586,8 @@ data class ArtistActions(
     val onPlay: (Placement) -> Unit,
     val onShuffle: () -> Unit,
     val onMore: (MoreRequest) -> Unit,
+    /** Their albums in a role ("Appears as", Wave 2 §3.1). */
+    val onRole: (io.github.jamezuk.lyrionanywhere.core.ArtistRole) -> Unit = {},
 )
 
 @Composable
@@ -613,7 +621,7 @@ fun ArtistScreen(
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                     modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
                 ) {
-                    item(span = { GridItemSpan(maxLineSpan) }) {
+                    item(span = { GridItemSpan(maxLineSpan) }) { Column {
                         TintedHeader(
                             artwork = d.headerArt,
                             kind = stringResource(R.string.kind_artist),
@@ -632,6 +640,8 @@ fun ArtistScreen(
                                 )
                             },
                         )
+                        AppearsAs(d.roles, actions.onRole, Modifier.padding(top = 8.dp))
+                    }
                     }
                     if (d.albums.isEmpty()) {
                         item(span = { GridItemSpan(maxLineSpan) }) { EmptyState(stringResource(R.string.no_albums)) }
@@ -651,57 +661,6 @@ fun ArtistScreen(
                             }
                         }
                     }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun SearchResultsList(
-    state: SearchUiState,
-    onRetry: () -> Unit,
-    onArtist: (Artist) -> Unit,
-    onAlbum: (Album) -> Unit,
-    onTrack: (Track) -> Unit,
-    modifier: Modifier = Modifier,
-    onMore: ((MoreRequest) -> Unit)? = null,
-) {
-    val results = state.results
-    when {
-        state.error != null -> ErrorState(state.error, onRetry, modifier)
-        state.loading && results == null -> LoadingState(modifier)
-        results == null -> EmptyState(stringResource(R.string.search_hint), modifier)
-        results.artists.isEmpty() && results.albums.isEmpty() && results.tracks.isEmpty() ->
-            EmptyState(stringResource(R.string.search_nothing, state.query.trim()), modifier)
-        else -> LazyColumn(modifier.fillMaxSize()) {
-            if (results.artists.isNotEmpty()) {
-                item { SectionHeader(stringResource(R.string.section_artists)) }
-                items(results.artists, key = { "ar${it.id}" }) { a ->
-                    ListItem(
-                        headlineContent = { Text(a.name) },
-                        modifier = Modifier.clickable(onClickLabel = stringResource(R.string.open_artist)) { onArtist(a) },
-                    )
-                }
-            }
-            if (results.albums.isNotEmpty()) {
-                item { SectionHeader(stringResource(R.string.section_albums)) }
-                items(results.albums, key = { "al${it.id}" }) { a ->
-                    ListItem(
-                        headlineContent = { Text(a.title) },
-                        modifier = Modifier.clickable(onClickLabel = stringResource(R.string.open_album)) { onAlbum(a) },
-                    )
-                }
-            }
-            if (results.tracks.isNotEmpty()) {
-                item { SectionHeader(stringResource(R.string.section_tracks)) }
-                items(results.tracks, key = { "tr${it.id}" }) { t ->
-                    TrackRow(
-                        t,
-                        onClick = { onTrack(t) },
-                        showArt = true,
-                        onMore = onMore?.let { m -> More.track(t)?.let { r -> { m(r) } } },
-                    )
                 }
             }
         }

@@ -102,7 +102,20 @@ data class PlayerUiState(
     val ratingStyle: RatingStyle = RatingStyle.STARS,
     /** The last rating couldn't be saved. */
     val ratingFailed: Boolean = false,
+    /** What this device added with Play next (Wave 2 §3.4); null: the queue shows flat. */
+    val upNext: UpNext? = null,
 ) {
+    /** The queue's sections (Now playing, Up next, Then), or null for a flat queue. */
+    val sections: QueueSections? get() = QueueSections.of(queue.size, status?.queueIndex?.toInt(), upNext)
+
+    /** Tracks after the current one (for "Clear upcoming"), or null if not known. */
+    val upcoming: Int?
+        get() {
+            val s = status ?: return null
+            val cur = s.queueIndex?.toInt() ?: return null
+            return (s.queueLength.toInt() - cur - 1).coerceAtLeast(0)
+        }
+
     val selected: Player? get() = players.firstOrNull { it.id == selectedId }
     val playing: Boolean get() = status?.mode == PlaybackMode.PLAYING
 
@@ -165,6 +178,9 @@ sealed interface PlayerMessage {
 
     /** A removal found a different track at that place (the queue changed): nothing removed. */
     data object QueueChanged : PlayerMessage
+
+    /** "Clear upcoming" found the queue changed part-way, and stopped (Wave 2 §3.4). */
+    data object ClearStopped : PlayerMessage
 }
 
 /**
@@ -190,7 +206,7 @@ class PlayerViewModel(
     private val clock: () -> Long,
 ) : ViewModel() {
     /** The last removal, for Undo (only for the player it was removed from). */
-    private data class Undo(val player: String, val track: Track, val index: Int, val token: Long)
+    private data class Undo(val player: String, val track: Track, val index: Int, val token: Long, val upNext: Boolean = false)
 
     private var undo: Undo? = null
     /** Queue edits run one at a time, in order. */
@@ -442,8 +458,17 @@ class PlayerViewModel(
         when (val r = players.status(id)) {
             is ApiResult.Ok -> {
                 _state.update {
-                    if (it.selectedId != id || generation != changeGeneration) it
-                    else it.copy(status = r.value, statusAt = at, error = null)
+                    if (it.selectedId != id || generation != changeGeneration) {
+                        it
+                    } else {
+                        it.copy(
+                            status = r.value,
+                            statusAt = at,
+                            error = null,
+                            // The player moving on uses up Up next (not while an edit is on its way).
+                            upNext = if (pendingEdits > 0) it.upNext else UpNextTracker.advanced(it.upNext, r.value.queueIndex?.toInt()),
+                        )
+                    }
                 }
                 sleepCheck(id, r.value)
                 followStation(id, r.value, readQueue)
@@ -480,7 +505,14 @@ class PlayerViewModel(
         }
         _state.update {
             // An edit still on its way would be undone on screen by this older list.
-            if (it.selectedId != id || pendingEdits > 0) it else it.copy(queue = tracks.map { t -> QueueEntry(nextQueueKey++, t) })
+            if (it.selectedId != id || pendingEdits > 0) {
+                it
+            } else {
+                it.copy(
+                    queue = tracks.map { t -> QueueEntry(nextQueueKey++, t) },
+                    upNext = UpNextTracker.verified(it.upNext, it.status?.queueIndex?.toInt(), tracks),
+                )
+            }
         }
     }
 
@@ -503,7 +535,11 @@ class PlayerViewModel(
                         if (it.selectedId != id || pendingEdits > 0 || it.queue !== before) {
                             it
                         } else {
-                            it.copy(queue = (before + r.value.map { t -> QueueEntry(nextQueueKey++, t) }).take(QUEUE_MAX))
+                            val queue = (before + r.value.map { t -> QueueEntry(nextQueueKey++, t) }).take(QUEUE_MAX)
+                            it.copy(
+                                queue = queue,
+                                upNext = UpNextTracker.verified(it.upNext, it.status?.queueIndex?.toInt(), queue.map { e -> e.track }),
+                            )
                         }
                     }
                     is ApiResult.Err -> _messages.trySend(PlayerMessage.Failed(r.error))
@@ -525,6 +561,8 @@ class PlayerViewModel(
         undoing: Boolean = false,
         onDone: (String) -> Unit = {},
         failed: (AppError) -> PlayerMessage = { PlayerMessage.QueueFailed(it, undo = undoing) },
+        /** How the edit changes Up next and the current index (shown at once, with the list). */
+        tracking: (PlayerUiState) -> Pair<UpNext?, Int?> = { it.upNext to it.status?.queueIndex?.toInt() },
         action: suspend (String) -> ApiResult<Unit>,
     ) {
         val id = _state.value.selectedId
@@ -533,7 +571,18 @@ class PlayerViewModel(
             return
         }
         val before = _state.value.queue
-        _state.update { it.copy(queue = optimistic(it.queue)) }
+        val upNextBefore = _state.value.upNext
+        val indexBefore = _state.value.status?.queueIndex
+        // A status read already on its way would show the queue as it was.
+        changeGeneration++
+        _state.update {
+            val (upNext, index) = tracking(it)
+            it.copy(
+                queue = optimistic(it.queue),
+                upNext = upNext,
+                status = it.status?.copy(queueIndex = index?.takeIf { i -> i >= 0 }?.toUInt()),
+            )
+        }
         pendingEdits++
         viewModelScope.launch {
             val r = try {
@@ -544,7 +593,13 @@ class PlayerViewModel(
             when (r) {
                 is ApiResult.Ok -> onDone(id)
                 is ApiResult.Err -> {
-                    _state.update { if (it.selectedId == id) it.copy(queue = before) else it }
+                    _state.update {
+                        if (it.selectedId == id) {
+                            it.copy(queue = before, upNext = upNextBefore, status = it.status?.copy(queueIndex = indexBefore))
+                        } else {
+                            it
+                        }
+                    }
                     _messages.trySend(failed(r.error))
                 }
             }
@@ -581,12 +636,17 @@ class PlayerViewModel(
     private fun removeTrack(index: Int, track: Track) {
         undo = null
         var changed = false
+        val wasUpNext = _state.value.upNext?.range?.contains(index) == true
         edit(
             optimistic = { QueueEdit.removeAt(it, index) },
+            tracking = { s ->
+                val cur = s.status?.queueIndex?.toInt()
+                UpNextTracker.removed(s.upNext, index) to if (cur != null && index < cur) cur - 1 else cur
+            },
             onDone = { id ->
                 val canUndo = QueueEdit.canRestore(track)
                 val token = ++undoToken
-                undo = if (canUndo) Undo(id, track, index, token) else null
+                undo = if (canUndo) Undo(id, track, index, token, wasUpNext) else null
                 _messages.trySend(PlayerMessage.Removed(track.title, canUndo, token))
             },
             failed = { e -> if (changed) PlayerMessage.QueueChanged else PlayerMessage.QueueFailed(e) },
@@ -613,7 +673,14 @@ class PlayerViewModel(
         undo = null
         if (u.player != _state.value.selectedId) return
         val trackId = u.track.id ?: return
-        edit(optimistic = { QueueEdit.insertAt(it, u.index, QueueEntry(nextQueueKey++, u.track)) }, undoing = true) { id ->
+        edit(
+            optimistic = { QueueEdit.insertAt(it, u.index, QueueEntry(nextQueueKey++, u.track)) },
+            undoing = true,
+            tracking = { s ->
+                val cur = s.status?.queueIndex?.toInt()
+                UpNextTracker.restored(s.upNext, u.index, trackId, u.upNext) to if (cur != null && u.index <= cur) cur + 1 else cur
+            },
+        ) { id ->
             players.restoreToQueue(id, trackId, u.index)
         }
     }
@@ -623,13 +690,84 @@ class PlayerViewModel(
         val size = _state.value.queue.size
         if (from == to || from !in 0 until size || to !in 0 until size) return
         undo = null
-        edit(optimistic = { QueueEdit.reorder(it, from, to) }) { id -> players.moveInQueue(id, from, to) }
+        val movedId = _state.value.queue[from].track.id
+        edit(
+            optimistic = { QueueEdit.reorder(it, from, to) },
+            tracking = { s ->
+                val cur = s.status?.queueIndex?.toInt()
+                UpNextTracker.moved(s.upNext, from, to, cur, movedId) to cur?.let { QueueEdit.indexAfterMove(it, from, to) }
+            },
+        ) { id -> players.moveInQueue(id, from, to) }
+    }
+
+    /**
+     * Play the entry at [index] next (a right swipe on the queue, or its menu): it moves to
+     * just after the current track and joins Up next. Nothing to do for the current track or
+     * the one already next.
+     */
+    fun playNextInQueue(index: Int) {
+        val cur = _state.value.status?.queueIndex?.toInt() ?: return
+        val to = QueueEdit.playNextTarget(index, cur) ?: return
+        moveInQueue(index, to)
     }
 
     /** Empty the queue (after the UI has asked to confirm). */
     fun clearQueue() {
         undo = null
-        edit(optimistic = { emptyList() }) { id -> players.clearQueue(id) }
+        edit(optimistic = { emptyList() }, tracking = { null to null }) { id -> players.clearQueue(id) }
+    }
+
+    /**
+     * Take out every track after the current one (after the UI has asked to confirm): from
+     * the end, each checked to be the track expected there first, with `playlist delete`.
+     * If the queue changes part-way, it stops and says so. Not offered for more than
+     * [CLEAR_UPCOMING_MAX] tracks (the UI offers Clear all instead).
+     */
+    fun clearUpcoming() {
+        val status = _state.value.status ?: return
+        val cur = status.queueIndex?.toInt() ?: return
+        val len = status.queueLength.toInt()
+        val count = len - cur - 1
+        if (count <= 0 || count > CLEAR_UPCOMING_MAX) return
+        undo = null
+        var changed = false
+        edit(
+            optimistic = { it.take(cur + 1) },
+            tracking = { null to cur },
+            failed = { e -> if (changed) PlayerMessage.ClearStopped else PlayerMessage.QueueFailed(e) },
+        ) { id -> deleteUpcoming(id, cur, len) { changed = true } }
+    }
+
+    private suspend fun deleteUpcoming(id: String, cur: Int, len: Int, onChanged: () -> Unit): ApiResult<Unit> {
+        val changed = ApiResult.Err(AppError.InvalidInput("the queue changed"))
+        val count = len - cur - 1
+        fun same(s: PlayerStatus, length: Int) = s.queueIndex?.toInt() == cur && s.queueLength.toInt() == length
+        when (val s = players.status(id)) {
+            is ApiResult.Err -> return s
+            is ApiResult.Ok -> if (!same(s.value, len)) return changed.also { onChanged() }
+        }
+        val expected = when (val r = players.queue(id, cur + 1, count)) {
+            is ApiResult.Err -> return r
+            is ApiResult.Ok -> r.value
+        }
+        if (expected.size != count) return changed.also { onChanged() }
+        for (i in count - 1 downTo 0) {
+            val index = cur + 1 + i
+            // Now and then, check the player hasn't moved on into what is being cleared.
+            if (i != count - 1 && (count - 1 - i) % STATUS_CHECK_EVERY == 0) {
+                when (val s = players.status(id)) {
+                    is ApiResult.Err -> return s
+                    is ApiResult.Ok -> if (!same(s.value, index + 1)) return changed.also { onChanged() }
+                }
+            }
+            when (val at = players.queue(id, index, 1)) {
+                is ApiResult.Err -> return at
+                is ApiResult.Ok -> if (!QueueEdit.sameTrack(at.value.firstOrNull(), expected[i])) return changed.also { onChanged() }
+            }
+            val r = players.removeFromQueue(id, index)
+            if (r is ApiResult.Err) return r
+        }
+        return ApiResult.Ok(Unit)
     }
 
     // --- sync groups -------------------------------------------------------------------------
@@ -725,7 +863,7 @@ class PlayerViewModel(
         changeGeneration++
         selectLocalWhenReady = true
         queueWanted = QUEUE_PAGE
-        _state.update { it.copy(selectedId = null, status = null, queue = emptyList(), waitingForPhone = true) }
+        _state.update { it.copy(selectedId = null, status = null, queue = emptyList(), upNext = null, waitingForPhone = true) }
         setPlayOnPhone(true)
         viewModelScope.launch { loadPlayers() }
     }
@@ -756,7 +894,7 @@ class PlayerViewModel(
         selectLocalWhenReady = false
         changeGeneration++
         queueWanted = QUEUE_PAGE
-        _state.update { it.copy(selectedId = playerId, status = null, queue = emptyList(), waitingForPhone = false) }
+        _state.update { it.copy(selectedId = playerId, status = null, queue = emptyList(), upNext = null, waitingForPhone = false) }
         viewModelScope.launch {
             settings.setSelectedPlayer(playerId)
             refreshStatus()
@@ -840,13 +978,12 @@ class PlayerViewModel(
         return true
     }
 
-    fun cycleShuffle() {
-        val next = when (_state.value.status?.shuffle) {
-            ShuffleMode.OFF, null -> ShuffleMode.SONGS
-            ShuffleMode.SONGS -> ShuffleMode.ALBUMS
-            ShuffleMode.ALBUMS -> ShuffleMode.OFF
-        }
-        command(optimistic = { it.copy(shuffle = next) }) { players.setShuffle(it, next) }
+    /** The shuffle button (Wave 2 §3.5): Off → Tracks → Albums → Off. */
+    fun cycleShuffle() = setShuffle(nextShuffle(_state.value.status?.shuffle))
+
+    /** One shuffle mode (the shuffle button's long-press choice). */
+    fun setShuffle(mode: ShuffleMode) {
+        command(optimistic = { it.copy(shuffle = mode) }) { players.setShuffle(it, mode) }
     }
 
     fun cycleRepeat() {
@@ -889,8 +1026,12 @@ class PlayerViewModel(
             return
         }
         viewModelScope.launch {
+            val before = if (placement == Placement.PLAY_NEXT) (players.status(id) as? ApiResult.Ok)?.value else null
             when (val r = players.playFavourite(id, itemId, placement)) {
-                is ApiResult.Ok -> _messages.trySend(PlayerMessage.Queued(placement))
+                is ApiResult.Ok -> {
+                    _messages.trySend(PlayerMessage.Queued(placement))
+                    if (before != null) trackPlayNext(id, before)
+                }
                 is ApiResult.Err -> _messages.trySend(PlayerMessage.Failed(r.error))
             }
             refreshStatus()
@@ -908,11 +1049,37 @@ class PlayerViewModel(
             return
         }
         viewModelScope.launch {
+            val before = if (placement == Placement.PLAY_NEXT) (players.status(id) as? ApiResult.Ok)?.value else null
             when (val r = players.enqueue(id, selection, placement, playIndex)) {
-                is ApiResult.Ok -> _messages.trySend(PlayerMessage.Queued(placement))
+                is ApiResult.Ok -> {
+                    _messages.trySend(PlayerMessage.Queued(placement))
+                    if (before != null) trackPlayNext(id, before)
+                    // A new queue (Play now) leaves nothing of Up next.
+                    if (placement == Placement.PLAY_NOW) _state.update { if (it.selectedId == id) it.copy(upNext = null) else it }
+                }
                 is ApiResult.Err -> _messages.trySend(PlayerMessage.Failed(r.error))
             }
             refreshStatus()
+        }
+    }
+
+    /**
+     * After a Play next from this device: what went in right after the current track joins
+     * Up next. Best effort: worked out from the queue's length before and after; if the
+     * player moved on meanwhile it is dropped, and if nothing shows yet it isn't tracked.
+     */
+    private suspend fun trackPlayNext(id: String, before: PlayerStatus) {
+        val cur = before.queueIndex?.toInt() ?: return
+        val after = (players.status(id) as? ApiResult.Ok)?.value ?: return
+        val added = after.queueLength.toInt() - before.queueLength.toInt()
+        if (after.queueIndex?.toInt() != cur || added > UpNextTracker.MAX) {
+            _state.update { if (it.selectedId == id) it.copy(upNext = null) else it }
+            return
+        }
+        if (added <= 0) return
+        val tracks = (players.queue(id, cur + 1, added) as? ApiResult.Ok)?.value ?: return
+        _state.update {
+            if (it.selectedId != id) it else it.copy(upNext = UpNextTracker.inserted(UpNextTracker.advanced(it.upNext, cur), cur, tracks))
         }
     }
 
@@ -1113,6 +1280,19 @@ class PlayerViewModel(
     companion object {
         /** The queue read for an armed timer is used again for this long at most. */
         const val UPCOMING_TTL_MS = 30_000L
+
+        /** "Clear upcoming" takes out at most this many tracks; beyond it, Clear all is offered. */
+        const val CLEAR_UPCOMING_MAX = 100
+
+        /** While clearing, the player's position is checked again this often (tracks). */
+        private const val STATUS_CHECK_EVERY = 10
+
+        /** What the shuffle button goes to next. */
+        fun nextShuffle(mode: ShuffleMode?): ShuffleMode = when (mode) {
+            ShuffleMode.OFF, null -> ShuffleMode.SONGS
+            ShuffleMode.SONGS -> ShuffleMode.ALBUMS
+            ShuffleMode.ALBUMS -> ShuffleMode.OFF
+        }
 
         /** The position in the current track at time [now] (ticking while playing). */
         fun elapsedAt(state: PlayerUiState, now: Long): Double {

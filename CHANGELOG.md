@@ -25,6 +25,26 @@ Dated entries, newest first.
 - **Shuffle:** cycles Off, Tracks and Albums, named for its state. A long press offers the three. Gapless markers link consecutive tracks of one album in the queue.
 - **Tests:** unit and robustness tests for every new parser (credits, the A–Z index, search results, recent searches, the Up next tracker), and component tests for each new control and its keyboard and screen-reader use.
 
+## 2026-10-13: Wave 2 part 2 on Android: library and queue
+
+Following `docs/plans/wave2-design.md` §3.
+
+- **Credits (X4):** track information (the "More…" sheet) lists everyone LMS credits by role. Each name opens that person's albums in that role ("Name · Composer"). Artist pages show "Appears as" chips with album counts.
+- **Library (U6):** type chips (Albums, Artists, Playlists, Favourites, Downloaded); tap the chosen one again for the overview.
+  - **Albums:** sorted Recently added, A–Z, Artist or Year, as a grid or a list.
+  - **A–Z scroller:** for albums in A–Z order and for artists. Built from LMS's index, so a letter reads only its own page. It is adjustable with TalkBack and works from the keyboard.
+  - **Remembered:** the chip, order and view are kept on the device.
+  - **Recently played:** not offered. LMS's sort is server-wide, so the gateway refuses it.
+- **Search (U7):**
+  - **Recents:** up to 20 recent searches, kept on the device only, each removable, with Clear all.
+  - **Results:** grouped, with a Top result. Type chips page through one type. Tracks play from their rows; albums and playlists have a play button.
+- **Queue (U4):**
+  - **Sections:** Now playing, Up next (this device's Play next, tracked best effort) and Then. Shown flat when the queue changes elsewhere.
+  - **Swipes:** queue rows swipe right to play next and left to remove (with Undo). Browse rows swipe right to play next and left to add to the queue. Each swipe is also a menu item and a TalkBack action.
+  - **Clear upcoming:** asks first, deletes from the end and checks each entry. A long queue gets Clear all instead.
+  - **Queue peek:** a swipe up on the artwork, or the Queue button, opens the queue in a sheet.
+- **Shuffle and gapless (H4):** the shuffle button cycles Off → Tracks → Albums, says which, and offers all three on a long press. Consecutive tracks of an album get a labelled link mark.
+
 ## 2026-10-13: Review fixes (gateway, native apps, web)
 
 - **Gateway:**

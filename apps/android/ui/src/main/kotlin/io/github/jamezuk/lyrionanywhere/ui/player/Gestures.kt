@@ -2,12 +2,12 @@ package io.github.jamezuk.lyrionanywhere.ui.player
 
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.Alignment
@@ -46,6 +46,17 @@ object Swipes {
             dx >= needed -> SwipeAction.PREVIOUS
             else -> SwipeAction.NONE
         }
+    }
+
+    /**
+     * Whose a drag on the artwork is: sideways is the artwork's (next, previous); upwards is
+     * the artwork's only when it opens the queue peek ([claimUp]); anything else (down,
+     * diagonal) is left to the list it sits in.
+     */
+    fun artworkAxis(dx: Float, dy: Float, claimUp: Boolean): DragAxis? = when (MiniGestures.axis(dx, dy)) {
+        DragAxis.HORIZONTAL -> DragAxis.HORIZONTAL
+        DragAxis.VERTICAL -> if (claimUp && dy < 0f) DragAxis.VERTICAL else null
+        null -> null
     }
 
     /** The mini player: up (negative) opens Now playing. */
@@ -196,29 +207,61 @@ fun SwipeableArtwork(
     onNext: () -> Unit,
     onPrevious: () -> Unit,
     modifier: Modifier = Modifier,
+    /** A swipe up (the queue peek, Wave 2 §3.4); null leaves upward drags to the list. */
+    onSwipeUp: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
-    val min = with(LocalDensity.current) { SWIPE_MIN.toPx() }
+    val density = LocalDensity.current
+    val min = with(density) { SWIPE_MIN.toPx() }
+    val up = with(density) { SWIPE_UP_MIN.toPx() }
     val haptics = LocalHapticFeedback.current
     var dx by remember { mutableFloatStateOf(0f) }
+    val latestNext by rememberUpdatedState(onNext)
+    val latestPrevious by rememberUpdatedState(onPrevious)
+    val latestUp by rememberUpdatedState(onSwipeUp)
+    val claimUp = onSwipeUp != null
     Box(
         modifier
             .graphicsLayer { translationX = dx * 0.5f }
-            .pointerInput(onNext, onPrevious) {
-                detectHorizontalDragGestures(
-                    onDragStart = { dx = 0f },
-                    onDragEnd = {
-                        val action = Swipes.artwork(dx, size.width.toFloat(), min)
-                        dx = 0f
-                        if (action != SwipeAction.NONE) {
-                            haptics.performHapticFeedback(HapticFeedbackType.GestureEnd)
-                            if (action == SwipeAction.NEXT) onNext() else onPrevious()
+            .pointerInput(min, up, claimUp) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var axis: DragAxis? = null
+                    var decided = false
+                    var delta = Offset.Zero
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        delta = change.position - down.position
+                        if (change.changedToUpIgnoreConsumed() || !change.pressed) break
+                        if (!decided && delta.getDistance() > viewConfiguration.touchSlop) {
+                            decided = true
+                            axis = Swipes.artworkAxis(delta.x, delta.y, claimUp)
+                            if (axis == null) break // the list's (scrolling, pulling down to close)
                         }
-                    },
-                    onDragCancel = { dx = 0f },
-                ) { change, amount ->
-                    dx += amount
-                    change.consume()
+                        if (axis != null) {
+                            change.consume()
+                            if (axis == DragAxis.HORIZONTAL) dx = delta.x
+                        }
+                    }
+                    dx = 0f
+                    val action = when (axis) {
+                        DragAxis.HORIZONTAL -> Swipes.artwork(delta.x, size.width.toFloat(), min)
+                        DragAxis.VERTICAL -> Swipes.miniPlayer(delta.y, up)
+                        null -> SwipeAction.NONE
+                    }
+                    when (action) {
+                        SwipeAction.NEXT -> {
+                            haptics.performHapticFeedback(HapticFeedbackType.GestureEnd)
+                            latestNext()
+                        }
+                        SwipeAction.PREVIOUS -> {
+                            haptics.performHapticFeedback(HapticFeedbackType.GestureEnd)
+                            latestPrevious()
+                        }
+                        SwipeAction.OPEN -> latestUp?.invoke()
+                        else -> {}
+                    }
                 }
             },
         contentAlignment = Alignment.Center,

@@ -229,9 +229,60 @@ class FakeLibrary(var totalAlbums: Int = 250) : LibraryRepository {
 
     override suspend fun playlistTracks(playlistId: Long) = ApiResult.Ok(tracks)
 
+    /** What search answers (by default one artist). */
+    var searchResult: SearchResults = SearchResults(listOf(Artist(3, "Artist")), emptyList(), emptyList())
+
     override suspend fun search(term: String, count: Int): ApiResult<SearchResults> {
         searches += term
-        return ApiResult.Ok(SearchResults(listOf(Artist(3, "Artist")), emptyList(), emptyList()))
+        fail?.let { return ApiResult.Err(it) }
+        return ApiResult.Ok(searchResult)
+    }
+
+    var credits = emptyList<io.github.jamezuk.lyrionanywhere.core.Credit>()
+    val creditCalls = mutableListOf<Long>()
+
+    override suspend fun trackCredits(trackId: Long): ApiResult<List<io.github.jamezuk.lyrionanywhere.core.Credit>> {
+        creditCalls += trackId
+        return ApiResult.Ok(credits)
+    }
+
+    var roleCounts = emptyList<io.github.jamezuk.lyrionanywhere.core.RoleCount>()
+    var roleCountsFail: AppError? = null
+
+    override suspend fun roleCounts(artistId: Long, libraryId: String?) =
+        roleCountsFail?.let { ApiResult.Err(it) } ?: ApiResult.Ok(roleCounts)
+
+    var index = emptyList<io.github.jamezuk.lyrionanywhere.core.IndexEntry>()
+    val indexCalls = mutableListOf<String>()
+
+    override suspend fun albumIndex(filter: LibraryFilter): ApiResult<List<io.github.jamezuk.lyrionanywhere.core.IndexEntry>> {
+        indexCalls += "albums"
+        return ApiResult.Ok(index)
+    }
+
+    override suspend fun artistIndex(filter: LibraryFilter): ApiResult<List<io.github.jamezuk.lyrionanywhere.core.IndexEntry>> {
+        indexCalls += "artists"
+        artistFilters += filter
+        return ApiResult.Ok(index)
+    }
+
+    var totalTracks = 120
+    val trackSearches = mutableListOf<Triple<String, Int, Int>>()
+
+    override suspend fun searchTracks(term: String, start: Int, count: Int): ApiResult<io.github.jamezuk.lyrionanywhere.core.TrackPage> {
+        trackSearches += Triple(term, start, count)
+        val end = minOf(start + count, totalTracks)
+        return ApiResult.Ok(
+            io.github.jamezuk.lyrionanywhere.core.TrackPage(totalTracks.toUInt(), (start until end).map { sampleTrack(it.toLong() + 1) }),
+        )
+    }
+
+    var playlistResults = listOf(SavedPlaylist(5, "Road trip"))
+    val playlistSearches = mutableListOf<String>()
+
+    override suspend fun searchPlaylists(term: String, start: Int, count: Int): ApiResult<PlaylistPage> {
+        playlistSearches += term
+        return ApiResult.Ok(PlaylistPage(playlistResults.size.toUInt(), playlistResults.drop(start).take(count)))
     }
 }
 
@@ -298,15 +349,46 @@ class FakePlayers : PlayersRepository {
         return ApiResult.Ok(upcoming)
     }
 
-    override suspend fun enqueue(player: String, selection: Selection, placement: Placement, playIndex: Int?) =
-        cmd("enqueue $selection $placement $playIndex $player")
+    /** Called as each enqueue lands (to change the queue as LMS would). */
+    var onEnqueue: (Selection, Placement) -> Unit = { _, _ -> }
+
+    override suspend fun enqueue(player: String, selection: Selection, placement: Placement, playIndex: Int?): ApiResult<Unit> {
+        val r = cmd("enqueue $selection $placement $playIndex $player")
+        if (r is ApiResult.Ok) onEnqueue(selection, placement)
+        return r
+    }
+
+    /** Removals take the entry out of [queueTracks] and shorten the status's queue. */
+    var liveQueue = false
+
+    /** Called after each removal (e.g. another controller changing the queue meanwhile). */
+    var onRemove: (Int) -> Unit = {}
 
     override suspend fun playFavourite(player: String, itemId: String, placement: Placement) =
         cmd("favourite $itemId $placement $player")
 
-    override suspend fun removeFromQueue(player: String, index: Int) = cmd("remove $index $player")
+    override suspend fun removeFromQueue(player: String, index: Int): ApiResult<Unit> {
+        val r = cmd("remove $index $player")
+        if (r is ApiResult.Ok && liveQueue) {
+            queueTracks = queueTracks.filterIndexed { i, _ -> i != index }
+            (statusResult as? ApiResult.Ok)?.value?.let { statusResult = ApiResult.Ok(it.copy(queueLength = queueTracks.size.toUInt())) }
+        }
+        onRemove(index)
+        return r
+    }
 
-    override suspend fun moveInQueue(player: String, from: Int, to: Int) = cmd("move $from $to $player")
+    override suspend fun moveInQueue(player: String, from: Int, to: Int): ApiResult<Unit> {
+        val r = cmd("move $from $to $player")
+        if (r is ApiResult.Ok && liveQueue) {
+            queueTracks = io.github.jamezuk.lyrionanywhere.ui.player.QueueEdit.reorder(queueTracks, from, to)
+            (statusResult as? ApiResult.Ok)?.value?.let { s ->
+                val cur = s.queueIndex?.toInt()
+                val now = cur?.let { io.github.jamezuk.lyrionanywhere.ui.player.QueueEdit.indexAfterMove(it, from, to) }
+                statusResult = ApiResult.Ok(s.copy(queueIndex = now?.toUInt()))
+            }
+        }
+        return r
+    }
 
     override suspend fun clearQueue(player: String) = cmd("clear $player")
 
@@ -377,6 +459,17 @@ class FakeSettings(initial: AppSettings = AppSettings()) : SettingsStore {
 
     override suspend fun setStreaming(streaming: io.github.jamezuk.lyrionanywhere.data.StreamingSettings) =
         state.update { it.copy(streaming = streaming) }
+
+    override suspend fun setLibraryPrefs(prefs: io.github.jamezuk.lyrionanywhere.data.LibraryPrefs) =
+        state.update { it.copy(library = prefs.sanitised()) }
+
+    override suspend fun addRecentSearch(term: String) =
+        state.update { it.copy(recentSearches = io.github.jamezuk.lyrionanywhere.data.RecentSearches.add(it.recentSearches, term)) }
+
+    override suspend fun removeRecentSearch(term: String) =
+        state.update { it.copy(recentSearches = io.github.jamezuk.lyrionanywhere.data.RecentSearches.remove(it.recentSearches, term)) }
+
+    override suspend fun clearRecentSearches() = state.update { it.copy(recentSearches = emptyList()) }
 }
 
 fun localStatus(id: String, connection: PlayerConnection = PlayerConnection.Connected) = LocalPlayerStatus(

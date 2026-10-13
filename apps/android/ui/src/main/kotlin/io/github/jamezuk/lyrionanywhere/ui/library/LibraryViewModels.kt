@@ -421,6 +421,8 @@ data class ArtistDetail(
     val albums: List<Album>,
     /** The albums grouped by the artist's role on them, in a fixed order; empty groups left out. */
     val sections: List<Pair<ArtistSection, List<Album>>>,
+    /** "Appears as": the roles they have albums in, with how many (Wave 2 §3.1). */
+    val roles: List<io.github.jamezuk.lyrionanywhere.core.RoleCount> = emptyList(),
 ) {
     /** The cover for the page's header: the newest album's. */
     val headerArt: String? get() = albums.lastOrNull { it.artwork != null }?.artwork
@@ -464,10 +466,14 @@ class ArtistViewModel(
         viewModelScope.launch {
             val all = async { library.artistAlbums(artistId) }
             val main = async { library.artistAlbums(artistId, ArtistRole.ALBUM_ARTIST) }
+            val roles = async { library.roleCounts(artistId, null) }
             _state.value = when (val a = all.await()) {
                 is ApiResult.Err -> Loadable.Failed(a.error)
-                // Role information is a nicety: without it, one list.
-                is ApiResult.Ok -> Loadable.Ready(ArtistDetail.group(a.value, (main.await() as? ApiResult.Ok)?.value))
+                // Role information is a nicety: without it, one list (and no "Appears as").
+                is ApiResult.Ok -> Loadable.Ready(
+                    ArtistDetail.group(a.value, (main.await() as? ApiResult.Ok)?.value)
+                        .copy(roles = (roles.await() as? ApiResult.Ok)?.value.orEmpty()),
+                )
             }
         }
     }
@@ -744,19 +750,62 @@ fun <T, R> Loadable<T>.mapReady(f: (T) -> R): Loadable<R> = when (this) {
     is Loadable.Ready -> Loadable.Ready(f(value))
 }
 
+/** What search shows: everything grouped, or one type paged on its own (Wave 2 §3.3). */
+enum class SearchType { ALL, ARTISTS, ALBUMS, TRACKS, PLAYLISTS }
+
+/** One result of a single type. */
+sealed interface SearchHit {
+    data class OfArtist(val artist: Artist) : SearchHit
+
+    data class OfAlbum(val album: Album) : SearchHit
+
+    data class OfTrack(val track: Track) : SearchHit
+
+    data class OfPlaylist(val playlist: SavedPlaylist) : SearchHit
+}
+
 data class SearchUiState(
     val query: String = "",
+    /** Artists, albums and tracks (LMS's `search`), with counts and the Top result. */
     val results: SearchResults? = null,
+    /** Saved playlists matching (a few, for "All"). */
+    val playlists: List<SavedPlaylist> = emptyList(),
     val loading: Boolean = false,
     val error: AppError? = null,
-)
+    val type: SearchType = SearchType.ALL,
+    /** Recent searches (on this device only), newest first. */
+    val recents: List<String> = emptyList(),
+) {
+    /** The search that [results] are for is more than nothing. */
+    val searched: Boolean get() = query.trim().length >= SearchViewModel.MIN_LENGTH
 
-/** Search as you type (after a short pause). */
+    val empty: Boolean
+        get() = results != null && results.artists.isEmpty() && results.albums.isEmpty() &&
+            results.tracks.isEmpty() && playlists.isEmpty()
+}
+
+/**
+ * Search as you type (after a short pause): LMS's own search for artists, albums and tracks,
+ * and saved playlists, grouped with a "Top result"; or one type alone, paged. Recent
+ * searches are kept on this device only (never sent to the gateway).
+ */
 @OptIn(FlowPreview::class)
-class SearchViewModel(private val library: LibraryRepository) : ViewModel() {
+class SearchViewModel(
+    private val library: LibraryRepository,
+    /** Where recent searches are kept (none: not kept). */
+    private val settings: io.github.jamezuk.lyrionanywhere.data.SettingsStore? = null,
+) : ViewModel() {
     private val _state = MutableStateFlow(SearchUiState())
     val state: StateFlow<SearchUiState> = _state.asStateFlow()
+    private val _typed = MutableStateFlow(PagedState<SearchHit>())
+
+    /** The chosen type's results, paged (empty for "All"). */
+    val typed: StateFlow<PagedState<SearchHit>> = _typed.asStateFlow()
     private var job: Job? = null
+    private var typedJob: Job? = null
+
+    /** Bumped whenever the typed list starts over, so an older page is dropped. */
+    private var typedGeneration = 0
 
     init {
         viewModelScope.launch {
@@ -765,30 +814,126 @@ class SearchViewModel(private val library: LibraryRepository) : ViewModel() {
                 .debounce(DEBOUNCE_MS)
                 .collect(::run)
         }
+        settings?.let { s ->
+            viewModelScope.launch {
+                s.settings.map { it.recentSearches }.distinctUntilChanged().collect { r -> _state.update { it.copy(recents = r) } }
+            }
+        }
     }
 
     fun onQueryChange(q: String) = _state.update { it.copy(query = q.take(200)) }
 
     fun retry() = run(_state.value.query.trim())
 
+    /** Show one type alone (paged), or everything grouped. */
+    fun setType(type: SearchType) {
+        if (type == _state.value.type) return
+        _state.update { it.copy(type = type) }
+        restartTyped()
+    }
+
+    /** Keep the search as a recent one (it was submitted, or a result was opened or played). */
+    fun remember(term: String = _state.value.query) {
+        val s = settings ?: return
+        if (term.trim().length < MIN_LENGTH) return
+        viewModelScope.launch { s.addRecentSearch(term) }
+    }
+
+    /** Search again for a recent search (it moves to the top). */
+    fun useRecent(term: String) {
+        onQueryChange(term)
+        remember(term)
+    }
+
+    fun removeRecent(term: String) {
+        val s = settings ?: return
+        viewModelScope.launch { s.removeRecentSearch(term) }
+    }
+
+    fun clearRecents() {
+        val s = settings ?: return
+        viewModelScope.launch { s.clearRecentSearches() }
+    }
+
     private fun run(term: String) {
         job?.cancel()
         if (term.length < MIN_LENGTH) {
-            _state.update { it.copy(results = null, loading = false, error = null) }
+            _state.update { it.copy(results = null, playlists = emptyList(), loading = false, error = null) }
+            restartTyped()
             return
         }
         _state.update { it.copy(loading = true, error = null) }
         job = viewModelScope.launch {
+            val playlists = async { (library.searchPlaylists(term, 0, SECTION) as? ApiResult.Ok)?.value?.items.orEmpty() }
             when (val r = library.search(term, RESULTS)) {
-                is ApiResult.Ok -> _state.update { it.copy(results = r.value, loading = false) }
-                is ApiResult.Err -> _state.update { it.copy(error = r.error, loading = false) }
+                is ApiResult.Ok -> _state.update { it.copy(results = r.value, playlists = playlists.await(), loading = false) }
+                is ApiResult.Err -> {
+                    playlists.cancel()
+                    _state.update { it.copy(error = r.error, loading = false) }
+                }
             }
         }
+        restartTyped()
+    }
+
+    private fun restartTyped() {
+        typedJob?.cancel()
+        typedGeneration++
+        _typed.value = PagedState()
+        if (_state.value.type != SearchType.ALL && _state.value.query.trim().length >= MIN_LENGTH) loadMoreTyped()
+    }
+
+    /** The next page of the chosen type. */
+    fun loadMoreTyped() {
+        val s = _typed.value
+        val type = _state.value.type
+        val term = _state.value.query.trim()
+        if (s.loading || s.endReached || type == SearchType.ALL || term.length < MIN_LENGTH) return
+        _typed.update { it.copy(loading = true, error = null) }
+        val gen = typedGeneration
+        typedJob = viewModelScope.launch {
+            val start = s.items.size
+            val r: ApiResult<Pair<List<SearchHit>, Int>> = when (type) {
+                SearchType.ARTISTS -> library.artists(start, TYPED_PAGE, term).page({ p -> p.items.map { SearchHit.OfArtist(it) } }, { it.total })
+                SearchType.ALBUMS -> library.albums(start, TYPED_PAGE, io.github.jamezuk.lyrionanywhere.core.AlbumSort.TITLE, term)
+                    .page({ p -> p.items.map { SearchHit.OfAlbum(it) } }, { it.total })
+                SearchType.TRACKS -> library.searchTracks(term, start, TYPED_PAGE).page({ p -> p.items.map { SearchHit.OfTrack(it) } }, { it.total })
+                SearchType.PLAYLISTS -> library.searchPlaylists(term, start, TYPED_PAGE).page({ p -> p.items.map { SearchHit.OfPlaylist(it) } }, { it.total })
+                SearchType.ALL -> return@launch
+            }
+            if (gen != typedGeneration) return@launch
+            _typed.update {
+                when (r) {
+                    is ApiResult.Err -> it.copy(loading = false, error = r.error)
+                    is ApiResult.Ok -> {
+                        val (items, total) = r.value
+                        val seen = it.items.mapTo(HashSet()) { h -> h.key() }
+                        val fresh = items.filter { h -> seen.add(h.key()) }
+                        val all = it.items + fresh
+                        val newTotal = if (items.size < TYPED_PAGE || fresh.isEmpty()) all.size else maxOf(total, all.size)
+                        it.copy(items = all, total = newTotal, loading = false)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun SearchHit.key(): Any = when (this) {
+        is SearchHit.OfArtist -> "ar${artist.id}"
+        is SearchHit.OfAlbum -> "al${album.id}"
+        is SearchHit.OfTrack -> "tr${track.id}"
+        is SearchHit.OfPlaylist -> "pl${playlist.id}"
     }
 
     companion object {
         const val DEBOUNCE_MS = 300L
         const val MIN_LENGTH = 2
         const val RESULTS = 20
+
+        /** Rows of each type shown under "All". */
+        const val SECTION = 5
+
+        /** A page of one type. */
+        const val TYPED_PAGE = 50
     }
 }

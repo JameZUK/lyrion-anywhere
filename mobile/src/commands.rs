@@ -9,6 +9,9 @@ use crate::error::ApiError;
 
 pub const STATUS_TAGS: &str = "tags:aAlcdeJKjNoqrsTIyx";
 pub const QUEUE_TAGS: &str = "tags:alcdJKj";
+/// The queue as the app lists it: as [`QUEUE_TAGS`], plus album ids, track and disc numbers
+/// (for the gapless markers between tracks that follow on from each other).
+pub const QUEUE_LIST_TAGS: &str = "tags:alcdJKjeti";
 /// Albums: artist, album, artwork, year, artist id, and the compilation flag.
 pub const ALBUM_TAGS: &str = "tags:aljySw";
 /// Tracks: as the web app's, plus album and artist ids, genre, disc, format, sample size
@@ -357,17 +360,109 @@ pub fn album_tracks(album: i64) -> Result<Command, ApiError> {
     ])
 }
 
-pub fn search(term: &str, n: u32) -> Result<Command, ApiError> {
+/// A search term, checked: never empty.
+fn search_term(term: &str) -> Result<String, ApiError> {
     let t = text(term);
     if t.is_empty() {
         return Err(ApiError::invalid("enter something to search for"));
     }
+    Ok(t)
+}
+
+/// LMS's own search: artists, albums and tracks, with how many of each it found
+/// (`extended:1` adds the counts and more detail per row).
+pub fn search(term: &str, n: u32) -> Result<Command, ApiError> {
     Ok(vec![
         json!("search"),
         json!(0),
         json!(count(n)),
-        json!(format!("term:{t}")),
+        json!(format!("term:{}", search_term(term)?)),
+        json!("extended:1"),
     ])
+}
+
+/// A page of tracks matching a search (the Tracks filter of search).
+pub fn search_tracks(term: &str, start: u32, n: u32) -> Result<Command, ApiError> {
+    Ok(vec![
+        json!("titles"),
+        json!(start),
+        json!(count(n)),
+        json!(TRACK_TAGS),
+        json!(format!("search:{}", search_term(term)?)),
+    ])
+}
+
+/// A page of saved playlists matching a search.
+pub fn search_playlists(term: &str, start: u32, n: u32) -> Result<Command, ApiError> {
+    Ok(vec![
+        json!("playlists"),
+        json!(start),
+        json!(count(n)),
+        json!(format!("search:{}", search_term(term)?)),
+    ])
+}
+
+/// Everyone credited on a track, by role (`tags:AS`: each role's names and ids).
+pub fn track_credits(track: i64) -> Result<Command, ApiError> {
+    Ok(vec![
+        json!("titles"),
+        json!(0),
+        json!(1),
+        json!(format!("track_id:{}", id(track)?)),
+        json!("tags:AS"),
+    ])
+}
+
+/// How many albums an artist has in a role: one row is asked for, and LMS's `count` says
+/// how many there are.
+pub fn albums_in_role(
+    artist: i64,
+    role: ArtistRole,
+    library: Option<&str>,
+) -> Result<Command, ApiError> {
+    let mut c = vec![
+        json!("albums"),
+        json!(0),
+        json!(1),
+        json!(format!("artist_id:{}", id(artist)?)),
+        json!(format!("role_id:{}", role.lms())),
+    ];
+    c.extend(filter_params(&in_library(library), &[Key::Library])?);
+    Ok(c)
+}
+
+/// The A–Z index of albums in title order (`tags:Z`: each first character and how many
+/// albums start with it), narrowed as the album list is.
+pub fn album_index(filter: &LibraryFilter) -> Result<Command, ApiError> {
+    let mut c = vec![
+        json!("albums"),
+        json!(0),
+        json!(1),
+        json!("tags:Z"),
+        json!(AlbumSort::Title.param()),
+    ];
+    c.extend(filter_params(
+        filter,
+        &[
+            Key::Genre,
+            Key::Year,
+            Key::Artist,
+            Key::Compilation,
+            Key::Role,
+            Key::Library,
+        ],
+    )?);
+    Ok(c)
+}
+
+/// The A–Z index of artists, narrowed as the artist list is.
+pub fn artist_index(filter: &LibraryFilter) -> Result<Command, ApiError> {
+    let mut c = vec![json!("artists"), json!(0), json!(1), json!("tags:Z")];
+    c.extend(filter_params(
+        filter,
+        &[Key::Genre, Key::Role, Key::Library],
+    )?);
+    Ok(c)
 }
 
 pub fn genres(
@@ -539,6 +634,16 @@ pub fn queue(start: u32, n: u32) -> Command {
         json!(start),
         json!(count(n)),
         json!(QUEUE_TAGS),
+    ]
+}
+
+/// A page of the queue as the app lists it (see [`QUEUE_LIST_TAGS`]).
+pub fn queue_list(start: u32, n: u32) -> Command {
+    vec![
+        json!("status"),
+        json!(start),
+        json!(count(n)),
+        json!(QUEUE_LIST_TAGS),
     ]
 }
 
@@ -1127,6 +1232,132 @@ mod tests {
         assert!(chunk_ids(&[], ID_LIST_MAX).is_empty());
         // An id longer than the limit on its own still gets a list (and is refused later).
         assert_eq!(chunk_ids(&[123_456], 3), vec![vec![123_456]]);
+    }
+
+    #[test]
+    fn library_and_queue_part_two_shapes() {
+        assert_eq!(
+            search(" blue ", 20).unwrap(),
+            vec![
+                json!("search"),
+                json!(0),
+                json!(20),
+                json!("term:blue"),
+                json!("extended:1")
+            ]
+        );
+        assert_eq!(
+            search_tracks("blue", 100, 50).unwrap(),
+            vec![
+                json!("titles"),
+                json!(100),
+                json!(50),
+                json!(TRACK_TAGS),
+                json!("search:blue")
+            ]
+        );
+        assert_eq!(
+            search_playlists("road", 0, 9999).unwrap(),
+            vec![
+                json!("playlists"),
+                json!(0),
+                json!(500),
+                json!("search:road")
+            ]
+        );
+        assert_eq!(
+            track_credits(7).unwrap(),
+            vec![
+                json!("titles"),
+                json!(0),
+                json!(1),
+                json!("track_id:7"),
+                json!("tags:AS")
+            ]
+        );
+        assert_eq!(
+            albums_in_role(3, ArtistRole::Conductor, Some("ab12")).unwrap(),
+            vec![
+                json!("albums"),
+                json!(0),
+                json!(1),
+                json!("artist_id:3"),
+                json!("role_id:CONDUCTOR"),
+                json!("library_id:ab12")
+            ]
+        );
+        assert_eq!(
+            album_index(&LibraryFilter {
+                compilation: Some(true),
+                ..none()
+            })
+            .unwrap(),
+            vec![
+                json!("albums"),
+                json!(0),
+                json!(1),
+                json!("tags:Z"),
+                json!("sort:album"),
+                json!("compilation:1")
+            ]
+        );
+        assert_eq!(
+            artist_index(&LibraryFilter {
+                role: Some(ArtistRole::AlbumArtist),
+                year: Some(1999),
+                ..none()
+            })
+            .unwrap(),
+            vec![
+                json!("artists"),
+                json!(0),
+                json!(1),
+                json!("tags:Z"),
+                json!("role_id:ALBUMARTIST")
+            ]
+        );
+        assert_eq!(
+            queue_list(0, 200),
+            vec![
+                json!("status"),
+                json!(0),
+                json!(200),
+                json!("tags:alcdJKjeti")
+            ]
+        );
+    }
+
+    /// Nothing malformed leaves the device from the new builders either.
+    #[test]
+    fn library_and_queue_part_two_refuse_bad_input() {
+        for bad in ["", "   ", "\u{0}\r\n"] {
+            assert!(search(bad, 10).is_err(), "{bad:?}");
+            assert!(search_tracks(bad, 0, 10).is_err(), "{bad:?}");
+            assert!(search_playlists(bad, 0, 10).is_err(), "{bad:?}");
+        }
+        // Control characters can't smuggle a second parameter in.
+        assert_eq!(
+            search_tracks("a\ntrack_id:1", 0, 10).unwrap()[4],
+            json!("search:a track_id:1")
+        );
+        assert!(track_credits(0).is_err());
+        assert!(track_credits(-1).is_err());
+        assert!(albums_in_role(0, ArtistRole::Band, None).is_err());
+        assert!(albums_in_role(3, ArtistRole::Band, Some("../x")).is_err());
+        assert!(
+            album_index(&LibraryFilter {
+                genre_id: Some(-4),
+                ..none()
+            })
+            .is_err()
+        );
+        assert!(
+            artist_index(&LibraryFilter {
+                library_id: Some("zz".into()),
+                ..none()
+            })
+            .is_err()
+        );
     }
 
     #[test]

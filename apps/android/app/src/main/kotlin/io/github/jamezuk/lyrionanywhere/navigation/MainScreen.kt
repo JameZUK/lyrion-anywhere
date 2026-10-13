@@ -135,8 +135,23 @@ import io.github.jamezuk.lyrionanywhere.ui.library.PlaylistScreen
 import io.github.jamezuk.lyrionanywhere.ui.library.PlaylistViewModel
 import io.github.jamezuk.lyrionanywhere.ui.library.PlaylistsScreen
 import io.github.jamezuk.lyrionanywhere.ui.library.PlaylistsViewModel
-import io.github.jamezuk.lyrionanywhere.ui.library.SearchResultsList
 import io.github.jamezuk.lyrionanywhere.ui.library.SearchViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.SearchScreen
+import io.github.jamezuk.lyrionanywhere.ui.library.SearchActions
+import io.github.jamezuk.lyrionanywhere.ui.library.LibraryPrefsViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.LibraryAlbumsViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.LibraryArtistsViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.AlbumBrowser
+import io.github.jamezuk.lyrionanywhere.ui.library.ArtistBrowser
+import io.github.jamezuk.lyrionanywhere.ui.library.ContributorViewModel
+import io.github.jamezuk.lyrionanywhere.ui.library.PagedState
+import io.github.jamezuk.lyrionanywhere.ui.library.roleLabel
+import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineLibraryScreen
+import io.github.jamezuk.lyrionanywhere.ui.components.ErrorState
+import io.github.jamezuk.lyrionanywhere.ui.components.LoadingState
+import io.github.jamezuk.lyrionanywhere.data.LibraryChip
+import io.github.jamezuk.lyrionanywhere.core.ArtistRole
+import androidx.compose.material3.TextButton
 import io.github.jamezuk.lyrionanywhere.ui.library.YearsScreen
 import io.github.jamezuk.lyrionanywhere.ui.library.YearsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.discovery.DiscoveryController
@@ -238,6 +253,9 @@ import kotlinx.serialization.Serializable
 
 @Serializable data class ArtistRoute(val id: Long, val name: String)
 
+/** A contributor's albums in one role (a credit followed, or "Appears as"); [role] is an [ArtistRole] name. */
+@Serializable data class ContributorRoute(val id: Long, val name: String, val role: String)
+
 @Serializable data object NowPlayingRoute
 
 @Serializable data object SettingsRoute
@@ -280,6 +298,7 @@ private fun messageText(res: Resources, m: PlayerMessage): String = when (m) {
     PlayerMessage.SleepUnknown -> res.getString(R.string.sleep_unknown)
     is PlayerMessage.StationStopped -> res.getString(R.string.station_broken, m.reason)
     PlayerMessage.QueueChanged -> res.getString(R.string.queue_changed)
+    PlayerMessage.ClearStopped -> res.getString(R.string.queue_clear_stopped)
 }
 
 /** "45 s", "27 min", "1 h 5 min" (as the web app and Now playing). */
@@ -463,6 +482,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                 discovery = found,
                 onStartRadio = discovery::startRadio,
                 onSimilar = discovery::play,
+                onQueueTrack = { t, placement -> t.id?.let { player.enqueue(Selection.Track(it), placement) } },
             ),
         )
     }
@@ -479,6 +499,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                 onPlay = { player.enqueue(Selection.Artist(artistId), it) },
                 onShuffle = { player.playShuffled(Selection.Artist(artistId)) },
                 onMore = openMore,
+                onRole = { role -> nav.navigate(ContributorRoute(artistId, name, role.name)) },
             ),
         )
     }
@@ -497,6 +518,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
             onMore = openMore,
             onDownload = { downloadPlaylist(playlistId) },
             downloaded = offlineState.downloadedIds,
+            onQueueTrack = { t, placement -> t.id?.let { player.enqueue(Selection.Track(it), placement) } },
         )
     }
 
@@ -619,40 +641,164 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     }
                 }
                 composable<LibraryRoute> {
+                    val prefsVm = viewModel { LibraryPrefsViewModel(container.settings) }
+                    val prefs by prefsVm.prefs.collectAsStateWithLifecycle()
                     Screen(title = stringResource(R.string.nav_library)) {
-                        LibraryScreen(
-                            libraries = libraries,
-                            chosenLibrary = chosenLibrary,
-                            onChooseLibrary = { id -> scope.launch { container.libraries.choose(id) } },
-                            onNewMusic = { nav.navigate(NewMusicRoute) },
-                            onOpen = { nav.openLibrary(it) },
-                        )
+                        val p = prefs
+                        if (p == null) {
+                            LoadingState()
+                        } else {
+                            LibraryScreen(
+                                libraries = libraries,
+                                chosenLibrary = chosenLibrary,
+                                onChooseLibrary = { id -> scope.launch { container.libraries.choose(id) } },
+                                onNewMusic = { nav.navigate(NewMusicRoute) },
+                                onOpen = { d ->
+                                    // The types with a chip open as that chip (Wave 2 §3.2).
+                                    when (d) {
+                                        LibraryDestination.ALBUMS -> prefsVm.toggleChip(LibraryChip.ALBUMS)
+                                        LibraryDestination.ARTISTS -> prefsVm.toggleChip(LibraryChip.ARTISTS)
+                                        LibraryDestination.PLAYLISTS -> prefsVm.toggleChip(LibraryChip.PLAYLISTS)
+                                        LibraryDestination.FAVOURITES -> prefsVm.toggleChip(LibraryChip.FAVOURITES)
+                                        LibraryDestination.DOWNLOADS -> prefsVm.toggleChip(LibraryChip.DOWNLOADED)
+                                        else -> nav.openLibrary(d)
+                                    }
+                                },
+                                chip = p.chip,
+                                onChip = prefsVm::toggleChip,
+                                chipContent = { chip ->
+                                    when (chip) {
+                                        LibraryChip.ALBUMS -> {
+                                            val vm = viewModel(key = "library-albums") {
+                                                LibraryAlbumsViewModel(container.library, p.albumSort, libraryId)
+                                            }
+                                            val ui by vm.state.collectAsStateWithLifecycle()
+                                            val sort by vm.sort.collectAsStateWithLifecycle()
+                                            AlbumBrowser(
+                                                ui,
+                                                sort = sort,
+                                                grid = p.albumGrid,
+                                                onSort = { s ->
+                                                    vm.setSort(s)
+                                                    prefsVm.setSort(s)
+                                                },
+                                                onGrid = prefsVm::setGrid,
+                                                onEnsure = vm::ensure,
+                                                onRetry = vm::retry,
+                                                onAlbum = { openAlbum(it.id) },
+                                                onMore = openMore,
+                                                onQueue = { a, placement -> player.enqueue(Selection.Album(a.id), placement) },
+                                            )
+                                        }
+                                        LibraryChip.ARTISTS -> {
+                                            val vm = viewModel(key = "library-artists") { LibraryArtistsViewModel(container.library, libraryId) }
+                                            val ui by vm.state.collectAsStateWithLifecycle()
+                                            val views by vm.views.collectAsStateWithLifecycle()
+                                            val view by vm.view.collectAsStateWithLifecycle()
+                                            ArtistBrowser(
+                                                ui,
+                                                views = views,
+                                                view = view,
+                                                onView = vm::setView,
+                                                onEnsure = vm::ensure,
+                                                onRetry = vm::retry,
+                                                onArtist = { nav.navigate(ArtistRoute(it.id, it.name)) },
+                                                onMore = openMore,
+                                            )
+                                        }
+                                        LibraryChip.PLAYLISTS -> {
+                                            val vm = viewModel(key = "library-playlists") { PlaylistsViewModel(container.library) }
+                                            val ui by vm.state.collectAsStateWithLifecycle()
+                                            PlaylistsScreen(
+                                                ui,
+                                                onPlaylist = { nav.navigate(PlaylistRoute(it.id, it.name)) },
+                                                onLoadMore = vm::loadMore,
+                                                onMore = openMore,
+                                            )
+                                        }
+                                        LibraryChip.FAVOURITES -> {
+                                            val vm = viewModel(key = "library-favourites") { FavouritesViewModel(container.library, null) }
+                                            val ui by vm.state.collectAsStateWithLifecycle()
+                                            FavouritesScreen(
+                                                ui,
+                                                onRetry = vm::reload,
+                                                onFolder = { nav.navigate(FavouritesRoute(it.id, it.name)) },
+                                                onPlay = { f, placement -> player.playFavourite(f.id, placement) },
+                                            )
+                                        }
+                                        LibraryChip.DOWNLOADED -> OfflineLibraryScreen(
+                                            offlineState.albums,
+                                            onAlbum = { nav.navigate(OfflineAlbumRoute(it)) },
+                                            onPlayAlbum = { ref ->
+                                                val tracks = OfflineAlbumViewModel.albumOf(offlineState, ref).tracks
+                                                if (tracks.isNotEmpty()) container.offlinePlayer.play(tracks, 0, false)
+                                            },
+                                        )
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
                 composable<SearchRoute> {
-                    val vm = viewModel { SearchViewModel(container.library) }
+                    val vm = viewModel { SearchViewModel(container.library, container.settings) }
                     val ui by vm.state.collectAsStateWithLifecycle()
+                    val typed by vm.typed.collectAsStateWithLifecycle()
                     Screen(title = stringResource(R.string.nav_search)) {
-                        val focusManager = LocalFocusManager.current
-                        Column {
-                            OutlinedTextField(
-                                value = ui.query,
-                                onValueChange = vm::onQueryChange,
-                                label = { Text(stringResource(R.string.search_field)) },
-                                singleLine = true,
-                                leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                                // Results come as you type: Search closes the keyboard to show them.
-                                keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                            )
-                            SearchResultsList(
-                                ui,
+                        SearchScreen(
+                            ui,
+                            typed,
+                            SearchActions(
+                                onQuery = vm::onQueryChange,
+                                onSubmit = { vm.remember() },
+                                onType = vm::setType,
                                 onRetry = vm::retry,
-                                onArtist = { nav.navigate(ArtistRoute(it.id, it.name)) },
-                                onAlbum = { openAlbum(it.id) },
-                                onTrack = { t -> t.id?.let { player.enqueue(Selection.Track(it), Placement.PLAY_NOW) } },
+                                onLoadMore = vm::loadMoreTyped,
+                                onRecent = vm::useRecent,
+                                onRemoveRecent = vm::removeRecent,
+                                onClearRecents = vm::clearRecents,
+                                onArtist = {
+                                    vm.remember()
+                                    nav.navigate(ArtistRoute(it.id, it.name))
+                                },
+                                onAlbum = {
+                                    vm.remember()
+                                    openAlbum(it.id)
+                                },
+                                onPlaylist = {
+                                    vm.remember()
+                                    nav.navigate(PlaylistRoute(it.id, it.name))
+                                },
+                                onPlay = { sel, placement ->
+                                    vm.remember()
+                                    player.enqueue(sel, placement)
+                                },
                                 onMore = openMore,
+                            ),
+                        )
+                    }
+                }
+                composable<ContributorRoute> { entry ->
+                    val route = entry.toRoute<ContributorRoute>()
+                    val role = ArtistRole.entries.firstOrNull { it.name == route.role } ?: ArtistRole.ARTIST
+                    val vm = viewModel(key = "contributor-${route.id}-$role") { ContributorViewModel(container.library, route.id, role) }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    val title = stringResource(R.string.contributor_title, route.name, roleLabel(role))
+                    Screen(title = title, onBack = { nav.popBackStack() }) {
+                        when (val s = ui) {
+                            Loadable.Loading -> LoadingState()
+                            is Loadable.Failed -> ErrorState(s.error, vm::reload)
+                            is Loadable.Ready -> AlbumGrid(
+                                PagedState(s.value, total = s.value.size),
+                                onAlbum = { openAlbum(it.id) },
+                                onLoadMore = {},
+                                onMore = openMore,
+                                empty = stringResource(R.string.no_albums_role),
+                                header = {
+                                    TextButton(onClick = { nav.navigate(ArtistRoute(route.id, route.name)) }) {
+                                        Text(stringResource(R.string.open_artist))
+                                    }
+                                },
                             )
                         }
                     }
@@ -1008,6 +1154,9 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 onRate = player::rate,
                                 onAlarms = playerState.selected?.let { p -> { nav.navigate(AlarmsRoute(p.id, p.name)) } },
                                 onLoadMoreQueue = player::loadMoreQueue,
+                                onPlayNextInQueue = player::playNextInQueue,
+                                onClearUpcoming = player::clearUpcoming,
+                                onShuffleMode = player::setShuffle,
                             ),
                         )
                     }
@@ -1174,6 +1323,12 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
             }
         }
         LaunchedEffect(navigator) { navigator.events.collect { e -> handleMenuEvent(e) { more = null } } }
+        // A track's credits (Wave 2 §3.1), under its play buttons.
+        val credits by androidx.compose.runtime.produceState(emptyList<io.github.jamezuk.lyrionanywhere.core.Credit>(), request) {
+            if (request.kind == io.github.jamezuk.lyrionanywhere.core.InfoKind.TRACK) {
+                value = (container.library.trackCredits(request.id) as? ApiResult.Ok)?.value.orEmpty()
+            }
+        }
         ModalBottomSheet(onDismissRequest = { more = null }, sheetState = sheetState) {
             ItemSheetContent(
                 target = request.target.copy(canPlay = request.selection != null),
@@ -1201,6 +1356,13 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                 discovery = found.takeIf { seed != null },
                 onStartRadio = discovery::startRadio,
                 onSimilar = discovery::play,
+                credits = credits,
+                onCredit = { c ->
+                    c.artistId?.let { id ->
+                        more = null
+                        nav.navigate(ContributorRoute(id, c.name, c.role.name))
+                    }
+                },
             )
         }
     }

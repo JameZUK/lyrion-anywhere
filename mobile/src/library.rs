@@ -7,8 +7,8 @@ use serde_json::Value;
 use crate::commands::{self, AlbumSort, ArtistRole, Command, LibraryFilter};
 use crate::error::ApiError;
 use crate::model::{
-    self, Album, AlbumPage, ArtistPage, FavouritePage, FolderPage, Genre, GenrePage, PlaylistPage,
-    SearchResults, Track, VirtualLibrary, YearPage,
+    self, Album, AlbumPage, ArtistPage, Credit, FavouritePage, FolderPage, Genre, GenrePage,
+    IndexEntry, PlaylistPage, RoleCount, SearchResults, Track, TrackPage, VirtualLibrary, YearPage,
 };
 use crate::session::Session;
 
@@ -297,12 +297,118 @@ impl MusicLibrary {
         Ok(in_order(&ids, found, |t| t.id))
     }
 
-    /// Artists, albums and tracks matching `term` (up to `count` of each).
+    /// Artists, albums and tracks matching `term` (up to `count` of each), how many of each
+    /// LMS found, and the "Top result".
     pub async fn search(&self, term: String, count: u32) -> Result<SearchResults, ApiError> {
         let v = self.query(commands::search(&term, count)?).await?;
-        Ok(model::search_from(&v))
+        let mut r = model::search_from(&v);
+        r.top = model::top_result(&term, &r.artists, &r.albums, &r.tracks);
+        Ok(r)
+    }
+
+    /// A page of tracks matching `term` (search's Tracks filter).
+    pub async fn search_tracks(
+        &self,
+        term: String,
+        start: u32,
+        count: u32,
+    ) -> Result<TrackPage, ApiError> {
+        let v = self
+            .query(commands::search_tracks(&term, start, count)?)
+            .await?;
+        let items = model::tracks_from(&v, "titles_loop");
+        Ok(TrackPage {
+            total: model::int_of(&v["count"])
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(items.len() as u32),
+            items,
+        })
+    }
+
+    /// A page of saved playlists matching `term`.
+    pub async fn search_playlists(
+        &self,
+        term: String,
+        start: u32,
+        count: u32,
+    ) -> Result<PlaylistPage, ApiError> {
+        let v = self
+            .query(commands::search_playlists(&term, start, count)?)
+            .await?;
+        Ok(model::playlists_from(&v))
+    }
+
+    /// Everyone credited on a library track, by role (empty if LMS doesn't know the track).
+    pub async fn track_credits(&self, track_id: i64) -> Result<Vec<Credit>, ApiError> {
+        let v = self.query(commands::track_credits(track_id)?).await?;
+        Ok(model::credits_from(&v))
+    }
+
+    /// The roles an artist has albums in, with how many ("Appears as"); roles with none are
+    /// left out, and so is any role whose count couldn't be read.
+    pub async fn role_counts(
+        &self,
+        artist_id: i64,
+        library_id: Option<String>,
+    ) -> Result<Vec<RoleCount>, ApiError> {
+        let mut cmds = Vec::new();
+        for role in ROLES {
+            cmds.push((
+                role,
+                commands::albums_in_role(artist_id, role, library_id.as_deref())?,
+            ));
+        }
+        let answers = futures_util::future::join_all(
+            cmds.into_iter()
+                .map(|(role, cmd)| async move { (role, self.query(cmd).await) }),
+        )
+        .await;
+        let mut out = Vec::new();
+        let mut first_error = None;
+        let mut any_ok = false;
+        for (role, r) in answers {
+            match r {
+                Ok(v) => {
+                    any_ok = true;
+                    let albums = model::albums_from(&v).total;
+                    if albums > 0 {
+                        out.push(RoleCount { role, albums });
+                    }
+                }
+                Err(e) => {
+                    first_error.get_or_insert(e);
+                }
+            }
+        }
+        match (any_ok, first_error) {
+            (false, Some(e)) => Err(e),
+            _ => Ok(out),
+        }
+    }
+
+    /// The A–Z index of albums in title order, narrowed as the list is (empty when LMS
+    /// gives none).
+    pub async fn album_index(&self, filter: LibraryFilter) -> Result<Vec<IndexEntry>, ApiError> {
+        let v = self.query(commands::album_index(&filter)?).await?;
+        Ok(model::index_from(&v))
+    }
+
+    /// The A–Z index of artists, narrowed as the list is.
+    pub async fn artist_index(&self, filter: LibraryFilter) -> Result<Vec<IndexEntry>, ApiError> {
+        let v = self.query(commands::artist_index(&filter)?).await?;
+        Ok(model::index_from(&v))
     }
 }
+
+/// The roles "Appears as" asks about, in the order shown.
+const ROLES: [ArtistRole; 6] = [
+    ArtistRole::AlbumArtist,
+    ArtistRole::Artist,
+    ArtistRole::TrackArtist,
+    ArtistRole::Composer,
+    ArtistRole::Conductor,
+    ArtistRole::Band,
+];
 
 #[cfg(test)]
 mod tests {
