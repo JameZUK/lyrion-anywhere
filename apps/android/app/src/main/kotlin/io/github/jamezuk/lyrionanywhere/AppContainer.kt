@@ -111,6 +111,10 @@ class AppContainer(context: Context, scope: CoroutineScope) {
     /** Listening history, the customisable Home and stations (Wave 1). */
     val me: MeRepository = RustMeRepository(accountImpl)
 
+    /** "Your listening" and "Your year in sound" (Wave 3 §1). */
+    val stats: io.github.jamezuk.lyrionanywhere.data.StatsRepository =
+        io.github.jamezuk.lyrionanywhere.data.RustStatsRepository(accountImpl)
+
     /** Smart filters (Wave 2 §5.6). */
     val filters: FiltersRepository = RustFiltersRepository(accountImpl)
 
