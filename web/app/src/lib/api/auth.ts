@@ -154,12 +154,18 @@ export function withRefreshLock<T>(fn: () => Promise<T>, locks: LockManagerLike 
 	return locks.request(REFRESH_LOCK, fn);
 }
 
+/** Why a refresh was asked for. Sent to the gateway's log only, to trace a reused token. */
+export type RefreshReason = 'load' | 'timer' | '401' | 'events' | 'player' | 'retry' | 'signout';
+
+/** A random id for this page load, so the gateway's log can tell two copies of the app apart. */
+export const PAGE_ID = Math.random().toString(36).slice(2, 10) || 'page';
+
 /** Exchange the refresh cookie for a new access token (and a rotated cookie). */
-export async function refresh(locks: LockManagerLike | undefined = browserLocks()): Promise<Session> {
+export async function refresh(reason: RefreshReason = 'load', locks: LockManagerLike | undefined = browserLocks()): Promise<Session> {
 	return withRefreshLock(async () => {
 		const session = await callJson<Session>('/v1/auth/refresh', {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
+			headers: { 'Content-Type': 'application/json', 'X-Anywhere-Refresh-Reason': reason, 'X-Anywhere-Page': PAGE_ID },
 			body: JSON.stringify(clientInfo()),
 		});
 		rememberDevice(session.device.id);

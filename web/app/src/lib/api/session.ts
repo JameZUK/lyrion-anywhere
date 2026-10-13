@@ -2,7 +2,7 @@
 // and retries a request once with a fresh token when the gateway says it has expired.
 import * as auth from './auth';
 import { ApiError } from './http';
-import type { Session } from './auth';
+import type { RefreshReason, Session } from './auth';
 
 /** Renew this long before the 15-minute access token expires. */
 const RENEW_BEFORE_MS = 5 * 60 * 1000;
@@ -99,7 +99,7 @@ export class SessionManager {
 		this.status = s ? 'signed-in' : 'signed-out';
 		if (s) {
 			const ms = Math.max(30_000, s.expires_in * 1000 - RENEW_BEFORE_MS);
-			this.#timer = setTimeout(() => void this.renew(), ms);
+			this.#timer = setTimeout(() => void this.renew('timer'), ms);
 		}
 		this.#emit();
 	}
@@ -113,7 +113,7 @@ export class SessionManager {
 	}
 
 	/** Sign in silently with the refresh cookie, if this browser has one. */
-	async restore(): Promise<boolean> {
+	async restore(reason: RefreshReason = 'load'): Promise<boolean> {
 		if (this.signOutPending) {
 			// Signed out while offline: show the sign-in form, and finish signing out quietly.
 			this.#set(null);
@@ -122,7 +122,7 @@ export class SessionManager {
 		}
 		const gen = this.#gen;
 		try {
-			const s = await this.api.refresh();
+			const s = await this.api.refresh(reason);
 			if (gen !== this.#gen) return false; // signed out (or in) meanwhile
 			this.#set(s);
 			return true;
@@ -136,7 +136,7 @@ export class SessionManager {
 					this.status = 'offline';
 					this.#emit();
 				}
-				this.#later(() => void this.restore());
+				this.#later(() => void this.restore('retry'));
 			}
 			return false;
 		}
@@ -174,7 +174,7 @@ export class SessionManager {
 	async #finishSignOut(): Promise<void> {
 		const gen = this.#gen;
 		try {
-			const s = await this.api.refresh();
+			const s = await this.api.refresh('signout');
 			if (gen !== this.#gen) return; // signed in meanwhile: leave the new session alone
 			await this.api.logout(s.access_token);
 			if (gen === this.#gen) this.#flag(false);
@@ -185,7 +185,7 @@ export class SessionManager {
 	}
 
 	/** Get a new access token. Concurrent callers share one refresh. */
-	renew(): Promise<boolean> {
+	renew(reason: RefreshReason = '401'): Promise<boolean> {
 		if (!this.current) return Promise.resolve(false);
 		if (this.#renewing) return this.#renewing;
 		const gen = this.#gen;
@@ -193,14 +193,14 @@ export class SessionManager {
 		p = (async () => {
 			await Promise.resolve(); // let `#renewing` be set before anything below runs
 			try {
-				const s = await this.api.refresh();
+				const s = await this.api.refresh(reason);
 				if (gen !== this.#gen) return false; // signed out meanwhile: stay signed out
 				this.#set(s);
 				return true;
 			} catch (e) {
 				if (gen !== this.#gen) return false;
 				if (refused(e)) this.#set(null);
-				else this.#later(() => void this.renew()); // stay signed in; try again soon
+				else this.#later(() => void this.renew('retry')); // stay signed in; try again soon
 				return false;
 			} finally {
 				if (this.#renewing === p) this.#renewing = null;

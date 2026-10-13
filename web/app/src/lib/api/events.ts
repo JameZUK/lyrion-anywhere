@@ -88,7 +88,7 @@ export class EventsClient {
 				// Probably an expired token: renew, then reconnect. A renewal that can't reach
 				// the server is retried by the session; keep trying here too (with backoff)
 				// unless it actually signed the user out.
-				const renewed = await this.session.renew();
+				const renewed = await this.session.renew('events');
 				if (this.#ws !== null || this.#stopped) return; // restarted or stopped meanwhile
 				if (!renewed && !this.session.current) return this.stop();
 			} else if (e.code === 1008) {

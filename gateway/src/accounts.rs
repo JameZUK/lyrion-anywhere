@@ -619,6 +619,17 @@ fn now_secs() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
+/// A short, one-way label for a refresh token in the log (8 hex digits of its hash's hash):
+/// enough to follow a token family across lines, useless for presenting.
+pub(crate) fn fingerprint(token: &str) -> String {
+    fingerprint_of_hash(&sha256(token))
+}
+
+fn fingerprint_of_hash(h: &[u8]) -> String {
+    let d = Sha256::digest(h);
+    d[..4].iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn sha256(s: &str) -> [u8; 32] {
     Sha256::digest(s.as_bytes()).into()
 }
@@ -1167,6 +1178,7 @@ impl Accounts {
     /// always sees either an unused token or a used one with its replacement recorded.
     fn refresh_at(&self, refresh_token: &str, now: i64) -> Result<Tokens, AuthError> {
         let h = sha256(refresh_token).to_vec();
+        let presented = fingerprint_of_hash(&h);
         type Row = (i64, i64, i64, Option<i64>, Option<Vec<u8>>);
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;
@@ -1179,6 +1191,7 @@ impl Accounts {
             )
             .optional()?;
         let Some((device, expires, used, used_at, parent)) = row else {
+            tracing::info!(target: "anywhere_gateway::refresh", token = %presented, outcome = "unknown", "refresh outcome");
             return Err(AuthError::Invalid);
         };
         // Refused before anything changes, so the client can try the same token later.
@@ -1201,6 +1214,16 @@ impl Accounts {
                 )?;
                 prune_refresh_on(&tx, device, now)?;
                 tx.commit()?;
+                tracing::info!(
+                    target: "anywhere_gateway::refresh",
+                    device,
+                    token = %presented,
+                    issued = %fingerprint(&minted.refresh),
+                    replacements = children + 1,
+                    since_use_s = used_at.map_or(-1, |at| now - at),
+                    outcome = "retried",
+                    "refresh outcome"
+                );
                 let t = self.activate(minted);
                 drop(db);
                 self.audit(
@@ -1211,6 +1234,17 @@ impl Accounts {
                 );
                 return Ok(t);
             }
+            tracing::warn!(
+                target: "anywhere_gateway::refresh",
+                device,
+                token = %presented,
+                parent = %parent.as_deref().map(fingerprint_of_hash).unwrap_or_default(),
+                replacements = children,
+                replacements_used = children_used,
+                since_use_s = used_at.map_or(-1, |at| now - at),
+                outcome = "reused",
+                "refresh outcome"
+            );
             drop(tx);
             drop(db);
             self.revoke_device(device)?;
@@ -1218,6 +1252,7 @@ impl Accounts {
             return Err(AuthError::Reused(device));
         }
         if expires <= now {
+            tracing::info!(target: "anywhere_gateway::refresh", device, token = %presented, outcome = "expired", "refresh outcome");
             return Err(AuthError::Invalid);
         }
         let n = tx.execute(
@@ -1251,6 +1286,16 @@ impl Accounts {
         )?;
         prune_refresh_on(&tx, device, now)?;
         tx.commit()?;
+        tracing::info!(
+            target: "anywhere_gateway::refresh",
+            device,
+            token = %presented,
+            issued = %fingerprint(&minted.refresh),
+            parent = %parent.as_deref().map(fingerprint_of_hash).unwrap_or_default(),
+            superseded = superseded.len(),
+            outcome = "rotated",
+            "refresh outcome"
+        );
         if !superseded.is_empty() {
             self.access
                 .lock()
@@ -2761,6 +2806,23 @@ fn check_password(p: &str) -> Result<(), AuthError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_fingerprints_are_short_stable_and_not_the_hash() {
+        let f = fingerprint("example-refresh-token");
+        assert_eq!(f.len(), 8);
+        assert!(f.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(f, fingerprint("example-refresh-token"));
+        assert_ne!(f, fingerprint("example-refresh-tokem"));
+        // The stored hash is never what is logged, so the log can't be matched against the
+        // database's token hashes.
+        let stored: String = sha256("example-refresh-token")[..4]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_ne!(f, stored);
+        assert_eq!(f, fingerprint_of_hash(&sha256("example-refresh-token")));
+    }
 
     const PW: &str = "correct horse battery";
 

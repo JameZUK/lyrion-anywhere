@@ -866,7 +866,7 @@ class DevicePlayer {
 			// the server can't be reached, the session retries, and the worker reconnects on
 			// the token that brings (it waits for any new token).
 			const worker = this.#worker;
-			if ((await session.renew()) && worker && this.#worker === worker) {
+			if ((await session.renew('player')) && worker && this.#worker === worker) {
 				worker.postMessage({ cmd: 'token', token: session.token, reconnect: true });
 			}
 		}

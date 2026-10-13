@@ -3,7 +3,7 @@ import { RETRY_MS, SIGNED_OUT_KEY, SessionManager, refused, type AuthApi } from 
 import { Api, artUrl } from '$lib/api/rpc';
 import { ApiError, callJson, CLIENT_HEADER } from '$lib/api/http';
 import { EventsClient, eventsBackoff, parseEventMessage } from '$lib/api/events';
-import { clientKind, defaultDeviceName, groupKey, login, refresh, REFRESH_LOCK, rememberedDevice, renameDevice, totpSetup, validDeviceName, withRefreshLock, type LockManagerLike } from '$lib/api/auth';
+import { clientKind, defaultDeviceName, groupKey, login, PAGE_ID, refresh, REFRESH_LOCK, rememberedDevice, renameDevice, totpSetup, validDeviceName, withRefreshLock, type LockManagerLike } from '$lib/api/auth';
 import type { Session } from '$lib/api/auth';
 
 const sess = (token: string): Session => ({
@@ -192,6 +192,26 @@ describe('session', () => {
 		await vi.advanceTimersByTimeAsync(120_000);
 		expect(auth.refresh).toHaveBeenCalledTimes(1);
 		expect(s.status).toBe('signed-out');
+	});
+
+	test('each refresh says why it was asked for (for the gateway log)', async () => {
+		vi.useFakeTimers();
+		const outcomes: (string | Error)[] = ['t1', 't2', new TypeError('Failed to fetch'), 't3', 't4'];
+		const auth = fakeAuth([]);
+		const reasons: (string | undefined)[] = [];
+		auth.refresh = vi.fn(async (reason?: string) => {
+			reasons.push(reason);
+			const o = outcomes.shift();
+			if (o instanceof Error) throw o;
+			return { ...sess(o!), expires_in: 60 };
+		});
+		const s = new SessionManager(auth);
+		await s.restore();
+		await s.authed(async (t) => (t === 't1' ? Promise.reject(new ApiError(401, 'x')) : t));
+		await s.renew('events');
+		await vi.advanceTimersByTimeAsync(RETRY_MS[0]!);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(reasons).toEqual(['load', '401', 'events', 'retry', 'timer']);
 	});
 
 	test('other errors are not retried', async () => {
@@ -788,6 +808,21 @@ describe('cross-tab refresh lock', () => {
 		expect(server.max()).toBe(1);
 		expect(locks.names).toEqual([REFRESH_LOCK, REFRESH_LOCK]);
 		expect(REFRESH_LOCK).toBe('anywhere-refresh');
+	});
+
+	test('a refresh sends its reason and this page\'s id', async () => {
+		const server = fakeRefreshServer();
+		vi.stubGlobal('fetch', server.f);
+		vi.stubGlobal('navigator', { userAgent: '' });
+		const p = refresh('timer');
+		await vi.waitFor(() => expect(server.pending.length).toBe(1));
+		server.pending[0]!.resolve();
+		await p;
+		const h = new Headers((server.f.mock.calls[0] as unknown as [string, RequestInit])[1].headers);
+		expect(h.get('x-anywhere-refresh-reason')).toBe('timer');
+		expect(h.get('x-anywhere-page')).toBe(PAGE_ID);
+		// Only what the gateway logs: lower-case letters and digits, short.
+		expect(PAGE_ID).toMatch(/^[a-z0-9]{1,16}$/);
 	});
 
 	test('a failed refresh releases the lock for the next one', async () => {

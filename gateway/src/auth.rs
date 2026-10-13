@@ -281,6 +281,22 @@ struct RefreshRequest {
     client_platform: Option<String>,
 }
 
+/// A short client diagnostic header for the log: lower-case letters, digits and `-` only, at
+/// most 24 characters, else `-`.
+fn diag_header(headers: &HeaderMap, name: &str) -> String {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| {
+            !v.is_empty()
+                && v.len() <= 24
+                && v.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+        .unwrap_or("-")
+        .to_string()
+}
+
 /// Rotate the refresh token (from the cookie, or the body for native apps).
 pub async fn refresh(
     State(gw): State<AppState>,
@@ -308,6 +324,15 @@ pub async fn refresh(
         (None, Some(c)) => (c.to_string(), RefreshIn::Cookie),
         (None, None) => return error(StatusCode::UNAUTHORIZED, "invalid credentials"),
     };
+    // Diagnostics: which client code asked, from which page, with which token (fingerprint).
+    tracing::info!(
+        target: "anywhere_gateway::refresh",
+        token = %crate::accounts::fingerprint(&token),
+        via = if matches!(refresh_in, RefreshIn::Cookie) { "cookie" } else { "body" },
+        reason = %diag_header(&headers, "x-anywhere-refresh-reason"),
+        page = %diag_header(&headers, "x-anywhere-page"),
+        "refresh requested"
+    );
     match gw.accounts().refresh(&token) {
         Ok(t) => {
             let addr = crate::client_addr(&gw.cfg, peer, &headers);
@@ -594,5 +619,36 @@ pub async fn rename_self(
     {
         Ok(name) => Json(json!({ "id": p.device_id, "name": name })).into_response(),
         Err(e) => auth_error(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with(name: &'static str, v: &[u8]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(name, HeaderValue::from_bytes(v).unwrap());
+        h
+    }
+
+    #[test]
+    fn diagnostic_headers_are_logged_only_when_plain() {
+        let n = "x-anywhere-refresh-reason";
+        assert_eq!(diag_header(&with(n, b"timer"), n), "timer");
+        assert_eq!(diag_header(&with(n, b"k3x9-a"), n), "k3x9-a");
+        assert_eq!(diag_header(&HeaderMap::new(), n), "-");
+        for bad in [
+            &b""[..],
+            b"Timer",
+            b"a b",
+            b"a\"b",
+            b"x=1",
+            b"\xc3\xa9",
+            b"aaaaaaaaaaaaaaaaaaaaaaaaa",
+            b"a\tb",
+        ] {
+            assert_eq!(diag_header(&with(n, bad), n), "-", "{bad:?}");
+        }
     }
 }
