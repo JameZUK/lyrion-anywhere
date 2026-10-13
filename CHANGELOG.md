@@ -2,6 +2,37 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Now playing and players (Wave 2 part 3, web)
+
+Following `docs/plans/wave2-design.md` §4.
+
+- **Visualiser:**
+  - the player worker feeds the core's analyser (`core::visual`, now exposed through WASM) with the PCM it sends out, in both playback modes;
+  - each frame reaches the page only once that audio is being heard, at most 30 a second;
+  - styles: Bars, Scope, VU meters (needle ballistics of about 300 ms, with peak hold) and Glow (the blurred background and a halo swelling with the bass);
+  - change the style with a swipe across it or its style button;
+  - off by default (Now playing's visualiser button, or Settings), and remembered on the device;
+  - shown only while this browser is the player, Now playing is on screen and the art is visible; with reduced motion it stays off;
+  - the worker analyses nothing unless it is shown;
+  - decorative: hidden from screen readers, with labelled on/off and style controls.
+- **Now playing layouts:**
+  - *Art*, *Lyrics* (synced lyrics, large) and *Info* (quality badge and signal path, credits as links, rating, Up next);
+  - chosen with a segmented control, the keys 1, 2 and 3, or a sideways swipe on the art area, and remembered on the device;
+  - wide windows (over 840 px): the art stays on the left with lyrics or info beside it;
+  - windows with room for it (1200 px and over, as the web's sidebar takes space): the queue pinned on the right, which can be hidden.
+- **Rooms:** a page in the menu, and "All rooms" in the player picker. Each permitted player (up to 20) has a card with:
+  - art, title and artist;
+  - play/pause, a volume slider and power;
+  - sleep remaining and the next alarm.
+
+  Each card is one group, with its controls labelled with the room's name ("Kitchen volume"). Tap a card to control it. Drag it onto another to sync; the grip works by pointer or keyboard, and "Sync with…" is in the card's menu. "Play on its own" unsyncs; "Move playback here" transfers, also from a long press. Statuses are read every 5 s and at once on a room's events, only while the page is open. Alarms are read on opening and after a change.
+- **Tests:**
+  - WASM binding tests for the frame layout and bad input;
+  - node tests for the worker's tap (timing against the output, flushes, bounds, odd input);
+  - unit and fuzz tests for frames, VU ballistics, drawing and the remembered choices;
+  - component tests for the layouts (keys and swipe alternatives), the visualiser's controls (reduced motion, remote player) and Rooms (labelled controls, sync by menu, keyboard and drag, polling that stops when closed);
+  - 44 px target checks for the new controls.
+
 ## 2026-10-13: Library and queue (Wave 2 part 2, web)
 
 - **Credits:** a track's "More…" lists every role LMS reports (album artist, artist, track artist, composer, conductor, band). Each name links to that contributor's albums in that role ("Name · Composer"). Artist pages show "Appears as" chips with album counts.
