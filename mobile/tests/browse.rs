@@ -673,3 +673,128 @@ async fn credits_indexes_and_search_pass_the_allow_list() {
     assert!(lib.artist_index(hostile).await.is_err());
     assert_eq!(h.lms.rpc_calls().len(), before, "nothing was sent");
 }
+
+/// "Search on <app>" through the real gateway: the apps with a search box are found from
+/// their own top menus; the text goes only as that box's `search:` value; text the gateway
+/// refuses (paths, local addresses) never reaches LMS; empty text and bad players never leave
+/// the device; and an app reserved for admins is neither listed nor searchable by a listener.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn search_on_apps_through_the_gateway() {
+    let h = Harness::start().await;
+    let (s, _) = h.alice().await;
+    let me = s.current().unwrap().device.player_id;
+    let menus = Menus::new(s.clone());
+
+    let mut listed = menus.apps().await.unwrap();
+    listed.extend(menus.radios().await.unwrap());
+    // Nonsense handed in is skipped (or refused by the gateway) and never searchable.
+    let mut forged = listed[0].clone();
+    forged.cmd = "../x".into();
+    let mut unknown = listed[0].clone();
+    unknown.cmd = "unknownapp".into();
+    let mut all = listed.clone();
+    all.extend([forged, unknown, listed[0].clone()]);
+    let found = menus.searchable(me.clone(), all).await.unwrap();
+    // Some App has a search box; Some Radio's menu has none.
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].cmd, "someapp");
+    assert_eq!(found[0].name, "Some App");
+    let search = found[0].search.clone();
+    assert_eq!(search.cmd, ["someapp", "items"]);
+    assert!(anywhere_mobile::is_search_box(&search));
+    // Each top menu was read with the app's own command, and no search was made.
+    let tops: Vec<Value> = h
+        .lms
+        .rpc_calls()
+        .into_iter()
+        .filter(|c| c[1][1] == "items")
+        .collect();
+    assert!(tops.contains(&json!([me, ["someapp", "items", "0", "100", "menu:1"]])));
+    assert!(tops.iter().all(|c| c[1].as_array().unwrap().len() == 5));
+
+    // A query that looks like parameters is one `search:` value.
+    let before = h.lms.rpc_calls().len();
+    menus
+        .open(
+            me.clone(),
+            search.clone(),
+            0,
+            100,
+            Some("x item_id:9 menu:1".into()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        calls_since(&h, before)
+            .into_iter()
+            .filter(|c| c[1][0] == "someapp")
+            .collect::<Vec<_>>(),
+        vec![json!([
+            me,
+            [
+                "someapp",
+                "items",
+                "0",
+                "100",
+                "item_id:0",
+                "menu:someapp",
+                "search:x item_id:9 menu:1"
+            ]
+        ])]
+    );
+
+    // Text the gateway refuses never reaches LMS; empty text never leaves the device.
+    let before = h.lms.rpc_calls().len();
+    for bad in [
+        "file:///etc/passwd",
+        "http://10.0.0.5:9000/x",
+        "smb://10.0.0.5/music",
+        "/srv/music",
+    ] {
+        assert!(
+            menus
+                .open(me.clone(), search.clone(), 0, 100, Some(bad.into()))
+                .await
+                .is_err(),
+            "{bad}"
+        );
+    }
+    for empty in ["", "   ", "\n\t"] {
+        assert!(matches!(
+            menus
+                .open(me.clone(), search.clone(), 0, 100, Some(empty.into()))
+                .await,
+            Err(ApiError::InvalidInput { .. })
+        ));
+    }
+    assert!(matches!(
+        menus.searchable("../x".into(), listed.clone()).await,
+        Err(ApiError::InvalidInput { .. })
+    ));
+    assert!(
+        calls_since(&h, before).iter().all(|c| c[1][0] != "someapp"),
+        "a refused search reached LMS"
+    );
+
+    // Reserved for admins: not listed for a listener, and not searchable even if asked.
+    h.accounts
+        .set_admin_only_plugins(&["someapp".to_string()])
+        .unwrap();
+    let apps = menus.apps().await.unwrap();
+    assert!(apps.iter().all(|a| a.cmd != "someapp"));
+    assert!(
+        menus
+            .searchable(me.clone(), listed.clone())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let before = h.lms.rpc_calls().len();
+    assert!(
+        menus
+            .open(me.clone(), search, 0, 100, Some("abba".into()))
+            .await
+            .is_err()
+    );
+    assert!(calls_since(&h, before).iter().all(|c| c[1][0] != "someapp"));
+}

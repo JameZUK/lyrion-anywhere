@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use serde_json::{Map, Value, json};
 
 use crate::art::{cover_key, image_key};
@@ -33,6 +34,12 @@ const MAX_ITEM_TEXT: usize = 4000;
 const MAX_ITEMS: usize = 2000;
 /// Placeholders LMS puts where the user's typed text goes.
 const INPUT_MARKERS: [&str; 2] = ["__TAGGEDINPUT__", "__INPUT__"];
+/// Apps looked at for "Search on", at most (LMS lists a handful).
+const MAX_SEARCHABLE: usize = 64;
+/// Top menus read at once for "Search on" (LMS is single-threaded).
+const SEARCH_PARALLEL: usize = 3;
+/// Items of a top menu read to find its search box.
+const TOP_ITEMS: u32 = 100;
 
 /// One `key:value` parameter of an action.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -122,6 +129,16 @@ pub struct PluginEntry {
     pub go: Option<MenuAction>,
     /// Entries under this one (e.g. Random Mix's mixes).
     pub children: Vec<MenuItem>,
+}
+
+/// An app or radio service whose top menu has a search box ("Search on …").
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SearchableApp {
+    pub cmd: String,
+    pub name: String,
+    pub icon: Option<String>,
+    /// Its search box's own action: opens the results, with the typed text as `search:`.
+    pub search: MenuAction,
 }
 
 /// Whether an app or plugin is usable from here, judged from its top menu.
@@ -540,6 +557,32 @@ pub fn plugin_entries(home: &Value, shown_apps: &[String]) -> Vec<PluginEntry> {
     out
 }
 
+/// Whether an action is a search box for `search:` text: it opens a menu, and its one and
+/// only typed-text parameter is `search` (exactly LMS's placeholder). Text going anywhere
+/// else (another parameter, or several) is never used for "Search on".
+pub fn is_search_box(action: &MenuAction) -> bool {
+    let typed: Vec<&MenuParam> = action
+        .params
+        .iter()
+        .filter(|p| has_input(&p.value))
+        .collect();
+    action.opens_menu
+        && action.needs_input
+        && typed.len() == 1
+        && typed[0].key == "search"
+        && INPUT_MARKERS.contains(&typed[0].value.as_str())
+}
+
+/// The first search box among a top menu's items, if it has one.
+pub fn search_box(page: &MenuPage) -> Option<MenuAction> {
+    page.items
+        .iter()
+        .filter(|i| i.kind == MenuItemKind::Search)
+        .filter_map(|i| i.go.as_ref())
+        .find(|a| is_search_box(a))
+        .cloned()
+}
+
 /// Judge an app from its top menu: usable if it offers anything to open, play or search;
 /// "needs setup" if all it says is a message; otherwise empty. Nothing is hard-coded per app.
 pub fn judge(page: &MenuPage) -> Suitability {
@@ -645,6 +688,45 @@ impl Menus {
         } else {
             MenuOutcome::Menu { page }
         })
+    }
+
+    /// The apps (of `apps`, as listed by [`Menus::apps`] and [`Menus::radios`]) whose top
+    /// menu has a search box, in the order given: each top menu is read again here (a few
+    /// at a time), from the app's own command, never from an action handed in. An app whose
+    /// menu can't be read is left out.
+    pub async fn searchable(
+        &self,
+        player: String,
+        apps: Vec<AppEntry>,
+    ) -> Result<Vec<SearchableApp>, ApiError> {
+        commands::player_id(&player)?;
+        let mut wanted: Vec<AppEntry> = Vec::new();
+        for a in apps {
+            if wanted.len() >= MAX_SEARCHABLE {
+                break;
+            }
+            if commands::app_command(&a.cmd).is_ok() && !wanted.iter().any(|w| w.cmd == a.cmd) {
+                wanted.push(a);
+            }
+        }
+        let found: Vec<Option<SearchableApp>> = futures_util::stream::iter(wanted)
+            .map(|a| {
+                let player = player.clone();
+                async move {
+                    let top = app_menu(a.cmd.clone()).ok()?;
+                    let page = self.open(player, top, 0, TOP_ITEMS, None).await.ok()?;
+                    Some(SearchableApp {
+                        search: search_box(&page)?,
+                        cmd: a.cmd,
+                        name: a.name,
+                        icon: a.icon,
+                    })
+                }
+            })
+            .buffered(SEARCH_PARALLEL)
+            .collect()
+            .await;
+        Ok(found.into_iter().flatten().collect())
     }
 
     /// How usable an app or plugin is from here, from the first few items of its menu.
@@ -966,5 +1048,83 @@ mod tests {
             let _ = apps_from(&v, "appss_loop");
             let _ = judge(&p);
         }
+    }
+
+    /// "Search on": a search box is a menu with the typed text as `search:` and nowhere else.
+    #[test]
+    fn search_boxes_are_found_generically() {
+        let one = |go: Value, extra: Value| {
+            let mut item = json!({"text": "Search", "type": "search", "actions": {"go": go}});
+            if let (Some(i), Some(e)) = (item.as_object_mut(), extra.as_object()) {
+                for (k, v) in e {
+                    i.insert(k.clone(), v.clone());
+                }
+            }
+            page_from(&json!({ "item_loop": [item] }))
+        };
+        // Own action, and through the menu's base actions.
+        let own = one(
+            json!({"cmd": ["exampleapp", "items"], "params": {"item_id": "0", "search": "__TAGGEDINPUT__", "menu": "exampleapp"}}),
+            json!({}),
+        );
+        let b = search_box(&own).unwrap();
+        assert_eq!(b.cmd, ["exampleapp", "items"]);
+        assert!(is_search_box(&b));
+        let base = page_from(&json!({
+            "base": {"actions": {"go": {"cmd": ["exampleradio", "items"], "params": {"menu": "exampleradio"}, "itemsParams": "params"}}},
+            "item_loop": [
+                {"text": "Browse", "type": "link", "params": {"item_id": "1"}},
+                {"text": "Find", "type": "search", "params": {"item_id": "2", "search": "__INPUT__"}}
+            ]
+        }));
+        assert!(search_box(&base).is_some());
+        // The radio menu's podcast search counts too; a menu without one has none.
+        assert!(search_box(&page_from(&radio_menu())).is_some());
+        assert_eq!(
+            search_box(&page_from(&json!({"item_loop": [{"text": "x"}]}))),
+            None
+        );
+
+        for not in [
+            // Text into another parameter, into part of one, or into two.
+            one(
+                json!({"cmd": ["x", "items"], "params": {"q": "__TAGGEDINPUT__"}}),
+                json!({}),
+            ),
+            one(
+                json!({"cmd": ["x", "items"], "params": {"search": "a __TAGGEDINPUT__"}}),
+                json!({}),
+            ),
+            one(
+                json!({"cmd": ["x", "items"], "params": {"search": "__TAGGEDINPUT__", "title": "__INPUT__"}}),
+                json!({}),
+            ),
+            // A command that runs rather than a menu of results.
+            one(
+                json!({"cmd": ["x", "add"], "params": {"search": "__TAGGEDINPUT__"}}),
+                json!({"nextWindow": "nowPlaying"}),
+            ),
+            // Malformed or carrying a URL: never an action at all.
+            one(
+                json!({"cmd": ["../x", "items"], "params": {"search": "__TAGGEDINPUT__"}}),
+                json!({}),
+            ),
+            one(
+                json!({"cmd": ["x", "items"], "params": {"search": "__TAGGEDINPUT__", "url": "file:///srv/music"}}),
+                json!({}),
+            ),
+        ] {
+            assert_eq!(search_box(&not), None, "{not:?}");
+        }
+        // An action changed after it was found no longer counts.
+        assert!(!is_search_box(&MenuAction {
+            opens_menu: false,
+            ..b.clone()
+        }));
+        assert!(!is_search_box(&MenuAction {
+            needs_input: false,
+            ..b.clone()
+        }));
+        assert!(!is_search_box(&app_menu("exampleapp".into()).unwrap()));
     }
 }
