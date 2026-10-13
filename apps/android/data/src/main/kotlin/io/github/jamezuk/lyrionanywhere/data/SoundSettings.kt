@@ -72,6 +72,12 @@ data class SoundSettings(
      * plays. Device names stay on this phone.
      */
     val outputEq: List<OutputEq> = emptyList(),
+    /**
+     * Loudness-compensated volume: gentle bass and treble shelves that grow as this phone's
+     * player is turned down (equal-loudness contours). Driven by the player's own volume,
+     * not Android's; bypassed on a bit-perfect route.
+     */
+    val loudness: Boolean = false,
 ) {
     /** The stages that change samples (empty: bit-perfect). The limiter and dither only
      *  ever act with one of these. */
@@ -80,6 +86,7 @@ data class SoundSettings(
             if (preampDb != 0.0) add(SoundStage.PREAMP)
             if (levelling != LevellingMode.OFF) add(SoundStage.LEVELLING)
             if (eqEnabled && eq != null) add(SoundStage.EQ)
+            if (loudness) add(SoundStage.LOUDNESS)
             if (crossfeed != CrossfeedMode.OFF) add(SoundStage.CROSSFEED)
             if (transitions != TransitionsMode.OFF) add(SoundStage.CROSSFADE)
         }
@@ -132,7 +139,7 @@ data class SoundSettings(
     }
 }
 
-enum class SoundStage { PREAMP, LEVELLING, EQ, CROSSFEED, CROSSFADE }
+enum class SoundStage { PREAMP, LEVELLING, EQ, LOUDNESS, CROSSFEED, CROSSFADE }
 
 /** The kinds of output an EQ profile can be bound to (Wave 2 §5.3). */
 enum class OutputClass {
@@ -293,6 +300,7 @@ private fun chainFor(s: SoundSettings): DspSettings {
             CrossfeedMode.NATURAL -> CrossfeedSetting.NATURAL
         },
         dither = s.dither.toCore(),
+        loudness = s.loudness,
     )
 }
 

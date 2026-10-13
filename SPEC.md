@@ -491,7 +491,9 @@ Android (Kotlin + Jetpack Compose) and iOS (Swift + SwiftUI) are thin native UIs
 - system background playback (Media3 `MediaSessionService` on Android, audio background mode + `MPNowPlayingInfoCenter` on iOS);
 - Android Auto and CarPlay;
 - downloads in the app sandbox, removed automatically when the device is revoked;
-- true network-type detection for quality switching.
+- true network-type detection for quality switching;
+- an optional DSP chain in the shared audio engine (`core/src/dsp`, Android's Settings › Sound), off by default so playback stays bit-perfect. In processing order: preamp and levelling → parametric EQ (per output) → loudness-compensated volume → crossfeed → true-peak limiter → dither, only where the bit depth is reduced. The limiter comes last so it catches every boost.
+  - **Loudness-compensated volume** (2026-10-13, off by default, remembered per device): at low volume the ear hears less bass and treble (ISO 226 equal-loudness contours), so a low shelf at 100 Hz and a high shelf at 10 kHz grow as the player's own volume (LMS `audg` as the engine applies it, not Android's system volume) is turned down. 0 dB at full volume; 1 dB of bass and 0.4 dB of treble per 4 dB of attenuation, reaching at most +10 dB and +4 dB at −40 dB. The shelves follow volume changes smoothly (ramped, no zipper noise), always run with the limiter, and are bypassed on a bit-perfect route (D19), where the DAC's volume rules; the signal path shows a *Loudness* stage, or says it was bypassed. Offline playback has no player volume, so there it never boosts.
 
 ---
 

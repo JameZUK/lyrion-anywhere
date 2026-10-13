@@ -1050,6 +1050,99 @@ async fn dsp_on_a_dac_is_direct_but_not_bit_perfect() {
     r.player.set_dsp(DspSettings::default());
 }
 
+/// LMS's volume at 25 % (0x4000 in 16.16).
+fn audg_quarter() -> Vec<u8> {
+    let mut p = vec![0u8; 18];
+    p[8] = 1;
+    p[9] = 255;
+    p[10..14].copy_from_slice(&0x4000u32.to_be_bytes());
+    p[14..18].copy_from_slice(&0x4000u32.to_be_bytes());
+    encode_server_frame(*b"audg", &p)
+}
+
+fn loudness_dsp() -> DspSettings {
+    DspSettings {
+        enabled: true,
+        loudness: true,
+        ..DspSettings::default()
+    }
+}
+
+/// Loudness-compensated volume on Android's mixer: LMS's volume at 25 % (−12 dB) brings
+/// +3 dB of bass and +1.2 dB of treble, the panel shows the stage, and the limiter keeps
+/// the result under its ceiling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn loudness_follows_lms_volume_on_the_mixer() {
+    let mut r = rig_with(false, None, loudness_dsp()).await;
+    let n = flac::noise(44_100, 16, 31);
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(flac::encode(44_100, 16, &n)));
+    let mac = r.mac;
+    r.send(audg_quarter()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    let obs = r.obs.clone();
+    wait_for("the loudness stage", move || {
+        obs.last_path().is_some_and(|p| {
+            p.stages
+                .iter()
+                .any(|s| s.name == "Loudness +3.0 dB bass, +1.2 dB treble")
+        })
+    })
+    .await;
+    r.wait_event("STMu", 1, 30).await;
+    r.stop_pulling();
+    let p = r.obs.last_path().unwrap();
+    let stage = p
+        .stages
+        .iter()
+        .find(|s| s.name.starts_with("Loudness"))
+        .unwrap();
+    assert!(!stage.bit_transparent);
+    assert!(p.dsp_active && !p.engine_bit_perfect);
+    assert!(p.not_bit_perfect.contains(&NotBitPerfect::DspActive));
+    let ceiling = 10f32.powf(-1.0 / 20.0) + 1e-6;
+    let all = r.pulled.all();
+    assert!(!all.is_empty());
+    assert!(all.iter().all(|x| x.is_finite() && x.abs() <= ceiling));
+    r.player.stop();
+}
+
+/// On a bit-perfect DAC the DAC's volume rules: loudness is bypassed, the file's integers
+/// reach the DAC untouched, and the panel says loudness was bypassed (and still calls the
+/// path bit-perfect).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn loudness_is_bypassed_on_a_bit_perfect_dac() {
+    let dac = FakeDac::typical(true);
+    let mut r = rig_with(false, Some(dac.clone()), loudness_dsp()).await;
+    let n = flac::noise(22_050, 16, 32);
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(flac::encode(44_100, 16, &n)));
+    let mac = r.mac;
+    r.send(audg_quarter()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMu", 1, 30).await;
+    r.stop_pulling();
+    let p = r.obs.last_path().unwrap();
+    assert!(p.direct && p.bit_perfect, "{:?}", p.not_bit_perfect);
+    let stage = p
+        .stages
+        .iter()
+        .find(|s| s.name.starts_with("Loudness"))
+        .expect("the panel names the bypass");
+    assert_eq!(stage.name, "Loudness bypassed (bit-perfect output)");
+    assert!(stage.bit_transparent);
+    let runs = r.pulled.int_runs.lock().unwrap().clone();
+    let got: Vec<i32> = runs.iter().flat_map(|run| run.2.clone()).collect();
+    assert_eq!(got, n, "integer for integer");
+    r.player.stop();
+}
+
 /// Opus is advertised only by builds that decode it, and an Ogg Opus stream plays through
 /// the whole player (gateway, decoder, pipeline, output).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

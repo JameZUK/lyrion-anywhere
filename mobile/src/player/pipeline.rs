@@ -8,8 +8,12 @@
 //!   copied straight through: no conversion, no arithmetic. Volume (`audg`) is applied by
 //!   the core, and at 100 % it is exactly 1.0, which leaves samples untouched.
 //! - **DSP (optional):** preamp, ReplayGain levelling from the track's tags (track or album
-//!   mode) and the true-peak limiter, from `core::dsp`, in `f64`. Levelling is decided per
-//!   track: the core's [`Player::pull_track`] never mixes two tracks in one block.
+//!   mode), EQ, loudness-compensated volume, crossfeed and the true-peak limiter, from
+//!   `core::dsp`, in `f64`. Levelling is decided per track: the core's
+//!   [`Player::pull_track`] never mixes two tracks in one block.
+//! - **Loudness compensation** follows the volume the core applied to the samples
+//!   ([`Pipeline::set_volume`]). On a bit-perfect route ([`Pipeline::set_direct`]) the DAC's
+//!   own volume rules, so it is bypassed, and the signal path says so.
 //! - **Resampling** happens only when the output could not be opened at the source rate.
 //! - **Played accounting:** the core must learn which frames have actually been played (for
 //!   elapsed time, `STMs` and `STMu`). Every block written to the ring is recorded with the
@@ -97,6 +101,10 @@ pub struct DspSettings {
     /// Crossfade length, seconds (1..=10; the most a smart transition uses).
     #[uniffi(default = 6.0)]
     pub crossfade_s: f64,
+    /// Loudness-compensated volume: bass and treble shelves that grow as the player's
+    /// volume is turned down (see `core::dsp::loudness`). Bypassed on a bit-perfect route.
+    #[uniffi(default = false)]
+    pub loudness: bool,
 }
 
 impl Default for DspSettings {
@@ -114,6 +122,7 @@ impl Default for DspSettings {
             dither: DitherSetting::Tpdf,
             transitions: TransitionMode::Off,
             crossfade_s: super::transitions::DEFAULT_FADE_S,
+            loudness: false,
         }
     }
 }
@@ -192,6 +201,7 @@ impl DspSettings {
                 super::transitions::MIN_FADE_S,
                 super::transitions::MAX_FADE_S,
             ),
+            loudness: self.loudness,
         }
     }
 
@@ -199,14 +209,26 @@ impl DspSettings {
     /// depth is reduced. The limiter is a safety net for the other stages, applied only
     /// with one of them.)
     pub fn active(&self) -> bool {
+        self.active_on(false)
+    }
+
+    /// [`DspSettings::active`] on a route that is (`direct`) or isn't bit-perfect: there,
+    /// loudness compensation alone doesn't switch the chain on.
+    pub fn active_on(&self, direct: bool) -> bool {
         self.enabled
             && (self.preamp_db != 0.0
                 || self.levelling != Levelling::Off
                 || self.eq_profile.is_some()
-                || self.crossfeed != CrossfeedSetting::Off)
+                || self.crossfeed != CrossfeedSetting::Off
+                || self.loudness_on(direct))
     }
 
-    fn chain_config(&self) -> ChainConfig {
+    /// Loudness compensation applies: asked for, and not on a bit-perfect route.
+    pub fn loudness_on(&self, direct: bool) -> bool {
+        self.enabled && self.loudness && !direct
+    }
+
+    fn chain_config(&self, direct: bool) -> ChainConfig {
         let crossfeed = match self.crossfeed {
             CrossfeedSetting::Off => None,
             CrossfeedSetting::Light => Some(CrossfeedPreset::Light.config()),
@@ -226,6 +248,7 @@ impl DspSettings {
                 .sanitised()
             }),
             dither: dither_mode(self.dither),
+            loudness: self.loudness_on(direct),
         }
     }
 }
@@ -288,6 +311,9 @@ pub fn levelling_decision(
     }
 }
 
+/// The signal-path stage when a bit-perfect route bypasses loudness compensation.
+pub const LOUDNESS_BYPASSED: &str = "Loudness bypassed (bit-perfect output)";
+
 /// Ring samples carrying some source frames.
 #[derive(Debug, Clone, Copy)]
 struct Mark {
@@ -329,6 +355,10 @@ pub struct Pipeline {
     source_bits: Option<u32>,
     out_dither: Dither,
     ints: Vec<i32>,
+    /// The volume the source applied to the samples (linear), for loudness compensation.
+    volume: f64,
+    /// The output is a bit-perfect route (fixed volume): loudness compensation is bypassed.
+    direct: bool,
 }
 
 impl Pipeline {
@@ -354,6 +384,8 @@ impl Pipeline {
             source_bits: None,
             out_dither: Dither::new(dither_mode(dsp.dither), CHANNELS),
             ints: Vec::new(),
+            volume: 1.0,
+            direct: false,
         }
     }
 
@@ -403,13 +435,44 @@ impl Pipeline {
     }
 
     fn build_chain(&mut self) {
-        self.chain = match (self.dsp.active(), self.src_rate) {
-            (true, Some(rate)) => Chain::new(self.dsp.chain_config(), rate, CHANNELS).ok(),
+        self.chain = match (self.dsp.active_on(self.direct), self.src_rate) {
+            (true, Some(rate)) => {
+                Chain::new(self.dsp.chain_config(self.direct), rate, CHANNELS).ok()
+            }
             _ => None,
         };
         if let Some(c) = &mut self.chain {
             c.set_levelling_db(self.levelling_db);
+            c.set_volume(self.volume);
         }
+    }
+
+    /// The volume the source applied to the samples it hands over (linear, 1.0 = full):
+    /// LMS's `audg` as the core applies it. Drives loudness compensation, which follows
+    /// smoothly; call it before each [`Pipeline::push_counted`].
+    pub fn set_volume(&mut self, volume: f64) {
+        self.volume = volume;
+        if let Some(c) = &mut self.chain {
+            c.set_volume(volume);
+        }
+    }
+
+    /// The output is (`true`) or isn't a bit-perfect route. On one, the DAC's volume rules
+    /// and loudness compensation is bypassed (the chain is rebuilt without it).
+    pub fn set_direct(&mut self, direct: bool) {
+        if direct == self.direct {
+            return;
+        }
+        self.direct = direct;
+        if self.dsp.enabled && self.dsp.loudness {
+            self.chain = None;
+            self.build_chain();
+        }
+    }
+
+    /// Loudness compensation is asked for but bypassed by a bit-perfect route.
+    pub fn loudness_bypassed(&self) -> bool {
+        self.dsp.enabled && self.dsp.loudness && self.direct
     }
 
     /// The pipeline now takes audio at `src` and the output runs at `out`.
@@ -659,6 +722,9 @@ impl Pipeline {
             Some(c) => c.stages(),
             None => Vec::new(),
         };
+        if self.loudness_bypassed() {
+            v.push(Stage::transparent(LOUDNESS_BYPASSED));
+        }
         let source = match self.level_source {
             LevelSource::Analysis => Some("R128 analysis"),
             LevelSource::Tags => Some("ReplayGain"),
@@ -780,6 +846,7 @@ mod tests {
             dither: DitherSetting::Tpdf,
             transitions: TransitionMode::Smart,
             crossfade_s: f64::NAN,
+            loudness: false,
         }
         .sanitised();
         assert_eq!(weird.crossfade_s, 6.0, "nonsense becomes the default");
@@ -1331,5 +1398,152 @@ mod tests {
         p.reset();
         assert!(!p.has_pending());
         assert_eq!(p.played(u64::MAX), 0);
+    }
+
+    fn loudness_settings(eq: bool) -> DspSettings {
+        DspSettings {
+            enabled: true,
+            loudness: true,
+            eq_profile: eq.then(|| PROFILE.to_string()),
+            ..DspSettings::default()
+        }
+    }
+
+    /// Process `block` as one push and take what came out.
+    fn run(p: &mut Pipeline, block: &[f32], seq: u32) -> Vec<f32> {
+        p.pending.clear();
+        p.pending_off = 0;
+        p.push_with(block, seq, None, None, None);
+        std::mem::take(&mut p.pending)
+    }
+
+    #[test]
+    fn loudness_is_off_by_default_and_survives_sanitising() {
+        assert!(!DspSettings::default().loudness);
+        let s = loudness_settings(false);
+        assert!(s.sanitised().loudness);
+        assert!(s.active(), "loudness alone switches the chain on");
+        assert!(!s.active_on(true), "but not on a bit-perfect route");
+        assert!(
+            !DspSettings {
+                enabled: false,
+                ..s
+            }
+            .active(),
+            "the master switch rules"
+        );
+    }
+
+    #[test]
+    fn loudness_follows_the_volume_and_shows_in_the_signal_path() {
+        let mut p = Pipeline::new(loudness_settings(false));
+        p.configure(44_100, 44_100).unwrap();
+        let names =
+            |p: &Pipeline| -> Vec<String> { p.stages().into_iter().map(|s| s.name).collect() };
+        assert_eq!(
+            names(&p),
+            [
+                "Loudness (none at full volume)",
+                "True-peak limiter −1.0 dBTP"
+            ]
+        );
+        p.set_volume(0.1);
+        assert_eq!(names(&p)[0], "Loudness +5.0 dB bass, +2.0 dB treble");
+        assert!(p.dsp_processing());
+        // Odd volumes from a confused source never break it.
+        for v in [f64::NAN, f64::INFINITY, -1.0, 0.0, 1e-300] {
+            p.set_volume(v);
+            let out = run(&mut p, &noise(2048, 7), 1);
+            assert!(out.iter().all(|x| x.is_finite()), "{v}");
+        }
+    }
+
+    #[test]
+    fn a_bit_perfect_route_bypasses_loudness_and_says_so() {
+        let mut p = Pipeline::new(loudness_settings(false));
+        p.configure(96_000, 96_000).unwrap();
+        p.set_direct(true);
+        assert!(p.loudness_bypassed());
+        assert!(!p.processing() && !p.dsp_processing(), "no chain at all");
+        let stages = p.stages();
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[0].name, LOUDNESS_BYPASSED);
+        assert!(stages[0].bit_transparent);
+        // Even told of a low volume, the samples pass untouched.
+        p.set_volume(0.05);
+        let input = noise(4096, 3);
+        assert_eq!(run(&mut p, &input, 1), input);
+
+        // With an EQ too, the chain runs but without loudness.
+        let mut p = Pipeline::new(loudness_settings(true));
+        p.configure(96_000, 96_000).unwrap();
+        p.set_direct(true);
+        p.set_volume(0.05);
+        let names: Vec<String> = p.stages().into_iter().map(|s| s.name).collect();
+        assert!(
+            !names.iter().any(|n| n.starts_with("Loudness +")),
+            "{names:?}"
+        );
+        assert!(names.iter().any(|n| n == LOUDNESS_BYPASSED), "{names:?}");
+
+        // Back on a mixed route, it applies again.
+        p.set_direct(false);
+        assert!(!p.loudness_bypassed());
+        let names: Vec<String> = p.stages().into_iter().map(|s| s.name).collect();
+        assert!(
+            names.iter().any(|n| n.starts_with("Loudness +")),
+            "{names:?}"
+        );
+    }
+
+    /// Full-scale audio (the worst case: as if no volume had been applied) at the most
+    /// compensation, with an EQ boosting the bass too, never clips.
+    #[test]
+    fn loudness_at_full_scale_never_clips_through_the_pipeline() {
+        let ceiling = 10f32.powf(-1.0 / 20.0) + 1e-6;
+        for eq in [false, true] {
+            for vol in [1.0, 0.3, 0.01, 0.0] {
+                let mut p = Pipeline::new(loudness_settings(eq));
+                p.configure(48_000, 48_000).unwrap();
+                p.set_volume(vol);
+                let block: Vec<f32> = (0..4096 * CHANNELS)
+                    .map(|i| if (i / 2 / 240) % 2 == 0 { 1.0 } else { -1.0 })
+                    .collect();
+                for k in 0..24 {
+                    let out = run(&mut p, &block, 1);
+                    let peak = out.iter().fold(0f32, |m, x| m.max(x.abs()));
+                    assert!(peak <= ceiling, "eq {eq} vol {vol} block {k}: {peak}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn volume_steps_through_the_pipeline_are_smooth() {
+        let mut p = Pipeline::new(loudness_settings(false));
+        p.configure(44_100, 44_100).unwrap();
+        let mut out = Vec::new();
+        // LMS volume steps, down and back up, on a steady low tone.
+        for (k, vol) in [1.0, 0.5, 0.25, 0.1, 0.05, 0.1, 0.5, 1.0]
+            .into_iter()
+            .enumerate()
+        {
+            p.set_volume(vol);
+            let block: Vec<f32> = (0..2048)
+                .flat_map(|i| {
+                    let t = (k * 2048 + i) as f64 / 44_100.0;
+                    let s = (0.05 * (2.0 * std::f64::consts::PI * 50.0 * t).sin()) as f32;
+                    [s, s]
+                })
+                .collect();
+            out.extend(run(&mut p, &block, 1).into_iter().step_by(2));
+        }
+        let lat = p.chain.as_ref().unwrap().latency_frames() + 1;
+        // A 50 Hz tone at 0.05 moves at most ~3.6e-4 a sample; boosted, at most ~3× that.
+        let worst = out[lat..]
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0f32, f32::max);
+        assert!(worst < 2e-3, "a step of {worst}");
     }
 }
