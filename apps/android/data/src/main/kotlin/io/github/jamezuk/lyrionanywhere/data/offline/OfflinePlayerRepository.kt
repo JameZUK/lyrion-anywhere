@@ -1,5 +1,6 @@
 package io.github.jamezuk.lyrionanywhere.data.offline
 
+import io.github.jamezuk.lyrionanywhere.data.cleanLoudnessReference
 import io.github.jamezuk.lyrionanywhere.core.DspSettings
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayback
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayerConfig
@@ -110,6 +111,9 @@ interface OfflinePlayerRepository {
 
     /** The newest visualiser frame since the last call (null: none, or off). */
     fun visualFrame(): VisualFrame? = null
+
+    /** See [io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository.setLoudnessReferenceDb]. */
+    fun setLoudnessReferenceDb(db: Double?) {}
 }
 
 /** The parts of the Rust [OfflinePlayer] used here (a seam for tests). */
@@ -152,6 +156,8 @@ interface OfflinePlayerHandle {
 
     /** The engine's packed frame (see [VisualFrame.parse]). */
     fun visualFrame(): ByteArray? = null
+
+    fun setLoudnessReferenceDb(db: Double?) {}
 
     fun shutdown()
 }
@@ -201,6 +207,8 @@ private class RustOfflinePlayer(store: OfflineStore, dsp: DspSettings) : Offline
 
     override fun visualFrame(): ByteArray? = p.visualFrame()
 
+    override fun setLoudnessReferenceDb(db: Double?) = p.setLoudnessReferenceDb(db)
+
     override fun shutdown() {
         p.shutdown()
         p.close()
@@ -233,6 +241,7 @@ class RustOfflinePlayerRepository(
     @Volatile private var output: AudioOutput? = null
     @Volatile private var bypass = false
     @Volatile private var visualiser = false
+    @Volatile private var loudnessReference: Double? = null
 
     private fun dspNow() = dspOn(sound, output, bypass)
 
@@ -283,6 +292,7 @@ class RustOfflinePlayerRepository(
                     negotiator?.let(it::setOutputNegotiator)
                     if (duck) it.setDuck(true)
                     if (visualiser) it.setVisualiser(true)
+                    it.setLoudnessReferenceDb(loudnessReference)
                     it.start(Observer(it))
                 }
             }
@@ -372,6 +382,13 @@ class RustOfflinePlayerRepository(
     override fun setVisualiser(on: Boolean) {
         visualiser = on
         handle?.setVisualiser(on)
+    }
+
+    override fun setLoudnessReferenceDb(db: Double?) {
+        val clean = cleanLoudnessReference(db)
+        if (clean == loudnessReference) return
+        loudnessReference = clean
+        handle?.setLoudnessReferenceDb(clean)
     }
 
     override fun visualFrame(): VisualFrame? = if (visualiser) VisualFrame.parse(handle?.visualFrame()) else null
