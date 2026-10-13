@@ -828,31 +828,87 @@ pub async fn wait_for(what: &str, cond: impl Fn() -> bool) {
     panic!("timed out waiting for {what}");
 }
 
-/// A TCP proxy in front of the gateway whose connections can all be cut at once.
+/// A TCP proxy in front of the gateway whose connections can all be cut at once, or that
+/// can be taken down (as a phone in a tunnel: nothing connects until it is back up).
 pub struct Proxy {
     pub addr: SocketAddr,
     cut: tokio::sync::broadcast::Sender<()>,
     freeze: tokio::sync::broadcast::Sender<()>,
     pub accepted: Arc<AtomicUsize>,
+    down: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Copy `from` to `to`, replacing `find` with `replace` (same length) within each piece.
+async fn copy_rewriting(
+    mut from: tokio::net::tcp::OwnedReadHalf,
+    mut to: tokio::net::tcp::OwnedWriteHalf,
+    rewrite: Option<(Vec<u8>, Vec<u8>)>,
+) {
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = match from.read(&mut buf).await {
+            Ok(0) | Err(_) => return,
+            Ok(n) => n,
+        };
+        if let Some((find, replace)) = &rewrite {
+            let mut i = 0;
+            while i + find.len() <= n {
+                if &buf[i..i + find.len()] == find.as_slice() {
+                    buf[i..i + find.len()].copy_from_slice(replace);
+                    i += find.len();
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        if to.write_all(&buf[..n]).await.is_err() {
+            return;
+        }
+    }
 }
 
 impl Proxy {
     pub async fn start(target: SocketAddr) -> Proxy {
+        Self::start_rewriting(target, None).await
+    }
+
+    /// A proxy that also replaces `find` with `replace` (the same length) in what the
+    /// gateway sends: to make it look like an older gateway.
+    pub async fn start_rewriting(target: SocketAddr, rewrite: Option<(Vec<u8>, Vec<u8>)>) -> Proxy {
+        if let Some((a, b)) = &rewrite {
+            assert_eq!(a.len(), b.len());
+        }
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (cut, _) = tokio::sync::broadcast::channel::<()>(4);
         let (freeze, _) = tokio::sync::broadcast::channel::<()>(4);
         let accepted = Arc::new(AtomicUsize::new(0));
-        let (c, f, a) = (cut.clone(), freeze.clone(), accepted.clone());
+        let down = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (c, f, a, d) = (cut.clone(), freeze.clone(), accepted.clone(), down.clone());
         tokio::spawn(async move {
             while let Ok((mut client, _)) = listener.accept().await {
                 a.fetch_add(1, Ordering::SeqCst);
+                if d.load(Ordering::SeqCst) {
+                    drop(client); // no network: nothing gets through
+                    continue;
+                }
                 let mut stop = c.subscribe();
                 let mut frozen = f.subscribe();
+                let rewrite = rewrite.clone();
                 tokio::spawn(async move {
                     let Ok(mut upstream) = tokio::net::TcpStream::connect(target).await else {
                         return;
                     };
+                    if rewrite.is_some() {
+                        let (cr, cw) = client.into_split();
+                        let (ur, uw) = upstream.into_split();
+                        tokio::select! {
+                            _ = copy_rewriting(cr, uw, None) => {}
+                            _ = copy_rewriting(ur, cw, rewrite) => {}
+                            _ = stop.recv() => {}
+                        }
+                        return;
+                    }
                     tokio::select! {
                         _ = tokio::io::copy_bidirectional(&mut client, &mut upstream) => {}
                         _ = stop.recv() => {}
@@ -871,12 +927,22 @@ impl Proxy {
             cut,
             freeze,
             accepted,
+            down,
         }
     }
 
     /// Drop every open connection (as a phone losing its network would).
     pub fn cut_all(&self) {
         let _ = self.cut.send(());
+    }
+
+    /// Take the network down (every connection is cut, and new ones are dropped at once)
+    /// or bring it back.
+    pub fn set_down(&self, down: bool) {
+        self.down.store(down, Ordering::SeqCst);
+        if down {
+            self.cut_all();
+        }
     }
 
     /// Stop every open connection passing anything, without closing it (as when a phone's
