@@ -287,6 +287,19 @@ impl AudioPath {
         self.visual.flush();
     }
 
+    /// A partial flush (`strm f`, see [`anywhere_core::player::QueueTrim`]): drop the audio
+    /// held of any track after `keep` (in the transitions, the pipeline and the ring), and
+    /// keep the rest, so the audible track plays on and the dropped one is never heard.
+    pub(crate) fn trim_after(&mut self, keep: u32) {
+        self.transitions.trim_after(keep);
+        if let Some(at) = self.pipeline.trim_after(keep) {
+            self.producer.discard_from(at);
+        }
+        if self.planned_seq.is_some_and(|s| s > keep) {
+            self.planned_seq = None;
+        }
+    }
+
     /// Nothing waits between the source and the ring (no pending block, nothing held).
     pub(crate) fn idle(&self) -> bool {
         !self.pipeline.has_pending() && self.transitions.is_empty()

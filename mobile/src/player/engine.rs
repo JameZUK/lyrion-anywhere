@@ -12,8 +12,18 @@
 //! - a dropped socket **resumes** the same gateway session (LMS never sees the player
 //!   leave), re-sending only what the gateway lacks; after the grace period, or when the
 //!   gateway says the session is gone, it starts afresh with a new HELO (same MAC);
-//! - a broken download resumes at the byte offset the core has, and is acknowledged at
-//!   least every 256 KiB so the gateway's replay window always covers it;
+//! - a broken download resumes at the byte offset already received, and is acknowledged
+//!   at least every 256 KiB so the gateway's replay window always covers it; it keeps
+//!   trying for as long as the gateway holds the session (the granted resume grace);
+//! - each stream is spooled to disk as fast as the network allows (`super::spool`) and
+//!   fed to the decoder as it wants it, so a gap in the signal is covered by what is
+//!   spooled; in read-ahead mode the next track is fetched long before the current one
+//!   ends (docs/plans/wave3-design.md, "Rolling cache", Phase A);
+//! - the resume grace is negotiated (asked for when `/v1/me` offers it), and the app says
+//!   when the phone has no network: reconnecting then waits for it, and starts at once
+//!   when it returns;
+//! - after a stall, a player in a sync group skips what the others played meanwhile, or
+//!   has LMS restart the group in step when too little is buffered to do that;
 //! - an expired access token is renewed and the socket reconnects; a refusal or a
 //!   takeover by another connection stops for good.
 //!
@@ -33,7 +43,9 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::{Connector, connect_async_tls_with_config};
 
-use anywhere_core::player::{Action, OutputState, Player, PlayerConfig};
+use anywhere_core::player::{
+    Action, OutputState, Player, PlayerConfig, SYNC_STALL_SKIP_MS, StallResume,
+};
 use anywhere_core::proto::{ClientMsg, format_mac};
 
 use super::audio::{AudioPath, AudioSource, OutputShared, dsp_transitions};
@@ -42,6 +54,7 @@ use super::output::AudioOutput;
 use super::pipeline::{DspSettings, Levelling};
 use super::protocol::{self, CloseAction, Greeting};
 use super::ring::CHANNELS;
+use super::spool::{FEED_CHUNK, Spool, SpoolDir, SpoolReadError};
 use super::transitions::{TrackFacts, TransitionMode};
 use super::{
     LocalPlayback, LocalPlayerObserver, LocalPlayerStatus, PlayerConnection, SignalPathInfo,
@@ -92,6 +105,79 @@ pub(crate) enum Cmd {
     /// The phone's media volume as an attenuation (dB) for loudness compensation, or
     /// `None` when it isn't known.
     SetLoudnessReference(Option<f64>),
+    /// Whether the phone has a network (Android's `ConnectivityManager`).
+    Network(bool),
+    /// Read ahead: report a track ready once it is fully received (needs the spool).
+    SetReadAhead(bool),
+    /// How much of a track must be heard before read-ahead fetches the next one (ms).
+    SetReadyAfter(u64),
+}
+
+/// Most bytes handed to the decoder per call of the feeder (a tick is 20 ms: 50 MB/s).
+const FEED_PER_CALL: usize = 1024 * 1024;
+/// How long the first connection waits for `/v1/me` (to know whether to ask for a longer
+/// resume grace) before going ahead without it.
+const FEATURES_WAIT: Duration = Duration::from_secs(2);
+/// In a sync group, how long to wait after a stall for enough audio to skip the stall
+/// before deciding (see [`stall_step`]).
+const REJOIN_WAIT: Duration = Duration::from_secs(2);
+/// Audio wanted beyond the stall before skipping it, so the output doesn't run dry again
+/// at once.
+const REJOIN_MARGIN_MS: u64 = 250;
+
+/// What to do about a stall (an underrun) now that audio may be available again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StallStep {
+    /// Nothing to do: not stalled, or no audio yet.
+    Nothing,
+    /// Hold the output back a little longer: in a group, waiting for enough audio to skip
+    /// the stall.
+    Wait,
+    /// Decide now ([`Player::resume_after_stall`]).
+    Resume,
+}
+
+/// The policy for resuming after a stall (A6). Alone, carry on as soon as there is audio.
+/// In a sync group, wait (up to [`REJOIN_WAIT`]) until the audio decoded covers the stall
+/// and a margin, so it can be skipped and the player is back in step; past that wait,
+/// decide anyway (the core then says whether to skip or to have LMS restart the player).
+pub(crate) fn stall_step(
+    stalled_ms: Option<u64>,
+    buffered_ms: u64,
+    in_group: bool,
+    waited: Duration,
+) -> StallStep {
+    let Some(stalled) = stalled_ms else {
+        return StallStep::Nothing;
+    };
+    if buffered_ms == 0 {
+        return StallStep::Nothing;
+    }
+    if !in_group || stalled <= SYNC_STALL_SKIP_MS {
+        return StallStep::Resume;
+    }
+    if buffered_ms >= stalled + REJOIN_MARGIN_MS || waited >= REJOIN_WAIT {
+        StallStep::Resume
+    } else {
+        StallStep::Wait
+    }
+}
+
+/// An estimate of how much listening is held ahead, in ms: the audio decoded, plus the
+/// compressed bytes not yet decoded (`undecoded_bytes`) at the byte rate seen so far
+/// (`decoded_bytes` over `decoded_ms`). Without a second of history, only what is decoded.
+pub(crate) fn cushion_ms(
+    decoded_ahead_ms: u64,
+    undecoded_bytes: u64,
+    decoded_bytes: u64,
+    decoded_ms: f64,
+) -> u64 {
+    if decoded_ms < 1000.0 || decoded_bytes == 0 || !decoded_ms.is_finite() {
+        return decoded_ahead_ms;
+    }
+    let per_ms = decoded_bytes as f64 / decoded_ms;
+    let ahead = undecoded_bytes as f64 / per_ms;
+    decoded_ahead_ms.saturating_add(ahead.min(1e12) as u64)
 }
 
 /// What the engine reacts to.
@@ -113,8 +199,13 @@ enum Ev {
         id: u64,
         content_type: String,
     },
-    /// Whether the gateway lets a session change its stream level (`/v1/me` features).
-    QualityFeature(bool),
+    /// What the gateway offers (`/v1/me` features; `None`: it couldn't be asked).
+    Features(Option<protocol::Features>),
+    /// Whether this player is in a sync group (from LMS's status).
+    SyncGroup {
+        player_gen: u64,
+        grouped: bool,
+    },
     StreamData {
         id: u64,
         bytes: Vec<u8>,
@@ -167,6 +258,8 @@ pub(crate) struct Shared {
 
 struct StreamTask {
     id: u64,
+    /// The stream number (its spool's).
+    n: u64,
     want: Arc<AtomicBool>,
     task: tokio::task::AbortHandle,
 }
@@ -190,6 +283,18 @@ pub(crate) struct Engine {
     /// until known).
     quality: StreamQuality,
     quality_feature: Option<bool>,
+    /// The gateway takes a resume grace at sign-in (`None` until known).
+    grace_feature: Option<bool>,
+    /// The first connection waits for the features until then.
+    connect_at: Option<Instant>,
+    /// The resume grace the gateway granted (seconds; `None`: it didn't say).
+    grace: Option<u64>,
+    /// The phone has a network (as the app last said; assumed until told otherwise).
+    network: bool,
+    /// Tells stream fetches when the network comes back.
+    net_tx: tokio::sync::watch::Sender<bool>,
+    /// Reconnecting waits for the network; `Some(resume)` once it is wanted.
+    waiting_for_network: Option<bool>,
     session: Option<(String, String)>,
     received: u64,
     ws_gen: u64,
@@ -213,6 +318,27 @@ pub(crate) struct Engine {
     stream_ids: u64,
     last_ack: (u64, u64),
     last_flush: u64,
+    last_trim: u64,
+    // Spooling and read-ahead.
+    /// Where spools go (`None`: no cache folder, so streams are held in memory).
+    spool_dir: Option<SpoolDir>,
+    /// One per stream the decoder still takes, oldest (being fed) first; the newest is
+    /// being fetched.
+    spools: VecDeque<Spool>,
+    /// The read-ahead setting (in force only with a spool folder).
+    read_ahead: bool,
+    /// How much must be heard before read-ahead reports a track ready (`None`: the core's
+    /// default).
+    ready_after_ms: Option<u64>,
+    /// Bytes handed to the decoder, and milliseconds of audio heard, this session (for
+    /// the cushion's byte rate).
+    fed_total: u64,
+    heard_ms: f64,
+    // Sync groups (A6).
+    in_sync_group: bool,
+    /// A stall in a group waiting for enough audio, since then.
+    stall_wait: Option<Instant>,
+    rejoin: Option<tokio::task::AbortHandle>,
     // Audio: pipeline, ring, output and its negotiated route.
     audio: AudioPath,
     underruns_seen: u64,
@@ -234,6 +360,7 @@ pub(crate) struct Engine {
 }
 
 impl Engine {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         core: Arc<Core>,
         shared: Arc<Shared>,
@@ -241,11 +368,30 @@ impl Engine {
         dsp: DspSettings,
         max_rate: u32,
         quality: StreamQuality,
+        spool_dir: Option<SpoolDir>,
+        read_ahead: bool,
         cmds: mpsc::UnboundedReceiver<Cmd>,
     ) -> Result<Engine, ApiError> {
         let (tx, rx) = mpsc::unbounded_channel();
         let audio = AudioPath::new(shared.out.clone(), output, dsp)?;
+        let (net_tx, _) = tokio::sync::watch::channel(true);
         Ok(Engine {
+            grace_feature: None,
+            connect_at: None,
+            grace: None,
+            network: true,
+            net_tx,
+            waiting_for_network: None,
+            last_trim: 0,
+            spool_dir,
+            spools: VecDeque::new(),
+            read_ahead,
+            ready_after_ms: None,
+            fed_total: 0,
+            heard_ms: 0.0,
+            in_sync_group: false,
+            stall_wait: None,
+            rejoin: None,
             server: core.server().clone(),
             core,
             http: Http::private()?,
@@ -320,8 +466,9 @@ impl Engine {
     }
 
     pub(crate) async fn run(mut self) {
-        self.learn_quality_feature();
-        self.connect(false);
+        self.learn_features();
+        // The first connection waits (briefly) to know whether to ask for a longer grace.
+        self.connect_at = Some(Instant::now() + FEATURES_WAIT);
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         while !self.stopped {
@@ -337,6 +484,15 @@ impl Engine {
                     Some(Cmd::SetLoudnessReference(db)) => {
                         self.audio.pipeline.set_loudness_reference_db(db);
                         self.publish_signal(true);
+                    }
+                    Some(Cmd::Network(up)) => self.set_network(up),
+                    Some(Cmd::SetReadAhead(on)) => {
+                        self.read_ahead = on;
+                        self.apply_read_ahead();
+                    }
+                    Some(Cmd::SetReadyAfter(ms)) => {
+                        self.ready_after_ms = Some(ms);
+                        self.apply_read_ahead();
                     }
                     // The app let go of the player, or asked to stop.
                     Some(Cmd::Stop) | None => self.shutdown("stopped").await,
@@ -366,6 +522,7 @@ impl Engine {
             reason: reason.into(),
         };
         self.player = None;
+        self.drop_spools();
         self.publish_status(true);
         self.publish_signal(true);
         self.stopped = true;
@@ -379,16 +536,79 @@ impl Engine {
 
     // --- Connection ---------------------------------------------------------------------
 
-    /// Ask the gateway (once) whether a session may change its stream level.
-    fn learn_quality_feature(&self) {
+    /// Ask the gateway (once) what it offers: whether a session may change its stream
+    /// level, and whether the sign-in takes a resume grace.
+    fn learn_features(&self) {
         let core = self.core.clone();
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            if let Ok(v) = core.get_json("v1/me").await {
-                let on = v["features"]["stream_quality"].as_bool() == Some(true);
-                let _ = tx.send(Ev::QualityFeature(on));
-            }
+            let features = core
+                .get_json("v1/me")
+                .await
+                .ok()
+                .map(|v| protocol::parse_features(&v));
+            let _ = tx.send(Ev::Features(features));
         });
+    }
+
+    /// Read-ahead is in force with the setting on and somewhere to spool.
+    fn apply_read_ahead(&mut self) {
+        let on = self.read_ahead && self.spool_dir.is_some();
+        let after = self.ready_after_ms;
+        if let Some(p) = &mut self.player {
+            p.set_ready_when_received(on);
+            if let Some(ms) = after {
+                p.set_ready_after_ms(ms);
+            }
+        }
+    }
+
+    /// The core's view of the link to LMS: the socket is up and the phone has a network.
+    fn update_link(&mut self) {
+        let up = self.open && self.network;
+        let now = self.now_ms();
+        if let Some(p) = &mut self.player {
+            p.set_link_up(up, now);
+        }
+    }
+
+    /// The app says whether the phone has a network. Without one, the socket is dropped at
+    /// once (its grace starts) and no reconnect is tried until the network is back; then
+    /// one is tried at once.
+    fn set_network(&mut self, up: bool) {
+        if up == self.network {
+            return;
+        }
+        self.network = up;
+        let _ = self.net_tx.send(up);
+        if self.stopped {
+            return;
+        }
+        if !up {
+            if self.ws_task.is_some() || self.open {
+                if let Some(t) = self.ws_task.take() {
+                    t.abort();
+                }
+                self.on_closed(None, "");
+            } else if let Some((_, resume)) = self.reconnect_at.take() {
+                self.waiting_for_network = Some(resume);
+            }
+        } else {
+            self.attempt = 0;
+            if let Some(resume) = self.waiting_for_network.take() {
+                self.reconnect_at = Some((Instant::now(), resume));
+            } else if let Some((_, resume)) = self.reconnect_at {
+                self.reconnect_at = Some((Instant::now(), resume));
+            }
+        }
+        self.update_link();
+        self.publish_status(true);
+    }
+
+    /// Still within the window for resuming the session after its socket dropped.
+    fn within_grace(&self) -> bool {
+        let window = protocol::resume_for(self.grace);
+        self.disconnected_at.is_none_or(|t| t.elapsed() < window)
     }
 
     fn set_quality(&mut self, q: StreamQuality) {
@@ -427,12 +647,16 @@ impl Engine {
         } else {
             None
         };
+        self.connect_at = None;
+        // Ask for a longer grace only where it is understood.
+        let grace = (self.grace_feature == Some(true)).then_some(protocol::GRACE_ASK);
         let task = tokio::spawn(socket_task(
             self.ws_gen,
             self.core.clone(),
             self.server.clone(),
             resume,
             self.quality,
+            grace,
             self.tx.clone(),
             out_rx,
         ));
@@ -448,11 +672,23 @@ impl Engine {
         self.connection = PlayerConnection::Connected;
         let fresh = !g.resumed || self.player.is_none();
         self.session = Some((g.session.clone(), g.secret.clone()));
+        // A resumed session without a grant keeps what it was granted before.
+        if g.grace.is_some() || fresh {
+            self.grace = g.grace;
+        }
         if fresh {
             // A new session: LMS sees a new connection, so start from a clean player.
             self.close_stream();
+            self.drop_spools();
             self.outbox.clear();
             self.received = 0;
+            self.fed_total = 0;
+            self.heard_ms = 0.0;
+            self.in_sync_group = false;
+            self.stall_wait = None;
+            if let Some(t) = self.rejoin.take() {
+                t.abort();
+            }
             self.drop_queued_audio();
             // Track numbers start again with the new player.
             self.loudness.clear();
@@ -477,10 +713,16 @@ impl Engine {
             p.set_fixed_volume(self.audio.route_state.direct);
             self.audio.forget_plan();
             self.last_flush = p.flush_count();
+            self.last_trim = p.trim_count();
             self.player = Some(p);
+            self.apply_read_ahead();
             self.mac = Some(g.mac);
             self.name = g.name;
+        } else {
+            // Back after a gap: is the player (still) in a sync group?
+            self.look_up_sync_group();
         }
+        self.update_link();
         let queued: Vec<_> = self.outbox.drain(..).collect();
         for b in queued {
             self.send_ws(Out::Binary(b));
@@ -498,17 +740,20 @@ impl Engine {
         self.open = false;
         self.ws_out = None;
         self.ws_task = None;
+        self.update_link();
         if was_open || self.disconnected_at.is_none() {
             self.disconnected_at.get_or_insert_with(Instant::now);
         }
         let action = protocol::close_action(code, reason);
         let resume = match action {
             CloseAction::Stop => {
+                // Refused, revoked, signed out or replaced: nothing of it is kept.
                 self.close_stream();
                 self.close_output();
                 self.audio.pipeline.unconfigure();
                 self.shared.out.ring.set_hold(true);
                 self.player = None;
+                self.drop_spools();
                 self.connection = PlayerConnection::Stopped {
                     reason: if reason.is_empty() {
                         "refused".into()
@@ -535,12 +780,17 @@ impl Engine {
             }
             CloseAction::Resume => true,
         };
-        let within_grace = self
-            .disconnected_at
-            .is_some_and(|t| t.elapsed() < protocol::RESUME_FOR);
-        let resume = resume && self.session.is_some() && within_grace;
+        let resume = resume && self.session.is_some() && self.within_grace();
         if !resume {
             self.session = None;
+        }
+        if !self.network {
+            // No network: nothing to try until the app says it is back.
+            self.reconnect_at = None;
+            self.waiting_for_network = Some(resume);
+            self.connection = PlayerConnection::Reconnecting { delay_ms: 0 };
+            self.publish_status(true);
+            return;
         }
         let delay = protocol::backoff(self.attempt, protocol::random01());
         self.attempt = self.attempt.saturating_add(1);
@@ -562,10 +812,7 @@ impl Engine {
             let _ = out.send(msg);
         } else if let Out::Binary(b) = msg {
             // Held until the session resumes; acknowledgements are only useful live.
-            self.outbox.push_back(b);
-            while self.outbox.len() > protocol::OUTBOX_LIMIT {
-                self.outbox.pop_front();
-            }
+            protocol::push_outbox(&mut self.outbox, b, protocol::OUTBOX_LIMIT);
         }
     }
 
@@ -590,15 +837,33 @@ impl Engine {
                     self.on_closed(None, "");
                 }
                 self.run_actions();
+                // A flush or a partial flush takes effect at once, before more of the
+                // dropped audio can be heard.
+                self.follow_flushes();
                 self.apply_corrections();
+                self.feed();
             }
             Ev::WsClosed { conn, code, reason } if conn == self.ws_gen => {
                 self.on_closed(code, &reason)
             }
-            Ev::QualityFeature(on) => {
-                self.quality_feature = Some(on);
+            Ev::Features(f) => {
+                let f = f.unwrap_or_default();
+                self.quality_feature = Some(f.stream_quality);
+                self.grace_feature = Some(f.resume_grace);
                 self.send_quality();
+                if self.ws_gen == 0 && self.connect_at.is_some() && !self.stopped {
+                    if self.network {
+                        self.connect(false);
+                    } else {
+                        self.connect_at = None;
+                        self.waiting_for_network = Some(false);
+                    }
+                }
             }
+            Ev::SyncGroup {
+                player_gen,
+                grouped,
+            } if player_gen == self.player_gen => self.in_sync_group = grouped,
             Ev::StreamHeaders { id, content_type } if self.is_current(id) => {
                 let now = self.now_ms();
                 let ct = clean_content_type(&content_type);
@@ -611,37 +876,57 @@ impl Engine {
                 self.run_actions();
             }
             Ev::StreamData { id, bytes } if self.is_current(id) => {
-                let now = self.now_ms();
-                let Some(p) = &mut self.player else { return };
-                p.on_stream_data(&bytes, now);
-                let want = p.wants_stream_data();
-                let open = p.open_stream();
-                if let Some(s) = &self.stream {
-                    s.want.store(want, Ordering::Release);
+                let Some(n) = self.stream.as_ref().map(|s| s.n) else {
+                    return;
+                };
+                let others: u64 = self
+                    .spools
+                    .iter()
+                    .filter(|s| s.n != n)
+                    .map(Spool::disk_bytes)
+                    .sum();
+                let Some(spool) = self.spools.iter_mut().find(|s| s.n == n) else {
+                    // The track was dropped (the core no longer takes it).
+                    self.close_stream();
+                    return;
+                };
+                spool.write(&bytes, others);
+                let got = spool.received;
+                if let Some(p) = &mut self.player
+                    && p.open_stream().is_some_and(|(open, _)| open == n)
+                {
+                    p.stream_bytes_received(got);
                 }
-                if let Some((n, got)) = open
-                    && (n != self.last_ack.0 || got - self.last_ack.1 >= protocol::ACK_EVERY)
+                if (n != self.last_ack.0 || got - self.last_ack.1 >= protocol::ACK_EVERY)
                     && self.open
                 {
                     self.last_ack = (n, got);
                     self.send_ws(Out::Text(protocol::ack_message(n, got)));
                 }
+                self.feed();
             }
             Ev::StreamEnd { id } if self.is_current(id) => {
-                self.stream = None;
+                let n = self.stream.take().map(|s| s.n);
                 let now = self.now_ms();
-                if let Some(p) = &mut self.player {
-                    p.on_stream_end(now);
+                if let Some(spool) = self.spools.iter_mut().find(|s| Some(s.n) == n) {
+                    spool.complete = true;
+                }
+                // The whole stream is in (`DSCO`; in read-ahead mode `STMd` may go now).
+                if let Some(p) = &mut self.player
+                    && p.open_stream().map(|(open, _)| open) == n
+                {
+                    p.stream_received(now);
                 }
                 self.run_actions();
+                self.feed();
             }
             Ev::StreamFailed { id } if self.is_current(id) => {
-                self.stream = None;
-                let now = self.now_ms();
-                if let Some(p) = &mut self.player {
-                    p.on_stream_error(now);
+                let n = self.stream.take().map(|s| s.n);
+                // What was received is still fed; the track ends there.
+                if let Some(spool) = self.spools.iter_mut().find(|s| Some(s.n) == n) {
+                    spool.failed = true;
                 }
-                self.run_actions();
+                self.feed();
             }
             Ev::Loudness {
                 player_gen,
@@ -684,14 +969,16 @@ impl Engine {
         let dsp = self.audio.pipeline.dsp();
         let levelling = dsp.enabled && dsp.analysis_levelling && dsp.levelling != Levelling::Off;
         let transitions = dsp_transitions(dsp);
-        if !levelling && !transitions.enabled() {
-            return;
-        }
         let smart = transitions.mode == TransitionMode::Smart;
         let (Some(mac), Ok(seq)) = (self.mac, u32::try_from(stream_number.saturating_sub(1)))
         else {
             return;
         };
+        if !levelling && !transitions.enabled() {
+            // Only whether the player is in a sync group (for rejoining after a stall).
+            self.look_up_sync_group();
+            return;
+        }
         let fresh = self
             .player
             .as_ref()
@@ -712,11 +999,17 @@ impl Engine {
         };
         let task = tokio::spawn(async move {
             let player = format_mac(&mac);
-            let track = core
+            let status = core
                 .rpc(&player, protocol::stream_status_command())
                 .await
-                .ok()
-                .and_then(|st| protocol::stream_track(&st, fresh));
+                .ok();
+            if let Some(st) = &status {
+                let _ = tx.send(Ev::SyncGroup {
+                    player_gen,
+                    grouped: protocol::in_sync_group(st),
+                });
+            }
+            let track = status.and_then(|st| protocol::stream_track(&st, fresh));
             let mut facts = TrackFacts {
                 album: track
                     .as_ref()
@@ -764,6 +1057,60 @@ impl Engine {
         self.lookup = Some(task.abort_handle());
     }
 
+    /// Ask LMS whether this player is in a sync group (the same status query as for a new
+    /// track's details).
+    fn look_up_sync_group(&self) {
+        let Some(mac) = self.mac else { return };
+        let (core, tx, player_gen) = (self.core.clone(), self.tx.clone(), self.player_gen);
+        tokio::spawn(async move {
+            if let Ok(st) = core
+                .rpc(&format_mac(&mac), protocol::stream_status_command())
+                .await
+            {
+                let _ = tx.send(Ev::SyncGroup {
+                    player_gen,
+                    grouped: protocol::in_sync_group(&st),
+                });
+            }
+        });
+    }
+
+    /// A stalled player in a sync group had too little audio to skip the stall: ask LMS to
+    /// restart the group where it is (`time` with the group's own position). LMS then
+    /// flushes and restarts every member at that point, in step (the others hear a short
+    /// pause). Minimal by design: LMS never pulls a member back into line by itself.
+    fn rejoin_group(&mut self) {
+        let Some(mac) = self.mac else { return };
+        if self.rejoin.as_ref().is_some_and(|t| !t.is_finished()) {
+            return;
+        }
+        let core = self.core.clone();
+        let task = tokio::spawn(async move {
+            let player = format_mac(&mac);
+            let Ok(answer) = core
+                .rpc(
+                    &player,
+                    vec![serde_json::json!("time"), serde_json::json!("?")],
+                )
+                .await
+            else {
+                return;
+            };
+            if let Some(t) = protocol::group_time(&answer) {
+                let _ = core
+                    .rpc(
+                        &player,
+                        vec![
+                            serde_json::json!("time"),
+                            serde_json::json!(format!("{t:.3}")),
+                        ],
+                    )
+                    .await;
+            }
+        });
+        self.rejoin = Some(task.abort_handle());
+    }
+
     /// A fresh start is waiting for its track's loudness (nothing else is audible).
     fn gating(&mut self) -> bool {
         match self.gate {
@@ -795,6 +1142,7 @@ impl Engine {
                 Action::CloseStream => self.close_stream(),
             }
         }
+        self.reconcile_spools();
     }
 
     fn open_stream(&mut self, n: u64) {
@@ -804,6 +1152,10 @@ impl Engine {
         };
         self.stream_ids += 1;
         let id = self.stream_ids;
+        // A spool for it, on disk where possible (an older one for this number is gone).
+        self.spools.retain(|s| s.n != n);
+        self.spools
+            .push_back(Spool::create(n, self.spool_dir.as_ref(), id));
         let want = Arc::new(AtomicBool::new(true));
         let task = tokio::spawn(stream_task(StreamJob {
             id,
@@ -814,10 +1166,13 @@ impl Engine {
             http: self.http.clone(),
             tx: self.tx.clone(),
             want: want.clone(),
+            budget: protocol::stream_retry_budget(self.grace),
+            net: self.net_tx.subscribe(),
         }));
         self.last_ack = (n, 0);
         self.stream = Some(StreamTask {
             id,
+            n,
             want,
             task: task.abort_handle(),
         });
@@ -829,6 +1184,116 @@ impl Engine {
         }
     }
 
+    // --- Spools -------------------------------------------------------------------------
+
+    /// Keep a spool only for the streams the core still takes (a flush, a partial flush or
+    /// a replaced stream drops the others, and their files go).
+    fn reconcile_spools(&mut self) {
+        let live = self
+            .player
+            .as_ref()
+            .map(Player::fed_streams)
+            .unwrap_or_default();
+        self.spools.retain(|s| live.contains(&s.n));
+        if let Some(s) = &self.stream
+            && !self.spools.iter().any(|sp| sp.n == s.n)
+        {
+            self.close_stream();
+        }
+    }
+
+    /// Delete every spool (stopping, signing out, refused, a new session).
+    fn drop_spools(&mut self) {
+        self.spools.clear();
+        if let Some(d) = &self.spool_dir {
+            d.clear();
+        }
+    }
+
+    /// Hand the decoder what it wants from the spools, oldest first: the rest of a stream,
+    /// then its end (or its failure) once it has all been fed. Also sets the fetch's
+    /// back-pressure (only a spool kept in memory holds the network back).
+    fn feed(&mut self) {
+        let now = self.now_ms();
+        let Some(p) = &mut self.player else { return };
+        let mut budget = FEED_PER_CALL;
+        while let Some(front) = self.spools.front_mut() {
+            // Only ever the stream the core is feeding (they are kept in step).
+            if p.fed_streams().first() != Some(&front.n) {
+                break;
+            }
+            if !front.caught_up() {
+                if budget == 0 || !p.wants_stream_data() {
+                    break;
+                }
+                match front.read(FEED_CHUNK.min(budget)) {
+                    Ok(bytes) => {
+                        budget -= bytes.len();
+                        self.fed_total += bytes.len() as u64;
+                        p.on_stream_data(&bytes, now);
+                    }
+                    Err(SpoolReadError::Broken) => {
+                        // The file can't give back what was written: the track ends with
+                        // what was fed (never anything else).
+                        let n = front.n;
+                        self.spools.pop_front();
+                        if self.stream.as_ref().is_some_and(|s| s.n == n)
+                            && let Some(s) = self.stream.take()
+                        {
+                            s.task.abort();
+                        }
+                        p.on_stream_error(now);
+                    }
+                }
+                continue;
+            }
+            if front.complete {
+                p.on_stream_end(now);
+                self.spools.pop_front();
+                continue;
+            }
+            if front.failed {
+                p.on_stream_error(now);
+                self.spools.pop_front();
+                continue;
+            }
+            break; // waiting for the network
+        }
+        if let Some(s) = &self.stream {
+            let want = self
+                .spools
+                .iter()
+                .find(|sp| sp.n == s.n)
+                .is_none_or(Spool::wants_network);
+            s.want.store(want, Ordering::Release);
+        }
+        self.run_actions();
+    }
+
+    /// Follow the core's flushes: a full one drops all audio queued for the output; a
+    /// partial one (`strm f`) drops only what is held of tracks after the audible one.
+    fn follow_flushes(&mut self) {
+        let Some(p) = &self.player else { return };
+        let (flushes, trims, trim) = (p.flush_count(), p.trim_count(), p.trim());
+        if flushes != self.last_flush {
+            self.last_flush = flushes;
+            self.last_trim = trims;
+            self.drop_queued_audio();
+            self.stall_wait = None;
+        } else if trims != self.last_trim {
+            self.last_trim = trims;
+            if let Some(t) = trim {
+                self.audio.trim_after(t.keep_track);
+            }
+        }
+        self.reconcile_spools();
+    }
+
+    /// Spooled ahead of the decoder, in bytes (for the cushion).
+    fn unfed_bytes(&self) -> u64 {
+        self.spools.iter().map(Spool::unfed).sum()
+    }
+
     // --- Audio --------------------------------------------------------------------------
 
     /// Drop audio queued between the core and the speaker (a flush, or a new session).
@@ -838,10 +1303,26 @@ impl Engine {
     }
 
     fn on_tick(&mut self) {
+        if self.ws_gen == 0 && self.connect_at.is_some_and(|t| Instant::now() >= t) && !self.stopped
+        {
+            // `/v1/me` didn't answer in time: connect without asking for a longer grace.
+            if self.network {
+                self.connect(false);
+            } else {
+                self.connect_at = None;
+                self.waiting_for_network = Some(false);
+            }
+        }
         if let Some((at, resume)) = self.reconnect_at
             && Instant::now() >= at
+            && self.network
         {
             self.reconnect_at = None;
+            // The window may have passed while waiting (for the backoff, or the network).
+            let resume = resume && self.session.is_some() && self.within_grace();
+            if !resume {
+                self.session = None;
+            }
             self.connect(resume);
         }
         let now_ns = mono_ns();
@@ -854,18 +1335,20 @@ impl Engine {
             self.publish_status(false);
             return;
         };
+        if let Some(rate) = p.output_rate().filter(|r| *r > 0) {
+            self.heard_ms += played as f64 * 1000.0 / f64::from(rate);
+        }
         p.presented(played, now);
         p.tick(now);
-        if p.flush_count() != self.last_flush {
-            self.last_flush = p.flush_count();
-            self.drop_queued_audio();
-        }
         self.run_actions();
+        self.follow_flushes();
         self.apply_corrections();
+        self.feed();
+        let stall_hold = self.after_stall(now);
 
         let src = self.player.as_mut().map(|p| p as &mut dyn AudioSource);
         self.audio.poll_output(src);
-        let gate = self.gate.is_some_and(|(_, until)| Instant::now() < until);
+        let gate = stall_hold || self.gate.is_some_and(|(_, until)| Instant::now() < until);
         if let Some(p) = self.player.as_mut() {
             let loudness = &self.loudness;
             let facts = &self.facts;
@@ -924,12 +1407,41 @@ impl Engine {
         let rate = self.audio.pipeline.out_rate().unwrap_or(48_000) as u64;
         let cap_bytes = ring.capacity() as u64 * 4;
         p.set_host_buffer(ring.len() as u64 * 4, cap_bytes.min(rate * 8 * 2));
-        if let Some(s) = &self.stream {
-            s.want.store(p.wants_stream_data(), Ordering::Release);
-        }
         self.run_actions();
         self.publish_status(false);
         self.publish_signal(false);
+    }
+
+    /// After a stall (an underrun), once audio is back: carry on, or in a sync group get
+    /// back in step with the others (A6). Returns true while the output should wait a
+    /// little longer (a grouped player gathering enough audio to skip the stall).
+    fn after_stall(&mut self, now: u64) -> bool {
+        let Some(p) = &mut self.player else {
+            return false;
+        };
+        let stalled = p.stall_ms(now);
+        if stalled.is_none() {
+            self.stall_wait = None;
+            return false;
+        }
+        let buffered = p.status().buffered_ms;
+        let waited = self.stall_wait.map_or(Duration::ZERO, |t| t.elapsed());
+        match stall_step(stalled, buffered, self.in_sync_group, waited) {
+            StallStep::Nothing => false,
+            StallStep::Wait => {
+                self.stall_wait.get_or_insert_with(Instant::now);
+                true
+            }
+            StallStep::Resume => {
+                self.stall_wait = None;
+                if let StallResume::NotEnoughBuffered { .. } =
+                    p.resume_after_stall(self.in_sync_group, now)
+                {
+                    self.rejoin_group();
+                }
+                false
+            }
+        }
     }
 
     // --- Reporting ----------------------------------------------------------------------
@@ -943,7 +1455,7 @@ impl Engine {
         } else {
             0
         };
-        let (playback, elapsed_ms, core_ms, error) = match &self.player {
+        let (playback, elapsed_ms, core_ms, error, input_bytes) = match &self.player {
             Some(p) => {
                 let s = p.status();
                 let playback = match s.output {
@@ -952,10 +1464,22 @@ impl Engine {
                     OutputState::Playing => LocalPlayback::Playing,
                     OutputState::Paused { .. } => LocalPlayback::Paused,
                 };
-                (playback, s.elapsed_ms, s.buffered_ms, s.last_error)
+                (
+                    playback,
+                    s.elapsed_ms,
+                    s.buffered_ms,
+                    s.last_error,
+                    s.input_bytes as u64,
+                )
             }
-            None => (LocalPlayback::Stopped, 0, 0, None),
+            None => (LocalPlayback::Stopped, 0, 0, None, 0),
         };
+        let cushion = cushion_ms(
+            core_ms + ring_ms,
+            self.unfed_bytes() + input_bytes,
+            self.fed_total.saturating_sub(input_bytes),
+            self.heard_ms + core_ms as f64,
+        );
         let previous_error = self
             .shared
             .status
@@ -974,6 +1498,9 @@ impl Engine {
             underrun_frames,
             held: self.shared.out.hold.load(Ordering::Acquire),
             last_error: error.map(|e| protocol::clean_name(&e)).or(previous_error),
+            cushion_ms: cushion,
+            resume_window_ms: protocol::resume_for(self.grace).as_millis() as u64,
+            read_ahead: self.read_ahead && self.spool_dir.is_some(),
         }
     }
 
@@ -1034,12 +1561,14 @@ fn clean_content_type(ct: &str) -> String {
 
 /// One player-socket connection: authenticate (or resume), deliver the greeting, then
 /// forward frames both ways until it closes.
+#[allow(clippy::too_many_arguments)]
 async fn socket_task(
     conn: u64,
     core: Arc<Core>,
     server: Arc<Server>,
     resume: Option<(String, String, u64)>,
     quality: StreamQuality,
+    grace: Option<u64>,
     tx: mpsc::UnboundedSender<Ev>,
     mut out_rx: mpsc::UnboundedReceiver<Out>,
 ) {
@@ -1086,12 +1615,13 @@ async fn socket_task(
             return;
         }
     };
-    let first = protocol::sign_in_message(
+    let first = protocol::sign_in_message_with_grace(
         &token,
         resume
             .as_ref()
             .map(|(s, k, n)| (s.as_str(), k.as_str(), *n)),
         quality,
+        grace,
     );
     if ws.send(Message::Text(first.into())).await.is_err() {
         let _ = tx.send(closed(None, ""));
@@ -1179,10 +1709,29 @@ struct StreamJob {
     http: Http,
     tx: mpsc::UnboundedSender<Ev>,
     want: Arc<AtomicBool>,
+    /// How long it may keep failing before the track is given up (the session's grace).
+    budget: Duration,
+    /// Whether the phone has a network.
+    net: tokio::sync::watch::Receiver<bool>,
+}
+
+/// Before retrying a failed fetch: the backoff, or, with no network, until it comes back
+/// (then at once). Never past `deadline`.
+async fn pause_before_retry(
+    net: &mut tokio::sync::watch::Receiver<bool>,
+    delay: Duration,
+    deadline: tokio::time::Instant,
+) {
+    if !*net.borrow() {
+        let _ = tokio::time::timeout_at(deadline, net.wait_for(|up| *up)).await;
+        return;
+    }
+    tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + delay)).await;
 }
 
 /// Fetch stream `n` of the session, resuming at the byte offset already delivered after a
-/// network failure or a 5xx, with backoff; anything else fails the track.
+/// network failure or a 5xx, with backoff, for as long as the gateway holds the session
+/// (`budget`, from the first failure in a row); anything else fails the track.
 async fn stream_task(job: StreamJob) {
     let StreamJob {
         id,
@@ -1193,10 +1742,13 @@ async fn stream_task(job: StreamJob) {
         http,
         tx,
         want,
+        budget,
+        mut net,
     } = job;
     let mut got = 0u64;
     let mut headers_seen = false;
     let mut tries = 0u32;
+    let mut failing_since: Option<Instant> = None;
     let mut renewed = false;
     loop {
         let token = match core.access_token().await {
@@ -1236,6 +1788,7 @@ async fn stream_task(job: StreamJob) {
                             {
                                 got += data.len() as u64;
                                 tries = 0;
+                                failing_since = None;
                                 if tx
                                     .send(Ev::StreamData {
                                         id,
@@ -1266,12 +1819,23 @@ async fn stream_task(job: StreamJob) {
             Ok(resp) => resp.status().as_u16(),
             Err(_) => 0,
         };
-        if !protocol::stream_should_retry(status) || tries >= protocol::STREAM_RETRIES {
+        let since = *failing_since.get_or_insert_with(Instant::now);
+        if !protocol::stream_should_retry(status)
+            || !protocol::stream_retry_allowed(since.elapsed(), budget)
+        {
             let _ = tx.send(Ev::StreamFailed { id });
             return;
         }
-        tokio::time::sleep(protocol::backoff(tries, protocol::random01())).await;
-        tries += 1;
+        let deadline = tokio::time::Instant::from_std(since + budget);
+        let was_down = !*net.borrow();
+        pause_before_retry(
+            &mut net,
+            protocol::backoff(tries, protocol::random01()),
+            deadline,
+        )
+        .await;
+        // Back from no network: the next try is the first of a new run.
+        tries = if was_down { 0 } else { tries + 1 };
     }
 }
 
@@ -1304,6 +1868,93 @@ mod tests {
             protocol::backoff(2, 0.5) > protocol::backoff(0, 0.5),
             "later attempts wait longer"
         );
+    }
+
+    #[test]
+    fn after_a_stall_alone_carries_on_and_a_group_waits_to_skip() {
+        let w0 = Duration::ZERO;
+        assert_eq!(stall_step(None, 500, true, w0), StallStep::Nothing);
+        assert_eq!(
+            stall_step(Some(800), 0, true, w0),
+            StallStep::Nothing,
+            "no audio yet"
+        );
+        assert_eq!(
+            stall_step(Some(800), 10, false, w0),
+            StallStep::Resume,
+            "alone"
+        );
+        assert_eq!(
+            stall_step(Some(40), 10, true, w0),
+            StallStep::Resume,
+            "too short to skip"
+        );
+        assert_eq!(stall_step(Some(800), 500, true, w0), StallStep::Wait);
+        assert_eq!(
+            stall_step(Some(800), 800 + REJOIN_MARGIN_MS, true, w0),
+            StallStep::Resume,
+            "enough to skip the stall"
+        );
+        assert_eq!(
+            stall_step(Some(800), 500, true, REJOIN_WAIT),
+            StallStep::Resume,
+            "waited long enough: the core decides (skip or restart)"
+        );
+    }
+
+    #[test]
+    fn the_cushion_counts_decoded_audio_and_spooled_bytes_at_the_byte_rate() {
+        // No history yet: only what is decoded.
+        assert_eq!(cushion_ms(3000, 10_000_000, 0, 0.0), 3000);
+        assert_eq!(cushion_ms(3000, 10_000_000, 1000, 999.0), 3000);
+        // 176.4 kB/s (CD-quality PCM): 17.64 MB spooled is 100 s.
+        assert_eq!(cushion_ms(10_000, 17_640_000, 1_764_000, 10_000.0), 110_000);
+        // Junk never panics or overflows.
+        assert_eq!(cushion_ms(5, u64::MAX, 1, 1e300), 5 + 1_000_000_000_000);
+        assert_eq!(cushion_ms(5, 100, 100, f64::NAN), 5);
+        assert_eq!(cushion_ms(u64::MAX, u64::MAX, 1, 2000.0), u64::MAX);
+    }
+
+    /// Retries back off normally; with no network they wait for it (and go at once when
+    /// it returns), never past the budget's end.
+    #[test]
+    fn retries_wait_for_the_network_within_the_budget() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let (tx, mut rx) = tokio::sync::watch::channel(true);
+            let far = tokio::time::Instant::now() + Duration::from_secs(60);
+            // Network up: the backoff.
+            let t = Instant::now();
+            pause_before_retry(&mut rx, Duration::from_millis(150), far).await;
+            assert!(t.elapsed() >= Duration::from_millis(140));
+            // The backoff never runs past the budget.
+            let t = Instant::now();
+            let soon = tokio::time::Instant::now() + Duration::from_millis(50);
+            pause_before_retry(&mut rx, Duration::from_secs(10), soon).await;
+            assert!(t.elapsed() < Duration::from_secs(1));
+            // No network: waits, then goes at once when it returns.
+            tx.send(false).unwrap();
+            let t = Instant::now();
+            let back = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                tx.send(true).unwrap();
+                tx
+            });
+            pause_before_retry(&mut rx, Duration::from_secs(10), far).await;
+            let waited = t.elapsed();
+            assert!(waited >= Duration::from_millis(190) && waited < Duration::from_secs(2));
+            // No network until the budget ends: gives up waiting then.
+            let tx = back.await.unwrap();
+            tx.send(false).unwrap();
+            let t = Instant::now();
+            let soon = tokio::time::Instant::now() + Duration::from_millis(100);
+            pause_before_retry(&mut rx, Duration::from_millis(1), soon).await;
+            assert!(t.elapsed() >= Duration::from_millis(90));
+            assert!(t.elapsed() < Duration::from_secs(2));
+        });
     }
 
     #[test]

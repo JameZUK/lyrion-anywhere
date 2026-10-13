@@ -5,6 +5,7 @@
 //! (bounded size, exact field shapes) because its values end up in URLs and in HELO.
 
 use super::StreamQuality;
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -14,15 +15,24 @@ pub const MAX_GREETING: usize = 4 * 1024;
 /// Largest binary message accepted from the gateway: one Slimproto frame (the core's
 /// reader refuses frames over 32 KiB itself).
 pub const MAX_FRAME_MESSAGE: usize = 34 * 1024;
-/// Give up resuming slightly before the gateway's default 60 s grace runs out.
+/// Give up resuming slightly before the gateway's default 60 s grace runs out (an older
+/// gateway, or one that didn't say what it granted).
 pub const RESUME_FOR: Duration = Duration::from_secs(55);
+/// Stop resuming this long before the granted grace runs out.
+pub const RESUME_MARGIN: Duration = Duration::from_secs(5);
+/// The resume grace asked for (seconds), from a gateway that offers it
+/// (`features.resume_grace`). The gateway grants at most its own maximum (600 s by default).
+pub const GRACE_ASK: u64 = 600;
+/// The most a greeting's `grace` may say (the gateway's own limit on requests).
+pub const MAX_GRACE: u64 = 3600;
 /// Acknowledge stream bytes at least this often; the gateway stays within its replay
 /// window (4 MiB by default) of the last acknowledgement.
 pub const ACK_EVERY: u64 = 256 * 1024;
 /// Messages for LMS held while disconnected; the oldest are dropped beyond this.
 pub const OUTBOX_LIMIT: usize = 2000;
-/// Attempts at one stream download before the track is reported as failed.
-pub const STREAM_RETRIES: u32 = 12;
+/// Without a grant from the gateway (60 s), how long a failing stream download keeps
+/// retrying before the track is reported as failed.
+pub const STREAM_RETRY_DEFAULT: Duration = Duration::from_secs(60);
 
 /// The gateway's reply to a new or resumed player session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +46,72 @@ pub struct Greeting {
     /// The player's name in LMS (cleaned).
     pub name: String,
     pub resumed: bool,
+    /// The resume grace granted, in seconds (`None`: an older gateway, which holds 60 s).
+    pub grace: Option<u64>,
+}
+
+/// How long to keep resuming a dropped session, from the grace the greeting granted:
+/// [`RESUME_MARGIN`] less than the grant, or [`RESUME_FOR`] without one.
+pub fn resume_for(grace: Option<u64>) -> Duration {
+    match grace {
+        Some(g) => Duration::from_secs(g.min(MAX_GRACE)).saturating_sub(RESUME_MARGIN),
+        None => RESUME_FOR,
+    }
+}
+
+/// How long a failing stream download keeps retrying: as long as the gateway holds the
+/// session (the grace granted), since the stream can resume until then.
+pub fn stream_retry_budget(grace: Option<u64>) -> Duration {
+    match grace {
+        Some(g) => Duration::from_secs(g.min(MAX_GRACE)).max(Duration::from_secs(5)),
+        None => STREAM_RETRY_DEFAULT,
+    }
+}
+
+/// Whether a stream download that has been failing for `failing_for` may try again.
+pub fn stream_retry_allowed(failing_for: Duration, budget: Duration) -> bool {
+    failing_for < budget
+}
+
+/// What `GET /v1/me` says the gateway offers (only what the player needs).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Features {
+    /// A session may change its stream level.
+    pub stream_quality: bool,
+    /// The player socket's sign-in takes `grace`.
+    pub resume_grace: bool,
+}
+
+/// The features from `/v1/me` (anything but `true` is off).
+pub fn parse_features(me: &Value) -> Features {
+    let on = |k: &str| me["features"][k].as_bool() == Some(true);
+    Features {
+        stream_quality: on("stream_quality"),
+        resume_grace: on("resume_grace"),
+    }
+}
+
+/// Hold `frame` for LMS until the session resumes, within `limit` frames. When full, the
+/// oldest `STMt` (a heartbeat, of no use once stale) goes first, so the events that matter
+/// (`STMs`, `STMd`, `STMo`, `STMr`, `STMu`…) survive a long gap; only an outbox full of
+/// those drops its oldest.
+pub fn push_outbox(outbox: &mut VecDeque<Vec<u8>>, frame: Vec<u8>, limit: usize) {
+    outbox.push_back(frame);
+    while outbox.len() > limit {
+        match outbox.iter().position(|f| is_heartbeat(f)) {
+            Some(i) => {
+                outbox.remove(i);
+            }
+            None => {
+                outbox.pop_front();
+            }
+        }
+    }
+}
+
+/// A `STAT` frame for `STMt` (opcode, length, then the event code).
+pub fn is_heartbeat(frame: &[u8]) -> bool {
+    frame.len() >= 12 && &frame[..4] == b"STAT" && &frame[8..12] == b"STMt"
 }
 
 fn hex32(v: &Value) -> Option<String> {
@@ -84,6 +160,12 @@ pub fn parse_greeting(text: &str) -> Option<Greeting> {
             name
         },
         resumed: o.get("resumed")?.as_bool()?,
+        // Bounded and exact, or treated as absent (an older gateway's 60 s): a hostile
+        // value can't make the player resume for longer than the protocol allows.
+        grace: o
+            .get("grace")
+            .and_then(Value::as_u64)
+            .filter(|g| *g <= MAX_GRACE),
     })
 }
 
@@ -104,7 +186,19 @@ pub fn sign_in_message(
     resume: Option<(&str, &str, u64)>,
     quality: StreamQuality,
 ) -> String {
-    if resume.is_none() && quality == StreamQuality::Original {
+    sign_in_message_with_grace(token, resume, quality, None)
+}
+
+/// [`sign_in_message`], asking for a resume grace of `grace` seconds. Only for a gateway
+/// that lists `resume_grace` among its features (it is never sent where it isn't
+/// understood). Capped at [`MAX_GRACE`].
+pub fn sign_in_message_with_grace(
+    token: &str,
+    resume: Option<(&str, &str, u64)>,
+    quality: StreamQuality,
+    grace: Option<u64>,
+) -> String {
+    if resume.is_none() && quality == StreamQuality::Original && grace.is_none() {
         return token.to_string();
     }
     let mut v = json!({ "token": token });
@@ -113,6 +207,9 @@ pub fn sign_in_message(
     }
     if quality != StreamQuality::Original {
         v["quality"] = json!(quality.as_str());
+    }
+    if let Some(g) = grace {
+        v["grace"] = json!(g.min(MAX_GRACE));
     }
     v.to_string()
 }
@@ -178,6 +275,29 @@ pub fn random01() -> f64 {
 pub fn stream_status_command() -> Vec<Value> {
     // x: remote (a stream, not a library file); e: album id; d: duration.
     vec![json!("status"), json!("-"), json!(2), json!("tags:xed")]
+}
+
+/// Whether this player's LMS `status` says it is in a sync group (`sync_master` or
+/// `sync_slaves`, which LMS adds only for grouped players). Anything but a non-empty, short
+/// string counts as not grouped.
+pub fn in_sync_group(status: &Value) -> bool {
+    let named = |k: &str| {
+        status
+            .get(k)
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty() && s.len() <= 4096)
+    };
+    named("sync_master") || named("sync_slaves")
+}
+
+/// The group's playing position (seconds) from LMS's `time ?` answer (`_time`), if sane.
+pub fn group_time(answer: &Value) -> Option<f64> {
+    let t = match answer.get("_time")? {
+        Value::Number(n) => n.as_f64()?,
+        Value::String(s) if s.len() <= 20 => s.parse::<f64>().ok()?,
+        _ => return None,
+    };
+    (t.is_finite() && (0.0..1e7).contains(&t)).then_some(t)
 }
 
 /// A library track LMS is streaming, as [`stream_track`] reads it.
@@ -519,6 +639,191 @@ mod tests {
         assert_eq!(backoff(0, 0.0), Duration::from_millis(400));
         assert_eq!(backoff(0, f64::NAN), Duration::from_millis(500));
         assert_eq!(backoff(0, 9.0), Duration::from_millis(600));
+    }
+
+    #[test]
+    fn sync_membership_and_group_time_are_read_strictly() {
+        assert!(in_sync_group(
+            &json!({"sync_master": "02:4c:41:00:00:01", "sync_slaves": "02:4c:41:00:00:02"})
+        ));
+        assert!(in_sync_group(&json!({"sync_slaves": "aa:bb"})));
+        for alone in [
+            json!({}),
+            json!({"sync_master": ""}),
+            json!({"sync_master": "  "}),
+            json!({"sync_master": 1}),
+            json!({"sync_slaves": ["a"]}),
+            json!({"sync_master": "x".repeat(5000)}),
+            json!(null),
+            json!([1]),
+        ] {
+            assert!(!in_sync_group(&alone), "{alone}");
+        }
+        assert_eq!(group_time(&json!({"_time": 12.5})), Some(12.5));
+        assert_eq!(group_time(&json!({"_time": "61"})), Some(61.0));
+        for bad in [
+            json!({}),
+            json!({"_time": -1}),
+            json!({"_time": "NaN"}),
+            json!({"_time": "inf"}),
+            json!({"_time": 1e300}),
+            json!({"_time": [1]}),
+            json!({"_time": "1".repeat(30)}),
+        ] {
+            assert_eq!(group_time(&bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_resume_window_follows_the_grant() {
+        assert_eq!(
+            resume_for(None),
+            Duration::from_secs(55),
+            "an older gateway"
+        );
+        assert_eq!(resume_for(Some(60)), Duration::from_secs(55));
+        assert_eq!(resume_for(Some(600)), Duration::from_secs(595));
+        assert_eq!(resume_for(Some(120)), Duration::from_secs(115));
+        assert_eq!(resume_for(Some(3)), Duration::ZERO, "never negative");
+        assert_eq!(resume_for(Some(0)), Duration::ZERO);
+        assert_eq!(
+            resume_for(Some(u64::MAX)),
+            Duration::from_secs(MAX_GRACE - 5)
+        );
+    }
+
+    #[test]
+    fn greetings_carry_the_grant_and_hostile_grants_are_ignored() {
+        let base: Value = serde_json::from_str(GOOD).unwrap();
+        assert_eq!(parse_greeting(GOOD).unwrap().grace, None, "older gateway");
+        let with = |v: Value| {
+            let mut b = base.clone();
+            b["grace"] = v;
+            parse_greeting(&b.to_string()).unwrap().grace
+        };
+        assert_eq!(with(json!(600)), Some(600));
+        assert_eq!(with(json!(0)), Some(0));
+        for bad in [
+            json!(-1),
+            json!(3601),
+            json!(1e300),
+            json!(60.5),
+            json!("600"),
+            json!(null),
+            json!([600]),
+            json!(u64::MAX),
+        ] {
+            assert_eq!(with(bad.clone()), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn grace_is_asked_for_only_when_wanted() {
+        assert_eq!(
+            sign_in_message_with_grace("tok", None, StreamQuality::Original, None),
+            "tok"
+        );
+        let v: Value = serde_json::from_str(&sign_in_message_with_grace(
+            "tok",
+            None,
+            StreamQuality::Original,
+            Some(GRACE_ASK),
+        ))
+        .unwrap();
+        assert_eq!(v, json!({"token": "tok", "grace": 600}));
+        let v: Value = serde_json::from_str(&sign_in_message_with_grace(
+            "tok",
+            Some(("s", "k", 4)),
+            StreamQuality::High,
+            Some(99_999),
+        ))
+        .unwrap();
+        assert_eq!(v["grace"], 3600, "capped");
+        assert_eq!(v["resume"]["received"], 4);
+        assert_eq!(v["quality"], "high");
+    }
+
+    #[test]
+    fn features_are_read_strictly() {
+        let f =
+            parse_features(&json!({"features": {"stream_quality": true, "resume_grace": true}}));
+        assert!(f.stream_quality && f.resume_grace);
+        for bad in [
+            json!({}),
+            json!({"features": {"resume_grace": "true"}}),
+            json!({"features": {"resume_grace": 1}}),
+            json!({"features": [true]}),
+            json!(null),
+        ] {
+            assert!(!parse_features(&bad).resume_grace, "{bad}");
+        }
+    }
+
+    #[test]
+    fn stream_retries_last_as_long_as_the_grant() {
+        assert_eq!(stream_retry_budget(None), STREAM_RETRY_DEFAULT);
+        assert_eq!(stream_retry_budget(Some(600)), Duration::from_secs(600));
+        assert_eq!(
+            stream_retry_budget(Some(0)),
+            Duration::from_secs(5),
+            "a floor"
+        );
+        assert_eq!(
+            stream_retry_budget(Some(u64::MAX)),
+            Duration::from_secs(MAX_GRACE)
+        );
+        let budget = Duration::from_secs(600);
+        assert!(stream_retry_allowed(Duration::ZERO, budget));
+        // Well past the old 12 tries (about 50 s to 3 min).
+        assert!(stream_retry_allowed(Duration::from_secs(300), budget));
+        assert!(!stream_retry_allowed(Duration::from_secs(600), budget));
+        assert!(!stream_retry_allowed(Duration::from_secs(601), budget));
+    }
+
+    fn stat(event: &[u8; 4], tag: u8) -> Vec<u8> {
+        let mut f = b"STAT".to_vec();
+        f.extend(53u32.to_be_bytes());
+        f.extend(event);
+        f.extend([tag; 49]);
+        f
+    }
+
+    #[test]
+    fn a_full_outbox_drops_heartbeats_before_events() {
+        let mut o = VecDeque::new();
+        push_outbox(&mut o, stat(b"STMs", 1), 4);
+        for i in 0..3 {
+            push_outbox(&mut o, stat(b"STMt", i), 4);
+        }
+        push_outbox(&mut o, stat(b"STMd", 2), 4);
+        push_outbox(&mut o, stat(b"STMo", 3), 4);
+        push_outbox(&mut o, stat(b"STMr", 4), 4);
+        let events: Vec<&[u8]> = o.iter().map(|f| &f[8..12]).collect();
+        assert_eq!(
+            events,
+            vec![&b"STMs"[..], b"STMd", b"STMo", b"STMr"],
+            "every heartbeat went first"
+        );
+        // Full of events: the oldest goes.
+        push_outbox(&mut o, stat(b"STMu", 5), 4);
+        assert_eq!(&o[0][8..12], b"STMd");
+        assert_eq!(o.len(), 4);
+        // Short or other frames are never taken for heartbeats.
+        assert!(!is_heartbeat(b"STAT"));
+        assert!(!is_heartbeat(b"BYE!\0\0\0\x01STMt"));
+        assert!(is_heartbeat(&stat(b"STMt", 0)));
+        // Any frames at all: bounded, no panic.
+        let mut o = VecDeque::new();
+        for i in 0..5000u32 {
+            let f = match i % 4 {
+                0 => stat(b"STMt", i as u8),
+                1 => vec![i as u8; (i % 13) as usize],
+                2 => stat(b"STMs", 0),
+                _ => b"STATxxxxSTMt".to_vec(),
+            };
+            push_outbox(&mut o, f, 100);
+            assert!(o.len() <= 100);
+        }
     }
 
     #[test]

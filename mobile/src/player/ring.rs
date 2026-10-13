@@ -12,6 +12,9 @@
 //! - **Discard:** the producer can drop everything written so far (a flush) without touching
 //!   the consumer's index: it publishes a position, and the consumer jumps to it on its next
 //!   read.
+//! - **Discard from a point:** the producer can also drop what it wrote from a given
+//!   position on, keeping what comes before (a partial flush: the next track was dropped).
+//!   The consumer plays up to that position, then jumps past the dropped audio.
 //! - **Hold:** while held, the consumer outputs silence and consumes nothing (pause).
 //! - **Gain:** an optional factor (ducking) applied on the way out; exactly 1.0 is a true
 //!   bypass, so the samples stay bit-identical.
@@ -42,6 +45,8 @@ pub const CHANNELS: usize = 2;
 const HISTORY: usize = 512;
 /// No timed start armed.
 const NO_START: u64 = u64::MAX;
+/// No partial discard pending.
+const NO_CUT: u64 = u64::MAX;
 /// A late timed start drops at most this many frames to catch up (about a second).
 const MAX_CATCH_UP_FRAMES: u64 = 48_000;
 
@@ -62,6 +67,10 @@ pub struct Ring {
     read: AtomicU64,
     /// The consumer skips forward to here (producer-owned).
     discard_to: AtomicU64,
+    /// A partial discard: the consumer plays up to `cut_from`, then jumps to `cut_to`
+    /// (both producer-set; [`NO_CUT`] when none is pending; the consumer clears it).
+    cut_from: AtomicU64,
+    cut_to: AtomicU64,
     hold: AtomicBool,
     /// `f32` bits of the output gain.
     gain: AtomicU32,
@@ -100,6 +109,8 @@ impl Ring {
             write: AtomicU64::new(0),
             read: AtomicU64::new(0),
             discard_to: AtomicU64::new(0),
+            cut_from: AtomicU64::new(NO_CUT),
+            cut_to: AtomicU64::new(0),
             hold: AtomicBool::new(true),
             gain: AtomicU32::new(1.0f32.to_bits()),
             expect_data: AtomicBool::new(false),
@@ -247,6 +258,11 @@ impl Ring {
             .read
             .load(Ordering::Acquire)
             .max(self.discard_to.load(Ordering::Acquire));
+        let cut = self.cut_from.load(Ordering::Acquire);
+        if cut != NO_CUT && r < cut {
+            let to = self.cut_to.load(Ordering::Acquire);
+            return ((cut - r) + w.saturating_sub(to)) as usize;
+        }
         w.saturating_sub(r) as usize
     }
 
@@ -332,6 +348,20 @@ impl Producer {
         self.ring.silence.store(0, Ordering::Release);
         w
     }
+
+    /// Drop what was written from ring position `pos` (samples) on, keeping what comes
+    /// before it: the consumer plays up to `pos`, then jumps to whatever is written next.
+    /// A position already played drops the rest at once. Nothing happens if `pos` is at or
+    /// past what was written.
+    pub fn discard_from(&mut self, pos: u64) {
+        let w = self.ring.write.load(Ordering::Relaxed);
+        let pos = pos - pos % CHANNELS as u64;
+        if pos >= w {
+            return;
+        }
+        self.ring.cut_to.store(w, Ordering::Release);
+        self.ring.cut_from.store(pos, Ordering::Release);
+    }
 }
 
 impl Drop for Producer {
@@ -396,7 +426,26 @@ impl Consumer {
             r = discard;
             ring.read.store(r, Ordering::Release);
         }
-        let w = ring.write.load(Ordering::Acquire);
+        let mut w = ring.write.load(Ordering::Acquire);
+        // A partial discard: play up to its start, then jump past it.
+        let mut cut_at = None;
+        let cut = ring.cut_from.load(Ordering::Acquire);
+        if cut != NO_CUT {
+            let to = ring.cut_to.load(Ordering::Acquire);
+            if r >= cut {
+                r = r.max(to);
+                ring.read.store(r, Ordering::Release);
+                let _ = ring.cut_from.compare_exchange(
+                    cut,
+                    NO_CUT,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+            } else {
+                w = w.min(cut);
+                cut_at = Some((cut, to));
+            }
+        }
         // Frames of silence before the audio in this read.
         let mut lead = 0u64;
         if ring.hold.load(Ordering::Acquire) {
@@ -457,7 +506,16 @@ impl Consumer {
             put(lead_samples + i, if gain == 1.0 { s } else { s * gain });
         }
         (lead_samples + n..len).for_each(|i| put(i, 0.0));
-        ring.read.store(r + n as u64, Ordering::Release);
+        let mut next = r + n as u64;
+        if let Some((cut, to)) = cut_at
+            && next >= cut
+        {
+            next = next.max(to);
+            let _ =
+                ring.cut_from
+                    .compare_exchange(cut, NO_CUT, Ordering::AcqRel, Ordering::Acquire);
+        }
+        ring.read.store(next, Ordering::Release);
         record(ring, dev + lead, r, (n / CHANNELS) as u64, frames);
         if lead_samples + n < len && ring.expect_data.load(Ordering::Acquire) {
             ring.underruns.fetch_add(1, Ordering::Relaxed);
@@ -499,6 +557,57 @@ mod tests {
         let p = r.producer().unwrap();
         let c = r.consumer().unwrap();
         (r, p, c)
+    }
+
+    #[test]
+    fn a_partial_discard_plays_up_to_the_point_then_skips_the_rest() {
+        let (r, mut p, mut c) = ring(1024);
+        let first: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        let dropped: Vec<f32> = (0..60).map(|i| 1000.0 + i as f32).collect();
+        p.write(&first);
+        let cut = r.write_pos();
+        p.write(&dropped);
+        p.discard_from(cut);
+        assert_eq!(r.len(), 100, "the dropped audio no longer counts");
+        let after: Vec<f32> = (0..20).map(|i| -(i as f32)).collect();
+        p.write(&after);
+        assert_eq!(r.len(), 120);
+        let mut out = vec![9.0f32; 80];
+        assert_eq!(c.read(&mut out), 80);
+        assert_eq!(out, first[..80]);
+        // This read ends exactly at the cut (the rest of the block is silence).
+        let mut out = vec![9.0f32; 40];
+        assert_eq!(c.read(&mut out), 20);
+        assert_eq!(out[..20], first[80..]);
+        // Then straight to what was written after the discard.
+        let mut out = vec![9.0f32; 40];
+        assert_eq!(c.read(&mut out), 20);
+        assert_eq!(out[..20], after[..]);
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn a_partial_discard_of_audio_already_playing_drops_the_rest_at_once() {
+        let (r, mut p, mut c) = ring(1024);
+        p.write(&[1.0; 100]);
+        let mut out = vec![0.0f32; 60];
+        c.read(&mut out);
+        // The cut point was already passed: everything after what was read goes.
+        p.discard_from(40);
+        p.write(&[2.0; 10]);
+        let mut out = vec![0.0f32; 20];
+        assert_eq!(c.read(&mut out), 10);
+        assert_eq!(out[..10], [2.0; 10]);
+        // A cut beyond what was written does nothing; a full discard overrides a cut.
+        p.discard_from(r.write_pos() + 10);
+        p.write(&[3.0; 10]);
+        let cut = r.write_pos() - 4;
+        p.discard_from(cut);
+        p.discard_all();
+        p.write(&[4.0; 4]);
+        let mut out = vec![0.0f32; 20];
+        assert_eq!(c.read(&mut out), 4);
+        assert_eq!(out[..4], [4.0; 4]);
     }
 
     #[test]

@@ -370,6 +370,23 @@ impl Transitions {
         self.gapless_for = None;
     }
 
+    /// A partial flush (`strm f`): forget anything of a track after `keep` (the next track
+    /// was dropped). A hold of a later track goes. A crossfade into a later track is called
+    /// off: the outgoing track's tail goes back into the hold and plays out to its end, as a
+    /// gapless end would (whatever of the fade was already mixed is the caller's to drop).
+    pub fn trim_after(&mut self, keep: u32) {
+        if let Some(m) = self.mix.take_if(|m| m.in_seq > keep) {
+            self.hold.extend(m.tail);
+            self.hold_seq = Some(keep);
+            self.gapless_for = Some(keep);
+        }
+        if self.hold_seq.is_some_and(|s| s > keep) {
+            self.hold.clear();
+            self.hold_seq = None;
+            self.gapless_for = None;
+        }
+    }
+
     fn keep_frames(&self) -> usize {
         if !self.cfg.enabled() {
             return 0;

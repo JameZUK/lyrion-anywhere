@@ -833,3 +833,53 @@ fn random_scripts_never_lose_or_invent_frames() {
         assert!(t.is_empty(), "round {round}");
     }
 }
+
+/// `strm f`: a hold of the dropped next track goes.
+#[test]
+fn a_trim_drops_a_hold_of_a_later_track() {
+    let mut src = Script::new(vec![(1, RATE, tone(50_000, -0.5))]);
+    let mut t = Transitions::new(cfg(TransitionMode::Crossfade, 1.0));
+    let mut block = vec![0.0f32; 4096 * CHANNELS];
+    t.top_up(&mut src, &mut block);
+    assert!(!t.is_empty());
+    t.trim_after(0);
+    assert!(t.is_empty());
+    // A hold of the kept track stays.
+    let mut src = Script::new(vec![(0, RATE, tone(50_000, 0.25))]);
+    t.top_up(&mut src, &mut block);
+    let held = t.held_frames();
+    t.trim_after(0);
+    assert_eq!(t.held_frames(), held);
+}
+
+/// `strm f` during a crossfade into the dropped track: the fade is called off and the
+/// outgoing track's own tail plays out, never another sample of the dropped track.
+#[test]
+fn a_trim_during_a_crossfade_plays_the_outgoing_tail_alone() {
+    let (a, b) = (300_000, 200_000);
+    let (mut src, info) = two_albums(a, b);
+    let ta = src.tracks[0].2.clone();
+    let mut t = Transitions::new(cfg(TransitionMode::Crossfade, 1.0));
+    let mut block = vec![0.0f32; 1000 * CHANNELS];
+    let mut heard = 0usize;
+    // Play until the fade has begun.
+    loop {
+        t.top_up(&mut src, &mut block);
+        let p = t.pull(&mut src, &mut block, &info, true).unwrap();
+        if p.seq == 1 {
+            break;
+        }
+        heard += p.frames;
+    }
+    // The core drops track 1.
+    src.pos[1] = src.tracks[1].2.len();
+    t.trim_after(0);
+    let (rest, _, seqs) = drain(&mut t, &mut src, &info);
+    assert_eq!(seqs, [0], "only the outgoing track");
+    // What follows is the outgoing track's own audio, in order, to its end.
+    let n = rest.len();
+    assert!(n > 0);
+    assert_eq!(&rest[..], &ta[ta.len() - n..]);
+    assert!(heard * CHANNELS + n <= ta.len());
+    assert!(t.is_empty());
+}

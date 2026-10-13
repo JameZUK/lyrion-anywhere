@@ -31,12 +31,14 @@ mod local;
 mod offline;
 mod queue;
 mod signal;
+mod spool;
 mod visual;
 
 use audio::OutputShared;
 use engine::{Cmd, Engine, Shared};
 use output::{AudioOutput, PullOutput, PullSlot};
 use ring::Ring;
+use spool::SpoolDir;
 
 pub use negotiate::{
     MixerOffer, NotBitPerfect, OfferBlocker, OutputNegotiator, OutputOffers, PcmEncoding,
@@ -70,6 +72,16 @@ pub struct LocalPlayerConfig {
     /// Highest sample rate offered to LMS (it transcodes anything higher).
     pub max_sample_rate: u32,
     pub dsp: DspSettings,
+    /// An app-private folder for spooling live streams to disk (Android: a folder under
+    /// `noBackupFilesDir`); `None` keeps streams in memory, as before. Absolute, without
+    /// `..`, and not a symlink; spools go in a per-server, per-user folder inside it and
+    /// are deleted as soon as they are done with.
+    #[uniffi(default = None)]
+    pub cache_dir: Option<String>,
+    /// Read the next track ahead: tell LMS a track is ready once it is fully received, so
+    /// the next one arrives long before the current one ends (needs `cache_dir`).
+    #[uniffi(default = true)]
+    pub read_ahead: bool,
 }
 
 /// The player's link to LMS.
@@ -114,6 +126,18 @@ pub struct LocalPlayerStatus {
     /// Silenced locally (see [`LocalPlayer::set_hold`]).
     pub held: bool,
     pub last_error: Option<String>,
+    /// About how much listening is on the phone ahead of what is heard (ms): the decoded
+    /// audio plus what is spooled, at the stream's byte rate. What a gap in the signal can
+    /// last without the music stopping.
+    #[uniffi(default = 0)]
+    pub cushion_ms: u64,
+    /// How long after its connection drops the player keeps resuming the same LMS session
+    /// (ms), from the grace the gateway granted.
+    #[uniffi(default = 0)]
+    pub resume_window_ms: u64,
+    /// Read-ahead is in force (the setting is on and there is somewhere to spool).
+    #[uniffi(default = false)]
+    pub read_ahead: bool,
 }
 
 impl Default for LocalPlayerStatus {
@@ -132,6 +156,9 @@ impl Default for LocalPlayerStatus {
             underrun_frames: 0,
             held: false,
             last_error: None,
+            cushion_ms: 0,
+            resume_window_ms: 0,
+            read_ahead: false,
         }
     }
 }
@@ -293,6 +320,10 @@ pub struct LocalPlayer {
     visual: Arc<visual::VisualShared>,
     /// The phone's media volume for loudness compensation (kept across restarts).
     loudness_reference: Mutex<Option<f64>>,
+    /// Whether the phone has a network, as the app last said (kept across restarts).
+    network: Mutex<bool>,
+    /// Tests: how much of a track read-ahead waits to be heard (kept across restarts).
+    ready_after_ms: Mutex<Option<u64>>,
 }
 
 pub(crate) fn make_output(
@@ -325,7 +356,40 @@ impl LocalPlayer {
             quality: Mutex::new(StreamQuality::Original),
             visual: Arc::new(visual::VisualShared::default()),
             loudness_reference: Mutex::new(None),
+            network: Mutex::new(true),
+            ready_after_ms: Mutex::new(None),
         })
+    }
+
+    /// Read the next track ahead (see [`LocalPlayerConfig::read_ahead`]); takes effect
+    /// from the next track. Android turns it off on mobile data if the user asks.
+    pub fn set_read_ahead(&self, on: bool) {
+        self.config.lock().unwrap().read_ahead = on;
+        if let Some(r) = self.run.lock().unwrap().as_ref() {
+            let _ = r.cmds.send(Cmd::SetReadAhead(on));
+        }
+    }
+
+    /// The read-ahead setting (in force only with a cache folder: see
+    /// [`LocalPlayerStatus::read_ahead`]).
+    pub fn read_ahead(&self) -> bool {
+        self.config.lock().unwrap().read_ahead
+    }
+
+    /// Whether the phone has a network (from Android's `ConnectivityManager`). Without one
+    /// the player stops trying to reconnect (saving battery) and keeps playing what it
+    /// has; when it returns, it reconnects at once.
+    pub fn set_network_available(&self, available: bool) {
+        *self.network.lock().unwrap() = available;
+        if let Some(r) = self.run.lock().unwrap().as_ref() {
+            let _ = r.cmds.send(Cmd::Network(available));
+        }
+    }
+
+    /// About how much listening is on the phone ahead of what is heard (ms; see
+    /// [`LocalPlayerStatus::cushion_ms`]), for "4 min buffered ahead".
+    pub fn cushion_ms(&self) -> u64 {
+        self.status().cushion_ms
     }
 
     /// The phone's media volume as an attenuation in dB (0 = full volume), which loudness
@@ -399,6 +463,16 @@ impl LocalPlayer {
         let pull = Arc::new(Mutex::new(PullSlot::default()));
         let output = make_output(cfg.output, &pull)?;
         let (cmds, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let spool_dir = cfg.cache_dir.as_deref().and_then(|root| {
+            let who = self.session.current()?;
+            let scope =
+                crate::offline::scope_name(&self.session.server().url(), &who.user.username);
+            // Leftovers of a crash, or of another server or user, go first.
+            if let Ok(r) = spool::validate_root(root) {
+                let _ = spool::remove_all(&r);
+            }
+            SpoolDir::open(root, &scope).ok()
+        });
         let engine = Engine::new(
             self.session.core().clone(),
             shared.clone(),
@@ -406,6 +480,8 @@ impl LocalPlayer {
             cfg.dsp,
             cfg.max_sample_rate,
             *self.quality.lock().unwrap(),
+            spool_dir,
+            cfg.read_ahead,
             cmd_rx,
         )?;
         let thread = std::thread::Builder::new()
@@ -422,6 +498,12 @@ impl LocalPlayer {
         let _ = cmds.send(Cmd::SetLoudnessReference(
             *self.loudness_reference.lock().unwrap(),
         ));
+        if !*self.network.lock().unwrap() {
+            let _ = cmds.send(Cmd::Network(false));
+        }
+        if let Some(ms) = *self.ready_after_ms.lock().unwrap() {
+            let _ = cmds.send(Cmd::SetReadyAfter(ms));
+        }
         *run = Some(Run {
             shared,
             cmds,
@@ -655,7 +737,28 @@ pub(crate) fn read_int(pull: Option<Arc<Mutex<PullSlot>>>, max_frames: u32) -> P
     }
 }
 
+/// Delete every stream spool kept under `cache_dir` (the folder passed as
+/// [`LocalPlayerConfig::cache_dir`]), for every server and user: at sign-out, when the
+/// device was revoked, or on a change of server. Downloads are left alone. A running player
+/// deletes its own spools as it goes; this is for when none is running.
+#[uniffi::export]
+pub fn remove_stream_spools(cache_dir: String) -> Result<(), ApiError> {
+    let root = spool::validate_root(&cache_dir)?;
+    spool::remove_all(&root)
+        .map_err(|e| ApiError::invalid(format!("could not clear the stream cache: {}", e.kind())))
+}
+
 impl LocalPlayer {
+    /// Tests: how much of a track must be heard before read-ahead reports it ready (the
+    /// core's default is 20 s). Not part of the app's API.
+    #[doc(hidden)]
+    pub fn debug_set_ready_after_ms(&self, ms: u64) {
+        *self.ready_after_ms.lock().unwrap() = Some(ms);
+        if let Some(r) = self.run.lock().unwrap().as_ref() {
+            let _ = r.cmds.send(Cmd::SetReadyAfter(ms));
+        }
+    }
+
     fn fade_factor(&self) -> f32 {
         f32::from_bits(self.fade.load(Ordering::Acquire))
     }
@@ -719,6 +822,9 @@ pub(crate) fn sanitise_config(c: LocalPlayerConfig) -> LocalPlayerConfig {
         output: c.output,
         max_sample_rate: c.max_sample_rate.clamp(44_100, 384_000),
         dsp: c.dsp.sanitised(),
+        // A folder that isn't acceptable means no spooling, never a failure to play.
+        cache_dir: c.cache_dir.filter(|d| spool::validate_root(d).is_ok()),
+        read_ahead: c.read_ahead,
     }
 }
 
@@ -758,8 +864,38 @@ mod tests {
                 preamp_db: 500.0,
                 ..DspSettings::default()
             },
+            cache_dir: Some("relative/cache".into()),
+            read_ahead: true,
         });
         assert_eq!(c.max_sample_rate, 44_100);
         assert_eq!(c.dsp.preamp_db, 12.0);
+        assert_eq!(c.cache_dir, None, "an unacceptable folder means no spool");
+        for bad in ["/tmp/../etc", "", "x"] {
+            let c = sanitise_config(LocalPlayerConfig {
+                output: OutputKind::Pull,
+                max_sample_rate: 48_000,
+                dsp: DspSettings::default(),
+                cache_dir: Some(bad.into()),
+                read_ahead: true,
+            });
+            assert_eq!(c.cache_dir, None, "{bad}");
+        }
+        let root = std::env::temp_dir();
+        let c = sanitise_config(LocalPlayerConfig {
+            output: OutputKind::Pull,
+            max_sample_rate: 48_000,
+            dsp: DspSettings::default(),
+            cache_dir: Some(root.to_string_lossy().into_owned()),
+            read_ahead: false,
+        });
+        assert!(c.cache_dir.is_some() && !c.read_ahead);
+    }
+
+    #[test]
+    fn removing_spools_refuses_bad_folders() {
+        assert!(remove_stream_spools("relative".into()).is_err());
+        assert!(remove_stream_spools("/a/../b".into()).is_err());
+        let missing = std::env::temp_dir().join("anywhere-no-such-cache-folder-x");
+        assert!(remove_stream_spools(missing.to_string_lossy().into_owned()).is_ok());
     }
 }

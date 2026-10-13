@@ -115,6 +115,8 @@ impl Rig {
             LocalPlayerConfig {
                 output: OutputKind::Pull,
                 max_sample_rate: 192_000,
+                cache_dir: None,
+                read_ahead: true,
                 dsp,
             },
         );

@@ -96,7 +96,7 @@ pub use player::{
     OfflinePlayerStatus, OutputKind, OutputNegotiator, OutputOffers, OutputRoute, PcmBlock,
     PcmEncoding, PcmIntBlock, PlayerConnection, SignalPathInfo, SignalStage, SignalVerdict,
     StreamQuality, TransitionMode, VISUAL_FRAME_BYTES, VISUAL_FRAME_FLOATS, check_eq_profile,
-    stream_quality_for,
+    remove_stream_spools, stream_quality_for,
 };
 pub use players::Players;
 pub use routine::{

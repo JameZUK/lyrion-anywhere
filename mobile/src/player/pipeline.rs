@@ -344,6 +344,8 @@ struct Mark {
     src_frames: u64,
     /// Source frames already reported.
     reported: u64,
+    /// The track the block is from (the last one pushed when it was written).
+    seq: Option<u32>,
 }
 
 pub struct Pipeline {
@@ -698,6 +700,7 @@ impl Pipeline {
                     len: 0,
                     src_frames: self.pending_src - self.pending_src_written,
                     reported: 0,
+                    seq: self.track,
                 });
                 self.pending_src_written = self.pending_src;
             }
@@ -723,6 +726,7 @@ impl Pipeline {
                 len: w as u64,
                 src_frames: src_after - src_before,
                 reported: 0,
+                seq: self.track,
             });
         }
         !self.has_pending()
@@ -746,6 +750,33 @@ impl Pipeline {
             break;
         }
         total
+    }
+
+    /// A partial flush (`strm f`): forget the audio of every track after `keep` (the next
+    /// track was dropped), keeping the rest. Returns the ring position (samples) from which
+    /// the ring must drop what was written, if any of it was from a later track.
+    pub fn trim_after(&mut self, keep: u32) -> Option<u64> {
+        if self.track.is_some_and(|t| t > keep) {
+            // The pending block is the dropped track's.
+            self.pending.clear();
+            self.pending_off = 0;
+            self.pending_src = 0;
+            self.pending_src_written = 0;
+            self.drained = false;
+            self.track = None;
+        }
+        let i = self
+            .marks
+            .iter()
+            .position(|m| m.seq.is_some_and(|s| s > keep))?;
+        let at = self.marks[i].end - self.marks[i].len;
+        self.marks.truncate(i);
+        Some(at)
+    }
+
+    #[cfg(test)]
+    fn marks_len(&self) -> usize {
+        self.marks.len()
     }
 
     /// Everything queued was dropped (flush): forget pending audio and filter state.
@@ -1418,6 +1449,43 @@ mod tests {
             }
         }
         assert_eq!(total, 150, "every source frame reported exactly once");
+    }
+
+    /// `strm f`: the dropped next track's audio leaves the ring and the pending block, and
+    /// only the kept track's frames are ever reported as played.
+    #[test]
+    fn a_trim_drops_the_later_tracks_audio_and_keeps_the_rest() {
+        let ring = Ring::new(1024);
+        ring.set_hold(false);
+        let mut prod = ring.producer().unwrap();
+        let mut cons = ring.consumer().unwrap();
+        let mut p = Pipeline::new(DspSettings::default());
+        p.configure(44_100, 44_100).unwrap();
+        p.push(&[0.25; 200], 3, None); // track 3: 100 frames
+        assert!(p.write_pending(&mut prod));
+        p.push(&[0.5; 200], 4, None); // track 4: 100 frames
+        assert!(p.write_pending(&mut prod));
+        p.push(&vec![0.75; 2000], 4, None); // more of track 4, more than fits
+        assert!(!p.write_pending(&mut prod));
+        // One mark per piece written.
+        assert_eq!(p.marks_len(), 3);
+        let at = p.trim_after(3).expect("track 4 was in the ring");
+        assert_eq!(at, 200);
+        assert!(!p.has_pending(), "track 4's pending block went");
+        assert_eq!(p.track(), None);
+        prod.discard_from(at);
+        let mut out = vec![0f32; 1024];
+        let n = cons.read(&mut out);
+        assert_eq!(n, 200);
+        assert!(
+            out[..200].iter().all(|s| *s == 0.25),
+            "only track 3 is heard"
+        );
+        assert_eq!(p.played(ring.read_pos()), 100);
+        assert_eq!(cons.read(&mut out), 0);
+        assert_eq!(p.played(ring.read_pos()), 0);
+        // Again with nothing of a later track: nothing to do.
+        assert_eq!(p.trim_after(3), None);
     }
 
     #[test]

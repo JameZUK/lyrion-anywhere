@@ -28,6 +28,7 @@ pub use download::{
 };
 pub use index::{DownloadFormat, DownloadOrigin, OfflineTrack};
 pub use plays::{PlayRecord, PlayVerdict, PlaysSyncOutcome};
+pub(crate) use store::scope_name;
 pub use store::{OfflineAlbum, OfflineLibrary, remove_offline_data};
 
 /// `POST /v1/plays` over the session (the real [`plays::PlaysApi`]).

@@ -132,6 +132,8 @@ async fn data_saver_plays_opus_then_original_plays_flac() {
         LocalPlayerConfig {
             output: OutputKind::Pull,
             max_sample_rate: 192_000,
+            cache_dir: None,
+            read_ahead: true,
             dsp: Default::default(),
         },
     );
@@ -247,6 +249,8 @@ async fn changing_level_without_the_feature_keeps_the_session() {
         LocalPlayerConfig {
             output: OutputKind::Pull,
             max_sample_rate: 192_000,
+            cache_dir: None,
+            read_ahead: true,
             dsp: Default::default(),
         },
     );
