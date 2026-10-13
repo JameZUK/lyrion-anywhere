@@ -412,3 +412,25 @@ async fn lyrics_from_the_tags_through_the_gateway() {
     }
     assert_eq!(h.lms.rpc_calls().len(), before);
 }
+
+/// Regression: the gateway's 409 for a full list of stations read as a malformed answer
+/// ("no id") instead of a refusal saying why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_list_of_stations_is_a_clear_refusal() {
+    let h = Harness::start().await;
+    let (s, _) = h.alice().await;
+    let me = Me::new(s.clone());
+    let have = me.stations().await.unwrap().len();
+    for i in have..100 {
+        me.create_station(format!("Mix {i}"), StationSpec::Genre { genres: vec![4] })
+            .await
+            .unwrap();
+    }
+    match me
+        .create_station("One more".into(), StationSpec::Genre { genres: vec![4] })
+        .await
+    {
+        Err(ApiError::InvalidInput { detail }) => assert!(detail.contains("too many"), "{detail}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}

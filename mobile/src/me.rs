@@ -719,19 +719,9 @@ impl Me {
         self.session.core()
     }
 
+    /// A `/v1/me` call. A 409 (too many stations, menus or filters) is a refusal with the
+    /// gateway's reason, like any other 4xx; it used to read as a malformed answer.
     async fn call(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<&Value>,
-    ) -> Result<Value, ApiError> {
-        exchange(self.core(), method, path, body)
-            .await
-            .map(|(_, v)| v)
-    }
-
-    /// A filter call: the gateway's 409 (too many filters) is a refusal like any other 4xx.
-    async fn filter_call(
         &self,
         method: &str,
         path: &str,
@@ -742,10 +732,20 @@ impl Me {
                 v.get("error")
                     .and_then(Value::as_str)
                     .map(|e| clean_text(e).chars().take(200).collect::<String>())
-                    .unwrap_or_else(|| "too many filters".into()),
+                    .unwrap_or_else(|| "too many".into()),
             )),
             (_, v) => Ok(v),
         }
+    }
+
+    /// A filter call (the same rules as [`Self::call`]).
+    async fn filter_call(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Value, ApiError> {
+        self.call(method, path, body).await
     }
 }
 
