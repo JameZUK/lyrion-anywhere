@@ -93,11 +93,11 @@ Agreed with the owner on 2026-10-13:
 
 ## 2. Rolling cache (part 2)
 
-**Status:** design agreed on 2026-10-13 (see the decisions at the end). Spike S1 done; Phase A under way:
+**Status:** design agreed on 2026-10-13 (see the decisions at the end). Spike S1 done; Phase A built on 2026-10-13. What remains for Phase A is the manual testing on a real phone (see "Manual" under Tests) and the live check of A6's rejoin.
 - **Gateway** (A3, A4): grace negotiation, `--max-resume-grace`, history from jiffies, heartbeats capped at the track's end. Built.
 - **Core** (A2, A4, A6 in the core): built (see "Core built" under A2).
 - **Mobile engine** (A1, the client's A3, A6, `strm f`): built on 2026-10-13 (see "Mobile engine built" under A1).
-- **Android** (A5): to do.
+- **Android** (A5) and the restart after a gap longer than the grace (decision 3): built on 2026-10-13 (see "Android built" under A5).
 
 Investigation written up on 2026-10-13, for the Android player (D14: the phone is a real LMS player). The web player is unchanged. iOS takes the same design when its app is built.
 
@@ -253,7 +253,12 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
   - **`strm f`:** on `trim_count()` the engine drops what it holds of tracks after `keep_track`: a hold or crossfade in the transitions, the pipeline's pending block, and the ring from the first sample of the later track (a new partial discard in the ring: the output plays up to that point, then jumps past it).
   - **A6:** sync membership comes from the status query already made for each new stream (and again on resume). After a stall, a lone player carries on at once; a grouped one waits up to 2 s for enough audio to skip the stall, then calls `resume_after_stall`. On `NotEnoughBuffered` it asks LMS for the group's position (`time ?`) and sends `time <that>`, so LMS restarts the group in step (the others hear a short pause). Minimal by design; the live check of the rejoin (S1's sync scenario extended) is still to do.
   - **For Android (A5):** `LocalPlayerStatus.cushion_ms` (and `LocalPlayer::cushion_ms()`): decoded audio plus spooled bytes at the byte rate seen so far. Also `resume_window_ms` and `read_ahead`.
-  - **Not done here:** restarting the same track at the same position after a gap longer than the grace (decision 3); the 20 s wait before read-ahead is the core's default.
+  - **The 20 s wait** before read-ahead is the core's default.
+  - **Restart after a gap longer than the grace** (decision 3, built with A5):
+    - **What is remembered:** the status query made for each new stream also gives the track's queue position (`protocol::stream_position`: the item's `playlist index`, checked against `playlist_cur_index`, and for a fresh stream LMS's `time`, so a stream that began part-way after a seek is placed right). While the link is down, the engine notes the point being heard every tick (`protocol::watch_gap`): queue position, track id, and time into the track. The point follows playback through the gap, so a track the phone carried on into from its spool is the one restarted.
+    - **Blocked:** if the player wasn't playing when the link went (the user had paused or stopped), or the user held the output during the gap.
+    - **On the new session** (a greeting with `resumed=false` replacing a lost one), after 1 s for LMS to settle, the engine asks `status <i> 1 tags:x` and restarts (`playlist index <i>`, then `time <s>` from 1 s in) only when `protocol::restart_commands` agrees: LMS shows the player stopped (not playing, not paused), the item at `<i>` is the same library track, and LMS's current index is `<i>` or the one before it. Anything malformed means no restart.
+    - **Limit:** a stop from another controller during the gap looks the same to the phone as LMS dropping the player, so such a track is restarted.
 
 **A2. Ready once received, with a queue of tracks in the core** (`core/src/player.rs`). Effort: M–L.
 - **Switch:** a new `Player::set_ready_when_received(bool)`, off by default (web and CLI unchanged).
@@ -297,6 +302,13 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
 - **Settings › Playback › *Gaps in the signal*:**
   - "Read ahead the next track": on, with a separate switch for mobile data, also on by default;
   - the signal path and the player sheet show the cushion ("4 min buffered ahead"), estimated from spooled bytes and the decoded byte rate.
+- **Android built (2026-10-13):**
+  - **Settings:** `ReadAheadSettings` (DataStore keys `read_ahead`, `read_ahead_mobile_data`, both on by default) under Settings › Playback on this phone › Gaps in the signal. The mobile-data switch can be changed only while reading ahead is on.
+  - **The rule:** read ahead = the setting on AND (not on a metered network OR the mobile-data switch on). `RustLocalPlayerRepository` applies it with `set_read_ahead` whenever the settings or the network type change, and before a new engine starts.
+  - **Network:** the app already follows the default network with one `ConnectivityManager.NetworkCallback` (`AndroidNetworkMonitor`, created with the app container, not an androidx.startup initialiser); the repository passes "anything but offline" to `set_network_available`, and the metered state to the rule above. A second callback in the playback service would only duplicate it.
+  - **Cache folder:** `noBackupFilesDir/stream-cache`, beside downloads (`noBackupFilesDir/offline`); the engine creates it and scopes it by server and user.
+  - **The cushion:** from `LocalPlayerStatus.cushion_ms` while `read_ahead` is in force; shown from 1 s up as "45 s", "4 min" or "1 h 5 min buffered ahead" in the signal path and under "This phone" in the "Play on…" sheet, read out in full words by TalkBack.
+  - **Clean-up:** when the signed-in session ends or changes (sign-out, revocation, another server or user), the repository stops the player and calls `remove_stream_spools`. Switching the player off and on clears nothing (the engine deletes its own spools).
 
 ### Phase B: replay cache
 
@@ -358,7 +370,7 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
 | Disk full or a cap reached | Back-pressure in memory, as today; the cache evicts first |
 | Cache entry corrupt or tampered | Hash mismatch: the entry is deleted and the stream comes from the network |
 | Gap longer than the buffer | `STMo` and silence; on resume LMS sends the next `strm` and playback continues |
-| Gap longer than the grace | New session, as today; playback stops (see question 3) |
+| Gap longer than the grace | New session; the track heard last restarts where it was, if LMS still has it there and nobody paused or stopped it (decision 3) |
 | Token expired during the gap | Renewed on reconnect (existing) |
 | Device revoked | 1008 stop; the cache is deleted |
 | LMS restarted | 1001, new session |

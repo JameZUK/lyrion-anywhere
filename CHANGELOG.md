@@ -2,6 +2,19 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Rolling cache, Phase A: Android, and restarting after a long gap
+
+The Android part (A5) of `docs/plans/wave3-design.md` §2, and the owner's decision 3 in the engine. Phase A is now built; what remains is the manual testing on a real phone.
+
+- **Restart after a gap longer than the grace** (engine): if the phone was playing when its link to LMS went, and the gap outlasted the resume grace, the new session restarts the track heard last (`playlist index`, then `time`) at the point last heard. It first checks with LMS that the same track is still at that queue position (or the phone had just played on into it), and that LMS isn't already playing or paused. Nothing is restarted if the user had paused or stopped, or held the output during the gap. The point follows playback through the gap, so a track the phone carried on into from its buffer is the one restarted.
+- **Settings › Playback on this phone › Gaps in the signal:**
+  - **Read ahead the next track** (on by default): the next track is fetched long before the current one ends.
+  - **On mobile data too** (on by default; can be changed only while reading ahead is on).
+  - Applied live: when either switch or the network changes (Wi-Fi or mobile data), the player is told at once.
+- **The cushion:** while reading ahead, the signal path and the "Play on…" sheet show how much listening is on the phone ("45 s", "4 min", "1 h 5 min buffered ahead"; read out in full words by TalkBack), and nothing when there is none.
+- **Network:** the player is told when the phone has no network (it stops trying to reconnect) and when it is back, from the app's existing network monitor.
+- **Storage:** streams spool to an app-private `stream-cache` folder under `noBackupFilesDir`, beside downloads. Every spool is deleted at sign-out, on revocation and on a change of server or user, once the player has stopped.
+
 ## 2026-10-13: Rolling cache, Phase A: the phone's player engine
 
 The mobile engine's part of A1, A3 and A6 in `docs/plans/wave3-design.md` §2, and `strm f`. The Android settings and cushion display come separately.
