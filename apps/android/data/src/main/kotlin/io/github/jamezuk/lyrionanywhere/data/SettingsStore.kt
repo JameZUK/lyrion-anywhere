@@ -44,6 +44,8 @@ data class AppSettings(
     val lyricsPeek: Boolean = true,
     /** The live stream's level on Wi-Fi and on mobile data (docs/plans/streaming-quality.md). */
     val streaming: StreamingSettings = StreamingSettings(),
+    /** Gaps in the signal: reading the next track ahead (rolling cache, Phase A). */
+    val readAhead: ReadAheadSettings = ReadAheadSettings(),
     /** The Library page's chip, album order and view (Wave 2 §3.2). */
     val library: LibraryPrefs = LibraryPrefs(),
     /** Recent searches, newest first (on this device only; Wave 2 §3.3). */
@@ -105,6 +107,21 @@ data class StreamingSettings(
     val mobile: StreamQuality = StreamQuality.HIGH,
 )
 
+/**
+ * Settings › Playback › Gaps in the signal (docs/plans/wave3-design.md, "Rolling cache"):
+ * this phone's player fetches the next track long before the current one ends, so a gap in
+ * the signal doesn't stop the music. Both on by default (the owner's decision 2).
+ */
+data class ReadAheadSettings(
+    /** "Read ahead the next track". */
+    val enabled: Boolean = true,
+    /** "On mobile data too": also on a metered network. */
+    val onMobileData: Boolean = true,
+) {
+    /** Whether the player reads ahead now: on, and on mobile data only if allowed there. */
+    fun effective(metered: Boolean): Boolean = enabled && (!metered || onMobileData)
+}
+
 /** The sleep timer's fade-out: 30 s by default, at most 2 minutes. */
 const val SLEEP_FADE_DEFAULT = 30
 const val SLEEP_FADE_MAX = 120
@@ -165,6 +182,9 @@ interface SettingsStore {
     /** The stream level on Wi-Fi and on mobile data. */
     suspend fun setStreaming(streaming: StreamingSettings) {}
 
+    /** Reading the next track ahead, and whether on mobile data too. */
+    suspend fun setReadAhead(readAhead: ReadAheadSettings) {}
+
     /** The Library page's chip, album order and view (checked before they are kept). */
     suspend fun setLibraryPrefs(prefs: LibraryPrefs) {}
 
@@ -203,6 +223,10 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
             streaming = StreamingSettings(
                 wifi = enumOr(it[STREAM_WIFI], StreamingSettings().wifi),
                 mobile = enumOr(it[STREAM_MOBILE], StreamingSettings().mobile),
+            ),
+            readAhead = ReadAheadSettings(
+                enabled = it[READ_AHEAD] ?: true,
+                onMobileData = it[READ_AHEAD_MOBILE] ?: true,
             ),
             library = LibraryPrefs(
                 chip = it[LIB_CHIP]?.let { c -> LibraryChip.entries.firstOrNull { e -> e.name == c } },
@@ -286,6 +310,13 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         }
     }
 
+    override suspend fun setReadAhead(readAhead: ReadAheadSettings) {
+        store.edit { p ->
+            p[READ_AHEAD] = readAhead.enabled
+            p[READ_AHEAD_MOBILE] = readAhead.onMobileData
+        }
+    }
+
     override suspend fun setLyricsPeek(on: Boolean) {
         store.edit { p -> p[LYRICS_PEEK] = on }
     }
@@ -365,6 +396,8 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         val LYRICS_PEEK = booleanPreferencesKey("lyrics_peek")
         val STREAM_WIFI = stringPreferencesKey("stream_quality_wifi")
         val STREAM_MOBILE = stringPreferencesKey("stream_quality_mobile")
+        val READ_AHEAD = booleanPreferencesKey("read_ahead")
+        val READ_AHEAD_MOBILE = booleanPreferencesKey("read_ahead_mobile_data")
         val LIB_CHIP = stringPreferencesKey("library_chip")
         val LIB_SORT = stringPreferencesKey("library_album_sort")
         val LIB_GRID = booleanPreferencesKey("library_album_grid")

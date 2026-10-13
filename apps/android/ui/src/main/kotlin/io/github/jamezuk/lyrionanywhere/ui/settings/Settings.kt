@@ -204,6 +204,8 @@ fun SettingsScreen(
     visualiser: (@Composable () -> Unit)? = null,
     /** This device: haptics, the theme's colours and car mode (Wave 2 §5). */
     device: (@Composable () -> Unit)? = null,
+    /** Gaps in the signal: reading the next track ahead (rolling cache), with this phone's player. */
+    gaps: (@Composable () -> Unit)? = null,
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var renaming by rememberSaveable { mutableStateOf(false) }
@@ -255,6 +257,7 @@ fun SettingsScreen(
                     modifier = Modifier.clickable(onClick = onSound),
                 )
             }
+            if (gaps != null) item { gaps() }
             item { HorizontalDivider() }
         }
         if (history != null) {

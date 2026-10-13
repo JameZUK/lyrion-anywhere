@@ -201,6 +201,7 @@ import io.github.jamezuk.lyrionanywhere.ui.player.SleepFadeSetting
 import io.github.jamezuk.lyrionanywhere.ui.player.LyricsPeekSetting
 import io.github.jamezuk.lyrionanywhere.ui.player.RatingsSetting
 import io.github.jamezuk.lyrionanywhere.ui.settings.StreamingQualitySetting
+import io.github.jamezuk.lyrionanywhere.ui.settings.ReadAheadSetting
 import io.github.jamezuk.lyrionanywhere.ui.settings.LicencesScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsViewModel
@@ -1560,6 +1561,10 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 StreamingQualitySetting(app.streaming) { s -> scope.launch { container.settings.setStreaming(s) } }
                             },
                             device = { DeviceSettings(container, scope) },
+                            gaps = {
+                                val app by container.settings.settings.collectAsStateWithLifecycle(AppSettings())
+                                ReadAheadSetting(app.readAhead) { s -> scope.launch { container.settings.setReadAhead(s) } }
+                            },
                         )
                     }
                 }

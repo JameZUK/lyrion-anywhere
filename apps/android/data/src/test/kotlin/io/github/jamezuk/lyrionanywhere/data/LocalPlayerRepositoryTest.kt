@@ -63,6 +63,8 @@ private class MemSettings : SettingsStore {
 
     override suspend fun setStreaming(streaming: StreamingSettings) = state.update { it.copy(streaming = streaming) }
 
+    override suspend fun setReadAhead(readAhead: ReadAheadSettings) = state.update { it.copy(readAhead = readAhead) }
+
     override suspend fun setLibrary(id: String?) = state.update { it.copy(libraryId = id) }
 
     override suspend fun setDefaultPlayer(choice: io.github.jamezuk.lyrionanywhere.data.DefaultPlayer, playerId: String?) =
@@ -78,6 +80,7 @@ private class FakeHandle : LocalPlayerHandle {
     override fun start(observer: LocalPlayerObserver) {
         calls += "start"
         qualitiesAtStart = qualities.size
+        readAheadsAtStart = readAheads.size
         this.observer = observer
     }
 
@@ -134,6 +137,19 @@ private class FakeHandle : LocalPlayerHandle {
 
     override fun visualFrame(): ByteArray? = frame
 
+    /** Read-ahead and network switches, in order, and how many came before start. */
+    val readAheads = mutableListOf<Boolean>()
+    val networks = mutableListOf<Boolean>()
+    var readAheadsAtStart: Int? = null
+
+    override fun setReadAhead(on: Boolean) {
+        readAheads += on
+    }
+
+    override fun setNetworkAvailable(available: Boolean) {
+        networks += available
+    }
+
     override fun close() {
         closed = true
     }
@@ -150,13 +166,118 @@ class LocalPlayerRepositoryTest {
 
     private val network = MutableStateFlow(NetworkKind.WIFI)
 
+    /** Folders whose spools were cleared, in order. */
+    private val cleared = mutableListOf<String>()
+
     private fun TestScope.repo(): RustLocalPlayerRepository {
         val d = UnconfinedTestDispatcher(testScheduler)
         val scope = CoroutineScope(backgroundScope.coroutineContext + d)
         return RustLocalPlayerRepository(sessions, settings, scope, d, factory = {
             failWith?.let { throw it }
             FakeHandle().also { handles += it }
-        }, nowMs = { clockMs }, network = network)
+        }, nowMs = { clockMs }, network = network, cacheDir = "/data/app/stream-cache", clearSpools = { cleared += it })
+    }
+
+    /** Gaps in the signal: read ahead when the setting is on, and on mobile data only if allowed there. */
+    @Test
+    fun theReadAheadRule() {
+        for (metered in listOf(false, true)) {
+            assertFalse(ReadAheadSettings(enabled = false, onMobileData = true).effective(metered))
+            assertFalse(ReadAheadSettings(enabled = false, onMobileData = false).effective(metered))
+            assertTrue(ReadAheadSettings(enabled = true, onMobileData = true).effective(metered))
+        }
+        assertTrue(ReadAheadSettings(enabled = true, onMobileData = false).effective(metered = false))
+        assertFalse(ReadAheadSettings(enabled = true, onMobileData = false).effective(metered = true))
+        // On by default, everywhere (the owner's decision).
+        assertTrue(ReadAheadSettings().effective(metered = true))
+        assertTrue(networkAvailable(NetworkKind.WIFI) && networkAvailable(NetworkKind.MOBILE))
+        assertFalse(networkAvailable(NetworkKind.OFFLINE))
+    }
+
+    /** Read-ahead follows the settings and the network live, and a new engine is told before it starts. */
+    @Test
+    fun readAheadFollowsTheSettingsAndTheNetwork() = runTest {
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        assertEquals(listOf(true), handles[0].readAheads)
+        assertEquals(1, handles[0].readAheadsAtStart)
+        assertTrue(r.state.value.readAhead)
+        // Mobile data, allowed there by default: nothing changes.
+        network.value = NetworkKind.MOBILE
+        assertEquals(listOf(true), handles[0].readAheads)
+        // Not on mobile data: off at once, and on again back on Wi-Fi.
+        settings.setReadAhead(ReadAheadSettings(enabled = true, onMobileData = false))
+        assertEquals(listOf(true, false), handles[0].readAheads)
+        assertFalse(r.state.value.readAhead)
+        network.value = NetworkKind.WIFI
+        assertEquals(listOf(true, false, true), handles[0].readAheads)
+        // Off altogether.
+        settings.setReadAhead(ReadAheadSettings(enabled = false, onMobileData = true))
+        assertEquals(false, handles[0].readAheads.last())
+        // A new engine starts with what is wanted now.
+        r.setEnabled(false)
+        r.setEnabled(true)
+        assertEquals(listOf(false), handles.last().readAheads)
+        assertEquals(1, handles.last().readAheadsAtStart)
+    }
+
+    /** No network: the engine is told (it stops reconnecting), and told again when it is back. */
+    @Test
+    fun theNetworkReachesTheEngine() = runTest {
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        assertEquals(listOf(true), handles[0].networks)
+        network.value = NetworkKind.MOBILE
+        assertEquals(listOf(true), handles[0].networks)
+        network.value = NetworkKind.OFFLINE
+        assertFalse(r.state.value.networkAvailable)
+        network.value = NetworkKind.WIFI
+        assertEquals(listOf(true, false, true), handles[0].networks)
+        // A new engine without a network is told so before it starts.
+        network.value = NetworkKind.OFFLINE
+        r.setEnabled(false)
+        r.setEnabled(true)
+        assertEquals(listOf(false), handles.last().networks)
+    }
+
+    /** Spools go at sign-out, revocation and a change of server or user, not when the player is merely switched off. */
+    @Test
+    fun spoolsAreClearedWhenTheSignInEnds() = runTest {
+        val r = repo()
+        settings.setPlayOnPhone(true)
+        val first = Session(NoHandle)
+        sessions.value = first
+        assertEquals(emptyList<String>(), cleared)
+        r.setEnabled(false)
+        r.setEnabled(true)
+        assertEquals("switching the player off and on keeps nothing to clear", emptyList<String>(), cleared)
+        // Signed out (or revoked): cleared once the player has stopped.
+        sessions.value = null
+        assertTrue(handles.last().stopped)
+        assertEquals(listOf("/data/app/stream-cache"), cleared)
+        // Signing in again clears nothing; another server or user does.
+        sessions.value = Session(NoHandle)
+        assertEquals(1, cleared.size)
+        sessions.value = Session(NoHandle)
+        assertEquals(2, cleared.size)
+        // Even with this phone's player off, a sign-out clears what a crash may have left.
+        r.setEnabled(false)
+        sessions.value = null
+        assertEquals(3, cleared.size)
+    }
+
+    /** The cushion shows only while reading ahead, from a second up, and not once stopped. */
+    @Test
+    fun theCushionShownComesFromTheStatus() {
+        val s = status().copy(cushionMs = 240_000u, readAhead = true)
+        assertEquals(240_000L, LocalPlayerState(enabled = true, status = s).cushionMs)
+        assertNull(LocalPlayerState(enabled = true, status = s.copy(readAhead = false)).cushionMs)
+        assertNull(LocalPlayerState(enabled = true, status = s.copy(cushionMs = 0u)).cushionMs)
+        assertNull(LocalPlayerState(enabled = true, status = s.copy(cushionMs = 999u)).cushionMs)
+        assertNull(LocalPlayerState(enabled = true, status = s.copy(connection = PlayerConnection.Stopped("x"))).cushionMs)
+        assertNull(LocalPlayerState().cushionMs)
     }
 
     /** Streaming quality: the setting for the network the phone is on, before the engine starts and on every change. */

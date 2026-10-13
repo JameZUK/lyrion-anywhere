@@ -187,7 +187,12 @@ fun PlayOnList(state: PlayerUiState, actions: PlayOnActions, modifier: Modifier 
             ListItem(
                 leadingContent = { Icon(Icons.Outlined.PhoneAndroid, contentDescription = null) },
                 headlineContent = { Text(stringResource(R.string.this_phone)) },
-                supportingContent = { Text(playOnPhoneDetail(state.local)) },
+                supportingContent = {
+                    Column {
+                        Text(playOnPhoneDetail(state.local))
+                        CushionLine(state.local.cushionMs, Modifier.testTag("phone-cushion"))
+                    }
+                },
                 trailingContent = { if (phone) Icon(Icons.Outlined.Check, contentDescription = null) },
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                 modifier = Modifier

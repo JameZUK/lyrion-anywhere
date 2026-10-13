@@ -139,6 +139,9 @@ class AppContainer(context: Context, scope: CoroutineScope) {
         scope = scope,
         io = Dispatchers.IO,
         network = network.kind,
+        // Live streams spooled for reading ahead (rolling cache): app-private, never backed
+        // up, beside the downloads; the engine creates it and scopes it by server and user.
+        cacheDir = File(app.noBackupFilesDir, "stream-cache").absolutePath,
     )
 
     private val offlineImpl = RustOfflineRepository(

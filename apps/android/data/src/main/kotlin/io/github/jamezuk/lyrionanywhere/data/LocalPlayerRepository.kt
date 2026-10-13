@@ -15,6 +15,7 @@ import io.github.jamezuk.lyrionanywhere.core.PlayerConnection
 import io.github.jamezuk.lyrionanywhere.core.Session
 import io.github.jamezuk.lyrionanywhere.core.SignalPathInfo
 import io.github.jamezuk.lyrionanywhere.core.checkEqProfile
+import io.github.jamezuk.lyrionanywhere.core.removeStreamSpools
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,7 +46,19 @@ data class LocalPlayerState(
     val output: AudioOutput? = null,
     /** The EQ is bypassed for a comparison (A/B), until released. */
     val eqBypass: Boolean = false,
+    /** Reading the next track ahead is wanted now (the settings, on this network). */
+    val readAhead: Boolean = true,
+    /** The phone has a network (as Android says). */
+    val networkAvailable: Boolean = true,
 ) {
+    /**
+     * How much listening is on the phone ahead of what is heard (ms), to show as "4 min
+     * buffered ahead": only while the player reads ahead, and null when nothing is.
+     */
+    val cushionMs: Long?
+        get() = status?.takeIf { it.readAhead && it.connection !is PlayerConnection.Stopped }
+            ?.cushionMs?.toLong()?.takeIf { it >= 1_000 }
+
     /** The Sound settings as they apply on the current output. */
     val effectiveSound: SoundSettings get() = sound.forOutput(output)
 
@@ -153,7 +166,21 @@ interface LocalPlayerHandle {
 
     fun setLoudnessReferenceDb(db: Double?) {}
 
+    /** Read the next track ahead (rolling cache, Phase A). */
+    fun setReadAhead(on: Boolean) {}
+
+    /** Whether the phone has a network (no reconnecting without one). */
+    fun setNetworkAvailable(available: Boolean) {}
+
     fun close()
+}
+
+/** Whether the player is told the phone has a network: anything but offline. */
+fun networkAvailable(kind: NetworkKind): Boolean = kind != NetworkKind.OFFLINE
+
+/** The engine's spool clean-up (every server's and user's), ignoring what can't be done. */
+fun rustClearSpools(cacheDir: String) {
+    runCatching { removeStreamSpools(cacheDir) }
 }
 
 /** The stream level for the network: the mobile-data setting on a metered network. */
@@ -165,10 +192,10 @@ private const val FADE_SAME_MS = 2_000L
 /** Highest rate offered to LMS; it transcodes anything above. */
 const val MAX_SAMPLE_RATE = 192_000
 
-private class RustHandle(session: Session) : LocalPlayerHandle {
+private class RustHandle(session: Session, cacheDir: String?, readAhead: Boolean) : LocalPlayerHandle {
     private val player = LocalPlayer(
         session,
-        LocalPlayerConfig(OutputKind.A_AUDIO, MAX_SAMPLE_RATE.toUInt(), DEFAULT_DSP),
+        LocalPlayerConfig(OutputKind.A_AUDIO, MAX_SAMPLE_RATE.toUInt(), DEFAULT_DSP, cacheDir, readAhead),
     )
 
     override fun start(observer: LocalPlayerObserver) = player.start(observer)
@@ -197,6 +224,10 @@ private class RustHandle(session: Session) : LocalPlayerHandle {
 
     override fun setLoudnessReferenceDb(db: Double?) = player.setLoudnessReferenceDb(db)
 
+    override fun setReadAhead(on: Boolean) = player.setReadAhead(on)
+
+    override fun setNetworkAvailable(available: Boolean) = player.setNetworkAvailable(available)
+
     override fun close() = player.close()
 }
 
@@ -220,11 +251,19 @@ class RustLocalPlayerRepository(
     scope: CoroutineScope,
     private val io: CoroutineDispatcher,
     private val eqCheck: (String) -> EqCheck = ::rustEqCheck,
-    private val factory: (Session) -> LocalPlayerHandle = { RustHandle(it) },
+    /** Tests: makes the engine (null: the Rust player, spooling to [cacheDir]). */
+    private val factory: ((Session) -> LocalPlayerHandle)? = null,
     /** A monotonic clock (ms), for the sleep fade. */
     private val nowMs: () -> Long = { System.nanoTime() / 1_000_000 },
     /** Wi-Fi or mobile data, for the stream level (none: as on Wi-Fi). */
     private val network: StateFlow<NetworkKind>? = null,
+    /**
+     * An app-private folder (under `noBackupFilesDir`, beside downloads) where the player
+     * spools live streams; null keeps them in memory (and reads nothing ahead).
+     */
+    private val cacheDir: String? = null,
+    /** Deletes every spool under the folder (at sign-out, revocation and server change). */
+    private val clearSpools: (String) -> Unit = ::rustClearSpools,
 ) : LocalPlayerRepository {
     private val _state = MutableStateFlow(LocalPlayerState())
     override val state: StateFlow<LocalPlayerState> = _state.asStateFlow()
@@ -239,6 +278,11 @@ class RustLocalPlayerRepository(
     @Volatile private var output: AudioOutput? = null
     @Volatile private var bypass = false
     @Volatile private var loudnessReference: Double? = null
+    @Volatile private var readAhead = true
+    @Volatile private var networkUp = true
+
+    /** The session the player last followed (null: signed out), to notice a change of it. */
+    private var lastSession: Session? = null
 
     /** The DSP last given to the engine (or that it started with). */
     @Volatile private var applied: DspSettings = DEFAULT_DSP
@@ -271,7 +315,7 @@ class RustLocalPlayerRepository(
         val wanted = settings.settings.map { it.playOnPhone }.distinctUntilChanged()
         scope.launch {
             combine(sessions, wanted) { s, on -> s to on }.collectLatest { (s, on) ->
-                reconcile(s.takeIf { on }, on)
+                reconcile(s.takeIf { on }, on, s)
             }
         }
         scope.launch {
@@ -298,9 +342,30 @@ class RustLocalPlayerRepository(
                     withContext(io) { handle?.setStreamQuality(q) }
                 }
         }
+        scope.launch {
+            // Read ahead by the settings and the network (Gaps in the signal), applied live.
+            val kinds = network ?: MutableStateFlow(NetworkKind.WIFI)
+            combine(settings.settings.map { it.readAhead }, kinds) { s, k -> s.effective(k == NetworkKind.MOBILE) }
+                .distinctUntilChanged()
+                .collect { on ->
+                    readAhead = on
+                    _state.update { it.copy(readAhead = on) }
+                    withContext(io) { handle?.setReadAhead(on) }
+                }
+        }
+        scope.launch {
+            // No network: the player stops trying to reconnect until it is back.
+            (network ?: MutableStateFlow(NetworkKind.WIFI)).map(::networkAvailable).distinctUntilChanged().collect { up ->
+                networkUp = up
+                _state.update { it.copy(networkAvailable = up) }
+                withContext(io) { handle?.setNetworkAvailable(up) }
+            }
+        }
     }
 
-    private suspend fun reconcile(session: Session?, enabled: Boolean) = withContext(io) {
+    private suspend fun reconcile(session: Session?, enabled: Boolean, signedIn: Session?) = withContext(io) {
+        val changed = lastSession != null && signedIn !== lastSession
+        lastSession = signedIn
         if (session != null && session === handleSession && handle != null) return@withContext
         handle?.let {
             it.stop()
@@ -308,6 +373,8 @@ class RustLocalPlayerRepository(
         }
         handle = null
         handleSession = null
+        // Signed out, revoked, or another server or user: nothing of the old stream stays.
+        if (changed) cacheDir?.let(clearSpools)
         _state.value = LocalPlayerState(
             enabled = enabled,
             sound = sound,
@@ -315,10 +382,12 @@ class RustLocalPlayerRepository(
             metered = _state.value.metered,
             output = output,
             eqBypass = bypass,
+            readAhead = readAhead,
+            networkAvailable = networkUp,
         )
         if (session == null) return@withContext
         try {
-            val h = factory(session)
+            val h = factory?.invoke(session) ?: RustHandle(session, cacheDir, readAhead)
             handle = h
             handleSession = session
             fade = null // a new engine has no fade yet
@@ -331,6 +400,8 @@ class RustLocalPlayerRepository(
             h.setStreamQuality(quality)
             h.setVisualiser(visualiser)
             h.setLoudnessReferenceDb(loudnessReference)
+            h.setReadAhead(readAhead)
+            h.setNetworkAvailable(networkUp)
             h.start(Observer(h))
         } catch (e: Exception) {
             handle = null

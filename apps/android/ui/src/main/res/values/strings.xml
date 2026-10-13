@@ -1009,4 +1009,25 @@
     <string name="sound_player_level_value">Player level: %1$d%%</string>
     <string name="sound_player_level_body">Lyrion\'s own level for this phone\'s player, applied before the phone\'s volume. Normally left at 100%; LMS can still change it.</string>
     <string name="sound_player_level_off">Turn on Play on this phone to set its level.</string>
+    <!-- Gaps in the signal: reading ahead (rolling cache, Phase A) -->
+    <string name="gaps_title">Gaps in the signal</string>
+    <string name="gaps_explain">This phone fetches the next track well before the current one ends, so tunnels, lifts and patchy mobile data don\'t stop the music. What it fetches is kept only until it has played.</string>
+    <string name="read_ahead">Read ahead the next track</string>
+    <string name="read_ahead_detail">Keeps up to a track in hand on this phone</string>
+    <string name="read_ahead_mobile">On mobile data too</string>
+    <string name="read_ahead_mobile_detail">A track skipped early still uses its data</string>
+    <string name="read_ahead_mobile_off">Turn on reading ahead first</string>
+    <string name="cushion_ahead">%1$s buffered ahead</string>
+    <plurals name="cushion_hours">
+        <item quantity="one">%1$d hour</item>
+        <item quantity="other">%1$d hours</item>
+    </plurals>
+    <plurals name="cushion_minutes">
+        <item quantity="one">%1$d minute</item>
+        <item quantity="other">%1$d minutes</item>
+    </plurals>
+    <plurals name="cushion_seconds">
+        <item quantity="one">%1$d second</item>
+        <item quantity="other">%1$d seconds</item>
+    </plurals>
 </resources>

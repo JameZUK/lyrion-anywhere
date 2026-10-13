@@ -20,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -39,6 +40,52 @@ import io.github.jamezuk.lyrionanywhere.ui.R
 fun formatRate(hz: UInt): String {
     val k = hz.toLong()
     return if (k % 1000 == 0L) "${k / 1000} kHz" else "${"%.1f".format(java.util.Locale.ROOT, k / 1000.0)} kHz"
+}
+
+/** A cushion of listening held ahead, in whole hours, minutes and seconds. */
+data class CushionParts(val hours: Long, val minutes: Long, val seconds: Long)
+
+/**
+ * How a cushion is shown: seconds under a minute, whole minutes under an hour, then hours
+ * and minutes; null below a second (nothing to show).
+ */
+fun cushionParts(ms: Long): CushionParts? = when {
+    ms < 1_000 -> null
+    ms < 60_000 -> CushionParts(0, 0, ms / 1_000)
+    ms < 3_600_000 -> CushionParts(0, ms / 60_000, 0)
+    else -> CushionParts(ms / 3_600_000, (ms % 3_600_000) / 60_000, 0)
+}
+
+/** "45 s", "4 min", "1 h 5 min", "2 h"; null below a second. */
+fun formatCushion(ms: Long): String? = cushionParts(ms)?.let { p ->
+    when {
+        p.hours > 0 && p.minutes > 0 -> "${p.hours} h ${p.minutes} min"
+        p.hours > 0 -> "${p.hours} h"
+        p.minutes > 0 -> "${p.minutes} min"
+        else -> "${p.seconds} s"
+    }
+}
+
+/** The cushion in words, for TalkBack: "1 hour 5 minutes". */
+@Composable
+private fun cushionSpoken(p: CushionParts): String = buildList {
+    if (p.hours > 0) add(pluralStringResource(R.plurals.cushion_hours, p.hours.toInt(), p.hours.toInt()))
+    if (p.minutes > 0) add(pluralStringResource(R.plurals.cushion_minutes, p.minutes.toInt(), p.minutes.toInt()))
+    if (p.hours == 0L && p.minutes == 0L) add(pluralStringResource(R.plurals.cushion_seconds, p.seconds.toInt(), p.seconds.toInt()))
+}.joinToString(" ")
+
+/** "4 min buffered ahead" (read out in full words); nothing below a second. */
+@Composable
+fun CushionLine(ms: Long?, modifier: Modifier = Modifier) {
+    val p = ms?.let(::cushionParts) ?: return
+    val shown = stringResource(R.string.cushion_ahead, formatCushion(ms).orEmpty())
+    val spoken = stringResource(R.string.cushion_ahead, cushionSpoken(p))
+    Text(
+        shown,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier.semantics { contentDescription = spoken },
+    )
 }
 
 @Composable
@@ -65,6 +112,8 @@ fun SignalPathPanel(
     metered: Boolean = false,
     /** The EQ profile in use on this output (Wave 2 §5.3; null: none). */
     eq: String? = null,
+    /** Listening held ahead while reading ahead (ms; null: none to show). */
+    cushionMs: Long? = null,
 ) {
     Card(modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -112,6 +161,7 @@ fun SignalPathPanel(
                     ),
                 )
             }
+            CushionLine(cushionMs, Modifier.testTag("signal-cushion"))
             path.stages.forEach { StageRow(it) }
             if (eq != null) EqChip(eq)
             LabelledLine(

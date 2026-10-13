@@ -81,6 +81,20 @@ class SettingsStoreTest {
         assertEquals(StreamingSettings(), DataStoreSettings(s).settings.first().streaming)
     }
 
+    /** Gaps in the signal (rolling cache): reading ahead on, also on mobile data, by default; both kept. */
+    @Test
+    fun readAheadIsOnByDefaultAndSurvivesARestart() = runBlocking {
+        assertEquals(ReadAheadSettings(enabled = true, onMobileData = true), DataStoreSettings(store()).settings.first().readAhead)
+        DataStoreSettings(restart()).setReadAhead(ReadAheadSettings(enabled = true, onMobileData = false))
+        assertEquals(ReadAheadSettings(true, false), DataStoreSettings(restart()).settings.first().readAhead)
+        DataStoreSettings(restart()).setReadAhead(ReadAheadSettings(enabled = false, onMobileData = false))
+        assertEquals(ReadAheadSettings(false, false), DataStoreSettings(restart()).settings.first().readAhead)
+        DataStoreSettings(restart()).setReadAhead(ReadAheadSettings())
+        assertEquals(ReadAheadSettings(), DataStoreSettings(restart()).settings.first().readAhead)
+        // Other settings are left alone.
+        assertEquals(StreamingSettings(), DataStoreSettings(restart()).settings.first().streaming)
+    }
+
     /** The lyrics peek (Wave 1): on by default, and kept. */
     @Test
     fun lyricsPeekIsOnByDefaultAndSurvivesARestart() = runBlocking {
