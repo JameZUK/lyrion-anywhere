@@ -1,6 +1,7 @@
 package io.github.jamezuk.lyrionanywhere.ui.player
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -162,6 +163,13 @@ fun SignalPathPanel(
                 )
             }
             CushionLine(cushionMs, Modifier.testTag("signal-cushion"))
+            if (path.fromCache) {
+                // The replay cache: its first bytes came from the network, the rest from the
+                // phone, checked by its hash, so the audio is the same.
+                Box(Modifier.testTag("signal-from-cache")) {
+                    StageRow(SignalStage(stringResource(R.string.stage_from_cache), bitTransparent = true, resamples = false))
+                }
+            }
             path.stages.forEach { StageRow(it) }
             if (eq != null) EqChip(eq)
             LabelledLine(
