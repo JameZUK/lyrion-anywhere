@@ -127,7 +127,6 @@ import io.github.jamezuk.lyrionanywhere.ui.settings.HistoryMessage
 import io.github.jamezuk.lyrionanywhere.ui.settings.HistoryScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.HistorySettings
 import io.github.jamezuk.lyrionanywhere.ui.settings.HistoryViewModel
-import io.github.jamezuk.lyrionanywhere.core.RunnerUpdate
 import io.github.jamezuk.lyrionanywhere.ui.library.HomeScreen
 import io.github.jamezuk.lyrionanywhere.ui.library.LibraryDestination
 import io.github.jamezuk.lyrionanywhere.ui.library.LibraryScreen
@@ -279,6 +278,7 @@ private fun messageText(res: Resources, m: PlayerMessage): String = when (m) {
     is PlayerMessage.SleepSet -> res.getString(R.string.sleep_set, sleepLeft(res, m.seconds))
     PlayerMessage.SleepOff -> res.getString(R.string.sleep_cancelled)
     PlayerMessage.SleepUnknown -> res.getString(R.string.sleep_unknown)
+    is PlayerMessage.StationStopped -> res.getString(R.string.station_broken, m.reason)
 }
 
 /** "45 s", "27 min", "1 h 5 min" (as the web app and Now playing). */
@@ -308,6 +308,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
             lyrics = LyricsCache(container.lyrics),
             ratings = container.ratings,
             nowPlaying = nowPlayingHub,
+            me = container.me,
             clock = clock,
         )
     }
@@ -410,22 +411,6 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
             is MenuEvent.CantSave -> scope.launch {
                 snackbar.showSnackbar(res.getString(R.string.menu_cant_save, errorText(res, e.error)))
             }
-        }
-    }
-
-    // A station started from Home keeps going: each status update may add another batch.
-    LaunchedEffect(playerState.selectedId, playerState.status, playerState.queue) {
-        val id = playerState.selectedId ?: return@LaunchedEffect
-        val status = playerState.status ?: return@LaunchedEffect
-        val update = container.me.onStatus(
-            id,
-            status.queueLength.toInt(),
-            status.queueIndex?.toInt() ?: 0,
-            status.current?.id,
-            playerState.queue.mapNotNull { it.track.id },
-        )
-        if (update is RunnerUpdate.Stopped) {
-            snackbar.showSnackbar(res.getString(R.string.station_broken, update.reason))
         }
     }
 

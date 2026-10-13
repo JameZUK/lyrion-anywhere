@@ -57,7 +57,7 @@ class Wave1ViewModelTest : MainDispatcherTest() {
         try {
             body()
         } finally {
-            vms.forEach { it.stop() }
+            vms.forEach { it.close() }
         }
     }
 
@@ -122,6 +122,59 @@ class Wave1ViewModelTest : MainDispatcherTest() {
         vm.refresh()
         assertEquals(listOf("sleep 20 $me"), sleeps(players))
         vm.stop()
+    }
+
+    @Test
+    fun anArmedTimerIsKeptInStepWithTheAppInTheBackground() = vmTest {
+        // Regression: re-arming lived only while the UI was visible.
+        val (vm, players) = setup()
+        vm.setSleep(SleepChoice.End(SleepEnd.TRACK))
+        players.commands.clear()
+        vm.stop() // the app goes to the background
+        players.statusResult = ApiResult.Ok(
+            sampleStatus(elapsed = 280.0).copy(durationSecs = 300.0, current = track(1, 7, 300.0), sleepSecs = 198.0),
+        )
+        testScheduler.advanceTimeBy(PlayerViewModel.BACKGROUND_POLL_MS + 1)
+        testScheduler.runCurrent()
+        assertEquals(listOf("sleep 20 $me"), sleeps(players))
+        // Once the timer is over, the background poll ends by itself.
+        now += 600_000
+        players.statusResult = ApiResult.Ok(sampleStatus(elapsed = 10.0).copy(durationSecs = 300.0, current = track(1, 7, 300.0)))
+        testScheduler.advanceTimeBy(PlayerViewModel.BACKGROUND_POLL_MS + 1)
+        testScheduler.runCurrent()
+        assertNull(vm.state.value.sleepArm)
+        val polls = players.statusCalls.size
+        testScheduler.advanceTimeBy(PlayerViewModel.BACKGROUND_POLL_MS * 3)
+        testScheduler.runCurrent()
+        assertEquals(polls, players.statusCalls.size)
+    }
+
+    @Test
+    fun aStationIsKeptGoingWithTheAppInTheBackground() = vmTest {
+        val players = FakePlayers()
+        val settings = FakeSettings()
+        settings.state.update { it.copy(defaultPlayer = DefaultPlayer.LAST_USED, selectedPlayerId = me) }
+        val stations = FakeMe()
+        val vm = PlayerViewModel(players, FakeEvents(), settings, me = stations) { now }
+        vms += vm
+        vm.start()
+        stations.startStation(1, me)
+        vm.stop()
+        val messages = mutableListOf<PlayerMessage>()
+        val c = backgroundScope.launch { vm.messages.collect { messages += it } }
+        stations.statuses.clear()
+        stations.statusUpdate = io.github.jamezuk.lyrionanywhere.core.RunnerUpdate.Stopped("this station is gone")
+        testScheduler.advanceTimeBy(PlayerViewModel.BACKGROUND_POLL_MS + 1)
+        testScheduler.runCurrent()
+        assertEquals(listOf(me to listOf(1L, 2L)), stations.statuses)
+        assertTrue(messages.contains(PlayerMessage.StationStopped("this station is gone")))
+        // Nothing to keep going: no more polling.
+        stations.stopStation()
+        stations.statuses.clear()
+        testScheduler.advanceTimeBy(PlayerViewModel.BACKGROUND_POLL_MS * 3)
+        testScheduler.runCurrent()
+        assertTrue(stations.statuses.isEmpty())
+        c.cancel()
     }
 
     @Test

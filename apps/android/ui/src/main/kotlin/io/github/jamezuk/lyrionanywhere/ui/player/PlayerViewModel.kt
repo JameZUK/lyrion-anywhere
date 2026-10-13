@@ -42,6 +42,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import io.github.jamezuk.lyrionanywhere.core.RunnerUpdate
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -152,6 +155,9 @@ sealed interface PlayerMessage {
 
     /** "End of …" can't be worked out (a stream with no set length, or over a day away). */
     data object SleepUnknown : PlayerMessage
+
+    /** The station kept going stopped: the server refused its next batch ([reason]). */
+    data class StationStopped(val reason: String) : PlayerMessage
 }
 
 /**
@@ -172,6 +178,8 @@ class PlayerViewModel(
     private val ratings: RatingsRepository? = null,
     /** Where the home-screen widget and tile learn what plays (none in tests). */
     private val nowPlaying: NowPlayingHub? = null,
+    /** Stations kept going (none without). */
+    private val me: io.github.jamezuk.lyrionanywhere.data.MeRepository? = null,
     private val clock: () -> Long,
 ) : ViewModel() {
     /** The last removal, for Undo (only for the player it was removed from). */
@@ -334,6 +342,35 @@ class PlayerViewModel(
         live?.cancel()
         live = null
         _state.update { it.copy(live = false) }
+        keepGoing()
+    }
+
+    /** Stop everything, the background poll too (sign-out, tests). */
+    fun close() {
+        stop()
+        background?.cancel()
+        background = null
+    }
+
+    /** The slow poll that runs while the UI isn't visible (see [keepGoing]). */
+    private var background: Job? = null
+
+    /** Whether anything needs the player watched while the UI isn't visible. */
+    private fun needsWatching() = _state.value.sleepArm != null || me?.activeStation?.value != null
+
+    /**
+     * While the UI isn't visible, a station still needs its next batch and an "end of …"
+     * sleep timer still needs setting again when the end moves: poll slowly until neither
+     * is wanted, or the UI is back.
+     */
+    private fun keepGoing() {
+        if (background?.isActive == true || !needsWatching()) return
+        background = viewModelScope.launch {
+            while (live == null && needsWatching()) {
+                delay(BACKGROUND_POLL_MS)
+                if (live == null) refreshStatus(readQueue = true)
+            }
+        }
     }
 
     private fun onEvent(event: ServerEvent) {
@@ -391,7 +428,7 @@ class PlayerViewModel(
         viewModelScope.launch { loadPlayers() }
     }
 
-    private suspend fun refreshStatus() {
+    private suspend fun refreshStatus(readQueue: Boolean = false) {
         val id = _state.value.selectedId ?: return
         val generation = changeGeneration
         val at = clock()
@@ -402,6 +439,7 @@ class PlayerViewModel(
                     else it.copy(status = r.value, statusAt = at, error = null)
                 }
                 sleepCheck(id, r.value)
+                followStation(id, r.value, readQueue)
             }
             is ApiResult.Err -> _state.update { if (it.selectedId == id) it.copy(error = r.error) else it }
         }
@@ -787,6 +825,26 @@ class PlayerViewModel(
         }
     }
 
+    /**
+     * A station started from Home keeps going: each status may add another batch. Not
+     * cancelled by the next status (a cancelled call would leave the runner waiting on a
+     * batch for ever); the runner itself makes sure only one batch is fetched at a time.
+     * [readQueue]: read the queue afresh (in the background, where it isn't kept).
+     */
+    private suspend fun followStation(id: String, status: PlayerStatus, readQueue: Boolean) {
+        val m = me ?: return
+        if (m.activeStation.value == null) return
+        val queued = if (readQueue || _state.value.queue.isEmpty()) {
+            (players.queue(id, 0, QUEUE_PAGE) as? ApiResult.Ok)?.value?.mapNotNull { it.id } ?: return
+        } else {
+            _state.value.queue.mapNotNull { it.track.id }
+        }
+        val update = withContext(NonCancellable) {
+            m.onStatus(id, status.queueLength.toInt(), status.queueIndex?.toInt() ?: 0, status.current?.id, queued)
+        }
+        if (update is RunnerUpdate.Stopped) _messages.trySend(PlayerMessage.StationStopped(update.reason))
+    }
+
     // --- sleep timer (Wave 1 §1) ---------------------------------------------------------------
 
     /** The queue after the current track (durations and albums), read once per queue state. */
@@ -956,6 +1014,8 @@ class PlayerViewModel(
         }
 
         const val EVENT_COALESCE_MS = 150L
+        /** Polling while the UI isn't visible and a station or sleep timer needs it. */
+        const val BACKGROUND_POLL_MS = 20_000L
         /** Polling while the event stream is down. */
         const val FAST_POLL_MS = 5_000L
         /** A safety net while it is up. */

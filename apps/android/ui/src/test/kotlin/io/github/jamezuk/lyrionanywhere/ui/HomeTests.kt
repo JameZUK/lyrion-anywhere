@@ -158,7 +158,13 @@ class FakeMe : MeRepository {
         return startResult
     }
 
-    override suspend fun onStatus(player: String, tracks: Int, current: Int, playing: Long?, queued: List<Long>) = RunnerUpdate.Idle
+    val statuses = mutableListOf<Pair<String, List<Long>>>()
+    var statusUpdate: RunnerUpdate = RunnerUpdate.Idle
+
+    override suspend fun onStatus(player: String, tracks: Int, current: Int, playing: Long?, queued: List<Long>): RunnerUpdate {
+        statuses += player to queued
+        return statusUpdate
+    }
 
     override fun stopStation() {
         active.value = null
