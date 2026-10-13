@@ -251,6 +251,14 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
   - **`STMu`:** only when every track is drained and nothing is queued.
   - **`strm q`:** clears everything. **`strm f`:** drops the queued and fetching tracks, keeps the audible one (S1).
 - **Not before 20 s:** don't report ready before 20 s of the current track have been heard (to be tuned). This saves data for people who skip fast.
+- **Core built (2026-10-13), with these refinements:**
+  - **Fetched and fed are separate.** `open_stream()`, STAT `bytes_received` and `HELO` follow the newest track (the one being fetched). `on_stream_data()` and `wants_stream_data()` follow the oldest track whose input hasn't ended, so a spool can keep feeding the current track while the next one downloads. A queued track is held to `INPUT_HIGH_WATER` until it decodes.
+  - **Spool calls:** `stream_received()` (network done: `DSCO`, and `STMd` may go) and `stream_bytes_received(total)` (the network count, for STAT and resume). `on_stream_end()` still ends the decoder's input; it sends `DSCO` only if `stream_received()` didn't.
+  - **`STMd` fallback:** if the track finishes decoding first (a short track), `STMd` goes then, as before. Never twice.
+  - **`strm f` with nothing audible** (not playing or paused, or the audible track fully played) is a full flush, as before. Otherwise hosts follow it through `trim_count()` / `trim()`, not `flush_count()`.
+  - **A `strm s` while the current track is still being fetched** replaces it, as before (LMS doesn't do this without a `strm q`).
+  - **`STMr` after `STMo`** is sent only in read-ahead mode, so the web and CLI players are unchanged.
+- **A4 and A6 in the core:** `set_link_up(up, now)`; with the link down, running out of audio sends `STMo`, and `STMu` waits until the link has been back 5 s (`LINK_SETTLE_MS`) with nothing new from LMS. `stall_ms()`, `resume_after_stall(in_sync_group, now)` (skips a stall over 50 ms in a group, or reports `NotEnoughBuffered`) and `skip_audio(ms)`.
 
 **A3. Longer resume grace.** Effort: M.
 - **Gateway:**

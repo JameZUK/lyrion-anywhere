@@ -57,6 +57,15 @@ const MAX_START_AHEAD_MS: u64 = 30_000;
 /// plays. A live stream (radio) arrives at about real time, so it keeps waiting for LMS's
 /// threshold and the cushion that gives it.
 const QUICK_START_SPEEDUP: u64 = 2;
+/// In read-ahead mode, `STMd` waits until this much of the track has been heard (see
+/// [`Player::set_ready_after_ms`]).
+pub const DEFAULT_READY_AFTER_MS: u64 = 20_000;
+/// After the link to LMS comes back, how long a deferred `STMu` waits for LMS to send the
+/// next track (it answers the `STMd` that waited in the host's outbox within milliseconds).
+pub const LINK_SETTLE_MS: u64 = 5_000;
+/// A player in a sync group drops a stall longer than this on resume (see
+/// [`Player::resume_after_stall`]).
+pub const SYNC_STALL_SKIP_MS: u64 = 50;
 
 #[derive(Debug, Clone)]
 pub struct PlayerConfig {
@@ -180,10 +189,19 @@ struct Track {
     decoder: StreamDecoder,
     autostart: u8,
     threshold: usize,
+    /// Bytes received from the network: the bytes fed, or more if the host spools the
+    /// stream ahead of the decoder and says so ([`Player::stream_bytes_received`]).
     bytes_received: u64,
+    /// Bytes handed to the decoder ([`Player::on_stream_data`]).
+    bytes_fed: u64,
     replay_gain: f32,
+    /// The network stream has ended (`DSCO` sent), or was never opened: nothing to fetch.
     stream_ended: bool,
+    /// No more bytes will be fed to the decoder.
+    input_ended: bool,
     decode_done: bool,
+    /// `STMd` has been sent for this track.
+    ready_sent: bool,
     /// When the stream was requested (host clock, ms).
     opened_at: u64,
 }
@@ -225,7 +243,12 @@ pub struct Player {
     reader: ServerFrameReader,
     actions: Vec<Action>,
     now: u64,
+    /// The track being decoded (or, once decoded, the last one).
     track: Option<Track>,
+    /// Read-ahead mode only: a track whose `strm s` came while `track` was still decoding.
+    /// It is fetched now and decoded once `track` finishes. LMS never streams more than one
+    /// track ahead (it waits for the next track's `STMs`), so one slot is enough.
+    next: Option<Track>,
     next_seq: u32,
     /// Interleaved stereo PCM, in segment order.
     pcm: VecDeque<f32>,
@@ -264,6 +287,37 @@ pub struct Player {
     corrections: Vec<OutputCorrection>,
     /// A pause correction runs until this host time (ms): no extrapolation until then.
     corrected_until: u64,
+    /// Read-ahead mode (see [`Player::set_ready_when_received`]).
+    ready_when_received: bool,
+    /// In read-ahead mode, how much of a track must be heard before `STMd` is sent early.
+    ready_after_ms: u64,
+    /// The host's link to LMS is up (see [`Player::set_link_up`]), and since when.
+    link_up: bool,
+    link_up_at: u64,
+    /// The audio ran out with the link down, so `STMo` was sent in place of `STMu`; `STMu`
+    /// waits for the link to have been back for [`LINK_SETTLE_MS`].
+    stmu_deferred: bool,
+    /// The last track `STMs` was sent for: never twice for one track.
+    stms_seq: Option<u32>,
+    /// The output has been stalled (an underrun) since this host time.
+    stall_since: Option<u64>,
+    /// Tests: every `STMs` and `STMd` sent, with the track it was for.
+    #[cfg(test)]
+    sent_log: Vec<(&'static str, u32)>,
+}
+
+/// What [`Player::resume_after_stall`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StallResume {
+    /// The output was not stalled.
+    NotStalled,
+    /// Carry on from where the audio stopped: the player is alone, or the stall was short.
+    CarryOn { stalled_ms: u64 },
+    /// `stalled_ms` of audio were dropped, so the player is back in step with its group.
+    Skipped { stalled_ms: u64 },
+    /// In a group, but less audio is decoded than the stall: the host should flush and let
+    /// LMS restart the player at the group's position.
+    NotEnoughBuffered { stalled_ms: u64, buffered_ms: u64 },
 }
 
 impl Player {
@@ -295,7 +349,103 @@ impl Player {
             output_corrections: false,
             corrections: Vec::new(),
             corrected_until: 0,
+            next: None,
+            ready_when_received: false,
+            ready_after_ms: DEFAULT_READY_AFTER_MS,
+            link_up: true,
+            link_up_at: 0,
+            stmu_deferred: false,
+            stms_seq: None,
+            stall_since: None,
+            #[cfg(test)]
+            sent_log: Vec::new(),
         }
+    }
+
+    /// Tests: record a track event (`STMs`, `STMd`) and the track it was for.
+    fn note_sent(&mut self, _event: &'static str, _seq: u32) {
+        #[cfg(test)]
+        self.sent_log.push((_event, _seq));
+    }
+
+    /// Read-ahead mode, for a host that fetches whole tracks ahead (a disk spool). Off by
+    /// default, and then nothing changes. When on:
+    /// - `STMd` (which makes LMS send the next track) is sent once per track, as soon as its
+    ///   whole stream is received ([`Player::stream_received`] or [`Player::on_stream_end`])
+    ///   and at least [`Player::set_ready_after_ms`] of it has been heard; or, at the latest,
+    ///   when it finishes decoding, as before.
+    /// - A `strm s` that arrives while the current track is still decoding (its stream fully
+    ///   received) is queued as the next track instead of replacing it. Its stream is fetched
+    ///   at once and it is decoded when the current one finishes, gaplessly.
+    /// - [`Player::open_stream`], STAT `bytes_received` and `HELO` refer to the track being
+    ///   fetched (the newest); [`Player::on_stream_data`] and [`Player::wants_stream_data`]
+    ///   to the track being fed (the oldest whose input hasn't ended). Elapsed time, `STMs`,
+    ///   segments and gapless playback follow the audible track, as always.
+    /// - `STMu` is sent only when every track has played out and nothing is queued.
+    /// - After an `STMo`, the first audio heard again sends `STMr` (resumed), unless it is a
+    ///   new track, which sends `STMs`. Never a second `STMs` for one track: in a sync group
+    ///   that moves the whole group on a track.
+    pub fn set_ready_when_received(&mut self, on: bool) {
+        self.ready_when_received = on;
+    }
+
+    /// In read-ahead mode, how much of a track must have been heard before `STMd` is sent
+    /// early (default [`DEFAULT_READY_AFTER_MS`]). This saves fetching the next track for
+    /// someone skipping quickly through tracks.
+    pub fn set_ready_after_ms(&mut self, ms: u64) {
+        self.ready_after_ms = ms;
+    }
+
+    /// Whether the host's link to LMS is up (default: up). If the audio runs out while the
+    /// link is down, `STMo` is sent instead of `STMu`, so LMS doesn't treat the queue as
+    /// finished (`STMu` with the next track already received made LMS stop); `STMu` follows
+    /// only once the link has been back [`LINK_SETTLE_MS`] and LMS still sent nothing new.
+    pub fn set_link_up(&mut self, up: bool, now_ms: u64) {
+        if up && !self.link_up {
+            self.link_up_at = now_ms;
+        }
+        self.link_up = up;
+    }
+
+    /// How long the output has been stalled (an underrun reported by
+    /// [`Player::output_underrun`], or the audio running out with the link down), if it is
+    /// stalled now. A stall ends when audio is heard again or [`Player::resume_after_stall`]
+    /// is called.
+    pub fn stall_ms(&self, now_ms: u64) -> Option<u64> {
+        self.stall_since.map(|at| now_ms.saturating_sub(at))
+    }
+
+    /// Call when audio is available again after a stall, before pulling it. The policy is
+    /// the host's: `in_sync_group` says whether the player is synced with others (LMS
+    /// `sync ?`). Alone, the player carries on where it stopped. In a group, a stall over
+    /// [`SYNC_STALL_SKIP_MS`] drops that much audio, so the player is back in step with the
+    /// others (LMS's small corrections do the rest); if less than that is decoded, nothing
+    /// is dropped and [`StallResume::NotEnoughBuffered`] says the host should flush and let
+    /// LMS restart the player.
+    pub fn resume_after_stall(&mut self, in_sync_group: bool, now_ms: u64) -> StallResume {
+        self.now = now_ms;
+        let Some(since) = self.stall_since.take() else {
+            return StallResume::NotStalled;
+        };
+        let stalled_ms = now_ms.saturating_sub(since);
+        if !in_sync_group || stalled_ms <= SYNC_STALL_SKIP_MS {
+            return StallResume::CarryOn { stalled_ms };
+        }
+        let buffered_ms = self.buffered_ms();
+        if buffered_ms < stalled_ms {
+            return StallResume::NotEnoughBuffered {
+                stalled_ms,
+                buffered_ms,
+            };
+        }
+        self.skip_ahead(stalled_ms);
+        StallResume::Skipped { stalled_ms }
+    }
+
+    /// Drop the next `ms` of decoded audio, counting it as played (elapsed time moves on).
+    /// Returns the milliseconds dropped, which is less if less is decoded.
+    pub fn skip_audio(&mut self, ms: u64) -> u64 {
+        self.skip_ahead(ms)
     }
 
     /// Let the host apply LMS's sync corrections at its output stage. The timed start, the
@@ -352,8 +502,13 @@ impl Player {
     /// The host's output ran dry while playing. If the current track is still arriving
     /// (an underrun, not the end of the audio), LMS is told once with `STMo`, as hardware
     /// players do; reported again only after audio has flowed in between.
+    ///
+    /// The stall is timed from the first report (see [`Player::stall_ms`]).
     pub fn output_underrun(&mut self) {
-        let streaming = self.track.as_ref().is_some_and(|t| !t.decode_done);
+        if self.output == OutputState::Playing && self.stall_since.is_none() {
+            self.stall_since = Some(self.now);
+        }
+        let streaming = self.decoding();
         if self.output == OutputState::Playing && streaming && !self.underrun_reported {
             self.underrun_reported = true;
             self.send_stat(*b"STMo", 0);
@@ -397,7 +552,7 @@ impl Player {
             mac: self.cfg.mac,
             uuid: self.cfg.uuid,
             wlan_channels: 0,
-            bytes_received: self.track.as_ref().map_or(0, |t| t.bytes_received),
+            bytes_received: self.fetching().map_or(0, |t| t.bytes_received),
             lang: *b"en",
             capabilities: self.cfg.capabilities(),
         };
@@ -422,43 +577,113 @@ impl Player {
         self.send(ClientMsg::Resp(headers.to_vec()));
     }
 
+    /// Stream bytes for the decoder. They go to the track being fed: the current track, or,
+    /// in read-ahead mode once the current track's input has ended, the queued next track.
     pub fn on_stream_data(&mut self, data: &[u8], now_ms: u64) {
         self.now = now_ms;
-        if let Some(t) = &mut self.track {
+        if let Some(t) = self.feeding_mut() {
             t.input.push(data);
-            t.bytes_received += data.len() as u64;
+            t.bytes_fed += data.len() as u64;
+            t.bytes_received = t.bytes_received.max(t.bytes_fed);
         }
     }
 
-    /// The HTTP stream finished normally.
+    /// The HTTP stream finished normally, and every byte of it has been fed: the decoder's
+    /// input ends. Sends `DSCO` unless [`Player::stream_received`] already did.
     pub fn on_stream_end(&mut self, now_ms: u64) {
         self.end_stream(0, now_ms);
     }
 
-    /// The HTTP stream failed (reset or connect failure).
+    /// The HTTP stream failed (reset or connect failure): the decoder's input ends with
+    /// what was fed. A host that spools ahead feeds what it has first.
     pub fn on_stream_error(&mut self, now_ms: u64) {
         self.end_stream(1, now_ms);
     }
 
     fn end_stream(&mut self, reason: u8, now_ms: u64) {
         self.now = now_ms;
-        if let Some(t) = &mut self.track
-            && !t.stream_ended
-        {
-            t.stream_ended = true;
+        let Some(t) = self.feeding_mut() else { return };
+        if t.stream_ended && t.input_ended {
+            return;
+        }
+        if !t.input_ended {
+            t.input_ended = true;
             t.input.set_eof();
+        }
+        if !t.stream_ended {
+            t.stream_ended = true;
             self.send(ClientMsg::Dsco(reason));
+        }
+    }
+
+    /// For a host that spools the network stream ahead of the decoder: the stream being
+    /// fetched has been received in full, though not all of it has been fed yet. Sends
+    /// `DSCO`, and in read-ahead mode lets `STMd` go early (see
+    /// [`Player::set_ready_when_received`]). The host still calls [`Player::on_stream_end`]
+    /// once it has fed the last byte. A host without a spool just calls `on_stream_end`.
+    pub fn stream_received(&mut self, now_ms: u64) {
+        self.now = now_ms;
+        let Some(t) = self.fetching_mut().filter(|t| !t.stream_ended) else {
+            return;
+        };
+        t.stream_ended = true;
+        self.send(ClientMsg::Dsco(0));
+    }
+
+    /// For a host that spools the network stream ahead of the decoder: the total bytes
+    /// received so far for the stream being fetched. It counts in STAT, `HELO` and
+    /// [`Player::open_stream`]; it never goes backwards, nor below the bytes fed.
+    pub fn stream_bytes_received(&mut self, total: u64) {
+        if let Some(t) = self.fetching_mut().filter(|t| !t.stream_ended) {
+            t.bytes_received = t.bytes_received.max(total);
         }
     }
 
     /// The stream currently being downloaded, as `(stream_number, bytes_received)`, or
     /// `None` if none is open. After a reconnect, the host resumes the download at this
-    /// byte offset (without passing the response headers in again).
+    /// byte offset (without passing the response headers in again). In read-ahead mode it
+    /// is the newest track's stream, which may be the queued next track's.
     pub fn open_stream(&self) -> Option<(u64, u64)> {
-        self.track
-            .as_ref()
+        self.fetching()
             .filter(|t| !t.stream_ended)
             .map(|t| (t.seq as u64 + 1, t.bytes_received))
+    }
+
+    /// The track whose stream is fetched (the newest).
+    fn fetching(&self) -> Option<&Track> {
+        self.next.as_ref().or(self.track.as_ref())
+    }
+
+    fn fetching_mut(&mut self) -> Option<&mut Track> {
+        self.next.as_mut().or(self.track.as_mut())
+    }
+
+    /// The track the decoder's input is fed to: the current track until its input ends,
+    /// then the queued next one.
+    fn feeding(&self) -> Option<&Track> {
+        if self.feeds_next() {
+            self.next.as_ref()
+        } else {
+            self.track.as_ref()
+        }
+    }
+
+    fn feeding_mut(&mut self) -> Option<&mut Track> {
+        if self.feeds_next() {
+            self.next.as_mut()
+        } else {
+            self.track.as_mut()
+        }
+    }
+
+    /// The queued next track is the one being fed: the current track's input has ended.
+    fn feeds_next(&self) -> bool {
+        self.next.is_some() && self.track.as_ref().is_none_or(|t| t.input_ended)
+    }
+
+    /// A track is still being decoded, or one is queued behind it.
+    fn decoding(&self) -> bool {
+        self.next.is_some() || self.track.as_ref().is_some_and(|t| !t.decode_done)
     }
 
     /// Whether the host should keep reading the network stream (back-pressure).
@@ -466,9 +691,14 @@ impl Player {
     /// While the decoder is still probing the stream's headers (which can carry several MiB
     /// of artwork) it keeps reading up to [`PROBE_MAX_BYTES`], so a probe that needs more
     /// than [`INPUT_HIGH_WATER`] can't stall; beyond that the track fails cleanly.
+    ///
+    /// In read-ahead mode it refers to the track being fed (see
+    /// [`Player::on_stream_data`]). A queued next track isn't decoding yet, so it is held to
+    /// [`INPUT_HIGH_WATER`] until it is.
     pub fn wants_stream_data(&self) -> bool {
-        self.track.as_ref().is_some_and(|t| {
-            let limit = if t.decoder.is_probing() && !t.decode_done {
+        let queued = self.feeds_next();
+        self.feeding().is_some_and(|t| {
+            let limit = if t.decoder.is_probing() && !t.decode_done && !queued {
                 PROBE_MAX_BYTES
             } else {
                 INPUT_HIGH_WATER
@@ -489,6 +719,7 @@ impl Player {
 
         self.decode_some();
         self.check_autostart();
+        self.check_ready();
 
         if self.output == OutputState::Playing
             && now_ms.saturating_sub(self.last_heartbeat) >= HEARTBEAT_MS
@@ -502,11 +733,42 @@ impl Player {
             .segments
             .iter()
             .all(|s| s.complete && s.played == s.frames);
-        let decoding = self.track.as_ref().is_some_and(|t| !t.decode_done);
-        if self.output == OutputState::Playing && drained && !decoding && !self.stmu_sent {
-            self.stmu_sent = true;
-            self.output = OutputState::Stopped;
-            self.send_stat(*b"STMu", 0);
+        if self.output == OutputState::Playing && drained && !self.decoding() && !self.stmu_sent {
+            let settled =
+                !self.stmu_deferred || now_ms.saturating_sub(self.link_up_at) >= LINK_SETTLE_MS;
+            if self.link_up && settled {
+                self.stmu_sent = true;
+                self.output = OutputState::Stopped;
+                self.send_stat(*b"STMu", 0);
+            } else if !self.link_up && !self.stmu_deferred {
+                // Out of audio with LMS out of reach: an underrun, not the end. `STMu` now
+                // would make LMS stop even if it has the next track ready to send.
+                self.stmu_deferred = true;
+                self.underrun_reported = true;
+                self.stall_since.get_or_insert(now_ms);
+                self.send_stat(*b"STMo", 0);
+            }
+        }
+    }
+
+    /// Read-ahead mode: send `STMd` for the newest track once its stream is in and enough of
+    /// it has been heard.
+    fn check_ready(&mut self) {
+        if !self.ready_when_received {
+            return;
+        }
+        let heard = self.elapsed_ms();
+        let playing = self.playing_seq;
+        let after = self.ready_after_ms;
+        let Some(t) = self.fetching_mut() else { return };
+        if t.ready_sent || t.decode_done || !t.stream_ended {
+            return;
+        }
+        if playing == Some(t.seq) && heard >= after {
+            t.ready_sent = true;
+            let seq = t.seq;
+            self.note_sent("STMd", seq);
+            self.send_stat(*b"STMd", 0);
         }
     }
 
@@ -664,29 +926,41 @@ impl Player {
     /// decoded and every frame has been pulled. (A pull returning nothing on its own does not
     /// mean this: decoding runs a slice at a time.)
     pub fn audio_exhausted(&self) -> bool {
-        let decoding = self.track.as_ref().is_some_and(|t| !t.decode_done);
-        !decoding && self.pcm.is_empty()
+        !self.decoding() && self.pcm.is_empty()
     }
 
     /// Report that `frames` previously pulled have now been played.
     pub fn played(&mut self, mut frames: u64) {
+        // Audio flowing again after an `STMo` (read-ahead mode tells LMS with `STMr`).
+        let resumed = frames > 0 && self.underrun_reported;
         if frames > 0 {
             self.underrun_reported = false;
+            self.stall_since = None;
         }
+        let mut started = false;
         while frames > 0 {
             let Some(idx) = self.segments.iter().position(|s| s.played < s.pulled) else {
                 break;
             };
-            let seg = &mut self.segments[idx];
-            if seg.played == 0 && self.playing_seq != Some(seg.seq) {
-                let seq = seg.seq;
+            let seq = self.segments[idx].seq;
+            if self.playing_seq != Some(seq) {
                 self.playing_seq = Some(seq);
-                self.send_stat(*b"STMs", 0);
+                // A track starts once: never a second `STMs` for it (in a sync group that
+                // moves the whole group on a track).
+                if self.stms_seq.is_none_or(|s| seq > s) {
+                    self.stms_seq = Some(seq);
+                    started = true;
+                    self.note_sent("STMs", seq);
+                    self.send_stat(*b"STMs", 0);
+                }
             }
             let seg = &mut self.segments[idx];
             let n = frames.min(seg.pulled - seg.played);
             seg.played += n;
             frames -= n;
+        }
+        if resumed && !started && self.ready_when_received {
+            self.send_stat(*b"STMr", 0);
         }
         // Drop fully played segments, keeping the one that is audible for elapsed time.
         while self.segments.len() > 1 {
@@ -797,34 +1071,58 @@ impl Player {
     }
 
     fn start_stream(&mut self, s: Strm) {
-        if self.track.as_ref().is_some_and(|t| !t.stream_ended) {
-            self.actions.push(Action::CloseStream);
-        }
         let seq = self.next_seq;
         self.next_seq += 1;
-
         let codec_ok = crate::decode::format_extension(s.format).is_some();
+        // Read-ahead mode: the current track's stream is in but it is still decoding, so
+        // this is the next track. Queue it rather than cut the current one off.
+        let queue = self.ready_when_received
+            && self
+                .track
+                .as_ref()
+                .is_some_and(|t| t.stream_ended && !t.decode_done);
+        if queue && !codec_ok {
+            // Refused: say so, and leave the current track alone.
+            self.send_stat(*b"STMn", 0);
+            return;
+        }
+        if self.fetching().is_some_and(|t| !t.stream_ended) {
+            self.actions.push(Action::CloseStream);
+        }
+
         let input = InputBuffer::new();
-        self.track = Some(Track {
+        let track = Track {
             seq,
             decoder: StreamDecoder::new(input.clone(), s.format),
             input,
             autostart: s.autostart,
             threshold: s.threshold as usize * 1024,
             bytes_received: 0,
+            bytes_fed: 0,
             replay_gain: if s.replay_gain == 0 {
                 1.0
             } else {
                 s.replay_gain as f32 / 65536.0
             },
             stream_ended: false,
+            input_ended: false,
             decode_done: false,
+            ready_sent: false,
             opened_at: self.now,
-        });
+        };
+        if queue {
+            self.next = Some(track);
+        } else {
+            self.next = None;
+            self.track = Some(track);
+        }
         self.stmu_sent = false;
+        self.stmu_deferred = false;
         if !codec_ok {
             if let Some(t) = &mut self.track {
-                t.stream_ended = true; // nothing will be fetched
+                // Nothing will be fetched or fed.
+                t.stream_ended = true;
+                t.input_ended = true;
             }
             self.send_stat(*b"STMn", 0);
             return;
@@ -847,10 +1145,13 @@ impl Player {
     }
 
     fn flush(&mut self) {
-        if self.track.as_ref().is_some_and(|t| !t.stream_ended) {
+        if self.fetching().is_some_and(|t| !t.stream_ended) {
             self.actions.push(Action::CloseStream);
         }
         self.track = None;
+        self.next = None;
+        self.stmu_deferred = false;
+        self.stall_since = None;
         self.pcm.clear();
         self.segments.clear();
         self.playing_seq = None;
@@ -887,13 +1188,16 @@ impl Player {
     /// Drop every track after `keep` (fetched, queued or decoded), keeping `keep`'s audio and
     /// the playback state. The track being fetched, if it is after `keep`, is closed.
     fn trim_after(&mut self, keep: u32) {
+        // The queued next track is never the audible one.
+        let mut close = self.next.take().is_some_and(|n| !n.stream_ended);
         if let Some(t) = &self.track
             && t.seq > keep
         {
-            if !t.stream_ended {
-                self.actions.push(Action::CloseStream);
-            }
+            close |= !t.stream_ended;
             self.track = None;
+        }
+        if close {
+            self.actions.push(Action::CloseStream);
         }
         let kept = self.segments.iter().filter(|s| s.seq <= keep);
         let unpulled: u64 = kept.clone().map(|s| s.frames - s.pulled).sum();
@@ -911,23 +1215,24 @@ impl Player {
         });
     }
 
-    fn skip_ahead(&mut self, ms: u64) {
-        let Some(rate) = self.output_rate() else {
-            return;
+    /// Drop up to `ms` of decoded audio as if played; returns the milliseconds dropped.
+    fn skip_ahead(&mut self, ms: u64) -> u64 {
+        let Some(rate) = self.output_rate().filter(|r| *r > 0) else {
+            return 0;
         };
-        let mut frames = ms * rate as u64 / 1000;
+        let want = ms.saturating_mul(u64::from(rate)) / 1000;
+        let mut frames = want;
         for seg in self.segments.iter_mut() {
-            let n = (seg.frames - seg.pulled).min(frames);
-            for _ in 0..n * 2 {
-                self.pcm.pop_front();
-            }
-            seg.pulled += n;
-            seg.played += n;
-            frames -= n;
             if frames == 0 {
                 break;
             }
+            let n = (seg.frames - seg.pulled).min(frames);
+            self.pcm.drain(..(n as usize * 2).min(self.pcm.len()));
+            seg.pulled += n;
+            seg.played += n;
+            frames -= n;
         }
+        (want - frames) * 1000 / u64::from(rate)
     }
 
     fn decode_some(&mut self) {
@@ -981,20 +1286,30 @@ impl Player {
         match status {
             DecodeStatus::Finished => {
                 t.decode_done = true;
+                // In read-ahead mode `STMd` may already have gone, once the stream was in.
+                let ready_sent = std::mem::replace(&mut t.ready_sent, true);
                 if let Some(s) = self.segments.iter_mut().rev().find(|s| s.seq == seq) {
                     s.complete = true;
                 }
-                self.send_stat(*b"STMd", 0);
+                if !ready_sent {
+                    self.note_sent("STMd", seq);
+                    self.send_stat(*b"STMd", 0);
+                }
             }
             DecodeStatus::Failed(e) => {
                 t.decode_done = true;
+                t.ready_sent = true;
                 self.last_error = Some(e);
                 if let Some(s) = self.segments.iter_mut().rev().find(|s| s.seq == seq) {
                     s.complete = true;
                 }
                 self.send_stat(*b"STMn", 0);
             }
-            DecodeStatus::Progress | DecodeStatus::NeedData => {}
+            DecodeStatus::Progress | DecodeStatus::NeedData => return,
+        }
+        // The current track is fully decoded: the queued next one follows it, gaplessly.
+        if let Some(next) = self.next.take() {
+            self.track = Some(next);
         }
     }
 
@@ -1026,7 +1341,7 @@ impl Player {
     /// only makes the stream look slower: the safe direction.)
     fn arriving_fast(&self, t: &Track) -> bool {
         let decoded_ms = self.buffered_ms() as u128;
-        let used = (t.bytes_received as u128).saturating_sub(t.input.unread() as u128);
+        let used = (t.bytes_fed as u128).saturating_sub(t.input.unread() as u128);
         let waited_ms = self.now.saturating_sub(t.opened_at) as u128;
         if decoded_ms == 0 || used == 0 {
             return false;
@@ -1083,9 +1398,9 @@ impl Player {
 
     fn send_stat(&mut self, event: [u8; 4], server_timestamp: u32) {
         let elapsed = self.elapsed_ms();
+        // The stream figures describe the newest stream, the one LMS sent last.
         let (input_unread, bytes) = self
-            .track
-            .as_ref()
+            .fetching()
             .map_or((0, 0), |t| (t.input.unread() as u32, t.bytes_received));
         let (host, host_cap) = self.host_buffered;
         let out_bytes = (self.pcm.len() as u64 * 4)
@@ -2098,5 +2413,636 @@ mod tests {
         );
         let ev = events(&p.take_actions());
         assert!(ev.contains(&"STMf".to_string()) && ev.contains(&"STMc".to_string()));
+    }
+
+    // --- Read-ahead mode (rolling cache, Phase A) --------------------------------------
+
+    /// A player in read-ahead mode that sends `STMd` early after 2 s heard.
+    fn read_ahead() -> Player {
+        let mut p = Player::new(cfg());
+        p.set_ready_when_received(true);
+        p.set_ready_after_ms(2000);
+        p
+    }
+
+    /// Play `ms` of audio in 10 ms steps, as a host would: tick, pull, report it heard.
+    fn play_ms(p: &mut Player, ms: u64, now: &mut u64) -> u64 {
+        let mut buf = vec![0f32; 441 * 2];
+        let mut total = 0;
+        for _ in 0..ms / 10 {
+            *now += 10;
+            p.tick(*now);
+            let n = p.pull_audio(&mut buf);
+            p.played(n as u64);
+            total += n as u64;
+        }
+        total
+    }
+
+    fn count(ev: &[String], name: &str) -> usize {
+        ev.iter().filter(|e| *e == name).count()
+    }
+
+    fn stream_numbers(actions: &[Action]) -> Vec<u64> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::OpenStream { stream_number, .. } => Some(*stream_number),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The STAT `bytes_received` LMS would see now (from a heartbeat).
+    fn stat_bytes(p: &mut Player, now: u64) -> u64 {
+        p.take_actions();
+        p.on_control_data(&strm_arg(b't', 1), now).unwrap();
+        let a = p.take_actions();
+        let Action::Send(bytes) = &a[0] else { panic!() };
+        Stat::parse(&bytes[8..]).unwrap().bytes_received
+    }
+
+    #[test]
+    fn read_ahead_is_off_by_default_and_a_new_stream_replaces_a_decoding_one() {
+        let mut p = Player::new(cfg());
+        let mut now = 0;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&wav(44100, 44100 * 15), now);
+        p.on_stream_end(now);
+        play_ms(&mut p, 3000, &mut now);
+        let ev = events(&p.take_actions());
+        assert_eq!(count(&ev, "STMd"), 0, "STMd waits for the decoder: {ev:?}");
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        assert!(p.next.is_none());
+        assert_eq!(p.track.as_ref().unwrap().seq, 1, "replaced, as before");
+    }
+
+    #[test]
+    fn read_ahead_sends_stmd_once_the_stream_is_in_and_enough_is_heard() {
+        let mut p = read_ahead();
+        let mut now = 0;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&wav(44100, 44100 * 15), now);
+        p.on_stream_end(now);
+        p.tick(now);
+        assert_eq!(p.status().output, OutputState::Playing);
+        let ev = events(&p.take_actions());
+        assert_eq!(count(&ev, "DSCO"), 1);
+        assert_eq!(count(&ev, "STMd"), 0, "nothing heard yet");
+        play_ms(&mut p, 1900, &mut now);
+        assert_eq!(count(&events(&p.take_actions()), "STMd"), 0, "1.9 s heard");
+        play_ms(&mut p, 200, &mut now);
+        assert_eq!(count(&events(&p.take_actions()), "STMd"), 1);
+        assert!(
+            !p.track.as_ref().unwrap().decode_done,
+            "well before the decoder"
+        );
+        // The rest of the track: the decoder finishing sends no second STMd.
+        play_ms(&mut p, 13_000, &mut now);
+        assert!(p.track.as_ref().unwrap().decode_done);
+        let ev = events(&p.take_actions());
+        assert_eq!(count(&ev, "STMd"), 0);
+        assert_eq!(count(&ev, "STMu"), 1);
+        assert_eq!(p.sent_log, vec![("STMs", 0), ("STMd", 0)]);
+    }
+
+    #[test]
+    fn read_ahead_waits_for_the_whole_stream() {
+        let mut p = read_ahead();
+        let mut now = 0;
+        let full = wav(44100, 44100 * 15);
+        let half = full.len() / 2;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&full[..half], now);
+        play_ms(&mut p, 3000, &mut now);
+        let ev = events(&p.take_actions());
+        assert_eq!(count(&ev, "STMd") + count(&ev, "DSCO"), 0, "{ev:?}");
+        p.on_stream_data(&full[half..], now);
+        p.on_stream_end(now);
+        p.tick(now + 1);
+        let ev = events(&p.take_actions());
+        assert_eq!((count(&ev, "DSCO"), count(&ev, "STMd")), (1, 1));
+    }
+
+    /// A track shorter than the wait (or fully decoded early) sends `STMd` when decoded, as
+    /// before, and only once.
+    #[test]
+    fn read_ahead_short_track_is_ready_when_decoded() {
+        let mut p = read_ahead();
+        p.set_ready_after_ms(DEFAULT_READY_AFTER_MS);
+        let mut now = 0;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&wav(44100, 44100 * 3), now);
+        p.on_stream_end(now);
+        tick_n(&mut p, 0, 20);
+        now = 20;
+        assert_eq!(count(&events(&p.take_actions()), "STMd"), 1);
+        play_ms(&mut p, 3100, &mut now);
+        assert_eq!(count(&events(&p.take_actions()), "STMd"), 0);
+    }
+
+    /// The next `strm s` comes while the current track is still decoding: it is queued and
+    /// fetched at once, the current track plays on, and the two join gaplessly.
+    #[test]
+    fn read_ahead_queues_the_next_track_while_the_current_one_decodes() {
+        let mut p = read_ahead();
+        let mut now = 0;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&wav(44100, 44100 * 15), now);
+        p.on_stream_end(now);
+        let mut heard = play_ms(&mut p, 2100, &mut now);
+        p.take_actions();
+
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        let a = p.take_actions();
+        assert!(!a.contains(&Action::CloseStream));
+        assert_eq!(stream_numbers(&a), vec![2]);
+        assert_eq!(events(&a), vec!["STMc"]);
+        assert_eq!(p.status().output, OutputState::Playing);
+        assert_eq!(p.open_stream(), Some((2, 0)));
+        assert!(p.wants_stream_data(), "the next track is fetched now");
+
+        let t2 = wav(44100, 44100 * 3);
+        p.on_stream_data(&t2, now);
+        assert_eq!(p.open_stream(), Some((2, t2.len() as u64)));
+        assert_eq!(stat_bytes(&mut p, now), t2.len() as u64);
+        assert_eq!(p.track.as_ref().unwrap().seq, 0, "track 1 still decoding");
+        p.on_stream_end(now);
+        assert_eq!(p.open_stream(), None);
+        assert_eq!(count(&events(&p.take_actions()), "DSCO"), 1);
+
+        // Track 1 decodes to its end, then track 2 follows without a gap.
+        heard += play_ms(&mut p, 16_500, &mut now);
+        assert_eq!(heard, 44100 * 18);
+        assert!(p.next.is_none());
+        let ev = events(&p.take_actions());
+        assert_eq!(count(&ev, "STMs"), 1, "track 2 started: {ev:?}");
+        assert_eq!(count(&ev, "STMu"), 1);
+        assert_eq!(
+            p.sent_log,
+            vec![("STMs", 0), ("STMd", 0), ("STMd", 1), ("STMs", 1)],
+            "track 2 is short: ready once decoded, before it starts"
+        );
+    }
+
+    /// A host with a disk spool: the network stream is in before the decoder has been fed
+    /// all of it. Fed bytes go to the current track until its input ends, then to the next.
+    #[test]
+    fn read_ahead_with_a_spool_feeds_the_current_track_while_the_next_is_fetched() {
+        let mut p = read_ahead();
+        let mut now = 0;
+        let t1 = wav(44100, 44100 * 15);
+        let fed = 44 + 5 * WAV_BYTES_PER_SEC;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&t1[..fed], now);
+        p.stream_bytes_received(t1.len() as u64);
+        p.stream_bytes_received(10); // never backwards
+        assert_eq!(p.open_stream(), Some((1, t1.len() as u64)));
+        p.stream_received(now);
+        assert_eq!(p.open_stream(), None);
+        assert_eq!(events(&p.take_actions()), vec!["STMc", "DSCO"]);
+        play_ms(&mut p, 2100, &mut now);
+        assert_eq!(count(&events(&p.take_actions()), "STMd"), 1);
+
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        assert!(p.next.is_some());
+        assert_eq!(p.open_stream(), Some((2, 0)));
+        p.stream_bytes_received(1234);
+        assert_eq!(p.open_stream(), Some((2, 1234)));
+        // Feeding carries on into track 1.
+        p.on_stream_data(&t1[fed..], now);
+        assert_eq!(p.track.as_ref().unwrap().bytes_fed, t1.len() as u64);
+        p.on_stream_end(now);
+        assert_eq!(count(&events(&p.take_actions()), "DSCO"), 0, "already sent");
+        // Now track 2 is fed.
+        let t2 = wav(44100, 44100 * 2);
+        p.on_stream_data(&t2, now);
+        assert_eq!(p.next.as_ref().unwrap().bytes_fed, t2.len() as u64);
+        p.on_stream_end(now);
+        assert_eq!(count(&events(&p.take_actions()), "DSCO"), 1);
+        let heard = play_ms(&mut p, 15_000, &mut now);
+        assert_eq!(
+            heard,
+            44100 * 17 - 2100 * 441 / 10,
+            "the rest of 1, all of 2"
+        );
+        assert_eq!(p.sent_log.iter().filter(|e| e.0 == "STMs").count(), 2);
+    }
+
+    /// A queued track that isn't decoding yet is held to the input limit, not the larger
+    /// probe allowance.
+    #[test]
+    fn read_ahead_queued_track_is_held_to_the_input_limit() {
+        let mut p = read_ahead();
+        let mut now = 0;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&wav(44100, 44100 * 15), now);
+        p.on_stream_end(now);
+        play_ms(&mut p, 2100, &mut now);
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&vec![0u8; INPUT_HIGH_WATER - 1], now);
+        assert!(p.wants_stream_data());
+        p.on_stream_data(&[0u8; 1], now);
+        assert!(!p.wants_stream_data());
+    }
+
+    /// Nothing more is queued yet, and the audio runs out: `STMu` waits until everything has
+    /// played out, and an underrun meanwhile is `STMo`.
+    #[test]
+    fn read_ahead_sends_stmu_only_when_everything_is_drained() {
+        let mut p = read_ahead();
+        let mut now = 0;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&wav(44100, 44100 * 12), now);
+        p.on_stream_end(now);
+        play_ms(&mut p, 2100, &mut now);
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap(); // track 2: no data yet
+        play_ms(&mut p, 10_500, &mut now);
+        let ev = events(&p.take_actions());
+        assert_eq!(count(&ev, "STMu"), 0, "track 2 is still to come: {ev:?}");
+        assert!(!p.audio_exhausted());
+        assert_eq!(p.status().output, OutputState::Playing);
+        p.output_underrun();
+        assert_eq!(events(&p.take_actions()), vec!["STMo"]);
+        // Track 2 arrives: it starts (STMs), with no STMr for a new track.
+        p.on_stream_data(&wav(44100, 44100), now);
+        p.on_stream_end(now);
+        play_ms(&mut p, 1500, &mut now);
+        let ev = events(&p.take_actions());
+        assert_eq!(count(&ev, "STMs"), 1);
+        assert_eq!(count(&ev, "STMr"), 0);
+        assert_eq!(count(&ev, "STMu"), 1);
+    }
+
+    #[test]
+    fn read_ahead_strm_q_clears_the_queue_and_strm_f_keeps_the_current_track() {
+        let setup = || {
+            let mut p = read_ahead();
+            let mut now = 0;
+            p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+            p.on_stream_data(&wav(44100, 44100 * 15), now);
+            p.on_stream_end(now);
+            play_ms(&mut p, 2100, &mut now);
+            p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+            p.on_stream_data(&wav(44100, 44100)[..1000], now);
+            p.take_actions();
+            (p, now)
+        };
+        let (mut p, now) = setup();
+        p.on_control_data(&strm(b'q', b'0', b'p', 0), now).unwrap();
+        let a = p.take_actions();
+        assert_eq!(a.iter().filter(|x| **x == Action::CloseStream).count(), 1);
+        assert_eq!(events(&a), vec!["STMf"]);
+        assert!(p.next.is_none() && p.track.is_none());
+        assert_eq!(p.status().output, OutputState::Stopped);
+
+        let (mut p, mut now) = setup();
+        p.on_control_data(&strm(b'f', b'0', b'p', 0), now).unwrap();
+        let a = p.take_actions();
+        assert_eq!(a[0], Action::CloseStream, "the next track's fetch");
+        assert_eq!(events(&a), vec!["STMf"]);
+        assert!(p.next.is_none());
+        assert_eq!(p.trim().unwrap().keep_track, 0);
+        assert_eq!(p.open_stream(), None);
+        // Track 1 plays on to its end.
+        let heard = play_ms(&mut p, 13_500, &mut now);
+        assert_eq!(heard, 44100 * 15 - 2100 * 441 / 10);
+        assert_eq!(count(&events(&p.take_actions()), "STMu"), 1);
+    }
+
+    /// LMS never sends two ahead; if it did, the newer one replaces the queued one.
+    #[test]
+    fn read_ahead_a_second_next_track_replaces_the_queued_one() {
+        let mut p = read_ahead();
+        let mut now = 0;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&wav(44100, 44100 * 15), now);
+        p.on_stream_end(now);
+        play_ms(&mut p, 2100, &mut now);
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.take_actions();
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        let a = p.take_actions();
+        assert_eq!(a[0], Action::CloseStream);
+        assert_eq!(stream_numbers(&a), vec![3]);
+        assert_eq!(p.next.as_ref().unwrap().seq, 2);
+        assert_eq!(p.track.as_ref().unwrap().seq, 0);
+    }
+
+    /// A refused next track (unsupported format) leaves the current track alone.
+    #[test]
+    fn read_ahead_a_refused_next_track_leaves_the_current_one() {
+        let mut p = read_ahead();
+        let mut now = 0;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&wav(44100, 44100 * 15), now);
+        p.on_stream_end(now);
+        play_ms(&mut p, 2100, &mut now);
+        p.take_actions();
+        p.on_control_data(&strm(b's', b'1', b'w', 0), now).unwrap();
+        let a = p.take_actions();
+        assert_eq!(events(&a), vec!["STMn"]);
+        assert!(stream_numbers(&a).is_empty());
+        assert!(p.next.is_none());
+        assert_eq!(p.track.as_ref().unwrap().seq, 0);
+        // Numbering still counts it.
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        assert_eq!(stream_numbers(&p.take_actions()), vec![3]);
+    }
+
+    /// Security: a malformed `strm` is refused as before and doesn't disturb the queue.
+    #[test]
+    fn read_ahead_malformed_strm_is_refused_and_changes_nothing() {
+        let mut p = read_ahead();
+        let mut now = 0;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&wav(44100, 44100 * 15), now);
+        p.on_stream_end(now);
+        play_ms(&mut p, 2100, &mut now);
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.take_actions();
+        let good = strm(b's', b'1', b'p', 0);
+        let truncated = encode_server_frame(*b"strm", &good[6..20]);
+        assert!(p.on_control_data(&truncated, now).is_err());
+        assert!(p.take_actions().is_empty());
+        assert_eq!(p.next.as_ref().unwrap().seq, 1);
+        let mut q = read_ahead();
+        assert!(
+            q.on_control_data(&[0xff, 0xff, b's', b't', b'r', b'm'], 0)
+                .is_err(),
+            "oversize frame"
+        );
+    }
+
+    /// Out of audio with the link down: `STMo`, not `STMu` (which would make LMS stop with
+    /// the next track ready). `STMu` only once the link has been back a while and LMS has
+    /// sent nothing new.
+    #[test]
+    fn link_down_turns_the_end_of_the_audio_into_an_underrun() {
+        let mut p = playing_player(false);
+        let mut now = 20;
+        p.set_link_up(false, now);
+        play_ms(&mut p, 1100, &mut now);
+        let ev = events(&p.take_actions());
+        assert_eq!(count(&ev, "STMu"), 0);
+        assert_eq!(count(&ev, "STMo"), 1, "{ev:?}");
+        assert_eq!(p.status().output, OutputState::Playing);
+        assert!(p.stall_ms(now).is_some());
+        play_ms(&mut p, 500, &mut now);
+        assert!(events(&p.take_actions()).iter().all(|e| e == "STMt"));
+        p.set_link_up(true, now);
+        let back = now;
+        play_ms(&mut p, LINK_SETTLE_MS - 100, &mut now);
+        assert_eq!(count(&events(&p.take_actions()), "STMu"), 0);
+        play_ms(&mut p, 200, &mut now);
+        assert_eq!(count(&events(&p.take_actions()), "STMu"), 1);
+        assert!(now - back >= LINK_SETTLE_MS);
+        assert_eq!(p.status().output, OutputState::Stopped);
+    }
+
+    /// When the link comes back LMS answers the delayed `STMd` with the next track: it
+    /// starts with `STMs`, and no `STMu` or `STMr` is sent.
+    #[test]
+    fn link_back_with_the_next_track_starts_it() {
+        let mut p = read_ahead();
+        let mut now = 0;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&wav(44100, 44100), now);
+        p.on_stream_end(now);
+        p.set_link_up(false, now);
+        play_ms(&mut p, 1500, &mut now);
+        assert_eq!(count(&events(&p.take_actions()), "STMo"), 1);
+        p.set_link_up(true, now);
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now + 50)
+            .unwrap();
+        p.on_stream_data(&wav(44100, 44100), now + 50);
+        p.on_stream_end(now + 50);
+        play_ms(&mut p, 2000, &mut now);
+        let ev = events(&p.take_actions());
+        assert_eq!(count(&ev, "STMs"), 1);
+        assert_eq!(count(&ev, "STMr"), 0);
+        assert_eq!(count(&ev, "STMu"), 1, "after track 2 played out: {ev:?}");
+        assert_eq!(p.sent_log.iter().filter(|e| e.0 == "STMs").count(), 2);
+    }
+
+    /// After an `STMo` mid-track, the audio coming back is `STMr` in read-ahead mode, never
+    /// a second `STMs` (which would move a whole sync group on a track).
+    #[test]
+    fn read_ahead_resume_after_an_underrun_is_stmr() {
+        for mode in [true, false] {
+            let mut p = Player::new(cfg());
+            p.set_ready_when_received(mode);
+            let mut now = 0;
+            let full = wav(44100, 44100 * 4);
+            p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+            p.on_stream_data(&full[..44 + WAV_BYTES_PER_SEC], now);
+            play_ms(&mut p, 1500, &mut now);
+            p.take_actions();
+            p.output_underrun();
+            assert_eq!(events(&p.take_actions()), vec!["STMo"]);
+            p.on_stream_data(&full[44 + WAV_BYTES_PER_SEC..], now);
+            p.on_stream_end(now);
+            play_ms(&mut p, 500, &mut now);
+            let ev = events(&p.take_actions());
+            assert_eq!(count(&ev, "STMs"), 0);
+            assert_eq!(count(&ev, "STMr"), usize::from(mode), "mode {mode}: {ev:?}");
+        }
+    }
+
+    /// A player with 15 s of a track decoding, 1 s heard, still streaming.
+    fn stall_player() -> (Player, u64) {
+        let mut p = read_ahead();
+        let mut now = 0;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&wav(44100, 44100 * 15), now);
+        play_ms(&mut p, 1000, &mut now);
+        p.take_actions();
+        (p, now)
+    }
+
+    #[test]
+    fn stalls_are_timed_and_skipped_only_in_a_sync_group() {
+        let (mut p, now) = stall_player();
+        assert_eq!(p.resume_after_stall(true, now), StallResume::NotStalled);
+        assert_eq!(p.stall_ms(now), None);
+
+        // Alone: carry on where it stopped, whatever the length.
+        p.output_underrun();
+        p.output_underrun(); // timed from the first report
+        assert_eq!(p.stall_ms(now + 100), Some(100));
+        let before = p.status();
+        assert_eq!(
+            p.resume_after_stall(false, now + 300),
+            StallResume::CarryOn { stalled_ms: 300 }
+        );
+        assert_eq!(p.stall_ms(now + 300), None);
+        assert_eq!(p.status().buffered_ms, before.buffered_ms);
+
+        // In a group, a short stall is left to LMS's own corrections.
+        let now = now + 1000;
+        p.tick(now);
+        p.output_underrun();
+        assert_eq!(
+            p.resume_after_stall(true, now + SYNC_STALL_SKIP_MS),
+            StallResume::CarryOn {
+                stalled_ms: SYNC_STALL_SKIP_MS
+            }
+        );
+
+        // A longer one is dropped from the buffer, and elapsed time moves on with it.
+        let now = now + 1000;
+        p.tick(now);
+        p.output_underrun();
+        let before = p.status();
+        assert_eq!(
+            p.resume_after_stall(true, now + 500),
+            StallResume::Skipped { stalled_ms: 500 }
+        );
+        let after = p.status();
+        assert!((before.buffered_ms - after.buffered_ms).abs_diff(500) <= 1);
+        assert!((after.elapsed_ms - before.elapsed_ms).abs_diff(500) <= 1);
+
+        // Longer than the buffer: nothing dropped; the host flushes.
+        let now = now + 1000;
+        p.tick(now);
+        p.output_underrun();
+        let before = p.status().buffered_ms;
+        assert_eq!(
+            p.resume_after_stall(true, now + 60_000),
+            StallResume::NotEnoughBuffered {
+                stalled_ms: 60_000,
+                buffered_ms: before
+            }
+        );
+        assert_eq!(p.status().buffered_ms, before);
+    }
+
+    #[test]
+    fn audio_flowing_again_ends_a_stall_and_a_flush_forgets_it() {
+        let (mut p, now) = stall_player();
+        p.output_underrun();
+        let mut buf = vec![0f32; 64];
+        let n = p.pull_audio(&mut buf);
+        p.played(n as u64);
+        assert_eq!(p.stall_ms(now + 10), None);
+        p.output_underrun();
+        p.on_control_data(&strm(b'q', b'0', b'p', 0), now).unwrap();
+        assert_eq!(p.stall_ms(now + 10), None);
+        // No stall while not playing.
+        p.output_underrun();
+        assert_eq!(p.stall_ms(now + 10), None);
+    }
+
+    #[test]
+    fn skip_audio_drops_at_most_what_is_decoded() {
+        let (mut p, _) = stall_player();
+        let buffered = p.status().buffered_ms;
+        assert_eq!(p.skip_audio(250), 250);
+        assert!(p.skip_audio(u64::MAX) <= buffered);
+        assert_eq!(p.status().buffered_ms, 0);
+        assert_eq!(Player::new(cfg()).skip_audio(100), 0);
+    }
+
+    /// A skip that crosses into the next track still starts it with one `STMs`.
+    #[test]
+    fn a_skip_into_the_next_track_still_starts_it_once() {
+        let (mut p, seq1) = two_tracks_queued();
+        assert_eq!(p.skip_audio(600), 600);
+        let mut now = 700;
+        play_ms(&mut p, 1000, &mut now);
+        assert_eq!(p.playing_track(), Some(seq1 + 1));
+        assert_eq!(count(&events(&p.take_actions()), "STMs"), 1);
+        let started: Vec<_> = p.sent_log.iter().filter(|e| e.0 == "STMs").collect();
+        assert_eq!(started, vec![&("STMs", seq1), &("STMs", seq1 + 1)]);
+    }
+
+    /// Robustness and the per-track invariants: random sequences of LMS commands, stream
+    /// data, stream ends, link changes, underruns, stalls and skips never panic, never send
+    /// `STMs` twice for one track, and never send `STMd` twice for one track.
+    #[test]
+    fn random_read_ahead_sequences_keep_the_track_invariants() {
+        let track = wav(44100, 44100 * 3);
+        let (mut queued, mut started) = (0, 0);
+        for seed in 1..=40u64 {
+            let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+            let mut rnd = move || {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x
+            };
+            let mut p = Player::new(cfg());
+            p.set_ready_when_received(seed % 4 != 0);
+            p.set_ready_after_ms(rnd() % 3000);
+            p.set_output_corrections(seed % 3 == 0);
+            let mut now = 0u64;
+            let mut offset = 0usize;
+            let mut buf = vec![0f32; 2048];
+            for _ in 0..1000 {
+                let r = rnd();
+                now += r % 40;
+                match (r >> 8) % 18 {
+                    0 => {
+                        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+                        offset = 0;
+                    }
+                    1 => {
+                        let cmd = b"qftupa"[(r >> 16) as usize % 6];
+                        p.on_control_data(&strm_arg(cmd, (r >> 24) as u32 % 3000), now)
+                            .unwrap();
+                    }
+                    2..=5 => {
+                        let n = ((r >> 16) as usize % 60_000).min(track.len() - offset);
+                        p.on_stream_data(&track[offset..offset + n], now);
+                        offset += n;
+                    }
+                    6 => p.on_stream_end(now),
+                    7 => p.on_stream_error(now),
+                    8 => p.stream_received(now),
+                    9 => p.stream_bytes_received(r >> 40),
+                    10 => p.set_link_up((r >> 16) % 2 == 0, now),
+                    11 => p.output_underrun(),
+                    12 => {
+                        let _ = p.resume_after_stall((r >> 16) % 2 == 0, now);
+                    }
+                    13 => {
+                        p.skip_audio((r >> 16) % 2000);
+                    }
+                    14 => {
+                        let n = p.pull_track(&mut buf).map_or(0, |(_, n)| n);
+                        p.presented((r >> 20) % (n as u64 + 1), now);
+                    }
+                    _ => {
+                        p.tick(now);
+                        let n = p.pull_audio(&mut buf);
+                        p.played(n as u64);
+                    }
+                }
+                let _ = p.status();
+                let _ = p.open_stream();
+                let _ = p.wants_stream_data();
+                let _ = p.stall_ms(now);
+                p.take_actions();
+                p.take_corrections();
+                queued += usize::from(p.next.is_some());
+            }
+            started += p.sent_log.iter().filter(|e| e.0 == "STMs").count();
+            for event in ["STMs", "STMd"] {
+                let seqs: Vec<u32> = p
+                    .sent_log
+                    .iter()
+                    .filter(|e| e.0 == event)
+                    .map(|e| e.1)
+                    .collect();
+                let mut unique = seqs.clone();
+                unique.sort_unstable();
+                unique.dedup();
+                assert_eq!(seqs.len(), unique.len(), "seed {seed}: {event} {seqs:?}");
+            }
+        }
+        assert!(
+            queued > 0 && started > 0,
+            "the sequences reach the interesting states"
+        );
     }
 }

@@ -477,3 +477,57 @@ fn wav_channel_count_overflow_is_refused_before_parsing() {
         let _ = anywhere_core::decode::check_wav_headers(&ok[..n]);
     }
 }
+
+/// The same with read-ahead mode on (rolling cache), adding the host calls it brings: the
+/// network stream received, spooled byte counts, the link going up and down, underruns,
+/// stall recovery and skips.
+#[test]
+fn read_ahead_player_survives_random_frames_and_host_calls() {
+    for seed in 1..=200u64 {
+        let mut r = Rng(seed);
+        let mut p = Player::new(cfg());
+        p.set_ready_when_received(true);
+        p.set_ready_after_ms(r.below(30_000));
+        p.connected(0);
+        let mut t = 0u64;
+        let mut out = vec![0f32; 2048];
+        for _ in 0..200 {
+            t += r.below(50);
+            match r.below(12) {
+                0 | 1 => {
+                    let f = random_server_frame(&mut r);
+                    let _ = p.on_control_data(&f, t);
+                }
+                2 | 3 => {
+                    let n = r.below(4096) as usize;
+                    p.on_stream_data(&r.bytes(n), t);
+                }
+                4 => match r.below(3) {
+                    0 => p.on_stream_end(t),
+                    1 => p.on_stream_error(t),
+                    _ => p.stream_received(t),
+                },
+                5 => p.stream_bytes_received(r.next()),
+                6 => p.set_link_up(r.below(2) == 0, t),
+                7 => p.output_underrun(),
+                8 => {
+                    let _ = p.resume_after_stall(r.below(2) == 0, t);
+                }
+                9 => {
+                    p.skip_audio(r.next());
+                }
+                10 => {
+                    let n = p.pull_audio(&mut out);
+                    p.played(r.below(n as u64 + 1));
+                }
+                _ => p.tick(t),
+            }
+            let _ = p.take_actions();
+            let _ = p.status();
+            let _ = p.open_stream();
+            let _ = p.wants_stream_data();
+            let _ = p.stall_ms(t);
+            let _ = p.trim();
+        }
+    }
+}
