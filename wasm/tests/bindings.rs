@@ -193,6 +193,63 @@ fn plays_ogg_opus() {
     );
 }
 
+/// A partial flush (`strm f`: the next track deleted or moved in LMS's queue) reaches the
+/// worker once, as a plain object saying what to drop from its output.
+#[wasm_bindgen_test]
+fn strm_f_hands_the_worker_a_trim() {
+    let opus = include_bytes!("../../core/tests/fixtures/sine-997hz-stereo.opus");
+    let mut p = WasmPlayer::new("02:00:00:00:00:01", "Web", "flc").unwrap();
+    p.connected(0.0);
+    let mut now = 1.0;
+    for _ in 0..2 {
+        p.on_control(&strm_s(b'u'), now).unwrap();
+        p.on_stream_headers(b"HTTP/1.0 200 OK\r\nContent-Type: audio/ogg\r\n\r\n", now);
+        p.on_stream_data(opus, now);
+        p.on_stream_end(now);
+        for _ in 0..200 {
+            now += 10.0;
+            p.tick(now);
+            let _ = p.take_actions();
+        }
+    }
+    let mut buf = vec![0f32; 4096];
+    let mut pulled = 0;
+    let mut tracks = Vec::new();
+    while pulled < 60_000 {
+        let n = p.pull_one(&mut buf);
+        assert!(n > 0, "{}", p.status_json());
+        pulled += n;
+        if !tracks.contains(&p.pulled_track().unwrap()) {
+            tracks.push(p.pulled_track().unwrap());
+        }
+    }
+    assert_eq!(tracks.len(), 2, "into the second track");
+    p.played(20_000.0);
+    assert!(p.take_trim().is_none());
+    assert_eq!(p.trim_count(), 0.0);
+    p.on_control(&strm_arg(b'f', 0), now).unwrap();
+    assert_eq!(p.trim_count(), 1.0);
+    let t: JsValue = p.take_trim().expect("a trim").into();
+    assert_eq!(
+        get(&t, "keep_track").as_f64().unwrap(),
+        f64::from(tracks[0])
+    );
+    let drop = get(&t, "drop_frames").as_f64().unwrap();
+    assert!(drop > 0.0 && drop < 60_000.0 - 20_000.0, "{drop}");
+    let keep = get(&t, "keep_frames").as_f64().unwrap();
+    assert_eq!(
+        keep + drop + 20_000.0,
+        pulled as f64,
+        "the output holds both"
+    );
+    assert!(p.take_trim().is_none(), "once");
+    let latest: JsValue = p.trim().expect("still described").into();
+    assert_eq!(
+        get(&latest, "keep_track").as_f64().unwrap(),
+        f64::from(tracks[0])
+    );
+}
+
 #[wasm_bindgen_test]
 fn visualiser_frames_have_the_documented_layout() {
     use anywhere_wasm::{VISUAL_FRAME_LEN, WasmVisualiser};

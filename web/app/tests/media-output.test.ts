@@ -33,9 +33,19 @@ class FakeSourceBuffer extends EventTarget {
 			this.dispatchEvent(new Event('updateend'));
 		}, 0);
 	}
-	remove() {
+	removed: [number, number][] = [];
+	remove(start: number, end: number) {
+		if (this.updating) throw new DOMException('busy', 'InvalidStateError');
+		this.updating = true;
+		this.removed.push([start, end]);
 		setTimeout(() => {
-			this.buffered = new FakeBuffered();
+			const kept: [number, number][] = [];
+			for (const [a, b] of this.buffered.spans) {
+				if (a < start) kept.push([a, Math.min(b, start)]);
+				if (b > end) kept.push([Math.max(a, end), b]);
+			}
+			this.buffered = new FakeBuffered(kept);
+			this.updating = false;
 			this.dispatchEvent(new Event('updateend'));
 		}, 0);
 	}
@@ -332,4 +342,64 @@ test('a sync skip moves the play head forward within buffered audio only', async
 	for (const bad of [NaN, -1, 0, 20_000]) expect(out.skipAhead(bad)).toBe(false);
 	expect(s.t).toBeCloseTo(10.25);
 	out.stop();
+});
+
+// Regression: after LMS's `strm f` (the next track deleted or moved), the element played the
+// segments of the dropped track it already had.
+test('a trim removes the audio from the cut, after the segments queued before it', async () => {
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors });
+	await out.start();
+	const sb = FakeSourceBuffer.last!;
+	const s = { paused: false, t: 3 };
+	control(out, s);
+	sb.buffered = new FakeBuffered([[0, 8]]);
+	out.append(new Uint8Array([1]));
+	out.trimFrom(5.5);
+	out.append(new Uint8Array([2])); // the kept audio again, from the cut
+	await settle();
+	expect(sb.appended.map((b) => b[0])).toEqual([1, 2]);
+	expect(sb.removed).toEqual([[5.5, Infinity]]);
+	expect(out.bufferedEnd).toBe(5.5);
+	expect(s.t).toBe(3); // the play head is left where it is
+	out.stop();
+});
+
+test('a trim behind the play head moves it back to the cut; one past the end does nothing', async () => {
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors });
+	await out.start();
+	const sb = FakeSourceBuffer.last!;
+	const s = { paused: false, t: 6 };
+	control(out, s);
+	sb.buffered = new FakeBuffered([[0, 8]]);
+	out.trimFrom(5.5);
+	await settle();
+	expect(s.t).toBe(5.5);
+	out.trimFrom(9);
+	await settle();
+	expect(sb.removed).toEqual([[5.5, Infinity]]);
+	out.append(new Uint8Array([3]));
+	await settle();
+	expect(sb.appended.map((b) => b[0])).toEqual([3]);
+	out.stop();
+});
+
+test('nonsense trims are ignored, and a refused removal is noted, not thrown', async () => {
+	const note = vi.fn();
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors, note });
+	await out.start();
+	const sb = FakeSourceBuffer.last!;
+	sb.buffered = new FakeBuffered([[0, 8]]);
+	for (const bad of [NaN, -1, Infinity]) out.trimFrom(bad);
+	await settle();
+	expect(sb.removed).toEqual([]);
+	sb.remove = () => {
+		throw new DOMException('gone', 'InvalidStateError');
+	};
+	out.trimFrom(2);
+	out.append(new Uint8Array([4]));
+	await settle();
+	expect(note).toHaveBeenCalledWith(expect.stringMatching(/gone/));
+	expect(sb.appended.map((b) => b[0])).toEqual([4]);
+	out.stop();
+	out.trimFrom(1); // after stop: nothing
 });

@@ -786,6 +786,8 @@ class DevicePlayer {
 				this.#watchRestart();
 			}
 		}
+		// LMS dropped the tracks after the one playing: cut them out (before any new segments).
+		if (typeof m.trimFrom === 'number') media.trimFrom(m.trimFrom);
 		if (m.init instanceof Uint8Array) media.append(m.init);
 		if (m.segment instanceof Uint8Array) media.append(m.segment);
 		if (m.pause) media.pause();

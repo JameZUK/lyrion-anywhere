@@ -72,6 +72,31 @@ export class VisualTap {
   }
 
   /**
+   * The output dropped what it held beyond `until` frames (LMS dropped the tracks after the
+   * one playing): forget the frames of that audio, which will never be heard.
+   */
+  trim(until) {
+    if (!Number.isFinite(until)) return;
+    const end = Math.max(0, until);
+    while (this.queue.length && this.queue[this.queue.length - 1].at > end) this.queue.pop();
+    while (this.ahead.length) {
+      const last = this.ahead[this.ahead.length - 1];
+      const frames = last.pcm.length / 2;
+      if (last.at >= end) {
+        this.ahead.pop();
+        this.aheadFrames -= frames;
+      } else {
+        const keep = Math.min(frames, end - last.at);
+        if (keep < frames) {
+          last.pcm = last.pcm.subarray(0, keep * 2);
+          this.aheadFrames -= frames - keep;
+        }
+        break;
+      }
+    }
+  }
+
+  /**
    * Interleaved stereo PCM at `rate`, about to go to the output; `at` is how many frames
    * were pulled before it (the output's position when its first frame is heard).
    * `retain`: while off, keep it (by reference: the caller never reuses it) so turning on

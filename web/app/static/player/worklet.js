@@ -11,6 +11,9 @@
 //   start). If it is already past, drop the audio that would have played since, and start;
 // - `silence`: insert N frames of silence (LMS pausing a player that is ahead);
 // - `skip`: drop the next N frames of audio (LMS moving a player that is behind forward).
+//
+// And `trim`: drop the last N frames queued (LMS dropped the tracks after the one playing;
+// `strm f`). Only for the current epoch: after a flush, the queue is already new audio.
 
 /** Volume changes are ramped over this long. */
 const RAMP_SECS = 0.03;
@@ -119,7 +122,30 @@ class AnywhereSink extends AudioWorkletProcessor {
     } else if (msg.skip !== undefined) {
       const n = frameCount(msg.skip);
       if (n !== null) this.skip = Math.min(MAX_CORRECTION, this.skip + n);
+    } else if (msg.trim !== undefined) {
+      const n = frameCount(msg.trim);
+      if (n !== null && msg.epoch === this.epoch) this.dropLast(n);
     }
+  }
+
+  /** Drop up to `n` frames from the end of the queue; returns how many were dropped. */
+  dropLast(n) {
+    let dropped = 0;
+    while (dropped < n && this.queue.length) {
+      const last = this.queue.length - 1;
+      const buf = this.queue[last];
+      const start = last === 0 ? this.offset : 0;
+      const have = (buf.length - start) / 2;
+      const take = Math.min(have, n - dropped);
+      dropped += take;
+      if (take === have) {
+        this.queue.pop();
+        if (!this.queue.length) this.offset = 0;
+      } else {
+        this.queue[last] = buf.subarray(0, buf.length - take * 2);
+      }
+    }
+    return dropped;
   }
 
   /** Drop up to `n` queued frames; returns how many were dropped. */

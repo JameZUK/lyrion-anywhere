@@ -171,6 +171,29 @@ impl Segmenter {
         self.pending.len() / 2
     }
 
+    /// The interleaved stereo PCM buffered but not yet in a segment.
+    pub fn pending_pcm(&self) -> &[f32] {
+        &self.pending
+    }
+
+    /// Keep only the first `frames` buffered frames (a host dropping audio it queued).
+    pub fn truncate_pending(&mut self, frames: usize) {
+        self.pending
+            .truncate(frames.saturating_mul(2).min(self.pending.len()));
+    }
+
+    /// Media timeline position of the next segment, in frames at [`Segmenter::rate`].
+    pub fn decode_time(&self) -> u64 {
+        self.decode_time
+    }
+
+    /// Continue the timeline at exactly `frames` (at the current rate), dropping anything
+    /// queued: for a host that removed the segments from there on.
+    pub fn set_decode_time(&mut self, frames: u64) {
+        self.pending.clear();
+        self.decode_time = frames;
+    }
+
     /// Queue interleaved stereo PCM (-1.0..1.0).
     pub fn push(&mut self, pcm: &[f32]) {
         self.pending.extend_from_slice(&pcm[..pcm.len() & !1]);
@@ -891,6 +914,30 @@ mod tests {
             s.set_time(bad);
             assert_eq!(s.emitted_seconds(), 0.0);
         }
+    }
+
+    /// A host dropping audio it queued (a partial flush) cuts the queue and the timeline
+    /// exactly, and never out of range.
+    #[test]
+    fn pending_audio_and_timeline_can_be_cut_exactly() {
+        let mut s = Segmenter::new(44_100);
+        s.push(&sine(BLOCK + 10, 44_100, 0));
+        let head: Vec<f32> = s.pending_pcm()[..20].to_vec();
+        s.truncate_pending(10);
+        assert_eq!(s.pending_frames(), 10);
+        assert_eq!(s.pending_pcm(), &head[..]);
+        s.truncate_pending(usize::MAX);
+        assert_eq!(s.pending_frames(), 10, "never grows");
+        s.push(&sine(BLOCK * 3, 44_100, 0));
+        s.segment().unwrap();
+        assert_eq!(s.decode_time(), (BLOCK * 3) as u64);
+        s.set_decode_time(BLOCK as u64);
+        assert_eq!(s.decode_time(), BLOCK as u64);
+        assert_eq!(s.pending_frames(), 0, "queued audio dropped");
+        s.push(&sine(BLOCK, 44_100, 0));
+        let seg = s.segment().unwrap();
+        assert!(!seg.is_empty());
+        assert_eq!(s.decode_time(), (BLOCK * 2) as u64);
     }
 
     /// Decode our output with Symphonia: it must give back exactly the 24-bit samples.

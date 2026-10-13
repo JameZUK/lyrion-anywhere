@@ -322,3 +322,50 @@ test('worker messages that are not objects are ignored', () => {
   const a = render(128);
   assert.ok(a.L.every((s) => s === 0));
 });
+
+// --- Partial flush (`strm f`): the tracks after the one playing are dropped ---------------
+
+// Regression: the worklet played the queued audio of a track LMS had dropped.
+test('a trim drops the last frames queued and keeps the rest playing', () => {
+  const { send, render } = loadProcessor();
+  send({ pcm: stereo(100, 0) });
+  send({ pcm: stereo(100, 100) });
+  send({ pcm: stereo(100, 200) });
+  render(50); // partly into the first chunk
+  send({ trim: 180, epoch: 0 }); // the whole last chunk and 80 frames of the middle one
+  const a = render(128);
+  for (let i = 0; i < 70; i++) assert.equal(a.L[i], 50 + i, `frame ${i}`);
+  for (let i = 70; i < 128; i++) assert.equal(a.L[i], 0, `frame ${i} was dropped`);
+  send({ pcm: stereo(10, 1000) });
+  assert.equal(render(128).L[0], 1000, 'new audio follows on');
+});
+
+test('a trim within the chunk being played keeps what is before it', () => {
+  const { send, render } = loadProcessor();
+  send({ pcm: stereo(100, 0) });
+  render(30);
+  send({ trim: 50, epoch: 0 });
+  const a = render(128);
+  assert.equal(a.L[19], 49);
+  assert.equal(a.L[20], 0);
+  send({ trim: 1000, epoch: 0 }); // more than is queued: just empties it
+  assert.ok(render(128).L.every((s) => s === 0));
+});
+
+test('a trim from before the last flush is ignored', () => {
+  const { send, render } = loadProcessor();
+  send({ flush: true, epoch: 2 });
+  send({ pcm: stereo(100, 1) });
+  send({ trim: 100, epoch: 1 });
+  send({ trim: 100 });
+  assert.equal(render(128).L[99], 100, 'the new audio is all there');
+});
+
+test('hostile trim messages are ignored', () => {
+  const { send, render } = loadProcessor();
+  send({ pcm: stereo(100, 1) });
+  for (const bad of [-1, 1.5, NaN, Infinity, '100', null, {}, 1e12]) send({ trim: bad, epoch: 0 });
+  const a = render(128);
+  assert.equal(a.L[99], 100, 'nothing dropped');
+  for (const s of a.L) assert.ok(Number.isFinite(s));
+});

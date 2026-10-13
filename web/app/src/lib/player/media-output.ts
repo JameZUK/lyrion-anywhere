@@ -32,7 +32,8 @@ export class MediaOutput {
 	#ms: MediaSource | null = null;
 	#sb: SourceBuffer | null = null;
 	#url = '';
-	#queue: Uint8Array[] = [];
+	/** Segments to append and cuts to make ({@link trimFrom}), in order. */
+	#queue: (Uint8Array | { removeFrom: number })[] = [];
 	#closed = false;
 	#note: (m: string) => void;
 	#failed = false;
@@ -136,6 +137,10 @@ export class MediaOutput {
 		}
 		const next = this.#queue.shift();
 		if (!next) return;
+		if (!(next instanceof Uint8Array)) {
+			this.#cut(sb, next.removeFrom);
+			return;
+		}
 		try {
 			sb.appendBuffer(next as BufferSource);
 		} catch (e) {
@@ -146,6 +151,34 @@ export class MediaOutput {
 				this.#note(`append failed: ${(e as Error).message}`);
 			}
 		}
+	}
+
+	/**
+	 * LMS dropped the tracks after the one playing (`strm f`): remove the audio from timeline
+	 * second `t` on, once the segments queued before this call are in. The worker sends the
+	 * kept audio after `t` again, then whatever comes next.
+	 */
+	trimFrom(t: number) {
+		if (this.#closed || !Number.isFinite(t) || t < 0) return;
+		this.#queue.push({ removeFrom: t });
+		this.#pump();
+	}
+
+	#cut(sb: SourceBuffer, t: number) {
+		const b = sb.buffered;
+		if (!b.length || b.end(b.length - 1) <= t) {
+			this.#pump(); // nothing there to remove
+			return;
+		}
+		try {
+			sb.remove(t, Infinity); // the queue resumes on updateend
+		} catch (e) {
+			this.#note(`could not remove the dropped track: ${(e as Error).message}`);
+			this.#pump();
+			return;
+		}
+		// Already playing past the cut (it came late): go back to where the new audio goes.
+		if (this.audio.currentTime > t) this.seek(t);
 	}
 
 	/** Play-head position, in timeline seconds. */

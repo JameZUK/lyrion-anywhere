@@ -16,6 +16,7 @@ const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, 
   await import(`./reconnect.js${VQ}`);
 const { Presentation } = await import(`./presentation.js${VQ}`);
 const { VisualTap } = await import(`./visual.js${VQ}`);
+const { planTrim } = await import(`./trim.js${VQ}`);
 
 const TICK_MS = 20;
 // PCM queued in the worklet ahead of playback. Small, so pause/stop feel immediate.
@@ -141,6 +142,21 @@ function flushOutput() {
   } else if (sink) {
     sink.postMessage({ flush: true, epoch });
   }
+}
+
+/**
+ * LMS dropped the tracks after the audible one (`strm f`: the next track was deleted or
+ * moved), which keeps playing. Drop what the output already holds of the later tracks.
+ */
+function trimOutput(t) {
+  const plan = planTrim(t, { mode: outputMode, pulled, segmenter, mediaWaiting });
+  if (plan.drop > 0) {
+    pulled = plan.pulled;
+    visual.trim(pulled);
+  }
+  if (plan.worklet && sink) sink.postMessage({ ...plan.worklet, epoch });
+  for (const m of plan.media) postMessage({ media: m });
+  log(`LMS dropped the tracks after track ${t.keep_track}; dropped ${plan.drop} frames queued`);
 }
 
 /** Tell the page when LMS's volume changes; the page applies it at the output. */
@@ -324,6 +340,9 @@ function onFrames(data) {
       seekFlushAt = now();
       seekTimer.start(seekFlushAt);
     }
+    // After the flush check: a full flush has already dropped everything.
+    const trim = player.take_trim();
+    if (trim) trimOutput(trim);
     reportVolume();
   } catch (err) {
     log(`protocol error: ${err}`);
@@ -615,7 +634,9 @@ function mediaTick(output) {
   let exhausted = false;
   while (pulled - played < rate * MEDIA_AHEAD_SECS) {
     const buf = new Float32Array(4096 * 2);
-    const frames = player.pull(buf);
+    // One track at a time, so the segmenter knows where each track's audio goes (a partial
+    // flush cuts the timeline there: see trimOutput).
+    const frames = player.pull_one(buf);
     if (!frames) {
       exhausted = player.audio_exhausted();
       break;
@@ -623,7 +644,7 @@ function mediaTick(output) {
     const pcm = buf.subarray(0, frames * 2);
     // Kept while off: the element plays seconds behind what is pulled here.
     visual.feed(pcm, rate, pulled, true);
-    segmenter.push(pcm);
+    segmenter.push_track(pcm, player.pulled_track());
     pulled += frames;
   }
   postSegment(segmenter.segment());

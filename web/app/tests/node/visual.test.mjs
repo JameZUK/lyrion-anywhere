@@ -120,6 +120,29 @@ test('a flush drops what was queued and resets the analyser', () => {
   assert.equal(tap.due(1e9, 1000), null);
 });
 
+// A partial flush (`strm f`): frames of the dropped track's audio will never be heard.
+test('a trim forgets the frames and the kept audio beyond the cut', () => {
+  const tap = new VisualTap(fakeAnalyser());
+  tap.setOn(true);
+  tap.feed(pcm(48_000), 48_000, 0); // frames at 1600, 3200, …, 48 000
+  tap.trim(16_000);
+  assert.equal(tap.queue.length, 10);
+  assert.equal(tap.queue[9].at, 16_000);
+  assert.equal(tap.due(1e9, 0)[0], 10, 'the newest left is from before the cut');
+
+  const off = new VisualTap(fakeAnalyser());
+  for (let s = 0; s < 4; s++) off.feed(pcm(48_000), 48_000, s * 48_000, true);
+  off.trim(72_000);
+  assert.equal(off.ahead.length, 2);
+  assert.equal(off.ahead[1].pcm.length, 24_000 * 2);
+  assert.equal(off.aheadFrames, 72_000);
+  for (const bad of [NaN, undefined, 'x']) off.trim(bad);
+  assert.equal(off.aheadFrames, 72_000, 'junk is ignored');
+  off.trim(-5);
+  assert.equal(off.ahead.length, 0);
+  assert.equal(off.aheadFrames, 0);
+});
+
 test('a new rate builds a new analyser; off frees it', () => {
   const made = [];
   const tap = new VisualTap(fakeAnalyser(made));

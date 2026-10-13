@@ -2,6 +2,16 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Web player: `strm f` keeps the current track and drops the next
+
+LMS sends `strm f` when the next track, already streamed, is deleted or moved in its queue, and keeps the current track playing. The core already kept the audible track. The web player only followed full flushes, so it could still play the audio of the dropped track that it had queued.
+
+- **Web Audio:** the worklet drops the audio of the dropped track it has queued. The current track plays to its end.
+- **Media element (`anywhere.playback.mode`):** the segments of the dropped track are removed from the element at the exact FLAC frame where the current track ends. The rest of that frame is queued again, so nothing of the current track is lost. If the dropped track was at another sample rate, the current track's rate is restored too.
+- **WASM:** `WasmPlayer.take_trim()`, `trim()`, `trim_count()`, `pull_one()` and `pulled_track()`; `WasmSegmenter.push_track()` and `trim_after()`. The core's `mux::Segmenter` gains `pending_pcm()`, `truncate_pending()`, `decode_time()` and `set_decode_time()`.
+- **Visualiser:** frames of the dropped audio are forgotten.
+- **Tests:** regression tests for the WASM host (Rust and Node bindings), for the real core driving the real worklet, and for the media output's cut; robustness tests on arbitrary sequences of pushes, rate changes and trims, and on hostile trim messages.
+
 ## 2026-10-13: Rolling cache, Phase A: Android, and restarting after a long gap
 
 The Android part (A5) of `docs/plans/wave3-design.md` §2, and the owner's decision 3 in the engine. Phase A is now built; what remains is the manual testing on a real phone.
