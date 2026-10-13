@@ -21,6 +21,7 @@ import io.github.jamezuk.lyrionanywhere.core.MenuOutcome
 import io.github.jamezuk.lyrionanywhere.core.MenuPage
 import io.github.jamezuk.lyrionanywhere.core.PlaylistPage
 import io.github.jamezuk.lyrionanywhere.core.PluginEntry
+import io.github.jamezuk.lyrionanywhere.core.SearchableApp
 import io.github.jamezuk.lyrionanywhere.core.Suitability
 import io.github.jamezuk.lyrionanywhere.core.SyncGroup
 import io.github.jamezuk.lyrionanywhere.core.VirtualLibrary
@@ -131,6 +132,12 @@ interface MenusRepository {
     suspend fun run(player: String, action: MenuAction, input: String? = null): ApiResult<MenuOutcome>
 
     suspend fun probe(player: String, action: MenuAction): Suitability
+
+    /**
+     * The apps of [apps] whose top menu has a search box ("Search on …"), each read again
+     * from the app's own command; ones that can't be read are left out.
+     */
+    suspend fun searchable(player: String, apps: List<AppEntry>): ApiResult<List<SearchableApp>>
 
     /** An app's top menu. */
     fun appMenu(cmd: String): ApiResult<MenuAction>
@@ -337,6 +344,8 @@ class RustMenusRepository(private val source: ConnectionSource) : MenusRepositor
             is ApiResult.Ok -> r.value
             is ApiResult.Err -> Suitability.Failed("The music server could not open it.")
         }
+
+    override suspend fun searchable(player: String, apps: List<AppEntry>) = withMenus { it.searchable(player, apps) }
 
     override fun appMenu(cmd: String): ApiResult<MenuAction> = try {
         ApiResult.Ok(io.github.jamezuk.lyrionanywhere.core.appMenu(cmd))

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.TravelExplore
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
@@ -56,6 +57,7 @@ import io.github.jamezuk.lyrionanywhere.core.Artist
 import io.github.jamezuk.lyrionanywhere.core.Placement
 import io.github.jamezuk.lyrionanywhere.core.SavedPlaylist
 import io.github.jamezuk.lyrionanywhere.core.SearchKind
+import io.github.jamezuk.lyrionanywhere.core.SearchableApp
 import io.github.jamezuk.lyrionanywhere.core.Selection
 import io.github.jamezuk.lyrionanywhere.core.Track
 import io.github.jamezuk.lyrionanywhere.ui.R
@@ -82,6 +84,8 @@ data class SearchActions(
     /** Play (now, next or at the end) straight from a result. */
     val onPlay: (Selection, Placement) -> Unit,
     val onMore: (MoreRequest) -> Unit,
+    /** Search an app for the same text (its own results, in the menu browser). */
+    val onSearchOn: (SearchableApp) -> Unit = {},
 )
 
 @Composable
@@ -97,7 +101,8 @@ private fun typeLabel(t: SearchType): String = stringResource(
 
 /**
  * Search (Wave 2 §3.3): the field; recent searches (this device only) while it is empty;
- * then results grouped with a Top result, or one type alone. A track plays from its row and
+ * then results grouped with a Top result, or one type alone, and below them "Search on …"
+ * rows handing the text to each app that offers a search. A track plays from its row and
  * an album has a play button; rows swipe right to play next and left to add to the queue,
  * and their menus offer the same.
  */
@@ -182,8 +187,17 @@ private fun AllResults(state: SearchUiState, actions: SearchActions) {
     when {
         state.error != null -> ErrorState(state.error, actions.onRetry)
         r == null -> LoadingState()
-        state.empty -> EmptyState(stringResource(R.string.search_nothing, state.query.trim()))
+        state.empty && state.searchOn.isEmpty() -> EmptyState(stringResource(R.string.search_nothing, state.query.trim()))
         else -> LazyColumn(Modifier.fillMaxSize().testTag("search-all")) {
+            if (state.empty) {
+                item(key = "nothing") {
+                    Text(
+                        stringResource(R.string.search_nothing, state.query.trim()),
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.padding(16.dp),
+                    )
+                }
+            }
             r.top?.let { top ->
                 item(key = "top") { TopResultCard(top.kind, top.index.toInt(), state, actions) }
             }
@@ -215,8 +229,28 @@ private fun AllResults(state: SearchUiState, actions: SearchActions) {
                 actions,
                 key = { "pl${it.id}" },
             ) { p -> PlaylistResultRow(p, actions) }
+            searchOn(state.searchOn, state.query.trim(), actions)
         }
     }
+}
+
+/** "Search on …": the same text in each app that offers a search, below the library's results. */
+private fun LazyListScope.searchOn(apps: List<SearchableApp>, query: String, actions: SearchActions) {
+    if (apps.isEmpty() || query.isEmpty()) return
+    item(key = "h-search-on") { SectionHeader(stringResource(R.string.search_on)) }
+    items(apps, key = { "on-${it.cmd}" }) { app -> SearchOnRow(app, query, actions) }
+}
+
+@Composable
+private fun SearchOnRow(app: SearchableApp, query: String, actions: SearchActions) {
+    ListItem(
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        leadingContent = { Icon(Icons.Outlined.TravelExplore, contentDescription = null) },
+        headlineContent = { Text(stringResource(R.string.search_on_row, app.name, query), maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        modifier = Modifier
+            .clickable(onClickLabel = stringResource(R.string.search_on_open)) { actions.onSearchOn(app) }
+            .testTag("search-on-${app.cmd}"),
+    )
 }
 
 /** A type's few rows under "All", with "See all" when there are more. */

@@ -16,6 +16,7 @@ import io.github.jamezuk.lyrionanywhere.core.LibraryFilter
 import io.github.jamezuk.lyrionanywhere.core.PinnedMenu
 import io.github.jamezuk.lyrionanywhere.core.SavedPlaylist
 import io.github.jamezuk.lyrionanywhere.core.SearchResults
+import io.github.jamezuk.lyrionanywhere.core.SearchableApp
 import io.github.jamezuk.lyrionanywhere.core.ShelfKind
 import io.github.jamezuk.lyrionanywhere.core.SmartFilter
 import io.github.jamezuk.lyrionanywhere.core.Station
@@ -837,6 +838,8 @@ data class SearchUiState(
     val type: SearchType = SearchType.ALL,
     /** Recent searches (on this device only), newest first. */
     val recents: List<String> = emptyList(),
+    /** Apps whose own search the text can be handed to ("Search on …"). */
+    val searchOn: List<SearchableApp> = emptyList(),
 ) {
     /** The search that [results] are for is more than nothing. */
     val searched: Boolean get() = query.trim().length >= SearchViewModel.MIN_LENGTH
@@ -856,6 +859,10 @@ class SearchViewModel(
     private val library: LibraryRepository,
     /** Where recent searches are kept (none: not kept). */
     private val settings: io.github.jamezuk.lyrionanywhere.data.SettingsStore? = null,
+    /** Which apps can be searched too (none: "Search on" isn't offered). */
+    private val plugins: SearchDirectory? = null,
+    /** The player apps are searched for (they browse and play for one). */
+    private val player: () -> String? = { null },
 ) : ViewModel() {
     private val _state = MutableStateFlow(SearchUiState())
     val state: StateFlow<SearchUiState> = _state.asStateFlow()
@@ -917,8 +924,23 @@ class SearchViewModel(
         viewModelScope.launch { s.clearRecentSearches() }
     }
 
+    /** The player "Search on" was looked up for (once per screen; the directory caches it). */
+    private var searchOnFor: String? = null
+
+    private fun loadSearchOn() {
+        val dir = plugins ?: return
+        val p = player() ?: return
+        if (p == searchOnFor) return
+        searchOnFor = p
+        viewModelScope.launch {
+            val found = dir.get(p)
+            if (player() == p) _state.update { it.copy(searchOn = found) }
+        }
+    }
+
     private fun run(term: String) {
         job?.cancel()
+        if (term.isNotEmpty()) loadSearchOn()
         if (term.length < MIN_LENGTH) {
             _state.update { it.copy(results = null, playlists = emptyList(), loading = false, error = null) }
             restartTyped()
