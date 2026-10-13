@@ -765,6 +765,10 @@ The aim is power users, the car and the daily routine.
 - **Platform:** per-output EQ profiles (H2), album-aware shuffle (H4), haptics (D6) and system surfaces (U11).
 - **Simple smart filters (X7 v1):** genre, year, rating and play count, saved as shelves and download rules.
 
+### Deferred
+
+- **Timed lyrics from LRCLIB (2026-10-13, deferred):** many tracks only have plain lyrics, which can't follow the music. The gateway could ask LRCLIB, a free open database of timed lyrics, by artist, title, album and duration, and cache the answer. The apps already handle timed lyrics. It would be an admin setting, off by default, because it sends what is played to an outside service. Judged overkill for now.
+
 ### Wave 3: signature features (larger, needing design reviews)
 
 The aim is features nobody else offers for LMS.
