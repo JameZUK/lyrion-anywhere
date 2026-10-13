@@ -258,8 +258,14 @@ class FakePlayers : PlayersRepository {
         return statusResult
     }
 
-    override suspend fun queue(player: String, start: Int, count: Int) =
-        ApiResult.Ok(listOf(sampleTrack(1, 0), sampleTrack(2, 1)))
+    /** The queue, read a page at a time as LMS does. */
+    var queueTracks: List<Track> = listOf(sampleTrack(1, 0), sampleTrack(2, 1))
+    val queueCalls = mutableListOf<Pair<Int, Int>>()
+
+    override suspend fun queue(player: String, start: Int, count: Int): ApiResult<List<Track>> {
+        queueCalls += start to count
+        return ApiResult.Ok(queueTracks.drop(start).take(count))
+    }
 
     override suspend fun play(player: String) = cmd("play $player")
 

@@ -43,6 +43,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -55,7 +56,9 @@ import androidx.compose.material.icons.outlined.SkipPrevious
 import androidx.compose.material.icons.outlined.Speaker
 import androidx.compose.material.icons.automirrored.outlined.VolumeDown
 import androidx.compose.material.icons.automirrored.outlined.VolumeUp
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -154,6 +157,9 @@ fun MiniPlayer(
         Column {
             TransferStatus(state.transfer, onDismissTransfer)
             PlayingOnStrip(state, onBackToPhone, onBringToPhone = onBringToPhone)
+            // No player yet, or nothing queued: "Play on…" must still be one tap away (a
+            // first-time user has no other way to pick a player).
+            if (!state.loading && !state.waitingForPhone) ChoosePlayerBar(state, onOutputs)
         }
         return
     }
@@ -263,6 +269,36 @@ fun MiniPlayer(
     }
 }
 
+/**
+ * The mini player's stand-in while nothing plays: says so (or that no player is chosen),
+ * with the button that opens "Play on…".
+ */
+@Composable
+internal fun ChoosePlayerBar(state: PlayerUiState, onOutputs: () -> Unit) {
+    val name = state.selected?.name
+    Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth().testTag("mini-choose-player")) {
+        Row(
+            Modifier.padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                if (name == null) stringResource(R.string.mini_no_player) else stringResource(R.string.mini_nothing_playing, name),
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onOutputs, modifier = Modifier.testTag("choose-player")) {
+                Icon(Icons.Outlined.Devices, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text(
+                    stringResource(if (name == null) R.string.action_choose_player else R.string.play_on_title),
+                    Modifier.padding(start = 8.dp),
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun PlayPauseButton(playing: Boolean, onClick: () -> Unit, filled: Boolean) {
     val icon = if (playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow
@@ -292,7 +328,25 @@ fun NowPlayingScreen(
     val status = state.status
     val player = state.selected
     if (player == null) {
-        if (state.waitingForPhone) LoadingState(modifier) else EmptyState(stringResource(R.string.choose_player_first), modifier)
+        if (state.waitingForPhone) {
+            LoadingState(modifier)
+        } else {
+            Column(
+                modifier.fillMaxSize().padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+            ) {
+                Text(
+                    stringResource(R.string.choose_player_first),
+                    style = MaterialTheme.typography.bodyLarge,
+                    textAlign = TextAlign.Center,
+                )
+                Button(onClick = actions.onOutputs, modifier = Modifier.testTag("now-playing-choose-player")) {
+                    Icon(Icons.Outlined.Devices, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text(stringResource(R.string.action_choose_player), Modifier.padding(start = 8.dp))
+                }
+            }
+        }
         return
     }
     if (status == null) {
@@ -301,7 +355,7 @@ fun NowPlayingScreen(
     }
     val track = status.current
     val drag = remember { QueueDrag() }
-    val queueActions = QueueActions(actions.onJump, actions.onRemove, actions.onMove, actions.onClearQueue)
+    val queueActions = QueueActions(actions.onJump, actions.onRemove, actions.onMove, actions.onClearQueue, actions.onLoadMoreQueue)
     val currentIndex = status.queueIndex?.toInt()
     val pullMin = with(LocalDensity.current) { SWIPE_MIN.toPx() * 1.5f }
     // Kept across recompositions (the caller's lambda changes each time), so a pull in
@@ -343,7 +397,7 @@ fun NowPlayingScreen(
             VerticalDivider()
             LazyColumn(Modifier.weight(1f).fillMaxHeight().testTag("queue-pane"), contentPadding = PaddingValues(vertical = 8.dp)) {
                 item(key = "queue-header") { QueueHeader(state.queue.size, player.name, actions.onClearQueue) }
-                queueItems(state.queue, currentIndex, drag, queueActions)
+                queueItems(state.queue, currentIndex, drag, queueActions, hasMore = state.queueMore)
             }
         }
     } else {
@@ -358,7 +412,7 @@ fun NowPlayingScreen(
                 HorizontalDivider()
                 QueueHeader(state.queue.size, player.name, actions.onClearQueue)
             }
-            queueItems(state.queue, currentIndex, drag, queueActions)
+            queueItems(state.queue, currentIndex, drag, queueActions, hasMore = state.queueMore)
         }
     }
     }
@@ -385,6 +439,8 @@ private fun NowPlayingControls(
     val trackKey = track?.id ?: track?.title
     val elapsed = rememberElapsed(state, clock)
     val lyrics = state.lyrics?.takeIf { track?.id != null && state.lyricsTrackId == track.id }
+    // The playing lyric line, updated as each line starts (not on the once-a-second tick).
+    val lyricLine = rememberLyricLine(lyrics, state, clock)
     val nextLabel = stringResource(R.string.action_next)
     val previousLabel = stringResource(R.string.action_previous)
     val coverLabel = stringResource(R.string.album_cover)
@@ -440,7 +496,7 @@ private fun NowPlayingControls(
         track?.quality?.let { q -> QualityBadge(q, onClick = { showPath = true }) }
         if ((track?.id ?: 0) > 0) RatingControl(state.rating, state.ratingStyle, state.ratingFailed, actions.onRate)
         if (state.lyricsPeek && lyrics?.synced == true) {
-            val line = lyrics.lines.getOrNull(lyricLineAt(lyrics, elapsed))?.text
+            val line = lyrics.lines.getOrNull(lyricLine)?.text
             if (!line.isNullOrEmpty()) LyricsPeek(line, onOpen = { showLyrics = true })
         }
         SeekBar(
@@ -496,8 +552,14 @@ private fun NowPlayingControls(
         status.next?.let { next ->
             UpNextRow(next, onOpenQueue = onOpenQueue, onRemove = actions.onRemoveUpNext)
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.weight(1f)) { VolumeBar(status.volume.toInt(), actions.onVolume) }
+        // The volume has a row of its own, so it keeps a usable width on a narrow phone; the
+        // other actions sit in the row below.
+        VolumeBar(status.volume.toInt(), actions.onVolume)
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            modifier = Modifier.fillMaxWidth().testTag("now-playing-actions"),
+        ) {
             if (lyrics != null) LyricsButton(onOpen = { showLyrics = true })
             actions.onAlarms?.let { open ->
                 IconButton(onClick = open, modifier = Modifier.testTag("alarms-button")) {
@@ -556,6 +618,7 @@ private fun NowPlayingControls(
             lyrics = lyrics,
             title = track?.title.orEmpty(),
             elapsedSecs = elapsed,
+            currentLine = lyricLine,
             canSeek = status.canSeek,
             onSeek = actions.onSeek,
             onDismiss = { showLyrics = false },
@@ -602,6 +665,8 @@ data class NowPlayingActions(
     val onRate: (Int) -> Unit = {},
     /** Open the selected player's alarms (null: not offered). */
     val onAlarms: (() -> Unit)? = null,
+    /** The queue list reached its end and there is more: read the next page. */
+    val onLoadMoreQueue: () -> Unit = {},
 )
 
 /**
@@ -683,6 +748,7 @@ private fun VolumeBar(volume: Int, onVolume: (Int) -> Unit) {
             valueRange = 0f..100f,
             modifier = Modifier
                 .weight(1f)
+                .testTag("volume-slider")
                 .semantics {
                     this.contentDescription = label
                     stateDescription = "${shown.toInt()}%"

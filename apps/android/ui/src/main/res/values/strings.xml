@@ -91,7 +91,7 @@
 
     <!-- Players -->
     <string name="section_queue">Queue</string>
-    <string name="choose_player_first">No player is chosen. Use the output button to choose where to play.</string>
+    <string name="choose_player_first">No player is chosen yet. Choose where to play.</string>
     <string name="player_playing">Playing</string>
     <string name="player_idle">Ready</string>
     <string name="player_off">Switched off</string>
@@ -677,7 +677,13 @@
     <string name="rating_style_heart">A heart</string>
     <string name="settings_ratings_detail">Your ratings are yours: kept on your server for your account. Where the server has the Ratings Light plugin, your rating also becomes its shared rating for the track.</string>
     <string name="clear_ratings">Clear my ratings</string>
-    <string name="ratings_cleared">%1$d ratings cleared</string>
+    <plurals name="ratings_cleared">
+        <item quantity="one">%1$d rating cleared</item>
+        <item quantity="other">%1$d ratings cleared</item>
+    </plurals>
+    <string name="clear_ratings_confirm_title">Clear your ratings?</string>
+    <string name="clear_ratings_confirm_body">Every rating you have given is removed, for all your devices. This can\'t be undone.</string>
+    <string name="ratings_clear_failed">Couldn\'t clear your ratings.</string>
     <string name="alarms">Alarms</string>
     <string name="alarms_on_player">On %1$s. Alarms are kept by your music server, so they ring even with this app closed.</string>
     <string name="alarms_all">Alarms on this player</string>
@@ -703,4 +709,22 @@
     <string name="every_day">Every day</string>
     <string name="weekdays">Weekdays</string>
     <string name="weekends">Weekends</string>
+    <string name="alarm_failed">Couldn\'t change the alarms: %1$s</string>
+    <string name="alarm_volume_label">Alarm volume</string>
+    <string name="alarm_volume_state">%1$d per cent</string>
+    <!-- Choosing a player when nothing plays. -->
+    <string name="mini_no_player">No player chosen</string>
+    <string name="mini_nothing_playing">Nothing playing on %1$s</string>
+    <string name="action_choose_player">Choose a player</string>
+    <!-- Home edit mode, and a layout that didn't load. -->
+    <string name="home_discard_title">Discard your changes?</string>
+    <string name="home_discard_body">Your changes to Home haven\'t been saved.</string>
+    <string name="action_discard">Discard</string>
+    <string name="action_keep_editing">Keep editing</string>
+    <string name="home_layout_failed">Couldn\'t load your Home layout, so it can\'t be edited just now.</string>
+    <!-- The camera for pairing, refused for good. -->
+    <string name="camera_denied">The camera is turned off for this app, so a QR code can\'t be scanned. Turn it on in the app\'s settings, or type the code below.</string>
+    <string name="action_open_settings">Open settings</string>
+    <!-- The queue changed before a removal. -->
+    <string name="queue_changed">The queue changed, so nothing was removed.</string>
 </resources>

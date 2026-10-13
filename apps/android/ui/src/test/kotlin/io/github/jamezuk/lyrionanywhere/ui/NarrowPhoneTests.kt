@@ -1,0 +1,47 @@
+package io.github.jamezuk.lyrionanywhere.ui
+
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import io.github.jamezuk.lyrionanywhere.core.LyricLine
+import io.github.jamezuk.lyrionanywhere.core.TrackLyrics
+import io.github.jamezuk.lyrionanywhere.ui.player.NowPlayingScreen
+import io.github.jamezuk.lyrionanywhere.ui.theme.LyrionTheme
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+
+/** Now playing on a small phone (360 dp wide). */
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [35], qualifiers = "w360dp-h1800dp")
+class NarrowPhoneTests {
+    @get:Rule
+    val compose = createComposeRule()
+
+    /** With every action shown (lyrics, alarms, sleep, Play on…, More), the volume keeps its room. */
+    @Test
+    fun theVolumeSliderKeepsAUsableWidth() {
+        val state = auditPlayerState().copy(
+            lyrics = TrackLyrics(false, true, listOf(LyricLine(0u, "A line"))),
+            lyricsTrackId = 1,
+        )
+        compose.setContent {
+            LyrionTheme(dynamicColour = false) {
+                NowPlayingScreen(
+                    state,
+                    clock = { 0L },
+                    actions = nowPlayingActions().copy(onAlarms = {}, onMore = {}),
+                )
+            }
+        }
+        val node = compose.onNodeWithTag("volume-slider").fetchSemanticsNode()
+        val widthDp = node.size.width / node.layoutInfo.density.density
+        assertTrue("the volume slider is only $widthDp dp wide", widthDp >= 160f)
+        // The actions are all still there, in their own row.
+        compose.onNodeWithTag("now-playing-actions").assertExists()
+        compose.onNodeWithTag("alarms-button").assertExists()
+        compose.onNodeWithTag("lyrics-button").assertExists()
+    }
+}

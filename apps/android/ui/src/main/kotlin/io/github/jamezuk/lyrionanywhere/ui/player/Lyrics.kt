@@ -28,8 +28,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -57,6 +60,43 @@ private const val MANUAL_SCROLL_MS = 4_000L
 /** The line playing at [elapsedSecs], or -1 (plain lyrics, before the first line, none). */
 internal fun lyricLineAt(lyrics: TrackLyrics?, elapsedSecs: Double): Int =
     LyricsMath.lineAt(lyrics, (elapsedSecs * 1000).toLong())
+
+/**
+ * How long until the line playing at [posMs] changes (the next line starts), ms; null when
+ * it never will (plain lyrics, none, or the last line is playing).
+ */
+internal fun msToNextLine(lyrics: TrackLyrics?, posMs: Long): Long? {
+    if (lyrics == null || !lyrics.synced) return null
+    val next = lyrics.lines.getOrNull(LyricsMath.lineAt(lyrics, posMs) + 1) ?: return null
+    return (next.timeMs.toLong() - posMs).coerceAtLeast(0)
+}
+
+/** The longest wait between checks of the lyric line, ms (keeps it right after a seek). */
+private const val LYRIC_MAX_WAIT_MS = 1_000L
+
+/** A little past a line's start, so the check lands after it rather than just before. */
+private const val LYRIC_MARGIN_MS = 15L
+
+/**
+ * The lyric line playing now, updated as each line starts: it waits until the next line's
+ * start (at most [LYRIC_MAX_WAIT_MS]) rather than ticking once a second, so the highlight
+ * moves with the singing.
+ */
+@Composable
+internal fun rememberLyricLine(lyrics: TrackLyrics?, state: PlayerUiState, clock: () -> Long): Int {
+    var line by remember(lyrics) { mutableIntStateOf(lyricLineAt(lyrics, PlayerViewModel.elapsedAt(state, clock()))) }
+    val latest by rememberUpdatedState(state)
+    LaunchedEffect(lyrics, state.playing, state.statusAt, state.status?.elapsedSecs) {
+        while (true) {
+            val pos = (PlayerViewModel.elapsedAt(latest, clock()) * 1000).toLong()
+            line = LyricsMath.lineAt(lyrics, pos)
+            if (!latest.playing) break
+            val wait = msToNextLine(lyrics, pos) ?: break
+            delay((wait + LYRIC_MARGIN_MS).coerceAtMost(LYRIC_MAX_WAIT_MS))
+        }
+    }
+    return line
+}
 
 /**
  * The current lyric line, small, on Now playing (docs/plans/wave1-design.md §9). Tapping it
@@ -103,10 +143,12 @@ internal fun LyricsScreen(
     onSeek: (Double) -> Unit,
     onDismiss: () -> Unit,
     now: () -> Long = System::currentTimeMillis,
+    /** The playing line, when the caller follows it more finely than [elapsedSecs] ticks. */
+    currentLine: Int? = null,
 ) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize().testTag("lyrics-view")) {
-            val current = lyricLineAt(lyrics, elapsedSecs)
+            val current = currentLine ?: lyricLineAt(lyrics, elapsedSecs)
             val list = rememberLazyListState()
             val dragged by list.interactionSource.collectIsDraggedAsState()
             var manualAt by remember { mutableLongStateOf(Long.MIN_VALUE / 2) }
