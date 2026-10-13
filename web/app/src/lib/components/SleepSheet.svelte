@@ -7,6 +7,7 @@
 	import { MAX_CUSTOM_MINUTES, MIN_CUSTOM_MINUTES } from '$lib/lms/sleep';
 	import { isRemote } from '$lib/lms/format';
 	import Sheet from './Sheet.svelte';
+	import { haptics } from '$lib/haptics/haptics.svelte';
 
 	let { onclose }: { onclose: () => void } = $props();
 
@@ -27,7 +28,10 @@
 		busy = true;
 		error = await app.setSleep(choice, scope);
 		busy = false;
-		if (!error) onclose();
+		if (!error) {
+			haptics.tick('sleep');
+			onclose();
+		}
 	}
 
 	async function off() {

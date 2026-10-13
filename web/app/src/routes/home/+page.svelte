@@ -10,6 +10,7 @@
 	import HomeShelf from '$lib/components/HomeShelf.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import { haptics } from '$lib/haptics/haptics.svelte';
 
 	let layout = $state<HomeLayout | null>(null);
 	let stations = $state<Station[]>([]);
@@ -140,6 +141,7 @@
 	// Pointer drag by the handle; Move up/down does the same for keyboards and screen readers.
 	function dragStart(e: PointerEvent, i: number) {
 		dragFrom = i;
+		haptics.tick('pickup');
 		(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
 	}
 	function dragMove(e: PointerEvent) {
@@ -152,6 +154,7 @@
 		}
 	}
 	function dragEnd() {
+		if (dragFrom !== null) haptics.tick('drop');
 		dragFrom = null;
 	}
 

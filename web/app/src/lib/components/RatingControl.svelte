@@ -3,6 +3,7 @@
 	// the user chose in Settings. Shows the blend of the user's own rating and LMS's shared
 	// one; the user's own is in the accent colour, a shared-only rating muted.
 	import { ratings } from '$lib/state/ratings';
+	import { haptics } from '$lib/haptics/haptics.svelte';
 
 	let { track, size = 22 }: { track: number | null | undefined; size?: number } = $props();
 	const uid = $props.id();
@@ -19,6 +20,7 @@
 	async function set(v: number) {
 		if (!track) return;
 		failed = !(await ratings.rate(track, Math.max(0, Math.min(100, v))));
+		if (!failed) haptics.tick('rating');
 	}
 
 	/** Clicking the star that is the user's rating clears it. */

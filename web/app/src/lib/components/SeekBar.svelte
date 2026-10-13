@@ -8,6 +8,7 @@
 	import type { AnalysisClient, AnalysisState } from '$lib/analysis/client';
 	import { barCount, bars, barsPath, fraction } from '$lib/analysis/waveform';
 	import { duration } from '$lib/lms/format';
+	import { haptics } from '$lib/haptics/haptics.svelte';
 
 	interface Props {
 		/** The LMS track id (no waveform without one). */
@@ -47,6 +48,14 @@
 	const levels = $derived(ready && width > 0 ? bars(ready.peak, barCount(width)) : []);
 	const path = $derived(barsPath(levels, Math.max(width, 1), HEIGHT, 1, 2));
 	const played = $derived(fraction(value, total) * Math.max(width, 1));
+	/** Where the last scrub step was, for a tick at every tenth of the track (haptics). */
+	let scrubFrom: number | null = null;
+	function scrubbing(v: number) {
+		haptics.scrub(scrubFrom ?? value, v, total);
+		scrubFrom = v;
+		oninput?.(v);
+	}
+
 	const valueText = $derived(total > 0 ? `${duration(value)} of ${duration(total)}` : duration(value));
 </script>
 
@@ -70,8 +79,11 @@
 		{disabled}
 		aria-label="Position"
 		aria-valuetext={valueText}
-		oninput={(e) => oninput?.(Number(e.currentTarget.value))}
-		onchange={(e) => onchange?.(Number(e.currentTarget.value))}
+		oninput={(e) => scrubbing(Number(e.currentTarget.value))}
+		onchange={(e) => {
+			scrubFrom = null;
+			onchange?.(Number(e.currentTarget.value));
+		}}
 	/>
 </div>
 

@@ -27,6 +27,7 @@
 	import { lyrics } from '$lib/state/lyrics';
 	import { nowPlaying } from '$lib/nowplaying/store.svelte';
 	import { STYLES, STYLE_LABELS, type VisualStyle } from '$lib/visual/draw';
+	import { haptics } from '$lib/haptics/haptics.svelte';
 
 	// Built in: every browser is checked, and the best playback mode chosen automatically.
 	const caps = detect();
@@ -233,6 +234,21 @@
 			</select>
 		</label>
 		<p class="muted small">In place of the cover, while this browser is the player and Now playing is on screen. Off while your device asks for reduced motion. Kept in this browser.</p>
+	</div>
+
+	<div class="card">
+		<h2>Haptics</h2>
+		<label class="check">
+			<input type="checkbox" role="switch" checked={haptics.enabled} disabled={!haptics.supported} onchange={(e) => haptics.set(e.currentTarget.checked)} aria-describedby="haptics-note" data-haptics-setting />
+			<span>Haptics</span>
+		</label>
+		<p class="muted small" id="haptics-note">
+			{#if haptics.supported}
+				Light ticks when you skip by swiping, scrub (every tenth of the track), change the volume, pick up and drop in a list, rate a track or set the sleep timer. Kept in this browser.
+			{:else}
+				This browser can’t vibrate (most phones other than Android, and computers), so there is nothing to switch on here.
+			{/if}
+		</p>
 	</div>
 
 	<div class="card">

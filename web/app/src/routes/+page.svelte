@@ -38,6 +38,7 @@
 	import { LAYOUTS, LAYOUT_LABELS, layoutForKey, swipeLayout, type Layout } from '$lib/nowplaying/prefs';
 	import { STYLE_LABELS, nextStyle } from '$lib/visual/draw';
 	import { isThisDevice } from '$lib/player/outputs';
+	import { haptics } from '$lib/haptics/haptics.svelte';
 
 	let showMore = $state(false);
 	let showSleep = $state(false);
@@ -150,6 +151,7 @@
 	);
 
 	function setVolume(v: number) {
+		haptics.volume(vol, v);
 		volume = v;
 		clearTimeout(volTimer);
 		volTimer = setTimeout(async () => {
