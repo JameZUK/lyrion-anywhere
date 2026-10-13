@@ -44,6 +44,10 @@ data class AppSettings(
     val lyricsPeek: Boolean = true,
     /** The live stream's level on Wi-Fi and on mobile data (docs/plans/streaming-quality.md). */
     val streaming: StreamingSettings = StreamingSettings(),
+    /** The Library page's chip, album order and view (Wave 2 §3.2). */
+    val library: LibraryPrefs = LibraryPrefs(),
+    /** Recent searches, newest first (on this device only; Wave 2 §3.3). */
+    val recentSearches: List<String> = emptyList(),
 )
 
 /** This phone's stream level by network: as sent on Wi-Fi, Opus 160 on mobile data. */
@@ -111,6 +115,16 @@ interface SettingsStore {
 
     /** The stream level on Wi-Fi and on mobile data. */
     suspend fun setStreaming(streaming: StreamingSettings) {}
+
+    /** The Library page's chip, album order and view (checked before they are kept). */
+    suspend fun setLibraryPrefs(prefs: LibraryPrefs) {}
+
+    /** Put a search first among the recent ones (at most 20 are kept). */
+    suspend fun addRecentSearch(term: String) {}
+
+    suspend fun removeRecentSearch(term: String) {}
+
+    suspend fun clearRecentSearches() {}
 }
 
 /** A user name fit to remember as the offline owner. */
@@ -135,7 +149,34 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
                 wifi = enumOr(it[STREAM_WIFI], StreamingSettings().wifi),
                 mobile = enumOr(it[STREAM_MOBILE], StreamingSettings().mobile),
             ),
+            library = LibraryPrefs(
+                chip = it[LIB_CHIP]?.let { c -> LibraryChip.entries.firstOrNull { e -> e.name == c } },
+                albumSort = enumOr(it[LIB_SORT], LibraryPrefs().albumSort),
+                albumGrid = it[LIB_GRID] ?: true,
+            ).sanitised(),
+            recentSearches = RecentSearches.decode(it[RECENT_SEARCHES]),
         )
+    }
+
+    override suspend fun setLibraryPrefs(prefs: LibraryPrefs) {
+        val p = prefs.sanitised()
+        store.edit { e ->
+            if (p.chip == null) e.remove(LIB_CHIP) else e[LIB_CHIP] = p.chip.name
+            e[LIB_SORT] = p.albumSort.name
+            e[LIB_GRID] = p.albumGrid
+        }
+    }
+
+    override suspend fun addRecentSearch(term: String) {
+        store.edit { e -> e[RECENT_SEARCHES] = RecentSearches.encode(RecentSearches.add(RecentSearches.decode(e[RECENT_SEARCHES]), term)) }
+    }
+
+    override suspend fun removeRecentSearch(term: String) {
+        store.edit { e -> e[RECENT_SEARCHES] = RecentSearches.encode(RecentSearches.remove(RecentSearches.decode(e[RECENT_SEARCHES]), term)) }
+    }
+
+    override suspend fun clearRecentSearches() {
+        store.edit { e -> e.remove(RECENT_SEARCHES) }
     }
 
     override suspend fun setSleepFade(seconds: Int) {
@@ -181,6 +222,8 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
             if (p[DEFAULT_PLAYER] == DefaultPlayer.SPECIFIC.name) p.remove(DEFAULT_PLAYER)
             // Downloads belong to a user on a server.
             p.remove(OFFLINE_OWNER)
+            // So do searches of its library.
+            p.remove(RECENT_SEARCHES)
         }
     }
 
@@ -226,6 +269,10 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         val LYRICS_PEEK = booleanPreferencesKey("lyrics_peek")
         val STREAM_WIFI = stringPreferencesKey("stream_quality_wifi")
         val STREAM_MOBILE = stringPreferencesKey("stream_quality_mobile")
+        val LIB_CHIP = stringPreferencesKey("library_chip")
+        val LIB_SORT = stringPreferencesKey("library_album_sort")
+        val LIB_GRID = booleanPreferencesKey("library_album_grid")
+        val RECENT_SEARCHES = stringPreferencesKey("recent_searches")
         val DL_WIFI = stringPreferencesKey("downloads_wifi_format")
         val DL_MOBILE = stringPreferencesKey("downloads_mobile_format")
         val DL_WIFI_ONLY = booleanPreferencesKey("downloads_wifi_only")

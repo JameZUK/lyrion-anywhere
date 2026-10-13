@@ -5,6 +5,10 @@ import io.github.jamezuk.lyrionanywhere.core.AlbumPage
 import io.github.jamezuk.lyrionanywhere.core.AlbumSort
 import io.github.jamezuk.lyrionanywhere.core.AppEntry
 import io.github.jamezuk.lyrionanywhere.core.ArtistRole
+import io.github.jamezuk.lyrionanywhere.core.Credit
+import io.github.jamezuk.lyrionanywhere.core.IndexEntry
+import io.github.jamezuk.lyrionanywhere.core.RoleCount
+import io.github.jamezuk.lyrionanywhere.core.TrackPage
 import io.github.jamezuk.lyrionanywhere.core.FavouriteLibraryItems
 import io.github.jamezuk.lyrionanywhere.core.FavouritePage
 import io.github.jamezuk.lyrionanywhere.core.FolderPage
@@ -91,6 +95,26 @@ interface LibraryRepository {
     /** Library tracks and albums among the LMS favourites ("Keep favourites offline"). */
     suspend fun favouriteLibraryItems(): ApiResult<FavouriteLibraryItems> =
         ApiResult.Ok(FavouriteLibraryItems(emptyList(), emptyList()))
+
+    /** Everyone credited on a library track, by role (Wave 2 §3.1). */
+    suspend fun trackCredits(trackId: Long): ApiResult<List<Credit>> = ApiResult.Ok(emptyList())
+
+    /** The roles an artist has albums in, with how many ("Appears as"). */
+    suspend fun roleCounts(artistId: Long, libraryId: String?): ApiResult<List<RoleCount>> = ApiResult.Ok(emptyList())
+
+    /** The A–Z index of albums in title order, narrowed as the list is (§3.2). */
+    suspend fun albumIndex(filter: LibraryFilter): ApiResult<List<IndexEntry>> = ApiResult.Ok(emptyList())
+
+    /** The A–Z index of artists, narrowed as the list is. */
+    suspend fun artistIndex(filter: LibraryFilter): ApiResult<List<IndexEntry>> = ApiResult.Ok(emptyList())
+
+    /** A page of tracks matching a search (§3.3). */
+    suspend fun searchTracks(term: String, start: Int, count: Int): ApiResult<TrackPage> =
+        ApiResult.Err(AppError.InvalidInput("search not available"))
+
+    /** A page of saved playlists matching a search. */
+    suspend fun searchPlaylists(term: String, start: Int, count: Int): ApiResult<PlaylistPage> =
+        ApiResult.Err(AppError.InvalidInput("search not available"))
 }
 
 /** LMS menus (apps, radio, plugins and "More…" menus), browsed for a player. */
@@ -249,6 +273,20 @@ class RustLibraryRepository(private val source: ConnectionSource) : LibraryRepos
     override suspend fun search(term: String, count: Int) = withLibrary { it.search(term, count.u()) }
 
     override suspend fun favouriteLibraryItems() = withLibrary { it.favouriteLibraryItems() }
+
+    override suspend fun trackCredits(trackId: Long) = withLibrary { it.trackCredits(trackId) }
+
+    override suspend fun roleCounts(artistId: Long, libraryId: String?) = withLibrary { it.roleCounts(artistId, libraryId) }
+
+    override suspend fun albumIndex(filter: LibraryFilter) = withLibrary { it.albumIndex(filter) }
+
+    override suspend fun artistIndex(filter: LibraryFilter) = withLibrary { it.artistIndex(filter) }
+
+    override suspend fun searchTracks(term: String, start: Int, count: Int) =
+        withLibrary { it.searchTracks(term, start.u(), count.u()) }
+
+    override suspend fun searchPlaylists(term: String, start: Int, count: Int) =
+        withLibrary { it.searchPlaylists(term, start.u(), count.u()) }
 }
 
 class RustMenusRepository(private val source: ConnectionSource) : MenusRepository {
