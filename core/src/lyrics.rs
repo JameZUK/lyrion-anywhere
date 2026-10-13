@@ -65,10 +65,8 @@ impl Lyrics {
             let text = clean(rest);
             if times.is_empty() {
                 if plain.len() < MAX_LINES {
-                    plain.push(Line {
-                        time_ms: 0,
-                        text: clean(raw),
-                    });
+                    // No times: `rest` is the whole line.
+                    plain.push(Line { time_ms: 0, text });
                 }
             } else {
                 for t in times {
@@ -203,6 +201,9 @@ fn parse_time(s: &str) -> Option<u32> {
     Some(min * 60_000 + sec * 1000 + ms)
 }
 
+/// The longest word time `clean` looks for (`mmm:ss.fff`).
+const MAX_WORD_TIME: usize = 10;
+
 /// The words: enhanced-LRC word times removed, control characters dropped, whitespace
 /// trimmed, and cut to [`MAX_LINE_CHARS`].
 fn clean(s: &str) -> String {
@@ -211,7 +212,14 @@ fn clean(s: &str) -> String {
     while let Some(i) = rest.find('<') {
         out.push_str(&rest[..i]);
         let after = &rest[i + 1..];
-        match after.find('>') {
+        // A word time is at most `mmm:ss.fff`: look no further for its `>`, so a line of
+        // `<`s costs linear time, not quadratic.
+        match after
+            .as_bytes()
+            .iter()
+            .take(MAX_WORD_TIME + 1)
+            .position(|&b| b == b'>')
+        {
             Some(j) if parse_time(&after[..j]).is_some() => rest = &after[j + 1..],
             _ => {
                 out.push('<');
@@ -340,6 +348,37 @@ mod tests {
         assert_eq!(l.lines.len(), 1);
         let plain = "x\n".repeat(MAX_LINES * 3);
         assert_eq!(Lyrics::parse(&plain).lines.len(), MAX_LINES);
+    }
+
+    #[test]
+    fn hostile_lines_parse_in_linear_time() {
+        // Regression: a tag of `<`s with no `>` took about 11 s (quadratic) at 256 KiB.
+        let start = std::time::Instant::now();
+        for input in [
+            "<".repeat(256 * 1024),
+            "<1".repeat(128 * 1024),
+            "[00:01.00]".to_string() + &"<".repeat(256 * 1024),
+            "[".repeat(256 * 1024),
+            "[00:01]".repeat(30_000),
+            "<00:01.00>".repeat(25_000) + "x",
+        ] {
+            let l = Lyrics::parse(&input);
+            assert!(
+                l.lines
+                    .iter()
+                    .all(|x| x.text.chars().count() <= MAX_LINE_CHARS)
+            );
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "took {:?}",
+            start.elapsed()
+        );
+        // Word times still go, and a long `<…>` is text.
+        assert_eq!(
+            Lyrics::parse("[00:01]<00:01.50>Hi <00:02.00>there <not a time>").lines[0].text,
+            "Hi there <not a time>"
+        );
     }
 
     #[test]
