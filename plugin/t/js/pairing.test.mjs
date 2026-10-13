@@ -55,6 +55,7 @@ test('what the panel shows for a reply', () => {
 /** A tiny DOM (as in settings.test.mjs), plus SVG elements and timers under test control. */
 function fakePage(publicUrl, reply) {
   const created = [];
+  const focused = [];
   class Node {
     constructor(tag, ns) {
       this.tagName = tag.toUpperCase();
@@ -79,10 +80,16 @@ function fakePage(publicUrl, reply) {
     addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
     append(...c) { this.children.push(...c); }
     replaceChildren(...c) { this._text = ''; this.children = c; }
-    focus() {}
+    prepend(...c) { this.children.unshift(...c); }
+    after() {}
+    contains(n) { return n === this || this.children.some((c) => typeof c !== 'string' && c.contains(n)); }
+    closest() { return null; }
+    get isConnected() { return !this.detached; }
+    focus() { focused.push(this); }
+    click() { for (const fn of this.listeners.click || []) fn({ target: this }); }
   }
   const byId = new Map();
-  for (const id of ['anywhere-app', 'aw-status', 'aw-users', 'aw-pair', 'aw-devices', 'aw-audit', 'aw-message', 'aw-create-btn', 'aw-new-user', 'aw-new-password', 'aw-new-role', 'aw-session-days', 'aw-session-btn', 'aw-plugins', 'aw-plugins-btn']) {
+  for (const id of ['anywhere-app', 'aw-status', 'aw-users', 'aw-pair', 'aw-devices', 'aw-audit', 'aw-message', 'aw-create-btn', 'aw-new-user', 'aw-new-password', 'aw-new-role', 'aw-session-days', 'aw-session-btn', 'aw-plugins', 'aw-plugins-btn', 'aw-offline', 'aw-create', 'aw-session', 'aw-plugins-box', 'aw-h-status', 'aw-h-users', 'aw-h-signin', 'aw-h-plugins', 'aw-h-devices', 'aw-h-audit']) {
     byId.set(id, new Node('div'));
   }
   const TOKEN = 'ef'.repeat(16);
@@ -94,6 +101,9 @@ function fakePage(publicUrl, reply) {
     createElement: (tag) => new Node(tag),
     createElementNS: (ns, tag) => new Node(tag, ns),
     getElementById: (id) => byId.get(id),
+    activeElement: null,
+    body: null,
+    querySelectorAll: () => created.filter((e) => 'data-aw-key' in e.attrs),
     addEventListener: (_type, fn) => { listener = fn; },
   };
   const replies = {

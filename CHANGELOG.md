@@ -2,6 +2,29 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Plugin review fixes (security, supervision, settings page)
+
+- **Security:**
+  - **Settings form:** saving needs the settings page's own token. LMS checks its anti-CSRF token only when its *CSRF protection* setting is raised (it is off by default), so any web page could post the form, for example to point the gateway at a different binary. Without the token nothing is saved and the page says to reload.
+  - **Admin secret:** sent only to the gateway the plugin started, on the port it started it with. `admin_port` is an ordinary pref that LMS's `pref` command can change; a later change no longer redirects the secret. On Linux the port must also be held by the gateway process itself.
+  - **Restart gateway** no longer starts a gateway that is turned off.
+  - **http:// Public URL:** saved only with *Allow http://* ticked as well; the page warns as it is typed.
+- **Supervision:**
+  - **Orphaned gateways:** the gateway's pid is kept in the data directory. A gateway left running by an LMS that crashed is stopped before a new one starts, but only once `/proc/<pid>/cmdline` shows it really is our gateway serving our data directory.
+  - **Stopping never blocks LMS:** SIGTERM, then SIGKILL after 5 s, from a timer. At LMS shutdown the plugin waits at most 3 s.
+  - **Backoff:** restarts double from 5 s up to 5 minutes; a gateway that can't start at all backs off too (it was retried every 5 s after a long good run).
+  - **Log:** rotated at 5 MiB, keeping one old file.
+  - **Errors:** the gateway's own reason (e.g. "username already exists") is shown instead of a bare status code.
+- **Settings page:**
+  - **Add a device** says the codes are for the Android app; in a browser people sign in with their password.
+  - **Enter** in the page's fields runs that field's action instead of submitting LMS's form (which lost what was typed).
+  - **Gateway stopped:** the controls that need it are turned off, and the page says why once.
+  - **Messages** appear beside the section just used, in a live region.
+  - **Accessibility:** focus returns to the same control (or the section heading) after a list is rebuilt; repeated buttons have names saying what they act on ("Delete: alice"); choosing a player to give someone needs an explicit **Add**.
+  - **Dark skins:** errors and diagnostics no longer rely on fixed text colours.
+  - **Gateway path** is under *Advanced (for developers)*; audit events are shown in words; **Restart gateway** asks for confirmation and warns that it disconnects remote listeners.
+- **Tests:** settings saves without, with a wrong or a malformed token (nothing changes); the secret never sent after a pref change, to a stopped or exited gateway, or to a port another program holds; restart while turned off; orphans stopped only when verifiably ours (other programs, other data directories, junk pid files left alone); non-blocking stop, SIGKILL after the grace, bounded shutdown; backoff after failed launches; log rotation; gateway error messages; passwords never logged; and, on the page, Enter handling, the stopped state, restart confirmation, explicit grants, unique button names, focus return and audit wording.
+
 ## 2026-10-12: Wave 2 (part 1): alarms and ratings (gateway, web, Android)
 
 - **Alarms:** LMS's own alarms for any player you may control, from an Alarms page (web) or screen (Android, from Now playing).

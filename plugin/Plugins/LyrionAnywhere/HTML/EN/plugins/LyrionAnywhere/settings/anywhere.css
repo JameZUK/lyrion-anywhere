@@ -1,4 +1,5 @@
-/* Theme-neutral: inherits colours so it works with the Default and Material skins. */
+/* Theme-neutral: text keeps the skin's own colour (so it reads on light and dark skins
+   alike); state is shown with borders, tints of currentColor and words, not text colour. */
 .anywhere h3 { margin: 1.5em 0 0.4em; }
 .anywhere-intro, .aw-note { opacity: 0.8; max-width: 48em; }
 .aw-panel { margin: 0.25em 0 0.75em; }
@@ -11,11 +12,18 @@
 .aw-mono { font-family: monospace; }
 .aw-danger { outline: 2px solid currentColor; }
 .aw-message { min-height: 1.4em; font-weight: bold; }
-.aw-error { color: #c62828; }
+.aw-message:empty { min-height: 0; margin: 0; }
+.aw-message:not(:empty) { padding: 0.3em 0.6em; border-left: 4px solid rgba(46, 125, 50, 0.9); }
+.aw-message.aw-error, .aw-error { border-left: 4px solid #e53935; padding-left: 0.6em; }
+.aw-warning { border-left: 4px solid #f9a825; padding-left: 0.6em; }
+.anywhere fieldset[disabled], .anywhere button:disabled, .anywhere select:disabled { opacity: 0.55; cursor: not-allowed; }
+.anywhere h3:focus { outline: 2px solid currentColor; outline-offset: 2px; }
+.aw-advanced { margin: 0.5em 0 1em; }
+.aw-advanced > summary { cursor: pointer; font-weight: bold; }
 #aw-create label { display: inline-flex; gap: 0.4em; align-items: center; margin-right: 1em; }
 
 .aw-diag-wrap { display: inline-block; margin-right: 0.5em; }
-.aw-diag { max-width: 60em; max-height: 30em; overflow: auto; white-space: pre-wrap; font-size: 0.85em; background: #f4f4f4; padding: 0.6em; border-radius: 4px; }
+.aw-diag { max-width: 60em; max-height: 30em; overflow: auto; white-space: pre-wrap; font-size: 0.85em; color: inherit; background: rgba(128, 128, 128, 0.15); padding: 0.6em; border-radius: 4px; }
 .aw-plugin { display: block; margin: 0.25em 0; }
 
 .anywhere-logo {
