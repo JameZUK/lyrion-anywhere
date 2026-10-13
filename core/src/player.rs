@@ -7,6 +7,9 @@
 //!   `STMp`/`STMr` paused/resumed, `STMf` flushed, `STMt` heartbeat,
 //!   `STMl` loaded (autostart off), `STMn` unsupported, `STMo` output underrun (reported
 //!   by the host through [`Player::output_underrun`]).
+//! - `strm q` flushes everything. `strm f` (sent when the next track, already streamed, is
+//!   deleted or moved in LMS's queue) keeps the audible track playing and drops only what
+//!   came after it; hosts follow it through [`Player::trim_count`] and [`QueueTrim`].
 //!
 //! Sans-I/O: the host feeds control bytes, stream bytes and a millisecond clock, executes
 //! the [`Action`]s, and pulls PCM with [`Player::pull_audio`].
@@ -185,6 +188,25 @@ struct Track {
     opened_at: u64,
 }
 
+/// What a partial flush (`strm f`) kept, for hosts that queue pulled audio ahead of their
+/// output (see [`Player::trim`]).
+///
+/// LMS sends `strm f` when the next track, already streamed, is deleted or moved in its
+/// queue. The audible track plays on; everything after it is dropped. A host must then drop
+/// the audio it holds from any track after `keep_track`, and keep the rest:
+/// - a host that pulls with [`Player::pull_track`] drops what it holds of tracks with a
+///   sequence number greater than `keep_track`;
+/// - a host that pulls with [`Player::pull_audio`] keeps the first `keep_frames` frames it
+///   holds (pulled but not yet reported as played) and drops the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueTrim {
+    /// The audible track, which was kept.
+    pub keep_track: u32,
+    /// Frames of `keep_track` (at its own rate) pulled but not yet reported as played when
+    /// the trim happened: the audio the host holds that it must keep.
+    pub keep_frames: u64,
+}
+
 /// Snapshot for UIs and logs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Status {
@@ -215,8 +237,12 @@ pub struct Player {
     last_heartbeat: u64,
     stmu_sent: bool,
     last_error: Option<String>,
-    /// Flushes so far (`strm q`/`strm f`), so hosts can drop audio they had queued.
+    /// Flushes so far (`strm q`, and `strm f` with nothing audible), so hosts can drop audio
+    /// they had queued.
     flushes: u64,
+    /// Partial flushes so far (`strm f` keeping the audible track), and the latest one.
+    trims: u64,
+    last_trim: Option<QueueTrim>,
     /// Bytes of pulled audio the host holds ahead of its output (e.g. a ring buffer), and
     /// that buffer's capacity, both counted in STAT's output buffer figures.
     host_buffered: (u64, u64),
@@ -258,6 +284,8 @@ impl Player {
             stmu_sent: true,
             last_error: None,
             flushes: 0,
+            trims: 0,
+            last_trim: None,
             host_buffered: (0, 0),
             underrun_reported: false,
             fixed_volume: false,
@@ -334,8 +362,24 @@ impl Player {
 
     /// How many times the server has flushed the player. When this changes, a host that
     /// queues pulled audio ahead of the output must drop that queue.
+    ///
+    /// `strm q` always counts. `strm f` counts only when nothing is audible; otherwise it is
+    /// a partial flush that keeps the audible track (see [`Player::trim_count`]).
     pub fn flush_count(&self) -> u64 {
         self.flushes
+    }
+
+    /// How many partial flushes (`strm f` while a track is audible) there have been. When
+    /// this changes, a host that queues pulled audio ahead of its output drops what it holds
+    /// beyond the audible track, as [`Player::trim`] describes. A host that ignores it plays
+    /// at most its own queue of the dropped track (it holds nothing else of it).
+    pub fn trim_count(&self) -> u64 {
+        self.trims
+    }
+
+    /// The latest partial flush, if any (see [`QueueTrim`]).
+    pub fn trim(&self) -> Option<QueueTrim> {
+        self.last_trim
     }
 
     /// The player's MAC address (as sent in HELO).
@@ -726,8 +770,17 @@ impl Player {
                 }
                 self.send_stat(*b"STMr", 0);
             }
-            b'q' | b'f' => {
+            b'q' => {
                 self.flush();
+                self.send_stat(*b"STMf", 0);
+            }
+            b'f' => {
+                // LMS flushes what it streamed beyond the audible track (the next track was
+                // deleted or moved) and keeps showing the audible one as playing.
+                match self.audible_track() {
+                    Some(keep) => self.trim_after(keep),
+                    None => self.flush(),
+                }
                 self.send_stat(*b"STMf", 0);
             }
             b't' => self.send_stat(*b"STMt", s.replay_gain),
@@ -807,6 +860,55 @@ impl Player {
         self.corrections.clear();
         self.corrected_until = 0;
         self.position_at = None;
+    }
+
+    /// The track being heard, if playback is under way (playing or paused) and that track
+    /// still has audio to come. A track that has fully played out doesn't count: its segment
+    /// is only kept for the elapsed time.
+    fn audible_track(&self) -> Option<u32> {
+        if !matches!(
+            self.output,
+            OutputState::Playing | OutputState::Paused { .. }
+        ) {
+            return None;
+        }
+        let seq = self.playing_seq?;
+        let decoding = self
+            .track
+            .as_ref()
+            .is_some_and(|t| t.seq == seq && !t.decode_done);
+        let unplayed = self
+            .segments
+            .iter()
+            .any(|s| s.seq == seq && (s.played < s.frames || !s.complete));
+        (decoding || unplayed).then_some(seq)
+    }
+
+    /// Drop every track after `keep` (fetched, queued or decoded), keeping `keep`'s audio and
+    /// the playback state. The track being fetched, if it is after `keep`, is closed.
+    fn trim_after(&mut self, keep: u32) {
+        if let Some(t) = &self.track
+            && t.seq > keep
+        {
+            if !t.stream_ended {
+                self.actions.push(Action::CloseStream);
+            }
+            self.track = None;
+        }
+        let kept = self.segments.iter().filter(|s| s.seq <= keep);
+        let unpulled: u64 = kept.clone().map(|s| s.frames - s.pulled).sum();
+        let host_holds: u64 = kept
+            .filter(|s| s.seq == keep)
+            .map(|s| s.pulled - s.played)
+            .sum();
+        self.segments.retain(|s| s.seq <= keep);
+        // The queue holds the unpulled frames of each segment, in segment order.
+        self.pcm.truncate(unpulled as usize * 2);
+        self.trims += 1;
+        self.last_trim = Some(QueueTrim {
+            keep_track: keep,
+            keep_frames: host_holds,
+        });
     }
 
     fn skip_ahead(&mut self, ms: u64) {
@@ -1823,6 +1925,128 @@ mod tests {
         p.on_control_data(&strm_arg(b'a', 45), 100).unwrap();
         p.on_control_data(&strm(b'q', b'0', b'p', 0), 101).unwrap();
         assert!(p.take_corrections().is_empty());
+    }
+
+    /// A player playing track 1 (half heard) with track 2 fully decoded behind it, as when
+    /// LMS has already streamed the next track.
+    fn two_tracks_queued() -> (Player, u32) {
+        let mut p = Player::new(cfg());
+        p.on_control_data(&strm(b's', b'1', b'p', 0), 0).unwrap();
+        p.on_stream_data(&wav(44100, 44100), 1);
+        p.on_stream_end(2);
+        tick_n(&mut p, 3, 20);
+        let mut buf = vec![0f32; 22050 * 2];
+        assert_eq!(p.pull_audio(&mut buf), 22050);
+        p.played(22050);
+        let seq1 = p.playing_track().unwrap();
+        p.on_control_data(&strm(b's', b'1', b'p', 0), 600).unwrap();
+        p.on_stream_data(&wav(44100, 44100), 601);
+        p.on_stream_end(602);
+        tick_n(&mut p, 603, 20);
+        p.take_actions();
+        (p, seq1)
+    }
+
+    /// Regression (spike S1): LMS sends `strm f` when the next track, already streamed, is
+    /// deleted or moved in the queue, and keeps showing the current track as playing. The
+    /// audible track must play on; only the next track's audio goes.
+    #[test]
+    fn strm_f_keeps_the_audible_track_and_drops_the_next() {
+        let (mut p, seq1) = two_tracks_queued();
+        let flushes = p.flush_count();
+        p.on_control_data(&strm(b'f', b'0', b'p', 0), 700).unwrap();
+        let a = p.take_actions();
+        assert_eq!(events(&a), vec!["STMf"]);
+        assert!(
+            !a.contains(&Action::CloseStream),
+            "track 2 was fully received"
+        );
+        assert_eq!(p.status().output, OutputState::Playing);
+        assert_eq!(p.flush_count(), flushes, "not a full flush");
+        assert_eq!(p.trim_count(), 1);
+        assert_eq!(
+            p.trim(),
+            Some(QueueTrim {
+                keep_track: seq1,
+                keep_frames: 0
+            })
+        );
+        assert_eq!(
+            drain(&mut p),
+            22050,
+            "the rest of track 1, and nothing of track 2"
+        );
+        assert_eq!(p.playing_track(), Some(seq1));
+        p.tick(1500);
+        assert!(events(&p.take_actions()).contains(&"STMu".to_string()));
+    }
+
+    /// `strm f` while the next track is still arriving closes that stream; audio the host
+    /// already holds for the audible track is counted in the trim so it can keep it.
+    #[test]
+    fn strm_f_closes_the_next_stream_and_reports_what_the_host_keeps() {
+        let mut p = Player::new(cfg());
+        p.on_control_data(&strm(b's', b'1', b'p', 0), 0).unwrap();
+        p.on_stream_data(&wav(44100, 44100), 1);
+        p.on_stream_end(2);
+        tick_n(&mut p, 3, 20);
+        let mut buf = vec![0f32; 4410 * 2];
+        p.pull_audio(&mut buf); // 4410 frames to the host
+        p.played(1000); // 1000 heard, 3410 still queued in the host
+        let seq1 = p.playing_track().unwrap();
+        p.on_control_data(&strm(b's', b'1', b'p', 0), 100).unwrap();
+        p.on_stream_data(&wav(44100, 44100)[..20_000], 101); // still arriving
+        tick_n(&mut p, 102, 5);
+        p.take_actions();
+        p.on_control_data(&strm(b'f', b'0', b'p', 0), 200).unwrap();
+        let a = p.take_actions();
+        assert_eq!(a[0], Action::CloseStream);
+        assert_eq!(events(&a), vec!["STMf"]);
+        assert_eq!(
+            p.trim(),
+            Some(QueueTrim {
+                keep_track: seq1,
+                keep_frames: 3410
+            })
+        );
+        assert_eq!(p.open_stream(), None);
+        assert!(!p.wants_stream_data());
+        p.played(3410);
+        assert_eq!(drain(&mut p), 44100 - 4410);
+    }
+
+    /// With nothing audible yet, `strm f` is a full flush as before; `strm q` always is.
+    #[test]
+    fn strm_f_with_nothing_audible_and_strm_q_flush_everything() {
+        let mut p = Player::new(cfg());
+        p.on_control_data(&strm(b's', b'1', b'p', 0), 0).unwrap();
+        p.on_stream_data(&wav(44100, 44100), 1);
+        tick_n(&mut p, 2, 10);
+        p.on_control_data(&strm(b'f', b'0', b'p', 0), 20).unwrap();
+        assert_eq!(p.flush_count(), 1);
+        assert_eq!(p.trim_count(), 0);
+        assert_eq!(p.status().output, OutputState::Stopped);
+
+        let (mut p, _) = two_tracks_queued();
+        p.on_control_data(&strm(b'q', b'0', b'p', 0), 700).unwrap();
+        assert_eq!(p.flush_count(), 1);
+        assert_eq!(p.trim_count(), 0);
+        assert_eq!(p.status().output, OutputState::Stopped);
+        assert_eq!(drain(&mut p), 0);
+    }
+
+    /// Once track 2 is audible (track 1 fully played), `strm f` keeps track 2.
+    #[test]
+    fn strm_f_keeps_whichever_track_is_audible() {
+        let (mut p, seq1) = two_tracks_queued();
+        let mut buf = vec![0f32; 30_000 * 2];
+        let n = p.pull_audio(&mut buf);
+        p.played(n as u64);
+        assert_eq!(p.playing_track(), Some(seq1 + 1));
+        p.take_actions();
+        p.on_control_data(&strm(b'f', b'0', b'p', 0), 900).unwrap();
+        assert_eq!(p.trim().unwrap().keep_track, seq1 + 1);
+        assert_eq!(drain(&mut p), 22050 + 44100 - 30_000);
     }
 
     /// Robustness: arbitrary `strm` arguments and clocks never panic or overflow.
