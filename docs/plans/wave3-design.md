@@ -214,6 +214,18 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
 - **Queue edits:** deleting or moving the received-but-not-started next track brings `strm f` and then a new `strm s` for the new next track, while LMS still shows the current track playing. So **`strm f` must drop only what was fetched beyond the audible track**, and `strm q` stops everything. Today the core treats `f` like `q`; that already cuts the last few seconds when the next track is edited, and must change in A2.
 - **`STMu` is harmful here.** With the next track received, `STMu` moved LMS to the next track and stopped it.
 - **`STMo` is safe.** LMS kept playing and sent nothing; a later `STMs` moved it on and released the next stream. A4's rule is confirmed.
+- **Sync groups** (a second test player, removed afterwards):
+  - LMS sends the next stream to a group only once every member has sent `STMd`, so a grouped phone gets no extra cushion from reading ahead. Sync itself is unaffected: starts are still timed by LMS, and decoding is still 10 s ahead.
+  - One member's `STMo` leaves the group playing and sends the others nothing.
+  - **LMS does not pull a member that fell behind back into line** (no `strm p`, `a` or `u` in 15 s with a member 8 s behind). Within a group, later tracks start gaplessly on each player, so the offset would last.
+  - **`STMs` after `STMo` for the same track moves the whole group on a track.** `STMs` means a new track started; resuming must send `STMr`.
+
+**A6. Rejoining a group after a gap** (from S1). Effort: S.
+- The engine knows how long the output was stalled. If the player is in a sync group (`sync ?` on resume) and the stall exceeded about 50 ms, it drops that much audio from the buffer (`skip_ahead`) on resume, so it is back in step with the others; LMS's usual small corrections do the rest.
+- If the buffer holds less than the skip, it flushes and lets LMS restart it at the group's position.
+- Alone, it carries on from where it stopped, as now.
+- After `STMo`, recovery sends `STMr`, never a second `STMs` for the same track.
+- Tests: the stall measure and skip in the core, and the sync scenario of `tools/live/lms_read_ahead.py` extended to check that a rejoining member is within 100 ms of the group.
 
 **A1. Disk spool for the live stream** (`mobile/src/player/engine.rs`, new `player/spool.rs`). Effort: M.
 - **Writing:**
@@ -386,6 +398,7 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
 | A3 grace negotiation, outbox priority, network-aware reconnect | M |
 | A4 `STMo`/`STMu` rule, history jiffies, heartbeat cap | S |
 | A5 Android settings and cushion indicator | S–M |
+| A6 rejoining a sync group after a gap | S |
 | B1 cache store | M |
 | B2 matching and switch-over, B3 bitexact Opus | M + S |
 | C reuse of downloaded FLAC | M (optional) |

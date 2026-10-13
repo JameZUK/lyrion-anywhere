@@ -12,6 +12,11 @@ from the library, and checks:
   move   the same for moving it later in the queue.
   stmu   STMu with the next track received stops playback (why the app must not send it).
   stmo   STMo leaves LMS playing; a later STMs moves it on and releases the next stream.
+  sync   the test player (reading ahead) synced with a second test player (SYNC_PLAYER_MAC,
+         default 02:4c:41:00:00:02, removed from LMS afterwards): the next stream waits for
+         every member's STMd; one member's STMo leaves the other playing untouched; and LMS
+         doesn't pull a member that fell behind back into line, so the app must (it skips
+         the time it missed).
 
 Usage: tools/live/lms_read_ahead.py dev/local.env [scenario ...]
 The env file gives LMS_HOST, LMS_JSON_PORT and TEST_PLAYER_MAC. Only the test player is
@@ -31,7 +36,8 @@ env = dict(
     if '=' in line and not line.lstrip().startswith('#')
 )
 HOST, JPORT, MAC = env['LMS_HOST'], int(env['LMS_JSON_PORT']), env['TEST_PLAYER_MAC']
-SCENARIOS = sys.argv[2:] or ['early', 'edit', 'move', 'stmu', 'stmo']
+SCENARIOS = sys.argv[2:] or ['early', 'edit', 'move', 'stmu', 'stmo', 'sync']
+SYNC_MAC = env.get('SYNC_PLAYER_MAC', '02:4c:41:00:00:02')
 
 
 def rpc(player, *cmd):
@@ -47,7 +53,8 @@ def status():
 
 
 class Player:
-    def __init__(self):
+    def __init__(self, mac=MAC):
+        self.mac = mac
         self.s = socket.create_connection((HOST, 3483), timeout=30)
         self.lock = threading.Lock()
         self.t0 = time.time()
@@ -55,6 +62,8 @@ class Player:
         self.events = []  # (seconds, what)
         self.streams = 0
         self.on_received = lambda n: None
+        self.on_strm = lambda cmd, p: None
+        self.elapsed_ms = lambda: 0
 
     def note(self, what):
         self.events.append((time.time() - self.t0, what))
@@ -67,14 +76,15 @@ class Player:
                 pass  # closed at the end of a scenario
 
     def helo(self):
-        mac = bytes(int(x, 16) for x in MAC.split(':'))
+        mac = bytes(int(x, 16) for x in self.mac.split(':'))
         caps = b'Model=squeezelite,ModelName=SqueezeLite,MaxSampleRate=48000,flc,mp3,ogg,pcm'
         self.send(b'HELO', bytes([12, 0]) + mac + bytes(16) + struct.pack('>HQ', 0x4000, 0) + b'en' + caps)
 
     def stat(self, ev, ts=0):
         jiffies = int((time.time() - self.t0) * 1000) & 0xFFFFFFFF
+        ms = int(self.elapsed_ms())
         self.send(b'STAT', ev + struct.pack('>BBBIIQHIIIIHIIH', 0, 0, 0, 1 << 21, 0, self.received, 0,
-                                            jiffies, 1 << 20, 0, 0, 0, 0, ts, 0))
+                                            jiffies, 1 << 20, 1 << 19, ms // 1000, 0, ms, ts, 0))
         if ev != b'STMt':
             self.note('-> ' + ev.decode())
 
@@ -115,6 +125,7 @@ class Player:
                     self.stat(b'STMt', struct.unpack('>I', p[14:18])[0])
                     continue
                 self.note('<- strm ' + cmd)
+                self.on_strm(cmd, p)
                 if cmd == 's':
                     self.streams += 1
                     port, ip = struct.unpack('>HI', p[18:24])
@@ -209,16 +220,86 @@ def scenario(name, tracks):
         time.sleep(1)
 
 
+def sync_scenario(tracks):
+    """Two test players in a group; A reads ahead, B reports STMd only when told."""
+    print('== sync', flush=True)
+    players = {}
+
+    def make(mac, reads_ahead):
+        pl = Player(mac)
+        st = {'started': 0}
+
+        def on_strm(cmd, p):
+            if cmd == 'u':
+                st['started'] += 1
+                pl.stat(b'STMs')
+
+        def on_received(n):
+            pl.stat(b'STMl')  # buffer loaded: in a group LMS starts everyone together
+            if reads_ahead:
+                pl.wait(lambda: st['started'] >= 1, 10)
+                pl.stat(b'STMd')
+
+        pl.on_strm, pl.on_received = on_strm, on_received
+        threading.Thread(target=pl.run, daemon=True).start()
+        pl.helo()
+        return pl
+
+    a, b = make(MAC, True), make(SYNC_MAC, False)
+    players.update(a=a, b=b)
+    time.sleep(2)
+    try:
+        for m in (MAC, SYNC_MAC):
+            rpc(m, 'mixer', 'volume', '0')
+        rpc(MAC, 'sync', SYNC_MAC)
+        rpc(MAC, 'playlistcontrol', 'cmd:load', 'track_id:' + ','.join(map(str, tracks)))
+        check(a.wait(lambda: a.got('-> STMd'), 15), 'the reading-ahead member said it was ready')
+        time.sleep(5)
+        check(a.streams == 1 and b.streams == 1, 'no next stream while the other member is not ready')
+        b.stat(b'STMd')
+        check(a.wait(lambda: a.streams == 2 and b.streams == 2, 5), 'both got the next stream once every member was ready')
+        a.stat(b'STMs')
+        b.stat(b'STMs')
+        time.sleep(3)
+        mark = len(b.events)
+        a.stat(b'STMo')
+        time.sleep(6)
+        check(status()[0] == 'play', 'one member running dry leaves the group playing')
+        check(all(not w.startswith('<- strm') for _, w in b.events[mark:]), 'and sends the other member nothing')
+        a.stat(b'STMr')
+        mark_a, mark_b = len(a.events), len(b.events)
+        time.sleep(15)
+        corrections = [w for pl, m in ((a, mark_a), (b, mark_b)) for _, w in pl.events[m:] if w in ('<- strm p', '<- strm a', '<- strm u')]
+        check(not corrections, f'LMS sent no catch-up to the member that fell behind ({corrections or "none"})')
+    finally:
+        rpc(MAC, 'stop')
+        rpc(MAC, 'playlist', 'clear')
+        rpc(SYNC_MAC, 'sync', '-')
+        a.s.close()
+        b.s.close()
+        for _ in range(10):
+            time.sleep(1)
+            rpc(SYNC_MAC, 'client', 'forget')
+            if not any(p['playerid'] == SYNC_MAC for p in rpc('', 'players', '0', '100').get('players_loop', [])):
+                break
+        check(not any(p['playerid'] == SYNC_MAC for p in rpc('', 'players', '0', '100').get('players_loop', [])),
+              'the second test player was removed from LMS')
+
+
 def main():
     titles = rpc('', 'titles', '0', '5')['titles_loop']
     tracks = [t['id'] for t in titles]
     if len(tracks) < 5:
         sys.exit('the library needs at least five tracks')
     for name in SCENARIOS:
-        scenario(name, tracks)
+        if name == 'sync':
+            sync_scenario(tracks)
+        else:
+            scenario(name, tracks)
     if failures:
         sys.exit(f'{len(failures)} check(s) failed')
     print('all checks passed')
 
 
-main()
+if __name__ == '__main__':
+    main()
