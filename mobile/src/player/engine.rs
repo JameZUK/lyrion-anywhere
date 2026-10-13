@@ -24,6 +24,9 @@
 //!   when it returns;
 //! - after a stall, a player in a sync group skips what the others played meanwhile, or
 //!   has LMS restart the group in step when too little is buffered to do that;
+//! - a gap longer than the grace, while playing, ends in a new session that restarts the
+//!   track heard last where it was, once LMS confirms that track is still there and nobody
+//!   paused or stopped it (`protocol::restart_commands`);
 //! - an expired access token is renewed and the socket reconnects; a refusal or a
 //!   takeover by another connection stops for good.
 //!
@@ -124,6 +127,11 @@ const REJOIN_WAIT: Duration = Duration::from_secs(2);
 /// Audio wanted beyond the stall before skipping it, so the output doesn't run dry again
 /// at once.
 const REJOIN_MARGIN_MS: u64 = 250;
+/// After a new session replaced one lost while playing, how long to let LMS settle (it
+/// may restart the player itself) before asking it to restart the track heard last.
+const RESTART_SETTLE: Duration = Duration::from_millis(1000);
+/// Queue positions remembered (by track sequence number).
+const POSITIONS_KEEP: usize = 8;
 
 /// What to do about a stall (an underrun) now that audio may be available again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,6 +213,13 @@ enum Ev {
     SyncGroup {
         player_gen: u64,
         grouped: bool,
+    },
+    /// Where track `seq` sits in LMS's queue (for restarting it after a lost session).
+    Position {
+        player_gen: u64,
+        seq: u32,
+        fresh: bool,
+        pos: protocol::StreamPosition,
     },
     StreamData {
         id: u64,
@@ -339,6 +354,13 @@ pub(crate) struct Engine {
     /// A stall in a group waiting for enough audio, since then.
     stall_wait: Option<Instant>,
     rejoin: Option<tokio::task::AbortHandle>,
+    // Restarting after a gap longer than the grace (the owner's decision 3).
+    /// Queue positions of recent tracks: (seq, position, ms into the track where its
+    /// stream began).
+    positions: VecDeque<(u32, protocol::StreamPosition, u64)>,
+    /// While the link to LMS is down: where to restart if the session is lost.
+    gap: Option<protocol::GapWatch>,
+    restart: Option<tokio::task::AbortHandle>,
     // Audio: pipeline, ring, output and its negotiated route.
     audio: AudioPath,
     underruns_seen: u64,
@@ -392,6 +414,9 @@ impl Engine {
             in_sync_group: false,
             stall_wait: None,
             rejoin: None,
+            positions: VecDeque::new(),
+            gap: None,
+            restart: None,
             server: core.server().clone(),
             core,
             http: Http::private()?,
@@ -516,6 +541,10 @@ impl Engine {
         if let Some(t) = self.ws_task.take() {
             t.abort();
         }
+        if let Some(t) = self.restart.take() {
+            t.abort();
+        }
+        self.gap = None;
         self.close_output();
         self.shared.out.ring.set_hold(true);
         self.connection = PlayerConnection::Stopped {
@@ -671,6 +700,12 @@ impl Engine {
         self.disconnected_at = None;
         self.connection = PlayerConnection::Connected;
         let fresh = !g.resumed || self.player.is_none();
+        // A session lost while playing: where to restart (a resumed one needs nothing).
+        let restart_at = self
+            .gap
+            .take()
+            .filter(|w| fresh && self.player.is_some() && !w.blocked)
+            .and_then(|w| w.point);
         self.session = Some((g.session.clone(), g.secret.clone()));
         // A resumed session without a grant keeps what it was granted before.
         if g.grace.is_some() || fresh {
@@ -693,6 +728,10 @@ impl Engine {
             // Track numbers start again with the new player.
             self.loudness.clear();
             self.facts.clear();
+            self.positions.clear();
+            if let Some(t) = self.restart.take() {
+                t.abort();
+            }
             self.gate = None;
             self.player_gen += 1;
             if let Some(t) = self.lookup.take() {
@@ -718,6 +757,9 @@ impl Engine {
             self.apply_read_ahead();
             self.mac = Some(g.mac);
             self.name = g.name;
+            if let Some(point) = restart_at {
+                self.restart_where_left(point);
+            }
         } else {
             // Back after a gap: is the player (still) in a sync group?
             self.look_up_sync_group();
@@ -744,10 +786,15 @@ impl Engine {
         if was_open || self.disconnected_at.is_none() {
             self.disconnected_at.get_or_insert_with(Instant::now);
         }
+        self.watch_gap();
         let action = protocol::close_action(code, reason);
         let resume = match action {
             CloseAction::Stop => {
                 // Refused, revoked, signed out or replaced: nothing of it is kept.
+                self.gap = None;
+                if let Some(t) = self.restart.take() {
+                    t.abort();
+                }
                 self.close_stream();
                 self.close_output();
                 self.audio.pipeline.unconfigure();
@@ -864,6 +911,12 @@ impl Engine {
                 player_gen,
                 grouped,
             } if player_gen == self.player_gen => self.in_sync_group = grouped,
+            Ev::Position {
+                player_gen,
+                seq,
+                fresh,
+                pos,
+            } if player_gen == self.player_gen => self.note_position(seq, fresh, pos),
             Ev::StreamHeaders { id, content_type } if self.is_current(id) => {
                 let now = self.now_ms();
                 let ct = clean_content_type(&content_type);
@@ -974,15 +1027,16 @@ impl Engine {
         else {
             return;
         };
-        if !levelling && !transitions.enabled() {
-            // Only whether the player is in a sync group (for rejoining after a stall).
-            self.look_up_sync_group();
-            return;
-        }
         let fresh = self
             .player
             .as_ref()
             .is_none_or(|p| p.playing_track().is_none());
+        if !levelling && !transitions.enabled() {
+            // Only whether the player is in a sync group (for rejoining after a stall), and
+            // where the track is in the queue (for restarting it after a lost session).
+            self.look_up_status(Some((seq, fresh)));
+            return;
+        }
         if fresh {
             if levelling {
                 self.gate = Some((seq, Instant::now() + LOUDNESS_WAIT));
@@ -1008,6 +1062,14 @@ impl Engine {
                     player_gen,
                     grouped: protocol::in_sync_group(st),
                 });
+                if let Some(pos) = protocol::stream_position(st, fresh) {
+                    let _ = tx.send(Ev::Position {
+                        player_gen,
+                        seq,
+                        fresh,
+                        pos,
+                    });
+                }
             }
             let track = status.and_then(|st| protocol::stream_track(&st, fresh));
             let mut facts = TrackFacts {
@@ -1060,6 +1122,13 @@ impl Engine {
     /// Ask LMS whether this player is in a sync group (the same status query as for a new
     /// track's details).
     fn look_up_sync_group(&self) {
+        self.look_up_status(None);
+    }
+
+    /// LMS's status for this player: whether it is in a sync group, and, for a stream just
+    /// started (`stream`: its track's sequence number and whether it is a fresh start),
+    /// where that track is in the queue.
+    fn look_up_status(&self, stream: Option<(u32, bool)>) {
         let Some(mac) = self.mac else { return };
         let (core, tx, player_gen) = (self.core.clone(), self.tx.clone(), self.player_gen);
         tokio::spawn(async move {
@@ -1071,8 +1140,91 @@ impl Engine {
                     player_gen,
                     grouped: protocol::in_sync_group(&st),
                 });
+                if let Some((seq, fresh)) = stream
+                    && let Some(pos) = protocol::stream_position(&st, fresh)
+                {
+                    let _ = tx.send(Ev::Position {
+                        player_gen,
+                        seq,
+                        fresh,
+                        pos,
+                    });
+                }
             }
         });
+    }
+
+    /// Remember where track `seq` is in the queue. A fresh stream may begin part-way into
+    /// its track (a seek): LMS's `time` then, less what has been heard of the stream since,
+    /// is where it began.
+    fn note_position(&mut self, seq: u32, fresh: bool, pos: protocol::StreamPosition) {
+        let heard = self
+            .player
+            .as_ref()
+            .filter(|p| p.playing_track() == Some(seq))
+            .map_or(0, |p| p.status().elapsed_ms);
+        let began = if fresh {
+            pos.lms_time_ms.unwrap_or(0).saturating_sub(heard)
+        } else {
+            0
+        };
+        self.positions.retain(|(s, _, _)| *s != seq);
+        self.positions.push_back((seq, pos, began));
+        while self.positions.len() > POSITIONS_KEEP {
+            self.positions.pop_front();
+        }
+    }
+
+    /// Where playback is now, as a queue position and time into the track (when known).
+    fn heard_point(&self) -> Option<protocol::RestartPoint> {
+        let p = self.player.as_ref()?;
+        let seq = p.playing_track()?;
+        let (_, pos, began) = self.positions.iter().find(|(s, _, _)| *s == seq)?;
+        Some(protocol::RestartPoint {
+            index: pos.index,
+            track_id: pos.track_id,
+            elapsed_ms: began.saturating_add(p.status().elapsed_ms),
+        })
+    }
+
+    /// While the link to LMS is down, keep note of where to restart should the session be
+    /// lost (see [`protocol::watch_gap`]).
+    fn watch_gap(&mut self) {
+        let Some(p) = &self.player else {
+            self.gap = None;
+            return;
+        };
+        let playing = p.status().output == OutputState::Playing;
+        let held = self.shared.out.hold.load(Ordering::Acquire);
+        let heard = self.heard_point();
+        self.gap = Some(protocol::watch_gap(self.gap, playing, held, heard));
+    }
+
+    /// A new session replaced one lost while this player was playing: once LMS has settled,
+    /// restart the track heard last where it was, if LMS still has it there and isn't
+    /// already playing (or paused). See [`protocol::restart_commands`].
+    fn restart_where_left(&mut self, point: protocol::RestartPoint) {
+        let Some(mac) = self.mac else { return };
+        let core = self.core.clone();
+        let task = tokio::spawn(async move {
+            tokio::time::sleep(RESTART_SETTLE).await;
+            let player = format_mac(&mac);
+            let Ok(st) = core
+                .rpc(&player, protocol::restart_status_command(point.index))
+                .await
+            else {
+                return;
+            };
+            let Some(cmds) = protocol::restart_commands(&point, &st) else {
+                return;
+            };
+            for c in cmds {
+                if core.rpc(&player, c).await.is_err() {
+                    return;
+                }
+            }
+        });
+        self.restart = Some(task.abort_handle());
     }
 
     /// A stalled player in a sync group had too little audio to skip the stall: ask LMS to
@@ -1331,6 +1483,9 @@ impl Engine {
 
         // Frames that have become audible since the last tick, exact as of now.
         let played = self.audio.played_at(now_ns);
+        if self.player.is_some() && !self.open {
+            self.watch_gap();
+        }
         let Some(p) = &mut self.player else {
             self.publish_status(false);
             return;

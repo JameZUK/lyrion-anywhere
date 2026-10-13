@@ -1877,3 +1877,158 @@ async fn a_grouped_player_too_far_behind_after_a_gap_asks_lms_to_restart_the_gro
     assert!(asked(), "LMS was asked where the group is");
     r.player.stop();
 }
+
+// --- Restarting after a gap longer than the grace (the owner's decision 3) ---------------
+
+/// What happens around a gap longer than the grace, in [`gap_beyond_the_grace`].
+#[derive(Clone, Copy, PartialEq)]
+enum BeyondGrace {
+    /// Playing throughout; LMS shows the track stopped where it was.
+    Playing,
+    /// The queue changed meanwhile: another track at that position.
+    QueueChanged,
+    /// The user stopped playback (LMS's `strm q`) before the link went.
+    StoppedFirst,
+    /// The user held the output (paused on the phone) during the gap.
+    HeldInGap,
+}
+
+/// A track plays (it sits at queue position 2), then the network goes for longer than the
+/// 8 s grace. Returns the rig, how much had been heard when the network went and when it
+/// came back (seconds), and the playback commands the player then sent LMS by itself.
+async fn gap_beyond_the_grace(case: BeyondGrace) -> (Rig, f64, f64, Vec<serde_json::Value>) {
+    let mut r = rig_opts(RigOpts {
+        proxy: true,
+        spool: true,
+        max_grace_s: Some(8),
+        pace: Some(1.0),
+        ..RigOpts::default()
+    })
+    .await;
+    let rate = 22_050usize;
+    let at = |cur: &str, id: u64, mode: &str| {
+        serde_json::json!({"mode": mode, "time": 0, "playlist_cur_index": cur,
+            "playlist_loop": [{"playlist index": 2, "id": id, "duration": 30}]})
+    };
+    *r.h.lms.status.lock().unwrap() = Some(at("2", 1, "play"));
+    wait_for("grant known", || {
+        r.player.status().resume_window_ms == 3_000
+    })
+    .await;
+    let track = flac::encode(rate as u32, 16, &flac::noise(rate * 30, 16, 81));
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(track));
+    let mac = r.mac;
+    let me = format_mac(&mac);
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMs", 1, 20).await;
+    let pulled = r.pulled.clone();
+    wait_for("3 s heard", move || pulled.frames() >= rate * 3).await;
+    // The player has asked LMS where the track is.
+    let lms = &r.h.lms;
+    wait_for("the track's position", || {
+        lms.rpc_calls()
+            .iter()
+            .any(|p| p[0] == me.as_str() && p[1][0] == "status" && p[1][1] == "-")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    if case == BeyondGrace::StoppedFirst {
+        r.send(strm_frame(b'q', b'0', "")).await;
+        r.wait_event("STMf", 1, 10).await;
+    }
+    // Meanwhile LMS loses the player (the session expires) and shows it stopped.
+    *r.h.lms.status.lock().unwrap() = Some(match case {
+        BeyondGrace::QueueChanged => at("2", 9, "stop"),
+        _ => at("2", 1, "stop"),
+    });
+    let heard_at_cut = r.pulled.frames() as f64 / rate as f64;
+    let proxy = r.proxy.as_ref().unwrap();
+    proxy.set_down(true);
+    if case == BeyondGrace::HeldInGap {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        r.player.set_hold(true);
+    }
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert_eq!(r.count("HELO"), 1);
+    proxy.set_down(false);
+    wait_for("a new session's HELO", || r.count("HELO") == 2).await;
+    let heard_at_return = r.pulled.frames() as f64 / rate as f64;
+    // The restart comes a second after the new session; give it ample time.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let sent: Vec<serde_json::Value> =
+        r.h.lms
+            .rpc_calls()
+            .into_iter()
+            .filter(|p| p[0] == me.as_str() && (p[1][0] == "playlist" || p[1][0] == "time"))
+            .map(|p| p[1].clone())
+            .collect();
+    (r, heard_at_cut, heard_at_return, sent)
+}
+
+/// A gap longer than the grace while playing: on the new session the player restarts the
+/// same track (by its queue position, checked with LMS first) at the point last heard, and
+/// LMS's new stream plays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gap_longer_than_the_grace_restarts_the_same_track_where_it_was() {
+    let (mut r, at_cut, at_return, sent) = gap_beyond_the_grace(BeyondGrace::Playing).await;
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert_eq!(sent[0], serde_json::json!(["playlist", "index", "2"]));
+    assert_eq!(sent[1][0], "time");
+    let t: f64 = sent[1][1].as_str().unwrap().parse().unwrap();
+    assert!(
+        t > at_cut + 5.0 && t < at_return + 1.0,
+        "restarted at {t} s: heard {at_cut} s at the cut, {at_return} s at the return"
+    );
+    let me = format_mac(&r.mac);
+    assert!(
+        r.h.lms
+            .rpc_calls()
+            .iter()
+            .any(|p| p[0] == me.as_str()
+                && p[1] == serde_json::json!(["status", "2", "1", "tags:x"])),
+        "the position was checked with LMS first"
+    );
+    // LMS streams it again on the new connection, and it plays.
+    let track = flac::encode(22_050, 16, &flac::noise(22_050 * 5, 16, 82));
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(track));
+    r.lms = r.h.lms.slim_conn().await;
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMs", 2, 20).await;
+    r.player.stop();
+}
+
+/// Negative: the queue changed during the gap (another track at that position), so the
+/// player leaves LMS alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gap_longer_than_the_grace_does_not_restart_a_changed_queue() {
+    let (r, _, _, sent) = gap_beyond_the_grace(BeyondGrace::QueueChanged).await;
+    assert!(sent.is_empty(), "{sent:?}");
+    r.player.stop();
+}
+
+/// Negative: the user had stopped playback before the gap, so nothing is restarted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gap_longer_than_the_grace_after_a_stop_restarts_nothing() {
+    let (r, _, _, sent) = gap_beyond_the_grace(BeyondGrace::StoppedFirst).await;
+    assert!(sent.is_empty(), "{sent:?}");
+    r.player.stop();
+}
+
+/// Negative: the user paused on the phone during the gap, so nothing is restarted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gap_longer_than_the_grace_held_by_the_user_restarts_nothing() {
+    let (r, _, _, sent) = gap_beyond_the_grace(BeyondGrace::HeldInGap).await;
+    assert!(sent.is_empty(), "{sent:?}");
+    r.player.stop();
+}

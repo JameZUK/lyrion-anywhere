@@ -363,9 +363,328 @@ pub fn stream_track(status: &Value, fresh: bool) -> Option<StreamTrack> {
     })
 }
 
+// --- Restarting after a lost session (rolling cache, owner's decision 3) -----------------
+
+/// Where a stream LMS started sits in this player's queue: its playlist position and
+/// library track, and (for a fresh stream) where in the track LMS says it starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamPosition {
+    pub index: u32,
+    pub track_id: i64,
+    /// LMS's `time` (ms) when asked; for a fresh stream after a seek, where it began.
+    pub lms_time_ms: Option<u64>,
+}
+
+/// [`stream_track`] with the item's playlist position, which must be given and be the one
+/// expected (the current index, or the one after it for a gapless next track). Untrusted:
+/// anything doubtful gives `None`, and the player then never restarts that track itself.
+pub fn stream_position(status: &Value, fresh: bool) -> Option<StreamPosition> {
+    let track = stream_track(status, fresh)?;
+    let repeat_one = status.get("playlist repeat").and_then(small_int) == Some(1);
+    let offset = usize::from(!(fresh || repeat_one));
+    let item = status.get("playlist_loop")?.as_array()?.get(offset)?;
+    let index = item.get("playlist index").and_then(small_int)?;
+    let cur = status.get("playlist_cur_index").and_then(small_int)?;
+    if cur.checked_add(offset as u32) != Some(index) {
+        return None;
+    }
+    Some(StreamPosition {
+        index,
+        track_id: track.id,
+        lms_time_ms: if fresh {
+            lms_seconds(status.get("time"))
+        } else {
+            None
+        },
+    })
+}
+
+/// A playlist index: a non-negative integer that fits LMS's queues (up to a million).
+fn small_int(v: &Value) -> Option<u32> {
+    let n = match v {
+        Value::Number(n) => n.as_u64()?,
+        Value::String(s) if (1..=7).contains(&s.len()) => s.parse().ok()?,
+        _ => return None,
+    };
+    (n <= 1_000_000).then_some(n as u32)
+}
+
+/// Seconds from LMS (a number or a short numeric string) as ms, if sane.
+fn lms_seconds(v: Option<&Value>) -> Option<u64> {
+    let t = match v? {
+        Value::Number(n) => n.as_f64()?,
+        Value::String(s) if s.len() <= 20 => s.parse::<f64>().ok()?,
+        _ => return None,
+    };
+    (t.is_finite() && (0.0..1e7).contains(&t)).then_some((t * 1000.0) as u64)
+}
+
+/// Where to restart playback if the session is lost: the track heard last, by playlist
+/// position and library id, and how far into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestartPoint {
+    pub index: u32,
+    pub track_id: i64,
+    pub elapsed_ms: u64,
+}
+
+/// What the player remembers while its link to LMS is down, for restarting on a new
+/// session if the gap outlasts the grace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GapWatch {
+    /// The last point heard (`None`: nothing known to restart).
+    pub point: Option<RestartPoint>,
+    /// No restart: playback wasn't going when the link went, or the user held it since.
+    pub blocked: bool,
+}
+
+/// One step of watching a gap (on losing the link, then every tick while it is down):
+/// - starting a watch, it is blocked unless the player is playing and not held (the user
+///   had paused or stopped);
+/// - the user holding the output during the gap blocks it for good;
+/// - while playing on from what is buffered, the point follows what is heard (it may move
+///   to the next track, if its position is known).
+pub fn watch_gap(
+    watch: Option<GapWatch>,
+    playing: bool,
+    held: bool,
+    heard: Option<RestartPoint>,
+) -> GapWatch {
+    let mut w = watch.unwrap_or(GapWatch {
+        point: None,
+        blocked: !playing || held,
+    });
+    if held {
+        w.blocked = true;
+    }
+    if !w.blocked && playing && heard.is_some() {
+        w.point = heard;
+    }
+    w
+}
+
+/// Asks LMS about the remembered queue position before restarting there.
+pub fn restart_status_command(index: u32) -> Vec<Value> {
+    vec![json!("status"), json!(index), json!(1), json!("tags:x")]
+}
+
+/// The commands that restart the remembered track at the remembered position on a new
+/// session, from LMS's answer to [`restart_status_command`]; `None` when it mustn't:
+/// - LMS shows the player playing (it restarted itself) or paused (someone paused it);
+/// - the queue changed: that position no longer holds that track, or LMS's current track
+///   is neither it nor the one before it (the phone may have played on into the next
+///   track from its buffer, which LMS never heard about).
+///
+/// The answer is untrusted; anything malformed means no restart.
+pub fn restart_commands(point: &RestartPoint, status: &Value) -> Option<Vec<Vec<Value>>> {
+    if status.get("mode")?.as_str()? != "stop" {
+        return None;
+    }
+    let cur = status.get("playlist_cur_index").and_then(small_int)?;
+    if cur != point.index && cur.checked_add(1) != Some(point.index) {
+        return None;
+    }
+    let item = status.get("playlist_loop")?.as_array()?.first()?;
+    if item.get("playlist index").and_then(small_int)? != point.index {
+        return None;
+    }
+    let id = match item.get("id")? {
+        Value::Number(n) => n.as_i64()?,
+        Value::String(s) if (1..=15).contains(&s.len()) => s.parse().ok()?,
+        _ => return None,
+    };
+    if id != point.track_id || item.get("remote").and_then(small_int).unwrap_or(0) != 0 {
+        return None;
+    }
+    let mut cmds = vec![vec![json!("playlist"), json!("index"), json!(point.index)]];
+    if point.elapsed_ms >= 1000 {
+        let secs = point.elapsed_ms as f64 / 1000.0;
+        cmds.push(vec![json!("time"), json!(format!("{secs:.1}"))]);
+    }
+    Some(cmds)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn point() -> RestartPoint {
+        RestartPoint {
+            index: 3,
+            track_id: 42,
+            elapsed_ms: 83_450,
+        }
+    }
+
+    fn stopped_at(cur: u32, index: u32, id: i64) -> Value {
+        json!({
+            "mode": "stop", "playlist_cur_index": cur.to_string(),
+            "playlist_loop": [{"playlist index": index, "id": id}]
+        })
+    }
+
+    #[test]
+    fn restart_plays_the_same_track_at_the_same_position() {
+        let cmds = restart_commands(&point(), &stopped_at(3, 3, 42)).unwrap();
+        assert_eq!(
+            cmds,
+            vec![
+                vec![json!("playlist"), json!("index"), json!(3)],
+                vec![json!("time"), json!("83.5")],
+            ]
+        );
+        // The phone had played on into track 3 from its buffer; LMS still shows track 2.
+        assert!(restart_commands(&point(), &stopped_at(2, 3, 42)).is_some());
+        // At the very start, no seek.
+        let start = RestartPoint {
+            elapsed_ms: 400,
+            ..point()
+        };
+        assert_eq!(
+            restart_commands(&start, &stopped_at(3, 3, 42))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            restart_status_command(3),
+            vec![json!("status"), json!(3), json!(1), json!("tags:x")]
+        );
+    }
+
+    #[test]
+    fn no_restart_when_the_queue_changed_or_lms_is_busy() {
+        // Another track at that position (the queue was edited).
+        assert_eq!(restart_commands(&point(), &stopped_at(3, 3, 43)), None);
+        // LMS's current track moved elsewhere (someone skipped or played something else).
+        assert_eq!(restart_commands(&point(), &stopped_at(7, 3, 42)), None);
+        assert_eq!(restart_commands(&point(), &stopped_at(4, 3, 42)), None);
+        // The answer is about another position.
+        assert_eq!(restart_commands(&point(), &stopped_at(3, 4, 42)), None);
+        // LMS already plays it, or someone paused it.
+        for mode in ["play", "pause", "", "STOP"] {
+            let mut st = stopped_at(3, 3, 42);
+            st["mode"] = json!(mode);
+            assert_eq!(restart_commands(&point(), &st), None, "{mode}");
+        }
+        // A radio stream at that position.
+        let mut st = stopped_at(3, 3, 42);
+        st["playlist_loop"][0]["remote"] = json!(1);
+        assert_eq!(restart_commands(&point(), &st), None);
+    }
+
+    #[test]
+    fn restart_answers_are_untrusted() {
+        let parts = [
+            json!(null),
+            json!(-1),
+            json!(3),
+            json!("3"),
+            json!("42"),
+            json!(1e300),
+            json!("x"),
+            json!([]),
+            json!({}),
+            json!("99999999999999999999"),
+        ];
+        let p = point();
+        for a in &parts {
+            for b in &parts {
+                for c in &parts {
+                    let st = json!({"mode": "stop", "playlist_cur_index": a,
+                        "playlist_loop": [{"playlist index": b, "id": c}]});
+                    if let Some(cmds) = restart_commands(&p, &st) {
+                        // Only ever the remembered position.
+                        assert_eq!(cmds[0][2], json!(3));
+                    }
+                    let _ = stream_position(&st, true);
+                    let _ = stream_position(&st, false);
+                }
+            }
+        }
+        for st in [
+            json!(null),
+            json!([]),
+            json!({"mode": 1}),
+            json!({"mode": "stop"}),
+            json!({"mode": "stop", "playlist_cur_index": 3, "playlist_loop": "x"}),
+            json!({"mode": "stop", "playlist_cur_index": 3, "playlist_loop": []}),
+        ] {
+            assert_eq!(restart_commands(&p, &st), None, "{st}");
+        }
+    }
+
+    #[test]
+    fn stream_positions_from_status() {
+        let st = json!({
+            "playlist_cur_index": "4", "time": "61.25",
+            "playlist_loop": [
+                {"playlist index": 4, "id": 101},
+                {"playlist index": "5", "id": "102"}
+            ]
+        });
+        assert_eq!(
+            stream_position(&st, true),
+            Some(StreamPosition {
+                index: 4,
+                track_id: 101,
+                lms_time_ms: Some(61_250)
+            })
+        );
+        assert_eq!(
+            stream_position(&st, false),
+            Some(StreamPosition {
+                index: 5,
+                track_id: 102,
+                lms_time_ms: None
+            })
+        );
+        // Without positions, nothing is known.
+        let mut bare = st.clone();
+        bare["playlist_loop"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("playlist index");
+        assert_eq!(stream_position(&bare, true), None);
+        let mut no_cur = st.clone();
+        no_cur.as_object_mut().unwrap().remove("playlist_cur_index");
+        assert_eq!(stream_position(&no_cur, true), None);
+        // A silly time is dropped, not the position.
+        for t in [json!(-1), json!("NaN"), json!(1e300), json!([1])] {
+            let mut odd = st.clone();
+            odd["time"] = t;
+            assert_eq!(stream_position(&odd, true).unwrap().lms_time_ms, None);
+        }
+    }
+
+    #[test]
+    fn a_gap_watch_follows_what_is_heard_unless_the_user_held_it() {
+        let at = |ms| {
+            Some(RestartPoint {
+                elapsed_ms: ms,
+                ..point()
+            })
+        };
+        // Playing when the link went: the point follows what is heard.
+        let w = watch_gap(None, true, false, at(10_000));
+        assert!(!w.blocked);
+        let w = watch_gap(Some(w), true, false, at(25_000));
+        assert_eq!(w.point, at(25_000));
+        // Ran dry: the last point heard stays.
+        let w = watch_gap(Some(w), false, false, None);
+        assert_eq!(w.point, at(25_000));
+        assert!(!w.blocked);
+        // Held by the user during the gap: never restarted.
+        let held = watch_gap(Some(w), true, true, at(26_000));
+        assert!(held.blocked);
+        let after = watch_gap(Some(held), true, false, at(27_000));
+        assert!(after.blocked);
+        // Paused or stopped when the link went: never restarted.
+        let stopped = watch_gap(None, false, false, at(1_000));
+        assert!(stopped.blocked);
+        assert_eq!(watch_gap(Some(stopped), true, false, at(2_000)).point, None);
+        assert!(watch_gap(None, true, true, at(1_000)).blocked);
+    }
 
     #[test]
     fn stream_track_ids_from_status() {

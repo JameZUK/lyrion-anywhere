@@ -228,6 +228,8 @@ pub struct FakeLms {
     pub library: Library,
     /// Sync groups, as LMS keeps them: member → the player whose group it joined.
     pub syncs: Syncs,
+    /// When set, every `status` answer is this (sync groups still added).
+    pub status: Arc<Mutex<Option<Value>>>,
 }
 
 pub type Library = Arc<Mutex<std::collections::HashMap<u64, (Value, Vec<u8>)>>>;
@@ -299,20 +301,23 @@ impl FakeLms {
         let streams: Arc<Mutex<std::collections::VecDeque<StreamPlan>>> = Default::default();
         let library: Library = Default::default();
         let syncs = Syncs::default();
-        let (r, paths, plans, lib, sy) = (
+        let status: Arc<Mutex<Option<Value>>> = Default::default();
+        let (r, paths, plans, lib, sy, so) = (
             rpc.clone(),
             http_paths.clone(),
             streams.clone(),
             library.clone(),
             syncs.clone(),
+            status.clone(),
         );
         let app = Router::new().fallback(any(move |req: Request| {
-            let (r, paths, plans, lib, sy) = (
+            let (r, paths, plans, lib, sy, so) = (
                 r.clone(),
                 paths.clone(),
                 plans.clone(),
                 lib.clone(),
                 sy.clone(),
+                so.clone(),
             );
             async move {
                 let path = req.uri().path().to_string();
@@ -432,9 +437,12 @@ impl FakeLms {
                         };
                     }
                     if cmd == "status" {
+                        if let Some(st) = so.lock().unwrap().clone() {
+                            result = st;
+                        }
                         sy.annotate(&player, &mut result);
                         // The whole queue (`status 0 N`): both of its library tracks.
-                        if arg1 == "0" {
+                        if arg1 == "0" && so.lock().unwrap().is_none() {
                             result["playlist_loop"] = json!([
                                 {"id": 1, "title": "One", "playlist index": 0},
                                 {"id": 2, "title": "Two", "playlist index": 1}
@@ -542,6 +550,7 @@ impl FakeLms {
             streams,
             library,
             syncs,
+            status,
         }
     }
 
