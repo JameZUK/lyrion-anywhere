@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { me } from '$lib/state/me';
 	// The selected player's queue. Edits (drag to reorder, swipe or tap to remove, Undo) show
 	// at once and are then sent to LMS one at a time, in order; the next load reconciles. A
 	// failed edit is undone locally and reported. Loads that land mid-gesture or mid-edit are
@@ -13,7 +14,7 @@
 	import * as cmd from '$lib/lms/commands';
 	import type { Command } from '$lib/api/rpc';
 	import { duration, textOf } from '$lib/lms/format';
-	import { CLEAR_UPCOMING_MAX, clearAfter, dropIndex, insertAt, isSwipe, moveChecked, playNextTarget, removeAt, removeChecked, reorder, restoreTrack, swipeAction, type RowBox } from '$lib/lms/queue-edit';
+	import { CLEAR_UPCOMING_MAX, clearAfter, dropIndex, insertAt, isSwipe, moveChecked, playNextTarget, removeAt, removeChecked, reorder, restoreTrack, swipeAction, type RowBox, type ServerEdit } from '$lib/lms/queue-edit';
 	import { rowShortcut } from '$lib/gestures/swipe';
 	import { gaplessLinks, stateOf } from '$lib/queue/tracker';
 	import { trackerVersion, upNextTracker } from '$lib/queue/upnext.svelte';
@@ -178,7 +179,7 @@
 		// that takes its place (or the one before), rather than losing it to the page.
 		const hadFocus = !!list?.contains(document.activeElement);
 		const done = edit(removeAt(tracks, i), Math.max(0, total - 1), async (player) => {
-			await removeChecked(rpc, player, i, t);
+			await removeChecked(rpc, player, i, t, serverEdit);
 			upNextTracker.removed(player, i);
 		}, "Couldn't remove the track");
 		if (hadFocus) {
@@ -220,7 +221,7 @@
 		if (from === to || from < 0 || to < 0 || from >= tracks.length || to >= tracks.length) return;
 		const t = tracks[from]!;
 		await edit(reorder(tracks, from, to), total, async (player) => {
-			await moveChecked(rpc, player, from, to, t);
+			await moveChecked(rpc, player, from, to, t, serverEdit);
 			upNextTracker.moved(player, from, to);
 		}, "Couldn't move the track");
 	}
@@ -251,7 +252,7 @@
 		const shown = tracks;
 		clearing = 'Clearing upcoming tracks…';
 		const ok = await edit(shown.slice(0, cur + 1), cur + 1, async (p) => {
-			await clearAfter(rpc, p, shown, cur, (n) => (clearing = `Removed ${n} of ${shown.length - cur - 1}`));
+			await clearAfter(rpc, p, shown, cur, (n) => (clearing = `Removed ${n} of ${shown.length - cur - 1}`), serverEdit);
 			upNextTracker.truncated(p, cur + 1);
 		}, "Couldn't clear upcoming");
 		clearing = ok ? 'Cleared upcoming tracks' : '';
@@ -387,6 +388,8 @@
 		if (swipe?.active && i === swipe.index) return `translateX(${swipe.dx}px)`;
 		return undefined;
 	}
+	/** The gateway's checked edits (check and change in one step), where it has them. */
+	const serverEdit: ServerEdit = (p, e) => me.queueEdit(p, e);
 </script>
 
 {#snippet row(t: Track, i: number)}

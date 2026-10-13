@@ -102,3 +102,20 @@ test('refusals come back as ApiError with the gateway reason', async () => {
 	reply = { status: 409, body: { error: 'this plugin is for admins only', broken: true } };
 	await expect(me.next(1, { player: PLAYER })).rejects.toMatchObject({ status: 409 });
 });
+
+test('checked queue edits: done, changed, and an older gateway remembered', async () => {
+	const fresh = new MeApi((fn) => fn('tok'));
+	reply = { status: 200, body: { done: true } };
+	expect(await fresh.queueEdit(PLAYER.toUpperCase(), { op: 'remove', index: 3, track: 42 })).toBe('done');
+	expect(calls[0]).toMatchObject({ url: `/v1/players/${encodeURIComponent(PLAYER)}/queue/edit`, method: 'POST', body: { op: 'remove', index: 3, track: 42 } });
+	reply = { status: 409, body: { error: 'the queue changed' } };
+	expect(await fresh.queueEdit(PLAYER, { op: 'move', index: 3, to: 1, track: 42 })).toBe('changed');
+	reply = { status: 500, body: { error: 'boom' } };
+	await expect(fresh.queueEdit(PLAYER, { op: 'remove', index: 3, track: 42 })).rejects.toBeInstanceOf(ApiError);
+	reply = { status: 404, body: {} };
+	expect(await fresh.queueEdit(PLAYER, { op: 'remove', index: 3, track: 42 })).toBe('unsupported');
+	const n = calls.length;
+	expect(await fresh.queueEdit(PLAYER, { op: 'remove', index: 3, track: 42 })).toBe('unsupported');
+	expect(calls.length).toBe(n); // not asked again
+	await expect(fresh.queueEdit('not a player', { op: 'remove', index: 3, track: 42 })).rejects.toThrow();
+});

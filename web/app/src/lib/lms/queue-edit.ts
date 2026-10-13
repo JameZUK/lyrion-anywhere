@@ -1,4 +1,5 @@
 // Queue editing logic, kept free of the DOM so it can be tested on its own.
+import type { QueueEditBody } from '$lib/api/me';
 import type { Command } from '$lib/api/rpc';
 import { enqueue, moveInQueue, queue, removeFromQueue, status } from './commands';
 import type { PlayerStatus, Track } from './types';
@@ -144,8 +145,23 @@ export async function checkAt(rpc: Rpc, player: string, index: number, track: Tr
 	if (!sameTrack(at, track) || (pos !== undefined && Number(pos) !== index)) throw new QueueChanged();
 }
 
+/**
+ * The gateway's checked edit (check and change in one step), where it has one: 'done',
+ * 'changed' or 'unsupported' (an older gateway; the client then checks itself).
+ */
+export type ServerEdit = (player: string, edit: QueueEditBody) => Promise<'done' | 'changed' | 'unsupported'>;
+
+/** Whether the gateway made the edit (throws QueueChanged if the entry had changed). */
+async function viaServer(server: ServerEdit | undefined, player: string, edit: QueueEditBody): Promise<boolean> {
+	if (!server || !Number.isSafeInteger(edit.track) || edit.track === 0) return false;
+	const r = await server(player, edit);
+	if (r === 'changed') throw new QueueChanged();
+	return r === 'done';
+}
+
 /** Remove `track` from position `index`, if it is still there. */
-export async function removeChecked(rpc: Rpc, player: string, index: number, track: Track): Promise<void> {
+export async function removeChecked(rpc: Rpc, player: string, index: number, track: Track, server?: ServerEdit): Promise<void> {
+	if (typeof track.id === 'number' && (await viaServer(server, player, { op: 'remove', index, track: track.id }))) return;
 	await checkAt(rpc, player, index, track);
 	await rpc(player, removeFromQueue(index));
 }
@@ -166,11 +182,11 @@ export class ClearStopped extends Error {
  * positions never shift), each checked against what was shown at that position. Stops at
  * the first that no longer matches (ClearStopped). Resolves to how many were removed.
  */
-export async function clearAfter(rpc: Rpc, player: string, tracks: readonly Track[], cur: number, progress?: (removed: number) => void): Promise<number> {
+export async function clearAfter(rpc: Rpc, player: string, tracks: readonly Track[], cur: number, progress?: (removed: number) => void, server?: ServerEdit): Promise<number> {
 	let removed = 0;
 	for (let i = tracks.length - 1; i > cur; i--) {
 		try {
-			await removeChecked(rpc, player, i, tracks[i]!);
+			await removeChecked(rpc, player, i, tracks[i]!, server);
 		} catch (e) {
 			if (e instanceof QueueChanged) throw new ClearStopped(removed);
 			throw e;
@@ -182,7 +198,8 @@ export async function clearAfter(rpc: Rpc, player: string, tracks: readonly Trac
 }
 
 /** Move `track` from position `from` so it ends up at `to`, if it is still at `from`. */
-export async function moveChecked(rpc: Rpc, player: string, from: number, to: number, track: Track): Promise<void> {
+export async function moveChecked(rpc: Rpc, player: string, from: number, to: number, track: Track, server?: ServerEdit): Promise<void> {
+	if (typeof track.id === 'number' && from !== to && (await viaServer(server, player, { op: 'move', index: from, to, track: track.id }))) return;
 	await checkAt(rpc, player, from, track);
 	await rpc(player, moveInQueue(from, to));
 }

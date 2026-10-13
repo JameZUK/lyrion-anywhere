@@ -1,7 +1,7 @@
 // The signed-in user's own data on the gateway (docs/PROTOCOL.md › Listening history, Home,
 // Stations): listening history, the Home layout, stations and pinned menus. Nothing here is
 // shared with other users.
-import { bearer, callJson } from './http';
+import { ApiError, bearer, callJson } from './http';
 import type { Command } from './rpc';
 import { FILTER_LIMITS, cleanSpec, filterFrom, filterProblem, validId, type FilterSpec, type SmartFilter } from './filters';
 
@@ -109,8 +109,38 @@ function player(p: string): string {
 	return v;
 }
 
+/** A checked queue edit (docs/PROTOCOL.md "Checked queue edits"). */
+export type QueueEditBody = { op: 'remove'; index: number; track: number } | { op: 'move'; index: number; to: number; track: number };
+
 export class MeApi {
 	constructor(private authed: Authed) {}
+
+	/** This gateway predates checked queue edits (it answered 404 or 405). */
+	#noQueueEdit = false;
+
+	/**
+	 * Remove or move a queue entry only if it is still `track`, checked and changed in one
+	 * step on the gateway: 'done', 'changed' (nothing was changed), or 'unsupported' (an older
+	 * gateway: the caller checks itself).
+	 */
+	async queueEdit(p: string, edit: QueueEditBody): Promise<'done' | 'changed' | 'unsupported'> {
+		const path = `/v1/players/${encodeURIComponent(player(p))}/queue/edit`;
+		if (this.#noQueueEdit) return 'unsupported';
+		try {
+			await this.#call(path, 'POST', edit);
+			return 'done';
+		} catch (e) {
+			if (e instanceof ApiError && e.status === 409) return 'changed';
+			if (e instanceof ApiError && (e.status === 404 || e.status === 405)) {
+				this.#noQueueEdit = true;
+				return 'unsupported';
+			}
+			// Not an answer from the gateway (no network, say): the caller's own check runs
+			// and reports what happens.
+			if (!(e instanceof ApiError)) return 'unsupported';
+			throw e;
+		}
+	}
 
 	#call<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
 		return this.authed((token) =>

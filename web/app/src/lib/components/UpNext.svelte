@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { me } from '$lib/state/me';
 	// "Up next" under the transport controls: the next track, with its cover. Tap opens the
 	// queue; swipe the row sideways (or press Delete, or the remove button) to take that
 	// track out of the queue, with Undo.
@@ -41,7 +42,7 @@
 		undo = null;
 		notice = '';
 		try {
-			await removeChecked((p, c) => api.rpc(p, c), player, n.index, n.track);
+			await removeChecked((p, c) => api.rpc(p, c), player, n.index, n.track, (p, e) => me.queueEdit(p, e));
 			const canUndo = Number.isSafeInteger(n.track.id) && (n.track.id as number) > 0;
 			undo = canUndo ? { track: n.track, index: n.index, player } : null;
 			notice = `Removed ${textOf(n.track.title, 80) || 'track'}`;

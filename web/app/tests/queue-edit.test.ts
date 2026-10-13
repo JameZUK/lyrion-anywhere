@@ -1,6 +1,7 @@
 // Queue editing logic: the optimistic list must match what LMS does with `playlist move`, and
 // the gesture maths must be sane for any input.
-import { QueueChanged, SWIPE_MIN_PX, checkAt, dropIndex, insertAt, isSwipe, moveChecked, removeAt, removeChecked, reorder, sameTrack, swipeRemoves } from '$lib/lms/queue-edit';
+import { QueueChanged, SWIPE_MIN_PX, checkAt, dropIndex, insertAt, isSwipe, moveChecked, removeAt, removeChecked, reorder, sameTrack, swipeRemoves, type ServerEdit } from '$lib/lms/queue-edit';
+import type { Track } from '$lib/lms/types';
 
 /** What LMS's playlist move does: take the item out, put it in so it ends up at `to`. */
 function lmsMove<T>(list: T[], from: number, to: number): T[] {
@@ -122,5 +123,34 @@ describe('checked edits', () => {
 		const wrongPos = async () => ({ playlist_loop: [{ id: 1, 'playlist index': 5 }] });
 		await expect(checkAt(wrongPos, 'p', 0, { id: 1 })).rejects.toBeInstanceOf(QueueChanged);
 		expect(sent.filter((c) => c[0] !== 'status')).toEqual([]);
+	});
+});
+
+describe('checked edits through the gateway', () => {
+	const t = { id: 42, title: 'Example Song' } as Track;
+	test('the gateway checks and changes in one step when it can', async () => {
+		const rpcs: unknown[] = [];
+		const rpc = async (_p: string, c: unknown) => (rpcs.push(c), {});
+		const edits: unknown[] = [];
+		const done: ServerEdit = async (_p, e) => (edits.push(e), 'done');
+		await removeChecked(rpc, 'p', 3, t, done);
+		await moveChecked(rpc, 'p', 5, 1, t, done);
+		expect(edits).toEqual([{ op: 'remove', index: 3, track: 42 }, { op: 'move', index: 5, to: 1, track: 42 }]);
+		expect(rpcs).toEqual([]); // nothing sent directly
+		await expect(removeChecked(rpc, 'p', 3, t, async () => 'changed')).rejects.toBeInstanceOf(QueueChanged);
+		expect(rpcs).toEqual([]);
+	});
+	test('an older gateway, or an entry without an id, falls back to the client check', async () => {
+		const rpcs: unknown[] = [];
+		const rpc = async (_p: string, c: unknown) => (rpcs.push(c), { playlist_loop: [{ 'playlist index': 3, id: 42, title: 'Example Song' }] });
+		await removeChecked(rpc, 'p', 3, t, async () => 'unsupported');
+		expect(rpcs.length).toBe(2);
+		rpcs.length = 0;
+		let asked = false;
+		const stream = { title: 'A stream' } as Track;
+		const rpc2 = async (_p: string, c: unknown) => (rpcs.push(c), { playlist_loop: [{ 'playlist index': 3, title: 'A stream' }] });
+		await removeChecked(rpc2, 'p', 3, stream, async () => ((asked = true), 'done'));
+		expect(asked).toBe(false);
+		expect(rpcs.length).toBe(2);
 	});
 });

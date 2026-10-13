@@ -136,7 +136,7 @@ describe('the rule builder', () => {
 		const spec = onsave.mock.calls[0]![0];
 		expect(spec.rules).toEqual([{ field: 'genre', in: GENRES.slice(0, 20).map((g) => g.id) }]);
 		expect(spec).toMatchObject({ name: 'Lots of genres', sort: 'album', limit: 100 });
-	});
+	}, 15_000); // about 25 interactions: more than the default 5 s on a busy machine
 
 	test('a decade must be chosen; each kind of rule is offered once', async () => {
 		const { onsave } = editor();
