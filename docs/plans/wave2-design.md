@@ -80,7 +80,7 @@ Detailed on 2026-10-13. Web and Android together. The gateway needs one change: 
 - **Type chips:**
   - **Albums, Artists, Playlists and Favourites** on both apps.
   - **Downloaded** on Android only (the web has no downloads).
-- **Album sort:** Recently added (`new`), Recently played (`recentlyplayed`; only offered when LMS supports it), A–Z (`album`), Artist (`artistalbum`) and Year (`yearalbum`).
+- **Album sort:** Recently added (`new`), Recently played (the user's own, from their listening history on the gateway; LMS's `recentlyplayed` is server-wide, so it would show other people's listening, and stays refused), A–Z (`album`), Artist (`artistalbum`) and Year (`yearalbum`).
 - **Grid or list:** a toggle for albums.
 - **A–Z fast scroller:** for albums sorted A–Z and for artists. It is built from LMS's `indexList` (`tags:Z`: each first character and its count), so a letter jumps straight to its offset without loading the whole list. Using it, it shows a letter bubble, and it is reachable with TalkBack and the keyboard.
 - **Remembered choice:** the chip, sort and view are remembered per device.
