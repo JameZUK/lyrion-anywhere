@@ -279,6 +279,7 @@ private fun messageText(res: Resources, m: PlayerMessage): String = when (m) {
     PlayerMessage.SleepOff -> res.getString(R.string.sleep_cancelled)
     PlayerMessage.SleepUnknown -> res.getString(R.string.sleep_unknown)
     is PlayerMessage.StationStopped -> res.getString(R.string.station_broken, m.reason)
+    PlayerMessage.QueueChanged -> res.getString(R.string.queue_changed)
 }
 
 /** "45 s", "27 min", "1 h 5 min" (as the web app and Now playing). */
@@ -326,6 +327,13 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
     val offlineUi by offlineVm.state.collectAsStateWithLifecycle()
     LaunchedEffect(offlineUi.state.active) {
         if (offlineUi.state.active) startPlaybackService(context)
+    }
+    // The volume keys step a remote player's volume while the app is in front; this phone's
+    // own player (and downloads playing on it) keep the system's volume.
+    val volumeKeys = container.volumeKeys
+    androidx.compose.runtime.DisposableEffect(player, offlineUi.state.active) {
+        volumeKeys.handler = if (offlineUi.state.active) null else { up -> player.volumeKey(up) }
+        onDispose { volumeKeys.handler = null }
     }
     val offlineState by container.offline.state.collectAsStateWithLifecycle()
     val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -999,6 +1007,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                                 onRemoveUpNext = player::removeUpNext,
                                 onRate = player::rate,
                                 onAlarms = playerState.selected?.let { p -> { nav.navigate(AlarmsRoute(p.id, p.name)) } },
+                                onLoadMoreQueue = player::loadMoreQueue,
                             ),
                         )
                     }
@@ -1103,9 +1112,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                             sleepFade = { SleepFadeSetting(playerState.sleepFade, player::setSleepFade) },
                             lyrics = { LyricsPeekSetting(playerState.lyricsPeek, player::setLyricsPeek) },
                             ratings = {
-                                RatingsSetting(playerState.ratingStyle, player::setRatingStyle) {
-                                    (container.ratings.clear() as? io.github.jamezuk.lyrionanywhere.data.ApiResult.Ok)?.value
-                                }
+                                RatingsSetting(playerState.ratingStyle, player::setRatingStyle, player::clearRatings)
                             },
                             streaming = {
                                 val app by container.settings.settings.collectAsStateWithLifecycle(AppSettings())

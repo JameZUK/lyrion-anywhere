@@ -48,6 +48,17 @@ object QueueEdit {
 
     /** Only library tracks can be put back after a removal (radio and app items can't). */
     fun canRestore(track: Track): Boolean = (track.id ?: 0) > 0
+
+    /**
+     * Whether [found] (what the queue holds at a place now) is [expected] (what was shown
+     * there): the same id when both have one, otherwise the same title and artist.
+     */
+    fun sameTrack(found: Track?, expected: Track): Boolean {
+        if (found == null) return false
+        val a = found.id
+        val b = expected.id
+        return if (a != null && b != null) a == b else found.title == expected.title && found.artist == expected.artist
+    }
 }
 
 /** Sync groups, as the "Play on…" sheet shows and changes them (`sync.ts`). */

@@ -23,8 +23,12 @@ import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberSwipeToDismissBoxState
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -64,6 +68,8 @@ data class QueueActions(
     val onRemove: (Int) -> Unit = {},
     val onMove: (Int, Int) -> Unit = { _, _ -> },
     val onClear: () -> Unit = {},
+    /** The list reached its end and the queue has more: read the next page. */
+    val onLoadMore: () -> Unit = {},
 )
 
 /** Which row is being dragged, and how far (shared by the rows of one list). */
@@ -116,12 +122,24 @@ fun LazyListScope.queueItems(
     currentIndex: Int?,
     drag: QueueDrag,
     actions: QueueActions,
+    hasMore: Boolean = false,
 ) {
-    if (entries.isEmpty()) {
+    if (entries.isEmpty() && !hasMore) {
         item(key = "queue-empty") { Text(stringResource(R.string.queue_empty), Modifier.padding(16.dp)) }
     }
     itemsIndexed(entries, key = { _, e -> e.key }) { i, e ->
         QueueRow(i, e, entries.size, i == currentIndex, drag, actions)
+    }
+    if (hasMore) {
+        // Shown once the list is scrolled to its end: it asks for the next page (again
+        // whenever the list read changes, as a read skipped during an edit is retried).
+        item(key = "queue-more") {
+            val onLoadMore by rememberUpdatedState(actions.onLoadMore)
+            LaunchedEffect(entries) { onLoadMore() }
+            Box(Modifier.fillMaxWidth().padding(16.dp).testTag("queue-more"), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(Modifier.size(24.dp))
+            }
+        }
     }
 }
 

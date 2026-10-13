@@ -114,6 +114,10 @@ data class PlayerUiState(
 
     /** The other players this account may control (for "Play on…"). */
     val otherPlayers: List<Player> get() = players.filter { it.id != local.playerId }
+
+    /** The queue has entries after those read so far (more are read as the list scrolls). */
+    val queueMore: Boolean
+        get() = queue.size < PlayerViewModel.QUEUE_MAX && (status?.queueLength?.toInt() ?: 0) > queue.size
 }
 
 /** For hosts without a local player (and tests). */
@@ -158,6 +162,9 @@ sealed interface PlayerMessage {
 
     /** The station kept going stopped: the server refused its next batch ([reason]). */
     data class StationStopped(val reason: String) : PlayerMessage
+
+    /** A removal found a different track at that place (the queue changed): nothing removed. */
+    data object QueueChanged : PlayerMessage
 }
 
 /**
@@ -450,13 +457,60 @@ class PlayerViewModel(
         viewModelScope.launch { readQueue(id) }
     }
 
+    /** How many queue entries the list wants (a page more each time it scrolls to the end). */
+    private var queueWanted = QUEUE_PAGE
+    private var queueLoadingMore = false
+
+    /** Read the queue afresh: as many entries as the list has asked for, a page at a time. */
     private suspend fun readQueue(id: String) {
-        when (val r = players.queue(id, 0, QUEUE_PAGE)) {
-            is ApiResult.Ok -> _state.update {
-                // An edit still on its way would be undone on screen by this older list.
-                if (it.selectedId != id || pendingEdits > 0) it else it.copy(queue = r.value.map { t -> QueueEntry(nextQueueKey++, t) })
+        val want = queueWanted.coerceIn(QUEUE_PAGE, QUEUE_MAX)
+        val tracks = mutableListOf<Track>()
+        while (tracks.size < want) {
+            when (val r = players.queue(id, tracks.size, QUEUE_PAGE)) {
+                is ApiResult.Ok -> {
+                    tracks += r.value
+                    if (r.value.size < QUEUE_PAGE) break
+                }
+                is ApiResult.Err -> {
+                    _messages.trySend(PlayerMessage.Failed(r.error))
+                    return
+                }
             }
-            is ApiResult.Err -> _messages.trySend(PlayerMessage.Failed(r.error))
+            if (_state.value.selectedId != id) return
+        }
+        _state.update {
+            // An edit still on its way would be undone on screen by this older list.
+            if (it.selectedId != id || pendingEdits > 0) it else it.copy(queue = tracks.map { t -> QueueEntry(nextQueueKey++, t) })
+        }
+    }
+
+    /**
+     * The queue list reached its end and there is more: read the next page. Skipped while an
+     * edit is on its way (the list is read afresh after it) or a page is already coming.
+     */
+    fun loadMoreQueue() {
+        val s = _state.value
+        val id = s.selectedId ?: return
+        if (queueLoadingMore || pendingEdits > 0 || !s.queueMore) return
+        val before = s.queue
+        queueLoadingMore = true
+        queueWanted = (before.size + QUEUE_PAGE).coerceAtMost(QUEUE_MAX)
+        viewModelScope.launch {
+            try {
+                when (val r = players.queue(id, before.size, QUEUE_PAGE)) {
+                    is ApiResult.Ok -> _state.update {
+                        // Only onto the list it follows: anything changed meanwhile is read afresh.
+                        if (it.selectedId != id || pendingEdits > 0 || it.queue !== before) {
+                            it
+                        } else {
+                            it.copy(queue = (before + r.value.map { t -> QueueEntry(nextQueueKey++, t) }).take(QUEUE_MAX))
+                        }
+                    }
+                    is ApiResult.Err -> _messages.trySend(PlayerMessage.Failed(r.error))
+                }
+            } finally {
+                queueLoadingMore = false
+            }
         }
     }
 
@@ -470,6 +524,7 @@ class PlayerViewModel(
         optimistic: (List<QueueEntry>) -> List<QueueEntry>,
         undoing: Boolean = false,
         onDone: (String) -> Unit = {},
+        failed: (AppError) -> PlayerMessage = { PlayerMessage.QueueFailed(it, undo = undoing) },
         action: suspend (String) -> ApiResult<Unit>,
     ) {
         val id = _state.value.selectedId
@@ -490,7 +545,7 @@ class PlayerViewModel(
                 is ApiResult.Ok -> onDone(id)
                 is ApiResult.Err -> {
                     _state.update { if (it.selectedId == id) it.copy(queue = before) else it }
-                    _messages.trySend(PlayerMessage.QueueFailed(r.error, undo = undoing))
+                    _messages.trySend(failed(r.error))
                 }
             }
             if (pendingEdits == 0 && _state.value.selectedId == id) {
@@ -518,14 +573,34 @@ class PlayerViewModel(
         removeTrack(index, next)
     }
 
+    /**
+     * Remove [track] at [index], after checking that it is still the track there: the queue
+     * may have moved on since it was shown (a track ended, another controller edited it). If
+     * it has, nothing is removed and the queue is read afresh.
+     */
     private fun removeTrack(index: Int, track: Track) {
         undo = null
-        edit(optimistic = { QueueEdit.removeAt(it, index) }, onDone = { id ->
-            val canUndo = QueueEdit.canRestore(track)
-            val token = ++undoToken
-            undo = if (canUndo) Undo(id, track, index, token) else null
-            _messages.trySend(PlayerMessage.Removed(track.title, canUndo, token))
-        }) { id -> players.removeFromQueue(id, index) }
+        var changed = false
+        edit(
+            optimistic = { QueueEdit.removeAt(it, index) },
+            onDone = { id ->
+                val canUndo = QueueEdit.canRestore(track)
+                val token = ++undoToken
+                undo = if (canUndo) Undo(id, track, index, token) else null
+                _messages.trySend(PlayerMessage.Removed(track.title, canUndo, token))
+            },
+            failed = { e -> if (changed) PlayerMessage.QueueChanged else PlayerMessage.QueueFailed(e) },
+        ) { id ->
+            when (val at = players.queue(id, index, 1)) {
+                is ApiResult.Err -> at
+                is ApiResult.Ok -> if (QueueEdit.sameTrack(at.value.firstOrNull(), track)) {
+                    players.removeFromQueue(id, index)
+                } else {
+                    changed = true
+                    ApiResult.Err(AppError.InvalidInput("the queue changed"))
+                }
+            }
+        }
     }
 
     /**
@@ -649,6 +724,7 @@ class PlayerViewModel(
         }
         changeGeneration++
         selectLocalWhenReady = true
+        queueWanted = QUEUE_PAGE
         _state.update { it.copy(selectedId = null, status = null, queue = emptyList(), waitingForPhone = true) }
         setPlayOnPhone(true)
         viewModelScope.launch { loadPlayers() }
@@ -679,6 +755,7 @@ class PlayerViewModel(
         started = true
         selectLocalWhenReady = false
         changeGeneration++
+        queueWanted = QUEUE_PAGE
         _state.update { it.copy(selectedId = playerId, status = null, queue = emptyList(), waitingForPhone = false) }
         viewModelScope.launch {
             settings.setSelectedPlayer(playerId)
@@ -748,6 +825,20 @@ class PlayerViewModel(
     fun setVolume(volume: Int) = command(
         optimistic = { it.copy(volume = volume.coerceIn(0, 100).toUInt()) },
     ) { players.setVolume(it, volume) }
+
+    /**
+     * A hardware volume key ([up] or down) while the app is in front: a step on the selected
+     * player, as other LMS controllers do, when that player isn't this phone (the system
+     * sets this phone's own volume). Returns whether the key was used.
+     */
+    fun volumeKey(up: Boolean): Boolean {
+        val s = _state.value
+        if (s.selectedId == null || s.localSelected) return false
+        val status = s.status ?: return false
+        // Each step builds on the last one shown, so a held key keeps going.
+        setVolume((status.volume.toInt() + if (up) VOLUME_STEP else -VOLUME_STEP).coerceIn(0, 100))
+        return true
+    }
 
     fun cycleShuffle() {
         val next = when (_state.value.status?.shuffle) {
@@ -950,6 +1041,25 @@ class PlayerViewModel(
         }
     }
 
+    /**
+     * Clear every rating of this user's (Settings, after asking): the number cleared, or null
+     * if it failed. The ratings kept in memory are forgotten, and the current track's rating
+     * is read again, so no cleared rating is still shown.
+     */
+    suspend fun clearRatings(): Long? {
+        val repo = ratings ?: return null
+        val r = repo.clear()
+        if (r !is ApiResult.Ok) return null
+        ratingsCache?.clear()
+        val id = _state.value.status?.current?.id
+        _state.update { it.copy(rating = null, ratingFailed = false) }
+        if (id != null && id > 0) {
+            val fresh = ratingsCache?.get(id)
+            _state.update { s -> if (s.status?.current?.id == id && s.rating == null) s.copy(rating = fresh) else s }
+        }
+        return r.value
+    }
+
     /** Stars or a heart (kept on the server for this user). */
     fun setRatingStyle(style: RatingStyle) {
         _state.update { it.copy(ratingStyle = style) }
@@ -1021,6 +1131,10 @@ class PlayerViewModel(
         /** A safety net while it is up. */
         const val SLOW_POLL_MS = 30_000L
         const val QUEUE_PAGE = 200
+        /** The most queue entries kept in memory (a bound on what scrolling can load). */
+        const val QUEUE_MAX = 5_000
+        /** A volume key's step, per cent. */
+        const val VOLUME_STEP = 5
         /** Players whose status the "Play on…" sheet reads. */
         const val MAX_OUTPUT_STATUS = 20
     }

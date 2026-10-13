@@ -482,6 +482,14 @@ data class HomeFeed(
     val playlists: Loadable<List<SavedPlaylist>> = Loadable.Loading,
     /** The user's layout (from the gateway); null: the fixed carousels above. */
     val layout: HomeLayout? = null,
+    /**
+     * [layout] is the one saved on the server (it loaded). Only then can Home be edited: an
+     * edit started from the default shown after a failed load would save over the user's
+     * real layout.
+     */
+    val layoutLoaded: Boolean = false,
+    /** Why the layout didn't load (the default is shown meanwhile). */
+    val layoutError: AppError? = null,
     /** Albums for the history shelves (recently played, most played, on this day). */
     val history: Map<ShelfKind, Loadable<List<Album>>> = emptyMap(),
     val stations: Loadable<List<Station>> = Loadable.Loading,
@@ -559,9 +567,19 @@ class HomeFeedViewModel(
         }
         val m = me ?: return
         viewModelScope.launch {
-            val layout = (m.home() as? ApiResult.Ok)?.value ?: HomeLayouts.DEFAULT
-            _state.update { it.copy(layout = layout) }
-            loadShelves(m, layout)
+            when (val r = m.home()) {
+                is ApiResult.Ok -> _state.update { it.copy(layout = r.value, layoutLoaded = true, layoutError = null) }
+                is ApiResult.Err -> _state.update {
+                    // A layout loaded before is still the user's own; otherwise show the
+                    // default, which can't be edited (it isn't what the server holds).
+                    if (it.layoutLoaded) {
+                        it.copy(layoutError = r.error)
+                    } else {
+                        it.copy(layout = HomeLayouts.DEFAULT, layoutError = r.error)
+                    }
+                }
+            }
+            loadShelves(m, _state.value.layout ?: HomeLayouts.DEFAULT)
         }
         viewModelScope.launch { loadStations(m) }
     }
@@ -663,7 +681,14 @@ class HomeFeedViewModel(
 
     // --- edit mode ---------------------------------------------------------------------------
 
-    fun edit() = _state.update { it.copy(draft = it.layout ?: HomeLayouts.DEFAULT) }
+    /** Start editing, from the layout the server holds (not offered until it has loaded). */
+    fun edit() = _state.update { s ->
+        val layout = s.layout
+        if (!s.layoutLoaded || layout == null) s else s.copy(draft = layout)
+    }
+
+    /** The draft differs from the saved layout (leaving would lose changes). */
+    fun draftChanged(): Boolean = _state.value.let { s -> s.draft != null && s.draft != s.layout }
 
     fun cancelEdit() = _state.update { it.copy(draft = null) }
 
@@ -690,6 +715,8 @@ class HomeFeedViewModel(
     fun save() {
         val m = me ?: return
         val draft = _state.value.draft ?: return
+        // Never over a layout that didn't load (see [HomeFeed.layoutLoaded]).
+        if (!_state.value.layoutLoaded || _state.value.saving) return
         _state.update { it.copy(saving = true) }
         viewModelScope.launch {
             val r = if (draft.isDefault) m.resetHome() else m.saveHome(draft)

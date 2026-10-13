@@ -423,6 +423,7 @@ class HomeScreenTests {
     private fun feed(draft: HomeLayout? = null) = HomeFeed(
         recent = Loadable.Ready(listOf(sampleAlbum(1))),
         layout = HomeLayouts.DEFAULT,
+        layoutLoaded = true,
         history = mapOf(ShelfKind.RECENT to Loadable.Ready(listOf(sampleAlbum(7))), ShelfKind.MOST to Loadable.Ready(listOf(sampleAlbum(3)))),
         // The broken one first: a row of cards shows only the first two at this width.
         stations = Loadable.Ready(FakeMe().stations.reversed()),

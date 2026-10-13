@@ -1,5 +1,24 @@
 package io.github.jamezuk.lyrionanywhere.ui
 
+import android.content.Context
+import android.provider.Settings
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertContentDescriptionEquals
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.junit4.StateRestorationTester
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.test.core.app.ApplicationProvider
+import io.github.jamezuk.lyrionanywhere.ui.alarms.dayName
+import io.github.jamezuk.lyrionanywhere.ui.alarms.timeText
+import io.github.jamezuk.lyrionanywhere.ui.alarms.weekOrder
+import org.junit.Before
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -38,7 +57,7 @@ import org.robolectric.annotation.Config
 
 private const val P = "aa:00:00:00:00:02"
 
-private fun alarm(id: String, enabled: Boolean = true) = AlarmInfo(
+internal fun sampleAlarm(id: String, enabled: Boolean = true) = AlarmInfo(
     id = id,
     timeSecs = 25_200u,
     days = byteArrayOf(1, 2, 3, 4, 5),
@@ -50,15 +69,15 @@ private fun alarm(id: String, enabled: Boolean = true) = AlarmInfo(
     soundTitle = "Morning radio",
 )
 
-private fun listing(alarms: List<AlarmInfo>, enabled: Boolean = true) = AlarmListing(
+internal fun alarmListing(alarms: List<AlarmInfo>, enabled: Boolean = true) = AlarmListing(
     enabled = enabled,
     alarms = alarms,
     sounds = listOf(AlarmSound("current", "current", "Current queue"), AlarmSound("0123456789abcdef", "favourites", "Morning radio")),
     newId = null,
 )
 
-private class FakeAlarms : AlarmsRepository {
-    var current = listing(listOf(alarm("1a2b3c4d")))
+internal class FakeAlarms : AlarmsRepository {
+    var current = alarmListing(listOf(sampleAlarm("1a2b3c4d")))
     val calls = mutableListOf<String>()
     var fail: AppError? = null
 
@@ -72,7 +91,7 @@ private class FakeAlarms : AlarmsRepository {
         answer("add ${change.timeSecs} ${change.days?.toList()} ${change.soundId} ${change.enabled}")
     override suspend fun change(player: String, id: String, change: AlarmChange) = answer("change $id ${change.enabled}")
     override suspend fun delete(player: String, id: String): ApiResult<AlarmListing> {
-        current = listing(emptyList())
+        current = alarmListing(emptyList())
         return answer("delete $id")
     }
     override suspend fun setAll(player: String, enabled: Boolean): ApiResult<AlarmListing> {
@@ -105,6 +124,10 @@ private class FakeRatings(var rating: TrackRating? = null, var style: RatingStyl
 class RoutineScreenTest {
     @get:Rule
     val compose = createComposeRule()
+
+    /** Times follow the device's clock setting: the 24-hour clock unless a test says otherwise. */
+    @Before
+    fun clock24() = setClock24(true)
 
     @Test
     fun starsSetAndClearTheUsersRating() {
@@ -182,6 +205,106 @@ class RoutineScreenTest {
         compose.setContent { LyrionTheme(dynamicColour = false) { AlarmsScreen(vm, "Kitchen") } }
         compose.onNodeWithText("Try again").assertExists()
         compose.onNodeWithText("07:00").assertDoesNotExist()
+    }
+
+    @Test
+    fun aFailedChangeIsShownAndTheListKept() {
+        val repo = FakeAlarms()
+        val vm = AlarmsViewModel(repo, P)
+        compose.setContent { LyrionTheme(dynamicColour = false) { AlarmsScreen(vm, "Kitchen") } }
+        repo.fail = AppError.Forbidden("you may not control this player")
+        compose.onNodeWithTag("alarm-switch-1a2b3c4d").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("alarm-error").assertIsDisplayed()
+        compose.onNodeWithText("Couldn't change the alarms", substring = true).assertExists()
+        // The alarm is still listed, as the server still has it, and its switch unchanged.
+        compose.onNodeWithTag("alarm-switch-1a2b3c4d").assertIsOn()
+        compose.onNodeWithContentDescription("Close").performClick()
+        compose.onNodeWithTag("alarm-error").assertDoesNotExist()
+        // Adding and deleting say so too.
+        compose.onNodeWithTag("alarm-delete-1a2b3c4d").performClick()
+        compose.onNodeWithTag("alarm-delete-confirm").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("alarm-error").assertIsDisplayed()
+        compose.onNodeWithText("07:00").assertExists()
+    }
+
+    @Test
+    fun withoutThe24HourClockTimesHaveAmAndPm() {
+        setClock24(false)
+        val vm = AlarmsViewModel(FakeAlarms(), P)
+        compose.setContent { LyrionTheme(dynamicColour = false) { AlarmsScreen(vm, "Kitchen") } }
+        compose.onNodeWithText("7:00 AM", ignoreCase = true).assertExists()
+        compose.onNodeWithText("07:00").assertDoesNotExist()
+        compose.onNodeWithTag("alarm-1a2b3c4d").performClick()
+        compose.onNodeWithTag("alarm-time").assertTextContains("7:00 AM", ignoreCase = true)
+    }
+
+    @Test
+    fun theEditorKeepsItsChoicesAcrossRotation() {
+        val vm = AlarmsViewModel(FakeAlarms(), P)
+        val restore = StateRestorationTester(compose)
+        restore.setContent { LyrionTheme(dynamicColour = false) { AlarmsScreen(vm, "Kitchen") } }
+        compose.onNodeWithTag("alarm-add").performClick()
+        compose.onNodeWithTag("alarm-day-6").performClick() // add Saturday
+        compose.onNodeWithTag("alarm-day-1").performClick() // drop Monday
+        compose.onNodeWithTag("alarm-volume").performSemanticsAction(SemanticsActions.SetProgress) { it(80f) }
+        restore.emulateSavedInstanceStateRestore()
+        compose.onNodeWithTag("alarm-day-6").assertIsSelected()
+        compose.onNodeWithTag("alarm-day-1").assertIsNotSelected()
+        compose.onNodeWithText("Volume 80").assertExists()
+    }
+
+    @Test
+    fun theAlarmVolumeIsLabelled() {
+        val vm = AlarmsViewModel(FakeAlarms(), P)
+        compose.setContent { LyrionTheme(dynamicColour = false) { AlarmsScreen(vm, "Kitchen") } }
+        compose.onNodeWithTag("alarm-1a2b3c4d").performClick()
+        compose.onNodeWithTag("alarm-volume")
+            .assertContentDescriptionEquals("Alarm volume")
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "40 per cent"))
+    }
+
+    @Test
+    fun dayNamesAndOrderComeFromTheLanguage() {
+        // English: Monday first, short names.
+        assertEquals(listOf(1, 2, 3, 4, 5, 6, 0), weekOrder(java.util.Locale.UK))
+        assertEquals("Mon", dayName(1, java.util.Locale.UK))
+        // US weeks start on Sunday.
+        assertEquals(0, weekOrder(java.util.Locale.US).first())
+        // French names.
+        assertEquals("lun.", dayName(1, java.util.Locale.FRANCE))
+        assertEquals("dim.", dayName(0, java.util.Locale.FRANCE))
+        assertEquals("07:00", timeText(25_200u, true, java.util.Locale.UK))
+        assertEquals("19:30", timeText(70_200u, true, java.util.Locale.UK))
+        assertEquals("7:30 PM", timeText(70_200u, false, java.util.Locale.US))
+    }
+}
+
+/** Set the device's 12/24-hour clock (as Settings › Date & time does). */
+internal fun setClock24(on: Boolean) {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    Settings.System.putString(context.contentResolver, Settings.System.TIME_12_24, if (on) "24" else "12")
+}
+
+/** The Alarms screen in another language: its day names come from the language. */
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [35], qualifiers = "fr-rFR-w420dp-h1800dp")
+class AlarmsInFrenchTest {
+    @get:Rule
+    val compose = createComposeRule()
+
+    @Test
+    fun dayNamesAreFrench() {
+        setClock24(true)
+        val repo = FakeAlarms().apply {
+            current = alarmListing(listOf(sampleAlarm("1a2b3c4d").copy(days = byteArrayOf(1, 3))))
+        }
+        val vm = AlarmsViewModel(repo, P)
+        compose.setContent { LyrionTheme(dynamicColour = false) { AlarmsScreen(vm, "Kitchen") } }
+        compose.onNodeWithText("lun. mer.", substring = true).assertExists()
+        compose.onNodeWithTag("alarm-add").performClick()
+        compose.onNodeWithText("sam.").assertExists()
     }
 }
 

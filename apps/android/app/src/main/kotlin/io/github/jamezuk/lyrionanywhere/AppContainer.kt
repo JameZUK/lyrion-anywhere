@@ -88,6 +88,9 @@ class AppContainer(context: Context, scope: CoroutineScope) {
      * (or declines) on the pairing screen. Holding it changes nothing by itself.
      */
     val pairingLinks = PairingLinks(account::readPairingCode)
+
+    /** Where the hardware volume keys go while the app is in front (see [VolumeKeys]). */
+    val volumeKeys = VolumeKeys()
     val library: LibraryRepository = RustLibraryRepository(accountImpl)
     val players: PlayersRepository = RustPlayersRepository(accountImpl)
     val art: ArtRepository = RustArtRepository(accountImpl)

@@ -106,12 +106,49 @@ internal fun RatingControl(rating: TrackRating?, style: RatingStyle, failed: Boo
     }
 }
 
-/** Settings: stars or a heart, and clearing the user's ratings. */
+/**
+ * Settings: stars or a heart, and clearing the user's ratings (after asking: it can't be
+ * undone). [onClear] gives the number cleared, or null if it failed.
+ */
 @Composable
 fun RatingsSetting(style: RatingStyle, onStyle: (RatingStyle) -> Unit, onClear: suspend () -> Long?) {
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var note by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf<String?>(null) }
-    val clearedFmt = stringResource(R.string.ratings_cleared)
+    var confirm by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    var clearing by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    val res = androidx.compose.ui.platform.LocalResources.current
+    if (confirm) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirm = false },
+            title = { Text(stringResource(R.string.clear_ratings_confirm_title)) },
+            text = { Text(stringResource(R.string.clear_ratings_confirm_body)) },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        confirm = false
+                        clearing = true
+                        scope.launch {
+                            val n = try {
+                                onClear()
+                            } finally {
+                                clearing = false
+                            }
+                            note = if (n == null) {
+                                res.getString(R.string.ratings_clear_failed)
+                            } else {
+                                val count = n.coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
+                                res.getQuantityString(R.plurals.ratings_cleared, count, count)
+                            }
+                        }
+                    },
+                    modifier = Modifier.testTag("clear-ratings-confirm"),
+                ) { Text(stringResource(R.string.action_clear)) }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { confirm = false }) { Text(stringResource(R.string.action_cancel)) }
+            },
+        )
+    }
     androidx.compose.foundation.layout.Column(Modifier.testTag("ratings-setting")) {
         androidx.compose.material3.ListItem(
             headlineContent = { Text(stringResource(R.string.settings_rating_style)) },
@@ -128,7 +165,11 @@ fun RatingsSetting(style: RatingStyle, onStyle: (RatingStyle) -> Unit, onClear: 
             }
         }
         androidx.compose.material3.TextButton(
-            onClick = { scope.launch { note = onClear()?.let { clearedFmt.format(it) } } },
+            onClick = {
+                note = null
+                confirm = true
+            },
+            enabled = !clearing,
             modifier = Modifier.padding(horizontal = 8.dp).testTag("clear-ratings"),
         ) { Text(stringResource(R.string.clear_ratings)) }
         note?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp)) }

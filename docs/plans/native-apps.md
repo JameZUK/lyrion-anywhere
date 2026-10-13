@@ -364,7 +364,7 @@ Built, in CI. **Verified on the host and the JVM only: nothing has run on a phon
 - Elapsed time doesn't yet subtract the device's output latency (AAudio timestamps): a few tens of ms early.
 - The service starts while the app is in front. If LMS starts playback on an idle phone whose app is in the background, the media session appears only once the app is opened.
 - No settings screen for DSP yet: it is off (bit-perfect), with the engine and API ready. (A3 adds the loudness levelling switch; A2 adds the Sound screen.)
-- Volume keys control Android's stream volume, not LMS's.
+- Volume keys control Android's stream volume, not LMS's, while this phone is the player. (Since 2026-10-13: with a remote player selected and the app in front, they step that player's volume by 5, as other LMS controllers do.)
 
 ### A2 status (2026-10-11)
 

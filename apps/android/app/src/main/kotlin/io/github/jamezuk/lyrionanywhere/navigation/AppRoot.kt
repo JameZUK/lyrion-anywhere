@@ -1,7 +1,16 @@
 package io.github.jamezuk.lyrionanywhere.navigation
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.core.app.ActivityCompat
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -50,6 +59,7 @@ import io.github.jamezuk.lyrionanywhere.ui.onboarding.ServerViewModel
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.SignInScreen
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.SignInViewModel
 import io.github.jamezuk.lyrionanywhere.ui.onboarding.SwitchAccountDialog
+import io.github.jamezuk.lyrionanywhere.ui.onboarding.UnreachableScreen
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 
@@ -108,7 +118,31 @@ fun AppRoot(container: AppContainer) {
             is AuthState.Restoring -> Restoring()
             AuthState.NoServer -> Onboarding(container, signedOut = null)
             is AuthState.SignedOut -> Onboarding(container, signedOut = s)
-            is AuthState.Unreachable -> Unreachable(container, s)
+            is AuthState.Unreachable -> {
+                // Signing out goes the way Settings' does: asked first, plays sent and
+                // downloads closed (kept unless the user removes them).
+                var leaving by remember { mutableStateOf(false) }
+                UnreachableScreen(
+                    serverName = s.server.name,
+                    detail = s.detail,
+                    downloadedTracks = downloads.tracks.size,
+                    downloadedBytes = downloads.usedBytes,
+                    onRetry = { scope.launch { container.account.retry() } },
+                    onSignOut = { remove ->
+                        if (!leaving) {
+                            leaving = true
+                            scope.launch {
+                                try {
+                                    container.offline.signOut(remove)
+                                    container.account.signOut()
+                                } finally {
+                                    leaving = false
+                                }
+                            }
+                        }
+                    },
+                )
+            }
             is AuthState.SignedInState -> MainScreen(container, s)
         }
     }
@@ -209,8 +243,22 @@ private fun Onboarding(container: AppContainer, signedOut: AuthState.SignedOut?)
                         PackageManager.PERMISSION_GRANTED,
                 )
             }
-            val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-                cameraPermitted = it
+            // Refused with "don't ask again" (or by policy): Android won't show the prompt,
+            // so the screen explains and offers the app's settings.
+            var cameraBlocked by rememberSaveable { mutableStateOf(false) }
+            val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                cameraPermitted = granted
+                val activity = context.findActivity()
+                cameraBlocked = !granted && activity != null &&
+                    !ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.CAMERA)
+            }
+            // Back from the settings: the camera may be allowed now.
+            LifecycleResumeEffect(Unit) {
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                    cameraPermitted = true
+                    cameraBlocked = false
+                }
+                onPauseOrDispose {}
             }
             // A link waiting: shown here for the user to confirm (taken once).
             LaunchedEffect(pendingLink) {
@@ -229,6 +277,15 @@ private fun Onboarding(container: AppContainer, signedOut: AuthState.SignedOut?)
                 backLabel = stringResource(
                     if (signedOut == null) R.string.action_back else R.string.action_back_to_sign_in,
                 ),
+                cameraBlocked = cameraBlocked,
+                onOpenSettings = {
+                    val settings = Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.fromParts("package", context.packageName, null),
+                    )
+                    // No settings app (a locked-down profile) must not crash the app.
+                    runCatching { context.startActivity(settings) }
+                },
             )
         }
     }
@@ -246,37 +303,10 @@ private fun Restoring() {
     }
 }
 
-@Composable
-private fun Unreachable(container: AppContainer, state: AuthState.Unreachable) {
-    val scope = rememberCoroutineScope()
-    Box(Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp), contentAlignment = Alignment.Center) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Text(
-                stringResource(R.string.unreachable_title),
-                style = MaterialTheme.typography.headlineSmall,
-                modifier = Modifier.semantics { heading() },
-            )
-            Text(
-                stringResource(R.string.unreachable_body, state.server.name),
-                textAlign = TextAlign.Center,
-            )
-            if (state.detail.isNotBlank()) {
-                Text(
-                    state.detail.take(200),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
-            }
-            Button(onClick = { scope.launch { container.account.retry() } }) {
-                Text(stringResource(R.string.action_retry))
-            }
-            TextButton(onClick = { scope.launch { container.account.signOut() } }) {
-                Text(stringResource(R.string.action_sign_out))
-            }
-        }
-    }
+/** The activity behind a Compose context (null if there isn't one). */
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
+

@@ -7,6 +7,7 @@ import android.content.Intent
 import android.graphics.Typeface
 import android.os.Bundle
 import android.provider.MediaStore
+import android.view.KeyEvent
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
@@ -35,19 +36,37 @@ class MainActivity : ComponentActivity() {
                 AppRoot(app.container)
             }
         }
-        if (savedInstanceState == null) {
-            playFromSearch(intent)
-            openPairingLink(intent)
-        }
+        if (savedInstanceState == null) handleOnce(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         val app = application as LyrionApp
-        if (!app.safeMode && app.started) {
-            playFromSearch(intent)
-            openPairingLink(intent)
-        }
+        if (!app.safeMode && app.started) handleOnce(intent)
+    }
+
+    /**
+     * Act on a voice search or pairing link once: not when the app is reopened from Recents
+     * (Android hands back the intent it was first started with), and not again when the
+     * activity is recreated (the handled intent is replaced with a plain one).
+     */
+    private fun handleOnce(intent: Intent?) {
+        if (intent == null || !LaunchIntents.shouldHandle(intent.action, intent.flags)) return
+        playFromSearch(intent)
+        openPairingLink(intent)
+        setIntent(Intent(Intent.ACTION_MAIN).setPackage(packageName))
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        val app = application as LyrionApp
+        if (app.started && !app.safeMode && app.container.volumeKeys.onKeyDown(keyCode)) return true
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        val app = application as LyrionApp
+        if (app.started && !app.safeMode && app.container.volumeKeys.onKeyUp(keyCode)) return true
+        return super.onKeyUp(keyCode, event)
     }
 
     /**
@@ -66,7 +85,7 @@ class MainActivity : ComponentActivity() {
     private fun playFromSearch(intent: Intent?) {
         if (intent?.action != MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH) return
         val query = runCatching { intent.getStringExtra(SearchManager.QUERY) }.getOrNull()
-        (application as LyrionApp).playFromSearch(query)
+        (application as LyrionApp).playFromSearch(LaunchIntents.searchQuery(query))
     }
 
     /**
