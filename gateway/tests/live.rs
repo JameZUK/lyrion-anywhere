@@ -385,6 +385,9 @@ async fn an_encoder_that_cant_start_is_a_bad_gateway() {
     assert_eq!(strm[2], b'u');
     let resp = h.get_stream(&sid, 1, Some(&tok)).await;
     assert_eq!(resp.status(), 502);
+    // A retry never runs an encoder outside the slot limit.
+    let resp = h.get_stream(&sid, 1, Some(&tok)).await;
+    assert_eq!(resp.status(), 502);
 }
 
 #[tokio::test]

@@ -1010,6 +1010,34 @@ async fn a_pinned_station_whose_action_is_withdrawn_is_marked_broken_and_never_r
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn replaying_unknown_menus_never_hammers_lms() {
+    // Regression: each replay of a menu whose app LMS doesn't list re-read LMS's app
+    // lists, unthrottled (as /v1/rpc is, to once a minute).
+    let h = harness().await;
+    let a = h.a();
+    for _ in 0..5 {
+        let (s, _) = h
+            .call(
+                "POST",
+                "/v1/me/menus",
+                Some(&h.tok_a),
+                Some(
+                    json!({"name": "Gone", "steps": [["goneplugin", "items", 0, 50]], "player": a}),
+                ),
+            )
+            .await;
+        assert_eq!(s, S::UNPROCESSABLE_ENTITY);
+    }
+    let refreshes = h
+        .lms
+        .rpc_calls()
+        .iter()
+        .filter(|c| c[1][0] == "apps")
+        .count();
+    assert!(refreshes <= 1, "{refreshes} app-list refreshes");
+}
+
+#[tokio::test]
 async fn pinned_menus_reopen_what_lms_offers_now() {
     let h = harness().await;
     let a = h.a();

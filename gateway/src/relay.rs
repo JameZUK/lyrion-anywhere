@@ -299,12 +299,17 @@ pub async fn stream(
                         .map(|r| r.map_err(std::io::Error::other));
                     up.stream = Some(match (&relay.live, &relay.flac) {
                         (Some(live), _) => {
-                            let permit = live.permit.lock().unwrap().take();
+                            // The slot is used once: an encoder that failed to start gave
+                            // it back, and a retry must not run one outside the limit.
+                            let Some(permit) = live.permit.lock().unwrap().take() else {
+                                warn!("live encoder already tried for this stream");
+                                return StatusCode::BAD_GATEWAY.into_response();
+                            };
                             match crate::live::encode(
                                 &live.ffmpeg,
                                 live.bitrate_k,
                                 body.boxed(),
-                                permit,
+                                Some(permit),
                                 live.counts.clone(),
                             ) {
                                 Ok(s) => {

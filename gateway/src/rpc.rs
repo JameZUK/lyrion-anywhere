@@ -472,7 +472,7 @@ impl crate::Gateway {
     }
 
     /// At most one refresh a minute, so unknown commands can't be used to hammer LMS.
-    fn may_refresh_apps(&self) -> bool {
+    pub(crate) fn may_refresh_apps(&self) -> bool {
         self.apps_refreshed
             .lock()
             .unwrap()

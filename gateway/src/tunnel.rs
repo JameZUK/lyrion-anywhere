@@ -181,6 +181,14 @@ async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
         }
     };
 
+    // Revoked while the session was being opened (after the token was checked, before
+    // the session was listed for revocation to find): end it now.
+    if !gw.accounts.device_active(session.device.device_id) {
+        warn!(mac = %session.device.mac_string(), "device revoked while connecting");
+        session.end(&gw, crate::session::EndReason::Revoked).await;
+        return close(ws, close_code::POLICY, "unauthorised").await;
+    }
+
     session.set_quality(quality);
     let attached = match session.attach(received) {
         Ok(a) => a,

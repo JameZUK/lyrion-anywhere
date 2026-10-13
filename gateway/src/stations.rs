@@ -950,7 +950,8 @@ impl crate::Gateway {
             let target = if i == 0 {
                 let raw: Vec<Value> = step.iter().map(|s| Value::String(s.clone())).collect();
                 let mut apps = self.apps();
-                if !root_menu(step, &apps) && !apps.contains(&step[0]) {
+                // Throttled as for /v1/rpc, so replaying stations can't hammer LMS.
+                if !root_menu(step, &apps) && !apps.contains(&step[0]) && self.may_refresh_apps() {
                     self.refresh_apps().await;
                     apps = self.apps();
                 }

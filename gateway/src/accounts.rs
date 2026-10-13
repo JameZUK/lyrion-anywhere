@@ -861,6 +861,12 @@ impl Accounts {
 
     /// Delete a user and revoke their devices. Returns the revoked device ids.
     pub fn delete_user(&self, username: &str) -> Result<Vec<i64>, AuthError> {
+        // Disabled first, so no sign-in or renewal can add a device (and a live token)
+        // between revoking the devices and deleting the user.
+        self.db.lock().unwrap().execute(
+            "UPDATE users SET disabled = 1 WHERE username = ?1",
+            [username],
+        )?;
         let revoked = self.revoke_user_devices(username)?;
         let n = self
             .db
@@ -2522,7 +2528,17 @@ fn mint(db: &Connection, device: i64, now: i64) -> Result<Minted, AuthError> {
 }
 
 /// Schema upgrades, tracked with `PRAGMA user_version`.
+/// Bring the schema up to date in one transaction: a migration that fails half-way leaves
+/// the database exactly as it was (SQLite's schema changes and `user_version` are both
+/// transactional), to be tried again on the next start.
 fn migrate(db: &Connection) -> Result<(), AuthError> {
+    let tx = db.unchecked_transaction()?;
+    migrate_steps(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn migrate_steps(db: &Connection) -> Result<(), AuthError> {
     let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version < 1 {
         db.execute_batch(
@@ -3317,6 +3333,30 @@ mod tests {
                 .unwrap();
             assert_eq!(a.session_days(), DEFAULT_SESSION_DAYS, "{stored:?}");
         }
+    }
+
+    #[test]
+    fn a_failed_migration_changes_nothing() {
+        // At version 10 but without the table migration 11 alters: it fails half-way.
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY);
+             PRAGMA user_version = 10;",
+        )
+        .unwrap();
+        assert!(migrate(&db).is_err());
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 10);
+        let made: i64 = db
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'user_ratings'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(made, 0, "the half-done step was rolled back");
     }
 
     #[test]
