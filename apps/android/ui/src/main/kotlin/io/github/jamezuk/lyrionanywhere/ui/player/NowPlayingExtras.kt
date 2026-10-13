@@ -284,11 +284,19 @@ fun UpNextLine(title: String, artist: String?, artwork: String?, onOpenQueue: ()
             scope.launch { dismiss.snapTo(SwipeToDismissBoxValue.Settled) }
         },
         backgroundContent = {
-            Box(
-                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(12.dp)).padding(horizontal = 20.dp),
-                contentAlignment = Alignment.CenterEnd,
-            ) {
-                Icon(Icons.Outlined.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer)
+            // Only while swiping: the line is translucent, so a resting background would show
+            // through it (a red wash and a bin behind the close button).
+            if (dismiss.dismissDirection != SwipeToDismissBoxValue.Settled) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(12.dp))
+                        .padding(horizontal = 20.dp)
+                        .testTag("up-next-swipe-background"),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    Icon(Icons.Outlined.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer)
+                }
             }
         },
         modifier = modifier.fillMaxWidth().testTag("up-next"),
