@@ -335,7 +335,7 @@ pub(crate) fn serialise_index(entries: &[Entry]) -> Vec<u8> {
 }
 
 /// Open a file for reading without following a symlink, and only if it is a plain file.
-fn open_plain(path: &Path) -> io::Result<File> {
+pub(crate) fn open_plain(path: &Path) -> io::Result<File> {
     let mut o = OpenOptions::new();
     o.read(true);
     #[cfg(unix)]

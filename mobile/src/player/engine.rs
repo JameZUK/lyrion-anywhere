@@ -22,6 +22,9 @@
 //! - streams received whole are kept in the replay cache (`super::cache`, Phase B) when
 //!   the account may download; a stream whose first bytes match a kept one, checked by its
 //!   hash, is played from the phone instead of the rest of the download;
+//! - a FLAC stream at the Original level whose audio is a downloaded original's (the same
+//!   STREAMINFO, the same bytes so far, the file checked whole) plays from the download
+//!   after its first bytes (`super::downloads`, Phase C);
 //! - the resume grace is negotiated (asked for when `/v1/me` offers it), and the app says
 //!   when the phone has no network: reconnecting then waits for it, and starts at once
 //!   when it returns;
@@ -57,6 +60,7 @@ use anywhere_core::proto::{ClientMsg, format_mac};
 use super::audio::{AudioPath, AudioSource, OutputShared, dsp_transitions};
 use super::cache::{self, Digest, Pin, SharedCache, StreamHash};
 use super::clock::mono_ns;
+use super::downloads::{self, Downloads, FlacHead, Found};
 use super::output::AudioOutput;
 use super::pipeline::{DspSettings, Levelling};
 use super::protocol::{self, CloseAction, Greeting};
@@ -240,6 +244,10 @@ enum Ev {
     FromCache {
         id: u64,
     },
+    /// The rest of stream `id` comes from a downloaded original.
+    FromDownloads {
+        id: u64,
+    },
     /// Whether the account may download (`/v1/account`; `None`: it couldn't be asked).
     Downloads {
         player_gen: u64,
@@ -375,6 +383,11 @@ pub(crate) struct Engine {
     downloads_allowed: Option<bool>,
     /// Streams (by number) whose rest came from the cache, newest last.
     from_cache: VecDeque<u64>,
+    // Downloaded originals as a source (Phase C).
+    /// This user's downloads on this server (`None`: no downloads folder).
+    downloads: Option<Arc<Downloads>>,
+    /// Streams (by number) whose rest came from a download, newest last.
+    from_downloads: VecDeque<u64>,
     // Sync groups (A6).
     in_sync_group: bool,
     /// A stall in a group waiting for enough audio, since then.
@@ -419,6 +432,7 @@ impl Engine {
         spool_dir: Option<SpoolDir>,
         read_ahead: bool,
         cache: Option<(SharedCache, u64)>,
+        downloads: Option<Arc<Downloads>>,
         cmds: mpsc::UnboundedReceiver<Cmd>,
     ) -> Result<Engine, ApiError> {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -440,6 +454,8 @@ impl Engine {
             cache: cache.map(|(c, _)| c),
             downloads_allowed: None,
             from_cache: VecDeque::new(),
+            downloads,
+            from_downloads: VecDeque::new(),
             fed_total: 0,
             heard_ms: 0.0,
             in_sync_group: false,
@@ -786,6 +802,7 @@ impl Engine {
             self.fed_total = 0;
             self.heard_ms = 0.0;
             self.from_cache.clear();
+            self.from_downloads.clear();
             self.in_sync_group = false;
             self.stall_wait = None;
             if let Some(t) = self.rejoin.take() {
@@ -876,6 +893,8 @@ impl Engine {
                     // Refused or revoked: nothing of this account's streams stays.
                     c.lock().unwrap().clear();
                 }
+                // Nor are its downloads read again (the app deletes them on revocation).
+                self.downloads = None;
                 self.connection = PlayerConnection::Stopped {
                     reason: if reason.is_empty() {
                         "refused".into()
@@ -1029,6 +1048,7 @@ impl Engine {
                 if (n != self.last_ack.0 || got - self.last_ack.1 >= protocol::ACK_EVERY)
                     && self.open
                     && !self.from_cache.contains(&n)
+                    && !self.from_downloads.contains(&n)
                 {
                     self.last_ack = (n, got);
                     self.send_ws(Out::Text(protocol::ack_message(n, got)));
@@ -1059,6 +1079,16 @@ impl Engine {
                     self.from_cache.push_back(n);
                     while self.from_cache.len() > POSITIONS_KEEP {
                         self.from_cache.pop_front();
+                    }
+                }
+                self.publish_signal(true);
+            }
+            Ev::FromDownloads { id } if self.is_current(id) => {
+                if let Some(n) = self.stream.as_ref().map(|s| s.n) {
+                    self.from_downloads.retain(|x| *x != n);
+                    self.from_downloads.push_back(n);
+                    while self.from_downloads.len() > POSITIONS_KEEP {
+                        self.from_downloads.pop_front();
                     }
                 }
                 self.publish_signal(true);
@@ -1440,6 +1470,11 @@ impl Engine {
                     format,
                     look_up: self.active_cache().is_some(),
                 }),
+            // Only a FLAC stream at the Original level can be a downloaded original's.
+            downloads: self
+                .downloads
+                .clone()
+                .filter(|_| self.quality == StreamQuality::Original && format == b'f'),
         }));
         self.last_ack = (n, 0);
         self.stream = Some(StreamTask {
@@ -1813,15 +1848,21 @@ impl Engine {
             resume_window_ms: protocol::resume_for(self.grace).as_millis() as u64,
             read_ahead: self.read_ahead && self.spool_dir.is_some(),
             from_cache: self.hearing_from_cache(),
+            from_downloads: self.hearing_from(&self.from_downloads),
         }
     }
 
     /// The track heard now came from the replay cache.
     fn hearing_from_cache(&self) -> bool {
+        self.hearing_from(&self.from_cache)
+    }
+
+    /// The track heard now is one of `streams` (by number).
+    fn hearing_from(&self, streams: &VecDeque<u64>) -> bool {
         self.player
             .as_ref()
             .and_then(Player::playing_track)
-            .is_some_and(|seq| self.from_cache.contains(&(u64::from(seq) + 1)))
+            .is_some_and(|seq| streams.contains(&(u64::from(seq) + 1)))
     }
 
     fn publish_status(&mut self, force: bool) {
@@ -1846,6 +1887,7 @@ impl Engine {
         let mut path = self.player.as_ref().and_then(|p| self.audio.signal_path(p));
         if let Some(p) = &mut path {
             p.from_cache = self.hearing_from_cache();
+            p.from_downloads = self.hearing_from(&self.from_downloads);
         }
         if !force && path == self.last_signal {
             return;
@@ -2038,6 +2080,8 @@ struct StreamJob {
     net: tokio::sync::watch::Receiver<bool>,
     /// The replay cache, when it is in use.
     cache: Option<CacheJob>,
+    /// Downloaded originals, for a FLAC stream at the Original level.
+    downloads: Option<Arc<Downloads>>,
 }
 
 /// What a stream task needs of the replay cache.
@@ -2195,6 +2239,8 @@ enum BodyEnd {
     Gone,
     /// The rest is in the cache.
     Hit(Hit),
+    /// The rest is in a downloaded original.
+    Download(Found),
 }
 
 /// Play the rest of stream `id` from a checked cache entry, at the decoder's pace, then
@@ -2245,6 +2291,75 @@ async fn play_from_cache(
     }
 }
 
+/// Follow a FLAC stream's first bytes (`head`, while still wanted) with the next piece,
+/// `data`. Once its header is in, ask the downloads for one that carries it on: a checked
+/// file, positioned where the stream carries on. Asked once; `None`: the network.
+async fn from_download(
+    head: &mut Option<Vec<u8>>,
+    data: &[u8],
+    downloads: Option<&Arc<Downloads>>,
+) -> Option<Found> {
+    let held = head.as_mut()?;
+    held.extend_from_slice(data);
+    match downloads::flac_head(held) {
+        FlacHead::More if held.len() <= downloads::MAX_METADATA + 2 => None,
+        FlacHead::Done { info, len } if info.usable() => {
+            let received = head.take()?;
+            let d = downloads?.clone();
+            tokio::task::spawn_blocking(move || d.take(&info, len, &received))
+                .await
+                .ok()
+                .flatten()
+        }
+        _ => {
+            *head = None;
+            None
+        }
+    }
+}
+
+/// Play the rest of stream `id` from a checked download, at the decoder's pace, then end
+/// it as the network would have. Not kept in the replay cache: the download is already on
+/// the phone. A file that comes up short ends the track there.
+async fn play_from_download(
+    found: Found,
+    id: u64,
+    tx: &mpsc::UnboundedSender<Ev>,
+    want: &AtomicBool,
+) {
+    use std::io::Read;
+    let Found {
+        mut file,
+        remaining,
+    } = found;
+    let _ = tx.send(Ev::FromDownloads { id });
+    let mut left = remaining;
+    while left > 0 {
+        while !want.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let mut buf = vec![0u8; cache::READ_CHUNK.min(usize::try_from(left).unwrap_or(usize::MAX))];
+        let k = match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(k) => k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        buf.truncate(k);
+        left -= k as u64;
+        if tx.send(Ev::StreamData { id, bytes: buf }).is_err() {
+            return;
+        }
+        // Let the engine take each piece before the next (they share a thread).
+        tokio::task::yield_now().await;
+    }
+    let _ = tx.send(if left == 0 {
+        Ev::StreamEnd { id, digest: None }
+    } else {
+        Ev::StreamFailed { id }
+    });
+}
+
 /// Before retrying a failed fetch: the backoff, or, with no network, until it comes back
 /// (then at once). Never past `deadline`.
 async fn pause_before_retry(
@@ -2278,6 +2393,7 @@ async fn stream_task(job: StreamJob) {
         budget,
         mut net,
         cache,
+        downloads,
     } = job;
     let mut got = 0u64;
     let mut headers_seen = false;
@@ -2287,11 +2403,23 @@ async fn stream_task(job: StreamJob) {
     let mut fpr = cache
         .as_ref()
         .map(|c| Fingerprinter::new(c.level, c.format));
-    // Ask for the first bytes only when the cache holds something this could be.
-    let mut prefix_end = cache
-        .as_ref()
-        .filter(|c| c.look_up && c.cache.lock().unwrap().holds_any(c.level, c.format))
-        .map(|_| PREFIX_BYTES);
+    // A FLAC stream's first bytes, held until its header shows whether a download can
+    // carry it on (only while some original FLAC is downloaded).
+    let mut flac_head: Option<Vec<u8>> = None;
+    if let Some(d) = downloads.clone()
+        && tokio::task::spawn_blocking(move || d.may_have_flac())
+            .await
+            .unwrap_or(false)
+    {
+        flac_head = Some(Vec::new());
+    }
+    // Ask for the first bytes only when the cache holds something this could be, or a
+    // download might.
+    let mut prefix_end = (flac_head.is_some()
+        || cache
+            .as_ref()
+            .is_some_and(|c| c.look_up && c.cache.lock().unwrap().holds_any(c.level, c.format)))
+    .then_some(PREFIX_BYTES);
     loop {
         let token = match core.access_token().await {
             Ok(t) => t,
@@ -2344,6 +2472,11 @@ async fn stream_task(job: StreamJob) {
                             {
                                 break BodyEnd::Gone;
                             }
+                            if let Some(found) =
+                                from_download(&mut flac_head, &data, downloads.as_ref()).await
+                            {
+                                break BodyEnd::Download(found);
+                            }
                             if known
                                 && let (Some(c), Some(f)) = (&cache, &mut fpr)
                                 && c.look_up
@@ -2375,6 +2508,10 @@ async fn stream_task(job: StreamJob) {
                         if let (Some(c), Some(f)) = (&cache, fpr) {
                             play_from_cache(hit, id, &tx, &want, c, f).await;
                         }
+                        return;
+                    }
+                    BodyEnd::Download(found) => {
+                        play_from_download(found, id, &tx, &want).await;
                         return;
                     }
                     BodyEnd::Broken => 0,

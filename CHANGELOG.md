@@ -2,6 +2,29 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Rolling cache, Phase C: downloads stand in for Original FLAC streams
+
+When the phone plays a track at Original quality that is downloaded as its original FLAC, it now fetches only the stream's first bytes and plays the rest from the download. The audio is bit-identical.
+
+- **Matching** (`mobile/src/player/downloads.rs`): a FLAC stream (`strm` format `f`, as LMS sends it or with its artwork stripped by the gateway) at the Original level whose STREAMINFO equals a downloaded original's: the audio's MD5, total samples, sample rate, channels and bit depth. An MD5 of all zeros, or an unknown length, never matches. Opus, MP3 and non-FLAC downloads are never used.
+- **Checked first; any doubt means the network:**
+  - the offline store's own check: in the index as an Original FLAC, a plain file (never a symlink) of the recorded size;
+  - the audio received so far equal to the download's bytes at the same place;
+  - the whole file decoded with every frame intact to its MD5 and sample count (new `anywhere_core::decode::verify_flac`), once per version of the file.
+- **Splice:** at the first audio frame, at the file's header length plus the bytes received less the stream's header length. Only the `?limit=` probe (96 KiB) is downloaded.
+- **Counting:** `bytes_received` counts the whole stream; only what came from the network is acknowledged; such streams aren't kept in the replay cache.
+- **Scope:** `LocalPlayerConfig.downloads_dir` is the offline library's folder, read only, under the signed-in user's scope. Removing downloads, signing out and revocation work as before.
+- **Reporting:** `LocalPlayerStatus.from_downloads`, `SignalPathInfo.from_downloads`; Android shows "From downloads" in the signal path.
+- **Tests:**
+  - the header and STREAMINFO parser on truncated, oversize and bogus input, with a fuzz run (never panics);
+  - the match rules (zero MD5, other samples, depth, rate, channels, another master);
+  - folder, index and file validation (relative or `..` folders, symlinked index, tracks folder or file, another user's scope);
+  - tampered, truncated and lying downloads falling back;
+  - `verify_flac` on random and hostile files;
+  - integration with the real gateway: a downloaded album fetches only the probe and plays bit-identical "from downloads"; a modified download falls back; a different master isn't matched;
+  - a Compose test for the signal path's new stage.
+- The test FLAC writer now sets the real MD5 in STREAMINFO.
+
 ## 2026-10-13: Android: offline mode no longer takes over after time in the background, and the app keeps your place
 
 Before, after the app sat in the background without playing, switching back to it showed the offline screen for a few seconds and then came back at Home. Android cuts such an app's network, so the phone's player had dropped, and that counted as the server being away.

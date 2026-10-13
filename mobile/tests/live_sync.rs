@@ -604,6 +604,7 @@ async fn start_engine(env: &LiveEnv, device_name: &str) -> Engine {
             cache_dir: None,
             read_ahead: false,
             stream_cache_bytes: 0,
+            downloads_dir: None,
         },
     );
     player.start(Arc::new(NoObs)).unwrap();

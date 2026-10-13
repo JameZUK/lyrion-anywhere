@@ -73,7 +73,24 @@ pub fn scope_name(server_url: &str, username: &str) -> String {
         .collect()
 }
 
-fn scope_dir(root: &str, server_url: &str, username: &str) -> Result<PathBuf, ApiError> {
+/// The offline index in a user's folder (`dir`, from [`scope_dir`]).
+pub(crate) fn index_file(dir: &Path) -> PathBuf {
+    dir.join("index.json")
+}
+
+/// Where a finished download lives in a user's folder (`dir`, from [`scope_dir`]). The key
+/// and extension come from a checked index entry, so the name never leaves `tracks/`.
+pub(crate) fn track_file(dir: &Path, t: &OfflineTrack) -> PathBuf {
+    dir.join("tracks").join(format!("{}.{}", t.key, t.ext))
+}
+
+/// A download's file is intact as far as the store can tell: a plain file of the size the
+/// index recorded (a file of any other size is dropped when the library opens).
+pub(crate) fn file_fits(meta: &fs::Metadata, t: &OfflineTrack) -> bool {
+    meta.is_file() && meta.len() == t.size
+}
+
+pub(crate) fn scope_dir(root: &str, server_url: &str, username: &str) -> Result<PathBuf, ApiError> {
     let root = Path::new(root);
     if !root.is_absolute() || root.components().any(|c| c.as_os_str() == "..") {
         return Err(ApiError::invalid(
@@ -152,7 +169,7 @@ impl OfflineLibrary {
     }
 
     fn index_path(&self) -> PathBuf {
-        self.dir.join("index.json")
+        index_file(&self.dir)
     }
 
     fn plays_path(&self) -> PathBuf {
@@ -196,7 +213,7 @@ impl OfflineLibrary {
     }
 
     fn file_of(&self, t: &OfflineTrack) -> PathBuf {
-        self.tracks_dir().join(format!("{}.{}", t.key, t.ext))
+        track_file(&self.dir, t)
     }
 
     /// Where a download in progress is kept (`key` must be valid).
@@ -288,9 +305,7 @@ impl OfflineLibrary {
         let before = tracks.len();
         let kept: Vec<OfflineTrack> = tracks
             .into_iter()
-            .filter(|t| {
-                fs::metadata(self.file_of(t)).is_ok_and(|m| m.is_file() && m.len() == t.size)
-            })
+            .filter(|t| fs::metadata(self.file_of(t)).is_ok_and(|m| file_fits(&m, t)))
             .collect();
         let names: std::collections::HashSet<String> = kept
             .iter()

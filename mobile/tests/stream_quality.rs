@@ -135,6 +135,7 @@ async fn data_saver_plays_opus_then_original_plays_flac() {
             cache_dir: None,
             read_ahead: true,
             stream_cache_bytes: 0,
+            downloads_dir: None,
             dsp: Default::default(),
         },
     );
@@ -253,6 +254,7 @@ async fn changing_level_without_the_feature_keeps_the_session() {
             cache_dir: None,
             read_ahead: true,
             stream_cache_bytes: 0,
+            downloads_dir: None,
             dsp: Default::default(),
         },
     );

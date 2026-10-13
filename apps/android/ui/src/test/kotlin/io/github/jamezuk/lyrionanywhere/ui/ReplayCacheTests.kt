@@ -150,4 +150,17 @@ class ReplayCacheSettingTest {
         path = signalPath()
         compose.onNodeWithTag("signal-from-cache").assertDoesNotExist()
     }
+
+    @Test
+    fun theSignalPathSaysFromDownloads() {
+        var path by mutableStateOf(signalPath().copy(fromDownloads = true))
+        compose.setContent {
+            LyrionTheme(dynamicColour = false) { SignalPathPanel(path) }
+        }
+        compose.onNodeWithTag("signal-from-downloads").assertExists()
+        compose.onNodeWithText("From downloads").assertExists()
+        compose.onNodeWithTag("signal-from-cache").assertDoesNotExist()
+        path = signalPath()
+        compose.onNodeWithTag("signal-from-downloads").assertDoesNotExist()
+    }
 }

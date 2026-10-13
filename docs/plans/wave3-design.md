@@ -99,6 +99,7 @@ Agreed with the owner on 2026-10-13:
 - **Mobile engine** (A1, the client's A3, A6, `strm f`): built on 2026-10-13 (see "Mobile engine built" under A1).
 - **Android** (A5) and the restart after a gap longer than the grace (decision 3): built on 2026-10-13 (see "Android built" under A5).
 - **Phase B** (S3, S4, B1, B2, the replay cache on Android): built on 2026-10-13 (see "Phase B built" under Phase B). What remains is the manual check on a real phone ("Cache" under Manual).
+- **Phase C** (downloaded FLAC originals as a source): built on 2026-10-13 (see "Phase C built" under Phase C). What remains is the manual check on a real phone ("Downloads" under Manual).
 
 Investigation written up on 2026-10-13, for the Android player (D14: the phone is a real LMS player). The web player is unchanged. iOS takes the same design when its app is built.
 
@@ -383,6 +384,20 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
 - **How:** splice at the first audio frame (stream offset = the file's header length + bytes received − the stripped header length). The frames are identical, so the decoded audio is bit-identical.
 - **Not for Opus:** Opus downloads aren't byte-identical to live Opus, so they aren't reused.
 
+**Phase C built (2026-10-13)** (`mobile/src/player/downloads.rs`, `stream_task` in `engine.rs`, `anywhere_core::decode::verify_flac`):
+- **When:** the session's level is Original and the `strm` format byte is `f` (pass-through or FLAC-stripped by the gateway), and the offline index lists at least one Original download with the extension `flac`. MP3, Opus and other originals (ALAC in MP4) are never candidates.
+- **The probe:** such a stream's first request asks for `?limit=` 96 KiB, as Phase B does. Its first bytes are held until the FLAC header has ended (`downloads::flac_head`: `fLaC`, a 34-byte STREAMINFO first and only there, defined block types, at most 16 MiB and 1024 blocks, the last flagged, then a frame sync). Anything else, and the stream simply carries on.
+- **Matching:** STREAMINFO equal in full: MD5, total samples, sample rate, channels and bit depth. An MD5 of all zeros or an unknown length never matches. The downloads' headers are read once and remembered while each file's size and time stay the same.
+- **Checks before use** (on a blocking thread; any failure means the network):
+  - the offline store's own check: a plain file, never a symlink, of the size the index recorded (`store::file_fits`), opened with `O_NOFOLLOW`; the index read the same way, bounded and parsed by the offline index's parser; the scope and `tracks` folders real folders;
+  - the file's STREAMINFO equal to the stream's;
+  - the audio received so far equal to the file's bytes at the same place (`Mf + (N − Ms)`), which also rules out a re-encode of the same audio;
+  - the whole file decoded with every frame intact, to its STREAMINFO's MD5 and sample count (`verify_flac`), through the same open file. Its other metadata (tags, artwork) is replaced by a bare STREAMINFO for this, so an odd tag block doesn't rule a file out. Done once per file version (size and time). It costs one decode of the file before the switch (the stream waits for it); read-ahead usually hides it.
+- **Splice:** the rest of the stream is the file from `Mf + (N − Ms)`, where `Mf` and `Ms` are the file's and the stream's header lengths and `N` the bytes received. Fed at the decoder's pace. The frames are the same bytes, so the decoded audio is bit-identical.
+- **Counting:** `bytes_received` (STAT, spool) counts the whole stream; acks stop at what the network delivered; the gateway clamps what LMS hears (S4). A file that comes up short ends the track there. Such streams aren't kept in the replay cache (the download is already on the phone).
+- **Scope and clean-up:** `LocalPlayerConfig.downloads_dir` (Android: `noBackupFilesDir/offline`, the offline library's folder) under the signed-in user's hashed scope. Only read, never written: the download manager owns the files. No download permission check: a download that exists implies it. Revocation and sign-out delete the downloads as before; a file that has gone is not used. The engine stops reading them after a 1008.
+- **Reporting:** `LocalPlayerStatus.from_downloads` and `SignalPathInfo.from_downloads`. Android shows a *From downloads* stage in the signal path.
+
 ### Mobile data, battery and storage
 
 - **Extra data:** only next tracks fetched and then skipped (High: about 4–6 MB each; Original: about 30 MB). The 20 s wait reduces this, and the mobile-data switch turns it off. The replay cache costs no extra data.
@@ -447,6 +462,7 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
 - a gap longer than the grace: a new session;
 - a replay: at most 64 KiB is served by `/stream.mp3`, the output is bit-identical, and the signal path says "from cache";
 - a tampered entry falls back to the network;
+- an Original FLAC stream of a downloaded album fetches only the probe and plays bit-identical "from downloads"; a modified download falls back to the network; a different master (same tags, another MD5) is not matched;
 - an old gateway: 55 s;
 - sign-out and revocation clear the cache.
 
@@ -464,6 +480,7 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
 - **Data use:** skip back and check the app's data use in Android settings.
 - **Sync group:** with a squeezelite player, no regression.
 - **Cache:** fill it past the cap and check eviction.
+- **Downloads:** download an album as originals, then play it at Original on mobile data: the signal path says "From downloads" and the app's data use stays small.
 - **Battery:** an hour with read-ahead on and off.
 
 ### Effort

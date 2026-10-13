@@ -106,6 +106,8 @@ struct Rig {
     pause_pull: Arc<AtomicBool>,
     /// The cache folder, if the player spools.
     cache: Option<std::path::PathBuf>,
+    /// The downloads folder the player reads, if any.
+    downloads: Option<std::path::PathBuf>,
 }
 
 /// How a rig is set up (see [`rig_opts`]).
@@ -132,6 +134,8 @@ struct RigOpts {
     counting: bool,
     /// Before the player starts: whether alice may download.
     downloads: Option<bool>,
+    /// Give the player a downloads folder (Phase C).
+    downloads_dir: bool,
 }
 
 async fn rig(with_proxy: bool) -> Rig {
@@ -214,6 +218,7 @@ async fn rig_opts(o: RigOpts) -> Rig {
         .await
         .unwrap();
     let cache = o.spool.then(temp_cache);
+    let downloads = o.downloads_dir.then(temp_cache);
     let player = LocalPlayer::new(
         session.clone(),
         LocalPlayerConfig {
@@ -222,6 +227,7 @@ async fn rig_opts(o: RigOpts) -> Rig {
             cache_dir: cache.as_ref().map(|c| c.to_string_lossy().into_owned()),
             read_ahead: true,
             stream_cache_bytes: o.cache_bytes,
+            downloads_dir: downloads.as_ref().map(|d| d.to_string_lossy().into_owned()),
             dsp: o.dsp,
         },
     );
@@ -321,6 +327,7 @@ async fn rig_opts(o: RigOpts) -> Rig {
         stop_pull,
         pause_pull,
         cache,
+        downloads,
     }
 }
 
@@ -2338,4 +2345,224 @@ async fn signing_out_clearing_and_off_delete_the_cache() {
     anywhere_mobile::remove_stream_spools(dir).unwrap();
     assert!(cache_files(&cache).is_empty());
     assert!(!scope.exists());
+}
+
+// ---------------------------------------------------------------------------------------
+// Downloaded originals (rolling cache Phase C)
+// ---------------------------------------------------------------------------------------
+
+struct QuietDownloads;
+
+impl anywhere_mobile::DownloadObserver for QuietDownloads {
+    fn on_downloads(&self, _: anywhere_mobile::DownloadsSnapshot) {}
+    fn on_library_changed(&self) {}
+}
+
+/// A rig whose player spools, reads a downloads folder and counts what it downloads. No
+/// replay cache, so only a download can stand in for the network.
+async fn downloads_rig() -> Rig {
+    rig_opts(RigOpts {
+        spool: true,
+        counting: true,
+        downloads: Some(true),
+        downloads_dir: true,
+        ..RigOpts::default()
+    })
+    .await
+}
+
+/// Download library tracks `ids` as originals into the rig's downloads folder, through the
+/// gateway, as the app does.
+async fn download_originals(r: &Rig, ids: &[i64]) -> Arc<anywhere_mobile::OfflineLibrary> {
+    use anywhere_mobile::{DownloadOrigin, DownloadRequest};
+    let root = r.downloads.as_ref().unwrap().to_string_lossy().into_owned();
+    let lib = anywhere_mobile::OfflineLibrary::open(root, r.session.server().url(), "alice".into())
+        .unwrap();
+    let dl = anywhere_mobile::Downloader::new(
+        r.session.clone(),
+        lib.clone(),
+        anywhere_mobile::DownloadPolicy::default(),
+        anywhere_mobile::NetworkKind::Wifi,
+        Arc::new(QuietDownloads),
+    )
+    .unwrap();
+    dl.enqueue(
+        ids.iter()
+            .map(|id| DownloadRequest {
+                track_id: *id,
+                album_id: None,
+                origin: DownloadOrigin::Manual,
+            })
+            .collect(),
+        anywhere_mobile::FormatChoice::Original,
+    );
+    let (l, n) = (lib.clone(), ids.len());
+    wait_for("the downloads", move || l.tracks().len() == n).await;
+    dl.shutdown();
+    lib
+}
+
+/// Every downloaded file under `root` (any depth).
+fn downloaded_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.extension().is_some_and(|x| x == "flac") {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// A library file: tags and 30 KB of artwork (which the gateway strips from the stream).
+fn library_flac(seed: u64, title: &str) -> Vec<u8> {
+    let plain = flac::encode(44_100, 16, &flac::noise(44_100 * 3, 16, seed));
+    flac::with_tags_and_art(&plain, title, 30_000)
+}
+
+fn downloaded_bytes(r: &Rig) -> u64 {
+    r.proxy.as_ref().unwrap().down_bytes.load(Ordering::SeqCst)
+}
+
+/// An Original FLAC stream of a downloaded album fetches only its first bytes (`?limit=`):
+/// the rest comes from the downloads, checked whole first, and the audio is bit-identical.
+/// The status and the signal path say so; nothing is kept twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_original_flac_stream_of_a_downloaded_album_plays_from_the_download() {
+    let mut r = downloads_rig().await;
+    let (t1, t2) = (library_flac(81, "One"), library_flac(82, "Two"));
+    assert!(t1.len() > 400_000);
+    r.h.lms.add_track(1, "flc", t1.clone());
+    r.h.lms.add_track(2, "flc", t2.clone());
+    download_originals(&r, &[1, 2]).await;
+    let mut want = flac::decode(&t1).1;
+    want.extend(flac::decode(&t2).1);
+    {
+        let mut s = r.h.lms.streams.lock().unwrap();
+        s.push_back(StreamPlan::whole(t1.clone()));
+        s.push_back(StreamPlan::whole(t2.clone()));
+    }
+    r.send(audg_full()).await;
+    let before = downloaded_bytes(&r);
+    play_once(&mut r, 1).await;
+    play_once(&mut r, 2).await;
+    r.stop_pulling();
+    let downloaded = downloaded_bytes(&r) - before;
+    // Per track, at most the 96 KiB probe, plus the player socket's traffic.
+    assert!(
+        downloaded < 2 * (96 * 1024 + 16 * 1024),
+        "downloaded {downloaded} of {} bytes",
+        t1.len() + t2.len()
+    );
+    assert_bits_equal(&r.pulled.all(), &want, "both tracks from their downloads");
+    assert!(r.obs.saw(|s| s.from_downloads), "the status says so");
+    assert!(!r.obs.saw(|s| s.from_cache));
+    assert!(
+        r.obs
+            .paths
+            .lock()
+            .unwrap()
+            .iter()
+            .flatten()
+            .any(|p| p.from_downloads),
+        "the signal path says so"
+    );
+    assert_eq!(r.count("STMd"), 2, "each stream received whole");
+    assert_eq!(r.count("HELO"), 1);
+    // LMS was never told of bytes it didn't send.
+    let told =
+        r.h.lms
+            .slim_payloads(b"STAT")
+            .iter()
+            .map(|p| u64::from_be_bytes(p[15..23].try_into().unwrap()))
+            .max()
+            .unwrap();
+    assert!(told <= t2.len() as u64);
+    // The downloads are untouched, and no spool is left.
+    let files = downloaded_files(r.downloads.as_ref().unwrap());
+    assert_eq!(files.len(), 2);
+    let mut contents: Vec<Vec<u8>> = files.iter().map(|f| std::fs::read(f).unwrap()).collect();
+    contents.sort();
+    let mut originals = vec![t1, t2];
+    originals.sort();
+    assert_eq!(contents, originals);
+    assert!(spool_files(r.cache.as_ref().unwrap()).is_empty());
+    r.player.stop();
+}
+
+/// A download changed on the phone (same size) fails its check: the stream carries on from
+/// the network, still bit-identical, and the download is left alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_modified_download_falls_back_to_the_network() {
+    let mut r = downloads_rig().await;
+    let track = library_flac(83, "One");
+    r.h.lms.add_track(1, "flc", track.clone());
+    download_originals(&r, &[1]).await;
+    let file = downloaded_files(r.downloads.as_ref().unwrap())
+        .pop()
+        .unwrap();
+    let mut bytes = std::fs::read(&file).unwrap();
+    let at = bytes.len() - 2000;
+    bytes[at] ^= 0x21;
+    std::fs::write(&file, &bytes).unwrap();
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(track.clone()));
+    r.send(audg_full()).await;
+    let before = downloaded_bytes(&r);
+    play_once(&mut r, 1).await;
+    r.stop_pulling();
+    let downloaded = downloaded_bytes(&r) - before;
+    assert!(
+        downloaded >= track.len() as u64 - 30_100,
+        "from the network: {downloaded}"
+    );
+    assert_bits_equal(
+        &r.pulled.all(),
+        &flac::decode(&track).1,
+        "the modified download was never played",
+    );
+    assert!(!r.obs.saw(|s| s.from_downloads));
+    assert_eq!(std::fs::read(&file).unwrap(), bytes, "left as it was");
+    r.player.stop();
+}
+
+/// A different master of the same track (the same tags and length, other audio: another
+/// MD5) is not matched: the stream comes from the network.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_different_master_is_not_matched() {
+    let mut r = downloads_rig().await;
+    let downloaded_master = library_flac(84, "Same title");
+    let streamed_master = library_flac(85, "Same title");
+    assert_eq!(downloaded_master.len(), streamed_master.len());
+    r.h.lms.add_track(1, "flc", downloaded_master);
+    download_originals(&r, &[1]).await;
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(streamed_master.clone()));
+    r.send(audg_full()).await;
+    let before = downloaded_bytes(&r);
+    play_once(&mut r, 1).await;
+    r.stop_pulling();
+    let downloaded = downloaded_bytes(&r) - before;
+    assert!(
+        downloaded >= streamed_master.len() as u64 - 30_100,
+        "from the network: {downloaded}"
+    );
+    assert_bits_equal(
+        &r.pulled.all(),
+        &flac::decode(&streamed_master).1,
+        "the streamed master, not the downloaded one",
+    );
+    assert!(!r.obs.saw(|s| s.from_downloads));
+    r.player.stop();
 }

@@ -118,6 +118,7 @@ impl Rig {
                 cache_dir: None,
                 read_ahead: true,
                 stream_cache_bytes: 0,
+                downloads_dir: None,
                 dsp,
             },
         );

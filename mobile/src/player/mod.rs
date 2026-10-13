@@ -27,6 +27,7 @@ pub mod transitions;
 
 mod audio;
 mod cache;
+mod downloads;
 mod engine;
 mod local;
 mod offline;
@@ -88,6 +89,12 @@ pub struct LocalPlayerConfig {
     /// and is used only while the account may download.
     #[uniffi(default = 0)]
     pub stream_cache_bytes: u64,
+    /// The folder the app gives the offline library (Android: `noBackupFilesDir/offline`).
+    /// With it, a FLAC stream at the Original level whose audio is a downloaded original's
+    /// plays from the download after its first bytes (checked in full first); `None` never
+    /// reads downloads. Only read, never written.
+    #[uniffi(default = None)]
+    pub downloads_dir: Option<String>,
 }
 
 /// The player's link to LMS.
@@ -147,6 +154,9 @@ pub struct LocalPlayerStatus {
     /// The track heard now is playing from the replay cache.
     #[uniffi(default = false)]
     pub from_cache: bool,
+    /// The track heard now is playing from its download on the phone.
+    #[uniffi(default = false)]
+    pub from_downloads: bool,
 }
 
 impl Default for LocalPlayerStatus {
@@ -169,6 +179,7 @@ impl Default for LocalPlayerStatus {
             resume_window_ms: 0,
             read_ahead: false,
             from_cache: false,
+            from_downloads: false,
         }
     }
 }
@@ -228,6 +239,10 @@ pub struct SignalPathInfo {
     /// network, the rest from the cache).
     #[uniffi(default = false)]
     pub from_cache: bool,
+    /// The audio comes from a downloaded original on the phone (its first bytes came from
+    /// the network, the rest from the download, whose audio was checked to be the same).
+    #[uniffi(default = false)]
+    pub from_downloads: bool,
 }
 
 /// What the app knows about the output route (from `AudioManager`). Whether the route is
@@ -587,6 +602,13 @@ impl LocalPlayer {
             }
             _ => None,
         };
+        // The signed-in user's downloads on this server (the offline library's folder).
+        let downloads = cfg.downloads_dir.as_deref().and_then(|root| {
+            let who = self.session.current()?;
+            let scope =
+                crate::offline::scope_name(&self.session.server().url(), &who.user.username);
+            downloads::Downloads::open(root, &scope).map(Arc::new)
+        });
         let engine = Engine::new(
             self.session.core().clone(),
             shared.clone(),
@@ -597,6 +619,7 @@ impl LocalPlayer {
             spool_dir,
             cfg.read_ahead,
             stream_cache,
+            downloads,
             cmd_rx,
         )?;
         let thread = std::thread::Builder::new()
@@ -944,6 +967,7 @@ pub(crate) fn sanitise_config(c: LocalPlayerConfig) -> LocalPlayerConfig {
         cache_dir: c.cache_dir.filter(|d| spool::validate_root(d).is_ok()),
         read_ahead: c.read_ahead,
         stream_cache_bytes: c.stream_cache_bytes.min(cache::MAX_CAP),
+        downloads_dir: c.downloads_dir.filter(|d| spool::validate_root(d).is_ok()),
     }
 }
 
@@ -986,11 +1010,13 @@ mod tests {
             cache_dir: Some("relative/cache".into()),
             read_ahead: true,
             stream_cache_bytes: u64::MAX,
+            downloads_dir: Some("relative/offline".into()),
         });
         assert_eq!(c.stream_cache_bytes, cache::MAX_CAP, "the size is bounded");
         assert_eq!(c.max_sample_rate, 44_100);
         assert_eq!(c.dsp.preamp_db, 12.0);
         assert_eq!(c.cache_dir, None, "an unacceptable folder means no spool");
+        assert_eq!(c.downloads_dir, None, "nor any downloads read");
         for bad in ["/tmp/../etc", "", "x"] {
             let c = sanitise_config(LocalPlayerConfig {
                 output: OutputKind::Pull,
@@ -999,8 +1025,10 @@ mod tests {
                 cache_dir: Some(bad.into()),
                 read_ahead: true,
                 stream_cache_bytes: 0,
+                downloads_dir: Some(bad.into()),
             });
             assert_eq!(c.cache_dir, None, "{bad}");
+            assert_eq!(c.downloads_dir, None, "{bad}");
         }
         let root = std::env::temp_dir();
         let c = sanitise_config(LocalPlayerConfig {
@@ -1010,8 +1038,10 @@ mod tests {
             cache_dir: Some(root.to_string_lossy().into_owned()),
             read_ahead: false,
             stream_cache_bytes: 1 << 30,
+            downloads_dir: Some(root.to_string_lossy().into_owned()),
         });
         assert!(c.cache_dir.is_some() && !c.read_ahead);
+        assert!(c.downloads_dir.is_some());
         assert_eq!(c.stream_cache_bytes, 1 << 30);
     }
 

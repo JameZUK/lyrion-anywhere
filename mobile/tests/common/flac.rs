@@ -1,6 +1,6 @@
-//! A minimal FLAC writer for tests: STREAMINFO plus fixed-size frames of VERBATIM
-//! subframes (uncompressed, so exact by construction). Written from the FLAC format
-//! specification; 16- and 24-bit stereo only.
+//! A minimal FLAC writer for tests: STREAMINFO (with the audio's MD5) plus fixed-size frames
+//! of VERBATIM subframes (uncompressed, so exact by construction). Written from the FLAC
+//! format specification; 16- and 24-bit stereo only.
 
 const BLOCK: usize = 4096;
 
@@ -68,6 +68,7 @@ pub fn encode(rate: u32, bits: u32, samples: &[i32]) -> Vec<u8> {
         | (((bits - 1) as u64) << 36)
         | frames as u64;
     si[10..18].copy_from_slice(&packed.to_be_bytes());
+    si[18..34].copy_from_slice(&anywhere_core::decode::flac_pcm_md5(samples, bits));
     out.extend_from_slice(&si);
 
     let width = (bits / 8) as usize;
@@ -92,6 +93,38 @@ pub fn encode(rate: u32, bits: u32, samples: &[i32]) -> Vec<u8> {
         f.extend(crc.to_be_bytes());
         out.extend(f);
     }
+    out
+}
+
+/// `file` (from [`encode`]) as a library file usually is: tags and embedded artwork after
+/// its STREAMINFO (the gateway strips the artwork from a stream).
+pub fn with_tags_and_art(file: &[u8], title: &str, art_bytes: usize) -> Vec<u8> {
+    assert_eq!(file[4], 0x80, "STREAMINFO alone");
+    let mut out = file[..42].to_vec();
+    out[4] = 0; // no longer the last block
+    let mut tags = Vec::new();
+    tags.extend(4u32.to_le_bytes());
+    tags.extend(b"test");
+    let tag = format!("TITLE={title}");
+    tags.extend(1u32.to_le_bytes());
+    tags.extend((tag.len() as u32).to_le_bytes());
+    tags.extend(tag.as_bytes());
+    out.push(4);
+    out.extend(&(tags.len() as u32).to_be_bytes()[1..]);
+    out.extend(tags);
+    // PICTURE: front cover, a JPEG of `art_bytes`.
+    let mut pic = Vec::new();
+    pic.extend(3u32.to_be_bytes());
+    pic.extend(10u32.to_be_bytes());
+    pic.extend(b"image/jpeg");
+    pic.extend(0u32.to_be_bytes());
+    pic.extend([0u8; 16]);
+    pic.extend((art_bytes as u32).to_be_bytes());
+    pic.extend((0..art_bytes).map(|i| (i % 251) as u8));
+    out.push(0x80 | 6);
+    out.extend(&(pic.len() as u32).to_be_bytes()[1..]);
+    out.extend(pic);
+    out.extend(&file[42..]);
     out
 }
 

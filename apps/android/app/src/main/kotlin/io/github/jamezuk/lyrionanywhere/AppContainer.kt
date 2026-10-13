@@ -142,6 +142,9 @@ class AppContainer(context: Context, scope: CoroutineScope) {
         // Live streams spooled for reading ahead (rolling cache): app-private, never backed
         // up, beside the downloads; the engine creates it and scopes it by server and user.
         cacheDir = File(app.noBackupFilesDir, "stream-cache").absolutePath,
+        // The downloads (read only): an Original FLAC stream of a downloaded track plays
+        // from its download after its first bytes.
+        downloadsDir = File(app.noBackupFilesDir, "offline").absolutePath,
     )
 
     private val offlineImpl = RustOfflineRepository(

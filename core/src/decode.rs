@@ -630,6 +630,88 @@ fn decode_seekable_inner(
     }
 }
 
+/// What decoding a whole FLAC file found ([`verify_flac`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlacCheck {
+    /// The MD5 of the decoded audio equals the one in its STREAMINFO (false when that is
+    /// unset, all zeros).
+    pub md5_ok: bool,
+    /// Sample frames decoded.
+    pub frames: u64,
+}
+
+/// Decode a whole FLAC file and check its audio against the MD5 in its STREAMINFO: proof
+/// that every audio frame is intact. Strict: anything but FLAC, and any frame that fails to
+/// decode (a bad CRC, a truncated frame), is an error. The host does the I/O (it supplies
+/// `source`); this only reads through it. A panic in the third-party demuxer or decoder is
+/// caught and reported as an error, as for [`decode_seekable`].
+pub fn verify_flac(source: Box<dyn MediaSource>) -> Result<FlacCheck, String> {
+    catch(move || verify_flac_inner(source))
+        .unwrap_or_else(|| Err("decoder failed on this file".into()))
+}
+
+fn verify_flac_inner(source: Box<dyn MediaSource>) -> Result<FlacCheck, String> {
+    let mut hint = Hint::new();
+    hint.with_extension("flac");
+    let mss = MediaSourceStream::new(source, MediaSourceStreamOptions::default());
+    let mut reader = symphonia::default::get_probe()
+        .probe(
+            &hint,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .map_err(|e| format!("probe: {e}"))?;
+    let track = reader
+        .default_track(TrackType::Audio)
+        .ok_or("no audio track")?;
+    let track_id = track.id;
+    let Some(CodecParameters::Audio(params)) = track.codec_params.clone() else {
+        return Err("no codec parameters".into());
+    };
+    if params.codec != ids::CODEC_ID_FLAC {
+        return Err("not FLAC".into());
+    }
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(&params, &AudioDecoderOptions::default().verify(true))
+        .map_err(|e| format!("codec: {e}"))?;
+    let mut frames = 0u64;
+    loop {
+        let packet = match reader.next_packet() {
+            Ok(Some(p)) => p,
+            Ok(None) => break,
+            Err(SymError::IoError(e)) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(format!("demux: {e}")),
+        };
+        if packet.track_id != track_id {
+            continue;
+        }
+        let buf = decoder
+            .decode(&packet)
+            .map_err(|e| format!("decode: {e}"))?;
+        frames += buf.frames() as u64;
+    }
+    Ok(FlacCheck {
+        md5_ok: decoder.finalize().verify_ok == Some(true),
+        frames,
+    })
+}
+
+/// FLAC's MD5 of interleaved integer samples `bits` deep (each sample little-endian in
+/// whole bytes, as STREAMINFO's MD5 is defined), e.g. for writing test files.
+pub fn flac_pcm_md5(samples: &[i32], bits: u32) -> [u8; 16] {
+    use symphonia::core::checksum::Md5;
+    use symphonia::core::io::Monitor;
+    let width = bits.div_ceil(8).clamp(1, 4) as usize;
+    let mut md5 = Md5::default();
+    let mut bytes = Vec::with_capacity(samples.len() * width);
+    for s in samples {
+        bytes.extend_from_slice(&s.to_le_bytes()[..width]);
+    }
+    md5.process_buf_bytes(&bytes);
+    md5.md5()
+}
+
 /// Bytes at the start of a file checked by [`check_wav_headers`] before a [`FileDecoder`]
 /// lets Symphonia probe it.
 const FILE_HEADER_CHECK: usize = 1024 * 1024;

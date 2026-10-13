@@ -224,7 +224,13 @@ private const val FADE_SAME_MS = 2_000L
 /** Highest rate offered to LMS; it transcodes anything above. */
 const val MAX_SAMPLE_RATE = 192_000
 
-private class RustHandle(session: Session, cacheDir: String?, readAhead: Boolean, cacheBytes: Long) : LocalPlayerHandle {
+private class RustHandle(
+    session: Session,
+    cacheDir: String?,
+    readAhead: Boolean,
+    cacheBytes: Long,
+    downloadsDir: String?,
+) : LocalPlayerHandle {
     private val player = LocalPlayer(
         session,
         LocalPlayerConfig(
@@ -234,6 +240,7 @@ private class RustHandle(session: Session, cacheDir: String?, readAhead: Boolean
             cacheDir,
             readAhead,
             cacheBytes.coerceAtLeast(0).toULong(),
+            downloadsDir,
         ),
     )
 
@@ -312,6 +319,12 @@ class RustLocalPlayerRepository(
     private val cacheTotals: (Session, String) -> ReplayCacheUsage = ::rustCacheTotals,
     /** Empties a session's replay cache (a seam for tests). */
     private val cacheClear: (Session, String) -> Unit = ::rustCacheClear,
+    /**
+     * The offline library's folder (under `noBackupFilesDir`), read only: an Original FLAC
+     * stream of a downloaded track plays from the download after its first bytes. Null
+     * never reads downloads.
+     */
+    private val downloadsDir: String? = null,
 ) : LocalPlayerRepository {
     private val _state = MutableStateFlow(LocalPlayerState())
     override val state: StateFlow<LocalPlayerState> = _state.asStateFlow()
@@ -456,7 +469,7 @@ class RustLocalPlayerRepository(
         if (changed) refreshReplayCache()
         if (session == null) return@withContext
         try {
-            val h = factory?.invoke(session) ?: RustHandle(session, cacheDir, readAhead, cacheBytes)
+            val h = factory?.invoke(session) ?: RustHandle(session, cacheDir, readAhead, cacheBytes, downloadsDir)
             handle = h
             handleSession = session
             fade = null // a new engine has no fade yet
