@@ -2,6 +2,43 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Review fixes (gateway, native apps, web)
+
+- **Gateway:**
+  - **Connection caps:** WebSockets (events and the player socket) now count against the connection caps for as long as they are open. Before, an upgraded connection left the caps, even one that never authenticated.
+  - **Renewals:** limited to 30 a minute per device (429, the token kept). A device keeps at most 8 live access tokens, and old refresh-token rows are pruned.
+  - **Skipped tracks:** a stream superseded by the next track is cancelled at once, with its LMS connection and encoder.
+  - **Lyrics:** a hostile lyrics tag can no longer stall a worker. Parsing is linear; before, 256 KiB of `<` took about 11 s.
+  - **Information hiding:** a refused `strm` is passed on without its address and request. Events blank the ids of players the user may not see.
+  - **Ratings:** clearing your own rating no longer clears LMS's shared rating.
+  - **Revocation:** a device revoked while connecting is caught. Deleting a user disables it first.
+  - **Housekeeping:** migrations are atomic. Station and menu replays refresh LMS's app list at most once a minute.
+- **Native apps (mobile layer, Android):**
+  - **Sign-in kept:** only the gateway's own 401 ends a sign-in. A proxy's or CDN's error page during renewal no longer signs the app out and deletes every download.
+  - **Saved sign-in:** a refresh token that can't be saved no longer leaves a stale one behind, which would have got the device revoked on the next start.
+  - **Downloads index:** an unreadable index no longer deletes the downloaded files. A copy is kept aside and read back when it can be.
+  - **Reconnecting:** repeated bad frames back off instead of reconnecting in a tight loop.
+  - **Paused downloads:** a skipped paused entry no longer pauses another.
+  - **Background (Android):** stations and "end of …" sleep timers keep going with the app in the background.
+- **Web:**
+  - **Navigation:** in-app navigation no longer reloads the page, which used to stop this browser's audio.
+  - **Signing out:** ratings, lyrics and search are reset when the user changes.
+  - **Stale answers:** late answers no longer overwrite newer ones in search, ratings and alarms.
+  - **Queue edits:** checked against the entry before removing or moving it.
+  - **Lyrics:** retried after a failure.
+  - **Artwork:** images still on screen keep their artwork.
+  - **Accessibility and layout:**
+    - every page has its own title;
+    - the track "More options" menu works from the keyboard;
+    - detail pages have Back buttons;
+    - "Getting this device ready" shows progress and a way out;
+    - Now playing fits a 360×640 phone;
+    - touch targets are 44 px;
+    - search keeps its state;
+    - Settings puts diagnostics last;
+    - confirmations are in-app dialogs.
+- **Tests:** a regression test for each fix, and the hostile and timing cases above.
+
 ## 2026-10-13: Plugin review fixes (security, supervision, settings page)
 
 - **Security:**
