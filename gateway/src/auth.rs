@@ -362,6 +362,8 @@ pub async fn me(State(gw): State<AppState>, headers: HeaderMap) -> Response {
             // Lower-data live streams (docs/plans/streaming-quality.md): the levels a player
             // may ask for when it connects, or later with a control message.
             "stream_quality": gw.live_ffmpeg().is_some(),
+            // POST /v1/players/{player}/queue/edit (checked queue edits).
+            "queue_edit": true,
         },
     }))
     .into_response()

@@ -814,6 +814,22 @@ Clients must treat both forms as untrusted: check the magic, the version, every 
 
 **Other answers:** 404 `not found` (a bad or unknown id, as for downloads), 404 `not analysable` (not a library file), 404 `analysis is not available on this server` (turned off with `--no-analysis` or the plugin's setting), 502/504 `music server unavailable`/`timed out` (not remembered).
 
+## Checked queue edits (`/v1/players/{player}/queue/edit`)
+
+LMS's queue commands take a position, so a remove or move sent after someone else changed the queue could hit a different track. LMS has no "this entry" by identity (`playlistcontrol cmd:delete track_id:` removes every copy). The gateway checks and changes in one step instead, one edit at a time per player:
+
+| Request | Body | Answer |
+|---|---|---|
+| `POST …/queue/edit` | `{"op":"remove","index":i,"track":id}` | 200 `{"done":true}` |
+| `POST …/queue/edit` | `{"op":"move","index":i,"to":j,"track":id}` | 200 `{"done":true}` |
+
+- **409 `{"error":"the queue changed"}`:** the entry at `index` isn't `track`, and nothing is changed. Re-read the queue.
+- **Refusals:**
+  - 403 for a player the caller may not control;
+  - 400 for any other body. Positions are 0–100 000, `to` differs from `index`, `track` is a non-zero id, and nothing else is accepted.
+- **What remains:** the check and the change are two local LMS commands, a few milliseconds apart. Another controller would have to change the queue in that gap.
+- **Detecting it:** `GET /v1/me` lists `"queue_edit": true` under `features`. Clients fall back to their own check against older gateways.
+
 ## Alarms (`/v1/players/{player}/alarms`)
 
 LMS's own alarms for one player (docs/plans/wave2-design.md §1). They ring on hardware players too, with no app open.

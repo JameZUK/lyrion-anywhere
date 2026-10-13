@@ -46,6 +46,7 @@ pub mod live;
 pub mod lyrics;
 pub mod menu_actions;
 pub mod plays;
+pub mod queue_edit;
 pub mod ratings;
 mod relay;
 mod rpc;
@@ -509,6 +510,7 @@ pub fn router(state: AppState) -> Router {
             "/v1/players/{player}/alarms/{id}",
             axum::routing::patch(alarms::update).delete(alarms::delete),
         )
+        .route("/v1/players/{player}/queue/edit", post(queue_edit::edit))
         .route("/v1/plays", post(plays::record))
         .route(
             "/v1/me/history",
