@@ -310,6 +310,8 @@ pub fn check(
                         ("year", V::Uint),
                         ("sort", V::Sort),
                         ("tags", V::Tags),
+                        // A contributor's tracks in one role (tappable credits).
+                        ("role_id", V::OneOf(ROLES)),
                     ],
                 ),
             )?;
@@ -1368,6 +1370,14 @@ mod tests {
                 "artist_id:12"
             ]),
             json!(["titles", 0, 50, "album_id:7", "tags:adl", "sort:tracknum"]),
+            json!([
+                "titles",
+                0,
+                50,
+                "artist_id:4",
+                "role_id:COMPOSER",
+                "tags:AS"
+            ]),
             json!(["genres", 0, 50]),
             json!(["years", 0, 50, "hasAlbums:1"]),
             json!(["search", 0, 20, "term:blue"]),
@@ -1561,6 +1571,26 @@ mod tests {
             json!(["titles", 0, 50, "track_id:-1"]),
             json!(["titles", 0, 50, "track_id:/srv/music/a.flac"]),
             json!(["titles", 0, 50, "track_id:1", "track_id:2"]),
+        ] {
+            denied("", bad);
+        }
+    }
+
+    #[test]
+    fn tracks_by_role_take_only_known_roles() {
+        for bad in [
+            json!(["titles", 0, 50, "artist_id:4", "role_id:producer"]),
+            json!(["titles", 0, 50, "artist_id:4", "role_id:COMPOSER,1"]),
+            json!(["titles", 0, 50, "artist_id:4", "role_id:"]),
+            json!([
+                "titles",
+                0,
+                50,
+                "artist_id:4",
+                "role_id:COMPOSER",
+                "role_id:BAND"
+            ]),
+            json!(["titles", 0, 50, "role_id:COMPOSER;DROP"]),
         ] {
             denied("", bad);
         }

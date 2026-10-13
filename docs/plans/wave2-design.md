@@ -64,7 +64,68 @@ Agreed with the owner on 2026-10-12, from `docs/plans/ux-research.md` (Wave 2). 
   - `POST /v1/me/ratings`: an offline batch, keyed;
   - `DELETE /v1/me/ratings`: all of them.
 
-## 3–4 (outline; detailed before each part starts)
+## 3. Library and queue (part 2)
+
+Detailed on 2026-10-13. Web and Android together. The gateway needs one change: `role_id` is now allowed on `titles`, with the same fixed role list as `albums` and `artists`. Everything else uses commands that are already allowed.
+
+### 3.1 Tappable credits (X4)
+
+- **Track credits:** track info lists every role LMS reports for the track (`tags:AS`): album artist, artist, track artist, composer, conductor and band. Each name is its own link (and its own TalkBack/VoiceOver item).
+- **Following a credit:** a name opens that contributor's page *in that role*: the albums where they are, say, the composer (`albums artist_id:… role_id:COMPOSER`), with the role in the title ("Bach · Composer").
+- **Artist pages:** under the name, "Appears as" chips for each role with a count, for example *Composer (12) · Conductor (3)*. The counts come from `count` on a one-item `albums` query per role; roles with none are hidden. The default view is unchanged.
+- **Out of scope:** MAI credits (X5) stay out of this part.
+
+### 3.2 Library chips, sort and A–Z (U6)
+
+- **Type chips:**
+  - **Albums, Artists, Playlists and Favourites** on both apps.
+  - **Downloaded** on Android only (the web has no downloads).
+- **Album sort:** Recently added (`new`), Recently played (`recentlyplayed`; only offered when LMS supports it), A–Z (`album`), Artist (`artistalbum`) and Year (`yearalbum`).
+- **Grid or list:** a toggle for albums.
+- **A–Z fast scroller:** for albums sorted A–Z and for artists. It is built from LMS's `indexList` (`tags:Z`: each first character and its count), so a letter jumps straight to its offset without loading the whole list. Using it, it shows a letter bubble, and it is reachable with TalkBack and the keyboard.
+- **Remembered choice:** the chip, sort and view are remembered per device.
+
+### 3.3 Search (U7)
+
+- **Recent searches:** kept on the device only, never sent to the gateway. At most 20, each removable, with "Clear all".
+- **Grouped results:** one `search` (`extended:1`) gives artists, albums and tracks. Playlists come from `playlists search:`.
+- **Top result:** an exact (or else prefix) name match, preferring an artist, then an album, then a track.
+- **Filter chips:** All, Artists, Albums, Tracks and Playlists. Picking a type pages through that type alone.
+- **Playing from results:** a track plays from its row. An album row has a play button. A long press or the menu offers Play next and Add to queue.
+- **Out of scope:**
+  - plugin searches ("Search on …") need each plugin's search menu replayed and are left to a later part;
+  - LMS search has no fuzzy matching, so there are no typo suggestions.
+
+### 3.4 Queue sections and list swipes (U4)
+
+- **Queue sections:** *Now playing*, *Up next* and *Then*.
+  - **Up next** holds the tracks this device added with Play next. LMS keeps one flat list, so the app tracks those positions itself: per device, best effort, shifted by its own edits.
+  - **Resetting:** if the queue changes in a way the app can't account for, the sections are dropped and the queue shows flat.
+- **Queue swipes:**
+  - right: play next (moved to just after the current track);
+  - left: remove, with Undo.
+- **Browse list swipes** (tracks and albums), Squeezer style:
+  - right: play next;
+  - left: add to queue.
+- **Alternatives to every swipe:**
+  - the row's menu;
+  - a TalkBack/VoiceOver custom action;
+  - a keyboard shortcut on the web.
+- **Swipe feel:** thresholds follow the platform's touch settings, and a swipe is never the only way to do something.
+- **Clear upcoming:** removes every track after the current one, after asking. It deletes from the end, using the existing `playlist delete` checked against each entry. For a long queue it offers *Clear all* instead.
+- **Queue peek:** on Now playing, a swipe up (and a button) shows the queue in a sheet.
+
+### 3.5 Album-aware shuffle (H4)
+
+- **Shuffle button:** cycles *Off → Tracks → Albums* (LMS shuffle 0, 1, 2). Its label and state say which, and long-pressing it offers the three.
+- **Gapless markers:** a small link mark between consecutive queue rows from the same album with consecutive track numbers. It is presentation only, has a label for screen readers, and comes with no promise about the player.
+
+### 3.6 Rules
+
+- **Tests:** negative tests for the new `role_id` on `titles`. Fuzz/robustness tests for any new parsing (`indexList`, search results, credit roles). UI and accessibility tests for every new control.
+- **Language and fixtures:** British English; no real names in fixtures (use placeholders).
+
+## 4–5 (outline; detailed before each part starts)
 
 - **Car mode:** opens automatically when the phone connects to a car's Bluetooth, configurable in Settings:
   - *Off*;
