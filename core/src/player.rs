@@ -649,6 +649,19 @@ impl Player {
             .map(|t| (t.seq as u64 + 1, t.bytes_received))
     }
 
+    /// The streams the decoder still takes bytes for (their input hasn't ended), oldest
+    /// first, as stream numbers: at most the current track and the queued next one. A host
+    /// that spools streams keeps a spool for exactly these. Any other spool is for a track
+    /// the player has dropped (a flush, a partial flush, or a stream replaced), and can go.
+    pub fn fed_streams(&self) -> Vec<u64> {
+        [self.track.as_ref(), self.next.as_ref()]
+            .into_iter()
+            .flatten()
+            .filter(|t| !t.input_ended)
+            .map(|t| t.seq as u64 + 1)
+            .collect()
+    }
+
     /// The track whose stream is fetched (the newest).
     fn fetching(&self) -> Option<&Track> {
         self.next.as_ref().or(self.track.as_ref())
@@ -2708,6 +2721,35 @@ mod tests {
         let heard = play_ms(&mut p, 13_500, &mut now);
         assert_eq!(heard, 44100 * 15 - 2100 * 441 / 10);
         assert_eq!(count(&events(&p.take_actions()), "STMu"), 1);
+    }
+
+    /// The streams a spooling host keeps follow the tracks that still take input.
+    #[test]
+    fn fed_streams_follow_the_tracks_still_taking_input() {
+        let mut p = read_ahead();
+        let mut now = 0;
+        assert!(p.fed_streams().is_empty());
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        assert_eq!(p.fed_streams(), vec![1]);
+        let t1 = wav(44100, 44100 * 15);
+        p.on_stream_data(&t1[..t1.len() / 2], now);
+        p.stream_received(now);
+        play_ms(&mut p, 2100, &mut now);
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        assert_eq!(p.fed_streams(), vec![1, 2], "current, then queued");
+        p.on_stream_data(&t1[t1.len() / 2..], now);
+        p.on_stream_end(now);
+        assert_eq!(p.fed_streams(), vec![2]);
+        // A partial flush drops the queued track.
+        p.on_control_data(&strm(b'f', b'0', b'p', 0), now).unwrap();
+        assert!(p.fed_streams().is_empty());
+        // A new stream replacing one still fetched leaves only the new one.
+        p.on_control_data(&strm(b'q', b'0', b'p', 0), now).unwrap();
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        assert_eq!(p.fed_streams(), vec![4]);
+        p.on_control_data(&strm(b'q', b'0', b'p', 0), now).unwrap();
+        assert!(p.fed_streams().is_empty());
     }
 
     /// LMS never sends two ahead; if it did, the newer one replaces the queued one.
