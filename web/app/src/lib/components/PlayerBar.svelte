@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { go } from '$lib/nav';
 	import { app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { coverPath } from '$lib/lms/commands';
@@ -45,7 +46,7 @@
 			navigator.vibrate?.(15);
 			playOn = true;
 		} else {
-			location.hash = '#/';
+			void go('/');
 		}
 	}
 

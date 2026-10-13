@@ -8,6 +8,7 @@ vi.mock('$lib/state/app.svelte', () => ({
 	api: {
 		async rpc(_player: string, cmd: unknown[]) {
 			calls.push(cmd);
+			if (cmd[0] === 'radio') return {};
 			return { count: 1, item_loop: [{ text: `Item for ${String(cmd[2])}`, actions: { go: { cmd: ['x', 'items'], params: { item_id: '1' } } } }] };
 		},
 		art: async () => 'blob:x',
@@ -59,4 +60,20 @@ test('an identical source on re-render keeps the menu as it is', async () => {
 	await rerender({ start: source(10), title: 'Other' });
 	await settle();
 	expect(calls).toHaveLength(2);
+});
+
+// Regression: an action whose next window is Now playing set location.hash, which SvelteKit's
+// hash router answers with a full page reload (stopping this device's sound).
+test('an action that goes to Now playing navigates without reloading', async () => {
+	const { goto } = await import('$app/navigation');
+	vi.mocked(goto).mockClear();
+	const menu = {
+		count: 1,
+		item_loop: [{ text: 'Start radio', nextWindow: 'nowPlaying', actions: { go: { cmd: ['radio', 'play'], params: { item_id: '1' } } } }],
+	};
+	const { getByText } = render(MenuView, { initial: menu, title: 'Radio' });
+	await settle();
+	getByText('Start radio').closest('button')!.click();
+	await settle();
+	expect(goto).toHaveBeenCalledWith('#/', {});
 });

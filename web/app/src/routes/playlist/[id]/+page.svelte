@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { go } from '$lib/nav';
 	import { page } from '$app/state';
 	import { untrack } from 'svelte';
 	import { api, app } from '$lib/state/app.svelte';
@@ -68,7 +69,7 @@
 		}
 		try {
 			await api.rpc('', cmd.deletePlaylist(id));
-			location.hash = '#/playlists';
+			await go('/playlists');
 		} catch (e) {
 			error = (e as Error).message;
 		}

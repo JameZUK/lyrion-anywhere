@@ -274,8 +274,20 @@ describe('mini player gestures', () => {
 	test('swipe up opens Now playing', async () => {
 		const r = render(PlayerBar);
 		await tick();
+		// Regression: it set location.hash, which SvelteKit's hash router answers with a full
+		// page reload (stopping this device's sound). It navigates client-side now.
+		await new Promise((res) => setTimeout(res, 0)); // the set-up's own hashchange
+		let hashChanges = 0;
+		const count = () => hashChanges++;
+		addEventListener('hashchange', count);
+		const { goto } = await import('$app/navigation');
+		vi.mocked(goto).mockClear();
 		drag(mini(r), 3, -80);
+		expect(goto).toHaveBeenCalledWith('#/', {});
 		expect(location.hash).toBe('#/');
+		await new Promise((res) => setTimeout(res, 0));
+		expect(hashChanges).toBe(0);
+		removeEventListener('hashchange', count);
 		r.unmount();
 	});
 
