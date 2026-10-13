@@ -80,6 +80,7 @@ class PlaybackService : MediaLibraryService() {
     private lateinit var focus: AudioFocusHandler
     private lateinit var locks: PlaybackLocks
     private lateinit var audio: AudioManager
+    private var volumeFollower: PhoneVolumeFollower? = null
     private val policy = AudioFocusPolicy()
     private var noisyRegistered = false
     private var playing = false
@@ -125,6 +126,11 @@ class PlaybackService : MediaLibraryService() {
         catalogue = host.autoSource?.let { AutoCatalogue(it, ResourceLabels(this), art = host.autoArt) }
         val requests = catalogue?.let { c -> PlayRequests { id, query -> c.play(id, query) } }
         audio = getSystemService(AudioManager::class.java)
+        // Loudness compensation follows the phone's media volume while this phone plays.
+        volumeFollower = PhoneVolumeFollower(this, audio) { db ->
+            host.localPlayer.setLoudnessReferenceDb(db)
+            host.offlinePlayer?.setLoudnessReferenceDb(db)
+        }
         locks = PlaybackLocks(this)
         controller = LocalPlaybackController(
             host.localPlayer,
@@ -223,11 +229,13 @@ class PlaybackService : MediaLibraryService() {
             playing = false
             locks.hold(false)
             setNoisyReceiver(false)
+            volumeFollower?.setActive(false)
             focus.abandon()
             stopSelf()
             return
         }
         playing = wantsToPlay
+        volumeFollower?.setActive(wantsToPlay)
         if (wantsToPlay) {
             if (!focus.request()) {
                 // Refused (a call is in progress): don't play over it.
@@ -275,6 +283,8 @@ class PlaybackService : MediaLibraryService() {
     /** A device came or went: update the route, and renegotiate if the USB DAC changed. */
     private fun devicesChanged() {
         updateRoute()
+        // Another output has its own volume (and may keep it itself, as Bluetooth can).
+        volumeFollower?.refresh()
         val now = currentUsbDac()
         if (now?.id != usbDac?.id) {
             usbDac = now
@@ -298,6 +308,7 @@ class PlaybackService : MediaLibraryService() {
             return
         }
         audio.unregisterAudioDeviceCallback(devices)
+        volumeFollower?.setActive(false)
         // The engine clears any mixer attributes through the negotiator that set them.
         host.localPlayer.setOutputNegotiator(null)
         host.offlinePlayer?.setOutputNegotiator(null)

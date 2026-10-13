@@ -62,7 +62,6 @@
     <string name="nav_search">Search</string>
     <string name="nav_queue">Queue</string>
     <string name="now_playing_close">Close Now playing</string>
-    <string name="signal_path_show">Show the signal path</string>
     <string name="title_settings">Settings</string>
     <string name="title_licences">Open-source licences</string>
     <string name="title_album">Album</string>
@@ -198,7 +197,7 @@
     <string name="sound_section_eq">Equaliser</string>
     <string name="sound_eq">Parametric EQ</string>
     <string name="sound_loudness_volume">Loudness-compensated volume</string>
-    <string name="sound_loudness_volume_body">Adds bass and treble as this phone\'s player is turned down, where the ear hears less of them. Bypassed for bit-perfect output.</string>
+    <string name="sound_loudness_volume_body">Adds bass and treble as the volume is turned down, where the ear hears less of them. It follows the phone\'s media volume (or a Bluetooth headset\'s player level, when the headset keeps its own volume). Bypassed for bit-perfect output.</string>
     <string name="sound_eq_none">No profile yet. Import an AutoEq ParametricEQ.txt file for your headphones.</string>
     <string name="sound_eq_profile">%1$s · %2$s · preamp %3$s</string>
     <plurals name="sound_eq_filters">
@@ -610,7 +609,6 @@
     <string name="sleep_timer">Sleep timer</string>
     <string name="sleep_timer_left">Sleep timer: stops in %1$s</string>
     <string name="sleep_off">Turn off</string>
-    <string name="sleep_turn_off">Turn the sleep timer off</string>
     <string name="sleep_stops_in">Stops in %1$s</string>
     <string name="sleep_minutes">%1$d min</string>
     <string name="sleep_custom">Custom (minutes)</string>
@@ -654,8 +652,6 @@
     <string name="mini_play_on">Play on…</string>
 
     <!-- Lyrics (Wave 1 §9) -->
-    <string name="lyrics">Lyrics</string>
-    <string name="lyrics_close">Close lyrics</string>
     <string name="lyrics_peek_label">Lyrics: %1$s. Show all the lyrics</string>
     <string name="lyrics_from_plugin">From Music &amp; Artist Information</string>
     <string name="lyrics_from_tags">From the file’s tags</string>
@@ -812,7 +808,6 @@
     <string name="search_on_missing">This app doesn\'t offer a search here any more.</string>
     <!-- Wave 2 part 3: visualiser, Now playing layouts, Rooms -->
     <string name="visualiser">Visualiser</string>
-    <string name="visualiser_style">Visualiser style: %1$s. Change style</string>
     <string name="visualiser_off_battery">Off in battery saver</string>
     <string name="visualiser_off_motion">Off while animations are removed</string>
     <string name="visual_bars">Bars</string>
@@ -821,19 +816,12 @@
     <string name="visual_vu">VU meters</string>
     <string name="settings_visualiser">Visualiser</string>
     <string name="settings_visualiser_detail">On Now playing while this phone is playing. It stays off in battery saver and when animations are removed.</string>
-    <string name="layout_art">Art</string>
-    <string name="layout_lyrics">Lyrics</string>
-    <string name="layout_info">Info</string>
-    <string name="layout_show_art">Show the art</string>
+    <string name="layout_show_art">Show the cover</string>
     <string name="layout_show_lyrics">Show the lyrics</string>
     <string name="layout_show_info">Show the track info</string>
-    <string name="layout_button">%1$s layout</string>
     <string name="lyrics_none">No lyrics for this track</string>
     <string name="lyrics_play_from">Play from this line</string>
-    <string name="up_next_none">Nothing after this track</string>
-    <string name="queue_panel">Queue panel</string>
     <string name="queue_panel_shown">Shown</string>
-    <string name="queue_panel_hidden">Hidden</string>
     <string name="rooms_all">All rooms</string>
     <string name="rooms_title">Rooms</string>
     <string name="rooms_empty">No rooms to show</string>
@@ -991,4 +979,34 @@
     <string name="filter_saved">Saved “%1$s”</string>
     <string name="filter_added">Added “%1$s”</string>
     <string name="filter_deleted_named">Deleted “%1$s”</string>
+    <!-- Now playing, redesigned (2026-10-13) -->
+    <string name="page_cover">Cover</string>
+    <string name="page_lyrics">Lyrics</string>
+    <string name="page_info">Track info</string>
+    <string name="info_album">Album</string>
+    <string name="info_artist">Artist</string>
+    <string name="info_genre">Genre</string>
+    <string name="info_format">Format</string>
+    <string name="info_length">Length</string>
+    <string name="now_playing_more">More</string>
+    <string name="car_mode_detail">Big buttons for driving</string>
+    <string name="alarms_detail">Wake to music on %1$s</string>
+    <string name="rooms_all_detail">Every player at a glance</string>
+    <string name="signal_path_detail">From the file to your ears</string>
+    <string name="track_options">Track options</string>
+    <string name="action_sleep">Sleep</string>
+    <string name="action_stop">Stop</string>
+    <string name="volume_on">Volume on %1$s</string>
+    <string name="volume_this_phone">this phone</string>
+    <string name="volume_phone_note">Phone media volume</string>
+    <string name="volume_phone_fixed">This output\'s volume is fixed</string>
+    <string name="visualiser_style_title">Visualiser style</string>
+    <string name="visualiser_switch_off">Switch off</string>
+    <string name="visualiser_off_toast">Visualiser off</string>
+    <string name="visualiser_choose_style">Choose a style</string>
+    <string name="up_next_remove_named">Remove %1$s from the queue</string>
+    <string name="sound_player_level">Player level</string>
+    <string name="sound_player_level_value">Player level: %1$d%%</string>
+    <string name="sound_player_level_body">Lyrion\'s own level for this phone\'s player, applied before the phone\'s volume. Normally left at 100%; LMS can still change it.</string>
+    <string name="sound_player_level_off">Turn on Play on this phone to set its level.</string>
 </resources>

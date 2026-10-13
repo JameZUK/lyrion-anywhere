@@ -335,12 +335,15 @@ class NowPlayingTidyTests {
     }
 
     @Test
-    fun theInfoLayoutOpensTheSignalPath() {
+    fun theMoreMenuOpensTheSignalPathAndTheInfoPageDoesntShowIt() {
         show {
             NowPlayingScreen(phonePlayingState(NowPlayingPrefs(layout = NowPlayingLayout.INFO)), clock = { 0L }, actions = nowPlayingActions())
         }
+        // Not inline on the Track info page any more.
+        compose.onNodeWithTag("info-panel").assertExists()
         compose.onNodeWithTag("signal-path-sheet").assertDoesNotExist()
-        compose.onNodeWithTag("signal-path-button").performClick()
+        compose.onNodeWithTag("now-playing-more").performClick()
+        compose.onNodeWithTag("more-signal-path").performClick()
         compose.onNodeWithTag("signal-path-sheet").assertExists()
     }
 

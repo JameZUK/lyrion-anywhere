@@ -373,7 +373,7 @@ class Wave2QueueScreenTest {
             }
         }
         compose.onNodeWithTag("queue-peek").assertDoesNotExist()
-        compose.onNodeWithTag("queue-peek-button").performClick()
+        compose.onNodeWithTag("queue-button").performClick()
         compose.onNodeWithTag("queue-peek").assertExists()
     }
 

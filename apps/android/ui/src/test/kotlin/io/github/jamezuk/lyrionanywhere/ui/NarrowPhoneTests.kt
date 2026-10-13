@@ -2,6 +2,7 @@ package io.github.jamezuk.lyrionanywhere.ui
 
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.github.jamezuk.lyrionanywhere.core.LyricLine
 import io.github.jamezuk.lyrionanywhere.core.TrackLyrics
@@ -20,7 +21,7 @@ class NarrowPhoneTests {
     @get:Rule
     val compose = createComposeRule()
 
-    /** With every action shown (lyrics, alarms, sleep, Play on…, More), the volume keeps its room. */
+    /** With every action offered, the bottom row keeps four and the volume's popover a usable slider. */
     @Test
     fun theVolumeSliderKeepsAUsableWidth() {
         val state = auditPlayerState().copy(
@@ -36,12 +37,13 @@ class NarrowPhoneTests {
                 )
             }
         }
-        val node = compose.onNodeWithTag("volume-slider").fetchSemanticsNode()
-        val widthDp = node.size.width / node.layoutInfo.density.density
-        assertTrue("the volume slider is only $widthDp dp wide", widthDp >= 160f)
-        // The actions are all still there, in their own row.
+        // The actions are all still there, in their own row; the rest is in ⋮.
         compose.onNodeWithTag("now-playing-actions").assertExists()
-        compose.onNodeWithTag("alarms-button").assertExists()
-        compose.onNodeWithTag("lyrics-button").assertExists()
+        compose.onNodeWithTag("sleep-button").assertExists()
+        compose.onNodeWithTag("queue-button").assertExists()
+        compose.onNodeWithTag("volume-button").performClick()
+        val node = compose.onNodeWithTag("volume-slider").fetchSemanticsNode()
+        val lengthDp = node.size.width / node.layoutInfo.density.density
+        assertTrue("the volume slider is only $lengthDp dp long", lengthDp >= 160f)
     }
 }

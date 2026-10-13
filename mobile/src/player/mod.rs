@@ -291,6 +291,8 @@ pub struct LocalPlayer {
     quality: Mutex<StreamQuality>,
     /// The visualiser (kept across restarts of the engine; off by default).
     visual: Arc<visual::VisualShared>,
+    /// The phone's media volume for loudness compensation (kept across restarts).
+    loudness_reference: Mutex<Option<f64>>,
 }
 
 pub(crate) fn make_output(
@@ -322,7 +324,25 @@ impl LocalPlayer {
             negotiator: Mutex::new(None),
             quality: Mutex::new(StreamQuality::Original),
             visual: Arc::new(visual::VisualShared::default()),
+            loudness_reference: Mutex::new(None),
         })
+    }
+
+    /// The phone's media volume as an attenuation in dB (0 = full volume), which loudness
+    /// compensation follows together with LMS's own level for this player; `None` when it
+    /// isn't known (a Bluetooth headset that keeps its own volume), so LMS's level alone
+    /// counts. Cleaned up by `pipeline::sanitise_reference_db`; kept across restarts.
+    pub fn set_loudness_reference_db(&self, db: Option<f64>) {
+        let db = pipeline::sanitise_reference_db(db);
+        *self.loudness_reference.lock().unwrap() = db;
+        if let Some(r) = self.run.lock().unwrap().as_ref() {
+            let _ = r.cmds.send(Cmd::SetLoudnessReference(db));
+        }
+    }
+
+    /// What [`LocalPlayer::set_loudness_reference_db`] last kept.
+    pub fn loudness_reference_db(&self) -> Option<f64> {
+        *self.loudness_reference.lock().unwrap()
     }
 
     /// Analyse the audio for a visualiser (docs/plans/wave2-design.md §4.1), or stop. Off
@@ -398,6 +418,10 @@ impl LocalPlayer {
                 rt.block_on(engine.run());
             })
             .map_err(|_| ApiError::invalid("could not start the player"))?;
+        // The phone's volume as last known, before any audio.
+        let _ = cmds.send(Cmd::SetLoudnessReference(
+            *self.loudness_reference.lock().unwrap(),
+        ));
         *run = Some(Run {
             shared,
             cmds,

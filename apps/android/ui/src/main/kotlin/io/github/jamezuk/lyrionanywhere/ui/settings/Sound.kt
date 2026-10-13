@@ -1,6 +1,10 @@
 package io.github.jamezuk.lyrionanywhere.ui.settings
 
 import android.content.Context
+import io.github.jamezuk.lyrionanywhere.data.ApiResult
+import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
@@ -100,6 +104,11 @@ data class SoundUiState(
     val output: AudioOutput? = null,
     /** The EQ is bypassed for a comparison (A/B). */
     val bypass: Boolean = false,
+    /**
+     * Lyrion's own level for this phone's player (LMS's volume for it, 0–100); null while
+     * this phone isn't a player in LMS (or it isn't known yet).
+     */
+    val playerLevel: Int? = null,
 ) {
     /** The settings as they apply on the current output (per-output EQ). */
     val effective: SoundSettings get() = sound.forOutput(output)
@@ -112,6 +121,8 @@ data class SoundUiState(
 class SoundViewModel(
     private val local: LocalPlayerRepository,
     sdk: Int = Build.VERSION.SDK_INT,
+    /** LMS, for this phone's player level (none: not offered). */
+    private val players: PlayersRepository? = null,
 ) : ViewModel() {
     private val _state = MutableStateFlow(
         SoundUiState(sound = local.state.value.sound, bitPerfectAvailable = sdk >= BIT_PERFECT_API),
@@ -122,6 +133,28 @@ class SoundViewModel(
         viewModelScope.launch {
             local.state.collect { l -> _state.update { it.copy(sound = l.sound, output = l.output, bypass = l.eqBypass) } }
         }
+        if (players != null) {
+            viewModelScope.launch {
+                // The level LMS holds for this phone's player, read when the player (re)appears.
+                local.state.map { it.playerId }.distinctUntilChanged().collect { id ->
+                    val level = id?.let { (players.status(it) as? ApiResult.Ok)?.value?.volume?.toInt() }
+                    _state.update { it.copy(playerLevel = level?.coerceIn(0, 100)) }
+                }
+            }
+        }
+    }
+
+    /**
+     * Lyrion's own level for this phone's player (LMS's volume for it, applied in the engine
+     * before the phone's media volume). Now playing's volume no longer touches it while this
+     * phone plays; LMS (another controller, an alarm) still can.
+     */
+    fun setPlayerLevel(level: Int) {
+        val repo = players ?: return
+        val id = local.state.value.playerId ?: return
+        val v = level.coerceIn(0, 100)
+        _state.update { it.copy(playerLevel = v) }
+        viewModelScope.launch { repo.setVolume(id, v) }
     }
 
     private fun change(transform: (SoundSettings) -> SoundSettings) {
@@ -267,6 +300,9 @@ interface SoundActions {
 
     fun crossfadeSecs(secs: Double) {}
 
+    /** This phone's player level in LMS (0–100). */
+    fun playerLevel(level: Int) {}
+
     fun messageShown() {}
 }
 
@@ -307,6 +343,8 @@ fun SoundViewModel.actions(): SoundActions = object : SoundActions {
     override fun transitions(mode: TransitionsMode) = setTransitions(mode)
 
     override fun crossfadeSecs(secs: Double) = setCrossfadeSecs(secs)
+
+    override fun playerLevel(level: Int) = setPlayerLevel(level)
 
     override fun messageShown() = this@actions.messageShown()
 }
@@ -356,6 +394,7 @@ fun SoundScreen(state: SoundUiState, actions: SoundActions, modifier: Modifier =
         item { HorizontalDivider() }
 
         item { SectionHeader(stringResource(R.string.sound_section_loudness)) }
+        item { PlayerLevel(state.playerLevel, actions::playerLevel) }
         item {
             RadioGroup(
                 label = stringResource(R.string.sound_levelling),
@@ -661,6 +700,49 @@ private fun DbSlider(
                     stateDescription = text
                 },
         )
+    }
+}
+
+/**
+ * Settings › Sound › Player level: Lyrion's own level for this phone's player (the software
+ * volume LMS sets), normally left at 100 %. Without a player in LMS, a note says how to get one.
+ */
+@Composable
+private fun PlayerLevel(level: Int?, onChange: (Int) -> Unit) {
+    var dragging by remember { mutableStateOf(false) }
+    var current by remember { mutableFloatStateOf((level ?: 100).toFloat()) }
+    val shown = if (dragging) current.toInt() else level ?: 100
+    val name = stringResource(R.string.sound_player_level)
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp).testTag("player-level-setting")) {
+        Text(
+            if (level == null) name else stringResource(R.string.sound_player_level_value, shown),
+            style = MaterialTheme.typography.bodyLarge,
+        )
+        Text(
+            stringResource(if (level == null) R.string.sound_player_level_off else R.string.sound_player_level_body),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (level != null) {
+            Slider(
+                value = shown.toFloat(),
+                onValueChange = {
+                    dragging = true
+                    current = it
+                },
+                onValueChangeFinished = {
+                    dragging = false
+                    onChange(current.toInt())
+                },
+                valueRange = 0f..100f,
+                modifier = Modifier
+                    .testTag("player-level")
+                    .semantics {
+                        contentDescription = name
+                        stateDescription = "$shown%"
+                    },
+            )
+        }
     }
 }
 

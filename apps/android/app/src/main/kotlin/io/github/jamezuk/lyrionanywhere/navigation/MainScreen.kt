@@ -1501,7 +1501,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                     CarModeContent(container, player, playerState, clock, snackbar, onExit = car::leaveByHand) { e -> discoveryText(e) }
                 }
                 composable<SoundRoute> {
-                    val vm = viewModel { SoundViewModel(container.localPlayer) }
+                    val vm = viewModel { SoundViewModel(container.localPlayer, players = container.players) }
                     val ui by vm.state.collectAsStateWithLifecycle()
                     val actions = remember(vm) { vm.actions() }
                     Screen(title = stringResource(R.string.title_sound), onBack = { nav.popBackStack() }) {

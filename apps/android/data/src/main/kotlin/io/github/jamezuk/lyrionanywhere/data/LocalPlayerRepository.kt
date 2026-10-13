@@ -108,6 +108,14 @@ interface LocalPlayerRepository {
 
     /** Bypass the EQ for a comparison (A/B), or stop. Never remembered. */
     fun setEqBypass(on: Boolean) {}
+
+    /**
+     * The phone's media volume as an attenuation in dB (0: full), which loudness
+     * compensation follows while this phone plays; null when the phone's volume says
+     * nothing about the level heard (a Bluetooth headset with its own volume), so the
+     * player's level in LMS alone counts. Kept across restarts of the engine.
+     */
+    fun setLoudnessReferenceDb(db: Double?) {}
 }
 
 /** The engine's DSP for [sound] on [output], with the EQ left out while [bypass]. */
@@ -142,6 +150,8 @@ interface LocalPlayerHandle {
 
     /** The engine's packed frame (see [VisualFrame.parse]). */
     fun visualFrame(): ByteArray? = null
+
+    fun setLoudnessReferenceDb(db: Double?) {}
 
     fun close()
 }
@@ -185,6 +195,8 @@ private class RustHandle(session: Session) : LocalPlayerHandle {
 
     override fun visualFrame(): ByteArray? = player.visualFrame()
 
+    override fun setLoudnessReferenceDb(db: Double?) = player.setLoudnessReferenceDb(db)
+
     override fun close() = player.close()
 }
 
@@ -226,6 +238,7 @@ class RustLocalPlayerRepository(
     @Volatile private var visualiser = false
     @Volatile private var output: AudioOutput? = null
     @Volatile private var bypass = false
+    @Volatile private var loudnessReference: Double? = null
 
     /** The DSP last given to the engine (or that it started with). */
     @Volatile private var applied: DspSettings = DEFAULT_DSP
@@ -317,6 +330,7 @@ class RustLocalPlayerRepository(
             if (dsp != DEFAULT_DSP) h.setDsp(dsp)
             h.setStreamQuality(quality)
             h.setVisualiser(visualiser)
+            h.setLoudnessReferenceDb(loudnessReference)
             h.start(Observer(h))
         } catch (e: Exception) {
             handle = null
@@ -398,6 +412,13 @@ class RustLocalPlayerRepository(
         applyDsp()
     }
 
+    override fun setLoudnessReferenceDb(db: Double?) {
+        val clean = cleanLoudnessReference(db)
+        if (clean == loudnessReference) return
+        loudnessReference = clean
+        handle?.setLoudnessReferenceDb(clean)
+    }
+
     override fun setEqBypass(on: Boolean) {
         if (on == bypass) return
         bypass = on
@@ -405,3 +426,16 @@ class RustLocalPlayerRepository(
         applyDsp()
     }
 }
+
+/**
+ * The phone's media-volume attenuation as the engine takes it: null stays null (not known),
+ * NaN is not known, anything else is held to 0–120 dB (muted is the most). The engine checks
+ * again; this keeps repeated identical values from being sent.
+ */
+fun cleanLoudnessReference(db: Double?): Double? = when {
+    db == null || db.isNaN() -> null
+    else -> db.coerceIn(0.0, MAX_LOUDNESS_REFERENCE_DB)
+}
+
+/** The most attenuation the phone's volume is taken to apply (dB); muted counts as this. */
+const val MAX_LOUDNESS_REFERENCE_DB = 120.0

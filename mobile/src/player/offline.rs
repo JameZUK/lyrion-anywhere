@@ -101,6 +101,8 @@ enum Cmd {
     SetDsp(DspSettings),
     Renegotiate,
     Shutdown,
+    /// See [`super::LocalPlayer::set_loudness_reference_db`].
+    SetLoudnessReference(Option<f64>),
 }
 
 struct Shared {
@@ -188,6 +190,10 @@ impl Engine {
             }
             Cmd::Renegotiate => self.audio.renegotiate = true,
             Cmd::Shutdown => self.shutdown(),
+            Cmd::SetLoudnessReference(db) => {
+                self.audio.pipeline.set_loudness_reference_db(db);
+                self.publish_signal(true);
+            }
         }
         if self.source.flush_count() != self.last_flush {
             self.after_flush();
@@ -380,6 +386,8 @@ pub struct OfflinePlayer {
     negotiator: Mutex<Option<Arc<dyn OutputNegotiator>>>,
     /// The visualiser (kept across restarts of the engine; off by default).
     visual: Arc<super::visual::VisualShared>,
+    /// The phone's media volume for loudness compensation (kept across restarts).
+    loudness_reference: Mutex<Option<f64>>,
 }
 
 impl OfflinePlayer {
@@ -403,7 +411,21 @@ impl OfflinePlayer {
             duck: Mutex::new(false),
             negotiator: Mutex::new(None),
             visual: Arc::new(super::visual::VisualShared::default()),
+            loudness_reference: Mutex::new(None),
         })
+    }
+
+    /// See [`super::LocalPlayer::set_loudness_reference_db`]: downloads play on this phone,
+    /// so loudness compensation follows its media volume.
+    pub fn set_loudness_reference_db(&self, db: Option<f64>) {
+        let db = super::pipeline::sanitise_reference_db(db);
+        *self.loudness_reference.lock().unwrap() = db;
+        self.send(Cmd::SetLoudnessReference(db));
+    }
+
+    /// What [`OfflinePlayer::set_loudness_reference_db`] last kept.
+    pub fn loudness_reference_db(&self) -> Option<f64> {
+        *self.loudness_reference.lock().unwrap()
     }
 
     /// See [`super::LocalPlayer::set_visualiser`].
@@ -473,6 +495,9 @@ impl OfflinePlayer {
                 rt.block_on(engine.run());
             })
             .map_err(|_| ApiError::invalid("could not start the player"))?;
+        let _ = cmds.send(Cmd::SetLoudnessReference(
+            *self.loudness_reference.lock().unwrap(),
+        ));
         *run = Some(Run {
             shared,
             cmds,

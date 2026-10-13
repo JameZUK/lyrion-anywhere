@@ -427,16 +427,18 @@ class WideLayoutScreenTest {
     val compose = createComposeRule()
 
     @Test
-    fun nowPlayingPutsTheQueueBesideTheControls() {
+    fun nowPlayingPutsTheCoverBesideTheControls() {
         compose.setContent {
             LyrionTheme(dynamicColour = false) {
                 NowPlayingScreen(state(), clock = { 0L }, actions = nowPlayingActions(), twoPane = true)
             }
         }
         compose.onNodeWithTag("now-playing-two-pane").assertIsDisplayed()
-        compose.onNodeWithTag("queue-pane").assertIsDisplayed()
-        // The queue is in view without scrolling past the controls.
-        compose.onNodeWithText("Track 3").assertIsDisplayed()
+        compose.onNodeWithTag("artwork").assertIsDisplayed()
+        compose.onNodeWithTag("play-pause").assertIsDisplayed()
+        // The queue is a tap away, in its sheet.
+        compose.onNodeWithTag("queue-button").performClick()
+        compose.onNodeWithText("Track 3").assertExists()
     }
 
     @Test
@@ -469,19 +471,19 @@ class PhoneLayoutScreenTest {
                 NowPlayingScreen(state(), clock = { 0L }, actions = nowPlayingActions())
             }
         }
-        compose.onNodeWithTag("now-playing-list").assertIsDisplayed()
+        compose.onNodeWithTag("now-playing-phone").assertIsDisplayed()
         compose.onNodeWithTag("now-playing-two-pane").assertDoesNotExist()
     }
 
     @Test
-    fun pullingDownFromTheTopCloses() {
+    fun swipingDownOnTheCoverCloses() {
         var closed = 0
         compose.setContent {
             LyrionTheme(dynamicColour = false) {
                 NowPlayingScreen(state(), clock = { 0L }, actions = nowPlayingActions(onClose = { closed++ }))
             }
         }
-        compose.onNodeWithTag("now-playing-list").performTouchInput {
+        compose.onNodeWithTag("artwork").performTouchInput {
             swipeDown(startY = top + 10f, endY = bottom - 10f)
         }
         compose.waitForIdle()

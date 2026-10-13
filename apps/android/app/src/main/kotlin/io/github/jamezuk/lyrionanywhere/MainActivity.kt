@@ -36,6 +36,9 @@ class MainActivity : ComponentActivity() {
         }
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // The volume keys (left to the system while this phone plays) set the media volume,
+        // the one Now playing's volume control shows, even between tracks.
+        volumeControlStream = android.media.AudioManager.STREAM_MUSIC
         setContent {
             // This device's choices (Wave 2 §5.4, §5.5): the wallpaper's colours and haptics.
             val prefs = androidx.compose.runtime.remember { app.container.settings.settings.map { it.device } }

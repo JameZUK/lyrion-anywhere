@@ -121,7 +121,7 @@ class ScreenTests {
                 )
             }
         }
-        for (label in listOf("Pause", "Next track", "Previous track", "Shuffle", "Repeat", "Volume", "Position in track")) {
+        for (label in listOf("Pause", "Next track", "Previous track", "Shuffle", "Repeat", "Volume on Player aa:00:00:00:00:01", "Position in track")) {
             compose.onNodeWithContentDescription(label).assertIsDisplayed()
         }
         compose.onNodeWithText("Track 1").assertIsDisplayed()
@@ -201,9 +201,10 @@ class ScreenTests {
                 )
             }
         }
-        // Not on screen all the time: the Info layout's button opens it as a sheet.
-        compose.onNodeWithText("Signal path").assertDoesNotExist()
-        compose.onNodeWithTag("signal-path-button").performScrollTo().performClick()
-        compose.onNodeWithText("Signal path").assertIsDisplayed()
+        // Not on screen all the time (not even on the Track info page): ⋮ opens it as a sheet.
+        compose.onNodeWithTag("signal-path-sheet").assertDoesNotExist()
+        compose.onNodeWithTag("now-playing-more").performClick()
+        compose.onNodeWithTag("more-signal-path").performClick()
+        compose.onNodeWithTag("signal-path-sheet").assertExists()
     }
 }

@@ -7,6 +7,7 @@ import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -75,30 +76,34 @@ class LyricsScreenTest {
         nowPlaying(lyricsState(SYNCED))
         compose.onNodeWithTag("lyrics-peek").assertTextEquals("Second line")
         compose.onNodeWithContentDescription("Lyrics: Second line. Show all the lyrics").performClick()
-        compose.onNodeWithTag("lyrics-view").assertIsDisplayed()
+        // The hero turns to its Lyrics page (the peek goes: the lyrics are showing).
+        compose.onNodeWithTag("page-panel-LYRICS").assertIsDisplayed()
+        compose.onNodeWithTag("lyrics-peek").assertDoesNotExist()
         compose.onNodeWithTag("lyrics-line-1").assertIsSelected()
         compose.onNodeWithTag("lyrics-line-2").assertTextEquals("♪")
         compose.onNodeWithText("From the file’s tags").assertExists()
         // Tap a line: seek there.
         compose.onNodeWithTag("lyrics-line-0").performClick()
         assertEquals(listOf(1.0), seeks)
-        compose.onNodeWithContentDescription("Close lyrics").performClick()
-        compose.onNodeWithTag("lyrics-view").assertDoesNotExist()
+        // Back to the cover by its tab.
+        compose.onNodeWithTag("page-ART").performClick()
+        compose.onNodeWithTag("page-panel-LYRICS").assertDoesNotExist()
+        compose.onNodeWithTag("artwork").assertIsDisplayed()
     }
 
     @Test
-    fun noPeekWhenSwitchedOffButTheButtonStays() {
+    fun noPeekWhenSwitchedOffButTheLyricsPageStays() {
         nowPlaying(lyricsState(SYNCED, peek = false))
         compose.onNodeWithTag("lyrics-peek").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Lyrics").performClick()
-        compose.onNodeWithTag("lyrics-view").assertIsDisplayed()
+        compose.onNodeWithTag("page-LYRICS").assertContentDescriptionEquals("Lyrics").performClick()
+        compose.onNodeWithTag("page-panel-LYRICS").assertIsDisplayed()
     }
 
     @Test
     fun plainLyricsHaveNoPeekAndNoSeeking() {
         nowPlaying(lyricsState(PLAIN))
         compose.onNodeWithTag("lyrics-peek").assertDoesNotExist()
-        compose.onNodeWithTag("lyrics-button").performClick()
+        compose.onNodeWithTag("page-LYRICS").performClick()
         compose.onNodeWithText("Just words").assertIsDisplayed()
         compose.onNodeWithText("From Music & Artist Information").assertExists()
         compose.onNodeWithTag("lyrics-line-0").performClick()
@@ -108,7 +113,7 @@ class LyricsScreenTest {
     @Test
     fun aPlayerThatCantSeekDoesntSeek() {
         nowPlaying(lyricsState(SYNCED, canSeek = false))
-        compose.onNodeWithTag("lyrics-button").performClick()
+        compose.onNodeWithTag("page-LYRICS").performClick()
         compose.onNodeWithTag("lyrics-line-0").assertIsNotEnabled()
     }
 

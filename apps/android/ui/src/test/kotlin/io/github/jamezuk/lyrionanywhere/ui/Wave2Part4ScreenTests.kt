@@ -1,5 +1,6 @@
 package io.github.jamezuk.lyrionanywhere.ui
 
+import androidx.compose.ui.test.assertTextEquals
 import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.Composable
@@ -438,9 +439,10 @@ class OutputEqScreenTests {
         val playing = base.copy(local = base.local.copy(signalPath = signalPath(), sound = SoundSettings(eqEnabled = true, eq = mainEq)))
         var state by mutableStateOf(playing)
         show { NowPlayingScreen(state, clock = { 0L }, actions = nowPlayingActions()) }
-        // Not shown all the time: the Info layout's button opens the signal path as a sheet.
+        // Not shown all the time: the quality badge (or ⋮) opens the signal path as a sheet.
         compose.onNodeWithTag("eq-chip").assertDoesNotExist()
-        compose.onNodeWithTag("signal-path-button").performClick()
+        compose.onNodeWithTag("now-playing-more").performClick()
+        compose.onNodeWithTag("more-signal-path").performClick()
         compose.onNodeWithTag("signal-path-sheet").assertExists()
         compose.onNodeWithTag("eq-chip").assertExists()
         compose.onNodeWithText("EQ: Example profile").assertExists()
@@ -550,10 +552,14 @@ class OfflineVisualiserAndCarButtonTests {
             }
         }
         compose.onNodeWithTag("visualiser").assertDoesNotExist()
-        compose.onNodeWithTag("visualiser-toggle").performClick()
-        compose.onNodeWithTag("visualiser").assertExists()
+        compose.onNodeWithTag("visualiser-button").performClick()
+        // It draws over the cover, which stays.
+        compose.onNodeWithTag("visualiser", useUnmergedTree = true).assertExists()
+        compose.onNodeWithTag("artwork").assertExists()
         assertTrue(source.active.contains(true))
-        compose.onNodeWithTag("visualiser-style").performClick()
+        // A long press chooses the style.
+        compose.onNodeWithTag("visualiser-button").performTouchInput { longClick() }
+        compose.onNodeWithTag("visual-style-SCOPE").performClick()
         assertEquals(listOf("on true", "style SCOPE"), chosen)
     }
 
@@ -585,7 +591,7 @@ class OfflineVisualiserAndCarButtonTests {
         // runs for the glow.
         compose.onNodeWithTag("visualiser").assertDoesNotExist()
         compose.onNodeWithTag("glow-halo").assertExists()
-        compose.onNodeWithTag("visualiser-style").assertExists()
+        compose.onNodeWithTag("visualiser-button").assertTextEquals("Glow")
         assertEquals(listOf(true), source.active)
     }
 
@@ -610,7 +616,8 @@ class OfflineVisualiserAndCarButtonTests {
                 NowPlayingScreen(auditPlayerState(), clock = { 0L }, actions = nowPlayingActions().copy(onCarMode = { opened++ }))
             }
         }
-        compose.onNodeWithTag("car-mode-button").performClick()
+        compose.onNodeWithTag("now-playing-more").performClick()
+        compose.onNodeWithTag("more-car-mode").performClick()
         assertEquals(1, opened)
     }
 }

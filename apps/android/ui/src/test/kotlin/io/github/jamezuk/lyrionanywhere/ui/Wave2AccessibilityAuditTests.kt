@@ -199,7 +199,7 @@ class Wave2AccessibilityAuditTests {
                 NowPlayingScreen(auditPlayerState().copy(upNext = UpNext(0, listOf(2L))), clock = { 0L }, actions = nowPlayingActions())
             }
         }
-        compose.onNodeWithTag("queue-peek-button").performClick()
+        compose.onNodeWithTag("queue-button").performClick()
         compose.assertAccessible()
     }
 

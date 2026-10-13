@@ -1,5 +1,9 @@
 package io.github.jamezuk.lyrionanywhere.ui
 
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.assertIsSelected
 import android.content.Context
 import android.os.PowerManager
 import androidx.compose.runtime.Composable
@@ -106,12 +110,15 @@ class Wave2Part3ScreenTests {
         val chosen = mutableListOf<NowPlayingLayout>()
         nowPlaying(auditPlayerState(), nowPlayingActions().copy(onLayout = { chosen += it }))
         compose.onNodeWithTag("artwork").assertExists()
-        compose.onNodeWithTag("layout-LYRICS").performClick()
-        compose.onNodeWithTag("layout-panel-LYRICS").assertExists()
+        compose.onNodeWithTag("page-ART").assertIsSelected()
+        compose.onNodeWithTag("page-LYRICS").performClick()
+        compose.onNodeWithTag("page-panel-LYRICS").assertExists()
         compose.onNodeWithTag("lyrics-none").assertExists()
-        compose.onNodeWithTag("layout-INFO").performClick()
+        compose.onNodeWithTag("page-INFO").performClick()
         compose.onNodeWithTag("info-panel").assertExists()
-        compose.onNodeWithTag("up-next-card").assertExists()
+        compose.onNodeWithTag("page-INFO").assertIsSelected()
+        // The transport stays whatever the page.
+        compose.onNodeWithTag("play-pause").assertExists()
         assertEquals(listOf(NowPlayingLayout.LYRICS, NowPlayingLayout.INFO), chosen)
     }
 
@@ -119,7 +126,7 @@ class Wave2Part3ScreenTests {
     fun theRememberedLayoutShowsFirst() {
         val lyrics = TrackLyrics(false, true, listOf(LyricLine(0u, "First line"), LyricLine(5_000u, "Second line")))
         nowPlaying(auditPlayerState().copy(nowPlaying = NowPlayingPrefs(layout = NowPlayingLayout.LYRICS), lyrics = lyrics, lyricsTrackId = 1))
-        compose.onNodeWithTag("layout-panel-LYRICS").assertExists()
+        compose.onNodeWithTag("page-panel-LYRICS").assertExists()
         compose.onNodeWithText("Second line").assertExists()
     }
 
@@ -130,9 +137,12 @@ class Wave2Part3ScreenTests {
         compose.onNodeWithTag("artwork").performTouchInput { swipeLeft() }
         compose.waitForIdle()
         assertEquals(listOf(NowPlayingLayout.LYRICS), chosen)
-        compose.onNodeWithTag("layout-panel-LYRICS").performTouchInput { swipeLeft() }
+        compose.onNodeWithTag("page-panel-LYRICS").performTouchInput { swipeLeft() }
         compose.waitForIdle()
         assertEquals(listOf(NowPlayingLayout.LYRICS, NowPlayingLayout.INFO), chosen)
+        compose.onNodeWithTag("info-panel").assertExists()
+        // The dots follow: Track info is the selected tab.
+        compose.onNodeWithTag("page-INFO").assertIsSelected()
     }
 
     @Test
@@ -181,14 +191,17 @@ class Wave2Part3ScreenTests {
         nowPlaying(phonePlayingState(), nowPlayingActions().copy(onVisualiser = { on += it }, onVisualStyle = { styles += it }), source)
         compose.onNodeWithTag("visualiser").assertDoesNotExist()
         assertTrue("nothing analysed while off", source.active.isEmpty())
-        compose.onNodeWithTag("visualiser-toggle").performClick()
+        compose.onNodeWithTag("visualiser-button").performClick()
         compose.onNodeWithTag("visualiser", useUnmergedTree = true).assertExists()
         assertEquals(listOf(true), on)
         assertEquals(listOf(true), source.active)
-        compose.onNodeWithTag("visualiser-style").performClick()
+        // A swipe across it changes the style (and says which).
+        compose.onNodeWithTag("visualiser", useUnmergedTree = true).performTouchInput { swipeLeft() }
+        compose.waitForIdle()
         assertEquals(listOf(VisualStyle.SCOPE), styles)
+        compose.onNodeWithTag("page-ART").assertIsSelected()
         // Off again: the engine is told to stop.
-        compose.onNodeWithTag("visualiser-toggle").performClick()
+        compose.onNodeWithTag("visualiser-button").performClick()
         compose.waitForIdle()
         assertEquals(listOf(true, false), source.active)
     }
@@ -199,9 +212,10 @@ class Wave2Part3ScreenTests {
         val node = compose.onNodeWithTag("visualiser", useUnmergedTree = true).fetchSemanticsNode()
         assertTrue(node.children.isEmpty())
         assertEquals(null, node.config.getOrNull(SemanticsProperties.ContentDescription))
-        // Its controls are labelled.
-        compose.onNodeWithContentDescription("Visualiser").assertExists()
-        compose.onNodeWithContentDescription("Visualiser style: Bars. Change style").assertExists()
+        // Its one button is labelled, its state the style, and a long press chooses another.
+        compose.onNodeWithContentDescription("Visualiser")
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Bars"))
+            .assert(SemanticsMatcher.keyIsDefined(androidx.compose.ui.semantics.SemanticsActions.OnLongClick))
     }
 
     @Test
@@ -220,8 +234,8 @@ class Wave2Part3ScreenTests {
         val source = FakeVisualSource()
         nowPlaying(phonePlayingState(NowPlayingPrefs(visualiser = true)), visual = source)
         compose.onNodeWithTag("visualiser").assertDoesNotExist()
-        compose.onNodeWithTag("visualiser-toggle").assertIsNotEnabled()
-        val state = compose.onNodeWithTag("visualiser-toggle").fetchSemanticsNode().config.getOrNull(SemanticsProperties.StateDescription)
+        compose.onNodeWithTag("visualiser-button").assertIsNotEnabled()
+        val state = compose.onNodeWithTag("visualiser-button").fetchSemanticsNode().config.getOrNull(SemanticsProperties.StateDescription)
         assertEquals("Off in battery saver", state)
         assertTrue(source.active.isEmpty())
     }
@@ -235,18 +249,24 @@ class Wave2Part3ScreenTests {
         compose.onNodeWithTag("artwork").assertExists()
         compose.onNodeWithTag("wide-pane-INFO").assertExists()
         compose.onNodeWithTag("queue-pane").assertExists()
-        compose.onNodeWithTag("layout-LYRICS").performClick()
+        compose.onNodeWithTag("page-LYRICS").performClick()
         compose.onNodeWithTag("wide-pane-LYRICS").assertExists()
-        compose.onNodeWithTag("queue-panel-toggle").performClick()
+        // Wide, the Queue action shows and hides the queue panel.
+        compose.onNodeWithTag("queue-button").performClick()
         compose.onNodeWithTag("queue-pane").assertDoesNotExist()
         assertEquals(listOf(false), panel)
     }
 
     @Test
-    fun thePlayerChipOpensAllRooms() {
+    fun theChipOpensPlayOnAndTheMenuAllRooms() {
         var rooms = 0
-        nowPlaying(auditPlayerState(), nowPlayingActions().copy(onRooms = { rooms++ }))
-        compose.onNodeWithTag("player-chip").performClick()
+        var playOn = 0
+        nowPlaying(auditPlayerState(), nowPlayingActions().copy(onRooms = { rooms++ }, onOutputs = { playOn++ }))
+        // The chip at the top opens Play on…; All rooms is in ⋮.
+        compose.onNodeWithTag("playing-on-chip").assertTextContains("Playing on", substring = true).performClick()
+        assertEquals(1, playOn)
+        compose.onNodeWithTag("now-playing-more").performClick()
+        compose.onNodeWithTag("more-rooms").performClick()
         assertEquals(1, rooms)
     }
 

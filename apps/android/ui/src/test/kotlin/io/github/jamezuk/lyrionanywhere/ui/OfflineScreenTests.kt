@@ -207,7 +207,8 @@ class OfflineScreenTests {
             .performClick()
         compose.onNodeWithContentDescription("Previous track").performClick()
         compose.onNodeWithContentDescription("Stop playing downloads").performClick()
-        compose.onNodeWithTag("offline-now-playing").performScrollToNode(hasText("Song 1"))
+        // The queue opens as a sheet from the Queue action.
+        compose.onNodeWithTag("queue-button").performClick()
         compose.onNodeWithText("Song 1").performClick()
         assertEquals(listOf("repeat", "shuffle", "previous", "stop", "jump 0"), calls)
     }

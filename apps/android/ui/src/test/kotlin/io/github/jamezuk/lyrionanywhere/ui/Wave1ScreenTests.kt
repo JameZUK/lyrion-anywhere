@@ -1,5 +1,6 @@
 package io.github.jamezuk.lyrionanywhere.ui
 
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.material3.ColorScheme
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.semantics.SemanticsActions
@@ -187,17 +188,20 @@ class NowPlayingWave1Test {
     }
 
     @Test
-    fun aRunningTimerShowsTheTimeLeftAndOneTapTurnsItOff() {
+    fun aRunningTimerShowsTheTimeLeftAndItsSheetTurnsItOff() {
         nowPlaying(wave1State(sleepSecs = 1620.0))
+        // The Sleep action's label is the time left.
         compose.onNodeWithContentDescription("Sleep timer: stops in 27 min").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Turn the sleep timer off").performClick()
+        compose.onNodeWithTag("sleep-button").assertTextEquals("27 min")
+        compose.onNodeWithTag("sleep-button").performClick()
+        compose.onNodeWithTag("sleep-off").performClick()
         assertEquals(listOf("cancel"), calls)
     }
 
     @Test
     fun upNextShowsTheNextTrack() {
         nowPlaying()
-        compose.onNodeWithText("Up next").assertIsDisplayed()
+        compose.onNodeWithText("UP NEXT").assertIsDisplayed()
         compose.onNodeWithText("Next song — Other band").assertIsDisplayed()
     }
 

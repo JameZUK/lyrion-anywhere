@@ -20,6 +20,48 @@ Phones and narrow windows (up to 840 px wide) get a new Now playing in which not
   - Node tests on the CSS: no page scroll, 100dvh, only the hero flexible, a square cover, a height budget at 360 × 640 that leaves at least 120 px of cover, and 44 px targets.
   - Updated the existing Now playing, lyrics, queue and volume tests for both layouts.
 
+## 2026-10-13: Now playing redesigned (Android)
+
+Built to the owner-approved mock-up. The old screen was cluttered, its play/pause could start partly off screen, and it had a segmented Art/Lyrics/Info row, two visualiser buttons and a whole row for the volume.
+
+- **Nothing scrolls.** The transport is always fully on screen, on a 360 × 640 dp phone and up. The cover is square and shrinks to fit the height that is left.
+- **Top row:** close (with its legible disc), "Playing on <player> ▾" in the middle (opens *Play on…*), and ⋮ at the end. ⋮ holds car mode, alarms, all rooms, the signal path, the visualiser's style, the track's options and the player's power.
+- **The hero is a pager:** Cover, Lyrics and Track info, with small page dots under it.
+  - The dots are tabs for TalkBack ("Cover", "Lyrics", "Track info"). Each page also has actions to show the others.
+  - Lyrics and Track info scroll inside their page only.
+  - Track info shows the album and year, artist, genre, format, length and the credits (links). The signal path is no longer shown there.
+  - A swipe up on the cover shows the queue; a swipe down closes.
+- **Under the hero:**
+  - the title on one line, with the stars or heart at its end;
+  - the artist and album, with the quality badge (a tap opens the signal path);
+  - the waveform seek bar, showing elapsed and remaining time;
+  - shuffle, previous, a 72 dp play/pause, next and repeat.
+  - The lyric line under the title stays, on screens with room for it.
+- **Up next** is one compact line with a ✕ to remove the track (Undo as before).
+- **Four actions** along the bottom:
+  - **Sleep:** shows the time left while a timer runs.
+  - **Queue:** opens the queue sheet. On wide windows it shows or hides the queue panel instead.
+  - **Visualiser:** one button.
+    - A tap switches it on or off. It draws over the cover; Glow is the halo around the cover.
+    - A long press chooses the style. So does a sideways swipe across it (the pager takes swipes when the visualiser is off or on Glow).
+    - The style's name shows for a moment.
+    - It is hidden for a remote player. It stays off, saying why, in battery saver or with animations removed.
+  - **Volume:** a small vertical slider. For a remote player it sets that player's volume in LMS. When this phone is the player it sets Android's media volume, as the hardware keys do. The app's volume keys now always set the media volume.
+- **Downloads** use the same layout, with Queue, Visualiser, Volume and Stop along the bottom.
+- **Player level:** LMS's own level for this phone moves to Settings › Sound › *Player level*. It is normally left at 100%, and LMS can still change it. Now playing's volume no longer touches it while this phone plays.
+- **Loudness follows the phone's volume:**
+  - While this phone plays, loudness-compensated volume follows Android's media volume as well as the player level. The app reads the attenuation for the current output (`getStreamVolumeDb`, or the default media curve) and passes it to the engine through a new `set_loudness_reference_db`.
+  - A fixed-volume output, or a Bluetooth device with absolute volume, falls back to the player level.
+  - Volume and output changes are followed while playing. The signal path says "(following the phone's volume)".
+- **Tests:**
+  - Robolectric layout tests at 360 × 640 and 360 × 800 dp: play/pause fully in the window at full size, and nothing scrolling.
+  - Screen tests for the pager, dots and actions, the top row, ⋮, the visualiser's tap, long press and swipe, both volume targets and a fixed volume, Up next and the seek times.
+  - Accessibility audits of every state: cover, lyrics and info pages, visualiser on and off, Glow, the popover (remote and phone), ⋮, the style, signal path, sleep and queue sheets, downloads and the player level.
+  - View-model tests for the player level.
+  - Playback tests for the volume curve, the Bluetooth fallback and the follower.
+  - Data tests for passing the attenuation to the engine.
+  - Rust tests in the pipeline, plus engine tests for the streaming and offline players.
+
 ## 2026-10-13: Now playing tidy-up, four tabs and a new Glow (web)
 
 - **Signal path on demand:** Now playing no longer shows the signal path all the time. The quality badge (e.g. "FLAC 16/44.1") still opens it in a sheet, and the Info layout keeps it folded behind a "Signal path" disclosure button. Nothing is lost.
