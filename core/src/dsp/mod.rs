@@ -20,11 +20,13 @@
 //!
 //! 1. [`gain::Gain`]: preamp plus loudness levelling ([`levelling`]).
 //! 2. [`eq::ParametricEq`]: RBJ-cookbook biquads, with an AutoEq profile parser.
-//! 3. [`crossfeed::Crossfeed`]: Bauer-style headphone crossfeed.
-//! 4. [`limiter::TruePeakLimiter`]: look-ahead brickwall limiter on oversampled true peak.
-//! 5. Output quantisation with [`dither::Dither`], only when the bit depth is reduced.
+//! 3. [`loudness::Loudness`]: loudness-compensated volume, bass and treble shelves that
+//!    grow as the player's volume drops (equal-loudness contours, ISO 226).
+//! 4. [`crossfeed::Crossfeed`]: Bauer-style headphone crossfeed.
+//! 5. [`limiter::TruePeakLimiter`]: look-ahead brickwall limiter on oversampled true peak.
+//! 6. Output quantisation with [`dither::Dither`], only when the bit depth is reduced.
 //!
-//! The limiter runs after EQ and crossfeed so it catches every gain stage. Resampling
+//! The limiter runs after EQ, loudness and crossfeed so it catches every gain stage. Resampling
 //! ([`resample`], behind the `resample` feature) and transitions ([`transition`]) sit
 //! outside the chain, because they change the number of frames.
 //!
@@ -43,6 +45,7 @@ pub mod eq;
 pub mod gain;
 pub mod levelling;
 pub mod limiter;
+pub mod loudness;
 pub mod pcm;
 #[cfg(feature = "resample")]
 pub mod resample;

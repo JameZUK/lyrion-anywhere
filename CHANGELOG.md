@@ -2,6 +2,17 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Loudness-compensated volume (Android)
+
+- **Loudness-compensated volume** for this phone's player: a switch in Settings › Sound, next to per-output EQ, off by default and remembered on the device. At low volume the ear hears less bass and treble (the ISO 226 equal-loudness contours), so the engine adds a low shelf at 100 Hz and a high shelf at 10 kHz that grow as the player's volume is turned down:
+  - 0 dB at full volume; 1 dB of bass and 0.4 dB of treble for every 4 dB of attenuation, up to +10 dB and +4 dB at −40 dB;
+  - driven by the player's own volume (LMS's `audg` as the engine applies it), not Android's system volume;
+  - the shelves follow volume changes smoothly (ramped every 32 frames), so there is no zipper noise;
+  - they sit after the EQ and before the true-peak limiter, which always runs with them, so the boost can never clip;
+  - on a bit-perfect USB DAC the DAC's volume rules: loudness is bypassed and the signal path says so. Otherwise the signal path shows a *Loudness* stage with the current boost.
+- **Core:** a new pure DSP stage, `core::dsp::loudness`, in the chain between EQ and crossfeed.
+- **Tests:** the curve (0 dB at full volume, monotonic, bounded, finite for NaN, infinite, negative and tiny volumes), the shelves' responses, smoothness across volume steps, no clipping at full scale through the chain and the pipeline (with and without an EQ boost), and the bypass on a bit-perfect route (unit tests, and end to end with a fake LMS and a fake DAC); on Android, the setting and its persistence, the engine settings it produces, the switch, the signal-path stages and an accessibility audit of the new control.
+
 ## 2026-10-13: Car, system surfaces, haptics and smart filters (Wave 2 part 4, web)
 
 Following `docs/plans/wave2-design.md` §5.1, §5.4, §5.5 and §5.6.

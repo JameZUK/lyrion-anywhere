@@ -163,6 +163,7 @@
     <string name="stage_name_preamp">preamp</string>
     <string name="stage_name_levelling">levelling</string>
     <string name="stage_name_eq">EQ</string>
+    <string name="stage_name_loudness">loudness compensation</string>
     <string name="stage_name_crossfeed">crossfeed</string>
     <string name="sound_section_output">Output</string>
     <string name="sound_bit_perfect_usb">Bit-perfect USB output</string>
@@ -186,6 +187,8 @@
     <string name="sound_limiter_ceiling_name">Limiter ceiling</string>
     <string name="sound_section_eq">Equaliser</string>
     <string name="sound_eq">Parametric EQ</string>
+    <string name="sound_loudness_volume">Loudness-compensated volume</string>
+    <string name="sound_loudness_volume_body">Adds bass and treble as this phone\'s player is turned down, where the ear hears less of them. Bypassed for bit-perfect output.</string>
     <string name="sound_eq_none">No profile yet. Import an AutoEq ParametricEQ.txt file for your headphones.</string>
     <string name="sound_eq_profile">%1$s · %2$s · preamp %3$s</string>
     <plurals name="sound_eq_filters">

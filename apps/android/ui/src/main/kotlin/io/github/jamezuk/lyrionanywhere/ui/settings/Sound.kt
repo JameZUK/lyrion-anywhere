@@ -186,6 +186,8 @@ class SoundViewModel(
 
     fun setCrossfeed(mode: CrossfeedMode) = change { it.copy(crossfeed = mode) }
 
+    fun setLoudness(on: Boolean) = change { it.copy(loudness = on) }
+
     fun setDither(mode: DitherMode) = change { it.copy(dither = mode) }
 
     fun setBitPerfectUsb(on: Boolean) = change { it.copy(bitPerfectUsb = on) }
@@ -253,6 +255,8 @@ interface SoundActions {
 
     fun eqBypass(on: Boolean) {}
 
+    fun loudness(on: Boolean) {}
+
     fun crossfeed(mode: CrossfeedMode) {}
 
     fun dither(mode: DitherMode) {}
@@ -292,6 +296,8 @@ fun SoundViewModel.actions(): SoundActions = object : SoundActions {
 
     override fun eqBypass(on: Boolean) = setBypass(on)
 
+    override fun loudness(on: Boolean) = setLoudness(on)
+
     override fun crossfeed(mode: CrossfeedMode) = setCrossfeed(mode)
 
     override fun dither(mode: DitherMode) = setDither(mode)
@@ -313,6 +319,7 @@ fun stageNames(stages: List<SoundStage>): String = stages.map {
             SoundStage.PREAMP -> R.string.stage_name_preamp
             SoundStage.LEVELLING -> R.string.stage_name_levelling
             SoundStage.EQ -> R.string.stage_name_eq
+            SoundStage.LOUDNESS -> R.string.stage_name_loudness
             SoundStage.CROSSFEED -> R.string.stage_name_crossfeed
             SoundStage.CROSSFADE -> R.string.stage_name_crossfade
         },
@@ -424,6 +431,17 @@ fun SoundScreen(state: SoundUiState, actions: SoundActions, modifier: Modifier =
             item { EqCompareButton(state.bypass, enabled = state.output != null && state.effective.eqEnabled, onBypass = actions::eqBypass) }
         }
         item { OutputEqSection(state, actions) }
+        item {
+            // Driven by this phone's player volume (not Android's); the engine bypasses it
+            // on a bit-perfect route, where the DAC's volume rules.
+            SwitchRow(
+                title = stringResource(R.string.sound_loudness_volume),
+                body = stringResource(R.string.sound_loudness_volume_body),
+                checked = s.loudness,
+                onChange = actions::loudness,
+                tag = "loudness-volume",
+            )
+        }
         if (pasting) {
             item {
                 val pastedName = stringResource(R.string.sound_eq_pasted_name)
@@ -569,6 +587,7 @@ private fun SwitchRow(
     checked: Boolean,
     onChange: (Boolean) -> Unit,
     enabled: Boolean = true,
+    tag: String? = null,
 ) {
     // The switch is decoration: the whole row is the toggle (one target for touch and
     // screen readers).
@@ -576,7 +595,9 @@ private fun SwitchRow(
         headlineContent = { Text(title) },
         supportingContent = { Text(body) },
         trailingContent = { Switch(checked = checked, onCheckedChange = null, enabled = enabled) },
-        modifier = Modifier.toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange),
+        modifier = Modifier
+            .then(if (tag != null) Modifier.testTag(tag) else Modifier)
+            .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange),
     )
 }
 

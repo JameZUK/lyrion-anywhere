@@ -207,6 +207,21 @@ class SettingsStoreTest {
         assertFalse(gone.eqEnabled)
     }
 
+    /** Loudness-compensated volume is remembered on this device, and off when never set. */
+    @Test
+    fun loudnessSurvivesARestart() = runBlocking {
+        assertFalse(DataStoreSettings(store()).settings.first().sound.loudness)
+        DataStoreSettings(restart()).setSound(SoundSettings(loudness = true))
+        val again = DataStoreSettings(restart()).settings.first().sound
+        assertTrue(again.loudness)
+        assertEquals(listOf(SoundStage.LOUDNESS), again.activeStages)
+        // Other sound settings saved later keep it, and turning it off is kept too.
+        DataStoreSettings(restart()).setSound(again.copy(crossfeed = CrossfeedMode.LIGHT))
+        assertTrue(DataStoreSettings(restart()).settings.first().sound.loudness)
+        DataStoreSettings(restart()).setSound(again.copy(loudness = false))
+        assertFalse(DataStoreSettings(restart()).settings.first().sound.loudness)
+    }
+
     @Test
     fun theOldLevellingSwitchMigratesToR128() = runBlocking {
         val s = store()

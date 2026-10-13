@@ -433,6 +433,9 @@ impl AudioPath {
             let source = src.track_audio(seq).and_then(|t| t.source);
             let tags = source.map(|s| s.replay_gain);
             let block = &self.block[..frames * CHANNELS];
+            // Loudness compensation follows the volume the source applied to this block.
+            let (l, r) = src.applied_volume();
+            self.pipeline.set_volume(f64::from(l.max(r)));
             self.pipeline.push_counted(
                 block,
                 seq,
@@ -508,6 +511,8 @@ impl AudioPath {
         if plan.encoding != PcmEncoding::Float {
             match self.output.open(&ring, rate, plan.encoding) {
                 Ok(o) if o.rate == rate && o.encoding == plan.encoding => {
+                    // A bit-perfect route: the DAC's volume rules, so no loudness.
+                    self.pipeline.set_direct(true);
                     if self.pipeline.configure(rate, rate).is_ok() {
                         self.output_ready(o.device, o.encoding, plan.quantise_bits);
                         self.route_state = RouteState {
@@ -533,6 +538,7 @@ impl AudioPath {
         let candidates =
             std::iter::once(rate).chain(FALLBACK_RATES.into_iter().filter(|r| *r != rate));
         for try_rate in candidates {
+            self.pipeline.set_direct(false);
             match self.output.open(&ring, try_rate, PcmEncoding::Float) {
                 Ok(o) => match self.pipeline.configure(rate, o.rate) {
                     Ok(()) => {
