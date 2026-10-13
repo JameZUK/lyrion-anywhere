@@ -2,6 +2,22 @@
 
 Dated entries, newest first.
 
+## 2026-10-13: Rolling cache, Phase B: the replay cache
+
+Phase B of `docs/plans/wave3-design.md` §2: tracks this phone streamed in full are kept, so a replay, a skip back or LMS sending a track again costs about 96 KiB instead of the whole track.
+
+- **Gateway:**
+  - **Live Opus is deterministic** (`-fflags +bitexact -flags:a +bitexact`): the same track at the same level is the same bytes every time.
+  - **STAT `bytes_received` is clamped** to what the stream's relay sent, for every stream (it already was for live Opus). LMS is never told of bytes it didn't send.
+  - **`/v1/stream/…?limit=m`** (1 to 16 MiB): at most `m` bytes, then a clean end; the rest follows with `?offset=`. Anything else is `400`.
+- **Phone's player:**
+  - **The replay cache** (`LocalPlayerConfig.stream_cache_bytes`; 0 is off): a stream that ended cleanly with every byte spooled is moved into `<cache_dir>/<scope>/stream-cache/`, named by its fingerprint, with a strictly checked, bounded index. Least recently used go first; entries in use are never evicted.
+  - **Matching:** a stream's fingerprint is its level, format and first bytes (the header plus 64 KiB). On a hit the cached copy is checked against its length and SHA-256 before use, the download stops, and the rest plays from the phone, bit for bit. A copy that fails the check is deleted and the network used.
+  - **Needs the download permission:** used only while `/v1/account` says downloads are allowed; emptied when they aren't, when the player is refused or revoked, and by `remove_stream_spools` (sign-out, revocation, another server or user).
+  - **For the app:** `stream_cache_totals`, `clear_stream_cache`, `set_stream_cache_bytes`, and a `from_cache` flag in the status and the signal path.
+- **Android:** Settings › Gaps in the signal › *Replay cache*: Off, 500 MB, 1 GB (default), 2 GB or 5 GB, what it holds, and *Clear*; disabled, with why, without the download permission. The signal path shows *From cache*.
+- **Privacy:** the replay cache is a new copy of music on the phone; `docs/PRIVACY.md` lists it, and the streams being played.
+
 ## 2026-10-13: Rolling cache, Phase A: Android, and restarting after a long gap
 
 The Android part (A5) of `docs/plans/wave3-design.md` §2, and the owner's decision 3 in the engine. Phase A is now built; what remains is the manual testing on a real phone.

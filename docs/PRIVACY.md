@@ -24,11 +24,14 @@ All of this is in the app's private storage. Other apps can't read it, and none 
 | **Car mode's car:** if you choose *This device*, that Bluetooth device's name and address | So car mode opens for that car only | Until you choose another option, or uninstall |
 | **Covers for Android Auto:** album covers already fetched from your server, under random names | So Android Auto can show them in its lists | Until the app restarts or you sign out |
 | **Downloads:** audio files, covers, and an index of titles, artists, albums, durations and formats | Offline listening | Until you remove them, choose to remove them at sign-out, the server revokes the device, or you uninstall |
+| **Streams being played** (when this phone is the player): the tracks being played and the next one, fetched ahead | So a short gap in the signal doesn't stop the music | Until each has played, or the player stops, signs out or is revoked |
+| **Replay cache** (only if your account may download): copies of tracks this phone streamed in full, and an index of their fingerprints, sizes, hashes, when each was last played and the track's id | So playing a track again, or skipping back, uses almost no data | Until it is full (the least recently played go first), you clear it or turn it off (Settings › Gaps in the signal › Replay cache; 1 GB by default), your account loses the download permission, you sign out, the server revokes the device, or you uninstall |
 | **Plays heard offline:** track id, when it started and how long it played | To update play counts on your server when you're back online | Until the server has them (then deleted) |
 | **Crash reports** (only after a crash) | So you can see what went wrong and choose to share it | Until you dismiss the report |
 
 - **The sign-in is sealed:** encrypted with AES-256-GCM under a key kept in the Android Keystore, which never leaves the phone. Access tokens are kept in memory only, never on disk. Your password is never stored; it is dropped from memory after you sign in.
 - **Downloads** are in a folder named by a one-way hash of the server and user name. Files are named by the server's track keys, not by title or path. The index holds no tokens, addresses or file paths.
+- **The replay cache** is a new copy of music on the phone, so it is kept only while your account may download (the same permission as downloads). It sits in a folder named like the downloads folder, its files are named by a hash of each stream's first bytes, and its index holds no titles, tokens, addresses or file paths. It counts apart from downloads and isn't offered for offline listening.
 - **Crash reports** stay on the phone. The app never sends them anywhere: you see the report the next time the app opens, and only you can copy or share it. Reports hold the app version, Android version, phone model and the error's stack trace. Before a report is saved or shown, the app removes tokens, secrets, server addresses, IP addresses and folder names. From a native crash, it keeps only the names of the code that crashed, never the memory dump Android records.
 - **Artwork** is cached in memory only.
 - **The camera** is used only to scan a pairing QR code, when you choose to. Frames are read on the phone and never stored or sent.
@@ -85,7 +88,8 @@ The gateway runs on your server, next to Lyrion Music Server. Its data stays the
 ## Deleting your data
 
 - **Sign out** (Settings → Sign out): the phone deletes its sign-in, sends any plays still waiting, and keeps or deletes your downloads as you choose. The server revokes the device, erasing its address and User-Agent.
-- **Revoked by the server** (an admin revokes the device, or too many devices signed in): the phone deletes its sign-in and all its downloads the next time it connects.
+- **Revoked by the server** (an admin revokes the device, or too many devices signed in): the phone deletes its sign-in and all its downloads the next time it connects. The replay cache is deleted as soon as the server refuses the phone's player.
+- **Sign out** also deletes the replay cache and every stream being played, whatever you choose for downloads.
 - **Uninstall:** Android deletes everything the app stored.
 - **Listening history:** Settings › Listening history › *Clear history* deletes it from the server at once; switching it off stops recording.
 - **On the server:** ask its admin to delete your account. That deletes your devices, sign-ins, play keys, listening history, Home layout, stations and smart filters at once. The audit log keeps its entries naming your username until they expire (one year), as a security record.
