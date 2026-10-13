@@ -249,6 +249,34 @@ pub fn fake_mai(words: &[serde_json::Value]) -> Option<serde_json::Value> {
     })
 }
 
+/// The fake LMS's `artists 0 1 artist_id:<id>` (`None`: it never answers). As a real
+/// LMS, a list of ids finds nothing. All names are invented.
+/// - 13: a name naming a server path (never handed out);
+/// - 14: a name with invisible formatting characters and odd spacing;
+/// - 15: answers with another artist;
+/// - 16: no such artist;
+/// - 900 and up: never answers;
+/// - anything else: "Invented Artist <id>".
+pub fn fake_artist(words: &[serde_json::Value]) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let ids = words
+        .iter()
+        .find_map(|w| w.as_str()?.strip_prefix("artist_id:"))?;
+    let Ok(id) = ids.parse::<u64>() else {
+        return Some(json!({"count": 0}));
+    };
+    let one =
+        |id: u64, name: &str| json!({"count": 1, "artists_loop": [{"id": id, "artist": name}]});
+    Some(match id {
+        900.. => return None,
+        13 => one(13, "Band /srv/music/Band/notes.txt"),
+        14 => one(14, "  Odd\u{202e}ly \u{200b}Spaced\t Band "),
+        15 => one(99, "Somebody Else"),
+        16 => json!({"count": 0}),
+        _ => one(id, &format!("Invented Artist {id}")),
+    })
+}
+
 /// Canned LMS JSON-RPC results, deliberately full of things that must not leak.
 pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
     use serde_json::json;
@@ -662,6 +690,19 @@ impl FakeLms {
                             "mode": "play",
                             "playlist_loop": [{"playlist index": 0, "id": playing.unwrap()}]
                         }),
+                        _ if cmd == "artists"
+                            && words.iter().any(|w| {
+                                w.as_str().is_some_and(|s| s.starts_with("artist_id:"))
+                            }) =>
+                        {
+                            match fake_artist(&words) {
+                                Some(v) => v,
+                                None => {
+                                    futures_util::future::pending::<()>().await;
+                                    serde_json::Value::Null
+                                }
+                            }
+                        }
                         _ => fake_rpc_result(&cmd),
                     };
                     let reply =

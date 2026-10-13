@@ -361,7 +361,7 @@ fn strip_html(s: &str) -> String {
 
 /// Invisible characters that can disguise text (bidirectional overrides, zero-width
 /// characters, the byte order mark).
-fn formatting(c: char) -> bool {
+pub(crate) fn formatting(c: char) -> bool {
     matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}' | '\u{00ad}')
 }
 

@@ -296,6 +296,39 @@ pub fn since(a: &Accounts, user: i64, since: i64, cap: usize) -> Result<Vec<Entr
     })
 }
 
+/// The user's plays with `from <= played_at < to`, newest first, at most `cap` (for the
+/// listening stats, [`crate::stats`]).
+pub fn between(
+    a: &Accounts,
+    user: i64,
+    from: i64,
+    to: i64,
+    cap: usize,
+) -> Result<Vec<Entry>, AuthError> {
+    a.with_db(|db| {
+        let mut st = db.prepare(
+            "SELECT id, track_key, track_id, album_id, artist_id, year, played_at, seconds, source
+             FROM history WHERE user_id = ?1 AND played_at >= ?2 AND played_at < ?3
+             ORDER BY played_at DESC, id DESC LIMIT ?4",
+        )?;
+        let rows = st.query_map(params![user, from, to, cap as i64], row_entry)?;
+        rows.collect()
+    })
+}
+
+/// When the user first played each artist, over everything the history keeps (for "new
+/// this period" in the listening stats).
+pub fn first_plays(a: &Accounts, user: i64) -> Result<HashMap<i64, i64>, AuthError> {
+    a.with_db(|db| {
+        let mut st = db.prepare(
+            "SELECT artist_id, MIN(played_at) FROM history
+             WHERE user_id = ?1 AND artist_id > 0 GROUP BY artist_id",
+        )?;
+        let rows = st.query_map([user], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+        rows.collect()
+    })
+}
+
 /// Forget all of a user's history. Returns how many plays were removed.
 pub fn clear(a: &Accounts, user: i64) -> Result<usize, AuthError> {
     a.with_db(|db| db.execute("DELETE FROM history WHERE user_id = ?1", [user]))
@@ -832,6 +865,7 @@ pub async fn delete(State(gw): State<AppState>, headers: HeaderMap) -> Response 
     match clear(gw.accounts(), p.user_id) {
         Ok(n) => {
             gw.station_served.forget_user(p.user_id);
+            gw.stats.forget_user(p.user_id);
             gw.accounts().audit(
                 "history.cleared",
                 Some(&p.username),
@@ -872,7 +906,11 @@ pub async fn patch(State(gw): State<AppState>, headers: HeaderMap, body: Body) -
         }
     };
     match set_enabled(gw.accounts(), p.user_id, on) {
-        Ok(()) => ok(json!({ "enabled": on })),
+        Ok(()) => {
+            // Stats answers are dropped too (switched off, they must show nothing).
+            gw.stats.forget_user(p.user_id);
+            ok(json!({ "enabled": on }))
+        }
         Err(_) => internal(),
     }
 }

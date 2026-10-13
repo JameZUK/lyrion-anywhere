@@ -668,6 +668,54 @@ Clients show titles with `titles 0 <n> track_id:<id,id,…> tags:…` through `/
 
 LMS before 9.1 has no play-count sorts: the server side is then empty.
 
+### Listening stats
+
+`GET /v1/me/stats[?period=<p>][&tz=<minutes>]` (docs/plans/wave3-design.md §1): the "Your listening" page and "Your year in sound", worked out from the user's own listening history. Nothing new is stored.
+
+- **`period`:** `days-N` (N from 7 to 400, no leading zero; `days-30` by default), `month-YYYY-MM`, `year-YYYY` (years 1970 to 2100) or `all`.
+- **`tz`:** minutes east of UTC, −840 to 840 (0 by default), plain decimal (no `+`). Clients send the device's current offset. Hours, days, weekdays, months and streaks are worked out at this fixed offset (no daylight-saving changes within the period).
+- **Refused (400, `bad query`):** any other parameter, either one twice, a malformed or out-of-range value, percent-encoding, or a query string over 64 characters.
+- **The period:** `days-N` runs from local midnight N − 1 days ago until now; a month or a year from local midnight on its first day to its end, or now if sooner (a future one is empty, `from` = `to`); `all` covers the 396 days the history keeps, until now. A play counts when `from <= played_at < to`.
+
+```json
+{
+  "enabled": true,
+  "retention_days": 396,
+  "period": {"from": 1790000000, "to": 1792600000},
+  "totals": {"plays": 412, "seconds": 82800, "tracks": 301, "albums": 64, "artists": 41, "days": 27},
+  "top_artists": [{"id": 12, "name": "An Example Band", "plays": 40, "seconds": 9100}],
+  "top_albums": [{"id": 7, "plays": 22, "seconds": 5200}],
+  "top_tracks": [{"id": 9, "plays": 6, "seconds": 1300}],
+  "new_artists": [{"id": 31, "name": "Another Example", "first_played": 1791000000}],
+  "by_hour": [0, 0, 1, …],
+  "by_weekday": [12, 30, …],
+  "by_month": [{"month": "2026-10", "plays": 412, "seconds": 82800}],
+  "longest_streak": {"days": 9, "from": "2026-10-02", "to": "2026-10-10"},
+  "busiest_day": {"date": "2026-10-04", "seconds": 14400}
+}
+```
+
+- **Counting:**
+  - At most 200 000 plays are read (the newest). Seconds are whole numbers.
+  - Tracks are counted by the history's stable track key (library ids can change after a rescan); each reports the newest track id seen for it.
+  - Albums and tracks are ids only: load names and artwork as for shelves.
+- **Top lists:** `top_artists`, `top_albums` and `top_tracks` hold at most 20 each. They are ordered by plays, then seconds, then the latest play, then the lower id.
+- **`new_artists`:** at most 20 artists whose first play in the whole kept history falls in the period. The ones played most in the period come first. History reaches back only 396 days, so for `all` and long periods say "first played since …".
+- **Artist names:**
+  - LMS looks an artist up by one id only, so the gateway asks `artists 0 1 artist_id:<id>` for each artist the answer names: at most 40, four at a time, each within 4 s and all within 8 s.
+  - A name is cleaned: control and invisible formatting characters are removed, whitespace is collapsed and it is cut to 200 characters. A name naming a server path or a LAN address is dropped.
+  - Names are remembered for an hour (a failed lookup for 2 minutes). A name LMS can't give is `""`.
+- **Charts:**
+  - `by_hour` (24 entries) and `by_weekday` (7, Monday first) count plays.
+  - `by_month` lists every month of the period, with zeros, for `year-*`, `all` and `days-N` with N > 60. Otherwise it is `[]`.
+- **Streaks:** `longest_streak` is the longest run of consecutive local days with at least one play. `busiest_day` is the day with the most seconds. On a tie, the most recent wins. Both are `null` with no plays.
+- **History switched off:** `enabled: false`, with zeros, empty lists and `null`s (what was kept shows again when it is switched back on).
+- **Caching:**
+  - An answer is remembered per user, period and `tz` for 5 minutes. A play recorded meanwhile shows once it expires.
+  - Clearing the history, switching it on or off, or deleting the account drops the user's answers at once.
+  - An answer missing a name because LMS failed is not remembered.
+- **Limits:** it counts under the 120-a-minute `/v1/me` allowance.
+
 ### Home layout
 
 `GET /v1/me/home` → `{"version": 1, "shelves": [{"type": "recent"}, …], "default": bool}`. Without a saved layout it is the default, in this order: `recent`, `stations`, `new`, `most`, `on_this_day`.

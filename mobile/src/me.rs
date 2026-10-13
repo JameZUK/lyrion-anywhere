@@ -795,6 +795,18 @@ impl Me {
         Ok(v.get("enabled").and_then(Value::as_bool).unwrap_or(enabled))
     }
 
+    /// Listening stats over `period`, with hours, days and streaks local to `tz_minutes`
+    /// (minutes east of UTC, −840 to 840: the device's current offset). Checked here as the
+    /// gateway checks it; see [`crate::stats`].
+    pub async fn stats(
+        &self,
+        period: crate::stats::StatsPeriod,
+        tz_minutes: i32,
+    ) -> Result<crate::stats::ListeningStats, ApiError> {
+        let path = crate::stats::stats_path(period, tz_minutes)?;
+        crate::stats::parse_stats(&self.call("GET", &path, None).await?)
+    }
+
     /// Album ids for a history shelf (`Recent`, `Most` or `OnThisDay`), best first.
     pub async fn shelf_albums(&self, kind: ShelfKind, limit: u32) -> Result<Vec<i64>, ApiError> {
         if !matches!(
