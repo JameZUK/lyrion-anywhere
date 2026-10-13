@@ -523,7 +523,8 @@ async fn the_visualiser_gives_frames_only_while_asked_and_as_audio_is_heard() {
 /// and the signal path says so; an unknown volume falls back to the player's own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn loudness_follows_the_phones_volume() {
-    let (lib, tracks, _) = library(vec![song(3.0, 5)], 3.0);
+    // Long enough to still be playing at every check below.
+    let (lib, tracks, _) = library(vec![song(30.0, 5)], 30.0);
     let rig = Rig::start(
         &lib,
         DspSettings {
