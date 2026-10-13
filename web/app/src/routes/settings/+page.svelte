@@ -183,6 +183,104 @@
 	<h1>Settings</h1>
 	{#if msg}<p class="note" role="status">{msg}</p>{/if}
 
+	{#if install.way === 'prompt' || install.way === 'ios'}
+		<div class="card">
+			<h2>Install the app</h2>
+			<p>Add Lyrion Anywhere to your home screen: it opens full screen like any other app, and remembers your settings.</p>
+			{#if install.way === 'prompt'}
+				<button class="btn primary" onclick={() => void install.install()}><Icon name="plus" size={18} />Install</button>
+			{:else}
+				<ol class="steps">
+					<li>Tap the <strong>Share</strong> button (the square with an arrow).</li>
+					<li>Choose <strong>Add to Home Screen</strong>.</li>
+					<li>Tap <strong>Add</strong>.</li>
+				</ol>
+			{/if}
+		</div>
+	{/if}
+
+	<div class="card">
+		<h2>Appearance</h2>
+		<AppearancePicker />
+	</div>
+
+	<div class="card">
+		<h2>Ratings</h2>
+		<RatingsSettings />
+	</div>
+
+	<div class="card">
+		<h2>Lyrics</h2>
+		<label class="check">
+			<input type="checkbox" checked={lyrics.peek} onchange={(e) => lyrics.setPeek(e.currentTarget.checked)} data-lyrics-peek-setting />
+			<span>Show the current line on Now playing</span>
+		</label>
+		<p class="muted small">When a track has synced lyrics. All lyrics are always a tap away with the Lyrics button. Kept in this browser.</p>
+	</div>
+
+	<div class="card">
+		<h2>Sleep timer</h2>
+		<label class="field">
+			<span>Fade out before it stops</span>
+			<select value={app.sleepFade} onchange={(e) => app.setSleepFade(Number(e.currentTarget.value))} data-sleep-fade>
+				{#each FADE_CHOICES as f (f)}<option value={f}>{f === 0 ? 'Off' : f < 60 ? `${f} seconds` : f === 60 ? '1 minute' : `${f / 60} minutes`}</option>{/each}
+			</select>
+		</label>
+		<p class="muted small">For this browser's own player; kept for your account in this browser. Other players follow LMS: they fade over the last minute, then stop and turn off.</p>
+	</div>
+
+	<div class="card">
+		<h2>Streaming quality</h2>
+		<label class="field">
+			<span>In this browser</span>
+			<select value={device.qualityPreference} onchange={(e) => device.setQualityPreference(e.currentTarget.value as QualityPreference)} data-stream-quality>
+				{#each PREFERENCES as p (p)}<option value={p}>{QUALITY_LABELS[p]}</option>{/each}
+			</select>
+		</label>
+		<p class="muted small" data-stream-quality-now>
+			{#if device.qualityPreference === 'auto'}Now: {QUALITY_LABELS[device.quality]}. Automatic uses High on a mobile connection and Data saver when the browser is asked to save data, where the browser says (Safari doesn't: choose a level there).{/if}
+			High (Opus 160 kbps) and Data saver (Opus 96 kbps) re-encode lossless tracks on your server, when it offers this; other tracks are sent as they are. Applies from the next track.
+		</p>
+	</div>
+
+	<div class="card">
+		<h2>Downloads</h2>
+		<p class="muted">Download albums to play them without a connection. Downloads stay on this device until you remove them, and are kept apart for each account.</p>
+		<div class="formats">
+			<label class="field">
+				<span>On Wi-Fi{network === 'wifi' ? ' (now)' : ''}</span>
+				<select value={prefs.wifi} onchange={(e) => setPrefs({ wifi: e.currentTarget.value as DownloadPrefs['wifi'] })}>
+					{#each FORMATS as f (f)}<option value={f}>{FORMAT_LABELS[f]}</option>{/each}
+				</select>
+			</label>
+			<label class="field">
+				<span>On mobile data{network === 'cellular' ? ' (now)' : ''}</span>
+				<select value={prefs.cellular} onchange={(e) => setPrefs({ cellular: e.currentTarget.value as DownloadPrefs['cellular'] })}>
+					{#each FORMATS as f (f)}<option value={f}>{FORMAT_LABELS[f]}</option>{/each}
+				</select>
+			</label>
+		</div>
+		<p class="muted small">Original is the file as it is in your library (largest). Opus is about 1 MB a minute. MP3 plays everywhere. If the server can’t convert, Original is used.</p>
+		<p data-testid="download-usage">
+			<strong>{downloads.saved.length} downloaded {downloads.saved.length === 1 ? 'track' : 'tracks'}, {formatBytes(downloads.usedBytes)}</strong>
+			{#if storage.quota}<span class="muted"> · this app uses {formatBytes(storage.usage ?? 0)} of {formatBytes(storage.quota)}</span>{/if}
+		</p>
+		<div class="row">
+			<a class="btn" href="#/downloads"><Icon name="download" size={18} />Open downloads</a>
+			{#if storage.persisted === false}
+				<button class="btn" onclick={keepDownloads}>Ask the browser to keep downloads</button>
+			{/if}
+			{#if downloads.saved.length || downloads.items.length}
+				{#if confirmRemove}
+					<button class="btn" onclick={removeAllDownloads}><Icon name="trash" size={18} />Yes, remove all downloads</button>
+					<button class="btn" onclick={() => (confirmRemove = false)}>Cancel</button>
+				{:else}
+					<button class="btn" onclick={() => (confirmRemove = true)}><Icon name="trash" size={18} />Remove all downloads…</button>
+				{/if}
+			{/if}
+		</div>
+	</div>
+
 	<div class="card">
 		<h2>This device</h2>
 		<p class="muted">Music plays in this browser unless you choose another player. It appears in LMS as a player named “{deviceName}”.</p>
@@ -246,22 +344,11 @@
 					<button class="btn" onclick={async () => { device.stop(); await device.start(); }}>Restart player now</button></p>
 			{/if}
 		</div>
-		{#if device.state !== 'off'}
-			<dl class="diag" aria-label="Player diagnostics">
-				<dt>Output</dt><dd data-diag="mode">{device.detail.mode === 'media' ? 'Media element' : device.detail.mode === 'worklet' ? 'Web Audio' : '–'}</dd>
-				<dt>State</dt><dd data-diag="output">{device.detail.output ?? '–'}</dd>
-				<dt>Buffered audio</dt><dd data-diag="buffered">{((device.detail.buffered_ms ?? 0) / 1000).toFixed(1)} s</dd>
-				<dt>Downloaded, not yet decoded</dt><dd data-diag="input">{mb(device.detail.input_bytes)}</dd>
-				<dt>Player memory</dt><dd data-diag="memory">{mb(device.detail.wasm_bytes)}</dd>
-				<dt>Sample rate</dt><dd>{device.detail.sample_rate ? `${device.detail.sample_rate / 1000} kHz` : '–'}</dd>
-			</dl>
-		{/if}
-		{#if device.log.length}
-			<details>
-				<summary>Connection log</summary>
-				<pre>{device.log.join('\n')}</pre>
-			</details>
-		{/if}
+	</div>
+
+	<div class="card">
+		<h2>Listening history</h2>
+		<HistorySettings />
 	</div>
 
 	<div class="card">
@@ -293,12 +380,32 @@
 	</div>
 
 	<div class="card">
-		<h2>Listening history</h2>
-		<HistorySettings />
+		<SignOut count={downloads.saved.length} bytes={downloads.usedBytes} onsignout={signOut} />
+		<p class="muted small">Signing out removes this device and its player.</p>
 	</div>
 
-	<div class="card">
-		<h2>Playback capabilities</h2>
+	<details class="card developer" data-developer>
+		<summary>Diagnostics</summary>
+		<p class="muted small">For troubleshooting: what this browser and its player report.</p>
+		<h3>This device’s player</h3>
+		{#if device.state === 'off'}<p class="muted small">The player isn’t running.</p>{/if}
+		{#if device.state !== 'off'}
+			<dl class="diag" aria-label="Player diagnostics">
+				<dt>Output</dt><dd data-diag="mode">{device.detail.mode === 'media' ? 'Media element' : device.detail.mode === 'worklet' ? 'Web Audio' : '–'}</dd>
+				<dt>State</dt><dd data-diag="output">{device.detail.output ?? '–'}</dd>
+				<dt>Buffered audio</dt><dd data-diag="buffered">{((device.detail.buffered_ms ?? 0) / 1000).toFixed(1)} s</dd>
+				<dt>Downloaded, not yet decoded</dt><dd data-diag="input">{mb(device.detail.input_bytes)}</dd>
+				<dt>Player memory</dt><dd data-diag="memory">{mb(device.detail.wasm_bytes)}</dd>
+				<dt>Sample rate</dt><dd>{device.detail.sample_rate ? `${device.detail.sample_rate / 1000} kHz` : '–'}</dd>
+			</dl>
+		{/if}
+		{#if device.log.length}
+			<details>
+				<summary>Connection log</summary>
+				<pre>{device.log.join('\n')}</pre>
+			</details>
+		{/if}
+		<h3>Playback capabilities</h3>
 		<p class="muted">What this browser supports; the automatic playback choice is based on this.</p>
 		{#if caps}
 			<dl class="diag">
@@ -317,111 +424,9 @@
 			</table>
 			<p class="muted small">{caps.userAgent}</p>
 		{/if}
-	</div>
+		<p class="muted small">Connection to the server: {app.events}</p>
+	</details>
 
-	{#if install.way === 'prompt' || install.way === 'ios'}
-		<div class="card">
-			<h2>Install the app</h2>
-			<p>Add Lyrion Anywhere to your home screen: it opens full screen like any other app, and remembers your settings.</p>
-			{#if install.way === 'prompt'}
-				<button class="btn primary" onclick={() => void install.install()}><Icon name="plus" size={18} />Install</button>
-			{:else}
-				<ol class="steps">
-					<li>Tap the <strong>Share</strong> button (the square with an arrow).</li>
-					<li>Choose <strong>Add to Home Screen</strong>.</li>
-					<li>Tap <strong>Add</strong>.</li>
-				</ol>
-			{/if}
-		</div>
-	{/if}
-
-	<div class="card">
-		<h2>Ratings</h2>
-		<RatingsSettings />
-	</div>
-
-	<div class="card">
-		<h2>Streaming quality</h2>
-		<label class="field">
-			<span>In this browser</span>
-			<select value={device.qualityPreference} onchange={(e) => device.setQualityPreference(e.currentTarget.value as QualityPreference)} data-stream-quality>
-				{#each PREFERENCES as p (p)}<option value={p}>{QUALITY_LABELS[p]}</option>{/each}
-			</select>
-		</label>
-		<p class="muted small" data-stream-quality-now>
-			{#if device.qualityPreference === 'auto'}Now: {QUALITY_LABELS[device.quality]}. Automatic uses High on a mobile connection and Data saver when the browser is asked to save data, where the browser says (Safari doesn't: choose a level there).{/if}
-			High (Opus 160 kbps) and Data saver (Opus 96 kbps) re-encode lossless tracks on your server, when it offers this; other tracks are sent as they are. Applies from the next track.
-		</p>
-	</div>
-
-	<div class="card">
-		<h2>Sleep timer</h2>
-		<label class="field">
-			<span>Fade out before it stops</span>
-			<select value={app.sleepFade} onchange={(e) => app.setSleepFade(Number(e.currentTarget.value))} data-sleep-fade>
-				{#each FADE_CHOICES as f (f)}<option value={f}>{f === 0 ? 'Off' : f < 60 ? `${f} seconds` : f === 60 ? '1 minute' : `${f / 60} minutes`}</option>{/each}
-			</select>
-		</label>
-		<p class="muted small">For this browser's own player; kept for your account in this browser. Other players follow LMS: they fade over the last minute, then stop and turn off.</p>
-	</div>
-
-	<div class="card">
-		<h2>Lyrics</h2>
-		<label class="check">
-			<input type="checkbox" checked={lyrics.peek} onchange={(e) => lyrics.setPeek(e.currentTarget.checked)} data-lyrics-peek-setting />
-			<span>Show the current line on Now playing</span>
-		</label>
-		<p class="muted small">When a track has synced lyrics. All lyrics are always a tap away with the Lyrics button. Kept in this browser.</p>
-	</div>
-
-	<div class="card">
-		<h2>Appearance</h2>
-		<AppearancePicker />
-	</div>
-
-	<div class="card">
-		<h2>Downloads</h2>
-		<p class="muted">Download albums to play them without a connection. Downloads stay on this device until you remove them, and are kept apart for each account.</p>
-		<div class="formats">
-			<label class="field">
-				<span>On Wi-Fi{network === 'wifi' ? ' (now)' : ''}</span>
-				<select value={prefs.wifi} onchange={(e) => setPrefs({ wifi: e.currentTarget.value as DownloadPrefs['wifi'] })}>
-					{#each FORMATS as f (f)}<option value={f}>{FORMAT_LABELS[f]}</option>{/each}
-				</select>
-			</label>
-			<label class="field">
-				<span>On mobile data{network === 'cellular' ? ' (now)' : ''}</span>
-				<select value={prefs.cellular} onchange={(e) => setPrefs({ cellular: e.currentTarget.value as DownloadPrefs['cellular'] })}>
-					{#each FORMATS as f (f)}<option value={f}>{FORMAT_LABELS[f]}</option>{/each}
-				</select>
-			</label>
-		</div>
-		<p class="muted small">Original is the file as it is in your library (largest). Opus is about 1 MB a minute. MP3 plays everywhere. If the server can’t convert, Original is used.</p>
-		<p data-testid="download-usage">
-			<strong>{downloads.saved.length} downloaded {downloads.saved.length === 1 ? 'track' : 'tracks'}, {formatBytes(downloads.usedBytes)}</strong>
-			{#if storage.quota}<span class="muted"> · this app uses {formatBytes(storage.usage ?? 0)} of {formatBytes(storage.quota)}</span>{/if}
-		</p>
-		<div class="row">
-			<a class="btn" href="#/downloads"><Icon name="download" size={18} />Open downloads</a>
-			{#if storage.persisted === false}
-				<button class="btn" onclick={keepDownloads}>Ask the browser to keep downloads</button>
-			{/if}
-			{#if downloads.saved.length || downloads.items.length}
-				{#if confirmRemove}
-					<button class="btn" onclick={removeAllDownloads}><Icon name="trash" size={18} />Yes, remove all downloads</button>
-					<button class="btn" onclick={() => (confirmRemove = false)}>Cancel</button>
-				{:else}
-					<button class="btn" onclick={() => (confirmRemove = true)}><Icon name="trash" size={18} />Remove all downloads…</button>
-				{/if}
-			{/if}
-		</div>
-	</div>
-
-	<div class="card">
-		<SignOut count={downloads.saved.length} bytes={downloads.usedBytes} onsignout={signOut} />
-		<p class="muted small">Signing out removes this device and its player.</p>
-	</div>
-	<p class="muted small">Connection: {app.events}</p>
 	<div class="card about">
 		<h2>About</h2>
 		<div class="about-row">
@@ -434,6 +439,7 @@
 		<p class="muted small">Your Lyrion Music Server, securely, from anywhere. Free software under the GNU GPL (version 2 or later).</p>
 		<p class="small"><a class="link" href="https://github.com/JameZUK/lyrion-anywhere" target="_blank" rel="noopener noreferrer">Project page and source code</a></p>
 	</div>
+
 </section>
 
 <style>
@@ -450,6 +456,15 @@
 	}
 	.card h2 {
 		margin-top: 0;
+	}
+	/* Developer diagnostics: last, and folded away. */
+	.developer > summary {
+		cursor: pointer;
+		font-size: 1.2rem;
+		font-weight: 700;
+		min-height: 44px;
+		display: flex;
+		align-items: center;
 	}
 	h3 {
 		font-size: 1rem;
