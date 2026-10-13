@@ -84,14 +84,23 @@ impl Server {
 
     /// `/v1/stream/<session>/<n>[?offset=k]`. `session` must already be validated (32 hex
     /// characters); it is percent-encoded as a path segment regardless.
-    pub(crate) fn stream_url(&self, session: &str, n: u64, offset: u64) -> Url {
+    /// `/v1/stream/<session>/<n>`, from byte `offset`, and at most `limit` bytes when given
+    /// (the replay cache's look at a stream's first bytes).
+    pub(crate) fn stream_url(&self, session: &str, n: u64, offset: u64, limit: Option<u64>) -> Url {
         let mut u = self.endpoint("v1/stream");
         u.path_segments_mut()
             .expect("http(s) URLs have a path")
             .push(session)
             .push(&n.to_string());
+        let mut q = Vec::new();
         if offset > 0 {
-            u.set_query(Some(&format!("offset={offset}")));
+            q.push(format!("offset={offset}"));
+        }
+        if let Some(l) = limit {
+            q.push(format!("limit={l}"));
+        }
+        if !q.is_empty() {
+            u.set_query(Some(&q.join("&")));
         }
         u
     }
@@ -345,16 +354,24 @@ mod tests {
         assert_eq!(local.display_name(), "127.0.0.1:9444");
         assert_eq!(s.player_url().as_str(), "wss://music.example.com/v1/player");
         assert_eq!(
-            s.stream_url("0123456789abcdef0123456789abcdef", 3, 0)
+            s.stream_url("0123456789abcdef0123456789abcdef", 3, 0, None)
                 .as_str(),
             "https://music.example.com/v1/stream/0123456789abcdef0123456789abcdef/3"
         );
         assert_eq!(
-            s.stream_url("ab", 1, 65536).as_str(),
+            s.stream_url("ab", 1, 65536, None).as_str(),
             "https://music.example.com/v1/stream/ab/1?offset=65536"
         );
+        assert_eq!(
+            s.stream_url("ab", 1, 0, Some(98304)).as_str(),
+            "https://music.example.com/v1/stream/ab/1?limit=98304"
+        );
+        assert_eq!(
+            s.stream_url("ab", 1, 10, Some(5)).as_str(),
+            "https://music.example.com/v1/stream/ab/1?offset=10&limit=5"
+        );
         // Even an unvalidated session id can't leave its path segment.
-        let u = s.stream_url("../../rpc?x=1#y", 1, 0);
+        let u = s.stream_url("../../rpc?x=1#y", 1, 0, None);
         assert_eq!(u.path(), "/v1/stream/..%2F..%2Frpc%3Fx=1%23y/1");
         assert_eq!(u.query(), None);
     }

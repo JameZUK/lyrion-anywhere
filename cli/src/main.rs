@@ -247,6 +247,7 @@ fn run(args: Args) -> Result<(), String> {
                     port,
                     request,
                     stream_number,
+                    ..
                 } => {
                     if let Some(s) = stream.take() {
                         s.cancel.store(true, Ordering::Relaxed);

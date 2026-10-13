@@ -126,6 +126,12 @@ struct RigOpts {
     ready_after_ms: Option<u64>,
     /// Start with pulling paused.
     paused: bool,
+    /// The replay cache's size (needs `spool`).
+    cache_bytes: u64,
+    /// A proxy that counts what the gateway sends (what the phone downloads).
+    counting: bool,
+    /// Before the player starts: whether alice may download.
+    downloads: Option<bool>,
 }
 
 async fn rig(with_proxy: bool) -> Rig {
@@ -182,7 +188,12 @@ async fn rig_opts(o: RigOpts) -> Rig {
         Some(s) => Harness::start_with(|c| c.max_resume_grace = Duration::from_secs(s)).await,
         None => Harness::start().await,
     };
-    let proxy = if o.proxy || o.old_gateway {
+    if let Some(on) = o.downloads {
+        h.accounts.set_downloads("alice", on, None).unwrap();
+    }
+    let proxy = if o.counting {
+        Some(Proxy::start_counting(h.addr).await)
+    } else if o.proxy || o.old_gateway {
         let rewrite = o.old_gateway.then(|| {
             (
                 b"\"resume_grace\":true".to_vec(),
@@ -210,6 +221,7 @@ async fn rig_opts(o: RigOpts) -> Rig {
             max_sample_rate: 192_000,
             cache_dir: cache.as_ref().map(|c| c.to_string_lossy().into_owned()),
             read_ahead: true,
+            stream_cache_bytes: o.cache_bytes,
             dsp: o.dsp,
         },
     );
@@ -2031,4 +2043,299 @@ async fn a_gap_longer_than_the_grace_held_by_the_user_restarts_nothing() {
     let (r, _, _, sent) = gap_beyond_the_grace(BeyondGrace::HeldInGap).await;
     assert!(sent.is_empty(), "{sent:?}");
     r.player.stop();
+}
+
+// ---------------------------------------------------------------------------------------
+// The replay cache (rolling cache Phase B)
+// ---------------------------------------------------------------------------------------
+
+/// Every replay-cache file under `root` (any depth).
+fn cache_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.extension().is_some_and(|x| x == "bin") {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+const GIB: u64 = 1024 * 1024 * 1024;
+
+/// A rig that spools and keeps a 1 GiB replay cache, behind a counting proxy.
+async fn cache_rig(downloads: bool) -> Rig {
+    rig_opts(RigOpts {
+        spool: true,
+        counting: true,
+        cache_bytes: GIB,
+        downloads: Some(downloads),
+        ..RigOpts::default()
+    })
+    .await
+}
+
+/// Play `track` once to its end (`STMu` number `n`).
+async fn play_once(r: &mut Rig, n: usize) {
+    let mac = r.mac;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMu", n, 30).await;
+}
+
+/// A replay downloads only the stream's first bytes: the rest comes from the cache, checked
+/// by its hash, and the audio is bit-identical; the status and the signal path say so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replay_plays_from_the_cache_bit_identically() {
+    let mut r = cache_rig(true).await;
+    let track = flac::encode(44_100, 16, &flac::noise(44_100 * 3, 16, 71));
+    assert!(track.len() > 400_000);
+    let once = flac::decode(&track).1;
+    let mut want = once.clone();
+    want.extend(once.iter().copied());
+    {
+        let mut s = r.h.lms.streams.lock().unwrap();
+        s.push_back(StreamPlan::whole(track.clone()));
+        s.push_back(StreamPlan::whole(track.clone()));
+    }
+    r.send(audg_full()).await;
+    play_once(&mut r, 1).await;
+    let p = r.player.clone();
+    wait_for("kept", move || p.stream_cache_totals().count == 1).await;
+    let t = r.player.stream_cache_totals();
+    assert_eq!(t.bytes, track.len() as u64, "the whole stream");
+    let cache = r.cache.clone().unwrap();
+    let files = cache_files(&cache);
+    assert_eq!(files.len(), 1);
+    assert_eq!(std::fs::read(&files[0]).unwrap(), track);
+    // Named by a fingerprint, in this user's scope: nothing says what it is.
+    let rel = files[0]
+        .strip_prefix(&cache)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let parts: Vec<&str> = rel.split('/').collect();
+    assert_eq!(parts.len(), 3, "{rel}");
+    assert_eq!(parts[1], "stream-cache");
+    let name = parts[2].trim_end_matches(".bin");
+    assert!(name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit()));
+    let index =
+        std::fs::read_to_string(cache.join(parts[0]).join("stream-cache/index.json")).unwrap();
+    assert!(
+        !index.contains("alice") && !index.contains("127.0.0.1"),
+        "{index}"
+    );
+    assert!(spool_files(&cache).is_empty(), "no spool left");
+    assert!(
+        !r.obs.saw(|s| s.from_cache),
+        "the first play came from the network"
+    );
+
+    // The replay.
+    let before = r.proxy.as_ref().unwrap().down_bytes.load(Ordering::SeqCst);
+    play_once(&mut r, 2).await;
+    r.stop_pulling();
+    let downloaded = r.proxy.as_ref().unwrap().down_bytes.load(Ordering::SeqCst) - before;
+    // At most the first 96 KiB (`?limit=`: the fingerprint's 64 KiB after the header),
+    // plus the player socket's traffic: a fraction of the track.
+    assert!(
+        downloaded < 96 * 1024 + 16 * 1024,
+        "downloaded {downloaded} of {} bytes",
+        track.len()
+    );
+    assert_bits_equal(
+        &r.pulled.all(),
+        &want,
+        "played twice, the second from the cache",
+    );
+    assert!(r.obs.saw(|s| s.from_cache), "the status says so");
+    assert!(
+        r.obs
+            .paths
+            .lock()
+            .unwrap()
+            .iter()
+            .flatten()
+            .any(|p| p.from_cache),
+        "the signal path says so"
+    );
+    assert_eq!(r.player.stream_cache_totals().count, 1, "not kept twice");
+    assert_eq!(r.count("STMd"), 2);
+    assert_eq!(r.count("HELO"), 1);
+    // LMS was never told of bytes it didn't send.
+    let told =
+        r.h.lms
+            .slim_payloads(b"STAT")
+            .iter()
+            .map(|p| u64::from_be_bytes(p[15..23].try_into().unwrap()))
+            .max()
+            .unwrap();
+    assert!(told <= track.len() as u64);
+    assert!(spool_files(&cache).is_empty());
+    r.player.stop();
+}
+
+/// A cached file that was changed on the phone fails its hash check: it is deleted and the
+/// replay comes from the network, still bit-identical.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tampered_entry_falls_back_to_the_network() {
+    let mut r = cache_rig(true).await;
+    let track = flac::encode(44_100, 16, &flac::noise(44_100 * 3, 16, 72));
+    let once = flac::decode(&track).1;
+    let mut want = once.clone();
+    want.extend(once.iter().copied());
+    {
+        let mut s = r.h.lms.streams.lock().unwrap();
+        s.push_back(StreamPlan::whole(track.clone()));
+        s.push_back(StreamPlan::whole(track.clone()));
+    }
+    r.send(audg_full()).await;
+    play_once(&mut r, 1).await;
+    let p = r.player.clone();
+    wait_for("kept", move || p.stream_cache_totals().count == 1).await;
+    let cache = r.cache.clone().unwrap();
+    let file = cache_files(&cache).pop().unwrap();
+    // One byte changed well past the fingerprint: the same length and first bytes.
+    let mut bytes = std::fs::read(&file).unwrap();
+    let at = bytes.len() - 1000;
+    bytes[at] ^= 0x5a;
+    std::fs::write(&file, &bytes).unwrap();
+
+    let before = r.proxy.as_ref().unwrap().down_bytes.load(Ordering::SeqCst);
+    play_once(&mut r, 2).await;
+    r.stop_pulling();
+    let downloaded = r.proxy.as_ref().unwrap().down_bytes.load(Ordering::SeqCst) - before;
+    assert!(
+        downloaded >= track.len() as u64,
+        "from the network: {downloaded}"
+    );
+    assert_bits_equal(&r.pulled.all(), &want, "the tampered copy was never played");
+    assert!(!r.obs.saw(|s| s.from_cache));
+    // The tampered copy went; the replay, received whole, is kept in its place.
+    let p = r.player.clone();
+    wait_for("kept again", move || p.stream_cache_totals().count == 1).await;
+    assert_eq!(
+        std::fs::read(cache_files(&cache).pop().unwrap()).unwrap(),
+        track
+    );
+    r.player.stop();
+}
+
+/// Without the download permission (the owner's decision 1) nothing is kept: the spools go
+/// once played, and a cache left from before is deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_the_download_permission_no_cache_is_kept() {
+    let mut r = cache_rig(false).await;
+    let track = flac::encode(44_100, 16, &flac::noise(44_100 * 2, 16, 73));
+    let want = flac::decode(&track).1;
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(track.clone()));
+    r.send(audg_full()).await;
+    play_once(&mut r, 1).await;
+    r.stop_pulling();
+    assert_bits_equal(&r.pulled.all(), &want, "plays as usual");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let cache = r.cache.clone().unwrap();
+    assert!(cache_files(&cache).is_empty());
+    assert!(spool_files(&cache).is_empty());
+    assert_eq!(r.player.stream_cache_totals().count, 0);
+    r.player.stop();
+}
+
+/// Losing the download permission deletes what was kept, at the next start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn losing_the_download_permission_deletes_the_cache() {
+    let mut r = cache_rig(true).await;
+    let track = flac::encode(44_100, 16, &flac::noise(44_100 * 2, 16, 74));
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(track));
+    r.send(audg_full()).await;
+    play_once(&mut r, 1).await;
+    let p = r.player.clone();
+    wait_for("kept", move || p.stream_cache_totals().count == 1).await;
+    r.player.stop();
+    let p = r.player.clone();
+    wait_for("stopped", move || !p.is_running()).await;
+    assert_eq!(
+        r.player.stream_cache_totals().count,
+        1,
+        "kept while stopped"
+    );
+    r.h.accounts.set_downloads("alice", false, None).unwrap();
+    r.player.start(r.obs.clone()).unwrap();
+    let p = r.player.clone();
+    wait_for("deleted", move || p.stream_cache_totals().count == 0).await;
+    assert!(cache_files(r.cache.as_ref().unwrap()).is_empty());
+    r.player.stop();
+}
+
+/// Signing out (the gateway closes the player's socket with 1008) deletes the cache, as
+/// does the app's clean-up call; "Clear" and "Off" empty it too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn signing_out_clearing_and_off_delete_the_cache() {
+    let mut r = cache_rig(true).await;
+    let t1 = flac::encode(44_100, 16, &flac::noise(44_100 * 2, 16, 75));
+    let t2 = flac::encode(44_100, 16, &flac::noise(44_100 * 2, 16, 76));
+    let t3 = flac::encode(44_100, 16, &flac::noise(44_100 * 2, 16, 77));
+    {
+        let mut s = r.h.lms.streams.lock().unwrap();
+        s.push_back(StreamPlan::whole(t1));
+        s.push_back(StreamPlan::whole(t2));
+        s.push_back(StreamPlan::whole(t3));
+    }
+    r.send(audg_full()).await;
+    let cache = r.cache.clone().unwrap();
+    let dir = cache.to_string_lossy().into_owned();
+    // "Clear".
+    play_once(&mut r, 1).await;
+    let p = r.player.clone();
+    wait_for("kept", move || p.stream_cache_totals().count == 1).await;
+    r.player.clear_stream_cache();
+    assert_eq!(r.player.stream_cache_totals().count, 0);
+    assert!(cache_files(&cache).is_empty());
+    // Off.
+    play_once(&mut r, 2).await;
+    let p = r.player.clone();
+    wait_for("kept", move || p.stream_cache_totals().count == 1).await;
+    r.player.set_stream_cache_bytes(0);
+    let p = r.player.clone();
+    wait_for("off", move || p.stream_cache_totals().count == 0).await;
+    r.player.set_stream_cache_bytes(GIB);
+    // The free functions, for when no player runs, see the same cache.
+    play_once(&mut r, 3).await;
+    let p = r.player.clone();
+    wait_for("kept", move || p.stream_cache_totals().count == 1).await;
+    assert_eq!(
+        anywhere_mobile::stream_cache_totals(r.session.clone(), dir.clone()).count,
+        1
+    );
+    assert!(anywhere_mobile::clear_stream_cache(r.session.clone(), "relative".into()).is_err());
+    // Signing out.
+    r.session.logout().await.unwrap();
+    let obs = r.obs.clone();
+    wait_for("stopped", move || {
+        obs.saw(|s| matches!(s.connection, PlayerConnection::Stopped { .. }))
+    })
+    .await;
+    let c = cache.clone();
+    wait_for("deleted", move || cache_files(&c).is_empty()).await;
+    // A leftover (a crash) is removed by the app's clean-up call, with the folders.
+    let scope = cache
+        .join("0123456789abcdef0123456789abcdef")
+        .join("stream-cache");
+    std::fs::create_dir_all(&scope).unwrap();
+    std::fs::write(scope.join(format!("{}.bin", "a".repeat(64))), b"x").unwrap();
+    anywhere_mobile::remove_stream_spools(dir).unwrap();
+    assert!(cache_files(&cache).is_empty());
+    assert!(!scope.exists());
 }
