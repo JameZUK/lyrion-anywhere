@@ -69,6 +69,7 @@ pub async fn player_upgrade(
     State(gw): State<AppState>,
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     headers: HeaderMap,
+    slot: Option<axum::Extension<crate::limits::ConnSlot>>,
     ws: WebSocketUpgrade,
 ) -> Response {
     if !origin_allowed(&gw.cfg, &headers) {
@@ -78,7 +79,11 @@ pub async fn player_upgrade(
     let addr = crate::client_addr(&gw.cfg, peer, &headers);
     ws.max_message_size(MAX_WS_MESSAGE)
         .max_frame_size(MAX_WS_MESSAGE)
-        .on_upgrade(move |socket| handle(gw, socket, addr))
+        // The connection's place under the caps is held until the socket closes.
+        .on_upgrade(move |socket| async move {
+            handle(gw, socket, addr).await;
+            drop(slot);
+        })
 }
 
 #[derive(Deserialize)]

@@ -768,9 +768,24 @@ impl Session {
         st.stream_seq += 1;
         st.stream_path = path;
         st.stream_format = s.format;
-        st.relay = None; // the previous stream's upstream is abandoned
-        st.live = None; // and its encode slot given back
-        st.stream_path.as_ref()?;
+        // The previous stream's upstream is abandoned: cancelled, so its LMS connection
+        // and any encoder (and its slot) go now, not when the stream next times out.
+        if let Some(old) = st.relay.take() {
+            old.cancel();
+        }
+        st.live = None; // and an unused encode slot given back
+        if st.stream_path.is_none() {
+            // Refused: the player can't fetch it anyway, so it isn't told where it was
+            // (another address, or a request that isn't LMS's own).
+            return Some(
+                Strm {
+                    server_ip: 0,
+                    request: Vec::new(),
+                    ..s
+                }
+                .encode_payload(),
+            );
+        }
         let bitrate = crate::live::wanted(s.format, st.quality, gw.live_ffmpeg().is_some())?;
         let Some(permit) = gw.live_slot() else {
             info!(mac = %self.device.mac_string(), "no free live-encode slot; sending the stream as it is");

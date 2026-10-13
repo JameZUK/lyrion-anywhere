@@ -806,6 +806,45 @@ async fn websockets_are_not_cut_by_the_time_limits() {
     still_open(&mut ws).await;
 }
 
+/// Regression: a WebSocket's connection left the caps once upgraded, so sockets (even ones
+/// that never sent a token) were unlimited.
+#[tokio::test]
+async fn websockets_count_against_the_connection_cap() {
+    let h = harness_with(|c| c.auth_timeout = Duration::from_secs(30)).await;
+    let addr = served(
+        &h,
+        ServeLimits {
+            max_connections: 2,
+            ..ServeLimits::default()
+        },
+    )
+    .await;
+    // Two sockets that never authenticate, one of each kind.
+    let (a, _) = connect_async(format!("ws://{addr}/v1/events"))
+        .await
+        .unwrap();
+    let (_b, _) = connect_async(format!("ws://{addr}/v1/player"))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut c = TcpStream::connect(addr).await.unwrap();
+    c.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut b = [0u8; 64];
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), c.read(&mut b))
+            .await
+            .is_err(),
+        "open sockets must hold their places"
+    );
+    // A socket that closes frees its place.
+    drop(a);
+    let got = closed_within(&mut c, Duration::from_secs(3)).await;
+    let all = [&b[..], &got[..]].concat();
+    assert!(String::from_utf8_lossy(&all).contains("200 OK"));
+}
+
 /// A download that takes longer than the limits is streamed to the end.
 #[tokio::test]
 async fn slow_downloads_are_not_cut_by_the_time_limits() {

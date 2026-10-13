@@ -6,8 +6,10 @@
 //! - [`body_deadline`]: request bodies (all small JSON) must arrive within a time limit.
 //! - [`Limiter`]: requests in flight, per user and overall (artwork).
 //!
-//! WebSockets and streamed responses are not affected: the header limit applies only while
-//! a request head is awaited, and the body limit only to request bodies.
+//! WebSockets and streamed responses are not affected by the time limits: the header limit
+//! applies only while a request head is awaited, and the body limit only to request bodies.
+//! A WebSocket does count against the connection caps for as long as it is open: its
+//! connection's [`ConnSlot`] is held by the socket's task (see [`ConnSlot`]).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -211,6 +213,13 @@ fn canonical(ip: IpAddr) -> IpAddr {
 }
 
 /// One connection counted against its address; uncounted when dropped.
+/// A connection's places under the connection caps, put in each request's extensions by
+/// [`serve`]. Hyper hands an upgraded connection (a WebSocket) to its handler and ends the
+/// HTTP connection, so an upgrade handler keeps a clone of this for the life of the socket;
+/// otherwise WebSockets would escape the caps.
+#[derive(Clone)]
+pub struct ConnSlot(#[allow(dead_code)] Arc<(tokio::sync::OwnedSemaphorePermit, Option<IpSlot>)>);
+
 struct IpSlot {
     map: Arc<Mutex<HashMap<IpAddr, usize>>>,
     ip: IpAddr,
@@ -312,8 +321,11 @@ pub async fn serve(
         };
         let _ = stream.set_nodelay(true);
         let app = app.clone();
+        let slot = ConnSlot(Arc::new((permit, ip_slot)));
+        let held = slot.clone();
         let svc = hyper::service::service_fn(move |mut req: Request<hyper::body::Incoming>| {
             req.extensions_mut().insert(ConnectInfo(peer));
+            req.extensions_mut().insert(held.clone());
             app.clone().oneshot(req.map(Body::new))
         });
         let conn = builder
@@ -329,8 +341,7 @@ pub async fn serve(
                     let _ = conn.await;
                 }
             }
-            drop(ip_slot);
-            drop(permit);
+            drop(slot);
         });
     }
     drop(listener);

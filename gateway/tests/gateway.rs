@@ -270,7 +270,16 @@ async fn stream_requests_are_locked_down() {
         let sid = connect(&mut ws, &h.tok_a).await;
         let mut lms = h.lms.accept().await;
         lms.write_all(&strm(b's', ip, &req)).await.unwrap();
-        next(&mut ws).await; // still forwarded, so the client stays in step
+        // Still forwarded, so the client stays in step, but without where it pointed.
+        match next(&mut ws).await {
+            Message::Binary(b) => {
+                assert_eq!(&b[2..6], b"strm", "{name}");
+                let s = anywhere_core::proto::Strm::parse(&b[6..]).unwrap();
+                assert_eq!(s.server_ip, 0, "{name}");
+                assert!(s.request.is_empty(), "{name}: {:?}", s.request);
+            }
+            other => panic!("{name}: {other:?}"),
+        }
         let resp = h.get_stream(&sid, 1, Some(&h.tok_a)).await;
         assert_eq!(resp.status(), 404, "{name}");
         assert!(

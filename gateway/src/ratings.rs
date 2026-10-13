@@ -2,7 +2,8 @@
 //! gateway by stable track key (so it survives rescans), blended with LMS's shared rating.
 //!
 //! - `PUT /v1/me/ratings/{track}` `{"rating": 0–100}` (steps of 10; 0 clears): rate a library
-//!   track. Also written to LMS's shared rating through Ratings Light, where it is installed.
+//!   track. Also written to LMS's shared rating through Ratings Light, where it is installed
+//!   (a clear takes back only the user's own rating, never the shared one).
 //! - `GET /v1/me/ratings?tracks=1,2,…` (at most [`MAX_TRACKS`]): for each track, the user's
 //!   own rating, LMS's shared rating (tag `R`) and the blend.
 //! - `POST /v1/me/ratings` `{"ratings": [{"track", "key", "rating", "at"}]}`: ratings made
@@ -340,7 +341,10 @@ pub async fn put(
     if set(gw.accounts(), p.user_id, &k.key, id, rating, unix_now()).is_err() {
         return internal();
     }
-    write_shared(&gw, id, rating).await;
+    // Clearing takes back only the user's own rating: LMS's shared one is everyone's.
+    if rating > 0 {
+        write_shared(&gw, id, rating).await;
+    }
     let mine = (rating > 0).then_some(rating);
     ok(json!({"track": id, "mine": mine, "shared": k.shared, "rating": blend(mine, k.shared)}))
 }
@@ -412,6 +416,8 @@ pub async fn batch(State(gw): State<AppState>, headers: HeaderMap, body: Body) -
         }
     }
     let (mut applied, mut skipped) = (0, 0);
+    // What LMS's shared rating ends as: one write per track, never a clear.
+    let mut shared: std::collections::BTreeMap<u64, u32> = Default::default();
     for (id, key, rating, at) in wanted {
         if !known.iter().any(|k| k.id == id && k.key == key) {
             skipped += 1; // not that track (any more)
@@ -420,10 +426,15 @@ pub async fn batch(State(gw): State<AppState>, headers: HeaderMap, body: Body) -
         match set(gw.accounts(), p.user_id, &key, id, rating, at) {
             Ok(true) => {
                 applied += 1;
-                write_shared(&gw, id, rating).await;
+                shared.insert(id, rating);
             }
             Ok(false) => skipped += 1, // a newer rating is kept
             Err(_) => return internal(),
+        }
+    }
+    for (id, rating) in shared {
+        if rating > 0 {
+            write_shared(&gw, id, rating).await;
         }
     }
     ok(json!({ "applied": applied, "skipped": skipped }))

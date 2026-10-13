@@ -116,6 +116,22 @@ pub fn parse_line(line: &str) -> Option<Event> {
     })
 }
 
+/// An event's words with any other player's id the user may not see blanked (a `sync`
+/// names the players joined, for one).
+fn hide_players(tokens: &[String], allows: impl Fn(&str) -> bool) -> Vec<String> {
+    tokens
+        .iter()
+        .map(|t| {
+            let lower = t.to_ascii_lowercase();
+            if is_player_id(&lower) && !allows(&lower) {
+                String::new()
+            } else {
+                t.clone()
+            }
+        })
+        .collect()
+}
+
 /// Close reason for a socket evicted by a newer one of the same device or user.
 pub const REPLACED: &str = "replaced by a newer connection";
 
@@ -338,13 +354,18 @@ impl crate::Gateway {
 pub async fn events_upgrade(
     State(gw): State<AppState>,
     headers: HeaderMap,
+    slot: Option<axum::Extension<crate::limits::ConnSlot>>,
     ws: WebSocketUpgrade,
 ) -> Response {
     if !origin_allowed(&gw.cfg, &headers) {
         return (StatusCode::FORBIDDEN, "origin not allowed\n").into_response();
     }
+    // The connection's place under the caps is held until the socket closes.
     ws.max_message_size(1024)
-        .on_upgrade(move |socket| handle(gw, socket))
+        .on_upgrade(move |socket| async move {
+            handle(gw, socket).await;
+            drop(slot);
+        })
 }
 
 async fn close(mut ws: WebSocket, code: u16, reason: &str) {
@@ -393,7 +414,8 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
                         None => true,
                     };
                     if wanted {
-                        let msg = json!({ "player": ev.player, "event": ev.tokens }).to_string();
+                        let tokens = hide_players(&ev.tokens, |p| scope.allows(p));
+                        let msg = json!({ "player": ev.player, "event": tokens }).to_string();
                         if ws.send(Message::Text(msg.into())).await.is_err() {
                             return;
                         }
@@ -433,6 +455,16 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn other_players_ids_are_hidden() {
+        let e = parse_line("aa:bb:cc:dd:ee:01 sync bb:bb:cc:dd:ee:02 AA:BB:CC:DD:EE:03").unwrap();
+        let mine = |p: &str| p == "aa:bb:cc:dd:ee:01" || p == "aa:bb:cc:dd:ee:03";
+        assert_eq!(
+            hide_players(&e.tokens, mine),
+            vec!["sync", "", "AA:BB:CC:DD:EE:03"]
+        );
+    }
 
     #[test]
     fn player_events_are_parsed_and_unescaped() {

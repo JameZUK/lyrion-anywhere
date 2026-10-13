@@ -528,6 +528,32 @@ async fn the_encoder_is_stopped_when_its_stream_is_abandoned() {
     wait_for(|| !alive(pid)).await;
 }
 
+/// Regression: a stream superseded by the next `strm s` kept its LMS connection, encoder
+/// and encode slot until it timed out, as long as its client kept the response open.
+#[tokio::test]
+async fn a_superseded_stream_is_cancelled_even_if_its_client_stays() {
+    let Live { mut h, dir } = live(Some("printf 'OggS'; exec sleep 600"), 1).await;
+    *h.lms.stream_body.lock().unwrap() = Some(Arc::new(library_flac(0, 5)));
+    let tok = h.tok_a.clone();
+    let (mut ws, sid, mut lms, _) = announce(&mut h, auth(&tok, Some("high")), A, b'f').await;
+    let mut resp = h.get_stream(&sid, 1, Some(&tok)).await;
+    assert_eq!(&resp.chunk().await.unwrap().unwrap()[..], b"OggS");
+    wait_for(|| !pids(&dir).is_empty()).await;
+    let pid = pids(&dir)[0];
+    let alive = |pid: u32| Path::new(&format!("/proc/{pid}")).exists();
+    // The next track, with the old response still held open.
+    let _ = restream(&mut ws, &mut lms, h.mac_a, b'm').await;
+    wait_for(|| !alive(pid)).await;
+    let end = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Ok(Some(_)) = resp.chunk().await {}
+    })
+    .await;
+    assert!(end.is_ok(), "the old response ends");
+    // Its encode slot (the only one) is free again.
+    let strm = restream(&mut ws, &mut lms, h.mac_a, b'f').await;
+    assert_eq!(strm[2], b'u', "the next FLAC stream is re-encoded");
+}
+
 // ---------------------------------------------------------------------------
 // The real ffmpeg
 // ---------------------------------------------------------------------------

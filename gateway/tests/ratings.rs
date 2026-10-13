@@ -121,6 +121,11 @@ async fn rating_a_track_blends_with_the_shared_rating() {
     )
     .await;
     assert_eq!(v["mine"], Value::Null);
+    assert_eq!(
+        shared_writes(&h).len(),
+        1,
+        "a clear never clears LMS's shared rating (it is everyone's)"
+    );
     // A stream or an unknown track can't be rated.
     for id in [2, 99_999] {
         let (s, _) = call(

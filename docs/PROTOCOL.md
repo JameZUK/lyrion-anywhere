@@ -48,7 +48,8 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
   - **trade-off:** a thief who copied a refresh token and replays it within 60 seconds of the owner's refresh also gets a valid replacement. They can't both keep the device: whichever side uses its replacement first cuts off the other's access token immediately, and when the other side next refreshes, the device is revoked for both. Before this change, the second refresh discarded the first replacement, which signed out (and revoked) legitimate browsers whose tabs refreshed together. The window is 60 seconds and the thief needs the refresh token itself. This was reviewed and kept deliberately (SPEC D21), so it is not a finding;
   - rotation is a single database transaction, so two simultaneous refreshes of one token never look like reuse: one rotates it, the other is served by the grace rule;
   - the web app also takes a cross-tab Web Lock (`anywhere-refresh`, where supported) around each refresh, so its tabs don't present the same cookie at once;
-  - clients sign out only when a refresh is refused (4xx). If the server can't be reached, they keep the sign-in and retry with backoff;
+  - **limits:** a device may renew at most 30 times a minute; beyond that the refresh is refused with 429 and `Retry-After`, without using the token up. A device keeps at most 8 live access tokens (the oldest are dropped), and the gateway keeps only the newest 32 used refresh tokens per device for reuse detection, plus none that have expired;
+  - clients sign out only when the gateway itself refuses a refresh: a 401 carrying its JSON `error`. Anything else (429, 5xx, or a proxy's or CDN's own error page, of any status) leaves the sign-in, and the native apps' downloads, in place; they retry with backoff;
   - browsers get them in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/v1/auth`;
   - native apps get them in the body and keep them in the Keystore/Keychain.
 - **Two-step verification (optional, per user):** TOTP per RFC 6238 (HMAC-SHA1, 30 s, 6 digits), compatible with standard authenticator apps.
@@ -164,6 +165,7 @@ The gateway replies with a text greeting:
 **Gateway → client:**
 - One binary message per server → client Slimproto frame, length prefix included, exactly as LMS sent it.
 - `serv` (redirect to another server) is never forwarded.
+- A refused `strm s` (another address, or a request that isn't this player's own LMS stream) is still forwarded so the client stays in step, but with its address zeroed and its HTTP request removed; fetching it is a 404.
 - **Client notes:**
   - On a seek LMS sends `strm q` and the new `strm s` back to back (about 2 ms apart for MP3), so a client sees them together. Drop queued audio on the `strm q` itself, not on a later check of the player state.
   - `audg` carries LMS's volume as linear gains (16.16) on LMS's own curve. A client applying it should do so at its output, after any queued audio.
@@ -870,7 +872,7 @@ The lyrics of a library track, for Now playing (docs/plans/wave1-design.md §9).
 
 **Connecting:** the first message is the access token, as text. The gateway replies `{"subscribed":true}`, then sends `{"player":"<mac>","event":[...]}` for the caller's permitted players and `{"player":null,"event":["rescan",...]}` for library rescans. `{"resync":true}` means some events were missed, so re-query state.
 
-**What is forwarded:** only `playlist`, `mixer`, `power`, `client`, `sync`, `pause`, `play`, `stop`, `time` and `newmetadata` events. Any token that looks like a URL or path, or that response filtering would remove (such as a bare LAN address like `10.0.0.5:9000`), is blanked. Preference changes (`prefset`) and everything else are never forwarded.
+**What is forwarded:** only `playlist`, `mixer`, `power`, `client`, `sync`, `pause`, `play`, `stop`, `time` and `newmetadata` events. Any token that looks like a URL or path, or that response filtering would remove (such as a bare LAN address like `10.0.0.5:9000`), is blanked, as is the id of any other player the user may not see (a `sync` names the players joined). Preference changes (`prefset`) and everything else are never forwarded.
 
 **Rules:**
 - Clients may send nothing after the token. Any message closes the socket (1008).

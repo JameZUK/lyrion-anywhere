@@ -93,6 +93,14 @@ const AUDIT_PRUNE_EVERY: i64 = 1000;
 pub const REVOKED_DEVICE_RETENTION: Duration = Duration::from_secs(30 * 24 * 3600);
 /// Siblings one refresh token may have (lost responses and concurrent refreshes).
 const MAX_REFRESH_RETRIES: i64 = 8;
+/// Renewals one device may make per [`REFRESH_WINDOW`]. A client renews every few minutes
+/// at most (more on a burst of page loads); a loop of renewals is refused.
+pub const REFRESHES_PER_WINDOW: u32 = 30;
+pub const REFRESH_WINDOW: Duration = Duration::from_secs(60);
+/// Live access tokens kept per device (older ones still unexpired are dropped).
+pub const MAX_ACCESS_PER_DEVICE: usize = 8;
+/// Used refresh tokens kept per device for reuse detection (newest first).
+const KEEP_USED_REFRESH: i64 = 32;
 /// Revoked devices' players waiting to be forgotten by LMS (beyond this, oldest dropped).
 const FORGET_QUEUE_CAP: usize = 1000;
 /// A device name that has nothing usable left after cleaning.
@@ -601,6 +609,8 @@ pub struct Accounts {
     forget: Mutex<std::collections::VecDeque<String>>,
     /// When each device's last address was written (to rate-limit the writes).
     seen: Mutex<HashMap<i64, Instant>>,
+    /// Renewals per device in the current window: (window start, count).
+    refreshes: Mutex<HashMap<i64, (Instant, u32)>>,
 }
 
 fn now_secs() -> i64 {
@@ -765,6 +775,7 @@ impl Accounts {
             dummy_hash: hash_password(&new_secret())?,
             forget: Mutex::new(Default::default()),
             seen: Mutex::new(HashMap::new()),
+            refreshes: Mutex::new(HashMap::new()),
         })
     }
 
@@ -1164,6 +1175,8 @@ impl Accounts {
         let Some((device, expires, used, used_at, parent)) = row else {
             return Err(AuthError::Invalid);
         };
+        // Refused before anything changes, so the client can try the same token later.
+        self.count_refresh(device)?;
         if used != 0 {
             let (children, children_used): (i64, i64) = tx.query_row(
                 "SELECT COUNT(*), COALESCE(SUM(used), 0) FROM refresh_tokens WHERE parent = ?1",
@@ -1180,6 +1193,7 @@ impl Accounts {
                     "UPDATE refresh_tokens SET parent = ?1 WHERE token_hash = ?2",
                     params![h, sha256(&minted.refresh).to_vec()],
                 )?;
+                prune_refresh_on(&tx, device, now)?;
                 tx.commit()?;
                 let t = self.activate(minted);
                 drop(db);
@@ -1229,6 +1243,7 @@ impl Accounts {
             "UPDATE refresh_tokens SET parent = ?1 WHERE token_hash = ?2",
             params![h, sha256(&minted.refresh).to_vec()],
         )?;
+        prune_refresh_on(&tx, device, now)?;
         tx.commit()?;
         if !superseded.is_empty() {
             self.access
@@ -2222,11 +2237,43 @@ impl Accounts {
         Ok(self.activate(minted))
     }
 
-    /// Make minted tokens live: register the access token in memory.
+    /// Count a renewal by `device`; refused beyond [`REFRESHES_PER_WINDOW`].
+    fn count_refresh(&self, device: i64) -> Result<(), AuthError> {
+        let mut m = self.refreshes.lock().unwrap();
+        let now = Instant::now();
+        if m.len() >= LIMITS_CAP {
+            m.retain(|_, (start, _)| now.duration_since(*start) < REFRESH_WINDOW);
+        }
+        let e = m.entry(device).or_insert((now, 0));
+        if now.duration_since(e.0) >= REFRESH_WINDOW {
+            *e = (now, 0);
+        }
+        if e.1 >= REFRESHES_PER_WINDOW {
+            let wait = (e.0 + REFRESH_WINDOW).saturating_duration_since(now);
+            return Err(AuthError::Locked(wait.max(Duration::from_secs(1))));
+        }
+        e.1 += 1;
+        Ok(())
+    }
+
+    /// Make minted tokens live: register the access token in memory. A device keeps at
+    /// most [`MAX_ACCESS_PER_DEVICE`] live access tokens (the newest).
     fn activate(&self, m: Minted) -> Tokens {
         let mut map = self.access.lock().unwrap();
         let now = Instant::now();
         map.retain(|_, e| e.expires > now);
+        let device = m.principal.device_id;
+        let mut mine: Vec<([u8; 32], Instant)> = map
+            .iter()
+            .filter(|(_, e)| e.principal.device_id == device)
+            .map(|(k, e)| (*k, e.expires))
+            .collect();
+        if mine.len() >= MAX_ACCESS_PER_DEVICE {
+            mine.sort_by_key(|(_, exp)| *exp);
+            for (k, _) in &mine[..=mine.len() - MAX_ACCESS_PER_DEVICE] {
+                map.remove(k);
+            }
+        }
         map.insert(
             sha256(&m.access),
             AccessEntry {
@@ -2340,6 +2387,11 @@ impl Accounts {
         if ok && db.last_insert_rowid() % AUDIT_PRUNE_EVERY == 0 {
             let oldest = now_secs() - AUDIT_RETENTION.as_secs() as i64;
             let _ = prune_audit_on(&db, AUDIT_MAX_ROWS, oldest);
+            // Expired refresh tokens of devices that never renewed again.
+            let _ = db.execute(
+                "DELETE FROM refresh_tokens WHERE expires_at <= ?1",
+                [now_secs()],
+            );
         }
     }
 
@@ -2405,6 +2457,22 @@ fn session_days_on(db: &Connection) -> u32 {
 
 /// Store a new refresh token for an active device (on the caller's connection or
 /// transaction) and pick a new access token.
+/// Drop `device`'s expired refresh tokens, and all but its newest [`KEEP_USED_REFRESH`] used
+/// ones (kept so a copied token presented later is still caught as reuse).
+fn prune_refresh_on(db: &Connection, device: i64, now: i64) -> rusqlite::Result<()> {
+    db.execute(
+        "DELETE FROM refresh_tokens WHERE device_id = ?1 AND expires_at <= ?2",
+        params![device, now],
+    )?;
+    db.execute(
+        "DELETE FROM refresh_tokens WHERE device_id = ?1 AND used = 1 AND token_hash NOT IN (
+           SELECT token_hash FROM refresh_tokens WHERE device_id = ?1 AND used = 1
+           ORDER BY used_at DESC LIMIT ?2)",
+        params![device, KEEP_USED_REFRESH],
+    )?;
+    Ok(())
+}
+
 fn mint(db: &Connection, device: i64, now: i64) -> Result<Minted, AuthError> {
     type Row = (i64, String, String, i64, String, String, i64, i64);
     let row: Row = db.query_row(
@@ -3260,6 +3328,90 @@ mod tests {
             a.refresh_at(&t.refresh, now_secs() + 86_400 + 1),
             Err(AuthError::Invalid)
         );
+    }
+
+    #[test]
+    fn renewals_are_rate_limited_per_device() {
+        // Regression: a refresh token could be renewed in a tight loop, each renewal adding
+        // a live access token and a database row.
+        let a = store();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let other = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+        let mut cur = t.refresh.clone();
+        for _ in 0..REFRESHES_PER_WINDOW {
+            cur = a.refresh(&cur).unwrap().refresh;
+        }
+        match a.refresh(&cur) {
+            Err(AuthError::Locked(d)) => assert!(d <= REFRESH_WINDOW),
+            x => panic!("expected a refusal, got {x:?}"),
+        }
+        // Refused without using the token up, and other devices are unaffected.
+        a.refreshes.lock().unwrap().clear();
+        assert!(a.refresh(&cur).is_ok());
+        assert!(a.refresh(&other.refresh).is_ok());
+    }
+
+    #[test]
+    fn renewals_keep_state_bounded() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let device = t.principal.device_id;
+        let mut cur = t.refresh.clone();
+        let mut accesses = vec![t.access.clone()];
+        for _ in 0..100 {
+            a.refreshes.lock().unwrap().clear();
+            let n = a.refresh(&cur).unwrap();
+            cur = n.refresh;
+            accesses.push(n.access);
+        }
+        let live = a
+            .access
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|e| e.principal.device_id == device)
+            .count();
+        assert_eq!(live, MAX_ACCESS_PER_DEVICE);
+        // The newest access tokens work; the oldest are gone.
+        assert!(a.authenticate(accesses.last().unwrap()).is_some());
+        assert!(a.authenticate(&accesses[0]).is_none());
+        let rows: i64 =
+            a.db.lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM refresh_tokens WHERE device_id = ?1",
+                    [device],
+                    |r| r.get(0),
+                )
+                .unwrap();
+        assert!(rows <= KEEP_USED_REFRESH + 1, "{rows} rows");
+        // The chain still renews.
+        assert!(a.refresh(&cur).is_ok());
+    }
+
+    #[test]
+    fn expired_refresh_rows_are_pruned_on_renewal() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let device = t.principal.device_id;
+        a.db.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO refresh_tokens (token_hash, device_id, expires_at) VALUES (x'01', ?1, 1)",
+                [device],
+            )
+            .unwrap();
+        a.refresh(&t.refresh).unwrap();
+        let old: i64 =
+            a.db.lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM refresh_tokens WHERE token_hash = x'01'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+        assert_eq!(old, 0);
     }
 
     #[test]
