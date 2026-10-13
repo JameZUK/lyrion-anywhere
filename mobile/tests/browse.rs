@@ -5,12 +5,12 @@
 
 mod common;
 
+use anywhere_mobile::{AlbumInfo, Art, ArtistInfo, Discovery, RadioSeed};
 use anywhere_mobile::{
     AlbumSort, ApiError, ArtistRole, FolderKind, InfoKind, LibraryFilter, MenuAction, MenuItemKind,
     MenuOutcome, MenuParam, Menus, MusicLibrary, Placement, Players, SearchKind, Selection,
     Suitability, TopResult, app_menu, info_menu,
 };
-use anywhere_mobile::{Discovery, RadioSeed};
 use common::*;
 use serde_json::{Value, json};
 
@@ -797,4 +797,85 @@ async fn search_on_apps_through_the_gateway() {
             .is_err()
     );
     assert!(calls_since(&h, before).iter().all(|c| c[1][0] != "someapp"));
+}
+
+/// Artist biographies and photos, and album reviews, through the gateway: cleaned text, the
+/// photo as an artwork key that fetches through the image proxy, only the plugin's three
+/// commands with an id reaching LMS, and bad ids refused on the device.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn artist_and_album_information() {
+    let h = Harness::start().await;
+    let (s, _) = h.alice().await;
+    let lib = MusicLibrary::new(s.clone());
+
+    let a = lib.artist_info(3).await.unwrap();
+    assert_eq!(
+        a,
+        ArtistInfo {
+            biography: Some("An invented artist & friends.\n\nSecond.".into()),
+            photo: Some(
+                "imageproxy/https%3A%2F%2Fimages%2Eexample%2Ecom%2Fa%2F3%2Ejpg/image".into()
+            ),
+            credits: Some("Discogs".into()),
+        }
+    );
+    // The photo comes through the gateway's image proxy, sized.
+    let img = Art::new(s.clone())
+        .fetch(a.photo.clone().unwrap(), 600)
+        .await
+        .unwrap();
+    assert_eq!(img.mime_type, "image/jpeg");
+    assert!(
+        h.lms.http_paths().iter().any(|p| p.starts_with(
+            "/imageproxy/https%3A%2F%2Fimages%2Eexample%2Ecom%2Fa%2F3%2Ejpg/image_600x600"
+        )),
+        "{:?}",
+        h.lms.http_paths()
+    );
+
+    assert_eq!(lib.artist_info(4).await.unwrap(), ArtistInfo::default());
+    assert_eq!(
+        lib.album_info(8).await.unwrap(),
+        AlbumInfo {
+            review: Some("A fine record.".into())
+        }
+    );
+    assert_eq!(lib.album_info(9).await.unwrap(), AlbumInfo::default());
+
+    let mut words: Vec<String> = h
+        .lms
+        .rpc_calls()
+        .into_iter()
+        .filter(|c| c[1][0] == "musicartistinfo")
+        .map(|c| c[1].to_string())
+        .collect();
+    words.sort();
+    assert_eq!(
+        words,
+        vec![
+            r#"["musicartistinfo","albumreview","album_id:8"]"#,
+            r#"["musicartistinfo","albumreview","album_id:9"]"#,
+            r#"["musicartistinfo","artistphoto","artist_id:3"]"#,
+            r#"["musicartistinfo","artistphoto","artist_id:4"]"#,
+            r#"["musicartistinfo","biography","artist_id:3"]"#,
+            r#"["musicartistinfo","biography","artist_id:4"]"#,
+        ]
+    );
+
+    // Bad ids are refused before anything is sent.
+    let before = h.lms.rpc_calls().len();
+    for id in [0, -1, i64::MIN, 1_000_000_000_000] {
+        assert!(
+            matches!(
+                lib.artist_info(id).await,
+                Err(ApiError::InvalidInput { .. })
+            ),
+            "{id}"
+        );
+        assert!(
+            matches!(lib.album_info(id).await, Err(ApiError::InvalidInput { .. })),
+            "{id}"
+        );
+    }
+    assert_eq!(h.lms.rpc_calls().len(), before);
 }
