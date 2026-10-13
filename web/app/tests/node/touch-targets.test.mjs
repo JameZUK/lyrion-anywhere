@@ -62,3 +62,16 @@ test('Now playing layouts, the visualiser and Rooms keep 44 px targets', () => {
 	assert.ok(px(rule(card, '.main {'), 'min-height') >= 44);
 	assert.ok(px(rule(read('routes/rooms/+page.svelte'), '.choose .btn {'), 'min-height') >= 44);
 });
+
+test('smart filters keep 44 px targets', () => {
+	const list = rule(read('lib/components/FiltersView.svelte'), 'li .icon-btn {');
+	assert.ok(px(list, 'width') >= 44 && px(list, 'height') >= 44, list);
+	assert.ok(px(rule(read('lib/components/FiltersView.svelte'), '.main {'), 'min-height') >= 44);
+	const editor = read('lib/components/FilterEditor.svelte');
+	assert.ok(px(rule(editor, '.check {'), 'min-height') >= 44);
+	assert.ok(px(rule(editor, '.actions .btn {'), 'min-height') >= 44);
+	assert.ok(px(rule(editor, '.field input {'), 'min-height') >= 44);
+	const shelf = rule(read('lib/components/HomeShelf.svelte'), '.head .icon-btn {');
+	assert.ok(px(shelf, 'width') >= 44 && px(shelf, 'height') >= 44, shelf);
+	assert.ok(px(rule(read('routes/filter/[id]/+page.svelte'), '.actions .btn {'), 'min-height') >= 44);
+});

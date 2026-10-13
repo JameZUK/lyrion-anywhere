@@ -34,6 +34,8 @@ const SECTIONS: Record<string, string> = {
 	folder: 'Music folder',
 	compilations: 'Compilations',
 	random: 'Random albums',
+	filter: 'Smart filter',
+	car: 'Car mode',
 };
 
 /** The section a route path (e.g. `/album/7`, from the hash) belongs to. */

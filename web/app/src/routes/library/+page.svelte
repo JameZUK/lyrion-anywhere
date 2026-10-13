@@ -1,13 +1,15 @@
 <script lang="ts">
-	// Library (Wave 2 §3.2): type chips (Albums, Artists, Playlists, Favourites), album order,
-	// grid or list, and the A–Z fast scroller; the choice is remembered on this device. LMS's
-	// other ways in (genres, years, the music folder…) are links above.
+	// Library (Wave 2 §3.2): type chips (Albums, Artists, Playlists, Favourites, and the smart
+	// Filters of §5.6), album order, grid or list, and the A–Z fast scroller; the choice is
+	// remembered on this device. LMS's other ways in (genres, years, the music folder…) are
+	// links above.
 	import Icon from '$lib/components/Icon.svelte';
 	import Chips from '$lib/components/Chips.svelte';
 	import AlbumBrowser from '$lib/components/AlbumBrowser.svelte';
 	import ArtistBrowser from '$lib/components/ArtistBrowser.svelte';
 	import PlaylistsView from '$lib/components/PlaylistsView.svelte';
 	import FavouritesView from '$lib/components/FavouritesView.svelte';
+	import FiltersView from '$lib/components/FiltersView.svelte';
 	import { library } from '$lib/state/library.svelte';
 	import { CHIPS, CHIP_LABELS, LIBRARY_SORTS, loadLibraryPrefs, saveLibraryPrefs, type AlbumView, type LibraryChip } from '$lib/library/prefs';
 	import type { BrowseSort } from '$lib/components/AlbumBrowser.svelte';
@@ -67,6 +69,8 @@
 			<ArtistBrowser />
 		{:else if chip === 'playlists'}
 			<PlaylistsView level={2} />
+		{:else if chip === 'filters'}
+			<FiltersView level={2} />
 		{:else}
 			<FavouritesView level={2} />
 		{/if}

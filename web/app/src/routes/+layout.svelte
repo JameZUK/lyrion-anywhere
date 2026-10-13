@@ -157,7 +157,7 @@
 		{ href: '#/settings', label: 'Settings', icon: 'settings', match: (p: string) => p.startsWith('/settings') },
 	];
 	// Library sections without a sidebar entry of their own: under "Library".
-	const MORE_LIBRARY = ['/library', '/genre', '/year', '/folder', '/compilations', '/random'];
+	const MORE_LIBRARY = ['/library', '/genre', '/year', '/folder', '/compilations', '/random', '/filter'];
 	// Phones: five tabs; Home ends with the library, whose sections are one tap away there.
 	const LIBRARY = ['/home', '/stations', '/album', '/artist', '/playlist', '/favourites', '/apps', '/browse', '/downloads', '/new', ...MORE_LIBRARY];
 	const TABS = [

@@ -53,8 +53,12 @@
 		rooms: 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z',
 		art: 'M4 4h16v16H4zM4 16l5-5 4 4 2-2 5 5M15.5 8.5h.01',
 		info: 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM12 11v6M12 7.5h.01',
+		car: 'M5 16.5V12l2-5h10l2 5v4.5zM3.5 12h17M7.5 14.5h.01M16.5 14.5h.01M6 16.5V19M18 16.5V19',
+		filter: 'M4 5h16l-6 7.5V19l-4-2v-4.5z',
+		keyboard: 'M3 6.5h18v11H3zM6.5 10h.01M10 10h.01M13.5 10h.01M17 10h.01M7.5 14h9',
+		stop: 'M6.5 6.5h11v11h-11z',
 	};
-	const SOLID = new Set(['play', 'pause', 'next', 'prev']);
+	const SOLID = new Set(['play', 'pause', 'next', 'prev', 'stop']);
 
 	let { name, size = 22, label = '' }: { name: keyof typeof PATHS | string; size?: number; label?: string } = $props();
 	const d = $derived(PATHS[name] ?? '');

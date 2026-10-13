@@ -11,6 +11,8 @@ const fakeMe = {
 	home: vi.fn(async () => structuredClone(fakeMe.layout)),
 	stations_: null,
 	menus: vi.fn(async () => []),
+	filters: vi.fn(async () => [{ id: 6, name: 'Sixties soul', rules: [{ field: 'decade', is: 1960 }], sort: 'album', limit: 50 }]),
+	filterAlbums: vi.fn(async () => ({ albums: [7], count: 1 })),
 	shelf: vi.fn(async () => [7]),
 	saveHome: vi.fn(async (l: HomeLayout) => {
 		if (fakeMe.failSave) throw new Error('gateway said no');
@@ -124,4 +126,16 @@ test('a shelf of a station needs one picked, and is never added twice', async ()
 	await fireEvent.change(screen.getByLabelText('Which'), { target: { value: '4' } });
 	await fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 	expect(screen.getByRole('status').textContent).toContain('already on Home');
+});
+
+test('a smart filter shelf: picked from the user’s filters, saved by id', async () => {
+	render(Home);
+	await fireEvent.click(await screen.findByRole('button', { name: 'Edit Home' }));
+	await fireEvent.change(screen.getByLabelText('Add a shelf'), { target: { value: 'filter' } });
+	await fireEvent.change(screen.getByLabelText('Which'), { target: { value: '6' } });
+	await fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+	expect(screen.getByRole('list', { name: 'Home shelves' }).textContent).toContain('Smart filter: Sixties soul');
+	await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+	await waitFor(() => expect(saves).toHaveLength(1));
+	expect(saves[0]!.shelves.at(-1)).toEqual({ type: 'filter', id: 6 });
 });
