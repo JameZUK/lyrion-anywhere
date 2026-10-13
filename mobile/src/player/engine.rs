@@ -89,6 +89,9 @@ pub(crate) enum Cmd {
     Renegotiate,
     /// The stream level for the streams that follow.
     SetQuality(StreamQuality),
+    /// The phone's media volume as an attenuation (dB) for loudness compensation, or
+    /// `None` when it isn't known.
+    SetLoudnessReference(Option<f64>),
 }
 
 /// What the engine reacts to.
@@ -331,6 +334,10 @@ impl Engine {
                     }
                     Some(Cmd::Renegotiate) => self.audio.renegotiate = true,
                     Some(Cmd::SetQuality(q)) => self.set_quality(q),
+                    Some(Cmd::SetLoudnessReference(db)) => {
+                        self.audio.pipeline.set_loudness_reference_db(db);
+                        self.publish_signal(true);
+                    }
                     // The app let go of the player, or asked to stop.
                     Some(Cmd::Stop) | None => self.shutdown("stopped").await,
                 },

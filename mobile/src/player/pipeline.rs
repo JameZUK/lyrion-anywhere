@@ -12,8 +12,10 @@
 //!   `core::dsp`, in `f64`. Levelling is decided per track: the core's
 //!   [`Player::pull_track`] never mixes two tracks in one block.
 //! - **Loudness compensation** follows the volume the core applied to the samples
-//!   ([`Pipeline::set_volume`]). On a bit-perfect route ([`Pipeline::set_direct`]) the DAC's
-//!   own volume rules, so it is bypassed, and the signal path says so.
+//!   ([`Pipeline::set_volume`]) and, when the host knows it, the phone's own media volume
+//!   ([`Pipeline::set_loudness_reference_db`]): the two attenuations add up. On a
+//!   bit-perfect route ([`Pipeline::set_direct`]) the DAC's own volume rules, so it is
+//!   bypassed, and the signal path says so.
 //! - **Resampling** happens only when the output could not be opened at the source rate.
 //! - **Played accounting:** the core must learn which frames have actually been played (for
 //!   elapsed time, `STMs` and `STMu`). Every block written to the ring is recorded with the
@@ -314,6 +316,23 @@ pub fn levelling_decision(
 /// The signal-path stage when a bit-perfect route bypasses loudness compensation.
 pub const LOUDNESS_BYPASSED: &str = "Loudness bypassed (bit-perfect output)";
 
+/// Added to the loudness stage's name while it follows the phone's media volume.
+pub const FOLLOWING_PHONE: &str = " (following the phone's volume)";
+
+/// The most attenuation the phone's volume is taken to apply, dB (muted counts as this).
+pub const MAX_REFERENCE_DB: f64 = 120.0;
+
+/// The phone's media-volume attenuation, cleaned up: `None` (not known) stays `None`, NaN
+/// is not known, +∞ (muted) and anything past [`MAX_REFERENCE_DB`] is the most, and a
+/// negative value (a boost) counts as none.
+pub fn sanitise_reference_db(db: Option<f64>) -> Option<f64> {
+    let db = db?;
+    if db.is_nan() {
+        return None;
+    }
+    Some(db.clamp(0.0, MAX_REFERENCE_DB))
+}
+
 /// Ring samples carrying some source frames.
 #[derive(Debug, Clone, Copy)]
 struct Mark {
@@ -359,6 +378,8 @@ pub struct Pipeline {
     volume: f64,
     /// The output is a bit-perfect route (fixed volume): loudness compensation is bypassed.
     direct: bool,
+    /// The phone's media volume as an attenuation (dB), when loudness follows it.
+    reference_db: Option<f64>,
 }
 
 impl Pipeline {
@@ -386,6 +407,7 @@ impl Pipeline {
             ints: Vec::new(),
             volume: 1.0,
             direct: false,
+            reference_db: None,
         }
     }
 
@@ -441,9 +463,19 @@ impl Pipeline {
             }
             _ => None,
         };
+        let volume = self.loudness_volume();
         if let Some(c) = &mut self.chain {
             c.set_levelling_db(self.levelling_db);
-            c.set_volume(self.volume);
+            c.set_volume(volume);
+        }
+    }
+
+    /// The volume loudness compensation follows: the source's, times the phone's media
+    /// volume when known.
+    fn loudness_volume(&self) -> f64 {
+        match self.reference_db {
+            Some(db) => self.volume * 10f64.powf(-db / 20.0),
+            None => self.volume,
         }
     }
 
@@ -452,9 +484,27 @@ impl Pipeline {
     /// smoothly; call it before each [`Pipeline::push_counted`].
     pub fn set_volume(&mut self, volume: f64) {
         self.volume = volume;
+        let v = self.loudness_volume();
         if let Some(c) = &mut self.chain {
-            c.set_volume(volume);
+            c.set_volume(v);
         }
+    }
+
+    /// The phone's media volume as an attenuation in dB (0 = full), for loudness
+    /// compensation while this phone is the player; `None` when it isn't known (a
+    /// Bluetooth headset with its own volume, say), so only the source's volume counts.
+    /// Cleaned up by [`sanitise_reference_db`]. The compensation follows smoothly.
+    pub fn set_loudness_reference_db(&mut self, db: Option<f64>) {
+        self.reference_db = sanitise_reference_db(db);
+        let v = self.loudness_volume();
+        if let Some(c) = &mut self.chain {
+            c.set_volume(v);
+        }
+    }
+
+    /// The phone's media volume loudness follows, dB of attenuation (if any).
+    pub fn loudness_reference_db(&self) -> Option<f64> {
+        self.reference_db
     }
 
     /// The output is (`true`) or isn't a bit-perfect route. On one, the DAC's volume rules
@@ -724,6 +774,10 @@ impl Pipeline {
         };
         if self.loudness_bypassed() {
             v.push(Stage::transparent(LOUDNESS_BYPASSED));
+        } else if self.reference_db.is_some() {
+            for s in v.iter_mut().filter(|s| s.name.starts_with("Loudness")) {
+                s.name.push_str(FOLLOWING_PHONE);
+            }
         }
         let source = match self.level_source {
             LevelSource::Analysis => Some("R128 analysis"),
@@ -1545,5 +1599,81 @@ mod tests {
             .map(|w| (w[1] - w[0]).abs())
             .fold(0f32, f32::max);
         assert!(worst < 2e-3, "a step of {worst}");
+    }
+
+    #[test]
+    fn loudness_follows_the_phones_volume_too() {
+        let mut p = Pipeline::new(loudness_settings(false));
+        p.configure(44_100, 44_100).unwrap();
+        let first = |p: &Pipeline| p.stages()[0].name.clone();
+        // Full player level, the phone 20 dB down: 20 dB in all, as 0.1 alone gives.
+        p.set_loudness_reference_db(Some(20.0));
+        assert_eq!(
+            first(&p),
+            format!("Loudness +5.0 dB bass, +2.0 dB treble{FOLLOWING_PHONE}")
+        );
+        // The player level adds to it (another 20 dB: 40 dB, the most).
+        p.set_volume(0.1);
+        assert_eq!(
+            first(&p),
+            format!("Loudness +10.0 dB bass, +4.0 dB treble{FOLLOWING_PHONE}")
+        );
+        // At full volume on both it is none, and still says what it follows.
+        p.set_volume(1.0);
+        p.set_loudness_reference_db(Some(0.0));
+        assert_eq!(
+            first(&p),
+            format!("Loudness (none at full volume){FOLLOWING_PHONE}")
+        );
+        // Not known any more (a Bluetooth headset's own volume): the player level only.
+        p.set_loudness_reference_db(None);
+        p.set_volume(0.1);
+        assert_eq!(first(&p), "Loudness +5.0 dB bass, +2.0 dB treble");
+        assert_eq!(p.loudness_reference_db(), None);
+    }
+
+    #[test]
+    fn the_phones_volume_survives_a_rebuilt_chain_and_odd_values() {
+        let mut p = Pipeline::new(loudness_settings(false));
+        p.set_loudness_reference_db(Some(20.0));
+        // The chain is built after the reference was given.
+        p.configure(48_000, 48_000).unwrap();
+        assert!(p.stages()[0].name.starts_with("Loudness +5.0 dB"));
+        // Changing the DSP rebuilds the chain; the reference stays.
+        p.set_dsp(loudness_settings(true));
+        assert!(
+            p.stages()
+                .iter()
+                .any(|s| s.name.starts_with("Loudness +5.0 dB")),
+            "{:?}",
+            p.stages()
+        );
+        for (db, want) in [
+            (Some(f64::NAN), None),
+            (Some(f64::INFINITY), Some(MAX_REFERENCE_DB)),
+            (Some(f64::NEG_INFINITY), Some(0.0)),
+            (Some(-6.0), Some(0.0)),
+            (Some(1e300), Some(MAX_REFERENCE_DB)),
+            (Some(12.5), Some(12.5)),
+            (None, None),
+        ] {
+            p.set_loudness_reference_db(db);
+            assert_eq!(p.loudness_reference_db(), want, "{db:?}");
+            let out = run(&mut p, &noise(2048, 11), 1);
+            assert!(out.iter().all(|x| x.is_finite()), "{db:?}");
+        }
+    }
+
+    #[test]
+    fn a_bit_perfect_route_ignores_the_phones_volume() {
+        let mut p = Pipeline::new(loudness_settings(false));
+        p.configure(96_000, 96_000).unwrap();
+        p.set_direct(true);
+        p.set_loudness_reference_db(Some(30.0));
+        let stages = p.stages();
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[0].name, LOUDNESS_BYPASSED);
+        let input = noise(4096, 5);
+        assert_eq!(run(&mut p, &input, 1), input);
     }
 }

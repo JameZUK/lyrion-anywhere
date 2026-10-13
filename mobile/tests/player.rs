@@ -1180,3 +1180,43 @@ async fn opus_is_advertised_and_plays_end_to_end() {
     assert_eq!(p.verdict, SignalVerdict::LossySource);
     assert!(p.not_bit_perfect.contains(&NotBitPerfect::LossySource));
 }
+
+/// While this phone is the player, loudness compensation follows the phone's media volume
+/// as well as LMS's level: 25 % in LMS (−12 dB) and the phone 28 dB down is the full 40 dB,
+/// and the panel says what it follows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn loudness_follows_the_phones_volume_with_lms_level() {
+    let mut r = rig_with(false, None, loudness_dsp()).await;
+    r.player.set_loudness_reference_db(Some(28.0));
+    let n = flac::noise(44_100, 16, 33);
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(flac::encode(44_100, 16, &n)));
+    let mac = r.mac;
+    r.send(audg_quarter()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    let obs = r.obs.clone();
+    wait_for("loudness following the phone", move || {
+        obs.last_path().is_some_and(|p| {
+            p.stages.iter().any(|s| {
+                s.name == "Loudness +10.0 dB bass, +4.0 dB treble (following the phone's volume)"
+            })
+        })
+    })
+    .await;
+    // A headset that keeps its own volume: LMS's level alone again.
+    r.player.set_loudness_reference_db(None);
+    let obs = r.obs.clone();
+    wait_for("loudness on LMS's level", move || {
+        obs.last_path().is_some_and(|p| {
+            p.stages
+                .iter()
+                .any(|s| s.name == "Loudness +3.0 dB bass, +1.2 dB treble")
+        })
+    })
+    .await;
+    assert_eq!(r.player.loudness_reference_db(), None);
+    r.player.stop();
+}

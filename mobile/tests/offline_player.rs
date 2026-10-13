@@ -516,3 +516,52 @@ async fn the_visualiser_gives_frames_only_while_asked_and_as_audio_is_heard() {
     rig.player.set_visualiser(false);
     assert!(play_through(false).await.is_empty(), "off again");
 }
+
+/// Loudness compensation follows the phone's media volume (downloads play on this phone),
+/// and the signal path says so; an unknown volume falls back to the player's own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn loudness_follows_the_phones_volume() {
+    let (lib, tracks, _) = library(vec![song(3.0, 5)], 3.0);
+    let rig = Rig::start(
+        &lib,
+        DspSettings {
+            enabled: true,
+            loudness: true,
+            ..DspSettings::default()
+        },
+    );
+    rig.player.set_loudness_reference_db(Some(20.0));
+    assert_eq!(rig.player.loudness_reference_db(), Some(20.0));
+    rig.player
+        .play_tracks(vec![tracks[0].key.clone()], 0, false, true)
+        .unwrap();
+    let stage = |want: &'static str| {
+        let obs = rig.obs.clone();
+        move || {
+            obs.signal
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|s| s.stages.iter().any(|st| st.name == want))
+        }
+    };
+    wait_for(
+        "loudness following the phone",
+        stage("Loudness +5.0 dB bass, +2.0 dB treble (following the phone's volume)"),
+    )
+    .await;
+    // A Bluetooth headset with its own volume: the player's level alone (full: none).
+    rig.player.set_loudness_reference_db(None);
+    wait_for(
+        "loudness on the player level",
+        stage("Loudness (none at full volume)"),
+    )
+    .await;
+    // Odd values from the host are cleaned up, never passed on as they are.
+    rig.player.set_loudness_reference_db(Some(f64::NAN));
+    assert_eq!(rig.player.loudness_reference_db(), None);
+    rig.player.set_loudness_reference_db(Some(f64::INFINITY));
+    assert_eq!(rig.player.loudness_reference_db(), Some(120.0));
+    rig.player.set_loudness_reference_db(Some(-3.0));
+    assert_eq!(rig.player.loudness_reference_db(), Some(0.0));
+}
