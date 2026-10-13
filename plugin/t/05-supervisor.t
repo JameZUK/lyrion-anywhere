@@ -2,9 +2,11 @@
 use strict; use warnings;
 use Test::More;
 use POSIX ();
+use Time::HiRes ();
 use File::Temp qw(tempdir);
 use Plugins::LyrionAnywhere::Gateway;
 use Proc::Background;
+use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::Timers;
 
@@ -19,6 +21,7 @@ my $prefs = preferences('plugin.lyrionanywhere');
 $prefs->set(gateway_path => $bin);
 $prefs->set(listen => '127.0.0.1:9443');
 $prefs->set(admin_port => 9445);
+$prefs->set(enabled => 1);
 preferences('server')->set(httpport => 9000);
 
 sub timer_for {
@@ -97,7 +100,7 @@ $prefs->set(gateway_path => $bin);
 		$first->[1]->();
 		is(Plugins::LyrionAnywhere::Gateway->state->{running}, 1, "crash $crash: restarted");
 	}
-	is_deeply(\@waits, [5, 10, 30, 60, 60, 60], 'backoff grows to 60 s and stays there');
+	is_deeply(\@waits, [5, 10, 20, 40, 80, 160], 'backoff doubles each time');
 
 	# A run longer than five minutes starts the count over.
 	$now += 301;
@@ -177,6 +180,190 @@ $prefs->set(gateway_path => $bin);
 	is(Plugins::LyrionAnywhere::Gateway::gateway_override(), undef, 'only the exact value 1 enables it');
 	$ENV{ANYWHERE_ALLOW_GATEWAY_PATH} = '1';
 	is(Plugins::LyrionAnywhere::Gateway::gateway_override(), $bin, 'honoured with the variable');
+}
+
+# --- a failing launch backs off too, even after a long good run --------------------------
+# Regression: the backoff reset whenever the last *successful* start was over five minutes
+# ago, so a gateway that then couldn't start at all was retried every 5 s for ever.
+{
+	my $now = 2_000_000;
+	no warnings 'redefine';
+	local *Plugins::LyrionAnywhere::Gateway::_now = sub { $now };
+	@Slim::Utils::Timers::TIMERS = ();
+	Plugins::LyrionAnywhere::Gateway->restart;
+	$now += 3600;   # a long, stable run
+	$prefs->set(gateway_path => "$dir/missing");
+	$Proc::Background::OBJECTS[-1]->die;
+	my @waits;
+	for (1 .. 4) {
+		Plugins::LyrionAnywhere::Gateway::_check();
+		my ($l) = grep { $_->[1] == \&Plugins::LyrionAnywhere::Gateway::_launch } @Slim::Utils::Timers::TIMERS;
+		push @waits, $l->[0] - $now;
+		@Slim::Utils::Timers::TIMERS = ();
+		$now = $l->[0];
+		$l->[1]->();   # fails: no binary
+	}
+	is_deeply(\@waits, [5, 10, 20, 40], 'failed launches keep backing off');
+	Plugins::LyrionAnywhere::Gateway->stop;
+	$prefs->set(gateway_path => $bin);
+}
+
+# --- stopping never blocks LMS; a gateway that ignores SIGTERM gets SIGKILL ---------------
+
+# A real child process standing in for the gateway. Returns its pid once it is ready.
+sub child {
+	my (%o) = @_;
+	pipe my $r, my $w or die;
+	my $pid = fork // die;
+	if (!$pid) {
+		close $r;
+		$SIG{TERM} = 'IGNORE' if $o{ignore_term};
+		print $w "ready\n";
+		close $w;
+		sleep 30;
+		POSIX::_exit(0);
+	}
+	close $w;
+	my $ready = <$r>;
+	close $r;
+	return $pid;
+}
+sub gone { my $pid = shift; for (1 .. 50) { return 1 if waitpid($pid, POSIX::WNOHANG()) != 0 || !kill(0, $pid); select undef, undef, undef, 0.1 } 0 }
+sub pid_in_file { my $f = Plugins::LyrionAnywhere::Gateway::pid_file(); open my $fh, '<', $f or return undef; my $l = <$fh>; chomp $l if defined $l; $l }
+
+{
+	@Slim::Utils::Timers::TIMERS = ();
+	my $pid = child();
+	$Proc::Background::NEXT_PID = $pid;
+	Plugins::LyrionAnywhere::Gateway->start;
+	is(pid_in_file(), $pid, 'the running gateway\'s pid is kept in the data dir');
+	is((stat Plugins::LyrionAnywhere::Gateway::pid_file())[2] & 0777, 0600, 'pid file is private');
+	my $t0 = Time::HiRes::time();
+	Plugins::LyrionAnywhere::Gateway->stop;
+	cmp_ok(Time::HiRes::time() - $t0, '<', 0.5, 'stop returns at once');
+	my ($reap) = grep { $_->[1] == \&Plugins::LyrionAnywhere::Gateway::_reap } @Slim::Utils::Timers::TIMERS;
+	ok($reap, 'a timer collects the stopped gateway');
+	select undef, undef, undef, 0.3;
+	@Slim::Utils::Timers::TIMERS = ();
+	Plugins::LyrionAnywhere::Gateway::_reap();
+	ok(!kill(0, $pid), 'SIGTERM stopped it');
+	ok(!defined pid_in_file(), 'pid file removed once it has gone');
+	ok(!grep({ $_->[1] == \&Plugins::LyrionAnywhere::Gateway::_reap } @Slim::Utils::Timers::TIMERS), 'nothing left to collect');
+}
+
+{
+	my $now = 3_000_000;
+	no warnings 'redefine';
+	local *Plugins::LyrionAnywhere::Gateway::_now = sub { $now };
+	@Slim::Utils::Timers::TIMERS = ();
+	my $pid = child(ignore_term => 1);
+	$Proc::Background::NEXT_PID = $pid;
+	Plugins::LyrionAnywhere::Gateway->start;
+	my $started = @Proc::Background::STARTED;
+	Plugins::LyrionAnywhere::Gateway->stop;
+	# A restart now must wait for the old gateway to let go of its ports.
+	Plugins::LyrionAnywhere::Gateway->start;
+	is(scalar @Proc::Background::STARTED, $started, 'the new gateway waits for the old one');
+	ok(grep({ $_->[1] == \&Plugins::LyrionAnywhere::Gateway::_launch } @Slim::Utils::Timers::TIMERS), 'and is started a moment later');
+	select undef, undef, undef, 0.3;
+	Plugins::LyrionAnywhere::Gateway::_reap();
+	ok(kill(0, $pid), 'it ignored SIGTERM');
+	$now += Plugins::LyrionAnywhere::Gateway::TERM_GRACE();
+	Plugins::LyrionAnywhere::Gateway::_reap();
+	ok(gone($pid), 'SIGKILL after the grace period');
+	Plugins::LyrionAnywhere::Gateway::_reap();
+	my ($l) = grep { $_->[1] == \&Plugins::LyrionAnywhere::Gateway::_launch } @Slim::Utils::Timers::TIMERS;
+	@Slim::Utils::Timers::TIMERS = ();
+	$l->[1]->();
+	is(scalar @Proc::Background::STARTED, $started + 1, 'then the new gateway starts');
+	Plugins::LyrionAnywhere::Gateway->stop;
+}
+
+# LMS shutting down waits for the gateway, but only briefly.
+{
+	@Slim::Utils::Timers::TIMERS = ();
+	my $pid = child(ignore_term => 1);
+	$Proc::Background::NEXT_PID = $pid;
+	Plugins::LyrionAnywhere::Gateway->start;
+	my $t0 = Time::HiRes::time();
+	Plugins::LyrionAnywhere::Gateway->stop_for_shutdown;
+	my $took = Time::HiRes::time() - $t0;
+	cmp_ok($took, '<=', Plugins::LyrionAnywhere::Gateway::SHUTDOWN_WAIT() + 1, "shutdown waits at most a few seconds (${took}s)");
+	ok(gone($pid), 'and kills a gateway that would not stop');
+
+	my $pid2 = child();
+	$Proc::Background::NEXT_PID = $pid2;
+	Plugins::LyrionAnywhere::Gateway->start;
+	$t0 = Time::HiRes::time();
+	Plugins::LyrionAnywhere::Gateway->stop_for_shutdown;
+	cmp_ok(Time::HiRes::time() - $t0, '<', 2, 'a gateway that stops at SIGTERM is not waited on for long');
+	ok(gone($pid2), 'it stopped');
+	ok(!defined pid_in_file(), 'pid file removed');
+}
+
+# --- a gateway left behind by an LMS that crashed is stopped, and only ours ---------------
+{
+	my $root = tempdir(CLEANUP => 1);
+	local $Plugins::LyrionAnywhere::Gateway::PROC_ROOT = $root;
+	my $data = "$dir/lyrion-anywhere";
+	my $fake_cmdline = sub {
+		my ($pid, @argv) = @_;
+		mkdir "$root/$pid";
+		open my $fh, '>:raw', "$root/$pid/cmdline" or die;
+		print $fh join("\0", @argv), "\0";
+		close $fh;
+	};
+	my $write_pid = sub {
+		open my $fh, '>', Plugins::LyrionAnywhere::Gateway::pid_file() or die;
+		print $fh shift, "\n";
+		close $fh;
+	};
+
+	# Ours: the pid file names it and its command line is our gateway with our data dir.
+	@Slim::Utils::Timers::TIMERS = ();
+	my $orphan = child();
+	$fake_cmdline->($orphan, '/opt/lms/Plugins/LyrionAnywhere/Bin/x86_64-linux/anywhere-gateway', 'serve', '--listen', '127.0.0.1:9443', '--data-dir', $data);
+	$write_pid->($orphan);
+	my $n = @Proc::Background::STARTED;
+	Plugins::LyrionAnywhere::Gateway->start;
+	is(scalar @Proc::Background::STARTED, $n, 'not started while the old gateway holds the ports');
+	ok(gone($orphan), 'the orphaned gateway was stopped');
+	my ($l) = grep { $_->[1] == \&Plugins::LyrionAnywhere::Gateway::_launch } @Slim::Utils::Timers::TIMERS;
+	@Slim::Utils::Timers::TIMERS = ();
+	$l->[1]->();
+	is(scalar @Proc::Background::STARTED, $n + 1, 'then the new one starts');
+	ok(!defined pid_in_file(), 'the stale pid file is gone');
+	Plugins::LyrionAnywhere::Gateway->stop;
+
+	# Not ours: never signalled, whatever the pid file says.
+	for my $case (
+		['another program', ['/usr/bin/sleep', '30']],
+		['a gateway for another data dir', ['/x/anywhere-gateway', 'serve', '--data-dir', '/srv/other']],
+		['no process information', undef],
+	) {
+		my ($name, $argv) = @$case;
+		my $victim = child();
+		$fake_cmdline->($victim, @$argv) if $argv;
+		$write_pid->($victim);
+		@Slim::Utils::Log::MESSAGES = ();
+		$n = @Proc::Background::STARTED;
+		Plugins::LyrionAnywhere::Gateway->start;
+		select undef, undef, undef, 0.2;
+		ok(kill(0, $victim) && !waitpid($victim, POSIX::WNOHANG()), "$name: left alone");
+		is(scalar @Proc::Background::STARTED, $n + 1, "$name: the gateway starts at once");
+		ok(grep({ $_->[1] =~ /not this plugin's gateway/ } @Slim::Utils::Log::MESSAGES), "$name: a warning is logged");
+		Plugins::LyrionAnywhere::Gateway->stop;
+		kill 'KILL', $victim;
+		waitpid($victim, 0);
+	}
+	for my $junk ($$, 1, 0, 'abc', "1\n2", '') {
+		$write_pid->($junk);
+		$n = @Proc::Background::STARTED;
+		Plugins::LyrionAnywhere::Gateway->start;
+		is(scalar @Proc::Background::STARTED, $n + 1, "pid file '" . ($junk =~ s/\n/\\n/r) . "': ignored, gateway started");
+		Plugins::LyrionAnywhere::Gateway->stop;
+	}
+	ok(1, 'this test process was not signalled');
 }
 
 done_testing;

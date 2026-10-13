@@ -107,7 +107,7 @@ for my $name (sort keys %bad) {
 }
 
 is(Plugins::LyrionAnywhere::Gateway::backoff($_->[0]), $_->[1], "backoff($_->[0])")
-	for ([1, 5], [2, 10], [3, 30], [4, 60], [9, 60], [0, 5]);
+	for ([1, 5], [2, 10], [3, 20], [4, 40], [5, 80], [6, 160], [7, 300], [9, 300], [100, 300], [0, 5]);
 
 is_deeply([Plugins::LyrionAnywhere::Gateway::split_list(' 10.0.0.1, 10.0.0.2  10.0.0.3,,')],
 	['10.0.0.1', '10.0.0.2', '10.0.0.3']);
@@ -164,6 +164,75 @@ ok(Plugins::LyrionAnywhere::Gateway::is_loopback('127.0.0.1:9445'), 'loopback');
 		is($listen->(), '127.0.0.1:9445', "bad admin port falls back to the default: $bad");
 	}
 	$prefs->set(admin_port => 9445);
+}
+
+# --- the gateway log is rotated, keeping one old file ----------------------------------
+{
+	require File::Temp;
+	my $dir = File::Temp::tempdir(CLEANUP => 1);
+	my $log = "$dir/lyrion-anywhere.log";
+	my $rotate = \&Plugins::LyrionAnywhere::Gateway::rotate_log;
+	is($rotate->("$dir/none", 10), 0, 'no log: nothing to do');
+	open my $fh, '>', $log or die; print $fh 'x' x 9; close $fh;
+	is($rotate->($log, 10), 0, 'under the limit: left alone');
+	open $fh, '>>', $log or die; print $fh "y\n"; close $fh;
+	is($rotate->($log, 10), 1, 'at the limit: rotated');
+	is(-s $log, 0, 'the log is emptied in place (the gateway appends to the same file)');
+	is(-s "$log.1", 11, 'the old lines are kept in .1');
+	open $fh, '>', $log or die; print $fh 'z' x 20; close $fh;
+	$rotate->($log, 10);
+	is(-s "$log.1", 20, 'only one old file: the next rotation replaces it');
+	ok(!-e "$log.2", 'no second old file');
+	is(Plugins::LyrionAnywhere::Gateway::LOG_MAX_BYTES(), 5 * 1024 * 1024, 'rotated at 5 MiB');
+	SKIP: {
+		skip 'no symlinks', 1 unless eval { symlink "$dir/target", "$dir/link.log" };
+		open $fh, '>', "$dir/target" or die; print $fh 'x' x 20; close $fh;
+		is($rotate->("$dir/link.log", 10), 0, 'a symlinked log is not followed');
+	}
+}
+
+# --- only a process that verifiably is our gateway counts as one -------------------------
+{
+	my $root = File::Temp::tempdir(CLEANUP => 1);
+	local $Plugins::LyrionAnywhere::Gateway::PROC_ROOT = $root;
+	my $data = '/srv/lms/prefs/lyrion-anywhere';
+	my %cmd = (
+		1001 => ['/opt/lms/Plugins/LyrionAnywhere/Bin/x86_64-linux/anywhere-gateway', 'serve', '--listen', '127.0.0.1:9443', '--data-dir', $data],
+		1002 => ['/usr/bin/sleep', 'serve', '--data-dir', $data],
+		1003 => ['/x/anywhere-gateway', 'serve', '--data-dir', '/srv/other'],
+		1004 => ['/x/anywhere-gateway', 'admin', '--data-dir', $data],
+		1005 => ['/x/anywhere-gateway', 'serve', '--listen', $data],
+		1006 => ['/x/anywhere-gateway', 'serve', '--data-dir', "$data/.."],
+		1007 => ['/x/anywhere-gateway.exe', 'serve', '--data-dir', $data],
+		1008 => ['/x/not-anywhere-gateway', 'serve', '--data-dir', $data],
+	);
+	for my $pid (keys %cmd) {
+		mkdir "$root/$pid";
+		open my $fh, '>:raw', "$root/$pid/cmdline" or die;
+		print $fh join("\0", @{ $cmd{$pid} }), "\0";
+		close $fh;
+	}
+	my $ours = \&Plugins::LyrionAnywhere::Gateway::is_our_gateway;
+	ok($ours->(1001, $data), 'the bundled gateway serving our data dir');
+	ok($ours->(1007, $data), 'the Windows binary name too');
+	ok(!$ours->($_, $data), "pid $_ ($cmd{$_}[0] $cmd{$_}[1]) is not ours") for 1002 .. 1006, 1008;
+	ok(!$ours->(1009, $data), 'no such process');
+	ok(!$ours->($_, $data), "bad pid '" . ($_ // 'undef') . "'") for (0, 1, -5, '1001/../1001', "1001\n", 'abc', undef);
+	ok(!$ours->(1001, ''), 'no data dir: nothing matches');
+}
+
+# --- whether a process holds a loopback listening port (Linux /proc) ----------------------
+SKIP: {
+	skip 'needs /proc/net/tcp', 4 unless -r '/proc/net/tcp' && -d "/proc/$$/fd";
+	require IO::Socket::INET;
+	my $s = IO::Socket::INET->new(Listen => 1, LocalAddr => '127.0.0.1', LocalPort => 0, ReuseAddr => 1) or die;
+	my $port = $s->sockport;
+	my $owned = \&Plugins::LyrionAnywhere::Gateway::listener_owned_by;
+	is($owned->($port, $$), 1, 'this process holds its own listening port');
+	is($owned->($port, getppid()), 0, 'another process does not');
+	close $s;
+	is($owned->($port, $$), 0, 'nobody listening: not held');
+	is($owned->('9445; x', $$), undef, 'a malformed port is not looked up');
 }
 
 # --- pref validators: the same rules as the settings page ------------------------------

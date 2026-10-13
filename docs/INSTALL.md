@@ -283,7 +283,8 @@ From a phone **off your Wi-Fi** (on mobile data):
 
 | Symptom | Likely cause and fix |
 |---|---|
-| The settings page shows **gateway exited: …** | The message after the colon is the gateway's own reason: usually a port already in use, or a bad *Listen address*. Fix it, then click **Restart gateway**. |
+| The settings page shows **gateway exited: …** | The message after the colon is the gateway's own reason: usually a port already in use, or a bad *Listen address*. Fix it, then click **Restart gateway** (and again to confirm). |
+| **Settings not saved: the form was out of date** | The settings form carries a token that changes when LMS restarts. Reload the page and save again. |
 | **502 Bad Gateway** from the proxy | The gateway isn't running, or the proxy points to the wrong address. Check the *Status* panel and the proxy's `upstream`/`reverse_proxy` address. |
 | **Sign-in fails with "too many attempts"** | The lockout is working (5 failures in 15 minutes). It applies to the address that failed: wait 15 minutes, or sign in from another network (mobile data); repeated lockouts last longer, up to a day. Someone guessing your password from elsewhere can slow sign-ins for your username to a couple a minute, but can't lock you out. Signing in on more than 10 new devices in an hour is also refused for an hour. If it happens to everyone, the proxy isn't passing the real client address (see §4 and §4.3). |
 | **Two-step codes are always wrong** | The device's clock, or the server's, is wrong. Both need the correct time (NTP). |

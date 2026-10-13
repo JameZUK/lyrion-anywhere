@@ -5,7 +5,10 @@ use File::Temp qw(tempdir);
 use JSON::PP;
 use Plugins::LyrionAnywhere::Admin;
 use Slim::Networking::SimpleAsyncHTTP;
+use Slim::Utils::Log;
 use Slim::Utils::Prefs;
+use lib 't/lib';
+use AnywhereTest qw(start_stub_gateway);
 
 sub req { [Plugins::LyrionAnywhere::Admin::request_for(@_)] }
 
@@ -118,9 +121,16 @@ Plugins::LyrionAnywhere::Admin::call('users', {}, sub { $got = shift }, sub { $e
 like($error, qr/not started/, 'no secret: friendly error');
 is(scalar @Slim::Networking::SimpleAsyncHTTP::REQUESTS, 0, 'nothing sent without a secret');
 
-# With a secret: bearer header, loopback URL, JSON body.
+# With a secret, but no gateway started by this plugin: nothing is sent.
 mkdir "$dir/lyrion-anywhere";
 open my $fh, '>', "$dir/lyrion-anywhere/admin.secret" or die; print $fh ('ab' x 32) . "\n"; close $fh;
+undef $error;
+Plugins::LyrionAnywhere::Admin::call('users', {}, sub { $got = shift }, sub { $error = shift });
+is($error, 'the gateway is not running', 'no gateway started: refused');
+is(scalar @Slim::Networking::SimpleAsyncHTTP::REQUESTS, 0, 'the secret is not sent anywhere');
+
+# With a secret and the gateway this plugin started: bearer header, loopback URL, JSON body.
+start_stub_gateway($dir);
 Plugins::LyrionAnywhere::Admin::call('grant', { username => 'alice', player => 'aa:bb:cc:dd:ee:01' }, sub { $got = shift }, sub { $error = shift });
 my $r = $Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1];
 is($r->{method}, 'POST');
@@ -145,10 +155,117 @@ Plugins::LyrionAnywhere::Admin::call('users', {}, sub { $got = shift }, sub { $e
 Slim::Networking::SimpleAsyncHTTP::fail($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1], 'Connection refused');
 is($error, 'the gateway is not running', 'connection errors are explained');
 
+# The gateway's own reason is shown (one cleaned line), not just the status code.
+for my $case (
+	['400 Bad Request', '{"error":"username already exists"}', 'refused by the gateway: username already exists'],
+	['500 Internal Server Error', '{"error":"database is locked\r\nX-Evil: 1"}', 'refused by the gateway: database is locked X-Evil: 1'],
+	['400 Bad Request', '{"error":"' . ('x' x 500) . '"}', 'refused by the gateway: ' . ('x' x 200)],
+	['400 Bad Request', 'not json', 'refused by the gateway (check the input)'],
+	['400 Bad Request', '{"error":{"nested":1}}', 'refused by the gateway (check the input)'],
+	['404 Not Found', '', 'not found'],
+	['403 Forbidden', '{"error":"anything"}', 'the gateway refused the admin secret'],
+) {
+	my ($status, $body, $want) = @$case;
+	Plugins::LyrionAnywhere::Admin::call('users', {}, sub { $got = shift }, sub { $error = shift });
+	Slim::Networking::SimpleAsyncHTTP::fail($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1], $status, $body);
+	is($error, $want, "gateway error $status with " . substr($body, 0, 30));
+}
+
+# Passwords never reach the log, even when the gateway refuses the request.
+{
+	@Slim::Utils::Log::MESSAGES = ();
+	my $pw = 'correct horse battery staple';
+	Plugins::LyrionAnywhere::Admin::call('user_create', { username => 'dave', password => $pw, role => 'listener' }, sub {}, sub { $error = shift });
+	Slim::Networking::SimpleAsyncHTTP::fail($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1], '400 Bad Request', '{"error":"refused"}');
+	Plugins::LyrionAnywhere::Admin::call('user_password', { username => 'dave', password => $pw }, sub {}, sub { $error = shift });
+	Slim::Networking::SimpleAsyncHTTP::fail($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1], 'Connection refused');
+	ok(@Slim::Utils::Log::MESSAGES, 'the failures were logged');
+	ok(!grep({ index($_->[1], $pw) >= 0 } @Slim::Utils::Log::MESSAGES), 'without the password');
+}
+
+# --- the admin secret goes only to the port the plugin started the gateway on -----------
+# Regression: admin_port is an ordinary pref (LMS's `pref` command can change it), and the
+# secret went to whatever port it named.
+{
+	my $prefs = preferences('plugin.lyrionanywhere');
+	$prefs->set(admin_port => 9446);
+	is($prefs->get('admin_port'), 9446, 'the pref changes (a valid port)');
+	Plugins::LyrionAnywhere::Admin::call('users', {}, sub {}, sub { $error = shift });
+	is($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1]{url}, 'http://127.0.0.1:9445/admin/v1/users',
+		'still sent to the port the running gateway was started with');
+
+	# Stopped: nothing is sent at all.
+	Plugins::LyrionAnywhere::Gateway->stop;
+	my $n = @Slim::Networking::SimpleAsyncHTTP::REQUESTS;
+	undef $error;
+	Plugins::LyrionAnywhere::Admin::call('users', {}, sub {}, sub { $error = shift });
+	is(scalar @Slim::Networking::SimpleAsyncHTTP::REQUESTS, $n, 'gateway stopped: the secret is not sent');
+	is($error, 'the gateway is not running');
+
+	# The gateway crashed: nothing is sent to its old port.
+	my $gw = start_stub_gateway($dir, admin_port => 9446);
+	Plugins::LyrionAnywhere::Admin::call('users', {}, sub {}, sub { $error = shift });
+	is($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1]{url}, 'http://127.0.0.1:9446/admin/v1/users', 'new port after a restart');
+	$gw->die;
+	$n = @Slim::Networking::SimpleAsyncHTTP::REQUESTS;
+	Plugins::LyrionAnywhere::Admin::call('users', {}, sub {}, sub { $error = shift });
+	is(scalar @Slim::Networking::SimpleAsyncHTTP::REQUESTS, $n, 'gateway exited: the secret is not sent');
+	Plugins::LyrionAnywhere::Gateway->stop;
+}
+
+# Where the system can tell (Linux), the port must be held by the gateway's own process: a
+# local program listening there instead never gets the secret.
+SKIP: {
+	skip 'needs /proc/net/tcp', 4 unless -r '/proc/net/tcp' && -d "/proc/$$/fd";
+	require IO::Socket::INET;
+	# The "gateway": a real child process, holding a listening socket on the admin port.
+	my $spawn = sub {
+		my $listen = shift;
+		pipe my $r, my $w or die;
+		my $pid = fork // die;
+		if (!$pid) {
+			close $r;
+			my $s = $listen ? IO::Socket::INET->new(Listen => 1, LocalAddr => '127.0.0.1', LocalPort => 0, ReuseAddr => 1) : undef;
+			print $w ($s ? $s->sockport : 0), "\n";
+			close $w;
+			sleep 30;
+			POSIX::_exit(0);
+		}
+		close $w;
+		chomp(my $port = <$r>);
+		return ($pid, $port);
+	};
+	require POSIX;
+	my ($pid, $port) = $spawn->(1);
+	start_stub_gateway($dir, admin_port => $port, pid => $pid);
+	my $n = @Slim::Networking::SimpleAsyncHTTP::REQUESTS;
+	Plugins::LyrionAnywhere::Admin::call('users', {}, sub {}, sub { $error = shift });
+	is($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1]{url}, "http://127.0.0.1:$port/admin/v1/users", 'the gateway holds its port: sent');
+	Plugins::LyrionAnywhere::Gateway->stop;
+
+	# Another local program holds the port the gateway was told to use.
+	# (The gateway process starts first, so it doesn't inherit the other program's socket.)
+	my ($pid2) = $spawn->(0);
+	my $squatter = IO::Socket::INET->new(Listen => 1, LocalAddr => '127.0.0.1', LocalPort => 0, ReuseAddr => 1) or die;
+	start_stub_gateway($dir, admin_port => $squatter->sockport, pid => $pid2);
+	$n = @Slim::Networking::SimpleAsyncHTTP::REQUESTS;
+	undef $error;
+	@Slim::Utils::Log::MESSAGES = ();
+	Plugins::LyrionAnywhere::Admin::call('users', {}, sub {}, sub { $error = shift });
+	is(scalar @Slim::Networking::SimpleAsyncHTTP::REQUESTS, $n, 'port held by another program: the secret is not sent');
+	is($error, 'the gateway is not running');
+	ok(grep({ $_->[1] =~ /not held by the gateway/ } @Slim::Utils::Log::MESSAGES), 'and the log says why');
+	Plugins::LyrionAnywhere::Gateway->stop;
+	for (1 .. 50) { last if waitpid($pid, POSIX::WNOHANG()) && waitpid($pid2, POSIX::WNOHANG()); select undef, undef, undef, 0.1 }
+	kill 'KILL', $pid, $pid2;
+	start_stub_gateway($dir);
+}
+
 # A tampered secret file is not used.
 open $fh, '>', "$dir/lyrion-anywhere/admin.secret" or die; print $fh "not-hex\r\nX-Evil: 1"; close $fh;
 my $before = @Slim::Networking::SimpleAsyncHTTP::REQUESTS;
 Plugins::LyrionAnywhere::Admin::call('users', {}, sub {}, sub { $error = shift });
 is(scalar @Slim::Networking::SimpleAsyncHTTP::REQUESTS, $before, 'malformed secret: nothing sent');
+Plugins::LyrionAnywhere::Gateway->stop;
 
 done_testing;

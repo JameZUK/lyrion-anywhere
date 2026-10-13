@@ -67,6 +67,12 @@ sub clean {
 				push @errors, 'Public URL must look like https://music.example.com (no path)';
 				next;
 			}
+			# Over plain http, passwords and sign-in tokens cross the internet unencrypted:
+			# saved only when the box saying so is ticked as well.
+			if ($v =~ m{\Ahttp://}i && !$params->{anywhere_allow_http}) {
+				push @errors, 'Public URL not saved: an http:// address sends passwords unencrypted. Use https://, or tick "Allow http://" to save it anyway.';
+				next;
+			}
 		}
 		elsif ($k eq 'trusted_proxies') {
 			my @ips = Plugins::LyrionAnywhere::Gateway::split_list($v);
@@ -129,8 +135,10 @@ sub assets_stamp {
 
 sub handler {
 	my ($class, $client, $params) = @_;
-	# The page's script needs this to change accounts (see Commands.pm). Only this page,
-	# which other web sites cannot read, carries it.
+	# The token the form came back with (read before the page's own copy is set below).
+	my $form_token = $params->{anywhere_form_token};
+	# The page's script needs this to change accounts (see Commands.pm), and the form sends
+	# it back when saving. Only this page, which other web sites cannot read, carries it.
 	$params->{anywhere_csrf} = Plugins::LyrionAnywhere::Commands::csrf_token();
 	# LMS serves the page's script and stylesheet with a week-long cache; stamping their
 	# URLs with the files' modification time makes browsers fetch them again after an update.
@@ -139,6 +147,16 @@ sub handler {
 	$params->{anywhere_public_url} = $prefs->get('public_url') // '';
 	$params->{anywhere_gateway_path_allowed} =
 		($ENV{ Plugins::LyrionAnywhere::Gateway::ALLOW_GATEWAY_PATH_ENV() } // '') eq '1' ? 1 : 0;
+	if ($params->{saveSettings} && !Plugins::LyrionAnywhere::Commands::token_ok($form_token)) {
+		# LMS checks its own anti-CSRF token only if the server's "CSRF protection" setting
+		# is raised (it is off by default), so any web page could otherwise post this form
+		# and, say, point the gateway at a different binary. Nothing is saved without ours.
+		$log->warn('refused a settings save without the settings page\'s token');
+		delete $params->{$_} for grep { /^pref_/ } keys %$params;
+		delete $params->{saveSettings};
+		$params->{warning} = 'Settings not saved: the form was out of date (for example, LMS restarted after the page was opened). Reload the page and try again.';
+		return $class->SUPER::handler($client, $params);
+	}
 	if ($params->{saveSettings}) {
 		my %before = map { $_ => $prefs->get($_) } qw(enabled listen public_url trusted_proxies client_ip_header gateway_path transcode ffmpeg_path download_cache_mb analysis);
 		my ($clean, $errors) = clean($params);

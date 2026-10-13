@@ -110,6 +110,19 @@ is_deeply($users_after->{users}, [], 'user deleted');
 	is($res->{status}, 400, 'unknown download format refused by the gateway');
 }
 
+# A refusal explains itself as {"error": "..."}, which the plugin shows on the settings page.
+{
+	my ($status, $data) = send_op(user_create => { username => 'bob', password => 'x' x 10, role => 'listener' });
+	is($status, 201, 'user created');
+	($status, $data) = send_op(user_create => { username => 'bob', password => 'x' x 10, role => 'listener' });
+	cmp_ok($status, '>=', 400, 'a second user of that name is refused');
+	my $res = bless { content => JSON::PP->new->encode($data // {}) }, 'ContractRes';
+	sub ContractRes::content { $_[0]{content} }
+	my $m = Plugins::LyrionAnywhere::Admin::gateway_message($res);
+	ok(defined $m && length $m, 'with a message the plugin can show: ' . ($m // 'none'));
+	send_op(user_delete => { username => 'bob' });
+}
+
 # Without the secret the gateway refuses, whatever the plugin would have sent.
 my $res = $http->get("http://127.0.0.1:$admin/admin/v1/users");
 is($res->{status}, 403, 'admin API refuses requests without the secret');

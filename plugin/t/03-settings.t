@@ -82,7 +82,9 @@ $Slim::Utils::Prefs::DIR = tempdir(CLEANUP => 1);
 my $prefs = preferences('plugin.lyrionanywhere');
 $prefs->set(listen => '127.0.0.1:9443');
 $prefs->set(enabled => 0);
-my $params = { saveSettings => 1, pref_listen => '<img src=x onerror=alert(1)>', pref_trusted_proxies => '<b>x</b>' };
+require Plugins::LyrionAnywhere::Commands;
+my $form = Plugins::LyrionAnywhere::Commands::csrf_token();   # what the page's form sends back
+my $params = { saveSettings => 1, anywhere_form_token => $form, pref_listen => '<img src=x onerror=alert(1)>', pref_trusted_proxies => '<b>x</b>' };
 Plugins::LyrionAnywhere::Settings->handler(undef, $params);
 is($prefs->get('listen'), '127.0.0.1:9443', 'invalid listen not saved');
 unlike($params->{warning}, qr/<img|<b>/, 'warning text is escaped');
@@ -94,9 +96,78 @@ my $token = Plugins::LyrionAnywhere::Commands::csrf_token();
 $params = {};
 Plugins::LyrionAnywhere::Settings->handler(undef, $params);
 is($params->{anywhere_csrf}, $token, 'settings page is given the token');
-$params = { saveSettings => 1, pref_listen => '127.0.0.1:9443' };
+$params = { saveSettings => 1, anywhere_form_token => $token, pref_listen => '127.0.0.1:9443' };
 Plugins::LyrionAnywhere::Settings->handler(undef, $params);
 is($params->{anywhere_csrf}, $token, 'also after saving');
+
+# --- CSRF: LMS's own form token is checked only if its "CSRF protection" setting is raised
+# (off by default), so the form must carry ours, or nothing is saved. ---------------------
+{
+	open my $fh, '<', 'Plugins/LyrionAnywhere/HTML/EN/plugins/LyrionAnywhere/settings/basic.html' or die;
+	my $html = do { local $/; <$fh> };
+	like($html, qr{<input type="hidden" name="anywhere_form_token" value="\[% anywhere_csrf \| html %\]">}, 'the form carries the token, escaped');
+	ok(index($html, 'anywhere_form_token') < index($html, 'pref_enabled'), 'inside the settings form, before the first setting');
+
+	require Plugins::LyrionAnywhere::Gateway;
+	my ($restarts, $stops) = (0, 0);
+	no warnings 'redefine';
+	local *Plugins::LyrionAnywhere::Gateway::restart = sub { $restarts++; 1 };
+	local *Plugins::LyrionAnywhere::Gateway::stop = sub { $stops++ };
+	my $exe = "$Slim::Utils::Prefs::DIR/evil-gw";
+	open $fh, '>', $exe or die; close $fh; chmod 0755, $exe;
+	$prefs->set(enabled => 0);
+	$prefs->set(listen => '127.0.0.1:9443');
+	$prefs->set(public_url => 'https://music.example.com');
+	$prefs->set(gateway_path => '');
+	my %forged = (saveSettings => 1, pref_enabled => 1, pref_listen => '0.0.0.0:9443',
+		pref_public_url => 'https://evil.example.com', pref_gateway_path => $exe);
+	for my $case (['no token', undef], ['empty token', ''], ['wrong token', 'ab' x 16],
+	              ['token with a suffix', "${token}x"], ['token as a list', [$token]], ['upper-case token', uc $token]) {
+		my ($name, $given) = @$case;
+		my $p = { %forged, (defined $given ? (anywhere_form_token => $given) : ()) };
+		@Slim::Web::Settings::HANDLED = ();
+		Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+		is($prefs->get('enabled'), 0, "$name: Enabled not changed");
+		is($prefs->get('listen'), '127.0.0.1:9443', "$name: listen address not changed");
+		is($prefs->get('public_url'), 'https://music.example.com', "$name: public URL not changed");
+		is($prefs->get('gateway_path'), '', "$name: gateway path not changed");
+		ok(!$Slim::Web::Settings::HANDLED[-1]{saveSettings}, "$name: LMS is not asked to save");
+		ok(!grep({ /^pref_/ } keys %{ $Slim::Web::Settings::HANDLED[-1] }), "$name: no submitted values passed on");
+		like($p->{warning}, qr/not saved.*Reload the page/, "$name: the page says so");
+		is($p->{anywhere_csrf}, $token, "$name: the reloaded form gets the right token");
+	}
+	is($restarts + $stops, 0, 'the gateway was not touched');
+	# With the page's token the same form saves.
+	Plugins::LyrionAnywhere::Settings->handler(undef, { %forged, anywhere_form_token => $token, pref_listen => '127.0.0.1:9444' });
+	is($prefs->get('listen'), '127.0.0.1:9444', 'with the token: saved');
+	is($prefs->get('enabled'), 1);
+	is($restarts, 1, 'and the gateway restarted');
+	# Just showing the page (no save) needs no token.
+	my $p = {};
+	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	ok(!$p->{warning}, 'viewing the page: no warning');
+	$prefs->set(enabled => 0);
+	$prefs->set(listen => '127.0.0.1:9443');
+	$prefs->set(gateway_path => '');
+}
+
+# --- an http:// public URL is saved only when "Allow http://" is ticked as well -----------
+{
+	my ($o, $e) = $clean->({ pref_public_url => 'http://music.example.com' });
+	ok(!exists $o->{pref_public_url}, 'http:// refused without the box');
+	like($e->[0], qr/http:\/\/.*unencrypted.*Allow http/, 'and the reason given');
+	($o, $e) = $clean->({ pref_public_url => 'HTTP://music.example.com' });
+	ok(!exists $o->{pref_public_url}, 'in any case');
+	($o, $e) = $clean->({ pref_public_url => 'http://music.example.com', anywhere_allow_http => 1 });
+	is_deeply($e, [], 'allowed with the box ticked');
+	is($o->{pref_public_url}, 'http://music.example.com');
+	($o, $e) = $clean->({ pref_public_url => 'https://music.example.com' });
+	is($o->{pref_public_url}, 'https://music.example.com', 'https needs no box');
+	open my $fh, '<', 'Plugins/LyrionAnywhere/HTML/EN/plugins/LyrionAnywhere/settings/basic.html' or die;
+	my $html = do { local $/; <$fh> };
+	like($html, qr/name="anywhere_allow_http"/, 'the page has the box');
+	like($html, qr/<details class="aw-advanced"[^>]*>\s*<summary>Advanced[^<]*<\/summary>\s*\[% WRAPPER setting title="Gateway path"/, 'the gateway path is under Advanced');
+}
 {
 	open my $fh, '<', 'Plugins/LyrionAnywhere/HTML/EN/plugins/LyrionAnywhere/settings/basic.html' or die;
 	my $html = do { local $/; <$fh> };

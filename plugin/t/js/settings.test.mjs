@@ -70,6 +70,7 @@ test('formats times and durations', () => {
 /** A tiny DOM: text is only ever text, and any attempt to parse HTML throws. */
 function fakeDom() {
   const created = [];
+  const focused = [];
   class Node {
     constructor(tag) {
       this.tagName = tag.toUpperCase();
@@ -89,23 +90,34 @@ function fakeDom() {
     insertAdjacentHTML() { throw new Error('insertAdjacentHTML used'); }
     setAttribute(k, v) { this.attrs[k] = String(v); }
     getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+    removeAttribute(k) { delete this.attrs[k]; }
+    hasAttribute(k) { return k in this.attrs; }
     addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
     append(...c) { this.children.push(...c); }
     replaceChildren(...c) { this._text = ''; this.children = c; }
-    focus() {}
+    prepend(...c) { this.children.unshift(...c); }
+    after() {}
+    contains(n) { return n === this || this.children.some((c) => typeof c !== 'string' && c.contains(n)); }
+    closest() { return null; }
+    get isConnected() { return !this.detached; }
+    focus() { focused.push(this); }
+    click() { for (const fn of this.listeners.click || []) fn({ target: this }); }
   }
   const byId = new Map();
-  for (const id of ['anywhere-app', 'aw-status', 'aw-users', 'aw-devices', 'aw-audit', 'aw-message', 'aw-create-btn', 'aw-new-user', 'aw-new-password', 'aw-new-role', 'aw-session-days', 'aw-session-btn', 'aw-plugins', 'aw-plugins-btn']) {
+  for (const id of ['anywhere-app', 'aw-status', 'aw-users', 'aw-pair', 'aw-devices', 'aw-audit', 'aw-message', 'aw-create-btn', 'aw-new-user', 'aw-new-password', 'aw-new-role', 'aw-session-days', 'aw-session-btn', 'aw-plugins', 'aw-plugins-btn', 'aw-offline', 'aw-create', 'aw-session', 'aw-plugins-box', 'aw-h-status', 'aw-h-users', 'aw-h-signin', 'aw-h-plugins', 'aw-h-devices', 'aw-h-audit']) {
     byId.set(id, new Node('div'));
   }
   const docListeners = {};
   const document = {
     createElement: (tag) => new Node(tag),
     getElementById: (id) => byId.get(id),
+    activeElement: null,
+    body: null,
+    querySelectorAll: () => created.filter((e) => 'data-aw-key' in e.attrs),
     addEventListener: (type, fn) => { docListeners[type] = fn; },
     write() { throw new Error('document.write used'); },
   };
-  return { document, byId, created, ready: () => docListeners.DOMContentLoaded() };
+  return { document, byId, created, focused, ready: () => docListeners.DOMContentLoaded() };
 }
 
 const HOSTILE = '<img src=x onerror=document.title="PWNED">';
@@ -177,7 +189,7 @@ test('renders remote-controlled names as text, never as markup', async () => {
   const rename = dom.created.find((e) => e.tagName === 'BUTTON' && e.textContent === 'Rename');
   assert.ok(rename, 'rename button shown');
   for (const fn of rename.listeners.click) fn();
-  const input = dom.created.find((e) => e.tagName === 'INPUT' && e.attrs['aria-label'] === 'New name');
+  const input = dom.created.find((e) => e.tagName === 'INPUT' && String(e.attrs['aria-label']).startsWith('New name for '));
   assert.ok(input, 'name input shown');
   assert.equal(input.value, HOSTILE, 'starts from the current name, as a value');
   const save = dom.created.filter((e) => e.tagName === 'BUTTON' && e.textContent === 'Save').pop();
@@ -271,4 +283,218 @@ test('download permission text', () => {
   assert.equal(t.downloadsText({ downloads: 1 }), 'off', 'only a real true counts');
   assert.equal(t.downloadsText({ downloads: true, download_formats: ['__proto__', 'constructor', 'toString'] }), 'on');
   assert.equal(t.downloadsText(null), 'off');
+});
+
+// --- page behaviour: stopped gateway, restart, Enter, grants, labels, focus, audit -------
+
+const qrSrc = readFileSync(
+  new URL('../../Plugins/LyrionAnywhere/HTML/EN/plugins/LyrionAnywhere/settings/qr.js', import.meta.url),
+  'utf8',
+);
+
+test('audit events in words; unknown codes as they are', () => {
+  assert.equal(t.auditEventText('login.failed'), 'Sign-in failed');
+  assert.equal(t.auditEventText('pairing.ok'), 'Device added with a code');
+  assert.equal(t.auditEventText('user.enabled'), 'User enabled');
+  assert.equal(t.auditEventText('something.new'), 'something.new');
+  assert.equal(t.auditEventText('__proto__'), '__proto__');
+  assert.equal(t.auditEventText('toString'), 'toString');
+  assert.equal(t.auditEventText(HOSTILE), HOSTILE, 'shown as text by the page');
+  assert.equal(t.auditEventText(undefined), '');
+});
+
+test('http:// public URLs are spotted', () => {
+  for (const u of ['http://music.example.com', ' HTTP://music.example.com', 'http://10.0.0.10:9443']) assert.ok(t.isHttpUrl(u), u);
+  for (const u of ['https://music.example.com', '', null, 'music.example.com', 'httpx://a']) assert.ok(!t.isHttpUrl(u), String(u));
+});
+
+test('Enter, but not while composing text', () => {
+  assert.ok(t.isEnter({ key: 'Enter' }));
+  assert.ok(!t.isEnter({ key: 'Enter', isComposing: true }));
+  assert.ok(!t.isEnter({ key: 'Enter', keyCode: 229 }));
+  assert.ok(!t.isEnter({ key: 'a' }));
+  assert.ok(!t.isEnter(null));
+});
+
+test('restart and stopped-gateway messages', () => {
+  assert.equal(t.restartText({ started: 1 }), 'Gateway restarted');
+  assert.equal(t.restartText({}), 'Gateway restarted');
+  assert.match(t.restartText({ started: 0, message: 'Remote access is turned off, so...' }), /turned off/);
+  assert.match(t.restartText({ started: '0' }), /turned off/);
+  assert.equal(t.offlineText({ running: 1, enabled: 1 }), null);
+  assert.match(t.offlineText({ running: 0, enabled: 0 }), /turned off/);
+  assert.match(t.offlineText({ running: 0, enabled: 1 }), /not running/);
+  assert.match(t.offlineText(null), /not running/);
+});
+
+/** The page over the fake DOM with the given replies; returns helpers to drive it. */
+async function page(replies) {
+  const dom = fakeDom();
+  const TOKEN = 'ab'.repeat(16);
+  dom.byId.get('anywhere-app').setAttribute('data-csrf', TOKEN);
+  dom.byId.get('anywhere-app').setAttribute('data-public-url', 'https://music.example.com');
+  dom.byId.get('aw-pair').setAttribute('hidden', '');
+  dom.document.createElementNS = (_ns, tag) => dom.document.createElement(tag);
+  const sent = [];
+  const fetch = async (_url, opts) => {
+    const cmd = JSON.parse(opts.body).params[1];
+    sent.push(cmd);
+    const key = cmd[0] === 'players' ? 'players' : cmd[1];
+    const r = replies[key];
+    return { json: async () => ({ result: (typeof r === 'function' ? r(cmd) : r) || {} }) };
+  };
+  const ctx = { document: dom.document, fetch, URL, setInterval: () => 0, setTimeout: () => 0, clearTimeout: () => {}, clearInterval: () => {}, Map, WeakMap, Set, Promise, JSON, Date, Math, Object, String, Error };
+  ctx.globalThis = ctx;
+  vm.runInNewContext(qrSrc, ctx);
+  vm.runInNewContext(src, ctx);
+  dom.ready();
+  const settle = async () => { for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r)); };
+  await settle();
+  const button = (text) => dom.created.filter((e) => e.tagName === 'BUTTON' && e.textContent === text).pop();
+  const click = async (b) => { for (const fn of b.listeners.click || []) fn(); await settle(); };
+  return { dom, sent, TOKEN, settle, button, click };
+}
+
+const RUNNING = { running: 1, enabled: 1, pid: 42, uptime: 60, listen: '127.0.0.1:9443', binary_ok: 1, binary: '/x', data_dir: '/d' };
+const BASE = {
+  status: RUNNING,
+  players: { players_loop: [{ playerid: 'aa:bb:cc:dd:ee:01', name: 'Kitchen' }, { playerid: 'aa:bb:cc:dd:ee:02', name: 'Lounge' }] },
+  users: { data: { users: [
+    { username: 'bob', role: 'listener', totp_enabled: 1, disabled: 0, downloads: false },
+    { username: 'carol', role: 'listener', totp_enabled: 0, disabled: 0, downloads: true },
+  ] } },
+  grants: (cmd) => ({ data: { players: cmd.includes('username:bob') ? ['aa:bb:cc:dd:ee:01'] : [] } }),
+  devices: { data: { devices: [
+    { id: 1, name: 'Kitchen phone', username: 'bob', mac: '02:4c:41:00:00:01', last_seen: 1 },
+    { id: 2, name: 'Work laptop', username: 'carol', mac: '02:4c:41:00:00:02', last_seen: 1 },
+  ] } },
+  audit: { data: { audit: [{ at: 1, event: 'login.failed', username: 'bob', detail: '' }] } },
+  settings: { data: { session_days: 90 } },
+  plugins: { data: { plugins: [] } },
+};
+
+test('a stopped gateway: its controls are off, and the page says why once', async () => {
+  for (const [status, why] of [[{ running: 0, enabled: 1 }, /not running/], [{ running: 0, enabled: 0 }, /turned off/]]) {
+    const p = await page({ ...BASE, status });
+    for (const id of ['aw-create', 'aw-session', 'aw-plugins-box']) assert.equal(p.dom.byId.get(id).disabled, true, id);
+    const note = p.dom.byId.get('aw-offline');
+    assert.match(note.textContent, why);
+    assert.equal(note.getAttribute('hidden'), null, 'the note is shown');
+    for (const id of ['aw-users', 'aw-devices', 'aw-audit']) assert.equal(p.dom.byId.get(id).textContent, '', `${id} left empty, not repeating the note`);
+    assert.deepEqual(p.sent.filter((c) => c[0] !== 'anywhere' || c[1] !== 'status'), [], 'nothing but status asked for');
+    assert.equal(p.button('Restart gateway').disabled, !status.enabled, 'restart is off while remote access is off');
+  }
+  const p = await page(BASE);
+  for (const id of ['aw-create', 'aw-session', 'aw-plugins-box']) assert.equal(p.dom.byId.get(id).disabled, false, id);
+  assert.equal(p.dom.byId.get('aw-offline').getAttribute('hidden'), '', 'no note while running');
+});
+
+test('restart warns first and needs a second click; a turned-off gateway is reported', async () => {
+  let started = 1;
+  const p = await page({ ...BASE, restart: () => (started ? { started: 1 } : { started: 0, message: 'Remote access is turned off, so the gateway was not started.' }) });
+  const b = p.button('Restart gateway');
+  assert.match(p.dom.byId.get('aw-status').textContent, /disconnects everyone listening remotely/);
+  await p.click(b);
+  assert.ok(!p.sent.some((c) => c[1] === 'restart'), 'first click only asks for confirmation');
+  assert.equal(b.textContent, 'Confirm restart');
+  await p.click(b);
+  assert.deepEqual(p.sent.find((c) => c[1] === 'restart'), ['anywhere', 'restart', 'csrf:' + p.TOKEN]);
+  assert.equal(p.dom.byId.get('aw-message').textContent, 'Gateway restarted');
+  started = 0;
+  await p.click(b);
+  await p.click(b);
+  assert.match(p.dom.byId.get('aw-message').textContent, /turned off/);
+});
+
+test('Enter in the section runs its own action and never submits the LMS form', async () => {
+  const p = await page(BASE);
+  const keydown = p.dom.byId.get('anywhere-app').listeners.keydown[0];
+  const user = p.dom.byId.get('aw-new-user');
+  const pass = p.dom.byId.get('aw-new-password');
+  user.tagName = 'INPUT';
+  pass.tagName = 'INPUT';
+  p.dom.byId.get('aw-new-role').value = 'listener';
+  user.value = 'dave';
+  pass.value = 'a long enough password';
+  let prevented = 0;
+  keydown({ key: 'Enter', target: pass, preventDefault: () => prevented++ });
+  await p.settle();
+  assert.equal(prevented, 1, 'the form is not submitted');
+  assert.deepEqual(p.sent.find((c) => c[1] === 'user_create'), ['anywhere', 'user_create', 'username:dave', 'password:a long enough password', 'role:listener', 'csrf:' + p.TOKEN]);
+  // Any other field of ours: no submit, no action.
+  const other = { tagName: 'INPUT' };
+  const before = p.sent.length;
+  keydown({ key: 'Enter', target: other, preventDefault: () => prevented++ });
+  await p.settle();
+  assert.equal(prevented, 2);
+  assert.equal(p.sent.length, before, 'nothing sent');
+  // Enter while composing text, or on a button, is left to the browser.
+  keydown({ key: 'Enter', isComposing: true, target: pass, preventDefault: () => prevented++ });
+  keydown({ key: 'Enter', target: { tagName: 'BUTTON' }, preventDefault: () => prevented++ });
+  assert.equal(prevented, 2);
+  // The sign-in lifetime field saves with Enter.
+  const days = p.dom.byId.get('aw-session-days');
+  days.tagName = 'INPUT';
+  days.value = '30';
+  keydown({ key: 'Enter', target: days, preventDefault: () => prevented++ });
+  await p.settle();
+  assert.deepEqual(p.sent.find((c) => c[1] === 'session_days'), ['anywhere', 'session_days', 'days:30', 'csrf:' + p.TOKEN]);
+});
+
+test('choosing a player does nothing until Add is pressed', async () => {
+  const p = await page(BASE);
+  const select = p.dom.created.find((e) => e.tagName === 'SELECT' && e.attrs['aria-label'] === 'Player to give bob');
+  assert.ok(select, 'player list labelled with the user');
+  assert.equal((select.listeners.change || []).length, 0, 'no action on change');
+  select.value = 'aa:bb:cc:dd:ee:02';
+  assert.ok(!p.sent.some((c) => c[1] === 'grant'));
+  const add = p.dom.created.find((e) => e.tagName === 'BUTTON' && e.attrs['aria-label'] === 'Give bob the chosen player');
+  await p.click(add);
+  assert.deepEqual(p.sent.find((c) => c[1] === 'grant'), ['anywhere', 'grant', 'username:bob', 'player:aa:bb:cc:dd:ee:02', 'csrf:' + p.TOKEN]);
+  // Nothing chosen: said so, nothing sent.
+  const carolAdd = p.dom.created.filter((e) => e.tagName === 'BUTTON' && e.attrs['aria-label'] === 'Give carol the chosen player').pop();
+  const n = p.sent.length;
+  await p.click(carolAdd);
+  assert.equal(p.sent.length, n);
+  assert.match(p.dom.byId.get('aw-message').textContent, /Choose a player/);
+});
+
+test('repeated buttons have names that say what they act on', async () => {
+  const p = await page(BASE);
+  const keyed = p.dom.created.filter((e) => e.tagName === 'BUTTON' && 'data-aw-key' in e.attrs);
+  const names = keyed.map((b) => b.attrs['aria-label']);
+  assert.ok(names.every((n) => typeof n === 'string' && n.length > 0), 'every one is named');
+  assert.equal(new Set(names).size, names.length, `names are unique: ${names.join(' | ')}`);
+  for (const n of ['Disable bob', 'Delete: carol', 'Sign out: Kitchen phone', 'Rename Work laptop', 'Remove Kitchen from bob', 'Reset two-step: bob', 'Add a device for carol']) {
+    assert.ok(names.includes(n), n);
+  }
+});
+
+test('after a list is rebuilt, focus goes back to the same control', async () => {
+  const p = await page(BASE);
+  const old = p.dom.created.find((e) => e.tagName === 'BUTTON' && e.attrs['data-aw-key'] === 'user:bob:disable');
+  p.dom.byId.get('anywhere-app').contains = () => true;
+  p.dom.document.activeElement = old;
+  for (const fn of old.listeners.click) fn();
+  old.detached = true; // the refresh replaces the row
+  p.dom.document.activeElement = null;
+  await p.settle();
+  const f = p.dom.focused[p.dom.focused.length - 1];
+  assert.ok(f && f !== old, 'focus moved to the new copy');
+  assert.equal(f.attrs['data-aw-key'], 'user:bob:disable');
+});
+
+test('audit events are shown in words, with the code kept as a tooltip', async () => {
+  const p = await page(BASE);
+  const audit = p.dom.byId.get('aw-audit').textContent;
+  assert.ok(audit.includes('Sign-in failed'));
+  assert.ok(p.dom.created.some((e) => e.tagName === 'TD' && e.attrs.title === 'login.failed'));
+});
+
+test('the device panel tells browser users to sign in with a password', async () => {
+  const p = await page({ ...BASE, pairing: { ok: 1, data: { code: 'ABCDEFGHJK', expires_in: 600 } } });
+  await p.click(p.dom.created.find((e) => e.tagName === 'BUTTON' && e.attrs['aria-label'] === 'Add a device for bob'));
+  const text = p.dom.byId.get('aw-pair').textContent;
+  assert.match(text, /Android app/);
+  assert.match(text, /web browser.*username and password/);
 });

@@ -13,8 +13,11 @@ use warnings;
 use Config;
 use Digest::SHA;
 use File::Spec::Functions qw(abs2rel catdir catfile file_name_is_absolute splitpath);
+use File::Basename ();
+use File::Copy ();
 use Socket qw(inet_pton AF_INET AF_INET6);
 use POSIX ();
+use Time::HiRes ();
 
 use Slim::Utils::Log;
 use Slim::Utils::OSDetect;
@@ -29,6 +32,12 @@ use constant STABLE_AFTER   => 300;     # a run this long resets the backoff
 use constant ADMIN_PORT     => 9445;    # default loopback port of the admin API
 use constant STDERR_FILE    => 'gateway.stderr';   # the gateway's stderr, in the data dir
 use constant STDERR_LINES   => 5;       # how many of its last lines the status shows
+use constant PID_FILE       => 'gateway.pid';      # the running gateway's pid, in the data dir
+use constant BACKOFF_FIRST  => 5;       # first restart delay (seconds); doubles each time
+use constant BACKOFF_MAX    => 300;     # ... up to this
+use constant TERM_GRACE     => 5;       # seconds after SIGTERM before SIGKILL
+use constant SHUTDOWN_WAIT  => 3;       # at most this long blocking LMS's own shutdown
+use constant LOG_MAX_BYTES  => 5 * 1024 * 1024;    # the gateway log is rotated at this size
 
 # The development "Gateway path" pref runs any binary as the LMS user, so it is honoured
 # only when LMS itself was started with this variable set to 1.
@@ -42,6 +51,12 @@ my $last_error = '';
 my $basedir = '';
 my $restart_pending = 0;   # a restart timer is set: never more than one at a time
 my $warned_override = '';  # the ignored gateway path last warned about
+my $launched_admin;        # the admin address the running gateway was started with
+my @dying;                 # gateways sent SIGTERM and not yet reaped: { proc, pid, kill_at, killed }
+my $orphan_tries = 0;      # signals sent to a gateway left behind by an earlier LMS
+
+# Where process information comes from (Linux). Tests point it at a fake tree.
+our $PROC_ROOT = '/proc';
 
 sub _now { time() }        # the clock (tests replace it)
 
@@ -212,11 +227,75 @@ sub command_line {
 	return (\@argv);
 }
 
-# Seconds to wait before restart attempt $n (1-based).
+# Seconds to wait before restart attempt $n (1-based): 5, 10, 20, 40 ... capped at 300.
 sub backoff {
-	my $n = shift;
-	my @steps = (5, 10, 30, 60);
-	return $steps[ $n <= 0 ? 0 : ($n > @steps ? $#steps : $n - 1) ];
+	my $n = shift // 1;
+	$n = 1 if $n < 1;
+	return BACKOFF_MAX if $n > 16;
+	my $wait = BACKOFF_FIRST * 2**($n - 1);
+	return $wait > BACKOFF_MAX ? BACKOFF_MAX : $wait;
+}
+
+# Copy-and-truncate the gateway log once it reaches $max bytes, keeping one old file
+# ($file.1). The gateway opens its log for appending, so it carries on writing at the start
+# of the emptied file. Returns 1 if the log was rotated.
+sub rotate_log {
+	my ($file, $max) = @_;
+	$max //= LOG_MAX_BYTES;
+	return 0 unless $file && !-l $file && -f $file;
+	my $size = -s _;
+	return 0 unless $size && $size >= $max;
+	File::Copy::copy($file, "$file.1") or return 0;
+	truncate($file, 0) or return 0;
+	return 1;
+}
+
+# Is $pid an anywhere-gateway serving $dir? Read from /proc/<pid>/cmdline, so it is only
+# ever true where that exists (Linux) and the process's command line says exactly that: a
+# binary named anywhere-gateway, run as `serve`, with our data directory. Anything else, or
+# anything unreadable, is not ours.
+sub is_our_gateway {
+	my ($pid, $dir) = @_;
+	return 0 unless defined $pid && $pid =~ /^[1-9]\d{0,9}\z/ && $pid > 1 && $dir;
+	open my $fh, '<:raw', "$PROC_ROOT/$pid/cmdline" or return 0;
+	my $cmd = do { local $/; <$fh> } // '';
+	close $fh;
+	my @argv = split /\0/, $cmd;
+	return 0 unless @argv >= 4;
+	return 0 unless File::Basename::basename($argv[0]) =~ /^anywhere-gateway(?:\.exe)?\z/;
+	return 0 unless $argv[1] eq 'serve';
+	for my $i (2 .. $#argv - 1) {
+		return 1 if $argv[$i] eq '--data-dir' && $argv[$i + 1] eq $dir;
+	}
+	return 0;
+}
+
+# Does process $pid hold the loopback listening socket on $port? 1 yes, 0 no, undef when this
+# system can't tell (no /proc). Read from /proc/net/tcp and /proc/<pid>/fd.
+sub listener_owned_by {
+	my ($port, $pid) = @_;
+	return undef unless $pid && valid_port($port);
+	open my $tcp, '<', "$PROC_ROOT/net/tcp" or return undef;
+	my %inodes;
+	while (my $line = <$tcp>) {
+		my @f = split ' ', $line;
+		next unless @f >= 10 && $f[1] =~ /^([0-9A-F]{8}):([0-9A-F]{4})\z/;
+		my ($addr, $p) = ($1, hex $2);
+		next unless $p == $port && $f[3] eq '0A';               # LISTEN
+		next unless $addr eq '0100007F' || $addr eq '7F000001';  # 127.0.0.1, either byte order
+		$inodes{ $f[9] } = 1 if $f[9] =~ /^[1-9]\d*\z/;
+	}
+	close $tcp;
+	return 0 unless %inodes;
+	return 0 unless -d "$PROC_ROOT/$pid";
+	opendir my $dh, "$PROC_ROOT/$pid/fd" or return undef;
+	my $found = 0;
+	while (defined(my $fd = readdir $dh)) {
+		my $link = readlink("$PROC_ROOT/$pid/fd/$fd") // next;
+		if ($link =~ /^socket:\[(\d+)\]\z/ && $inodes{$1}) { $found = 1; last }
+	}
+	closedir $dh;
+	return $found;
 }
 
 # Check a bundled binary against Bin/SHA256SUMS (written by tools/build-release.sh), so a
@@ -264,8 +343,8 @@ sub data_dir {
 	return catdir(Slim::Utils::Prefs::dir(), 'lyrion-anywhere');
 }
 
-# The admin API address. Only a plain port number is ever used: the admin secret is sent
-# here, so a crafted pref (e.g. "1@evil.example.com:80") must never redirect it.
+# The admin API address to start the gateway with. Only a plain port number is ever used.
+# The admin secret is never sent to this directly: see admin_target().
 sub admin_listen {
 	my $port = $prefs->get('admin_port');
 	if (defined $port && $port ne '' && !valid_port($port)) {
@@ -291,7 +370,62 @@ sub gateway_override {
 	return $p;
 }
 
+# Where to send the admin secret: the admin address the running gateway was started with,
+# or undef if this plugin didn't start a gateway that is still running. `admin_port` is an
+# ordinary pref that LMS's `pref` command can change, so it is read only when the gateway
+# starts; a later change never redirects the secret. Where the system can tell (Linux), the
+# port must also be held by the gateway process itself, not by some other local program.
+sub admin_target {
+	return undef unless $proc && $launched_admin && eval { $proc->alive };
+	my $pid = eval { $proc->pid };
+	my ($port) = $launched_admin =~ /:(\d+)\z/;
+	my $owned = listener_owned_by($port, $pid);
+	if (defined $owned && !$owned) {
+		# Just after a start the gateway may not be listening yet; later, this is worth a warning.
+		my $msg = "admin port $port is not held by the gateway (pid $pid): not sending the admin secret";
+		if ($started_at && _now() - $started_at < CHECK_INTERVAL) { $log->info($msg) }
+		else                                                      { $log->warn($msg) }
+		return undef;
+	}
+	return $launched_admin;
+}
+
 sub stderr_file { catfile(data_dir(), STDERR_FILE) }
+sub pid_file    { catfile(data_dir(), PID_FILE) }
+
+sub log_file {
+	my ($logdir) = Slim::Utils::OSDetect::dirsFor('log');
+	return $logdir ? catfile($logdir, 'lyrion-anywhere.log') : undef;
+}
+
+sub _write_pid_file {
+	my $pid = shift // return;
+	my $file = pid_file();
+	my $tmp = "$file.tmp";
+	unlink $tmp;
+	my $fh;
+	unless (sysopen($fh, $tmp, POSIX::O_WRONLY() | POSIX::O_CREAT() | POSIX::O_EXCL(), 0600)) {
+		$log->warn("could not write $file: $!");
+		return;
+	}
+	print $fh "$pid\n";
+	close $fh;
+	rename $tmp, $file or unlink $tmp;
+}
+
+sub _read_pid_file {
+	open my $fh, '<', pid_file() or return undef;
+	my $line = <$fh> // '';
+	close $fh;
+	return $line =~ /^([1-9]\d{0,9})\s*\z/ ? $1 : undef;
+}
+
+# Forget the pid file if it names $pid (or whatever it names, given no pid).
+sub _remove_pid_file {
+	my $pid = shift;
+	my $in = _read_pid_file();
+	unlink pid_file() if !defined $pid || !defined $in || $in == $pid;
+}
 
 # The last few lines the gateway wrote to stderr (control characters removed), or ''.
 sub stderr_tail {
@@ -339,7 +473,6 @@ sub register_validators {
 sub _options {
 	my $server = preferences('server');
 	my $cli    = preferences('plugin.cli');
-	my ($logdir) = Slim::Utils::OSDetect::dirsFor('log');
 	my $public = $prefs->get('public_url') || '';
 	# Stored values are checked again: one that is no longer valid (e.g. ffmpeg removed) is
 	# left out rather than stopping the gateway from starting.
@@ -363,7 +496,7 @@ sub _options {
 		data_dir        => data_dir(),
 		http_port       => $server->get('httpport') || 9000,
 		cli_port        => ($cli && $cli->get('cliport')) || 9090,
-		log_file        => $logdir ? catfile($logdir, 'lyrion-anywhere.log') : undef,
+		log_file        => log_file(),
 		static_dir      => web_dir($basedir),
 		trusted_proxies => [ split_list($prefs->get('trusted_proxies')) ],
 		allowed_origins => [ $public ? $public : () ],
@@ -390,24 +523,121 @@ sub start {
 	Slim::Utils::Timers::setTimer(undef, _now() + CHECK_INTERVAL, \&_check);
 }
 
+# Stop the gateway. This never blocks LMS: the gateway is sent SIGTERM and reaped from a
+# timer, with SIGKILL if it hasn't gone TERM_GRACE seconds later.
 sub stop {
 	my $class = shift;
 	$wanted = 0;
 	Slim::Utils::Timers::killTimers(undef, \&_check);
 	Slim::Utils::Timers::killTimers(undef, \&_launch);
 	$restart_pending = 0;
+	$launched_admin = undef;
 	if ($proc) {
 		$log->info('stopping gateway');
-		eval { $proc->die };
+		_terminate($proc);
 		undef $proc;
 	}
 }
 
+# LMS is shutting down: stop, then wait (at most SHUTDOWN_WAIT seconds) for the gateway to
+# go, so it isn't left running without LMS.
+sub stop_for_shutdown {
+	my $class = shift;
+	$class->stop;
+	my $until = Time::HiRes::time() + SHUTDOWN_WAIT;
+	while (@dying && Time::HiRes::time() < $until) {
+		Time::HiRes::sleep(0.1);
+		@dying = grep {
+			my $alive = eval { $_->{proc}->alive };
+			_remove_pid_file($_->{pid}) unless $alive;
+			$alive;
+		} @dying;
+	}
+	_signal('KILL', $_->{pid}) for @dying;
+	Slim::Utils::Timers::killTimers(undef, \&_reap);
+}
+
+# Restart, but only if remote access is turned on: a disabled gateway is stopped and stays
+# stopped. Returns 1 if the gateway was started, 0 if not.
 sub restart {
 	my $class = shift;
 	$class->stop;
 	$attempt = 0;
+	unless ($prefs->get('enabled')) {
+		$log->info('not restarting the gateway: remote access is turned off');
+		return 0;
+	}
 	$class->start;
+	return 1;
+}
+
+sub _signal {
+	my ($sig, $pid) = @_;
+	return 0 unless defined $pid && $pid =~ /^[1-9]\d{0,9}\z/ && $pid > 1 && $pid != $$;
+	return kill($sig, $pid) ? 1 : 0;
+}
+
+# Ask a running gateway to stop, without waiting for it.
+sub _terminate {
+	my $p = shift or return;
+	return unless eval { $p->alive };
+	my $pid = eval { $p->pid };
+	if ($pid && _signal('TERM', $pid)) {
+		push @dying, { proc => $p, pid => $pid, kill_at => _now() + TERM_GRACE, killed => 0 };
+		_schedule_reap();
+		return;
+	}
+	# No pid to signal: Proc::Background's own way (which can block).
+	eval { $p->die };
+}
+
+sub _schedule_reap {
+	Slim::Utils::Timers::killTimers(undef, \&_reap);
+	Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + 1, \&_reap) if @dying;
+}
+
+# Collect stopped gateways (alive() reaps them); SIGKILL any that outstay TERM_GRACE.
+sub _reap {
+	my @left;
+	for my $d (@dying) {
+		if (!eval { $d->{proc}->alive }) {
+			_remove_pid_file($d->{pid});
+			next;
+		}
+		if (!$d->{killed} && _now() >= $d->{kill_at}) {
+			$log->warn("gateway (pid $d->{pid}) did not stop; killing it");
+			_signal('KILL', $d->{pid});
+			$d->{killed} = 1;
+		}
+		push @left, $d;
+	}
+	@dying = @left;
+	_schedule_reap();
+}
+
+# A gateway left running by an earlier LMS (one that crashed, so never stopped it) still
+# holds the ports. Returns 1 if one was found and signalled (start again shortly), else 0.
+# Only a process that verifiably is our gateway, serving our data directory, is signalled.
+sub _stop_orphan {
+	my $pid = _read_pid_file() or return 0;
+	my $mine = $proc ? eval { $proc->pid } : undef;
+	return 0 if (defined $mine && $mine == $pid) || grep { $_->{pid} == $pid } @dying;
+	if ($pid == $$ || !kill(0, $pid)) {
+		$orphan_tries = 0;
+		_remove_pid_file($pid);
+		return 0;
+	}
+	if (!is_our_gateway($pid, data_dir())) {
+		# Some other process has that pid now (or this system has no /proc): leave it alone.
+		$log->warn("the pid file names process $pid, which is not this plugin's gateway: leaving it alone");
+		$orphan_tries = 0;
+		_remove_pid_file($pid);
+		return 0;
+	}
+	my $sig = $orphan_tries++ >= 3 ? 'KILL' : 'TERM';
+	$log->warn("stopping a gateway left running by an earlier LMS (pid $pid, SIG$sig)");
+	_signal($sig, $pid);
+	return 1;
 }
 
 sub state {
@@ -429,6 +659,15 @@ sub _launch {
 	$restart_pending = 0;
 	return unless $wanted;
 	return if $proc && eval { $proc->alive };
+	# Wait for an earlier gateway to let go of the ports: one this plugin is stopping, or one
+	# an earlier LMS left behind.
+	_reap() if @dying;
+	if (@dying || _stop_orphan()) {
+		$restart_pending = 1;
+		Slim::Utils::Timers::setTimer(undef, _now() + 1, \&_launch);
+		return;
+	}
+	$orphan_tries = 0;
 	my %o = _options();
 	my ($argv, $err) = command_line(%o);
 	if (!$argv) {
@@ -456,12 +695,16 @@ sub _launch {
 		return;
 	}
 	mkdir $o{data_dir}, 0700 unless -d $o{data_dir};
+	rotate_log($o{log_file});
 	require Proc::Background;
 	$proc = _spawn($argv, stderr_file());
 	if ($proc) {
 		$started_at = _now();
 		$last_error = '';
-		$log->info('gateway started (pid ' . ($proc->pid // '?') . ")");
+		$launched_admin = $o{admin_listen};
+		my $pid = eval { $proc->pid };
+		_write_pid_file($pid) if $pid;
+		$log->info('gateway started (pid ' . ($pid // '?') . ")");
 	} else {
 		$last_error = "could not start gateway: " . ($@ || 'unknown error');
 		$log->error($last_error);
@@ -501,19 +744,25 @@ sub _spawn {
 sub _check {
 	return unless $wanted;
 	if ((!$proc || !eval { $proc->alive }) && !$restart_pending) {
-		$attempt = 0 if $started_at && _now() - $started_at >= STABLE_AFTER;
-		$attempt++;
-		my $wait = backoff($attempt);
 		if ($proc) {
+			# It ran and exited: a long run starts the backoff over. A launch that failed
+			# (no binary, a bad setting) never resets it, so that backs off too.
+			$attempt = 0 if $started_at && _now() - $started_at >= STABLE_AFTER;
 			my $tail = stderr_tail();
 			$last_error = 'gateway exited' . (length $tail ? ": $tail" : '');
+			_remove_pid_file(eval { $proc->pid });
 		}
+		$started_at = 0;
+		$launched_admin = undef;
+		$attempt++;
+		my $wait = backoff($attempt);
 		$last_error ||= 'gateway exited';
 		$log->warn("gateway not running; restarting in ${wait}s (attempt $attempt)");
 		undef $proc;
 		$restart_pending = 1;
 		Slim::Utils::Timers::setTimer(undef, _now() + $wait, \&_launch);
 	}
+	rotate_log(log_file());
 	Slim::Utils::Timers::setTimer(undef, _now() + CHECK_INTERVAL, \&_check);
 }
 
