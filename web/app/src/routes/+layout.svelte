@@ -358,8 +358,11 @@
 	}
 	@media (max-width: 760px) {
 		:global(:root) {
-			--tabs-h: calc(58px + env(safe-area-inset-bottom));
-			--bar-h: 64px;
+			/* Bottom chrome kept tight (tabs, mini player, "Playing on" strip): each control
+			   still has a 44 px target. */
+			--tabs-h: calc(52px + env(safe-area-inset-bottom));
+			--bar-h: 58px;
+			--strip-h: 30px;
 		}
 		.shell {
 			grid-template-columns: minmax(0, 1fr);
@@ -398,7 +401,7 @@
 			display: grid;
 			place-items: center;
 			width: 56px;
-			height: 30px;
+			height: 28px;
 			border-radius: 999px;
 		}
 		/* Material: a navigation bar with a pill behind the active icon. */
@@ -417,8 +420,12 @@
 		.barwrap.on-np {
 			display: none;
 		}
-		/* …so no room is kept for it either: the page ends at the tab bar. */
+		/* …so no room is kept for it either: the page ends at the tab bar. Banners (a notice,
+		   "tap to turn the sound on") take their room from Now playing, which fills the rest. */
 		.content.on-np {
+			display: flex;
+			flex-direction: column;
+			height: var(--app-h);
 			padding-bottom: var(--tabs-h);
 		}
 	}

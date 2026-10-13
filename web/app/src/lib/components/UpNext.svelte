@@ -185,8 +185,8 @@
 	}
 	.rm {
 		flex: none;
-		width: 36px;
-		height: 36px;
+		width: 44px;
+		height: 44px;
 		color: var(--fg-muted);
 	}
 	@media (prefers-reduced-motion: no-preference) {

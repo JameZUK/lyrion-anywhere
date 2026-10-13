@@ -347,7 +347,7 @@
 			clip: rect(0 0 0 0);
 		}
 		.thumb {
-			width: 46px;
+			width: 42px;
 		}
 		/* The bar's backdrop filter makes it the frame for the Play on… sheet. */
 		.bar {

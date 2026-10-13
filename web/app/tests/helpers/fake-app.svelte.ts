@@ -51,6 +51,10 @@ class FakeApp {
 	select(id: string) {
 		this.playerId = id;
 	}
+	deviceFailures = 0;
+	deviceFailed() {
+		this.deviceFailures++;
+	}
 	preferDevice() {
 		this.playerId = this.deviceMac;
 	}

@@ -15,6 +15,7 @@
 	import SleepSheet from '$lib/components/SleepSheet.svelte';
 	import SignalPath from '$lib/components/SignalPath.svelte';
 	import UpNext from '$lib/components/UpNext.svelte';
+	import DeviceWait from '$lib/components/DeviceWait.svelte';
 	import LyricsView from '$lib/components/LyricsView.svelte';
 	import RatingControl from '$lib/components/RatingControl.svelte';
 	import { lyrics } from '$lib/state/lyrics';
@@ -111,8 +112,7 @@
 	<div class="info">
 
 		{#if !app.current && app.playerId && app.playerId === app.deviceMac}
-			<h1>Getting this device ready…</h1>
-			<p class="muted">Music will play here. Pick something to play, or choose another player with the Play on… button.</p>
+			<DeviceWait />
 		{:else if !app.current}
 			<h1>Nothing to control yet</h1>
 			<p class="muted">Choose a player with the Play on… button by the volume.</p>
@@ -122,7 +122,7 @@
 		{:else}
 			{#key trackKey}<h1 class="title" in:fade={swap}>{title}</h1>{/key}
 			<p class="artist">
-				{#if artistHref}<a href={artistHref}>{textOf(track?.artist)}</a>{:else}{textOf(track?.artist)}{/if}
+				{#if artistHref}<a href={artistHref}>{textOf(track?.artist)}</a>{:else}{textOf(track?.artist)}{/if}{#if track?.album}<span class="album-inline muted">{` · ${textOf(track.album)}`}</span>{/if}
 			</p>
 			<p class="album muted">
 				{#if albumHref}<a href={albumHref}>{textOf(track?.album)}</a>{:else}{textOf(track?.album)}{/if}
@@ -245,9 +245,8 @@
 		font-variant-numeric: tabular-nums;
 	}
 	.cancel {
-		width: 32px;
-		height: 32px;
-		margin-left: 0.15rem;
+		width: 44px;
+		height: 44px;
 	}
 	.badge {
 		display: inline-flex;
@@ -333,6 +332,11 @@
 	.details {
 		margin: 0;
 	}
+	/* The album on the artist line: only on short phone screens (where the album line goes). */
+	.album-inline {
+		display: none;
+		font-weight: 400;
+	}
 	.details {
 		font-size: 0.85rem;
 	}
@@ -413,6 +417,7 @@
 		.np {
 			display: flex;
 			flex-direction: column;
+			flex: 1 1 0;
 			height: calc(var(--app-h) - var(--tabs-h));
 			min-height: 0;
 			padding: max(0.75rem, env(safe-area-inset-top)) 1.25rem 1rem;
@@ -487,22 +492,63 @@
 			justify-self: center;
 		}
 	}
-	/* Short phone screens: drop the quality line and tighten a little before the cover
-	   gets too small. */
+	/* Short phone screens (e.g. 360 × 640): everything has to fit above the tab bar with
+	   room left for the cover. Drop the quality line, put the album on the artist line, one
+	   line of title, smaller transport, and tighter spacing. */
 	@media (max-width: 760px) and (max-height: 700px) {
-		.details {
+		.np {
+			padding-top: max(0.5rem, env(safe-area-inset-top));
+			padding-bottom: 0.5rem;
+		}
+		.bar {
+			margin-bottom: 0.5rem;
+		}
+		.details,
+		.album {
 			display: none;
 		}
+		.album-inline {
+			display: inline;
+		}
+		.title {
+			-webkit-line-clamp: 1;
+			line-clamp: 1;
+		}
 		.info {
-			margin-top: 0.9rem;
+			margin-top: 0.6rem;
+			gap: 0.15rem;
+		}
+		.rating {
+			margin-top: 0;
 		}
 		.progress {
-			margin-top: 0.6rem;
+			margin-top: 0.4rem;
+		}
+		.transport {
+			margin: 0.15rem 0 0.25rem;
+		}
+		.big {
+			width: 46px;
+			height: 46px;
+		}
+		.play {
+			width: 56px;
+			height: 56px;
+		}
+		.art-wrap {
+			min-height: 64px;
+		}
+	}
+	/* Very short: the lyric line gives way to the cover. */
+	@media (max-width: 760px) and (max-height: 660px) {
+		.peek {
+			display: none;
 		}
 	}
 	/* Very short screens (landscape phones): let the page scroll rather than squash. */
 	@media (max-width: 760px) and (max-height: 520px) {
 		.np {
+			flex: none;
 			height: auto;
 			overflow: visible;
 		}
