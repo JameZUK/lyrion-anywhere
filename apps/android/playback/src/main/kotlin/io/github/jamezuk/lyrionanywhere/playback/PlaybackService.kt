@@ -18,6 +18,7 @@ import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
+import io.github.jamezuk.lyrionanywhere.playback.auto.AutoArtGrants
 import io.github.jamezuk.lyrionanywhere.playback.auto.AutoCatalogue
 import io.github.jamezuk.lyrionanywhere.playback.auto.CallerAccess
 import io.github.jamezuk.lyrionanywhere.playback.auto.CallerFactsReader
@@ -25,6 +26,8 @@ import io.github.jamezuk.lyrionanywhere.playback.auto.CallerPolicy
 import io.github.jamezuk.lyrionanywhere.playback.auto.LibraryCallback
 import io.github.jamezuk.lyrionanywhere.playback.auto.ResourceLabels
 import io.github.jamezuk.lyrionanywhere.core.OutputRoute
+import io.github.jamezuk.lyrionanywhere.data.AudioOutput
+import io.github.jamezuk.lyrionanywhere.data.OutputClass
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -119,7 +122,7 @@ class PlaybackService : MediaLibraryService() {
             return
         }
         ready = true
-        catalogue = host.autoSource?.let { AutoCatalogue(it, ResourceLabels(this)) }
+        catalogue = host.autoSource?.let { AutoCatalogue(it, ResourceLabels(this), art = host.autoArt) }
         val requests = catalogue?.let { c -> PlayRequests { id, query -> c.play(id, query) } }
         audio = getSystemService(AudioManager::class.java)
         locks = PlaybackLocks(this)
@@ -166,7 +169,8 @@ class PlaybackService : MediaLibraryService() {
         val launch = packageManager.getLaunchIntentForPackage(packageName)?.let {
             PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         }
-        val callback = LibraryCallback(::access, { catalogue }, scope)
+        // Covers in the car's lists: each URI granted to Android Auto alone, read-only.
+        val callback = LibraryCallback(::access, { catalogue }, scope, host.autoArt?.let { AutoArtGrants.forContext(this) })
         session = MediaLibrarySession.Builder(this, if (offlineActive) offlineSessionPlayer ?: player else player, callback)
             .apply { launch?.let { setSessionActivity(it) } }
             .build()
@@ -260,6 +264,10 @@ class PlaybackService : MediaLibraryService() {
         val route = describeRoute(this, audio)
         host.localPlayer.setOutputRoute(route)
         host.offlinePlayer?.setOutputRoute(route)
+        // Per-output EQ (Wave 2 §5.3): the profile bound to this output, if any, applies.
+        val output = audioOutputOf(bestOutput(outputDevices(audio)))
+        host.localPlayer.setOutput(output)
+        host.offlinePlayer?.setOutput(output)
     }
 
     private fun currentUsbDac(): OutputDevice? = pickUsbDac(outputDevices(audio))
@@ -348,7 +356,7 @@ fun outputDevices(audio: AudioManager): List<OutputDevice> =
  * codec-change broadcast isn't public either, so an ordinary app can't read it.
  */
 fun describeRoute(context: Context, audio: AudioManager): OutputRoute {
-    val best = outputDevices(audio).maxByOrNull { routePriority(it.type) }
+    val best = bestOutput(outputDevices(audio))
     val kind = best?.type?.let(::routeKind)
     val label = when (kind) {
         RouteKind.USB -> R.string.route_usb
@@ -365,6 +373,21 @@ fun describeRoute(context: Context, audio: AudioManager): OutputRoute {
         0
     }
     return OutputRoute(routeLabel(context.getString(label), kind, best?.name), mixer.coerceAtLeast(0).toUInt())
+}
+
+/** The output media most likely plays on (see [routePriority]). */
+fun bestOutput(devices: List<OutputDevice>): OutputDevice? = devices.maxByOrNull { routePriority(it.type) }
+
+/**
+ * The output as per-output EQ knows it (Wave 2 §5.3): the built-in speaker, wired
+ * headphones, a USB DAC by its product name, or a Bluetooth device by its name. Anything
+ * else counts as the speaker.
+ */
+fun audioOutputOf(device: OutputDevice?): AudioOutput = when (device?.type?.let(::routeKind)) {
+    RouteKind.USB -> AudioOutput.of(OutputClass.USB, device.name)
+    RouteKind.WIRED -> AudioOutput.of(OutputClass.WIRED, null)
+    RouteKind.BLUETOOTH -> AudioOutput.of(OutputClass.BLUETOOTH, device.name)
+    else -> AudioOutput.of(OutputClass.SPEAKER, null)
 }
 
 /** "USB audio · <DAC>" or "Bluetooth · <headphones>": the route, with the device's own name

@@ -36,6 +36,9 @@ interface PlaybackHost {
 
     /** What the car's browse tree reads and plays (none: no Android Auto). */
     val autoSource: io.github.jamezuk.lyrionanywhere.playback.auto.AutoSource? get() = null
+
+    /** Covers for Android Auto's lists, served by the app's own provider (none: no art). */
+    val autoArt: io.github.jamezuk.lyrionanywhere.playback.auto.AutoArtCache? get() = null
 }
 
 /** What this phone's player plays, for the widget and tile (null until LMS has said). */
