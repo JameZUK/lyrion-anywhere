@@ -252,6 +252,22 @@ class FakeLibrary(var totalAlbums: Int = 250) : LibraryRepository {
     override suspend fun roleCounts(artistId: Long, libraryId: String?) =
         roleCountsFail?.let { ApiResult.Err(it) } ?: ApiResult.Ok(roleCounts)
 
+    /** Biographies, photos and reviews (X5): none by default. */
+    var artistInfo = io.github.jamezuk.lyrionanywhere.core.ArtistInfo(null, null, null)
+    var albumInfo = io.github.jamezuk.lyrionanywhere.core.AlbumInfo(null)
+    var infoFail: AppError? = null
+    val infoCalls = mutableListOf<String>()
+
+    override suspend fun artistInfo(artistId: Long): ApiResult<io.github.jamezuk.lyrionanywhere.core.ArtistInfo> {
+        infoCalls += "artist $artistId"
+        return infoFail?.let { ApiResult.Err(it) } ?: ApiResult.Ok(artistInfo)
+    }
+
+    override suspend fun albumInfo(albumId: Long): ApiResult<io.github.jamezuk.lyrionanywhere.core.AlbumInfo> {
+        infoCalls += "album $albumId"
+        return infoFail?.let { ApiResult.Err(it) } ?: ApiResult.Ok(albumInfo)
+    }
+
     var index = emptyList<io.github.jamezuk.lyrionanywhere.core.IndexEntry>()
     val indexCalls = mutableListOf<String>()
 

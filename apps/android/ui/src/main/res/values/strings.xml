@@ -74,6 +74,14 @@
     <string name="sort_random">Random</string>
     <string name="open_album">Open album</string>
     <string name="open_artist">Open artist</string>
+    <string name="info_biography">Biography</string>
+    <string name="info_review">Review</string>
+    <string name="info_read_more">Read more</string>
+    <string name="info_show_less">Show less</string>
+    <string name="info_collapsed">Collapsed</string>
+    <string name="info_expanded">Expanded</string>
+    <string name="info_photo_of">Photo of %1$s</string>
+    <string name="info_photo_credit">Photo: %1$s</string>
     <string name="play_track">Play from this track</string>
     <string name="album_cover">Album cover</string>
     <string name="unknown_album">Unknown album</string>

@@ -481,6 +481,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
     val albumPage: @Composable (Long) -> Unit = { albumId ->
         val vm = viewModel(key = "album-$albumId") { AlbumViewModel(container.library, albumId) }
         val ui by vm.state.collectAsStateWithLifecycle()
+        val review by vm.review.collectAsStateWithLifecycle()
         val discovery = remember(albumId) {
             DiscoveryController(scope, container.discovery, container.menus, player::target, withShelf = true)
         }
@@ -511,11 +512,13 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                 onSimilar = discovery::play,
                 onQueueTrack = { t, placement -> t.id?.let { player.enqueue(Selection.Track(it), placement) } },
             ),
+            review = review,
         )
     }
     val artistPage: @Composable (Long, String) -> Unit = { artistId, name ->
         val vm = viewModel(key = "artist-$artistId") { ArtistViewModel(container.library, artistId) }
         val ui by vm.state.collectAsStateWithLifecycle()
+        val info by vm.info.collectAsStateWithLifecycle()
         ArtistScreen(
             id = artistId,
             name = name,
@@ -528,6 +531,7 @@ fun MainScreen(container: AppContainer, signedIn: AuthState.SignedInState) {
                 onMore = openMore,
                 onRole = { role -> nav.navigate(ContributorRoute(artistId, name, role.name)) },
             ),
+            info = info,
         )
     }
     val playlistPage: @Composable (Long, String) -> Unit = { playlistId, name ->

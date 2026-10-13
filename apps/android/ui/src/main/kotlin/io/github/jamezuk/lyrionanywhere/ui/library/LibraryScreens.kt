@@ -356,6 +356,8 @@ fun TintedHeader(
     lines: List<String>,
     buttons: @Composable () -> Unit,
     onLine: ((Int) -> Unit)? = null,
+    /** In place of the artwork (an artist's photo). */
+    art: (@Composable () -> Unit)? = null,
 ) {
     val scheme = MaterialTheme.colorScheme
     Column(
@@ -366,14 +368,18 @@ fun TintedHeader(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        // Decorative: the title beside it is the heading.
-        ArtworkImage(
-            artwork,
-            600,
-            contentDescription = null,
-            modifier = Modifier.widthIn(max = 320.dp).fillMaxWidth(0.72f),
-            corner = 12.dp,
-        )
+        if (art != null) {
+            art()
+        } else {
+            // Decorative: the title beside it is the heading.
+            ArtworkImage(
+                artwork,
+                600,
+                contentDescription = null,
+                modifier = Modifier.widthIn(max = 320.dp).fillMaxWidth(0.72f),
+                corner = 12.dp,
+            )
+        }
         Text(
             kind.uppercase(),
             style = MaterialTheme.typography.labelMedium,
@@ -428,7 +434,13 @@ data class AlbumActions(
 
 /** The album page: large art, details, Play/Shuffle/Add/More, and tracks by disc. */
 @Composable
-fun AlbumScreen(state: Loadable<AlbumDetail>, actions: AlbumActions, modifier: Modifier = Modifier) {
+fun AlbumScreen(
+    state: Loadable<AlbumDetail>,
+    actions: AlbumActions,
+    modifier: Modifier = Modifier,
+    /** The album's review (X5), when there is one. */
+    review: String? = null,
+) {
     when (state) {
         Loadable.Loading -> LoadingState(modifier)
         is Loadable.Failed -> ErrorState(state.error, actions.onRetry, modifier)
@@ -473,6 +485,9 @@ fun AlbumScreen(state: Loadable<AlbumDetail>, actions: AlbumActions, modifier: M
                             },
                         )
                         io.github.jamezuk.lyrionanywhere.ui.discovery.StartRadioButton(actions.discovery, actions.onStartRadio)
+                        if (review != null) {
+                            ExpandableInfo(stringResource(R.string.info_review), review, Modifier.padding(horizontal = 16.dp))
+                        }
                         HorizontalDivider()
                     }
                     if (d.tracks.isEmpty()) {
@@ -607,6 +622,8 @@ fun ArtistScreen(
     state: Loadable<ArtistDetail>,
     actions: ArtistActions,
     modifier: Modifier = Modifier,
+    /** The artist's biography and photo (X5), once loaded. */
+    info: io.github.jamezuk.lyrionanywhere.core.ArtistInfo? = null,
 ) {
     when (state) {
         Loadable.Loading -> LoadingState(modifier)
@@ -639,8 +656,14 @@ fun ArtistScreen(
                                     modifier = Modifier.padding(top = 8.dp),
                                 )
                             },
+                            art = info?.photo?.let { photo ->
+                                { ArtistPhoto(photo, name, info.credits, fallback = d.headerArt) }
+                            },
                         )
                         AppearsAs(d.roles, actions.onRole, Modifier.padding(top = 8.dp))
+                        info?.biography?.takeIf { it.isNotBlank() }?.let { bio ->
+                            ExpandableInfo(stringResource(R.string.info_biography), bio, Modifier.padding(horizontal = 16.dp))
+                        }
                     }
                     }
                     if (d.albums.isEmpty()) {
