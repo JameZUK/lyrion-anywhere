@@ -467,6 +467,8 @@ class NowPlayingMarkTests {
         compose.setContent {
             LyrionTheme(dynamicColour = false) { OfflineNowPlayingScreen(ui, clock = { 0L }, actions = OfflineNowPlayingActions()) }
         }
+        // The queue is a sheet, from the Queue action.
+        compose.onNodeWithTag("queue-button").performClick()
         val playing = compose.onNode(hasText("Song 2") and SemanticsMatcher.keyIsDefined(SemanticsActions.OnClick))
         playing.performScrollTo()
         playing.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Now playing"))
@@ -521,8 +523,11 @@ class SpokenLabelTests {
     @Test
     fun thePowerToggleHasAConstantName() {
         show { NowPlayingScreen(auditPlayerState(), clock = { 0L }, actions = nowPlayingActions()) }
-        compose.onNodeWithContentDescription("Power, Player $KITCHEN")
+        // In ⋮ on Now playing.
+        compose.onNodeWithTag("now-playing-more").performClick()
+        compose.onNodeWithTag("more-power")
             .performScrollTo()
+            .assert(hasText("Power, Player $KITCHEN"))
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "On"))
     }
 

@@ -45,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -84,6 +85,12 @@ interface VisualSource {
     /** The newest frame since the last call, or null. */
     fun frame(): VisualFrame?
 }
+
+/** The visualiser's warm accent (peaks, the VU's peak mark) over the cover's scrim. */
+private val VISUAL_ACCENT = Color(0xFFF0A46B)
+
+/** The VU meters' red zone over the cover's scrim. */
+private val VISUAL_HOT = Color(0xFFFF7A7A)
 
 /** Why the visualiser can't run now (it then stays off, whatever the setting). */
 enum class VisualBlock { NONE, BATTERY_SAVER, ANIMATIONS_OFF }
@@ -377,9 +384,9 @@ fun visualStyleName(s: VisualStyle): String = stringResource(
 )
 
 /**
- * The visualiser where the art is (Bars, Scope or VU; Glow lights the background instead).
- * Decorative: hidden from screen readers (its on/off and style controls are labelled).
- * Swiping across it changes the style.
+ * The visualiser, drawn over the cover (Bars, Scope or VU; Glow is a halo around the cover
+ * instead), in light ink over the cover's dark scrim. Decorative: hidden from screen readers
+ * (its button is labelled). Swiping across it changes the style.
  */
 @Composable
 fun VisualiserCanvas(
@@ -388,18 +395,16 @@ fun VisualiserCanvas(
     onStyle: (VisualStyle) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val scheme = MaterialTheme.colorScheme
-    val primary = scheme.primary
-    val track = scheme.onSurfaceVariant.copy(alpha = 0.35f)
-    val accent = scheme.tertiary
-    val error = scheme.error
+    val primary = Color.White
+    val track = Color.White.copy(alpha = 0.35f)
+    val accent = VISUAL_ACCENT
+    val error = VISUAL_HOT
     val min = with(LocalDensity.current) { SWIPE_MIN.toPx() }
     val latestStyle by rememberUpdatedState(style)
     val latestOnStyle by rememberUpdatedState(onStyle)
     Box(
         modifier
-            .fillMaxWidth()
-            .aspectRatio(1f)
+            .fillMaxSize()
             .testTag("visualiser")
             .clearAndSetSemantics {}
             .pointerInput(min) {
@@ -422,7 +427,7 @@ fun VisualiserCanvas(
             when (style) {
                 VisualStyle.BARS, VisualStyle.GLOW -> drawBars(state.bars, primary, track)
                 VisualStyle.SCOPE -> drawScope(state.scope, primary, track)
-                VisualStyle.VU -> drawVu(state.vu, scheme.onSurface, track, accent, error)
+                VisualStyle.VU -> drawVu(state.vu, primary, track, accent, error)
             }
         }
     }
@@ -478,43 +483,6 @@ private fun DrawScope.drawVu(
         drawLine(peakColour, at(meter.peak, r * 0.8f), at(meter.peak, r), strokeWidth = 6f, cap = StrokeCap.Round)
         drawLine(ink, Offset(cx, cy), at(meter.needle, r * 0.95f), strokeWidth = 5f, cap = StrokeCap.Round)
         drawCircle(ink, radius = 8f, center = Offset(cx, cy))
-    }
-}
-
-/**
- * The visualiser's controls on Now playing: on/off (a labelled toggle whose state says when
- * battery saver or "Remove animations" keeps it off) and, while on, the style button (each
- * press moves to the next style; its label says which is showing).
- */
-@Composable
-fun VisualiserControls(
-    on: Boolean,
-    style: VisualStyle,
-    block: VisualBlock,
-    onToggle: (Boolean) -> Unit,
-    onStyle: (VisualStyle) -> Unit,
-) {
-    val stateText = when {
-        block == VisualBlock.BATTERY_SAVER -> stringResource(R.string.visualiser_off_battery)
-        block == VisualBlock.ANIMATIONS_OFF -> stringResource(R.string.visualiser_off_motion)
-        on -> stringResource(R.string.toggle_on)
-        else -> stringResource(R.string.mode_off)
-    }
-    Row(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-        IconToggleButton(
-            checked = on && block == VisualBlock.NONE,
-            onCheckedChange = onToggle,
-            enabled = block == VisualBlock.NONE,
-            modifier = Modifier.testTag("visualiser-toggle").semantics { stateDescription = stateText },
-        ) {
-            Icon(Icons.Outlined.GraphicEq, contentDescription = stringResource(R.string.visualiser))
-        }
-        if (on && block == VisualBlock.NONE) {
-            val name = visualStyleName(style)
-            IconButton(onClick = { onStyle(VisualMotion.next(style)) }, modifier = Modifier.testTag("visualiser-style")) {
-                Icon(Icons.Outlined.Style, contentDescription = stringResource(R.string.visualiser_style, name))
-            }
-        }
     }
 }
 

@@ -100,17 +100,17 @@ internal fun rememberLyricLine(lyrics: TrackLyrics?, state: PlayerUiState, clock
 
 /**
  * The current lyric line, small, on Now playing (docs/plans/wave1-design.md §9). Tapping it
- * opens all the lyrics.
+ * shows the Lyrics page.
  */
 @Composable
-internal fun LyricsPeek(line: String, onOpen: () -> Unit) {
+internal fun LyricsPeek(line: String, onOpen: () -> Unit, maxLines: Int = 2) {
     val label = stringResource(R.string.lyrics_peek_label, line)
     Text(
         line,
         style = MaterialTheme.typography.bodyMedium,
         fontStyle = FontStyle.Italic,
-        textAlign = TextAlign.Center,
-        maxLines = 2,
+        textAlign = if (maxLines == 1) TextAlign.Start else TextAlign.Center,
+        maxLines = maxLines,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier
             .fillMaxWidth()
@@ -121,58 +121,10 @@ internal fun LyricsPeek(line: String, onOpen: () -> Unit) {
     )
 }
 
-/** The button that opens the lyrics (shown when the track has some). */
-@Composable
-internal fun LyricsButton(onOpen: () -> Unit) {
-    IconButton(onClick = onOpen, modifier = Modifier.testTag("lyrics-button")) {
-        Icon(Icons.Outlined.Lyrics, contentDescription = stringResource(R.string.lyrics))
-    }
-}
-
-/**
- * All the lyrics, full screen. Synced lyrics highlight the playing line and keep it in view
- * (unless the listener scrolled in the last few seconds); tapping a line seeks there. Plain
- * lyrics just scroll. Back or Close returns to Now playing.
- */
-@Composable
-internal fun LyricsScreen(
-    lyrics: TrackLyrics,
-    title: String,
-    elapsedSecs: Double,
-    canSeek: Boolean,
-    onSeek: (Double) -> Unit,
-    onDismiss: () -> Unit,
-    now: () -> Long = System::currentTimeMillis,
-    /** The playing line, when the caller follows it more finely than [elapsedSecs] ticks. */
-    currentLine: Int? = null,
-) {
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxSize().testTag("lyrics-view")) {
-            val current = currentLine ?: lyricLineAt(lyrics, elapsedSecs)
-            Column(Modifier.fillMaxSize()) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp)) {
-                    Text(
-                        title.ifEmpty { stringResource(R.string.lyrics) },
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f).semantics { heading() },
-                    )
-                    IconButton(onClick = onDismiss, modifier = Modifier.testTag("lyrics-close")) {
-                        Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.lyrics_close))
-                    }
-                }
-                HorizontalDivider()
-                LyricsList(lyrics, current, canSeek, onSeek, Modifier.fillMaxSize(), now = now)
-            }
-        }
-    }
-}
-
 /**
  * The lines of [lyrics]: synced lyrics highlight the [current] line and keep it in view
  * (unless the listener scrolled in the last few seconds), and tapping a line seeks there;
- * plain lyrics just scroll. Used full screen and as Now playing's Lyrics layout.
+ * plain lyrics just scroll. Used as Now playing's Lyrics page.
  */
 @Composable
 internal fun LyricsList(

@@ -98,9 +98,9 @@ fun sleepLeftText(seconds: Int): String {
 @Composable
 fun qualityText(q: Quality): String = if (q.hiRes) stringResource(R.string.quality_hi_res, q.label) else q.label
 
-/** The quality badge (Wave 1 §5); a tap opens the signal path. */
+/** The quality badge (Wave 1 §5); a tap opens the signal path. [compact]: the small form beside the artist. */
 @Composable
-fun QualityBadge(quality: Quality, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun QualityBadge(quality: Quality, onClick: () -> Unit, modifier: Modifier = Modifier, compact: Boolean = false) {
     val text = qualityText(quality)
     val label = stringResource(R.string.quality_show_path, text)
     Surface(
@@ -110,32 +110,12 @@ fun QualityBadge(quality: Quality, onClick: () -> Unit, modifier: Modifier = Mod
         contentColor = if (quality.hiRes) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = modifier.testTag("quality-badge").semantics { contentDescription = label },
     ) {
-        Text(text, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
-    }
-}
-
-/**
- * The moon (Wave 1 §1): opens the sleep timer; while one runs it shows the time left, with
- * a one-tap button that turns it off.
- */
-@Composable
-fun SleepButton(left: Int?, onOpen: () -> Unit, onCancel: () -> Unit, modifier: Modifier = Modifier) {
-    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        if (left == null) {
-            IconButton(onClick = onOpen, modifier = Modifier.testTag("sleep-button")) {
-                Icon(Icons.Outlined.Bedtime, contentDescription = stringResource(R.string.sleep_timer))
-            }
-        } else {
-            val text = sleepLeftText(left)
-            val label = stringResource(R.string.sleep_timer_left, text)
-            TextButton(onClick = onOpen, modifier = Modifier.testTag("sleep-button").semantics { contentDescription = label }) {
-                Icon(Icons.Outlined.Bedtime, contentDescription = null, modifier = Modifier.size(18.dp))
-                Text(text, Modifier.padding(start = 6.dp))
-            }
-            IconButton(onClick = onCancel, modifier = Modifier.testTag("sleep-cancel")) {
-                Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.sleep_turn_off))
-            }
-        }
+        Text(
+            text,
+            style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelLarge,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = if (compact) 8.dp else 12.dp, vertical = if (compact) 3.dp else 6.dp),
+        )
     }
 }
 
@@ -278,20 +258,29 @@ fun SleepChoices(
 }
 
 /**
- * "Up next" under the transport (Wave 1 §3): the next track with its cover. Tap opens the
- * queue; swipe it away (or use the Remove action, or press Delete) to take it out of the
- * queue, with Undo.
+ * "Up next" under the transport (Wave 1 §3): one compact line, the next track with its
+ * cover. Tap opens the queue; ✕ (or a swipe, the Remove action or Delete) takes it out of
+ * the queue, with Undo. Without [onRemove] it can't be removed (downloads).
  */
 @Composable
-fun UpNextRow(track: Track, onOpenQueue: () -> Unit, onRemove: () -> Unit, modifier: Modifier = Modifier) {
+fun UpNextRow(track: Track, onOpenQueue: () -> Unit, onRemove: (() -> Unit)?, modifier: Modifier = Modifier) {
+    UpNextLine(track.title, track.artist, track.artwork, onOpenQueue, onRemove, modifier)
+}
+
+/** [UpNextRow] from its parts (a download's cover key, too). */
+@Composable
+fun UpNextLine(title: String, artist: String?, artwork: String?, onOpenQueue: () -> Unit, onRemove: (() -> Unit)?, modifier: Modifier = Modifier) {
     val dismiss = rememberSwipeToDismissBoxState()
     val scope = rememberCoroutineScope()
     val remove = stringResource(R.string.up_next_remove)
-    val label = stringResource(R.string.up_next_label, listOfNotNull(track.title, track.artist).joinToString(" — "))
+    val line = listOfNotNull(title, artist?.takeIf { it.isNotBlank() }).joinToString(" — ")
+    val label = stringResource(R.string.up_next_label, line)
     SwipeToDismissBox(
         state = dismiss,
+        enableDismissFromStartToEnd = onRemove != null,
+        enableDismissFromEndToStart = onRemove != null,
         onDismiss = {
-            if (it != SwipeToDismissBoxValue.Settled) onRemove()
+            if (it != SwipeToDismissBoxValue.Settled) onRemove?.invoke()
             scope.launch { dismiss.snapTo(SwipeToDismissBoxValue.Settled) }
         },
         backgroundContent = {
@@ -311,7 +300,7 @@ fun UpNextRow(track: Track, onOpenQueue: () -> Unit, onRemove: () -> Unit, modif
                 .fillMaxWidth()
                 .clickable(onClickLabel = stringResource(R.string.up_next_open_queue), onClick = onOpenQueue)
                 .onPreviewKeyEvent { e ->
-                    if (e.type == KeyEventType.KeyDown && (e.key == Key.Delete || e.key == Key.Backspace)) {
+                    if (onRemove != null && e.type == KeyEventType.KeyDown && (e.key == Key.Delete || e.key == Key.Backspace)) {
                         onRemove()
                         true
                     } else {
@@ -320,23 +309,30 @@ fun UpNextRow(track: Track, onOpenQueue: () -> Unit, onRemove: () -> Unit, modif
                 }
                 .semantics(mergeDescendants = true) {
                     contentDescription = label
-                    customActions = listOf(CustomAccessibilityAction(remove) { onRemove(); true })
+                    if (onRemove != null) customActions = listOf(CustomAccessibilityAction(remove) { onRemove(); true })
                 },
         ) {
-            Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                ArtworkImage(track.artwork, 120, contentDescription = null, modifier = Modifier.size(40.dp), corner = 6.dp)
+            Row(Modifier.padding(start = 8.dp, top = 4.dp, bottom = 4.dp, end = 0.dp), verticalAlignment = Alignment.CenterVertically) {
+                ArtworkImage(artwork, 120, contentDescription = null, modifier = Modifier.size(40.dp), corner = 8.dp)
                 Column(Modifier.weight(1f).padding(start = 12.dp)) {
                     Text(
-                        stringResource(R.string.up_next),
+                        stringResource(R.string.up_next).uppercase(),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        listOfNotNull(track.title, track.artist).joinToString(" — "),
+                        line,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.bodyMedium,
                     )
+                }
+                if (onRemove != null) {
+                    IconButton(onClick = onRemove, modifier = Modifier.testTag("up-next-remove")) {
+                        Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.up_next_remove_named, title), modifier = Modifier.size(20.dp))
+                    }
+                } else {
+                    Spacer(Modifier.width(12.dp))
                 }
             }
         }

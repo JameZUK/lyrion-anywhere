@@ -87,7 +87,8 @@ class LoudnessScreenTests {
         compose.onNodeWithTag("loudness-volume").assertIsOff().assertIsDisplayed()
         compose.onNodeWithText("Loudness-compensated volume").assertIsDisplayed()
         compose.onNodeWithText(
-            "Adds bass and treble as this phone's player is turned down, where the ear hears less of them. Bypassed for bit-perfect output.",
+            "Adds bass and treble as the volume is turned down, where the ear hears less of them. It follows the phone's media volume " +
+                "(or a Bluetooth headset's player level, when the headset keeps its own volume). Bypassed for bit-perfect output.",
         ).assertIsDisplayed()
         // It sits in the EQ section, right after per-output EQ.
         val eqBottom = compose.onNodeWithTag("output-eq").fetchSemanticsNode().boundsInRoot.bottom
