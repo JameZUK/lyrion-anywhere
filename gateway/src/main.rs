@@ -121,6 +121,11 @@ enum AdminCmd {
     Pair { username: String },
     /// Remove a user's two-step verification (e.g. a lost phone).
     ResetTotp { username: String },
+    /// Demo only (tools/demo; debug builds only): seed invented listening history, a JSON
+    /// list of plays read from standard input, into a demo data directory.
+    #[cfg(debug_assertions)]
+    #[command(hide = true)]
+    DemoSeedHistory { username: String },
 }
 
 fn main() {
@@ -398,6 +403,24 @@ fn admin_command(dir: &Path, cmd: AdminCmd) {
         AdminCmd::Pair { username } => accounts.create_pairing_code(&username).map(|code| {
             println!("pairing code for {username}: {code} (valid 10 minutes, single use)");
         }),
+        #[cfg(debug_assertions)]
+        AdminCmd::DemoSeedHistory { username } => {
+            use std::io::Read;
+            let mut input = Vec::new();
+            let _ = std::io::stdin()
+                .lock()
+                .take(anywhere_gateway::demo::MAX_INPUT as u64 + 1)
+                .read_to_end(&mut input)
+                .unwrap_or_else(|e| fail(e));
+            let now = anywhere_gateway::history::unix_now();
+            match anywhere_gateway::demo::seed(&accounts, dir, &username, &input, now) {
+                Ok(n) => {
+                    println!("seeded {n} plays for {username}");
+                    Ok(())
+                }
+                Err(e) => fail(format!("refused: {e:?}")),
+            }
+        }
     };
     if let Err(e) = result {
         fail(format!("{e:?}"));

@@ -34,6 +34,9 @@ pub mod alarms;
 pub mod analysis;
 pub mod art;
 mod auth;
+/// Demo-only seeding (tools/demo); never in release builds.
+#[cfg(debug_assertions)]
+pub mod demo;
 pub mod diagnostics;
 pub mod download;
 pub mod events;
