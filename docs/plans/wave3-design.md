@@ -93,7 +93,7 @@ Agreed with the owner on 2026-10-13:
 
 ## 2. Rolling cache (part 2)
 
-**Status:** design agreed on 2026-10-13 (see the decisions at the end). Spike S1 done; Phase A built on 2026-10-13. What remains for Phase A is the manual testing on a real phone (see "Manual" under Tests) and the live check of A6's rejoin.
+**Status:** design agreed on 2026-10-13 (see the decisions at the end). Spike S1 done; Phase A built on 2026-10-13. What remains for Phase A is the manual testing on a real phone (see "Manual" under Tests). The live check of A6's rejoin is built (`mobile/tests/live_sync.rs`): the phone rejoins in step, but LMS pauses the rest of the group meanwhile, and a long stall moves the whole group back (open: see "A6 live check").
 - **Gateway** (A3, A4): grace negotiation, `--max-resume-grace`, history from jiffies, heartbeats capped at the track's end. Built.
 - **Core** (A2, A4, A6 in the core): built (see "Core built" under A2).
 - **Mobile engine** (A1, the client's A3, A6, `strm f`): built on 2026-10-13 (see "Mobile engine built" under A1).
@@ -220,7 +220,7 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
 - **`STMo` is safe.** LMS kept playing and sent nothing; a later `STMs` moved it on and released the next stream. A4's rule is confirmed.
 - **Sync groups** (a second test player, removed afterwards):
   - LMS sends the next stream to a group only once every member has sent `STMd`, so a grouped phone gets no extra cushion from reading ahead. Sync itself is unaffected: starts are still timed by LMS, and decoding is still 10 s ahead.
-  - One member's `STMo` leaves the group playing and sends the others nothing.
+  - One member's `STMo` leaves the group playing and sends the others nothing. (Here the stream was already received in full. While LMS is still streaming the track, a member's `STMo` makes it pause and rebuffer the whole group: see "A6 live check".)
   - **LMS does not pull a member that fell behind back into line** (no `strm p`, `a` or `u` in 15 s with a member 8 s behind). Within a group, later tracks start gaplessly on each player, so the offset would last.
   - **`STMs` after `STMo` for the same track moves the whole group on a track.** `STMs` means a new track started; resuming must send `STMr`.
 
@@ -230,6 +230,35 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
 - Alone, it carries on from where it stopped, as now.
 - After `STMo`, recovery sends `STMr`, never a second `STMs` for the same track.
 - Tests: the stall measure and skip in the core, and the sync scenario of `tools/live/lms_read_ahead.py` extended to check that a rejoining member is within 100 ms of the group.
+
+**A6 live check (2026-10-13, LMS 9.1, `mobile/tests/live_sync.rs`).**
+- **The check:**
+  - **Set-up:** the real engine, behind an in-process gateway and a proxy that can be taken down, is the test player. A fake Slimproto player is the second member of the group; it follows LMS's timing exactly, so its elapsed time is the group's position.
+  - **Streams in memory** (no spool), so a stall needs a gap of about 1.5 minutes: 10 s decoded plus up to 8 MiB undecoded.
+  - **The gap:** the network goes (`set_network_available(false)` and the proxy down) until the engine has run dry. It stays down 3 s more (short) or 14 s more (long), then comes back.
+  - **The measure:** the engine's elapsed less the other member's, the median of 40 paired samples over 2 s, before the gap and 5 s after the rejoin.
+  - **Running it:** `ANYWHERE_LIVE=1 cargo test -p anywhere-mobile --test live_sync -- --nocapture` with `dev/local.env`; it takes about 4 minutes. Without both it passes without touching anything.
+- **Offsets measured** (three runs). The engine's figure comes from its last 20 ms tick, so it reads about 10 ms early on average; the 100 ms bound allows for that.
+
+  | Stall | Before the gap | After the rejoin | Stalled, until playing again |
+  |---|---|---|---|
+  | Short (skipped in place) | −4 to −11 ms | −1 to −9 ms | 6.8 s |
+  | Long (`NotEnoughBuffered`, `time`) | −8 to −12 ms | −8 ms | 16.5 s |
+
+- **What the other members hear: the open problem.** The engine is in step afterwards, but S1's "a member's `STMo` leaves the group playing" holds only once the track has been streamed in full.
+  - **LMS rebuffers the whole group.** While LMS is still streaming the track (`STREAMING` or `STREAMOUT`), a member's `STMo` runs LMS's `_Rebuffer`:
+    - every member is paused (`strm p`);
+    - LMS waits until each reports its buffer full again (30 s at most, then it restarts at the song position);
+    - it resumes all of them with a timed `strm u`, which holds the others back until the stalled member's reported position.
+  - **The `STMo` arrives late.** It is sent while the link is down, so it reaches LMS on reconnect, after the others have played on through the gap.
+  - **Short stall:** the others paused for 3.7 to 4 s at the reconnect, then got a skip correction of 0.15 to 0.55 s. Both the engine's skip and LMS's hold-back happened, and LMS's correction settled the difference.
+  - **Long stall:** the others paused for 14.7 s, then the engine's `time ?` / `time <t>` restarted the group 13.7 to 13.9 s back, at the engine's own stall point.
+    - **Why:** during a rebuffer, `time ?` gives the position LMS paused the master at. The engine was the master, so that was its own stale position.
+    - **Result:** the group replays the stretch the phone missed. The design wanted the phone to jump forward to the group, not the group to go back.
+  - **To decide (not fixed: it changes A4/A6's design, not a detail of the code):**
+    - in a group, drop a mid-track `STMo` still queued when the link comes back, since the engine handles the stall itself; LMS would then never pause the others;
+    - restart at the group's position (the stall point plus the time stalled) rather than at the answer to `time ?`;
+    - or leave the realignment to LMS's rebuffer altogether.
 
 **A1. Disk spool for the live stream** (`mobile/src/player/engine.rs`, new `player/spool.rs`). Effort: M.
 - **Writing:**
@@ -251,7 +280,7 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
   - **Retry budget:** the granted grace, counted from the first failure in a row (60 s without a grant).
   - **Client A3:** grace asked for only when `/v1/me` says `resume_grace` (the first connection waits up to 2 s for `/v1/me`); the resume window is the grant less 5 s (55 s without one). The outbox drops `STMt` first. `LocalPlayer::set_network_available` (from `ConnectivityManager`): with no network the socket is dropped, nothing is tried, and the core's link is down (so running dry sends `STMo`); when it returns, the player reconnects at once. The core's link also follows the socket.
   - **`strm f`:** on `trim_count()` the engine drops what it holds of tracks after `keep_track`: a hold or crossfade in the transitions, the pipeline's pending block, and the ring from the first sample of the later track (a new partial discard in the ring: the output plays up to that point, then jumps past it).
-  - **A6:** sync membership comes from the status query already made for each new stream (and again on resume). After a stall, a lone player carries on at once; a grouped one waits up to 2 s for enough audio to skip the stall, then calls `resume_after_stall`. On `NotEnoughBuffered` it asks LMS for the group's position (`time ?`) and sends `time <that>`, so LMS restarts the group in step (the others hear a short pause). Minimal by design; the live check of the rejoin (S1's sync scenario extended) is still to do.
+  - **A6:** sync membership comes from the status query already made for each new stream (and again on resume). After a stall, a lone player carries on at once; a grouped one waits up to 2 s for enough audio to skip the stall, then calls `resume_after_stall`. On `NotEnoughBuffered` it asks LMS for the group's position (`time ?`) and sends `time <that>`, so LMS restarts the group in step (the others hear a short pause). Minimal by design; checked live (see "A6 live check" under A6).
   - **For Android (A5):** `LocalPlayerStatus.cushion_ms` (and `LocalPlayer::cushion_ms()`): decoded audio plus spooled bytes at the byte rate seen so far. Also `resume_window_ms` and `read_ahead`.
   - **The 20 s wait** before read-ahead is the core's default.
   - **Restart after a gap longer than the grace** (decision 3, built with A5):
