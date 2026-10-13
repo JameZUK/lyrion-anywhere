@@ -165,6 +165,18 @@ Alternatively, use *Settings → Secrets and variables → Actions → New repos
 4. Capture Home, an album, Now playing with the signal path, Downloads and Settings → Sound, in light and dark: `adb exec-out screencap -p > 01-home.png`. Repeat on a 10-inch tablet emulator for `tenInchScreenshots`.
 5. Save them under `fastlane/metadata/android/en-GB/images/phoneScreenshots/` (and `tenInchScreenshots/`), numbered in display order.
 
+### Android screenshots
+
+The documentation's Android screenshots (`docs/images/android/*.png`) need no device or emulator. The `DocScreenshots*` tests in `:ui` render the app's real screens and theme on the JVM (Robolectric native graphics), fed with the web demo's invented library (`ui/src/test/.../docs/DocLibrary.kt`) and generated cover art (`DocArt.kt`, drawn as `tools/demo/fake_lms.py` draws it). The status bar and gesture bar are drawn over the app, and the app is given matching window insets. Phones are 411×914 dp at 420 dpi (1078×2399 px); the tablet is 1280×800 dp, scaled to 1080 px wide. Each file is an opaque RGB PNG, written at the strongest lossless compression.
+
+To regenerate them, from `apps/android`:
+
+```sh
+./gradlew :ui:testDebugUnitTest --tests '*DocScreenshots*' -PrecordDocScreenshots
+```
+
+Every normal `testDebugUnitTest` run also renders them all (about 20 seconds) and fails if one comes out blank, but writes nothing. Look at each image before committing.
+
 ### F-Droid
 
 F-Droid builds the app from source. The draft recipe is `apps/android/fdroid/io.github.jamezuk.lyrionanywhere.yml`, with the srclib `apps/android/fdroid/srclibs/rustls-platform-verifier.yml`.

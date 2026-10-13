@@ -49,3 +49,16 @@ dependencies {
     testImplementation(libs.compose.ui.test.junit4)
     debugImplementation(libs.compose.ui.test.manifest)
 }
+
+// The documentation screenshots (the DocScreenshots* tests): every test run renders and
+// checks them; with -PrecordDocScreenshots they are also written to docs/images/android
+// (docs/RELEASING.md › Android screenshots).
+val docScreenshotsDir: String? = providers.gradleProperty("recordDocScreenshots").orNull?.let {
+    rootProject.layout.projectDirectory.dir("../../docs/images/android").asFile.absolutePath
+}
+tasks.withType<Test>().configureEach {
+    if (docScreenshotsDir != null) {
+        systemProperty("docScreenshots.dir", docScreenshotsDir)
+        outputs.upToDateWhen { false }
+    }
+}

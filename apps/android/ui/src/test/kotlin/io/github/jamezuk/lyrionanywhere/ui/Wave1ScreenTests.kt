@@ -227,6 +227,20 @@ class UpNextRowTest {
         }
     }
 
+    /** Regression: the red "remove" background showed through the translucent line at rest. */
+    @Test
+    fun theRemoveBackgroundShowsOnlyWhileSwiping() {
+        row()
+        compose.onNodeWithTag("up-next-swipe-background", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithTag("up-next").performTouchInput {
+            down(center)
+            moveBy(androidx.compose.ui.geometry.Offset(-width * 0.2f, 0f))
+        }
+        compose.waitForIdle()
+        compose.onNodeWithTag("up-next-swipe-background", useUnmergedTree = true).assertExists()
+        compose.onNodeWithTag("up-next").performTouchInput { up() }
+    }
+
     @Test
     fun swipingEitherWayRemovesIt() {
         row()

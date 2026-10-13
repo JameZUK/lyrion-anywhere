@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -230,7 +231,8 @@ fun CarModeScreen(
     }
     MaterialTheme(colorScheme = CarColours) {
         Surface(modifier.fillMaxSize().testTag("car-mode"), color = MaterialTheme.colorScheme.background) {
-            Column(Modifier.fillMaxSize().padding(12.dp)) {
+            // Clear of the status and gesture bars (the app draws edge to edge).
+            Column(Modifier.fillMaxSize().safeDrawingPadding().padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     if (view == CarView.PLAYING) {
                         CarIconButton(Icons.Outlined.Close, stringResource(R.string.car_leave), actions.onExit, "car-exit")
