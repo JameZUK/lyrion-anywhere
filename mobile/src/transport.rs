@@ -364,9 +364,79 @@ pub(crate) async fn send_json(req: Request) -> Result<Value, ApiError> {
     serde_json::from_slice(&body).map_err(|_| ApiError::bad_response("malformed answer"))
 }
 
+/// The refresh exchange: like [`send_json`], but only the gateway's own 401 (with its JSON
+/// `error`) is a refusal. Anything else in the way (a proxy's or CDN's 400/403/404 page
+/// during maintenance, a challenge page) is a failure to reach the gateway, so the sign-in,
+/// and with it the downloads, is kept.
+pub(crate) async fn send_refresh(req: Request) -> Result<Value, ApiError> {
+    let mut req = req;
+    req.headers
+        .insert(ACCEPT, HeaderValue::from_static("application/json"));
+    let resp = req.send().await?;
+    let status = resp.status();
+    if status.is_success() {
+        let body = resp.read_limited(MAX_JSON).await?;
+        return serde_json::from_slice(&body)
+            .map_err(|_| ApiError::bad_response("malformed answer"));
+    }
+    let headers = resp.headers().clone();
+    let body = resp.read_limited(64 * 1024).await.unwrap_or_default();
+    Err(refresh_error_of(status.as_u16(), &headers, &body))
+}
+
+fn refresh_error_of(status: u16, headers: &HeaderMap, body: &[u8]) -> ApiError {
+    let from_gateway = serde_json::from_slice::<Value>(body)
+        .ok()
+        .is_some_and(|v| v.get("error").is_some_and(Value::is_string));
+    match error_of(status, headers, body) {
+        ApiError::Unauthorised if from_gateway => ApiError::Unauthorised,
+        e @ (ApiError::RateLimited { .. } | ApiError::Network { .. }) => e,
+        _ => ApiError::Server {
+            status,
+            detail: format!("HTTP {status} while renewing the sign-in"),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_gateways_own_401_ends_a_sign_in_on_refresh() {
+        let h = HeaderMap::new();
+        let gw = br#"{"error":"invalid credentials"}"#;
+        assert_eq!(refresh_error_of(401, &h, gw), ApiError::Unauthorised);
+        // In the way: a proxy, a CDN challenge, maintenance pages. Never a revocation.
+        for (status, body) in [
+            (401, &b"<html>Unauthorized</html>"[..]),
+            (401, &b""[..]),
+            (401, &br#"{"message":"nope"}"#[..]),
+            (400, &br#"{"error":"malformed request"}"#[..]),
+            (403, &br#"{"error":"forbidden"}"#[..]),
+            (403, &b"<html>Attention required</html>"[..]),
+            (404, &b"Not found"[..]),
+            (409, &b""[..]),
+            (421, &b""[..]),
+            (451, &b""[..]),
+            (502, &b"Bad gateway"[..]),
+        ] {
+            let e = refresh_error_of(status, &h, body);
+            assert!(
+                matches!(e, ApiError::Server { .. }),
+                "{status}: {e:?} must not end the sign-in"
+            );
+            assert!(!matches!(e, ApiError::Unauthorised));
+        }
+        assert!(matches!(
+            refresh_error_of(429, &h, b""),
+            ApiError::RateLimited { .. }
+        ));
+        assert!(matches!(
+            refresh_error_of(408, &h, b""),
+            ApiError::Network { .. }
+        ));
+    }
 
     #[test]
     fn platform_tls_config_builds() {

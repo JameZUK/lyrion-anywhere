@@ -218,16 +218,58 @@ impl OfflineLibrary {
         Ok(())
     }
 
-    fn load_index(&self) -> Vec<OfflineTrack> {
-        let read = |p: PathBuf| read_limited(&p, index::MAX_INDEX_BYTES).map(|b| index::parse(&b));
-        match read(self.index_path()) {
-            Some(Parsed::Tracks(t, _)) => t,
-            // Unreadable or missing: the last good version, if any.
-            _ => match read(self.index_path().with_extension("json.bak")) {
-                Some(Parsed::Tracks(t, _)) => t,
-                _ => Vec::new(),
-            },
+    /// A copy of an index that couldn't be read, kept until it can be (a passing read
+    /// error) or the user removes all downloads.
+    fn unreadable_index_path(&self) -> PathBuf {
+        self.index_path().with_extension("json.unreadable")
+    }
+
+    /// The index, and whether it can be trusted to name every download (so files it
+    /// doesn't name may be deleted). An index that exists but can't be read (a read error,
+    /// damage, a newer app's format) is never grounds for deleting the files.
+    /// Also says whether a copy kept aside was read back (so the index should be saved).
+    fn load_index(&self) -> (Vec<OfflineTrack>, bool, bool) {
+        let read = |p: &Path| read_limited(p, index::MAX_INDEX_BYTES).map(|b| index::parse(&b));
+        let (main, bak, aside) = (
+            self.index_path(),
+            self.index_path().with_extension("json.bak"),
+            self.unreadable_index_path(),
+        );
+        let (mut tracks, mut trusted) = match read(&main) {
+            Some(Parsed::Tracks(t, _)) => (t, true),
+            _ if !main.exists() && !bak.exists() => (Vec::new(), true),
+            _ => {
+                // Keep what couldn't be read (the first copy only), then try the last good
+                // version. Its files are kept: the list may be missing some.
+                if main.exists() && !aside.exists() {
+                    let _ = fs::copy(&main, &aside);
+                }
+                match read(&bak) {
+                    Some(Parsed::Tracks(t, _)) => (t, false),
+                    _ => (Vec::new(), false),
+                }
+            }
+        };
+        let mut recovered = false;
+        if aside.exists() {
+            match read(&aside) {
+                // Readable after all: take back what it lists (reconcile drops entries
+                // whose file has gone), and it's no longer needed.
+                Some(Parsed::Tracks(t, _)) if trusted => {
+                    for x in t {
+                        if !tracks.iter().any(|k| k.key == x.key)
+                            && tracks.len() < index::MAX_TRACKS
+                        {
+                            tracks.push(x);
+                        }
+                    }
+                    let _ = fs::remove_file(&aside);
+                    recovered = true;
+                }
+                _ => trusted = false,
+            }
         }
+        (tracks, trusted, recovered)
     }
 
     fn save_index(&self, tracks: &[OfflineTrack]) -> Result<(), ApiError> {
@@ -240,9 +282,9 @@ impl OfflineLibrary {
         let _ = write_atomic(&self.plays_path(), &plays::serialise(plays), false);
     }
 
-    /// Drop index entries whose file is missing or the wrong size, and delete files no
-    /// entry names (left by a crash, or by an index that was lost).
-    fn reconcile(&self, tracks: Vec<OfflineTrack>) -> (Vec<OfflineTrack>, bool) {
+    /// Drop index entries whose file is missing or the wrong size, and (when the index is
+    /// `trusted`) delete files no entry names, left by a crash.
+    fn reconcile(&self, tracks: Vec<OfflineTrack>, trusted: bool) -> (Vec<OfflineTrack>, bool) {
         let before = tracks.len();
         let kept: Vec<OfflineTrack> = tracks
             .into_iter()
@@ -254,7 +296,7 @@ impl OfflineLibrary {
             .iter()
             .map(|t| format!("{}.{}", t.key, t.ext))
             .collect();
-        if let Ok(rd) = fs::read_dir(self.tracks_dir()) {
+        if let Ok(rd) = fs::read_dir(self.tracks_dir()).map(|rd| rd.filter(|_| trusted)) {
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
                 if !names.contains(&name) {
@@ -429,8 +471,9 @@ impl OfflineLibrary {
             }),
         };
         lib.create_dirs()?;
-        let (tracks, changed) = lib.reconcile(lib.load_index());
-        if changed {
+        let (loaded, trusted, recovered) = lib.load_index();
+        let (tracks, changed) = lib.reconcile(loaded, trusted);
+        if changed || recovered {
             lib.save_index(&tracks)?;
         }
         let plays = read_limited(&lib.plays_path(), 8 * 1024 * 1024)
@@ -586,6 +629,7 @@ impl OfflineLibrary {
         }
         let _ = fs::remove_file(self.queue_path());
         let _ = fs::remove_file(self.index_path().with_extension("json.bak"));
+        let _ = fs::remove_file(self.unreadable_index_path());
         self.save_index(&st.tracks)?;
         drop(st);
         self.create_dirs()
@@ -713,17 +757,53 @@ pub(crate) mod tests {
         put(&lib, &b); // the backup now lists a only
         fs::write(lib.index_path(), b"{\"v\":1,\"tracks\":[{\"key\":").unwrap();
         let again = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
-        assert_eq!(
-            again.tracks(),
-            vec![a.clone()],
-            "b's file is orphaned and removed"
+        assert_eq!(again.tracks(), vec![a.clone()]);
+        assert!(
+            again.final_path(&b.key, &b.ext).exists(),
+            "an index that can't be read never deletes files"
         );
-        // Both gone: start empty, files cleaned.
-        fs::write(again.index_path(), b"garbage").unwrap();
-        fs::write(again.index_path().with_extension("json.bak"), b"garbage").unwrap();
-        let empty = OfflineLibrary::open(root, "https://s".into(), "u".into()).unwrap();
-        assert!(empty.tracks().is_empty());
-        assert!(!empty.final_path(&a.key, &a.ext).exists());
+    }
+
+    #[test]
+    fn an_unreadable_index_never_deletes_the_downloads() {
+        // Regression: a damaged (or newer-format, or briefly unreadable) index and backup
+        // used to make every downloaded file an "orphan", deleted on opening.
+        let root = temp_root();
+        let lib = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
+        let (a, b) = (sample(1), sample(2));
+        put(&lib, &a);
+        put(&lib, &b);
+        let good = fs::read(lib.index_path()).unwrap();
+        for bad in [&b"garbage"[..], br#"{"v":99,"tracks":[]}"#] {
+            fs::write(lib.index_path(), bad).unwrap();
+            fs::write(lib.index_path().with_extension("json.bak"), b"garbage").unwrap();
+            let again = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
+            assert!(again.tracks().is_empty());
+            assert!(again.final_path(&a.key, &a.ext).exists());
+            assert!(again.final_path(&b.key, &b.ext).exists());
+            // Downloading more, then opening again, still keeps them while the copy kept
+            // aside can't be read.
+            let c = sample(3);
+            put(&again, &c);
+            let later = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
+            assert_eq!(later.tracks(), vec![c.clone()]);
+            assert!(later.final_path(&a.key, &a.ext).exists());
+            later.remove(vec![c.key.clone()]).unwrap();
+            let _ = fs::remove_file(lib.unreadable_index_path());
+            fs::write(lib.index_path(), &good).unwrap();
+        }
+        // A passing read error: the copy kept aside is read back later, nothing lost.
+        fs::write(lib.unreadable_index_path(), &good).unwrap();
+        fs::write(lib.index_path(), br#"{"v":1,"tracks":[]}"#).unwrap();
+        let back = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
+        let mut keys: Vec<String> = back.tracks().into_iter().map(|t| t.key).collect();
+        keys.sort();
+        assert_eq!(keys, vec![a.key.clone(), b.key.clone()]);
+        assert!(!lib.unreadable_index_path().exists());
+        // Removing everything clears the kept copy too.
+        fs::write(lib.unreadable_index_path(), b"garbage").unwrap();
+        back.remove_all().unwrap();
+        assert!(!lib.unreadable_index_path().exists());
     }
 
     #[test]

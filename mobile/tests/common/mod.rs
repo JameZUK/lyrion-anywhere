@@ -666,6 +666,8 @@ pub struct MemStore {
     pub creds: Mutex<Option<StoredCredentials>>,
     pub saves: AtomicUsize,
     pub clears: AtomicUsize,
+    /// Fail every save, as a broken keystore would.
+    pub fail_saves: std::sync::atomic::AtomicBool,
 }
 
 impl MemStore {
@@ -694,6 +696,11 @@ impl SecureStore for MemStore {
     }
     fn save(&self, credentials: StoredCredentials) -> Result<(), StoreError> {
         self.saves.fetch_add(1, Ordering::SeqCst);
+        if self.fail_saves.load(Ordering::SeqCst) {
+            return Err(StoreError::Failed {
+                detail: "keystore unavailable".into(),
+            });
+        }
         *self.creds.lock().unwrap() = Some(credentials);
         Ok(())
     }

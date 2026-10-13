@@ -134,6 +134,28 @@ async fn refresh_rotates_the_stored_token() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_save_never_leaves_a_stale_token_behind() {
+    // The rotated token couldn't be stored: the old one must not be presented on the next
+    // start (that would look like a stolen token and revoke the device, and its downloads).
+    let h = Harness::start().await;
+    let (s, store) = h.alice().await;
+    store.fail_saves.store(true, Ordering::SeqCst);
+    s.refresh().await.unwrap();
+    assert!(store.get().is_none(), "the stale token is cleared");
+    // This run of the app keeps working.
+    MusicLibrary::new(s.clone())
+        .albums(0, 10, AlbumSort::Title, None, Default::default())
+        .await
+        .unwrap();
+    // The next start asks to sign in again; the device is not revoked.
+    store.fail_saves.store(false, Ordering::SeqCst);
+    let again = h.session(store.clone());
+    assert!(!again.has_sign_in());
+    s.refresh().await.unwrap();
+    assert!(store.get().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_saved_sign_in_is_restored_by_a_new_session() {
     let h = Harness::start().await;
     let (s1, store) = h.alice().await;

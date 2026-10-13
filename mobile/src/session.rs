@@ -56,6 +56,9 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for StoreError {
     }
 }
 
+/// The longest access-token lifetime believed (the gateway issues minutes).
+const MAX_ACCESS_LIFETIME_SECS: u64 = 24 * 3600;
+
 /// Encrypted storage for the refresh token, implemented by the app (Android: AES-GCM with
 /// a key held in the AndroidKeyStore).
 #[uniffi::export(with_foreign)]
@@ -162,7 +165,11 @@ fn parse_issued(v: &Value) -> Result<Issued, ApiError> {
     };
     Ok(Issued {
         access: access.to_string(),
-        expires_in: v["expires_in"].as_u64().unwrap_or(900),
+        // Bounded, so an absurd value can't overflow `Instant` (a panic under the lock).
+        expires_in: v["expires_in"]
+            .as_u64()
+            .unwrap_or(900)
+            .min(MAX_ACCESS_LIFETIME_SECS),
         refresh: refresh.to_string(),
         who: parse_who(v)?,
     })
@@ -248,11 +255,19 @@ impl Core {
             Some(_) => {}
             None => st.generation += 1,
         }
-        // A store failure keeps the sign-in for this run of the app only.
-        let _ = self.store.save(StoredCredentials {
-            refresh_token: t.refresh.clone(),
-            device_id: t.who.device.id,
-        });
+        // A store failure keeps the sign-in for this run of the app only. Whatever was
+        // stored before is now stale: clear it, or the next start would present a rotated
+        // token, which the gateway takes as theft and revokes the device.
+        if self
+            .store
+            .save(StoredCredentials {
+                refresh_token: t.refresh.clone(),
+                device_id: t.who.device.id,
+            })
+            .is_err()
+        {
+            let _ = self.store.clear();
+        }
         let lifetime = Duration::from_secs(t.expires_in);
         st.access = Some(Access {
             token: t.access,
@@ -318,7 +333,7 @@ impl Core {
         let core = self.clone();
         let task = tokio::spawn(async move {
             let _guard = guard;
-            let answer = transport::send_json(
+            let answer = transport::send_refresh(
                 core.post("v1/auth/refresh", &json!({ "refresh_token": refresh })),
             )
             .await
@@ -328,7 +343,9 @@ impl Core {
                     let token = t.access.clone();
                     core.adopt(t, Some(generation)).map(|_| token)
                 }
-                Err(e) if e.is_refusal() => {
+                // Only the gateway's own 401 means this device's sign-in has ended (signing
+                // out also deletes downloads); see `transport::send_refresh`.
+                Err(ApiError::Unauthorised) => {
                     core.forget(true, Some(generation));
                     Err(ApiError::Unauthorised)
                 }
@@ -632,6 +649,19 @@ mod tests {
         assert!(!valid_token("a\r\nX-Evil: 1"));
         assert!(!valid_token(&"a".repeat(MAX_TOKEN + 1)));
         assert!(!valid_token("é"));
+    }
+
+    #[test]
+    fn an_absurd_lifetime_is_bounded() {
+        let v = json!({
+            "access_token": "acc", "refresh_token": "ref", "expires_in": u64::MAX,
+            "user": {"username": "alice", "role": "listener"},
+            "device": {"id": 4, "name": "Phone", "mac": "02:4C:41:00:00:01"}
+        });
+        let t = parse_issued(&v).unwrap();
+        assert_eq!(t.expires_in, MAX_ACCESS_LIFETIME_SECS);
+        // What `adopt` does with it can't overflow.
+        let _ = Instant::now() + Duration::from_secs(t.expires_in);
     }
 
     #[test]
