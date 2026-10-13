@@ -12,13 +12,30 @@
 
 	const mine = $derived(!offlinePlayer.active);
 
+	/** Seconds moved by the system's seek-backward and seek-forward buttons, unless it says. */
+	const SEEK_OFFSET = 10;
+	const total = $derived(Number(app.now?.duration ?? track?.duration ?? 0));
+	const seekable = $derived(total > 0 && app.now?.can_seek !== 0);
+
+	function seekTo(seconds: number) {
+		if (!Number.isFinite(seconds)) return;
+		void app.seek(Math.max(0, Math.min(Math.max(0, total - 1), seconds)));
+	}
+
+	// Every action the player supports: play, pause, stop, previous and next, and, for a track
+	// with a length, seeking (to a point, or back and forward).
 	$effect(() => {
 		if (!ms || !mine) return;
-		const actions: [MediaSessionAction, () => void][] = [
+		const canSeek = seekable;
+		const actions: [MediaSessionAction, MediaSessionActionHandler | null][] = [
 			['play', () => app.send(cmd.play())],
 			['pause', () => app.send(cmd.pause(true))],
+			['stop', () => app.send(cmd.stop())],
 			['nexttrack', () => app.send(cmd.skip(1))],
 			['previoustrack', () => app.send(cmd.skip(-1))],
+			['seekto', canSeek ? (d) => typeof d.seekTime === 'number' && seekTo(d.seekTime) : null],
+			['seekbackward', canSeek ? (d) => seekTo(app.elapsed - (d.seekOffset || SEEK_OFFSET)) : null],
+			['seekforward', canSeek ? (d) => seekTo(app.elapsed + (d.seekOffset || SEEK_OFFSET)) : null],
 		];
 		for (const [a, fn] of actions) {
 			try {
@@ -27,13 +44,29 @@
 				/* unsupported action */
 			}
 		}
-		ms.setActionHandler('seekto', (d) => {
-			if (typeof d.seekTime === 'number') void app.seek(d.seekTime);
-		});
 		return () => {
 			// The offline player may have taken the controls over already: leave its handlers.
-			if (!offlinePlayer.active) for (const [a] of actions) ms.setActionHandler(a, null);
+			if (offlinePlayer.active) return;
+			for (const [a] of actions) {
+				try {
+					ms.setActionHandler(a, null);
+				} catch {
+					/* unsupported action */
+				}
+			}
 		};
+	});
+
+	// Where the track is, for the system's own progress bar (updated with each status).
+	$effect(() => {
+		if (!ms || !mine || typeof ms.setPositionState !== 'function') return;
+		const position = Number(app.now?.time ?? 0);
+		try {
+			if (seekable) ms.setPositionState({ duration: total, position: Math.max(0, Math.min(total, position)), playbackRate: 1 });
+			else ms.setPositionState();
+		} catch {
+			/* a browser that refuses odd values */
+		}
 	});
 
 	$effect(() => {

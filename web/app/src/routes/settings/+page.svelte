@@ -28,6 +28,7 @@
 	import { nowPlaying } from '$lib/nowplaying/store.svelte';
 	import { STYLES, STYLE_LABELS, type VisualStyle } from '$lib/visual/draw';
 	import { haptics } from '$lib/haptics/haptics.svelte';
+	import { keysHelp } from '$lib/keys/help.svelte';
 
 	// Built in: every browser is checked, and the best playback mode chosen automatically.
 	const caps = detect();
@@ -249,6 +250,12 @@
 				This browser can’t vibrate (most phones other than Android, and computers), so there is nothing to switch on here.
 			{/if}
 		</p>
+	</div>
+
+	<div class="card">
+		<h2>Keyboard</h2>
+		<p class="muted small">Space plays or pauses, / searches, L shows the lyrics; on Now playing the arrow keys seek, skip and change the volume. Press ? anywhere for the full list.</p>
+		<button class="btn" onclick={() => (keysHelp.open = true)} aria-haspopup="dialog" data-keys-help><Icon name="keyboard" size={18} />Keyboard shortcuts</button>
 	</div>
 
 	<div class="card">

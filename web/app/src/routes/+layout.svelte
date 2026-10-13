@@ -14,6 +14,7 @@
 	import Login from '$lib/components/Login.svelte';
 	import PlayerBar from '$lib/components/PlayerBar.svelte';
 	import MediaSession from '$lib/components/MediaSession.svelte';
+	import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import OfflineBar from '$lib/components/OfflineBar.svelte';
 	import OfflineMode from '$lib/components/OfflineMode.svelte';
@@ -186,6 +187,7 @@
 	<Login />
 {:else}
 	<MediaSession />
+	<KeyboardShortcuts />
 	<div class="shell">
 		<nav class="side" aria-label="Main">
 			<div class="brand"><img class="logo" src="./icons/icon.svg" alt="" width="28" height="28" />Lyrion Anywhere</div>
