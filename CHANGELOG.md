@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Android 1.12.0 (versionCode 25)
+
+A test build: a busy music server (LMS frozen while its storage wakes) is shown as a calm "busy" note rather than "Can't reach your server" or offline mode, the player stays connected on the gateway's keepalives, polling backs off, and commands refused while busy say so instead of being replayed later.
+
 ## 2026-10-14: Android: a busy music server isn't "offline"
 
 When LMS freezes for a while (a network music share waking its disks, say), the gateway now says so: `{"lms":"busy"}` / `{"lms":"ok"}` on the event stream, and an immediate 503 with `"busy": true` for commands (see `docs/PROTOCOL.md`). The phone used to take the silence for a lost server: its player socket gave up and resumed in a loop, requests piled up behind 30 s time-outs, and after about 25 s offline mode took over. Now, with a gateway that sends these:
