@@ -24,6 +24,12 @@ sealed interface AppError {
     /** Too many attempts: wait this long. */
     data class RateLimited(val retryAfterSeconds: Long) : AppError
 
+    /**
+     * The music server is busy (it stopped answering for a while; the gateway is reachable):
+     * nothing was done. Try again in a moment, at the earliest after [retryAfterSeconds].
+     */
+    data class ServerBusy(val retryAfterSeconds: Long) : AppError
+
     /** The server or the music server failed. */
     data class Server(val status: Int, val detail: String) : AppError
 
@@ -58,6 +64,7 @@ fun Throwable.toAppError(): AppError = when (this) {
     is ApiException.TwoStepRequired -> AppError.TwoStepRequired
     is ApiException.Forbidden -> AppError.Forbidden(detail)
     is ApiException.RateLimited -> AppError.RateLimited(retryAfterSecs.toLong())
+    is ApiException.ServerBusy -> AppError.ServerBusy(retryAfterSecs.toLong())
     is ApiException.Server -> AppError.Server(status.toInt(), detail)
     is ApiException.InvalidInput -> AppError.InvalidInput(detail)
     else -> AppError.Unexpected(this::class.java.simpleName)

@@ -64,6 +64,11 @@ class OfflineModeController(
     private val reconnectNow: () -> Unit = {},
     /** A monotonic clock (ms). */
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
+    /**
+     * The gateway says the music server is busy: the gateway is reachable, so the player's
+     * trouble meanwhile never means offline (see [io.github.jamezuk.lyrionanywhere.data.ServerBusyTracker]).
+     */
+    private val serverBusy: Flow<Boolean> = flowOf(false),
 ) {
     private val _offline = MutableStateFlow(false)
 
@@ -76,7 +81,7 @@ class OfflineModeController(
 
     private val _ui = MutableStateFlow(ConnectionUi())
 
-    /** What the screen shows: offline mode, the "can't reach" banner or the reconnecting pill. */
+    /** What the screen shows: offline mode, the "can't reach" banner, the reconnecting or the busy pill. */
     val ui: StateFlow<ConnectionUi> = _ui.asStateFlow()
 
     private val judge = ConnectionJudge()
@@ -86,10 +91,10 @@ class OfflineModeController(
             val inputs = combine(
                 auth,
                 network.map { it == NetworkKind.OFFLINE },
-                serverTrouble,
+                combine(serverTrouble, serverBusy) { t, b -> t to b },
                 foreground,
                 playing,
-            ) { a, down, t, fg, p -> ConnectionInputs(a, down, t, fg, p) }.distinctUntilChanged()
+            ) { a, down, (t, b), fg, p -> ConnectionInputs(a, down, t, fg, p, busy = b) }.distinctUntilChanged()
             inputs.collectLatest { i ->
                 // Decide now, and again whenever a grace period runs out on the same inputs.
                 while (true) {
@@ -117,7 +122,7 @@ class OfflineModeController(
         scope.launch {
             val netDown = network.map { it == NetworkKind.OFFLINE }.sustained(NETWORK_GRACE_MS)
             val trouble = serverTrouble.sustained(TROUBLE_GRACE_MS)
-            combine(auth, netDown, trouble) { a, down, t -> Triple(a, down, t) }.collect { (a, down, t) ->
+            combine(auth, netDown, trouble, serverBusy) { a, down, t, b -> Triple(a, down, t && !b) }.collect { (a, down, t) ->
                 _offline.value = decide(a, down, t, _offline.value)
             }
         }

@@ -77,7 +77,9 @@ class LocalPlaybackController(
                         is ServerEvent.PlayerChanged ->
                             if (e.playerId == id) request(queue = e.name == "playlist" || e.name == "newmetadata")
                         ServerEvent.Resync -> request(queue = true)
-                        is ServerEvent.LibraryChanged -> {}
+                        // The music server answers again: catch up.
+                        ServerEvent.LmsOk -> request(queue = true)
+                        is ServerEvent.LibraryChanged, is ServerEvent.LmsBusy -> {}
                     }
                     is StreamUpdate.State -> {}
                 }

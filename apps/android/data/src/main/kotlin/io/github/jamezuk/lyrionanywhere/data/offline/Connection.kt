@@ -9,11 +9,14 @@ import io.github.jamezuk.lyrionanywhere.data.AuthState
  * - [unreachable]: the server can't be reached; a banner on the current screen says so and
  *   leads to the downloads.
  * - [reconnecting]: a reconnect is under way; a small pill over the current screen.
+ * - [busy]: the music server is busy (it stopped answering for a while) but the gateway is
+ *   reachable; a calm pill says so, and nothing else changes.
  */
 data class ConnectionUi(
     val takeover: Boolean = false,
     val unreachable: Boolean = false,
     val reconnecting: Boolean = false,
+    val busy: Boolean = false,
 )
 
 /** What [ConnectionJudge] decides from, at one moment. */
@@ -27,6 +30,11 @@ data class ConnectionInputs(
     val foreground: Boolean,
     /** This phone's LMS player is playing (or buffering): its link matters even in the background. */
     val playing: Boolean,
+    /**
+     * The gateway says the music server is busy ([io.github.jamezuk.lyrionanywhere.data.ServerBusyTracker]):
+     * the gateway is reachable, so the player's trouble meanwhile isn't the server being away.
+     */
+    val busy: Boolean = false,
 )
 
 /**
@@ -44,6 +52,10 @@ data class ConnectionInputs(
  *   the link is back.
  * A sign-in that couldn't be checked ([AuthState.Unreachable]) is offline mode as before,
  * and a sign-in being checked again keeps whatever was shown.
+ *
+ * While the gateway says the music server is busy, the gateway is plainly reachable: the
+ * player's trouble doesn't count (no banner, no offline mode), and a calm "busy" pill shows
+ * instead of "Reconnecting…". No network at all still counts as before.
  */
 class ConnectionJudge {
     private var lastForeground = false
@@ -61,7 +73,9 @@ class ConnectionJudge {
         netDownSince = if (i.netDown) netDownSince ?: now else null
 
         val inGrace = foregroundSince?.let { now - it < FOREGROUND_GRACE_MS } ?: false
-        val counts = i.trouble && !i.netDown && (i.playing || (i.foreground && !inGrace))
+        // Busy: the gateway answers, so the player's trouble isn't the server being away.
+        val trouble = i.trouble && !i.busy
+        val counts = trouble && !i.netDown && (i.playing || (i.foreground && !inGrace))
         troubleSince = if (counts) troubleSince ?: now else null
         val unreachableNow = i.netDown || counts
         inUseSince = if (i.foreground && unreachableNow) inUseSince ?: now else null
@@ -73,7 +87,7 @@ class ConnectionJudge {
             is AuthState.SignedInState -> when {
                 opened && i.netDown -> true
                 // Once offline mode has the screen, it keeps it until the link is back.
-                takeover -> i.netDown || i.trouble
+                takeover -> i.netDown || trouble
                 else -> inUseSince?.let { now - it >= TAKEOVER_MS } ?: false
             }
             else -> false
@@ -81,8 +95,9 @@ class ConnectionJudge {
         val netGone = netDownSince?.let { now - it >= NETWORK_GRACE_MS } ?: false
         val troubleLong = troubleSince?.let { now - it >= TROUBLE_GRACE_MS } ?: false
         val unreachable = signedIn && !takeover && (netGone || troubleLong)
-        val reconnecting = signedIn && !takeover && !unreachable && i.foreground && (i.trouble || i.netDown)
-        return ConnectionUi(takeover = takeover, unreachable = unreachable, reconnecting = reconnecting)
+        val busy = signedIn && !takeover && !unreachable && i.foreground && i.busy && !i.netDown
+        val reconnecting = signedIn && !takeover && !unreachable && !busy && i.foreground && (trouble || i.netDown)
+        return ConnectionUi(takeover = takeover, unreachable = unreachable, reconnecting = reconnecting, busy = busy)
     }
 
     /** How long until the decision could change with the same inputs (null: it won't). */

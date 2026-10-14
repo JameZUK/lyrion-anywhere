@@ -287,7 +287,10 @@ pub async fn flush<A: PlaysApi>(
                 outcome.unsupported = true;
                 break;
             }
-            Err(SendError::Failed(ApiError::RateLimited { retry_after_secs })) => {
+            Err(SendError::Failed(
+                ApiError::RateLimited { retry_after_secs }
+                | ApiError::ServerBusy { retry_after_secs },
+            )) => {
                 outcome.retry_after_secs = later(outcome.retry_after_secs, retry_after_secs);
                 break;
             }

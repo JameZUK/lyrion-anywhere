@@ -52,6 +52,7 @@ fun errorText(res: Resources, error: AppError): String = when (error) {
             res.getQuantityString(R.plurals.error_rate_limited_minutes, minutes, minutes)
         }
     }
+    is AppError.ServerBusy -> res.getString(R.string.error_server_busy)
     is AppError.Server -> res.getString(R.string.error_server)
     is AppError.InvalidInput -> error.detail.replaceFirstChar { it.uppercase() }
     is AppError.Unexpected -> res.getString(R.string.error_unexpected)
@@ -63,7 +64,7 @@ fun errorMessage(error: AppError): String = errorText(LocalResources.current, er
 private fun icon(error: AppError): ImageVector = when (error) {
     is AppError.Offline -> Icons.Outlined.CloudOff
     is AppError.Forbidden, AppError.SignedOut -> Icons.Outlined.Lock
-    is AppError.RateLimited -> Icons.Outlined.HourglassEmpty
+    is AppError.RateLimited, is AppError.ServerBusy -> Icons.Outlined.HourglassEmpty
     else -> Icons.Outlined.ErrorOutline
 }
 

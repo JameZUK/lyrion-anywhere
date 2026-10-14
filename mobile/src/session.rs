@@ -736,6 +736,33 @@ impl Session {
     }
 }
 
+/// A session already signed in to `server` with made-up tokens (nothing is stored), for
+/// unit tests that talk to a fake socket.
+#[cfg(test)]
+pub(crate) fn signed_in_for_test(server: Arc<Server>) -> Arc<Session> {
+    struct NoStore;
+    impl SecureStore for NoStore {
+        fn load(&self) -> Result<Option<StoredCredentials>, StoreError> {
+            Ok(None)
+        }
+        fn save(&self, _: StoredCredentials) -> Result<(), StoreError> {
+            Ok(())
+        }
+        fn clear(&self) -> Result<(), StoreError> {
+            Ok(())
+        }
+    }
+    let s = Session::new(server, Arc::new(NoStore), "Test phone".into()).unwrap();
+    let issued = parse_issued(&json!({
+        "access_token": "acc", "refresh_token": "ref", "expires_in": 900,
+        "user": {"username": "alice", "role": "listener"},
+        "device": {"id": 1, "name": "Test phone", "mac": "02:4C:41:00:00:01"}
+    }))
+    .unwrap();
+    s.core.adopt(issued, None).unwrap();
+    s
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

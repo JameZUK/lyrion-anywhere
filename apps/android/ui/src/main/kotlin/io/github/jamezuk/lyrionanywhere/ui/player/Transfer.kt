@@ -50,7 +50,7 @@ fun errorDetail(error: AppError): String? = when (error) {
     is AppError.Server -> error.detail
     is AppError.InvalidInput -> null
     is AppError.Unexpected -> error.detail
-    AppError.SignedOut, AppError.TwoStepRequired, is AppError.RateLimited -> null
+    AppError.SignedOut, AppError.TwoStepRequired, is AppError.RateLimited, is AppError.ServerBusy -> null
 }?.trim()?.take(200)?.takeIf { it.isNotEmpty() }
 
 /** A message for [error] with its detail on a second line (for failures worth diagnosing). */

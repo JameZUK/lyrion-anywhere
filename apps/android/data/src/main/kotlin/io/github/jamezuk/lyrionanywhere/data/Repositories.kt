@@ -425,10 +425,15 @@ class RustMenusRepository(private val source: ConnectionSource) : MenusRepositor
     }
 }
 
-class RustPlayersRepository(private val source: ConnectionSource) : PlayersRepository {
+class RustPlayersRepository(
+    private val source: ConnectionSource,
+    /** Told when the music server refuses a command as busy, and when it answers one. */
+    private val busy: ServerBusyTracker? = null,
+) : PlayersRepository {
     private suspend fun <T> withPlayers(block: suspend (io.github.jamezuk.lyrionanywhere.core.Players) -> T): ApiResult<T> {
         val p = source.connection.value?.players ?: return ApiResult.Err(AppError.SignedOut)
-        return apiCall { block(p) }
+        val r = apiCall { block(p) }
+        return busy?.observe(r) ?: r
     }
 
     override suspend fun list() = withPlayers { it.list() }
@@ -528,7 +533,11 @@ class RustArtRepository(private val source: ConnectionSource) : ArtRepository {
     }
 }
 
-class RustEventsRepository(private val source: ConnectionSource) : EventsRepository {
+class RustEventsRepository(
+    private val source: ConnectionSource,
+    /** Told what the stream says about the music server being busy. */
+    private val busy: ServerBusyTracker? = null,
+) : EventsRepository {
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun updates(): Flow<StreamUpdate> = source.connection.flatMapLatest { conn ->
         if (conn == null) {
@@ -537,15 +546,23 @@ class RustEventsRepository(private val source: ConnectionSource) : EventsReposit
             callbackFlow {
                 val listener = object : EventListener {
                     override fun onEvent(event: ServerEvent) {
+                        when (event) {
+                            is ServerEvent.LmsBusy -> busy?.streamBusy(this)
+                            ServerEvent.LmsOk -> busy?.streamOk()
+                            else -> {}
+                        }
                         trySend(StreamUpdate.Event(event))
                     }
 
                     override fun onState(state: EventsState) {
+                        // Reconnecting: the gateway says again if the music server is still busy.
+                        if (state !is EventsState.Live) busy?.streamGone(this)
                         trySend(StreamUpdate.State(state))
                     }
                 }
                 val subscription = conn.events.subscribe(listener)
                 awaitClose {
+                    busy?.streamGone(listener)
                     subscription.cancel()
                     subscription.close()
                 }
