@@ -1,12 +1,25 @@
 // The download manager (SPEC §8.3): a queue that fetches two tracks at a time, shows
-// progress per track and per album, pauses, cancels, retries with backoff, and resumes an
-// interrupted download from the bytes it already stored (HTTP Range).
+// progress per track and per album or playlist, pauses, cancels, retries with backoff, and
+// resumes an interrupted download from the bytes it already stored (HTTP Range).
+//
+// Each downloaded track lists the downloads that need it (its refs: an album, a playlist,
+// or the track on its own). Removing a download takes its ref off; a track is deleted only
+// when no ref is left, so a playlist never loses tracks to an album being removed.
+//
+// "Download on Wi-Fi only" holds the queue while the browser says it is on mobile data
+// (unless the user said "Download now"), and the storage limit is checked before a batch is
+// queued (by estimate) and again as each track starts (by its real size).
 import { ApiError, CLIENT_HEADER, bearer } from '$lib/api/http';
 import type { OfflineStore } from './store';
 import {
 	BadInfo,
+	TRACK_REF,
 	TRANSCODE_TYPES,
 	audioType,
+	cleanRefs,
+	estimateBytes,
+	isRef,
+	refsOf,
 	downloadUrl,
 	infoUrl,
 	isFormat,
@@ -16,6 +29,8 @@ import {
 	type Format,
 	type PartialDownload,
 	type QueuedDownload,
+	type Ref,
+	type StoredGroup,
 	type StoredTrack,
 	type TrackInfo,
 } from './types';
@@ -69,6 +84,60 @@ export interface ManagerDeps {
 	now?: () => number;
 	/** Ask the browser to keep downloads (navigator.storage.persist). */
 	persist?: () => Promise<unknown>;
+	/** True while downloads must wait for Wi-Fi (Wi-Fi only is on and this is mobile data). */
+	waitForWifi?: () => boolean;
+	/** The storage limit for downloads in bytes (0: none). */
+	capBytes?: () => number;
+	/** The browser's storage estimate (navigator.storage.estimate). */
+	storageEstimate?: () => Promise<{ usage?: number; quota?: number }>;
+}
+
+/** A track to download, as a library list gives it (sizes are for the storage limit). */
+export interface DownloadRequest {
+	id: unknown;
+	albumId?: unknown;
+	duration?: unknown;
+	filesize?: unknown;
+	/** What it is downloaded as part of (else the request's `ref`). */
+	ref?: Ref;
+}
+
+export interface RequestOptions {
+	choice?: Format | 'auto';
+	/** What these tracks are downloaded as part of: `album:<id>`, `playlist:<id>` or `track`. */
+	ref?: Ref;
+	/** For a playlist: its name and order, shown on the Downloads page. */
+	group?: { name: string; ids: number[] };
+}
+
+export interface RequestResult {
+	/** Tracks added to the queue. */
+	queued: number;
+	/** Why nothing was queued (the storage limit or the browser's space), for the user. */
+	refused?: string;
+}
+
+/** What a removal did: the tracks deleted, and how many stayed for other downloads. */
+export interface Released {
+	removed: string[];
+	kept: number;
+}
+
+/** A track would take downloads past the user's storage limit. */
+export class LimitReached extends Error {
+	constructor() {
+		super('storage limit reached');
+		this.name = 'LimitReached';
+	}
+}
+
+export const LIMIT_MESSAGE = 'Storage limit reached. Remove some downloads, or raise the limit in Settings.';
+
+/** "23.4 MB", "1.20 GB" (as settings' formatBytes; kept here so the manager stands alone). */
+function formatSize(n: number): string {
+	if (!Number.isFinite(n) || n <= 0) return '0 MB';
+	if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
+	return `${(n / 1024 ** 2).toFixed(1)} MB`;
 }
 
 export type ItemStatus = 'queued' | 'active' | 'waiting' | 'paused' | 'done' | 'failed';
@@ -76,6 +145,12 @@ export type ItemStatus = 'queued' | 'active' | 'waiting' | 'paused' | 'done' | '
 export interface DownloadItem {
 	id: number;
 	albumId: number | null;
+	/** The downloads that asked for this track. */
+	refs: Ref[];
+	/** "Download now": may use mobile data although Wi-Fi only is on. */
+	cellular: boolean;
+	/** Expected size before the server says (for the storage limit). */
+	estimate: number;
 	choice: Format | 'auto';
 	status: ItemStatus;
 	title: string;
@@ -133,6 +208,7 @@ export function classify(e: unknown): { permanent: boolean; message: string; wai
 		if (s >= 400 && s < 500 && s !== 408) return { permanent: true, message: `The server refused the download (HTTP ${s}).` };
 		return { permanent: false, message: `Server error (HTTP ${s}). Retrying…` };
 	}
+	if (e instanceof LimitReached) return { permanent: true, message: LIMIT_MESSAGE };
 	if (e instanceof DOMException && e.name === 'QuotaExceededError') {
 		return { permanent: true, message: 'Not enough storage space on this device.' };
 	}
@@ -180,8 +256,12 @@ export class DownloadManager {
 	user = $state<string | null>(null);
 	/** False in offline mode: show downloads, but fetch nothing. */
 	online = $state(false);
+	/** Downloaded playlists (name and order) for this user. */
+	groups = $state<StoredGroup[]>([]);
 	/** Set if storage can't be used at all. */
 	error = $state('');
+	/** The queue is held: Wi-Fi only is on and the browser says this is mobile data. */
+	holding = $state(false);
 
 	#ctl = new Map<number, AbortController>();
 	#runs = new Map<number, Promise<void>>();
@@ -217,12 +297,15 @@ export class DownloadManager {
 		this.online = online && !!user;
 		this.items = [];
 		this.saved = [];
+		this.groups = [];
 		this.error = '';
 		if (!user) return;
 		try {
 			const saved = await this.store.listTracks(user);
+			const groups = await this.store.listGroups(user).catch(() => [] as StoredGroup[]);
 			if (gen !== this.#gen) return;
 			this.saved = saved;
+			this.groups = groups.filter((g) => isRef(g?.id) && g.id !== TRACK_REF && typeof g.name === 'string' && Array.isArray(g.ids));
 			if (this.online) await this.#restoreQueue(gen);
 		} catch (e) {
 			if (gen === this.#gen) this.error = (e as Error).message;
@@ -236,7 +319,16 @@ export class DownloadManager {
 		if (gen !== this.#gen) return;
 		for (const e of q) {
 			try {
-				this.#add(trackId(e.id), typeof e.albumId === 'number' ? e.albumId : null, e.choice === 'auto' || isFormat(e.choice) ? e.choice : 'auto', e.paused ? 'paused' : 'queued');
+				const albumId = typeof e.albumId === 'number' && Number.isSafeInteger(e.albumId) && e.albumId > 0 ? e.albumId : null;
+				const refs = cleanRefs(e.refs);
+				this.#add(trackId(e.id), albumId, e.choice === 'auto' || isFormat(e.choice) ? e.choice : 'auto', e.paused ? 'paused' : 'queued', {
+					refs: refs.length ? refs : [albumId !== null ? `album:${albumId}` : TRACK_REF],
+					cellular: e.cellular === true,
+					estimate: typeof e.estimate === 'number' && Number.isSafeInteger(e.estimate) && e.estimate > 0 ? e.estimate : 0,
+				});
+				// Its stable key, once known: a cancel before the details come back still finds its bytes.
+				const it = this.item(e.id);
+				if (it && !it.key && typeof e.key === 'string' && /^[0-9a-f]{64}$/.test(e.key)) it.key = e.key;
 			} catch {
 				/* a bad entry: drop it */
 			}
@@ -263,21 +355,161 @@ export class DownloadManager {
 		return this.saved.filter((t) => t.albumId === albumId);
 	}
 
-	#add(id: number, albumId: number | null, choice: Format | 'auto', status: ItemStatus = 'queued'): DownloadItem {
+	#add(
+		id: number,
+		albumId: number | null,
+		choice: Format | 'auto',
+		status: ItemStatus = 'queued',
+		extra: { refs: Ref[]; cellular?: boolean; estimate?: number } = { refs: [albumId !== null ? `album:${albumId}` : TRACK_REF] },
+	): DownloadItem {
 		const existing = this.item(id);
 		if (existing) {
+			existing.refs = cleanRefs([...existing.refs, ...extra.refs]);
 			if (existing.status === 'failed' || existing.status === 'paused' || existing.status === 'done') {
 				Object.assign(existing, { status, choice, attempts: 0, waits: 0, message: '' });
+				if (extra.estimate) existing.estimate = extra.estimate;
 			}
+			if (extra.cellular) existing.cellular = true;
 			return existing;
 		}
-		this.items.push({ id, albumId, choice, status, title: '', key: '', format: null, received: 0, total: 0, attempts: 0, waits: 0, message: '' });
+		this.items.push({
+			id,
+			albumId,
+			refs: cleanRefs(extra.refs),
+			cellular: extra.cellular === true,
+			estimate: extra.estimate ?? 0,
+			choice,
+			status,
+			title: '',
+			key: '',
+			format: null,
+			received: 0,
+			total: 0,
+			attempts: 0,
+			waits: 0,
+			message: '',
+		});
 		return this.items[this.items.length - 1]!;
 	}
 
+	/** Bytes the queue still expects to store (what is downloading or waiting). */
+	get pendingBytes(): number {
+		let n = 0;
+		for (const i of this.items) if (i.status !== 'done' && i.status !== 'failed') n += Math.max(i.total, i.estimate, 0);
+		return n;
+	}
+
 	/**
-	 * Download tracks (in order). Tracks already on the device are checked by their stable key
-	 * and not fetched again. Ids must be LMS track ids; anything else is refused.
+	 * Download tracks as part of an album, a playlist or on their own. Tracks already on the
+	 * device just gain the ref (nothing is fetched); the others are queued, unless they would
+	 * take downloads past the storage limit or the browser's free space, in which case
+	 * nothing is queued and `refused` says why. Ids must be LMS track ids; anything else is
+	 * dropped.
+	 */
+	async request(tracks: readonly DownloadRequest[], opts: RequestOptions = {}): Promise<RequestResult> {
+		const user = this.user;
+		if (!user || !this.online) return { queued: 0 };
+		const gen = this.#gen;
+		const choice = opts.choice ?? 'auto';
+		const format = choice === 'auto' ? (this.deps.defaultFormat?.() ?? 'original') : choice;
+		const fallback = opts.ref !== undefined && isRef(opts.ref) ? opts.ref : TRACK_REF;
+		const adopt = new Map<string, Ref[]>();
+		const fresh: { id: number; albumId: number | null; ref: Ref; estimate: number }[] = [];
+		const seen = new Set<number>();
+		let need = 0;
+		for (const t of tracks) {
+			let id: number;
+			try {
+				id = trackId(t.id);
+			} catch {
+				continue;
+			}
+			if (seen.has(id)) continue;
+			seen.add(id);
+			const ref = t.ref !== undefined && isRef(t.ref) ? t.ref : fallback;
+			const have = this.savedById(id);
+			if (have) {
+				adopt.set(have.key, [...(adopt.get(have.key) ?? []), ref]);
+				continue;
+			}
+			const albumId = typeof t.albumId === 'number' && Number.isSafeInteger(t.albumId) && t.albumId > 0 ? t.albumId : null;
+			const it = this.item(id);
+			const estimate = estimateBytes(t, format);
+			// Already waiting or downloading: it gains the ref, and its bytes are counted already.
+			if (!it || it.status === 'done' || it.status === 'failed') need += estimate;
+			fresh.push({ id, albumId, ref, estimate });
+		}
+		const refused = await this.#room(need);
+		if (gen !== this.#gen || !this.online) return { queued: 0 };
+		if (refused) return { queued: 0, refused };
+
+		if (opts.group && fallback !== TRACK_REF) {
+			const ids = opts.group.ids.filter((i) => Number.isSafeInteger(i) && i > 0).slice(0, 5000);
+			const g: StoredGroup = { user, id: fallback, name: String(opts.group.name ?? '').slice(0, 300), ids, savedAt: this.deps.now?.() ?? Date.now() };
+			await this.store.putGroup(g).catch(() => {});
+			if (gen !== this.#gen) return { queued: 0 };
+			this.groups = [...this.groups.filter((x) => x.id !== g.id), g];
+		}
+		for (const [key, refs] of adopt) await this.#addRefs(user, key, refs, gen);
+		let n = 0;
+		for (const f of fresh) {
+			const it = this.#add(f.id, f.albumId, choice, 'queued', { refs: [f.ref], estimate: f.estimate });
+			if (it.status === 'queued') n++;
+		}
+		if (n) void this.deps.persist?.();
+		this.#saveQueue();
+		this.#pump();
+		return { queued: n };
+	}
+
+	/** Why `need` more bytes can't be stored now, or '' if they can. */
+	async #room(need: number): Promise<string> {
+		if (need <= 0) return '';
+		const cap = this.deps.capBytes?.() ?? 0;
+		if (Number.isFinite(cap) && cap > 0) {
+			const free = Math.max(0, cap - this.usedBytes - this.pendingBytes);
+			if (need > free) {
+				return `Not enough room under your storage limit: this needs about ${formatSize(need)}, and ${formatSize(free)} of ${formatSize(cap)} is free. Remove some downloads, or raise the limit in Settings.`;
+			}
+		}
+		let est: { usage?: number; quota?: number } | undefined;
+		try {
+			est = await this.deps.storageEstimate?.();
+		} catch {
+			est = undefined; // unknown: don't stand in the way
+		}
+		const quota = est?.quota;
+		const usage = est?.usage ?? 0;
+		if (typeof quota === 'number' && Number.isFinite(quota) && quota > 0 && Number.isFinite(usage)) {
+			// What is still to arrive for downloads already queued (their stored bytes are in `usage`).
+			let coming = 0;
+			for (const i of this.items) if (i.status !== 'done' && i.status !== 'failed') coming += Math.max(0, Math.max(i.total, i.estimate) - i.received);
+			const free = Math.max(0, quota - usage - coming);
+			if (need > free) return `Not enough space in this browser: this needs about ${formatSize(need)}, and only ${formatSize(free)} is free.`;
+		}
+		return '';
+	}
+
+	/** Add refs to a stored track (it is needed by one more download). */
+	async #addRefs(user: string, key: string, refs: Ref[], gen: number) {
+		const t = this.saved.find((s) => s.key === key);
+		if (!t) return;
+		const merged = cleanRefs([...refsOf(t), ...refs]);
+		if (Array.isArray(t.refs) && merged.length === t.refs.length) return;
+		const next = { ...t, refs: merged };
+		try {
+			await this.store.putTrack(next);
+		} catch {
+			return;
+		}
+		this.#saved(gen, next);
+	}
+
+	/**
+	 * Download tracks (in order), each as part of its album (or on its own without one),
+	 * with no storage check: [`request`] is what the pages use. Tracks already on the device
+	 * are checked by their stable key and not fetched again. Ids must be LMS track ids;
+	 * anything else is refused.
 	 */
 	enqueue(tracks: { id: unknown; albumId?: unknown }[], choice: Format | 'auto' = 'auto'): number {
 		if (!this.user || !this.online) return 0;
@@ -305,14 +537,59 @@ export class DownloadManager {
 		if (!user) return;
 		const q: QueuedDownload[] = this.items
 			.filter((i) => i.status !== 'done' && i.status !== 'failed')
-			.map((i) => ({ id: i.id, albumId: i.albumId, choice: i.choice, paused: i.status === 'paused' }));
+			.map((i) => ({ id: i.id, albumId: i.albumId, choice: i.choice, paused: i.status === 'paused', refs: [...i.refs], cellular: i.cellular, estimate: i.estimate, ...(i.key ? { key: i.key } : {}) }));
 		void this.store.saveQueue(user, q).catch(() => {});
+	}
+
+	#holdNow(): boolean {
+		try {
+			return this.deps.waitForWifi?.() === true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** Waiting for Wi-Fi: queued, and held because this is mobile data. */
+	isHeld(i: DownloadItem): boolean {
+		return this.holding && !i.cellular && i.status === 'queued';
+	}
+
+	/**
+	 * The network or the Wi-Fi only setting changed. On mobile data with Wi-Fi only on,
+	 * downloads in progress stop (keeping their bytes, to resume by Range) and wait;
+	 * on Wi-Fi they carry on.
+	 */
+	networkChanged() {
+		this.holding = this.#holdNow();
+		if (this.holding) {
+			for (const i of this.items) {
+				if (i.cellular || (i.status !== 'active' && i.status !== 'waiting')) continue;
+				i.status = 'queued';
+				i.message = '';
+				this.#ctl.get(i.id)?.abort();
+			}
+		}
+		this.#pump();
+	}
+
+	/** "Download now": let these waiting downloads (all, or those matching) use mobile data. */
+	downloadNow(match: (i: DownloadItem) => boolean = () => true) {
+		let any = false;
+		for (const i of this.items) {
+			if (i.status === 'done' || i.status === 'failed' || i.cellular || !match(i)) continue;
+			i.cellular = true;
+			any = true;
+		}
+		if (!any) return;
+		this.#saveQueue();
+		this.#pump();
 	}
 
 	#pump() {
 		if (!this.online) return;
+		this.holding = this.#holdNow();
 		while (this.#active < CONCURRENCY) {
-			const next = this.items.find((i) => i.status === 'queued');
+			const next = this.items.find((i) => i.status === 'queued' && (!this.holding || i.cellular));
 			if (!next) return;
 			this.#active++;
 			next.status = 'active';
@@ -379,12 +656,16 @@ export class DownloadManager {
 		const want = item.choice === 'auto' ? (this.deps.defaultFormat?.() ?? 'original') : item.choice;
 		const format = pickFormat(want, info.formats);
 		item.format = format;
+		const cap = this.deps.capBytes?.() ?? 0;
+		const limited = Number.isFinite(cap) && cap > 0;
+		const base = this.usedBytes;
 
 		// Already here (perhaps under an older track id, before a rescan): just refresh the id.
 		const have = await store.getTrack(user, info.key);
 		if (have) {
-			const t = { ...have, id: info.id, albumId: info.albumId ?? have.albumId };
-			if (t.id !== have.id || t.albumId !== have.albumId) await store.putTrack(t);
+			const refs = cleanRefs([...refsOf(have), ...item.refs]);
+			const t = { ...have, id: info.id, albumId: info.albumId ?? have.albumId, refs };
+			if (t.id !== have.id || t.albumId !== have.albumId || refs.length !== (have.refs?.length ?? -1)) await store.putTrack(t);
 			this.#saved(gen, t);
 			item.received = item.total = have.size;
 			return;
@@ -398,6 +679,11 @@ export class DownloadManager {
 		let offset = partial?.received ?? 0;
 		item.total = format === 'original' ? info.original.size : (partial?.total ?? 0);
 		item.received = offset;
+		// The storage limit, by the real size where known (an estimate for a transcode), with
+		// what the other downloads in progress have stored so far.
+		const expected = format === 'original' && info.original.size ? info.original.size : estimateBytes({ duration: info.duration }, format);
+		const others = this.items.reduce((n, i) => (i !== item && i.status === 'active' ? n + i.received : n), 0);
+		if (limited && base + others + expected > cap) throw new LimitReached();
 
 		const resp = await this.deps.authed((t) => fetchAudio(f, item.id, format, t, offset, signal));
 		let seq = partial?.chunks ?? 0;
@@ -456,6 +742,12 @@ export class DownloadManager {
 				await store.discardPartial(user, info.key);
 				throw new HttpError(502, 'more data than expected');
 			}
+			if (limited && base + item.received > cap) {
+				buf = [];
+				bufLen = 0;
+				await store.discardPartial(user, info.key);
+				throw new LimitReached();
+			}
 			if (bufLen >= CHUNK_BYTES) await flush();
 		};
 		const reader = resp.body?.getReader();
@@ -500,6 +792,7 @@ export class DownloadManager {
 			contentType,
 			downloadedAt: this.deps.now?.() ?? Date.now(),
 			chunks: seq,
+			refs: cleanRefs(item.refs.length ? item.refs : [item.albumId !== null ? `album:${item.albumId}` : TRACK_REF]),
 		};
 		await store.putTrack(track);
 		await store.finishPartial(user, info.key);
@@ -554,26 +847,42 @@ export class DownloadManager {
 		if (user && it.key && !this.saved.some((s) => s.key === it.key)) await this.store.discardPartial(user, it.key).catch(() => {});
 	}
 
-	pauseAll(albumId?: number) {
-		for (const i of this.items) if (albumId === undefined || i.albumId === albumId) this.pause(i.id);
+
+	/** Downloads of one album (by id), those matching, or all. */
+	#which(sel?: number | ((i: DownloadItem) => boolean)): (i: DownloadItem) => boolean {
+		if (sel === undefined) return () => true;
+		if (typeof sel === 'function') return sel;
+		return (i) => i.albumId === sel;
 	}
 
-	resumeAll(albumId?: number) {
-		for (const i of [...this.items]) if (albumId === undefined || i.albumId === albumId) this.resume(i.id);
+	pauseAll(sel?: number | ((i: DownloadItem) => boolean)) {
+		const m = this.#which(sel);
+		for (const i of this.items) if (m(i)) this.pause(i.id);
 	}
 
-	async cancelAll(albumId?: number) {
-		await Promise.all(this.items.filter((i) => albumId === undefined || i.albumId === albumId).map((i) => this.cancel(i.id)));
+	resumeAll(sel?: number | ((i: DownloadItem) => boolean)) {
+		const m = this.#which(sel);
+		for (const i of [...this.items]) if (m(i)) this.resume(i.id);
 	}
 
-	/** Forget finished and failed entries in the list of downloads. */
+	async cancelAll(sel?: number | ((i: DownloadItem) => boolean)) {
+		const m = this.#which(sel);
+		await Promise.all(this.items.filter(m).map((i) => this.cancel(i.id)));
+	}
+
+	/** Forget finished and failed entries in the list of downloads (and a failed one's bytes). */
 	clearFinished() {
+		const user = this.user;
+		for (const i of this.items) {
+			if (user && i.status === 'failed' && i.key && !this.saved.some((s) => s.key === i.key)) void this.store.discardPartial(user, i.key).catch(() => {});
+		}
 		this.items = this.items.filter((i) => i.status !== 'done' && i.status !== 'failed');
 		this.#saveQueue();
 	}
 
-	album(albumId: number): AlbumProgress {
-		const its = this.items.filter((i) => i.albumId === albumId);
+	/** Progress of the downloads that match (an album's, a playlist's…). */
+	progress(match: (i: DownloadItem) => boolean): AlbumProgress {
+		const its = this.items.filter(match);
 		let sum = 0;
 		const p: AlbumProgress = { count: its.length, done: 0, failed: 0, paused: 0, busy: false, fraction: 0 };
 		for (const i of its) {
@@ -591,19 +900,116 @@ export class DownloadManager {
 		return p;
 	}
 
-	/** Remove downloaded tracks from this device. */
-	async remove(keys: string[]): Promise<void> {
-		const user = this.user;
-		if (!user) return;
-		for (const k of keys) await this.store.deleteTrack(user, k);
-		this.items = this.items.filter((i) => !keys.includes(i.key));
-		this.saved = this.saved.filter((t) => !keys.includes(t.key));
-		this.#saveQueue();
+	album(albumId: number): AlbumProgress {
+		return this.progress((i) => i.albumId === albumId);
 	}
 
-	async removeAlbum(albumId: number): Promise<void> {
-		await this.cancelAll(albumId);
-		await this.remove(this.savedAlbum(albumId).map((t) => t.key));
+	/** Progress of the downloads asked for as part of `ref` (e.g. `playlist:3`). */
+	group(ref: Ref): AlbumProgress {
+		return this.progress((i) => i.refs.includes(ref));
+	}
+
+	/** The stored tracks a download (`album:…`, `playlist:…`, `track`) needs. */
+	savedFor(ref: Ref): StoredTrack[] {
+		return this.saved.filter((t) => refsOf(t).includes(ref));
+	}
+
+	/**
+	 * Take refs (those `drop` picks) off the tracks `track` picks, and off downloads still in
+	 * the queue that `item` picks. A track left with no ref is deleted with its audio; a
+	 * queued download left with none is cancelled. Nothing another download needs is lost.
+	 */
+	async #release(drop: (r: Ref) => boolean, track: (t: StoredTrack) => boolean, item: (i: DownloadItem) => boolean): Promise<Released> {
+		const user = this.user;
+		if (!user) return { removed: [], kept: 0 };
+		const gen = this.#gen;
+		const cancel: number[] = [];
+		for (const i of this.items) {
+			if (i.status === 'done' || !item(i)) continue;
+			i.refs = i.refs.filter((r) => !drop(r));
+			if (!i.refs.length) cancel.push(i.id);
+		}
+		for (const id of cancel) await this.cancel(id);
+		const removed: string[] = [];
+		let kept = 0;
+		for (const t of this.saved.filter(track)) {
+			const refs = refsOf(t).filter((r) => !drop(r));
+			if (refs.length) {
+				const next = { ...t, refs };
+				await this.store.putTrack(next);
+				this.#saved(gen, next);
+				kept++;
+			} else {
+				await this.store.deleteTrack(user, t.key);
+				removed.push(t.key);
+			}
+		}
+		if (gen !== this.#gen) return { removed, kept };
+		const gone = new Set(removed);
+		this.items = this.items.filter((i) => !gone.has(i.key));
+		this.saved = this.saved.filter((t) => !gone.has(t.key));
+		await this.#pruneGroups(user, gen);
+		this.#saveQueue();
+		return { removed, kept };
+	}
+
+	/** Forget downloaded playlists that no track or queued download needs any more. */
+	async #pruneGroups(user: string, gen: number) {
+		const used = new Set<string>();
+		for (const t of this.saved) for (const r of refsOf(t)) used.add(r);
+		for (const i of this.items) if (i.status !== 'done' && i.status !== 'failed') for (const r of i.refs) used.add(r);
+		for (const g of this.groups) {
+			if (used.has(g.id)) continue;
+			await this.store.deleteGroup(user, g.id).catch(() => {});
+		}
+		if (gen === this.#gen) this.groups = this.groups.filter((g) => used.has(g.id));
+	}
+
+	/** Delete downloaded tracks from this device, whatever else needs them. */
+	async remove(keys: string[]): Promise<void> {
+		const ks = new Set(keys);
+		await this.#release(
+			() => true,
+			(t) => ks.has(t.key),
+			(i) => ks.has(i.key),
+		);
+	}
+
+	/**
+	 * Remove tracks downloaded on their own or with their albums. Tracks a downloaded
+	 * playlist still needs stay (counted in `kept`).
+	 */
+	removeTracks(keys: readonly string[]): Promise<Released> {
+		const ks = new Set(keys);
+		return this.#release(
+			(r) => r === TRACK_REF || r.startsWith('album:'),
+			(t) => ks.has(t.key),
+			(i) => ks.has(i.key),
+		);
+	}
+
+	/** Remove an album's download (and its tracks downloaded on their own), keeping tracks a playlist needs. */
+	removeAlbum(albumId: number): Promise<Released> {
+		const ref = `album:${albumId}`;
+		return this.#release(
+			(r) => r === ref || r === TRACK_REF,
+			(t) => t.albumId === albumId || refsOf(t).includes(ref),
+			(i) => i.albumId === albumId || i.refs.includes(ref),
+		);
+	}
+
+	/** Remove a playlist's download, keeping tracks an album or another playlist needs. */
+	async removePlaylist(playlistId: number): Promise<Released> {
+		const ref = `playlist:${playlistId}`;
+		const r = await this.#release(
+			(x) => x === ref,
+			(t) => refsOf(t).includes(ref),
+			(i) => i.refs.includes(ref),
+		);
+		const user = this.user;
+		if (user) await this.store.deleteGroup(user, ref).catch(() => {});
+		this.groups = this.groups.filter((g) => g.id !== ref);
+		return r;
 	}
 
 	/** Remove everything this user downloaded on this device, and stop the queue. */
@@ -614,6 +1020,7 @@ export class DownloadManager {
 		await this.store.deleteUser(user);
 		this.items = [];
 		this.saved = [];
+		this.groups = [];
 	}
 
 	get usedBytes(): number {

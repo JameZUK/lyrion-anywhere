@@ -226,12 +226,12 @@ All of these are on Android, for this phone's player, and are **off by default**
 
 | Feature | Where | Details |
 |---|---|---|
-| **Download for offline listening** | Both | Web: albums (or the rest of one). Android: albums, playlists and tracks. Local library files only, never streaming services or radio |
+| **Download for offline listening** | Both | Albums (or the rest of one), playlists and single tracks; on the web also all of an artist's albums. Local library files only, never streaming services or radio |
 | **Three formats** | Both | Original (bit-perfect), Opus 160 kb/s or MP3 320 kb/s, with separate defaults for Wi-Fi and mobile data. Transcoded formats need `ffmpeg` on the server; an admin can limit the formats per user or turn downloads off |
 | **Resumable downloads** | Both | Two at a time, resumed with HTTP ranges after a break (even after a reload or restart), checked against the server's size and stable key; pause, resume and cancel |
-| **Wi-Fi only and a storage cap** | Android | Optional, in *Settings › Downloads and storage* |
+| **Wi-Fi only and a storage cap** | Both | Android: optional, in *Settings › Downloads and storage*. Web: *Download on Wi-Fi only* is on by default and works where the browser reports mobile data (Chrome on Android), with *Waiting for Wi-Fi* and a *Download now* override; elsewhere downloads always start. A storage limit (none by default) refuses a download that won't fit, saying how much it needs and how much is free |
 | **Smart downloads** | Android | *Keep recently added albums offline (N)* and *Keep favourites offline*, refreshed on Wi-Fi within the storage cap; they never remove your own downloads |
-| **Downloads page** | Both | What is downloading, what is on the device (by album), storage used, remove and remove all; the web page also shows whether the browser keeps storage persistent |
+| **Downloads page** | Both | What is downloading, what is on the device (by album; on the web also playlists as their own groups), storage used, remove and remove all; the web page also shows the storage limit, the browser's quota and whether it keeps storage persistent. Removing a playlist or album keeps tracks another download still needs |
 | **Offline mode** | Both | When the server can't be reached, the downloaded library is shown and plays on the device; Android switches back by itself when the server returns |
 | **Quiet reconnects** | Android | Losing the connection in the background doesn't count as being offline. Back in the app, it reconnects at once on the screen you were on, with a small *Reconnecting…* pill; if the server stays out of reach, a *Can't reach your server · Downloads* banner appears instead of a takeover. Offline mode takes over only with no network at start, or after 15 s unreachable while in use, and hands back to the same screen, back history and scroll position |
 | **Offline playback** | Both | Android: the app's own queue through the same engine as streaming (DSP, levelling, bit-perfect USB, gapless, signal path), with the notification and Bluetooth buttons. Web: the browser's audio element with lock-screen controls |

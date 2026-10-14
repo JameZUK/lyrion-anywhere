@@ -34,6 +34,8 @@ export interface Track {
 	samplesize?: string;
 	remote?: number | string;
 	remote_title?: string;
+	/** File size in bytes (tag `f`). */
+	filesize?: number | string;
 	'playlist index'?: number;
 }
 

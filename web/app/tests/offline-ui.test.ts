@@ -17,8 +17,15 @@ vi.mock('$lib/offline/index.svelte', async () => {
 	// The server never answers (until aborted), so downloads stay in progress.
 	const hang = ((_u: unknown, init?: RequestInit) =>
 		new Promise((_r, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))))) as typeof fetch;
-	const control = { fetch: hang, hang };
-	const downloads = new DownloadManager({ store: offlineStore, authed: (fn) => fn('t'), fetch: (...a) => control.fetch(...a), sleep: async () => {} });
+	const control = { fetch: hang, hang, cellular: false, cap: 0 };
+	const downloads = new DownloadManager({
+		store: offlineStore,
+		authed: (fn) => fn('t'),
+		fetch: (...a) => control.fetch(...a),
+		sleep: async () => {},
+		waitForWifi: () => control.cellular,
+		capBytes: () => control.cap,
+	});
 	const offlinePlayer = new OfflinePlayer({ store: offlineStore, mediaSession: null });
 	const { PlaySync } = await import('$lib/offline/plays.svelte');
 	const plays = new PlaySync({ store: offlineStore, authed: (fn) => fn('t'), fetch: (...a) => control.fetch(...a) });
@@ -44,7 +51,7 @@ vi.mock('$app/state', () => ({ page: { params: { id: '7' }, url: new URL('http:/
 const downloads = offline.downloads as DownloadManager;
 const plays = offline.plays as PlaySync;
 const store = offline.offlineStore as OfflineStore;
-const control = (offline as unknown as { control: { fetch: typeof fetch; hang: typeof fetch } }).control;
+const control = (offline as unknown as { control: { fetch: typeof fetch; hang: typeof fetch; cellular: boolean; cap: number } }).control;
 
 const HOSTILE = ['<img src=x onerror=alert(1)>', '<script>alert(1)</script>', '"><svg onload=alert(1)>', "javascript:alert('x')"];
 
@@ -69,6 +76,8 @@ beforeEach(async () => {
 	for (const u of ['alice', 'bob']) await store.deleteUser(u);
 	localStorage.clear();
 	control.fetch = control.hang;
+	control.cellular = false;
+	control.cap = 0;
 });
 
 async function saveTracks(user: string, list: Partial<ReturnType<typeof stored>>[]) {
@@ -101,6 +110,7 @@ test('album page: progress while downloading, then pause', async () => {
 	await albumPage();
 	await fireEvent.change(screen.getByLabelText('Download format'), { target: { value: 'mp3' } });
 	await fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+	await vi.waitFor(() => expect(downloads.items).toHaveLength(2));
 	await tick();
 	// Library tracks only: the radio track is never queued.
 	expect(downloads.items.map((i) => [i.id, i.choice, i.albumId])).toEqual([
@@ -137,6 +147,98 @@ test('album page: some tracks here offers the rest; offline the button is off', 
 	await albumPage();
 	expect(screen.getByText('1 of 2 downloaded')).toBeTruthy();
 	expect((screen.getByRole('button', { name: 'Download the rest' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test('album page: on mobile data with Wi-Fi only, the download waits; Download now starts it', async () => {
+	control.cellular = true;
+	await downloads.setUser('alice', true);
+	await albumPage();
+	await fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+	await vi.waitFor(() => expect(screen.getByRole('status').textContent).toContain('Waiting for Wi-Fi (2 tracks)'));
+	expect(screen.getAllByLabelText('Waiting for Wi-Fi').length).toBe(2);
+	expect(downloads.items.every((i) => i.status === 'queued')).toBe(true);
+	await fireEvent.click(screen.getByRole('button', { name: 'Download now' }));
+	await vi.waitFor(() => expect(screen.getByRole('status').textContent).toContain('Downloading 0 of 2'));
+	expect(downloads.items.every((i) => i.cellular && i.status === 'active')).toBe(true);
+	await downloads.cancelAll();
+});
+
+test('album page: a download past the storage limit is refused with what it needs and what is free', async () => {
+	control.cap = 1024 * 1024;
+	await downloads.setUser('alice', true);
+	await albumPage();
+	await fireEvent.change(screen.getByLabelText('Download format'), { target: { value: 'mp3' } });
+	await fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+	// Two 100 s tracks at 320 kb/s: about 7.6 MB, with 1 MB allowed.
+	const alert = await screen.findByRole('alert');
+	expect(alert.textContent).toBe(
+		'Not enough room under your storage limit: this needs about 7.6 MB, and 1.0 MB of 1.0 MB is free. Remove some downloads, or raise the limit in Settings.',
+	);
+	expect(downloads.items).toEqual([]);
+});
+
+test('album page: a single track downloads on its own from its row menu', async () => {
+	await downloads.setUser('alice', true);
+	await albumPage();
+	await fireEvent.click(screen.getByRole('button', { name: 'More options for Two' }));
+	await fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }));
+	await vi.waitFor(() => expect(downloads.items.map((i) => [i.id, i.refs])).toEqual([[12, ['track']]]));
+	// The radio track has no download entry.
+	await fireEvent.click(screen.getByRole('button', { name: 'More options for Radio' }));
+	expect(screen.queryByRole('menuitem', { name: 'Download' })).toBeNull();
+	await downloads.cancelAll();
+});
+
+test('album page: removing a track a playlist needs keeps it and says so', async () => {
+	await saveTracks('alice', [{ key: key(12), id: 12, albumId: 7, refs: ['album:7', 'playlist:3'] }]);
+	await downloads.setUser('alice', true);
+	await albumPage();
+	await fireEvent.click(screen.getByRole('button', { name: 'More options for Two' }));
+	await fireEvent.click(screen.getByRole('menuitem', { name: 'Remove download' }));
+	expect(await screen.findByText('This track stays: a downloaded playlist still needs it.')).toBeTruthy();
+	expect((await store.getTrack('alice', key(12)))?.refs).toEqual(['playlist:3']);
+});
+
+test('Downloads page: playlists are their own group; removing one keeps tracks an album needs', async () => {
+	await saveTracks('alice', [
+		{ key: key(1), id: 1, title: 'Shared', album: 'Album A', albumId: 7, refs: ['album:7', 'playlist:3'] },
+		{ key: key(2), id: 2, title: 'Only in mix', album: 'Album B', albumId: 8, refs: ['playlist:3'] },
+	]);
+	await store.putGroup({ user: 'alice', id: 'playlist:3', name: '<b>Mix</b>', ids: [2, 1], savedAt: 1 });
+	await downloads.setUser('alice', true);
+	const { default: View } = await import('$lib/components/DownloadsView.svelte');
+	const { container } = render(View);
+	await tick();
+	expect(screen.getByRole('heading', { name: 'Playlists' })).toBeTruthy();
+	expect(container.textContent).toContain('<b>Mix</b>');
+	expect(container.querySelector('b')).toBeNull();
+	// The album list shows only what was downloaded with its album.
+	expect(container.textContent).toContain('Album A');
+	expect(container.textContent).not.toContain('Album B');
+	await fireEvent.click(screen.getByRole('button', { name: 'Show tracks of <b>Mix</b>' }));
+	const order = screen.getAllByRole('button', { name: /^Play (Shared|Only in mix)$/ }).map((b) => b.getAttribute('aria-label'));
+	expect(order.slice(0, 2)).toEqual(['Play Only in mix', 'Play Shared']);
+	await fireEvent.click(screen.getByRole('button', { name: 'Remove <b>Mix</b>' }));
+	await vi.waitFor(() => expect(screen.queryByRole('heading', { name: 'Playlists' })).toBeNull());
+	expect(screen.getByText(/1 track stays on this device/)).toBeTruthy();
+	expect((await store.listTracks('alice')).map((t) => [t.id, t.refs])).toEqual([[1, ['album:7']]]);
+	expect(await store.listGroups('alice')).toEqual([]);
+});
+
+test('Downloads page: waiting for Wi-Fi, with Download now; the storage limit is shown', async () => {
+	control.cellular = true;
+	localStorage.setItem('anywhere.downloads', JSON.stringify({ capBytes: 2 * 1024 ** 3 }));
+	await downloads.setUser('alice', true);
+	await downloads.request([{ id: 5 }, { id: 6 }]);
+	const { default: View } = await import('$lib/components/DownloadsView.svelte');
+	render(View);
+	await tick();
+	expect(screen.getByTestId('wifi-wait').textContent).toContain('Waiting for Wi-Fi: 2 downloads will start on Wi-Fi.');
+	expect(screen.getAllByText('Waiting for Wi-Fi').length).toBe(2);
+	expect(screen.getByTestId('storage-limit').textContent).toContain('2.00 GB limit');
+	await fireEvent.click(screen.getByRole('button', { name: 'Download now' }));
+	await vi.waitFor(() => expect(screen.queryByTestId('wifi-wait')).toBeNull());
+	await downloads.cancelAll();
 });
 
 test('Downloads page shows hostile titles as text, with sizes, and removes', async () => {

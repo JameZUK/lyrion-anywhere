@@ -6,10 +6,12 @@
 	import { untrack } from 'svelte';
 	import { api, app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
-	import { duration, textOf } from '$lib/lms/format';
+	import { duration, isRemote, textOf } from '$lib/lms/format';
 	import type { PlaylistTracksResult, Playlist, PlaylistsResult, Track } from '$lib/lms/types';
 	import type { Command } from '$lib/api/rpc';
 	import Icon from '$lib/components/Icon.svelte';
+	import DownloadBar from '$lib/components/DownloadBar.svelte';
+	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
 
 	let info = $state<Playlist | null>(null);
 	let tracks = $state<Track[]>([]);
@@ -76,6 +78,13 @@
 			error = (e as Error).message;
 		}
 	}
+	// Downloads (SPEC §8.1): the playlist's library tracks, as a group on the Downloads page.
+	const requests = $derived(
+		tracks
+			.filter((t) => typeof t.id === 'number' && t.id > 0 && !isRemote(t.remote))
+			.map((t) => ({ id: t.id, albumId: t.album_id, duration: t.duration, filesize: t.filesize })),
+	);
+	const order = $derived(requests.map((t) => t.id as number));
 	const totalTime = $derived(tracks.reduce((s, t) => s + (Number(t.duration) || 0), 0));
 	useDetailTitle(() => textOf(info?.playlist));
 </script>
@@ -106,6 +115,12 @@
 					<button class="btn" class:danger={confirmDelete} onclick={() => remove(id)}><Icon name="trash" size={18} />{confirmDelete ? 'Tap again to delete' : 'Delete'}</button>
 				{/if}
 			</div>
+			<DownloadBar
+				tracks={requests}
+				ref={`playlist:${id}`}
+				group={{ name: textOf(info.playlist) || 'Playlist', ids: order }}
+				onremoved={(keys) => offlinePlayer.forget(keys)}
+			/>
 		</header>
 		<ol class="q">
 			{#each tracks as t, i (`${i}:${t.id}`)}
@@ -116,6 +131,7 @@
 							<span class="title ellipsis">{textOf(t.title)}</span>
 							<span class="sub ellipsis muted">{[textOf(t.artist), textOf(t.album)].filter(Boolean).join(' · ')}</span>
 						</span>
+						{#if downloads.savedById(t.id)}<span class="saved" title="Downloaded"><Icon name="check" size={16} label="Downloaded" /></span>{/if}
 						<span class="dur muted">{duration(t.duration)}</span>
 					</button>
 					{#if app.isAdmin}
@@ -192,6 +208,10 @@
 		border: 0;
 		background: transparent;
 		text-align: left;
+	}
+	.saved {
+		display: inline-flex;
+		color: var(--accent);
 	}
 	.num {
 		width: 3ch;

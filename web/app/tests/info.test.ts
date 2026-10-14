@@ -12,7 +12,19 @@ vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.sv
 const params: Record<string, string | undefined> = {};
 vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/') } }));
 vi.mock('$lib/offline/index.svelte', () => ({
-	downloads: { savedById: () => undefined, album: () => null, items: [], item: () => undefined, online: true, savedAlbum: () => [] },
+	downloads: {
+		savedById: () => undefined,
+		album: () => null,
+		group: () => ({ count: 0, done: 0, failed: 0, paused: 0, busy: false, fraction: 0 }),
+		progress: () => ({ count: 0, done: 0, failed: 0, paused: 0, busy: false, fraction: 0 }),
+		savedFor: () => [],
+		isHeld: () => false,
+		items: [],
+		item: () => undefined,
+		online: true,
+		savedAlbum: () => [],
+	},
+	offlinePlayer: { forget: () => {} },
 }));
 const fake = await import('./helpers/fake-app.svelte');
 const InfoText = (await import('$lib/components/InfoText.svelte')).default;
