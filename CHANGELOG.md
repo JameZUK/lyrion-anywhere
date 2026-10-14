@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Android 1.14.0 (versionCode 28)
+
+A test build of Wave 3.5 (declutter; see `docs/plans/wave3_5-declutter.md`): no "Playing on" strip (the player shows in the mini player), Play · Shuffle · Download · ⋮ headers, a tidier queue, a calmer Now playing (no tab bar, one rating control, one-line Up next, Play on · Lyrics · Queue), Settings as seven sections with pickers, one status line, one Library list, a simpler Play on… that now also holds what Rooms did, and downloads playing through the main player screens. Also the four layout fixes found by the review.
+
 ## 2026-10-14: Android declutter, phase 3 (Wave 3.5)
 
 The merges of `docs/plans/wave3_5-declutter.md` for Android, built from the design section written there first.
