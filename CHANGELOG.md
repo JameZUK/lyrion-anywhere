@@ -2,6 +2,18 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Android: a busy music server isn't "offline"
+
+When LMS freezes for a while (a network music share waking its disks, say), the gateway now says so: `{"lms":"busy"}` / `{"lms":"ok"}` on the event stream, and an immediate 503 with `"busy": true` for commands (see `docs/PROTOCOL.md`). The phone used to take the silence for a lost server: its player socket gave up and resumed in a loop, requests piled up behind 30 s time-outs, and after about 25 s offline mode took over. Now, with a gateway that sends these:
+
+- **Calm note, not an error:** a small *Your music server is busy. Waiting for it…* pill over the current screen. No *Can't reach your server* banner and no offline takeover, since the gateway is plainly reachable (Android Auto keeps browsing the server too). No network at all, or a sign-in that can't be checked, still counts as before.
+- **Keeps playing:** the phone's player socket stays open on the gateway's 5 s WebSocket pings (answered by the WebSocket layer; no opt-in needed), so what is buffered plays on.
+- **No pile-up:** status reads never overlap (one asked for meanwhile runs once after it). While busy with the event stream down, polling slows to every 15 s, or the gateway's Retry-After if longer. On `ok` the app refreshes at once.
+- **Commands refused as busy:** a brief *Your music server is busy. Try again in a moment.*; nothing is queued and replayed later. Background reads refused as busy say nothing, and what is shown stays.
+- **Rust layer** (`mobile`): `ServerEvent::LmsBusy { since_ms }` and `ServerEvent::LmsOk` from the event stream (anything malformed is ignored), and `ApiError::ServerBusy { retry_after_secs }` for a 503 whose body says `"busy": true` (Retry-After bounded to 1–300 s, 2 s if absent). A plain 503 or 429 maps as before. Plays sync-back treats busy as a rate limit.
+- **Older gateways:** nothing is sent, so nothing changes.
+- **Tests:** Rust unit tests for the messages (malformed and hostile ones ignored), the 503 mapping (with and without the busy body and Retry-After, garbage bodies, other statuses), and a fake socket proving Pings keep the player's socket alive and are answered while true silence still ends it. JVM tests for the busy tracker (including arbitrary sequences), the connection decision (busy never takes over, trouble counts afresh after it, no network still counts; the arbitrary-input test now varies busy too), the controller and Android Auto's measure, the player view model (poll back-off, Retry-After, `ok` refresh, no stacked reads, no replay, no message for background reads), and Robolectric tests for the pill and the error text.
+
 ## 2026-10-14: Gateway logs slow LMS requests
 
 When LMS is blocked (for example while a network music share waits for its disks to spin up), every request times out and the apps show "music server unavailable", but the log only said "LMS timed out". The gateway now logs any LMS request that takes 5 seconds or more, and every failed one, with the command (`playlist jump`, `albums`) and how long it took, so a stall can be traced to its cause. Labels are log-safe: the command word, plus the sub-command for groups such as `playlist`; never search terms, ids, paths or player addresses.

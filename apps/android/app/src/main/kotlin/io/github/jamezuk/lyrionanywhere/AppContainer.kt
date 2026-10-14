@@ -33,6 +33,7 @@ import io.github.jamezuk.lyrionanywhere.data.RustArtRepository
 import io.github.jamezuk.lyrionanywhere.data.RustEventsRepository
 import io.github.jamezuk.lyrionanywhere.data.RustLibraryRepository
 import io.github.jamezuk.lyrionanywhere.data.RustPlayersRepository
+import io.github.jamezuk.lyrionanywhere.data.ServerBusyTracker
 import io.github.jamezuk.lyrionanywhere.data.SettingsStore
 import io.github.jamezuk.lyrionanywhere.data.secure.AesGcmCipher
 import io.github.jamezuk.lyrionanywhere.data.secure.EncryptedCredentialStore
@@ -96,10 +97,12 @@ class AppContainer(context: Context, scope: CoroutineScope) {
 
     /** The launcher's app shortcuts, waiting for the signed-in app (Wave 2 §5.5). */
     val shortcuts = AppShortcuts { android.os.SystemClock.elapsedRealtime() }
+    /** Whether the music server is busy (it stopped answering; the gateway is reachable). */
+    val serverBusy = ServerBusyTracker(scope) { android.os.SystemClock.elapsedRealtime() }
     val library: LibraryRepository = RustLibraryRepository(accountImpl)
-    val players: PlayersRepository = RustPlayersRepository(accountImpl)
+    val players: PlayersRepository = RustPlayersRepository(accountImpl, serverBusy)
     val art: ArtRepository = RustArtRepository(accountImpl)
-    val events: EventsRepository = RustEventsRepository(accountImpl)
+    val events: EventsRepository = RustEventsRepository(accountImpl, serverBusy)
     val analysis: AnalysisRepository = RustAnalysisRepository(accountImpl)
     val lyrics: LyricsRepository = RustLyricsRepository(accountImpl)
     val alarms: AlarmsRepository = RustAlarmsRepository(accountImpl)
@@ -191,6 +194,8 @@ class AppContainer(context: Context, scope: CoroutineScope) {
         playing = localPlayer.state.map(OfflineModeController::playingOf),
         reconnectNow = { localPlayer.reconnectNow() },
         now = { android.os.SystemClock.elapsedRealtime() },
+        // The music server busy: the gateway answers, so that is never offline.
+        serverBusy = serverBusy.busy,
     ).also { it.start() }
 
     /** "Continue on <player>": back online, offer to hand the downloads queue to a player (SPEC §8.4). */

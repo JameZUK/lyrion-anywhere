@@ -305,14 +305,18 @@ class PlayerViewModel(
             launch {
                 events.updates().collect { update ->
                     when (update) {
-                        is StreamUpdate.State -> _state.update { it.copy(live = update.state == EventsState.Live) }
+                        is StreamUpdate.State -> {
+                            // Reconnecting: the gateway says again if the music server is still busy.
+                            if (update.state != EventsState.Live) lmsBusy = false
+                            _state.update { it.copy(live = update.state == EventsState.Live) }
+                        }
                         is StreamUpdate.Event -> onEvent(update.event)
                     }
                 }
             }
             launch {
                 while (true) {
-                    delay(if (_state.value.live) SLOW_POLL_MS else FAST_POLL_MS)
+                    delay(pollDelay())
                     // Still waiting for the phone to show up in LMS: look again.
                     if (_state.value.selectedId == null) loadPlayers() else refreshStatus()
                 }
@@ -435,13 +439,45 @@ class PlayerViewModel(
                 if (event.playerId == _state.value.selectedId) refreshRequests.tryEmit(Unit)
             is ServerEvent.Resync -> viewModelScope.launch { loadPlayers() }
             is ServerEvent.LibraryChanged -> {}
+            is ServerEvent.LmsBusy -> lmsBusy = true
+            // The music server answers again: catch up at once.
+            ServerEvent.LmsOk -> {
+                lmsBusy = false
+                refusedBusy = false
+                viewModelScope.launch { loadPlayers() }
+            }
         }
+    }
+
+    /** The event stream says the music server is busy (it stopped answering; the gateway answers). */
+    private var lmsBusy = false
+
+    /** The last status read was refused as busy (until one is answered). */
+    private var refusedBusy = false
+    private var busyRetryMs = 0L
+
+    /**
+     * How long until the next poll. While the music server is busy it isn't asked over and
+     * over: with the stream up its `ok` says when it is back; without, at most every
+     * [BUSY_POLL_MS] (or the gateway's Retry-After, if longer).
+     */
+    internal fun pollDelay(): Long = when {
+        _state.value.live -> SLOW_POLL_MS
+        lmsBusy || refusedBusy -> maxOf(BUSY_POLL_MS, busyRetryMs)
+        else -> FAST_POLL_MS
     }
 
     private suspend fun loadPlayers() {
         when (val r = players.list()) {
-            is ApiResult.Err -> _state.update { it.copy(loading = false, error = r.error) }
+            is ApiResult.Err -> {
+                val busy = r.error as? AppError.ServerBusy
+                refusedBusy = busy != null
+                if (busy != null) busyRetryMs = busy.retryAfterSeconds * 1000
+                // Busy for a moment: what is shown stays (a calm note says why).
+                _state.update { it.copy(loading = false, error = if (busy != null && it.status != null) it.error else r.error) }
+            }
             is ApiResult.Ok -> {
+                refusedBusy = false
                 val list = r.value
                 val s = settings.settings.first()
                 val local = localPlayer.state.value
@@ -484,7 +520,37 @@ class PlayerViewModel(
         viewModelScope.launch { loadPlayers() }
     }
 
+    /** A status read is on its way: another one asked meanwhile waits for it (see [refreshStatus]). */
+    private var statusInFlight = false
+
+    /** Asked for while one was on its way (and whether with the queue), or null. */
+    private var statusAgain: Boolean? = null
+
+    /**
+     * Re-read the selected player's status. Never two at once: one asked for while another is
+     * on its way runs once after it (so a slow server isn't sent a pile of them), unless the
+     * music server turned out busy (it is read again when it is back).
+     */
     private suspend fun refreshStatus(readQueue: Boolean = false) {
+        if (statusInFlight) {
+            statusAgain = (statusAgain ?: false) || readQueue
+            return
+        }
+        statusInFlight = true
+        try {
+            var next: Boolean? = readQueue
+            while (next != null) {
+                statusAgain = null
+                readStatus(next)
+                next = statusAgain.takeUnless { refusedBusy }
+            }
+        } finally {
+            statusInFlight = false
+            statusAgain = null
+        }
+    }
+
+    private suspend fun readStatus(readQueue: Boolean) {
         val id = _state.value.selectedId ?: return
         val generation = changeGeneration
         val at = clock()
@@ -503,10 +569,23 @@ class PlayerViewModel(
                         )
                     }
                 }
+                refusedBusy = false
                 sleepCheck(id, r.value)
                 followStation(id, r.value, readQueue)
             }
-            is ApiResult.Err -> _state.update { if (it.selectedId == id) it.copy(error = r.error) else it }
+            is ApiResult.Err -> {
+                val busy = r.error as? AppError.ServerBusy
+                refusedBusy = busy != null
+                if (busy != null) busyRetryMs = busy.retryAfterSeconds * 1000
+                _state.update {
+                    when {
+                        it.selectedId != id -> it
+                        // Busy for a moment: what is shown stays (a calm note says why).
+                        busy != null && it.status != null -> it
+                        else -> it.copy(error = r.error)
+                    }
+                }
+            }
         }
     }
 
@@ -530,7 +609,8 @@ class PlayerViewModel(
                     if (r.value.size < QUEUE_PAGE) break
                 }
                 is ApiResult.Err -> {
-                    _messages.trySend(PlayerMessage.Failed(r.error))
+                    // A read of its own accord: no message just because the music server is busy.
+                    if (r.error !is AppError.ServerBusy) _messages.trySend(PlayerMessage.Failed(r.error))
                     return
                 }
             }
@@ -1469,6 +1549,8 @@ class PlayerViewModel(
         const val FAST_POLL_MS = 5_000L
         /** A safety net while it is up. */
         const val SLOW_POLL_MS = 30_000L
+        /** Polling while the stream is down and the music server is busy. */
+        const val BUSY_POLL_MS = 15_000L
         const val QUEUE_PAGE = 200
         /** The most queue entries kept in memory (a bound on what scrolling can load). */
         const val QUEUE_MAX = 5_000

@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.CloudOff
+import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -34,6 +35,7 @@ import io.github.jamezuk.lyrionanywhere.ui.R
 object ConnectionTags {
     const val BANNER = "connection-banner"
     const val PILL = "connection-reconnecting"
+    const val BUSY = "connection-server-busy"
 }
 
 /**
@@ -102,6 +104,38 @@ fun ReconnectingPill(modifier: Modifier = Modifier) {
                 color = MaterialTheme.colorScheme.inverseOnSurface,
                 modifier = Modifier.size(14.dp),
             )
+            Text(text, style = MaterialTheme.typography.labelLarge)
+        }
+    }
+}
+
+/**
+ * "Your music server is busy. Waiting for it…": a calm pill over the current screen while
+ * the music server has stopped answering for a while (the gateway is reachable). Not an
+ * error: what is playing keeps playing, and it goes by itself when the server answers.
+ */
+@Composable
+fun ServerBusyPill(modifier: Modifier = Modifier) {
+    val text = stringResource(R.string.connection_server_busy)
+    Surface(
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        shadowElevation = 2.dp,
+        modifier = modifier
+            .padding(horizontal = 16.dp)
+            .testTag(ConnectionTags.BUSY)
+            .clearAndSetSemantics {
+                contentDescription = text
+                liveRegion = LiveRegionMode.Polite
+            },
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+        ) {
+            Icon(Icons.Outlined.HourglassEmpty, contentDescription = null, modifier = Modifier.size(16.dp))
             Text(text, style = MaterialTheme.typography.labelLarge)
         }
     }

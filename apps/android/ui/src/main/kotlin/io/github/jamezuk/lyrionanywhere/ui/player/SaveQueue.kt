@@ -82,6 +82,7 @@ private fun errorText(e: SaveQueueError): String = when (e) {
         is AppError.Forbidden -> stringResource(R.string.save_queue_failed_detail, a.detail)
         is AppError.InvalidInput -> stringResource(R.string.save_queue_failed_detail, a.detail)
         is AppError.Server -> stringResource(R.string.save_queue_failed_detail, a.detail)
+        is AppError.ServerBusy -> io.github.jamezuk.lyrionanywhere.ui.components.errorMessage(a)
         else -> stringResource(R.string.save_queue_failed)
     }
 }

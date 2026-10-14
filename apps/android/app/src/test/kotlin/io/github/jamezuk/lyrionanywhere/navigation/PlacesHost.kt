@@ -23,6 +23,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import io.github.jamezuk.lyrionanywhere.data.offline.ConnectionUi
 import io.github.jamezuk.lyrionanywhere.ui.components.ReconnectingPill
+import io.github.jamezuk.lyrionanywhere.ui.components.ServerBusyPill
 import io.github.jamezuk.lyrionanywhere.ui.components.ServerUnreachableBanner
 import io.github.jamezuk.lyrionanywhere.ui.theme.LyrionTheme
 import kotlinx.serialization.Serializable
@@ -85,6 +86,7 @@ private fun TestMain(connection: ConnectionUi) {
                 composable<TestDownloads> { Text("Downloads screen") }
             }
             if (connection.reconnecting) ReconnectingPill(Modifier.align(Alignment.BottomCenter))
+            if (connection.busy) ServerBusyPill(Modifier.align(Alignment.BottomCenter))
         }
         if (connection.unreachable) {
             ServerUnreachableBanner(onDownloads = { nav.navigate(TestDownloads) { launchSingleTop = true } })

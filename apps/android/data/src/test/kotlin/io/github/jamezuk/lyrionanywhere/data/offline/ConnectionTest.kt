@@ -217,6 +217,73 @@ class ConnectionJudgeTest {
         assertEquals(ConnectionUi(), r.set { it.copy(auth = signedIn) })
     }
 
+    /** The music server busy: the gateway answers, so the player's trouble isn't the server being away. */
+    @Test
+    fun aBusyMusicServerNeverTakesOverOrShowsUnreachable() {
+        val r = Rig(signedIn)
+        r.at(FOREGROUND_GRACE_MS + 1)
+        // The phone's player reconnects while the gateway says the music server is busy.
+        assertEquals(ConnectionUi(busy = true), r.set { it.copy(busy = true, trouble = true) })
+        assertEquals(ConnectionUi(busy = true), r.at(r.now + 10 * TAKEOVER_MS))
+        // Playing in the background (where trouble counts at once) changes nothing either.
+        r.set { it.copy(foreground = false, playing = true) }
+        assertEquals(ConnectionUi(), r.at(r.now + 10 * TAKEOVER_MS))
+        r.set { it.copy(foreground = true) }
+        assertEquals(ConnectionUi(busy = true), r.at(r.now + FOREGROUND_GRACE_MS + 10 * TAKEOVER_MS))
+        // Busy without trouble: the calm note alone.
+        assertEquals(ConnectionUi(busy = true), r.set { it.copy(trouble = false) })
+        // Back: nothing.
+        assertEquals(ConnectionUi(), r.set { it.copy(busy = false) })
+    }
+
+    @Test
+    fun troubleAfterBusyEndsCountsAfresh() {
+        val r = Rig(signedIn)
+        r.at(FOREGROUND_GRACE_MS + 1)
+        r.set { it.copy(busy = true, trouble = true) }
+        r.at(r.now + TAKEOVER_MS * 2)
+        // The gateway says the music server is back but the player still can't reach it:
+        // that is trouble again, counted from now (the time spent busy doesn't count).
+        assertEquals(ConnectionUi(reconnecting = true), r.set { it.copy(busy = false) })
+        val from = r.now
+        assertEquals(ConnectionUi(reconnecting = true), r.at(from + TROUBLE_GRACE_MS - 1))
+        assertEquals(ConnectionUi(unreachable = true), r.at(from + TROUBLE_GRACE_MS))
+        assertEquals(ConnectionUi(takeover = true), r.at(from + TAKEOVER_MS))
+    }
+
+    @Test
+    fun busyEndsOfflineModeTheGatewayIsReachable() {
+        val r = Rig(signedIn)
+        r.at(FOREGROUND_GRACE_MS + 1)
+        r.set { it.copy(trouble = true) }
+        assertTrue(r.at(r.now + TAKEOVER_MS).takeover)
+        // Offline mode had the screen; the gateway now says LMS is busy, so it answers.
+        assertEquals(ConnectionUi(busy = true), r.set { it.copy(busy = true) })
+    }
+
+    @Test
+    fun noNetworkStillCountsWhileBusy() {
+        val r = Rig(signedIn)
+        r.at(FOREGROUND_GRACE_MS + 1)
+        r.set { it.copy(busy = true) }
+        // A stale "busy" can't hide that the phone has no network at all.
+        assertEquals(ConnectionUi(reconnecting = true), r.set { it.copy(netDown = true) })
+        assertEquals(ConnectionUi(unreachable = true), r.at(r.now + NETWORK_GRACE_MS))
+        assertEquals(ConnectionUi(takeover = true), r.at(r.now + TAKEOVER_MS))
+        // A sign-in that couldn't be checked is offline mode whatever is said.
+        assertTrue(r.set { it.copy(netDown = false, auth = AuthState.Unreachable(SERVER)) }.takeover)
+    }
+
+    @Test
+    fun withoutBusyEverythingIsAsBefore() {
+        // The default: a gateway that never says busy.
+        val r = Rig(signedIn)
+        assertFalse(r.inputs.busy)
+        r.at(FOREGROUND_GRACE_MS + 1)
+        assertEquals(ConnectionUi(reconnecting = true), r.set { it.copy(trouble = true) })
+        assertEquals(ConnectionUi(unreachable = true), r.at(r.now + TROUBLE_GRACE_MS))
+    }
+
     @Test
     fun nextCheckInIsTheNearestDeadline() {
         val j = ConnectionJudge()
@@ -247,11 +314,16 @@ class ConnectionJudgeTest {
             var now = rnd.nextLong(-1_000_000, 1_000_000)
             repeat(200) {
                 now += rnd.nextLong(-5_000, 40_000)
-                val i = ConnectionInputs(auths.random(rnd), rnd.nextBoolean(), rnd.nextBoolean(), rnd.nextBoolean(), rnd.nextBoolean())
+                val i = ConnectionInputs(
+                    auths.random(rnd), rnd.nextBoolean(), rnd.nextBoolean(), rnd.nextBoolean(), rnd.nextBoolean(),
+                    busy = rnd.nextBoolean(),
+                )
                 val ui = j.update(now, i)
-                if (ui.takeover) assertFalse(ui.unreachable || ui.reconnecting)
+                if (ui.takeover) assertFalse(ui.unreachable || ui.reconnecting || ui.busy)
                 assertFalse(ui.unreachable && ui.reconnecting)
-                if (i.auth !is AuthState.SignedInState) assertFalse(ui.unreachable || ui.reconnecting)
+                assertFalse(ui.busy && (ui.reconnecting || ui.unreachable))
+                if (ui.busy) assertTrue(i.busy)
+                if (i.auth !is AuthState.SignedInState) assertFalse(ui.unreachable || ui.reconnecting || ui.busy)
                 if (i.auth is AuthState.Unreachable) assertTrue(ui.takeover)
                 if (!i.foreground) assertFalse(ui.reconnecting)
                 j.nextCheckIn(now)?.let { assertTrue(it > 0) }
@@ -268,6 +340,7 @@ class ConnectionControllerTest {
         val trouble = MutableStateFlow(false)
         val foreground = MutableStateFlow(true)
         val playing = MutableStateFlow(false)
+        val busy = MutableStateFlow(false)
         var retries = 0
         var kicks = 0
         val c = OfflineModeController(
@@ -280,6 +353,7 @@ class ConnectionControllerTest {
             playing = playing,
             reconnectNow = { kicks++ },
             now = { scope.testScheduler.currentTime },
+            serverBusy = busy,
         ).also { it.start() }
     }
 
@@ -300,6 +374,29 @@ class ConnectionControllerTest {
         r.trouble.value = false
         runCurrent()
         assertEquals(ConnectionUi(), r.c.ui.value)
+    }
+
+    @Test
+    fun aBusyMusicServerIsNeverOffline() = runTest {
+        val r = Rig(this)
+        r.auth.value = AuthState.SignedInState(SERVER, who())
+        advanceTimeBy(FOREGROUND_GRACE_MS + 1)
+        r.busy.value = true
+        r.trouble.value = true
+        runCurrent()
+        assertEquals(ConnectionUi(busy = true), r.c.ui.value)
+        advanceTimeBy(10 * OfflineModeController.TROUBLE_GRACE_MS)
+        runCurrent()
+        assertEquals(ConnectionUi(busy = true), r.c.ui.value)
+        assertFalse("Android Auto keeps browsing the server", r.c.offline.value)
+        // Busy over and the player still failing: offline as before.
+        r.busy.value = false
+        runCurrent()
+        assertEquals(ConnectionUi(reconnecting = true), r.c.ui.value)
+        advanceTimeBy(TAKEOVER_MS)
+        runCurrent()
+        assertEquals(ConnectionUi(takeover = true), r.c.ui.value)
+        assertTrue(r.c.offline.value)
     }
 
     @Test

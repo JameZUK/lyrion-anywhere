@@ -303,6 +303,7 @@
         <item quantity="other">Too many attempts. Try again in %1$d minutes.</item>
     </plurals>
     <string name="error_server">Your music server didn\'t answer properly. Try again shortly.</string>
+    <string name="error_server_busy">Your music server is busy. Try again in a moment.</string>
     <string name="error_wrong_credentials">Wrong user name, password or code.</string>
     <string name="error_bad_pairing_code">That pairing code isn\'t valid or has expired. Ask for a new one.</string>
     <string name="error_unexpected">Something went wrong. Please try again.</string>
@@ -555,6 +556,8 @@
     <string name="connection_unreachable_description">Can’t reach your server. Open your downloads</string>
     <string name="connection_open_downloads">open your downloads</string>
     <string name="connection_reconnecting">Reconnecting…</string>
+    <!-- The music server stopped answering for a while (its storage waking up, say); the app stays connected. -->
+    <string name="connection_server_busy">Your music server is busy. Waiting for it…</string>
     <string name="playing_downloads">Downloads</string>
     <string name="playing_downloads_on_phone">Playing downloads on this phone</string>
     <string name="format_original">Original (as in your library)</string>

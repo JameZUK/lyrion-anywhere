@@ -208,7 +208,7 @@ class RustAccountRepository(
             is ApiResult.Ok -> signedIn(info, sess, r.value)
             is ApiResult.Err -> _state.value = when (val e = r.error) {
                 is AppError.Offline -> AuthState.Unreachable(info, e.detail)
-                is AppError.RateLimited, is AppError.Server -> AuthState.Unreachable(info)
+                is AppError.RateLimited, is AppError.ServerBusy, is AppError.Server -> AuthState.Unreachable(info)
                 else -> AuthState.SignedOut(info, revoked = true)
             }
         }

@@ -94,6 +94,16 @@ class ScreenTests {
     }
 
     @Test
+    fun aBusyMusicServerSaysSoCalmly() {
+        compose.setContent {
+            LyrionTheme(dynamicColour = false) {
+                ErrorState(AppError.ServerBusy(2), onRetry = {})
+            }
+        }
+        compose.onNodeWithText("Your music server is busy. Try again in a moment.").assertIsDisplayed()
+    }
+
+    @Test
     fun nowPlayingControlsAreLabelledForAccessibility() {
         var toggled = 0
         compose.setContent {

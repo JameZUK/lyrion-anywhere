@@ -81,7 +81,8 @@ pub(crate) const TICK: Duration = Duration::from_millis(20);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// LMS asks for the player's status every 5 s; a socket that has brought nothing for this
 /// long has died without closing (a network change): resume on a new one, well within the
-/// gateway's 60 s grace. Only what arrives counts: the player's own STATs going out say
+/// gateway's 60 s grace. The gateway also pings every 5 s (answered by the WebSocket layer),
+/// so a socket whose LMS is busy and silent isn't taken for dead. Only what arrives counts: the player's own STATs going out say
 /// nothing about whether anything is getting through.
 const SOCKET_IDLE: Duration = Duration::from_secs(25);
 /// Longest wait to hand one message to a socket (a dead one stops taking them).
@@ -770,6 +771,7 @@ impl Engine {
             grace,
             self.tx.clone(),
             out_rx,
+            SOCKET_IDLE,
         ));
         self.ws_task = Some(task.abort_handle());
         self.publish_status(true);
@@ -1936,6 +1938,8 @@ async fn socket_task(
     grace: Option<u64>,
     tx: mpsc::UnboundedSender<Ev>,
     mut out_rx: mpsc::UnboundedReceiver<Out>,
+    // How long nothing may arrive (see [`SOCKET_IDLE`]); shorter in tests.
+    socket_idle: Duration,
 ) {
     let closed = |code: Option<u16>, reason: &str| Ev::WsClosed {
         conn,
@@ -1996,7 +2000,7 @@ async fn socket_task(
     // Regression: the time limit was set afresh on every pass of the loop, so the player's
     // own STATs (one a second while playing) kept a dead socket looking alive until the
     // gateway's grace had run out, and the player had to start a new session.
-    let idle = tokio::time::sleep(SOCKET_IDLE);
+    let idle = tokio::time::sleep(socket_idle);
     tokio::pin!(idle);
     loop {
         tokio::select! {
@@ -2005,7 +2009,9 @@ async fn socket_task(
                 return;
             }
             msg = ws.next() => {
-                idle.as_mut().reset(tokio::time::Instant::now() + SOCKET_IDLE);
+                // Anything counts, the gateway's WebSocket Pings (every 5 s) too: they keep
+                // the socket alive while LMS is busy and sends nothing.
+                idle.as_mut().reset(tokio::time::Instant::now() + socket_idle);
                 let msg = match msg {
                     Some(Ok(m)) => m,
                     // Silence, end of stream or a broken socket.
@@ -2773,5 +2779,97 @@ mod tests {
                         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
             );
         }
+    }
+
+    /// While LMS is busy it sends nothing for up to a minute; the gateway's WebSocket Pings
+    /// must keep the player's socket alive (and be answered), and only true silence ends it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pings_keep_a_quiet_socket_alive_and_are_answered() {
+        use std::sync::atomic::AtomicUsize;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let pongs = Arc::new(AtomicUsize::new(0));
+        let stop_pinging = Arc::new(AtomicBool::new(false));
+        let (p, stop) = (pongs.clone(), stop_pinging.clone());
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            // The sign-in, then the greeting.
+            let Some(Ok(Message::Text(_))) = ws.next().await else {
+                panic!("no sign-in")
+            };
+            let greeting = serde_json::json!({
+                "mac": "02:4c:41:00:00:01", "name": "Test phone",
+                "session": "0123456789abcdef0123456789abcdef",
+                "secret": "fedcba9876543210fedcba9876543210",
+                "resumed": false,
+            });
+            ws.send(Message::Text(greeting.to_string().into()))
+                .await
+                .unwrap();
+            let mut tick = tokio::time::interval(Duration::from_millis(200));
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        if !stop.load(Ordering::SeqCst)
+                            && ws.send(Message::Ping(b"k".to_vec().into())).await.is_err()
+                        {
+                            return;
+                        }
+                    }
+                    m = ws.next() => match m {
+                        Some(Ok(Message::Pong(b))) if b.as_ref() == b"k" => {
+                            p.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Some(Ok(_)) => {}
+                        _ => return,
+                    },
+                }
+            }
+        });
+
+        let server = Server::new(format!("http://127.0.0.1:{}", addr.port())).unwrap();
+        let session = crate::session::signed_in_for_test(server.clone());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (_out_tx, out_rx) = mpsc::unbounded_channel();
+        let idle = Duration::from_millis(800);
+        tokio::spawn(socket_task(
+            1,
+            session.core().clone(),
+            server,
+            None,
+            StreamQuality::Original,
+            None,
+            tx,
+            out_rx,
+            idle,
+        ));
+        let first = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+        assert!(
+            matches!(first, Ok(Some(Ev::WsGreeting { conn: 1, .. }))),
+            "greeted"
+        );
+        // Several idle limits of nothing but Pings: the socket stays open.
+        let quiet = tokio::time::timeout(idle * 4, rx.recv()).await;
+        assert!(quiet.is_err(), "pings must keep the socket alive");
+        assert!(
+            pongs.load(Ordering::SeqCst) >= 5,
+            "every ping is answered ({} pongs)",
+            pongs.load(Ordering::SeqCst)
+        );
+        // True silence: given up after the idle limit.
+        stop_pinging.store(true, Ordering::SeqCst);
+        let closed = tokio::time::timeout(idle * 4, rx.recv()).await;
+        assert!(
+            matches!(
+                closed,
+                Ok(Some(Ev::WsClosed {
+                    conn: 1,
+                    code: None,
+                    ..
+                }))
+            ),
+            "a silent socket is given up"
+        );
     }
 }

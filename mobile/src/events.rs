@@ -7,6 +7,8 @@
 //! - A 1008 "unauthorised" close (an expired token) renews the token and reconnects. Any
 //!   other 1008 (revoked, replaced by a newer connection) is final, like in the web app,
 //!   so two connections of one device never evict each other in a loop.
+//! - `{"lms":"busy","since":…}` and `{"lms":"ok"}` say when the music server behind the
+//!   gateway stops and starts answering ([`ServerEvent::LmsBusy`], [`ServerEvent::LmsOk`]).
 //! - Messages are small JSON; anything malformed or oversized is ignored.
 
 use std::sync::{Arc, Mutex};
@@ -43,6 +45,13 @@ pub enum ServerEvent {
     LibraryChanged { name: String, args: Vec<String> },
     /// Events may have been missed (or the stream (re)connected): re-query everything.
     Resync,
+    /// The music server (LMS) stopped answering at `since_ms` (Unix ms; 0 if not given):
+    /// it is busy, the gateway is not. Commands are refused (`ApiError::ServerBusy`) until
+    /// [`ServerEvent::LmsOk`]. On (re)connecting assume it answers; the gateway says so
+    /// right after subscribing if it doesn't.
+    LmsBusy { since_ms: u64 },
+    /// The music server answers again: refresh.
+    LmsOk,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
@@ -84,6 +93,19 @@ pub(crate) fn parse_message(text: &str) -> Option<Parsed> {
     }
     if o.get("resync") == Some(&Value::Bool(true)) {
         return Some(Parsed::Event(ServerEvent::Resync));
+    }
+    if let Some(lms) = o.get("lms") {
+        return match lms.as_str()? {
+            "busy" => {
+                let since_ms = match o.get("since") {
+                    None => 0,
+                    Some(v) => v.as_u64()?,
+                };
+                Some(Parsed::Event(ServerEvent::LmsBusy { since_ms }))
+            }
+            "ok" => Some(Parsed::Event(ServerEvent::LmsOk)),
+            _ => None,
+        };
     }
     let tokens: Vec<String> = o
         .get("event")?
@@ -337,6 +359,50 @@ mod tests {
     }
 
     #[test]
+    fn the_music_server_being_busy_and_back() {
+        assert_eq!(
+            parse_message(r#"{"lms":"busy","since":1760000000000}"#),
+            Some(Parsed::Event(ServerEvent::LmsBusy {
+                since_ms: 1_760_000_000_000
+            }))
+        );
+        assert_eq!(
+            parse_message(r#"{"lms":"busy"}"#),
+            Some(Parsed::Event(ServerEvent::LmsBusy { since_ms: 0 }))
+        );
+        assert_eq!(
+            parse_message(r#"{"lms":"ok"}"#),
+            Some(Parsed::Event(ServerEvent::LmsOk))
+        );
+        // Extra fields from a newer gateway are fine.
+        assert_eq!(
+            parse_message(r#"{"lms":"ok","since":5,"x":[1]}"#),
+            Some(Parsed::Event(ServerEvent::LmsOk))
+        );
+        for bad in [
+            r#"{"lms":"BUSY"}"#,
+            r#"{"lms":"down"}"#,
+            r#"{"lms":""}"#,
+            r#"{"lms":true}"#,
+            r#"{"lms":null}"#,
+            r#"{"lms":["busy"]}"#,
+            r#"{"lms":{"busy":true}}"#,
+            r#"{"lms":"busy","since":-1}"#,
+            r#"{"lms":"busy","since":1.5}"#,
+            r#"{"lms":"busy","since":"1760000000000"}"#,
+            r#"{"lms":"busy","since":null}"#,
+            r#"{"lms":"busy","since":1e400}"#,
+            r#"{"lms":"busy","since":18446744073709551616}"#,
+            r#"["lms","busy"]"#,
+            r#"{"lms":"busy""#,
+        ] {
+            assert_eq!(parse_message(bad), None, "{bad}");
+        }
+        let huge = format!(r#"{{"lms":"ok","pad":"{}"}}"#, "x".repeat(MAX_MESSAGE));
+        assert_eq!(parse_message(&huge), None);
+    }
+
+    #[test]
     fn backoff_grows_and_is_capped() {
         assert_eq!(backoff(0, 0.5), Duration::from_millis(1000));
         assert_eq!(backoff(1, 0.5), Duration::from_millis(2000));
@@ -348,7 +414,7 @@ mod tests {
 
     #[test]
     fn arbitrary_messages_never_panic() {
-        let alphabet: Vec<char> = "{}[]\":,nultrsubcdyevpa0123:\\é ".chars().collect();
+        let alphabet: Vec<char> = "{}[]\":,nultrsubcdyevpakmo0123:\\é ".chars().collect();
         let mut seed = 0x1234_5678_9abc_def0u64;
         for _ in 0..20_000 {
             let len = (seed % 64) as usize;

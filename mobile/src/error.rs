@@ -23,6 +23,11 @@ pub enum ApiError {
     /// Too many attempts or requests: wait this many seconds.
     #[error("too many requests; retry in {retry_after_secs} s")]
     RateLimited { retry_after_secs: u64 },
+    /// The music server (LMS) is busy and stopped answering for a while (its music share
+    /// stalled, say); the gateway refused the request at once rather than queue it. Nothing
+    /// was done: try again after `retry_after_secs`. The gateway itself is reachable.
+    #[error("the music server is busy; retry in {retry_after_secs} s")]
+    ServerBusy { retry_after_secs: u64 },
     /// The server (or the music server behind it) failed or answered nonsense.
     #[error("server error {status}: {detail}")]
     Server { status: u16, detail: String },
@@ -41,6 +46,14 @@ impl ApiError {
     pub(crate) fn network(detail: impl Into<String>) -> Self {
         ApiError::Network {
             detail: detail.into(),
+        }
+    }
+
+    /// The gateway's "music server is busy" refusal: a 503 whose JSON body says
+    /// `"busy": true`. A 503 without it keeps its old meaning (see [`Self::from_status`]).
+    pub(crate) fn busy(retry_after: Option<u64>) -> Self {
+        ApiError::ServerBusy {
+            retry_after_secs: retry_after.unwrap_or(2).clamp(1, 300),
         }
     }
 

@@ -93,6 +93,26 @@ class AppPlacesTests {
     }
 
     @Test
+    fun aBusyMusicServerKeepsTheScreenWithACalmNote() {
+        show()
+        openAlbumAndScroll()
+        h.connection = ConnectionUi(busy = true)
+        compose.waitForIdle()
+        assertOnTheAlbumWhereItWasLeft()
+        compose.onNodeWithTag(ConnectionTags.BUSY).assertIsDisplayed()
+            .assertContentDescriptionEquals("Your music server is busy. Waiting for it…")
+            .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.LiveRegion))
+        // Not an error and not offline: no banner, no reconnecting pill.
+        compose.onNodeWithTag(ConnectionTags.BANNER).assertDoesNotExist()
+        compose.onNodeWithTag(ConnectionTags.PILL).assertDoesNotExist()
+        // The server answers again: it goes by itself.
+        h.connection = ConnectionUi()
+        compose.waitForIdle()
+        assertOnTheAlbumWhereItWasLeft()
+        compose.onNodeWithTag(ConnectionTags.BUSY).assertDoesNotExist()
+    }
+
+    @Test
     fun theBannerIsOneLabelledButtonThatOpensTheDownloads() {
         show()
         openAlbumAndScroll()

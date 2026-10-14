@@ -336,8 +336,12 @@ class FakePlayers : PlayersRepository {
 
     override suspend fun syncGroups() = ApiResult.Ok(groups)
 
+    /** When set, status reads wait for it (a slow server). */
+    var statusGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
     override suspend fun status(player: String): ApiResult<PlayerStatus> {
         statusCalls += player
+        statusGate?.await()
         return statusResult
     }
 
@@ -361,8 +365,12 @@ class FakePlayers : PlayersRepository {
     var queueTracks: List<Track> = listOf(sampleTrack(1, 0), sampleTrack(2, 1))
     val queueCalls = mutableListOf<Pair<Int, Int>>()
 
+    /** When set, queue reads fail with it. */
+    var queueResult: ApiResult.Err? = null
+
     override suspend fun queue(player: String, start: Int, count: Int): ApiResult<List<Track>> {
         queueCalls += start to count
+        queueResult?.let { return it }
         return ApiResult.Ok(queueTracks.drop(start).take(count))
     }
 

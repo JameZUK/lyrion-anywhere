@@ -458,6 +458,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
     - After the process is killed, the app reopens on the same screen with its back stack. Each screen's own saved state, scroll included, starts afresh, as with any NavHost.
     - Another account, or signing out, starts at Home.
   - The connection is not kept alive in the background: there is no foreground service unless playing.
+  - **A busy music server is not an unreachable one (2026-10-14):** while the gateway says LMS is busy (`{"lms":"busy"}` on the event stream, or a 503 with `"busy": true`), the gateway is plainly reachable. The phone player's trouble then doesn't count: no banner, no takeover (and an offline takeover already shown ends). A calm "Your music server is busy. Waiting for it…" pill shows instead. No network at all still counts. Status reads never overlap and back off (15 s, or Retry-After if longer, while the stream is down); `{"lms":"ok"}` refreshes at once; a command refused as busy says so briefly and is never replayed.
 
 ### 8.5 Security
 

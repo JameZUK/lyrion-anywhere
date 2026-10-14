@@ -120,6 +120,8 @@ class RoomsViewModel(
                         when (ev) {
                             is ServerEvent.PlayerChanged -> if (_state.value.room(ev.playerId) != null) changed.tryEmit(Unit)
                             is ServerEvent.Resync -> loadPlayers()
+                            // The music server answers again: catch up at once.
+                            ServerEvent.LmsOk -> loadPlayers()
                             else -> {}
                         }
                     }

@@ -356,6 +356,130 @@ class PlayerViewModelTest : MainDispatcherTest() {
     }
 
     @Test
+    fun aBusyMusicServerIsPolledLessAndWhatIsShownStays() = runTest(dispatcher) {
+        val players = FakePlayers()
+        val vm = vm(players, FakeEvents(), FakeSettings())
+        vm.start()
+        val shown = vm.state.value.status
+        players.statusResult = ApiResult.Err(AppError.ServerBusy(2))
+        advanceTimeBy(PlayerViewModel.FAST_POLL_MS + 1)
+        val first = players.statusCalls.size
+        // Busy: no error over what is shown, and the stream being down, polled every 15 s.
+        assertEquals(shown, vm.state.value.status)
+        assertNull(vm.state.value.error)
+        assertEquals(PlayerViewModel.BUSY_POLL_MS, vm.pollDelay())
+        advanceTimeBy(60_000L)
+        assertEquals("not every 5 s", first + 4, players.statusCalls.size)
+        // Answered again: back to the usual pace.
+        players.statusResult = ApiResult.Ok(sampleStatus())
+        advanceTimeBy(PlayerViewModel.BUSY_POLL_MS)
+        assertEquals(PlayerViewModel.FAST_POLL_MS, vm.pollDelay())
+        vm.stop()
+    }
+
+    @Test
+    fun aLongRetryAfterIsRespected() = runTest(dispatcher) {
+        val players = FakePlayers()
+        val vm = vm(players, FakeEvents(), FakeSettings())
+        vm.start()
+        players.statusResult = ApiResult.Err(AppError.ServerBusy(60))
+        advanceTimeBy(PlayerViewModel.FAST_POLL_MS + 1)
+        assertEquals(60_000L, vm.pollDelay())
+        vm.stop()
+    }
+
+    @Test
+    fun theStreamSaysBusyAndOkAndOkRefreshesAtOnce() = runTest(dispatcher) {
+        val players = FakePlayers()
+        val events = FakeEvents()
+        val vm = vm(players, events, FakeSettings())
+        vm.start()
+        events.flow.emit(StreamUpdate.State(EventsState.Live))
+        events.flow.emit(StreamUpdate.Event(ServerEvent.LmsBusy(1_760_000_000_000uL)))
+        // Live: the stream says when it is back; the safety-net poll as before.
+        assertEquals(PlayerViewModel.SLOW_POLL_MS, vm.pollDelay())
+        val before = players.statusCalls.size
+        events.flow.emit(StreamUpdate.Event(ServerEvent.LmsOk))
+        runCurrent()
+        assertEquals("caught up at once", before + 1, players.statusCalls.size)
+        // The stream dropping: busy is forgotten (the gateway says again on reconnecting).
+        events.flow.emit(StreamUpdate.Event(ServerEvent.LmsBusy(0uL)))
+        events.flow.emit(StreamUpdate.State(EventsState.Retrying(1000uL)))
+        assertEquals(PlayerViewModel.FAST_POLL_MS, vm.pollDelay())
+        vm.stop()
+    }
+
+    @Test
+    fun statusReadsNeverStackUp() = runTest(dispatcher) {
+        val players = FakePlayers()
+        val events = FakeEvents()
+        val vm = vm(players, events, FakeSettings())
+        vm.start()
+        val selected = vm.state.value.selectedId!!
+        events.flow.emit(StreamUpdate.State(EventsState.Live))
+        val before = players.statusCalls.size
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        players.statusGate = gate
+        // A slow server: one read on its way, and more asked for meanwhile.
+        vm.refresh()
+        runCurrent()
+        assertEquals(before + 1, players.statusCalls.size)
+        repeat(3) {
+            events.flow.emit(StreamUpdate.Event(ServerEvent.PlayerChanged(selected, "mixer", listOf("volume"))))
+            advanceTimeBy(PlayerViewModel.EVENT_COALESCE_MS + 1)
+        }
+        vm.refresh()
+        runCurrent()
+        assertEquals("nothing more while one is on its way", before + 1, players.statusCalls.size)
+        // It answers: the ones asked for meanwhile make one more read, not four.
+        players.statusGate = null
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(before + 2, players.statusCalls.size)
+        vm.stop()
+    }
+
+    @Test
+    fun aCommandRefusedAsBusyIsSaidOnceAndNotReplayed() = runTest(dispatcher) {
+        val players = FakePlayers()
+        val vm = vm(players, FakeEvents(), FakeSettings())
+        vm.start()
+        players.commandResult = ApiResult.Err(AppError.ServerBusy(2))
+        val messages = mutableListOf<PlayerMessage>()
+        val collector = backgroundScope.launch { vm.messages.collect { messages += it } }
+        vm.next()
+        runCurrent()
+        assertEquals(PlayerMessage.Failed(AppError.ServerBusy(2)), messages.single())
+        val sent = players.commands.size
+        // Back: nothing is sent again by itself.
+        players.commandResult = ApiResult.Ok(Unit)
+        advanceTimeBy(5 * 60_000L)
+        assertEquals(sent, players.commands.size)
+        collector.cancel()
+        vm.stop()
+    }
+
+    @Test
+    fun aQueueReadRefusedAsBusySaysNothing() = runTest(dispatcher) {
+        val players = FakePlayers()
+        val vm = vm(players, FakeEvents(), FakeSettings())
+        vm.start()
+        players.queueResult = ApiResult.Err(AppError.ServerBusy(2))
+        val messages = mutableListOf<PlayerMessage>()
+        val collector = backgroundScope.launch { vm.messages.collect { messages += it } }
+        vm.loadQueue()
+        runCurrent()
+        assertTrue(messages.isEmpty())
+        // Anything else is still said.
+        players.queueResult = ApiResult.Err(AppError.Server(502, "x"))
+        vm.loadQueue()
+        runCurrent()
+        assertEquals(PlayerMessage.Failed(AppError.Server(502, "x")), messages.single())
+        collector.cancel()
+        vm.stop()
+    }
+
+    @Test
     fun transportIsOptimisticAndReportsFailures() = runTest(dispatcher) {
         val players = FakePlayers()
         val vm = vm(players, FakeEvents(), FakeSettings())

@@ -171,6 +171,7 @@ import io.github.jamezuk.lyrionanywhere.ui.library.roleLabel
 import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineLibraryScreen
 import io.github.jamezuk.lyrionanywhere.ui.components.ErrorState
 import io.github.jamezuk.lyrionanywhere.ui.components.ReconnectingPill
+import io.github.jamezuk.lyrionanywhere.ui.components.ServerBusyPill
 import io.github.jamezuk.lyrionanywhere.ui.components.ServerUnreachableBanner
 import io.github.jamezuk.lyrionanywhere.data.offline.ConnectionUi
 import androidx.compose.ui.Alignment
@@ -1653,6 +1654,10 @@ fun MainScreen(
             // A reconnect under way: a small pill over the screen, which stays as it was.
             if (connection.reconnecting && !inCar && !inStory) {
                 ReconnectingPill(Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp))
+            }
+            // The music server is busy (the gateway answers): a calm note, nothing else changes.
+            if (connection.busy && !inCar && !inStory) {
+                ServerBusyPill(Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp))
             }
             }
         }

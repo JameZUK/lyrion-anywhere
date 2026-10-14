@@ -329,6 +329,10 @@ fn error_of(status: u16, headers: &HeaderMap, body: &[u8]) -> ApiError {
         .get(RETRY_AFTER)
         .and_then(|h| h.to_str().ok())
         .and_then(|s| s.trim().parse::<u64>().ok());
+    // The music server is busy (the gateway refused at once): only a 503 that says so.
+    if status == 503 && v.get("busy") == Some(&Value::Bool(true)) {
+        return ApiError::busy(retry_after);
+    }
     ApiError::from_status(
         status,
         v.get("error").and_then(Value::as_str),
@@ -456,6 +460,92 @@ mod tests {
             .get(Url::parse("https://music.example.com/v1/me").unwrap())
             .bearer_auth("a\r\nX-Evil: 1");
         assert!(!req.headers.contains_key(AUTHORIZATION));
+    }
+
+    #[test]
+    fn a_503_saying_busy_is_the_music_server_being_busy() {
+        let busy = br#"{"error":"music server is busy","busy":true}"#;
+        let mut h = HeaderMap::new();
+        h.insert(RETRY_AFTER, HeaderValue::from_static("2"));
+        assert_eq!(
+            error_of(503, &h, busy),
+            ApiError::ServerBusy {
+                retry_after_secs: 2
+            }
+        );
+        // Without Retry-After: a short default, never zero; an absurd one is bounded.
+        assert_eq!(
+            error_of(503, &HeaderMap::new(), busy),
+            ApiError::ServerBusy {
+                retry_after_secs: 2
+            }
+        );
+        let mut zero = HeaderMap::new();
+        zero.insert(RETRY_AFTER, HeaderValue::from_static("0"));
+        assert_eq!(
+            error_of(503, &zero, busy),
+            ApiError::ServerBusy {
+                retry_after_secs: 1
+            }
+        );
+        let mut huge = HeaderMap::new();
+        huge.insert(RETRY_AFTER, HeaderValue::from_static("99999999"));
+        assert_eq!(
+            error_of(503, &huge, busy),
+            ApiError::ServerBusy {
+                retry_after_secs: 300
+            }
+        );
+        // A busy answer is never a refusal: the sign-in is kept.
+        assert!(!error_of(503, &h, busy).is_refusal());
+
+        // A 503 without `busy: true` keeps its old meaning.
+        assert_eq!(
+            error_of(503, &h, br#"{"error":"unavailable"}"#),
+            ApiError::RateLimited {
+                retry_after_secs: 2
+            }
+        );
+        assert!(matches!(
+            error_of(503, &HeaderMap::new(), br#"{"error":"unavailable"}"#),
+            ApiError::Server { status: 503, .. }
+        ));
+        for not_busy in [
+            &br#"{"busy":"true"}"#[..],
+            br#"{"busy":1}"#,
+            br#"{"busy":false}"#,
+            br#"[{"busy":true}]"#,
+            br#"{"error":{"busy":true}}"#,
+            b"\xff\xfe<html>busy</html>",
+            b"",
+        ] {
+            let e = error_of(503, &HeaderMap::new(), not_busy);
+            assert!(
+                matches!(e, ApiError::Server { status: 503, .. }),
+                "{not_busy:?}: {e:?}"
+            );
+        }
+        // Only a 503: `busy` on any other status changes nothing.
+        assert_eq!(
+            error_of(429, &h, busy),
+            ApiError::RateLimited {
+                retry_after_secs: 2
+            }
+        );
+        assert!(matches!(
+            error_of(502, &h, busy),
+            ApiError::Server { status: 502, .. }
+        ));
+        assert!(matches!(
+            error_of(500, &h, busy),
+            ApiError::Server { status: 500, .. }
+        ));
+        assert_eq!(error_of(401, &h, busy), ApiError::Unauthorised);
+        // Renewing a sign-in never ends it on a busy answer.
+        assert!(!matches!(
+            refresh_error_of(503, &h, busy),
+            ApiError::Unauthorised
+        ));
     }
 
     #[test]
