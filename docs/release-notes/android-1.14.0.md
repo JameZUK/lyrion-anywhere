@@ -28,6 +28,7 @@ Three features need a gateway newer than the one in plugin [0.3.0](https://githu
 - **Change your password** in Settings › Account.
 - **Save the queue as a playlist** from the queue's ⋮.
 - **Opus decodes about 80 times faster,** which saves battery on lower-data streams.
+- **Security:** the TLS library is updated to rustls 0.23.46, for four advisories published today (RUSTSEC-2026-0346 to 0349).
 - **Fixed:**
   - The app froze when airplane mode was turned on while playing.
   - The queue heading wrapped on narrow phones.

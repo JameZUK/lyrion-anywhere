@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: rustls 0.23.46 (RUSTSEC-2026-0346 to 0349)
+
+Four rustls advisories published today stopped the Android 1.14.0 release in CI's supply-chain check. rustls is updated to 0.23.46. It is used by the Android app's Rust layer and the command-line tool; the gateway doesn't use it. Mobile and CLI tests pass (551), and the release APK was rebuilt and checked.
+
 ## 2026-10-14: README and screenshots brought up to date; Android 1.14.0 release notes
 
 - **README:** the decluttered web and Android apps, controls that keep working while the server is out of reach, the busy-server notice, the rolling cache as built, *Play on…* in place of car mode among the Android highlights, and a folded *More screenshots* gallery of both apps. It notes that change password, save as playlist and the busy notice need a gateway newer than plugin 0.3.0.
