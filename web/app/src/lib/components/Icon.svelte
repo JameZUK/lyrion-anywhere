@@ -59,6 +59,7 @@
 		keyboard: 'M3 6.5h18v11H3zM6.5 10h.01M10 10h.01M13.5 10h.01M17 10h.01M7.5 14h9',
 		stop: 'M6.5 6.5h11v11h-11z',
 		signal: 'M3 12h4l2-6 4 12 2-6h6',
+		clock: 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM12 7.5V12l3 2',
 	};
 	const SOLID = new Set(['play', 'pause', 'next', 'prev', 'stop']);
 

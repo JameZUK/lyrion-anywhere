@@ -15,6 +15,7 @@
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import SeekBar from '$lib/components/SeekBar.svelte';
 	import { device } from '$lib/player/device.svelte';
+	import { controls } from '$lib/player/controls.svelte';
 	import { DEVICE_BUTTONS_NOTE } from '$lib/player/volume';
 	import Ambient from '$lib/components/Ambient.svelte';
 	import SleepSheet from '$lib/components/SleepSheet.svelte';
@@ -145,6 +146,8 @@
 	const artistHref = $derived(cmd.link('artist', track?.artist_id));
 	const albumHref = $derived(cmd.link('album', track?.album_id));
 	const repeat = $derived(Number(app.now?.['playlist repeat'] ?? 0));
+	/** Which controls work now (all of them while the server is in reach). */
+	const g = $derived(controls.gates);
 	const vol = $derived(volume ?? app.now?.['mixer volume'] ?? 0);
 	const badge = $derived(quality(track));
 	const sleepIn = $derived(sleepLeft(app.now));
@@ -188,7 +191,7 @@
 				onclick={() => (showSleep = true)}
 				aria-haspopup="dialog"
 				aria-label={sleepIn !== null ? `Sleep timer: stops in ${formatLeft(sleepIn)}` : 'Sleep timer'}
-				disabled={!app.current}
+				disabled={!app.current || !g.other}
 				data-sleep-button
 			>
 				<Icon name="moon" size={18} /><span class="label">{sleepIn !== null ? formatLeft(sleepIn) : 'Sleep'}</span>
@@ -332,10 +335,10 @@
 				trackId={typeof track?.id === 'number' && track.id > 0 && !isRemote(track.remote) ? track.id : null}
 				value={shown}
 				{total}
-				disabled={!total || app.now?.can_seek === 0}
+				disabled={!total || app.now?.can_seek === 0 || !g.seek}
 				oninput={(v) => (seeking = v)}
 				onchange={async (v) => {
-					await app.seek(v);
+					await controls.seek(v);
 					seeking = null;
 				}}
 			/>
@@ -343,19 +346,19 @@
 		</div>
 
 		<div class="transport">
-			<ShuffleButton value={app.now?.['playlist shuffle']} onchange={(m) => app.send(cmd.shuffle(m))} disabled={!app.now} />
-			<button class="icon-btn big" aria-label="Previous" onclick={() => app.send(cmd.skip(-1))} disabled={!app.now}><Icon name="prev" size={30} /></button>
-			<button class="icon-btn play" aria-label={app.playing ? 'Pause' : 'Play'} onclick={() => app.send(app.playing ? cmd.pause(true) : cmd.play())} disabled={!app.now}>
+			<ShuffleButton value={app.now?.['playlist shuffle']} onchange={(m) => app.send(cmd.shuffle(m))} disabled={!g.other} />
+			<button class="icon-btn big" aria-label="Previous" onclick={() => controls.previous()} disabled={!g.previous}><Icon name="prev" size={30} /></button>
+			<button class="icon-btn play" aria-label={app.playing ? 'Pause' : 'Play'} onclick={() => controls.toggle()} disabled={!g.playPause}>
 				<Icon name={app.playing ? 'pause' : 'play'} size={34} />
 			</button>
-			<button class="icon-btn big" aria-label="Next" onclick={() => app.send(cmd.skip(1))} disabled={!app.now}><Icon name="next" size={30} /></button>
+			<button class="icon-btn big" aria-label="Next" onclick={() => controls.next()} disabled={!g.next}><Icon name="next" size={30} /></button>
 			<button
 				class="icon-btn"
 				class:on={repeat > 0}
 				aria-pressed={repeat > 0}
 				aria-label={repeat === 1 ? 'Repeat: this track' : repeat === 2 ? 'Repeat: all' : 'Repeat: off'}
 				onclick={() => app.send(cmd.repeat(((repeat + 1) % 3) as 0 | 1 | 2))}
-				disabled={!app.now}
+				disabled={!g.other}
 			>
 				<Icon name="repeat" />{#if repeat === 1}<span class="one">1</span>{/if}
 			</button>
@@ -371,7 +374,7 @@
 				<label class="volume">
 					<Icon name={vol > 0 ? 'volume' : 'mute'} size={20} />
 					<span class="sr-only">Volume</span>
-					<input type="range" min="0" max="100" value={vol} oninput={(e) => setVolume(Number(e.currentTarget.value))} disabled={!app.now} />
+					<input type="range" min="0" max="100" value={vol} oninput={(e) => setVolume(Number(e.currentTarget.value))} disabled={!g.volume} />
 					<span class="muted vnum">{Math.round(vol)}</span>
 				</label>
 			{/if}

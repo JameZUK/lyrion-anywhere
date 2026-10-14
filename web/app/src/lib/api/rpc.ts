@@ -1,6 +1,7 @@
 // LMS commands through the gateway's allow-list (POST /v1/rpc) and artwork (GET /v1/art).
 import { ApiError, bearer, callJson, isBusy } from './http';
 import type { SessionManager } from './session';
+import { isNetworkError } from '$lib/state/reachability';
 
 export type Command = (string | number)[];
 
@@ -58,6 +59,8 @@ export class Api {
 	 * nothing either way.
 	 */
 	onHealth: (busy: ApiError | null) => void = () => {};
+	/** Told when a command couldn't reach the server at all (see state/reachability). */
+	onUnreachable: () => void = () => {};
 
 	constructor(
 		private session: SessionManager,
@@ -79,6 +82,7 @@ export class Api {
 			return result;
 		} catch (e) {
 			if (isBusy(e)) this.onHealth(e);
+			else if (isNetworkError(e)) this.onUnreachable();
 			throw e;
 		}
 	}

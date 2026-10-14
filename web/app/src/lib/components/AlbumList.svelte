@@ -27,8 +27,8 @@
 		return () => io.disconnect();
 	});
 
-	const next = (a: Album) => void app.queueUp({ album: a.id }, 'next');
-	const add = (a: Album) => void app.queueUp({ album: a.id }, 'add');
+	const next = (a: Album) => app.canQueue && void app.queueUp({ album: a.id }, 'next');
+	const add = (a: Album) => app.canQueue && void app.queueUp({ album: a.id }, 'add');
 </script>
 
 <p class="sr-only">On an album, press N to play it next or A to add it to the queue.</p>
@@ -44,12 +44,12 @@
 						<span class="sub ellipsis muted">{[showArtist ? textOf(a.artist) : '', textOf(a.year)].filter(Boolean).join(' · ')}</span>
 					</span>
 				</a>
-				<button class="icon-btn" aria-label={`Play ${name}`} onclick={() => app.queueUp({ album: a.id }, 'play')}><Icon name="play" size={18} /></button>
+				<button class="icon-btn" aria-label={`Play ${name}`} onclick={() => app.queueUp({ album: a.id }, 'play')} disabled={!app.canQueue}><Icon name="play" size={18} /></button>
 				<RowMenu
 					label={`More options for ${name}`}
 					actions={[
-						{ label: 'Play next', icon: 'playnext', run: () => next(a), shortcut: 'N' },
-						{ label: 'Add to queue', icon: 'plus', run: () => add(a), shortcut: 'A' },
+						{ label: 'Play next', icon: 'playnext', run: () => next(a), shortcut: 'N', disabled: !app.canQueue },
+						{ label: 'Add to queue', icon: 'plus', run: () => add(a), shortcut: 'A', disabled: !app.canQueue },
 					]}
 				/>
 			</div>

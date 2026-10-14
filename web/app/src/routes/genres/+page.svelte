@@ -45,7 +45,7 @@
 					<span class="glyph" aria-hidden="true"><Icon name="genre" size={20} /></span>
 					<span class="name ellipsis">{textOf(g.genre)}</span>
 				</a>
-				<button class="icon-btn" aria-label={`Play ${textOf(g.genre)}`} onclick={() => app.queueUp({ genre: g.id }, 'play')}><Icon name="play" size={18} /></button>
+				<button class="icon-btn" aria-label={`Play ${textOf(g.genre)}`} onclick={() => app.queueUp({ genre: g.id }, 'play')} disabled={!app.canQueue}><Icon name="play" size={18} /></button>
 			</li>
 		{/each}
 	</ul>

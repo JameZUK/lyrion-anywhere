@@ -5,6 +5,8 @@
 		run: () => void;
 		/** A key that does the same on the focused row, shown to screen readers. */
 		shortcut?: string;
+		/** Shown but unavailable (e.g. it needs the server): stays focusable, does nothing. */
+		disabled?: boolean;
 	}
 </script>
 
@@ -69,6 +71,7 @@
 	}
 
 	function choose(a: RowAction) {
+		if (a.disabled) return;
 		close();
 		a.run();
 	}
@@ -103,7 +106,7 @@
 	{#if open}
 		<div class="menu" role="menu" id={`${uid}-menu`} aria-labelledby={uid} bind:this={menu} tabindex="-1" onkeydown={menuKey}>
 			{#each actions as a (a.label)}
-				<button role="menuitem" tabindex="-1" onclick={() => choose(a)} aria-keyshortcuts={a.shortcut}>
+				<button role="menuitem" tabindex="-1" onclick={() => choose(a)} aria-keyshortcuts={a.shortcut} aria-disabled={a.disabled ? 'true' : undefined}>
 					<Icon name={a.icon} size={18} /><span>{a.label}</span>{#if a.shortcut}<kbd class="muted" aria-hidden="true">{a.shortcut}</kbd>{/if}
 				</button>
 			{/each}
@@ -128,6 +131,10 @@
 		border: 1px solid var(--line);
 		border-radius: var(--radius-sm);
 		box-shadow: var(--shadow);
+	}
+	.menu button[aria-disabled='true'] {
+		opacity: 0.45;
+		cursor: not-allowed;
 	}
 	.menu button {
 		display: flex;

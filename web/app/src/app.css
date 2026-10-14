@@ -312,3 +312,11 @@ input[type='range'] {
 :root[data-theme='contrast'] .card {
 	border-width: 2px;
 }
+
+/* Library rows and chips whose play action is unavailable (the server is out of reach). */
+button.main:disabled,
+button.chip:disabled,
+button.play:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}

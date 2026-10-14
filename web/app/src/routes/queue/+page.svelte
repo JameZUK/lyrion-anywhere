@@ -28,6 +28,9 @@
 	import type { SavedPlaylist } from '$lib/api/me';
 	import { go } from '$lib/nav';
 	import { haptics } from '$lib/haptics/haptics.svelte';
+	import { controls } from '$lib/player/controls.svelte';
+	import { MARK_LABELS } from '$lib/player/local-plan';
+	import { isNetworkError } from '$lib/state/reachability';
 
 	/** How long a swiped row takes to slide out before it is removed. */
 	const SLIDE_MS = 180;
@@ -89,7 +92,8 @@
 			const cur = Number(r.playlist_cur_index ?? app.now?.playlist_cur_index ?? -1);
 			if (Number.isInteger(cur) && cur >= 0) upNextTracker.verify(id, cur, tracks.map((t) => (typeof t.id === 'number' ? t.id : null)));
 		} catch (e) {
-			error = (e as Error).message;
+			// Out of reach: the connection message says so; the queue as last read stays.
+			error = isNetworkError(e) || app.reach !== 'online' ? '' : (e as Error).message;
 		}
 	}
 
@@ -115,6 +119,10 @@
 	});
 
 	const current = $derived(Number(app.now?.playlist_cur_index ?? -1));
+	/** Which controls work now: out of reach, no edits, and only rows this device can play. */
+	const g = $derived(controls.gates);
+	/** Queue edits need the server. */
+	const editable = $derived(app.reach === 'online');
 	const links = $derived(gaplessLinks(tracks));
 	/** Up next, as tracked on this device; null shows the queue flat. */
 	const sections = $derived.by(() => {
@@ -141,7 +149,7 @@
 	 */
 	function edit(optimistic: Track[], newTotal: number, run: (player: string) => Promise<unknown>, failure: string): Promise<boolean> {
 		const player = app.playerId;
-		if (!player) return Promise.resolve(false);
+		if (!player || !editable) return Promise.resolve(false);
 		const before = tracks;
 		const beforeTotal = total;
 		tracks = optimistic;
@@ -322,7 +330,7 @@
 	}
 
 	function dragStart(e: PointerEvent, i: number) {
-		if (drag || leaving !== null || (e.pointerType === 'mouse' && e.button !== 0)) return;
+		if (drag || leaving !== null || !editable || (e.pointerType === 'mouse' && e.button !== 0)) return;
 		e.preventDefault();
 		(e.currentTarget as Element).setPointerCapture?.(e.pointerId);
 		drag = { from: i, to: i, pointerId: e.pointerId, startY: e.clientY, dy: 0, rows: rowBoxes() };
@@ -357,7 +365,7 @@
 	// --- swipe left to remove (touch only; vertical movement stays a scroll) ----------------
 
 	function swipeStart(e: PointerEvent, i: number) {
-		if (e.pointerType === 'mouse' || drag || swipe || leaving !== null) return;
+		if (e.pointerType === 'mouse' || drag || swipe || leaving !== null || !editable) return;
 		const li = (e.currentTarget as Element).closest('li');
 		swipe = { index: i, pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, dx: 0, active: false, width: li?.getBoundingClientRect().width ?? 0 };
 	}
@@ -398,8 +406,8 @@
 	}
 
 	function play(i: number) {
-		if (swallowClick) return;
-		void app.send(cmd.jump(i));
+		if (swallowClick || !g.jump(i)) return;
+		controls.jump(i);
 	}
 
 	function rowShift(i: number): string | undefined {
@@ -412,9 +420,12 @@
 </script>
 
 {#snippet row(t: Track, i: number)}
+	{@const mark = controls.mark(i, t.id)}
+	{@const playable = g.jump(i)}
 	<li
 		data-index={i}
 		class:now={i === current}
+		class:unavailable={!playable}
 		class:lifted={drag?.from === i}
 		class:swiping={swipe?.active && swipe.index === i}
 		class:leaving={leaving === i}
@@ -442,27 +453,32 @@
 			onpointermove={swipeMove}
 			onpointerup={(e) => swipeEnd(e)}
 			onpointercancel={(e) => swipeEnd(e, true)}
-			aria-label={`Play ${textOf(t.title)}`}
+			aria-label={`Play ${textOf(t.title)}${mark ? `. ${MARK_LABELS[mark]}` : ''}`}
 			aria-current={i === current ? 'true' : undefined}
+			disabled={!playable}
+			data-mark={mark ?? undefined}
 		>
 			<div class="thumb"><Art path={cmd.coverPath(t.coverid ?? t.artwork_track_id, 96)} alt="" label={textOf(t.title)} /></div>
 			<span class="text">
 				<span class="title ellipsis">{textOf(t.title)}</span>
 				<span class="sub ellipsis muted">{[textOf(t.artist), textOf(t.album)].filter(Boolean).join(' · ')}</span>
 			</span>
+			{#if mark}<span class="mark" title={MARK_LABELS[mark]} data-queue-mark={mark}><Icon name={mark === 'downloaded' ? 'download' : 'device'} size={15} /></span>{/if}
 			<span class="dur muted">{duration(t.duration)}</span>
 		</button>
 		<div class="ops">
-			<button class="icon-btn mv" aria-label={`Move ${textOf(t.title)} up`} onclick={() => move(i, i - 1)} onkeydown={(e) => onRowKey(e, i)} disabled={i === 0}><Icon name="back" size={16} /></button>
-			<button class="icon-btn mv" aria-label={`Move ${textOf(t.title)} down`} onclick={() => move(i, i + 1)} onkeydown={(e) => onRowKey(e, i)} disabled={i === tracks.length - 1}><Icon name="chevron" size={16} /></button>
-			<button class="icon-btn" aria-label={`Remove ${textOf(t.title)}`} onclick={() => remove(i)}><Icon name="close" size={16} /></button>
-			<RowMenu
-				label={`More options for ${textOf(t.title) || 'this track'}`}
-				actions={[
-					{ label: 'Play next', icon: 'playnext', run: () => void playNext(i), shortcut: 'N' },
-					{ label: 'Remove from queue', icon: 'trash', run: () => void remove(i), shortcut: 'Delete' },
-				]}
-			/>
+			<button class="icon-btn mv" aria-label={`Move ${textOf(t.title)} up`} onclick={() => move(i, i - 1)} onkeydown={(e) => onRowKey(e, i)} disabled={i === 0 || !editable}><Icon name="back" size={16} /></button>
+			<button class="icon-btn mv" aria-label={`Move ${textOf(t.title)} down`} onclick={() => move(i, i + 1)} onkeydown={(e) => onRowKey(e, i)} disabled={i === tracks.length - 1 || !editable}><Icon name="chevron" size={16} /></button>
+			<button class="icon-btn" aria-label={`Remove ${textOf(t.title)}`} onclick={() => remove(i)} disabled={!editable}><Icon name="close" size={16} /></button>
+			{#if editable}
+				<RowMenu
+					label={`More options for ${textOf(t.title) || 'this track'}`}
+					actions={[
+						{ label: 'Play next', icon: 'playnext', run: () => void playNext(i), shortcut: 'N' },
+						{ label: 'Remove from queue', icon: 'trash', run: () => void remove(i), shortcut: 'Delete' },
+					]}
+				/>
+			{/if}
 		</div>
 		{#if links[i]}
 			<span class="gapless" title="Runs straight on into the next track" data-gapless>
@@ -480,11 +496,11 @@
 		</div>
 		{#if tracks.length}
 			<div class="clears">
-			<SaveQueue {tracks} onsaved={savedAs} />
+			{#if editable}<SaveQueue {tracks} onsaved={savedAs} />{/if}
 			{#if upcoming > 0}
-				<button class="btn" onclick={() => (askUpcoming = true)} aria-haspopup="dialog" data-clear-upcoming><Icon name="trash" size={18} />Clear upcoming</button>
+				<button class="btn" onclick={() => (askUpcoming = true)} aria-haspopup="dialog" disabled={!editable} data-clear-upcoming><Icon name="trash" size={18} />Clear upcoming</button>
 			{/if}
-			<button class="btn" class:danger={confirmClear} onclick={clear}><Icon name="trash" size={18} />{confirmClear ? 'Tap again to clear' : 'Clear'}</button>
+			<button class="btn" class:danger={confirmClear} onclick={clear} disabled={!editable}><Icon name="trash" size={18} />{confirmClear ? 'Tap again to clear' : 'Clear'}</button>
 			</div>
 		{/if}
 	</header>
@@ -650,6 +666,17 @@
 	}
 	.dragging .handle {
 		cursor: grabbing;
+	}
+	/* Out of reach: rows this device can't play are dimmed (and their buttons disabled). */
+	li.unavailable .main {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
+	.mark {
+		flex: none;
+		display: inline-grid;
+		place-items: center;
+		color: var(--accent);
 	}
 	.main {
 		flex: 1;

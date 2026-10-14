@@ -293,7 +293,7 @@
 					{:else if kind === 'text'}
 						<p class="text">{textOf(item.text, 4000)}</p>
 					{:else}
-						<button class="main" onclick={() => primary(top.menu, item)}>
+						<button class="main" onclick={() => primary(top.menu, item)} disabled={!app.canQueue}>
 							{#if ic}<span class="thumb"><Art path={ic} alt="" label={textOf(item.text)} /></span>{/if}
 							<span class="label">{textOf(item.text)}</span>
 							{#if kind === 'folder'}<span class="chev" aria-hidden="true">›</span>{/if}
@@ -301,10 +301,10 @@
 						</button>
 						{#if kind === 'playable' || kind === 'folder'}
 							{#if resolveAction(top.menu, item, 'add-hold') || resolveAction(top.menu, item, 'insert')}
-								<button class="icon-btn" aria-label={`Play ${textOf(item.text)} next`} onclick={() => act(top.menu, item, resolveAction(top.menu, item, 'add-hold') ? 'add-hold' : 'insert', 'Play next')}><Icon name="playnext" size={18} /></button>
+								<button class="icon-btn" aria-label={`Play ${textOf(item.text)} next`} onclick={() => act(top.menu, item, resolveAction(top.menu, item, 'add-hold') ? 'add-hold' : 'insert', 'Play next')} disabled={!app.canQueue}><Icon name="playnext" size={18} /></button>
 							{/if}
 							{#if resolveAction(top.menu, item, 'add')}
-								<button class="icon-btn" aria-label={`Add ${textOf(item.text)} to the queue`} onclick={() => act(top.menu, item, 'add', 'Add to queue')}><Icon name="plus" size={18} /></button>
+								<button class="icon-btn" aria-label={`Add ${textOf(item.text)} to the queue`} onclick={() => act(top.menu, item, 'add', 'Add to queue')} disabled={!app.canQueue}><Icon name="plus" size={18} /></button>
 							{/if}
 						{/if}
 						{#if (kind === 'playable' || kind === 'action') && stationOf(top.menu, item, i)}

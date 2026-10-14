@@ -9,7 +9,11 @@
 	import { trackerVersion, upNextTracker } from '$lib/queue/upnext.svelte';
 	import type { PlayerStatus, Track } from '$lib/lms/types';
 	import Art from './Art.svelte';
+	import Icon from './Icon.svelte';
 	import SaveQueue from './SaveQueue.svelte';
+	import { controls, local } from '$lib/player/controls.svelte';
+	import { MARK_LABELS } from '$lib/player/local-plan';
+	import { isNetworkError } from '$lib/state/reachability';
 
 	let { onplay, side = false }: { onplay?: () => void; side?: boolean } = $props();
 	const uid = `ql-${Math.random().toString(36).slice(2, 9)}`;
@@ -36,7 +40,8 @@
 				error = '';
 				upNextTracker.verify(id, cur, [...Array<null>(cur).fill(null), ...rows.map((t) => (typeof t.id === 'number' ? t.id : null))]);
 			},
-			(e) => live && (error = (e as Error).message),
+			// Out of reach: the connection message says so; the rows as last read stay.
+			(e) => live && (error = isNetworkError(e) || app.reach !== 'online' ? '' : (e as Error).message),
 		);
 		return () => (live = false);
 	});
@@ -56,27 +61,41 @@
 		return out;
 	});
 	const total = $derived(Number(app.now?.playlist_tracks ?? 0));
+	/** Which controls work now: out of reach, only rows this device can play. */
+	const g = $derived(controls.gates);
+	/** The row playing: the first, unless this device has moved on by itself meanwhile. */
+	const nowRow = $derived(local.engaged && local.index >= 0 ? local.index - from : 0);
 
 	function play(i: number) {
-		void app.send(cmd.jump(from + i));
+		if (!g.jump(from + i)) return;
+		controls.jump(from + i);
 		onplay?.();
 	}
 </script>
 
 {#if error}<p class="error">{error}</p>{/if}
 {#if loaded && !rows.length}<p class="muted">The queue is empty.</p>{/if}
-{#each groups as g (g.key)}
-	<h3 id={`${uid}-${g.key}`}>{g.title}</h3>
-	<ol aria-labelledby={`${uid}-${g.key}`} data-peek={side ? undefined : g.key} data-side-queue={side ? g.key : undefined}>
-		{#each rows.slice(g.start, g.end + 1) as t, k (`${g.start + k}:${t.id}`)}
-			{@const i = g.start + k}
-			<li>
-				<button onclick={() => play(i)} aria-current={i === 0 ? 'true' : undefined} aria-label={`Play ${textOf(t.title)}${t.artist ? ` by ${textOf(t.artist)}` : ''}`}>
+{#each groups as grp (grp.key)}
+	<h3 id={`${uid}-${grp.key}`}>{grp.title}</h3>
+	<ol aria-labelledby={`${uid}-${grp.key}`} data-peek={side ? undefined : grp.key} data-side-queue={side ? grp.key : undefined}>
+		{#each rows.slice(grp.start, grp.end + 1) as t, k (`${grp.start + k}:${t.id}`)}
+			{@const i = grp.start + k}
+			{@const mark = controls.mark(from + i, t.id)}
+			{@const playable = g.jump(from + i)}
+			<li class:unavailable={!playable}>
+				<button
+					onclick={() => play(i)}
+					disabled={!playable}
+					aria-current={i === nowRow ? 'true' : undefined}
+					aria-label={`Play ${textOf(t.title)}${t.artist ? ` by ${textOf(t.artist)}` : ''}${mark ? `. ${MARK_LABELS[mark]}` : ''}`}
+					data-mark={mark ?? undefined}
+				>
 					<span class="thumb"><Art path={cmd.coverPath(t.coverid ?? t.artwork_track_id, 96)} alt="" label={textOf(t.title)} /></span>
 					<span class="text">
 						<span class="title ellipsis">{textOf(t.title)}</span>
 						<span class="sub ellipsis muted">{textOf(t.artist)}</span>
 					</span>
+					{#if mark}<span class="mark" title={MARK_LABELS[mark]} data-queue-mark={mark}><Icon name={mark === 'downloaded' ? 'download' : 'device'} size={15} /></span>{/if}
 					<span class="dur muted">{duration(t.duration)}</span>
 				</button>
 			</li>
@@ -85,7 +104,7 @@
 {/each}
 {#if total > from + rows.length}<p class="muted more">And {(total - from - rows.length).toLocaleString('en-GB')} more.</p>{/if}
 <a class="btn full" href="#/queue" onclick={() => onplay?.()} data-full-queue>Open the full queue</a>
-{#if rows.length}<SaveQueue tracks={rows} full onopen={onplay} />{/if}
+{#if rows.length && app.reach === 'online'}<SaveQueue tracks={rows} full onopen={onplay} />{/if}
 
 <style>
 	h3 {
@@ -114,8 +133,19 @@
 		font: inherit;
 		border-radius: var(--radius-sm);
 	}
-	li button:hover {
+	li button:hover:not(:disabled) {
 		background: var(--bg-sunken);
+	}
+	/* Out of reach: rows this device can't play are dimmed, and can't be tapped. */
+	li.unavailable button {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
+	.mark {
+		flex: none;
+		display: inline-grid;
+		place-items: center;
+		color: var(--accent);
 	}
 	li button[aria-current='true'] .title {
 		color: var(--accent);

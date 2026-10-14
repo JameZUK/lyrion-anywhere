@@ -107,9 +107,9 @@
 			{/if}
 			<p class="muted">{tracks.length} tracks · {duration(totalTime)}</p>
 			<div class="actions">
-				<button class="btn primary" onclick={() => app.queueUp({ playlist: id }, 'play')} disabled={!tracks.length}><Icon name="play" size={18} />Play</button>
-				<button class="btn" onclick={() => app.queueUp({ playlist: id }, 'next')} disabled={!tracks.length}><Icon name="playnext" size={18} />Play next</button>
-				<button class="btn" onclick={() => app.queueUp({ playlist: id }, 'add')} disabled={!tracks.length}><Icon name="plus" size={18} />Add to queue</button>
+				<button class="btn primary" onclick={() => app.queueUp({ playlist: id }, 'play')} disabled={!tracks.length || !app.canQueue}><Icon name="play" size={18} />Play</button>
+				<button class="btn" onclick={() => app.queueUp({ playlist: id }, 'next')} disabled={!tracks.length || !app.canQueue}><Icon name="playnext" size={18} />Play next</button>
+				<button class="btn" onclick={() => app.queueUp({ playlist: id }, 'add')} disabled={!tracks.length || !app.canQueue}><Icon name="plus" size={18} />Add to queue</button>
 				{#if app.isAdmin}
 					<button class="btn" onclick={() => { newName = textOf(info?.playlist); renaming = true; }}>Rename</button>
 					<button class="btn" class:danger={confirmDelete} onclick={() => remove(id)}><Icon name="trash" size={18} />{confirmDelete ? 'Tap again to delete' : 'Delete'}</button>
@@ -125,7 +125,7 @@
 		<ol class="q">
 			{#each tracks as t, i (`${i}:${t.id}`)}
 				<li>
-					<button class="main" onclick={() => app.queueUp({ playlist: id }, 'play', i)} aria-label={`Play from ${textOf(t.title)}`}>
+					<button class="main" onclick={() => app.queueUp({ playlist: id }, 'play', i)} disabled={!app.canQueue} aria-label={`Play from ${textOf(t.title)}`}>
 						<span class="num muted">{i + 1}</span>
 						<span class="text">
 							<span class="title ellipsis">{textOf(t.title)}</span>

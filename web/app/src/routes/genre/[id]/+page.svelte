@@ -64,8 +64,8 @@
 		<p class="kind muted">Genre</p>
 		<h1>{name || '…'}</h1>
 		<div class="actions">
-			<button class="btn primary" onclick={() => app.queueUp({ genre: id }, 'play')}><Icon name="play" size={18} />Play all</button>
-			<button class="btn" onclick={() => app.queueUp({ genre: id }, 'add')}><Icon name="plus" size={18} />Add to queue</button>
+			<button class="btn primary" onclick={() => app.queueUp({ genre: id }, 'play')} disabled={!app.canQueue}><Icon name="play" size={18} />Play all</button>
+			<button class="btn" onclick={() => app.queueUp({ genre: id }, 'add')} disabled={!app.canQueue}><Icon name="plus" size={18} />Add to queue</button>
 			<button class="btn" onclick={() => (showMore = true)}><Icon name="more" size={18} />More</button>
 		</div>
 		<LibraryNote />

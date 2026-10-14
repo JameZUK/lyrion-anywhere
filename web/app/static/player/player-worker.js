@@ -17,6 +17,7 @@ const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, 
 const { Presentation } = await import(`./presentation.js${VQ}`);
 const { VisualTap } = await import(`./visual.js${VQ}`);
 const { planTrim } = await import(`./trim.js${VQ}`);
+const { LocalHold, effectiveOutput, parseLocal } = await import(`./local.js${VQ}`);
 
 const TICK_MS = 20;
 // PCM queued in the worklet ahead of playback. Small, so pause/stop feel immediate.
@@ -80,6 +81,11 @@ const presentation = new Presentation();
 let timedStart = false;
 // The hold last sent to the worklet.
 let workletHeld = false;
+// A pause made on this device while the server is out of reach (see local.js): the output
+// is held, and the core and what it tells LMS are left alone.
+const localHold = new LocalHold();
+// The stream being fetched has been received to its end (the page's "On this device").
+let streamReceived = false;
 
 // Output mode: 'worklet' (PCM to an AudioWorklet) or 'media' (fMP4/FLAC segments for an
 // <audio> element on the main thread, which keeps playing in the background on iOS).
@@ -136,6 +142,7 @@ function flushOutput() {
   epoch++;
   presentation.dropRuns();
   timedStart = false;
+  localHold.onFlush(now());
   if (outputMode === 'media') {
     if (segmenter) {
       mediaWaiting = true;
@@ -189,6 +196,15 @@ onmessage = async (e) => {
   } else if (msg.cmd === 'visual') {
     // The page shows the visualiser (or stopped showing it).
     visual.setOn(msg.on === true);
+  } else if (msg.cmd === 'local') {
+    // The page acts on this device while the server is out of reach.
+    const l = parseLocal(msg);
+    if (l?.hold) {
+      localHold.hold();
+      log('paused on this device');
+    } else if (l?.release) {
+      localHold.release(l.release, now());
+    }
   } else if (msg.cmd === 'start-sink') {
     attachSink(msg.port);
   } else if (msg.cmd === 'rate-ready') {
@@ -319,7 +335,9 @@ function onGreeting(g) {
   lastHeard = now();
   void learnFeatures();
   attempt = 0;
-  if (!g.resumed || !player) {
+  // A fresh session (not a resumed one): what the page did here meanwhile must be retold.
+  const fresh = !g.resumed || !player;
+  if (fresh) {
     // A fresh session: LMS sees a new connection, so start from a clean player.
     closeStream();
     outbox.clear();
@@ -341,7 +359,7 @@ function onGreeting(g) {
     const dropped = outbox.dropped;
     log(`resumed after ${Math.round((now() - disconnectedAt) / 100) / 10} s${dropped ? `, ${dropped} queued messages dropped` : ''}`);
   }
-  postMessage({ connection: 'connected', player: { mac: g.mac, name: g.name } });
+  postMessage({ connection: 'connected', fresh, player: { mac: g.mac, name: g.name } });
   for (const bytes of outbox.drain()) ws.send(bytes);
   const os = player.open_stream();
   if (os) sendAck(os[0], os[1]);
@@ -456,6 +474,7 @@ function closeStream() {
 
 function openStream(n) {
   closeStream();
+  streamReceived = false;
   const id = ++streamId;
   stream = { id, n, controller: null };
   fetchStream(id, n);
@@ -501,6 +520,7 @@ async function fetchStream(id, n) {
         const { done, value } = await reader.read();
         if (!current()) return;
         if (done) {
+          streamReceived = true;
           player.on_stream_end(now());
           runActions();
           return;
@@ -566,17 +586,22 @@ function tick() {
 
   const status = JSON.parse(player.status_json());
   if (status.output === 'Playing') seekMark('started');
+  // Held here: the outputs act as if paused ('Held'); the core plays on, unheard.
+  const output = effectiveOutput(status.output, localHold.update(status.output, now()));
   if (outputMode === 'media') {
-    mediaTick(status.output);
+    mediaTick(output);
   } else {
-    holdWorklet(status.output);
+    holdWorklet(output);
     workletTick();
   }
-  lastOutput = status.output;
+  lastOutput = output;
   // The newest visualiser frame now being heard.
   const frame = visual.due(played, now());
   if (frame) postMessage({ visual: frame }, [frame.buffer]);
   status.connection = open ? 'connected' : 'reconnecting';
+  status.held = localHold.held;
+  status.received = streamReceived;
+  status.track = player.pulled_track() ?? null;
   // Memory diagnostics: iOS reloads a page whose process uses too much memory.
   status.wasm_bytes = wasmMemory ? wasmMemory.buffer.byteLength : 0;
   status.mode = outputMode;
@@ -592,7 +617,8 @@ function holdWorklet(output) {
   if (!sink) return;
   const timed = timedStart && player.start_due() !== undefined;
   if (timedStart && !timed) timedStart = false;
-  if (timed) return;
+  // A timed start releases the worklet itself, unless this device holds the output.
+  if (timed && output !== 'Held') return;
   const hold = output !== 'Playing';
   if (hold !== workletHeld) {
     workletHeld = hold;
@@ -631,8 +657,8 @@ function mediaTick(output) {
   // The core reports e.g. "Paused { until: None }": compare by prefix.
   // Loaded counts as paused: audio is queued ahead of a synced start, which must not play
   // until the start.
-  const paused = output.startsWith('Paused') || output === 'Loaded';
-  const wasPaused = String(lastOutput).startsWith('Paused') || lastOutput === 'Loaded';
+  const paused = output.startsWith('Paused') || output === 'Loaded' || output === 'Held';
+  const wasPaused = String(lastOutput).startsWith('Paused') || lastOutput === 'Loaded' || lastOutput === 'Held';
   if (paused && !wasPaused) postMessage({ media: { pause: true } });
   if (output === 'Playing' && lastOutput !== 'Playing') postMessage({ media: { play: true } });
   if (mediaWaiting) return;

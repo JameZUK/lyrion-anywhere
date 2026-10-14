@@ -10,6 +10,7 @@ import { PlayheadSmoother, outputClock } from './output-clock';
 import { MEDIA_TYPE, MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
 import { Reporter, buildReport, diagnosticsSender } from './diagnostics';
 import { fadeGain } from '$lib/lms/sleep';
+import { mayResumeMedia } from './local-plan';
 import {
 	connection,
 	effectiveQuality,
@@ -58,6 +59,12 @@ export interface DeviceStatus {
 	input_bytes?: number;
 	wasm_bytes?: number;
 	mode?: string;
+	/** Paused here while the server is out of reach (the output is held; see local.js). */
+	held?: boolean;
+	/** The stream being fetched has been received to its end. */
+	received?: boolean;
+	/** The core's sequence number of the track last handed to the output. */
+	track?: number | null;
 }
 
 /** A player file, with the build version so a stale cached copy is never used. */
@@ -89,6 +96,10 @@ class DevicePlayer {
 	#auto = false;
 	/** Called when the player is connected (the app selects it). */
 	onConnected: ((mac: string) => void) | null = null;
+	/** The last connection was a fresh session (LMS saw a new player), not a resumed one. */
+	freshSession = $state(false);
+	/** A pause made here is holding the output (until the worker lets it go). */
+	#holding = false;
 	/** "Volume on this device" in Settings. */
 	volumeSetting = $state<VolumeSetting>(loadVolumeSetting());
 	/** "Streaming quality in this browser" in Settings, and the level it means now. */
@@ -254,7 +265,7 @@ class DevicePlayer {
 	async #recover() {
 		const media = this.#media;
 		if (media) {
-			if (media.audio.paused && this.detail.output === 'Playing') {
+			if (media.audio.paused && this.detail.output === 'Playing' && mayResumeMedia(this.detail.output, this.held)) {
 				media.resume();
 				this.#note('media element resumed');
 			}
@@ -270,6 +281,22 @@ class DevicePlayer {
 				this.#note(`audio could not resume: ${(e as Error).message}; tap Play on this device`);
 			}
 		}
+	}
+
+	/** Is the output held by a pause made here? */
+	get held(): boolean {
+		return this.#holding || this.detail.held === true;
+	}
+
+	/**
+	 * Pause (`hold`) or resume this device's own output while the server is out of reach,
+	 * keeping the position; or let a hold go once LMS has taken over (see local.js).
+	 */
+	local(m: { hold: true } | { release: 'now' | 'flush' | 'paused' }) {
+		if (!this.#worker) return;
+		this.#holding = 'hold' in m;
+		this.#worker.postMessage({ cmd: 'local', ...m });
+		if (this.#holding) this.#media?.pause();
 	}
 
 	/** What this browser can do about volume, for the mode in use (or planned). */
@@ -579,10 +606,11 @@ class DevicePlayer {
 		const resume = async () => {
 			void this.#keepAlive.start();
 			// Not while LMS has the player paused: that would play the old queued audio.
-			if (!String(this.detail.output ?? '').startsWith('Paused')) this.#media?.resume();
+			if (mayResumeMedia(String(this.detail.output ?? ''), this.held)) this.#media?.resume();
 			await this.#ctx?.resume().catch(() => {});
 			const ctxOk = !this.#ctx || this.#ctx.state === 'running';
-			const mediaOk = !this.#media || !this.#media.audio.paused;
+			// Held by a pause made here: the element is meant to be paused.
+			const mediaOk = !this.#media || !this.#media.audio.paused || this.held;
 			if (!ctxOk || !mediaOk || !this.needsTap) {
 				if (!this.needsTap) for (const t of events) document.removeEventListener(t, onTap, true);
 				return;
@@ -620,6 +648,7 @@ class DevicePlayer {
 		this.#unsubscribe = null;
 		this.#worker?.terminate();
 		this.#worker = null;
+		this.#holding = false;
 		this.#ctx?.close().catch(() => {});
 		this.#ctx = null;
 		this.state = final === 'error' ? 'error' : this.state === 'off' ? 'off' : 'stopped';
@@ -802,7 +831,7 @@ class DevicePlayer {
 			// A synced start: play at that moment, not at the worker's next tick after it.
 			const wait = m.startAt - (performance.timeOrigin + performance.now());
 			clearTimeout(this.#startTimer);
-			if (wait > 0 && wait < 30_000) this.#startTimer = setTimeout(() => this.#media === media && media.resume(), wait);
+			if (wait > 0 && wait < 30_000) this.#startTimer = setTimeout(() => this.#media === media && mayResumeMedia('Playing', this.held) && media.resume(), wait);
 		}
 		if (m.flush) {
 			clearTimeout(this.#startTimer);
@@ -847,6 +876,7 @@ class DevicePlayer {
 		if (m.media && typeof m.media === 'object') await this.#onMedia(m.media as Record<string, unknown>);
 		if (m.connection === 'connected') {
 			this.state = 'connected';
+			this.freshSession = m.fresh === true;
 			const p = m.player as { mac?: string; name?: string } | undefined;
 			if (p?.mac && p.mac !== this.mac) {
 				this.mac = p.mac;
