@@ -150,12 +150,14 @@ test('setting a sleep timer ticks', async () => {
 	expect(buzz).toHaveBeenCalledWith(PATTERNS.sleep);
 });
 
-test('the Settings switch turns haptics on and off, and is disabled without the API', async () => {
+test('the Settings switch (Settings › Now playing) turns haptics on and off, and is disabled without the API', async () => {
 	vi.stubGlobal('fetch', async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }));
-	const { default: Settings } = await import('../src/routes/settings/+page.svelte');
+	const { default: Settings } = await import('$lib/settings/NowPlayingSettings.svelte');
 	const r = render(Settings);
-	const sw = screen.getByRole('switch', { name: 'Haptics' }) as HTMLInputElement;
-	expect(sw.checked).toBe(false);
+	const sw = screen.getByRole('switch', { name: 'Haptics' });
+	expect(sw.getAttribute('aria-checked')).toBe('false');
+	// The state in words, not colour alone.
+	expect(sw.textContent).toContain('Off');
 	await fireEvent.click(sw);
 	expect(haptics.enabled).toBe(true);
 	expect(localStorage.getItem(HAPTICS_KEY)).toBe('1');
@@ -164,7 +166,7 @@ test('the Settings switch turns haptics on and off, and is disabled without the 
 	r.unmount();
 	withVibrate(false);
 	render(Settings);
-	const off = screen.getByRole('switch', { name: 'Haptics' }) as HTMLInputElement;
+	const off = screen.getByRole('switch', { name: 'Haptics' }) as HTMLButtonElement;
 	expect(off.disabled).toBe(true);
 	expect(screen.getByText(/can’t vibrate/)).toBeTruthy();
 });

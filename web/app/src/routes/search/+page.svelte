@@ -197,6 +197,8 @@
 	}
 	.box:focus-within {
 		border-color: var(--accent);
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
 	}
 	input {
 		flex: 1;

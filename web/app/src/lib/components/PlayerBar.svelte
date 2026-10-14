@@ -7,7 +7,6 @@
 	import Art from './Art.svelte';
 	import Icon from './Icon.svelte';
 	import OutputButton from './OutputButton.svelte';
-	import PlayingElsewhere from './PlayingElsewhere.svelte';
 	import { playerLabel } from '$lib/lms/sync';
 	import { device } from '$lib/player/device.svelte';
 	import { DEVICE_BUTTONS_NOTE } from '$lib/player/volume';
@@ -127,7 +126,6 @@
 
 <footer class="bar" aria-label="Player">
 	{#if thumb}<div class="tint" aria-hidden="true"><Art path={thumb} alt="" rounded="0" /></div>{/if}
-	<div class="strip"><PlayingElsewhere compact /></div>
 	<a
 		class="now"
 		href="#/"
@@ -322,13 +320,6 @@
 		margin: 0;
 		font-size: 0.75rem;
 		line-height: 1.2;
-	}
-	/* "Playing on …": a strip along the top edge of the bar. */
-	.strip {
-		position: absolute;
-		left: 0;
-		right: 0;
-		bottom: 100%;
 	}
 
 	/* Phones: a compact bar with title and play/pause; the rest is on the Now playing page. */

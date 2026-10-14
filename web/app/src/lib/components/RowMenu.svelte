@@ -13,6 +13,8 @@
 		danger?: boolean;
 		/** A hook for tests and screenshots (`data-action`). */
 		id?: string;
+		/** One of a set of choices (a menuitemradio), chosen or not. */
+		checked?: boolean;
 	}
 </script>
 
@@ -46,7 +48,7 @@
 	let menu = $state<HTMLDivElement>();
 	let trigger = $state<HTMLButtonElement>();
 	const uid = `rm-${Math.random().toString(36).slice(2, 9)}`;
-	const items = () => [...(menu?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])];
+	const items = () => [...(menu?.querySelectorAll<HTMLButtonElement>('[role^="menuitem"]') ?? [])];
 
 	export function show(focus: 'first' | 'last' = 'first') {
 		open = true;
@@ -132,7 +134,7 @@
 		<div class="menu" role="menu" id={`${uid}-menu`} aria-labelledby={uid} bind:this={menu} tabindex="-1" onkeydown={menuKey}>
 			{#each ordered as a, i (a.label)}
 				{#if a.danger && i > 0 && !ordered[i - 1]?.danger}<hr aria-hidden="true" />{/if}
-				<button role="menuitem" tabindex="-1" class:danger={a.danger} onclick={() => choose(a)} aria-keyshortcuts={a.shortcut} aria-disabled={a.disabled ? 'true' : undefined} {...a.disabled ? a.why ?? {} : {}} data-action={a.id}>
+				<button role={a.checked === undefined ? 'menuitem' : 'menuitemradio'} aria-checked={a.checked} tabindex="-1" class:danger={a.danger} onclick={() => choose(a)} aria-keyshortcuts={a.shortcut} aria-disabled={a.disabled ? 'true' : undefined} {...a.disabled ? a.why ?? {} : {}} data-action={a.id}>
 					<Icon name={a.icon} size={18} /><span>{a.label}</span>{#if a.shortcut}<kbd class="muted" aria-hidden="true">{a.shortcut}</kbd>{/if}
 				</button>
 			{/each}

@@ -1,8 +1,8 @@
 // Player-first (SPEC D20): the output button opens "Play on…", which lists this device (ticked
 // when in use) and the other players with what each is playing. Wave 3.5: tapping a row plays
 // on that player; moving the playback there is in the row's ⋯; the mini player says which
-// player is in use ("on Lounge"), and the old "Playing on" strip shows only while playback
-// is moving.
+// player is in use ("on Lounge"); the old "Playing on" strip is gone, and moving playback
+// is said in the one status line.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
@@ -10,7 +10,7 @@ vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.sv
 const fake = await import('./helpers/fake-app.svelte');
 const { default: OutputButton } = await import('$lib/components/OutputButton.svelte');
 const { default: PlayerSwitcher } = await import('$lib/components/PlayerSwitcher.svelte');
-const { default: PlayingElsewhere } = await import('$lib/components/PlayingElsewhere.svelte');
+const { default: StatusSlot } = await import('$lib/components/StatusSlot.svelte');
 const { default: PlayerBar } = await import('$lib/components/PlayerBar.svelte');
 const { choose, openMenu } = await import('./helpers/menu');
 const { device } = await import('$lib/player/device.svelte');
@@ -178,14 +178,14 @@ describe('which player is in use (Wave 3.5: no "Playing on" strip)', () => {
 		expect(r.container.querySelector('.sub')!.textContent).toContain('Choose a player');
 	});
 
-	test('the strip shows only while playback is moving, and says where to', () => {
+	test('only while playback is moving does the status line say so, and where to', () => {
 		fake.app.playerId = LOUNGE;
-		let r = render(PlayingElsewhere);
-		expect(r.container.querySelector('[data-strip]')).toBeNull();
+		let r = render(StatusSlot);
+		expect(r.container.querySelector('[data-status]')).toBeNull();
 		r.unmount();
 		fake.app.moving = 'Study';
-		r = render(PlayingElsewhere);
-		expect(r.getByRole('status').textContent).toContain('Moving playback to Study…');
+		r = render(StatusSlot);
+		expect(r.container.querySelector('[data-status="moving"]')!.textContent).toContain('Moving playback to Study…');
 		expect(r.queryAllByRole('button')).toHaveLength(0);
 		fake.app.moving = '';
 	});

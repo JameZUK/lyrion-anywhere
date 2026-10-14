@@ -18,13 +18,13 @@ export async function openMenu(trigger: Name, scope?: HTMLElement): Promise<HTML
 /** Open the menu named `trigger` and choose `item` in it. */
 export async function choose(trigger: Name, item: Name, scope?: HTMLElement): Promise<void> {
 	const menu = await openMenu(trigger, scope);
-	await fireEvent.click(within(menu).getByRole('menuitem', { name: item }));
+	const q = within(menu);
+	await fireEvent.click(q.queryByRole('menuitem', { name: item }) ?? q.getByRole('menuitemradio', { name: item }));
 }
 
 /** The names of the items in the menu named `trigger` (it is left open). */
 export async function menuItems(trigger: Name, scope?: HTMLElement): Promise<string[]> {
 	const menu = await openMenu(trigger, scope);
-	return within(menu)
-		.getAllByRole('menuitem')
+	return [...menu.querySelectorAll<HTMLElement>('[role^="menuitem"]')]
 		.map((m) => (m.querySelector('span')?.textContent ?? m.textContent ?? '').trim());
 }

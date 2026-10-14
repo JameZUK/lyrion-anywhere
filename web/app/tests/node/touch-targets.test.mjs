@@ -39,7 +39,11 @@ test('Wave 2 library and queue controls keep 44 px targets', () => {
 	assert.ok(px(rule(read('routes/search/+page.svelte'), '.term {'), 'min-height') >= 44);
 	assert.ok(px(rule(read('lib/components/SearchHit.svelte'), '.main {'), 'min-height') >= 44);
 	assert.ok(px(rule(read('lib/components/QueueList.svelte'), 'li button {'), 'min-height') >= 44);
-	assert.ok(px(rule(read('routes/library/+page.svelte'), '.browse a {'), 'min-height') >= 44);
+	// Library's sections are the shared chips (44 px, above), one row that scrolls sideways.
+	assert.match(read('routes/library/+page.svelte'), /<Chips[\s\S]*?\bscroll\b[\s\S]*?\/>/);
+	// The settings pickers and index rows.
+	assert.ok(px(rule(read('lib/components/PickerRow.svelte'), '.choice {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('routes/settings/+page.svelte'), '.row {'), 'min-height') >= 44);
 	// The A–Z strip is 44 px wide; dragging along it picks a letter (and the keyboard reaches each).
 	assert.ok(px(rule(read('lib/components/AzScroller.svelte'), '.strip {'), 'width') >= 44);
 });

@@ -1,5 +1,6 @@
 <script lang="ts">
 	// Settings › Listening history: on or off, view it, clear it (docs/PRIVACY.md).
+	import Switch from './Switch.svelte';
 	import { api } from '$lib/state/app.svelte';
 	import { me } from '$lib/state/me';
 	import * as cmd from '$lib/lms/commands';
@@ -103,15 +104,9 @@
 	const months = $derived(Math.round(days / 30.4));
 </script>
 
-<p class="muted">
-	What you play here, on this device or offline, is remembered for your Home shelves and stations: which track, when, and for how long. It’s kept for {months} months, only for you, and never shared with
-	other users.
-</p>
+<p class="muted">For your Home shelves and stations: kept {months} months, only for you, and never shared with other users.</p>
 {#if enabled !== null}
-	<label class="toggle">
-		<input type="checkbox" checked={enabled} onchange={toggle} />
-		Keep my listening history
-	</label>
+	<Switch checked={enabled} onchange={() => void toggle()} label="Keep my listening history" data-history-switch />
 {/if}
 <div class="buttons">
 	<button class="btn" onclick={show} disabled={busy}>View history</button>
@@ -139,12 +134,6 @@
 {/if}
 
 <style>
-	.toggle {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		margin: 0.5rem 0;
-	}
 	.buttons {
 		display: flex;
 		flex-wrap: wrap;

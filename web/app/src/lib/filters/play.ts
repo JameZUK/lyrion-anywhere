@@ -34,7 +34,7 @@ export async function playFilter(deps: FilterPlayDeps, id: number, shuffle: bool
 		return `Couldn’t read the filter: ${(e as Error).message}`;
 	}
 	const commands = filterPlayCommands(ids, shuffle);
-	if (!commands.length) return 'No albums match this filter.';
+	if (!commands.length) return 'No albums match this smart playlist.';
 	for (const c of commands) {
 		try {
 			await deps.send(c);

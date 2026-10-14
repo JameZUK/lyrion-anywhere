@@ -70,8 +70,8 @@ export class ReachabilityTracker {
 }
 
 export const BUSY_TEXT = 'Your music server is busy. Waiting for it…';
-export const UNREACHABLE_TEXT = 'Can’t reach your server.';
-export const LOCAL_TEXT = 'Can’t reach your server. Playing from this device.';
+export const UNREACHABLE_TEXT = 'Can’t reach your music server.';
+export const LOCAL_TEXT = 'Can’t reach your music server. Playing from this device.';
 
 /** The connection message's element id, for the controls it explains. */
 export const CONNECTION_ID = 'connection-status';

@@ -48,7 +48,7 @@
 	{:else if status === 'error'}
 		<p class="error">{error}</p>
 	{:else if status === 'missing' || !entry}
-		<p class="muted">This plugin isn’t in the music server’s menu any more.</p>
+		<p class="muted">This plugin isn’t in your music server’s menu any more.</p>
 	{:else}
 		{#key entry.id}
 			<MenuView {start} {initial} title={entry.text} root={cmd.homeMenu()} />

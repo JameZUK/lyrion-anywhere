@@ -43,7 +43,7 @@
 				: shelf.type === 'genre'
 					? genreName || 'Genre'
 					: shelf.type === 'filter'
-						? (smart?.name ?? 'Smart filter')
+						? (smart?.name ?? 'Smart playlist')
 						: SHELF_LABELS[shelf.type],
 	);
 	let playMessage = $state('');
@@ -58,7 +58,7 @@
 		new: 'Nothing has been added to the library yet.',
 		random: 'No albums in the library yet.',
 		genre: 'No albums in this genre.',
-		filter: 'No albums match this filter.',
+		filter: 'No albums match this smart playlist.',
 	};
 
 	async function byIds(ids: number[]): Promise<Album[]> {

@@ -11,6 +11,7 @@
 		note = '',
 		disabled = false,
 		icon,
+		compact = false,
 		...rest
 	}: {
 		checked: boolean;
@@ -20,6 +21,8 @@
 		disabled?: boolean;
 		/** Something before the label (e.g. a player's icon). */
 		icon?: import('svelte').Snippet;
+		/** Just the switch and its state (in a row that already names it); the label is its name. */
+		compact?: boolean;
 	} & Omit<HTMLButtonAttributes, 'onchange' | 'role' | 'aria-checked'> = $props();
 	const uid = $props.id();
 </script>
@@ -27,6 +30,7 @@
 <button
 	type="button"
 	class="switch"
+	class:compact
 	role="switch"
 	aria-checked={checked}
 	aria-label={label}
@@ -36,10 +40,12 @@
 	{...rest}
 >
 	{#if icon}<span class="icon">{@render icon()}</span>{/if}
-	<span class="words">
-		<span class="label">{label}</span>
-		{#if note}<span class="note muted" id={`${uid}-note`}>{note}</span>{/if}
-	</span>
+	{#if !compact}
+		<span class="words">
+			<span class="label">{label}</span>
+			{#if note}<span class="note muted" id={`${uid}-note`}>{note}</span>{/if}
+		</span>
+	{/if}
 	<span class="state" aria-hidden="true">{checked ? 'On' : 'Off'}</span>
 	<span class="track" class:on={checked} aria-hidden="true"><span class="knob"></span></span>
 </button>
@@ -59,6 +65,10 @@
 		font: inherit;
 		text-align: left;
 		cursor: pointer;
+	}
+	.switch.compact {
+		width: auto;
+		flex: none;
 	}
 	.switch:hover:not(:disabled) {
 		background: var(--bg-sunken);

@@ -23,6 +23,7 @@
 		type SBMenu,
 	} from '$lib/lms/slimbrowse';
 	import Art from './Art.svelte';
+	import RowMenu, { type RowAction } from './RowMenu.svelte';
 	import Icon from './Icon.svelte';
 
 	let {
@@ -264,6 +265,24 @@
 		}
 	}
 
+	/**
+	 * A row's ⋯ (Wave 3.5: one trailing control per row): play next, add to the queue, save as a
+	 * station, pin to Home and the item's own "more", where the menu offers each.
+	 */
+	function rowActions(menu: SBMenu, item: SBItem, i: number, kind: string): RowAction[] {
+		const out: RowAction[] = [];
+		const off = !app.canQueue;
+		if (kind === 'playable' || kind === 'folder') {
+			if (resolveAction(menu, item, 'add-hold') || resolveAction(menu, item, 'insert'))
+				out.push({ label: 'Play next', icon: 'playnext', run: () => act(menu, item, resolveAction(menu, item, 'add-hold') ? 'add-hold' : 'insert', 'Play next'), disabled: off });
+			if (resolveAction(menu, item, 'add')) out.push({ label: 'Add to queue', icon: 'plus', run: () => act(menu, item, 'add', 'Add to queue'), disabled: off });
+		}
+		if ((kind === 'playable' || kind === 'action') && stationOf(menu, item, i)) out.push({ label: 'Save as a station', icon: 'radio', run: () => void saveStation(menu, item, i) });
+		if (kind === 'folder' && pinOf(menu, item, i)) out.push({ label: 'Pin to Home', icon: 'shelves', run: () => void pin(menu, item, i) });
+		if (resolveAction(menu, item, 'more')) out.push({ label: 'More…', icon: 'more', run: () => act(menu, item, 'more', 'More') });
+		return out;
+	}
+
 	function icon(item: SBItem): string | null {
 		const v = iconOf(item);
 		return imagePath(v, 96) ?? coverPath(v, 96);
@@ -304,23 +323,8 @@
 							{#if kind === 'folder'}<span class="chev" aria-hidden="true">›</span>{/if}
 							{#if kind === 'action'}<span class="run" aria-hidden="true"><Icon name="play" size={14} /></span>{/if}
 						</button>
-						{#if kind === 'playable' || kind === 'folder'}
-							{#if resolveAction(top.menu, item, 'add-hold') || resolveAction(top.menu, item, 'insert')}
-								<button class="icon-btn" aria-label={`Play ${textOf(item.text)} next`} onclick={() => act(top.menu, item, resolveAction(top.menu, item, 'add-hold') ? 'add-hold' : 'insert', 'Play next')} disabled={!app.canQueue}><Icon name="playnext" size={18} /></button>
-							{/if}
-							{#if resolveAction(top.menu, item, 'add')}
-								<button class="icon-btn" aria-label={`Add ${textOf(item.text)} to the queue`} onclick={() => act(top.menu, item, 'add', 'Add to queue')} disabled={!app.canQueue}><Icon name="plus" size={18} /></button>
-							{/if}
-						{/if}
-						{#if (kind === 'playable' || kind === 'action') && stationOf(top.menu, item, i)}
-							<button class="icon-btn" aria-label={`Save ${textOf(item.text)} as a station`} onclick={() => saveStation(top.menu, item, i)}><Icon name="radio" size={18} /></button>
-						{/if}
-						{#if kind === 'folder' && pinOf(top.menu, item, i)}
-							<button class="icon-btn" aria-label={`Pin ${textOf(item.text)} to Home`} onclick={() => pin(top.menu, item, i)}><Icon name="shelves" size={18} /></button>
-						{/if}
-						{#if resolveAction(top.menu, item, 'more')}
-							<button class="icon-btn" aria-label={`More options for ${textOf(item.text)}`} onclick={() => act(top.menu, item, 'more', 'More')}><Icon name="more" size={18} /></button>
-						{/if}
+						{@const acts = rowActions(top.menu, item, i, kind)}
+						{#if acts.length}<RowMenu label={`More options for ${textOf(item.text)}`} actions={acts} />{/if}
 					{/if}
 				</li>
 			{:else}

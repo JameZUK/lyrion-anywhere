@@ -89,7 +89,7 @@ export function afterEnd(q: QueueState, available: (i: number) => boolean, fromS
 }
 
 /** Why playback stopped at the end of a track, when the next one isn't here. */
-export const NEXT_NEEDS_SERVER = 'Next track needs your server.';
+export const NEXT_NEEDS_SERVER = 'Next track needs your music server.';
 
 /** Which controls work now. `jump` says whether a queue entry can be played. */
 export interface Gates {

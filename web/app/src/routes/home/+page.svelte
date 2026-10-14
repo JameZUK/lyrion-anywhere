@@ -56,7 +56,7 @@
 				: s.type === 'genre'
 					? `Genre: ${genres.find((x) => x.id === s.id)?.genre ?? s.id}`
 					: s.type === 'filter'
-						? `Smart filter: ${filters.find((x) => x.id === s.id)?.name ?? s.id}`
+						? `Smart playlist: ${filters.find((x) => x.id === s.id)?.name ?? s.id}`
 						: L.SHELF_LABELS[s.type];
 
 	function change(next: HomeLayout) {

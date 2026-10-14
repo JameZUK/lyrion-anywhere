@@ -36,7 +36,7 @@
 			if (was) await me.updateFilter(was.id, spec);
 			else await me.createFilter(spec);
 		} catch (e) {
-			return `Couldn’t save the filter: ${(e as Error).message}`;
+			return `Couldn’t save the smart playlist: ${(e as Error).message}`;
 		}
 		editing = undefined;
 		message = was ? `Saved “${spec.name}”.` : `Added “${spec.name}”.`;
@@ -68,8 +68,8 @@
 
 <div class="filters" data-filters-view>
 	<div class="head">
-		<svelte:element this={`h${level}`} class="title">Smart filters</svelte:element>
-		<button class="btn primary" onclick={() => (editing = null)} disabled={full || filters === null} data-filter-new><Icon name="plus" size={18} />New filter</button>
+		<svelte:element this={`h${level}`} class="title">Smart playlists</svelte:element>
+		<button class="btn primary" onclick={() => (editing = null)} disabled={full || filters === null} data-filter-new><Icon name="plus" size={18} />New smart playlist</button>
 	</div>
 	<p class="muted small">Albums chosen by rules: genres, a decade, an artist, compilations. Kept for your account on every device{full ? `. You have the most allowed (${FILTER_LIMITS.maxFilters}).` : '.'}</p>
 	<p class="status" role="status" data-filter-status>{message}</p>
@@ -79,7 +79,7 @@
 	{:else if filters === null}
 		<p class="muted">Loading…</p>
 	{:else if !filters.length}
-		<p class="muted">No smart filters yet. Use New filter to make one.</p>
+		<p class="muted">No smart playlists yet. Use New smart playlist to make one.</p>
 	{:else}
 		<ul class="list">
 			{#each filters as f (f.id)}
@@ -108,7 +108,7 @@
 	<FilterEditor initial={editing} onsave={save} oncancel={() => (editing = undefined)} />
 {/if}
 {#if deleting}
-	<ConfirmDialog title={`Delete “${deleting.name}”?`} message="The filter is removed from every device. Your music isn’t touched." confirmLabel="Delete" danger onconfirm={remove} oncancel={() => (deleting = null)} />
+	<ConfirmDialog title={`Delete “${deleting.name}”?`} message="The smart playlist is removed from every device. Your music isn’t touched." confirmLabel="Delete" danger onconfirm={remove} oncancel={() => (deleting = null)} />
 {/if}
 
 <style>

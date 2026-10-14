@@ -113,7 +113,7 @@
 </script>
 
 <section class="page">
-	<BackButton parent="/albums" />
+	<BackButton parent="/library" />
 	{#if error}
 		<p class="error">{error}</p>
 	{:else if album && albumId !== null}

@@ -143,7 +143,7 @@ test('a smart filter shelf: picked from the user’s filters, saved by id', asyn
 	await fireEvent.change(screen.getByLabelText('Add a shelf'), { target: { value: 'filter' } });
 	await fireEvent.change(screen.getByLabelText('Which'), { target: { value: '6' } });
 	await fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-	expect(screen.getByRole('list', { name: 'Home shelves' }).textContent).toContain('Smart filter: Sixties soul');
+	expect(screen.getByRole('list', { name: 'Home shelves' }).textContent).toContain('Smart playlist: Sixties soul');
 	await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 	await waitFor(() => expect(saves).toHaveLength(1));
 	expect(saves[0]!.shelves.at(-1)).toEqual({ type: 'filter', id: 6 });

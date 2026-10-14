@@ -400,8 +400,8 @@ describe('the visualiser, from ⋮', () => {
 		nowPlaying.setLayout('lyrics');
 		const r = render(NowPlaying);
 		await tick();
-		const toast = r.container.querySelector('[data-np-toast]')!;
-		expect(toast.getAttribute('role')).toBe('status');
+		// The one snackbar says it (Wave 3.5: no toast of its own), in its live region.
+		const toast = r.container.querySelector('[data-np-toast] [role=status]')!;
 		expect(toast.getAttribute('aria-live')).toBe('polite');
 		const sheet = await chooser(r.container);
 		expect(sheet.getAttribute('aria-label')).toBe('Visualiser style');
@@ -424,7 +424,7 @@ describe('the visualiser, from ⋮', () => {
 			expect(sheet.querySelector('[data-style-choice="bars"]')!.getAttribute('aria-pressed')).toBe('true');
 			await fireEvent.click(sheet.querySelector('[data-style-off]')!);
 			expect(nowPlaying.visualiser).toBe(false);
-			const toast = r.container.querySelector('[data-np-toast]')!;
+			const toast = r.container.querySelector('[data-np-toast] [role=status]')!;
 			expect(toast.textContent).toBe('Visualiser off');
 			vi.advanceTimersByTime(2000);
 			flushSync();
@@ -441,7 +441,7 @@ describe('the visualiser, from ⋮', () => {
 		await tick();
 		swipe(r.container.querySelector('[data-visualiser]')!, -100);
 		expect(r.container.querySelector('[data-visualiser]')!.getAttribute('data-visualiser')).toBe('scope');
-		expect(r.container.querySelector('[data-np-toast]')!.textContent).toBe('Scope');
+		expect(r.container.querySelector('[data-np-toast] [role=status]')!.textContent).toBe('Scope');
 		r.unmount();
 	});
 

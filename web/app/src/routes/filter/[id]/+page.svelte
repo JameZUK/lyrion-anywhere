@@ -38,7 +38,7 @@
 			const f = (await me.filters()).find((x) => x.id === id) ?? null;
 			if (filterId !== id) return;
 			filter = f;
-			if (!f) error = 'This filter has been deleted, or isn’t yours.';
+			if (!f) error = 'This smart playlist has been deleted, or isn’t yours.';
 		} catch (e) {
 			error = (e as Error).message;
 		}
@@ -77,7 +77,7 @@
 			reset();
 			filter = null;
 			if (id === null) {
-				error = 'Not a filter.';
+				error = 'Not a smart playlist.';
 				return;
 			}
 			void loadFilter(id);
@@ -99,7 +99,7 @@
 		try {
 			await me.updateFilter(filter.id, spec);
 		} catch (e) {
-			return `Couldn’t save the filter: ${(e as Error).message}`;
+			return `Couldn’t save the smart playlist: ${(e as Error).message}`;
 		}
 		editing = false;
 		filter = { ...spec, id: filter.id };
@@ -123,8 +123,8 @@
 
 <section class="page">
 	<BackButton parent="/library" />
-	<p class="kind muted">Smart filter</p>
-	<h1>{filter?.name ?? (error ? 'Smart filter' : '…')}</h1>
+	<p class="kind muted">Smart playlist</p>
+	<h1>{filter?.name ?? (error ? 'Smart playlist' : '…')}</h1>
 	{#if filter}
 		<p class="muted rules">{filter.rules.map((r) => ruleSummary(r)).join(' · ')}</p>
 		<div class="actions">
@@ -145,7 +145,7 @@
 	{#if error}<p class="error">{error}</p>{/if}
 	{#if total !== null}<p class="muted">{total.toLocaleString('en-GB')} {total === 1 ? 'album' : 'albums'}</p>{/if}
 	{#if total === 0}
-		<p class="muted">No albums match this filter.</p>
+		<p class="muted">No albums match this smart playlist.</p>
 	{:else}
 		<AlbumGrid {albums} more={total !== null && next < total ? more : null} />
 	{/if}
@@ -155,7 +155,7 @@
 	<FilterEditor initial={filter} onsave={save} oncancel={() => (editing = false)} />
 {/if}
 {#if deleting && filter}
-	<ConfirmDialog title={`Delete “${filter.name}”?`} message="The filter is removed from every device. Your music isn’t touched." confirmLabel="Delete" danger onconfirm={remove} oncancel={() => (deleting = false)} />
+	<ConfirmDialog title={`Delete “${filter.name}”?`} message="The smart playlist is removed from every device. Your music isn’t touched." confirmLabel="Delete" danger onconfirm={remove} oncancel={() => (deleting = false)} />
 {/if}
 
 <style>

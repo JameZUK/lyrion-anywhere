@@ -19,7 +19,7 @@ export const SHELF_LABELS: Record<ShelfType, string> = {
 	station: 'Station',
 	menu: 'Pinned menu',
 	genre: 'Genre',
-	filter: 'Smart filter',
+	filter: 'Smart playlist',
 };
 
 /** The Home every user starts with. */

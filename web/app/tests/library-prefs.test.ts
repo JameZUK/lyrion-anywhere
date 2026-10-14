@@ -1,6 +1,6 @@
 // Library's remembered choice (chip, album order, grid or list): per device, validated, and
 // harmless when storage is blocked or holds something odd.
-import { DEFAULT_LIBRARY, LIBRARY_KEY, LIBRARY_SORTS, loadLibraryPrefs, saveLibraryPrefs } from '$lib/library/prefs';
+import { CHIPS, DEFAULT_LIBRARY, LIBRARY_KEY, LIBRARY_SORTS, loadLibraryPrefs, openSection, saveLibraryPrefs } from '$lib/library/prefs';
 
 function memory() {
 	const m = new Map<string, string>();
@@ -21,19 +21,16 @@ test('a saved choice comes back', () => {
 test('nothing saved, or junk, gives the defaults', () => {
 	const s = memory();
 	expect(loadLibraryPrefs(s)).toEqual(DEFAULT_LIBRARY);
-	for (const junk of ['{', 'null', '7', '"x"', '[]', '{"chip":"downloads","sort":"recentlyplayed","view":"carousel"}', '{"chip":{"x":1}}']) {
+	for (const junk of ['{', 'null', '7', '"x"', '[]', '{"chip":"downloaded","sort":"recentlyplayed","view":"carousel"}', '{"chip":{"x":1}}', '{"chip":"__proto__"}']) {
 		s.m.set(LIBRARY_KEY, junk);
 		const p = loadLibraryPrefs(s);
-		expect(['albums', 'artists', 'playlists', 'favourites']).toContain(p.chip);
+		expect(CHIPS).toContain(p.chip);
 		expect(LIBRARY_SORTS).toContain(p.sort);
 		expect(['grid', 'list']).toContain(p.view);
 	}
-	// Downloads is Android's: never a web chip.
-	s.m.set(LIBRARY_KEY, '{"chip":"downloads"}');
-	expect(loadLibraryPrefs(s).chip).toBe('albums');
-	// Random is not one of Library's orders.
-	s.m.set(LIBRARY_KEY, '{"sort":"random"}');
-	expect(loadLibraryPrefs(s).sort).toBe(DEFAULT_LIBRARY.sort);
+	// Wave 3.5: Downloads is one of the web's sections, and Random one of Albums' orders.
+	s.m.set(LIBRARY_KEY, '{"chip":"downloads","sort":"random"}');
+	expect(loadLibraryPrefs(s)).toMatchObject({ chip: 'downloads', sort: 'random' });
 });
 
 test('blocked storage never throws', () => {
@@ -52,5 +49,14 @@ test('blocked storage never throws', () => {
 
 test('Recently played is not offered while the gateway refuses that sort', () => {
 	expect(LIBRARY_SORTS).not.toContain('recentlyplayed');
-	expect(LIBRARY_SORTS).toEqual(['new', 'played', 'album', 'artistalbum', 'yearalbum']);
+	expect(LIBRARY_SORTS).toEqual(['new', 'played', 'album', 'artistalbum', 'yearalbum', 'random']);
+});
+
+test('opening a section (what /albums, /artists, /new and /random do) keeps the rest of the choice', () => {
+	const s = memory();
+	saveLibraryPrefs({ chip: 'genres', sort: 'yearalbum', view: 'list' }, s);
+	openSection('albums', 'new', s);
+	expect(loadLibraryPrefs(s)).toEqual({ chip: 'albums', sort: 'new', view: 'list' });
+	openSection('artists', undefined, s);
+	expect(loadLibraryPrefs(s)).toEqual({ chip: 'artists', sort: 'new', view: 'list' });
 });

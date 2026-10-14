@@ -248,13 +248,12 @@ describe('the lock screen', () => {
 describe('the connection message', () => {
 	const layout = readFileSync(`${__dirname}/../src/routes/+layout.svelte`, 'utf8');
 
-	test('one chip, in the content (every width), before the banners; no sidebar-only note', () => {
+	test('one status slot, in the content (every width), before the page; no sidebar-only note', () => {
 		const content = layout.slice(layout.indexOf('<main class="content"'));
-		expect(content).toMatch(/\{#if controls\.message\}\s*<p class="chip"[^>]*role="status"/);
-		expect(content.indexOf('class="chip"')).toBeLessThan(content.indexOf('<ContinueOn />'));
-		expect(layout).not.toMatch(/Reconnecting…/);
+		expect(content.indexOf('<StatusSlot />')).toBeLessThan(content.indexOf('{@render children()}'));
+		expect((layout.match(/<StatusSlot \/>/g) ?? []).length).toBe(2); // the shell, and car mode
 		const nav = layout.slice(layout.indexOf('<nav class="side"'), layout.indexOf('</nav>'));
-		expect(nav).not.toMatch(/chip/);
+		expect(nav).not.toMatch(/StatusSlot|chip/);
 	});
 
 	test('it takes room in the layout: never fixed or floating over the controls', () => {
@@ -271,8 +270,8 @@ describe('the connection message', () => {
 		fake.app.reach = 'busy';
 		expect(controls.message).toBe('Your music server is busy. Waiting for it…');
 		fake.app.reach = 'unreachable';
-		expect(controls.message).toBe('Can’t reach your server.');
+		expect(controls.message).toBe('Can’t reach your music server.');
 		thisDeviceOutOfReach();
-		expect(controls.message).toBe('Can’t reach your server. Playing from this device.');
+		expect(controls.message).toBe('Can’t reach your music server. Playing from this device.');
 	});
 });

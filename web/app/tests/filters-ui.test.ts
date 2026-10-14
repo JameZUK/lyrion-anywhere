@@ -25,6 +25,7 @@ const store = {
 	asked: [] as [number, number, number][],
 };
 vi.mock('$lib/state/me', () => ({
+	routine: {},
 	me: {
 		filters: async () => structuredClone(store.filters),
 		createFilter: async (spec: FilterSpec) => {
@@ -211,7 +212,7 @@ describe('the Filters chip in Library', () => {
 	test('Library has a Filters chip showing the list', async () => {
 		localStorage.removeItem(LIBRARY_KEY);
 		render(LibraryPage);
-		const tab = screen.getByRole('tab', { name: 'Filters' });
+		const tab = screen.getByRole('tab', { name: 'Smart playlists' });
 		await fireEvent.click(tab);
 		expect(tab.getAttribute('aria-selected')).toBe('true');
 		expect(await screen.findByRole('link', { name: /Late jazz/ })).toBeTruthy();
@@ -220,7 +221,7 @@ describe('the Filters chip in Library', () => {
 
 	test('create: the builder saves a new filter, which is then listed', async () => {
 		render(FiltersView);
-		await fireEvent.click(await screen.findByRole('button', { name: 'New filter' }));
+		await fireEvent.click(await screen.findByRole('button', { name: 'New smart playlist' }));
 		await fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Compilations' } });
 		await fireEvent.change(screen.getByLabelText('Add a rule'), { target: { value: 'compilation' } });
 		await fireEvent.click(screen.getByRole('button', { name: 'Add' }));
@@ -317,7 +318,7 @@ describe('the filter page', () => {
 		params.id = '3;drop';
 		try {
 			render(FilterPage);
-			expect(await screen.findByText('Not a filter.')).toBeTruthy();
+			expect(await screen.findByText('Not a smart playlist.')).toBeTruthy();
 			expect(store.asked).toEqual([]);
 		} finally {
 			params.id = '3';
@@ -333,7 +334,7 @@ describe('the filter Home shelf', () => {
 		const l = L.add(L.defaultLayout(), { type: 'filter', id: 3 });
 		expect(() => L.add(l, { type: 'filter', id: 3 })).toThrow(/already/);
 		expect(L.addable(l)).toContain('filter');
-		expect(L.SHELF_LABELS.filter).toBe('Smart filter');
+		expect(L.SHELF_LABELS.filter).toBe('Smart playlist');
 	});
 
 	test('shows the filter’s albums under its name, with Play and Shuffle', async () => {
@@ -351,7 +352,7 @@ describe('the filter Home shelf', () => {
 
 	test('an empty filter says so', async () => {
 		render(HomeShelf, { shelf: { type: 'filter', id: 3 }, stations: [], menus: [], filters: [jazz] });
-		expect(await screen.findByText('No albums match this filter.')).toBeTruthy();
+		expect(await screen.findByText('No albums match this smart playlist.')).toBeTruthy();
 		expect(screen.queryByRole('button', { name: 'Play Late jazz' })).toBeNull();
 	});
 });

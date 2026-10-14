@@ -11,12 +11,15 @@
 		create,
 		server,
 		now = () => Date.now(),
+		heading = true,
 	}: {
 		/** Ask the gateway for a code (with the account password). */
 		create: (password: string) => Promise<PairingCode>;
 		/** This app's own address (`location.origin`): the server the link names. */
 		server: string;
 		now?: () => number;
+		/** Its own heading (not inside a sheet that names it). */
+		heading?: boolean;
 	} = $props();
 
 	let password = $state('');
@@ -73,7 +76,7 @@
 	}
 </script>
 
-<h3>Add another device</h3>
+{#if heading}<h3>Add another device</h3>{/if}
 {#if shown}
 	<div class="pairing" data-pairing>
 		{#if !expired}

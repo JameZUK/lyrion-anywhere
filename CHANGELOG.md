@@ -2,6 +2,30 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Web: Wave 3.5 declutter, phase 2 (structure)
+
+The second phase of [the declutter plan](docs/plans/wave3_5-declutter.md) for the web app. Nothing was removed: every setting and section has a new home, each reached by a test.
+
+- **Settings is an index.** It has seven rows (eight where the browser can install the app), each with a one-line summary of its value: Account, Appearance, Playback, Now playing, Downloads, Listening history, (Install the app,) About. Each opens a page of its own at `#/settings/<section>`.
+  - **Advanced** is under About. It holds this device's player (start, stop, restart), the playback engine, the volume source and the diagnostics (folded away). It is the only place LMS is named.
+  - **Account:** one row per action (Change password, Two-step verification, Add another device), each in its own dialog that asks for the password once, then Sign out. The code field is "Authenticator code" everywhere (sign-in too).
+  - **Option lists open a picker** (one shared component, `PickerRow`) instead of being laid out inline: the start player, streaming quality, sleep fade, visualiser style, rating style, download formats, storage limit, playback engine and volume source.
+  - **One switch component** (`Switch`) for every on/off setting: the lyric line, the visualiser, haptics, Wi-Fi only, listening history, an alarm and all of a player's alarms, and grouping players. Its state is in words ("On"/"Off") beside it, not colour alone.
+  - Help is cut to one sentence per control. Download preferences are in Settings; the downloads themselves, and *Remove all*, are on the Downloads page, which now has a gear to its settings.
+- **One status slot** at the top of every page, car mode included, replaces the layout's banners. Lasting states show in priority order: moving playback > out of reach > busy > reconnecting, then this device's offers (the sound held back until a tap, which is now a plain status rather than a placebo button; *Resume playing here* after a reload).
+  - Results (`app.notice`, `app.error`) and the visualiser's style name on phones go to the one snackbar.
+  - The "Moving playback…" strip above the mini player has gone: moving now shows in the slot.
+- **Library is one model:** one row of sections that scrolls sideways (Albums, Artists, Playlists, Favourites, Smart playlists, Genres, Years, Compilations, Folders, Apps & radio, Downloads), each shown in place.
+  - New music and Random albums are now orders of Albums ("Recently added", "Random", with *Shuffle again*).
+  - `/albums`, `/artists`, `/new` and `/random` open Library at that section, without adding a history entry.
+  - The virtual library choice is in the Library header's ⋯.
+  - The second row of link pills, the library select and the duplicate album browser are gone.
+- **Sidebar:** seven entries (Home, Library, Search, Queue, Now playing, Rooms, Settings). Library's seven repeat entries are gone. Now playing has its own icon (no longer the house), and an album lights up Library.
+- **One trailing control per row**, continued: LMS menus (apps, radio, plugins, track info) put Play next, Add to queue, *Save as a station*, *Pin to Home* and the item's own *More…* in one ⋯ per row. Favourites rows do the same, and an alarm row is its switch (Delete is in the alarm's form, confirmed).
+- **Naming:** "Smart playlists" everywhere the user reads it; "your music server" (not "your server", "the music server").
+- **Accessibility:** a visible 2 px focus ring on every text input (sign-in included); filter boxes (Playlists, Genres, Search) show it around the whole pill.
+- **Tests:** `tests/declutter-phase2.test.ts` (the switch, the picker, Library's sections in place, the orders, naming), `tests/status-slot.test.ts` (priority, one line, the connection id) and a rewritten `tests/settings-page.test.ts` (the index, every old setting still reachable, the pickers, Account's dialogs), plus the sidebar's rules in `tests/nav-tabs.test.ts`.
+
 ## 2026-10-14: Web: Wave 3.5 declutter, phase 1 (quick wins)
 
 The first phase of [the declutter plan](docs/plans/wave3_5-declutter.md) for the web app. Almost every change is a move into a menu; nothing was removed. Each moved action has a test that reaches it in its new home.

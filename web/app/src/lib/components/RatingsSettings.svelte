@@ -3,6 +3,7 @@
 	import type { RatingStyle } from '$lib/api/routine';
 	import { ratings } from '$lib/state/ratings';
 	import ConfirmDialog from './ConfirmDialog.svelte';
+	import PickerRow from './PickerRow.svelte';
 
 	let note = $state('');
 	let confirmClear = $state(false);
@@ -32,17 +33,19 @@
 	}
 </script>
 
-<label class="field">
-	<span>Rate with</span>
-	<select value={ratings.style} onchange={(e) => void setStyle(e.currentTarget.value === 'heart' ? 'heart' : 'stars')} data-rating-style>
-		<option value="stars">Stars</option>
-		<option value="heart">A heart</option>
-	</select>
-</label>
-<p class="muted small">
-	Your ratings are yours: kept on your server for your account and used for your shelves and stations. Where the server has the Ratings Light plugin, your rating also becomes its shared rating for the
-	track.
-</p>
+<div data-rating-style={ratings.style}>
+	<PickerRow
+		label="Rate with"
+		value={ratings.style}
+		options={[
+			{ value: 'stars', label: 'Stars' },
+			{ value: 'heart', label: 'A heart' },
+		]}
+		onchange={(v) => void setStyle(v === 'heart' ? 'heart' : 'stars')}
+		note="Kept for your account, and shared with Ratings Light where your music server has it."
+		id="rating-style"
+	/>
+</div>
 <button class="btn" onclick={() => (confirmClear = true)} data-clear-ratings>Clear my ratings</button>
 <p class="muted small" role="status" data-ratings-note>{note}</p>
 {#if confirmClear}

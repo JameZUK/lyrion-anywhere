@@ -169,7 +169,7 @@
 	}
 </script>
 
-<Sheet title={initial ? 'Edit smart filter' : 'New smart filter'} onclose={oncancel}>
+<Sheet title={initial ? 'Edit smart playlist' : 'New smart playlist'} onclose={oncancel}>
 	<form class="editor" onsubmit={save} novalidate data-filter-editor>
 		<label class="field">
 			<span>Name</span>

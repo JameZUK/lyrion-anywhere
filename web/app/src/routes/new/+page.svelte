@@ -1,22 +1,11 @@
 <script lang="ts">
-	import BackButton from '$lib/components/BackButton.svelte';
-	import AlbumBrowser from '$lib/components/AlbumBrowser.svelte';
-	import LibraryNote from '$lib/components/LibraryNote.svelte';
+	// New music is Library’s Albums in the order "Recently added" (Wave 3.5: one Library model). This address opens Library there instead, without
+	// adding a history entry, so Back skips it.
+	import { go } from '$lib/nav';
+	import { openSection } from '$lib/library/prefs';
+
+	$effect(() => {
+		openSection('albums', 'new');
+		void go('/library', { replaceState: true });
+	});
 </script>
-
-<section class="page">
-	<BackButton parent="/library" />
-	<h1>New music</h1>
-	<p class="muted lead">Albums most recently added to the library, newest first.</p>
-	<LibraryNote />
-	<AlbumBrowser sort="new" sorts={null} empty="Nothing has been added to the library yet." />
-</section>
-
-<style>
-	h1 {
-		margin-bottom: 0.2rem;
-	}
-	.lead {
-		margin: 0 0 0.75rem;
-	}
-</style>

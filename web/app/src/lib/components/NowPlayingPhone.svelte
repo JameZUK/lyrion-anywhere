@@ -36,6 +36,7 @@
 	import RatingControl from './RatingControl.svelte';
 	import SeekBar from './SeekBar.svelte';
 	import Sheet from './Sheet.svelte';
+	import Snackbar from './Snackbar.svelte';
 	import ShuffleButton from './ShuffleButton.svelte';
 	import SignalPath from './SignalPath.svelte';
 	import SleepSheet from './SleepSheet.svelte';
@@ -95,15 +96,11 @@
 		if (!visualising || nowPlaying.style !== 'glow') onglow(GLOW_REST);
 	});
 
-	/** A word that shows for a moment (the style's name), and is read out. */
+	/** A word that shows for a moment (the style's name), and is read out: the one snackbar. */
 	let toast = $state('');
-	let toastTimer: ReturnType<typeof setTimeout> | undefined;
 	function say(text: string) {
 		toast = text;
-		clearTimeout(toastTimer);
-		toastTimer = setTimeout(() => (toast = ''), 1400);
 	}
-	$effect(() => () => clearTimeout(toastTimer));
 
 	function chooseStyle(s: VisualStyle) {
 		closeSheet();
@@ -187,7 +184,7 @@
 				<div class="scroll"><NowPlayingInfo compact /></div>
 			{/snippet}
 		</NowPlayingPager>
-		<div class="toast" class:shown={!!toast} role="status" aria-live="polite" data-np-toast>{toast}</div>
+		<div class="np-toast" data-np-toast><Snackbar message={toast} ondismiss={() => (toast = '')} timeout={1400} /></div>
 	</div>
 
 	<div class="meta">
@@ -417,35 +414,6 @@
 		overscroll-behavior: contain;
 		touch-action: pan-y pinch-zoom;
 	}
-	.toast {
-		position: absolute;
-		left: 50%;
-		top: 40%;
-		z-index: 4;
-		transform: translate(-50%, -50%);
-		padding: 0.5rem 1rem;
-		border-radius: 999px;
-		background: var(--bg-raised);
-		color: var(--fg);
-		box-shadow: var(--shadow);
-		font-weight: 650;
-		white-space: nowrap;
-		pointer-events: none;
-		opacity: 0;
-		transition: opacity 0.2s;
-	}
-	.toast.shown {
-		opacity: 1;
-	}
-	.toast:empty {
-		padding: 0;
-	}
-	@media (prefers-reduced-motion: reduce) {
-		.toast {
-			transition: none;
-		}
-	}
-
 	.meta {
 		flex: none;
 		min-height: 68px;

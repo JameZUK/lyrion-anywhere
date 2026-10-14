@@ -11,6 +11,7 @@ const saved: unknown[] = [];
 let refuse = false;
 let menus: Record<string, unknown> = {};
 
+const { choose, menuItems } = await import('./helpers/menu');
 vi.mock('$lib/state/app.svelte', () => ({
 	app: { playerId: P, soon() {}, queueVersion: 0 },
 	api: {
@@ -87,7 +88,7 @@ const settle = async () => {
 test('a mix is saved as a reference to what the menu offered', async () => {
 	render(MenuView, { start, title: 'Song' });
 	await settle();
-	await fireEvent.click(screen.getByRole('button', { name: 'Save Mix like this as a station' }));
+	await choose('More options for Mix like this', 'Save as a station');
 	await waitFor(() => expect(created).toHaveLength(1));
 	expect(created[0]).toEqual({
 		name: 'Mix like this',
@@ -105,8 +106,9 @@ test('a mix is saved as a reference to what the menu offered', async () => {
 test('items needing typed text, text and folders are never saved as stations', async () => {
 	render(MenuView, { start, title: 'Song' });
 	await settle();
-	expect(screen.queryByRole('button', { name: /Describe a mix as a station/ })).toBeNull();
-	expect(screen.queryByRole('button', { name: /Similar artists as a station/ })).toBeNull();
+	// (Each row's saving is in its ⋯ since Wave 3.5.)
+	expect(screen.queryByRole('button', { name: 'More options for Describe a mix' })).toBeNull();
+	expect(await menuItems('More options for Similar artists')).not.toContain('Save as a station');
 	expect(screen.queryByRole('button', { name: /Just words/ })).toBeNull();
 });
 
@@ -114,14 +116,14 @@ test('a refusal says why', async () => {
 	refuse = true;
 	render(MenuView, { start, title: 'Song' });
 	await settle();
-	await fireEvent.click(screen.getByRole('button', { name: 'Save Mix like this as a station' }));
+	await choose('More options for Mix like this', 'Save as a station');
 	await waitFor(() => expect(screen.getByRole('status').textContent).toBe('This can’t be saved: this menu item is no longer offered'));
 });
 
 test('a folder is pinned to Home with the request that opens it as the last step', async () => {
 	render(MenuView, { start, title: 'Song' });
 	await settle();
-	await fireEvent.click(screen.getByRole('button', { name: 'Pin Similar artists to Home' }));
+	await choose('More options for Similar artists', 'Pin to Home');
 	await waitFor(() => expect(saved).toHaveLength(1));
 	expect(pinned[0]).toEqual({
 		name: 'Similar artists',
@@ -138,11 +140,12 @@ test('a menu handed over whole needs its root request to be saved', async () => 
 	const initial = menus.trackinfo as object;
 	const { unmount } = render(MenuView, { initial, title: 'Group' });
 	await settle();
-	expect(screen.queryByRole('button', { name: /as a station/ })).toBeNull();
+	// Nothing to offer for it: no ⋯ at all.
+	expect(screen.queryByRole('button', { name: 'More options for Mix like this' })).toBeNull();
 	unmount();
 	render(MenuView, { initial, title: 'Group', root: ['menu', 0, 500, 'direct:1'] });
 	await settle();
-	await fireEvent.click(screen.getByRole('button', { name: 'Save Mix like this as a station' }));
+	await choose('More options for Mix like this', 'Save as a station');
 	await waitFor(() => expect(created).toHaveLength(1));
 	expect((created[0]!.spec as { steps: unknown[] }).steps).toEqual([['menu', 0, 500, 'direct:1']]);
 });

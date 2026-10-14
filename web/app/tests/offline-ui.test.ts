@@ -308,7 +308,7 @@ test('offline splash offers “Play your downloads” for the account last signe
 	localStorage.setItem('anywhere.offlineUser', 'alice');
 	const { default: OfflineMode } = await import('$lib/components/OfflineMode.svelte');
 	render(OfflineMode);
-	expect(screen.getByText('Can’t reach the music server. Trying again…')).toBeTruthy();
+	expect(screen.getByText('Can’t reach your music server. Trying again…')).toBeTruthy();
 	const play = await screen.findByRole('button', { name: 'Play your downloads' });
 	await fireEvent.click(play);
 	expect(await screen.findByText('Offline album')).toBeTruthy();

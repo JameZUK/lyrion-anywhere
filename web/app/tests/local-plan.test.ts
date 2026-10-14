@@ -95,7 +95,7 @@ describe('next and previous', () => {
 		expect(afterEnd(q(2, 5, 1), set(3), set())).toBe(3);
 		expect(afterEnd(q(2), set(3), set(3))).toBe(3);
 		expect(afterEnd(q(2), set(), set())).toBeNull();
-		expect(NEXT_NEEDS_SERVER).toBe('Next track needs your server.');
+		expect(NEXT_NEEDS_SERVER).toBe('Next track needs your music server.');
 	});
 });
 

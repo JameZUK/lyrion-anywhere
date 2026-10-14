@@ -13,7 +13,6 @@
 	import Art from '$lib/components/Art.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import OutputButton from '$lib/components/OutputButton.svelte';
-	import PlayingElsewhere from '$lib/components/PlayingElsewhere.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import RowMenu, { type RowAction } from '$lib/components/RowMenu.svelte';
 	import { go } from '$lib/nav';
@@ -210,7 +209,6 @@
 <section class="np page" class:wide class:has-side={!!side} class:has-queue={queueSide} bind:this={section} data-layout={layout}>
 	<Ambient path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 120)} />
 	<div class="bar">
-		{#if app.moving}<div class="where"><PlayingElsewhere /></div>{/if}
 		{#if roomy && app.current}
 			<!-- With room for it, Queue pins or hides the queue beside Now playing. -->
 			<button
@@ -520,12 +518,6 @@
 		max-width: 520px;
 		margin-bottom: 1.25rem;
 		container-type: inline-size;
-	}
-	/* The "Playing on …" strip takes the room left by the action buttons, which give up
-	   their labels first when the column is narrow (e.g. iPad portrait). */
-	.where {
-		flex: 1 1 100%;
-		min-width: 0;
 	}
 	.act {
 		flex: none;

@@ -111,6 +111,12 @@
 		background: var(--bg-raised);
 		color: var(--fg-muted);
 	}
+	/* The input draws no ring of its own: the pill around it does (Wave 3.5 a11y). */
+	.filter:focus-within {
+		border-color: var(--accent);
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+	}
 	.filter input {
 		flex: 1;
 		border: 0;
