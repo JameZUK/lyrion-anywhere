@@ -139,6 +139,7 @@ fun QueuePeekSheet(state: PlayerUiState, actions: NowPlayingActions, onDismiss: 
                     actions.onClearQueue,
                     upcoming = state.upcoming,
                     onClearUpcoming = actions.onClearUpcoming,
+                    onSaveAsPlaylist = actions.onSaveQueue.takeIf { state.canSaveQueue },
                 )
             }
             queueItems(

@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
 import androidx.compose.material.icons.outlined.ClearAll
 import androidx.compose.material.icons.outlined.Delete
@@ -103,12 +104,20 @@ fun QueueHeader(
     /** Tracks after the current one (null: not known, so not offered). */
     upcoming: Int? = null,
     onClearUpcoming: () -> Unit = {},
+    /** "Save as playlist" (admins, on a gateway that has it); null: not offered. */
+    onSaveAsPlaylist: (() -> Unit)? = null,
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var confirmUpcoming by rememberSaveable { mutableStateOf(false) }
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Box(Modifier.weight(1f)) { SectionHeader(stringResource(R.string.section_queue)) }
         FlowRow(horizontalArrangement = Arrangement.End) {
+            if (onSaveAsPlaylist != null && count > 0) {
+                TextButton(onClick = onSaveAsPlaylist, modifier = Modifier.testTag("save-queue")) {
+                    Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, contentDescription = null)
+                    Text(stringResource(R.string.save_queue_action), Modifier.padding(start = 4.dp))
+                }
+            }
             if (upcoming != null && upcoming > 0) {
                 TextButton(onClick = { confirmUpcoming = true }, modifier = Modifier.testTag("clear-upcoming")) {
                     Text(stringResource(R.string.queue_clear_upcoming))

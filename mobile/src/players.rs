@@ -136,6 +136,39 @@ enum Checked {
     Unsupported,
 }
 
+/// What saving the queue as a playlist came to (docs/PROTOCOL.md "Save the queue as a
+/// playlist").
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum SaveQueueOutcome {
+    /// Saved: the playlist's id and the name it was saved under.
+    Saved { id: i64, name: String },
+    /// Not saved: a playlist of that name (ignoring case) exists. Save again with
+    /// `replace` to overwrite it.
+    Exists { id: i64, name: String },
+    /// Not saved: the queue is empty.
+    Empty,
+}
+
+/// A saved playlist named in the gateway's answer (`{"id":…,"name":…}`).
+fn named_playlist(v: &Value) -> Option<(i64, String)> {
+    let id = v.get("id")?.as_i64().filter(|n| *n > 0)?;
+    let name = model::clean_text(v.get("name")?.as_str()?);
+    Some((id, name))
+}
+
+/// The gateway's answer to `POST /v1/players/{player}/queue/save`, as an outcome.
+fn save_outcome(status: u16, v: &Value) -> Result<SaveQueueOutcome, ApiError> {
+    if status == 409 {
+        return Ok(match v.get("exists").and_then(named_playlist) {
+            Some((id, name)) => SaveQueueOutcome::Exists { id, name },
+            None => SaveQueueOutcome::Empty,
+        });
+    }
+    named_playlist(v)
+        .map(|(id, name)| SaveQueueOutcome::Saved { id, name })
+        .ok_or_else(|| ApiError::bad_response("no playlist in answer"))
+}
+
 fn edit_track(track_id: i64) -> Result<i64, ApiError> {
     if track_id == 0 || track_id.unsigned_abs() > 999_999_999_999 {
         return Err(ApiError::invalid("not a track id"));
@@ -375,6 +408,36 @@ impl Players {
         self.run(&player, cmd).await
     }
 
+    /// Whether this account may save the queue as a playlist here: an admin, on a gateway
+    /// that offers it (`GET /v1/me`: role and `features.save_queue`).
+    pub async fn can_save_queue(&self) -> Result<bool, ApiError> {
+        let (_, v) = crate::me::exchange(self.session.core(), "GET", "v1/me", None).await?;
+        Ok(v["user"]["role"].as_str() == Some("admin")
+            && v["features"]["save_queue"].as_bool() == Some(true))
+    }
+
+    /// Save the player's queue as a playlist called `name` (admins only; the name is
+    /// checked here first, by the rules the gateway enforces). A playlist of that name is
+    /// overwritten only with `replace`.
+    pub async fn save_queue(
+        &self,
+        player: String,
+        name: String,
+        replace: bool,
+    ) -> Result<SaveQueueOutcome, ApiError> {
+        let p = commands::player_id(&player)?;
+        let name = anywhere_core::names::playlist_name(&name).map_err(ApiError::invalid)?;
+        let body = serde_json::json!({ "name": name, "replace": replace });
+        let (status, v) = crate::me::exchange(
+            self.session.core(),
+            "POST",
+            &format!("v1/players/{p}/queue/save"),
+            Some(&body),
+        )
+        .await?;
+        save_outcome(status, &v)
+    }
+
     /// Move playback from `source` to `target` (docs/PROTOCOL.md › Transfer): group then
     /// leave, or copy the list if LMS won't group them. Both must be players this account
     /// may control; the gateway refuses anything else.
@@ -510,6 +573,41 @@ mod tests {
             room_ids(&huge),
             Err(ApiError::InvalidInput { .. })
         ));
+    }
+
+    #[test]
+    fn save_answers_are_read() {
+        use serde_json::json;
+        assert_eq!(
+            save_outcome(200, &json!({"id": 12, "name": "Road trip"})),
+            Ok(SaveQueueOutcome::Saved {
+                id: 12,
+                name: "Road trip".into()
+            })
+        );
+        assert_eq!(
+            save_outcome(
+                409,
+                &json!({"error": "exists", "exists": {"id": 5, "name": "Road Trip"}})
+            ),
+            Ok(SaveQueueOutcome::Exists {
+                id: 5,
+                name: "Road Trip".into()
+            })
+        );
+        assert_eq!(
+            save_outcome(409, &json!({"error": "the queue is empty"})),
+            Ok(SaveQueueOutcome::Empty)
+        );
+        for junk in [
+            json!(null),
+            json!({}),
+            json!({"id": "12", "name": "x"}),
+            json!({"id": 0, "name": "x"}),
+            json!({"id": 12}),
+        ] {
+            assert!(save_outcome(200, &junk).is_err(), "{junk}");
+        }
     }
 
     #[test]

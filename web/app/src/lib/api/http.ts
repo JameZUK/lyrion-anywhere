@@ -13,6 +13,8 @@ export class ApiError extends Error {
 		readonly totpRequired = false,
 		/** Seconds to wait before trying again (the `Retry-After` header), if the server said. */
 		readonly retryAfter?: number,
+		/** The gateway's whole answer, for refusals that say more than a message. */
+		readonly body: Record<string, unknown> = {},
 	) {
 		super(message);
 		this.name = 'ApiError';
@@ -31,7 +33,7 @@ export async function callJson<T>(path: string, init: RequestInit = {}): Promise
 	const body = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
 	if (!resp.ok) {
 		const msg = typeof body.error === 'string' ? body.error : `HTTP ${resp.status}`;
-		throw new ApiError(resp.status, msg, body.totp_required === true, retryAfterOf(resp.headers?.get?.('retry-after') ?? null));
+		throw new ApiError(resp.status, msg, body.totp_required === true, retryAfterOf(resp.headers?.get?.('retry-after') ?? null), body);
 	}
 	return body as T;
 }

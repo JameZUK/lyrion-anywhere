@@ -75,6 +75,24 @@ The web app's offline downloads now cover what SPEC §8 asks for, as Android doe
 - **Gateway:** unchanged. Album and playlist track lists ask LMS for two more tags (`f` file size, `x` remote), checked against the RPC allow-list by the existing fixture test.
 - **Not done:** ratings made offline. The web app has no rating control in offline mode (ratings are only on Now playing for an LMS player), so there is nothing to queue yet.
 - **Tests:** refs and size estimates (hostile values); request, groups and reference-counted removal (shared tracks, playlists removed mid-download, no orphaned audio, partials, covers or groups); the queue's new fields across a reload with hostile entries; Wi-Fi only (held, *Download now* per batch, a network change mid-download resuming by Range, the API absent or throwing); the storage limit (exactly full, one byte over, the queue counted, already-downloaded tracks free, nonsense limits, a real size larger than estimated, a transcode stopped mid-stream) and the browser's quota (refused, unknown or failing estimates never block); the album, playlist, Downloads and Settings pages.
+## 2026-10-14: Save the queue as a playlist
+
+Admins can save a player's queue as a saved playlist, on the web and on Android.
+
+- **Gateway:** a typed endpoint, `POST /v1/players/{player}/queue/save` `{"name","replace"}` (docs/PROTOCOL.md "Save the queue as a playlist"). Raw `playlist save` stays refused by the RPC policy for everyone.
+  - **Who:** admins only, as for the other playlist changes (listeners get 403 "changing playlists needs the admin role"), for a player they may control.
+  - **The name:** trimmed, 1–100 characters; no control or invisible characters, no `/ \ : * ? " < > |`, no `..`, no leading or trailing dot, no Windows device names. The rules live in the core (`anywhere_core::names`), shared with the Android app's Rust layer; the web app and the Kotlin layer mirror them to say what's wrong as the name is typed.
+  - **An existing name:** looked up ignoring case. Without `replace` the answer is 409 with the existing playlist; with it, that playlist is overwritten under its own spelling and keeps its id.
+  - **Other refusals:** an empty queue is 409; unknown fields and bad types are 400, bodies over 1 KiB 413.
+  - **The answer:** the new playlist's id and name. `GET /v1/me` lists `"save_queue": true` under `features`.
+- **What's saved** is LMS's own `playlist save`: library tracks by file, radio and streaming entries by URL (never shown to clients).
+- **Web:** "Save as playlist" on the Queue page and under the queue peek and side panel, for admins on a gateway that offers it. A dialog suggests the album (for a one-album queue) or "Queue" and the date, explains a bad name, and offers Replace for a taken one; then a message with Open.
+- **Android:** the same in the queue header (Queue tab, queue peek and the queue beside Now playing), through `Players.save_queue` and `can_save_queue` in the Rust layer.
+- **Tests:**
+  - gateway: success, listener and stranger refused, every bad name, existing name with and without replace, empty queue, malformed, unknown-field and oversize bodies, raw `playlist save` still refused, and a fuzz run of the name check (never panics);
+  - mobile Rust, against the real gateway: saved, taken, empty, listener refused, bad names and players never sent;
+  - web: the name rules (with a fuzz run), the request and its answers, and the dialog;
+  - Android: the name rules and repository checks (JVM), the view model (saved, 403, 409, empty, invalid) and Compose tests of the button and dialog.
 
 ## 2026-10-13: Rolling cache, Phase C: downloads stand in for Original FLAC streams
 

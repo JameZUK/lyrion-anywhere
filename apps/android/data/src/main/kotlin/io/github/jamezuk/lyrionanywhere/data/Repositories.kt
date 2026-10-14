@@ -36,6 +36,7 @@ import io.github.jamezuk.lyrionanywhere.core.Placement
 import io.github.jamezuk.lyrionanywhere.core.Player
 import io.github.jamezuk.lyrionanywhere.core.PlayerStatus
 import io.github.jamezuk.lyrionanywhere.core.RoomStatus
+import io.github.jamezuk.lyrionanywhere.core.SaveQueueOutcome
 import io.github.jamezuk.lyrionanywhere.core.RepeatMode
 import io.github.jamezuk.lyrionanywhere.core.SearchResults
 import io.github.jamezuk.lyrionanywhere.core.Selection
@@ -249,6 +250,17 @@ interface PlayersRepository {
 
     /** Undo a removal: put library track [trackId] back at [index]. */
     suspend fun restoreToQueue(player: String, trackId: Long, index: Int): ApiResult<Unit>
+
+    /** Whether this account may save the queue as a playlist (an admin, on a gateway that offers it). */
+    suspend fun canSaveQueue(): ApiResult<Boolean> = ApiResult.Ok(false)
+
+    /**
+     * Save [player]'s queue as a playlist called [name] (see [PlaylistNames]): saved, or
+     * why not (a playlist of that name exists, overwritten only with [replace]; or the
+     * queue is empty).
+     */
+    suspend fun saveQueue(player: String, name: String, replace: Boolean): ApiResult<SaveQueueOutcome> =
+        ApiResult.Err(AppError.InvalidInput("saving the queue isn't available"))
 
     /** Put [other] in [current]'s sync group, or take [other] out of its group. */
     suspend fun setSynced(current: String, other: String, on: Boolean): ApiResult<Unit>
@@ -480,6 +492,16 @@ class RustPlayersRepository(private val source: ConnectionSource) : PlayersRepos
 
     override suspend fun restoreToQueue(player: String, trackId: Long, index: Int) =
         withPlayers { it.restoreToQueue(player, trackId, index.u()) }
+
+    override suspend fun canSaveQueue() = withPlayers { it.canSaveQueue() }
+
+    /** The name and player are checked here first; nothing is sent if either is wrong. */
+    override suspend fun saveQueue(player: String, name: String, replace: Boolean): ApiResult<SaveQueueOutcome> {
+        val clean = PlaylistNames.clean(name)
+        PlaylistNames.problem(clean)?.let { return ApiResult.Err(AppError.InvalidInput(it.name.lowercase())) }
+        if (!isPlayerId(player)) return ApiResult.Err(AppError.InvalidInput("bad player"))
+        return withPlayers { it.saveQueue(player, clean, replace) }
+    }
 
     override suspend fun setSynced(current: String, other: String, on: Boolean) =
         withPlayers { it.setSynced(current, other, on) }

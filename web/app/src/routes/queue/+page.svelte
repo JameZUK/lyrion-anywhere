@@ -24,6 +24,9 @@
 	import Art from '$lib/components/Art.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import Snackbar from '$lib/components/Snackbar.svelte';
+	import SaveQueue from '$lib/components/SaveQueue.svelte';
+	import type { SavedPlaylist } from '$lib/api/me';
+	import { go } from '$lib/nav';
 	import { haptics } from '$lib/haptics/haptics.svelte';
 
 	/** How long a swiped row takes to slide out before it is removed. */
@@ -55,6 +58,8 @@
 
 	type Undo = { track: Track; index: number; player: string };
 	let undo = $state<Undo | null>(null);
+	/** The playlist the queue was just saved as (the message bar offers to open it). */
+	let saved = $state<SavedPlaylist | null>(null);
 	let notice = $state('');
 
 	// Edits in flight, and a counter bumped by each: a load started before an edit is stale.
@@ -214,7 +219,21 @@
 
 	function dismiss() {
 		undo = null;
+		saved = null;
 		notice = '';
+	}
+
+	/** The queue was saved as a playlist: say so, with a way to open it. */
+	function savedAs(p: SavedPlaylist) {
+		dismiss();
+		saved = p;
+		notice = `Saved as “${p.name}”`;
+	}
+
+	function openSaved() {
+		const to = saved ? cmd.link('playlist', saved.id) : null;
+		dismiss();
+		if (to) void go(to);
 	}
 
 	async function move(from: number, to: number) {
@@ -461,6 +480,7 @@
 		</div>
 		{#if tracks.length}
 			<div class="clears">
+			<SaveQueue {tracks} onsaved={savedAs} />
 			{#if upcoming > 0}
 				<button class="btn" onclick={() => (askUpcoming = true)} aria-haspopup="dialog" data-clear-upcoming><Icon name="trash" size={18} />Clear upcoming</button>
 			{/if}
@@ -513,7 +533,7 @@
 	{/if}
 {/if}
 
-<Snackbar message={notice} action={undo ? 'Undo' : ''} onaction={restore} ondismiss={dismiss} />
+<Snackbar message={notice} action={undo ? 'Undo' : saved ? 'Open' : ''} onaction={undo ? restore : openSaved} ondismiss={dismiss} />
 
 <style>
 	header {

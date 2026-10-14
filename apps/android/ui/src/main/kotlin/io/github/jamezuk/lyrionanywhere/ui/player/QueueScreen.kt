@@ -31,6 +31,8 @@ import io.github.jamezuk.lyrionanywhere.ui.components.LoadingState
 data class QueueScreenActions(
     val queue: QueueActions,
     val onClearUpcoming: () -> Unit = {},
+    /** Open "Save as playlist" (offered only when [PlayerUiState.canSaveQueue]). */
+    val onSaveQueue: () -> Unit = {},
     /** No player chosen yet: open *Play on…*. */
     val onChoosePlayer: () -> Unit = {},
     val onRetry: () -> Unit = {},
@@ -76,7 +78,14 @@ fun QueueScreen(state: PlayerUiState, actions: QueueScreenActions, modifier: Mod
     ) {
         item(key = "queue-header") {
             Column(Modifier.widthIn(max = 840.dp).fillMaxWidth()) {
-                QueueHeader(state.queue.size, player.name, actions.queue.onClear, state.upcoming, actions.onClearUpcoming)
+                QueueHeader(
+                    state.queue.size,
+                    player.name,
+                    actions.queue.onClear,
+                    state.upcoming,
+                    actions.onClearUpcoming,
+                    onSaveAsPlaylist = actions.onSaveQueue.takeIf { state.canSaveQueue },
+                )
             }
         }
         queueItems(state.queue, status.queueIndex?.toInt(), drag, actions.queue, hasMore = state.queueMore, sections = state.sections)

@@ -447,6 +447,19 @@ class FakePlayers : PlayersRepository {
         return restoreResult
     }
 
+    /** "Save as playlist": offered or not, and what each save answers. */
+    var canSave: ApiResult<Boolean> = ApiResult.Ok(false)
+    val saves = mutableListOf<Triple<String, String, Boolean>>()
+    var saveAnswer: (name: String, replace: Boolean) -> ApiResult<io.github.jamezuk.lyrionanywhere.core.SaveQueueOutcome> =
+        { name, _ -> ApiResult.Ok(io.github.jamezuk.lyrionanywhere.core.SaveQueueOutcome.Saved(9, name)) }
+
+    override suspend fun canSaveQueue() = canSave
+
+    override suspend fun saveQueue(player: String, name: String, replace: Boolean): ApiResult<io.github.jamezuk.lyrionanywhere.core.SaveQueueOutcome> {
+        saves += Triple(player, name, replace)
+        return saveAnswer(name, replace)
+    }
+
     /** Holds setSynced until completed (to see what is shown meanwhile). */
     var syncGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
 

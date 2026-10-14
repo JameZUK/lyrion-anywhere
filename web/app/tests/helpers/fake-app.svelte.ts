@@ -87,6 +87,8 @@ class FakeApp {
 		await api.rpc(this.playerId, c);
 	}
 	libraryVersion = $state(0);
+	/** Admins may change shared data (playlists). */
+	isAdmin = $state(false);
 	elapsed = $state(0);
 	seeks: number[] = [];
 	async seek(seconds: number) {

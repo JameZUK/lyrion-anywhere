@@ -171,10 +171,10 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
 - **Listener:**
   - library browse/search (artists, albums, tracks, genres, years, composers, `musicfolder`);
   - favorites, and apps/radio menus (SlimBrowse);
-  - `playlistcontrol` by library IDs, saved playlist CRUD;
+  - `playlistcontrol` by library IDs, and playing saved playlists;
   - transport, volume, sleep, `status`, `sync`/`unsync` among permitted players;
   - track info menus.
-- **Admin (opt-in):** also rescan. Per-player settings are not exposed over the internet.
+- **Admin (opt-in):** also rescan, and changing saved playlists (shared household data: `playlists new|rename|delete|edit`, and saving a queue as a playlist through the typed `POST /v1/players/{player}/queue/save`, which checks the name and never overwrites a playlist unless asked; docs/PROTOCOL.md). Per-player settings are not exposed over the internet.
 - **Player permissions (implemented):**
   - admins control every player;
   - listeners control their own signed-in devices plus home players an admin explicitly grants (least privilege, so an account given to a friend can't take over the house's speakers).
@@ -182,6 +182,7 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
   - `readdirectory`, `pref`, `restartserver`, `debug`/`logging`;
   - `serverstatus` fields beyond the permitted players and library totals (no server version, last scan, address or identity, and no players on other servers);
   - any `playlist play/add/insert` with a `file://` or non-library URL;
+  - `playlist save` (it writes a file named by the client into LMS's playlist folder; admins save the queue through the typed endpoint instead);
   - free text (search terms, playlist names, typed input) holding a path, a `file:` URL, a URL to a local host, a bare LAN address, or any URL other than http(s). Public http(s) URLs are allowed, since some apps search by feed URL.
 - **Local hosts:** one check, shared by response filtering, request validation, events and the image proxy, decides what is "on the home network": private, loopback, link-local, CGNAT and benchmarking addresses in any spelling a URL parser or `inet_aton` accepts (`2130706433`, `0x7f000001`, `127.1`, IPv6 zone ids, IPv4-mapped IPv6), single-label names, local suffixes (`.lan`, `.local`, `.localhost`, `.home.arpa`, …), wildcard-DNS services that answer with an address taken from the name (`nip.io`, `sslip.io`, `localtest.me`, …), and names embedding a private IPv4 address as labels (`10.0.0.5.example`, `ip-10-0-0-5`).
 - **Events:** the gateway subscribes to LMS locally (CometD) and forwards only events for permitted players. It pushes them over `WS /v1/events`.

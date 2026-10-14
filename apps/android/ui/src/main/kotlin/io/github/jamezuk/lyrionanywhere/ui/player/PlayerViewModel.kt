@@ -36,6 +36,7 @@ import io.github.jamezuk.lyrionanywhere.data.EventsRepository
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerState
 import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
+import io.github.jamezuk.lyrionanywhere.data.PlaylistNames
 import io.github.jamezuk.lyrionanywhere.data.SettingsStore
 import io.github.jamezuk.lyrionanywhere.data.StreamUpdate
 import io.github.jamezuk.lyrionanywhere.data.Waveform
@@ -115,6 +116,10 @@ data class PlayerUiState(
     val credits: List<Credit>? = null,
     /** The track [credits] belong to. */
     val creditsTrackId: Long? = null,
+    /** "Save as playlist" is offered: an admin, on a gateway that has it. */
+    val canSaveQueue: Boolean = false,
+    /** The "Save as playlist" dialog, while it is open. */
+    val saveQueue: SaveQueueDialog? = null,
 ) {
     /** The queue's sections (Now playing, Up next, Then), or null for a flat queue. */
     val sections: QueueSections? get() = QueueSections.of(queue.size, status?.queueIndex?.toInt(), upNext)
@@ -192,6 +197,9 @@ sealed interface PlayerMessage {
 
     /** "Clear upcoming" found the queue changed part-way, and stopped (Wave 2 §3.4). */
     data object ClearStopped : PlayerMessage
+
+    /** The queue was saved as playlist [id], called [name] (the message offers to open it). */
+    data class SavedPlaylist(val id: Long, val name: String) : PlayerMessage
 }
 
 /**
@@ -279,6 +287,13 @@ class PlayerViewModel(
                     localPlayer.setEnabled(true)
                 }
                 loadPlayers()
+            }
+            launch {
+                // Whether "Save as playlist" is offered (asked again on the next start if
+                // the answer didn't come).
+                if (!_state.value.canSaveQueue) {
+                    (players.canSaveQueue() as? ApiResult.Ok)?.value?.let { on -> _state.update { it.copy(canSaveQueue = on) } }
+                }
             }
             launch {
                 // Coalesce bursts of events (LMS sends several per change).
@@ -751,6 +766,56 @@ class PlayerViewModel(
         val cur = _state.value.status?.queueIndex?.toInt() ?: return
         val to = QueueEdit.playNextTarget(index, cur) ?: return
         moveInQueue(index, to)
+    }
+
+    /**
+     * Open "Save as playlist", with a name to start from: the album when the queue shown is
+     * one album, else "Queue" and [today] (as the UI writes dates).
+     */
+    fun openSaveQueue(today: String) {
+        val s = _state.value
+        if (!s.canSaveQueue || s.selectedId == null || s.queue.isEmpty()) return
+        val suggestion = PlaylistNames.suggest(s.queue.map { it.track.album }, today)
+        _state.update { it.copy(saveQueue = SaveQueueDialog(suggestion)) }
+    }
+
+    fun closeSaveQueue() {
+        _state.update { it.copy(saveQueue = null) }
+    }
+
+    /** The name was taken and another is wanted: back to the name. */
+    fun saveQueueChangeName() {
+        _state.update { it.copy(saveQueue = it.saveQueue?.copy(exists = null, error = null)) }
+    }
+
+    /**
+     * Save the selected player's queue as a playlist called [name]. A playlist of that name
+     * is overwritten only with [replace]: otherwise the dialog asks first. Saved: the dialog
+     * closes and a message offers to open the playlist.
+     */
+    fun saveQueue(name: String, replace: Boolean = false) {
+        val id = _state.value.selectedId ?: return
+        val dialog = _state.value.saveQueue ?: return
+        if (dialog.busy) return
+        _state.update { it.copy(saveQueue = dialog.copy(busy = true, error = null)) }
+        viewModelScope.launch {
+            val r = players.saveQueue(id, name, replace)
+            val now = _state.value.saveQueue ?: return@launch // closed meanwhile
+            val next: SaveQueueDialog? = when (r) {
+                is ApiResult.Err -> now.copy(busy = false, exists = null, error = SaveQueueError.Failed(r.error))
+                is ApiResult.Ok -> when (val o = r.value) {
+                    is io.github.jamezuk.lyrionanywhere.core.SaveQueueOutcome.Saved -> {
+                        _messages.trySend(PlayerMessage.SavedPlaylist(o.id, o.name))
+                        null
+                    }
+                    is io.github.jamezuk.lyrionanywhere.core.SaveQueueOutcome.Exists ->
+                        now.copy(busy = false, error = null, exists = ExistingPlaylist(o.id, o.name, name))
+                    io.github.jamezuk.lyrionanywhere.core.SaveQueueOutcome.Empty ->
+                        now.copy(busy = false, exists = null, error = SaveQueueError.Empty)
+                }
+            }
+            _state.update { it.copy(saveQueue = next) }
+        }
     }
 
     /** Empty the queue (after the UI has asked to confirm). */
