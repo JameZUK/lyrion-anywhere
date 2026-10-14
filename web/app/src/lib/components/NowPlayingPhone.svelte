@@ -11,6 +11,7 @@
 	import { badgeText, quality } from '$lib/lms/quality';
 	import { formatLeft, sleepLeft } from '$lib/lms/sleep';
 	import { device } from '$lib/player/device.svelte';
+	import { controls } from '$lib/player/controls.svelte';
 	import { isThisDevice } from '$lib/player/outputs';
 	import { nowPlaying } from '$lib/nowplaying/store.svelte';
 	import { STYLES, STYLE_LABELS, type VisualStyle } from '$lib/visual/draw';
@@ -54,6 +55,8 @@
 	const artistHref = $derived(cmd.link('artist', track?.artist_id));
 	const albumHref = $derived(cmd.link('album', track?.album_id));
 	const repeat = $derived(Number(app.now?.['playlist repeat'] ?? 0));
+	/** Which controls work now (all of them while the server is in reach). */
+	const g = $derived(controls.gates);
 	const badge = $derived(quality(track));
 	const sleepIn = $derived(sleepLeft(app.now));
 	const coverOf = (size: number) => cmd.coverPath(track?.coverid ?? track?.artwork_track_id, size);
@@ -228,10 +231,10 @@
 			trackId={libraryId}
 			value={shown}
 			{total}
-			disabled={!total || app.now?.can_seek === 0}
+			disabled={!total || app.now?.can_seek === 0 || !g.seek}
 			oninput={(v) => (seeking = v)}
 			onchange={async (v) => {
-				await app.seek(v);
+				await controls.seek(v);
 				seeking = null;
 			}}
 		/>
@@ -239,19 +242,19 @@
 	</div>
 
 	<div class="transport">
-		<ShuffleButton value={app.now?.['playlist shuffle']} onchange={(m) => app.send(cmd.shuffle(m))} disabled={!app.now} />
-		<button class="icon-btn big" aria-label="Previous" onclick={() => app.send(cmd.skip(-1))} disabled={!app.now}><Icon name="prev" size={30} /></button>
-		<button class="icon-btn play" aria-label={app.playing ? 'Pause' : 'Play'} onclick={() => app.send(app.playing ? cmd.pause(true) : cmd.play())} disabled={!app.now}>
+		<ShuffleButton value={app.now?.['playlist shuffle']} onchange={(m) => app.send(cmd.shuffle(m))} disabled={!g.other} />
+		<button class="icon-btn big" aria-label="Previous" onclick={() => controls.previous()} disabled={!g.previous}><Icon name="prev" size={30} /></button>
+		<button class="icon-btn play" aria-label={app.playing ? 'Pause' : 'Play'} onclick={() => controls.toggle()} disabled={!g.playPause}>
 			<Icon name={app.playing ? 'pause' : 'play'} size={34} />
 		</button>
-		<button class="icon-btn big" aria-label="Next" onclick={() => app.send(cmd.skip(1))} disabled={!app.now}><Icon name="next" size={30} /></button>
+		<button class="icon-btn big" aria-label="Next" onclick={() => controls.next()} disabled={!g.next}><Icon name="next" size={30} /></button>
 		<button
 			class="icon-btn"
 			class:on={repeat > 0}
 			aria-pressed={repeat > 0}
 			aria-label={repeat === 1 ? 'Repeat: this track' : repeat === 2 ? 'Repeat: all' : 'Repeat: off'}
 			onclick={() => app.send(cmd.repeat(((repeat + 1) % 3) as 0 | 1 | 2))}
-			disabled={!app.now}
+			disabled={!g.other}
 		>
 			<Icon name="repeat" />{#if repeat === 1}<span class="one">1</span>{/if}
 		</button>
@@ -266,14 +269,14 @@
 			onclick={() => openSheet('sleep')}
 			aria-haspopup="dialog"
 			aria-label={sleepIn !== null ? `Sleep timer: stops in ${formatLeft(sleepIn)}` : 'Sleep timer'}
-			disabled={!app.current}
+			disabled={!app.current || !g.other}
 			data-sleep-button
 		><Icon name="moon" size={24} /><span class="np-act-label">{sleepIn !== null ? formatLeft(sleepIn) : 'Sleep'}</span></button>
 		<button class="np-act" onclick={() => openSheet('queue')} aria-haspopup="dialog" aria-label="Queue" disabled={!app.current} data-queue-peek><Icon name="queue" size={24} /><span class="np-act-label">Queue</span></button>
 		{#if local}
 			<VisualiserButton on={nowPlaying.visualiser} style={STYLE_LABELS[nowPlaying.style]} {reduce} ontoggle={toggleVisualiser} onchoose={() => openSheet('styles', visButton())} />
 		{/if}
-		<VolumePopover disabled={!app.now} />
+		<VolumePopover disabled={!g.volume} />
 	</nav>
 
 	{#if sheet === 'more'}

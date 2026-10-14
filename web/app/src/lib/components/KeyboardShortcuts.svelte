@@ -7,6 +7,7 @@
 	import { app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { device } from '$lib/player/device.svelte';
+	import { controls } from '$lib/player/controls.svelte';
 	import { nowPlaying } from '$lib/nowplaying/store.svelte';
 	import { haptics } from '$lib/haptics/haptics.svelte';
 	import { SEEK_STEP, SHORTCUT_HELP, VOLUME_STEP, shortcutFor, type Shortcut } from '$lib/keys/shortcuts';
@@ -27,31 +28,34 @@
 	async function run(s: Shortcut, path: string) {
 		const now = app.now;
 		const duration = Number(now?.duration ?? 0);
+		// What works now (out of reach, only what this device can do by itself).
+		const g = controls.gates;
 		switch (s) {
 			case 'playpause': {
-				if (!now) return;
+				if (!now || !g.playPause) return;
 				const was = app.playing;
-				await app.send(was ? cmd.pause(true) : cmd.play());
+				controls.toggle();
 				say(was ? 'Paused' : 'Playing');
 				return;
 			}
 			case 'seekback':
 			case 'seekforward': {
-				if (!now || !(duration > 0) || now.can_seek === 0) return;
+				if (!now || !(duration > 0) || now.can_seek === 0 || !g.seek) return;
 				const to = Math.max(0, Math.min(duration - 1, app.elapsed + (s === 'seekback' ? -SEEK_STEP : SEEK_STEP)));
-				await app.seek(to);
+				await controls.seek(to);
 				return;
 			}
 			case 'previous':
 			case 'next':
-				if (!now) return;
+				if (!now || !(s === 'next' ? g.next : g.previous)) return;
 				haptics.tick('skip');
-				await app.send(cmd.skip(s === 'next' ? 1 : -1));
+				if (s === 'next') controls.next();
+				else controls.previous();
 				say(s === 'next' ? 'Next track' : 'Previous track');
 				return;
 			case 'volumeup':
 			case 'volumedown': {
-				if (!now || device.buttonsOnly(app.playerId)) return;
+				if (!now || !g.volume || device.buttonsOnly(app.playerId)) return;
 				const cur = Number(now['mixer volume'] ?? 0);
 				const v = Math.max(0, Math.min(100, Math.abs(cur) + (s === 'volumeup' ? VOLUME_STEP : -VOLUME_STEP)));
 				haptics.volume(Math.abs(cur), v);

@@ -127,9 +127,10 @@
 				</p>
 				<p class="muted">{[textOf(album.year), `${tracks.length} tracks`, duration(totalTime)].filter(Boolean).join(' · ')}</p>
 				<div class="actions">
-					<button class="btn primary" onclick={() => app.queueUp({ album: id }, 'play')}><Icon name="play" size={18} />Play</button>
-					<button class="btn" onclick={() => app.queueUp({ album: id }, 'next')}><Icon name="playnext" size={18} />Play next</button>
-					<button class="btn" onclick={() => app.queueUp({ album: id }, 'add')}><Icon name="plus" size={18} />Add to queue</button>
+					<!-- These need the server: disabled while it is out of reach. -->
+					<button class="btn primary" onclick={() => app.queueUp({ album: id }, 'play')} disabled={app.reach !== 'online'}><Icon name="play" size={18} />Play</button>
+					<button class="btn" onclick={() => app.queueUp({ album: id }, 'next')} disabled={app.reach !== 'online'}><Icon name="playnext" size={18} />Play next</button>
+					<button class="btn" onclick={() => app.queueUp({ album: id }, 'add')} disabled={app.reach !== 'online'}><Icon name="plus" size={18} />Add to queue</button>
 					<button class="btn" onclick={() => (ctx = { kind: 'album', id, title: textOf(album?.album) })}><Icon name="more" size={18} />More</button>
 				</div>
 				<DownloadBar tracks={requests} ref={`album:${id}`} onremoved={(keys) => offlinePlayer.forget(keys)} />

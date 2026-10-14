@@ -13,6 +13,7 @@
 	import { LONG_PRESS_MS, MiniGesture, miniKey, type MiniAction } from '$lib/player/gesture';
 	import { formatLeft, sleepLeft } from '$lib/lms/sleep';
 	import { haptics } from '$lib/haptics/haptics.svelte';
+	import { controls } from '$lib/player/controls.svelte';
 
 	let seeking = $state<number | null>(null);
 	let volume = $state<number | null>(null);
@@ -24,7 +25,9 @@
 	const vol = $derived(volume ?? app.now?.['mixer volume'] ?? 0);
 	const title = $derived(textOf(track?.title ?? app.now?.current_title) || (app.current ? 'Nothing playing' : ''));
 	const sub = $derived([textOf(track?.artist), textOf(track?.album)].filter(Boolean).join(' · '));
-	const canSeek = $derived(total > 0 && app.now?.can_seek !== 0);
+	/** Which controls work now (all of them while the server is in reach). */
+	const g = $derived(controls.gates);
+	const canSeek = $derived(total > 0 && app.now?.can_seek !== 0 && g.seek);
 	const sleepIn = $derived(sleepLeft(app.now));
 	const thumb = $derived(coverPath(track?.coverid ?? track?.artwork_track_id, 120));
 
@@ -41,8 +44,10 @@
 	function act(a: MiniAction) {
 		if (a === 'none') return;
 		if (a === 'next' || a === 'previous') {
+			if (!(a === 'next' ? g.next : g.previous)) return;
 			haptics.tick('skip');
-			void app.send(cmd.skip(a === 'next' ? 1 : -1));
+			if (a === 'next') controls.next();
+			else controls.previous();
 		} else if (a === 'long-press') {
 			haptics.tick('press');
 			playOn = true;
@@ -148,18 +153,13 @@
 
 	<div class="centre">
 		<div class="transport">
-			<button class="icon-btn" aria-label="Previous" onclick={() => app.send(cmd.skip(-1))} disabled={!app.now}>
+			<button class="icon-btn" aria-label="Previous" onclick={() => controls.previous()} disabled={!g.previous}>
 				<Icon name="prev" />
 			</button>
-			<button
-				class="icon-btn play"
-				aria-label={app.playing ? 'Pause' : 'Play'}
-				onclick={() => app.send(app.playing ? cmd.pause(true) : cmd.play())}
-				disabled={!app.now}
-			>
+			<button class="icon-btn play" aria-label={app.playing ? 'Pause' : 'Play'} onclick={() => controls.toggle()} disabled={!g.playPause}>
 				<Icon name={app.playing ? 'pause' : 'play'} size={24} />
 			</button>
-			<button class="icon-btn" aria-label="Next" onclick={() => app.send(cmd.skip(1))} disabled={!app.now}>
+			<button class="icon-btn" aria-label="Next" onclick={() => controls.next()} disabled={!g.next}>
 				<Icon name="next" />
 			</button>
 		</div>
@@ -176,7 +176,7 @@
 				oninput={(e) => (seeking = Number(e.currentTarget.value))}
 				onchange={async (e) => {
 					const t = Number(e.currentTarget.value);
-					await app.seek(t);
+					await controls.seek(t);
 					seeking = null;
 				}}
 			/>
@@ -191,7 +191,7 @@
 			<label class="volume">
 				<Icon name={vol > 0 ? 'volume' : 'mute'} size={20} />
 				<span class="sr-only">Volume</span>
-				<input type="range" min="0" max="100" value={vol} oninput={(e) => setVolume(Number(e.currentTarget.value))} disabled={!app.now} />
+				<input type="range" min="0" max="100" value={vol} oninput={(e) => setVolume(Number(e.currentTarget.value))} disabled={!g.volume} />
 			</label>
 		{/if}
 		<OutputButton bind:open={playOn} />

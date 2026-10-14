@@ -23,6 +23,7 @@ import { textOf } from '$lib/lms/format';
 import { AnalysisClient } from '$lib/analysis/client';
 import { ApiError, BUSY_MESSAGE, CLIENT_HEADER, bearer, isBusy } from '$lib/api/http';
 import { BusyGate, POLL_MS, Single } from './busy';
+import { ReachabilityTracker, isNetworkError, type Reachability } from './reachability';
 import {
 	armedOver,
 	choiceSeconds,
@@ -75,6 +76,11 @@ class AppState {
 	error = $state('');
 	/** The music server isn't answering for now (busy): a calm status, not an error. */
 	serverBusy = $state(false);
+	/**
+	 * Can the server be reached (see reachability.ts)? Controls that need it are disabled
+	 * while it is anything but `online`.
+	 */
+	reach = $state<Reachability>('online');
 	/** Bumped when the library changes (rescan), so views can reload. */
 	libraryVersion = $state(0);
 	/** Bumped when the queue may have changed. */
@@ -103,6 +109,12 @@ class AppState {
 	#pending: ReturnType<typeof setTimeout> | undefined;
 	#events: EventsClient;
 	#busy = new BusyGate();
+	#reachability = new ReachabilityTracker();
+	#reachTimer: ReturnType<typeof setTimeout> | undefined;
+	/** The last request failed for want of a connection. */
+	#requestsFailing = false;
+	/** This device is the player and its socket is down (set by the layout). */
+	#deviceDown = false;
 	/** Status requests, one at a time: a poll never stacks on one still waiting. */
 	#refresher = new Single(
 		() => this.#refreshNow(),
@@ -133,10 +145,22 @@ class AppState {
 				this.queueVersion++;
 				this.soon();
 			},
-			onState: (s) => (this.events = s),
+			onState: (s) => {
+				this.events = s;
+				this.#reassess();
+			},
 			onLms: (h) => this.#onLms(h),
 		});
-		api.onHealth = (e) => (e ? this.#markBusy(e.retryAfter === undefined ? null : Math.min(e.retryAfter, 300)) : this.#markOk());
+		api.onHealth = (e) => {
+			this.#reached(true);
+			if (e) this.#markBusy(e.retryAfter === undefined ? null : Math.min(e.retryAfter, 300));
+			else this.#markOk();
+		};
+		api.onUnreachable = () => this.#reached(false);
+		if (typeof window !== 'undefined') {
+			addEventListener('online', () => this.#reassess());
+			addEventListener('offline', () => this.#reassess());
+		}
 		session.subscribe((s, st) => {
 			const was = this.status;
 			this.session = s;
@@ -267,7 +291,50 @@ class AppState {
 		this.#upcoming = null;
 		this.#busy.markOk();
 		this.serverBusy = false;
+		this.#requestsFailing = false;
+		this.#deviceDown = false;
+		this.#reachability.reset();
+		this.#reassess();
 		upNextTracker.reset();
+	}
+
+	/** A request reached the server (true), or failed for want of a connection (false). */
+	#reached(ok: boolean) {
+		if (this.#requestsFailing === !ok) return;
+		this.#requestsFailing = !ok;
+		this.#reassess();
+	}
+
+	/** This device is the player and its connection to the gateway is down (or back). */
+	setDeviceDown(down: boolean) {
+		if (this.#deviceDown === down) return;
+		this.#deviceDown = down;
+		this.#reassess();
+	}
+
+	/** Work out `reach` again from everything the app sees. */
+	#reassess() {
+		clearTimeout(this.#reachTimer);
+		const online = typeof navigator === 'undefined' || navigator.onLine !== false;
+		const r = this.#reachability.update(
+			{ browserOnline: online, events: this.events, requestsFailing: this.#requestsFailing, deviceDown: this.#deviceDown, busy: this.serverBusy },
+			Date.now(),
+		);
+		const was = this.reach;
+		this.reach = r.state;
+		if (r.recheckAt !== null) this.#reachTimer = setTimeout(() => this.#reassess(), Math.max(0, r.recheckAt - Date.now()));
+		// Back: the per-command errors seen meanwhile are explained; catch up at once.
+		if (was === 'unreachable' && r.state !== 'unreachable' && this.status === 'signed-in') {
+			this.error = '';
+			void this.loadPlayers();
+			this.soon();
+		}
+	}
+
+	/** Report a failure as an error, unless it is the server being out of reach (or busy). */
+	#failed(e: unknown) {
+		if (isBusy(e) || isNetworkError(e)) return;
+		this.error = (e as Error).message;
 	}
 
 	/** From the events stream: LMS stopped answering, or answers again. */
@@ -282,6 +349,7 @@ class AppState {
 		if (!this.serverBusy) {
 			this.serverBusy = true;
 			this.error = '';
+			this.#reassess();
 		}
 	}
 
@@ -289,6 +357,7 @@ class AppState {
 	#markOk() {
 		if (!this.#busy.markOk()) return;
 		this.serverBusy = false;
+		this.#reassess();
 		if (this.notice === BUSY_MESSAGE) this.notice = '';
 		if (this.status !== 'signed-in') return;
 		void this.loadPlayers();
@@ -318,7 +387,7 @@ class AppState {
 				this.soon();
 			}
 		} catch (e) {
-			if (!isBusy(e)) this.error = (e as Error).message;
+			this.#failed(e);
 		}
 	}
 
@@ -421,7 +490,7 @@ class AppState {
 			this.error = '';
 			void this.#sleepCheck(id, s);
 		} catch (e) {
-			if (!isBusy(e)) this.error = (e as Error).message;
+			this.#failed(e);
 		}
 	}
 
@@ -432,18 +501,35 @@ class AppState {
 		this.elapsed = s.duration ? Math.min(t, s.duration) : t;
 	}
 
-	/** Send a command to the selected player, then refresh its status. */
+	/**
+	 * Send a command to the selected player, then refresh its status. Not while the server
+	 * is out of reach or busy: the controls are disabled then, and the connection message
+	 * says why, so a command that gets here anyway is dropped quietly (never replayed).
+	 */
 	async send(c: (string | number)[]) {
 		const id = this.playerId;
-		if (!id || !this.current) return;
+		if (!id || !this.current || this.reach !== 'online') return;
 		try {
 			await api.rpc(id, c);
 		} catch (e) {
-			// Refused while LMS is busy: it didn't happen, and isn't replayed later.
-			if (isBusy(e)) this.notice = BUSY_MESSAGE;
-			else this.error = (e as Error).message;
+			// Refused while LMS is busy, or the server couldn't be reached: it didn't happen,
+			// isn't replayed later, and the connection message already says why.
+			this.#failed(e);
 		}
 		this.soon();
+	}
+
+	/**
+	 * Show what this device plays while the server is out of reach (see player/local):
+	 * merged into the status, with the play head counted on from `time`.
+	 */
+	applyLocal(patch: PlayerStatus) {
+		if (!this.now) return;
+		this.now = { ...this.now, ...patch };
+		if (typeof patch.time === 'number') {
+			this.elapsed = patch.time;
+			this.#statusAt = performance.now();
+		}
 	}
 
 	/** Play, play next or add a selection on the selected player. */
@@ -452,6 +538,7 @@ class AppState {
 			this.error = 'Choose a player first: tap the Play on… button by the volume.';
 			return;
 		}
+		if (this.reach !== 'online') return; // needs the server (the connection message says so)
 		// Play next from this device: the queue's Up next section follows it.
 		if (placement === 'next') upNextTracker.expectInsert(this.playerId, stateOf(this.now));
 		await this.send(cmd.enqueue(sel, placement, playIndex));

@@ -8,6 +8,7 @@
 	import { api, app } from '$lib/state/app.svelte';
 	import { me } from '$lib/state/me';
 	import * as cmd from '$lib/lms/commands';
+	import { controls } from '$lib/player/controls.svelte';
 	import { duration, isRemote, textOf } from '$lib/lms/format';
 	import type { FavouritesResult, MenuItem } from '$lib/lms/types';
 	import type { Station } from '$lib/api/me';
@@ -62,9 +63,11 @@
 			e.preventDefault();
 			return;
 		}
-		if (!app.now) return;
-		void app.send(app.playing ? cmd.pause(true) : cmd.play());
+		if (!app.now || !g.playPause) return;
+		controls.toggle();
 	}
+	/** Which controls work now: out of reach, only what this device can do by itself. */
+	const g = $derived(controls.gates);
 	async function stop() {
 		haptics.tick('press');
 		await app.send(cmd.stop());
@@ -81,8 +84,10 @@
 	$effect(() => () => clearTimeout(pressTimer));
 
 	function skip(by: 1 | -1) {
+		if (!(by > 0 ? g.next : g.previous)) return;
 		haptics.tick('skip');
-		void app.send(cmd.skip(by));
+		if (by > 0) controls.next();
+		else controls.previous();
 	}
 
 	// --- Start radio ---------------------------------------------------------------------------
@@ -192,7 +197,7 @@
 	{/if}
 
 	<div class="transport" role="group" aria-label="Playback">
-		<button class="big" aria-label="Previous" onclick={() => skip(-1)} disabled={!app.now} data-car-prev><Icon name="prev" size={56} /></button>
+		<button class="big" aria-label="Previous" onclick={() => skip(-1)} disabled={!g.previous} data-car-prev><Icon name="prev" size={56} /></button>
 		<button
 			class="big play"
 			aria-label={app.playing ? 'Pause' : 'Play'}
@@ -203,15 +208,15 @@
 			onpointercancel={pressEnd}
 			onclick={playPause}
 			oncontextmenu={contextStop}
-			disabled={!app.now}
+			disabled={!g.playPause}
 			data-car-play
 		><Icon name={app.playing ? 'pause' : 'play'} size={64} /></button>
-		<button class="big" aria-label="Next" onclick={() => skip(1)} disabled={!app.now} data-car-next><Icon name="next" size={56} /></button>
+		<button class="big" aria-label="Next" onclick={() => skip(1)} disabled={!g.next} data-car-next><Icon name="next" size={56} /></button>
 	</div>
 	<p class="hold" id="car-hold">Hold play to stop</p>
 
 	<nav class="more" aria-label="Car mode">
-		<button class="wide" onclick={radio} disabled={trackId === null || busy} data-car-radio><Icon name="radio" size={30} /><span>Start radio</span></button>
+		<button class="wide" onclick={radio} disabled={trackId === null || busy || !g.other} data-car-radio><Icon name="radio" size={30} /><span>Start radio</span></button>
 		<button class="wide" aria-pressed={view === 'favourites'} onclick={() => (view === 'favourites' ? (view = 'playing') : open('favourites'))} data-car-favourites>
 			<Icon name="heart" size={30} /><span>Favourites</span>
 		</button>

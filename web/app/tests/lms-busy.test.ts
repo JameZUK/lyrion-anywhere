@@ -263,12 +263,16 @@ describe('the app while LMS is busy', () => {
 		expect(app.error).toBe('command not allowed');
 	});
 
-	test('a command refused as busy tells the user, and is not replayed', async () => {
+	test('a command refused as busy is not replayed; the connection status says why (no per-command note)', async () => {
 		respond = () => busy503();
 		await app.send(['pause', '1']);
-		expect(app.notice).toBe(BUSY_MESSAGE);
+		expect(app.notice).toBe('');
 		expect(app.error).toBe('');
+		expect(app.reach).toBe('busy');
 		await new Promise((r) => setTimeout(r, 200));
+		expect(calls.filter((c) => c.cmd[0] === 'pause')).toHaveLength(1);
+		// While busy, further commands aren't even sent (the controls are disabled).
+		await app.send(['pause', '0']);
 		expect(calls.filter((c) => c.cmd[0] === 'pause')).toHaveLength(1);
 	});
 
@@ -321,7 +325,8 @@ describe('wiring', () => {
 		expect(src).toMatch(/api\.onHealth = /);
 	});
 
-	test('the layout shows a calm status while busy', () => {
-		expect(layout).toMatch(/\{#if app\.serverBusy\}\s*<div class="banner resume busy" role="status">\s*<span>Your music server is busy\. Waiting for it…<\/span>/);
+	test('the layout shows one calm connection status (busy included), at every width', () => {
+		expect(layout).toMatch(/\{#if controls\.message\}\s*<p class="chip" class:busy=\{app\.reach === 'busy'\} role="status"/);
+		expect(layout).not.toMatch(/app\.serverBusy\}\s*<div class="banner/);
 	});
 });

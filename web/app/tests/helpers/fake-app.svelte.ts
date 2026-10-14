@@ -43,7 +43,16 @@ class FakeApp {
 	queueVersion = $state(0);
 	error = $state('');
 	serverBusy = $state(false);
+	/** Can the server be reached (see state/reachability)? */
+	reach = $state<'online' | 'busy' | 'unreachable'>('online');
+	status = $state('signed-in');
 	soon = () => {};
+	applyLocal(p: PlayerStatus) {
+		if (!this.now) return;
+		this.now = { ...this.now, ...p };
+		if (typeof p.time === 'number') this.elapsed = p.time;
+	}
+	setDeviceDown(_down: boolean) {}
 	/** Event watchers (Rooms); tests call `emit` to deliver one. */
 	watchers = new Set<(e: { player: string | null; event: string[] } | 'resync') => void>();
 	watchEvents(cb: (e: { player: string | null; event: string[] } | 'resync') => void) {
@@ -85,6 +94,7 @@ class FakeApp {
 		return this.players.some((p) => p.playerid === id);
 	}
 	async send(c: (string | number)[]) {
+		if (this.reach !== 'online') return; // as the real one: dropped quietly
 		await api.rpc(this.playerId, c);
 	}
 	libraryVersion = $state(0);

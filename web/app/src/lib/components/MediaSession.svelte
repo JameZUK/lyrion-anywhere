@@ -6,6 +6,7 @@
 	import { offlinePlayer } from '$lib/offline/index.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
+	import { controls } from '$lib/player/controls.svelte';
 
 	const ms = typeof navigator !== 'undefined' && 'mediaSession' in navigator ? navigator.mediaSession : null;
 	const track = $derived(app.now?.playlist_loop?.[0]);
@@ -15,24 +16,27 @@
 	/** Seconds moved by the system's seek-backward and seek-forward buttons, unless it says. */
 	const SEEK_OFFSET = 10;
 	const total = $derived(Number(app.now?.duration ?? track?.duration ?? 0));
-	const seekable = $derived(total > 0 && app.now?.can_seek !== 0);
+	/** Which controls work now: out of reach, only what this device can do by itself. */
+	const g = $derived(controls.gates);
+	const seekable = $derived(total > 0 && app.now?.can_seek !== 0 && g.seek);
 
 	function seekTo(seconds: number) {
 		if (!Number.isFinite(seconds)) return;
-		void app.seek(Math.max(0, Math.min(Math.max(0, total - 1), seconds)));
+		void controls.seek(Math.max(0, Math.min(Math.max(0, total - 1), seconds)));
 	}
 
-	// Every action the player supports: play, pause, stop, previous and next, and, for a track
-	// with a length, seeking (to a point, or back and forward).
+	// Every action that works now: play, pause, stop, previous and next, and, for a track with
+	// a length, seeking (to a point, or back and forward). The system shows only these.
 	$effect(() => {
 		if (!ms || !mine) return;
 		const canSeek = seekable;
+		const { playPause, next, previous, other } = g;
 		const actions: [MediaSessionAction, MediaSessionActionHandler | null][] = [
-			['play', () => app.send(cmd.play())],
-			['pause', () => app.send(cmd.pause(true))],
-			['stop', () => app.send(cmd.stop())],
-			['nexttrack', () => app.send(cmd.skip(1))],
-			['previoustrack', () => app.send(cmd.skip(-1))],
+			['play', playPause ? () => controls.play() : null],
+			['pause', playPause ? () => controls.pause() : null],
+			['stop', other ? () => app.send(cmd.stop()) : null],
+			['nexttrack', next ? () => controls.next() : null],
+			['previoustrack', previous ? () => controls.previous() : null],
 			['seekto', canSeek ? (d) => typeof d.seekTime === 'number' && seekTo(d.seekTime) : null],
 			['seekbackward', canSeek ? (d) => seekTo(app.elapsed - (d.seekOffset || SEEK_OFFSET)) : null],
 			['seekforward', canSeek ? (d) => seekTo(app.elapsed + (d.seekOffset || SEEK_OFFSET)) : null],

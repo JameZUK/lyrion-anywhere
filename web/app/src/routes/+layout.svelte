@@ -24,6 +24,7 @@
 	import ContinueOn from '$lib/components/ContinueOn.svelte';
 	import { forgetOwner, rememberOwner } from '$lib/offline/settings';
 	import { library } from '$lib/state/library.svelte';
+	import { controls, local } from '$lib/player/controls.svelte';
 	// Keeps a playing station topped up wherever the user goes.
 	import '$lib/stations/active.svelte';
 
@@ -130,6 +131,33 @@
 		};
 	});
 
+	// Out of reach (SPEC: controls while the server is out of reach). This device's own
+	// connection counts while it is the player; then it plays on by itself, and tells the
+	// server what it did once it is back.
+	$effect(() => {
+		app.setDeviceDown(controls.thisDevice && device.state === 'reconnecting');
+	});
+	$effect(() => {
+		const online = app.reach === 'online';
+		const on = !online && controls.thisDevice && app.status === 'signed-in';
+		untrack(() => local.sync(on, online));
+	});
+	$effect(() => {
+		void device.detail;
+		untrack(() => local.onDevice());
+	});
+	// While in reach, keep the queue around the current track: what this device can play
+	// with no server is worked out from it.
+	const curIndex = $derived(Number(app.now?.playlist_cur_index ?? -1));
+	$effect(() => {
+		const mac = device.mac;
+		const cur = curIndex;
+		void app.queueVersion;
+		if (app.reach !== 'online' || !controls.thisDevice || app.status !== 'signed-in' || cur < 0) return;
+		const t = setTimeout(() => void local.snapshot(mac, cur).catch(() => {}), 1000);
+		return () => clearTimeout(t);
+	});
+
 	// A sleep timer on this device fades its own output before the end.
 	app.onDeviceSleep = (endsAt, fadeS) => device.setSleepFade(endsAt, fadeS);
 
@@ -219,9 +247,6 @@
 						<Icon name={n.icon} size={20} />{n.label}
 					</a>
 				{/each}
-				{#if app.events !== 'live' && app.events !== 'stopped'}
-					<p class="conn muted">Reconnecting…</p>
-				{/if}
 			</nav>
 			<main class="content" class:has-strip={app.remote && !offlinePlayer.active} class:on-np={path === '/' && !offlinePlayer.active}>
 				{#if heldBack}
@@ -235,12 +260,13 @@
 						<button class="btn" onclick={() => device.stop()}>Dismiss</button>
 					</div>
 				{/if}
-				<ContinueOn />
-				{#if app.serverBusy}
-					<div class="banner resume busy" role="status">
-						<span>Your music server is busy. Waiting for it…</span>
-					</div>
+				<!-- One connection message, at every width, taking its own room (never over the controls). -->
+				{#if controls.message}
+					<p class="chip" class:busy={app.reach === 'busy'} role="status" data-connection={app.reach}>
+						<Icon name={app.reach === 'busy' ? 'clock' : 'offline'} size={16} /><span>{controls.message}</span>
+					</p>
 				{/if}
+				<ContinueOn />
 				{#if app.notice}
 					<div class="banner resume notice" role="status">
 						<span>{app.notice}</span>
@@ -340,10 +366,24 @@
 		border-radius: 999px;
 		padding: 0.65rem 1rem;
 	}
-	.conn {
-		margin-top: auto;
-		padding: 0 0.7rem;
+	.chip {
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
+		width: fit-content;
+		max-width: calc(100% - 2 * clamp(1rem, 3vw, 2.5rem));
+		margin: 0.6rem clamp(1rem, 3vw, 2.5rem) 0;
+		padding: 0.3rem 0.75rem;
+		border-radius: 999px;
 		font-size: 0.85rem;
+		background: var(--bg-sunken);
+		color: var(--fg);
+		border: 1px solid var(--line);
+		flex: none;
+	}
+	.chip.busy {
+		border-color: var(--accent);
+		background: var(--accent-soft);
 	}
 	.content {
 		min-width: 0;
