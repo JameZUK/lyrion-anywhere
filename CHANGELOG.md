@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Android 1.12.1 (versionCode 26): no freeze in airplane mode
+
+A fix for an "app not responding" freeze, seen when turning on airplane mode. UniFFI calls a Rust future's continuation while holding that future's lock, and on the main thread Kotlin resumed the waiting coroutine right there, inside the callback. When polling one future woke another (several requests failing at once as the network vanished), the resumed coroutine polled its own future again and waited for ever on the lock its own thread held. `anywhere-uniffi-bindgen` now patches the generated Kotlin so every Rust future is polled on `Dispatchers.Default`, which always dispatches a resumption rather than running it inline; this also keeps Rust work off the main thread. The build fails if UniFFI's generated glue ever changes shape. A regression test models UniFFI's locking and deadlocks against the unpatched driver.
+
 ## 2026-10-14: Android 1.12.0 (versionCode 25)
 
 A test build: a busy music server (LMS frozen while its storage wakes) is shown as a calm "busy" note rather than "Can't reach your server" or offline mode, the player stays connected on the gateway's keepalives, polling backs off, and commands refused while busy say so instead of being replayed later.
