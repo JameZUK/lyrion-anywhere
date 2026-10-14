@@ -165,7 +165,7 @@ class AccessibilityAuditTests {
 
     @Test
     fun library() = audit {
-        LibraryScreen(listOf(VirtualLibrary("ab12", "Classical")), null, {}, onNewMusic = {}, onOpen = {})
+        LibraryScreen(listOf(VirtualLibrary("ab12", "Classical")), null, {}, onOpen = {})
     }
 
     @Test
@@ -263,7 +263,6 @@ class AccessibilityAuditTests {
             error = null,
             onChange = {},
             onRefreshSmart = {},
-            onDownloads = {},
         )
     }
 
@@ -388,7 +387,7 @@ class PrivacyLinkTests {
     private fun settings(handler: UriHandler) = compose.setContent {
         CompositionLocalProvider(LocalUriHandler provides handler) {
             LyrionTheme(dynamicColour = false) {
-                SettingsScreen(SettingsUiState(username = "alice"), "1", "1", {}, {})
+                SettingsScreen(SettingsUiState(username = "alice"), "1", "1", {}, {}, section = io.github.jamezuk.lyrionanywhere.ui.settings.SettingsSection.ABOUT)
             }
         }
     }
@@ -404,7 +403,7 @@ class PrivacyLinkTests {
         val row = compose.onNodeWithTag("privacy-policy").performScrollTo()
         row.assertHasClickAction()
         row.assert(hasText("Privacy policy"))
-        row.assert(hasText("What the app and your server keep, and what they don't"))
+        row.assert(hasText("What the app and your music server keep, and what they don't"))
         row.performClick()
         assertEquals(listOf("https://github.com/JameZUK/lyrion-anywhere/blob/main/docs/PRIVACY.md"), opened)
         assertEquals(PRIVACY_POLICY_URL, opened.single())
@@ -530,6 +529,8 @@ class SpokenLabelTests {
     @Test
     fun theSyncToggleNamesBothPlayers() {
         show { PlayOnList(auditPlayerState(), PlayOnActions(onControl = {}, onBackToPhone = {}, onSync = { _, _ -> })) }
+        // In Group players… (Wave 3.5).
+        compose.onNodeWithTag("group-players").performClick()
         compose.onNodeWithContentDescription("Play Player $LOUNGE in sync with Player $KITCHEN").assertExists()
     }
 

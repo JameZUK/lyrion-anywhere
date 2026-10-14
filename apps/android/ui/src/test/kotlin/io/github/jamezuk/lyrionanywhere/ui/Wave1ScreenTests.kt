@@ -352,7 +352,7 @@ class SleepChoicesTest {
     @Test
     fun theFadeIsExplained() {
         choices(fade = 0)
-        compose.onNodeWithText("No fade-out on this phone (Settings). Other players fade over LMS's last minute, then stop and turn off.")
+        compose.onNodeWithText("No fade-out on this phone (Settings). Other players fade over their last minute, then stop and turn off.")
             .assertIsDisplayed()
     }
 

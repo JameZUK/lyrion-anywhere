@@ -432,28 +432,19 @@ class DocScreenshotsPhone : DocShots() {
     @Test
     fun library() = shot("library") {
         PhoneShell(tab = MainTab.LIBRARY, mini = DocStates.mini) {
-            DocScreen(stringResource(R.string.nav_library)) {
-                LibraryScreen(
-                    libraries = emptyList(),
-                    chosenLibrary = null,
-                    onChooseLibrary = {},
-                    onNewMusic = {},
-                    onOpen = {},
-                    chip = LibraryChip.ALBUMS,
-                    onChip = {},
-                    chipContent = {
-                        AlbumBrowser(
-                            SparseState(total = DocLibrary.ALBUMS.size, pages = mapOf(0 to DocLibrary.ALBUMS)),
-                            sort = LibraryAlbumOrder.TITLE,
-                            grid = true,
-                            onSort = {},
-                            onGrid = {},
-                            onEnsure = {},
-                            onRetry = {},
-                            onAlbum = {},
-                            onMore = {},
-                        )
-                    },
+            // The Library's Albums page (Wave 3.5: one album browser, a page of its own).
+            DocScreen(stringResource(R.string.lib_albums), back = true) {
+                AlbumBrowser(
+                    SparseState(total = DocLibrary.ALBUMS.size, pages = mapOf(0 to DocLibrary.ALBUMS)),
+                    sort = LibraryAlbumOrder.TITLE,
+                    grid = true,
+                    onSort = {},
+                    onGrid = {},
+                    onEnsure = {},
+                    onRetry = {},
+                    onAlbum = {},
+                    onMore = {},
+                    onRandom = {},
                 )
             }
         }
@@ -544,6 +535,8 @@ class DocScreenshotsPhone : DocShots() {
                     libraryVersion = "1.0.0",
                     onSignOut = {},
                     onLicences = {},
+                    // Settings › About › Advanced (Wave 3.5).
+                    section = io.github.jamezuk.lyrionanywhere.ui.settings.SettingsSection.ADVANCED,
                     gaps = {
                         ReadAheadSetting(ReadAheadSettings()) {}
                         ReplayCacheSetting(

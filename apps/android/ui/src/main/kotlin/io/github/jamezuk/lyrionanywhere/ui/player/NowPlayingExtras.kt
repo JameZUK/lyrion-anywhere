@@ -394,39 +394,14 @@ fun fadeText(seconds: Int): String = when {
 /** Settings › Sleep timer fade-out: off to 2 minutes (30 s by default), kept on this phone. */
 @Composable
 fun SleepFadeSetting(fadeSecs: Int, onFade: (Int) -> Unit) {
-    var open by rememberSaveable { mutableStateOf(false) }
-    ListItem(
-        leadingContent = { Icon(Icons.Outlined.Bedtime, contentDescription = null) },
-        headlineContent = { Text(stringResource(R.string.settings_sleep_fade)) },
-        supportingContent = { Text(fadeText(fadeSecs)) },
-        modifier = Modifier.testTag("sleep-fade-setting").clickable { open = true },
+    io.github.jamezuk.lyrionanywhere.ui.components.ChoiceRow(
+        title = stringResource(R.string.settings_sleep_fade),
+        choices = SleepTimer.FADE_CHOICES.map { f -> io.github.jamezuk.lyrionanywhere.ui.components.Choice(f, fadeText(f), tag = "sleep-fade-$f") },
+        selected = fadeSecs,
+        onSelect = onFade,
+        icon = Icons.Outlined.Bedtime,
+        tag = "sleep-fade-setting",
+        note = stringResource(R.string.settings_sleep_fade_detail),
+        current = fadeText(fadeSecs),
     )
-    if (open) {
-        AlertDialog(
-            onDismissRequest = { open = false },
-            title = { Text(stringResource(R.string.settings_sleep_fade)) },
-            text = {
-                Column(Modifier.selectableGroup().verticalScroll(rememberScrollState())) {
-                    Text(stringResource(R.string.settings_sleep_fade_detail), style = MaterialTheme.typography.bodySmall)
-                    SleepTimer.FADE_CHOICES.forEach { f ->
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .selectable(selected = f == fadeSecs, role = Role.RadioButton, onClick = {
-                                    onFade(f)
-                                    open = false
-                                })
-                                .padding(vertical = 8.dp)
-                                .testTag("sleep-fade-$f"),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(selected = f == fadeSecs, onClick = null)
-                            Text(fadeText(f), Modifier.padding(start = 8.dp))
-                        }
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { open = false }) { Text(stringResource(R.string.action_cancel)) } },
-        )
-    }
 }

@@ -70,6 +70,8 @@ class ReplayCacheSettingTest {
             }
         }
         compose.onNodeWithText("Replay cache").assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading))
+        // The sizes are in the Size row's picker (Wave 3.5).
+        compose.onNodeWithTag("replay-cache-size").performClick()
         compose.onNodeWithTag("replay-cache-size-${ReplayCache.GB}").assertIsSelected()
         compose.onNodeWithText("500 MB").assertExists()
         compose.onNodeWithText("5 GB").assertExists()
@@ -78,6 +80,7 @@ class ReplayCacheSettingTest {
             SemanticsMatcher.expectValue(SemanticsProperties.Text, listOf(androidx.compose.ui.text.AnnotatedString("512.0 MB for 12 tracks"))),
         )
         compose.onNodeWithTag("replay-cache-size-0").performClick()
+        compose.onNodeWithTag("replay-cache-size").performClick()
         compose.onNodeWithTag("replay-cache-size-0").assertIsSelected()
         compose.onNodeWithTag("replay-cache-size-${ReplayCache.GB}").assertIsNotSelected()
         compose.onNodeWithTag("replay-cache-size-${2 * ReplayCache.GB}").performClick()
@@ -119,6 +122,7 @@ class ReplayCacheSettingTest {
                 ),
             ),
         )
+        compose.onNodeWithTag("replay-cache-size").performClick()
         for (c in ReplayCache.CHOICES) {
             compose.onNodeWithTag("replay-cache-size-$c").assertIsNotEnabled().assertIsNotSelected()
         }
@@ -135,6 +139,7 @@ class ReplayCacheSettingTest {
                 ReplayCacheSetting(ReplayCache.DEFAULT_BYTES, null, downloadsAllowed = null, onSize = {}, onClear = {})
             }
         }
+        compose.onNodeWithTag("replay-cache-size").performClick()
         compose.onNodeWithTag("replay-cache-size-0").assertIsEnabled()
         compose.onNodeWithText("Nothing kept yet").assertExists()
     }

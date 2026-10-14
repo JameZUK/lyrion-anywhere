@@ -115,7 +115,8 @@ class Wave35Phase1Tests {
         var brought = 0
         var back = 0
         show { PlayOnList(auditPlayerState(KITCHEN), PlayOnActions(onControl = {}, onBackToPhone = { back++ }, onBringToPhone = { brought++ })) }
-        compose.onNodeWithTag("play-on-bring-here").assertTextContains("Move playback here").performClick()
+        compose.onNodeWithTag("play-on-phone-more").performClick()
+        compose.onNodeWithTag("play-on-phone-move").assertTextContains("Move playback to this phone").performClick()
         compose.onNode(hasText("This phone") and hasClickAction()).performClick()
         assertEquals(listOf(1, 1), listOf(brought, back))
     }

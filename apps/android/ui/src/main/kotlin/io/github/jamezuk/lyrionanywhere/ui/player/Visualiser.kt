@@ -500,17 +500,14 @@ fun VisualiserSetting(on: Boolean, style: VisualStyle, onChange: (Boolean) -> Un
                 .testTag("visualiser-setting"),
         )
         if (on) {
-            androidx.compose.foundation.layout.Column(Modifier.selectableGroup()) {
-                VisualStyle.entries.forEach { s ->
-                    ListItem(
-                        headlineContent = { Text(visualStyleName(s)) },
-                        leadingContent = { RadioButton(selected = s == style, onClick = null) },
-                        modifier = Modifier
-                            .selectable(selected = s == style, role = Role.RadioButton) { onStyle(s) }
-                            .testTag("visual-style-${s.name}"),
-                    )
-                }
-            }
+            // The style: one row with a picker (Wave 3.5).
+            io.github.jamezuk.lyrionanywhere.ui.components.ChoiceRow(
+                title = stringResource(R.string.visualiser_style_title),
+                choices = VisualStyle.entries.map { s -> io.github.jamezuk.lyrionanywhere.ui.components.Choice(s, visualStyleName(s), tag = "visual-style-${s.name}") },
+                selected = style,
+                onSelect = onStyle,
+                tag = "visualiser-style-setting",
+            )
         }
     }
 }

@@ -136,7 +136,7 @@ fun rememberElapsed(state: PlayerUiState, clock: () -> Long): Double {
 /**
  * The bar shown above the navigation: what's playing, with play/pause, next and the output
  * button. Which player it controls is part of its second line ("on Lounge", D20), never a
- * band of its own; a move of playback in progress shows above it.
+ * band of its own; a move of playback in progress is in the status slot at the top.
  *
  * Gestures (Wave 1 §4, as on the web): swipe left/right for the next/previous track (with a
  * haptic tick), swipe up or tap to open Now playing, long-press for *Play on…*. TalkBack
@@ -151,13 +151,11 @@ fun MiniPlayer(
     onTogglePlay: () -> Unit,
     onNext: () -> Unit,
     onOutputs: () -> Unit = {},
-    onDismissTransfer: () -> Unit = {},
     onPrevious: () -> Unit = {},
 ) {
     val track = state.status?.current
     if (track == null) {
         Column {
-            TransferStatus(state.transfer, onDismissTransfer)
             // No player yet, or nothing queued: "Play on…" must still be one tap away (a
             // first-time user has no other way to pick a player).
             if (!state.loading && !state.waitingForPhone) ChoosePlayerBar(state, onOutputs)
@@ -205,7 +203,6 @@ fun MiniPlayer(
         modifier = Modifier.fillMaxWidth(),
     ) {
       Column {
-        TransferStatus(state.transfer, onDismissTransfer)
         Row(
             Modifier
                 .testTag("mini-player")
@@ -589,7 +586,6 @@ private fun NowPlayingContent(
                 }
             },
     ) {
-    TransferStatus(state.transfer, actions.onDismissTransfer)
     when {
         wide -> Row(Modifier.fillMaxSize().testTag("now-playing-wide")) {
             Column(Modifier.weight(1f).fillMaxHeight().padding(horizontal = 16.dp)) {

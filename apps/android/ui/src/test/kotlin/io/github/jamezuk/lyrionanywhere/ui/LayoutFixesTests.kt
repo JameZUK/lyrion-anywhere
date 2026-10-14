@@ -35,7 +35,6 @@ import io.github.jamezuk.lyrionanywhere.ui.components.ConnectionFrame
 import io.github.jamezuk.lyrionanywhere.ui.components.ConnectionMessage
 import io.github.jamezuk.lyrionanywhere.ui.components.ConnectionTags
 import io.github.jamezuk.lyrionanywhere.ui.docs.DocArt
-import io.github.jamezuk.lyrionanywhere.ui.library.LibraryChips
 import io.github.jamezuk.lyrionanywhere.ui.library.PlayButtons
 import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadMark
 import io.github.jamezuk.lyrionanywhere.ui.player.QueueHeader
@@ -301,24 +300,20 @@ class LayoutFixesTests {
     }
 
     @Test
-    fun theChosenChipIsScrolledIntoView() {
-        compose.setContent { LyrionTheme(dynamicColour = false) { LibraryChips(LibraryChip.DOWNLOADED, {}) } }
+    fun theLibraryHasNoChipsToLoseOffTheEdge() {
+        // Wave 3.5 took the chips away (one model): every section is a row, wholly on screen.
+        compose.setContent {
+            LyrionTheme(dynamicColour = false) {
+                io.github.jamezuk.lyrionanywhere.ui.library.LibraryScreen(emptyList(), null, {}, onOpen = {})
+            }
+        }
         compose.waitForIdle()
-        assertWhollyOnScreen("chip-downloaded")
-    }
-
-    @Test
-    fun choosingAnotherChipBringsItIntoView() {
-        var chosen by mutableStateOf<LibraryChip?>(LibraryChip.ALBUMS)
-        compose.setContent { LyrionTheme(dynamicColour = false) { LibraryChips(chosen, { chosen = it }) } }
-        compose.waitForIdle()
-        assertWhollyOnScreen("chip-albums")
-        chosen = LibraryChip.DOWNLOADED
-        compose.waitForIdle()
-        assertWhollyOnScreen("chip-downloaded")
-        chosen = LibraryChip.ALBUMS
-        compose.waitForIdle()
-        assertWhollyOnScreen("chip-albums")
+        compose.onNodeWithTag("library-chips").assertDoesNotExist()
+        listOf("Albums", "Artists", "Playlists", "Downloaded").forEach { name ->
+            val node = compose.onNodeWithText(name).assertIsDisplayed().fetchSemanticsNode()
+            val root = compose.onRoot().fetchSemanticsNode().size.width
+            assertTrue("$name ends off-screen", node.positionInRoot.x + node.size.width <= root)
+        }
     }
 
     private fun close(a: Int, b: Int): Boolean {

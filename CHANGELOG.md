@@ -2,6 +2,18 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Android declutter, phase 2 (Wave 3.5)
+
+The structural part of `docs/plans/wave3_5-declutter.md` for Android (item 11 is web-only). Nothing was removed: every setting and action has a page and a test.
+
+- **Settings is an index** (item 8): seven rows, each with a one-line summary: Account ("alex · music.example.com"), Playback ("Starts on This phone"), Now playing ("Lyric line on · Visualiser: Bars"), Downloads ("1.18 GB · 34 tracks"), Listening history ("On"), This device (its name) and About (the version), with Advanced under About. Playback holds the default player, streaming quality on Wi-Fi and on mobile data, the sleep timer's fade-out and Sound; Now playing the lyric line, the visualiser and its style, and ratings; Downloads the Downloads page and *Download options* (was *Downloads and storage*); This device the phone's name, haptics, wallpaper colours and car mode; About the version, licences, the privacy policy and Advanced (read ahead, the replay cache).
+- **One picker row** (`ChoiceRow`): every list of options is now one row showing the current choice, which opens a picker that closes as one is chosen (Cancel leaves it): the default player, streaming quality, sleep fade-out, visualiser style, ratings style, car mode, the replay cache's size, Download options (storage limit, formats on Wi-Fi and mobile data, recently added albums kept offline) and Sound (levelling, crossfeed, transitions, dither). Help is at most one sentence per control.
+- **One status slot** (item 9): the line at the top shows one lasting state, by priority: moving playback, then out of reach, then busy, then reconnecting. The mini player and Now playing no longer have a transfer band of their own; a move that didn't work is a snackbar (Play on… still shows it with its detail while open).
+- **One Library** (item 10): one list (Albums, Artists, Playlists, Favourites, Downloaded, Smart playlists), then Browse (Genres, Years, Compilations, Folders, Apps & Radio), each a page of its own. The chips and the second album browser are gone: Albums is the one browser (sort, grid or list, A–Z), with Recently added and Random as sorts (Random is one batch, with *Shuffle again*); Home's "See all" opens it in that order. Downloaded (the music) is in the Library; the Downloads page (the manager) is in Settings › Downloads.
+- **Play on…** (item 12): a tap on a row controls that player; *Move playback to …* is in each row's ⋮ (This phone's too); grouping is one *Group players…* row with a dialog of players; a grouped player says who it plays with; the paragraph and the separate list of groups are gone.
+- **Naming** (one word per concept): *your music server* (not "your server" or "LMS"), *Move playback to …*, *Downloaded* (the state) and *Downloads* (the page), *Smart playlists*, *No player chosen · Choose a player*, *Folders*, *Random albums*; unused strings removed.
+- **Tests:** `Wave35Phase2Tests` (the index's seven rows and their summaries, no option inline, every setting on its page; the picker row; the slot's priority and only one line at a time; no transfer band on Now playing; the Library's one list; Play on's tap, ⋮ and Group players…), `Wave35RandomAlbumsTest` (one batch, shuffle again, a sort leaves random). Existing tests open the pickers and pages where their controls moved.
+
 ## 2026-10-14: Android declutter, phase 1 (Wave 3.5)
 
 The quick wins of `docs/plans/wave3_5-declutter.md`, Android column. Each control that left a screen has a named new home, and every one is still reachable (tested).

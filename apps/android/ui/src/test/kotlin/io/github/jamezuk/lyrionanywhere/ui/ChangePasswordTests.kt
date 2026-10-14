@@ -109,6 +109,8 @@ class ChangePasswordScreenTests {
                     libraryVersion = "1",
                     onSignOut = {},
                     onLicences = {},
+                    // Settings › Account (Wave 3.5: Settings is an index of pages).
+                    section = io.github.jamezuk.lyrionanywhere.ui.settings.SettingsSection.ACCOUNT,
                     onChangePassword = { c, n, code, others -> form.sent += listOf(c, n, code, others) },
                 )
             }

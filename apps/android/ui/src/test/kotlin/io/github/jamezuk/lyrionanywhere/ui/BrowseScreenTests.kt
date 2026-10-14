@@ -7,6 +7,7 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
@@ -131,9 +132,11 @@ class BrowseScreenTests {
         compose.onNodeWithText("Ready as “Test phone”").assertIsDisplayed()
         // The other player, what it plays, and that it is the one controlled.
         compose.onNode(hasText("Player $KITCHEN") and hasClickAction()).assertIsSelected()
-        compose.onNodeWithText("Track 9 · Artist").assertIsDisplayed()
-        compose.onNodeWithText("Synchronised groups").assertIsDisplayed()
-        compose.onNodeWithText("Player $KITCHEN + Player $PHONE").performClick()
+        // A grouped player says who it plays in step with (Wave 3.5: no separate list of groups).
+        compose.onNodeWithText("Track 9 · Artist", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("with Player $PHONE", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Synchronised groups").assertDoesNotExist()
+        compose.onNode(hasText("Player $KITCHEN") and hasClickAction()).performClick()
         compose.onNodeWithText("This phone").performClick()
         assertEquals(listOf(KITCHEN), controlled)
         assertEquals(1, back)
@@ -147,8 +150,11 @@ class BrowseScreenTests {
                 DefaultPlayerSetting(state(PHONE), onChoose = { d, id -> chosen += d to id })
             }
         }
-        compose.onNode(hasText("This phone") and hasClickAction()).assertIsSelected()
+        // A row with a picker (Wave 3.5).
+        compose.onNodeWithTag("default-player-setting").assertTextContains("This phone").performClick()
+        compose.onNode(hasText("This phone") and androidx.compose.ui.test.isSelectable()).assertIsSelected()
         compose.onNodeWithText("Last used").performClick()
+        compose.onNodeWithTag("default-player-setting").performClick()
         compose.onNodeWithText("Player $KITCHEN").performClick()
         assertEquals(listOf(DefaultPlayer.LAST_USED to null, DefaultPlayer.SPECIFIC to KITCHEN), chosen)
     }
@@ -159,11 +165,13 @@ class BrowseScreenTests {
         var libraries by mutableStateOf(emptyList<VirtualLibrary>())
         compose.setContent {
             LyrionTheme(dynamicColour = false) {
-                LibraryScreen(libraries, null, {}, onNewMusic = {}, onOpen = { opened += it })
+                LibraryScreen(libraries, null, {}, onOpen = { opened += it })
             }
         }
         compose.onNodeWithText("Whole library").assertDoesNotExist()
-        compose.onNodeWithText("New Music").assertIsDisplayed()
+        // One model (Wave 3.5): the sections, then Browse; New music is a sort of Albums.
+        compose.onNodeWithText("New Music").assertDoesNotExist()
+        compose.onNodeWithText("Albums").assertIsDisplayed()
         compose.onNodeWithText("Apps & Radio").performScrollTo().performClick()
         assertEquals(listOf(LibraryDestination.APPS), opened)
         libraries = listOf(VirtualLibrary("ab12", "Classical"))
@@ -250,7 +258,7 @@ class BrowseScreenTests {
             LyrionTheme(dynamicColour = false) { AppsScreen(ui, onOpen = {}, onRetry = {}, onToggleShowAll = { toggled++ }) }
         }
         compose.onNodeWithText("Some App").assertIsDisplayed()
-        compose.onNodeWithText("Needs setting up in LMS").assertIsDisplayed()
+        compose.onNodeWithText("Needs setting up in your music server").assertIsDisplayed()
         compose.onNodeWithText("Some Radio").assertDoesNotExist()
         compose.onNodeWithText("1 app is hidden: it shows nothing here, or the music server couldn't open it.").assertIsDisplayed()
         compose.onNodeWithText("Show all").performClick()

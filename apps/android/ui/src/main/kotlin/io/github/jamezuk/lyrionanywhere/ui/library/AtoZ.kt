@@ -3,6 +3,7 @@ package io.github.jamezuk.lyrionanywhere.ui.library
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.jamezuk.lyrionanywhere.core.Album
+import io.github.jamezuk.lyrionanywhere.core.AlbumSort
 import io.github.jamezuk.lyrionanywhere.core.Artist
 import io.github.jamezuk.lyrionanywhere.core.IndexEntry
 import io.github.jamezuk.lyrionanywhere.core.LibraryFilter
@@ -154,10 +155,24 @@ class LibraryAlbumsViewModel(
     order: LibraryAlbumOrder = LibraryAlbumOrder.DEFAULT,
     libraryId: Flow<String?> = flowOf(null),
     private val me: MeRepository? = null,
+    random: Boolean = false,
 ) : SparsePagedViewModel<Album>() {
     private val _order = MutableStateFlow(if (order in LibraryAlbumOrder.OFFERED) order else LibraryAlbumOrder.DEFAULT)
     val order: StateFlow<LibraryAlbumOrder> = _order.asStateFlow()
+
+    /**
+     * Albums in a random order (Wave 3.5: a sort of Albums, not a page of its own): one batch
+     * of [RANDOM_BATCH], as paging a random order would only repeat albums.
+     */
+    private val _random = MutableStateFlow(random)
+    val random: StateFlow<Boolean> = _random.asStateFlow()
     private var currentLibrary: String? = null
+
+    /** Albums in a random order, or a new random order when already. */
+    fun shuffle() {
+        _random.value = true
+        restart()
+    }
 
     init {
         viewModelScope.launch {
@@ -169,17 +184,31 @@ class LibraryAlbumsViewModel(
     }
 
     fun setOrder(order: LibraryAlbumOrder) {
-        if (order == _order.value || order !in LibraryAlbumOrder.OFFERED) return
+        if (order !in LibraryAlbumOrder.OFFERED || (order == _order.value && !_random.value)) return
         _order.value = order
+        _random.value = false
         restart()
     }
 
     private val filter get() = LibraryFilter(libraryId = currentLibrary)
 
     override suspend fun page(start: Int, count: Int): ApiResult<Pair<List<Album>, Int>> {
+        if (_random.value) return randomBatch(start)
         val sort = _order.value.lmsSort ?: return recentlyPlayed(start, count)
         return when (val r = library.albums(start, count, sort, null, filter)) {
             is ApiResult.Ok -> ApiResult.Ok(r.value.items to r.value.total.toInt())
+            is ApiResult.Err -> r
+        }
+    }
+
+    /** One batch of random albums; nothing past it. */
+    private suspend fun randomBatch(start: Int): ApiResult<Pair<List<Album>, Int>> {
+        if (start >= RANDOM_BATCH) return ApiResult.Ok(emptyList<Album>() to RANDOM_BATCH)
+        return when (val r = library.albums(0, RANDOM_BATCH, AlbumSort.RANDOM, null, filter)) {
+            is ApiResult.Ok -> {
+                val items = r.value.items.take(RANDOM_BATCH)
+                ApiResult.Ok(items.drop(start.coerceAtLeast(0)) to items.size)
+            }
             is ApiResult.Err -> r
         }
     }
@@ -204,7 +233,12 @@ class LibraryAlbumsViewModel(
     }
 
     override suspend fun index(): ApiResult<List<IndexEntry>> =
-        if (_order.value == LibraryAlbumOrder.TITLE) library.albumIndex(filter) else ApiResult.Ok(emptyList())
+        if (_order.value == LibraryAlbumOrder.TITLE && !_random.value) library.albumIndex(filter) else ApiResult.Ok(emptyList())
+
+    companion object {
+        /** How many random albums are shown at once. */
+        const val RANDOM_BATCH = 60
+    }
 }
 
 /** The Library's artists, by role (as [ArtistsViewModel]), with the A–Z index. */
@@ -264,9 +298,6 @@ class LibraryPrefsViewModel(private val settings: SettingsStore) : ViewModel() {
         val now = prefs.value ?: LibraryPrefs()
         viewModelScope.launch { settings.setLibraryPrefs(f(now).sanitised()) }
     }
-
-    /** Choose a chip; choosing the one chosen goes back to the overview. */
-    fun toggleChip(chip: LibraryChip) = change { it.copy(chip = if (it.chip == chip) null else chip) }
 
     fun setOrder(order: LibraryAlbumOrder) = change { it.copy(albumOrder = order) }
 

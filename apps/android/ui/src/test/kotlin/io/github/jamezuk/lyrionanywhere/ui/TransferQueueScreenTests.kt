@@ -97,18 +97,21 @@ class TransferScreenTest {
     fun eachOtherPlayerOffersMovePlaybackHere() {
         val moved = mutableListOf<String>()
         sheet(state(), PlayOnActions(onControl = {}, onBackToPhone = {}, onMoveHere = { moved += it }))
-        compose.onNodeWithText("Moving playback replaces the other player's queue.").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Move playback to Player $KITCHEN").performClick()
+        // A secondary action in each row's ⋮ (Wave 3.5; the paragraph about it went).
+        compose.onNodeWithText("Moving playback replaces the other player's queue.").assertDoesNotExist()
+        compose.onNodeWithTag("play-on-$KITCHEN-more").performClick()
+        compose.onNodeWithText("Move playback to Player $KITCHEN").performClick()
         assertEquals(listOf(KITCHEN), moved)
         // Not for the player already being controlled.
-        compose.onNodeWithContentDescription("Move playback to Player $PHONE").assertDoesNotExist()
+        compose.onNodeWithTag("play-on-$PHONE-more").assertDoesNotExist()
     }
 
     @Test
     fun whileControllingAnotherPlayerThePhoneRowOffersBringToThisPhone() {
         var brought = 0
         sheet(state(selected = KITCHEN), PlayOnActions(onControl = {}, onBackToPhone = {}, onBringToPhone = { brought++ }))
-        compose.onNodeWithTag("play-on-bring-here").performClick()
+        compose.onNodeWithTag("play-on-phone-more").performClick()
+        compose.onNodeWithText("Move playback to this phone").performClick()
         assertEquals(1, brought)
     }
 
@@ -120,7 +123,8 @@ class TransferScreenTest {
             PlayOnActions(onControl = {}, onBackToPhone = {}, onMoveHere = { moved += it }),
         )
         compose.onNodeWithText("Moving playback to Kitchen: copying the queue…").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Move playback to Player $LOUNGE").performClick()
+        compose.onNodeWithTag("play-on-$LOUNGE-more").performClick()
+        compose.onNodeWithTag("play-on-$LOUNGE-move").assertIsNotEnabled().performClick()
         assertTrue(moved.isEmpty())
     }
 
@@ -151,7 +155,8 @@ class TransferScreenTest {
         }
         compose.onAllNodesWithText("Moving playback to Phone…")[0].assertIsDisplayed()
         // Moving playback here (Play on…) is not offered again while one is running.
-        compose.onNodeWithTag("play-on-bring-here").assertIsNotEnabled()
+        compose.onNodeWithTag("play-on-phone-more").performClick()
+        compose.onNodeWithTag("play-on-phone-move").assertIsNotEnabled()
         assertEquals(0, brought)
     }
 
@@ -203,6 +208,8 @@ class SyncScreenTest {
                 )
             }
         }
+        // In Group players… (Wave 3.5).
+        compose.onNodeWithTag("group-players").performClick()
         compose.onNodeWithTag("sync-$LOUNGE").assertIsOn().performClick()
         compose.onNodeWithTag("sync-$PHONE").assertDoesNotExist()
         assertEquals(listOf(LOUNGE to false), calls)
@@ -218,6 +225,7 @@ class SyncScreenTest {
                 PlayOnList(state(selected = PHONE), PlayOnActions(onControl = {}, onBackToPhone = {}, onSync = { id, on -> calls += id to on }))
             }
         }
+        compose.onNodeWithTag("group-players").performClick()
         compose.onNodeWithTag("sync-$KITCHEN").assertIsOff().performClick()
         assertEquals(listOf(KITCHEN to true), calls)
     }

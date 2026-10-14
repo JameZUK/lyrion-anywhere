@@ -254,20 +254,17 @@ fun RatingsSetting(style: RatingStyle, onStyle: (RatingStyle) -> Unit, onClear: 
         )
     }
     androidx.compose.foundation.layout.Column(Modifier.testTag("ratings-setting")) {
-        androidx.compose.material3.ListItem(
-            headlineContent = { Text(stringResource(R.string.settings_rating_style)) },
-            supportingContent = { Text(stringResource(R.string.settings_ratings_detail)) },
+        // A row with a picker (Wave 3.5).
+        io.github.jamezuk.lyrionanywhere.ui.components.ChoiceRow(
+            title = stringResource(R.string.settings_rating_style),
+            choices = listOf(RatingStyle.STARS to R.string.rating_style_stars, RatingStyle.HEART to R.string.rating_style_heart).map { (s, label) ->
+                io.github.jamezuk.lyrionanywhere.ui.components.Choice(s, stringResource(label), tag = "rating-style-${s.name.lowercase()}")
+            },
+            selected = style,
+            onSelect = onStyle,
+            tag = "rating-style-setting",
+            note = stringResource(R.string.settings_ratings_detail),
         )
-        Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            listOf(RatingStyle.STARS to R.string.rating_style_stars, RatingStyle.HEART to R.string.rating_style_heart).forEach { (s, label) ->
-                androidx.compose.material3.FilterChip(
-                    selected = style == s,
-                    onClick = { onStyle(s) },
-                    label = { Text(stringResource(label)) },
-                    modifier = Modifier.padding(end = 8.dp).testTag("rating-style-${s.name.lowercase()}"),
-                )
-            }
-        }
         androidx.compose.material3.TextButton(
             onClick = {
                 note = null

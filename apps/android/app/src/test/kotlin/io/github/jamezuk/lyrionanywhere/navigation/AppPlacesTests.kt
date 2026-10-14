@@ -122,11 +122,11 @@ class AppPlacesTests {
             .assertIsDisplayed()
             .assertHasClickAction()
             .assertHeightIsAtLeast(48.dp)
-            .assertContentDescriptionEquals("Can’t reach your server.")
+            .assertContentDescriptionEquals("Can’t reach your music server.")
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
             .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.LiveRegion))
         // Its words are read once (as the description), not again as text.
-        compose.onNodeWithText("Can’t reach your server.").assertDoesNotExist()
+        compose.onNodeWithText("Can’t reach your music server.").assertDoesNotExist()
         compose.onNodeWithTag(ConnectionTags.BANNER).performClick()
         compose.onNodeWithText("Downloads screen").assertIsDisplayed()
         // Back from the downloads: the album, where it was.
@@ -140,7 +140,7 @@ class AppPlacesTests {
         openAlbumAndScroll()
         h.phase = Phase.OFFLINE
         compose.waitForIdle()
-        compose.onNodeWithText("Downloaded music").assertIsDisplayed()
+        compose.onNodeWithText("Downloaded").assertIsDisplayed()
         compose.onNodeWithText("Album 7").assertDoesNotExist()
         // The connection is back: the album, scrolled where it was, with its back stack.
         h.phase = Phase.MAIN

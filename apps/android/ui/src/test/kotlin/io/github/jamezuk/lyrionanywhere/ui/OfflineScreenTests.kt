@@ -10,6 +10,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
@@ -147,7 +148,7 @@ class OfflineScreenTests {
             }
         }
         compose.onNodeWithTag("offline-banner").assertIsDisplayed()
-        compose.onNodeWithText("Downloaded music").assertIsDisplayed()
+        compose.onNodeWithText("Downloaded").assertIsDisplayed()
         compose.onNodeWithText("Try again").performClick()
         compose.onNodeWithContentDescription("Play Second").performClick()
         assertTrue(retried)
@@ -229,11 +230,11 @@ class OfflineScreenTests {
                 error = null,
                 onChange = { settings = it(settings) },
                 onRefreshSmart = {},
-                onDownloads = {},
             )
         }
-        compose.onNodeWithText("No limit").assertIsSelected()
-        compose.onNodeWithText("5.00 GB").performClick()
+        // The limit is a row with a picker (Wave 3.5).
+        compose.onNodeWithTag("storage-cap").assertTextContains("No limit").performClick()
+        compose.onNode(hasText("5.00 GB") and androidx.compose.ui.test.isSelectable()).performClick()
         assertEquals(5 * DownloadSettings.GB, settings.capBytes)
         compose.onNodeWithTag("storage-settings").performScrollToNode(hasText("Download on Wi-Fi only"))
         compose.onNodeWithText("Download on Wi-Fi only").performClick()
