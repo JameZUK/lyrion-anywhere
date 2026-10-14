@@ -15,7 +15,7 @@ Until now only an admin could set a password. A signed-in user can now change th
   - Audited as `user.password_changed` (detail `self`) and `password.change_failed`, never with the password.
   - `GET /v1/me` lists `change_password` under `features`.
 - **Web:** a *Change password* form in *Settings › Account* with a hidden username field and `current-password`/`new-password` autocomplete for password managers. A code field appears when two-step is on. Errors show inline and are announced: wrong password, the policy's reason, locked out (with the wait) and network failures. Afterwards it lists the devices still signed in.
-- **Android:** the same form as a dialog in Settings' account section, shown only when the server offers it. It sends the two-step code when the account has two-step on.
+- **Android:** the same form, opened from a *Change password* row in Settings' account section and shown only when the server offers it (the app now reads `/v1/me` features with the account). It asks for the two-step code when the account has two-step on.
 - **Tests:**
   - gateway:
     - success, with the old password refused and the new one accepted;

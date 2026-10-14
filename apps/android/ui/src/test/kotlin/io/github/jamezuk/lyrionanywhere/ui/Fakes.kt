@@ -56,6 +56,7 @@ import io.github.jamezuk.lyrionanywhere.core.SignalVerdict
 import io.github.jamezuk.lyrionanywhere.data.LibraryRepository
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerState
+import io.github.jamezuk.lyrionanywhere.data.PasswordChangeResult
 import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
 import io.github.jamezuk.lyrionanywhere.data.ServerInfo
 import io.github.jamezuk.lyrionanywhere.data.SettingsStore
@@ -154,7 +155,22 @@ class FakeAccount : AccountRepository {
         return true
     }
 
-    override suspend fun account(): ApiResult<AccountInfo> = ApiResult.Ok(AccountInfo("alice", false, true, false))
+    var accountInfo = AccountInfo("alice", false, true, false, true)
+
+    override suspend fun account(): ApiResult<AccountInfo> = ApiResult.Ok(accountInfo)
+
+    val passwordChanges = mutableListOf<List<Any?>>()
+    var passwordResult: PasswordChangeResult = PasswordChangeResult.Changed(0, emptyList())
+
+    override suspend fun changePassword(
+        current: String,
+        new: String,
+        code: String?,
+        signOutOthers: Boolean,
+    ): PasswordChangeResult {
+        passwordChanges += listOf(current, new, code, signOutOthers)
+        return passwordResult
+    }
 
     val renames = mutableListOf<String>()
     var renameResult: ApiResult<String>? = null

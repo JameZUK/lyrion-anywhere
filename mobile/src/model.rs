@@ -97,6 +97,29 @@ pub struct AccountInfo {
     pub is_admin: bool,
     pub two_step_enabled: bool,
     pub downloads_enabled: bool,
+    /// The server lets users change their own password (`features.change_password` in
+    /// `GET /v1/me`); false on older gateways.
+    pub can_change_password: bool,
+}
+
+/// One of this user's other devices, still signed in after a password change.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct OwnDevice {
+    pub id: i64,
+    pub name: String,
+    /// E.g. "Pixel 8" or "Firefox on Linux", if the device said.
+    pub platform: Option<String>,
+    /// When it was last seen (Unix seconds), if known.
+    pub last_seen: Option<i64>,
+}
+
+/// What [`crate::Session::change_password`] did.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PasswordChanged {
+    /// How many other devices were signed out with it.
+    pub signed_out: u32,
+    /// The user's other devices that are still signed in.
+    pub other_devices: Vec<OwnDevice>,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]

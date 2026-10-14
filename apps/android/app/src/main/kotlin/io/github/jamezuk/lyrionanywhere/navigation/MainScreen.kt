@@ -1543,6 +1543,8 @@ fun MainScreen(
                             libraryVersion = remember { libraryVersion() },
                             onSignOut = vm::signOut,
                             onRename = vm::rename,
+                            onChangePassword = vm::changePassword,
+                            onClosePasswordForm = vm::closePasswordForm,
                             onLicences = { nav.navigate(LicencesRoute) },
                             onSound = { nav.navigate(SoundRoute) },
                             onDownloads = { nav.navigate(DownloadsRoute) },

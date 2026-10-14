@@ -60,7 +60,7 @@ impl ApiError {
     ) -> Self {
         let detail = clean_detail(error.unwrap_or(""), status);
         match status {
-            401 if totp_required => ApiError::TwoStepRequired,
+            401 | 403 if totp_required => ApiError::TwoStepRequired,
             401 => ApiError::Unauthorised,
             403 => ApiError::Forbidden { detail },
             408 => ApiError::Network { detail },
@@ -115,6 +115,17 @@ mod tests {
         assert_eq!(
             ApiError::from_status(401, None, true, None),
             ApiError::TwoStepRequired
+        );
+        // A password change asks for the code with 403 (the token itself is fine).
+        assert_eq!(
+            ApiError::from_status(403, Some("two-step code required"), true, None),
+            ApiError::TwoStepRequired
+        );
+        assert_eq!(
+            ApiError::from_status(403, Some("wrong"), false, None),
+            ApiError::Forbidden {
+                detail: "wrong".into()
+            }
         );
         assert_eq!(
             ApiError::from_status(403, Some("command not allowed"), false, None),

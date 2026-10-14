@@ -107,6 +107,18 @@ interface AccountRepository {
      * follows. Returns the name the server stored.
      */
     suspend fun renameDevice(name: String): ApiResult<String> = ApiResult.Err(AppError.SignedOut)
+
+    /**
+     * Change this user's password: the current one, the new one, and the two-step code when
+     * two-step is on. This phone stays signed in; other devices too unless [signOutOthers].
+     * Offered only when [AccountInfo.canChangePassword].
+     */
+    suspend fun changePassword(
+        current: String,
+        new: String,
+        code: String?,
+        signOutOthers: Boolean,
+    ): PasswordChangeResult = PasswordChangeResult.Failed(PasswordChangeError.SignedOut)
 }
 
 /**
@@ -280,6 +292,17 @@ class RustAccountRepository(
     override suspend fun account(): ApiResult<AccountInfo> {
         val sess = _connection.value?.session ?: return ApiResult.Err(AppError.SignedOut)
         return apiCall { sess.account() }
+    }
+
+    override suspend fun changePassword(
+        current: String,
+        new: String,
+        code: String?,
+        signOutOthers: Boolean,
+    ): PasswordChangeResult {
+        val sess = _connection.value?.session
+            ?: return PasswordChangeResult.Failed(PasswordChangeError.SignedOut)
+        return runPasswordChange { sess.changePassword(current, new, code?.takeIf { it.isNotBlank() }, signOutOthers) }
     }
 
     override suspend fun renameDevice(name: String): ApiResult<String> {
