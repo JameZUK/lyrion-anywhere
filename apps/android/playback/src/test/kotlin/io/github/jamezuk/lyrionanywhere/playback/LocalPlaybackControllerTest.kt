@@ -77,6 +77,25 @@ class LocalPlaybackControllerTest {
     }
 
     @Test
+    fun withTheServerAwayActionsGoToThePhoneNotLms() = runTest {
+        val c = controller()
+        local.state.value = away()
+        c.pause()
+        c.play()
+        c.next()
+        c.previous()
+        c.seekTo(42.0)
+        c.jumpTo(2)
+        c.becomingNoisy()
+        assertTrue("nothing for LMS", players.commands.isEmpty())
+        assertEquals(
+            listOf("Pause", "Play", "Next", "Previous", "Seek(ms=42000)", "Jump(index=2)", "Pause"),
+            local.calls.filter { it.startsWith("local ") }.map { it.removePrefix("local ") },
+        )
+        assertTrue("becoming noisy still silences at once", local.calls.contains("hold true"))
+    }
+
+    @Test
     fun becomingNoisySilencesFirstThenPauses() = runTest {
         val c = controller()
         c.becomingNoisy()

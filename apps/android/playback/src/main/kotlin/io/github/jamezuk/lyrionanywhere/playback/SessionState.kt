@@ -93,6 +93,16 @@ data class SessionState(
     /** The position advances with time (playing, not buffering). */
     val advancing: Boolean,
     val canSeek: Boolean,
+    /**
+     * What works (offline controls): everything while the phone's player reaches LMS; with
+     * the server away, only what the phone can do by itself, so the notification, the lock
+     * screen and the car offer nothing that would fail.
+     */
+    val canPlayPause: Boolean = true,
+    val canNext: Boolean = true,
+    val canPrevious: Boolean = true,
+    /** Jumping to another queue entry from the session's list. */
+    val canJump: Boolean = true,
 ) {
     val current: SessionItem? get() = items.getOrNull(currentIndex)
 }
@@ -134,7 +144,7 @@ fun mapSnapshot(s: SessionSnapshot): SessionState {
             Player.STATE_BUFFERING
         else -> Player.STATE_READY
     }
-    return SessionState(
+    val online = SessionState(
         playbackState = state,
         playWhenReady = lmsPlaying,
         items = items,
@@ -142,5 +152,20 @@ fun mapSnapshot(s: SessionSnapshot): SessionState {
         positionMs = (status.elapsedSecs.coerceAtLeast(0.0) * 1000).toLong(),
         advancing = lmsPlaying && state == Player.STATE_READY,
         canSeek = status.canSeek,
+    )
+    // The server away: what the phone does, and only what it can.
+    val c = s.local.offlineControls ?: return online
+    val here = c.index?.toInt()?.let { i -> items.indexOfFirst { it.queueIndex == i } }?.takeIf { it >= 0 } ?: index
+    return online.copy(
+        playbackState = Player.STATE_READY,
+        playWhenReady = c.playing,
+        currentIndex = here,
+        positionMs = c.elapsedMs.toLong(),
+        advancing = c.playing,
+        canSeek = c.seek,
+        canPlayPause = c.playPause,
+        canNext = c.next,
+        canPrevious = c.previous,
+        canJump = false,
     )
 }

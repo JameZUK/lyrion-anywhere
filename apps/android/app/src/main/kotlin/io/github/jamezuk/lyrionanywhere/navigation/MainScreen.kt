@@ -170,9 +170,8 @@ import io.github.jamezuk.lyrionanywhere.ui.library.PagedState
 import io.github.jamezuk.lyrionanywhere.ui.library.roleLabel
 import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineLibraryScreen
 import io.github.jamezuk.lyrionanywhere.ui.components.ErrorState
-import io.github.jamezuk.lyrionanywhere.ui.components.ReconnectingPill
-import io.github.jamezuk.lyrionanywhere.ui.components.ServerBusyPill
-import io.github.jamezuk.lyrionanywhere.ui.components.ServerUnreachableBanner
+import io.github.jamezuk.lyrionanywhere.ui.components.ConnectionFrame
+import io.github.jamezuk.lyrionanywhere.ui.components.connectionMessage
 import io.github.jamezuk.lyrionanywhere.data.offline.ConnectionUi
 import androidx.compose.ui.Alignment
 import io.github.jamezuk.lyrionanywhere.ui.components.LoadingState
@@ -238,6 +237,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -397,8 +397,11 @@ fun MainScreen(
             me = container.me,
             clock = clock,
             library = container.library,
+            downloaded = container.offline.state.map { it.downloadedIds },
         )
     }
+    // Which controls work follows the link to the server (offline controls).
+    LaunchedEffect(player, connection) { player.setConnection(connection) }
     LifecycleStartEffect(player) {
         player.start()
         onStopOrDispose { player.stop() }
@@ -644,10 +647,6 @@ fun MainScreen(
               Column(if (bottomBarNav) Modifier else Modifier.navigationBarsPadding()) {
                 val onNowPlaying = destination?.hasRoute(NowPlayingRoute::class) == true ||
                     destination?.hasRoute(OfflineNowPlayingRoute::class) == true || inCar || inStory
-                // The server can't be reached: say so here, on the screen the user is on.
-                if (connection.unreachable && !inCar && !inStory && destination?.hasRoute(DownloadsRoute::class) != true) {
-                    ServerUnreachableBanner(onDownloads = { nav.navigate(DownloadsRoute) { launchSingleTop = true } })
-                }
                 // Back online with downloads queued: "Continue on <player>?" (SPEC §8.4).
                 if (!inCar && !inStory) {
                     val handOff by container.continueOn.state.collectAsStateWithLifecycle()
@@ -697,7 +696,15 @@ fun MainScreen(
             },
         ) { padding ->
             val openAlbum: (Long) -> Unit = { nav.navigate(AlbumRoute(it)) }
-            BoxWithConstraints(Modifier.padding(padding)) {
+            // The link to the server: one line at the top that takes its own space, so it
+            // never covers the controls (offline controls). Car mode and stories say nothing.
+            val playingHere = playerState.local.status?.playback == io.github.jamezuk.lyrionanywhere.core.LocalPlayback.PLAYING ||
+                offlineUi.state.playing
+            val connectionLine = connectionMessage(connection, playingHere).takeIf { !inCar && !inStory }
+            val toDownloads = { nav.navigate(DownloadsRoute) { launchSingleTop = true } }
+                .takeIf { destination?.hasRoute(DownloadsRoute::class) != true }
+            ConnectionFrame(connectionLine, toDownloads, Modifier.padding(padding)) {
+            BoxWithConstraints(Modifier.fillMaxSize()) {
             val layout = WindowLayout.of(maxWidth.value, maxHeight.value)
             CompositionLocalProvider(LocalWindowLayout provides layout) {
             NavHost(nav, startDestination = HomeRoute) {
@@ -1651,13 +1658,6 @@ fun MainScreen(
                 }
             }
             }
-            // A reconnect under way: a small pill over the screen, which stays as it was.
-            if (connection.reconnecting && !inCar && !inStory) {
-                ReconnectingPill(Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp))
-            }
-            // The music server is busy (the gateway answers): a calm note, nothing else changes.
-            if (connection.busy && !inCar && !inStory) {
-                ServerBusyPill(Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp))
             }
             }
         }

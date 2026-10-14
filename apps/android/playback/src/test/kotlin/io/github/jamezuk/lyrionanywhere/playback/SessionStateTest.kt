@@ -20,6 +20,23 @@ class SessionStateTest {
     ) = mapSnapshot(SessionSnapshot(local = local, status = status, queue = queue))
 
     @Test
+    fun withTheServerAwayOnlyWhatThePhoneCanDoIsOffered() {
+        val online = map()
+        assertTrue(online.canPlayPause && online.canNext && online.canPrevious && online.canJump)
+        val s = map(local = away(offline(index = 2, playing = false, next = true, previous = false, seek = true)))
+        assertTrue(s.canPlayPause && s.canNext && s.canSeek)
+        assertFalse("previous isn't on the phone", s.canPrevious)
+        assertFalse("jumping from the list needs the server", s.canJump)
+        // What the phone does: paused at its position, on the entry it plays.
+        assertFalse(s.playWhenReady || s.advancing)
+        assertEquals(30_000, s.positionMs)
+        assertEquals(2, s.items[s.currentIndex].queueIndex)
+        // Nothing playable: nothing offered.
+        val none = map(local = away(offline(playPause = false)))
+        assertFalse(none.canPlayPause || none.canNext || none.canPrevious || none.canSeek)
+    }
+
+    @Test
     fun idleUnlessThePhoneIsAPlayerAndLmsHasSpoken() {
         assertEquals(Player.STATE_IDLE, map(local = LocalPlayerState()).playbackState)
         assertEquals(Player.STATE_IDLE, map(status = null).playbackState)

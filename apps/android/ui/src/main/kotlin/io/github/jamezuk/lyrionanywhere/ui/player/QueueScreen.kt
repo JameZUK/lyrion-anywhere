@@ -85,9 +85,19 @@ fun QueueScreen(state: PlayerUiState, actions: QueueScreenActions, modifier: Mod
                     state.upcoming,
                     actions.onClearUpcoming,
                     onSaveAsPlaylist = actions.onSaveQueue.takeIf { state.canSaveQueue },
+                    enabled = state.gate.other,
                 )
             }
         }
-        queueItems(state.queue, status.queueIndex?.toInt(), drag, actions.queue, hasMore = state.queueMore, sections = state.sections)
+        queueItems(
+            state.queue,
+            status.queueIndex?.toInt(),
+            drag,
+            actions.queue,
+            hasMore = state.queueMore,
+            sections = state.sections,
+            marks = state::markOf,
+            gate = state.gate,
+        )
     }
 }

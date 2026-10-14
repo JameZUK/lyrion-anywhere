@@ -447,7 +447,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
     - The player's trouble counts only while the app is in use (in the foreground, after a 10 s grace on return) or while it plays.
     - On return to the foreground, the player retries at once instead of waiting out its back-off. A sign-in that couldn't be checked is tried again.
     - No network at all (flight mode, no signal) counts at once, foreground or not, after 3 s to ride out a handover.
-  - **On the current screen:** while reconnecting, a small "Reconnecting…" pill. After 5 s of counted trouble, or with no network, a banner: "Can’t reach your server · Downloads". Tapping it opens the downloads. Lists keep what they last loaded: a reload that fails doesn't replace them with an error.
+  - **On the current screen:** while reconnecting, "Reconnecting…". After 5 s of counted trouble, or with no network, "Can’t reach your server." ("… Playing from this device." while the phone plays on). Tapping it opens the downloads. It is one line at the top of the screen that takes its own space (2026-10-14: it used to float over the controls). Lists keep what they last loaded: a reload that fails doesn't replace them with an error.
   - **Offline mode takes the whole screen** only:
     - when there's no network as the app opens;
     - when the server stays unreachable for 15 s while the app is in use;
@@ -458,6 +458,16 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
     - After the process is killed, the app reopens on the same screen with its back stack. Each screen's own saved state, scroll included, starts afresh, as with any NavHost.
     - Another account, or signing out, starts at Home.
   - The connection is not kept alive in the background: there is no foreground service unless playing.
+  - **Controls while the server can't be reached (2026-10-14, the owner's request):**
+    - Unreachable or busy, another player's controls are all greyed out. This phone's player keeps what it can do by itself (`mobile/src/player/outage.rs`):
+      - play and pause, at once, position kept;
+      - next, previous (past 3 s: the start of this track), a queue row and seek, for entries the phone has whole: a download, a replay-cache entry recorded as the track's whole stream from its start, or a stream spooled whole. It plays its own copies of the queue (as the app last read it), on through entries in a row, and stops at the first one it doesn't have ("Next track needs your server");
+      - nothing else (shuffle, repeat, edits, sleep, power, sync, LMS's volume, library play actions).
+    - With the link up but LMS busy, play and pause hold the phone's output.
+    - The media session (notification, lock screen, Android Auto) advertises only the actions that work.
+    - Queue rows are marked "Downloaded" (any player) or "On this device" (while the phone is the player), online too; with the server away, rows the phone can't play are dimmed.
+    - Commands refused because the server is away raise no message of their own.
+    - On return, if the user acted on the phone meanwhile, its state is the truth: LMS is told `playlist index N`, `time T` and the pause state, only if LMS's queue still has the same track at N. A skip on the phone leaves LMS's session, so a new one starts on return; a pause alone keeps it, and LMS is told the pause state. With nothing done, nothing changes.
   - **A busy music server is not an unreachable one (2026-10-14):** while the gateway says LMS is busy (`{"lms":"busy"}` on the event stream, or a 503 with `"busy": true`), the gateway is plainly reachable. The phone player's trouble then doesn't count: no banner, no takeover (and an offline takeover already shown ends). A calm "Your music server is busy. Waiting for it…" pill shows instead. No network at all still counts. Status reads never overlap and back off (15 s, or Retry-After if longer, while the stream is down); `{"lms":"ok"}` refreshes at once; a command refused as busy says so briefly and is never replayed.
 
 ### 8.5 Security

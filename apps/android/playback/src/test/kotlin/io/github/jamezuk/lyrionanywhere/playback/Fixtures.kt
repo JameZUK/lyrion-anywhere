@@ -87,7 +87,30 @@ class FakeLocal(initial: LocalPlayerState = running()) : LocalPlayerRepository {
     override fun renegotiateOutput() {
         calls += "renegotiate"
     }
+
+    override fun localControl(control: io.github.jamezuk.lyrionanywhere.data.LocalControl): Boolean {
+        calls += "local $control"
+        return true
+    }
 }
+
+/** What the engine says this phone can do with the server away. */
+fun offline(
+    index: Int = 1,
+    playing: Boolean = true,
+    next: Boolean = false,
+    previous: Boolean = false,
+    seek: Boolean = false,
+    playPause: Boolean = true,
+) = io.github.jamezuk.lyrionanywhere.core.OfflineControls(
+    index.toUInt(), 11, playing, 30_000u, playPause, next, previous, seek, false, false,
+)
+
+/** This phone's player with the server away, its engine saying [controls]. */
+fun away(controls: io.github.jamezuk.lyrionanywhere.core.OfflineControls = offline()) = LocalPlayerState(
+    enabled = true,
+    status = localStatus(connection = PlayerConnection.Reconnecting(0uL)).copy(offlineControls = controls),
+)
 
 class FakePlayers : PlayersRepository {
     var status: PlayerStatus = lmsStatus()

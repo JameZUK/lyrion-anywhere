@@ -2,12 +2,17 @@ package io.github.jamezuk.lyrionanywhere.ui.components
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.CloudOff
@@ -27,116 +32,141 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.unit.dp
+import io.github.jamezuk.lyrionanywhere.data.offline.ConnectionUi
 import io.github.jamezuk.lyrionanywhere.ui.R
 
-/** Test tags for the connection's banner and pill. */
+/** Test tags for the connection line, by what it says. */
 object ConnectionTags {
     const val BANNER = "connection-banner"
     const val PILL = "connection-reconnecting"
     const val BUSY = "connection-server-busy"
+    /** The screen's content under the line. */
+    const val CONTENT = "connection-content"
+}
+
+/** What the connection line says (at most one thing at a time). */
+enum class ConnectionMessage {
+    /** A reconnect under way. */
+    RECONNECTING,
+
+    /** The music server is busy; the gateway answers. */
+    BUSY,
+
+    /** The server can't be reached. */
+    UNREACHABLE,
+
+    /** … and this phone carries on playing what it holds. */
+    UNREACHABLE_PLAYING_HERE,
 }
 
 /**
- * "Can’t reach your server · Downloads": a strip on the current screen while the server
- * can't be reached, which leads to the downloads. The screen stays as it was (offline mode
- * takes over only when the server stays away; SPEC §8.4). One tap target, at least 48 dp
- * high, read once by TalkBack (and announced when it appears).
+ * The one message for the link to the server, or none (pure, tested on the JVM). Offline
+ * mode having the whole screen says it by itself. [playingHere]: this phone is playing (its
+ * player, or downloads).
+ */
+fun connectionMessage(c: ConnectionUi, playingHere: Boolean): ConnectionMessage? = when {
+    c.takeover -> null
+    c.unreachable -> if (playingHere) ConnectionMessage.UNREACHABLE_PLAYING_HERE else ConnectionMessage.UNREACHABLE
+    c.busy -> ConnectionMessage.BUSY
+    c.reconnecting -> ConnectionMessage.RECONNECTING
+    else -> null
+}
+
+/**
+ * The screen under one connection line (the offline controls spec): the line sits at the
+ * top and takes its own space, so it never covers the transport, the seek bar or the queue;
+ * the content keeps clear of the status bar as before (the line handles it while shown).
  */
 @Composable
-fun ServerUnreachableBanner(onDownloads: () -> Unit, modifier: Modifier = Modifier) {
-    val description = stringResource(R.string.connection_unreachable_description)
+fun ConnectionFrame(
+    message: ConnectionMessage?,
+    /** Opens the downloads (null: not offered, e.g. already there). */
+    onDownloads: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Column(modifier) {
+        if (message != null) ConnectionLine(message, onDownloads, Modifier.statusBarsPadding())
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .testTag(ConnectionTags.CONTENT)
+                .then(if (message != null) Modifier.consumeWindowInsets(WindowInsets.statusBars) else Modifier),
+        ) { content() }
+    }
+}
+
+/**
+ * One line about the link to the server: "Reconnecting…", "Your music server is busy.
+ * Waiting for it…", or "Can’t reach your server." (with "Playing from this device." while the
+ * phone plays on), which leads to the downloads. Read once by TalkBack, and announced when it
+ * appears; as a button it is at least 48 dp high.
+ */
+@Composable
+fun ConnectionLine(message: ConnectionMessage, onDownloads: (() -> Unit)?, modifier: Modifier = Modifier) {
+    val text = stringResource(
+        when (message) {
+            ConnectionMessage.RECONNECTING -> R.string.connection_reconnecting
+            ConnectionMessage.BUSY -> R.string.connection_server_busy
+            ConnectionMessage.UNREACHABLE -> R.string.connection_unreachable_short
+            ConnectionMessage.UNREACHABLE_PLAYING_HERE -> R.string.connection_unreachable_here
+        },
+    )
+    val unreachable = message == ConnectionMessage.UNREACHABLE || message == ConnectionMessage.UNREACHABLE_PLAYING_HERE
+    val open = onDownloads?.takeIf { unreachable }
     val clickLabel = stringResource(R.string.connection_open_downloads)
+    val colours = MaterialTheme.colorScheme
+    val (container, onContainer) = when (message) {
+        ConnectionMessage.RECONNECTING -> colours.surfaceVariant to colours.onSurfaceVariant
+        ConnectionMessage.BUSY -> colours.secondaryContainer to colours.onSecondaryContainer
+        else -> colours.tertiaryContainer to colours.onTertiaryContainer
+    }
+    val tag = when (message) {
+        ConnectionMessage.RECONNECTING -> ConnectionTags.PILL
+        ConnectionMessage.BUSY -> ConnectionTags.BUSY
+        else -> ConnectionTags.BANNER
+    }
     Surface(
-        color = MaterialTheme.colorScheme.tertiaryContainer,
-        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        color = container,
+        contentColor = onContainer,
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .testTag(ConnectionTags.BANNER)
-            .clickable(onClickLabel = clickLabel, role = Role.Button, onClick = onDownloads)
+            .heightIn(min = if (open != null) 48.dp else 36.dp)
+            .testTag(tag)
+            .then(if (open != null) Modifier.clickable(onClickLabel = clickLabel, role = Role.Button, onClick = open) else Modifier)
             .clearAndSetSemantics {
-                contentDescription = description
-                role = Role.Button
+                contentDescription = text
                 liveRegion = LiveRegionMode.Polite
+                if (open != null) {
+                    role = Role.Button
+                    onClick(label = clickLabel) {
+                        open()
+                        true
+                    }
+                }
             },
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
-            Icon(Icons.Outlined.CloudOff, contentDescription = null)
-            Text(
-                stringResource(R.string.connection_unreachable_downloads),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.weight(1f),
-            )
-            Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = null)
+            when (message) {
+                ConnectionMessage.RECONNECTING -> CircularProgressIndicator(
+                    strokeWidth = 2.dp,
+                    color = onContainer,
+                    modifier = Modifier.size(16.dp),
+                )
+                ConnectionMessage.BUSY -> Icon(Icons.Outlined.HourglassEmpty, contentDescription = null, modifier = Modifier.size(18.dp))
+                else -> Icon(Icons.Outlined.CloudOff, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+            Text(text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            if (open != null) Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = null)
         }
     }
 }
 
-/** "Reconnecting…": a small pill over the current screen while a reconnect is under way. */
-@Composable
-fun ReconnectingPill(modifier: Modifier = Modifier) {
-    val text = stringResource(R.string.connection_reconnecting)
-    Surface(
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.inverseSurface,
-        contentColor = MaterialTheme.colorScheme.inverseOnSurface,
-        shadowElevation = 2.dp,
-        modifier = modifier
-            .testTag(ConnectionTags.PILL)
-            .clearAndSetSemantics {
-                contentDescription = text
-                liveRegion = LiveRegionMode.Polite
-            },
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-        ) {
-            CircularProgressIndicator(
-                strokeWidth = 2.dp,
-                color = MaterialTheme.colorScheme.inverseOnSurface,
-                modifier = Modifier.size(14.dp),
-            )
-            Text(text, style = MaterialTheme.typography.labelLarge)
-        }
-    }
-}
-
-/**
- * "Your music server is busy. Waiting for it…": a calm pill over the current screen while
- * the music server has stopped answering for a while (the gateway is reachable). Not an
- * error: what is playing keeps playing, and it goes by itself when the server answers.
- */
-@Composable
-fun ServerBusyPill(modifier: Modifier = Modifier) {
-    val text = stringResource(R.string.connection_server_busy)
-    Surface(
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.secondaryContainer,
-        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-        shadowElevation = 2.dp,
-        modifier = modifier
-            .padding(horizontal = 16.dp)
-            .testTag(ConnectionTags.BUSY)
-            .clearAndSetSemantics {
-                contentDescription = text
-                liveRegion = LiveRegionMode.Polite
-            },
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-        ) {
-            Icon(Icons.Outlined.HourglassEmpty, contentDescription = null, modifier = Modifier.size(16.dp))
-            Text(text, style = MaterialTheme.typography.labelLarge)
-        }
-    }
-}

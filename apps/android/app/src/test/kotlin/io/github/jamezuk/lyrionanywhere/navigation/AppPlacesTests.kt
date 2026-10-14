@@ -122,11 +122,11 @@ class AppPlacesTests {
             .assertIsDisplayed()
             .assertHasClickAction()
             .assertHeightIsAtLeast(48.dp)
-            .assertContentDescriptionEquals("Can’t reach your server. Open your downloads")
+            .assertContentDescriptionEquals("Can’t reach your server.")
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
             .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.LiveRegion))
         // Its words are read once (as the description), not again as text.
-        compose.onNodeWithText("Can’t reach your server · Downloads").assertDoesNotExist()
+        compose.onNodeWithText("Can’t reach your server.").assertDoesNotExist()
         compose.onNodeWithTag(ConnectionTags.BANNER).performClick()
         compose.onNodeWithText("Downloads screen").assertIsDisplayed()
         // Back from the downloads: the album, where it was.
