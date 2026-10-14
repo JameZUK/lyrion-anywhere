@@ -151,6 +151,10 @@ const REJOIN_MARGIN_MS: u64 = 250;
 /// After a new session replaced one lost while playing, how long to let LMS settle (it
 /// may restart the player itself) before asking it to restart the track heard last.
 const RESTART_SETTLE: Duration = Duration::from_millis(1000);
+/// A track that ended with LMS still in reach, and nothing sent to follow it, counts as
+/// just ended when the link goes down this soon after: LMS may have been about to send the
+/// next one. Later, LMS chose to stop there, and the phone mustn't start playing by itself.
+const ENDED_GRACE: Duration = Duration::from_secs(15);
 /// Queue positions remembered (by track sequence number).
 const POSITIONS_KEEP: usize = 8;
 /// A stream that LMS said began within this much of its track's start is the whole track
@@ -428,6 +432,9 @@ pub(crate) struct Engine {
     acted: bool,
     /// Stopped at the end of a track: the next one needs the server.
     waiting_for_server: bool,
+    /// When the track heard last played out (and `STMu` went) with the link up and nothing
+    /// to follow it yet.
+    ended_online_at: Option<Instant>,
     /// Where each track is on the phone, whole, and when that was looked at.
     sources: Option<(Instant, Sources)>,
     /// Spools kept whole for a takeover (their files go when they do).
@@ -510,6 +517,7 @@ impl Engine {
             takeover: None,
             acted: false,
             waiting_for_server: false,
+            ended_online_at: None,
             sources: None,
             held_spools: Vec::new(),
             stream_formats: VecDeque::new(),
@@ -2295,21 +2303,38 @@ impl Engine {
 
     /// With the link down, the track LMS sent has played out and nothing follows it: carry
     /// on with the next entry if it is on the phone, or stop there and wait for the server.
+    ///
+    /// The track may also have ended just before the link went down, with `STMu` sent and
+    /// the next track not yet sent: that counts too, within [`ENDED_GRACE`].
     fn after_last_track(&mut self) {
-        if self.takeover.is_some() || self.waiting_for_server || !self.offline() {
+        if self.takeover.is_some() || self.waiting_for_server {
             return;
         }
-        let Some(p) = &self.player else { return };
-        let ended = p.status().output == OutputState::Playing
-            && p.playing_track().is_some()
+        let Some(p) = &self.player else {
+            self.ended_online_at = None;
+            return;
+        };
+        let output = p.status().output;
+        // Played out: a stop from LMS (`strm q`, a flush) forgets the track instead.
+        let drained = p.playing_track().is_some()
             && p.audio_exhausted()
             && self.audio.idle()
             && self.shared.out.ring.is_empty()
             && self.spools.is_empty()
             && self.stream.is_none();
-        if !ended {
+        if !self.offline() {
+            self.ended_online_at = (drained && output == OutputState::Stopped)
+                .then(|| self.ended_online_at.unwrap_or_else(Instant::now));
             return;
         }
+        let just_ended = output == OutputState::Stopped
+            && self
+                .ended_online_at
+                .is_some_and(|t| t.elapsed() <= ENDED_GRACE);
+        if !drained || !(output == OutputState::Playing || just_ended) {
+            return;
+        }
+        self.ended_online_at = None;
         self.refresh_sources(true);
         let cur = self.offline_moment().and_then(|m| m.cur);
         match cur.and_then(|c| self.snapshot.after_end(c)) {

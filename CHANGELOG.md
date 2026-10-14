@@ -2,6 +2,13 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Android: a track that ends just before the server goes away carries on
+
+Found by CI, where `with_the_server_away_a_track_end_carries_on_into_a_download` failed in 3 of 4 runs. If the track LMS sent played out while LMS was still in reach (`STMu` sent, the next track not yet sent) and the link went down moments later, the phone stopped there, even with the next entry downloaded: it only carried on from a player still "playing". On a slow runner the 3-second test track ended before the test cut the link. On a phone, a track that ends in the seconds before a lost link is noticed would stop the same way.
+
+- **Fix** (`mobile/src/player/engine.rs`): a track that played out with the link up counts as just ended for 15 seconds (`ENDED_GRACE`), so the next entry, if it is on the phone, follows as it would have. Later than that, LMS chose to stop there, and the phone doesn't start playing by itself. A stop from LMS (`strm q`) forgets the track, so it never counts.
+- **Tests** (`mobile/tests/player.rs`): a regression test that fails before the fix (the track ends, then the link drops), and two negatives: a track that ended long before, and a player LMS stopped, both stay stopped.
+
 ## 2026-10-14: rustls 0.23.46 (RUSTSEC-2026-0346 to 0349)
 
 Four rustls advisories published today stopped the Android 1.14.0 release in CI's supply-chain check. rustls is updated to 0.23.46. It is used by the Android app's Rust layer and the command-line tool; the gateway doesn't use it. Mobile and CLI tests pass (551), and the release APK was rebuilt and checked.

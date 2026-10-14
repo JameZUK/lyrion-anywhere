@@ -2863,3 +2863,109 @@ async fn with_the_server_away_a_track_end_carries_on_into_a_download() {
 async fn with_the_server_away_a_changed_queue_is_left_to_lms() {
     skip_to_a_download_with_the_server_away(true, true).await;
 }
+
+/// What happens just before the link goes down, for [`track_end_then_away`].
+enum Before {
+    /// The track plays out (`STMu`) with LMS in reach and nothing sent to follow it.
+    TrackEnds,
+    /// As `TrackEnds`, then a long wait: LMS chose to stop there.
+    TrackEndsLongAgo,
+    /// LMS stops the player (`strm q`).
+    LmsStops,
+}
+
+/// The track LMS sent ends while LMS is still in reach, then the link goes down.
+async fn track_end_then_away(before: Before) {
+    use anywhere_mobile::LocalRepeat;
+    let mut r = rig_opts(RigOpts {
+        proxy: true,
+        spool: true,
+        max_grace_s: Some(120),
+        pace: Some(1.0),
+        downloads: Some(true),
+        downloads_dir: true,
+        ..RigOpts::default()
+    })
+    .await;
+    let (t1, t2) = (library_flac(93, "One"), library_flac(94, "Two"));
+    r.h.lms.add_track(1, "flc", t1.clone());
+    r.h.lms.add_track(2, "flc", t2.clone());
+    download_originals(&r, &[2]).await;
+    *r.h.lms.status.lock().unwrap() = Some(serde_json::json!({
+        "mode": "play", "time": 0, "playlist_cur_index": "0",
+        "playlist_loop": [{"playlist index": 0, "id": 1, "duration": 3}]
+    }));
+    r.player
+        .set_queue_snapshot(vec![1, 2, 3], Some(0), LocalRepeat::Off);
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(t1.clone()));
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMs", 1, 20).await;
+    match before {
+        Before::TrackEnds => r.wait_event("STMu", 1, 30).await,
+        Before::TrackEndsLongAgo => {
+            r.wait_event("STMu", 1, 30).await;
+            tokio::time::sleep(Duration::from_secs(17)).await;
+        }
+        Before::LmsStops => {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            r.send(strm_frame(b'q', b'0', "")).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+    r.proxy.as_ref().unwrap().set_down(true);
+    r.player.set_network_available(false);
+    let p = r.player.clone();
+    wait_for("the controls with the server away", move || {
+        p.status().offline_controls.is_some()
+    })
+    .await;
+    if matches!(before, Before::TrackEnds) {
+        let p = r.player.clone();
+        wait_for("playing the download", move || {
+            let s = p.status();
+            s.from_downloads
+                && s.playback == LocalPlayback::Playing
+                && s.offline_controls
+                    .is_some_and(|c| c.local && c.index == Some(1) && c.track_id == Some(2))
+        })
+        .await;
+    } else {
+        // Nothing starts by itself: LMS had stopped the player.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let s = r.player.status();
+        assert!(!s.from_downloads, "{s:?}");
+        assert_ne!(s.playback, LocalPlayback::Playing, "{s:?}");
+        assert!(
+            s.offline_controls.as_ref().is_some_and(|c| !c.local),
+            "{s:?}"
+        );
+    }
+    r.player.stop();
+}
+
+/// Regression: a track that ended just before the link went down (`STMu` sent, the next
+/// track not yet sent) carries on into the next entry when it is downloaded. Before, the
+/// phone stopped there because its output was no longer "playing".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_track_ended_just_before_the_server_went_away_carries_on_into_a_download() {
+    track_end_then_away(Before::TrackEnds).await;
+}
+
+/// Negative: a track that ended long before the link went down was where LMS stopped; the
+/// phone doesn't start the next entry by itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_track_that_ended_long_before_the_server_went_away_stays_stopped() {
+    track_end_then_away(Before::TrackEndsLongAgo).await;
+}
+
+/// Negative: LMS stopped the player before the link went down: nothing starts by itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_player_lms_stopped_stays_stopped_with_the_server_away() {
+    track_end_then_away(Before::LmsStops).await;
+}
