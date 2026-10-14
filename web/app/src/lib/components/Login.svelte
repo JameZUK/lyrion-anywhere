@@ -53,7 +53,7 @@
 		</label>
 		{#if needCode}
 			<label class="field">
-				<span>Two-step code</span>
+				<span>Authenticator code</span>
 				<input
 					bind:this={codeInput}
 					bind:value={code}

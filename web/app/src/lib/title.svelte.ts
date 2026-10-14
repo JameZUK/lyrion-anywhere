@@ -34,7 +34,7 @@ const SECTIONS: Record<string, string> = {
 	folder: 'Music folder',
 	compilations: 'Compilations',
 	random: 'Random albums',
-	filter: 'Smart filter',
+	filter: 'Smart playlist',
 	car: 'Car mode',
 	stats: 'Your listening',
 };

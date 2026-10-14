@@ -18,7 +18,6 @@
 	--radius-sm: 8px;
 	--bar-h: 76px;
 	--tabs-h: 0px;
-	--strip-h: 34px;
 	/* Now playing's ambient scrim (the theme sets the strength; see theme/ambient.ts). */
 	--ambient-scrim: 85%;
 	--sidebar-w: 232px;
@@ -171,8 +170,8 @@ h2 {
 		min-height: 44px;
 	}
 }
-/* Now playing on phones: the bottom row of actions (Sleep, Queue, Visualiser, Volume), each
-   an icon over a short label, at least 52 px tall and a quarter of the row wide. */
+/* Now playing on phones: the bottom row of actions (Play on, Lyrics, Queue), each
+   an icon over a short label, at least 52 px tall and a third of the row wide. */
 .np-act {
 	display: grid;
 	justify-items: center;
@@ -252,7 +251,12 @@ h2 {
 }
 .field input:focus {
 	border-color: var(--accent);
-	outline: none;
+}
+.field input:focus-visible,
+.field select:focus-visible,
+.field textarea:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
 }
 .card {
 	background: var(--bg-raised);

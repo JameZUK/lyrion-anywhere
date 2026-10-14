@@ -11,7 +11,8 @@
 	import OfflineCover from './OfflineCover.svelte';
 	import Icon from './Icon.svelte';
 
-	let { offline = false }: { offline?: boolean } = $props();
+	// `embedded`: Library's Downloads section (an h2 title for screen readers, no page padding).
+	let { offline = false, embedded = false }: { offline?: boolean; embedded?: boolean } = $props();
 
 	interface Group {
 		id: string;
@@ -117,8 +118,12 @@
 	const pct = (n: number) => `${Math.round(n * 100)}%`;
 </script>
 
-<section class="page downloads">
-	<h1>Downloads</h1>
+<section class="downloads" class:page={!embedded}>
+	<div class="dl-head">
+		{#if embedded}<h2 class="sr-only">Downloads</h2>{:else}<h1>Downloads</h1>{/if}
+		<!-- The preferences (formats, Wi-Fi only, the limit) are in Settings; the downloads are here. -->
+		<a class="icon-btn" href="#/settings/downloads" aria-label="Download settings" title="Download settings" data-download-settings><Icon name="settings" size={20} /></a>
+	</div>
 	{#if offline}
 		<p class="note" role="status"><Icon name="offline" size={18} /> You’re offline. Your downloads still play.</p>
 	{/if}
@@ -188,7 +193,7 @@
 						{:else}
 							<button class="icon-btn" aria-label="Pause" onclick={() => downloads.pause(i.id)}><Icon name="pause" size={18} /></button>
 						{/if}
-						<button class="icon-btn" aria-label="Cancel" onclick={() => downloads.cancel(i.id)}><Icon name="close" size={18} /></button>
+						<button class="icon-btn" aria-label="Cancel" onclick={() => downloads.cancel(i.id)}><Icon name="stop" size={18} /></button>
 					</li>
 				{/each}
 			</ul>
@@ -278,6 +283,12 @@
 </section>
 
 <style>
+	.dl-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
 	.downloads {
 		display: grid;
 		gap: 1rem;

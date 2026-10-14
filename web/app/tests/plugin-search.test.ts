@@ -9,6 +9,7 @@ import { resolveAction } from '$lib/lms/slimbrowse';
 import { loadRecents } from '$lib/search/recents';
 import { CONCURRENCY, MAX_APPS, SearchDirectory, candidates, cleanQuery, discover, isSearchBox, searchBox, searchCommand, searchOnHref, signature } from '$lib/search/plugins';
 
+const { choose } = await import('./helpers/menu');
 vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const params: Record<string, string | undefined> = {};
 vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/') } }));
@@ -313,7 +314,7 @@ describe('the results page', () => {
 		await findByText('Found track');
 		expect(container.querySelector('h2')!.textContent).toBe('Example Music: “blue moon”');
 		expect(searches()).toEqual([['examplemusic', 'items', 0, 100, 'item_id:0', 'search:blue moon', 'menu:examplemusic']]);
-		await fireEvent.click(container.querySelector<HTMLButtonElement>('[aria-label="Add Found track to the queue"]')!);
+		await choose('More options for Found track', 'Add to queue', container);
 		await settle();
 		expect(fake.calls.at(-1)!.cmd).toEqual(['examplemusic', 'playlist', 'add', 'item_id:0.1']);
 		expect(fake.calls.at(-1)!.player).toBe(P);

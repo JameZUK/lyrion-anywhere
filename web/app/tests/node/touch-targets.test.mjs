@@ -39,17 +39,34 @@ test('Wave 2 library and queue controls keep 44 px targets', () => {
 	assert.ok(px(rule(read('routes/search/+page.svelte'), '.term {'), 'min-height') >= 44);
 	assert.ok(px(rule(read('lib/components/SearchHit.svelte'), '.main {'), 'min-height') >= 44);
 	assert.ok(px(rule(read('lib/components/QueueList.svelte'), 'li button {'), 'min-height') >= 44);
-	assert.ok(px(rule(read('routes/library/+page.svelte'), '.browse a {'), 'min-height') >= 44);
+	// Library's sections are the shared chips (44 px, above), one row that scrolls sideways.
+	assert.match(read('routes/library/+page.svelte'), /<Chips[\s\S]*?\bscroll\b[\s\S]*?\/>/);
+	// The settings pickers and index rows.
+	assert.ok(px(rule(read('lib/components/PickerRow.svelte'), '.choice {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('routes/settings/+page.svelte'), '.row {'), 'min-height') >= 44);
 	// The A–Z strip is 44 px wide; dragging along it picks a letter (and the keyboard reaches each).
 	assert.ok(px(rule(read('lib/components/AzScroller.svelte'), '.strip {'), 'width') >= 44);
 });
 
 test('Up next, the sleep timer and track menus keep 44 px targets', () => {
-	const rm = rule(read('lib/components/UpNext.svelte'), '.rm {');
-	assert.ok(px(rm, 'width') >= 44 && px(rm, 'height') >= 44);
-	const cancel = rule(read('routes/+page.svelte'), '.cancel {');
-	assert.ok(px(cancel, 'width') >= 44 && px(cancel, 'height') >= 44);
+	// Up next is one line, the whole of it a 44 px tall link (no remove button since Wave 3.5).
+	assert.ok(px(rule(read('lib/components/UpNext.svelte'), '.row {'), 'min-height') >= 44);
+	// Sleep timer and its off switch are items of Now playing's ⋯ (RowMenu, 44 px rows).
+	assert.match(read('routes/+page.svelte'), /<RowMenu label="More options"/);
 	assert.ok(px(rule(read('lib/components/TrackList.svelte'), '.menu button {'), 'min-height') >= 44);
+});
+
+test('Wave 3.5: the one switch, Play on…, the queue handle and menus keep 44 px targets', () => {
+	assert.ok(px(rule(read('lib/components/Switch.svelte'), '.switch {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('lib/components/VolumeSlider.svelte'), 'input {'), 'height') >= 44);
+	assert.ok(px(rule(read('lib/components/FormatPicker.svelte'), '.row {'), 'min-height') >= 44);
+	const queue = read('routes/queue/+page.svelte');
+	const coarse = queue.indexOf('@media (pointer: coarse)');
+	assert.ok(coarse >= 0);
+	assert.ok(px(rule(queue, '.handle {', coarse), 'width') >= 44);
+	assert.ok(px(rule(read('lib/components/ContinueOn.svelte'), '.row {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('lib/components/Snackbar.svelte'), '.act {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('routes/home/+page.svelte'), '.edit-home {'), 'min-height') >= 44);
 });
 
 test('Now playing layouts, the visualiser and Rooms keep 44 px targets', () => {
@@ -64,8 +81,8 @@ test('Now playing layouts, the visualiser and Rooms keep 44 px targets', () => {
 });
 
 test('smart filters keep 44 px targets', () => {
-	const list = rule(read('lib/components/FiltersView.svelte'), 'li .icon-btn {');
-	assert.ok(px(list, 'width') >= 44 && px(list, 'height') >= 44, list);
+	// A row's one trailing control is its ⋯ (RowMenu's icon button: 44 px on touch).
+	assert.match(read('lib/components/FiltersView.svelte'), /<RowMenu/);
 	assert.ok(px(rule(read('lib/components/FiltersView.svelte'), '.main {'), 'min-height') >= 44);
 	const editor = read('lib/components/FilterEditor.svelte');
 	assert.ok(px(rule(editor, '.check {'), 'min-height') >= 44);

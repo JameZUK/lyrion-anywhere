@@ -9,6 +9,8 @@ import type { PlayerStatus } from '$lib/lms/types';
 
 vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
+const { choose, menuItems } = await import('./helpers/menu');
+const { goto } = await import('$app/navigation');
 const { device } = await import('$lib/player/device.svelte');
 const { nowPlaying } = await import('$lib/nowplaying/store.svelte');
 const { NOW_PLAYING_KEY } = await import('$lib/nowplaying/prefs');
@@ -246,24 +248,27 @@ describe('layouts', () => {
 });
 
 describe('visualiser', () => {
-	test('phones: off by default; one button switches it, its chooser picks the style, remembered', async () => {
+	test('phones: off by default; ⋮ › Visualiser switches it on in a style, and changes it, remembered', async () => {
 		const r = render(NowPlaying);
 		await tick();
 		expect(r.container.querySelector('[data-visualiser]')).toBeNull();
-		const btn = r.container.querySelector<HTMLButtonElement>('[data-visualiser-button]')!;
-		expect(btn.getAttribute('aria-label')).toBe('Visualiser');
-		expect(btn.getAttribute('aria-pressed')).toBe('false');
-		// One button only: no separate style button, toggle or volume row on phones.
+		// No button of its own in the bottom row (Wave 3.5): it lives in ⋮.
+		expect(r.container.querySelector('[data-visualiser-button]')).toBeNull();
 		expect(r.container.querySelector('[data-visualiser-style]')).toBeNull();
 		expect(r.container.querySelector('[data-visualiser-toggle]')).toBeNull();
-		await fireEvent.click(btn);
-		expect(btn.getAttribute('aria-pressed')).toBe('true');
-		expect(btn.getAttribute('aria-label')).toBe('Visualiser: Bars');
+		await fireEvent.click(r.getByRole('button', { name: 'More options' }));
+		const row = r.container.querySelector<HTMLButtonElement>('[data-visualiser-style-row]')!;
+		expect(row.textContent).toContain('Visualiser');
+		expect(row.textContent).toContain('Off');
+		await fireEvent.click(row);
+		await fireEvent.click(document.querySelector('[data-style-choice="bars"]')!);
 		const vis = r.container.querySelector('[data-visualiser]')!;
 		expect(vis.getAttribute('aria-hidden')).toBe('true');
 		expect(vis.getAttribute('data-visualiser')).toBe('bars');
 		expect(device.visualWatchers).toBe(1);
-		await fireEvent.contextMenu(btn);
+		await fireEvent.click(r.getByRole('button', { name: 'More options' }));
+		expect(r.container.querySelector('[data-visualiser-style-row]')!.textContent).toContain('Bars');
+		await fireEvent.click(r.container.querySelector('[data-visualiser-style-row]')!);
 		await fireEvent.click(document.querySelector('[data-style-choice="scope"]')!);
 		expect(r.container.querySelector('[data-visualiser]')!.getAttribute('data-visualiser')).toBe('scope');
 		expect(JSON.parse(localStorage.getItem(NOW_PLAYING_KEY)!)).toMatchObject({ visualiser: true, style: 'scope' });
@@ -416,9 +421,10 @@ describe('visualiser', () => {
 		await tick();
 		expect(r.container.querySelector('[data-visualiser]')).toBeNull();
 		expect(device.visualWatchers).toBe(0);
-		const toggle = r.container.querySelector<HTMLButtonElement>('[data-visualiser-button]')!;
+		await fireEvent.click(r.getByRole('button', { name: 'More options' }));
+		const toggle = r.container.querySelector<HTMLButtonElement>('[data-visualiser-style-row]')!;
 		expect(toggle.disabled).toBe(true);
-		expect(toggle.getAttribute('aria-label')).toMatch(/reduced motion/);
+		expect(toggle.textContent).toMatch(/reduced motion/);
 		expect(r.container.querySelector('[data-visualiser-style]')).toBeNull();
 		r.unmount();
 	});
@@ -447,15 +453,16 @@ describe('visualiser', () => {
 	});
 });
 
-test('car mode opens from a named button on Now playing (Wave 2 §5.1)', async () => {
+test('car mode opens from ⋯ on wide Now playing (Wave 2 §5.1; in ⋯ since Wave 3.5)', async () => {
 	width = 1300;
 	const r = render(NowPlaying);
-	const link = r.getByRole('link', { name: 'Car mode' });
-	expect(link.getAttribute('href')).toBe('#/car');
+	expect(r.queryByRole('link', { name: 'Car mode' })).toBeNull();
+	await choose('More options', 'Car mode', r.container);
+	expect(goto).toHaveBeenCalledWith('#/car', expect.anything());
 	r.unmount();
 	fake.app.playerId = '';
 	const none = render(NowPlaying);
-	expect(none.queryByRole('link', { name: 'Car mode' })).toBeNull();
+	expect(await menuItems('More options', none.container)).not.toContain('Car mode');
 	none.unmount();
 });
 

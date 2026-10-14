@@ -1,6 +1,7 @@
-// Rooms (Wave 2 §4.3): the poller (what it reads, how often, for whom, and that it stops), and
-// the page: one labelled group per room, its controls named after the room, sync by menu,
-// keyboard or drag, unsync, Transfer, and nothing read once it closes.
+// Rooms (Wave 2 §4.3; Wave 3.5 item 13): the poller (what it reads, how often, for whom, and
+// that it stops), and the page: one labelled group per room with three controls (play/pause,
+// volume, ⋯) named after the room, sync by menu or by dragging the cover, unsync, Transfer,
+// power in ⋯, and nothing read once it closes. Play on… shares the same player manager.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import type { AlarmListing } from '$lib/api/routine';
@@ -18,7 +19,7 @@ vi.mock('$lib/state/me', () => ({
 	},
 }));
 const fake = await import('./helpers/fake-app.svelte');
-const { MAX_ROOMS, POLL_MS, EVENT_DELAY_MS, RoomsPoller, alarmText, roomStatus, stepTarget } = await import('$lib/rooms/rooms.svelte');
+const { MAX_ROOMS, POLL_MS, EVENT_DELAY_MS, RoomsPoller, alarmText, roomStatus } = await import('$lib/rooms/rooms.svelte');
 const { alarmChanges } = await import('$lib/rooms/alarm-changes.svelte');
 const { goto } = await import('$app/navigation');
 const { default: Rooms } = await import('../src/routes/rooms/+page.svelte');
@@ -194,15 +195,6 @@ describe('the poller', () => {
 		p.stop();
 	});
 
-	test('the keyboard drag steps through the other rooms', () => {
-		const ids = ['a', 'b', 'c'];
-		expect(stepTarget(ids, 'a', null, 1)).toBe('b');
-		expect(stepTarget(ids, 'a', 'b', 1)).toBe('c');
-		expect(stepTarget(ids, 'a', 'c', 1)).toBe('b');
-		expect(stepTarget(ids, 'a', null, -1)).toBe('c');
-		expect(stepTarget(['a'], 'a', null, 1)).toBeNull();
-	});
-
 	test('alarm times read naturally', () => {
 		const now = new Date(2026, 9, 13, 6, 0);
 		expect(alarmText(new Date(2026, 9, 13, 7, 5), now)).toBe('today 07:05');
@@ -221,21 +213,24 @@ describe('the Rooms page', () => {
 	}
 	const card = (r: { container: HTMLElement }, name: string) => r.container.querySelector<HTMLElement>(`[role="group"][aria-label="${name}"]`)!;
 
-	test('one labelled group per room, its controls named after the room', async () => {
+	test('one labelled group per room, three controls named after the room; no instructions paragraph', async () => {
 		const r = await open();
 		expect([...r.container.querySelectorAll('[data-room]')].map((c) => c.getAttribute('aria-label'))).toEqual(['Kitchen', 'Lounge', 'Study']);
 		const k = card(r, 'Kitchen');
-		expect(k.querySelector('[data-room-volume]')!.getAttribute('aria-label')).toBe('Kitchen volume');
-		expect(k.querySelector('[data-room-power]')!.getAttribute('aria-label')).toBe('Kitchen power');
-		expect(k.querySelector('[data-room-power]')!.getAttribute('aria-pressed')).toBe('true');
-		expect(k.querySelector('[data-room-play]')!.getAttribute('aria-label')).toBe('Pause Kitchen');
+		// Play/pause, volume and ⋯: no power button, no grip (Wave 3.5).
+		const controls = k.querySelector('.controls')!;
+		expect([...controls.querySelectorAll('button, input')].map((e) => e.getAttribute('aria-label'))).toEqual(['Pause Kitchen', 'Kitchen volume', 'Kitchen options']);
+		expect(k.querySelector('[data-room-grip]')).toBeNull();
 		expect(card(r, 'Lounge').querySelector('[data-room-play]')!.getAttribute('aria-label')).toBe('Play Lounge');
-		expect(k.querySelector('[data-row-more]')!.getAttribute('aria-label')).toBe('Kitchen options');
-		expect(k.querySelector('[data-room-grip]')!.getAttribute('aria-label')).toBe('Drag Kitchen onto another room to sync');
-		expect(k.querySelector('[data-room-control]')!.getAttribute('aria-label')).toBe('Control Kitchen: playing, Morning tune by A Band');
+		expect(k.querySelector('[data-room-control]')!.getAttribute('aria-label')).toBe('Play on Kitchen: playing, Morning tune by A Band');
 		expect(k.textContent).toContain('sleep in 10 min');
+		// A switched-off room has one Switch on button in place of play/pause and volume.
+		const st = card(r, 'Study');
+		expect([...st.querySelector('.controls')!.querySelectorAll('button, input')].map((e) => e.textContent?.trim() || e.getAttribute('aria-label'))).toEqual(['Switch on', 'Study options']);
 		// The room in use is marked.
 		expect(card(r, 'Lounge').querySelector('[data-room-control]')!.getAttribute('aria-current')).toBe('true');
+		expect(card(r, 'Lounge').querySelector('[data-room-control]')!.getAttribute('aria-label')).toMatch(/^Play on Lounge \(in use\)/);
+		expect(r.container.textContent).not.toMatch(/Drag a room onto another/);
 		r.unmount();
 	});
 
@@ -244,7 +239,9 @@ describe('the Rooms page', () => {
 		fake.calls.length = 0;
 		await fireEvent.click(card(r, 'Kitchen').querySelector('[data-room-play]')!);
 		await fireEvent.click(card(r, 'Lounge').querySelector('[data-room-play]')!);
-		await fireEvent.click(card(r, 'Kitchen').querySelector('[data-room-power]')!);
+		// Power is in ⋯ now.
+		await fireEvent.click(card(r, 'Kitchen').querySelector('[data-row-more]')!);
+		await fireEvent.click([...card(r, 'Kitchen').querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((b) => b.textContent?.includes('Switch Kitchen off'))!);
 		const vol = card(r, 'Lounge').querySelector<HTMLInputElement>('[data-room-volume]')!;
 		vol.value = '64';
 		await fireEvent.input(vol);
@@ -259,7 +256,15 @@ describe('the Rooms page', () => {
 		r.unmount();
 	});
 
-	test('tapping a card controls that player', async () => {
+	test('a switched-off room switches on with its one button', async () => {
+		const r = await open();
+		fake.calls.length = 0;
+		await fireEvent.click(card(r, 'Study').querySelector('[data-room-power]')!);
+		await waitFor(() => expect(sent('power')).toEqual([{ player: STUDY, cmd: ['power', 1] }]));
+		r.unmount();
+	});
+
+	test('tapping a card plays on that player', async () => {
 		const r = await open();
 		await fireEvent.click(card(r, 'Kitchen').querySelector('[data-room-control]')!);
 		expect(fake.app.playerId).toBe(KITCHEN);
@@ -283,34 +288,13 @@ describe('the Rooms page', () => {
 		r.unmount();
 	});
 
-	test('the keyboard drags too: Enter on the grip, the arrow keys, Enter; Escape cancels', async () => {
-		const r = await open();
-		const grip = card(r, 'Study').querySelector<HTMLButtonElement>('[data-room-grip]')!;
-		expect(grip.getAttribute('aria-describedby')).toBe('rooms-drag-help');
-		await fireEvent.keyDown(grip, { key: 'Enter' });
-		const status = r.container.querySelector('[data-rooms-status]')!;
-		expect(status.textContent).toMatch(/Study picked up/);
-		await fireEvent.keyDown(grip, { key: 'ArrowDown' });
-		expect(status.textContent).toBe('Over Kitchen.');
-		expect(card(r, 'Kitchen').classList.contains('target')).toBe(true);
-		await fireEvent.keyDown(grip, { key: 'Escape' });
-		expect(status.textContent).toBe('Study put back.');
-		expect(sent('sync')).toHaveLength(0);
-		await fireEvent.keyDown(grip, { key: ' ' });
-		await fireEvent.keyDown(grip, { key: 'ArrowDown' });
-		await fireEvent.keyDown(grip, { key: 'ArrowDown' });
-		await fireEvent.keyDown(grip, { key: 'Enter' });
-		await waitFor(() => expect(sent('sync')).toEqual([{ player: LOUNGE, cmd: ['sync', STUDY] }]));
-		r.unmount();
-	});
-
-	test('dragging a card onto another with a pointer syncs them', async () => {
+	test('dragging a card by its cover onto another with a pointer syncs them', async () => {
 		const r = await open();
 		const target = card(r, 'Kitchen');
 		const restore = document.elementFromPoint;
 		document.elementFromPoint = ((x: number) => (x > 500 ? target : null)) as typeof document.elementFromPoint;
 		try {
-			const grip = card(r, 'Study').querySelector('[data-room-grip]')!;
+			const grip = card(r, 'Study').querySelector('[data-room-drag]')!;
 			await fireEvent.pointerDown(grip, { pointerId: 3, clientX: 10, clientY: 10, button: 0 });
 			await fireEvent.pointerMove(window, { pointerId: 3, clientX: 600, clientY: 10 });
 			expect(target.classList.contains('target')).toBe(true);
@@ -334,12 +318,12 @@ describe('the Rooms page', () => {
 		await waitFor(() => expect(card(r, 'Kitchen').textContent).toContain('with Lounge'));
 		await fireEvent.click(card(r, 'Kitchen').querySelector('[data-row-more]')!);
 		const items = () => [...card(r, 'Kitchen').querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
-		expect(items().map((b) => b.textContent?.trim())).toEqual(['Control Kitchen', 'Sync with…', 'Play on its own', 'Move playback here']);
+		expect(items().map((b) => b.textContent?.trim())).toEqual(['Play on Kitchen', 'Sync with…', 'Move playback to Kitchen', 'Pause Kitchen', 'Play on its own', 'Alarms', 'Switch Kitchen off']);
 		fake.calls.length = 0;
 		await fireEvent.click(items().find((b) => b.textContent?.includes('on its own'))!);
 		await waitFor(() => expect(sent('sync')).toEqual([{ player: KITCHEN, cmd: ['sync', '-'] }]));
 		await fireEvent.click(card(r, 'Study').querySelector('[data-row-more]')!);
-		const move = [...card(r, 'Study').querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((b) => b.textContent?.includes('Move playback here'))!;
+		const move = [...card(r, 'Study').querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((b) => b.textContent?.includes('Move playback to Study'))!;
 		fake.moves.length = 0;
 		await fireEvent.click(move);
 		expect(fake.moves).toEqual([{ source: LOUNGE, target: STUDY, name: 'Study' }]);
@@ -392,7 +376,7 @@ describe('the Rooms page', () => {
 		const restore = document.elementFromPoint;
 		document.elementFromPoint = (() => k) as typeof document.elementFromPoint;
 		try {
-			await fireEvent.pointerDown(k.querySelector('[data-room-grip]')!, { pointerId: 5, clientX: 1, clientY: 1, button: 0 });
+			await fireEvent.pointerDown(k.querySelector('[data-room-drag]')!, { pointerId: 5, clientX: 1, clientY: 1, button: 0 });
 			await fireEvent.pointerUp(window, { pointerId: 5, clientX: 2, clientY: 2 });
 		} finally {
 			document.elementFromPoint = restore;
@@ -404,12 +388,45 @@ describe('the Rooms page', () => {
 		r.unmount();
 	});
 
+	test('Alarms in a card’s ⋯ opens that room’s alarms', async () => {
+		const r = await open();
+		await fireEvent.click(card(r, 'Kitchen').querySelector('[data-row-more]')!);
+		await fireEvent.click([...card(r, 'Kitchen').querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((b) => b.textContent?.trim() === 'Alarms')!);
+		expect(fake.app.playerId).toBe(KITCHEN);
+		expect(goto).toHaveBeenCalledWith('#/alarms', {});
+		r.unmount();
+	});
+
+	test('Play on… is the same manager: a row’s ⋯ holds what a card had (move, play/pause, alarms, power)', async () => {
+		const r = render(PlayerSwitcher, { onclose: () => {} });
+		await waitFor(() => expect(r.container.textContent).toContain('Playing Morning tune'));
+		await fireEvent.click(r.getByRole('button', { name: 'More options for Kitchen' }));
+		const items = [...r.container.querySelectorAll<HTMLElement>('[role="menuitem"]')].map((b) => b.textContent?.trim());
+		expect(items).toEqual(['Move playback to Kitchen', 'Pause Kitchen', 'Alarms', 'Switch Kitchen off']);
+		fake.calls.length = 0;
+		await fireEvent.click([...r.container.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((b) => b.textContent?.includes('Pause Kitchen'))!);
+		await waitFor(() => expect(sent('pause')).toEqual([{ player: KITCHEN, cmd: ['pause', 1] }]));
+		r.unmount();
+	});
+
+	test('Play on… reads statuses only while it is open', async () => {
+		vi.useFakeTimers();
+		const r = render(PlayerSwitcher, { onclose: () => {} });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(sent('status').length).toBeGreaterThan(0);
+		r.unmount();
+		fake.calls.length = 0;
+		await vi.advanceTimersByTimeAsync(POLL_MS * 3);
+		expect(sent('status')).toHaveLength(0);
+	});
+
 	test('the player picker links to Rooms', async () => {
 		const r = render(PlayerSwitcher, { onclose: () => {} });
 		await tick();
 		const link = r.container.querySelector<HTMLAnchorElement>('[data-rooms-link]')!;
 		expect(link.getAttribute('href')).toBe('#/rooms');
-		expect(link.textContent).toContain('All rooms');
+		expect(link.textContent).toContain('Rooms');
+		expect(link.textContent).not.toContain('All rooms'); // naming: Rooms is the page
 		r.unmount();
 	});
 });

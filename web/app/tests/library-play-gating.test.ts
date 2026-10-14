@@ -131,19 +131,21 @@ describe('Rooms', () => {
 		await waitFor(() => expect(r.container.querySelector<HTMLButtonElement>('[data-room-play]')!.disabled).toBe(false));
 		fake.app.reach = 'unreachable';
 		await tick();
-		for (const sel of ['[data-room-play]', '[data-room-power]', '[data-room-grip]', '[data-room-volume]']) {
+		for (const sel of ['[data-room-play]', '[data-room-power]', '[data-room-volume]']) {
 			for (const el of r.container.querySelectorAll<HTMLButtonElement | HTMLInputElement>(sel)) expect(el.disabled, sel).toBe(true);
 		}
 		(r.getByRole('button', { name: 'Kitchen options' }) as HTMLButtonElement).click();
 		await tick();
 		const items = r.getAllByRole('menuitem');
-		// Choosing which player to control needs no server; syncing does.
-		expect(items.find((i) => i.textContent?.includes('Control'))!.hasAttribute('aria-disabled')).toBe(false);
-		expect(items.find((i) => i.textContent?.includes('Sync with'))!.getAttribute('aria-disabled')).toBe('true');
+		// Choosing which player to play on needs no server; syncing, play/pause and power do.
+		expect(items.find((i) => i.textContent?.includes('Play on Kitchen'))!.hasAttribute('aria-disabled')).toBe(false);
+		for (const t of ['Sync with', 'Switch Kitchen']) expect(items.find((i) => i.textContent?.includes(t))!.getAttribute('aria-disabled'), t).toBe('true');
 		fake.calls.length = 0;
 		for (const i of items) if (i.getAttribute('aria-disabled')) (i as HTMLButtonElement).click();
-		const grip = r.container.querySelector<HTMLButtonElement>('[data-room-grip]')!;
-		grip.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		// A drag by the cover does nothing either.
+		const cover = r.container.querySelector<HTMLElement>('[data-room-drag]')!;
+		cover.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 9, button: 0 }));
+		window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 9 }));
 		await tick();
 		expect(sent()).toEqual([]);
 		expect(r.container.querySelector('.error')).toBeNull();
@@ -169,7 +171,9 @@ describe('every library play action uses the helper', () => {
 	const users = files.filter((f) => PLAYS.test(readFileSync(f, 'utf8')) && !f.includes(`go${'/'}[action]`));
 
 	test('found the call sites', () => {
-		expect(users.length).toBeGreaterThanOrEqual(14);
+		// Fewer since Wave 3.5: album, artist, genre, year and folder headers share PageActions.
+		expect(users.length).toBeGreaterThanOrEqual(12);
+		expect(users.some((f) => f.endsWith('PageActions.svelte'))).toBe(true);
 	});
 
 	test.each(users.map((f) => [f.slice(root.length + 1), f]))('%s', (_name, f) => {

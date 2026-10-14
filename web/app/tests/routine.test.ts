@@ -190,9 +190,10 @@ describe('ratings settings', () => {
 	test('a refused style change is put back and says why', async () => {
 		route = (m, p) => (p === '/v1/me/ratings/style' && m === 'PUT' ? { status: 503, body: { error: 'busy' } } : { body: { style: 'stars' } });
 		const r = render(RatingsSettings);
-		const select = r.container.querySelector<HTMLSelectElement>('[data-rating-style]')!;
 		await waitFor(() => expect(sent.some((s) => s.path === '/v1/me/ratings/style')).toBe(true));
-		await fireEvent.change(select, { target: { value: 'heart' } });
+		// Rate with: the one picker (Wave 3.5).
+		await fireEvent.click(r.container.querySelector('[data-setting="rating-style"]')!);
+		await fireEvent.click(await waitFor(() => document.querySelector<HTMLElement>('[data-picker="rating-style"] [data-choice="heart"]')!));
 		await waitFor(() => expect(r.container.querySelector('[data-ratings-note]')!.textContent).toContain('Couldn’t change how you rate'));
 		expect(ratings.style).toBe('stars');
 	});
@@ -233,17 +234,22 @@ describe('alarms page', () => {
 		expect(post.body).toEqual({ time: 6 * 3600 + 1800, days: [1, 2, 3, 4, 5], repeat: true, volume: 50, shuffle: 0, sound: '0123456789abcdef', enabled: true });
 	});
 
-	test('deleting asks first, in the page; the all switch', async () => {
+	test('deleting is in the alarm’s own form and asks first; a row has one switch; the all switch', async () => {
 		const alarm = { id: '1a2b3c4d', time: 3600, days: [0], enabled: true, repeat: true, volume: null, shuffle: 0, sound: null };
 		route = (m) => ({ body: m === 'DELETE' ? listing([]) : listing([alarm]) });
 		const r = render(AlarmsPage);
 		await waitFor(() => expect(r.container.querySelector('[data-alarm="1a2b3c4d"]')).not.toBeNull());
+		// One trailing control per row (Wave 3.5): its on/off switch, the state in words.
+		const row = r.container.querySelector('[data-alarm="1a2b3c4d"]')!;
+		expect([...row.querySelectorAll('button:not(.main)')].map((b) => b.getAttribute('role'))).toEqual(['switch']);
+		expect(row.querySelector('[role=switch]')!.textContent).toContain('On');
 		// Reading them changes nothing; a change tells Rooms to read the next alarms again.
 		const before = alarmChanges.version;
-		await fireEvent.click(r.container.querySelector('[aria-label="Delete the 01:00 alarm"]')!);
+		await fireEvent.click(r.getByRole('button', { name: 'Change the 01:00 alarm' }));
+		await fireEvent.click(r.container.querySelector('[data-alarm-delete]')!);
 		expect(alarmChanges.version).toBe(before);
 		expect(sent.some((s) => s.method === 'DELETE')).toBe(false);
-		await fireEvent.click(r.container.querySelector('[data-confirm-delete]')!);
+		await fireEvent.click(document.querySelector('[data-confirm-ok]')!);
 		await waitFor(() => expect(sent.some((s) => s.method === 'DELETE' && s.path === `/v1/players/${P}/alarms/1a2b3c4d`)).toBe(true));
 		await waitFor(() => expect(alarmChanges.version).toBe(before + 1));
 		await fireEvent.click(r.container.querySelector('[data-all-alarms]')!);
@@ -254,7 +260,7 @@ describe('alarms page', () => {
 		fake.app.playerId = '';
 		route = () => ({ body: listing() });
 		const r = render(AlarmsPage);
-		expect(r.container.textContent).toContain('Choose a player first');
+		expect(r.container.textContent).toContain('No player chosen');
 		await new Promise((res) => setTimeout(res, 0));
 		expect(sent).toEqual([]);
 	});

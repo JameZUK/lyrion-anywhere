@@ -5,6 +5,12 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/sve
 import type { FilterSpec, SmartFilter } from '$lib/api/filters';
 import * as L from '$lib/home/layout';
 
+/** A row's or page's ⋯ (Wave 3.5): open it, then choose an item. */
+async function choose(trigger: HTMLElement, item: string) {
+	await fireEvent.click(trigger);
+	const menu = document.getElementById(trigger.getAttribute('aria-controls')!)!;
+	await fireEvent.click(within(menu).getByRole('menuitem', { name: item }));
+}
 vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const params: Record<string, string> = { id: '3' };
 vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/') } }));
@@ -19,6 +25,7 @@ const store = {
 	asked: [] as [number, number, number][],
 };
 vi.mock('$lib/state/me', () => ({
+	routine: {},
 	me: {
 		filters: async () => structuredClone(store.filters),
 		createFilter: async (spec: FilterSpec) => {
@@ -205,7 +212,7 @@ describe('the Filters chip in Library', () => {
 	test('Library has a Filters chip showing the list', async () => {
 		localStorage.removeItem(LIBRARY_KEY);
 		render(LibraryPage);
-		const tab = screen.getByRole('tab', { name: 'Filters' });
+		const tab = screen.getByRole('tab', { name: 'Smart playlists' });
 		await fireEvent.click(tab);
 		expect(tab.getAttribute('aria-selected')).toBe('true');
 		expect(await screen.findByRole('link', { name: /Late jazz/ })).toBeTruthy();
@@ -214,7 +221,7 @@ describe('the Filters chip in Library', () => {
 
 	test('create: the builder saves a new filter, which is then listed', async () => {
 		render(FiltersView);
-		await fireEvent.click(await screen.findByRole('button', { name: 'New filter' }));
+		await fireEvent.click(await screen.findByRole('button', { name: 'New smart playlist' }));
 		await fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Compilations' } });
 		await fireEvent.change(screen.getByLabelText('Add a rule'), { target: { value: 'compilation' } });
 		await fireEvent.click(screen.getByRole('button', { name: 'Add' }));
@@ -228,7 +235,7 @@ describe('the Filters chip in Library', () => {
 
 	test('edit replaces the filter', async () => {
 		render(FiltersView);
-		await fireEvent.click(await screen.findByRole('button', { name: 'Edit Late jazz' }));
+		await choose(await screen.findByRole('button', { name: 'More options for Late jazz' }), 'Edit');
 		await fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Early jazz' } });
 		await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 		await waitFor(() => expect(store.updated).toHaveLength(1));
@@ -239,12 +246,12 @@ describe('the Filters chip in Library', () => {
 
 	test('delete asks first; Cancel keeps it', async () => {
 		render(FiltersView);
-		await fireEvent.click(await screen.findByRole('button', { name: 'Delete Late jazz' }));
+		await choose(await screen.findByRole('button', { name: 'More options for Late jazz' }), 'Delete');
 		const confirm = screen.getByRole('alertdialog');
 		expect(within(confirm).getByText('Delete “Late jazz”?')).toBeTruthy();
 		await fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
 		expect(store.deleted).toEqual([]);
-		await fireEvent.click(screen.getByRole('button', { name: 'Delete Late jazz' }));
+		await choose(screen.getByRole('button', { name: 'More options for Late jazz' }), 'Delete');
 		await fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
 		await waitFor(() => expect(store.deleted).toEqual([3]));
 		await waitFor(() => expect(screen.queryByRole('link', { name: /Late jazz/ })).toBeNull());
@@ -253,14 +260,14 @@ describe('the Filters chip in Library', () => {
 	test('play loads the first albums through the album play path; shuffle turns shuffle on first', async () => {
 		store.albums = Array.from({ length: 70 }, (_, i) => 100 + i);
 		render(FiltersView);
-		await fireEvent.click(await screen.findByRole('button', { name: 'Play Late jazz' }));
+		await choose(await screen.findByRole('button', { name: 'More options for Late jazz' }), 'Play');
 		await waitFor(() => expect(sentPlay()).toHaveLength(50));
 		expect(store.asked[0]).toEqual([3, 0, 50]);
 		expect(sentPlay()[0]).toEqual(['playlistcontrol', 'cmd:load', 'album_id:100']);
 		expect(sentPlay()[49]).toEqual(['playlistcontrol', 'cmd:add', 'album_id:149']);
 		expect(fake.calls.every((c) => c.player === PLAYER)).toBe(true);
 		fake.calls.length = 0;
-		await fireEvent.click(screen.getByRole('button', { name: 'Shuffle Late jazz' }));
+		await choose(screen.getByRole('button', { name: 'More options for Late jazz' }), 'Shuffle');
 		await waitFor(() => expect(sentPlay()).toHaveLength(51));
 		expect(sentPlay()[0]).toEqual(['playlist', 'shuffle', 1]);
 	});
@@ -269,8 +276,8 @@ describe('the Filters chip in Library', () => {
 		fake.app.playerId = '';
 		store.albums = [1];
 		render(FiltersView);
-		await fireEvent.click(await screen.findByRole('button', { name: 'Play Late jazz' }));
-		await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/Choose a player/));
+		await choose(await screen.findByRole('button', { name: 'More options for Late jazz' }), 'Play');
+		await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/No player chosen/));
 		expect(sentPlay()).toEqual([]);
 	});
 
@@ -311,7 +318,7 @@ describe('the filter page', () => {
 		params.id = '3;drop';
 		try {
 			render(FilterPage);
-			expect(await screen.findByText('Not a filter.')).toBeTruthy();
+			expect(await screen.findByText('Not a smart playlist.')).toBeTruthy();
 			expect(store.asked).toEqual([]);
 		} finally {
 			params.id = '3';
@@ -327,7 +334,7 @@ describe('the filter Home shelf', () => {
 		const l = L.add(L.defaultLayout(), { type: 'filter', id: 3 });
 		expect(() => L.add(l, { type: 'filter', id: 3 })).toThrow(/already/);
 		expect(L.addable(l)).toContain('filter');
-		expect(L.SHELF_LABELS.filter).toBe('Smart filter');
+		expect(L.SHELF_LABELS.filter).toBe('Smart playlist');
 	});
 
 	test('shows the filter’s albums under its name, with Play and Shuffle', async () => {
@@ -345,7 +352,7 @@ describe('the filter Home shelf', () => {
 
 	test('an empty filter says so', async () => {
 		render(HomeShelf, { shelf: { type: 'filter', id: 3 }, stations: [], menus: [], filters: [jazz] });
-		expect(await screen.findByText('No albums match this filter.')).toBeTruthy();
+		expect(await screen.findByText('No albums match this smart playlist.')).toBeTruthy();
 		expect(screen.queryByRole('button', { name: 'Play Late jazz' })).toBeNull();
 	});
 });

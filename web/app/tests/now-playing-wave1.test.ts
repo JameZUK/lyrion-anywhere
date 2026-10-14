@@ -1,6 +1,7 @@
 // Wave 1 on Now playing and the mini player: the quality badge and signal path, the sleep
-// timer sheet, "Up next" (swipe or button to remove, with Undo), the ambient background,
-// and the mini player's gestures with their keyboard and screen-reader equivalents.
+// timer sheet (in ⋮ since Wave 3.5), "Up next" (swipe or Delete to remove, with Undo), the
+// ambient background, and the mini player's gestures with their keyboard and screen-reader
+// equivalents.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
 import type { PlayerStatus } from '$lib/lms/types';
@@ -77,6 +78,13 @@ beforeEach(() => {
 });
 
 const sent = () => fake.calls.map((c) => c.cmd).filter((c) => c[0] !== 'status' && c[0] !== 'players');
+/** Now playing's ⋮ › Sleep timer (Wave 3.5: Sleep moved from the bottom row into ⋮). */
+async function openSleep(c: HTMLElement) {
+	await fireEvent.click(c.querySelector('[data-np-more]')!);
+	const row = await waitFor(() => c.querySelector<HTMLButtonElement>('[data-more-sheet] [data-sleep-button]')!);
+	await fireEvent.click(row);
+	return waitFor(() => c.querySelector('[data-sleep-sheet]')!);
+}
 
 function pointer(el: Element, type: string, init: PointerEventInit & { timeStamp?: number }) {
 	const e = new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'touch', ...init });
@@ -111,8 +119,10 @@ describe('Now playing', () => {
 	test('the moon opens the sleep sheet; a length is set on the chosen players', async () => {
 		const r = render(NowPlaying);
 		await tick();
-		const moon = r.container.querySelector<HTMLButtonElement>('[data-sleep-button]')!;
-		expect(moon.getAttribute('aria-label')).toBe('Sleep timer');
+		await fireEvent.click(r.container.querySelector('[data-np-more]')!);
+		const moon = await waitFor(() => r.container.querySelector<HTMLButtonElement>('[data-more-sheet] [data-sleep-button]')!);
+		expect(moon.textContent).toContain('Sleep timer');
+		expect(moon.textContent).toContain('Off');
 		await fireEvent.click(moon);
 		const sheet = await waitFor(() => r.container.querySelector('[data-sleep-sheet]')!);
 		// Another connected player: "All players" is offered.
@@ -125,8 +135,7 @@ describe('Now playing', () => {
 
 	test('end of track/album/queue are offered for tracks, not for a stream', async () => {
 		let r = render(NowPlaying);
-		await fireEvent.click(r.container.querySelector('[data-sleep-button]')!);
-		let sheet = await waitFor(() => r.container.querySelector('[data-sleep-sheet]')!);
+		let sheet = await openSleep(r.container);
 		const album = [...sheet.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === 'End of this album')!;
 		expect(album.disabled).toBe(false);
 		await fireEvent.click(album);
@@ -134,8 +143,7 @@ describe('Now playing', () => {
 		r.unmount();
 		fake.app.now = status({ duration: 0, playlist_loop: [{ title: 'Radio', remote: 1 }] });
 		r = render(NowPlaying);
-		await fireEvent.click(r.container.querySelector('[data-sleep-button]')!);
-		sheet = await waitFor(() => r.container.querySelector('[data-sleep-sheet]')!);
+		sheet = await openSleep(r.container);
 		for (const label of ['End of this track', 'End of this album', 'End of the queue']) {
 			expect([...sheet.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === label)!.disabled).toBe(true);
 		}
@@ -144,8 +152,7 @@ describe('Now playing', () => {
 
 	test('a custom length is checked before it is sent', async () => {
 		const r = render(NowPlaying);
-		await fireEvent.click(r.container.querySelector('[data-sleep-button]')!);
-		const sheet = await waitFor(() => r.container.querySelector('[data-sleep-sheet]')!);
+		const sheet = await openSleep(r.container);
 		const input = sheet.querySelector<HTMLInputElement>('#sleep-custom')!;
 		for (const bad of ['0', '5000', '-3']) {
 			await fireEvent.input(input, { target: { value: bad } });
@@ -159,28 +166,33 @@ describe('Now playing', () => {
 		r.unmount();
 	});
 
-	test('a running timer shows the time left on Sleep, and its sheet turns it off', async () => {
+	test('a running timer shows the time left beside the title and in ⋮, and its sheet turns it off', async () => {
 		fake.app.now = status({ will_sleep_in: 1620 });
 		const r = render(NowPlaying);
 		await tick();
-		const moon = r.container.querySelector('[data-sleep-button]')!;
-		expect(moon.getAttribute('aria-label')).toBe('Sleep timer: stops in 27 min');
-		expect(moon.textContent).toContain('27 min');
-		expect(moon.classList.contains('set')).toBe(true);
+		const left = r.container.querySelector('[data-sleep-left]')!;
+		expect(left.textContent).toContain('27 min');
+		expect(left.getAttribute('aria-label')).toBe('Sleep timer: stops in 27 min');
+		await fireEvent.click(r.container.querySelector('[data-np-more]')!);
+		const moon = await waitFor(() => r.container.querySelector('[data-more-sheet] [data-sleep-button]')!);
+		expect(moon.textContent).toContain('Stops in 27 min');
 		await fireEvent.click(moon);
 		await fireEvent.click(await waitFor(() => r.container.querySelector('[data-sleep-off]')!));
 		expect(fake.app.sleepCalls).toEqual([{ choice: 'off', scope: null }]);
 		r.unmount();
 	});
 
-	test('Up next shows the next track; its remove button takes it out, and Undo puts it back', async () => {
+	test('Up next is one line naming the next track; Delete takes it out, and Undo puts it back', async () => {
 		const r = render(NowPlaying);
 		await tick();
 		const row = r.container.querySelector('[data-up-next]')!;
 		expect(row.textContent).toContain('Up next');
 		expect(row.textContent).toContain('Next song');
 		expect(row.querySelector('a')!.getAttribute('href')).toBe('#/queue');
-		await fireEvent.click(r.getByRole('button', { name: 'Remove Next song from the queue' }));
+		// One line, no trailing control: removing is a swipe or Delete (and lives in the queue).
+		expect(row.querySelectorAll('button')).toHaveLength(0);
+		expect(row.querySelector('img, .thumb')).toBeNull();
+		await fireEvent.keyDown(row.querySelector('a')!, { key: 'Delete' });
 		await waitFor(() => expect(sent()).toEqual([['playlist', 'delete', 4]]));
 		await waitFor(() => expect(r.container.querySelector('[data-up-next]')).toBeNull()); // hidden at once
 		const undo = await waitFor(() => r.getByRole('button', { name: 'Undo' }));
@@ -211,9 +223,9 @@ describe('Now playing', () => {
 	test('removing Up next from the keyboard puts focus on Undo, not the page', async () => {
 		const r = render(NowPlaying);
 		await tick();
-		const rm = r.getByRole('button', { name: 'Remove Next song from the queue' });
+		const rm = r.container.querySelector<HTMLAnchorElement>('[data-up-next] a')!;
 		rm.focus();
-		await fireEvent.click(rm);
+		await fireEvent.keyDown(rm, { key: 'Delete' });
 		await waitFor(() => expect(document.activeElement?.textContent).toBe('Undo'));
 		r.unmount();
 	});
@@ -225,7 +237,7 @@ describe('Now playing', () => {
 		fake.handler.rpc = async (p, c) => (c[0] === 'status' && c[2] === 1 ? { playlist_loop: [{ id: 99, title: 'Someone else', 'playlist index': Number(c[1]) }] } : base(p, c));
 		const r = render(NowPlaying);
 		await tick();
-		await fireEvent.click(r.getByRole('button', { name: 'Remove Next song from the queue' }));
+		await fireEvent.keyDown(r.container.querySelector('[data-up-next] a')!, { key: 'Delete' });
 		await waitFor(() => expect(r.container.textContent).toContain('the queue changed meanwhile'));
 		expect(sent()).toEqual([]);
 		expect(r.container.querySelector('[data-up-next]')).not.toBeNull(); // shown again
@@ -386,7 +398,7 @@ describe('mini player gestures', () => {
 		const r = render(PlayerBar);
 		await tick();
 		expect(r.container.querySelector('.moon')).not.toBeNull();
-		expect(mini(r).getAttribute('aria-label')).toBe('Now playing: Current song. Sleep timer: 5 min');
+		expect(mini(r).getAttribute('aria-label')).toBe('Now playing: Current song, on Test player. Sleep timer: 5 min');
 		r.unmount();
 		fake.app.now = status();
 		const r2 = render(PlayerBar);

@@ -294,7 +294,7 @@ export class SessionManager {
 		// Not confirmed yet: get a real token first (no request ever goes with an empty one).
 		if (this.provisional && !(await this.renew())) {
 			if (!this.current) throw new ApiError(401, 'not signed in');
-			throw new TypeError('Can’t reach your server.');
+			throw new TypeError('Can’t reach your music server.');
 		}
 		const token = this.token;
 		try {

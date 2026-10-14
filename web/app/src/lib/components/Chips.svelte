@@ -8,6 +8,7 @@
 		label,
 		panel,
 		idPrefix = `chips-${Math.random().toString(36).slice(2, 9)}`,
+		scroll = false,
 	}: {
 		items: readonly { value: T; label: string }[];
 		value: T;
@@ -17,7 +18,17 @@
 		/** Id of the panel the chips control. */
 		panel?: string;
 		idPrefix?: string;
+		/** One row that scrolls sideways (Library's sections), the chosen chip kept in view. */
+		scroll?: boolean;
 	} = $props();
+
+	// The chosen chip is scrolled into view (a remembered one off the edge, say).
+	$effect(() => {
+		void value;
+		if (!scroll) return;
+		const on = list?.querySelector<HTMLElement>('[aria-selected="true"]');
+		on?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+	});
 
 	let list = $state<HTMLDivElement>();
 
@@ -36,7 +47,7 @@
 	}
 </script>
 
-<div class="chips" role="tablist" aria-label={label} bind:this={list} {onkeydown} tabindex="-1">
+<div class="chips" class:scroll role="tablist" aria-label={label} bind:this={list} {onkeydown} tabindex="-1">
 	{#each items as it (it.value)}
 		<button
 			type="button"
@@ -61,6 +72,21 @@
 		gap: 0.4rem;
 		margin: 0.5rem 0;
 		outline: none;
+	}
+	.chips.scroll {
+		flex-wrap: nowrap;
+		overflow-x: auto;
+		scrollbar-width: none;
+		/* Room for the focus ring of the first and last chip. */
+		padding: 3px;
+		margin-inline: -3px;
+	}
+	.chips.scroll::-webkit-scrollbar {
+		display: none;
+	}
+	.scroll > [role='tab'] {
+		flex: none;
+		white-space: nowrap;
 	}
 	button {
 		min-height: 44px;

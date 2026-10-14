@@ -277,19 +277,8 @@ await group(['now-playing-phone', 'play-on-phone', 'lyrics-phone', 'home-phone',
   await shot(page, 'year-story-phone');
   await page.click('[data-story-close]');
 
-  await go(page, '#/settings', 'h2');
-  await page.evaluate(() => {
-    const h = [...document.querySelectorAll('h2')].find((e) => e.textContent?.trim() === 'Appearance');
-    h?.scrollIntoView({ block: 'start' });
-    // A little room above the heading, in whatever scrolls.
-    for (let e = h?.parentElement; e; e = e.parentElement) {
-      if (e.scrollTop > 0) {
-        e.scrollTop -= 28;
-        return;
-      }
-    }
-    scrollBy(0, -28);
-  });
+  // Settings is an index (Wave 3.5): one screen of rows with their summaries.
+  await go(page, '#/settings', '[data-settings-index]');
   await settle(page, null, 600);
   await shot(page, 'settings-phone');
   await ctx.close();

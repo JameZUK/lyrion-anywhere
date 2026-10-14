@@ -8,6 +8,7 @@ import { removeAt, reorder } from '$lib/lms/queue-edit';
 vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
 const { default: QueuePage } = await import('../src/routes/queue/+page.svelte');
+const { choose } = await import('./helpers/menu');
 
 const P = '02:00:00:00:00:01';
 let queue: Track[] = [];
@@ -83,19 +84,19 @@ function pointer(el: Element, type: string, init: PointerEventInit) {
 	flushSync();
 }
 
-test('move buttons reorder at once and send playlist move', async () => {
+test('Move down in a row’s menu reorders at once and sends playlist move', async () => {
 	const r = await setup();
-	await fireEvent.click(r.getByRole('button', { name: 'Move Song 1 down' }));
+	await choose('More options for Song 1', 'Move down', r.container);
 	expect(titles(r.container)).toEqual(['Song 2', 'Song 1', 'Song 3', 'Song 4']);
 	await settle();
 	expect(sent()).toEqual([['playlist', 'move', 0, 1]]);
-	expect(r.getByRole('button', { name: 'Move Song 1 up' })).toBeTruthy();
+	expect(r.getByRole('button', { name: 'More options for Song 1' })).toBeTruthy();
 });
 
 test('a refused move is put back and reported', async () => {
 	const r = await setup();
 	refuse = ['playlist move'];
-	await fireEvent.click(r.getByRole('button', { name: 'Move Song 2 up' }));
+	await choose('More options for Song 2', 'Move up', r.container);
 	expect(titles(r.container)[0]).toBe('Song 2');
 	await waitFor(() => expect(titles(r.container)).toEqual(['Song 1', 'Song 2', 'Song 3', 'Song 4']));
 	expect(r.getByRole('alert').textContent).toContain("Couldn't move the track");
@@ -164,15 +165,13 @@ test('status refreshes during a drag are held back, then applied', async () => {
 	await waitFor(() => expect(titles(r.container)[0]).toBe('Song 9'));
 });
 
-test('removing with the button keeps focus in the list; the message is in a live region that was already there', async () => {
+test('removing from the row’s menu keeps focus in the list; the message is in a live region that was already there', async () => {
 	const r = await setup();
 	// The live region exists (empty) before anything is said, so screen readers announce it.
 	const live = r.container.ownerDocument.querySelector('[data-snackbar] [role="status"]')!;
 	expect(live.getAttribute('aria-live')).toBe('polite');
 	expect(live.textContent).toBe('');
-	const rm = r.getByRole('button', { name: 'Remove Song 2' });
-	rm.focus();
-	await fireEvent.click(rm);
+	await choose('More options for Song 2', 'Remove from queue', r.container);
 	await settle();
 	expect(document.activeElement?.getAttribute('aria-label')).toBe('Play Song 3');
 	expect(r.container.ownerDocument.querySelector('[data-snackbar] [role="status"]')).toBe(live);
@@ -244,7 +243,7 @@ test('the tap that ends a swipe does not also play the track', async () => {
 test('a refused removal is put back and reported, with no Undo', async () => {
 	const r = await setup();
 	refuse = ['playlist delete'];
-	await fireEvent.click(r.getByRole('button', { name: 'Remove Song 1' }));
+	await choose('More options for Song 1', 'Remove from queue', r.container);
 	expect(titles(r.container)).toEqual(['Song 2', 'Song 3', 'Song 4']);
 	await waitFor(() => expect(titles(r.container)).toEqual(['Song 1', 'Song 2', 'Song 3', 'Song 4']));
 	expect(r.getByRole('alert').textContent).toContain("Couldn't remove the track");
@@ -253,7 +252,7 @@ test('a refused removal is put back and reported, with no Undo', async () => {
 
 test('a failed Undo is put back and reported', async () => {
 	const r = await setup();
-	await fireEvent.click(r.getByRole('button', { name: 'Remove Song 2' }));
+	await choose('More options for Song 2', 'Remove from queue', r.container);
 	await settle();
 	refuse = ['playlistcontrol'];
 	await fireEvent.click(r.getByRole('button', { name: 'Undo' }));
@@ -263,7 +262,7 @@ test('a failed Undo is put back and reported', async () => {
 
 test('Undo waits for LMS to apply a late add before moving the track into place', async () => {
 	const r = await setup();
-	await fireEvent.click(r.getByRole('button', { name: 'Remove Song 1' }));
+	await choose('More options for Song 1', 'Remove from queue', r.container);
 	await settle();
 	const base = fake.handler.rpc;
 	let late: Track | null = null;
@@ -289,7 +288,7 @@ test('Undo waits for LMS to apply a late add before moving the track into place'
 
 test('Undo never moves a track it cannot be sure is the one it added', async () => {
 	const r = await setup();
-	await fireEvent.click(r.getByRole('button', { name: 'Remove Song 1' }));
+	await choose('More options for Song 1', 'Remove from queue', r.container);
 	await settle();
 	const base = fake.handler.rpc;
 	fake.handler.rpc = async (p, c) => {
@@ -307,7 +306,7 @@ test('no Undo for tracks without a library id (e.g. radio streams)', async () =>
 	queue = [track(1), track(2, -5)];
 	const r = render(QueuePage);
 	await waitFor(() => expect(titles(r.container)).toHaveLength(2));
-	await fireEvent.click(r.getByRole('button', { name: 'Remove Song 2' }));
+	await choose('More options for Song 2', 'Remove from queue', r.container);
 	await settle();
 	expect(r.getByRole('status').textContent).toContain('Removed Song 2');
 	expect(r.queryByRole('button', { name: 'Undo' })).toBeNull();
@@ -321,8 +320,8 @@ test('edits are sent one at a time, in order', async () => {
 		if (c[1] === 'move' && c[2] === 0) await new Promise<void>((res) => (release = res));
 		return base(p, c);
 	};
-	await fireEvent.click(r.getByRole('button', { name: 'Move Song 1 down' }));
-	await fireEvent.click(r.getByRole('button', { name: 'Remove Song 4' }));
+	await choose('More options for Song 1', 'Move down', r.container);
+	await choose('More options for Song 4', 'Remove from queue', r.container);
 	await settle();
 	expect(sent()).toEqual([['playlist', 'move', 0, 1]]);
 	// A refresh while edits are in flight would show LMS's old order: it is held back.
@@ -341,7 +340,7 @@ test('hostile track titles stay text in rows, labels and the snackbar', async ()
 	queue = [{ id: 1, title: '<img src=x onerror=alert(1)>' }];
 	const r = render(QueuePage);
 	await waitFor(() => expect(titles(r.container)).toHaveLength(1));
-	await fireEvent.click(r.getByRole('button', { name: 'Remove <img src=x onerror=alert(1)>' }));
+	await choose('More options for <img src=x onerror=alert(1)>', 'Remove from queue', r.container);
 	await settle();
 	expect(document.querySelectorAll('img').length).toBe(0);
 	expect(r.getByRole('status').textContent).toContain('<img src=x');
@@ -353,7 +352,7 @@ test('a track no longer at its position is not removed (nor is anything else)', 
 	const r = await setup();
 	// Another app puts a track at the front: Song 3 is now at index 3, not 2.
 	queue = [track(9), ...queue];
-	await fireEvent.click(r.getByRole('button', { name: 'Remove Song 3' }));
+	await choose('More options for Song 3', 'Remove from queue', r.container);
 	await settle();
 	expect(sent().filter((c) => c[1] === 'delete')).toEqual([]);
 	expect(queue.map((t) => t.title)).toEqual(['Song 9', 'Song 1', 'Song 2', 'Song 3', 'Song 4']);

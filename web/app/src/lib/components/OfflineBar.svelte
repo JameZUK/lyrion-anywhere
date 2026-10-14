@@ -52,7 +52,7 @@
 
 	<div class="right">
 		<span class="tag muted">Downloads</span>
-		<button class="icon-btn" aria-label="Stop playing downloads" onclick={() => p.stop()}><Icon name="close" size={20} /></button>
+		<button class="icon-btn" aria-label="Stop playing downloads" onclick={() => p.stop()}><Icon name="stop" size={20} /></button>
 	</div>
 </footer>
 

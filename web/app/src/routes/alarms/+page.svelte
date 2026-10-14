@@ -6,6 +6,8 @@
 	import { routine } from '$lib/state/me';
 	import { alarmChanges } from '$lib/rooms/alarm-changes.svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import Switch from '$lib/components/Switch.svelte';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import {
 		DAY_NAMES,
 		daysText,
@@ -132,17 +134,14 @@
 		{/if}
 	</header>
 	{#if !player}
-		<p class="muted">Choose a player first, with the Play on… button.</p>
+		<p class="muted">No player chosen. Choose a player with Play on.</p>
 	{:else}
 		<p class="muted lead">On {playerName}. Alarms are kept by your music server, so they ring even with this app closed.</p>
 		{#if error}<p class="error" role="alert">{error}</p>{/if}
 		{#if !listing}
 			<p class="muted">{busy ? 'Loading…' : ''}</p>
 		{:else}
-			<label class="switch">
-				<input type="checkbox" checked={listing.enabled} disabled={busy} onchange={(e) => run(player, (q) => routine.setAllAlarms(q, e.currentTarget.checked))} data-all-alarms />
-				<span>Alarms on this player</span>
-			</label>
+			<Switch checked={listing.enabled} disabled={busy} onchange={(v) => run(player, (q) => routine.setAllAlarms(q, v))} label="Alarms on this player" data-all-alarms />
 			{#if next}
 				<p class="next" data-next-alarm>Next: {next.toLocaleDateString(undefined, { weekday: 'long' })} at {timeText(next.getHours() * 3600 + next.getMinutes() * 60)}</p>
 			{/if}
@@ -160,7 +159,7 @@
 							<button type="button" class="day" class:on={fDays.includes(d)} aria-pressed={fDays.includes(d)} onclick={() => toggleDay(d)}>{DAY_NAMES[d]}</button>
 						{/each}
 					</fieldset>
-					<label class="check"><input type="checkbox" bind:checked={fRepeat} /><span>Every week (otherwise once)</span></label>
+					<Switch checked={fRepeat} onchange={(v) => (fRepeat = v)} label="Every week" note="Otherwise once." />
 					<label class="field">
 						<span>Play</span>
 						<select bind:value={fSound} data-alarm-sound>
@@ -186,6 +185,10 @@
 					<div class="actions">
 						<button class="btn primary" type="submit" disabled={busy}>Save</button>
 						<button class="btn" type="button" onclick={() => (editing = null)}>Cancel</button>
+						{#if editing !== 'new'}
+							<!-- Destructive: only here, and asked first (Wave 3.5). -->
+							<button class="btn danger delete" type="button" onclick={() => (confirmDelete = editing)} data-alarm-delete><Icon name="trash" size={18} />Delete alarm</button>
+						{/if}
 					</div>
 				</form>
 			{/if}
@@ -200,20 +203,8 @@
 								<span class="time">{timeText(a.time)}</span>
 								<span class="muted">{daysText(a.days)}{a.repeat ? '' : ' · once'} · {a.sound?.title || 'Current queue'}</span>
 							</button>
-							<input
-								type="checkbox"
-								class="toggle"
-								aria-label={`${timeText(a.time)} alarm on`}
-								checked={a.enabled}
-								disabled={busy}
-								onchange={(e) => run(player, (q) => routine.changeAlarm(q, a.id, { enabled: e.currentTarget.checked }))}
-							/>
-							{#if confirmDelete === a.id}
-								<button class="btn small danger" onclick={() => run(player, (q) => routine.deleteAlarm(q, a.id)).then(() => (confirmDelete = null))} data-confirm-delete>Delete</button>
-								<button class="btn small" onclick={() => (confirmDelete = null)}>Keep</button>
-							{:else}
-								<button class="icon-btn" aria-label={`Delete the ${timeText(a.time)} alarm`} onclick={() => (confirmDelete = a.id)}><Icon name="close" size={18} /></button>
-							{/if}
+							<!-- One trailing control: on or off (Delete is in the alarm's own form). -->
+							<Switch compact checked={a.enabled} disabled={busy} onchange={(v) => run(player, (q) => routine.changeAlarm(q, a.id, { enabled: v }))} label={`${timeText(a.time)} alarm on`} />
 						</li>
 					{/each}
 				</ul>
@@ -221,6 +212,20 @@
 		{/if}
 	{/if}
 </section>
+{#if confirmDelete && player}
+	{@const id = confirmDelete}
+	{@const p = player}
+	<ConfirmDialog
+		title="Delete this alarm?"
+		confirmLabel="Delete"
+		danger
+		onconfirm={() => run(p, (q) => routine.deleteAlarm(q, id)).then((ok) => {
+			confirmDelete = null;
+			if (ok) editing = null;
+		})}
+		oncancel={() => (confirmDelete = null)}
+	/>
+{/if}
 
 <style>
 	header {
@@ -229,12 +234,9 @@
 		justify-content: space-between;
 		gap: 1rem;
 	}
-	.switch,
-	.check {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		margin: 0.5rem 0;
+	.delete {
+		margin-left: auto;
+		color: var(--danger);
 	}
 	.next {
 		font-weight: 600;
@@ -305,10 +307,6 @@
 		font-size: 1.6rem;
 		font-weight: 650;
 		font-variant-numeric: tabular-nums;
-	}
-	.toggle {
-		width: 1.2rem;
-		height: 1.2rem;
 	}
 	.error {
 		color: var(--danger);

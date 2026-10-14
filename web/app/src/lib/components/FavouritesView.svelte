@@ -7,9 +7,10 @@
 	import { api, app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
+	import { NO_PLAYER } from '$lib/naming';
 	import type { FavouritesResult, MenuItem } from '$lib/lms/types';
 	import Art from '$lib/components/Art.svelte';
-	import Icon from '$lib/components/Icon.svelte';
+	import RowMenu from '$lib/components/RowMenu.svelte';
 
 	let items = $state<MenuItem[]>([]);
 	let title = $state('Favourites');
@@ -50,7 +51,7 @@
 	const isFolder = (i: MenuItem) => String(i.hasitems) === '1' && String(i.isaudio) !== '1';
 	async function play(i: MenuItem, how: cmd.Placement) {
 		if (!app.playerId) {
-			app.error = 'Choose a player first (bottom right, or Settings › This device).';
+			app.error = NO_PLAYER;
 			return;
 		}
 		await app.send(cmd.playFavourite(i.id!, how));
@@ -77,8 +78,14 @@
 						<div class="icon"><Art path={cmd.imagePath(i.image, 96)} alt="" label={textOf(i.name)} /></div>
 						<span class="name ellipsis">{textOf(i.name)}</span>
 					</button>
-					<button class="icon-btn" aria-label={`Play ${textOf(i.name)} next`} onclick={() => play(i, 'next')} disabled={!app.canQueue}><Icon name="playnext" size={18} /></button>
-					<button class="icon-btn" aria-label={`Add ${textOf(i.name)} to the queue`} onclick={() => play(i, 'add')} disabled={!app.canQueue}><Icon name="plus" size={18} /></button>
+					<!-- One trailing control (Wave 3.5 rule 3). -->
+					<RowMenu
+						label={`More options for ${textOf(i.name)}`}
+						actions={[
+							{ label: 'Play next', icon: 'playnext', run: () => void play(i, 'next'), disabled: !app.canQueue },
+							{ label: 'Add to queue', icon: 'plus', run: () => void play(i, 'add'), disabled: !app.canQueue },
+						]}
+					/>
 				{/if}
 			</li>
 		{/each}

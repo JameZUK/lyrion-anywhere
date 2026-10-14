@@ -7,6 +7,7 @@
 	import FilterEditor from './FilterEditor.svelte';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 	import Icon from './Icon.svelte';
+	import RowMenu from './RowMenu.svelte';
 
 	let { level = 2 }: { level?: 2 | 3 } = $props();
 
@@ -35,7 +36,7 @@
 			if (was) await me.updateFilter(was.id, spec);
 			else await me.createFilter(spec);
 		} catch (e) {
-			return `Couldn’t save the filter: ${(e as Error).message}`;
+			return `Couldn’t save the smart playlist: ${(e as Error).message}`;
 		}
 		editing = undefined;
 		message = was ? `Saved “${spec.name}”.` : `Added “${spec.name}”.`;
@@ -67,8 +68,8 @@
 
 <div class="filters" data-filters-view>
 	<div class="head">
-		<svelte:element this={`h${level}`} class="title">Smart filters</svelte:element>
-		<button class="btn primary" onclick={() => (editing = null)} disabled={full || filters === null} data-filter-new><Icon name="plus" size={18} />New filter</button>
+		<svelte:element this={`h${level}`} class="title">Smart playlists</svelte:element>
+		<button class="btn primary" onclick={() => (editing = null)} disabled={full || filters === null} data-filter-new><Icon name="plus" size={18} />New smart playlist</button>
 	</div>
 	<p class="muted small">Albums chosen by rules: genres, a decade, an artist, compilations. Kept for your account on every device{full ? `. You have the most allowed (${FILTER_LIMITS.maxFilters}).` : '.'}</p>
 	<p class="status" role="status" data-filter-status>{message}</p>
@@ -78,7 +79,7 @@
 	{:else if filters === null}
 		<p class="muted">Loading…</p>
 	{:else if !filters.length}
-		<p class="muted">No smart filters yet. Use New filter to make one.</p>
+		<p class="muted">No smart playlists yet. Use New smart playlist to make one.</p>
 	{:else}
 		<ul class="list">
 			{#each filters as f (f.id)}
@@ -87,10 +88,16 @@
 						<span class="glyph"><Icon name="filter" size={20} /></span>
 						<span class="text"><span class="name ellipsis">{f.name}</span><span class="sub ellipsis muted">{summary(f)}</span></span>
 					</a>
-					<button class="icon-btn" aria-label={`Play ${f.name}`} onclick={() => play(f, false)} data-filter-play><Icon name="play" size={18} /></button>
-					<button class="icon-btn" aria-label={`Shuffle ${f.name}`} onclick={() => play(f, true)} data-filter-shuffle><Icon name="shuffle" size={18} /></button>
-					<button class="icon-btn" aria-label={`Edit ${f.name}`} onclick={() => (editing = f)} data-filter-edit><Icon name="settings" size={18} /></button>
-					<button class="icon-btn" aria-label={`Delete ${f.name}`} onclick={() => (deleting = f)} data-filter-delete><Icon name="trash" size={18} /></button>
+					<!-- One trailing control (Wave 3.5 rule 3): the row opens it; ⋯ has the rest. -->
+					<RowMenu
+						label={`More options for ${f.name}`}
+						actions={[
+							{ label: 'Play', icon: 'play', run: () => void play(f, false), id: 'play' },
+							{ label: 'Shuffle', icon: 'shuffle', run: () => void play(f, true), id: 'shuffle' },
+							{ label: 'Edit', icon: 'pencil', run: () => (editing = f), id: 'edit' },
+							{ label: 'Delete', icon: 'trash', run: () => (deleting = f), danger: true, id: 'delete' },
+						]}
+					/>
 				</li>
 			{/each}
 		</ul>
@@ -101,7 +108,7 @@
 	<FilterEditor initial={editing} onsave={save} oncancel={() => (editing = undefined)} />
 {/if}
 {#if deleting}
-	<ConfirmDialog title={`Delete “${deleting.name}”?`} message="The filter is removed from every device. Your music isn’t touched." confirmLabel="Delete" danger onconfirm={remove} oncancel={() => (deleting = null)} />
+	<ConfirmDialog title={`Delete “${deleting.name}”?`} message="The smart playlist is removed from every device. Your music isn’t touched." confirmLabel="Delete" danger onconfirm={remove} oncancel={() => (deleting = null)} />
 {/if}
 
 <style>
@@ -165,10 +172,5 @@
 	}
 	.sub {
 		font-size: 0.85rem;
-	}
-	li .icon-btn {
-		width: 44px;
-		height: 44px;
-		flex: none;
 	}
 </style>

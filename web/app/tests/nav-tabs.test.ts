@@ -1,7 +1,7 @@
 // The four main tabs (Home, Library, Search, Queue), the same on phones, at the top of the
 // desktop sidebar and in the Android app; which tab each page belongs to.
 import { readFileSync } from 'node:fs';
-import { MAIN_TABS, tabFor } from '$lib/nav-tabs';
+import { MAIN_TABS, SIDEBAR, tabFor } from '$lib/nav-tabs';
 
 const layout = readFileSync(`${__dirname}/../src/routes/+layout.svelte`, 'utf8');
 
@@ -65,9 +65,27 @@ test('the phone tab bar is built from the four, four columns wide', () => {
 	expect(layout).not.toMatch(/label: 'Playing'/);
 });
 
-test('the desktop sidebar starts with the same four, then Now playing and the rest', () => {
-	const labels = [...layout.matchAll(/\{ href: '#\/[^']*', label: '([^']+)'/g)].map((m) => m[1]);
-	expect(labels.slice(0, 4)).toEqual(['Home', 'Library', 'Search', 'Queue']);
-	for (const l of ['Now playing', 'Rooms', 'Downloads', 'Settings']) expect(labels).toContain(l);
-	expect(labels.at(-1)).toBe('Settings');
+test('the desktop sidebar is seven: the same four, then Now playing, Rooms and Settings (Wave 3.5)', () => {
+	expect(layout).toMatch(/const NAV = SIDEBAR;/);
+	expect(SIDEBAR.map((n) => n.label)).toEqual(['Home', 'Library', 'Search', 'Queue', 'Now playing', 'Rooms', 'Settings']);
+	expect(SIDEBAR.slice(0, 4).map((n) => n.href)).toEqual(MAIN_TABS.map((t) => t.href));
+	// Library's sections are not repeated in the sidebar.
+	for (const gone of ['New music', 'Albums', 'Artists', 'Playlists', 'Favourites', 'Apps & radio', 'Downloads']) expect(SIDEBAR.map((n) => n.label)).not.toContain(gone);
+	// Now playing has its own icon (never Home's house), and no two entries share one.
+	expect(SIDEBAR.find((n) => n.label === 'Now playing')!.icon).toBe('nowplaying');
+	expect(new Set(SIDEBAR.map((n) => n.icon)).size).toBe(SIDEBAR.length);
+});
+
+test('every page lights up exactly one sidebar entry, or none; an album lights up Library, not Albums', () => {
+	const lit = (p: string) => SIDEBAR.filter((n) => n.match(p)).map((n) => n.label);
+	expect(lit('/album/7')).toEqual(['Library']);
+	expect(lit('/artist/3')).toEqual(['Library']);
+	expect(lit('/downloads')).toEqual(['Library']);
+	expect(lit('/apps')).toEqual(['Library']);
+	expect(lit('/')).toEqual(['Now playing']);
+	expect(lit('/rooms')).toEqual(['Rooms']);
+	expect(lit('/settings/account')).toEqual(['Settings']);
+	expect(lit('/home')).toEqual(['Home']);
+	expect(lit('/queue')).toEqual(['Queue']);
+	for (const p of ['/car', '/alarms', '/stats']) expect(lit(p).length).toBeLessThanOrEqual(1);
 });

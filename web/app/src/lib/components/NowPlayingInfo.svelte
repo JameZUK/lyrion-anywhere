@@ -4,9 +4,13 @@
 	// the badge opens), the track's credits as links, its rating and an "Up next" card.
 	// `compact` (phones, where it is a page of the pager): just the quality and the credits;
 	// the rating and Up next are on the screen already, and the signal path opens from the
-	// quality badge, never here.
-	import { app } from '$lib/state/app.svelte';
+	// quality badge, never here. Wave 3.5: whether the track runs straight on into the next
+	// (gapless, the same album) is said here only, not between the queue's rows.
+	import { api, app } from '$lib/state/app.svelte';
+	import * as cmd from '$lib/lms/commands';
 	import { isRemote } from '$lib/lms/format';
+	import { gaplessLinks } from '$lib/queue/tracker';
+	import type { PlayerStatus } from '$lib/lms/types';
 	import { badgeText, quality } from '$lib/lms/quality';
 	import RatingControl from './RatingControl.svelte';
 	import SignalPathView from './SignalPathView.svelte';
@@ -22,6 +26,23 @@
 	const pathId = `np-info-path-${Math.random().toString(36).slice(2, 8)}`;
 	/** A library track (not a stream): it has credits and a rating. */
 	const libraryId = $derived(typeof track?.id === 'number' && track.id > 0 && !isRemote(track.remote) ? track.id : null);
+
+	// Gapless: this track and the next, with their album and track number (the queue's tags).
+	let gapless = $state(false);
+	const cur = $derived(Number(app.now?.playlist_cur_index ?? -1));
+	$effect(() => {
+		const id = app.playerId;
+		const at = cur;
+		void app.queueVersion;
+		gapless = false;
+		if (!id || at < 0 || libraryId === null || app.reach !== 'online') return;
+		let live = true;
+		api.rpc<PlayerStatus>(id, cmd.queue(at, 2)).then(
+			(r) => live && (gapless = gaplessLinks(r?.playlist_loop ?? [])[0] === true),
+			() => {},
+		);
+		return () => (live = false);
+	});
 </script>
 
 <div class="info-pane" data-info-pane>
@@ -31,6 +52,7 @@
 		<section aria-labelledby="np-info-quality">
 			<h3 id="np-info-quality">Quality</h3>
 			{#if badge}<p class="badge" class:hires={badge.hiRes}>{badgeText(badge)}</p>{/if}
+			{#if gapless}<p class="gapless muted" data-gapless>Gapless: runs straight on into the next track, from the same album.</p>{/if}
 			{#if !compact}
 				<button class="disclose" aria-expanded={pathOpen} aria-controls={pathId} onclick={() => (pathOpen = !pathOpen)} data-signal-path-toggle>
 					<span class="chev" class:open={pathOpen} aria-hidden="true">›</span>Signal path
@@ -81,6 +103,10 @@
 		font-size: 0.78rem;
 		font-weight: 650;
 		letter-spacing: 0.02em;
+	}
+	.gapless {
+		margin: 0;
+		font-size: 0.9rem;
 	}
 	.badge.hires {
 		border-color: var(--accent);

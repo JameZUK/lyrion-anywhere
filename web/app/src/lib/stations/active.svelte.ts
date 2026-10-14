@@ -3,6 +3,7 @@
 import { untrack } from 'svelte';
 import { api, app } from '$lib/state/app.svelte';
 import { me } from '$lib/state/me';
+import { NO_PLAYER } from '$lib/naming';
 import * as cmd from '$lib/lms/commands';
 import type { PlayerStatus } from '$lib/lms/types';
 import type { Station } from '$lib/api/me';
@@ -24,7 +25,7 @@ class ActiveStation {
 		const player = app.playerId;
 		this.error = '';
 		if (!player) {
-			this.error = 'Choose a player first: tap the Play on… button by the volume.';
+			this.error = NO_PLAYER;
 			return false;
 		}
 		this.station = station;

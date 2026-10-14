@@ -7,17 +7,17 @@
 	import { duration, isRemote, textOf } from '$lib/lms/format';
 	import type { Album, AlbumsResult, TitlesResult, Track } from '$lib/lms/types';
 	import Art from '$lib/components/Art.svelte';
-	import Icon from '$lib/components/Icon.svelte';
 	import TrackList from '$lib/components/TrackList.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import InfoText from '$lib/components/InfoText.svelte';
 	import { sanitiseAlbumInfo } from '$lib/info/info';
 	import type { TrackBadge } from '$lib/components/track-badge';
 	import DownloadBar from '$lib/components/DownloadBar.svelte';
+	import PageActions from '$lib/components/PageActions.svelte';
 	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
-	import { controls } from '$lib/player/controls.svelte';
 
 	let ctx = $state<{ kind: cmd.InfoKind; id: number; title: string } | null>(null);
+	let dl = $state<ReturnType<typeof DownloadBar>>();
 
 	let album = $state<Album | null>(null);
 	let tracks = $state<Track[]>([]);
@@ -99,21 +99,21 @@
 		const r = await downloads.request([{ id: t.id, albumId, duration: t.duration, filesize: t.filesize }], { ref: 'track' });
 		trackMsg = r.refused ?? '';
 	}
+	/** One mark per meaning (Wave 3.5): downloaded, downloading, or failed. Waiting, held for
+	 *  Wi-Fi and paused have no mark on the row: the header's line and the Downloads page say so. */
 	function badge(t: Track): TrackBadge | undefined {
 		if (downloads.savedById(t.id)) return { kind: 'done', label: 'Downloaded' };
 		const it = typeof t.id === 'number' ? downloads.item(t.id) : undefined;
 		if (!it) return undefined;
 		if (it.status === 'failed') return { kind: 'failed', label: it.message || 'Download failed' };
-		if (it.status === 'paused') return { kind: 'busy', label: 'Download paused' };
-		if (downloads.isHeld(it)) return { kind: 'busy', label: 'Waiting for Wi-Fi' };
-		if (it.status === 'active' && it.total) return { kind: 'busy', label: `Downloading ${Math.round((100 * it.received) / it.total)}%` };
-		return { kind: 'busy', label: 'Waiting to download' };
+		if (it.status === 'active' && !downloads.isHeld(it)) return { kind: 'busy', label: it.total ? `Downloading ${Math.round((100 * it.received) / it.total)}%` : 'Downloading' };
+		return undefined;
 	}
 	useDetailTitle(() => textOf(album?.album));
 </script>
 
 <section class="page">
-	<BackButton parent="/albums" />
+	<BackButton parent="/library" />
 	{#if error}
 		<p class="error">{error}</p>
 	{:else if album && albumId !== null}
@@ -127,14 +127,10 @@
 					{#if artistHref}<a href={artistHref}>{textOf(album.artist)}</a>{:else}{textOf(album.artist)}{/if}
 				</p>
 				<p class="muted">{[textOf(album.year), `${tracks.length} tracks`, duration(totalTime)].filter(Boolean).join(' · ')}</p>
-				<div class="actions">
-					<!-- These need the server (More is LMS's own menu): disabled while it is out of reach. -->
-					<button class="btn primary" onclick={() => app.queueUp({ album: id }, 'play')} {...controls.needsServer()}><Icon name="play" size={18} />Play</button>
-					<button class="btn" onclick={() => app.queueUp({ album: id }, 'next')} {...controls.needsServer()}><Icon name="playnext" size={18} />Play next</button>
-					<button class="btn" onclick={() => app.queueUp({ album: id }, 'add')} {...controls.needsServer()}><Icon name="plus" size={18} />Add to queue</button>
-					<button class="btn" onclick={() => (ctx = { kind: 'album', id, title: textOf(album?.album) })} {...controls.needsServer()} data-album-more><Icon name="more" size={18} />More</button>
-				</div>
-				<DownloadBar tracks={requests} ref={`album:${id}`} onremoved={(keys) => offlinePlayer.forget(keys)} />
+				<!-- Play, Shuffle, Download and ⋯ (Play next, Add to queue, Download as…, More…, Remove download). -->
+				<PageActions sel={{ album: id }} title={textOf(album.album)} onmore={() => (ctx = { kind: 'album', id, title: textOf(album?.album) })} extra={dl?.actions() ?? []}>
+					{#snippet download()}<DownloadBar bind:this={dl} tracks={requests} ref={`album:${id}`} onremoved={(keys) => offlinePlayer.forget(keys)} />{/snippet}
+				</PageActions>
 				{#if trackMsg}<p class="small muted" role="alert">{trackMsg}</p>{/if}
 			</div>
 		</header>
@@ -191,12 +187,6 @@
 	}
 	.by a:hover {
 		text-decoration: underline;
-	}
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.6rem;
-		margin-top: 1rem;
 	}
 	.review {
 		margin-top: -0.5rem;

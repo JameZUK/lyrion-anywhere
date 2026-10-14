@@ -24,7 +24,7 @@
 {#if browsing && owner}
 	<div class="offline">
 		<header class="top">
-			<span class="muted"><Icon name="offline" size={18} /> Can’t reach the music server. Trying again…</span>
+			<span class="muted"><Icon name="offline" size={18} /> Can’t reach your music server. Trying again…</span>
 			<button class="btn" onclick={() => (browsing = false)}>Back</button>
 		</header>
 		<main class="content"><DownloadsView offline /></main>
@@ -33,7 +33,7 @@
 {:else}
 	<div class="splash" role="status">
 		<div class="box">
-			<p class="muted">Can’t reach the music server. Trying again…</p>
+			<p class="muted">Can’t reach your music server. Trying again…</p>
 			{#if count > 0}
 				<button class="btn primary" onclick={() => (browsing = true)}><Icon name="play" size={18} />Play your downloads</button>
 				<p class="muted small">{count} downloaded {count === 1 ? 'track' : 'tracks'} on this device.</p>

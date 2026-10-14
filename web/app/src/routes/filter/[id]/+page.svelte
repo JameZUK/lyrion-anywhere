@@ -6,6 +6,7 @@
 	import FilterEditor from '$lib/components/FilterEditor.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import RowMenu from '$lib/components/RowMenu.svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { untrack } from 'svelte';
@@ -37,7 +38,7 @@
 			const f = (await me.filters()).find((x) => x.id === id) ?? null;
 			if (filterId !== id) return;
 			filter = f;
-			if (!f) error = 'This filter has been deleted, or isn’t yours.';
+			if (!f) error = 'This smart playlist has been deleted, or isn’t yours.';
 		} catch (e) {
 			error = (e as Error).message;
 		}
@@ -76,7 +77,7 @@
 			reset();
 			filter = null;
 			if (id === null) {
-				error = 'Not a filter.';
+				error = 'Not a smart playlist.';
 				return;
 			}
 			void loadFilter(id);
@@ -98,7 +99,7 @@
 		try {
 			await me.updateFilter(filter.id, spec);
 		} catch (e) {
-			return `Couldn’t save the filter: ${(e as Error).message}`;
+			return `Couldn’t save the smart playlist: ${(e as Error).message}`;
 		}
 		editing = false;
 		filter = { ...spec, id: filter.id };
@@ -122,15 +123,21 @@
 
 <section class="page">
 	<BackButton parent="/library" />
-	<p class="kind muted">Smart filter</p>
-	<h1>{filter?.name ?? (error ? 'Smart filter' : '…')}</h1>
+	<p class="kind muted">Smart playlist</p>
+	<h1>{filter?.name ?? (error ? 'Smart playlist' : '…')}</h1>
 	{#if filter}
 		<p class="muted rules">{filter.rules.map((r) => ruleSummary(r)).join(' · ')}</p>
 		<div class="actions">
 			<button class="btn primary" onclick={() => play(false)} disabled={total === 0} data-filter-play><Icon name="play" size={18} />Play</button>
 			<button class="btn" onclick={() => play(true)} disabled={total === 0} data-filter-shuffle><Icon name="shuffle" size={18} />Shuffle</button>
-			<button class="btn" onclick={() => (editing = true)} data-filter-edit><Icon name="settings" size={18} />Edit</button>
-			<button class="btn" onclick={() => (deleting = true)} data-filter-delete><Icon name="trash" size={18} />Delete</button>
+			<RowMenu
+				label={`More options for ${filter.name}`}
+				actions={[
+					{ label: 'Edit', icon: 'pencil', run: () => (editing = true), id: 'edit' },
+					{ label: 'Delete', icon: 'trash', run: () => (deleting = true), danger: true, id: 'delete' },
+				]}
+				trigger={{ 'data-page-more': true }}
+			/>
 		</div>
 		<p class="muted small">Play and Shuffle use the first {Math.min(50, total ?? 50)} albums.</p>
 	{/if}
@@ -138,7 +145,7 @@
 	{#if error}<p class="error">{error}</p>{/if}
 	{#if total !== null}<p class="muted">{total.toLocaleString('en-GB')} {total === 1 ? 'album' : 'albums'}</p>{/if}
 	{#if total === 0}
-		<p class="muted">No albums match this filter.</p>
+		<p class="muted">No albums match this smart playlist.</p>
 	{:else}
 		<AlbumGrid {albums} more={total !== null && next < total ? more : null} />
 	{/if}
@@ -148,7 +155,7 @@
 	<FilterEditor initial={filter} onsave={save} oncancel={() => (editing = false)} />
 {/if}
 {#if deleting && filter}
-	<ConfirmDialog title={`Delete “${filter.name}”?`} message="The filter is removed from every device. Your music isn’t touched." confirmLabel="Delete" danger onconfirm={remove} oncancel={() => (deleting = false)} />
+	<ConfirmDialog title={`Delete “${filter.name}”?`} message="The smart playlist is removed from every device. Your music isn’t touched." confirmLabel="Delete" danger onconfirm={remove} oncancel={() => (deleting = false)} />
 {/if}
 
 <style>
@@ -167,6 +174,7 @@
 	.actions {
 		display: flex;
 		flex-wrap: wrap;
+		align-items: center;
 		gap: 0.5rem;
 	}
 	.actions .btn {

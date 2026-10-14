@@ -133,7 +133,7 @@
 				{#each recents as r (r)}
 					<li>
 						<button class="term" onclick={() => useRecent(r)}><Icon name="search" size={16} /><span class="ellipsis">{r}</span></button>
-						<button class="icon-btn" aria-label={`Remove “${r}” from recent searches`} onclick={() => forget(r)}><Icon name="close" size={16} /></button>
+						<button class="icon-btn" aria-label={`Remove “${r}” from recent searches`} onclick={() => forget(r)}><Icon name="minus" size={16} /></button>
 					</li>
 				{/each}
 			</ul>
@@ -197,6 +197,8 @@
 	}
 	.box:focus-within {
 		border-color: var(--accent);
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
 	}
 	input {
 		flex: 1;

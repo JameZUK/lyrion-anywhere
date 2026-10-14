@@ -1,10 +1,11 @@
 <script lang="ts">
-	import ArtistBrowser from '$lib/components/ArtistBrowser.svelte';
-	import LibraryNote from '$lib/components/LibraryNote.svelte';
-</script>
+	// Artists is a section of Library (Wave 3.5: one Library model). This address opens Library there instead, without
+	// adding a history entry, so Back skips it.
+	import { go } from '$lib/nav';
+	import { openSection } from '$lib/library/prefs';
 
-<section class="page">
-	<h1>Artists</h1>
-	<LibraryNote />
-	<ArtistBrowser />
-</section>
+	$effect(() => {
+		openSection('artists');
+		void go('/library', { replaceState: true });
+	});
+</script>

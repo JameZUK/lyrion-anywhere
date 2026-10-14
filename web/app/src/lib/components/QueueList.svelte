@@ -1,8 +1,7 @@
 <script lang="ts">
 	// The current track and what follows (Wave 2 §3.4), in sections when this device can vouch
 	// for its Up next: in the queue peek's sheet, and beside Now playing in wide windows (§4.2).
-	// Tap a track to play it; the full queue (to edit it) is a link away. Admins can save the
-	// queue as a playlist from here too.
+	// Tap a track to play it; the full queue (to edit or save it) is a link away.
 	import { api, app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { duration, textOf } from '$lib/lms/format';
@@ -10,8 +9,9 @@
 	import type { PlayerStatus, Track } from '$lib/lms/types';
 	import Art from './Art.svelte';
 	import Icon from './Icon.svelte';
-	import SaveQueue from './SaveQueue.svelte';
 	import { controls, local } from '$lib/player/controls.svelte';
+	import { now } from '$lib/player/now.svelte';
+	import DownloadsQueue from './DownloadsQueue.svelte';
 	import { MARK_LABELS } from '$lib/player/local-plan';
 	import { isNetworkError } from '$lib/state/reachability';
 
@@ -28,7 +28,8 @@
 	$effect(() => {
 		const id = app.playerId;
 		void app.queueVersion;
-		if (!id) return;
+		// This device plays its downloads: their queue shows instead (no need to read the player's).
+		if (!id || now.downloads) return;
 		const cur = Math.max(0, Number(app.now?.playlist_cur_index ?? 0) || 0);
 		let live = true;
 		api.rpc<PlayerStatus>(id, cmd.queue(cur, PEEK)).then(
@@ -73,8 +74,13 @@
 	}
 </script>
 
+{#if now.downloads}
+	<!-- This device plays its downloads: their queue (Wave 3.5: one Queue). -->
+	<h3>Downloads</h3>
+	<DownloadsQueue {onplay} />
+{:else}
 {#if error}<p class="error">{error}</p>{/if}
-{#if loaded && !rows.length}<p class="muted">The queue is empty.</p>{/if}
+{#if loaded && !rows.length}<p class="muted">The queue is empty.</p>{:else if !loaded && app.reach !== 'online'}<p class="muted" data-queue-unloaded>The queue can’t be loaded until your music server is back.</p>{/if}
 {#each groups as grp (grp.key)}
 	<h3 id={`${uid}-${grp.key}`}>{grp.title}</h3>
 	<ol aria-labelledby={`${uid}-${grp.key}`} data-peek={side ? undefined : grp.key} data-side-queue={side ? grp.key : undefined}>
@@ -95,7 +101,7 @@
 						<span class="title ellipsis">{textOf(t.title)}</span>
 						<span class="sub ellipsis muted">{textOf(t.artist)}</span>
 					</span>
-					{#if mark}<span class="mark" title={MARK_LABELS[mark]} data-queue-mark={mark}><Icon name={mark === 'downloaded' ? 'download' : 'device'} size={15} /></span>{/if}
+					{#if mark}<span class="mark" title={MARK_LABELS[mark]} data-queue-mark={mark}><Icon name={mark === 'downloaded' ? 'downloaded' : 'device'} size={15} /></span>{/if}
 					<span class="dur muted">{duration(t.duration)}</span>
 				</button>
 			</li>
@@ -103,8 +109,8 @@
 	</ol>
 {/each}
 {#if total > from + rows.length}<p class="muted more">And {(total - from - rows.length).toLocaleString('en-GB')} more.</p>{/if}
+{/if}
 <a class="btn full" href="#/queue" onclick={() => onplay?.()} data-full-queue>Open the full queue</a>
-{#if rows.length && app.reach === 'online'}<SaveQueue tracks={rows} full onopen={onplay} />{/if}
 
 <style>
 	h3 {

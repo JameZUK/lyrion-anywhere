@@ -128,7 +128,11 @@
 				</span>
 				{#if badge}
 					{@const b = badge(t)}
-					{#if b}<span class="badge" class:done={b.kind === 'done'} class:failed={b.kind === 'failed'} title={b.label}><Icon name={b.kind === 'failed' ? 'close' : b.kind === 'done' ? 'check' : 'download'} size={16} label={b.label} /></span>{/if}
+					{#if b?.kind === 'busy'}
+						<span class="badge busy" title={b.label} role="img" aria-label={b.label} data-track-mark="busy"><span class="ring"></span></span>
+					{:else if b}
+						<span class="badge" class:done={b.kind === 'done'} class:failed={b.kind === 'failed'} title={b.label} data-track-mark={b.kind}><Icon name={b.kind === 'failed' ? 'warning' : 'downloaded'} size={16} label={b.label} /></span>
+					{/if}
 				{/if}
 				<span class="dur muted">{duration(t.duration)}</span>
 			</button>
@@ -226,6 +230,25 @@
 	}
 	.badge.failed {
 		color: var(--danger);
+	}
+	/* Downloading: a small turning ring (still under reduced motion). */
+	.ring {
+		width: 12px;
+		height: 12px;
+		border-radius: 50%;
+		border: 2px solid var(--line);
+		border-top-color: var(--accent);
+		animation: turn 0.9s linear infinite;
+	}
+	@keyframes turn {
+		to {
+			transform: rotate(1turn);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.ring {
+			animation: none;
+		}
 	}
 	.dur {
 		font-variant-numeric: tabular-nums;

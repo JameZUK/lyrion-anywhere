@@ -8,6 +8,7 @@ import type { DownloadManager } from '$lib/offline/manager.svelte';
 import type { PlaySync } from '$lib/offline/plays.svelte';
 import type { OfflineStore } from '$lib/offline/store';
 import { key, stored } from './helpers/fake-downloads';
+import { choose } from './helpers/menu';
 
 vi.mock('$lib/offline/index.svelte', async () => {
 	const { DownloadManager } = await import('$lib/offline/manager.svelte');
@@ -44,7 +45,7 @@ vi.mock('$lib/state/app.svelte', () => ({
 		art: () => Promise.reject(new Error('offline')),
 	},
 	app: { queueUp: vi.fn(), reach: 'online', canQueue: true },
-	session: { current: null },
+	session: { current: null, subscribe: () => () => {} },
 }));
 vi.mock('$app/state', () => ({ page: { params: { id: '7' }, url: new URL('http://app.example/#/album/7') } }));
 
@@ -95,21 +96,28 @@ async function albumPage() {
 	return r;
 }
 
-test('album page: Download, with a format choice, when nothing is downloaded', async () => {
+/** ⋯ › Download as… › a format (Wave 3.5: the format is no longer a select in the header). */
+async function downloadAs(format: string) {
+	await choose('More options for An <b>Album</b>', 'Download as…');
+	await fireEvent.click(document.querySelector(`[data-format-picker] [data-format="${format}"]`)!);
+}
+
+test('album page: Download in the usual format when nothing is downloaded; Download as… offers each format', async () => {
 	await downloads.setUser('alice', true);
 	await albumPage();
 	const btn = screen.getByRole('button', { name: 'Download' });
 	expect(btn).not.toHaveProperty('disabled', true);
-	const select = screen.getByLabelText('Download format') as HTMLSelectElement;
-	expect([...select.options].map((o) => o.value)).toEqual(['auto', 'original', 'mp3', 'opus']);
+	expect(screen.queryByLabelText('Download format')).toBeNull();
 	expect(screen.queryByText('Downloaded')).toBeNull();
+	await choose('More options for An <b>Album</b>', 'Download as…');
+	const picker = document.querySelector('[data-format-picker]')!;
+	expect([...picker.querySelectorAll<HTMLElement>('[data-format]')].map((b) => b.dataset.format)).toEqual(['auto', 'original', 'mp3', 'opus']);
 });
 
 test('album page: progress while downloading, then pause', async () => {
 	await downloads.setUser('alice', true);
 	await albumPage();
-	await fireEvent.change(screen.getByLabelText('Download format'), { target: { value: 'mp3' } });
-	await fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+	await downloadAs('mp3');
 	await vi.waitFor(() => expect(downloads.items).toHaveLength(2));
 	await tick();
 	// Library tracks only: the radio track is never queued.
@@ -119,7 +127,8 @@ test('album page: progress while downloading, then pause', async () => {
 	]);
 	expect(screen.getByRole('status').textContent).toContain('Downloading 0 of 2');
 	expect(screen.getByRole('progressbar', { name: 'Download progress' })).toBeTruthy();
-	expect(screen.getAllByLabelText('Waiting to download').length).toBe(2);
+	// One mark per meaning: tracks waiting their turn have none (the line above says it).
+	expect(screen.queryAllByLabelText('Waiting to download')).toHaveLength(0);
 	await fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
 	expect(screen.getByRole('status').textContent).toContain('Download paused');
 	expect(screen.getByRole('button', { name: 'Resume' })).toBeTruthy();
@@ -136,7 +145,9 @@ test('album page: Downloaded ✓ and Remove download once every track is here', 
 	expect(screen.getByRole('status').textContent).toContain('Downloaded');
 	expect(screen.getAllByLabelText('Downloaded').length).toBe(2); // the track marks
 	expect(screen.queryByRole('button', { name: 'Download' })).toBeNull();
-	await fireEvent.click(screen.getByRole('button', { name: 'Remove download' }));
+	// Destructive: only in ⋯.
+	expect(screen.queryByRole('button', { name: 'Remove download' })).toBeNull();
+	await choose('More options for An <b>Album</b>', 'Remove download');
 	await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy());
 	expect(await store.listTracks('alice')).toEqual([]);
 });
@@ -155,7 +166,7 @@ test('album page: on mobile data with Wi-Fi only, the download waits; Download n
 	await albumPage();
 	await fireEvent.click(screen.getByRole('button', { name: 'Download' }));
 	await vi.waitFor(() => expect(screen.getByRole('status').textContent).toContain('Waiting for Wi-Fi (2 tracks)'));
-	expect(screen.getAllByLabelText('Waiting for Wi-Fi').length).toBe(2);
+	expect(screen.queryAllByLabelText('Waiting for Wi-Fi')).toHaveLength(0);
 	expect(downloads.items.every((i) => i.status === 'queued')).toBe(true);
 	await fireEvent.click(screen.getByRole('button', { name: 'Download now' }));
 	await vi.waitFor(() => expect(screen.getByRole('status').textContent).toContain('Downloading 0 of 2'));
@@ -167,8 +178,7 @@ test('album page: a download past the storage limit is refused with what it need
 	control.cap = 1024 * 1024;
 	await downloads.setUser('alice', true);
 	await albumPage();
-	await fireEvent.change(screen.getByLabelText('Download format'), { target: { value: 'mp3' } });
-	await fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+	await downloadAs('mp3');
 	// Two 100 s tracks at 320 kb/s: about 7.6 MB, with 1 MB allowed.
 	const alert = await screen.findByRole('alert');
 	expect(alert.textContent).toBe(
@@ -298,7 +308,7 @@ test('offline splash offers “Play your downloads” for the account last signe
 	localStorage.setItem('anywhere.offlineUser', 'alice');
 	const { default: OfflineMode } = await import('$lib/components/OfflineMode.svelte');
 	render(OfflineMode);
-	expect(screen.getByText('Can’t reach the music server. Trying again…')).toBeTruthy();
+	expect(screen.getByText('Can’t reach your music server. Trying again…')).toBeTruthy();
 	const play = await screen.findByRole('button', { name: 'Play your downloads' });
 	await fireEvent.click(play);
 	expect(await screen.findByText('Offline album')).toBeTruthy();

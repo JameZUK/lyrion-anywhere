@@ -3,7 +3,7 @@
 	import { useDetailTitle } from '$lib/title.svelte';
 	import { page } from '$app/state';
 	import { untrack } from 'svelte';
-	import { api, app } from '$lib/state/app.svelte';
+	import { api } from '$lib/state/app.svelte';
 	import { library } from '$lib/state/library.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
@@ -12,7 +12,8 @@
 	import AlbumBrowser from '$lib/components/AlbumBrowser.svelte';
 	import ArtistList from '$lib/components/ArtistList.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
-	import Icon from '$lib/components/Icon.svelte';
+	import PageActions from '$lib/components/PageActions.svelte';
+	import Chips from '$lib/components/Chips.svelte';
 	import LibraryNote from '$lib/components/LibraryNote.svelte';
 
 	const genreId = $derived.by(() => {
@@ -63,16 +64,17 @@
 		{@const id = genreId}
 		<p class="kind muted">Genre</p>
 		<h1>{name || '…'}</h1>
-		<div class="actions">
-			<button class="btn primary" onclick={() => app.queueUp({ genre: id }, 'play')} disabled={!app.canQueue}><Icon name="play" size={18} />Play all</button>
-			<button class="btn" onclick={() => app.queueUp({ genre: id }, 'add')} disabled={!app.canQueue}><Icon name="plus" size={18} />Add to queue</button>
-			<button class="btn" onclick={() => (showMore = true)}><Icon name="more" size={18} />More</button>
-		</div>
+		<PageActions sel={{ genre: id }} title={name} next={false} onmore={() => (showMore = true)} />
 		<LibraryNote />
-		<div class="tabs" role="tablist" aria-label="Show">
-			<button role="tab" aria-selected={view === 'albums'} class:on={view === 'albums'} onclick={() => (view = 'albums')}>Albums</button>
-			<button role="tab" aria-selected={view === 'artists'} class:on={view === 'artists'} onclick={() => (view = 'artists')}>Artists</button>
-		</div>
+		<Chips
+			items={[
+				{ value: 'albums', label: 'Albums' },
+				{ value: 'artists', label: 'Artists' },
+			]}
+			value={view}
+			onchange={(v) => (view = v)}
+			label="Show"
+		/>
 		{#if view === 'albums'}
 			<AlbumBrowser bind:sort filter={{ genre: id }} empty="No albums in this genre." />
 		{:else}
@@ -99,33 +101,7 @@
 		margin: 0.2rem 0 0.8rem;
 		overflow-wrap: anywhere;
 	}
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.6rem;
-		margin-bottom: 1.25rem;
-	}
-	.tabs {
-		display: inline-flex;
-		gap: 0.25rem;
-		padding: 0.2rem;
-		margin-bottom: 1rem;
-		border: 1px solid var(--line);
-		border-radius: 999px;
-		background: var(--bg-raised);
-	}
-	.tabs button {
-		border: 0;
-		background: none;
-		color: var(--fg-muted);
-		font: inherit;
-		font-weight: 600;
-		padding: 0.35rem 1rem;
-		border-radius: 999px;
-		cursor: pointer;
-	}
-	.tabs button.on {
-		background: var(--accent-soft);
-		color: var(--accent-soft-fg);
+	section > :global(.page-actions) {
+		margin: 0 0 1.25rem;
 	}
 </style>

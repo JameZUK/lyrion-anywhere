@@ -42,11 +42,11 @@ LMS itself never touches the internet. One small, hardened gateway sits behind y
 ### In the browser (installable web app)
 
 <p align="center">
-  <img src="docs/images/web/now-playing-phone.png" alt="Now playing on a phone, dark theme: the cover fills the top of the screen above the title, a waveform seek bar, large transport controls and four actions: Sleep, Queue, Visualiser and Volume" width="250">
+  <img src="docs/images/web/now-playing-phone.png" alt="Now playing on a phone, dark theme: the cover fills the top of the screen above the title, a waveform seek bar, large transport controls, a one-line Up next and three actions: Play on, Lyrics and Queue" width="250">
   &nbsp;
   <img src="docs/images/web/home-phone.png" alt="Home on a phone: shelves of recently played albums, stations and new music, with a card summarising this month's listening" width="250">
   &nbsp;
-  <img src="docs/images/web/queue-phone.png" alt="The queue on a phone, in sections: Now playing, Up next and Then, with drag handles on each row" width="250">
+  <img src="docs/images/web/queue-phone.png" alt="The queue on a phone, in sections: Now playing, Up next and Then, each row with a drag handle and a ⋯ menu" width="250">
 </p>
 
 - **Plays on the device straight away:** sign in and press Play. Lossless decoding runs in WebAssembly; on iPhone, iPad and Android it keeps playing with the screen locked.

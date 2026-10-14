@@ -326,7 +326,8 @@ describe('wiring', () => {
 	});
 
 	test('the layout shows one calm connection status (busy included), at every width', () => {
-		expect(layout).toMatch(/\{#if controls\.message\}\s*<p class="chip" class:busy=\{app\.reach === 'busy'\} role="status"/);
-		expect(layout).not.toMatch(/app\.serverBusy\}\s*<div class="banner/);
+		// Wave 3.5: the one status slot (see state/status.ts and the slot's own tests).
+		expect(layout).toMatch(/<main class="content"[^>]*>[\s\S]*?<StatusSlot \/>/);
+		expect(layout).not.toMatch(/class="banner/);
 	});
 });

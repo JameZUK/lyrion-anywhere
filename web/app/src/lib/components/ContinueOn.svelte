@@ -2,29 +2,37 @@
 	// "Continue on <player>?" (SPEC §8.4): back online with downloads queued on this device,
 	// offer to hand the queue to an LMS player. Never by itself: the user picks the player
 	// (this device's own player when it was the one in use, else the last one used) or says
-	// "Not now". The choices are only the players this user may control (as Play on… lists
-	// them); the hand-off itself is in $lib/offline/handoff.svelte.
+	// "Not now". Wave 3.5: an offer is a snackbar with an action ("Continue"), and a second
+	// one ("Other player…") for the list of players. The choices are only the players this
+	// user may control (as Play on… lists them); the hand-off itself is in
+	// $lib/offline/handoff.svelte.
 	import { api, app } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
 	import { deviceRunning } from '$lib/player/outputs';
 	import { handoff, lookupTrack, offlinePlayer } from '$lib/offline/index.svelte';
 	import { continueOn, defaultChoice, handoffChoices, handoffText, snapshotOf } from '$lib/offline/handoff.svelte';
+	import Icon from './Icon.svelte';
+	import Sheet from './Sheet.svelte';
+	import Snackbar from './Snackbar.svelte';
 
 	const live = $derived(snapshotOf(offlinePlayer));
 	const queue = $derived(handoff.queue(live));
 	const choices = $derived(handoffChoices(app.players, { mac: app.deviceMac, supported: device.supported }));
 	let picked = $state('');
 	const target = $derived(choices.some((c) => c.id === picked) ? picked : defaultChoice(choices, app.playerId));
+	const targetName = $derived(choices.find((c) => c.id === target)?.name ?? '');
 	let message = $state('');
+	let choosing = $state(false);
 
 	// The queue was cleared (or played to its end and stopped) meanwhile: nothing to offer.
 	$effect(() => {
 		if (handoff.offered && !queue && !handoff.busy) handoff.dismiss();
 	});
 
-	async function go() {
-		const c = choices.find((x) => x.id === target);
+	async function go(id = target) {
+		const c = choices.find((x) => x.id === id);
 		if (!c || handoff.busy || !queue) return;
+		picked = c.id;
 		handoff.busy = c.name;
 		message = '';
 		try {
@@ -57,59 +65,74 @@
 		}
 	}
 
+	function choose(id: string) {
+		choosing = false;
+		void go(id);
+	}
+
 	const count = $derived(queue?.tracks.length ?? 0);
+	const offered = $derived(handoff.offered && !!queue && choices.length > 0);
+	const text = $derived.by(() => {
+		if (!offered) return '';
+		if (handoff.busy) return `Moving to ${handoff.busy}…`;
+		if (message) return message;
+		return `Back online. Continue ${count} ${count === 1 ? 'track' : 'tracks'} from your downloads on ${targetName}?`;
+	});
 </script>
 
-{#if handoff.offered && queue && choices.length}
-	<div class="offer" role="region" aria-label="Continue on another player">
-		<p class="q">
-			<span>Back online. Continue on</span>
-			<select aria-label="Player" value={target} onchange={(e) => (picked = e.currentTarget.value)} disabled={!!handoff.busy}>
-				{#each choices as c (c.id)}
-					<option value={c.id}>{c.name}</option>
-				{/each}
-			</select><span>?</span>
-		</p>
-		<p class="muted small">{count} {count === 1 ? 'track' : 'tracks'} from your downloads{queue.playing ? ', playing now' : ''}.</p>
-		<div class="actions">
-			<button class="btn primary" onclick={go} disabled={!!handoff.busy}>{handoff.busy ? `Moving to ${handoff.busy}…` : 'Continue'}</button>
-			<button class="btn" onclick={() => handoff.dismiss()} disabled={!!handoff.busy}>Not now</button>
-		</div>
-		{#if message}<p class="msg" role="status">{message}</p>{/if}
-	</div>
+<div class="continue-on" data-continue-on={offered ? 'offered' : undefined}>
+	<Snackbar
+		message={text}
+		action={offered && !handoff.busy ? 'Continue' : ''}
+		onaction={() => void go()}
+		secondary={offered && !handoff.busy && choices.length > 1 ? 'Other player…' : ''}
+		onsecondary={() => (choosing = true)}
+		ondismiss={() => !handoff.busy && handoff.dismiss()}
+		timeout={0}
+	/>
+</div>
+{#if choosing && offered}
+	<Sheet title="Continue on" onclose={() => (choosing = false)}>
+		<ul class="choices" data-continue-choices>
+			{#each choices as c (c.id)}
+				<li>
+					<button class="row" aria-current={c.id === target ? 'true' : undefined} onclick={() => choose(c.id)}>
+						<Icon name={c.device ? 'device' : 'speaker'} /><span>{c.name}</span>
+					</button>
+				</li>
+			{/each}
+		</ul>
+	</Sheet>
 {/if}
 
 <style>
-	.offer {
-		margin: 1rem clamp(1rem, 3vw, 2.5rem) 0;
-		padding: 0.6rem 0.9rem;
-		border: 1px solid var(--accent);
-		border-radius: var(--radius-sm);
-		background: var(--accent-soft);
+	.choices {
+		list-style: none;
+		margin: 0;
+		padding: 0;
 		display: grid;
-		gap: 0.4rem;
+		gap: 2px;
 	}
-	.q {
-		margin: 0;
+	.row {
 		display: flex;
-		flex-wrap: wrap;
 		align-items: center;
-		gap: 0.4rem;
-		font-weight: 600;
+		gap: 0.75rem;
+		width: 100%;
+		min-height: 52px;
+		padding: 0.5rem 0.75rem;
+		border: 0;
+		border-radius: var(--radius-sm);
+		background: transparent;
+		color: var(--fg);
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
 	}
-	select {
-		max-width: 100%;
+	.row:hover {
+		background: var(--bg-sunken);
 	}
-	.small {
-		margin: 0;
-		font-size: 0.85rem;
-	}
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.6rem;
-	}
-	.msg {
-		margin: 0;
+	.row[aria-current='true'] {
+		background: var(--accent-soft);
+		color: var(--accent-soft-fg);
 	}
 </style>

@@ -1,25 +1,44 @@
-// What Library shows (Wave 2 §3.2): the type chip, the album order and grid or list. Kept per
-// device in local storage (never sent anywhere); storage that is blocked or holds something
-// odd gives the defaults.
+// What Library shows (Wave 2 §3.2; one model since Wave 3.5): the section, the album order
+// and grid or list. Kept per device in local storage (never sent anywhere); storage that is
+// blocked or holds something odd gives the defaults.
 import type { BrowseSort } from '$lib/components/AlbumBrowser.svelte';
 
-export type LibraryChip = 'albums' | 'artists' | 'playlists' | 'favourites' | 'filters';
+/** Library's sections, in order: one list (Wave 3.5), each shown in place. */
+export type LibraryChip =
+	| 'albums'
+	| 'artists'
+	| 'playlists'
+	| 'favourites'
+	| 'filters'
+	| 'genres'
+	| 'years'
+	| 'compilations'
+	| 'folders'
+	| 'apps'
+	| 'downloads';
 export type AlbumView = 'grid' | 'list';
 
-export const CHIPS: readonly LibraryChip[] = ['albums', 'artists', 'playlists', 'favourites', 'filters'];
+export const CHIPS: readonly LibraryChip[] = ['albums', 'artists', 'playlists', 'favourites', 'filters', 'genres', 'years', 'compilations', 'folders', 'apps', 'downloads'];
 export const CHIP_LABELS: Record<LibraryChip, string> = {
 	albums: 'Albums',
 	artists: 'Artists',
 	playlists: 'Playlists',
 	favourites: 'Favourites',
-	filters: 'Filters',
+	filters: 'Smart playlists',
+	genres: 'Genres',
+	years: 'Years',
+	compilations: 'Compilations',
+	folders: 'Folders',
+	apps: 'Apps & radio',
+	downloads: 'Downloads',
 };
 
 /**
  * Album orders Library offers. "Recently played" is the user's own (their listening history
- * on the gateway), never LMS's `recentlyplayed`, which is everyone's.
+ * on the gateway), never LMS's `recentlyplayed`, which is everyone's. "Recently added" is what
+ * New music was, and "Random" what Random albums was (Wave 3.5: sorts, not pages of their own).
  */
-export const LIBRARY_SORTS: readonly BrowseSort[] = ['new', 'played', 'album', 'artistalbum', 'yearalbum'];
+export const LIBRARY_SORTS: readonly BrowseSort[] = ['new', 'played', 'album', 'artistalbum', 'yearalbum', 'random'];
 
 export interface LibraryPrefs {
 	chip: LibraryChip;
@@ -61,4 +80,13 @@ export function saveLibraryPrefs(p: LibraryPrefs, storage: Pick<Storage, 'setIte
 	} catch {
 		/* storage blocked or full: the choice lasts until the page closes */
 	}
+}
+
+/**
+ * Open Library at a section (and, for albums, an order): what the old pages of their own
+ * (`/albums`, `/artists`, `/new`, `/random`) now redirect to. Remembered like a choice made there.
+ */
+export function openSection(chip: LibraryChip, sort?: BrowseSort, storage: (Pick<Storage, 'getItem'> & Pick<Storage, 'setItem'>) | undefined = local()) {
+	const now = loadLibraryPrefs(storage);
+	saveLibraryPrefs({ ...now, chip, ...(sort ? { sort } : {}) }, storage);
 }

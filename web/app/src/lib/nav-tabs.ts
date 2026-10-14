@@ -12,6 +12,20 @@ export const MAIN_TABS: readonly { id: MainTab; href: string; label: string; ico
 	{ id: 'queue', href: '#/queue', label: 'Queue', icon: 'playnext' },
 ];
 
+/**
+ * The sidebar on tablets and desktops (Wave 3.5): the four tabs, then Now playing, Rooms and
+ * Settings. Seven entries; every page lights up exactly one (an album lights up Library).
+ */
+export const SIDEBAR: readonly { href: string; label: string; icon: string; match: (path: string) => boolean }[] = [
+	{ href: '#/home', label: 'Home', icon: 'shelves', match: (p) => p.startsWith('/home') || p.startsWith('/stations') },
+	{ href: '#/library', label: 'Library', icon: 'library', match: (p) => tabFor(p) === 'library' },
+	{ href: '#/search', label: 'Search', icon: 'search', match: (p) => tabFor(p) === 'search' },
+	{ href: '#/queue', label: 'Queue', icon: 'playnext', match: (p) => tabFor(p) === 'queue' },
+	{ href: '#/', label: 'Now playing', icon: 'nowplaying', match: (p) => p === '/' },
+	{ href: '#/rooms', label: 'Rooms', icon: 'rooms', match: (p) => p.startsWith('/rooms') },
+	{ href: '#/settings', label: 'Settings', icon: 'settings', match: (p) => p.startsWith('/settings') },
+];
+
 /** Each tab's pages, by the first segment of the route. */
 const SECTIONS: Record<MainTab, readonly string[]> = {
 	home: ['home', 'stations', 'settings', 'rooms'],

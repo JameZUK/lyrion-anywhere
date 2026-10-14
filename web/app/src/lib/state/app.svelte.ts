@@ -5,6 +5,7 @@ import { Api } from '$lib/api/rpc';
 import { EventsClient, type EventsState, type LmsEvent, type LmsHealth } from '$lib/api/events';
 import type { Session } from '$lib/api/auth';
 import * as cmd from '$lib/lms/commands';
+import { NO_PLAYER } from '$lib/naming';
 import type { PlayerInfo, PlayersResult, PlayerStatus } from '$lib/lms/types';
 import { loadResume } from '$lib/player/resume';
 import { canPlayHere } from '$lib/player/capabilities';
@@ -588,13 +589,26 @@ class AppState {
 	/** Play, play next or add a selection on the selected player. */
 	async queueUp(sel: cmd.Selection, placement: cmd.Placement, playIndex?: number) {
 		if (!this.playerId) {
-			this.error = 'Choose a player first: tap the Play on… button by the volume.';
+			this.error = NO_PLAYER;
 			return;
 		}
 		if (this.reach !== 'online') return; // needs the server (the connection message says so)
 		// Play next from this device: the queue's Up next section follows it.
 		if (placement === 'next') upNextTracker.expectInsert(this.playerId, stateOf(this.now));
 		await this.send(cmd.enqueue(sel, placement, playIndex));
+		this.queueVersion++;
+	}
+
+	/** Play a selection in shuffled order (a page header's Shuffle): shuffle on, then load it. */
+	async shufflePlay(sel: cmd.Selection) {
+		if (!this.playerId) {
+			this.error = NO_PLAYER;
+			return;
+		}
+		if (this.reach !== 'online') return; // needs the server (the connection message says so)
+		// With shuffle on, LMS shuffles what it loads.
+		await this.send(cmd.shuffle(1));
+		await this.send(cmd.enqueue(sel, 'play'));
 		this.queueVersion++;
 	}
 
@@ -618,7 +632,7 @@ class AppState {
 	async setSleep(choice: SleepChoice, scope: SleepScope = 'player'): Promise<string> {
 		const id = this.playerId;
 		const s = this.now;
-		if (!id || !this.current) return 'Choose a player first.';
+		if (!id || !this.current) return NO_PLAYER;
 		try {
 			const upcoming = choice.kind === 'album' || choice.kind === 'queue' ? await this.#readUpcoming(id, s ?? {}) : [];
 			const secs = choiceSeconds(choice, s, upcoming);

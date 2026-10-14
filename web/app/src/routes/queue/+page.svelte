@@ -7,8 +7,11 @@
 	//
 	// Wave 2 §3.4: sections (Now playing, Up next — what this device added with Play next —
 	// and Then), shown flat whenever the tracker can't vouch for them; swipe right to play
-	// next and left to remove, each also in the row's menu and on keys (N, Delete); Clear
-	// upcoming; and gapless markers between consecutive tracks of one album (§3.5).
+	// next and left to remove, each also in the row's menu and on keys (N, Delete).
+	//
+	// Wave 3.5: the header is the title and ⋯ (Save as playlist, Clear upcoming, Clear the
+	// queue, each confirmed in a dialog); a row is its drag handle, the track (tap to play) and
+	// ⋯ (Play next, Move up, Move down, Remove from queue). Gapless is shown in track info.
 	import { tick, untrack } from 'svelte';
 	import { api, app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
@@ -16,7 +19,7 @@
 	import { duration, textOf } from '$lib/lms/format';
 	import { CLEAR_UPCOMING_MAX, clearAfter, dropIndex, insertAt, isSwipe, moveChecked, playNextTarget, removeAt, removeChecked, reorder, restoreTrack, swipeAction, type RowBox, type ServerEdit } from '$lib/lms/queue-edit';
 	import { rowShortcut } from '$lib/gestures/swipe';
-	import { gaplessLinks, stateOf } from '$lib/queue/tracker';
+	import { stateOf } from '$lib/queue/tracker';
 	import { trackerVersion, upNextTracker } from '$lib/queue/upnext.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import RowMenu from '$lib/components/RowMenu.svelte';
@@ -31,6 +34,8 @@
 	import { controls } from '$lib/player/controls.svelte';
 	import { MARK_LABELS } from '$lib/player/local-plan';
 	import { isNetworkError } from '$lib/state/reachability';
+	import { now } from '$lib/player/now.svelte';
+	import DownloadsQueue from '$lib/components/DownloadsQueue.svelte';
 
 	/** How long a swiped row takes to slide out before it is removed. */
 	const SLIDE_MS = 180;
@@ -41,9 +46,13 @@
 	let tracks = $state<Track[]>([]);
 	let total = $state(0);
 	let error = $state('');
+	/** The queue has been read from the server at least once (for this player). */
+	let loaded = $state(false);
 	/** Why the last edit failed; kept until the next edit (a reload doesn't clear it). */
 	let editError = $state('');
+	/** Clear the queue's confirmation, while it is open. */
 	let confirmClear = $state(false);
+	let saver = $state<ReturnType<typeof SaveQueue>>();
 	/** Clear upcoming's confirmation, while it is open. */
 	let askUpcoming = $state(false);
 	/** Clear upcoming's progress, for screen readers. */
@@ -75,7 +84,8 @@
 
 	async function load() {
 		const id = app.playerId;
-		if (!id) return;
+		// This device plays its downloads: the page shows their queue, not the player's.
+		if (!id || now.downloads) return;
 		const seq = editSeq;
 		try {
 			const r = await api.rpc<PlayerStatus>(id, cmd.queue(0, 500));
@@ -87,6 +97,7 @@
 			tracks = r.playlist_loop ?? [];
 			total = r.playlist_tracks ?? tracks.length;
 			error = '';
+			loaded = true;
 			// Check Up next against the tracks LMS actually has there.
 			upNextTracker.observe(id, stateOf(r));
 			const cur = Number(r.playlist_cur_index ?? app.now?.playlist_cur_index ?? -1);
@@ -107,7 +118,13 @@
 	$effect(() => {
 		void app.playerId;
 		void app.queueVersion;
+		void now.downloads;
 		untrack(() => void load());
+	});
+	// Another player: its queue hasn't been read yet.
+	$effect(() => {
+		void app.playerId;
+		untrack(() => (loaded = false));
 	});
 
 	// Another player: its queue is a different list, so an Undo for this one no longer applies.
@@ -123,7 +140,6 @@
 	const g = $derived(controls.gates);
 	/** Queue edits need the server. */
 	const editable = $derived(app.reach === 'online');
-	const links = $derived(gaplessLinks(tracks));
 	/** Up next, as tracked on this device; null shows the queue flat. */
 	const sections = $derived.by(() => {
 		void trackerVersion();
@@ -294,11 +310,6 @@
 	}
 
 	async function clear() {
-		if (!confirmClear) {
-			confirmClear = true;
-			setTimeout(() => (confirmClear = false), 4000);
-			return;
-		}
 		confirmClear = false;
 		dismiss();
 		const player = app.playerId;
@@ -463,31 +474,34 @@
 				<span class="title ellipsis">{textOf(t.title)}</span>
 				<span class="sub ellipsis muted">{[textOf(t.artist), textOf(t.album)].filter(Boolean).join(' · ')}</span>
 			</span>
-			{#if mark}<span class="mark" title={MARK_LABELS[mark]} data-queue-mark={mark}><Icon name={mark === 'downloaded' ? 'download' : 'device'} size={15} /></span>{/if}
+			{#if mark}<span class="mark" title={MARK_LABELS[mark]} data-queue-mark={mark}><Icon name={mark === 'downloaded' ? 'downloaded' : 'device'} size={15} /></span>{/if}
 			<span class="dur muted">{duration(t.duration)}</span>
 		</button>
-		<div class="ops">
-			<button class="icon-btn mv" aria-label={`Move ${textOf(t.title)} up`} onclick={() => move(i, i - 1)} onkeydown={(e) => onRowKey(e, i)} disabled={i === 0 || !editable}><Icon name="back" size={16} /></button>
-			<button class="icon-btn mv" aria-label={`Move ${textOf(t.title)} down`} onclick={() => move(i, i + 1)} onkeydown={(e) => onRowKey(e, i)} disabled={i === tracks.length - 1 || !editable}><Icon name="chevron" size={16} /></button>
-			<button class="icon-btn" aria-label={`Remove ${textOf(t.title)}`} onclick={() => remove(i)} disabled={!editable}><Icon name="close" size={16} /></button>
-			{#if editable}
-				<RowMenu
-					label={`More options for ${textOf(t.title) || 'this track'}`}
-					actions={[
-						{ label: 'Play next', icon: 'playnext', run: () => void playNext(i), shortcut: 'N' },
-						{ label: 'Remove from queue', icon: 'trash', run: () => void remove(i), shortcut: 'Delete' },
-					]}
-				/>
-			{/if}
-		</div>
-		{#if links[i]}
-			<span class="gapless" title="Runs straight on into the next track" data-gapless>
-				<Icon name="link" size={14} /><span class="sr-only">Runs straight on into the next track, from the same album.</span>
-			</span>
-		{/if}
+		<!-- One trailing control (Wave 3.5 rule 3): everything else is in its menu. -->
+		<RowMenu
+			label={`More options for ${textOf(t.title) || 'this track'}`}
+			actions={[
+				{ label: 'Play next', icon: 'playnext', run: () => void playNext(i), shortcut: 'N', disabled: !editable, why: controls.why(!editable) },
+				{ label: 'Move up', icon: 'up', run: () => void move(i, i - 1), shortcut: 'Alt+ArrowUp', disabled: i === 0 || !editable, why: controls.why(!editable) },
+				{ label: 'Move down', icon: 'down', run: () => void move(i, i + 1), shortcut: 'Alt+ArrowDown', disabled: i === tracks.length - 1 || !editable, why: controls.why(!editable) },
+				{ label: 'Remove from queue', icon: 'trash', run: () => void remove(i), shortcut: 'Delete', disabled: !editable, why: controls.why(!editable), danger: true },
+			]}
+		/>
 	</li>
 {/snippet}
 
+{#if now.downloads}
+	<!-- This device plays its downloads: their queue here, in play order (Wave 3.5: one Queue). -->
+	<section class="page" data-queue-downloads>
+		<header>
+			<div>
+				<h1>Queue</h1>
+				<p class="muted">Downloads · {now.queue.length} {now.queue.length === 1 ? 'track' : 'tracks'}</p>
+			</div>
+		</header>
+		<DownloadsQueue />
+	</section>
+{:else}
 <section class="page">
 	<header>
 		<div>
@@ -495,23 +509,31 @@
 			<p class="muted">{textOf(app.current?.name)}{total ? ` · ${total} tracks` : ''}</p>
 		</div>
 		{#if tracks.length}
-			<div class="clears">
-			{#if editable}<SaveQueue {tracks} onsaved={savedAs} />{/if}
-			{#if upcoming > 0}
-				<button class="btn" onclick={() => (askUpcoming = true)} aria-haspopup="dialog" disabled={!editable} data-clear-upcoming><Icon name="trash" size={18} />Clear upcoming</button>
-			{/if}
-			<button class="btn" class:danger={confirmClear} onclick={clear} disabled={!editable}><Icon name="trash" size={18} />{confirmClear ? 'Tap again to clear' : 'Clear'}</button>
-			</div>
+			<RowMenu
+				label="Queue options"
+				actions={[
+					...(saver?.available() ? [{ label: 'Save as playlist…', icon: 'plus', run: () => saver?.start(), disabled: !editable, why: controls.why(!editable), id: 'save-queue' }] : []),
+					...(upcoming > 0 ? [{ label: 'Clear upcoming…', icon: 'trash', run: () => (askUpcoming = true), disabled: !editable, why: controls.why(!editable), danger: true, id: 'clear-upcoming' }] : []),
+					{ label: 'Clear the queue…', icon: 'trash', run: () => (confirmClear = true), disabled: !editable, why: controls.why(!editable), danger: true, id: 'clear' },
+				]}
+				trigger={{ 'data-queue-more': true }}
+			/>
 		{/if}
+		<SaveQueue bind:this={saver} button={false} {tracks} onsaved={savedAs} />
 	</header>
 	{#if editError}<p class="error" role="alert">{editError}</p>{/if}
 	{#if error}<p class="error">{error}</p>{/if}
 	{#if !app.playerId}
-		<p class="muted">Choose a player to see its queue.</p>
+		<p class="muted">No player chosen. Choose a player with Play on to see its queue.</p>
+	{:else if !tracks.length && !loaded && app.reach !== 'online'}
+		<!-- Never "empty" when it simply couldn't be read. -->
+		<p class="muted" data-queue-unloaded>The queue can’t be loaded until your music server is back.</p>
+	{:else if !tracks.length && loaded}
+		<p class="muted">The queue is empty. <a class="link" href="#/library">Find something to play</a></p>
 	{:else if !tracks.length}
-		<p class="muted">The queue is empty. <a class="link" href="#/albums">Find something to play</a></p>
+		<p class="muted">Loading…</p>
 	{:else}
-		<p class="sr-only">To reorder, focus a track and press Alt with the up or down arrow, or use the move buttons. Press N to play a track next, or Delete to remove it.</p>
+		<p class="sr-only">To reorder, focus a track and press Alt with the up or down arrow, or use Move up and Move down in its menu. Press N to play a track next, or Delete to remove it.</p>
 		{#if clearing}<p class="sr-only" role="status">{clearing}</p>{/if}
 		<div class="q" class:dragging={drag !== null} bind:this={list} data-sections={sections ? 'on' : 'off'}>
 			{#each groups as g (g.key)}
@@ -527,6 +549,18 @@
 	{/if}
 </section>
 
+{/if}
+
+{#if confirmClear}
+	<ConfirmDialog
+		title="Clear the queue?"
+		message={`Take out all ${total === 1 ? 'the track' : `${total.toLocaleString('en-GB')} tracks`}? Playback stops.`}
+		confirmLabel="Clear"
+		danger
+		onconfirm={clear}
+		oncancel={() => (confirmClear = false)}
+	/>
+{/if}
 {#if askUpcoming}
 	{#if upcoming > CLEAR_UPCOMING_MAX || upcoming > tracks.length - current - 1}
 		<ConfirmDialog
@@ -563,10 +597,6 @@
 	header p {
 		margin: 0;
 	}
-	.danger {
-		border-color: var(--danger);
-		color: var(--danger);
-	}
 	.q ol {
 		list-style: none;
 		margin: 0;
@@ -578,26 +608,6 @@
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		color: var(--fg-muted);
-	}
-	.clears {
-		display: flex;
-		flex-wrap: wrap;
-		justify-content: flex-end;
-		gap: 0.5rem;
-	}
-	.gapless {
-		position: absolute;
-		left: 6px;
-		bottom: -8px;
-		z-index: 1;
-		display: grid;
-		place-items: center;
-		width: 16px;
-		height: 16px;
-		border-radius: 50%;
-		background: var(--bg);
-		color: var(--accent);
-		pointer-events: none;
 	}
 	.q.dragging {
 		user-select: none;
@@ -657,12 +667,17 @@
 		flex: none;
 		display: grid;
 		place-items: center;
-		width: 28px;
+		width: 36px;
 		height: 44px;
 		color: var(--fg-muted);
 		cursor: grab;
 		/* The handle starts a drag, never a scroll. */
 		touch-action: none;
+	}
+	@media (pointer: coarse) {
+		.handle {
+			width: 44px;
+		}
 	}
 	.dragging .handle {
 		cursor: grabbing;
@@ -708,31 +723,11 @@
 		font-size: 0.85rem;
 		font-variant-numeric: tabular-nums;
 	}
-	.ops {
-		display: flex;
-		opacity: 0.55;
-	}
-	li:hover .ops,
-	.ops:focus-within {
-		opacity: 1;
-	}
-	.ops .mv:first-child :global(svg) {
-		transform: rotate(90deg);
-	}
 	.link {
 		text-decoration: underline;
 	}
-	/* Phones: the move buttons stay in the tab order for keyboard and screen-reader users, but
-	   are only shown while one of them has focus (drag the handle instead). */
+	/* Phones: no room for the length. */
 	@media (max-width: 600px) {
-		.ops:not(:focus-within) .mv {
-			position: absolute;
-			width: 1px;
-			height: 1px;
-			overflow: hidden;
-			clip: rect(0 0 0 0);
-			white-space: nowrap;
-		}
 		.dur {
 			display: none;
 		}

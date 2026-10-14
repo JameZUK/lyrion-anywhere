@@ -1,6 +1,7 @@
 <script lang="ts">
 	// Cover art, loaded through the API (bearer token, never in the URL) when it scrolls
-	// into view. Falls back to a placeholder with the item's initial.
+	// into view. Falls back to a placeholder with the item's initial. `local`: a cover this
+	// device already holds (a download's, as a blob: URL), shown as it is.
 	import { api } from '$lib/state/app.svelte';
 
 	let {
@@ -9,7 +10,8 @@
 		label = '',
 		rounded = 'var(--radius-sm)',
 		eager = false,
-	}: { path: string | null; alt?: string; label?: string; rounded?: string; eager?: boolean } = $props();
+		local = '',
+	}: { path: string | null; alt?: string; label?: string; rounded?: string; eager?: boolean; local?: string } = $props();
 
 	let el: HTMLDivElement;
 	let src = $state('');
@@ -39,6 +41,11 @@
 		const p = path;
 		src = '';
 		failed = false;
+		// Only this device's own blob: URLs (never a web address from elsewhere).
+		if (local.startsWith('blob:')) {
+			src = local;
+			return;
+		}
 		if (!p || !visible) return;
 		let live = true;
 		// Keep this art's blob: URL from being revoked while it is on screen.

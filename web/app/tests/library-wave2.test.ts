@@ -148,13 +148,13 @@ test('a role word that is not a role is refused without asking LMS for albums', 
 
 // --- 3.2 chips, sort, view, A–Z --------------------------------------------------------------
 
-test('Library chips are tabs: arrows move and choose; the choice is remembered', async () => {
+test('Library sections are one row of tabs: arrows move and choose; the choice is remembered', async () => {
 	fake.handler.rpc = async () => ({ count: 0 });
 	const first = render(LibraryPage);
 	const tabs = () => [...first.container.querySelectorAll<HTMLButtonElement>('[role="tab"][data-chip]')];
-	expect(tabs().map((t) => t.textContent?.trim())).toEqual(['Albums', 'Artists', 'Playlists', 'Favourites', 'Filters']);
-	// No Downloaded chip on the web.
-	expect(first.container.textContent).not.toContain('Downloaded');
+	// Wave 3.5: one section list (the second row of link pills is gone).
+	expect(tabs().map((t) => t.textContent?.trim())).toEqual(['Albums', 'Artists', 'Playlists', 'Favourites', 'Smart playlists', 'Genres', 'Years', 'Compilations', 'Folders', 'Apps & radio', 'Downloads']);
+	expect(first.container.querySelector('nav.browse')).toBeNull();
 	expect(tabs()[0]!.getAttribute('aria-selected')).toBe('true');
 	expect(tabs().filter((t) => t.tabIndex === 0)).toHaveLength(1);
 	tabs()[0]!.focus();
@@ -164,6 +164,12 @@ test('Library chips are tabs: arrows move and choose; the choice is remembered',
 	expect(document.activeElement).toBe(tabs()[1]);
 	expect(first.container.querySelector('[role="tabpanel"]')?.getAttribute('data-library-panel')).toBe('artists');
 	await fireEvent.keyDown(tabs()[1]!, { key: 'End' });
+	await settle();
+	expect(first.container.querySelector('[data-library-panel]')?.getAttribute('data-library-panel')).toBe('downloads');
+	await fireEvent.keyDown(tabs()[10]!, { key: 'Home' });
+	await settle();
+	expect(first.container.querySelector('[data-library-panel]')?.getAttribute('data-library-panel')).toBe('albums');
+	await fireEvent.click(tabs()[4]!);
 	await settle();
 	expect(first.container.querySelector('[data-library-panel]')?.getAttribute('data-library-panel')).toBe('filters');
 	await fireEvent.keyDown(tabs()[4]!, { key: 'ArrowLeft' });
@@ -181,7 +187,8 @@ test('album order and grid or list are remembered; sorts offered are the gateway
 	const first = render(LibraryPage);
 	await waitFor(() => expect(first.container.querySelector('[data-pos="0"]')).not.toBeNull());
 	const select = first.container.querySelector<HTMLSelectElement>('[data-library-panel] select')!;
-	expect([...select.options].map((o) => o.textContent)).toEqual(['Recently added', 'Recently played', 'A–Z', 'Artist', 'Year']);
+	// New music and Random albums are orders here (Wave 3.5), not pages of their own.
+	expect([...select.options].map((o) => o.textContent)).toEqual(['Recently added', 'Recently played', 'A–Z', 'Artist', 'Year', 'Random']);
 	await fireEvent.change(select, { target: { value: 'yearalbum' } });
 	await waitFor(() => expect(sent('albums').at(-1)).toContain('sort:yearalbum'));
 	const list = first.container.querySelector<HTMLButtonElement>('[data-view="list"]')!;

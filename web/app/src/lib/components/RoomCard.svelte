@@ -1,9 +1,11 @@
 <script lang="ts">
-	// One room on the Rooms page (Wave 2 §4.3): what it plays, play/pause, volume, power,
-	// sleep remaining and the next alarm. One accessible group, its controls labelled with the
-	// room's name ("Kitchen volume"). Tapping the card controls that player; a long press (or
-	// its menu) offers Sync with…, Play on its own and Move playback here. The grip drags it
-	// onto another room to sync, by pointer or keyboard (the page runs the drag).
+	// One room on the Rooms page (Wave 2 §4.3; three controls since Wave 3.5): what it plays,
+	// sleep remaining and the next alarm, then play/pause (or Switch on, when it is off), the
+	// volume and ⋯ (the player manager's menu: move playback, sync, power, alarms). One
+	// accessible group, its controls labelled with the room's name ("Kitchen volume"). Tapping
+	// the card plays on that player; a long press or a right-click opens its menu; a pointer
+	// drags it by its cover onto another room to sync (the page runs the drag; Sync with… in
+	// the menu is the keyboard's and screen readers' way).
 	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
 	import { formatLeft, sleepLeft } from '$lib/lms/sleep';
@@ -28,8 +30,7 @@
 		onplaypause,
 		onvolume,
 		onpower,
-		ongrip,
-		ongripkey,
+		ondrag,
 	}: {
 		id: string;
 		name: string;
@@ -49,9 +50,10 @@
 		oncontrol: () => void;
 		onplaypause: () => void;
 		onvolume: (v: number) => void;
+		/** Switch it on (an off player's one button). */
 		onpower: () => void;
-		ongrip: (e: PointerEvent) => void;
-		ongripkey: (e: KeyboardEvent) => void;
+		/** A pointer goes down on the cover: the page may start a drag. */
+		ondrag: (e: PointerEvent) => void;
 	} = $props();
 
 	const LONG_PRESS_MS = 550;
@@ -112,61 +114,55 @@
 </script>
 
 <div class="room" class:current class:dragging class:target role="group" aria-label={name} data-room={id}>
-	<button
-		class="main"
-		aria-label={`Control ${name}${mode ? `: ${mode.toLowerCase()}` : ''}${title ? `, ${title}${artist ? ` by ${artist}` : ''}` : ''}`}
-		aria-current={current ? 'true' : undefined}
-		onclick={click}
-		onpointerdown={down}
-		onpointermove={move}
-		onpointerup={cancel}
-		onpointercancel={cancel}
-		oncontextmenu={contextmenu}
-		data-room-control
-	>
-		<span class="thumb"><Art path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 120)} alt="" label={title || name} /></span>
-		<span class="text">
-			<span class="name">{name}{#if current}<span class="muted in-use"> · in use</span>{/if}</span>
-			<span class="what ellipsis">{title || (on ? 'Nothing playing' : 'Off')}</span>
-			{#if artist}<span class="sub ellipsis muted">{artist}</span>{/if}
-			<span class="sub muted ellipsis" data-room-meta>
-				{[mode, groupNote, sleep !== null ? `sleep in ${formatLeft(sleep)}` : '', alarm ? `alarm ${alarm}` : ''].filter(Boolean).join(' · ')}
-			</span>
-		</span>
-	</button>
-	<div class="controls">
-		<button class="icon-btn" aria-label={playing ? `Pause ${name}` : `Play ${name}`} onclick={onplaypause} disabled={!status || unavailable} data-room-play>
-			<Icon name={playing ? 'pause' : 'play'} size={22} />
-		</button>
-		{#if buttonsOnly}
-			<span class="vol muted small">Volume on the device</span>
-		{:else}
-			<input
-				class="vol"
-				type="range"
-				min="0"
-				max="100"
-				value={volume}
-				aria-label={`${name} volume`}
-				oninput={(e) => slide(Number(e.currentTarget.value))}
-				disabled={!status || !on || unavailable}
-				data-room-volume
-			/>
-		{/if}
-		<button class="icon-btn" class:on aria-label={`${name} power`} aria-pressed={on} onclick={onpower} disabled={!status || unavailable} data-room-power>
-			<Icon name="power" size={20} />
-		</button>
+	<div class="top">
+		<!-- The cover is where a pointer drag starts (to sync with another room). -->
+		<span class="thumb" aria-hidden="true" onpointerdown={ondrag} data-room-drag><Art path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 120)} alt="" label={title || name} /></span>
 		<button
-			class="icon-btn grip"
-			aria-label={`Drag ${name} onto another room to sync`}
-			aria-describedby="rooms-drag-help"
-			onpointerdown={ongrip}
-			onkeydown={ongripkey}
-			disabled={unavailable}
-			data-room-grip
+			class="main"
+			aria-label={`Play on ${name}${current ? ' (in use)' : ''}${mode ? `: ${mode.toLowerCase()}` : ''}${title ? `, ${title}${artist ? ` by ${artist}` : ''}` : ''}`}
+			aria-current={current ? 'true' : undefined}
+			onclick={click}
+			onpointerdown={down}
+			onpointermove={move}
+			onpointerup={cancel}
+			onpointercancel={cancel}
+			oncontextmenu={contextmenu}
+			data-room-control
 		>
-			<Icon name="grip" size={20} />
+			<span class="text">
+				<span class="name">{name}</span>
+				<span class="what ellipsis">{title || (on ? 'Nothing playing' : 'Off')}</span>
+				{#if artist}<span class="sub ellipsis muted">{artist}</span>{/if}
+				<span class="sub muted ellipsis" data-room-meta>
+					{[mode, groupNote, sleep !== null ? `sleep in ${formatLeft(sleep)}` : '', alarm ? `alarm ${alarm}` : ''].filter(Boolean).join(' · ')}
+				</span>
+			</span>
 		</button>
+	</div>
+	<div class="controls">
+		{#if status && !on}
+			<!-- Off: one button in place of play/pause and volume. -->
+			<button class="btn on-btn" onclick={onpower} disabled={unavailable} data-room-power><Icon name="power" size={18} />Switch on</button>
+		{:else}
+			<button class="icon-btn" aria-label={playing ? `Pause ${name}` : `Play ${name}`} onclick={onplaypause} disabled={!status || unavailable} data-room-play>
+				<Icon name={playing ? 'pause' : 'play'} size={22} />
+			</button>
+			{#if buttonsOnly}
+				<span class="vol muted small">Volume on the device</span>
+			{:else}
+				<input
+					class="vol"
+					type="range"
+					min="0"
+					max="100"
+					value={volume}
+					aria-label={`${name} volume`}
+					oninput={(e) => slide(Number(e.currentTarget.value))}
+					disabled={!status || !on || unavailable}
+					data-room-volume
+				/>
+			{/if}
+		{/if}
 		<RowMenu bind:this={menu} label={`${name} options`} {actions} />
 	</div>
 </div>
@@ -192,7 +188,14 @@
 		border-color: var(--accent);
 		box-shadow: 0 0 0 3px var(--accent-soft);
 	}
+	.top {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+	}
 	.main {
+		flex: 1;
+		min-width: 0;
 		display: flex;
 		align-items: center;
 		gap: 0.75rem;
@@ -213,6 +216,10 @@
 	.thumb {
 		width: 64px;
 		flex: none;
+		cursor: grab;
+		touch-action: none;
+		-webkit-touch-callout: none;
+		user-select: none;
 	}
 	.text {
 		display: grid;
@@ -221,10 +228,6 @@
 	}
 	.name {
 		font-weight: 650;
-	}
-	.in-use {
-		font-weight: 400;
-		font-size: 0.85rem;
 	}
 	.what {
 		font-size: 0.95rem;
@@ -252,12 +255,14 @@
 		width: 44px;
 		height: 44px;
 	}
-	.icon-btn.on {
-		color: var(--accent);
+	.on-btn {
+		flex: 1;
+		justify-content: center;
+		min-height: 44px;
 	}
-	.grip {
-		cursor: grab;
-		touch-action: none;
+	/* The rest of the controls sit at the end, the menu always last. */
+	.controls :global(.rowmenu) {
+		margin-left: auto;
 	}
 	@media (prefers-reduced-motion: reduce) {
 		.room {

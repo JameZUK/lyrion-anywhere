@@ -6,6 +6,7 @@ import { Pager } from '$lib/lms/pager.svelte';
 import { folderRow } from '$lib/lms/folder';
 import { loadChoice, parseLibraries, saveChoice } from '$lib/state/library.svelte';
 
+const { choose } = await import('./helpers/menu');
 vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const params: Record<string, string | undefined> = {};
 vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/') } }));
@@ -14,7 +15,9 @@ const { library } = await import('$lib/state/library.svelte');
 const AlbumBrowser = (await import('$lib/components/AlbumBrowser.svelte')).default;
 const NewMusic = (await import('../src/routes/new/+page.svelte')).default;
 const RandomAlbums = (await import('../src/routes/random/+page.svelte')).default;
-const Artists = (await import('../src/routes/artists/+page.svelte')).default;
+const Artists = (await import('$lib/components/ArtistBrowser.svelte')).default;
+const { goto } = await import('$app/navigation');
+const { LIBRARY_KEY, loadLibraryPrefs } = await import('$lib/library/prefs');
 const Folder = (await import('../src/routes/folder/[[id]]/+page.svelte')).default;
 const Genres = (await import('../src/routes/genres/+page.svelte')).default;
 const Years = (await import('../src/routes/years/+page.svelte')).default;
@@ -178,27 +181,28 @@ test('with no virtual libraries the picker is hidden and nothing is narrowed', a
 	expect(library.available).toEqual([]);
 	expect(library.id).toBeNull();
 	const { container } = render(LibraryPage);
-	expect(container.querySelector('.picker select')).toBeNull();
-	expect(container.textContent).toContain('New music');
-	expect(container.textContent).toContain('Music folder');
+	expect(container.querySelector('[data-library-picker]')).toBeNull();
+	expect(container.querySelector('select[aria-label="Library"], .picker')).toBeNull();
+	// Every section is there (New music is the "Recently added" order of Albums).
+	expect(container.textContent).toContain('Folders');
+	expect(container.textContent).toContain('Genres');
 });
 
 test('a chosen library narrows the album lists, and can be picked on the Library page', async () => {
 	fake.handler.rpc = async (_p, cmd) =>
 		cmd[0] === 'libraries' ? { folder_loop: [{ id: '1a2b3c4d', name: 'Lossless' }] } : { count: 0, albums_loop: [] };
 	await library.start('alice', (c) => fake.api.rpc('', c));
+	localStorage.setItem(LIBRARY_KEY, JSON.stringify({ chip: 'albums', sort: 'new', view: 'grid' }));
 	const page = render(LibraryPage);
-	const select = page.container.querySelector<HTMLSelectElement>('.picker select')!;
-	expect(select).not.toBeNull();
-	await fireEvent.change(select, { target: { value: '1a2b3c4d' } });
+	// Wave 3.5: the choice is in the Library header's ⋯, not a select of its own.
+	const picker = page.container.querySelector<HTMLButtonElement>('[data-library-picker]')!;
+	expect(picker.textContent).toContain('Whole library');
+	await choose(/^Library options/, 'Lossless', page.container);
 	expect(library.id).toBe('1a2b3c4d');
+	await waitFor(() => expect(sent('albums').at(-1)).toContain('library_id:1a2b3c4d'));
+	expect(sent('albums').at(-1)).toContain('sort:new');
+	await waitFor(() => expect(page.container.textContent).toContain('Lossless'));
 	page.unmount();
-	fake.calls.length = 0;
-	const view = render(NewMusic);
-	await waitFor(() => expect(sent('albums').length).toBe(1));
-	expect(sent('albums')[0]).toContain('library_id:1a2b3c4d');
-	expect(sent('albums')[0]).toContain('sort:new');
-	expect(view.container.textContent).toContain('Lossless');
 	// An id LMS no longer lists is never sent.
 	library.choose('ffffffff');
 	expect(library.id).toBeNull();
@@ -206,12 +210,28 @@ test('a chosen library narrows the album lists, and can be picked on the Library
 
 // --- pages --------------------------------------------------------------------------------
 
-test('New music lists recently added albums, newest first, with an empty state', async () => {
+test('New music is Library’s Albums, Recently added: its address opens that, without a history entry', async () => {
+	vi.mocked(goto).mockClear();
+	localStorage.removeItem(LIBRARY_KEY);
+	render(NewMusic);
+	await waitFor(() => expect(goto).toHaveBeenCalledWith('#/library', expect.objectContaining({ replaceState: true })));
+	expect(loadLibraryPrefs()).toMatchObject({ chip: 'albums', sort: 'new' });
 	fake.handler.rpc = async () => ({ count: 0, albums_loop: [] });
-	const { container } = render(NewMusic);
-	await waitFor(() => expect(container.textContent).toContain('Nothing has been added'));
+	fake.calls.length = 0;
+	const { container } = render(LibraryPage);
+	await waitFor(() => expect(container.textContent).toContain('No albums in the library yet.'));
 	expect(sent('albums')[0]).toEqual(['albums', 0, 120, 'tags:aljyS', 'sort:new']);
-	expect(container.querySelector('select')).toBeNull(); // a fixed order
+});
+
+test('/albums and /artists open those sections of Library', async () => {
+	vi.mocked(goto).mockClear();
+	const Albums = (await import('../src/routes/albums/+page.svelte')).default;
+	const ArtistsPage = (await import('../src/routes/artists/+page.svelte')).default;
+	render(ArtistsPage);
+	await waitFor(() => expect(goto).toHaveBeenCalledWith('#/library', expect.objectContaining({ replaceState: true })));
+	expect(loadLibraryPrefs().chip).toBe('artists');
+	render(Albums);
+	await waitFor(() => expect(loadLibraryPrefs().chip).toBe('albums'));
 });
 
 test('album lists show hostile names as text and repeated albums once', async () => {
@@ -231,9 +251,14 @@ test('album lists show hostile names as text and repeated albums once', async ()
 	expect(container.textContent).not.toContain('Again');
 });
 
-test('Random albums asks for one batch and shuffles again on request', async () => {
+test('Random albums (Library’s Albums, Random) asks for one batch and shuffles again on request', async () => {
+	vi.mocked(goto).mockClear();
+	render(RandomAlbums);
+	await waitFor(() => expect(goto).toHaveBeenCalledWith('#/library', expect.objectContaining({ replaceState: true })));
+	expect(loadLibraryPrefs()).toMatchObject({ chip: 'albums', sort: 'random' });
 	fake.handler.rpc = async () => ({ count: 1000, albums_loop: [{ id: 5, album: 'Five' }] });
-	const { getByText } = render(RandomAlbums);
+	fake.calls.length = 0;
+	const { getByText } = render(LibraryPage);
 	await waitFor(() => expect(sent('albums').length).toBe(1));
 	expect(sent('albums')[0]).toEqual(['albums', 0, 60, 'tags:aljyS', 'sort:random']);
 	await fireEvent.click(getByText('Shuffle again'));
@@ -248,6 +273,7 @@ test('artists default to album artists, and other roles show only where the libr
 		return { count: 1, artists_loop: [{ id: 3, artist: HOSTILE }] };
 	};
 	const { container, getByText, queryByText } = render(Artists);
+	// (Library's Artists section; /artists opens it.)
 	await waitFor(() => expect(getByText('Composers')).toBeTruthy());
 	expect(queryByText('Conductors')).toBeNull();
 	expect(queryByText('Bands')).toBeNull();
@@ -318,8 +344,9 @@ test('the music folder browses by id and plays folders and tracks by id', async 
 	assertInert(container);
 	expect(container.textContent).not.toContain('/srv');
 	expect(container.querySelector('a[href="#/folder/21"]')).not.toBeNull();
-	await fireEvent.click(getByLabelText(`Play ${HOSTILE}`));
-	await fireEvent.click(getByLabelText('Add Song to the queue'));
+	// Each row has one trailing control (Wave 3.5): its ⋯ menu.
+	await choose(`More options for ${HOSTILE}`, 'Play', container);
+	await choose('More options for Song', 'Add to queue', container);
 	await fireEvent.click(getByLabelText('Play Song'));
 	const plays = fake.calls.filter((c) => c.cmd[0] === 'playlistcontrol');
 	expect(plays.map((c) => c.cmd)).toEqual([

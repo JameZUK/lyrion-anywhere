@@ -48,7 +48,7 @@
 	{#if !query}
 		<p class="muted">Type something to search for on the Search page.</p>
 	{:else if !app.playerId}
-		<p class="muted">Choose a player first: apps search and play for a player.</p>
+		<p class="muted">No player chosen. Choose a player with Play on: apps search and play for a player.</p>
 	{:else if status === 'loading'}
 		<p class="muted" role="status">Loading…</p>
 	{:else if status === 'error'}

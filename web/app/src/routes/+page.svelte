@@ -4,18 +4,23 @@
 	// (over 840 px) the art stays on the left with lyrics or info beside it, and the queue can
 	// be pinned on the right. The visualiser (§4.1) takes the art's place while this browser
 	// is the player and it is switched on. Phones and narrow windows have a layout of their
-	// own (NowPlayingPhone), whose pager shows the same three layouts.
+	// own (NowPlayingPhone), whose pager shows the same three layouts. Wave 3.5: the action
+	// row is Queue and ⋯ (Sleep timer, This track, Signal path, Car mode); the player bar is
+	// hidden under this page, which has its own transport, volume and Play on.
 	import { app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { duration, formatDetails, isRemote, textOf } from '$lib/lms/format';
 	import Art from '$lib/components/Art.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import OutputButton from '$lib/components/OutputButton.svelte';
-	import PlayingElsewhere from '$lib/components/PlayingElsewhere.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
+	import RowMenu, { type RowAction } from '$lib/components/RowMenu.svelte';
+	import { go } from '$lib/nav';
 	import SeekBar from '$lib/components/SeekBar.svelte';
 	import { device } from '$lib/player/device.svelte';
 	import { controls } from '$lib/player/controls.svelte';
+	import { now } from '$lib/player/now.svelte';
+	import { offlinePlayer } from '$lib/offline/index.svelte';
 	import { DEVICE_BUTTONS_NOTE } from '$lib/player/volume';
 	import Ambient from '$lib/components/Ambient.svelte';
 	import SleepSheet from '$lib/components/SleepSheet.svelte';
@@ -24,7 +29,6 @@
 	import QueuePeek from '$lib/components/QueuePeek.svelte';
 	import ShuffleButton from '$lib/components/ShuffleButton.svelte';
 	import DeviceWait from '$lib/components/DeviceWait.svelte';
-	import LyricsView from '$lib/components/LyricsView.svelte';
 	import RatingControl from '$lib/components/RatingControl.svelte';
 	import { lyrics } from '$lib/state/lyrics';
 	import { lineAt } from '$lib/lyrics/lyrics';
@@ -48,8 +52,9 @@
 	let showMore = $state(false);
 	let showSleep = $state(false);
 	let showPath = $state(false);
-	let showLyrics = $state(false);
 	let showQueue = $state(false);
+	/** Play on…, opened from the empty state's "Choose a player" too. */
+	let playOn = $state(false);
 	/** A swipe up over the cover peeks at the queue (touch and pen). */
 	let peekSwipe: { id: number; x: number; y: number } | null = null;
 	function peekDown(e: PointerEvent) {
@@ -113,11 +118,11 @@
 	const stage = $derived<Layout>(wide ? 'art' : layout);
 	/** Wide windows: lyrics or info in the right-hand column. */
 	const side = $derived<Layout | null>(wide && layout !== 'art' ? layout : null);
-	const queueSide = $derived(roomy && nowPlaying.queuePanel && !!app.current);
+	const queueSide = $derived(roomy && nowPlaying.queuePanel && (!!app.current || now.downloads));
 
 	// --- the visualiser (§4.1) ----------------------------------------------------------
 	/** This browser is the player (a remote player keeps the blurred-art background only). */
-	const local = $derived(!!app.current && isThisDevice(app.playerId) && (device.state === 'connected' || device.state === 'reconnecting'));
+	const local = $derived(!now.downloads && !!app.current && isThisDevice(app.playerId) && (device.state === 'connected' || device.state === 'reconnecting'));
 	const visualising = $derived(local && nowPlaying.visualiser && !reduce && stage === 'art');
 	/** Glow: a halo in the cover's colours behind it (still, at rest, under reduced motion). */
 	const glowing = $derived(local && nowPlaying.visualiser && nowPlaying.style === 'glow' && stage === 'art');
@@ -139,18 +144,21 @@
 	let volume = $state<number | null>(null);
 	let volTimer: ReturnType<typeof setTimeout> | undefined;
 
-	const track = $derived(app.now?.playlist_loop?.[0]);
-	const total = $derived(app.now?.duration ?? track?.duration ?? 0);
-	const shown = $derived(seeking ?? app.elapsed);
-	const title = $derived(textOf(track?.title ?? app.now?.current_title));
+	// What plays: the selected player, or this device's downloads (Wave 3.5: one Now playing;
+	// LMS-only controls are left out for downloads).
+	const downloads = $derived(now.downloads);
+	const track = $derived(now.track);
+	const total = $derived(now.duration);
+	const shown = $derived(seeking ?? now.elapsed);
+	const title = $derived(textOf(track?.title ?? (downloads ? '' : app.now?.current_title)));
 	const artistHref = $derived(cmd.link('artist', track?.artist_id));
 	const albumHref = $derived(cmd.link('album', track?.album_id));
 	const repeat = $derived(Number(app.now?.['playlist repeat'] ?? 0));
 	/** Which controls work now (all of them while the server is in reach). */
 	const g = $derived(controls.gates);
 	const vol = $derived(volume ?? app.now?.['mixer volume'] ?? 0);
-	const badge = $derived(quality(track));
-	const sleepIn = $derived(sleepLeft(app.now));
+	const badge = $derived(downloads ? null : quality(track));
+	const sleepIn = $derived(downloads ? null : sleepLeft(app.now));
 	/** Art and title cross-fade between tracks (not under "reduce motion"). */
 	const trackKey = $derived(`${track?.id ?? ''}|${title}`);
 	const swap = { duration: reducedMotion() ? 0 : 350 };
@@ -161,8 +169,35 @@
 	});
 	const lyricLine = $derived(lyrics.peek && lyrics.lyrics?.synced ? lyrics.lyrics.lines[lineAt(lyrics.lyrics, app.elapsed * 1000)]?.text ?? '' : '');
 	const pos = $derived(
-		app.now?.playlist_tracks ? `${Number(app.now.playlist_cur_index ?? 0) + 1} of ${app.now.playlist_tracks}` : '',
+		downloads
+			? `${now.index + 1} of ${now.queue.length} · Downloads`
+			: app.now?.playlist_tracks
+				? `${Number(app.now.playlist_cur_index ?? 0) + 1} of ${app.now.playlist_tracks}`
+				: '',
 	);
+
+	/** The ⋯ menu: everything but the queue, which has its own button. */
+	const libraryTrack = $derived(!downloads && typeof track?.id === 'number' && track.id > 0);
+	const menu = $derived.by((): RowAction[] => {
+		// Downloads: their engine's own Stop; the rest here is LMS's.
+		if (downloads) return [{ label: 'Stop playing downloads', icon: 'stop', run: () => offlinePlayer.stop(), id: 'stop-downloads' }];
+		const out: RowAction[] = [
+			{
+				label: sleepIn !== null ? `Sleep timer: ${formatLeft(sleepIn)} left` : 'Sleep timer',
+				icon: 'moon',
+				run: () => (showSleep = true),
+				disabled: !app.current || !g.other,
+				id: 'sleep',
+			},
+		];
+		if (sleepIn !== null) out.push({ label: 'Turn the sleep timer off', icon: 'stop', run: async () => (sleepError = await app.cancelSleep()), id: 'sleep-cancel' });
+		// The track's menu is LMS's own: it needs the server.
+		if (libraryTrack) out.push({ label: 'This track', icon: 'note', run: () => (showMore = true), disabled: !app.canQueue, why: controls.needsServer(), id: 'this-track' });
+		if (track) out.push({ label: 'Signal path', icon: 'signal', run: () => (showPath = true), id: 'signal-path' });
+		// A player's Alarms are its row in Play on… (and its card in Rooms): one way in.
+		if (app.current) out.push({ label: 'Car mode', icon: 'car', run: () => void go('/car'), id: 'car' });
+		return out;
+	});
 
 	function setVolume(v: number) {
 		haptics.volume(vol, v);
@@ -183,31 +218,7 @@
 <section class="np page" class:wide class:has-side={!!side} class:has-queue={queueSide} bind:this={section} data-layout={layout}>
 	<Ambient path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 120)} />
 	<div class="bar">
-		{#if app.remote || app.moving}<div class="where"><PlayingElsewhere /></div>{/if}
-		<span class="sleepgroup">
-			<button
-				class="btn act"
-				class:set={sleepIn !== null}
-				onclick={() => (showSleep = true)}
-				aria-haspopup="dialog"
-				aria-label={sleepIn !== null ? `Sleep timer: stops in ${formatLeft(sleepIn)}` : 'Sleep timer'}
-				disabled={!app.current || !g.other}
-				data-sleep-button
-			>
-				<Icon name="moon" size={18} /><span class="label">{sleepIn !== null ? formatLeft(sleepIn) : 'Sleep'}</span>
-			</button>
-			{#if sleepIn !== null}
-				<button class="icon-btn cancel" aria-label="Turn the sleep timer off" onclick={async () => (sleepError = await app.cancelSleep())} data-sleep-cancel>
-					<Icon name="close" size={16} />
-				</button>
-			{/if}
-		</span>
-		{#if lyrics.lyrics && lyricsId !== null}
-			<button class="btn act" onclick={() => (showLyrics = true)} aria-haspopup="dialog" aria-label="Lyrics" data-lyrics-button><Icon name="lyrics" size={18} /><span class="label">Lyrics</span></button>
-		{/if}
-		{#if app.current}<a class="btn act" href="#/car" aria-label="Car mode" data-car-link><Icon name="car" size={18} /><span class="label">Car</span></a>{/if}
-		{#if app.current}<a class="btn act" href="#/alarms" aria-label="Alarms" data-alarms-link><Icon name="alarm" size={18} /><span class="label">Alarms</span></a>{/if}
-		{#if roomy && app.current}
+		{#if roomy && (app.current || downloads)}
 			<!-- With room for it, Queue pins or hides the queue beside Now playing. -->
 			<button
 				class="btn act"
@@ -218,12 +229,10 @@
 				data-queue-panel-toggle
 			><Icon name="queue" size={18} /><span class="label">Queue</span></button>
 		{:else}
-			<button class="btn act" onclick={() => (showQueue = true)} aria-haspopup="dialog" aria-label="Queue" disabled={!app.current} data-queue-peek><Icon name="queue" size={18} /><span class="label">Queue</span></button>
+			<button class="btn act" onclick={() => (showQueue = true)} aria-haspopup="dialog" aria-label="Queue" disabled={!app.current && !downloads} data-queue-peek><Icon name="queue" size={18} /><span class="label">Queue</span></button>
 		{/if}
-		{#if typeof track?.id === 'number' && track.id > 0}
-			<!-- The track's menu is LMS's own: it needs the server. -->
-			<button class="btn act" onclick={() => (showMore = true)} aria-label="More" {...controls.needsServer()} data-np-more><Icon name="more" size={18} /><span class="label">More</span></button>
-		{/if}
+		<!-- Always there, so the row never shifts: its items say when they can't be used. -->
+		<RowMenu label="More options" actions={menu} trigger={{ 'data-np-more': true }} />
 	</div>
 
 	<div class="modes">
@@ -278,7 +287,7 @@
 					<div class="art-box" class:glowing in:fade={swap}>
 						{#if glowing}<GlowHalo path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 120)} playing={app.playing} still={reduce} />{/if}
 						<div class="cover">
-							<Art path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 800)} alt={title ? `Cover of ${textOf(track?.album)}` : ''} label={title} rounded="var(--radius)" eager />
+							<Art path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 800)} local={now.localCover} alt={title ? `Cover of ${textOf(track?.album)}` : ''} label={title} rounded="var(--radius)" eager />
 						</div>
 						{#if visualising}<Visualiser style="glow" onstyle={(s) => nowPlaying.setStyle(s)} {onglow} />{/if}
 					</div>
@@ -303,14 +312,14 @@
 
 	<div class="info">
 
-		{#if !app.current && app.playerId && app.playerId === app.deviceMac}
+		{#if !downloads && !app.current && app.playerId && app.playerId === app.deviceMac}
 			<DeviceWait />
-		{:else if !app.current}
-			<h1>Nothing to control yet</h1>
-			<p class="muted">Choose a player with the Play on… button by the volume.</p>
+		{:else if !downloads && !app.current}
+			<h1>No player chosen</h1>
+			<p><button class="btn primary" onclick={() => (playOn = true)} data-choose-player>Choose a player</button></p>
 		{:else if !track && !app.now?.current_title}
 			<h1>Nothing playing</h1>
-			<p class="muted">Pick an album to start. <a class="link" href="#/albums">Browse albums</a></p>
+			<p class="muted">Pick an album to start. <a class="link" href="#/library">Go to Library</a></p>
 		{:else}
 			{#key trackKey}<h1 class="title" in:fade={swap}>{title}</h1>{/key}
 			<p class="artist">
@@ -323,20 +332,20 @@
 			<p class="details muted">
 				{#if badge}
 					<button class="badge" class:hires={badge.hiRes} onclick={() => (showPath = true)} aria-haspopup="dialog" aria-label={`${badgeText(badge)}. Show the signal path`} data-quality-badge>{badgeText(badge)}</button>
-				{:else}{formatDetails(track ?? {})}{/if}{pos ? ` · ${pos}` : ''}
+				{:else}{formatDetails(track ?? {})}{/if}{pos ? ` · ${pos}` : ''}{#if sleepIn !== null}<span class="sleep-left" data-sleep-left> · <Icon name="moon" size={13} /> {formatLeft(sleepIn)}</span>{/if}
 			</p>
-			{#if lyricsId !== null && layout !== 'info'}<div class="rating"><RatingControl track={lyricsId} /></div>{/if}
+			{#if lyricsId !== null && !downloads}<div class="rating"><RatingControl track={lyricsId} toggle /></div>{/if}
 			{#if lyricLine && layout !== 'lyrics'}
-				<button class="peek" onclick={() => (showLyrics = true)} aria-label={`Lyrics: ${lyricLine}. Show all the lyrics`} data-lyrics-peek>{lyricLine}</button>
+				<button class="peek" onclick={() => setLayout('lyrics')} aria-label={`Lyrics: ${lyricLine}. Show all the lyrics`} data-lyrics-peek>{lyricLine}</button>
 			{/if}
 		{/if}
 
 		<div class="progress">
 			<SeekBar
-				trackId={typeof track?.id === 'number' && track.id > 0 && !isRemote(track.remote) ? track.id : null}
+				trackId={!downloads && typeof track?.id === 'number' && track.id > 0 && !isRemote(track.remote) ? track.id : null}
 				value={shown}
 				{total}
-				disabled={!total || app.now?.can_seek === 0 || !g.seek}
+				disabled={!total || (!downloads && app.now?.can_seek === 0) || !g.seek}
 				oninput={(v) => (seeking = v)}
 				onchange={async (v) => {
 					await controls.seek(v);
@@ -349,8 +358,8 @@
 		<div class="transport">
 			<ShuffleButton value={app.now?.['playlist shuffle']} onchange={(m) => app.send(cmd.shuffle(m))} disabled={!g.other} />
 			<button class="icon-btn big" aria-label="Previous" onclick={() => controls.previous()} disabled={!g.previous} {...controls.why(!g.previous)}><Icon name="prev" size={30} /></button>
-			<button class="icon-btn play" aria-label={app.playing ? 'Pause' : 'Play'} onclick={() => controls.toggle()} disabled={!g.playPause} {...controls.why(!g.playPause)}>
-				<Icon name={app.playing ? 'pause' : 'play'} size={34} />
+			<button class="icon-btn play" aria-label={controls.playing ? 'Pause' : 'Play'} onclick={() => controls.toggle()} disabled={!g.playPause} {...controls.why(!g.playPause)}>
+				<Icon name={controls.playing ? 'pause' : 'play'} size={34} />
 			</button>
 			<button class="icon-btn big" aria-label="Next" onclick={() => controls.next()} disabled={!g.next} {...controls.why(!g.next)}><Icon name="next" size={30} /></button>
 			<button
@@ -365,7 +374,7 @@
 			</button>
 		</div>
 
-		{#if layout !== 'info'}<UpNext />{/if}
+		{#if layout !== 'info'}<UpNext onopen={() => (roomy ? nowPlaying.setQueuePanel(true) : (showQueue = true))} />{/if}
 		{#if sleepError}<p class="muted" role="alert">{sleepError}</p>{/if}
 
 		<div class="volrow">
@@ -379,14 +388,13 @@
 					<span class="muted vnum">{Math.round(vol)}</span>
 				</label>
 			{/if}
-			<OutputButton />
+			<OutputButton named bind:open={playOn} />
 		</div>
 
 		{#if showMore && typeof track?.id === 'number'}<ContextMenu kind="track" id={track.id} title={title} onclose={() => (showMore = false)} />{/if}
 		{#if showSleep}<SleepSheet onclose={() => (showSleep = false)} />{/if}
 		{#if showPath}<SignalPath onclose={() => (showPath = false)} />{/if}
 		{#if showQueue}<QueuePeek onclose={() => (showQueue = false)} />{/if}
-		{#if showLyrics}<LyricsView {title} onclose={() => (showLyrics = false)} />{/if}
 	</div>
 </section>
 {/if}
@@ -404,7 +412,7 @@
 			'art info'
 			'art .';
 		column-gap: clamp(1.5rem, 4vw, 4rem);
-		min-height: calc(var(--app-h) - var(--bar-h) - 3rem);
+		min-height: calc(var(--app-h) - 3rem);
 	}
 	/* Wide windows, Lyrics or Info: the art stays left, the pane fills the right column. */
 	.np.has-side {
@@ -414,7 +422,7 @@
 			'art modes'
 			'art side'
 			'art info';
-		height: calc(var(--app-h) - var(--bar-h) - 3rem);
+		height: calc(var(--app-h) - 3rem);
 		min-height: 420px;
 	}
 	/* Room for the queue too: pinned on the right. */
@@ -490,7 +498,7 @@
 		align-self: stretch;
 		display: flex;
 		flex-direction: column;
-		max-height: calc(var(--app-h) - var(--bar-h) - 3rem);
+		max-height: calc(var(--app-h) - 3rem);
 	}
 	.art-wrap.pane-stage .pane {
 		flex: 1;
@@ -499,7 +507,7 @@
 		grid-area: queue;
 		align-self: stretch;
 		min-height: 0;
-		max-height: calc(var(--app-h) - var(--bar-h) - 3rem);
+		max-height: calc(var(--app-h) - 3rem);
 		overflow-y: auto;
 		padding: 0 0 0 1rem;
 		border-left: 1px solid var(--line);
@@ -520,18 +528,7 @@
 		margin-bottom: 1.25rem;
 		container-type: inline-size;
 	}
-	/* The "Playing on …" strip takes the room left by the action buttons, which give up
-	   their labels first when the column is narrow (e.g. iPad portrait). */
-	.where {
-		flex: 1 1 100%;
-		min-width: 0;
-	}
 	.act {
-		flex: none;
-	}
-	.sleepgroup {
-		display: inline-flex;
-		align-items: center;
 		flex: none;
 	}
 	.act.set {
@@ -539,9 +536,11 @@
 		color: var(--accent-soft-fg);
 		font-variant-numeric: tabular-nums;
 	}
-	.cancel {
-		width: 44px;
-		height: 44px;
+	.sleep-left {
+		white-space: nowrap;
+	}
+	.sleep-left :global(svg) {
+		vertical-align: -2px;
 	}
 	.badge {
 		display: inline-flex;

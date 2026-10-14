@@ -10,6 +10,7 @@
 		totp,
 		change,
 		now = () => Date.now(),
+		heading = true,
 	}: {
 		/** The signed-in user (for password managers: the hidden username field). */
 		username: string;
@@ -18,6 +19,8 @@
 		/** Send the change (through the session, which adds the token). */
 		change: (c: PasswordChange) => Promise<PasswordChanged>;
 		now?: () => number;
+		/** Its own heading (not inside a sheet that names it). */
+		heading?: boolean;
 	} = $props();
 
 	let current = $state('');
@@ -60,7 +63,7 @@
 	}
 </script>
 
-<h3>Change password</h3>
+{#if heading}<h3>Change password</h3>{/if}
 <form onsubmit={submit} class="change-password" novalidate data-change-password>
 	<!-- For password managers: which account this new password belongs to. -->
 	<input type="text" name="username" autocomplete="username" value={username} readonly hidden aria-hidden="true" tabindex="-1" />
@@ -70,7 +73,7 @@
 	>
 	<label class="field"><span>New password again</span><input type="password" name="confirm-password" bind:value={confirm} autocomplete="new-password" required data-confirm /></label>
 	{#if needCode}
-		<label class="field"><span>Two-step code</span><input bind:value={code} inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="7" required data-code /></label>
+		<label class="field"><span>Authenticator code</span><input bind:value={code} inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="7" required data-code /></label>
 	{/if}
 	<p class="muted small" id="new-password-rule">At least {MIN_PASSWORD} characters.</p>
 	<label class="check">

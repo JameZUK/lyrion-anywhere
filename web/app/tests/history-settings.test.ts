@@ -48,12 +48,12 @@ test('says how long it is kept and that it is never shared', async () => {
 	render(HistorySettings);
 	expect(document.body.textContent).toContain('13 months');
 	expect(document.body.textContent).toContain('never shared');
-	await waitFor(() => expect((screen.getByRole('checkbox', { name: 'Keep my listening history' }) as HTMLInputElement).checked).toBe(true));
+	await waitFor(() => expect(screen.getByRole('switch', { name: 'Keep my listening history' }).getAttribute('aria-checked')).toBe('true'));
 });
 
 test('switching it off is sent and confirmed', async () => {
 	render(HistorySettings);
-	const box = await screen.findByRole('checkbox', { name: 'Keep my listening history' });
+	const box = await screen.findByRole('switch', { name: 'Keep my listening history' });
 	await fireEvent.click(box);
 	await waitFor(() => expect(state.patches).toEqual([false]));
 	expect(screen.getByRole('status').textContent).toContain('nothing more is recorded');

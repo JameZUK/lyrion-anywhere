@@ -70,7 +70,8 @@ test('shelves show in the saved order, with albums by id', async () => {
 	// The recent shelf asked for its ids, then those albums by id.
 	expect(fake.calls.some((c) => c.cmd[0] === 'albums' && String(c.cmd.at(-1)) === 'album_id:7')).toBe(true);
 	expect(screen.getByRole('button', { name: 'Play the station Fresh' })).toBeTruthy();
-	expect(screen.getByRole('link', { name: /Browse the library/ }).getAttribute('href')).toBe('#/library');
+	// One way in (Wave 3.5): Library is a tab; Home has no second link to it.
+	expect(screen.queryByRole('link', { name: /Browse the library/ })).toBeNull();
 });
 
 test('edit mode: move, hide and add with accessible controls, then save', async () => {
@@ -142,7 +143,7 @@ test('a smart filter shelf: picked from the user’s filters, saved by id', asyn
 	await fireEvent.change(screen.getByLabelText('Add a shelf'), { target: { value: 'filter' } });
 	await fireEvent.change(screen.getByLabelText('Which'), { target: { value: '6' } });
 	await fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-	expect(screen.getByRole('list', { name: 'Home shelves' }).textContent).toContain('Smart filter: Sixties soul');
+	expect(screen.getByRole('list', { name: 'Home shelves' }).textContent).toContain('Smart playlist: Sixties soul');
 	await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 	await waitFor(() => expect(saves).toHaveLength(1));
 	expect(saves[0]!.shelves.at(-1)).toEqual({ type: 'filter', id: 6 });
@@ -172,7 +173,9 @@ test('the listening card links to Your listening, after everything else on Home'
 	const link = await screen.findByRole('link', { name: 'This month: 23 h · 412 plays' });
 	expect(link.getAttribute('href')).toBe('#/stats');
 	const page = r.container.querySelector('section.home')!;
-	expect(page.lastElementChild).toBe(document.querySelector('[data-stats-card]'));
+	// Then only the quiet Edit Home text button.
+	expect(page.lastElementChild).toBe(document.querySelector('[data-edit-home]'));
+	expect(page.lastElementChild!.previousElementSibling).toBe(document.querySelector('[data-stats-card]'));
 	// Out of the way while editing Home.
 	await fireEvent.click(screen.getByRole('button', { name: 'Edit Home' }));
 	expect(document.querySelector('[data-stats-card]')).toBeNull();

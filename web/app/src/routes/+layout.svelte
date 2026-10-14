@@ -4,7 +4,7 @@
 	import { page } from '$app/state';
 	import { afterNavigate } from '$app/navigation';
 	import { noteNavigation, routeOutsideHashChanges } from '$lib/nav';
-	import { MAIN_TABS, tabFor } from '$lib/nav-tabs';
+	import { MAIN_TABS, SIDEBAR, tabFor } from '$lib/nav-tabs';
 	import { documentTitle, pageTitle } from '$lib/title.svelte';
 	import { api, app, session } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
@@ -17,15 +17,15 @@
 	import MediaSession from '$lib/components/MediaSession.svelte';
 	import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import OfflineBar from '$lib/components/OfflineBar.svelte';
 	import OfflineMode from '$lib/components/OfflineMode.svelte';
 	import { downloads, handoff, offlinePlayer, plays } from '$lib/offline/index.svelte';
 	import { snapshotOf } from '$lib/offline/handoff.svelte';
 	import ContinueOn from '$lib/components/ContinueOn.svelte';
+	import StatusSlot from '$lib/components/StatusSlot.svelte';
+	import Snackbar from '$lib/components/Snackbar.svelte';
 	import { forgetOwner, rememberOwner } from '$lib/offline/settings';
 	import { library } from '$lib/state/library.svelte';
 	import { controls, local } from '$lib/player/controls.svelte';
-	import { CONNECTION_ID } from '$lib/state/reachability';
 	// Keeps a playing station topped up wherever the user goes.
 	import '$lib/stations/active.svelte';
 
@@ -74,8 +74,6 @@
 		return () => clearTimeout(t);
 	});
 
-	// The sound is held back until a tap, but only worth saying while this device plays.
-	const heldBack = $derived(device.needsTap && (device.detail.output === 'Playing' || (app.playerId === device.mac && app.playing)));
 
 	// Downloads belong to the signed-in user. Remember who that is, so offline mode can offer
 	// their downloads when the server can't be reached; forget it once signed out.
@@ -200,25 +198,10 @@
 
 	// The same four destinations lead on every screen size (and in the Android app): Home,
 	// Library, Search and Queue. Now playing opens from the mini player; Settings from the
-	// gear on Home (and the sidebar). See lib/nav-tabs.ts for what each one covers.
-	const NAV = [
-		{ href: '#/home', label: 'Home', icon: 'shelves', match: (p: string) => p.startsWith('/home') || p.startsWith('/stations') },
-		{ href: '#/library', label: 'Library', icon: 'library', match: (p: string) => MORE_LIBRARY.some((l) => p.startsWith(l)) },
-		{ href: '#/search', label: 'Search', icon: 'search', match: (p: string) => tabFor(p) === 'search' },
-		{ href: '#/queue', label: 'Queue', icon: 'playnext', match: (p: string) => tabFor(p) === 'queue' },
-		{ href: '#/', label: 'Now playing', icon: 'home', match: (p: string) => p === '/' },
-		{ href: '#/new', label: 'New music', icon: 'new', match: (p: string) => p.startsWith('/new') },
-		{ href: '#/albums', label: 'Albums', icon: 'album', match: (p: string) => p.startsWith('/album') },
-		{ href: '#/artists', label: 'Artists', icon: 'artist', match: (p: string) => p.startsWith('/artist') },
-		{ href: '#/playlists', label: 'Playlists', icon: 'queue', match: (p: string) => p.startsWith('/playlist') },
-		{ href: '#/favourites', label: 'Favourites', icon: 'heart', match: (p: string) => p.startsWith('/favourites') },
-		{ href: '#/apps', label: 'Apps & radio', icon: 'radio', match: (p: string) => p.startsWith('/apps') || p.startsWith('/browse') || p.startsWith('/plugin') },
-		{ href: '#/rooms', label: 'Rooms', icon: 'rooms', match: (p: string) => p.startsWith('/rooms') },
-		{ href: '#/downloads', label: 'Downloads', icon: 'download', match: (p: string) => p.startsWith('/downloads') },
-		{ href: '#/settings', label: 'Settings', icon: 'settings', match: (p: string) => p.startsWith('/settings') },
-	];
-	// Library sections without a sidebar entry of their own: under "Library".
-	const MORE_LIBRARY = ['/library', '/genre', '/year', '/folder', '/compilations', '/random', '/filter'];
+	// gear on Home (and the sidebar). See lib/nav-tabs.ts for what each one covers. Wave 3.5:
+	// the sidebar is those four, Now playing, Rooms and Settings; Library's own sections
+	// (albums, artists, playlists, downloads…) are in Library, never repeated here.
+	const NAV = SIDEBAR;
 	// Phones: the four tabs.
 	const TABS = MAIN_TABS.map((t) => ({ ...t, match: (p: string) => tabFor(p) === t.id }));
 	const path = $derived(page.url.hash.replace(/^#/, '') || '/');
@@ -244,8 +227,9 @@
 	<MediaSession />
 	<KeyboardShortcuts />
 	{#if path === '/car'}
-		<!-- Car mode fills the screen: no navigation, player bar or tabs around it. -->
-		<main class="car-shell">{@render children()}</main>
+		<!-- Car mode fills the screen: no navigation, player bar or tabs around it; the one status
+		     line still says when the server is out of reach. -->
+		<main class="car-shell"><StatusSlot />{@render children()}</main>
 	{:else}
 		<div class="shell">
 			<nav class="side" aria-label="Main">
@@ -256,40 +240,19 @@
 					</a>
 				{/each}
 			</nav>
-			<main class="content" class:has-strip={app.remote && !offlinePlayer.active} class:on-np={path === '/' && !offlinePlayer.active}>
-				{#if heldBack}
-					<button class="banner resume tap" onclick={() => {}}>
-						<Icon name="play" size={16} /><span>Playing on this device. Tap here (or anywhere) to turn the sound on.</span>
-					</button>
-				{:else if device.wasActive && (device.state === 'off' || device.state === 'stopped' || device.state === 'error')}
-					<div class="banner resume" role="status">
-						<span>This device was playing before the page reloaded.</span>
-						<button class="btn primary" onclick={() => device.start()}><Icon name="play" size={16} />Resume playing here</button>
-						<button class="btn" onclick={() => device.stop()}>Dismiss</button>
-					</div>
-				{/if}
-				<!-- One connection message, at every width, taking its own room (never over the controls). -->
-				{#if controls.message}
-					<p class="chip" class:busy={app.reach === 'busy'} role="status" id={CONNECTION_ID} data-connection={app.reach}>
-						<Icon name={app.reach === 'busy' ? 'clock' : 'offline'} size={16} /><span>{controls.message}</span>
-					</p>
-				{/if}
-				<ContinueOn />
-				{#if app.notice}
-					<div class="banner resume notice" role="status">
-						<span>{app.notice}</span>
-						<button class="btn" onclick={() => (app.notice = '')}>OK</button>
-					</div>
-				{/if}
-				{#if app.error}<p class="banner error" role="alert">{app.error}</p>{/if}
+			<main class="content" class:on-np={path === '/'}>
+				<!-- The one status line (Wave 3.5, rule 1): moving > out of reach > busy > reconnecting,
+				     then this device's offers. At every width, in its own room, never over the controls. -->
+				<StatusSlot />
 				{@render children()}
 			</main>
 		</div>
-		{#if offlinePlayer.active}
-			<div class="barwrap"><OfflineBar /></div>
-		{:else}
-			<div class="barwrap" class:on-np={path === '/'}><PlayerBar /></div>
-		{/if}
+		<!-- One mini player, for the selected player and for this device's downloads alike
+		     (Wave 3.5: two engines, one face). -->
+		<div class="barwrap" class:on-np={path === '/'}><PlayerBar /></div>
+		<!-- Results and offers: one snackbar at a time (see Snackbar). -->
+		<ContinueOn />
+		<Snackbar message={app.error || app.notice} ondismiss={() => ((app.error = ''), (app.notice = ''))} timeout={10000} />
 		<nav class="tabs" aria-label="Main">
 			{#each TABS as n (n.href)}
 				<a href={n.href} class:active={n.match(path)} aria-current={n.match(path) ? 'page' : undefined}>
@@ -374,25 +337,6 @@
 		border-radius: 999px;
 		padding: 0.65rem 1rem;
 	}
-	.chip {
-		display: flex;
-		align-items: center;
-		gap: 0.45rem;
-		width: fit-content;
-		max-width: calc(100% - 2 * clamp(1rem, 3vw, 2.5rem));
-		margin: 0.6rem clamp(1rem, 3vw, 2.5rem) 0;
-		padding: 0.3rem 0.75rem;
-		border-radius: 999px;
-		font-size: 0.85rem;
-		background: var(--bg-sunken);
-		color: var(--fg);
-		border: 1px solid var(--line);
-		flex: none;
-	}
-	.chip.busy {
-		border-color: var(--accent);
-		background: var(--accent-soft);
-	}
 	.content {
 		min-width: 0;
 		padding-bottom: calc(var(--bar-h) + var(--tabs-h) + 1rem);
@@ -402,48 +346,23 @@
 		position: relative;
 		isolation: isolate;
 	}
-	/* Room for the "Playing on …" strip above the player bar. Now playing shows the strip
-	   itself, so the bar's is hidden there. */
-	.content.has-strip:not(.on-np) {
-		padding-bottom: calc(var(--bar-h) + var(--tabs-h) + var(--strip-h) + 1rem);
-	}
-	.barwrap.on-np :global(.bar > .strip) {
+	/* Now playing has its own transport, seek, volume and Play on at every width: no second
+	   one in the player bar under it (Wave 3.5). */
+	.barwrap.on-np {
 		display: none;
 	}
-	.banner {
-		margin: 1rem clamp(1rem, 3vw, 2.5rem) 0;
-		padding: 0.6rem 0.9rem;
-		border: 1px solid currentColor;
-		border-radius: var(--radius-sm);
-	}
-	.resume {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.6rem;
-		border-color: var(--accent);
-		background: var(--accent-soft);
-	}
-	.resume span {
-		flex: 1 1 14rem;
-	}
-	.tap {
-		width: calc(100% - 2 * clamp(1rem, 3vw, 2.5rem));
-		font: inherit;
-		color: inherit;
-		text-align: left;
-		cursor: pointer;
+	.content.on-np {
+		padding-bottom: calc(var(--tabs-h) + 1rem);
 	}
 	.tabs {
 		display: none;
 	}
 	@media (max-width: 760px) {
 		:global(:root) {
-			/* Bottom chrome kept tight (tabs, mini player, "Playing on" strip): each control
-			   still has a 44 px target. */
+			/* Bottom chrome kept tight (tabs, mini player): each control still has a 44 px
+			   target. */
 			--tabs-h: calc(52px + env(safe-area-inset-bottom));
 			--bar-h: 58px;
-			--strip-h: 30px;
 		}
 		.shell {
 			grid-template-columns: minmax(0, 1fr);

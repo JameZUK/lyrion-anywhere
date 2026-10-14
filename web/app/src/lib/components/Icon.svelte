@@ -60,6 +60,15 @@
 		stop: 'M6.5 6.5h11v11h-11z',
 		signal: 'M3 12h4l2-6 4 12 2-6h6',
 		clock: 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM12 7.5V12l3 2',
+		// Available offline (downloaded): the one mark for it everywhere (Wave 3.5 rule 2).
+		downloaded: 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM12 7.5v8M8.5 12.5 12 16l3.5-3.5',
+		// Now playing: a note in a circle (never the house, which reads as Home).
+		nowplaying: 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM10.5 15.5V8.5l4.5-1M10.5 15.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z',
+		pencil: 'M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4',
+		warning: 'M12 4 2.5 20h19zM12 10v4.5M12 17.5h.01',
+		minus: 'M5 12h14',
+		// Ungroup: a broken link.
+		unlink: 'M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1M4 4l16 16',
 	};
 	const SOLID = new Set(['play', 'pause', 'next', 'prev', 'stop']);
 

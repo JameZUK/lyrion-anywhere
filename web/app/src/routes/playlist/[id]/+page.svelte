@@ -11,6 +11,9 @@
 	import type { Command } from '$lib/api/rpc';
 	import Icon from '$lib/components/Icon.svelte';
 	import DownloadBar from '$lib/components/DownloadBar.svelte';
+	import PageActions from '$lib/components/PageActions.svelte';
+	import RowMenu, { type RowAction } from '$lib/components/RowMenu.svelte';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import { controls } from '$lib/player/controls.svelte';
 	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
 
@@ -19,7 +22,9 @@
 	let error = $state('');
 	let renaming = $state(false);
 	let newName = $state('');
+	/** Delete's confirmation, while it is open (one confirm pattern app-wide: ConfirmDialog). */
 	let confirmDelete = $state(false);
+	let dl = $state<ReturnType<typeof DownloadBar>>();
 
 	const listId = $derived.by(() => {
 		try {
@@ -67,11 +72,7 @@
 		await edit(cmd.renamePlaylist(id, newName), id);
 	}
 	async function remove(id: number) {
-		if (!confirmDelete) {
-			confirmDelete = true;
-			setTimeout(() => (confirmDelete = false), 4000);
-			return;
-		}
+		confirmDelete = false;
 		try {
 			await api.rpc('', cmd.deletePlaylist(id));
 			await go('/playlists');
@@ -88,6 +89,24 @@
 	const order = $derived(requests.map((t) => t.id as number));
 	const totalTime = $derived(tracks.reduce((s, t) => s + (Number(t.duration) || 0), 0));
 	useDetailTitle(() => textOf(info?.playlist));
+
+	/** The page's own ⋯ items: Rename and Delete for admins (playlists are shared data). */
+	const adminActions = $derived.by((): RowAction[] =>
+		app.isAdmin
+			? [
+					{ label: 'Rename', icon: 'pencil', run: () => ((newName = textOf(info?.playlist)), (renaming = true)), id: 'rename' },
+					{ label: 'Delete playlist', icon: 'trash', run: () => (confirmDelete = true), danger: true, id: 'delete' },
+				]
+			: [],
+	);
+	/** A track's ⋯ (admins): move it, or take it out. One trailing control per row. */
+	function rowActions(id: number, i: number): RowAction[] {
+		return [
+			{ label: 'Move up', icon: 'up', run: () => void edit(cmd.moveInPlaylist(id, i, i - 1), id), disabled: i === 0 },
+			{ label: 'Move down', icon: 'down', run: () => void edit(cmd.moveInPlaylist(id, i, i + 1), id), disabled: i === tracks.length - 1 },
+			{ label: 'Remove from the playlist', icon: 'trash', run: () => void edit(cmd.removeFromPlaylist(id, i), id), danger: true, id: 'remove' },
+		];
+	}
 </script>
 
 <section class="page">
@@ -107,22 +126,28 @@
 				<h1>{textOf(info.playlist)}</h1>
 			{/if}
 			<p class="muted">{tracks.length} tracks · {duration(totalTime)}</p>
-			<div class="actions">
-				<button class="btn primary" onclick={() => app.queueUp({ playlist: id }, 'play')} {...controls.needsServer(tracks.length > 0)}><Icon name="play" size={18} />Play</button>
-				<button class="btn" onclick={() => app.queueUp({ playlist: id }, 'next')} {...controls.needsServer(tracks.length > 0)}><Icon name="playnext" size={18} />Play next</button>
-				<button class="btn" onclick={() => app.queueUp({ playlist: id }, 'add')} {...controls.needsServer(tracks.length > 0)}><Icon name="plus" size={18} />Add to queue</button>
-				{#if app.isAdmin}
-					<button class="btn" onclick={() => { newName = textOf(info?.playlist); renaming = true; }}>Rename</button>
-					<button class="btn" class:danger={confirmDelete} onclick={() => remove(id)}><Icon name="trash" size={18} />{confirmDelete ? 'Tap again to delete' : 'Delete'}</button>
-				{/if}
-			</div>
-			<DownloadBar
-				tracks={requests}
-				ref={`playlist:${id}`}
-				group={{ name: textOf(info.playlist) || 'Playlist', ids: order }}
-				onremoved={(keys) => offlinePlayer.forget(keys)}
-			/>
+			<PageActions sel={{ playlist: id }} title={textOf(info.playlist)} can={tracks.length > 0} extra={[...adminActions, ...(dl?.actions() ?? [])]}>
+				{#snippet download()}
+					<DownloadBar
+						bind:this={dl}
+						tracks={requests}
+						ref={`playlist:${id}`}
+						group={{ name: textOf(info?.playlist) || 'Playlist', ids: order }}
+						onremoved={(keys) => offlinePlayer.forget(keys)}
+					/>
+				{/snippet}
+			</PageActions>
 		</header>
+		{#if confirmDelete}
+			<ConfirmDialog
+				title={`Delete the playlist “${textOf(info.playlist)}”?`}
+				message="It is deleted on your music server, for everyone."
+				confirmLabel="Delete"
+				danger
+				onconfirm={() => remove(id)}
+				oncancel={() => (confirmDelete = false)}
+			/>
+		{/if}
 		<ol class="q">
 			{#each tracks as t, i (`${i}:${t.id}`)}
 				<li>
@@ -132,15 +157,11 @@
 							<span class="title ellipsis">{textOf(t.title)}</span>
 							<span class="sub ellipsis muted">{[textOf(t.artist), textOf(t.album)].filter(Boolean).join(' · ')}</span>
 						</span>
-						{#if downloads.savedById(t.id)}<span class="saved" title="Downloaded"><Icon name="check" size={16} label="Downloaded" /></span>{/if}
+						{#if downloads.savedById(t.id)}<span class="saved" title="Downloaded" data-track-mark="done"><Icon name="downloaded" size={16} label="Downloaded" /></span>{/if}
 						<span class="dur muted">{duration(t.duration)}</span>
 					</button>
 					{#if app.isAdmin}
-					<div class="ops">
-						<button class="icon-btn" aria-label="Move up" disabled={i === 0} onclick={() => edit(cmd.moveInPlaylist(id, i, i - 1), id)}><Icon name="back" size={16} /></button>
-						<button class="icon-btn" aria-label="Move down" disabled={i === tracks.length - 1} onclick={() => edit(cmd.moveInPlaylist(id, i, i + 1), id)}><Icon name="chevron" size={16} /></button>
-						<button class="icon-btn" aria-label={`Remove ${textOf(t.title)} from the playlist`} onclick={() => edit(cmd.removeFromPlaylist(id, i), id)}><Icon name="close" size={16} /></button>
-					</div>
+						<RowMenu label={`More options for ${textOf(t.title) || 'this track'}`} actions={rowActions(id, i)} />
 					{/if}
 				</li>
 			{/each}
@@ -175,16 +196,6 @@
 	}
 	.rename .field {
 		flex: 1;
-	}
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.6rem;
-		margin-top: 1rem;
-	}
-	.danger {
-		border-color: var(--danger);
-		color: var(--danger);
 	}
 	.q {
 		list-style: none;
@@ -230,16 +241,5 @@
 	.dur {
 		font-size: 0.85rem;
 		font-variant-numeric: tabular-nums;
-	}
-	.ops {
-		display: flex;
-		opacity: 0.55;
-	}
-	li:hover .ops,
-	.ops:focus-within {
-		opacity: 1;
-	}
-	.ops .icon-btn:first-child :global(svg) {
-		transform: rotate(90deg);
 	}
 </style>

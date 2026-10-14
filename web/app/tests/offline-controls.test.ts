@@ -2,7 +2,7 @@
 // the player bar, the queue peek and full queue (with their Downloaded / On this device
 // marks), the lock screen, and the one connection message in the layout.
 import { readFileSync } from 'node:fs';
-import { render, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import type { PlayerStatus, Track } from '$lib/lms/types';
 import type { StoredTrack } from '$lib/offline/types';
@@ -150,9 +150,15 @@ describe('the queue peek', () => {
 		r.unmount();
 	});
 
-	test('On this device: the stream this device holds, only while it is the player', async () => {
+	test('On this device: the stream this device holds, only while it is the player and only out of reach', async () => {
 		device.mac = P;
 		device.detail = { output: 'Playing', received: true };
+		// In reach, the cache is invisible (Wave 3.5 rule 2): nothing to mark.
+		const online = render(QueueList);
+		await waitFor(() => expect(online.container.querySelectorAll('li').length).toBe(4));
+		expect(online.container.querySelector('[data-queue-mark="device"]')).toBeNull();
+		online.unmount();
+		fake.app.reach = 'unreachable';
 		const r = render(QueueList);
 		await waitFor(() => expect(r.container.querySelectorAll('li').length).toBe(4));
 		const now = r.container.querySelector<HTMLButtonElement>('button[aria-current="true"]')!;
@@ -200,8 +206,11 @@ describe('the full queue', () => {
 		expect(lis.map((li) => li.classList.contains('unavailable'))).toEqual([true, false, false, true, true]);
 		expect(lis[2]!.querySelector('[data-queue-mark="downloaded"]')).not.toBeNull();
 		expect(lis[1]!.querySelector('[data-queue-mark="device"]')).not.toBeNull();
-		for (const b of r.container.querySelectorAll<HTMLButtonElement>('button[aria-label^="Remove"], button[aria-label^="Move"]')) expect(b.disabled).toBe(true);
-		expect(r.container.querySelector('[aria-label^="More options"]')).toBeNull();
+		// Every edit in a row's menu (and the queue's own menu) is unavailable, and says why.
+		await fireEvent.click(r.getByRole('button', { name: 'More options for Song 2' }));
+		const items = r.getAllByRole('menuitem');
+		expect(items.map((m) => m.textContent?.replace(/(N|Delete|Alt\+Arrow\w+)$/, ''))).toEqual(['Play next', 'Move up', 'Move down', 'Remove from queue']);
+		for (const m of items) expect(m.getAttribute('aria-disabled')).toBe('true');
 		r.unmount();
 	});
 });
@@ -239,13 +248,12 @@ describe('the lock screen', () => {
 describe('the connection message', () => {
 	const layout = readFileSync(`${__dirname}/../src/routes/+layout.svelte`, 'utf8');
 
-	test('one chip, in the content (every width), before the banners; no sidebar-only note', () => {
+	test('one status slot, in the content (every width), before the page; no sidebar-only note', () => {
 		const content = layout.slice(layout.indexOf('<main class="content"'));
-		expect(content).toMatch(/\{#if controls\.message\}\s*<p class="chip"[^>]*role="status"/);
-		expect(content.indexOf('class="chip"')).toBeLessThan(content.indexOf('<ContinueOn />'));
-		expect(layout).not.toMatch(/Reconnecting…/);
+		expect(content.indexOf('<StatusSlot />')).toBeLessThan(content.indexOf('{@render children()}'));
+		expect((layout.match(/<StatusSlot \/>/g) ?? []).length).toBe(2); // the shell, and car mode
 		const nav = layout.slice(layout.indexOf('<nav class="side"'), layout.indexOf('</nav>'));
-		expect(nav).not.toMatch(/chip/);
+		expect(nav).not.toMatch(/StatusSlot|chip/);
 	});
 
 	test('it takes room in the layout: never fixed or floating over the controls', () => {
@@ -262,8 +270,8 @@ describe('the connection message', () => {
 		fake.app.reach = 'busy';
 		expect(controls.message).toBe('Your music server is busy. Waiting for it…');
 		fake.app.reach = 'unreachable';
-		expect(controls.message).toBe('Can’t reach your server.');
+		expect(controls.message).toBe('Can’t reach your music server.');
 		thisDeviceOutOfReach();
-		expect(controls.message).toBe('Can’t reach your server. Playing from this device.');
+		expect(controls.message).toBe('Can’t reach your music server. Playing from this device.');
 	});
 });

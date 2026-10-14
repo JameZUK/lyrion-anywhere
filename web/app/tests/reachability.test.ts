@@ -103,8 +103,8 @@ describe('the connection message', () => {
 		expect(BUSY_TEXT).toBe('Your music server is busy. Waiting for it…');
 		expect(connectionMessage('unreachable', false)).toBe(UNREACHABLE_TEXT);
 		expect(connectionMessage('unreachable', true)).toBe(LOCAL_TEXT);
-		expect(LOCAL_TEXT).toMatch(/^Can’t reach your server\. Playing from this device\.$/);
-		expect(connectionMessage('unreachable', false, 'Next track needs your server.')).toBe('Can’t reach your server. Next track needs your server.');
+		expect(LOCAL_TEXT).toMatch(/^Can’t reach your music server\. Playing from this device\.$/);
+		expect(connectionMessage('unreachable', false, 'Next track needs your music server.')).toBe('Can’t reach your music server. Next track needs your music server.');
 	});
 });
 

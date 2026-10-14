@@ -340,8 +340,10 @@ describe('the layout wires it up', () => {
 		expect(layout).toMatch(/downloads\.setUser\(user, !app\.provisional\)/);
 	});
 
-	test('the connection chip has the id disabled controls point at', () => {
-		expect(layout).toMatch(/role="status" id=\{CONNECTION_ID\}/);
+	test('the connection message (in the one status slot) has the id disabled controls point at', () => {
+		const slot = readFileSync(`${__dirname}/../src/lib/components/StatusSlot.svelte`, 'utf8');
+		expect(slot).toMatch(/role="status"\s+id=\{status\.kind === 'unreachable' \|\| status\.kind === 'busy' \? CONNECTION_ID : undefined\}/);
+		expect(layout).toMatch(/<StatusSlot \/>/);
 		expect(layout).toMatch(/app\.rememberNow\(\)/);
 	});
 });
@@ -350,13 +352,13 @@ describe('controls that need the server', () => {
 	test('are disabled unless in reach, and point at the connection message when that is why', () => {
 		expect(needsServer('online', '')).toEqual({ disabled: false });
 		expect(needsServer('online', '', false)).toEqual({ disabled: true });
-		expect(needsServer('unreachable', 'Can’t reach your server.')).toEqual({ disabled: true, title: 'Can’t reach your server.', 'aria-describedby': CONNECTION_ID });
+		expect(needsServer('unreachable', 'Can’t reach your music server.')).toEqual({ disabled: true, title: 'Can’t reach your music server.', 'aria-describedby': CONNECTION_ID });
 		expect(needsServer('busy', 'Your music server is busy. Waiting for it…', true)).toMatchObject({ disabled: true, 'aria-describedby': CONNECTION_ID });
 	});
 
 	test('a control disabled for another reason does not blame the connection', () => {
 		expect(explain(true, 'online', '')).toEqual({});
-		expect(explain(false, 'unreachable', 'Can’t reach your server.')).toEqual({});
+		expect(explain(false, 'unreachable', 'Can’t reach your music server.')).toEqual({});
 		expect(explain(true, 'unreachable', '')).toEqual({});
 	});
 });
