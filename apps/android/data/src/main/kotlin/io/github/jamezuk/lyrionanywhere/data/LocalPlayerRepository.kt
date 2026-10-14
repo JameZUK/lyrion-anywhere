@@ -4,14 +4,18 @@ import io.github.jamezuk.lyrionanywhere.core.NetworkKind
 import io.github.jamezuk.lyrionanywhere.core.StreamQuality
 import io.github.jamezuk.lyrionanywhere.core.ApiException
 import io.github.jamezuk.lyrionanywhere.core.DspSettings
+import io.github.jamezuk.lyrionanywhere.core.LocalAvailability
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayer
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayerConfig
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayerObserver
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayerStatus
+import io.github.jamezuk.lyrionanywhere.core.LocalRepeat
+import io.github.jamezuk.lyrionanywhere.core.OfflineControls
 import io.github.jamezuk.lyrionanywhere.core.OutputKind
 import io.github.jamezuk.lyrionanywhere.core.OutputNegotiator
 import io.github.jamezuk.lyrionanywhere.core.OutputRoute
 import io.github.jamezuk.lyrionanywhere.core.PlayerConnection
+import io.github.jamezuk.lyrionanywhere.core.RepeatMode
 import io.github.jamezuk.lyrionanywhere.core.Session
 import io.github.jamezuk.lyrionanywhere.core.SignalPathInfo
 import io.github.jamezuk.lyrionanywhere.core.checkEqProfile
@@ -75,6 +79,36 @@ data class LocalPlayerState(
     /** Connected (or reconnecting) to LMS as a player. */
     val running: Boolean
         get() = enabled && status != null && status.connection !is PlayerConnection.Stopped
+
+    /**
+     * While the player can't reach the server: what this phone can still do by itself
+     * (null while connected, or with nothing to play).
+     */
+    val offlineControls: OfflineControls? get() = status?.offlineControls?.takeIf { running }
+}
+
+/** A control used on this phone while the server can't be reached (see [OfflineControls]). */
+sealed interface LocalControl {
+    data object Play : LocalControl
+
+    data object Pause : LocalControl
+
+    data object Next : LocalControl
+
+    data object Previous : LocalControl
+
+    /** Play the queue entry at [index] from the phone's copy. */
+    data class Jump(val index: Int) : LocalControl
+
+    /** Go to [ms] into the track playing. */
+    data class Seek(val ms: Long) : LocalControl
+}
+
+/** LMS's repeat mode as the engine's. */
+fun RepeatMode.toLocal(): LocalRepeat = when (this) {
+    RepeatMode.OFF -> LocalRepeat.OFF
+    RepeatMode.ALL -> LocalRepeat.ALL
+    RepeatMode.ONE -> LocalRepeat.ONE
 }
 
 /** What the replay cache holds: only totals, never what is in it. */
@@ -149,6 +183,25 @@ interface LocalPlayerRepository {
      * happens while it is connected or there is no network.
      */
     fun reconnectNow() {}
+
+    /**
+     * LMS's queue for this phone's player as the app last read it: track ids in play order
+     * (null for what isn't a library track), the current position and the repeat mode. While
+     * the server can't be reached, the phone's controls work on this.
+     */
+    fun setQueueSnapshot(trackIds: List<Long?>, currentIndex: Int?, repeat: RepeatMode) {}
+
+    /**
+     * Use a control on the phone while the server can't be reached. Returns whether the
+     * phone could do it now (false while connected: LMS's commands are used then).
+     */
+    fun localControl(control: LocalControl): Boolean = false
+
+    /**
+     * Where each of these tracks is on the phone, whole (for the queue's marks, and which
+     * entries play while the server can't be reached).
+     */
+    suspend fun localAvailability(trackIds: List<Long>): List<LocalAvailability> = trackIds.map { LocalAvailability.NONE }
 }
 
 /** The engine's DSP for [sound] on [output], with the EQ left out while [bypass]. */
@@ -194,6 +247,12 @@ interface LocalPlayerHandle {
 
     /** The replay cache's size in bytes (0: off, which empties it). */
     fun setStreamCacheBytes(bytes: Long) {}
+
+    fun setQueueSnapshot(trackIds: List<Long>, currentIndex: UInt?, repeat: LocalRepeat) {}
+
+    fun localControl(control: LocalControl): Boolean = false
+
+    fun localAvailability(trackIds: List<Long>): List<LocalAvailability> = trackIds.map { LocalAvailability.NONE }
 
     fun close()
 }
@@ -276,6 +335,20 @@ private class RustHandle(
 
     override fun setStreamCacheBytes(bytes: Long) = player.setStreamCacheBytes(bytes.coerceAtLeast(0).toULong())
 
+    override fun setQueueSnapshot(trackIds: List<Long>, currentIndex: UInt?, repeat: LocalRepeat) =
+        player.setQueueSnapshot(trackIds, currentIndex, repeat)
+
+    override fun localControl(control: LocalControl): Boolean = when (control) {
+        LocalControl.Play -> player.localPlay()
+        LocalControl.Pause -> player.localPause()
+        LocalControl.Next -> player.localNext()
+        LocalControl.Previous -> player.localPrevious()
+        is LocalControl.Jump -> control.index >= 0 && player.localJump(control.index.toUInt())
+        is LocalControl.Seek -> player.localSeek(control.ms.coerceAtLeast(0).toULong())
+    }
+
+    override fun localAvailability(trackIds: List<Long>): List<LocalAvailability> = player.localAvailability(trackIds)
+
     override fun close() = player.close()
 }
 
@@ -296,7 +369,7 @@ class RustLocalPlayerRepository(
     /** The signed-in session (null while signed out). */
     private val sessions: StateFlow<Session?>,
     private val settings: SettingsStore,
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
     private val io: CoroutineDispatcher,
     private val eqCheck: (String) -> EqCheck = ::rustEqCheck,
     /** Tests: makes the engine (null: the Rust player, spooling to [cacheDir]). */
@@ -485,6 +558,7 @@ class RustLocalPlayerRepository(
             h.setReadAhead(readAhead)
             h.setNetworkAvailable(networkUp)
             h.setStreamCacheBytes(cacheBytes)
+            snapshot?.let { (ids, cur, rep) -> h.setQueueSnapshot(ids, cur, rep) }
             h.start(Observer(h))
         } catch (e: Exception) {
             handle = null
@@ -598,6 +672,35 @@ class RustLocalPlayerRepository(
         applyDsp()
     }
 
+    /** The queue snapshot last given (kept for a new engine). */
+    @Volatile private var snapshot: Triple<List<Long>, UInt?, LocalRepeat>? = null
+
+    override fun setQueueSnapshot(trackIds: List<Long?>, currentIndex: Int?, repeat: RepeatMode) {
+        val s = Triple(
+            trackIds.take(MAX_QUEUE_SNAPSHOT).map { it?.takeIf { id -> id > 0 } ?: 0L },
+            currentIndex?.takeIf { it >= 0 }?.toUInt(),
+            repeat.toLocal(),
+        )
+        if (s == snapshot) return
+        snapshot = s
+        handle?.setQueueSnapshot(s.first, s.second, s.third)
+    }
+
+    override fun localControl(control: LocalControl): Boolean {
+        val h = handle ?: return false
+        if (control is LocalControl.Jump) {
+            // Off the calling thread: the engine looks at what is on the phone first.
+            scope.launch(io) { runCatching { h.localControl(control) } }
+            return true
+        }
+        return h.localControl(control)
+    }
+
+    override suspend fun localAvailability(trackIds: List<Long>): List<LocalAvailability> {
+        val h = handle ?: return trackIds.map { LocalAvailability.NONE }
+        return withContext(io) { runCatching { h.localAvailability(trackIds) }.getOrNull() } ?: trackIds.map { LocalAvailability.NONE }
+    }
+
     override fun reconnectNow() {
         if (!networkUp) return
         if (_state.value.status?.connection !is io.github.jamezuk.lyrionanywhere.core.PlayerConnection.Reconnecting) return
@@ -621,3 +724,6 @@ fun cleanLoudnessReference(db: Double?): Double? = when {
 
 /** The most attenuation the phone's volume is taken to apply (dB); muted counts as this. */
 const val MAX_LOUDNESS_REFERENCE_DB = 120.0
+
+/** The most queue entries given to the engine (as the engine keeps). */
+const val MAX_QUEUE_SNAPSHOT = 10_000

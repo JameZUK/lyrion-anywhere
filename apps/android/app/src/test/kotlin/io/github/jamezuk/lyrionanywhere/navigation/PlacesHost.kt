@@ -3,7 +3,6 @@ package io.github.jamezuk.lyrionanywhere.navigation
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
@@ -14,7 +13,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.navigation.compose.NavHost
@@ -22,16 +20,15 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import io.github.jamezuk.lyrionanywhere.data.offline.ConnectionUi
-import io.github.jamezuk.lyrionanywhere.ui.components.ReconnectingPill
-import io.github.jamezuk.lyrionanywhere.ui.components.ServerBusyPill
-import io.github.jamezuk.lyrionanywhere.ui.components.ServerUnreachableBanner
+import io.github.jamezuk.lyrionanywhere.ui.components.ConnectionFrame
+import io.github.jamezuk.lyrionanywhere.ui.components.connectionMessage
 import io.github.jamezuk.lyrionanywhere.ui.theme.LyrionTheme
 import kotlinx.serialization.Serializable
 
 /*
  * A stand-in for AppRoot and MainScreen (which need the whole app, Rust included): the same
  * switch between "signing in", offline mode and the signed-in app, with the signed-in app
- * kept in [AppPlaces] exactly as AppRoot keeps MainScreen, and the same banner and pill.
+ * kept in [AppPlaces] exactly as AppRoot keeps MainScreen, and the same connection line.
  */
 
 @Serializable data object TestHome
@@ -65,31 +62,28 @@ fun PlacesHost(h: HostState) {
 @Composable
 private fun TestMain(connection: ConnectionUi) {
     val nav = rememberNavController()
-    Column(Modifier.fillMaxSize()) {
-        Box(Modifier.weight(1f)) {
-            NavHost(nav, startDestination = TestHome) {
-                composable<TestHome> {
-                    Column {
-                        Text("Home")
-                        Button(onClick = { nav.navigate(TestAlbum(7)) }) { Text("Open album") }
-                    }
+    ConnectionFrame(
+        connectionMessage(connection, playingHere = false),
+        onDownloads = { nav.navigate(TestDownloads) { launchSingleTop = true } },
+        Modifier.fillMaxSize(),
+    ) {
+        NavHost(nav, startDestination = TestHome) {
+            composable<TestHome> {
+                Column {
+                    Text("Home")
+                    Button(onClick = { nav.navigate(TestAlbum(7)) }) { Text("Open album") }
                 }
-                composable<TestAlbum> { entry ->
-                    val id = entry.toRoute<TestAlbum>().id
-                    Column {
-                        Text("Album $id")
-                        LazyColumn(state = rememberLazyListState(), modifier = Modifier.testTag(ALBUM_LIST)) {
-                            items(TRACKS) { Text("Track $it") }
-                        }
-                    }
-                }
-                composable<TestDownloads> { Text("Downloads screen") }
             }
-            if (connection.reconnecting) ReconnectingPill(Modifier.align(Alignment.BottomCenter))
-            if (connection.busy) ServerBusyPill(Modifier.align(Alignment.BottomCenter))
-        }
-        if (connection.unreachable) {
-            ServerUnreachableBanner(onDownloads = { nav.navigate(TestDownloads) { launchSingleTop = true } })
+            composable<TestAlbum> { entry ->
+                val id = entry.toRoute<TestAlbum>().id
+                Column {
+                    Text("Album $id")
+                    LazyColumn(state = rememberLazyListState(), modifier = Modifier.testTag(ALBUM_LIST)) {
+                        items(TRACKS) { Text("Track $it") }
+                    }
+                }
+            }
+            composable<TestDownloads> { Text("Downloads screen") }
         }
     }
 }

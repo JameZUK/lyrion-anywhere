@@ -123,6 +123,8 @@ pub(crate) struct LocalSource {
     /// Where a paused or stopped queue would start (ms into the current track).
     held_position_ms: u64,
     failures_in_row: usize,
+    /// A track that can't be played ends the queue there (instead of being skipped).
+    stop_at_failure: bool,
     clock: Box<dyn Fn() -> u64 + Send>,
     seed: u64,
 }
@@ -147,9 +149,16 @@ impl LocalSource {
             play: None,
             held_position_ms: 0,
             failures_in_row: 0,
+            stop_at_failure: false,
             clock,
             seed,
         }
+    }
+
+    /// End the queue at a track that can't be played, rather than skip it (the live
+    /// player's takeover: it may only play entries in a row).
+    pub(crate) fn set_stop_at_failure(&mut self, on: bool) {
+        self.stop_at_failure = on;
     }
 
     pub(crate) fn take_events(&mut self) -> Vec<SourceEvent> {
@@ -302,7 +311,7 @@ impl LocalSource {
             Err(error) => {
                 self.events.push(SourceEvent::Failed { index, error });
                 self.failures_in_row += 1;
-                if self.failures_in_row >= self.tracks.len() {
+                if self.failures_in_row >= self.tracks.len() || self.stop_at_failure {
                     self.open_done = true;
                 }
                 false
@@ -368,7 +377,7 @@ impl LocalSource {
                     self.events.push(SourceEvent::Failed { index, error });
                     self.finish_segment(seq);
                     self.failures_in_row += 1;
-                    if self.failures_in_row >= self.tracks.len() {
+                    if self.failures_in_row >= self.tracks.len() || self.stop_at_failure {
                         self.open_done = true;
                     }
                 }

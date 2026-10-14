@@ -58,13 +58,17 @@ fun shuffleState(mode: ShuffleMode): String = stringResource(
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ShuffleButton(mode: ShuffleMode, onCycle: () -> Unit, onChoose: (ShuffleMode) -> Unit) {
+fun ShuffleButton(mode: ShuffleMode, onCycle: () -> Unit, onChoose: (ShuffleMode) -> Unit, enabled: Boolean = true) {
     var open by remember { mutableStateOf(false) }
     val haptics = LocalHapticFeedback.current
     val label = stringResource(R.string.shuffle)
     val state = shuffleState(mode)
     val on = mode != ShuffleMode.OFF
-    val tint = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+    val tint = when {
+        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = io.github.jamezuk.lyrionanywhere.ui.library.DISABLED_ALPHA)
+        on -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
     Box {
         Box(
             Modifier
@@ -72,6 +76,7 @@ fun ShuffleButton(mode: ShuffleMode, onCycle: () -> Unit, onChoose: (ShuffleMode
                 .clip(CircleShape)
                 .testTag("shuffle-button")
                 .combinedClickable(
+                    enabled = enabled,
                     role = Role.Button,
                     onLongClickLabel = stringResource(R.string.shuffle_choose),
                     onLongClick = {
@@ -140,6 +145,7 @@ fun QueuePeekSheet(state: PlayerUiState, actions: NowPlayingActions, onDismiss: 
                     upcoming = state.upcoming,
                     onClearUpcoming = actions.onClearUpcoming,
                     onSaveAsPlaylist = actions.onSaveQueue.takeIf { state.canSaveQueue },
+                    enabled = state.gate.other,
                 )
             }
             queueItems(
@@ -149,6 +155,8 @@ fun QueuePeekSheet(state: PlayerUiState, actions: NowPlayingActions, onDismiss: 
                 queueActions,
                 hasMore = state.queueMore,
                 sections = state.sections,
+                marks = state::markOf,
+                gate = state.gate,
             )
         }
     }

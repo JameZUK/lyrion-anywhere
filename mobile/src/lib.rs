@@ -91,14 +91,14 @@ pub use offline::{
     resolve_offline_tracks, sync_plays,
 };
 pub use player::{
-    CrossfeedSetting, DitherSetting, DspSettings, EqProfileSummary, Levelling, LocalPlayback,
-    LocalPlayer, LocalPlayerConfig, LocalPlayerObserver, LocalPlayerStatus, LocalRepeat,
-    MixerOffer, NotBitPerfect, OfferBlocker, OfflinePlayer, OfflinePlayerObserver,
-    OfflinePlayerStatus, OutputKind, OutputNegotiator, OutputOffers, OutputRoute, PcmBlock,
-    PcmEncoding, PcmIntBlock, PlayerConnection, SignalPathInfo, SignalStage, SignalVerdict,
-    StreamCacheTotals, StreamQuality, TransitionMode, VISUAL_FRAME_BYTES, VISUAL_FRAME_FLOATS,
-    check_eq_profile, clear_stream_cache, remove_stream_spools, stream_cache_totals,
-    stream_quality_for,
+    CrossfeedSetting, DitherSetting, DspSettings, EqProfileSummary, Levelling, LocalAvailability,
+    LocalPlayback, LocalPlayer, LocalPlayerConfig, LocalPlayerObserver, LocalPlayerStatus,
+    LocalRepeat, MixerOffer, NotBitPerfect, OfferBlocker, OfflineControls, OfflinePlayer,
+    OfflinePlayerObserver, OfflinePlayerStatus, OutputKind, OutputNegotiator, OutputOffers,
+    OutputRoute, PcmBlock, PcmEncoding, PcmIntBlock, PlayerConnection, SignalPathInfo, SignalStage,
+    SignalVerdict, StreamCacheTotals, StreamQuality, TransitionMode, VISUAL_FRAME_BYTES,
+    VISUAL_FRAME_FLOATS, check_eq_profile, clear_stream_cache, remove_stream_spools,
+    stream_cache_totals, stream_quality_for,
 };
 pub use players::{Players, SaveQueueOutcome};
 pub use routine::{

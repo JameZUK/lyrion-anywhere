@@ -398,6 +398,10 @@ internal fun TransportRow(
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     modifier: Modifier = Modifier,
+    /** False: greyed out (it can't work now, e.g. the server can't be reached). */
+    playEnabled: Boolean = true,
+    previousEnabled: Boolean = true,
+    nextEnabled: Boolean = true,
     shuffle: @Composable () -> Unit,
     repeat: @Composable () -> Unit,
 ) {
@@ -407,11 +411,11 @@ internal fun TransportRow(
         horizontalArrangement = Arrangement.SpaceEvenly,
     ) {
         shuffle()
-        IconButton(onClick = onPrevious) {
+        IconButton(onClick = onPrevious, enabled = previousEnabled, modifier = Modifier.testTag("previous")) {
             Icon(Icons.Outlined.SkipPrevious, contentDescription = stringResource(R.string.action_previous))
         }
-        PlayPause(playing, onTogglePlay)
-        IconButton(onClick = onNext) {
+        PlayPause(playing, onTogglePlay, enabled = playEnabled)
+        IconButton(onClick = onNext, enabled = nextEnabled, modifier = Modifier.testTag("next")) {
             Icon(Icons.Outlined.SkipNext, contentDescription = stringResource(R.string.action_next))
         }
         repeat()
@@ -420,10 +424,10 @@ internal fun TransportRow(
 
 /** The large play/pause button (72 dp). */
 @Composable
-internal fun PlayPause(playing: Boolean, onClick: () -> Unit) {
+internal fun PlayPause(playing: Boolean, onClick: () -> Unit, enabled: Boolean = true) {
     val icon = if (playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow
     val label = stringResource(if (playing) R.string.action_pause else R.string.action_play)
-    androidx.compose.material3.FilledIconButton(onClick = onClick, modifier = Modifier.size(72.dp).testTag("play-pause")) {
+    androidx.compose.material3.FilledIconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(72.dp).testTag("play-pause")) {
         Icon(icon, contentDescription = label, modifier = Modifier.size(40.dp))
     }
 }

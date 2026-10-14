@@ -164,10 +164,12 @@ fun MiniPlayer(
     val swipeMin = with(density) { SWIPE_MIN.toPx() }
     val swipeUp = with(density) { SWIPE_UP_MIN.toPx() }
     val haptics = LocalHapticFeedback.current
+    // While the server is away only what works is offered (swipes and TalkBack actions too).
+    val gate = state.gate
     // Stable callbacks, so recompositions don't restart a swipe in progress.
     val latestOpen by rememberUpdatedState(onOpen)
-    val latestNext by rememberUpdatedState(onNext)
-    val latestPrevious by rememberUpdatedState(onPrevious)
+    val latestNext by rememberUpdatedState(onNext.takeIf { gate.next } ?: {})
+    val latestPrevious by rememberUpdatedState(onPrevious.takeIf { gate.previous } ?: {})
     val swiped = remember {
         { a: SwipeAction ->
             when (a) {
@@ -215,9 +217,9 @@ fun MiniPlayer(
                     onClick = onOpen,
                 )
                 .semantics {
-                    customActions = listOf(
-                        CustomAccessibilityAction(nextLabel) { onNext(); true },
-                        CustomAccessibilityAction(previousLabel) { onPrevious(); true },
+                    customActions = listOfNotNull(
+                        CustomAccessibilityAction(nextLabel) { onNext(); true }.takeIf { gate.next },
+                        CustomAccessibilityAction(previousLabel) { onPrevious(); true }.takeIf { gate.previous },
                         CustomAccessibilityAction(playOnLabel) { onOutputs(); true },
                     )
                 }
@@ -257,8 +259,8 @@ fun MiniPlayer(
             }
             }
             OutputButton(state, onOutputs)
-            PlayPauseButton(state.playing, onTogglePlay, filled = false)
-            IconButton(onClick = onNext) {
+            PlayPauseButton(state.playing, onTogglePlay, filled = false, enabled = gate.playPause)
+            IconButton(onClick = onNext, enabled = gate.next, modifier = Modifier.testTag("mini-next")) {
                 Icon(Icons.Outlined.SkipNext, contentDescription = stringResource(R.string.action_next))
             }
         }
@@ -297,15 +299,15 @@ internal fun ChoosePlayerBar(state: PlayerUiState, onOutputs: () -> Unit) {
 }
 
 @Composable
-private fun PlayPauseButton(playing: Boolean, onClick: () -> Unit, filled: Boolean) {
+private fun PlayPauseButton(playing: Boolean, onClick: () -> Unit, filled: Boolean, enabled: Boolean = true) {
     val icon = if (playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow
     val label = stringResource(if (playing) R.string.action_pause else R.string.action_play)
     if (filled) {
-        FilledIconButton(onClick = onClick, modifier = Modifier.size(72.dp)) {
+        FilledIconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(72.dp)) {
             Icon(icon, contentDescription = label, modifier = Modifier.size(40.dp))
         }
     } else {
-        IconButton(onClick = onClick) { Icon(icon, contentDescription = label) }
+        IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.testTag("mini-play-pause")) { Icon(icon, contentDescription = label) }
     }
 }
 
@@ -588,9 +590,19 @@ private fun NowPlayingContent(
                             state.upcoming,
                             actions.onClearUpcoming,
                             onSaveAsPlaylist = actions.onSaveQueue.takeIf { state.canSaveQueue },
+                            enabled = state.gate.other,
                         )
                     }
-                    queueItems(state.queue, status.queueIndex?.toInt(), drag, actions.queueActions(), hasMore = state.queueMore, sections = state.sections)
+                    queueItems(
+                        state.queue,
+                        status.queueIndex?.toInt(),
+                        drag,
+                        actions.queueActions(),
+                        hasMore = state.queueMore,
+                        sections = state.sections,
+                        marks = state::markOf,
+                        gate = state.gate,
+                    )
                 }
             }
         }
@@ -799,20 +811,34 @@ private fun NowPlayingControls(
                 null
             },
         )
+        val gate = state.gate
         SeekBar(
             elapsed = elapsed,
             duration = status.durationSecs,
-            enabled = status.canSeek && track != null,
+            enabled = status.canSeek && track != null && gate.seek,
             onSeek = actions.onSeek,
             waveform = state.waveform,
         )
+        if (gate.waitingForServer) {
+            // The phone played what it holds; the next track has to come from the server.
+            Text(
+                stringResource(R.string.next_needs_server),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth().testTag("needs-server"),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+        }
         TransportRow(
             playing = state.playing,
             onTogglePlay = actions.onTogglePlay,
             onPrevious = actions.onPrevious,
             onNext = actions.onNext,
-            shuffle = { ShuffleButton(status.shuffle, onCycle = actions.onShuffle, onChoose = actions.onShuffleMode) },
-            repeat = { RepeatButton(status.repeat, actions.onRepeat) },
+            playEnabled = gate.playPause,
+            previousEnabled = gate.previous,
+            nextEnabled = gate.next,
+            shuffle = { ShuffleButton(status.shuffle, onCycle = actions.onShuffle, onChoose = actions.onShuffleMode, enabled = gate.other) },
+            repeat = { RepeatButton(status.repeat, actions.onRepeat, enabled = gate.other) },
         )
         status.next?.let { next ->
             UpNextRow(next, onOpenQueue = onOpenQueue, onRemove = actions.onRemoveUpNext, modifier = Modifier.padding(top = 4.dp))
@@ -825,6 +851,7 @@ private fun NowPlayingControls(
                 label = sleepLeft ?: stringResource(R.string.action_sleep),
                 description = if (sleepLeft != null) stringResource(R.string.sleep_timer_left, sleepLeft) else stringResource(R.string.sleep_timer),
                 on = null,
+                enabled = gate.other,
                 onClick = onSleep,
                 modifier = Modifier.weight(1f).testTag("sleep-button"),
             )
@@ -842,6 +869,7 @@ private fun NowPlayingControls(
                 label = stringResource(R.string.volume),
                 description = stringResource(R.string.volume_on, volume.name),
                 state = "${volume.percent}%",
+                enabled = gate.volume || state.localSelected,
                 onClick = onVolume,
                 modifier = Modifier.weight(1f).testTag("volume-button"),
             )
@@ -851,7 +879,7 @@ private fun NowPlayingControls(
 
 /** Repeat: Off → All → One; its name stays "Repeat", its state says which. */
 @Composable
-internal fun RepeatButton(repeat: RepeatMode, onCycle: () -> Unit) {
+internal fun RepeatButton(repeat: RepeatMode, onCycle: () -> Unit, enabled: Boolean = true) {
     val repeatState = stringResource(
         when (repeat) {
             RepeatMode.OFF -> R.string.mode_off
@@ -862,6 +890,7 @@ internal fun RepeatButton(repeat: RepeatMode, onCycle: () -> Unit) {
     IconToggleButton(
         checked = repeat != RepeatMode.OFF,
         onCheckedChange = { onCycle() },
+        enabled = enabled,
         modifier = Modifier.testTag("repeat-button").semantics { stateDescription = repeatState },
     ) {
         Icon(

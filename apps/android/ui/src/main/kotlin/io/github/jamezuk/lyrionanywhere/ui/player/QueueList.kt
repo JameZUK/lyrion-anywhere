@@ -19,7 +19,9 @@ import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
 import androidx.compose.material.icons.outlined.ClearAll
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.DownloadDone
 import androidx.compose.material.icons.outlined.DragHandle
+import androidx.compose.material.icons.outlined.OfflinePin
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -66,6 +68,7 @@ import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import io.github.jamezuk.lyrionanywhere.core.Track
 import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.components.HapticSteps
 import io.github.jamezuk.lyrionanywhere.ui.library.SectionHeader
@@ -106,6 +109,8 @@ fun QueueHeader(
     onClearUpcoming: () -> Unit = {},
     /** "Save as playlist" (admins, on a gateway that has it); null: not offered. */
     onSaveAsPlaylist: (() -> Unit)? = null,
+    /** False while the server can't be reached: the queue can't be changed (greyed out). */
+    enabled: Boolean = true,
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var confirmUpcoming by rememberSaveable { mutableStateOf(false) }
@@ -113,18 +118,18 @@ fun QueueHeader(
         Box(Modifier.weight(1f)) { SectionHeader(stringResource(R.string.section_queue)) }
         FlowRow(horizontalArrangement = Arrangement.End) {
             if (onSaveAsPlaylist != null && count > 0) {
-                TextButton(onClick = onSaveAsPlaylist, modifier = Modifier.testTag("save-queue")) {
+                TextButton(onClick = onSaveAsPlaylist, enabled = enabled, modifier = Modifier.testTag("save-queue")) {
                     Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, contentDescription = null)
                     Text(stringResource(R.string.save_queue_action), Modifier.padding(start = 4.dp))
                 }
             }
             if (upcoming != null && upcoming > 0) {
-                TextButton(onClick = { confirmUpcoming = true }, modifier = Modifier.testTag("clear-upcoming")) {
+                TextButton(onClick = { confirmUpcoming = true }, enabled = enabled, modifier = Modifier.testTag("clear-upcoming")) {
                     Text(stringResource(R.string.queue_clear_upcoming))
                 }
             }
             if (count > 0) {
-                TextButton(onClick = { confirm = true }) {
+                TextButton(onClick = { confirm = true }, enabled = enabled, modifier = Modifier.testTag("clear-queue")) {
                     Icon(Icons.Outlined.ClearAll, contentDescription = null)
                     Text(stringResource(R.string.queue_clear), Modifier.padding(start = 4.dp))
                 }
@@ -190,6 +195,10 @@ fun LazyListScope.queueItems(
     actions: QueueActions,
     hasMore: Boolean = false,
     sections: QueueSections? = null,
+    /** Where each track is on the phone (its mark). */
+    marks: (Track) -> QueueMark = { QueueMark.NONE },
+    /** Which controls work (while the server is away: rows not on the phone are dimmed). */
+    gate: ControlGate = ControlGate.ONLINE,
 ) {
     if (entries.isEmpty() && !hasMore) {
         item(key = "queue-empty") { Text(stringResource(R.string.queue_empty), Modifier.padding(16.dp)) }
@@ -204,7 +213,7 @@ fun LazyListScope.queueItems(
                     i == sections.thenFrom -> SectionHeader(stringResource(R.string.section_then), Modifier.testTag("section-then"))
                 }
                 if (i > 0 && Gapless.follows(entries[i - 1].track, e.track)) GaplessMark(i)
-                QueueRow(i, e, entries.size, currentIndex, drag, actions)
+                QueueRow(i, e, entries.size, currentIndex, drag, actions, marks(e.track), gate)
             }
         }
     }
@@ -241,6 +250,22 @@ private fun GaplessMark(index: Int) {
     }
 }
 
+/** A queue row's mark: an icon with its own label, for TalkBack too. */
+@Composable
+internal fun QueueMarkIcon(mark: QueueMark, index: Int) {
+    val (icon, label) = when (mark) {
+        QueueMark.NONE -> return
+        QueueMark.DOWNLOADED -> Icons.Outlined.DownloadDone to R.string.queue_mark_downloaded
+        QueueMark.ON_DEVICE -> Icons.Outlined.OfflinePin to R.string.queue_mark_on_device
+    }
+    Icon(
+        icon,
+        contentDescription = stringResource(label),
+        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(end = 8.dp).size(18.dp).testTag("queue-mark-$index"),
+    )
+}
+
 @Composable
 private fun QueueRow(
     index: Int,
@@ -249,7 +274,12 @@ private fun QueueRow(
     currentIndex: Int?,
     drag: QueueDrag,
     actions: QueueActions,
+    mark: QueueMark = QueueMark.NONE,
+    gate: ControlGate = ControlGate.ONLINE,
 ) {
+    // While the server is away: no edits, and only rows on the phone can be played.
+    val editable = gate.other
+    val playable = gate.canJump(mark)
     val haptics = LocalHapticFeedback.current
     val dismiss = rememberSwipeToDismissBoxState()
     val scope = rememberCoroutineScope()
@@ -262,7 +292,8 @@ private fun QueueRow(
     var menu by remember { mutableStateOf(false) }
     SwipeToDismissBox(
         state = dismiss,
-        enableDismissFromStartToEnd = canPlayNext,
+        enableDismissFromStartToEnd = canPlayNext && editable,
+        enableDismissFromEndToStart = editable,
         onDismiss = {
             when (it) {
                 SwipeToDismissBoxValue.EndToStart -> actions.onRemove(index)
@@ -306,16 +337,26 @@ private fun QueueRow(
                     onClick = { actions.onJump(index) },
                     highlighted = index == currentIndex,
                     showArt = true,
-                    onMore = { menu = true },
+                    onMore = { menu = true }.takeIf { editable },
+                    enabled = playable,
+                    badge = if (mark != QueueMark.NONE) {
+                        { QueueMarkIcon(mark, index) }
+                    } else {
+                        null
+                    },
                     modifier = Modifier
                         .testTag("queue-track-$index")
-                        .onPreviewKeyEvent { e -> e.type == KeyEventType.KeyDown && queueKey(e, index, size, actions) }
+                        .onPreviewKeyEvent { e -> editable && e.type == KeyEventType.KeyDown && queueKey(e, index, size, actions) }
                         .semantics {
-                            customActions = buildList {
-                                if (canPlayNext) add(CustomAccessibilityAction(playNext) { actions.onPlayNext(index); true })
-                                if (index > 0) add(CustomAccessibilityAction(moveUp) { actions.onMove(index, index - 1); true })
-                                if (index < size - 1) add(CustomAccessibilityAction(moveDown) { actions.onMove(index, index + 1); true })
-                                add(CustomAccessibilityAction(remove) { actions.onRemove(index); true })
+                            customActions = if (!editable) {
+                                emptyList()
+                            } else {
+                                buildList {
+                                    if (canPlayNext) add(CustomAccessibilityAction(playNext) { actions.onPlayNext(index); true })
+                                    if (index > 0) add(CustomAccessibilityAction(moveUp) { actions.onMove(index, index - 1); true })
+                                    if (index < size - 1) add(CustomAccessibilityAction(moveDown) { actions.onMove(index, index + 1); true })
+                                    add(CustomAccessibilityAction(remove) { actions.onRemove(index); true })
+                                }
                             }
                         },
                 )
@@ -345,7 +386,7 @@ private fun QueueRow(
                 }
             }
             // Touch only: screen-reader and keyboard users have the row's actions instead.
-            Icon(
+            if (editable) Icon(
                 Icons.Outlined.DragHandle,
                 contentDescription = null,
                 modifier = Modifier

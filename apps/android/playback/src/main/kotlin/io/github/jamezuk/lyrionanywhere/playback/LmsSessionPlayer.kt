@@ -129,17 +129,15 @@ class LmsSessionPlayer(
         fun buildState(snapshot: SessionSnapshot, playRequests: Boolean = false): State {
             val s = mapSnapshot(snapshot)
             val commands = Player.Commands.Builder().addAll(
-                Player.COMMAND_PLAY_PAUSE,
-                Player.COMMAND_STOP,
                 Player.COMMAND_GET_CURRENT_MEDIA_ITEM,
                 Player.COMMAND_GET_TIMELINE,
                 Player.COMMAND_GET_METADATA,
-                Player.COMMAND_SEEK_TO_NEXT,
-                Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
-                Player.COMMAND_SEEK_TO_PREVIOUS,
-                Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
-                Player.COMMAND_SEEK_TO_MEDIA_ITEM,
             )
+            // Only what will work (with the server away, what the phone can do itself).
+            if (s.canPlayPause) commands.addAll(Player.COMMAND_PLAY_PAUSE, Player.COMMAND_STOP)
+            if (s.canNext) commands.addAll(Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+            if (s.canPrevious) commands.addAll(Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+            if (s.canJump) commands.add(Player.COMMAND_SEEK_TO_MEDIA_ITEM)
             if (s.canSeek) commands.add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
             if (playRequests) commands.addAll(Player.COMMAND_SET_MEDIA_ITEM, Player.COMMAND_PREPARE)
             val playlist = s.items.mapIndexed { i, item ->

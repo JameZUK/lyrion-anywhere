@@ -20,7 +20,7 @@
 //!   are not.
 //! - **Private and anonymous:** names are fingerprints (a hash of the stream's level, format
 //!   and first bytes) with a fixed extension. The index holds no titles, paths, addresses or
-//!   tokens; the optional track id is for labelling only. The root must be absolute without
+//!   tokens; the optional track id says which LMS track the stream was. The root must be absolute without
 //!   `..`; symlinks and anything that isn't a plain file are refused and removed.
 //! - **Untrusted on reading:** the index is bounded and every entry is checked (anything
 //!   malformed, or whose file is missing, the wrong size or not a plain file, is dropped);
@@ -251,8 +251,12 @@ pub(crate) struct Entry {
     pub sha256: Digest,
     /// When it was last used (a counter: higher is more recent).
     pub used: u64,
-    /// The LMS track id, for labelling only (never trusted for anything).
+    /// The LMS track id, for labelling only unless `whole` says more.
     pub track: Option<i64>,
+    /// The stream was the whole of `track`, from its start, as LMS said when it began (a
+    /// seek's stream never is). Only such an entry is played with no server (offline
+    /// controls); entries written before it existed never are.
+    pub whole: bool,
 }
 
 fn entry_json(e: &Entry) -> Value {
@@ -266,6 +270,9 @@ fn entry_json(e: &Entry) -> Value {
     });
     if let Some(t) = e.track {
         v["track"] = json!(t);
+        if e.whole {
+            v["whole"] = json!(true);
+        }
     }
     v
 }
@@ -288,6 +295,10 @@ fn entry_from(v: &Value) -> Option<Entry> {
         None | Some(Value::Null) => None,
         Some(t) => Some(t.as_i64().filter(|t| *t >= 0)?),
     };
+    let whole = match o.get("whole") {
+        None | Some(Value::Null) => false,
+        Some(w) => w.as_bool()?,
+    };
     Some(Entry {
         fp,
         level,
@@ -295,6 +306,8 @@ fn entry_from(v: &Value) -> Option<Entry> {
         len,
         sha256,
         used,
+        // A whole stream only of a real track.
+        whole: whole && track.is_some_and(|t| t > 0),
         track,
     })
 }
@@ -359,6 +372,8 @@ pub(crate) struct NewEntry {
     pub len: u64,
     pub sha256: Digest,
     pub track: Option<i64>,
+    /// See [`Entry::whole`].
+    pub whole: bool,
 }
 
 /// One user's replay cache on one server.
@@ -540,6 +555,28 @@ impl StreamCache {
             .any(|e| e.level == level && e.format == format)
     }
 
+    /// The whole stream of each LMS track the cache holds one of (see [`Entry::whole`]),
+    /// at `level` where there are several, for playing with no server. Only a format this
+    /// build decodes counts.
+    pub(crate) fn whole_tracks(&self, level: u8) -> HashMap<i64, Entry> {
+        let mut out: HashMap<i64, Entry> = HashMap::new();
+        for e in &self.entries {
+            let Some(t) = e.track.filter(|_| e.whole) else {
+                continue;
+            };
+            if anywhere_core::decode::format_extension(e.format).is_none() {
+                continue;
+            }
+            match out.get(&t) {
+                Some(have) if have.level == level || e.level != level => {}
+                _ => {
+                    out.insert(t, e.clone());
+                }
+            }
+        }
+        out
+    }
+
     pub(crate) fn lookup(&self, fp: &Digest) -> Option<Entry> {
         self.entries.iter().find(|e| e.fp == *fp).cloned()
     }
@@ -631,6 +668,7 @@ impl StreamCache {
             len: n.len,
             sha256: n.sha256,
             used: self.clock,
+            whole: n.whole && n.track.is_some_and(|t| t > 0),
             track: n.track,
         });
         self.pin(n.fp);
@@ -828,6 +866,7 @@ mod tests {
             len: bytes.len() as u64,
             sha256: sha(bytes),
             track: Some(7),
+            whole: false,
         }
     }
 
@@ -867,10 +906,12 @@ mod tests {
             sha256: d(2),
             used: 9,
             track: Some(42),
+            whole: true,
         };
         let mut f = e.clone();
         f.fp = d(3);
         f.track = None;
+        f.whole = false;
         let bytes = serialise_index(&[e.clone(), f.clone()]);
         assert_eq!(parse_index(&bytes), vec![e.clone(), f.clone()]);
 
@@ -897,6 +938,8 @@ mod tests {
             ("used", json!("now")),
             ("track", json!(-3)),
             ("track", json!("x")),
+            ("whole", json!("yes")),
+            ("whole", json!(1)),
         ] {
             let mut x = good.clone();
             x[k] = v;
@@ -945,6 +988,7 @@ mod tests {
                     sha256: d(0),
                     used: i as u64,
                     track: None,
+                    whole: false,
                 }
             })
             .collect();
@@ -974,6 +1018,7 @@ mod tests {
             sha256: d(6),
             used: 1,
             track: Some(1),
+            whole: true,
         }]);
         for _ in 0..5000 {
             let mut b = base.clone();
@@ -993,6 +1038,10 @@ mod tests {
             for e in parse_index(&b) {
                 assert!(e.level <= 2 && e.len >= 1 && e.len <= MAX_SPOOL_BYTES);
                 assert!(e.format.is_ascii_graphic());
+                assert!(
+                    !e.whole || e.track.is_some_and(|t| t > 0),
+                    "whole needs a track"
+                );
             }
         }
         // Random bytes too.
@@ -1391,5 +1440,48 @@ mod tests {
         remove_all_except(&root, None).unwrap();
         assert!(elsewhere.join("keep.bin").exists());
         assert!(fs::symlink_metadata(cache_dir(&root)).is_err());
+    }
+
+    #[test]
+    fn only_whole_streams_of_real_tracks_count_for_playing_offline() {
+        let root = temp_root();
+        let mut c = open(&root, 1 << 30);
+        let mut add = |n: u8, level: u8, format: u8, track: Option<i64>, whole: bool| {
+            let bytes = vec![n; 1000 + usize::from(n)];
+            let src = spool_file(&root, &format!("{n}.spool"), &bytes);
+            let mut e = new_entry(d(n), &bytes);
+            (e.level, e.format, e.track, e.whole) = (level, format, track, whole);
+            c.adopt(&src, e).unwrap();
+            c.unpin(&d(n));
+        };
+        add(1, 1, b'f', Some(10), true);
+        add(2, 0, b'f', Some(10), true); // the same track at the Original level
+        add(3, 0, b'f', Some(11), false); // a label only (a seek, or an older entry)
+        add(4, 0, b'f', None, true); // no track: never whole
+        add(5, 0, b'x', Some(12), true); // a format this build can't decode
+        add(6, 2, b'm', Some(13), true);
+        let at_original = c.whole_tracks(0);
+        assert_eq!(at_original.len(), 2, "{at_original:?}");
+        assert_eq!(at_original[&10].fp, d(2), "the level asked for first");
+        assert_eq!(at_original[&13].fp, d(6), "any level otherwise");
+        assert_eq!(c.whole_tracks(1)[&10].fp, d(1));
+        // Kept across reopening; a label-only entry stays a label.
+        drop(c);
+        let c = open(&root, 1 << 30);
+        assert_eq!(c.whole_tracks(0).len(), 2);
+        assert!(!c.lookup(&d(3)).unwrap().whole);
+        assert!(!c.lookup(&d(4)).unwrap().whole);
+        // An index that says "whole" for no track, or track 0, is not believed.
+        let doc = json!({"version": VERSION, "entries": [
+            {"fp": d(7).hex(), "level": 0, "format": "f", "len": 5, "sha256": d(8).hex(),
+             "used": 1, "whole": true},
+            {"fp": d(9).hex(), "level": 0, "format": "f", "len": 5, "sha256": d(8).hex(),
+             "used": 1, "track": 0, "whole": true},
+        ]});
+        assert!(
+            parse_index(&serde_json::to_vec(&doc).unwrap())
+                .iter()
+                .all(|e| !e.whole)
+        );
     }
 }

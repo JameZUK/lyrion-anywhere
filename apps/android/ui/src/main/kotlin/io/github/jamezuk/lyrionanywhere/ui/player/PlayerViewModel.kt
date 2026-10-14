@@ -33,8 +33,12 @@ import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.core.OutputRoute
 import io.github.jamezuk.lyrionanywhere.data.EventsRepository
+import io.github.jamezuk.lyrionanywhere.data.LocalControl
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerState
+import io.github.jamezuk.lyrionanywhere.data.offline.ConnectionUi
+import io.github.jamezuk.lyrionanywhere.data.offline.Reachability
+import io.github.jamezuk.lyrionanywhere.data.offline.reachability
 import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
 import io.github.jamezuk.lyrionanywhere.data.PlaylistNames
 import io.github.jamezuk.lyrionanywhere.data.SettingsStore
@@ -45,6 +49,7 @@ import io.github.jamezuk.lyrionanywhere.data.LyricsCache
 import io.github.jamezuk.lyrionanywhere.data.RatingsCache
 import io.github.jamezuk.lyrionanywhere.data.RatingsRepository
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -120,7 +125,26 @@ data class PlayerUiState(
     val canSaveQueue: Boolean = false,
     /** The "Save as playlist" dialog, while it is open. */
     val saveQueue: SaveQueueDialog? = null,
+    /** The link to the server, as the screen shows it (which controls work: offline controls). */
+    val connection: ConnectionUi = ConnectionUi(),
+    /** Downloaded tracks (the queue's "Downloaded" marks, for any player). */
+    val downloaded: Set<Long> = emptySet(),
+    /** Tracks this phone's player holds whole (its "On this device" marks). */
+    val onDevice: Set<Long> = emptySet(),
 ) {
+    /** Whether the server can be reached. */
+    val reachability: Reachability get() = connection.reachability
+
+    /** Which controls work now, and where they go (see [controlGate]). */
+    val gate: ControlGate
+        get() = controlGate(reachability, localSelected, local.running, local.offlineControls).let { g ->
+            // Holding the output (the music server busy): the phone says whether it plays.
+            if (g.route == ControlRoute.HOLD) g.copy(playing = local.status?.let { it.playback == io.github.jamezuk.lyrionanywhere.core.LocalPlayback.PLAYING && !it.held }) else g
+        }
+
+    /** A queue row's mark. */
+    fun markOf(track: Track): QueueMark = queueMark(track.id, downloaded, onDevice, localSelected)
+
     /** The queue's sections (Now playing, Up next, Then), or null for a flat queue. */
     val sections: QueueSections? get() = QueueSections.of(queue.size, status?.queueIndex?.toInt(), upNext)
 
@@ -133,7 +157,7 @@ data class PlayerUiState(
         }
 
     val selected: Player? get() = players.firstOrNull { it.id == selectedId }
-    val playing: Boolean get() = status?.mode == PlaybackMode.PLAYING
+    val playing: Boolean get() = gate.playing ?: (status?.mode == PlaybackMode.PLAYING)
 
     /** The selected player is this phone. */
     val localSelected: Boolean get() = local.playerId != null && local.playerId == selectedId
@@ -224,6 +248,8 @@ class PlayerViewModel(
     private val me: io.github.jamezuk.lyrionanywhere.data.MeRepository? = null,
     /** Credits for the Info layout (none without). */
     private val library: io.github.jamezuk.lyrionanywhere.data.LibraryRepository? = null,
+    /** Downloaded track ids (the queue's marks; none without). */
+    private val downloaded: Flow<Set<Long>> = flowOf(emptySet()),
     private val clock: () -> Long,
 ) : ViewModel(), VisualSource {
     /** The last removal, for Undo (only for the player it was removed from). */
@@ -369,11 +395,82 @@ class PlayerViewModel(
             launch {
                 localPlayer.state.collect { local ->
                     val newId = local.playerId != null && local.playerId != _state.value.local.playerId
-                    _state.update { it.copy(local = local) }
+                    val wasOffline = _state.value.local.offlineControls != null
+                    _state.update { withOffline(it.copy(local = local)) }
                     // LMS lists the phone once it has said hello: re-read the players.
                     if (newId) loadPlayers()
+                    // The phone's player is back with LMS: LMS's view again.
+                    if (wasOffline && local.offlineControls == null) refreshRequests.tryEmit(Unit)
                 }
             }
+            launch {
+                downloaded.distinctUntilChanged().collect { ids -> _state.update { it.copy(downloaded = ids) } }
+            }
+            launch {
+                // The queue as last read, for this phone's player to work on while the
+                // server is away (only while it is the player, and only LMS's own view).
+                state.map { s ->
+                    if (!s.localSelected || s.local.offlineControls != null) {
+                        null
+                    } else {
+                        Triple(s.queue.map { it.track.id }, lmsStatus?.second?.queueIndex?.toInt(), lmsStatus?.second?.repeat ?: RepeatMode.OFF)
+                    }
+                }.distinctUntilChanged().collect { snap ->
+                    if (snap != null) localPlayer.setQueueSnapshot(snap.first, snap.second, snap.third)
+                }
+            }
+            launch {
+                // Which queued tracks this phone holds whole ("On this device"), read again
+                // as the queue, the track playing or the link changes.
+                state.map { s ->
+                    if (!s.localSelected) null else Triple(s.queue.mapNotNull { it.track.id }, s.status?.current?.id, s.reachability)
+                }.distinctUntilChanged().collectLatest { key ->
+                    val on = if (key == null) emptySet() else onDeviceIds(key.first, localPlayer.localAvailability(key.first))
+                    _state.update { it.copy(onDevice = on) }
+                }
+            }
+        }
+    }
+
+    /** LMS's last status for the selected player (by id): what [withOffline] builds on. */
+    private var lmsStatus: Pair<String, PlayerStatus>? = null
+
+    /**
+     * While this phone plays with the server away, what it shows is what the phone does
+     * (see [offlineStatus]); otherwise LMS's status as read.
+     */
+    private fun withOffline(s: PlayerUiState): PlayerUiState {
+        val lms = lmsStatus?.takeIf { it.first == s.selectedId }?.second
+        val controls = s.local.offlineControls?.takeIf { s.localSelected }
+        if (controls == null) {
+            // Back with LMS: its status again (until it is read afresh).
+            if (!offlineShown) return s
+            offlineShown = false
+            return if (lms != null) s.copy(status = lms) else s
+        }
+        offlineShown = true
+        return s.copy(status = offlineStatus(lms ?: s.status, s.queue, controls), statusAt = clock())
+    }
+
+    /** What is shown is the phone's own state (see [withOffline]). */
+    private var offlineShown = false
+
+    /** A pause made by holding the output while the music server was busy (told to LMS once it answers). */
+    private var heldWhileBusy = false
+
+    /** The link to the server, as the screen shows it: which controls work (offline controls). */
+    fun setConnection(connection: ConnectionUi) {
+        val before = _state.value.reachability
+        _state.update { it.copy(connection = connection) }
+        if (before != Reachability.ONLINE && connection.reachability == Reachability.ONLINE) {
+            val s = _state.value
+            val id = s.selectedId
+            if (heldWhileBusy && id != null && s.localSelected && s.local.status?.held == true) {
+                viewModelScope.launch { players.setPaused(id, true) }
+            }
+            heldWhileBusy = false
+            // Back: catch up with what LMS did meanwhile.
+            viewModelScope.launch { refreshStatus(readQueue = true) }
         }
     }
 
@@ -556,16 +653,19 @@ class PlayerViewModel(
         val at = clock()
         when (val r = players.status(id)) {
             is ApiResult.Ok -> {
+                lmsStatus = id to r.value
                 _state.update {
                     if (it.selectedId != id || generation != changeGeneration) {
                         it
                     } else {
-                        it.copy(
-                            status = r.value,
-                            statusAt = at,
-                            error = null,
-                            // The player moving on uses up Up next (not while an edit is on its way).
-                            upNext = if (pendingEdits > 0) it.upNext else UpNextTracker.advanced(it.upNext, r.value.queueIndex?.toInt()),
+                        withOffline(
+                            it.copy(
+                                status = r.value,
+                                statusAt = at,
+                                error = null,
+                                // The player moving on uses up Up next (not while an edit is on its way).
+                                upNext = if (pendingEdits > 0) it.upNext else UpNextTracker.advanced(it.upNext, r.value.queueIndex?.toInt()),
+                            ),
                         )
                     }
                 }
@@ -582,6 +682,8 @@ class PlayerViewModel(
                         it.selectedId != id -> it
                         // Busy for a moment: what is shown stays (a calm note says why).
                         busy != null && it.status != null -> it
+                        // The server away: what is shown stays (one line says why).
+                        it.reachability != Reachability.ONLINE && it.status != null -> it
                         else -> it.copy(error = r.error)
                     }
                 }
@@ -678,6 +780,8 @@ class PlayerViewModel(
         tracking: (PlayerUiState) -> Pair<UpNext?, Int?> = { it.upNext to it.status?.queueIndex?.toInt() },
         action: suspend (String) -> ApiResult<Unit>,
     ) {
+        // Queue edits need the server (greyed out while it is away).
+        if (!_state.value.gate.other) return
         val id = _state.value.selectedId
         if (id == null) {
             _messages.trySend(PlayerMessage.NoPlayer)
@@ -854,7 +958,7 @@ class PlayerViewModel(
      */
     fun openSaveQueue(today: String) {
         val s = _state.value
-        if (!s.canSaveQueue || s.selectedId == null || s.queue.isEmpty()) return
+        if (!s.canSaveQueue || s.selectedId == null || s.queue.isEmpty() || !s.gate.other) return
         val suggestion = PlaylistNames.suggest(s.queue.map { it.track.album }, today)
         _state.update { it.copy(saveQueue = SaveQueueDialog(suggestion)) }
     }
@@ -911,6 +1015,7 @@ class PlayerViewModel(
      * [CLEAR_UPCOMING_MAX] tracks (the UI offers Clear all instead).
      */
     fun clearUpcoming() {
+        if (!_state.value.gate.other) return
         val status = _state.value.status ?: return
         val cur = status.queueIndex?.toInt() ?: return
         val len = status.queueLength.toInt()
@@ -970,6 +1075,7 @@ class PlayerViewModel(
 
     /** Put [otherId] in the selected player's group ([on]), or take it out of its group. */
     fun setSynced(otherId: String, on: Boolean) {
+        if (!_state.value.gate.other) return
         val current = _state.value.selectedId
         if (current == null) {
             _messages.trySend(PlayerMessage.NoPlayer)
@@ -1107,6 +1213,8 @@ class PlayerViewModel(
             _messages.trySend(PlayerMessage.NoPlayer)
             return
         }
+        // With the server away the controls are greyed out (what works goes to the phone).
+        if (!_state.value.gate.online) return
         changeGeneration++
         val now = clock()
         _state.update { s ->
@@ -1116,26 +1224,63 @@ class PlayerViewModel(
         }
         viewModelScope.launch {
             val r = action(id)
-            if (r is ApiResult.Err) _messages.trySend(PlayerMessage.Failed(r.error))
+            if (r is ApiResult.Err && !quietFailure(r.error)) _messages.trySend(PlayerMessage.Failed(r.error))
             // The server's view wins once the command is done.
             changeGeneration++
             refreshStatus()
         }
     }
 
+    /**
+     * A command refused because the server can't be reached (or is busy) while the screen
+     * already says so: no message of its own (one line says it, not one per command).
+     */
+    private fun quietFailure(e: AppError): Boolean {
+        val c = _state.value.connection
+        val away = c.reachability != Reachability.ONLINE || c.reconnecting
+        return away && (e is AppError.Offline || e is AppError.ServerBusy)
+    }
+
+    /**
+     * Send [control] to this phone's player while the server is away (true: handled here,
+     * whether or not it could be done). False while online: LMS's commands are used.
+     */
+    private fun onPhone(control: LocalControl, allowed: (ControlGate) -> Boolean): Boolean {
+        val g = _state.value.gate
+        if (g.online) return false
+        if (g.route == ControlRoute.PHONE && allowed(g)) {
+            if (localPlayer.localControl(control)) changeGeneration++
+        }
+        return true
+    }
+
     fun togglePlay() {
         val playing = _state.value.playing
+        val g = _state.value.gate
+        if (g.route == ControlRoute.HOLD) {
+            // The music server is busy: pause or play the phone's own output at once.
+            localPlayer.setHold(playing)
+            heldWhileBusy = playing
+            return
+        }
+        if (onPhone(if (playing) LocalControl.Pause else LocalControl.Play) { it.playPause }) return
         command(
             optimistic = { it.copy(mode = if (playing) PlaybackMode.PAUSED else PlaybackMode.PLAYING) },
         ) { id -> if (playing) players.setPaused(id, true) else players.play(id) }
     }
 
-    fun next() = command { players.next(it) }
+    fun next() {
+        if (onPhone(LocalControl.Next) { it.next }) return
+        command { players.next(it) }
+    }
 
     /** Stop playback (car mode's long press on play/pause). */
     fun stopPlayback() = command(optimistic = { it.copy(mode = PlaybackMode.STOPPED) }) { players.stop(it) }
 
-    fun previous() = command { players.previous(it) }
+    fun previous() {
+        if (onPhone(LocalControl.Previous) { it.previous }) return
+        command { players.previous(it) }
+    }
 
     /**
      * Seek, starting playback there if the player was paused or stopped (as tapping the
@@ -1143,6 +1288,13 @@ class PlayerViewModel(
      * seek on a stopped one, hence the order.
      */
     fun seek(seconds: Double) {
+        val wasPlaying = _state.value.playing
+        val ms = (seconds.coerceAtLeast(0.0) * 1000).toLong()
+        if (onPhone(LocalControl.Seek(ms)) { it.seek }) {
+            // As online: a seek plays from there.
+            if (_state.value.gate.seek && !wasPlaying) localPlayer.localControl(LocalControl.Play)
+            return
+        }
         val mode = _state.value.status?.mode
         command(
             optimistic = { it.copy(elapsedSecs = seconds.coerceAtLeast(0.0), mode = PlaybackMode.PLAYING) },
@@ -1194,7 +1346,12 @@ class PlayerViewModel(
         command(optimistic = { it.copy(repeat = next) }) { players.setRepeat(it, next) }
     }
 
-    fun jumpTo(index: Int) = command { players.jumpTo(it, index) }
+    fun jumpTo(index: Int) {
+        val s = _state.value
+        val mark = s.queue.getOrNull(index)?.let { s.markOf(it.track) } ?: QueueMark.NONE
+        if (onPhone(LocalControl.Jump(index)) { it.canJump(mark) }) return
+        command { players.jumpTo(it, index) }
+    }
 
     fun setPower(on: Boolean) = command(optimistic = { it.copy(powered = on) }) { players.setPower(it, on) }
 
@@ -1205,6 +1362,7 @@ class PlayerViewModel(
             _messages.trySend(PlayerMessage.NoPlayer)
             return
         }
+        if (!_state.value.gate.other) return
         viewModelScope.launch {
             val r = players.setShuffle(id, ShuffleMode.SONGS).let {
                 if (it is ApiResult.Err) it else players.enqueue(id, selection, Placement.PLAY_NOW)
@@ -1224,6 +1382,7 @@ class PlayerViewModel(
             _messages.trySend(PlayerMessage.NoPlayer)
             return
         }
+        if (!_state.value.gate.other) return
         viewModelScope.launch {
             val before = if (placement == Placement.PLAY_NEXT) (players.status(id) as? ApiResult.Ok)?.value else null
             when (val r = players.playFavourite(id, itemId, placement)) {
@@ -1247,6 +1406,7 @@ class PlayerViewModel(
             _messages.trySend(PlayerMessage.NoPlayer)
             return
         }
+        if (!_state.value.gate.other) return
         viewModelScope.launch {
             val before = if (placement == Placement.PLAY_NEXT) (players.status(id) as? ApiResult.Ok)?.value else null
             when (val r = players.enqueue(id, selection, placement, playIndex)) {
@@ -1334,6 +1494,7 @@ class PlayerViewModel(
             _messages.trySend(PlayerMessage.NoPlayer)
             return
         }
+        if (!_state.value.gate.other) return
         viewModelScope.launch {
             val status = _state.value.status
             val list = if (choice is SleepChoice.End && choice.end != SleepEnd.TRACK) {
@@ -1375,6 +1536,7 @@ class PlayerViewModel(
 
     /** Turn the timer off (one tap): on the players it was set on, and the selected one. */
     fun cancelSleep() {
+        if (!_state.value.gate.other) return
         val selected = _state.value.selectedId
         val targets = (_state.value.sleepArm?.players.orEmpty() + listOfNotNull(selected)).distinct()
         if (targets.isEmpty()) return

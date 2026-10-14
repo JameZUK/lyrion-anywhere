@@ -552,12 +552,19 @@
     <string name="offline_stop">Stop playing downloads</string>
     <string name="offline_banner">Offline: can’t reach %1$s. Showing your downloads.</string>
     <string name="offline_banner_signed_in">Offline. Showing your downloads.</string>
-    <string name="connection_unreachable_downloads">Can’t reach your server · Downloads</string>
-    <string name="connection_unreachable_description">Can’t reach your server. Open your downloads</string>
     <string name="connection_open_downloads">open your downloads</string>
     <string name="connection_reconnecting">Reconnecting…</string>
     <!-- The music server stopped answering for a while (its storage waking up, say); the app stays connected. -->
     <string name="connection_server_busy">Your music server is busy. Waiting for it…</string>
+    <!-- The server can't be reached (offline controls): one line, above the screen. -->
+    <string name="connection_unreachable_short">Can’t reach your server.</string>
+    <!-- … while this phone carries on playing what it holds. -->
+    <string name="connection_unreachable_here">Can’t reach your server. Playing from this device.</string>
+    <!-- Now playing, stopped at a track's end with the server away. -->
+    <string name="next_needs_server">Next track needs your server</string>
+    <!-- Queue marks: where a track is on this phone. -->
+    <string name="queue_mark_downloaded">Downloaded</string>
+    <string name="queue_mark_on_device">On this device</string>
     <string name="playing_downloads">Downloads</string>
     <string name="playing_downloads_on_phone">Playing downloads on this phone</string>
     <string name="format_original">Original (as in your library)</string>

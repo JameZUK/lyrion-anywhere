@@ -5,6 +5,7 @@ import io.github.jamezuk.lyrionanywhere.core.ServerEvent
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.ArtRepository
 import io.github.jamezuk.lyrionanywhere.data.EventsRepository
+import io.github.jamezuk.lyrionanywhere.data.LocalControl
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
 import io.github.jamezuk.lyrionanywhere.data.StreamUpdate
@@ -133,25 +134,52 @@ class LocalPlaybackController(
         request(queue = false)
     }
 
+    /**
+     * With the server away, the phone acts by itself (what the session offers is only what
+     * works then; see [mapSnapshot]). True: handled here.
+     */
+    private fun onPhone(control: LocalControl): Boolean {
+        if (local.state.value.offlineControls == null) return false
+        local.localControl(control)
+        return true
+    }
+
     override suspend fun play() {
         // An explicit play from this phone also lifts any local hold at once.
         local.setHold(false)
+        if (onPhone(LocalControl.Play)) return
         command { play(it) }
     }
 
-    override suspend fun pause() = command { setPaused(it, true) }
+    override suspend fun pause() {
+        if (onPhone(LocalControl.Pause)) return
+        command { setPaused(it, true) }
+    }
 
-    override suspend fun next() = command { next(it) }
+    override suspend fun next() {
+        if (onPhone(LocalControl.Next)) return
+        command { next(it) }
+    }
 
-    override suspend fun previous() = command { previous(it) }
+    override suspend fun previous() {
+        if (onPhone(LocalControl.Previous)) return
+        command { previous(it) }
+    }
 
-    override suspend fun seekTo(seconds: Double) = command { seek(it, seconds) }
+    override suspend fun seekTo(seconds: Double) {
+        if (onPhone(LocalControl.Seek((seconds.coerceAtLeast(0.0) * 1000).toLong()))) return
+        command { seek(it, seconds) }
+    }
 
-    override suspend fun jumpTo(queueIndex: Int) = command { jumpTo(it, queueIndex) }
+    override suspend fun jumpTo(queueIndex: Int) {
+        if (onPhone(LocalControl.Jump(queueIndex))) return
+        command { jumpTo(it, queueIndex) }
+    }
 
-    /** Headphones unplugged (or Bluetooth lost): silence now, then pause LMS. */
+    /** Headphones unplugged (or Bluetooth lost): silence now, then pause LMS (or the phone). */
     suspend fun becomingNoisy() {
         local.setHold(true)
+        if (onPhone(LocalControl.Pause)) return
         command { setPaused(it, true) }
     }
 

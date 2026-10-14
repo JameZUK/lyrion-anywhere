@@ -426,6 +426,11 @@ pub struct RestartPoint {
     pub index: u32,
     pub track_id: i64,
     pub elapsed_ms: u64,
+    /// Paused there (by the user, on the phone, while the server couldn't be reached).
+    pub paused: bool,
+    /// The user played, paused, skipped or sought on the phone while the server couldn't be
+    /// reached (offline controls): the phone's state is the truth, whatever LMS shows.
+    pub local: bool,
 }
 
 /// What the player remembers while its link to LMS is down, for restarting on a new
@@ -475,14 +480,20 @@ pub fn restart_status_command(index: u32) -> Vec<Value> {
 ///   is neither it nor the one before it (the phone may have played on into the next
 ///   track from its buffer, which LMS never heard about).
 ///
+/// A point the user made on the phone ([`RestartPoint::local`]) is the truth whatever LMS
+/// is doing: only the queue must still hold that track at that position. It is also
+/// paused there if it was paused on the phone.
+///
 /// The answer is untrusted; anything malformed means no restart.
 pub fn restart_commands(point: &RestartPoint, status: &Value) -> Option<Vec<Vec<Value>>> {
-    if status.get("mode")?.as_str()? != "stop" {
-        return None;
-    }
-    let cur = status.get("playlist_cur_index").and_then(small_int)?;
-    if cur != point.index && cur.checked_add(1) != Some(point.index) {
-        return None;
+    if !point.local {
+        if status.get("mode")?.as_str()? != "stop" {
+            return None;
+        }
+        let cur = status.get("playlist_cur_index").and_then(small_int)?;
+        if cur != point.index && cur.checked_add(1) != Some(point.index) {
+            return None;
+        }
     }
     let item = status.get("playlist_loop")?.as_array()?.first()?;
     if item.get("playlist index").and_then(small_int)? != point.index {
@@ -501,7 +512,22 @@ pub fn restart_commands(point: &RestartPoint, status: &Value) -> Option<Vec<Vec<
         let secs = point.elapsed_ms as f64 / 1000.0;
         cmds.push(vec![json!("time"), json!(format!("{secs:.1}"))]);
     }
+    if point.paused && point.local {
+        cmds.push(pause_command(true));
+    }
     Some(cmds)
+}
+
+/// LMS's pause (`true`) or play (`false`) for this player, without toggling.
+pub fn pause_command(paused: bool) -> Vec<Value> {
+    vec![json!("pause"), json!(if paused { 1 } else { 0 })]
+}
+
+/// The phone's state after an outage in which the user acted on it, told to LMS on a
+/// resumed session (LMS never lost the player, so its queue position is unchanged): its
+/// pause state only. `None`: nothing was done on the phone.
+pub fn resumed_commands(acted: bool, paused: bool) -> Option<Vec<Vec<Value>>> {
+    acted.then(|| vec![pause_command(paused)])
 }
 
 #[cfg(test)]
@@ -513,6 +539,8 @@ mod tests {
             index: 3,
             track_id: 42,
             elapsed_ms: 83_450,
+            paused: false,
+            local: false,
         }
     }
 
@@ -574,6 +602,79 @@ mod tests {
     }
 
     #[test]
+    fn the_phones_own_point_wins_unless_the_queue_changed() {
+        let local = RestartPoint {
+            local: true,
+            ..point()
+        };
+        let expected = vec![
+            vec![json!("playlist"), json!("index"), json!(3)],
+            vec![json!("time"), json!("83.5")],
+        ];
+        // Whatever LMS is doing, and wherever its current track is.
+        for (mode, cur) in [("play", 7), ("pause", 0), ("stop", 3), ("stop", 9)] {
+            let mut st = stopped_at(cur, 3, 42);
+            st["mode"] = json!(mode);
+            assert_eq!(
+                restart_commands(&local, &st),
+                Some(expected.clone()),
+                "{mode} {cur}"
+            );
+        }
+        // Paused on the phone: paused there too.
+        let paused = RestartPoint {
+            paused: true,
+            ..local
+        };
+        let mut with_pause = expected.clone();
+        with_pause.push(vec![json!("pause"), json!(1)]);
+        assert_eq!(
+            restart_commands(&paused, &stopped_at(0, 3, 42)),
+            Some(with_pause)
+        );
+        // A pause that wasn't the user's on the phone is never sent.
+        assert_eq!(
+            restart_commands(
+                &RestartPoint {
+                    paused: true,
+                    ..point()
+                },
+                &stopped_at(3, 3, 42)
+            )
+            .unwrap()
+            .len(),
+            2
+        );
+        // The queue changed (someone else edited it): the phone's state is dropped.
+        assert_eq!(restart_commands(&local, &stopped_at(3, 3, 43)), None);
+        assert_eq!(restart_commands(&local, &stopped_at(3, 4, 42)), None);
+        let mut radio = stopped_at(3, 3, 42);
+        radio["playlist_loop"][0]["remote"] = json!(1);
+        assert_eq!(restart_commands(&local, &radio), None);
+        // Malformed answers: nothing, and only ever the remembered position.
+        for st in [
+            json!(null),
+            json!({"playlist_loop": []}),
+            json!({"mode": "play"}),
+        ] {
+            assert_eq!(restart_commands(&local, &st), None, "{st}");
+        }
+    }
+
+    #[test]
+    fn a_resumed_session_is_told_the_phones_pause_state_only_if_the_user_acted() {
+        assert_eq!(resumed_commands(false, true), None);
+        assert_eq!(
+            resumed_commands(true, true),
+            Some(vec![vec![json!("pause"), json!(1)]])
+        );
+        assert_eq!(
+            resumed_commands(true, false),
+            Some(vec![vec![json!("pause"), json!(0)]])
+        );
+    }
+
+    #[test]
     fn restart_answers_are_untrusted() {
         let parts = [
             json!(null),
@@ -588,6 +689,11 @@ mod tests {
             json!("99999999999999999999"),
         ];
         let p = point();
+        let local = RestartPoint {
+            local: true,
+            paused: true,
+            ..p
+        };
         for a in &parts {
             for b in &parts {
                 for c in &parts {
@@ -595,6 +701,9 @@ mod tests {
                         "playlist_loop": [{"playlist index": b, "id": c}]});
                     if let Some(cmds) = restart_commands(&p, &st) {
                         // Only ever the remembered position.
+                        assert_eq!(cmds[0][2], json!(3));
+                    }
+                    if let Some(cmds) = restart_commands(&local, &st) {
                         assert_eq!(cmds[0][2], json!(3));
                     }
                     let _ = stream_position(&st, true);

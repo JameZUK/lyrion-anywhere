@@ -161,6 +161,27 @@ private class FakeHandle : LocalPlayerHandle {
         cacheSizes += bytes
     }
 
+    /** Queue snapshots given, in order (ids, current, repeat). */
+    val snapshots = mutableListOf<Triple<List<Long>, UInt?, io.github.jamezuk.lyrionanywhere.core.LocalRepeat>>()
+
+    override fun setQueueSnapshot(trackIds: List<Long>, currentIndex: UInt?, repeat: io.github.jamezuk.lyrionanywhere.core.LocalRepeat) {
+        snapshots += Triple(trackIds, currentIndex, repeat)
+        calls += "snapshot"
+    }
+
+    val controls = mutableListOf<LocalControl>()
+    var controlAnswer = true
+
+    override fun localControl(control: LocalControl): Boolean {
+        controls += control
+        return controlAnswer
+    }
+
+    override fun localAvailability(trackIds: List<Long>): List<io.github.jamezuk.lyrionanywhere.core.LocalAvailability> =
+        trackIds.map {
+            if (it == 7L) io.github.jamezuk.lyrionanywhere.core.LocalAvailability.DOWNLOADED else io.github.jamezuk.lyrionanywhere.core.LocalAvailability.NONE
+        }
+
     override fun close() {
         closed = true
     }
@@ -199,6 +220,50 @@ class LocalPlayerRepositoryTest {
     }
 
     /** The replay cache's size reaches a new engine before it starts, and a running one at once. */
+    @Test
+    fun theQueueSnapshotAndTheOfflineControlsReachTheEngine() = runTest {
+        val r = repo()
+        // No engine yet: kept for it, and nothing to control.
+        r.setQueueSnapshot(listOf(5, null, -3, 7), 1, io.github.jamezuk.lyrionanywhere.core.RepeatMode.ALL)
+        assertFalse(r.localControl(LocalControl.Next))
+        assertEquals(
+            List(2) { io.github.jamezuk.lyrionanywhere.core.LocalAvailability.NONE },
+            r.localAvailability(listOf(7, 8)),
+        )
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        val h = handles[0]
+        // Given before the engine starts; what isn't a library track is 0.
+        assertTrue(h.calls.indexOf("snapshot") < h.calls.indexOf("start"))
+        assertEquals(
+            Triple(listOf(5L, 0L, 0L, 7L), 1u, io.github.jamezuk.lyrionanywhere.core.LocalRepeat.ALL),
+            h.snapshots.single(),
+        )
+        // The same again: not sent twice. A negative position is none.
+        r.setQueueSnapshot(listOf(5, null, -3, 7), 1, io.github.jamezuk.lyrionanywhere.core.RepeatMode.ALL)
+        assertEquals(1, h.snapshots.size)
+        r.setQueueSnapshot(listOf(5), -1, io.github.jamezuk.lyrionanywhere.core.RepeatMode.ONE)
+        assertEquals(Triple(listOf(5L), null, io.github.jamezuk.lyrionanywhere.core.LocalRepeat.ONE), h.snapshots.last())
+        // Bounded.
+        r.setQueueSnapshot(List(MAX_QUEUE_SNAPSHOT + 5) { 1L }, 0, io.github.jamezuk.lyrionanywhere.core.RepeatMode.OFF)
+        assertEquals(MAX_QUEUE_SNAPSHOT, h.snapshots.last().first.size)
+        // Controls and availability go to the engine, which says what it could do (a jump,
+        // which reads what is on the phone first, goes off the calling thread).
+        assertTrue(r.localControl(LocalControl.Seek(1_000)))
+        h.controlAnswer = false
+        assertFalse(r.localControl(LocalControl.Next))
+        r.localControl(LocalControl.Jump(3))
+        assertEquals(listOf(LocalControl.Seek(1_000), LocalControl.Next, LocalControl.Jump(3)), h.controls)
+        assertEquals(
+            listOf(io.github.jamezuk.lyrionanywhere.core.LocalAvailability.DOWNLOADED, io.github.jamezuk.lyrionanywhere.core.LocalAvailability.NONE),
+            r.localAvailability(listOf(7, 8)),
+        )
+        // A new engine gets the last snapshot.
+        r.setEnabled(false)
+        r.setEnabled(true)
+        assertEquals(MAX_QUEUE_SNAPSHOT, handles[1].snapshots.single().first.size)
+    }
+
     @Test
     fun theReplayCacheSizeReachesTheEngine() = runTest {
         val r = repo()

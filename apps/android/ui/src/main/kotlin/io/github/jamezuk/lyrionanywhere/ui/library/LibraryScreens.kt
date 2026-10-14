@@ -55,6 +55,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
@@ -545,6 +546,10 @@ fun TrackRow(
     showArt: Boolean = false,
     showArtist: Boolean = true,
     onMore: (() -> Unit)? = null,
+    /** False: shown dimmed, and tapping it does nothing (it can't be played now). */
+    enabled: Boolean = true,
+    /** A small mark before the duration (e.g. where the track is on the phone). */
+    badge: (@Composable () -> Unit)? = null,
 ) {
     val playLabel = stringResource(R.string.play_track)
     val title = track.title.ifEmpty { stringResource(R.string.unknown_track) }
@@ -582,6 +587,7 @@ fun TrackRow(
         supportingContent = track.artist?.takeIf { showArtist }?.let { { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) } },
         trailingContent = {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                badge?.invoke()
                 track.durationSecs?.let { Text(formatDuration(it)) }
                 if (onMore != null) {
                     IconButton(onClick = onMore) { Icon(Icons.Outlined.MoreVert, stringResource(R.string.more_for, title)) }
@@ -589,10 +595,14 @@ fun TrackRow(
             }
         },
         modifier = modifier
+            .alpha(if (enabled) 1f else DISABLED_ALPHA)
             .semantics { if (highlighted) stateDescription = nowPlaying }
-            .clickable(onClickLabel = playLabel, onClick = onClick),
+            .clickable(enabled = enabled, onClickLabel = playLabel, onClick = onClick),
     )
 }
+
+/** How faint something that can't be used now is drawn (Material's disabled content). */
+const val DISABLED_ALPHA = 0.38f
 
 /** What the artist page can do. */
 data class ArtistActions(

@@ -53,6 +53,26 @@ class LmsSessionPlayerTest {
     }
 
     @Test
+    fun withTheServerAwayOnlyWorkingButtonsAreAdvertised() {
+        val p = player()
+        for (c in listOf(Player.COMMAND_PLAY_PAUSE, Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_MEDIA_ITEM)) {
+            assertTrue("online: $c", p.isCommandAvailable(c))
+        }
+        snapshots.value = snapshots.value.copy(local = away(offline(next = true, previous = false, seek = false)))
+        idle()
+        assertTrue(p.isCommandAvailable(Player.COMMAND_PLAY_PAUSE))
+        assertTrue(p.isCommandAvailable(Player.COMMAND_SEEK_TO_NEXT))
+        assertFalse(p.isCommandAvailable(Player.COMMAND_SEEK_TO_PREVIOUS))
+        assertFalse(p.isCommandAvailable(Player.COMMAND_SEEK_TO_MEDIA_ITEM))
+        assertFalse(p.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM))
+        // Waiting for the server with nothing to play: not even play.
+        snapshots.value = snapshots.value.copy(local = away(offline(playPause = false)))
+        idle()
+        assertFalse(p.isCommandAvailable(Player.COMMAND_PLAY_PAUSE))
+        assertFalse(p.isCommandAvailable(Player.COMMAND_SEEK_TO_NEXT))
+    }
+
+    @Test
     fun mirrorsLmsState() {
         val p = player()
         assertEquals(Player.STATE_READY, p.playbackState)

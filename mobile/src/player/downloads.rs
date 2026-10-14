@@ -289,6 +289,8 @@ struct State {
     stamp: Option<(u64, Option<SystemTime>)>,
     /// Original FLAC downloads, from the index.
     tracks: Vec<OfflineTrack>,
+    /// Every download, from the index (for playing with no server).
+    all: Vec<OfflineTrack>,
     heads: HashMap<String, Head>,
 }
 
@@ -344,13 +346,16 @@ impl Downloads {
         if st.stamp == Some(stamp) {
             return;
         }
-        st.tracks = match read_plain(&path, index::MAX_INDEX_BYTES).map(|b| index::parse(&b)) {
-            Some(Parsed::Tracks(t, _)) => t
-                .into_iter()
-                .filter(|t| t.format == DownloadFormat::Original && t.ext == "flac")
-                .collect(),
+        st.all = match read_plain(&path, index::MAX_INDEX_BYTES).map(|b| index::parse(&b)) {
+            Some(Parsed::Tracks(t, _)) => t,
             _ => Vec::new(),
         };
+        st.tracks = st
+            .all
+            .iter()
+            .filter(|t| t.format == DownloadFormat::Original && t.ext == "flac")
+            .cloned()
+            .collect();
         st.stamp = Some(stamp);
         let keys: std::collections::HashSet<&str> =
             st.tracks.iter().map(|t| t.key.as_str()).collect();
@@ -362,6 +367,40 @@ impl Downloads {
         let mut st = self.state.lock().unwrap();
         self.refresh(&mut st);
         !st.tracks.is_empty()
+    }
+
+    /// Every download whose file is in place (the offline store's check: a plain file of
+    /// the recorded size), by LMS track id, for playing with no server (offline controls).
+    /// Blocking: reads the index if it changed, and each file's metadata.
+    pub(crate) fn by_track(&self) -> HashMap<i64, super::local::LocalTrack> {
+        let all = {
+            let mut st = self.state.lock().unwrap();
+            self.refresh(&mut st);
+            st.all.clone()
+        };
+        let mut out = HashMap::new();
+        for t in all {
+            if t.track_id <= 0 || out.contains_key(&t.track_id) {
+                continue;
+            }
+            let path = store::track_file(&self.dir, &t);
+            let fits = fs::symlink_metadata(&path).is_ok_and(|m| store::file_fits(&m, &t));
+            if !fits {
+                continue;
+            }
+            out.insert(
+                t.track_id,
+                super::local::LocalTrack {
+                    key: format!("download:{}", t.key),
+                    track_id: t.track_id,
+                    path,
+                    ext: t.ext.clone(),
+                    duration_secs: t.duration_secs,
+                    album: t.album_id.map(|a| a.to_string()),
+                },
+            );
+        }
+        out
     }
 
     /// What a download's file holds, remembered while its size and time stay the same.
@@ -991,5 +1030,40 @@ pub(crate) mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(&p, &bad).unwrap();
         assert!(d.take(&info, ms, &file[..ms + 100]).is_none());
+    }
+
+    #[test]
+    fn every_download_in_place_is_found_by_track_for_playing_offline() {
+        let l = Lib::new();
+        let flac_file = flac(44_100, &noise(2000, 3), &[], None);
+        l.put(1, &flac_file, DownloadFormat::Original, "flac");
+        l.put(2, b"an opus file", DownloadFormat::Opus, "opus");
+        let gone = l.put(3, b"an mp3 file", DownloadFormat::Original, "mp3");
+        let d = l.downloads();
+        let found = d.by_track();
+        let id = |n: u8| sample(n).track_id;
+        assert_eq!(found.len(), 3, "any format, not only Original FLAC");
+        let t = &found[&id(2)];
+        assert_eq!(t.ext, "opus");
+        assert!(t.key.starts_with("download:"));
+        assert!(t.path.starts_with(&d.dir), "only in this user's folder");
+        // A file that went, or changed size, is not offered.
+        fs::remove_file(&gone).unwrap();
+        assert!(!d.by_track().contains_key(&id(3)));
+        fs::write(&found[&id(2)].path, b"longer than it was recorded").unwrap();
+        assert!(!d.by_track().contains_key(&id(2)));
+        #[cfg(unix)]
+        {
+            // A symlink in its place: never followed.
+            let p = found[&id(1)].path.clone();
+            let elsewhere = std::path::Path::new(&l.root).join("elsewhere.flac");
+            fs::write(&elsewhere, &flac_file).unwrap();
+            fs::remove_file(&p).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, &p).unwrap();
+            assert!(!d.by_track().contains_key(&id(1)));
+        }
+        // Another user's downloads are never found.
+        let bob = Downloads::open(&l.root, &crate::offline::scope_name(SERVER, "bob")).unwrap();
+        assert!(bob.by_track().is_empty());
     }
 }

@@ -19,6 +19,22 @@ data class ConnectionUi(
     val busy: Boolean = false,
 )
 
+/**
+ * Whether the server can be reached, for which controls work (the offline controls spec):
+ * [ONLINE]; [BUSY] (the gateway answers but the music server is frozen); [UNREACHABLE] (no
+ * network, or the link down past a short grace, so brief blips don't flash the screen).
+ * Busy gates the controls as unreachable does, with its own calm wording.
+ */
+enum class Reachability { ONLINE, BUSY, UNREACHABLE }
+
+/** What [ConnectionUi] says about reaching the server. */
+val ConnectionUi.reachability: Reachability
+    get() = when {
+        takeover || unreachable -> Reachability.UNREACHABLE
+        busy -> Reachability.BUSY
+        else -> Reachability.ONLINE
+    }
+
 /** What [ConnectionJudge] decides from, at one moment. */
 data class ConnectionInputs(
     val auth: AuthState,
