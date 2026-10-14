@@ -464,6 +464,62 @@ pub struct FakeLms {
     pub plugin: Arc<Mutex<FakePlugin>>,
     /// When set, `status` says every player is playing this track id.
     pub status_track: Arc<Mutex<Option<u64>>>,
+    /// When set, saved playlists and `playlist save` are answered from this
+    /// ([`FakeLms::set_saved_playlists`]).
+    pub saved: Arc<Mutex<Option<FakeSaved>>>,
+}
+
+/// The fake LMS's saved playlists, and the length of every player's queue.
+#[derive(Clone, Debug, Default)]
+pub struct FakeSaved {
+    /// (id, name), as `playlists` lists them.
+    pub playlists: Vec<(u64, String)>,
+    /// What `status` reports as `playlist_tracks`.
+    pub queue_len: u64,
+}
+
+/// The fake LMS's answer to `playlists …` and `playlist save …` and `status …` when saved
+/// playlists are set: `search:` matches case-insensitively anywhere in the name (LMS's
+/// `LIKE`); `playlist save` overwrites a playlist of exactly that name (a case-sensitive
+/// filesystem) or adds one, and answers with its id, as LMS does.
+fn fake_saved(
+    saved: &Mutex<Option<FakeSaved>>,
+    words: &[serde_json::Value],
+) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let mut guard = saved.lock().unwrap();
+    let s = guard.as_mut()?;
+    let w = |i: usize| words.get(i).and_then(|v| v.as_str());
+    match (w(0), w(1)) {
+        (Some("playlists"), Some(n)) if n.parse::<u64>().is_ok() => {
+            let search = words
+                .iter()
+                .filter_map(|v| v.as_str()?.strip_prefix("search:"))
+                .next()
+                .map(str::to_lowercase);
+            let found: Vec<serde_json::Value> = s
+                .playlists
+                .iter()
+                .filter(|(_, name)| search.as_ref().is_none_or(|t| name.to_lowercase().contains(t)))
+                .map(|(id, name)| json!({"id": id, "playlist": name, "url": format!("file:///srv/playlists/{name}.m3u")}))
+                .collect();
+            Some(json!({"count": found.len(), "playlists_loop": found}))
+        }
+        (Some("playlist"), Some("save")) => {
+            let name = w(2)?.to_string();
+            let id = match s.playlists.iter().find(|(_, n)| *n == name) {
+                Some((id, _)) => *id,
+                None => {
+                    let id = 100 + s.playlists.len() as u64;
+                    s.playlists.push((id, name));
+                    id
+                }
+            };
+            Some(json!({"__playlist_id": id}))
+        }
+        (Some("status"), _) => Some(json!({"mode": "stop", "playlist_tracks": s.queue_len})),
+        _ => None,
+    }
 }
 
 /// The secret the test gateway signs plays with (`Config::plays_secret`).
@@ -585,6 +641,8 @@ impl FakeLms {
         let st_track = status_track.clone();
         let albums: Arc<Mutex<Option<Vec<FakeAlbum>>>> = Default::default();
         let lib = albums.clone();
+        let saved: Arc<Mutex<Option<FakeSaved>>> = Default::default();
+        let sv = saved.clone();
         let (r, a, stall, ex, pl) = (
             rec.clone(),
             audio.clone(),
@@ -594,6 +652,7 @@ impl FakeLms {
         );
         let app = Router::new().fallback(any(move |req: Request| {
             let (r, stall, ex, pl) = (r.clone(), stall.clone(), ex.clone(), pl.clone());
+            let sv = sv.clone();
             let playing = *st_track.lock().unwrap();
             let library = lib.lock().unwrap().clone();
             let a = sb.lock().unwrap().clone().unwrap_or_else(|| a.clone());
@@ -642,8 +701,10 @@ impl FakeLms {
                     } else {
                         None
                     };
+                    let saved_answer = fake_saved(&sv, &words);
                     let result = match track_id {
                         _ if plugin_answer.is_some() => plugin_answer.unwrap(),
+                        _ if saved_answer.is_some() => saved_answer.unwrap(),
                         _ if cmd == "titles" && many.is_some() => {
                             let loop_: Vec<serde_json::Value> = many
                                 .unwrap()
@@ -822,7 +883,23 @@ impl FakeLms {
             extra,
             plugin,
             status_track,
+            saved,
         }
+    }
+
+    /// Answer saved-playlist queries, `playlist save` and `status` from this from now on.
+    pub fn set_saved_playlists(&self, saved: FakeSaved) {
+        *self.saved.lock().unwrap() = Some(saved);
+    }
+
+    /// The saved playlists now.
+    pub fn saved_playlists(&self) -> Vec<(u64, String)> {
+        self.saved
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.playlists.clone())
+            .unwrap_or_default()
     }
 
     /// Answer `albums` queries from this library from now on.

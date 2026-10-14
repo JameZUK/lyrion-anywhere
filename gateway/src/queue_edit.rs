@@ -40,7 +40,7 @@ const MAX_LOCKS: usize = 1_000;
 type Locks = Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>;
 
 /// One lock per player: edits through the gateway to one queue run one at a time.
-fn lock_for(player: &str) -> Arc<tokio::sync::Mutex<()>> {
+pub(crate) fn lock_for(player: &str) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: OnceLock<Locks> = OnceLock::new();
     let mut m = LOCKS.get_or_init(Default::default).lock().unwrap();
     if m.len() >= MAX_LOCKS {
