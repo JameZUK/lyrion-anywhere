@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Android 1.11.0 (versionCode 24)
+
+A test build with the day's work: Opus about 80 times faster, changing your own password, saving the queue as a playlist, and "Continue on <player>" when back online.
+
 ## 2026-10-14: Performance measured
 
 `docs/PERFORMANCE.md` now has measurements as well as budgets: the decoders' speed, the gateway's latency, throughput and memory (on the demo stack, and at rest on a live install), the web app's first load and WebAssembly size, and the Android release sizes against their budgets (within them). The decoder measurement found the slow Opus path fixed above. New `tools/demo/bench.py` repeats the gateway figures. Start-up, frames, memory and battery on a phone still need a device.
