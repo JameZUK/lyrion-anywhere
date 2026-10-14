@@ -108,6 +108,120 @@ impl KissFft {
     }
 }
 
+/// Forward FFT plan on flat interleaved complex buffers, mixed radix (Lyrion Anywhere patch).
+///
+/// Replaces the direct DFT the MDCT used, which was O(n²) with a `sin_cos` per term and made
+/// decoding run at only a few times real time. The twiddles are built once per size; each
+/// stage is a generic radix-`p` butterfly, as kissfft's `kf_bfly_generic`, so any size works
+/// (CELT needs 60, 120, 240 and 480).
+#[derive(Debug, Clone)]
+pub(crate) struct FftPlan {
+    n: usize,
+    /// `(p, m)` pairs: radix `p` over `m` points, outermost first.
+    factors: Vec<(usize, usize)>,
+    /// `exp(-2πi k / n)`.
+    twiddles: Vec<Complex32>,
+}
+
+impl FftPlan {
+    pub fn new(n: usize) -> Self {
+        let mut factors = Vec::new();
+        let mut rest = n.max(1);
+        while rest > 1 {
+            let p = [4, 2, 3, 5]
+                .into_iter()
+                .find(|p| rest % p == 0)
+                .unwrap_or_else(|| (6..=rest).find(|p| rest % p == 0).unwrap_or(rest));
+            rest /= p;
+            factors.push((p, rest));
+        }
+        let twiddles = (0..n)
+            .map(|k| {
+                let phase = -2.0 * core::f64::consts::PI * (k as f64) / (n as f64);
+                Complex32::new(phase.cos() as f32, phase.sin() as f32)
+            })
+            .collect();
+        Self {
+            n,
+            factors,
+            twiddles,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.n
+    }
+
+    /// Unscaled forward transform of `n` complex points; the same result as
+    /// [`flat_fft_forward`] (to rounding).
+    pub fn forward_flat(&self, input: &[f32], output: &mut [f32]) {
+        let n = self.n;
+        assert!(input.len() >= 2 * n && output.len() >= 2 * n);
+        if n == 0 {
+            return;
+        }
+        let src: Vec<Complex32> = (0..n)
+            .map(|j| Complex32::new(input[2 * j], input[2 * j + 1]))
+            .collect();
+        let mut out = vec![Complex32::new(0.0, 0.0); n];
+        let mut scratch = Vec::new();
+        self.work(&mut out, &src, 0, 1, 0, &mut scratch);
+        for (k, c) in out.iter().enumerate() {
+            output[2 * k] = c.re;
+            output[2 * k + 1] = c.im;
+        }
+    }
+
+    /// Decimation in time: `out` gets the transform of `src[start + i * stride]`.
+    fn work(
+        &self,
+        out: &mut [Complex32],
+        src: &[Complex32],
+        start: usize,
+        stride: usize,
+        stage: usize,
+        scratch: &mut Vec<Complex32>,
+    ) {
+        let Some(&(p, m)) = self.factors.get(stage) else {
+            out[0] = src[start];
+            return;
+        };
+        for q in 0..p {
+            self.work(
+                &mut out[q * m..(q + 1) * m],
+                src,
+                start + q * stride,
+                stride * p,
+                stage + 1,
+                scratch,
+            );
+        }
+        let n = self.n;
+        // This stage's transforms have p * m points, so its twiddles step by n / (p * m).
+        let fstride = stride;
+        scratch.clear();
+        scratch.resize(p, Complex32::new(0.0, 0.0));
+        for u in 0..m {
+            for q in 0..p {
+                let x = out[u + q * m];
+                // Twiddle the q-th sub-transform's u-th point by w^(q u).
+                let t = self.twiddles[(fstride * q * u) % n];
+                scratch[q] = Complex32::new(x.re * t.re - x.im * t.im, x.re * t.im + x.im * t.re);
+            }
+            for k in 0..p {
+                let mut acc = scratch[0];
+                for q in 1..p {
+                    let t = self.twiddles[(fstride * m * q * k) % n];
+                    let x = scratch[q];
+                    acc.re += x.re * t.re - x.im * t.im;
+                    acc.im += x.re * t.im + x.im * t.re;
+                }
+                out[u + k * m] = acc;
+            }
+        }
+    }
+}
+
 /// Compute forward DFT on flat interleaved complex buffers.
 ///
 /// Params: `input`/`output` are `[re0, im0, re1, im1, ...]` and `n` is the
@@ -133,7 +247,49 @@ pub(crate) fn flat_fft_forward(input: &[f32], output: &mut [f32], n: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Complex32, KissFft};
+    use super::{Complex32, FftPlan, KissFft, flat_fft_forward};
+
+    /// The mixed-radix plan matches an exact (f64, true π) DFT for every CELT size and some
+    /// awkward ones, at least as closely as the direct DFT it replaced (which used f32 π).
+    #[test]
+    fn plan_matches_exact_dft() {
+        for n in [1, 2, 3, 4, 5, 6, 7, 8, 12, 15, 30, 49, 60, 120, 240, 480] {
+            let input: Vec<f32> = (0..2 * n)
+                .map(|i| {
+                    ((i * 7919 % 113) as f32 / 56.0 - 1.0) * if i % 3 == 0 { 0.5 } else { 1.0 }
+                })
+                .collect();
+            let mut exact = vec![0.0f64; 2 * n];
+            for k in 0..n {
+                for j in 0..n {
+                    let a = -2.0 * core::f64::consts::PI * ((k * j) % n) as f64 / n as f64;
+                    let (re, im) = (f64::from(input[2 * j]), f64::from(input[2 * j + 1]));
+                    exact[2 * k] += re * a.cos() - im * a.sin();
+                    exact[2 * k + 1] += re * a.sin() + im * a.cos();
+                }
+            }
+            let mut old = vec![0.0f32; 2 * n];
+            let mut got = vec![0.0f32; 2 * n];
+            flat_fft_forward(&input, &mut old, n);
+            FftPlan::new(n).forward_flat(&input, &mut got);
+            let worst = |v: &[f32]| {
+                v.iter()
+                    .zip(&exact)
+                    .map(|(a, e)| (f64::from(*a) - e).abs())
+                    .fold(0.0, f64::max)
+            };
+            let scale = exact.iter().fold(1.0f64, |a, v| a.max(v.abs()));
+            assert!(
+                worst(&got) <= 4e-6 * scale,
+                "n={n}: off by {} (scale {scale})",
+                worst(&got)
+            );
+            assert!(
+                worst(&got) <= worst(&old).max(1e-6 * scale),
+                "n={n}: less exact than before"
+            );
+        }
+    }
     use core::f32::consts::PI;
 
     /// Compute libopus-style forward DFT with `1/N` scaling for tests.

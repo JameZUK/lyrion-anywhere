@@ -2,6 +2,18 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Opus decodes about 80 times faster (Android, web player, gateway)
+
+Found while measuring for `docs/PERFORMANCE.md`: the vendored Opus decoder (`third_party/opus-decoder`) computed its inverse MDCT's FFT as a direct O(n²) DFT, with a `sin_cos` per term. Opus therefore decoded at only about 2× real time on a desktop core: enough to play, but close to the limit on a phone, where it costs battery, and in a browser's WebAssembly. Opus is what the phone and the web player stream at *High* and *Data saver*, and what Opus downloads hold.
+
+- **Fix:** a mixed-radix FFT plan (radix 4, 2, 3 and 5, generic otherwise), with its twiddles built once per MDCT size. See `third_party/opus-decoder/PATCHES.md`.
+- **Speed (release, one desktop core, 160 kb/s stereo):** 2× → about 170× real time. FLAC, MP3 and Vorbis were already 850–2,000×.
+- **Accuracy:** compared with libopus decoding the same files (160 and 64 kb/s), the output moved from 80.6 dB to about 100.5 dB signal-to-error. The old DFT's f32 π made its angles drift.
+- **Tests:**
+  - `plan_matches_exact_dft` (the plan against an exact f64 DFT at every CELT size and some awkward ones);
+  - `opus_decodes_far_faster_than_real_time` in `core/tests/opus.rs` (asserts at least 20× in release builds; the old decoder fails it at 2.3×).
+- **New:** `core/examples/decode_speed.rs` measures any codec's decoding speed and can dump the PCM.
+
 ## 2026-10-14: Web: no lone queue button on wide Now playing
 
 In windows wide enough for the queue beside Now playing (1200 px and over), the button that pins or hides it sat on a line of its own under the Art, Lyrics and Info tabs. The Queue action in the row of actions now does that job there (pressed while the queue is shown); in narrower windows it still peeks at the queue.
