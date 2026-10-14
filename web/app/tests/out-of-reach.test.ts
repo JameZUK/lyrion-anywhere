@@ -285,7 +285,7 @@ describe('a page loaded while the server is out of reach', () => {
 
 describe('the last now-playing state', () => {
 	const player = { playerid: '02:00:00:00:00:01', name: 'Lounge' };
-	const now = { mode: 'play', time: 98, playlist_cur_index: 2, playlist_tracks: 8, playlist_loop: [{ id: 5, title: 'Night Ferry' }] };
+	const now = { mode: 'play' as const, time: 98, playlist_cur_index: 2, playlist_tracks: 8, playlist_loop: [{ id: 5, title: 'Night Ferry' }] };
 
 	test("is kept per user and per player, and given back only for that user's player", () => {
 		saveLastKnown({ user: 'alice', player, now });
