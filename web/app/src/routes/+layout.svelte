@@ -19,7 +19,9 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import OfflineBar from '$lib/components/OfflineBar.svelte';
 	import OfflineMode from '$lib/components/OfflineMode.svelte';
-	import { downloads, offlinePlayer, plays } from '$lib/offline/index.svelte';
+	import { downloads, handoff, offlinePlayer, plays } from '$lib/offline/index.svelte';
+	import { snapshotOf } from '$lib/offline/handoff.svelte';
+	import ContinueOn from '$lib/components/ContinueOn.svelte';
 	import { forgetOwner, rememberOwner } from '$lib/offline/settings';
 	import { library } from '$lib/state/library.svelte';
 	// Keeps a playing station topped up wherever the user goes.
@@ -73,20 +75,40 @@
 
 	// Downloads belong to the signed-in user. Remember who that is, so offline mode can offer
 	// their downloads when the server can't be reached; forget it once signed out.
+	let lastStatus = '';
 	$effect(() => {
 		const user = app.session?.user.username ?? null;
+		const was = lastStatus;
+		lastStatus = app.status;
+		if (app.status === 'offline') handoff.wentOffline();
 		if (app.status === 'signed-in' && user) {
 			rememberOwner(user);
 			void downloads.setUser(user, true);
 			void plays.setUser(user, true);
 			void library.start(user, (c) => api.rpc('', c));
+			// Back from offline with downloads queued: offer "Continue on <player>" (SPEC §8.4).
+			if (navigator.onLine !== false) untrack(() => handoff.backOnline(user, snapshotOf(offlinePlayer)));
 		} else if (app.status === 'signed-out') {
+			// The sign-in ended while offline (not signed out on purpose): keep the queue to
+			// offer once the same user signs in again.
+			if (was === 'offline' || !session.signOutPending) untrack(() => handoff.keep(snapshotOf(offlinePlayer)));
+			else handoff.reset();
 			offlinePlayer.stop();
 			library.stop();
 			forgetOwner();
 			void downloads.setUser(null);
 			void plays.setUser(null);
 		}
+	});
+
+	// The browser lost its connection while signed in, and has it back: the same offer.
+	$effect(() => {
+		const online = () => {
+			const user = app.session?.user.username;
+			if (app.status === 'signed-in' && user) handoff.backOnline(user, snapshotOf(offlinePlayer));
+		};
+		addEventListener('online', online);
+		return () => removeEventListener('online', online);
 	});
 
 	// Note where this device is in the queue when the page goes away, to carry on after a reload.
@@ -213,6 +235,7 @@
 						<button class="btn" onclick={() => device.stop()}>Dismiss</button>
 					</div>
 				{/if}
+				<ContinueOn />
 				{#if app.notice}
 					<div class="banner resume notice" role="status">
 						<span>{app.notice}</span>

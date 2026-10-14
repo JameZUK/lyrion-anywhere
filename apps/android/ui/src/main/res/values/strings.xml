@@ -416,6 +416,27 @@
     <string name="transfer_phone_not_ready">This phone isn\'t ready as a player yet. Try again in a moment.</string>
     <string name="action_dismiss">Dismiss</string>
 
+    <!-- "Continue on <player>" (SPEC §8.4) -->
+    <string name="continue_on_title">Back online. Continue on %1$s?</string>
+    <plurals name="continue_on_detail">
+        <item quantity="one">%1$d track from your downloads</item>
+        <item quantity="other">%1$d tracks from your downloads</item>
+    </plurals>
+    <string name="continue_on_playing">%1$s, playing now</string>
+    <string name="continue_on_choose">Choose a player</string>
+    <string name="continue_on_go">Continue</string>
+    <string name="continue_on_not_now">Not now</string>
+    <string name="continue_on_busy">Moving your downloads queue to %1$s…</string>
+    <string name="continue_on_done">Now playing on %1$s.</string>
+    <plurals name="continue_on_skipped">
+        <item quantity="one">%1$d track was skipped: it isn’t in the library any more.</item>
+        <item quantity="other">%1$d tracks were skipped: they aren’t in the library any more.</item>
+    </plurals>
+    <string name="continue_on_none">None of these tracks are in the library any more, so nothing was sent to %1$s.</string>
+    <string name="continue_on_changed">The downloads queue kept changing, so nothing was sent to %1$s. Try again.</string>
+    <string name="continue_on_failed">Couldn’t continue on %1$s. Your downloads carry on here.</string>
+    <string name="continue_on_empty">Nothing to continue: the downloads queue is empty.</string>
+
     <!-- Sync groups -->
     <string name="sync_with">Play %1$s in sync with %2$s</string>
 

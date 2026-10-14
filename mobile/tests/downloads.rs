@@ -25,7 +25,7 @@ use anywhere_mobile::offline::store::scope_name;
 use anywhere_mobile::{
     DownloadFailure, DownloadFormat, DownloadObserver, DownloadOrigin, DownloadPolicy,
     DownloadRequest, DownloadState, Downloader, DownloadsSnapshot, FormatChoice, NetworkKind,
-    OfflineLibrary, Server, Session, sync_plays,
+    OfflineLibrary, OfflineTrackRef, Server, Session, resolve_offline_tracks, sync_plays,
 };
 use axum::Router;
 use axum::body::Body;
@@ -1051,4 +1051,64 @@ async fn plays_sync_back_through_the_real_gateway() {
     let out = sync_plays(session, again.clone()).await.unwrap();
     assert_eq!((out.sent, out.pending), (1, 0), "{out:?}");
     assert_eq!(recorded_plays(&h.lms).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn offline_tracks_resolve_to_current_ids_through_the_gateway() {
+    // "Continue on <player>" (SPEC §8.4): only an id that still names the download's file.
+    let h = Harness::start().await;
+    for id in [1u64, 2] {
+        h.lms.add_track(
+            id,
+            "flc",
+            flac::encode(44_100, 16, &flac::noise(4410, 16, id)),
+        );
+    }
+    let (session, lib, seen, dl, _) = real_setup(&h).await;
+    dl.enqueue(vec![manual(1), manual(2)], FormatChoice::Original);
+    wait_state(&seen, 1, DownloadState::Done, 20).await;
+    wait_state(&seen, 2, DownloadState::Done, 20).await;
+    dl.shutdown();
+    let key = |id: i64| {
+        lib.tracks()
+            .into_iter()
+            .find(|t| t.track_id == id)
+            .unwrap()
+            .key
+    };
+    let (k1, k2) = (key(1), key(2));
+    assert_ne!(k1, k2);
+    let r = |track_id: i64, key: &str| OfflineTrackRef {
+        track_id,
+        key: key.to_string(),
+    };
+    let refs = vec![
+        r(2, &k2),
+        // Track 1's id names another file than this (as after a rescan): not resolved.
+        r(1, &k2),
+        // Unknown to LMS: not resolved.
+        r(424242, &k1),
+        r(1, &k1),
+    ];
+    let got = resolve_offline_tracks(session.clone(), refs.clone())
+        .await
+        .unwrap();
+    assert_eq!(got, vec![Some(2), None, None, Some(1)]);
+
+    // Downloads turned off for alice: refused as a whole, nothing half-resolved.
+    h.accounts.set_downloads("alice", false, None).unwrap();
+    let res = resolve_offline_tracks(session.clone(), refs.clone()).await;
+    assert!(
+        matches!(res, Err(anywhere_mobile::ApiError::Forbidden { .. })),
+        "{res:?}"
+    );
+    h.accounts.set_downloads("alice", true, None).unwrap();
+
+    // Signed out: refused before anything is asked.
+    session.logout().await.unwrap();
+    let res = resolve_offline_tracks(session, refs).await;
+    assert!(
+        matches!(res, Err(anywhere_mobile::ApiError::Unauthorised)),
+        "{res:?}"
+    );
 }

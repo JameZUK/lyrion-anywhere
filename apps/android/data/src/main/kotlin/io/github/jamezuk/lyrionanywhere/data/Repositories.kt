@@ -201,6 +201,13 @@ interface PlayersRepository {
     /** Play a favourite (a station, track or app item). */
     suspend fun playFavourite(player: String, itemId: String, placement: Placement): ApiResult<Unit>
 
+    /**
+     * Replace the queue with library tracks [ids], in order, playing from [start] (an index
+     * into them): "Continue on" for the offline queue (SPEC §8.4).
+     */
+    suspend fun loadTrackList(player: String, ids: List<Long>, start: Int): ApiResult<Unit> =
+        ApiResult.Err(AppError.InvalidInput("not available"))
+
     /** Take the queue entry at [index] out. */
     suspend fun removeFromQueue(player: String, index: Int): ApiResult<Unit>
 
@@ -476,6 +483,9 @@ class RustPlayersRepository(private val source: ConnectionSource) : PlayersRepos
 
     override suspend fun setSynced(current: String, other: String, on: Boolean) =
         withPlayers { it.setSynced(current, other, on) }
+
+    override suspend fun loadTrackList(player: String, ids: List<Long>, start: Int) =
+        withPlayers { it.loadTrackList(player, ids, start.u()) }
 
     override suspend fun transfer(source: String, target: String, onStage: (TransferStage) -> Unit) =
         withPlayers {

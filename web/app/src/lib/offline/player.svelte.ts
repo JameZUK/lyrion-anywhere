@@ -105,6 +105,11 @@ export class OfflinePlayer {
 		return this.queue.length > 0;
 	}
 
+	/** Whose downloads are queued ('' before the first play). */
+	get user(): string {
+		return this.#user;
+	}
+
 	get current(): StoredTrack | undefined {
 		return this.queue[this.index];
 	}

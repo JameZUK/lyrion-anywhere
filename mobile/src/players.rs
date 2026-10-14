@@ -18,6 +18,38 @@ pub const ROOMS_MAX: usize = 20;
 /// Status reads in flight at once for the Rooms view.
 const ROOMS_PARALLEL: usize = 4;
 
+/// Most tracks [`Players::load_track_list`] puts on a queue at once.
+pub const MAX_LIST_LOAD: usize = 2000;
+
+/// The commands that put library tracks `ids` on a queue, in order, playing from `start`:
+/// the first id list replaces the queue (`load`, starting there when `start` is in it), the
+/// rest are added, then a jump when `start` is further on. Every id is checked, and each
+/// list fits the gateway's limit; nothing is sent for a bad list.
+pub fn list_load_commands(ids: &[i64], start: u32) -> Result<Vec<commands::Command>, ApiError> {
+    if ids.is_empty() || ids.len() > MAX_LIST_LOAD {
+        return Err(ApiError::invalid("bad track list"));
+    }
+    let start = start as usize;
+    if start >= ids.len() {
+        return Err(ApiError::invalid("bad start"));
+    }
+    let chunks = commands::chunk_ids(ids, commands::ID_LIST_MAX);
+    let first = &chunks[0];
+    let in_first = start < first.len();
+    let mut out = vec![commands::load_tracks(
+        first,
+        false,
+        Some(if in_first { start as u32 } else { 0 }),
+    )?];
+    for c in &chunks[1..] {
+        out.push(commands::load_tracks(c, true, None)?);
+    }
+    if !in_first {
+        out.push(commands::jump(start as u32));
+    }
+    Ok(out)
+}
+
 /// One room's status for the Rooms view, or why it couldn't be read.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct RoomStatus {
@@ -362,6 +394,22 @@ impl Players {
         .await
     }
 
+    /// Replace the queue with library tracks `ids`, in order, and play from `start` (an
+    /// index into them): "Continue on" for the offline queue (SPEC §8.4). Long lists go in
+    /// several commands, each through the gateway's policy (see [`list_load_commands`]).
+    pub async fn load_track_list(
+        &self,
+        player: String,
+        ids: Vec<i64>,
+        start: u32,
+    ) -> Result<(), ApiError> {
+        let player = commands::player_id(&player)?;
+        for c in list_load_commands(&ids, start)? {
+            self.run(&player, c).await?;
+        }
+        Ok(())
+    }
+
     /// Play a favourite (a station, track or app item) now, next, or at the end.
     pub async fn play_favourite(
         &self,
@@ -397,6 +445,49 @@ mod tests {
 
     fn id(n: usize) -> String {
         format!("02:00:00:00:00:{n:02x}")
+    }
+
+    #[test]
+    fn a_list_load_keeps_order_and_starts_where_asked() {
+        // Short: one load, starting at the track.
+        let c = list_load_commands(&[11, 12, 13], 1).unwrap();
+        assert_eq!(
+            c,
+            vec![commands::load_tracks(&[11, 12, 13], false, Some(1)).unwrap()]
+        );
+        // Long: the first list loads, the rest are added in order, then a jump past the first.
+        let ids: Vec<i64> = (100_000..100_100).collect();
+        let chunks = commands::chunk_ids(&ids, commands::ID_LIST_MAX);
+        assert!(chunks.len() > 2);
+        let c = list_load_commands(&ids, 90).unwrap();
+        assert_eq!(c.len(), chunks.len() + 1);
+        assert_eq!(
+            c[0],
+            commands::load_tracks(&chunks[0], false, Some(0)).unwrap()
+        );
+        for (i, ch) in chunks[1..].iter().enumerate() {
+            assert_eq!(c[i + 1], commands::load_tracks(ch, true, None).unwrap());
+        }
+        assert_eq!(*c.last().unwrap(), commands::jump(90));
+        // Starting inside the first list: no jump.
+        let c = list_load_commands(&ids, 3).unwrap();
+        assert_eq!(c.len(), chunks.len());
+        assert_eq!(
+            c[0],
+            commands::load_tracks(&chunks[0], false, Some(3)).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_bad_list_load_sends_nothing() {
+        assert!(list_load_commands(&[], 0).is_err());
+        assert!(list_load_commands(&[1, 2], 2).is_err());
+        assert!(list_load_commands(&[1, 0, 3], 0).is_err());
+        assert!(list_load_commands(&[1, -5], 0).is_err());
+        assert!(list_load_commands(&[i64::MAX], 0).is_err());
+        let many = vec![1i64; MAX_LIST_LOAD + 1];
+        assert!(list_load_commands(&many, 0).is_err());
+        assert!(list_load_commands(&vec![1i64; MAX_LIST_LOAD], 0).is_ok());
     }
 
     #[test]
