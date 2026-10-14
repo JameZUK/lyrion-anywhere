@@ -2,6 +2,36 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Change your own password, on the web and Android
+
+Until now only an admin could set a password. A signed-in user can now change their own in *Settings › Account › Change password*.
+
+- **Gateway:** `POST /v1/account/password` `{"current","new","code"?,"sign_out_others"?}` (docs/PROTOCOL.md).
+  - It needs a bearer access token, `X-Anywhere-Client` and an allowed `Origin`, the current password, and a two-step code when that is on.
+  - The new password must pass the usual policy and differ from the current one.
+  - Wrong guesses count as failed sign-ins: the user's account-change lock, the address and the username's sign-in lock. Five lock them, and sign-in from that address too.
+  - Wrong credentials are 403 rather than 401, so clients don't renew their token and resend the same guess.
+  - Unused pairing codes are dropped. The caller stays signed in, and so do the user's other devices unless they ask for those to be signed out; the answer lists them.
+  - Audited as `user.password_changed` (detail `self`) and `password.change_failed`, never with the password.
+  - `GET /v1/me` lists `change_password` under `features`.
+- **Web:** a *Change password* form in *Settings › Account* with a hidden username field and `current-password`/`new-password` autocomplete for password managers. A code field appears when two-step is on. Errors show inline and are announced: wrong password, the policy's reason, locked out (with the wait) and network failures. Afterwards it lists the devices still signed in.
+- **Android:** the same form as a dialog in Settings' account section, shown only when the server offers it. It sends the two-step code when the account has two-step on.
+- **Tests:**
+  - gateway:
+    - success, with the old password refused and the new one accepted;
+    - the caller and other devices kept, or signed out on request;
+    - pairing codes dropped;
+    - wrong password, and a missing or wrong code;
+    - a lockout reached here that blocks sign-in and two-step setup, and sign-in failures that lock this call;
+    - weak and unchanged passwords costing no attempt;
+    - missing, bogus, revoked and signed-out tokens;
+    - cross-origin and header-less requests, and cookie-only requests;
+    - malformed, unknown-field, duplicate-field, wrong-type and oversize bodies, and random bytes;
+    - the audit entry without the password;
+  - the web app's API call and form;
+  - the mobile layer against the real gateway;
+  - Android's repository mapping and a Compose test of the dialog.
+
 ## 2026-10-13: Rolling cache, Phase C: downloads stand in for Original FLAC streams
 
 When the phone plays a track at Original quality that is downloaded as its original FLAC, it now fetches only the stream's first bytes and plays the rest from the download. The audio is bit-identical.
