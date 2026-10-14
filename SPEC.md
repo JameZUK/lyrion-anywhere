@@ -345,7 +345,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 - **Wave 2 part 4 on the web (2026-10-13, `docs/plans/wave2-design.md` §5):** car mode (a driving screen from Now playing: giant transport, hold play to stop, Start radio, one level of Favourites and Stations, 76 px targets, high contrast, the screen kept on while playing); haptics through `navigator.vibrate`, off by default; manifest shortcuts (Resume, Radio, Search), a full Media Session including seeking, and keyboard shortcuts (Space, arrows on Now playing and in car mode, `/`, `L`, `?`); smart filters (a rule builder, a Library chip, a `filter` Home shelf, play/shuffle of the first 50 albums), built to the §5.6 contract.
 
 **Offline (§8)**
-- Download buttons on track/album/playlist, a downloads page with progress, and storage usage.
+- Download buttons on track/album/playlist (and "Download all albums" on an artist), a downloads page with progress, and storage usage.
 - Offline mode with a local queue and browse of downloaded content.
 
 **Account and admin**
@@ -381,6 +381,10 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 
 - Single tracks, albums, playlists, and artists (all albums), from local library files only.
 - **Pinned items:** albums and playlists can be pinned. A pinned playlist re-syncs whenever the device is online: new tracks are downloaded and removed tracks deleted.
+- _Web app (2026-10-14):_ tracks (the album page's track menu), playlists, artists (each album its own download) and albums.
+  - Each stored track lists what it was downloaded for (`album:<id>`, `playlist:<id>` or `track`). Removing a playlist, album or track takes only its own reference off; the track's audio goes only when no reference is left. Tracks stored before this belong to their album.
+  - A playlist is a group on the Downloads page with its name and order (IndexedDB `groups`), forgotten once nothing needs it.
+  - Pinning and playlist re-sync are not built on the web yet.
 
 ### 8.2 Format (D5)
 
@@ -389,6 +393,8 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
   - **Opus 160**: about 1.2 MB/min (an Opus 128 option was dropped: one Opus quality keeps the cache simple).
   - **MP3 320** (constant bit rate): for compatibility.
 - Settings hold separate defaults for Wi-Fi and cellular, and a "download on Wi-Fi only" toggle (on by default).
+  - _Web app (2026-10-14):_ only `navigator.connection.type` tells mobile data from Wi-Fi (Chromium on Android); `effectiveType` is speed, not cost, and never holds a download. On mobile data the queue waits ("Waiting for Wi-Fi") and downloads in progress stop, keeping their bytes; "Download now" lets that album's, playlist's or artist's downloads (or all, from the Downloads page) use mobile data, remembered across a reload. Where the browser doesn't report the network (Safari, Firefox, desktop), nothing waits and Settings says so.
+  - _Android:_ the toggle is off by default (`DownloadSettings.wifiOnly`); to be aligned.
 - If the server has no `ffmpeg`, only Original is offered.
 - The admin can restrict formats per user.
 
@@ -401,6 +407,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
   - The manifest (and `GET /v1/download/track/{id}/info`) returns both the current track ID and the stable key. On reconnect, the client re-resolves keys to current IDs before re-syncing or sending offline events.
 - A track's version is derived from its library modification time and size. When the library file changes, the cached copy is refreshed on the next sync.
 - Optional storage cap per device. Pinned items are never evicted automatically; the user is warned instead.
+  - _Web app (2026-10-14):_ Settings › Downloads, no limit (default) or 1, 2, 5, 10, 20, 50 or 100 GB. Before anything is queued, the batch's expected size (an original by LMS's file size, tag `f`; otherwise duration at the format's rate, CD-quality PCM for an original of unknown size) must fit in the limit less what is stored and queued, and in the browser's free space (`navigator.storage.estimate`, less what the queue still expects); otherwise nothing is queued and the page says how much is needed and how much is free. Each track is checked again by its real size as it starts, and a transcode of unknown length is stopped once it passes the limit (its bytes are discarded). There is no smart eviction on the web.
 - Metadata and artwork are stored alongside the audio, so offline browse works fully.
 
 ### 8.4 Offline playback and sync-back (D6)
@@ -420,7 +427,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
   - **Counting rule (as scrobblers use):** a play counts if at least half the track, or 240 s, was heard, whichever is less (240 s when the duration is unknown).
   - **No overlap:** a play of a track the user already has a counted play of, starting less than that counting time before or after it, is refused (`overlap`): it can't be a separate listen (2026-10 security review).
   - The gateway forwards each play to the plugin's `anywhere play_record` over LMS JSON-RPC on loopback, signed with HMAC-SHA256 under the admin secret both already share. The plugin raises LMS's play count and sets last played (if later) through `Slim::Schema::TrackPersistent`, as LMS does for its own players.
-- **Ratings** (not yet): rating changes will be queued the same way.
+- **Ratings** (not yet): rating changes will be queued the same way. _Web app:_ there is no rating control while playing offline (ratings are on Now playing for LMS players only), so nothing is queued yet.
 - Back online, the app offers to send the offline queue to an LMS player ("continue on <player>").
 - _Web app (2026-10-10, 2026-10-11):_
   - the local player: an `<audio>` element on blob: URLs, with Media Session controls;

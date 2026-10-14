@@ -13,9 +13,8 @@
 	import InfoText from '$lib/components/InfoText.svelte';
 	import { sanitiseAlbumInfo } from '$lib/info/info';
 	import type { TrackBadge } from '$lib/components/track-badge';
-	import { downloads } from '$lib/offline/index.svelte';
-	import { defaultFormat, networkType } from '$lib/offline/settings';
-	import { FORMATS, FORMAT_LABELS, type Format } from '$lib/offline/types';
+	import DownloadBar from '$lib/components/DownloadBar.svelte';
+	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
 
 	let ctx = $state<{ kind: cmd.InfoKind; id: number; title: string } | null>(null);
 
@@ -73,26 +72,31 @@
 	const many = $derived(new Set(tracks.map((t) => t.artist)).size > 1);
 
 	// Downloads (SPEC §8): library tracks only (never radio or streamed ones).
-	let choice = $state<Format | 'auto'>('auto');
-	const auto = defaultFormat();
-	const onWifi = networkType() === 'wifi';
 	const downloadable = $derived(tracks.filter((t) => typeof t.id === 'number' && !isRemote(t.remote)));
-	const savedCount = $derived(downloadable.filter((t) => downloads.savedById(t.id)).length);
-	const allSaved = $derived(downloadable.length > 0 && savedCount === downloadable.length);
-	const progress = $derived(albumId !== null ? downloads.album(albumId) : null);
-	const firstError = $derived(albumId !== null ? downloads.items.find((i) => i.albumId === albumId && i.status === 'failed')?.message : undefined);
+	const requests = $derived(
+		albumId === null ? [] : downloadable.map((t) => ({ id: t.id, albumId, duration: t.duration, filesize: t.filesize })),
+	);
+	let trackMsg = $state('');
 
-	function download(id: number) {
-		downloads.enqueue(downloadable.map((t) => ({ id: t.id, albumId: id })), choice);
+	/** A single track: download it on its own, or remove it (unless a playlist needs it). */
+	function trackDownload(t: Track): string | undefined {
+		if (typeof t.id !== 'number' || isRemote(t.remote)) return undefined;
+		if (downloads.savedById(t.id)) return 'Remove download';
+		const it = downloads.item(t.id);
+		if (it && it.status !== 'done' && it.status !== 'failed') return undefined;
+		return downloads.online ? 'Download' : undefined;
 	}
-	async function removeDownload(id: number) {
-		const keys = new Set(downloads.savedAlbum(id).map((t) => t.key));
-		for (const t of downloadable) {
-			const s = downloads.savedById(t.id);
-			if (s) keys.add(s.key);
+	async function toggleTrack(t: Track) {
+		trackMsg = '';
+		const s = downloads.savedById(t.id);
+		if (s) {
+			const r = await downloads.removeTracks([s.key]);
+			offlinePlayer.forget(r.removed);
+			if (r.kept) trackMsg = 'This track stays: a downloaded playlist still needs it.';
+			return;
 		}
-		await downloads.cancelAll(id);
-		await downloads.remove([...keys]);
+		const r = await downloads.request([{ id: t.id, albumId, duration: t.duration, filesize: t.filesize }], { ref: 'track' });
+		trackMsg = r.refused ?? '';
 	}
 	function badge(t: Track): TrackBadge | undefined {
 		if (downloads.savedById(t.id)) return { kind: 'done', label: 'Downloaded' };
@@ -100,6 +104,7 @@
 		if (!it) return undefined;
 		if (it.status === 'failed') return { kind: 'failed', label: it.message || 'Download failed' };
 		if (it.status === 'paused') return { kind: 'busy', label: 'Download paused' };
+		if (downloads.isHeld(it)) return { kind: 'busy', label: 'Waiting for Wi-Fi' };
 		if (it.status === 'active' && it.total) return { kind: 'busy', label: `Downloading ${Math.round((100 * it.received) / it.total)}%` };
 		return { kind: 'busy', label: 'Waiting to download' };
 	}
@@ -127,44 +132,8 @@
 					<button class="btn" onclick={() => app.queueUp({ album: id }, 'add')}><Icon name="plus" size={18} />Add to queue</button>
 					<button class="btn" onclick={() => (ctx = { kind: 'album', id, title: textOf(album?.album) })}><Icon name="more" size={18} />More</button>
 				</div>
-				{#if downloadable.length}
-					<div class="dl" data-testid="album-download">
-						{#if progress?.busy}
-							<span class="dl-state" role="status">Downloading {progress.done} of {progress.count} · {Math.round(progress.fraction * 100)}%</span>
-							<progress max="1" value={progress.fraction} aria-label="Download progress"></progress>
-							<button class="btn" onclick={() => downloads.pauseAll(id)}><Icon name="pause" size={18} />Pause</button>
-							<button class="btn" onclick={() => downloads.cancelAll(id)}><Icon name="close" size={18} />Cancel</button>
-						{:else if progress && progress.paused > 0}
-							<span class="dl-state" role="status">Download paused ({progress.done} of {progress.count})</span>
-							<button class="btn" onclick={() => downloads.resumeAll(id)}><Icon name="play" size={18} />Resume</button>
-							<button class="btn" onclick={() => downloads.cancelAll(id)}><Icon name="close" size={18} />Cancel</button>
-						{:else if allSaved}
-							<span class="dl-state done" role="status"><Icon name="check" size={18} />Downloaded</span>
-							<button class="btn" onclick={() => removeDownload(id)}><Icon name="trash" size={18} />Remove download</button>
-						{:else}
-							<button class="btn" onclick={() => download(id)} disabled={!downloads.online}>
-								<Icon name="download" size={18} />{savedCount ? 'Download the rest' : 'Download'}
-							</button>
-							<label class="fmt">
-								<span class="sr-only">Download format</span>
-								<select bind:value={choice}>
-									<option value="auto">{FORMAT_LABELS[auto]} ({onWifi ? 'Wi-Fi' : 'mobile data'} default)</option>
-									{#each FORMATS as f (f)}<option value={f}>{FORMAT_LABELS[f]}</option>{/each}
-								</select>
-							</label>
-							{#if savedCount}
-								<span class="dl-state muted">{savedCount} of {downloadable.length} downloaded</span>
-								<button class="btn" onclick={() => removeDownload(id)}><Icon name="trash" size={18} />Remove download</button>
-							{/if}
-						{/if}
-						{#if progress?.failed && !progress.busy}
-							<p class="error small" role="alert">
-								{progress.failed} {progress.failed === 1 ? 'track' : 'tracks'} couldn’t be downloaded: {firstError}
-								<button class="btn" onclick={() => downloads.resumeAll(id)}>Try again</button>
-							</p>
-						{/if}
-					</div>
-				{/if}
+				<DownloadBar tracks={requests} ref={`album:${id}`} onremoved={(keys) => offlinePlayer.forget(keys)} />
+				{#if trackMsg}<p class="small muted" role="alert">{trackMsg}</p>{/if}
 			</div>
 		</header>
 		{#if review}
@@ -178,6 +147,8 @@
 			onadd={(t) => t.id && app.queueUp({ track: t.id }, 'add')}
 			onmore={(t) => t.id && (ctx = { kind: 'track', id: t.id, title: textOf(t.title) })}
 			{badge}
+			download={trackDownload}
+			ondownload={toggleTrack}
 		/>
 	{:else}
 		<p class="muted">Loading…</p>
@@ -223,33 +194,6 @@
 		flex-wrap: wrap;
 		gap: 0.6rem;
 		margin-top: 1rem;
-	}
-	.dl {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.6rem;
-		margin-top: 0.75rem;
-	}
-	.dl-state {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.35rem;
-		font-weight: 550;
-	}
-	.dl-state.done {
-		color: var(--accent);
-	}
-	.dl progress {
-		width: 8rem;
-		accent-color: var(--accent);
-	}
-	.fmt select {
-		padding: 0.5em 0.6em;
-		border: 1px solid var(--line);
-		border-radius: var(--radius-sm);
-		background: var(--bg-raised);
-		color: var(--fg);
 	}
 	.review {
 		margin-top: -0.5rem;

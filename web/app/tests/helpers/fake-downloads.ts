@@ -10,6 +10,7 @@ export interface FakeTrack {
 	album?: string;
 	album_id?: number;
 	tracknum?: number;
+	duration?: number;
 	bytes: Uint8Array;
 	formats?: string[];
 }
@@ -83,7 +84,7 @@ export function fakeServer(tracks: FakeTrack[]) {
 				album: t.album ?? 'Album',
 				album_id: t.album_id ?? 7,
 				tracknum: t.tracknum ?? 1,
-				duration: 241.2,
+				duration: t.duration ?? 241.2,
 				original: { format: 'flc', content_type: 'audio/flac', size: t.bytes.length, ext: 'flac' },
 				formats: t.formats ?? ['original', 'mp3', 'opus'],
 			});

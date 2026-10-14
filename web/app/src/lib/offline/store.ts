@@ -12,14 +12,16 @@
 //   keeps what it has and resumes with an HTTP Range request, even after a reload.
 //
 // Plays made offline wait in 'plays' until the server has them (see ./plays.svelte).
+// Downloaded playlists keep their name and order in 'groups'; each track lists the
+// downloads that need it (its refs), so removing one never deletes another's tracks.
 //
 // Everything is partitioned by user: each key starts with the (encoded) username, so a
 // different user signing in on the same browser never sees another user's downloads.
 // Tokens are never stored.
-import type { PartialDownload, QueuedDownload, QueuedPlay, StoredTrack } from './types';
+import { isRef, type PartialDownload, type QueuedDownload, type QueuedPlay, type StoredGroup, type StoredTrack } from './types';
 
-export type StoreName = 'tracks' | 'chunks' | 'partials' | 'covers' | 'queues' | 'plays';
-const STORES: StoreName[] = ['tracks', 'chunks', 'partials', 'covers', 'queues', 'plays'];
+export type StoreName = 'tracks' | 'chunks' | 'partials' | 'covers' | 'queues' | 'plays' | 'groups';
+const STORES: StoreName[] = ['tracks', 'chunks', 'partials', 'covers', 'queues', 'plays', 'groups'];
 
 /** The handful of operations the store needs: real (IndexedDB) or in memory (tests). */
 export interface Backend {
@@ -67,8 +69,8 @@ export class IdbBackend implements Backend {
 	#open(): Promise<IDBDatabase> {
 		this.#db ??= new Promise<IDBDatabase>((resolve, reject) => {
 			if (typeof indexedDB === 'undefined') return reject(new Error('This browser can’t store downloads.'));
-			// Version 2 added 'plays'; the upgrade only creates the stores that are missing.
-			const req = indexedDB.open(this.name, 2);
+			// Version 2 added 'plays', 3 'groups'; the upgrade only creates the stores that are missing.
+			const req = indexedDB.open(this.name, 3);
 			req.onupgradeneeded = () => {
 				for (const s of STORES) if (!req.result.objectStoreNames.contains(s)) req.result.createObjectStore(s);
 			};
@@ -133,6 +135,10 @@ const coverKey = (user: string, albumId: number) => {
 	if (!Number.isSafeInteger(albumId) || albumId <= 0) throw new RangeError('bad album id');
 	return `${userPrefix(user)}${albumId}`;
 };
+const groupKey = (user: string, id: string) => {
+	if (!isRef(id) || id === 'track') throw new RangeError('bad group id');
+	return `${userPrefix(user)}${id}`;
+};
 const seqKey = (n: number) => String(n).padStart(8, '0');
 /** A queued play's id: its start time (so plays list oldest first) and a random part. */
 export const PLAY_ID = /^\d{11}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -195,6 +201,16 @@ export class OfflineStore {
 	}
 	async saveQueue(user: string, q: QueuedDownload[]): Promise<void> {
 		return q.length ? this.backend.put('queues', userPrefix(user), q.map((e) => ({ ...e }))) : this.backend.del('queues', userPrefix(user));
+	}
+
+	async listGroups(user: string): Promise<StoredGroup[]> {
+		return this.backend.list<StoredGroup>('groups', userPrefix(user));
+	}
+	async putGroup(g: StoredGroup): Promise<void> {
+		return this.backend.put('groups', groupKey(g.user, g.id), { ...g, ids: [...g.ids] });
+	}
+	async deleteGroup(user: string, id: string): Promise<void> {
+		return this.backend.del('groups', groupKey(user, id));
 	}
 
 	/** Queue a play made offline until the server has it. */

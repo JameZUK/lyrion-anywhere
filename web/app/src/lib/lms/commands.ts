@@ -7,6 +7,9 @@ export const STATUS_TAGS = 'tags:aAlcdeJKjNoqrsTIyx';
 export const QUEUE_TAGS = 'tags:alcdeJKjt';
 export const ALBUM_TAGS = 'tags:aljyS';
 export const TRACK_TAGS = 'tags:adtlcJKj';
+/** For lists that can be downloaded (albums, playlists): also the file size (`f`), for the
+ *  storage limit, and whether a track is remote (`x`), which is never downloaded. */
+export const LIST_TRACK_TAGS = 'tags:adtlcJKjfx';
 
 /** LMS library ids are positive integers. */
 export function id(v: unknown): number {
@@ -144,7 +147,7 @@ export function inOrder<T extends { id?: unknown }>(items: readonly T[], ids: re
 	}
 	return ids.map((i) => by.get(i)).filter((x): x is T => x !== undefined);
 }
-export const albumTracks = (album: number): Command => ['titles', 0, 500, TRACK_TAGS, 'sort:tracknum', `album_id:${id(album)}`];
+export const albumTracks = (album: number): Command => ['titles', 0, 500, LIST_TRACK_TAGS, 'sort:tracknum', `album_id:${id(album)}`];
 export const search = (term: string, n = 20): Command => ['search', 0, count(n), `term:${text(term)}`];
 /** One search for artists, albums and tracks at once (`extended:1` adds their counts). */
 export const searchAll = (term: string, n = 20): Command => ['search', 0, count(n), `term:${text(term)}`, 'extended:1'];
@@ -167,7 +170,7 @@ export const favourites = (from: number, n: number, item?: string): Command => [
 ];
 export const playlists = (from: number, n: number): Command => ['playlists', start(from), count(n)];
 export const playlistTracks = (playlist: number): Command => [
-	'playlists', 'tracks', 0, 500, `playlist_id:${id(playlist)}`, TRACK_TAGS,
+	'playlists', 'tracks', 0, 500, `playlist_id:${id(playlist)}`, LIST_TRACK_TAGS,
 ];
 export const newPlaylist = (name: string): Command => ['playlists', 'new', `name:${text(name) || 'New playlist'}`];
 export const renamePlaylist = (playlist: number, name: string): Command => [

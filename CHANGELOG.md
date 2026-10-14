@@ -2,6 +2,19 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Web downloads: tracks, playlists and artists, Wi-Fi only, and a storage limit
+
+The web app's offline downloads now cover what SPEC §8 asks for, as Android does.
+
+- **What can be downloaded:** single tracks (the track menu on an album page: *Download* / *Remove download*), whole playlists (a *Download* bar on the playlist page) and all of an artist's albums (*Download all albums* on the artist page), as well as albums. Library tracks only, as before.
+- **Groups, reference-counted:** each downloaded track lists what it was downloaded for (`album:<id>`, `playlist:<id>` or `track`). A playlist is its own group on the Downloads page, in its own order, with play, show tracks and remove. Removing a playlist, an album or a track takes only its own reference off; a track is deleted (audio, partial and cover) only when no download still needs it, and the page says how many stayed. Tracks downloaded before this change belong to their album. A playlist whose tracks are already here (for their albums) is "downloaded" at once, with nothing fetched.
+- **Download on Wi-Fi only** (on by default, SPEC §8.2): while the browser reports mobile data (`navigator.connection.type`, Chromium on Android), the queue waits and says *Waiting for Wi-Fi*, with *Download now* for that album, playlist or artist, or for all on the Downloads page; downloads in progress stop and resume by Range on Wi-Fi. `effectiveType` (speed) never holds a download. Where the browser doesn't report the network (Safari, Firefox, desktop), nothing waits, and Settings says so.
+- **Storage limit** (Settings › Downloads: no limit by default, or 1–100 GB, as on Android): a batch that would go past it is refused before anything is queued, saying how much it needs and how much is free under the limit (originals by LMS's file size, transcodes by duration). Each track is checked again by its real size as it starts, and a transcode of unknown size is stopped once it passes the limit; its bytes are thrown away. The browser's own free space (`navigator.storage.estimate`) is checked the same way. Settings and the Downloads page show the limit, the browser's quota and whether it keeps downloads.
+- **Smaller fixes:** a queued download remembers its stable key, so cancelling it after a reload, before its details arrive, still deletes its stored bytes; clearing a failed download deletes its partial bytes.
+- **Gateway:** unchanged. Album and playlist track lists ask LMS for two more tags (`f` file size, `x` remote), checked against the RPC allow-list by the existing fixture test.
+- **Not done:** ratings made offline. The web app has no rating control in offline mode (ratings are only on Now playing for an LMS player), so there is nothing to queue yet.
+- **Tests:** refs and size estimates (hostile values); request, groups and reference-counted removal (shared tracks, playlists removed mid-download, no orphaned audio, partials, covers or groups); the queue's new fields across a reload with hostile entries; Wi-Fi only (held, *Download now* per batch, a network change mid-download resuming by Range, the API absent or throwing); the storage limit (exactly full, one byte over, the queue counted, already-downloaded tracks free, nonsense limits, a real size larger than estimated, a transcode stopped mid-stream) and the browser's quota (refused, unknown or failing estimates never block); the album, playlist, Downloads and Settings pages.
+
 ## 2026-10-13: Rolling cache, Phase C: downloads stand in for Original FLAC streams
 
 When the phone plays a track at Original quality that is downloaded as its original FLAC, it now fetches only the stream's first bytes and plays the rest from the download. The audio is bit-identical.

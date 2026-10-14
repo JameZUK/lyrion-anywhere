@@ -1,13 +1,26 @@
-// Download preferences (SPEC D5): a default format for Wi-Fi and one for mobile data, and
-// this device's storage use. Kept in local storage; never anything secret.
+// Download preferences (SPEC D5, §8.2, §8.3): a default format for Wi-Fi and one for mobile
+// data, "download on Wi-Fi only", a storage limit, and this device's storage use. Kept in
+// local storage; never anything secret.
 import { isFormat, type Format } from './types';
 
 export interface DownloadPrefs {
 	wifi: Format;
 	cellular: Format;
+	/** On mobile data, downloads wait for Wi-Fi (only where the browser reports the network). */
+	wifiOnly: boolean;
+	/** Most bytes downloads may use on this device; 0 is no limit. */
+	capBytes: number;
 }
 
-export const DEFAULT_PREFS: DownloadPrefs = { wifi: 'original', cellular: 'opus' };
+const GB = 1024 ** 3;
+/** The storage limits offered (0: no limit), as on Android. */
+export const CAP_CHOICES = [0, 1 * GB, 2 * GB, 5 * GB, 10 * GB, 20 * GB, 50 * GB, 100 * GB] as const;
+export const MAX_CAP = 1024 * GB;
+
+export const DEFAULT_PREFS: DownloadPrefs = { wifi: 'original', cellular: 'opus', wifiOnly: true, capBytes: 0 };
+
+/** A storage limit from storage: a whole number of bytes up to [`MAX_CAP`], else none. */
+const cap = (v: unknown) => (typeof v === 'number' && Number.isSafeInteger(v) && v > 0 && v <= MAX_CAP ? v : 0);
 const PREFS_KEY = 'anywhere.downloads';
 
 type Get = Pick<Storage, 'getItem'>;
@@ -27,6 +40,8 @@ export function loadPrefs(storage: Get | undefined = local()): DownloadPrefs {
 		return {
 			wifi: isFormat(v?.wifi) ? v.wifi : DEFAULT_PREFS.wifi,
 			cellular: isFormat(v?.cellular) ? v.cellular : DEFAULT_PREFS.cellular,
+			wifiOnly: typeof v?.wifiOnly === 'boolean' ? v.wifiOnly : DEFAULT_PREFS.wifiOnly,
+			capBytes: cap(v?.capBytes),
 		};
 	} catch {
 		return { ...DEFAULT_PREFS };
@@ -35,7 +50,7 @@ export function loadPrefs(storage: Get | undefined = local()): DownloadPrefs {
 
 export function savePrefs(p: DownloadPrefs, storage: Set | undefined = local()) {
 	try {
-		storage?.setItem(PREFS_KEY, JSON.stringify({ wifi: p.wifi, cellular: p.cellular }));
+		storage?.setItem(PREFS_KEY, JSON.stringify({ wifi: p.wifi, cellular: p.cellular, wifiOnly: p.wifiOnly, capBytes: cap(p.capBytes) }));
 	} catch {
 		/* storage blocked: the defaults apply */
 	}
@@ -63,6 +78,26 @@ export function networkType(nav: { connection?: Connection } | undefined = globa
 	if (c.saveData) return 'cellular';
 	return c.effectiveType && /^(slow-2g|2g|3g)$/.test(c.effectiveType) ? 'cellular' : 'wifi';
 }
+
+/**
+ * What the browser says about the link, for "download on Wi-Fi only": only `type` tells
+ * mobile data from Wi-Fi (Chromium on Android has it; Safari, Firefox and desktop Chrome
+ * don't). `effectiveType` is about speed, not cost, so it never holds a download back.
+ */
+export function connectionKind(nav: { connection?: Connection } | undefined = globalThis.navigator as never): Network | 'unknown' {
+	const t = nav?.connection?.type;
+	if (t === 'cellular') return 'cellular';
+	if (t === 'wifi' || t === 'ethernet' || t === 'wimax') return 'wifi';
+	return 'unknown';
+}
+
+/** Whether this browser reports the network type at all. */
+export const reportsNetwork = (nav: { connection?: Connection } | undefined = globalThis.navigator as never): boolean =>
+	typeof nav?.connection?.type === 'string';
+
+/** Downloads wait now: Wi-Fi only is on and the browser says this is mobile data. */
+export const waitForWifi = (prefs: DownloadPrefs = loadPrefs(), nav?: { connection?: Connection }): boolean =>
+	prefs.wifiOnly && connectionKind(nav ?? (globalThis.navigator as never)) === 'cellular';
 
 export const defaultFormat = (prefs: DownloadPrefs = loadPrefs(), nav?: { connection?: Connection }): Format =>
 	prefs[networkType(nav ?? (globalThis.navigator as never))];

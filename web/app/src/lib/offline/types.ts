@@ -126,6 +126,67 @@ export interface StoredTrack {
 	downloadedAt: number;
 	/** How many stored pieces the audio is in. */
 	chunks: number;
+	/**
+	 * Why it is on the device: the downloads that need it (see [`isRef`]). It is deleted only
+	 * once none is left. Missing on tracks stored before groups existed: see [`refsOf`].
+	 */
+	refs?: string[];
+}
+
+/**
+ * What a downloaded track was downloaded as part of: `album:<id>` (an album, or an
+ * artist's albums), `playlist:<id>`, or `track` (on its own). Several downloads can need
+ * the same track; it stays until the last one is removed.
+ */
+export type Ref = string;
+const REF = /^(?:(?:album|playlist):[1-9]\d{0,14}|track)$/;
+export const isRef = (v: unknown): v is Ref => typeof v === 'string' && REF.test(v);
+export const albumRef = (id: number): Ref => `album:${trackId(id)}`;
+export const playlistRef = (id: number): Ref => `playlist:${trackId(id)}`;
+export const TRACK_REF: Ref = 'track';
+/** At most this many refs on one track (a track in very many playlists keeps the first ones). */
+export const MAX_REFS = 64;
+
+/** Clean a list of refs: valid ones only, each once, bounded. */
+export function cleanRefs(v: unknown): Ref[] {
+	return Array.isArray(v) ? [...new Set(v.filter(isRef))].slice(0, MAX_REFS) : [];
+}
+
+/** A stored track's refs; tracks stored before refs existed belong to their album. */
+export function refsOf(t: Pick<StoredTrack, 'refs' | 'albumId'>): Ref[] {
+	if (Array.isArray(t.refs)) return cleanRefs(t.refs);
+	return [t.albumId !== null && Number.isSafeInteger(t.albumId) && t.albumId > 0 ? `album:${t.albumId}` : TRACK_REF];
+}
+
+/** A playlist (or other named group) downloaded to this device: its name and track order. */
+export interface StoredGroup {
+	user: string;
+	/** A [`Ref`] other than `track`. */
+	id: Ref;
+	name: string;
+	/** LMS track ids in the playlist's order when it was downloaded. */
+	ids: number[];
+	savedAt: number;
+}
+
+/** Bytes per second for the transcodes (Opus 160 kb/s, MP3 320 kb/s CBR) and, when a file's
+ *  size is unknown, for an original (CD-quality PCM: a FLAC is smaller, hi-res larger). */
+export const BYTES_PER_SECOND: Record<Format, number> = { opus: 20_000, mp3: 40_000, original: 176_400 };
+/** Assumed length of a track whose duration is unknown. */
+export const FALLBACK_SECONDS = 300;
+
+/**
+ * How many bytes a download will take, for the storage limit: an original's file size when
+ * LMS said it, else its duration at the format's bit rate. Never negative or NaN.
+ */
+export function estimateBytes(t: { duration?: unknown; filesize?: unknown }, format: Format): number {
+	if (format === 'original') {
+		const n = typeof t.filesize === 'number' ? t.filesize : typeof t.filesize === 'string' && /^\d{1,15}$/.test(t.filesize) ? Number(t.filesize) : NaN;
+		if (Number.isSafeInteger(n) && n > 0) return n;
+	}
+	const d = Number(t.duration);
+	const seconds = Number.isFinite(d) && d > 0 ? Math.min(d, 86_400) : FALLBACK_SECONDS;
+	return Math.ceil(seconds * BYTES_PER_SECOND[format]);
 }
 
 /** A download that has started but not finished: what has been stored so far. */
@@ -146,6 +207,14 @@ export interface QueuedDownload {
 	albumId: number | null;
 	choice: Format | 'auto';
 	paused: boolean;
+	/** The downloads that asked for it (missing in queues saved before groups). */
+	refs?: Ref[];
+	/** "Download now": allowed on mobile data although Wi-Fi only is on. */
+	cellular?: boolean;
+	/** Expected size, for the storage limit. */
+	estimate?: number;
+	/** The stable key, once the server has said it (so a cancel finds the stored bytes). */
+	key?: string;
 }
 
 /** A play made offline, waiting to be sent to the server (POST /v1/plays). */

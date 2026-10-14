@@ -18,7 +18,20 @@
 	import pkg from '../../../package.json';
 	import { VOLUME_LABELS, canFollow, planVolume, type VolumeSetting } from '$lib/player/volume';
 	import { downloads, offlinePlayer, plays } from '$lib/offline/index.svelte';
-	import { forgetOwner, formatBytes, loadPrefs, networkType, requestPersist, savePrefs, storageInfo, type DownloadPrefs, type StorageInfo } from '$lib/offline/settings';
+	import {
+		CAP_CHOICES,
+		connectionKind,
+		forgetOwner,
+		formatBytes,
+		loadPrefs,
+		networkType,
+		reportsNetwork,
+		requestPersist,
+		savePrefs,
+		storageInfo,
+		type DownloadPrefs,
+		type StorageInfo,
+	} from '$lib/offline/settings';
 	import { FORMATS, FORMAT_LABELS } from '$lib/offline/types';
 	import { loadDefault, saveDefault, type DefaultSetting } from '$lib/player/default-player';
 	import { isThisDevice } from '$lib/player/outputs';
@@ -140,13 +153,18 @@
 			offCode = '';
 		}
 	}
-	// Downloads (SPEC D5): a default format for each network type, and storage use.
+	// Downloads (SPEC D5, §8.2, §8.3): a default format for each network type, Wi-Fi only,
+	// a storage limit, and storage use.
 	let prefs = $state<DownloadPrefs>(loadPrefs());
 	function setPrefs(p: Partial<DownloadPrefs>) {
 		prefs = { ...prefs, ...p };
 		savePrefs(prefs);
+		// Wi-Fi only may hold or release the queue at once.
+		downloads.networkChanged();
 	}
 	const network = networkType();
+	const reports = reportsNetwork();
+	const onCellular = connectionKind() === 'cellular';
 	let storage = $state<StorageInfo>({});
 	$effect(() => {
 		void downloads.saved.length;
@@ -301,9 +319,29 @@
 			</label>
 		</div>
 		<p class="muted small">Original is the file as it is in your library (largest). Opus is about 1 MB a minute. MP3 plays everywhere. If the server can’t convert, Original is used.</p>
+		<label class="check">
+			<input type="checkbox" checked={prefs.wifiOnly} onchange={(e) => setPrefs({ wifiOnly: e.currentTarget.checked })} />
+			<span>Download on Wi-Fi only</span>
+		</label>
+		<p class="muted small" data-testid="wifi-only-note">
+			On mobile data, downloads wait for Wi-Fi; you can start them anyway with Download now.
+			{#if !reports}This browser doesn’t say which network it is on, so downloads always start here (it works in Chrome on Android).{:else if onCellular && prefs.wifiOnly}You’re on mobile data now.{/if}
+		</p>
+		<label class="field cap">
+			<span>Storage limit for downloads</span>
+			<select value={String(prefs.capBytes)} onchange={(e) => setPrefs({ capBytes: Number(e.currentTarget.value) })}>
+				{#each CAP_CHOICES as c (c)}<option value={String(c)}>{c ? formatBytes(c) : 'No limit'}</option>{/each}
+				{#if prefs.capBytes && !(CAP_CHOICES as readonly number[]).includes(prefs.capBytes)}<option value={String(prefs.capBytes)}>{formatBytes(prefs.capBytes)}</option>{/if}
+			</select>
+		</label>
+		<p class="muted small">A download that would go past the limit isn’t started; the page says how much it needs and how much is free.</p>
 		<p data-testid="download-usage">
 			<strong>{downloads.saved.length} downloaded {downloads.saved.length === 1 ? 'track' : 'tracks'}, {formatBytes(downloads.usedBytes)}</strong>
-			{#if storage.quota}<span class="muted"> · this app uses {formatBytes(storage.usage ?? 0)} of {formatBytes(storage.quota)}</span>{/if}
+			{#if prefs.capBytes}<span class="muted"> of your {formatBytes(prefs.capBytes)} limit</span>{/if}
+			{#if storage.quota}<span class="muted"> · this app uses {formatBytes(storage.usage ?? 0)} of {formatBytes(storage.quota)} the browser allows</span>{/if}
+		</p>
+		<p class="muted small" data-testid="persist-status">
+			{storage.persisted === true ? 'The browser has agreed to keep downloads.' : storage.persisted === false ? 'The browser may clear downloads if the device runs short of space.' : 'This browser doesn’t say whether it keeps downloads.'}
 		</p>
 		<div class="row">
 			<a class="btn" href="#/downloads"><Icon name="download" size={18} />Open downloads</a>

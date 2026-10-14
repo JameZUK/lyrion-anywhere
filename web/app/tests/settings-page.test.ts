@@ -35,3 +35,23 @@ test('Settings › Listening history links to Your listening', async () => {
 	expect(a.getAttribute('href')).toBe('#/stats');
 	r.unmount();
 });
+
+test('Settings › Downloads: Wi-Fi only (on by default) and a storage limit (off by default)', async () => {
+	localStorage.removeItem('anywhere.downloads');
+	const { default: Settings } = await import('../src/routes/settings/+page.svelte');
+	const r = render(Settings);
+	const card = [...r.container.querySelectorAll('.card')].find((c) => c.querySelector('h2')?.textContent === 'Downloads')!;
+	const wifi = [...card.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((i) => i.parentElement?.textContent?.includes('Download on Wi-Fi only'))!;
+	expect(wifi.checked).toBe(true);
+	// jsdom, like Safari and Firefox, doesn't report the network type.
+	expect(card.querySelector('[data-testid="wifi-only-note"]')!.textContent).toContain('This browser doesn’t say which network it is on, so downloads always start here');
+	const cap = [...card.querySelectorAll<HTMLSelectElement>('select')].find((s) => s.parentElement?.textContent?.includes('Storage limit for downloads'))!;
+	expect(cap.value).toBe('0');
+	expect([...cap.options].map((o) => o.textContent)).toEqual(['No limit', '1.00 GB', '2.00 GB', '5.00 GB', '10.00 GB', '20.00 GB', '50.00 GB', '100.00 GB']);
+	cap.value = String(5 * 1024 ** 3);
+	cap.dispatchEvent(new Event('change', { bubbles: true }));
+	wifi.click();
+	expect(JSON.parse(localStorage.getItem('anywhere.downloads')!)).toMatchObject({ wifiOnly: false, capBytes: 5 * 1024 ** 3 });
+	expect(card.querySelector('[data-testid="persist-status"]')!.textContent).toBeTruthy();
+	r.unmount();
+});

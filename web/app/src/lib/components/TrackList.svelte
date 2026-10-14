@@ -13,6 +13,8 @@
 		onmore,
 		showArtist = false,
 		badge,
+		download,
+		ondownload,
 	}: {
 		tracks: Track[];
 		onplay: (t: Track, index: number) => void;
@@ -23,6 +25,9 @@
 		showArtist?: boolean;
 		/** A per-track status mark, e.g. whether it is downloaded to this device. */
 		badge?: (t: Track) => TrackBadge | undefined;
+		/** The row menu's download entry for a track ("Download", "Remove download"), or none. */
+		download?: (t: Track) => string | undefined;
+		ondownload?: (t: Track) => void;
 	} = $props();
 
 	// Each row's "More options" is a menu button (WAI-ARIA APG): Enter, Space or the arrow keys
@@ -118,7 +123,7 @@
 				{/if}
 				<span class="dur muted">{duration(t.duration)}</span>
 			</button>
-			{#if onnext || onadd || onmore}
+			{#if onnext || onadd || onmore || ondownload}
 				<div class="more">
 					<button
 						class="icon-btn"
@@ -138,6 +143,10 @@
 						<div class="menu" role="menu" id={`tl-${uid}-${i}-menu`} aria-labelledby={`tl-${uid}-${i}`} bind:this={menuEl} tabindex="-1" onkeydown={menuKey}>
 							{#if onnext}<button role="menuitem" tabindex="-1" onclick={() => choose(() => onnext(t))}><Icon name="playnext" size={18} />Play next</button>{/if}
 							{#if onadd}<button role="menuitem" tabindex="-1" onclick={() => choose(() => onadd(t))}><Icon name="plus" size={18} />Add to queue</button>{/if}
+							{#if ondownload && download}
+								{@const label = download(t)}
+								{#if label}<button role="menuitem" tabindex="-1" onclick={() => choose(() => ondownload(t))}><Icon name={label === 'Download' ? 'download' : 'trash'} size={18} />{label}</button>{/if}
+							{/if}
 							{#if onmore}<button role="menuitem" tabindex="-1" onclick={() => choose(() => onmore(t))}><Icon name="more" size={18} />More…</button>{/if}
 						</div>
 					{/if}

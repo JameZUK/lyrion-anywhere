@@ -14,6 +14,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import InfoText from '$lib/components/InfoText.svelte';
+	import ArtistDownload from '$lib/components/ArtistDownload.svelte';
 	import { NO_ARTIST_INFO, sanitiseArtistInfo, type ArtistInfo } from '$lib/info/info';
 
 	let showMore = $state(false);
@@ -177,6 +178,7 @@
 				<button class="btn" onclick={() => (showMore = true)}><Icon name="more" size={18} />More</button>
 			</div>
 		{/if}
+		<ArtistDownload {albums} />
 		{#if !role && info.biography}
 			<InfoText heading="Biography" text={info.biography} />
 		{/if}
