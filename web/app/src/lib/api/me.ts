@@ -3,6 +3,7 @@
 // shared with other users.
 import { ApiError, bearer, callJson } from './http';
 import type { Command } from './rpc';
+import { cleanPlaylistName, playlistNameProblem } from '$lib/queue/save-name';
 import { FILTER_LIMITS, cleanSpec, filterFrom, filterProblem, validId, type FilterSpec, type SmartFilter } from './filters';
 
 export type { FilterRule, FilterSort, FilterSpec, SmartFilter } from './filters';
@@ -112,6 +113,24 @@ function player(p: string): string {
 /** A checked queue edit (docs/PROTOCOL.md "Checked queue edits"). */
 export type QueueEditBody = { op: 'remove'; index: number; track: number } | { op: 'move'; index: number; to: number; track: number };
 
+/** Saving the queue as a playlist: saved, or why not (docs/PROTOCOL.md "Save the queue as a playlist"). */
+export type SaveQueueResult =
+	| { saved: SavedPlaylist }
+	/** A playlist of that name (ignoring case) exists: save again with `replace` to overwrite it. */
+	| { exists: SavedPlaylist }
+	| { empty: true };
+
+export interface SavedPlaylist {
+	id: number;
+	name: string;
+}
+
+function savedPlaylist(v: unknown): SavedPlaylist | null {
+	const o = v as { id?: unknown; name?: unknown } | null;
+	if (!o || typeof o.id !== 'number' || !Number.isSafeInteger(o.id) || o.id <= 0 || typeof o.name !== 'string') return null;
+	return { id: o.id, name: o.name };
+}
+
 export class MeApi {
 	constructor(private authed: Authed) {}
 
@@ -138,6 +157,37 @@ export class MeApi {
 			// Not an answer from the gateway (no network, say): the caller's own check runs
 			// and reports what happens.
 			if (!(e instanceof ApiError)) return 'unsupported';
+			throw e;
+		}
+	}
+
+	/** The optional features this gateway offers (`GET /v1/me`): only `true` counts. */
+	async features(): Promise<Record<string, boolean>> {
+		const r = await this.#call<{ features?: Record<string, unknown> } | null>('/v1/me');
+		const out: Record<string, boolean> = {};
+		for (const [k, v] of Object.entries(r?.features ?? {})) if (v === true) out[k] = true;
+		return out;
+	}
+
+	/**
+	 * Save the player's queue as a playlist called `name` (admins only). The name is checked
+	 * here first (a RangeError says why, as playlistNameProblem does); the gateway checks it
+	 * again.
+	 */
+	async saveQueue(p: string, name: string, replace = false): Promise<SaveQueueResult> {
+		const path = `/v1/players/${encodeURIComponent(player(p))}/queue/save`;
+		const clean = cleanPlaylistName(name);
+		const problem = playlistNameProblem(clean);
+		if (problem) throw new RangeError(problem);
+		try {
+			const saved = savedPlaylist(await this.#call<unknown>(path, 'POST', { name: clean, replace: !!replace }));
+			if (!saved) throw new ApiError(502, 'unexpected answer');
+			return { saved };
+		} catch (e) {
+			if (e instanceof ApiError && e.status === 409) {
+				const exists = savedPlaylist(e.body.exists);
+				return exists ? { exists } : { empty: true };
+			}
 			throw e;
 		}
 	}

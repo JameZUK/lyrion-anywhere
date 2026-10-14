@@ -31,7 +31,7 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
 | `POST /v1/auth/pair` | `{"code","device_name"}`, plus the optional client fields | Same, with `refresh_token` in the body (native apps) |
 | `POST /v1/auth/refresh` | none (cookie), or `{"refresh_token"}`; either may add the optional client fields | A new access token and a **rotated** refresh token |
 | `POST /v1/auth/logout` | bearer access token | 204; revokes this device and ends its sessions. Sends `Clear-Site-Data: "cache"` |
-| `GET /v1/me` | bearer access token | `{user, device, features}` (`features.analysis`: the server offers track analysis; `features.resume_grace`: the player socket's sign-in takes `grace`) |
+| `GET /v1/me` | bearer access token | `{user, device, features}` (`features.analysis`: the server offers track analysis; `features.resume_grace`: the player socket's sign-in takes `grace`; `features.save_queue`: `POST /v1/players/{player}/queue/save` is offered) |
 | `GET /v1/account` | bearer access token | `{username, role, totp_enabled, downloads: {enabled, formats}}` (`formats`: what this user may download that this server can produce; see [Downloads](#downloads)) |
 | `POST /v1/account/totp/setup` | `{"password"}` | `{secret, uri, qr_svg}`: a new secret, active once confirmed. A wrong password is 401 and counts towards a lockout of its own (per user), separate from sign-in |
 | `POST /v1/account/totp/confirm` | `{"code"}` | 204; two-step is now on |
@@ -299,7 +299,7 @@ Library browse parameters ("My Music"), and the values each takes:
 A `musicfolder` answer lists each entry's `url` (its path on the server): it is stripped like every `url`, and a name that holds a path is dropped (see the response filter below).
 | Player (permitted players only) | `status`, `play`, `pause`, `stop`, `mode ?`, `time`, `power`, `sleep`, `mixer volume/muting`, `playlist index/jump/move/delete/clear/shuffle/repeat/tracks ?`, `playlistcontrol cmd:load/add/insert/delete` with exactly one id selector, `sync` with another permitted player, `favorites playlist play/add/insert item_id:…`; Don't Stop The Music: `dontstopthemusicsetting` (exactly that), and `playerpref plugin.dontstopthemusic:provider <token>|0|?` (no other `playerpref`; the token is letters, digits and `_`, starting with a letter, at most 64); Random Mix (part of LMS): `randomplay <tracks\|albums\|contributors\|artists\|year\|works> [genre_id:<id>]`, `randomplay disable` and `randomplayisactive` (see below) |
 | Apps and radio | `<app> items …` and `<app> playlist play/add/insert item_id:…`, only for app commands LMS lists in its `apps`/`radios` menus. Core command names can never be learned as apps. An unknown app triggers at most one menu refresh a minute. |
-| Admin role only | `rescan`; changing saved playlists (`playlists new/rename/delete/edit`) |
+| Admin role only | `rescan`; changing saved playlists (`playlists new/rename/delete/edit`; saving the queue goes through `POST /v1/players/{player}/queue/save` instead, and raw `playlist save` is refused) |
 
 **Plugin and context menus (learned actions).** LMS menus (apps, radio, track/album/artist info, plugin menus) offer actions: commands with parameters, which plugins define. A command outside the fixed allow-list is allowed only if **LMS offered exactly that action, in a menu the gateway relayed to the same device in the last hour**:
 - requests must match a learned action word for word and parameter for parameter, except text typed into a search box (`__TAGGEDINPUT__`);
@@ -892,6 +892,29 @@ LMS's queue commands take a position, so a remove or move sent after someone els
   - 400 for any other body. Positions are 0–100 000, `to` differs from `index`, `track` is a non-zero id, and nothing else is accepted.
 - **What remains:** the check and the change are two local LMS commands, a few milliseconds apart. Another controller would have to change the queue in that gap.
 - **Detecting it:** `GET /v1/me` lists `"queue_edit": true` under `features`. Clients fall back to their own check against older gateways.
+
+## Save the queue as a playlist (`/v1/players/{player}/queue/save`)
+
+LMS's `playlist save <name>` writes `<name>.m3u` into its playlist folder, named by the client, and silently overwrites a playlist of that name. The RPC policy never passes it on (it stays refused for everyone, admins included). This endpoint does the save with the name checked first:
+
+| Request | Body | Answer |
+|---|---|---|
+| `POST …/queue/save` | `{"name":"Road trip","replace":false}` | 200 `{"id":12,"name":"Road trip"}` |
+
+- **Who:** admins only, for a player they may control. Saved playlists are shared household data: listeners may play them, not change them (as for `playlists new|rename|delete|edit`). A listener gets 403 `{"error":"changing playlists needs the admin role"}`; a player the caller may not control (or not a player id) is 403 `{"error":"you may not control this player"}`. Requests count towards the per-user `/v1/me/…` allowance.
+- **The name:** trimmed, then 1–100 characters (not bytes; any script, sent composed as NFC). Refused with 400:
+  - control characters, and invisible ones (zero-width characters and joiners, bidirectional overrides and isolates, line and paragraph separators, the byte-order mark);
+  - `/ \ : * ? " < > |` (path separators, characters common filesystems reject, and `:`, which LMS would read as a tagged parameter);
+  - `..` anywhere, a leading dot, a trailing dot;
+  - Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, with or without an extension);
+  - anything the policy's free-text check refuses (file URLs, LAN addresses).
+- **The body:** exactly `name` (a string) and optionally `replace` (true or false); anything else is 400, a body over 1 KiB is 413.
+- **A name already taken:** the gateway looks for a saved playlist of that name ignoring case (the playlist folder may be on a case-insensitive filesystem), using LMS's `playlists … search:` and comparing exactly. If there is one and `replace` isn't true: 409 `{"error":"a playlist with that name already exists","exists":{"id":5,"name":"Road Trip"}}`, nothing saved. With `replace: true` the existing playlist is overwritten under its own spelling (so a different case doesn't leave two playlists of one name on a case-sensitive filesystem), and keeps its id.
+- **An empty queue:** 409 `{"error":"the queue is empty"}`, nothing saved.
+- **The answer:** the id LMS gives the saved playlist (its `__playlist_id`; looked up by name if LMS doesn't say), and the name it was saved under. LMS failing to write the file (no playlist folder set, say) is 502.
+- **What is saved:** LMS's own `playlist save`: library tracks by their file, and radio or streaming-service entries in the queue by their URL, as LMS's own web pages save them. Those URLs stay on the server: `playlists tracks` is filtered as ever.
+- **Concurrency:** one save at a time (names are shared by every player), and none while the gateway edits that player's queue.
+- **Detecting it:** `GET /v1/me` lists `"save_queue": true` under `features`. Clients offer the action only then, and only to admins.
 
 ## Alarms (`/v1/players/{player}/alarms`)
 

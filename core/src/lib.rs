@@ -10,6 +10,7 @@ pub mod decode;
 pub mod dsp;
 pub mod lyrics;
 pub mod mux;
+pub mod names;
 #[cfg(feature = "opus")]
 pub mod opus;
 #[cfg(feature = "player")]

@@ -398,6 +398,8 @@ impl FakeLms {
                             fake_alarm(&params[1])
                         }
                         _ if cmd == "musicartistinfo" => fake_mai(&params[1]),
+                        // Saving the queue: the saved playlist's id, as LMS answers.
+                        _ if cmd == "playlist" && arg1 == "save" => json!({"__playlist_id": 77}),
                         _ => fake_result(&cmd),
                     };
                     // The A–Z index (`tags:Z`) of albums and artists.

@@ -1,13 +1,15 @@
 <script lang="ts">
 	// The current track and what follows (Wave 2 §3.4), in sections when this device can vouch
 	// for its Up next: in the queue peek's sheet, and beside Now playing in wide windows (§4.2).
-	// Tap a track to play it; the full queue (to edit it) is a link away.
+	// Tap a track to play it; the full queue (to edit it) is a link away. Admins can save the
+	// queue as a playlist from here too.
 	import { api, app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { duration, textOf } from '$lib/lms/format';
 	import { trackerVersion, upNextTracker } from '$lib/queue/upnext.svelte';
 	import type { PlayerStatus, Track } from '$lib/lms/types';
 	import Art from './Art.svelte';
+	import SaveQueue from './SaveQueue.svelte';
 
 	let { onplay, side = false }: { onplay?: () => void; side?: boolean } = $props();
 	const uid = `ql-${Math.random().toString(36).slice(2, 9)}`;
@@ -83,6 +85,7 @@
 {/each}
 {#if total > from + rows.length}<p class="muted more">And {(total - from - rows.length).toLocaleString('en-GB')} more.</p>{/if}
 <a class="btn full" href="#/queue" onclick={() => onplay?.()} data-full-queue>Open the full queue</a>
+{#if rows.length}<SaveQueue tracks={rows} full onopen={onplay} />{/if}
 
 <style>
 	h3 {

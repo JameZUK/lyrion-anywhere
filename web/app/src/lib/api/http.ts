@@ -11,6 +11,8 @@ export class ApiError extends Error {
 		message: string,
 		/** The password was right: ask for a two-step code and sign in again. */
 		readonly totpRequired = false,
+		/** The gateway's whole answer, for refusals that say more than a message. */
+		readonly body: Record<string, unknown> = {},
 	) {
 		super(message);
 		this.name = 'ApiError';
@@ -29,7 +31,7 @@ export async function callJson<T>(path: string, init: RequestInit = {}): Promise
 	const body = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
 	if (!resp.ok) {
 		const msg = typeof body.error === 'string' ? body.error : `HTTP ${resp.status}`;
-		throw new ApiError(resp.status, msg, body.totp_required === true);
+		throw new ApiError(resp.status, msg, body.totp_required === true, body);
 	}
 	return body as T;
 }

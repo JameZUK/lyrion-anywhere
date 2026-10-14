@@ -99,7 +99,7 @@ pub use player::{
     check_eq_profile, clear_stream_cache, remove_stream_spools, stream_cache_totals,
     stream_quality_for,
 };
-pub use players::Players;
+pub use players::{Players, SaveQueueOutcome};
 pub use routine::{
     AlarmChange, AlarmInfo, AlarmListing, AlarmSound, QueuedRating, RatingStyle,
     RatingsSyncOutcome, Routine, TrackRating, next_alarm_in, sync_ratings,

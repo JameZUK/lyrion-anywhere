@@ -22,6 +22,7 @@
 
 use std::sync::OnceLock;
 
+use anywhere_core::names;
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -36,63 +37,20 @@ use crate::rpc_policy;
 /// Largest request body (a 100-character name, every character escaped, fits).
 pub const MAX_BODY: usize = 1024;
 /// Longest name, in characters.
-pub const MAX_NAME: usize = 100;
+pub const MAX_NAME: usize = names::PLAYLIST_NAME_MAX;
 /// Saved playlists of a similar name looked through for an exact match.
 const SEARCH_ROWS: u32 = 1_000;
 
-/// Characters LMS or common filesystems won't take in a file name (and `:` would turn the
-/// name into a tagged parameter of LMS's command).
-const RESERVED: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
-
-/// Windows device names: a file of that name (with any extension) can't be created there.
-const DEVICES: &[&str] = &[
-    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
-    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
-];
-
-/// Invisible characters that could disguise a name: zero-width and joiners, bidirectional
-/// overrides and isolates, line and paragraph separators, the byte-order mark.
-fn invisible(c: char) -> bool {
-    matches!(c,
-        '\u{200B}'..='\u{200F}'
-        | '\u{2028}'..='\u{202E}'
-        | '\u{2060}'..='\u{206F}'
-        | '\u{FEFF}'
-        | '\u{FFF9}'..='\u{FFFB}')
-}
-
-/// The name a playlist may be saved under (trimmed), or why not.
+/// The name a playlist may be saved under (trimmed), or why not: the shared rules
+/// ([`names::playlist_name`]: length, control and invisible characters, path separators,
+/// `..`, leading or trailing dots, characters filesystems reject, Windows device names),
+/// and never anything LMS could take for a location.
 pub fn check_name(raw: &str) -> Result<String, &'static str> {
-    let name = raw.trim();
-    if name.is_empty() {
-        return Err("a name is needed");
-    }
-    if name.chars().count() > MAX_NAME {
-        return Err("names are at most 100 characters");
-    }
-    if name.chars().any(|c| c.is_control() || invisible(c)) {
-        return Err("names can't contain control or invisible characters");
-    }
-    if name.contains(RESERVED) {
-        return Err("names can't contain / \\ : * ? \" < > |");
-    }
-    if name.contains("..") {
-        return Err("names can't contain ..");
-    }
-    if name.starts_with('.') {
-        return Err("names can't start with a dot");
-    }
-    if name.ends_with('.') {
-        return Err("names can't end with a dot");
-    }
-    let stem = name.split('.').next().unwrap_or("").trim_end();
-    if DEVICES.iter().any(|d| stem.eq_ignore_ascii_case(d)) {
-        return Err("that name is reserved");
-    }
-    if !rpc_policy::text_ok(name) {
+    let name = names::playlist_name(raw)?;
+    if !rpc_policy::text_ok(&name) {
         return Err("that name isn't allowed");
     }
-    Ok(name.to_string())
+    Ok(name)
 }
 
 /// A save request: the checked name and whether an existing playlist may be overwritten.
@@ -445,9 +403,12 @@ mod tests {
                 .collect();
             if let Ok(n) = check_name(&s) {
                 assert!(!n.is_empty() && n.chars().count() <= MAX_NAME, "{n:?}");
-                assert!(!n.contains(RESERVED) && !n.contains(".."), "{n:?}");
+                assert!(!n.contains(names::RESERVED) && !n.contains(".."), "{n:?}");
                 assert!(!n.starts_with('.') && !n.ends_with('.'), "{n:?}");
-                assert!(!n.chars().any(|c| c.is_control() || invisible(c)), "{n:?}");
+                assert!(
+                    !n.chars().any(|c| c.is_control() || names::invisible(c)),
+                    "{n:?}"
+                );
                 assert_eq!(n, n.trim());
             }
             let _ = parse(&json!({ "name": s, "replace": next() % 2 == 0 }));

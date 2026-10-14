@@ -144,6 +144,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 | **Reorder and remove** | Both | Drag by the handle (or Alt+Up/Down, or move actions for screen readers); swipe left to remove and right to play next, with Undo; tap to play |
 | **Checked edits** | Both, Server | Removes and moves are checked against the entry on the server first, so an edit made after someone else changed the queue can't hit the wrong track |
 | **Clear** | Both | *Clear upcoming* (asks first, removes from the end checking each entry), or *Clear all* for a long queue |
+| **Save as playlist** | Both, Server | Admins save the queue as a saved playlist from the Queue page, the queue peek and the queue beside Now playing. The name starts as the album (for a one-album queue) or the date, and is checked as it's typed; a playlist of that name is replaced only if you say so. Then a message with a link to the new playlist. Radio and streaming entries are saved as LMS saves them, by their URL |
 | **Shuffle and repeat** | Both | Shuffle cycles Off, Tracks and Albums (a long press offers all three); consecutive tracks of one album carry a gapless link mark |
 | **Queue peek** | Both | Swipe up on the cover (or the Queue button) for the queue in a sheet; a Queue tab on phones |
 
