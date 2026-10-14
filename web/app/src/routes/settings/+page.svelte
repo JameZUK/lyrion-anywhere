@@ -13,6 +13,7 @@
 	import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, savePreference, type ModePreference } from '$lib/player/mode';
 	import SignOut from '$lib/components/SignOut.svelte';
 	import AddDevice from '$lib/components/AddDevice.svelte';
+	import ChangePassword from '$lib/components/ChangePassword.svelte';
 	import HistorySettings from '$lib/components/HistorySettings.svelte';
 	import { version as buildVersion } from '$app/environment';
 	import pkg from '../../../package.json';
@@ -102,6 +103,14 @@
 	}
 	$effect(() => {
 		void loadAccount();
+	});
+	// Older gateways have no password change: the form shows only when the gateway says so.
+	let features = $state<auth.Features>({});
+	$effect(() => {
+		session
+			.authed((t) => auth.features(t))
+			.then((f) => (features = f))
+			.catch(() => {});
 	});
 
 	async function beginTotp(e: SubmitEvent) {
@@ -416,6 +425,9 @@
 				<label class="field"><span>Current code</span><input bind:value={offCode} inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required /></label>
 				<button class="btn" type="submit">Turn off</button>
 			</form>
+		{/if}
+		{#if account && features.change_password}
+			<ChangePassword username={account.username} totp={account.totp_enabled} change={(c) => session.authed((t) => auth.changePassword(t, c))} />
 		{/if}
 		<AddDevice create={(pw) => session.authed((t) => auth.createPairingCode(t, pw))} server={globalThis.location?.origin ?? ''} />
 	</div>

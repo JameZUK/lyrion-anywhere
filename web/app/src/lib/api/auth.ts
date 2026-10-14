@@ -236,5 +236,59 @@ export async function totpDisable(token: string, password: string, code: string)
 	});
 }
 
+/** Optional features the gateway offers (`GET /v1/me`); missing ones are off. */
+export interface Features {
+	change_password?: boolean;
+}
+
+/** What this gateway offers. An older gateway that doesn't say gives no features. */
+export async function features(token: string): Promise<Features> {
+	const me = await callJson<{ features?: unknown }>('/v1/me', { headers: bearer(token) });
+	const f = me?.features;
+	return f && typeof f === 'object' ? { change_password: (f as Record<string, unknown>).change_password === true } : {};
+}
+
+/** One of the user's own devices, as the gateway lists them. */
+export interface OwnDevice {
+	id: number;
+	name: string;
+	client_kind?: string | null;
+	client_platform?: string | null;
+	/** Unix seconds. */
+	last_seen?: number | null;
+}
+
+export interface PasswordChanged {
+	/** How many other devices were signed out with the change. */
+	signed_out: number;
+	/** The user's other devices, still signed in. */
+	other_devices: OwnDevice[];
+}
+
+export interface PasswordChange {
+	current: string;
+	new: string;
+	/** The two-step code, when two-step is on. */
+	code?: string;
+	/** Also sign out this user's other devices. */
+	signOutOthers?: boolean;
+}
+
+/**
+ * Change this user's own password. Wrong credentials come back as 403 (not 401), so the
+ * session doesn't renew its token and send the same guess twice.
+ */
+export const changePassword = (token: string, c: PasswordChange) =>
+	callJson<PasswordChanged>('/v1/account/password', {
+		method: 'POST',
+		headers: { ...bearer(token), 'Content-Type': 'application/json' },
+		body: JSON.stringify({
+			current: c.current,
+			new: c.new,
+			...(c.code ? { code: c.code } : {}),
+			...(c.signOutOthers ? { sign_out_others: true } : {}),
+		}),
+	});
+
 /** Group a base32 key in fours for reading aloud or typing. */
 export const groupKey = (secret: string) => secret.replace(/(.{4})(?=.)/g, '$1 ');

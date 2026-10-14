@@ -11,6 +11,8 @@ export class ApiError extends Error {
 		message: string,
 		/** The password was right: ask for a two-step code and sign in again. */
 		readonly totpRequired = false,
+		/** Seconds to wait before trying again (the `Retry-After` header), if the server said. */
+		readonly retryAfter?: number,
 	) {
 		super(message);
 		this.name = 'ApiError';
@@ -29,9 +31,15 @@ export async function callJson<T>(path: string, init: RequestInit = {}): Promise
 	const body = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
 	if (!resp.ok) {
 		const msg = typeof body.error === 'string' ? body.error : `HTTP ${resp.status}`;
-		throw new ApiError(resp.status, msg, body.totp_required === true);
+		throw new ApiError(resp.status, msg, body.totp_required === true, retryAfterOf(resp.headers?.get?.('retry-after') ?? null));
 	}
 	return body as T;
+}
+
+/** A `Retry-After` in whole seconds (1 to a day); dates and nonsense give undefined. */
+export function retryAfterOf(v: string | null): number | undefined {
+	if (v === null || !/^\s*\d{1,9}\s*$/.test(v)) return undefined;
+	return Math.min(Math.max(Number(v), 1), 86_400);
 }
 
 export const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
