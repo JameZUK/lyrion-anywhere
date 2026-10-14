@@ -1,7 +1,9 @@
 <script lang="ts">
 	// "Play on…": where the music plays (SPEC D20). This device first (ticked when in use), then
-	// the other players this user may control, with what each is playing. Each other player
-	// can be controlled, or have playback moved to it (Transfer). Then sync groups.
+	// the other players this user may control, with what each is playing. Wave 3.5: tapping a
+	// row plays on that player from now on; moving the playback there (Transfer) is the row's
+	// secondary action, in its ⋯ ("Move playback to Kitchen"). Grouping is one "Group
+	// players…" row, which opens the sync switches. On phones it carries the volume too.
 	import { untrack } from 'svelte';
 	import { api, app, session } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
@@ -11,8 +13,17 @@
 	import { groupFromStatus, groupLabel, groupOf, syncGroupsFrom, syncToggle } from '$lib/lms/sync';
 	import type { PlayerStatus, SyncGroupsResult } from '$lib/lms/types';
 	import Icon from './Icon.svelte';
+	import VolumeSlider from './VolumeSlider.svelte';
+	import RowMenu from './RowMenu.svelte';
+	import Switch from './Switch.svelte';
+	import { controls } from '$lib/player/controls.svelte';
 
-	let { onclose }: { onclose: () => void } = $props();
+	// `volume`: the selected player's volume at the top (phones: Now playing has no volume row).
+	let { onclose, volume = false }: { onclose: () => void; volume?: boolean } = $props();
+	/** The player list, or the sync switches ("Group players…"). */
+	let view = $state<'list' | 'group'>('list');
+	/** Moving playback and grouping need the server. */
+	const offline = $derived(app.reach !== 'online');
 
 	// Focus moves into the panel when it opens, and back to whatever opened it when it closes;
 	// Escape closes it.
@@ -176,67 +187,77 @@
 
 <svelte:window {onkeydown} {onpointerdown} />
 
-<div class="sheet" role="dialog" aria-label="Play on" tabindex="-1" bind:this={sheet}>
+<div class="sheet" role="dialog" aria-label={view === 'group' ? 'Group players' : 'Play on'} tabindex="-1" bind:this={sheet}>
 	<header>
-		<h2>Play on…</h2>
+		{#if view === 'group'}
+			<button class="icon-btn" onclick={() => (view = 'list')} aria-label="Back to Play on"><Icon name="back" /></button>
+		{/if}
+		<h2>{view === 'group' ? 'Group players' : 'Play on'}</h2>
 		<button class="icon-btn" onclick={onclose} aria-label="Close"><Icon name="close" /></button>
 	</header>
 
-	<ul class="outputs">
-		<li class="output" class:selected={hereSelected}>
-			<button
-				class="row choice"
-				aria-current={hereSelected ? 'true' : undefined}
-				disabled={!device.supported}
-				onclick={here}
-				data-output="device"
-			>
-				<Icon name="device" />
-				<span class="grow">
-					<span class="name">This device</span>
-					<span class="sub muted ellipsis">{deviceSub}</span>
-				</span>
-				{#if hereSelected}<span class="tick"><Icon name="check" size={20} label="In use" /></span>{/if}
-			</button>
-			{#if !hereSelected && device.supported && canMove}
-				<button class="btn move" onclick={bring} aria-label="Bring playback to this device">
-					<Icon name="transfer" size={16} />Move here
-				</button>
-			{/if}
-		</li>
+	{#if view === 'list'}
+		{#if volume && app.playerId}<VolumeSlider disabled={!controls.gates.volume} />{/if}
 
-		{#each others as p (p.playerid)}
-			{@const on = p.playerid.toLowerCase() === selected}
-			<li class="output" class:selected={on}>
-				<button class="row choice" aria-current={on ? 'true' : undefined} onclick={() => control(p.playerid)} aria-label={`Control ${textOf(p.name)}`}>
-					<Icon name="speaker" />
+		<ul class="outputs">
+			<li class="output" class:selected={hereSelected}>
+				<button
+					class="row choice"
+					aria-current={hereSelected ? 'true' : undefined}
+					aria-label={`Play on this device${hereSelected ? ' (in use)' : ''}`}
+					disabled={!device.supported}
+					onclick={here}
+					data-output="device"
+				>
+					<Icon name="device" />
 					<span class="grow">
-						<span class="name ellipsis">{textOf(p.name)}</span>
-						<span class="sub muted ellipsis">
-							{playing[p.playerid] ?? (p.isplaying ? 'Playing' : p.power ? 'On' : 'Off')}{groupNote(p.playerid) ? ` · ${groupNote(p.playerid)}` : ''}
-						</span>
+						<span class="name">This device</span>
+						<span class="sub muted ellipsis">{deviceSub}</span>
 					</span>
-					{#if p.isplaying}<span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>{/if}
-					{#if on}<span class="tick"><Icon name="check" size={20} label="In use" /></span>{/if}
+					{#if hereSelected}<span class="tick"><Icon name="check" size={20} label="In use" /></span>{/if}
 				</button>
-				{#if !on && canMove}
-					<button class="btn move" onclick={() => move(p.playerid)} aria-label={`Move playback to ${textOf(p.name)}`}>
-						<Icon name="transfer" size={16} />Move here
-					</button>
+				{#if !hereSelected && device.supported && canMove}
+					<RowMenu label="More options for this device" actions={[{ label: 'Move playback to this device', icon: 'transfer', run: bring, disabled: offline, why: controls.why(offline), id: 'move' }]} />
 				{/if}
 			</li>
-		{:else}
-			{#if !app.players.length}<li class="muted empty">No other players you can control.</li>{/if}
-		{/each}
-	</ul>
-	{#if app.players.length > 1}
-		<a class="btn rooms" href="#/rooms" onclick={onclose} data-rooms-link><Icon name="rooms" size={16} />All rooms</a>
-	{/if}
-	{#if canMove && (others.length || !hereSelected)}
-		<p class="hint muted">Move here: playback carries on there from the same point, and stops where it was. That player's own queue is replaced.</p>
-	{/if}
 
-	{#if selected && app.current && syncable.length}
+			{#each others as p (p.playerid)}
+				{@const on = p.playerid.toLowerCase() === selected}
+				{@const name = textOf(p.name)}
+				<li class="output" class:selected={on}>
+					<button class="row choice" aria-current={on ? 'true' : undefined} onclick={() => control(p.playerid)} aria-label={`Play on ${name}${on ? ' (in use)' : ''}`} data-output={p.playerid}>
+						<Icon name="speaker" />
+						<span class="grow">
+							<span class="name ellipsis">{name}</span>
+							<span class="sub muted ellipsis">
+								{playing[p.playerid] ?? (p.isplaying ? 'Playing' : p.power ? 'On' : 'Off')}{groupNote(p.playerid) ? ` · ${groupNote(p.playerid)}` : ''}
+							</span>
+						</span>
+						{#if p.isplaying}<span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>{/if}
+						{#if on}<span class="tick"><Icon name="check" size={20} label="In use" /></span>{/if}
+					</button>
+					{#if !on && canMove}
+						<!-- One trailing control (Wave 3.5 rule 3): moving playback is the row's secondary action. -->
+						<RowMenu label={`More options for ${name}`} actions={[{ label: `Move playback to ${name}`, icon: 'transfer', run: () => move(p.playerid), disabled: offline, why: controls.why(offline), id: 'move' }]} />
+					{/if}
+				</li>
+			{/each}
+			{#if !others.length}<li class="muted empty">No other players you can control.</li>{/if}
+		</ul>
+		{#if selected && app.current && syncable.length}
+			<button class="row choice group-row" onclick={() => (view = 'group')} data-group-players>
+				<Icon name="link" />
+				<span class="grow">
+					<span class="name">Group players…</span>
+					<span class="sub muted ellipsis">{myGroup.length > 1 ? `${nameOf(selected) || 'This player'} ${groupNote(selected)}` : 'Play in sync on several players'}</span>
+				</span>
+				<span class="chev" aria-hidden="true">›</span>
+			</button>
+		{/if}
+		{#if app.players.length > 1}
+			<a class="row choice rooms" href="#/rooms" onclick={onclose} data-rooms-link><Icon name="rooms" /><span class="grow"><span class="name">Rooms</span><span class="sub muted">Every player at a glance</span></span><span class="chev" aria-hidden="true">›</span></a>
+		{/if}
+	{:else}
 		<section class="sync" aria-labelledby="sync-h">
 			<h3 id="sync-h">Play {nameOf(selected) || 'this player'} in sync with…</h3>
 			{#if syncError}<p class="error" role="alert">{syncError}</p>{/if}
@@ -244,26 +265,21 @@
 				{#each syncable as p (p.playerid)}
 					{@const on = myGroup.includes(p.playerid.toLowerCase())}
 					<li>
-						<button
-							class="row choice toggle"
-							role="switch"
-							aria-checked={on}
+						<Switch
+							checked={on}
+							onchange={(v) => toggle(p.playerid, v)}
+							label={textOf(p.name)}
+							note={!on && groupNote(p.playerid) ? `Grouped ${groupNote(p.playerid)}` : ''}
 							aria-label={`Sync with ${textOf(p.name)}`}
-							disabled={syncBusy}
-							onclick={() => toggle(p.playerid, !on)}
+							disabled={syncBusy || offline}
 						>
-							<Icon name={isThisDevice(p.playerid) ? 'device' : 'speaker'} size={18} />
-							<span class="grow">
-								<span class="name ellipsis">{textOf(p.name)}</span>
-								{#if !on && groupNote(p.playerid)}<span class="sub muted ellipsis">Grouped {groupNote(p.playerid)}</span>{/if}
-							</span>
-							<span class="track" class:on aria-hidden="true"><span class="knob"></span></span>
-						</button>
+							{#snippet icon()}<Icon name={isThisDevice(p.playerid) ? 'device' : 'speaker'} size={18} />{/snippet}
+						</Switch>
 					</li>
 				{/each}
 			</ul>
 			{#if myGroup.length > 1}
-				<button class="btn leave" disabled={syncBusy} onclick={leave}>Play {nameOf(selected) || 'this player'} on its own</button>
+				<button class="btn leave" disabled={syncBusy || offline} onclick={leave}><Icon name="unlink" size={18} />Play {nameOf(selected) || 'this player'} on its own</button>
 			{/if}
 		</section>
 	{/if}
@@ -335,9 +351,6 @@
 		opacity: 0.6;
 		cursor: default;
 	}
-	.toggle:hover {
-		background: var(--bg-sunken);
-	}
 	.grow {
 		flex: 1;
 		min-width: 0;
@@ -357,26 +370,23 @@
 		display: inline-grid;
 		color: var(--accent);
 	}
-	.move {
-		flex: none;
-		font-size: 0.8rem;
-		padding: 0.35em 0.7em;
-		white-space: nowrap;
-	}
+	.group-row,
 	.rooms {
-		margin: 0.4rem 0.75rem 0.2rem;
+		margin-top: 0.15rem;
 	}
-	.hint {
-		margin: 0.4rem 0.75rem 0.2rem;
-		font-size: 0.78rem;
+	.group-row:hover,
+	.rooms:hover {
+		background: var(--bg-sunken);
+	}
+	.chev {
+		color: var(--fg-muted);
+		font-size: 1.2rem;
 	}
 	.empty {
 		padding: 0.75rem;
 	}
 	.sync {
-		border-top: 1px solid var(--line);
-		margin-top: 0.4rem;
-		padding-top: 0.4rem;
+		padding-top: 0.2rem;
 	}
 	h3 {
 		margin: 0.25rem 0.75rem 0.4rem;
@@ -387,36 +397,8 @@
 	.sync .error {
 		margin: 0.25rem 0.75rem;
 	}
-	.toggle {
-		min-height: 48px;
-	}
-	.track {
-		flex: none;
-		position: relative;
-		width: 38px;
-		height: 22px;
-		border-radius: 11px;
-		background: var(--line);
-		transition: background 0.15s;
-	}
-	.track.on {
-		background: var(--accent);
-	}
-	.knob {
-		position: absolute;
-		top: 3px;
-		left: 3px;
-		width: 16px;
-		height: 16px;
-		border-radius: 50%;
-		background: var(--bg-raised);
-		transition: transform 0.15s;
-	}
-	.track.on .knob {
-		transform: translateX(16px);
-	}
 	.leave {
-		margin: 0.4rem 0.75rem 0.25rem;
+		margin: 0.4rem 0.5rem 0.25rem;
 	}
 	.eq {
 		display: inline-flex;
@@ -445,10 +427,6 @@
 		}
 	}
 	@media (prefers-reduced-motion: reduce) {
-		.track,
-		.knob {
-			transition: none;
-		}
 		.eq i {
 			animation: none;
 			height: 70%;

@@ -3,6 +3,7 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import * as offline from '$lib/offline/index.svelte';
 import type { DownloadManager } from '$lib/offline/manager.svelte';
+import { choose } from './helpers/menu';
 import type { OfflineStore } from '$lib/offline/store';
 import { key, stored } from './helpers/fake-downloads';
 
@@ -32,7 +33,7 @@ vi.mock('$lib/state/app.svelte', () => ({
 		art: () => Promise.reject(new Error('offline')),
 	},
 	app: { queueUp: vi.fn(), isAdmin: false },
-	session: { current: null },
+	session: { current: null, subscribe: () => () => {} },
 }));
 vi.mock('$app/state', () => ({ page: { params: { id: '5' }, url: new URL('http://app.example/#/playlist/5') } }));
 
@@ -77,7 +78,8 @@ test('tracks already downloaded with an album join the playlist without being fe
 	await vi.waitFor(() => expect(screen.getByRole('status').textContent).toContain('Downloaded'));
 	expect(downloads.items).toEqual([]);
 	expect(screen.getAllByLabelText('Downloaded').length).toBe(3); // rows 21, 22 and 21 again
-	await fireEvent.click(screen.getByRole('button', { name: 'Remove download' }));
+	// Destructive: only in the page's ⋯.
+	await choose('More options for Road <i>trip</i>', 'Remove download');
 	// 21 stays for its album, so the playlist offers the rest again.
 	await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Download the rest' })).toBeTruthy());
 	expect(await screen.findByText('1 track stays: another download still needs it.')).toBeTruthy();

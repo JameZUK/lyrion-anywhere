@@ -1,10 +1,11 @@
 <script lang="ts">
 	// A generic LMS menu (apps, radio, plugin and context menus), with its own back stack.
 	// Only actions the menus offered are run; the gateway enforces the same.
-	import { untrack } from 'svelte';
+	import { untrack, type Snippet } from 'svelte';
 	import { go as navigate } from '$lib/nav';
 	import { api, app } from '$lib/state/app.svelte';
 	import { me } from '$lib/state/me';
+	import { NO_PLAYER } from '$lib/naming';
 	import type { Command } from '$lib/api/rpc';
 	import { ApiError } from '$lib/api/http';
 	import { add as addShelf } from '$lib/home/layout';
@@ -31,6 +32,7 @@
 		onclose,
 		compact = false,
 		root,
+		intro,
 	}: {
 		/** First menu: a command builder taking paging… */
 		start?: (from: number, count: number) => Command;
@@ -45,6 +47,8 @@
 		 * save items as stations or pin them, which the gateway replays from the root.
 		 */
 		root?: Command;
+		/** Shown under the heading of the first menu only (a track's rating and credits). */
+		intro?: Snippet;
 	} = $props();
 
 	const PAGE = 100;
@@ -230,7 +234,7 @@
 		const spec = stationOf(menu, item, i);
 		if (!spec) return;
 		if (!player()) {
-			note = 'Choose a player first.';
+			note = NO_PLAYER;
 			return;
 		}
 		try {
@@ -246,7 +250,7 @@
 		const s = pinOf(menu, item, i);
 		if (!s) return;
 		if (!player()) {
-			note = 'Choose a player first.';
+			note = NO_PLAYER;
 			return;
 		}
 		try {
@@ -275,6 +279,7 @@
 		{/if}
 		<h2 class="ellipsis">{top?.title || title}</h2>
 	</header>
+	{#if intro && stack.length <= 1}{@render intro()}{/if}
 	{#if note}<p class="note" role="status">{note}</p>{/if}
 	{#if top}
 		{#if top.error}<p class="error">{top.error}</p>{/if}

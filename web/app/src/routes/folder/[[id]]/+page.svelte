@@ -11,6 +11,8 @@
 	import Art from '$lib/components/Art.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import PageActions from '$lib/components/PageActions.svelte';
+	import RowMenu from '$lib/components/RowMenu.svelte';
 
 	const PAGE = 200;
 	/** The folder shown: undefined for the top level, null for a bad id. */
@@ -56,11 +58,7 @@
 		<h1>{title}</h1>
 		{#if folder !== undefined}
 			{@const f = folder}
-			<div class="actions">
-				<button class="btn primary" onclick={() => app.queueUp({ folder: f }, 'play')} disabled={!hasAudio || !app.canQueue}><Icon name="play" size={18} />Play all</button>
-				<button class="btn" onclick={() => app.queueUp({ folder: f }, 'add')} disabled={!hasAudio || !app.canQueue}><Icon name="plus" size={18} />Add to queue</button>
-				<button class="btn" onclick={() => (ctx = { kind: 'folder', id: f, title })}><Icon name="more" size={18} />More</button>
-			</div>
+			<PageActions sel={{ folder: f }} {title} can={hasAudio} next={false} onmore={() => (ctx = { kind: 'folder', id: f, title })} />
 		{/if}
 		{#if list.error}<p class="error">{list.error}</p>{/if}
 		<ul class="rows">
@@ -71,16 +69,28 @@
 							<span class="glyph" aria-hidden="true"><Icon name="folder" size={20} /></span>
 							<span class="name ellipsis">{x.name}</span>
 						</a>
-						<button class="icon-btn" aria-label={`Play ${x.name}`} onclick={() => app.queueUp({ folder: x.id }, 'play')} disabled={!app.canQueue}><Icon name="play" size={18} /></button>
-						<button class="icon-btn" aria-label={`More for ${x.name}`} onclick={() => (ctx = { kind: 'folder', id: x.id, title: x.name })}><Icon name="more" size={18} /></button>
+						<RowMenu
+							label={`More options for ${x.name}`}
+							actions={[
+								{ label: 'Play', icon: 'play', run: () => void app.queueUp({ folder: x.id }, 'play'), disabled: !app.canQueue },
+								{ label: 'Add to queue', icon: 'plus', run: () => void app.queueUp({ folder: x.id }, 'add'), disabled: !app.canQueue },
+								{ label: 'More…', icon: 'more', run: () => (ctx = { kind: 'folder', id: x.id, title: x.name }), disabled: !app.canQueue },
+							]}
+						/>
 					{:else if x.kind === 'track'}
 						<button class="main" onclick={() => app.queueUp({ track: x.id }, 'play')} disabled={!app.canQueue} aria-label={`Play ${x.name}`}>
 							<span class="cover"><Art path={x.cover} label={x.name} /></span>
 							<span class="name ellipsis">{x.name}</span>
 							{#if x.duration}<span class="muted dur">{x.duration}</span>{/if}
 						</button>
-						<button class="icon-btn" aria-label={`Add ${x.name} to the queue`} onclick={() => app.queueUp({ track: x.id }, 'add')} disabled={!app.canQueue}><Icon name="plus" size={18} /></button>
-						<button class="icon-btn" aria-label={`More for ${x.name}`} onclick={() => (ctx = { kind: 'track', id: x.id, title: x.name })}><Icon name="more" size={18} /></button>
+						<RowMenu
+							label={`More options for ${x.name}`}
+							actions={[
+								{ label: 'Play next', icon: 'playnext', run: () => void app.queueUp({ track: x.id }, 'next'), disabled: !app.canQueue },
+								{ label: 'Add to queue', icon: 'plus', run: () => void app.queueUp({ track: x.id }, 'add'), disabled: !app.canQueue },
+								{ label: 'More…', icon: 'more', run: () => (ctx = { kind: 'track', id: x.id, title: x.name }), disabled: !app.canQueue },
+							]}
+						/>
 					{:else if x.kind === 'playlist'}
 						<span class="main">
 							<span class="glyph" aria-hidden="true"><Icon name="queue" size={20} /></span>
@@ -119,11 +129,8 @@
 		margin: 0.2rem 0 0.8rem;
 		overflow-wrap: anywhere;
 	}
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.6rem;
-		margin-bottom: 1.25rem;
+	section > :global(.page-actions) {
+		margin: 0 0 1.25rem;
 	}
 	.rows {
 		list-style: none;

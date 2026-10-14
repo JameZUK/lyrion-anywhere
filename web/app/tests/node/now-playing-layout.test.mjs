@@ -114,7 +114,6 @@ test('phone controls are 44 px targets (or more)', () => {
 	const act = rule(css, '.np-act');
 	assert.ok(px(act, 'min-height') >= 44 && px(act, 'min-width') >= 44, act);
 	assert.ok(px(rule(phone, '.top .icon-btn'), 'width') >= 44);
-	assert.ok(px(rule(phone, '.chip'), 'min-height') >= 44);
 	assert.ok(px(rule(phone, '.transport .icon-btn'), 'width') >= 44);
 	assert.ok(px(rule(phone, '.row'), 'min-height') >= 44);
 	// The small badge and dots reach 44 px tall through their ::after.
@@ -125,14 +124,25 @@ test('phone controls are 44 px targets (or more)', () => {
 	assert.ok(px(dot, 'width') >= 44);
 	const dotReach = Number(decl(rule(pager, '.dots button::after'), 'inset').match(/^-(\d+)px/)[1]);
 	assert.ok(px(dot, 'height') + 2 * dotReach >= 44);
-	// The volume slider is a 44 px wide target.
-	assert.ok(px(rule(style(read('lib/components/VolumePopover.svelte')), 'input'), 'width') >= 44);
-	// Stars beside the title are narrower, but still 44 px tall and side by side.
-	const stars = style(read('lib/components/RatingControl.svelte'));
-	assert.ok(px(rule(stars, '.compact .star'), 'min-width') >= 36);
+	// The volume slider (in Play on…) is a 44 px tall target.
+	assert.ok(px(rule(style(read('lib/components/VolumeSlider.svelte')), 'input'), 'height') >= 44);
+	// The one rating toggle beside the title is a 44 px target (the full stars are in ⋮).
+	const rating = style(read('lib/components/RatingControl.svelte'));
+	const toggle = rule(rating, '.star,\n\t.heart');
+	assert.ok(px(toggle, 'min-width') >= 44 && px(toggle, 'min-height') >= 44);
+	assert.match(read('lib/components/NowPlayingPhone.svelte'), /<RatingControl track=\{libraryId\} size=\{22\} toggle \/>/);
 });
 
 test('reduced motion: the pager does not slide', () => {
 	assert.match(pager, /@media \(prefers-reduced-motion: reduce\) \{\s*\.track \{\s*transition: none;/);
 	assert.equal(decl(rule(pager, '.track.still'), 'transition'), 'none');
+});
+
+test('Wave 3.5: the player bar is hidden under Now playing at every width (no second transport)', () => {
+	const css = style(read('routes/+layout.svelte'));
+	const firstMedia = css.indexOf('@media');
+	assert.ok(css.indexOf('.barwrap.on-np {') < firstMedia, 'outside any media query');
+	assert.equal(decl(rule(css, '.barwrap.on-np'), 'display'), 'none');
+	// And the page keeps no room for it.
+	assert.doesNotMatch(rule(css, '.content.on-np', css.indexOf('.barwrap.on-np {')), /--bar-h/);
 });

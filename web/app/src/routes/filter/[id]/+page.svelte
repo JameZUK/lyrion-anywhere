@@ -6,6 +6,7 @@
 	import FilterEditor from '$lib/components/FilterEditor.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import RowMenu from '$lib/components/RowMenu.svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { untrack } from 'svelte';
@@ -129,8 +130,14 @@
 		<div class="actions">
 			<button class="btn primary" onclick={() => play(false)} disabled={total === 0} data-filter-play><Icon name="play" size={18} />Play</button>
 			<button class="btn" onclick={() => play(true)} disabled={total === 0} data-filter-shuffle><Icon name="shuffle" size={18} />Shuffle</button>
-			<button class="btn" onclick={() => (editing = true)} data-filter-edit><Icon name="settings" size={18} />Edit</button>
-			<button class="btn" onclick={() => (deleting = true)} data-filter-delete><Icon name="trash" size={18} />Delete</button>
+			<RowMenu
+				label={`More options for ${filter.name}`}
+				actions={[
+					{ label: 'Edit', icon: 'pencil', run: () => (editing = true), id: 'edit' },
+					{ label: 'Delete', icon: 'trash', run: () => (deleting = true), danger: true, id: 'delete' },
+				]}
+				trigger={{ 'data-page-more': true }}
+			/>
 		</div>
 		<p class="muted small">Play and Shuffle use the first {Math.min(50, total ?? 50)} albums.</p>
 	{/if}
@@ -167,6 +174,7 @@
 	.actions {
 		display: flex;
 		flex-wrap: wrap;
+		align-items: center;
 		gap: 0.5rem;
 	}
 	.actions .btn {

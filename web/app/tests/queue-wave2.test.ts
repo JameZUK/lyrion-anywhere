@@ -1,7 +1,8 @@
 // The queue for Wave 2 (§3.4, §3.5): sections from this device's Up next (flat when they can't
 // be vouched for), swipe right to play next with the menu and N key as alternatives, Clear
-// upcoming (from the end, checked; Clear all for a long queue), gapless markers, the queue
-// peek on Now playing, and the shuffle button's three modes.
+// upcoming (from the end, checked; Clear all for a long queue), gapless (said in track info,
+// not between rows, since Wave 3.5), the queue peek on Now playing, and the shuffle button's
+// three modes.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
 import type { PlayerStatus, Track } from '$lib/lms/types';
@@ -14,6 +15,8 @@ const { default: QueuePage } = await import('../src/routes/queue/+page.svelte');
 const { default: QueuePeek } = await import('$lib/components/QueuePeek.svelte');
 const { default: ShuffleButton } = await import('$lib/components/ShuffleButton.svelte');
 const { default: NowPlaying } = await import('../src/routes/+page.svelte');
+const { default: NowPlayingInfo } = await import('$lib/components/NowPlayingInfo.svelte');
+const { choose, menuItems } = await import('./helpers/menu');
 
 const P = '02:00:00:00:00:01';
 let queue: Track[] = [];
@@ -149,11 +152,11 @@ test('swipe right plays a track next: moved to just after the current one, joini
 
 test('every swipe has alternatives: the row menu and keys (N, Delete)', async () => {
 	const r = await setup();
-	// The menu: Play next and Remove.
+	// The menu: Play next, the moves, and Remove (last).
 	await fireEvent.click(r.getByRole('button', { name: 'More options for Song 6' }));
 	await settle();
 	const items = r.getAllByRole('menuitem');
-	expect(items.map((i) => i.firstElementChild?.nextElementSibling?.textContent)).toEqual(['Play next', 'Remove from queue']);
+	expect(items.map((i) => i.firstElementChild?.nextElementSibling?.textContent)).toEqual(['Play next', 'Move up', 'Move down', 'Remove from queue']);
 	expect(items[0]!.getAttribute('aria-keyshortcuts')).toBe('N');
 	await fireEvent.click(items[0]!);
 	await settle();
@@ -180,7 +183,7 @@ test('every swipe has alternatives: the row menu and keys (N, Delete)', async ()
 
 test('Clear upcoming asks, then deletes from the end, each checked', async () => {
 	const r = await setup();
-	await fireEvent.click(r.container.querySelector('[data-clear-upcoming]')!);
+	await choose('Queue options', 'Clear upcoming…', r.container);
 	await settle();
 	const dialog = r.container.ownerDocument.querySelector('[data-confirm-dialog]')!;
 	expect(dialog.textContent).toContain('Clear upcoming?');
@@ -198,13 +201,14 @@ test('Clear upcoming asks, then deletes from the end, each checked', async () =>
 	const checks = fake.calls.filter((c) => c.cmd[0] === 'status' && c.cmd[2] === 1).map((c) => c.cmd[1]);
 	expect(checks).toEqual([5, 4, 3, 2]);
 	await waitFor(() => expect(titles(r.container)).toEqual(['Song 1', 'Song 2']));
-	expect(r.container.querySelector('[data-clear-upcoming]')).toBeNull();
+	// Nothing after the current track: no Clear upcoming any more.
+	expect(await menuItems('Queue options', r.container)).not.toContain('Clear upcoming…');
 });
 
 test('Clear upcoming stops when the queue changed meanwhile, and says so', async () => {
 	const r = await setup();
 	queue = [...queue.slice(0, 3), track(77), ...queue.slice(4)];
-	await fireEvent.click(r.container.querySelector('[data-clear-upcoming]')!);
+	await choose('Queue options', 'Clear upcoming…', r.container);
 	await settle();
 	await fireEvent.click(document.querySelector('[data-confirm-ok]')!);
 	await settle();
@@ -217,7 +221,7 @@ test('Clear upcoming stops when the queue changed meanwhile, and says so', async
 
 test('Cancel clears nothing', async () => {
 	const r = await setup();
-	await fireEvent.click(r.container.querySelector('[data-clear-upcoming]')!);
+	await choose('Queue options', 'Clear upcoming…', r.container);
 	await settle();
 	await fireEvent.click(document.querySelector('[data-confirm-cancel]')!);
 	await settle();
@@ -227,7 +231,7 @@ test('Cancel clears nothing', async () => {
 test('a long queue offers Clear all instead', async () => {
 	queue = Array.from({ length: 150 }, (_, i) => track(i + 1));
 	const r = await setup();
-	await fireEvent.click(r.container.querySelector('[data-clear-upcoming]')!);
+	await choose('Queue options', 'Clear upcoming…', r.container);
 	await settle();
 	const dialog = document.querySelector('[data-confirm-dialog]')!;
 	expect(dialog.textContent).toContain('Clear the whole queue?');
@@ -237,7 +241,7 @@ test('a long queue offers Clear all instead', async () => {
 	expect(sent()).toEqual([['playlist', 'clear']]);
 });
 
-test('gapless markers sit between consecutive tracks of one album, with words for screen readers', async () => {
+test('gapless is said in track info only, never between the queue’s rows', async () => {
 	queue = [
 		track(1, { album_id: 7, tracknum: 1 }),
 		track(2, { album_id: 7, tracknum: 2 }),
@@ -245,12 +249,22 @@ test('gapless markers sit between consecutive tracks of one album, with words fo
 		track(4, { album_id: 8, tracknum: 4 }),
 		track(5, { album_id: 7, tracknum: 4 }),
 	];
+	cur = 1;
+	fake.app.now = nowStatus();
 	const r = await setup();
-	const marked = [...r.container.querySelectorAll('li[data-index]')].map((li) => !!li.querySelector('[data-gapless]'));
-	expect(marked).toEqual([true, true, false, false, false]);
-	expect(r.container.querySelector('[data-gapless] .sr-only')?.textContent).toBe('Runs straight on into the next track, from the same album.');
-	// The queue asks for album ids and track numbers.
-	expect(fake.calls.length).toBe(0);
+	expect(r.container.querySelector('[data-gapless]')).toBeNull();
+	r.unmount();
+	// Track info: Song 2 runs straight on into Song 3.
+	const info = render(NowPlayingInfo);
+	await waitFor(() => expect(info.container.querySelector('[data-gapless]')?.textContent).toBe('Gapless: runs straight on into the next track, from the same album.'));
+	info.unmount();
+	// Song 3 then Song 4 (another album): not gapless.
+	cur = 2;
+	fake.app.now = nowStatus();
+	const other = render(NowPlayingInfo);
+	await settle();
+	expect(other.container.querySelector('[data-gapless]')).toBeNull();
+	other.unmount();
 });
 
 test('the queue peek shows sections from the current track and plays a tapped one', async () => {

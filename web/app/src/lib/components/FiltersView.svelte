@@ -7,6 +7,7 @@
 	import FilterEditor from './FilterEditor.svelte';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 	import Icon from './Icon.svelte';
+	import RowMenu from './RowMenu.svelte';
 
 	let { level = 2 }: { level?: 2 | 3 } = $props();
 
@@ -87,10 +88,16 @@
 						<span class="glyph"><Icon name="filter" size={20} /></span>
 						<span class="text"><span class="name ellipsis">{f.name}</span><span class="sub ellipsis muted">{summary(f)}</span></span>
 					</a>
-					<button class="icon-btn" aria-label={`Play ${f.name}`} onclick={() => play(f, false)} data-filter-play><Icon name="play" size={18} /></button>
-					<button class="icon-btn" aria-label={`Shuffle ${f.name}`} onclick={() => play(f, true)} data-filter-shuffle><Icon name="shuffle" size={18} /></button>
-					<button class="icon-btn" aria-label={`Edit ${f.name}`} onclick={() => (editing = f)} data-filter-edit><Icon name="settings" size={18} /></button>
-					<button class="icon-btn" aria-label={`Delete ${f.name}`} onclick={() => (deleting = f)} data-filter-delete><Icon name="trash" size={18} /></button>
+					<!-- One trailing control (Wave 3.5 rule 3): the row opens it; ⋯ has the rest. -->
+					<RowMenu
+						label={`More options for ${f.name}`}
+						actions={[
+							{ label: 'Play', icon: 'play', run: () => void play(f, false), id: 'play' },
+							{ label: 'Shuffle', icon: 'shuffle', run: () => void play(f, true), id: 'shuffle' },
+							{ label: 'Edit', icon: 'pencil', run: () => (editing = f), id: 'edit' },
+							{ label: 'Delete', icon: 'trash', run: () => (deleting = f), danger: true, id: 'delete' },
+						]}
+					/>
 				</li>
 			{/each}
 		</ul>
@@ -165,10 +172,5 @@
 	}
 	.sub {
 		font-size: 0.85rem;
-	}
-	li .icon-btn {
-		width: 44px;
-		height: 44px;
-		flex: none;
 	}
 </style>

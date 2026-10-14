@@ -9,6 +9,7 @@
 	import type { HomeShelf, PinnedMenu, SmartFilter, Station } from '$lib/api/me';
 	import { startFilter } from '$lib/filters/run';
 	import Icon from './Icon.svelte';
+	import { controls } from '$lib/player/controls.svelte';
 	import type { SBMenu } from '$lib/lms/slimbrowse';
 	import { SHELF_LABELS } from '$lib/home/layout';
 	import AlbumShelf from './AlbumShelf.svelte';
@@ -123,8 +124,8 @@
 			<div class="head">
 				<h2 id={`shelf-${shelf.type}-${shelf.id ?? 0}`}><a href={`#/filter/${shelf.id}`}>{title}</a></h2>
 				{#if albums?.length}
-					<button class="icon-btn" aria-label={`Play ${title}`} onclick={() => playSmart(false)} data-shelf-filter-play><Icon name="play" size={18} /></button>
-					<button class="icon-btn" aria-label={`Shuffle ${title}`} onclick={() => playSmart(true)} data-shelf-filter-shuffle><Icon name="shuffle" size={18} /></button>
+					<button class="icon-btn" aria-label={`Play ${title}`} onclick={() => playSmart(false)} {...controls.needsServer()} data-shelf-filter-play><Icon name="play" size={18} /></button>
+					<button class="icon-btn" aria-label={`Shuffle ${title}`} onclick={() => playSmart(true)} {...controls.needsServer()} data-shelf-filter-shuffle><Icon name="shuffle" size={18} /></button>
 				{/if}
 			</div>
 			{#if playMessage}<p class="error" role="alert">{playMessage}</p>{/if}
@@ -140,7 +141,7 @@
 			{#if station}<StationCards stations={[station]} />{:else}<p class="muted">This station has been deleted.</p>{/if}
 		{:else if shelf.type === 'menu'}
 			{#if !app.playerId}
-				<p class="muted">Choose a player first: menus browse and play for a player.</p>
+				<p class="muted">No player chosen. Choose a player with Play on: menus browse and play for a player.</p>
 			{:else if menu}
 				<MenuView initial={menu} title={title} compact />
 			{:else}

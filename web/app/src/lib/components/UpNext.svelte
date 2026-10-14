@@ -1,18 +1,18 @@
 <script lang="ts">
 	import { me } from '$lib/state/me';
-	// "Up next" under the transport controls: the next track, with its cover. Tap opens the
-	// queue; swipe the row sideways (or press Delete, or the remove button) to take that
-	// track out of the queue, with Undo.
+	// "Up next" under the transport controls: one line naming the next track (Wave 3.5). A tap
+	// opens the queue (the same sheet as the Queue button, through `onopen`, or else the queue
+	// page); swipe the line sideways (or press Delete) to take that track out of the queue,
+	// with Undo. Removing tracks otherwise lives in the queue itself.
 	import { api, app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
 	import { isSwipe, removeChecked, restoreTrack } from '$lib/lms/queue-edit';
 	import { upNext } from '$lib/lms/upnext';
 	import type { Track } from '$lib/lms/types';
-	import Art from './Art.svelte';
-	import Icon from './Icon.svelte';
 	import Snackbar from './Snackbar.svelte';
 	import { tick } from 'svelte';
+
+	let { onopen }: { onopen?: () => void } = $props();
 
 	/** A swipe must travel this far (px) to remove. */
 	const SWIPE_REMOVE_PX = 90;
@@ -115,6 +115,11 @@
 		if (swallowClick) {
 			swallowClick = false;
 			e.preventDefault();
+			return;
+		}
+		if (onopen) {
+			e.preventDefault();
+			onopen();
 		}
 	}
 </script>
@@ -124,6 +129,7 @@
 		<a
 			class="row"
 			href="#/queue"
+			aria-haspopup={onopen ? 'dialog' : undefined}
 			aria-label={`Up next: ${title}${artist ? ` by ${artist}` : ''}. Opens the queue; press Delete to remove it from the queue.`}
 			style:transform={swipe?.active ? `translateX(${swipe.dx}px)` : undefined}
 			style:opacity={swipe?.active ? Math.max(0.3, 1 - Math.abs(swipe.dx) / 240) : undefined}
@@ -134,49 +140,36 @@
 			onpointerup={(e) => up(e)}
 			onpointercancel={(e) => up(e, true)}
 		>
-			<div class="thumb"><Art path={cmd.coverPath(shown.track.coverid ?? shown.track.artwork_track_id, 120)} alt="" label={title} /></div>
-			<div class="meta">
-				<span class="kicker">Up next</span>
-				<span class="line ellipsis">{title}{#if artist}<span class="muted">{` — ${artist}`}</span>{/if}</span>
-			</div>
+			<span class="kicker">Up next</span>
+			<span class="line ellipsis">{title}{#if artist}<span class="muted">{` — ${artist}`}</span>{/if}</span>
+			<span class="chev" aria-hidden="true">›</span>
 		</a>
-		<button class="icon-btn rm" aria-label={`Remove ${title} from the queue`} onclick={remove}><Icon name="close" size={18} /></button>
 	</div>
 {/if}
 <Snackbar bind:this={snack} message={notice} action={undo ? 'Undo' : ''} onaction={restore} ondismiss={dismiss} />
 
 <style>
 	.upnext {
-		display: flex;
-		align-items: center;
-		gap: 0.25rem;
 		max-width: 400px;
 		width: 100%;
 		margin-top: 0.25rem;
-		padding: 0.3rem;
-		border-radius: var(--radius-sm);
-		background: color-mix(in srgb, var(--bg-raised) 55%, transparent);
 	}
 	.row {
-		flex: 1;
-		min-width: 0;
 		display: flex;
 		align-items: center;
-		gap: 0.65rem;
+		gap: 0.6rem;
+		min-height: 44px;
+		padding: 0 0.6rem;
+		border-radius: var(--radius-sm);
 		text-align: left;
 		touch-action: pan-y;
 		user-select: none;
-		border-radius: var(--radius-sm);
 	}
-	.thumb {
-		width: 40px;
-		flex: none;
-	}
-	.meta {
-		display: grid;
-		min-width: 0;
+	.row:hover {
+		background: color-mix(in srgb, var(--bg-raised) 55%, transparent);
 	}
 	.kicker {
+		flex: none;
 		font-size: 0.72rem;
 		font-weight: 650;
 		text-transform: uppercase;
@@ -184,6 +177,8 @@
 		color: var(--fg-muted);
 	}
 	.line {
+		flex: 1;
+		min-width: 0;
 		font-size: 0.9rem;
 	}
 	.ellipsis {
@@ -191,21 +186,8 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
-	.rm {
+	.chev {
 		flex: none;
-		width: 44px;
-		height: 44px;
 		color: var(--fg-muted);
-	}
-	@media (prefers-reduced-motion: no-preference) {
-		.upnext {
-			animation: rise 0.3s ease-out;
-		}
-	}
-	@keyframes rise {
-		from {
-			opacity: 0;
-			transform: translateY(4px);
-		}
 	}
 </style>

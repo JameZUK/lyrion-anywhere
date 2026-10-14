@@ -409,7 +409,8 @@ describe('the Rooms page', () => {
 		await tick();
 		const link = r.container.querySelector<HTMLAnchorElement>('[data-rooms-link]')!;
 		expect(link.getAttribute('href')).toBe('#/rooms');
-		expect(link.textContent).toContain('All rooms');
+		expect(link.textContent).toContain('Rooms');
+		expect(link.textContent).not.toContain('All rooms'); // naming: Rooms is the page
 		r.unmount();
 	});
 });

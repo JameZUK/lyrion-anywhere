@@ -82,9 +82,14 @@ class Controls {
 		return explain(disabled, app.reach, this.message);
 	}
 
-	/** The queue mark for entry `index` (LMS track `id`). */
+	/**
+	 * The queue mark for entry `index` (LMS track `id`). One mark per meaning (Wave 3.5 rule 2):
+	 * "Downloaded" whenever the track is; "On this device" (the cache) only while the server is
+	 * out of reach, when it changes what can play.
+	 */
 	mark(index: number, id: unknown): LocalKind | null {
-		return local.mark(index, id, this.thisDevice, Number(app.now?.playlist_cur_index ?? -1));
+		const m = local.mark(index, id, this.thisDevice, Number(app.now?.playlist_cur_index ?? -1));
+		return m === 'device' && app.reach === 'online' ? null : m;
 	}
 
 	toggle() {

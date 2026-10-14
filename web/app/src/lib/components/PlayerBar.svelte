@@ -8,6 +8,7 @@
 	import Icon from './Icon.svelte';
 	import OutputButton from './OutputButton.svelte';
 	import PlayingElsewhere from './PlayingElsewhere.svelte';
+	import { playerLabel } from '$lib/lms/sync';
 	import { device } from '$lib/player/device.svelte';
 	import { DEVICE_BUTTONS_NOTE } from '$lib/player/volume';
 	import { LONG_PRESS_MS, MiniGesture, miniKey, type MiniAction } from '$lib/player/gesture';
@@ -23,8 +24,10 @@
 	const total = $derived(app.now?.duration ?? track?.duration ?? 0);
 	const shownTime = $derived(seeking ?? app.elapsed);
 	const vol = $derived(volume ?? app.now?.['mixer volume'] ?? 0);
-	const title = $derived(textOf(track?.title ?? app.now?.current_title) || (app.current ? 'Nothing playing' : ''));
-	const sub = $derived([textOf(track?.artist), textOf(track?.album)].filter(Boolean).join(' · '));
+	const title = $derived(textOf(track?.title ?? app.now?.current_title) || (app.current ? 'Nothing playing' : 'No player chosen'));
+	const sub = $derived(app.current ? [textOf(track?.artist), textOf(track?.album)].filter(Boolean).join(' · ') : 'Choose a player');
+	/** Which player is in use, when it isn't this device (Wave 3.5: no separate strip for it). */
+	const on = $derived(app.remote ? playerLabel(app.playerId, app.now, app.players) || app.nameOf(app.playerId) || 'another player' : '');
 	/** Which controls work now (all of them while the server is in reach). */
 	const g = $derived(controls.gates);
 	const canSeek = $derived(total > 0 && app.now?.can_seek !== 0 && g.seek);
@@ -128,7 +131,7 @@
 	<a
 		class="now"
 		href="#/"
-		aria-label={`Now playing: ${title}${sleepIn !== null ? `. Sleep timer: ${formatLeft(sleepIn)}` : ''}`}
+		aria-label={`Now playing: ${title}${on ? `, on ${on}` : ''}${sleepIn !== null ? `. Sleep timer: ${formatLeft(sleepIn)}` : ''}`}
 		aria-describedby="mini-hint"
 		bind:this={nowEl}
 		style:transform={follow ? `translate(${follow.dx * 0.5}px, ${follow.dy * 0.4}px)` : undefined}
@@ -145,7 +148,7 @@
 		<div class="meta">
 			<div class="title ellipsis">{title}</div>
 			<div class="sub ellipsis muted">
-				{#if sleepIn !== null}<span class="moon" title={`Sleep timer: ${formatLeft(sleepIn)}`}><Icon name="moon" size={13} /></span>{/if}{sub}
+				{#if sleepIn !== null}<span class="moon" title={`Sleep timer: ${formatLeft(sleepIn)}`}><Icon name="moon" size={13} /></span>{/if}{#if on}<span class="on" data-mini-on>on {on}</span>{#if sub}{' · '}{/if}{/if}<span class:pick={!app.current}>{sub}</span>
 			</div>
 		</div>
 	</a>
@@ -261,6 +264,12 @@
 	}
 	.sub {
 		font-size: 0.85rem;
+	}
+	/* The player in use, first so it is never cut off: "on Lounge · Artist · Album". */
+	.on,
+	.pick {
+		color: var(--accent);
+		font-weight: 600;
 	}
 	.centre {
 		display: grid;

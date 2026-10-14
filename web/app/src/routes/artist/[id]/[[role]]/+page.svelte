@@ -11,14 +11,14 @@
 	import { CREDIT_ORDER, ROLE_LABELS, nameInRole, roleFromSlug, roleLink } from '$lib/lms/credits';
 	import type { Album, AlbumsResult, TitlesResult } from '$lib/lms/types';
 	import AlbumGrid from '$lib/components/AlbumGrid.svelte';
-	import Icon from '$lib/components/Icon.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import InfoText from '$lib/components/InfoText.svelte';
 	import ArtistDownload from '$lib/components/ArtistDownload.svelte';
-	import { controls } from '$lib/player/controls.svelte';
+	import PageActions from '$lib/components/PageActions.svelte';
 	import { NO_ARTIST_INFO, sanitiseArtistInfo, type ArtistInfo } from '$lib/info/info';
 
 	let showMore = $state(false);
+	let dl = $state<ReturnType<typeof ArtistDownload>>();
 
 	let albums = $state<Album[]>([]);
 	let name = $state('');
@@ -173,14 +173,13 @@
 			</nav>
 		{/if}
 		{#if !role}
-			<div class="actions">
-				<button class="btn primary" onclick={() => app.queueUp({ artist: id }, 'play')} {...controls.needsServer(albums.length > 0)}><Icon name="play" size={18} />Play all</button>
-				<button class="btn" onclick={() => app.queueUp({ artist: id }, 'add')} {...controls.needsServer(albums.length > 0)}><Icon name="plus" size={18} />Add to queue</button>
-				<!-- LMS's own menu for the artist: it needs the server. -->
-				<button class="btn" onclick={() => (showMore = true)} {...controls.needsServer()} data-artist-more><Icon name="more" size={18} />More</button>
-			</div>
+			<!-- Play, Shuffle, Download all albums and ⋯ (Add to queue, Download all as…, More…, Remove downloads). -->
+			<PageActions sel={{ artist: id }} title={textOf(name)} can={albums.length > 0} next={false} onmore={() => (showMore = true)} extra={dl?.actions() ?? []}>
+				{#snippet download()}<ArtistDownload bind:this={dl} {albums} />{/snippet}
+			</PageActions>
+		{:else}
+			<div class="role-dl"><ArtistDownload {albums} /></div>
 		{/if}
-		<ArtistDownload {albums} />
 		{#if !role && info.biography}
 			<InfoText heading="Biography" text={info.biography} />
 		{/if}
@@ -202,11 +201,16 @@
 		font-size: clamp(1.8rem, 3.5vw, 2.8rem);
 		margin: 0.2rem 0 0.8rem;
 	}
-	.actions {
+	.role-dl {
 		display: flex;
 		flex-wrap: wrap;
+		align-items: center;
 		gap: 0.6rem;
-		margin-bottom: 2rem;
+		margin: 0.75rem 0;
+	}
+	.head + :global(.page-actions),
+	.roles + :global(.page-actions) {
+		margin-bottom: 1.5rem;
 	}
 	.head.with-photo {
 		display: flex;

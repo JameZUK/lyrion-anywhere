@@ -1,6 +1,7 @@
 // Play or shuffle a smart filter on the selected player (see play.ts).
 import { api, app } from '$lib/state/app.svelte';
 import { me } from '$lib/state/me';
+import { NO_PLAYER } from '$lib/naming';
 import { playFilter } from './play';
 import * as cmd from '$lib/lms/commands';
 import type { Album, AlbumsResult } from '$lib/lms/types';
@@ -8,7 +9,7 @@ import type { Album, AlbumsResult } from '$lib/lms/types';
 /** Resolves to '' when it played, or a message for the user. */
 export async function startFilter(id: number, shuffle: boolean): Promise<string> {
 	const player = app.playerId;
-	if (!player) return 'Choose a player first: tap the Play on… button by the volume.';
+	if (!player) return NO_PLAYER;
 	const msg = await playFilter({ albums: (i, from, n) => me.filterAlbums(i, from, n), send: (c) => api.rpc(player, c) }, id, shuffle);
 	app.queueVersion++;
 	app.soon();

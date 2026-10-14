@@ -161,7 +161,7 @@
 				<Art path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 800)} alt={title ? `Cover of ${textOf(track?.album)}` : ''} label={title} rounded="12px" eager />
 			</div>
 			<div class="about">
-				<p class="title">{title || (app.current ? 'Nothing playing' : 'Choose a player on Now playing')}</p>
+				<p class="title">{title || (app.current ? 'Nothing playing' : 'No player chosen')}</p>
 				{#if artist}<p class="artist">{artist}</p>{/if}
 				<p class="time" aria-label={`Elapsed ${duration(app.elapsed)}${total > 0 ? ` of ${duration(total)}` : ''}`} data-car-time>
 					<span class="elapsed">{duration(app.elapsed)}</span>{#if total > 0}<span class="of"> / {duration(total)}</span>{/if}

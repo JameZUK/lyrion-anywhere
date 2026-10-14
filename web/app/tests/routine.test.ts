@@ -254,7 +254,7 @@ describe('alarms page', () => {
 		fake.app.playerId = '';
 		route = () => ({ body: listing() });
 		const r = render(AlarmsPage);
-		expect(r.container.textContent).toContain('Choose a player first');
+		expect(r.container.textContent).toContain('No player chosen');
 		await new Promise((res) => setTimeout(res, 0));
 		expect(sent).toEqual([]);
 	});

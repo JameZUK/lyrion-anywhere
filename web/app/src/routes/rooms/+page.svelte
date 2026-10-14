@@ -194,7 +194,7 @@
 		const out: RowAction[] = [{ label: `Control ${name}`, icon: 'speaker', run: () => control(p) }];
 		const off = !app.canQueue;
 		if (rooms.length > 1) out.push({ label: 'Sync with…', icon: 'link', run: () => (choosing = p), disabled: off });
-		if (roomGroup(id, poller.groups).length > 1) out.push({ label: 'Play on its own', icon: 'close', run: () => void unsync(p), disabled: off });
+		if (roomGroup(id, poller.groups).length > 1) out.push({ label: 'Play on its own', icon: 'unlink', run: () => void unsync(p), disabled: off });
 		if (canMove && p.playerid !== app.playerId) {
 			out.push({
 				label: 'Move playback here',

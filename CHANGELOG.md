@@ -2,6 +2,42 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Web: Wave 3.5 declutter, phase 1 (quick wins)
+
+The first phase of [the declutter plan](docs/plans/wave3_5-declutter.md) for the web app. Almost every change is a move into a menu; nothing was removed. Each moved action has a test that reaches it in its new home.
+
+- **No "Playing on …" strip.** The mini player now names the player in use ("on Lounge", first on its second line, in the accent colour). *Move playback to …* (formerly *Move here*, *Bring here*) and going back to this device are in **Play on…**. A strip shows only while playback is moving.
+- **Play on…:** a tap on a row plays on that player. Moving the playback there is the row's ⋯ (*Move playback to Kitchen*, *Move playback to this device*). The sync switches are behind one *Group players…* row. The explanatory paragraph is gone, and *All rooms* is now *Rooms*.
+- **Page headers are Play · Shuffle · Download · ⋯** on album, artist, playlist, genre, year and folder pages. *Shuffle* is new: it turns shuffle on and plays.
+  - ⋯ holds *Play next*, *Add to queue*, *Download as…*, LMS's *More…*, and (for admins) a playlist's *Rename* and *Delete playlist*.
+  - Destructive items come last, after a divider. *Remove download* is one of them.
+  - The download format select is gone from the header. The usual format comes from Settings › Downloads; *Download as…* picks a one-off format.
+  - Deleting a playlist asks in a dialog, as everywhere else, rather than "Tap again to delete".
+  - A smart filter's page has Play, Shuffle and ⋯ (*Edit*, *Delete*).
+- **Queue:** the header is the title and ⋯ (*Save as playlist…*, *Clear upcoming…*, *Clear the queue…*, each confirmed in a dialog). A row is its drag handle (44 px on touch), the track and ⋯ (*Play next*, *Move up*, *Move down*, *Remove from queue*). The ✕ and the move buttons are gone. The gapless link marks are gone from the queue; track info says "Gapless" instead. The queue peek keeps *Open the full queue* only.
+- **One trailing control per row** elsewhere too: smart filter rows, music folder rows, a playlist's rows for admins, and Home's station cards each have one ⋯.
+- **Now playing, wide windows:** the player bar is hidden under Now playing (no second transport, seek or volume). The action row is *Queue* and ⋯ (*Sleep timer*, *Turn the sleep timer off*, *This track*, *Signal path*, *Car mode*, *Alarms*), always the same, so it never shifts.
+  - The Lyrics button and its dialog are gone. The lyric peek and the *L* key open the Lyrics layout.
+  - The Play on button by the volume names the player.
+  - A running sleep timer shows its time left by the track details.
+- **Now playing, phones:**
+  - The top row is close and ⋮. ⋮ holds *This track*, *Sleep timer*, *Visualiser*, *Car mode* and *Alarms*. *Signal path* is the quality badge's, *All rooms* is in Play on….
+  - The bottom row is *Play on* (named for the player in use), *Lyrics* and *Queue*. Play on… carries the volume slider on phones.
+  - The visualiser's style chooser and its on/off are in ⋮ › Visualiser (a swipe across it still changes the style).
+- **One rating toggle by the title** (a heart, or a star for those who rate in stars): a tap loves the track (five stars), a second clears it. The full 1–5 rating is in ⋮ › *This track*, above the credits, which now come after its heading and close button.
+- **Up next is one line** ("Up next · Title — Artist ›"). A tap opens the queue (the same sheet as Queue on phones). The ✕ is gone; a swipe or Delete still removes it, with Undo.
+- **Home:** the station cards' bins are gone (*Delete station* is in each card's ⋯, confirmed). *Edit Home* is a quiet text button at the end of Home. The *Browse the library* card is gone (Library is a tab). A smart filter shelf's Play and Shuffle are disabled while the server is out of reach.
+- **Continue on… is a snackbar with an action:** "Back online. Continue 3 tracks from your downloads on Lounge?" with *Continue* and *Other player…* (a list of the players you may control). Dismissing it is "Not now".
+- **One mark per meaning:**
+  - Downloaded tracks have one "available offline" glyph (an arrow in a circle) everywhere.
+  - A downloading track shows a small ring. Waiting, paused and held-for-Wi-Fi tracks have no mark on the row (the header line says so).
+  - The *On this device* mark shows only while the server is out of reach.
+  - ✕ now means close or dismiss only: cancelling a download uses a stop glyph, removing a rule or a recent search a minus, ungrouping a broken link, deleting an alarm a bin.
+- **One snackbar at a time:** every snackbar joins one list, and only the newest message shows. An older one shows again when the newer goes; screen readers still hear each. Snackbars wrap to two lines rather than cut off.
+- **Empty states no longer lie:** while your music server is out of reach, a queue that couldn't be read says "The queue can’t be loaded until your music server is back", not "The queue is empty".
+- **Naming:** "No player chosen. Choose a player with Play on." everywhere (it was four wordings). Now playing's empty state is "No player chosen" with a *Choose a player* button that opens Play on…. "Play all" is now "Play".
+- **Tests:** `tests/declutter-wave35.test.ts` (header and row rules, the moved actions, one snackbar at a time, Continue on…, wide Now playing, honest empty states, the one offline mark) and the node layout checks (the player bar is hidden under Now playing at every width, and the new 44 px targets). Existing tests were updated to reach the actions in their new places.
+
 ## 2026-10-14: Android: four layout fixes
 
 Found by a rendered review of every screen at phone, small-phone and tablet sizes:

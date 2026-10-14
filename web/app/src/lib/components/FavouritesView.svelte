@@ -7,6 +7,7 @@
 	import { api, app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
+	import { NO_PLAYER } from '$lib/naming';
 	import type { FavouritesResult, MenuItem } from '$lib/lms/types';
 	import Art from '$lib/components/Art.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -50,7 +51,7 @@
 	const isFolder = (i: MenuItem) => String(i.hasitems) === '1' && String(i.isaudio) !== '1';
 	async function play(i: MenuItem, how: cmd.Placement) {
 		if (!app.playerId) {
-			app.error = 'Choose a player first (bottom right, or Settings › This device).';
+			app.error = NO_PLAYER;
 			return;
 		}
 		await app.send(cmd.playFavourite(i.id!, how));

@@ -6,6 +6,7 @@ import { Pager } from '$lib/lms/pager.svelte';
 import { folderRow } from '$lib/lms/folder';
 import { loadChoice, parseLibraries, saveChoice } from '$lib/state/library.svelte';
 
+const { choose } = await import('./helpers/menu');
 vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const params: Record<string, string | undefined> = {};
 vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/') } }));
@@ -318,8 +319,9 @@ test('the music folder browses by id and plays folders and tracks by id', async 
 	assertInert(container);
 	expect(container.textContent).not.toContain('/srv');
 	expect(container.querySelector('a[href="#/folder/21"]')).not.toBeNull();
-	await fireEvent.click(getByLabelText(`Play ${HOSTILE}`));
-	await fireEvent.click(getByLabelText('Add Song to the queue'));
+	// Each row has one trailing control (Wave 3.5): its ⋯ menu.
+	await choose(`More options for ${HOSTILE}`, 'Play', container);
+	await choose('More options for Song', 'Add to queue', container);
 	await fireEvent.click(getByLabelText('Play Song'));
 	const plays = fake.calls.filter((c) => c.cmd[0] === 'playlistcontrol');
 	expect(plays.map((c) => c.cmd)).toEqual([

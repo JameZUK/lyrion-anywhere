@@ -7,6 +7,12 @@
 		shortcut?: string;
 		/** Shown but unavailable (e.g. it needs the server): stays focusable, does nothing. */
 		disabled?: boolean;
+		/** Why it is unavailable, when the connection is the reason (title and description). */
+		why?: { title?: string; 'aria-describedby'?: string };
+		/** A destructive action: kept last, after a divider (Wave 3.5 rule 3). */
+		danger?: boolean;
+		/** A hook for tests and screenshots (`data-action`). */
+		id?: string;
 	}
 </script>
 
@@ -17,7 +23,24 @@
 	// elsewhere (a long press or a right-click on the row).
 	import Icon from './Icon.svelte';
 
-	let { label, actions }: { label: string; actions: readonly RowAction[] } = $props();
+	let {
+		label,
+		actions,
+		icon = 'more',
+		text = '',
+		trigger: data = {},
+	}: {
+		label: string;
+		actions: readonly RowAction[];
+		/** The trigger's icon (⋯ by default). */
+		icon?: string;
+		/** A visible label beside the icon (header menus on wide screens). */
+		text?: string;
+		/** Extra attributes for the trigger (e.g. a `data-` hook). */
+		trigger?: Record<string, string | boolean | undefined>;
+	} = $props();
+	/** Destructive actions last, after the rest. */
+	const ordered = $derived([...actions.filter((a) => !a.danger), ...actions.filter((a) => a.danger)]);
 
 	let open = $state(false);
 	let menu = $state<HTMLDivElement>();
@@ -91,6 +114,7 @@
 	<button
 		type="button"
 		class="icon-btn"
+		class:labelled={!!text}
 		bind:this={trigger}
 		id={uid}
 		aria-label={label}
@@ -100,13 +124,15 @@
 		onclick={() => (open ? close() : show())}
 		onkeydown={triggerKey}
 		data-row-more
+		{...data}
 	>
-		<Icon name="more" size={20} />
+		<Icon name={icon} size={20} />{#if text}<span class="text">{text}</span>{/if}
 	</button>
 	{#if open}
 		<div class="menu" role="menu" id={`${uid}-menu`} aria-labelledby={uid} bind:this={menu} tabindex="-1" onkeydown={menuKey}>
-			{#each actions as a (a.label)}
-				<button role="menuitem" tabindex="-1" onclick={() => choose(a)} aria-keyshortcuts={a.shortcut} aria-disabled={a.disabled ? 'true' : undefined}>
+			{#each ordered as a, i (a.label)}
+				{#if a.danger && i > 0 && !ordered[i - 1]?.danger}<hr aria-hidden="true" />{/if}
+				<button role="menuitem" tabindex="-1" class:danger={a.danger} onclick={() => choose(a)} aria-keyshortcuts={a.shortcut} aria-disabled={a.disabled ? 'true' : undefined} {...a.disabled ? a.why ?? {} : {}} data-action={a.id}>
 					<Icon name={a.icon} size={18} /><span>{a.label}</span>{#if a.shortcut}<kbd class="muted" aria-hidden="true">{a.shortcut}</kbd>{/if}
 				</button>
 			{/each}
@@ -131,6 +157,24 @@
 		border: 1px solid var(--line);
 		border-radius: var(--radius-sm);
 		box-shadow: var(--shadow);
+	}
+	hr {
+		border: 0;
+		border-top: 1px solid var(--line);
+		margin: 0.25rem 0.4rem;
+	}
+	.menu button.danger {
+		color: var(--danger);
+	}
+	.labelled {
+		width: auto;
+		display: inline-flex;
+		gap: 0.4rem;
+		padding: 0 0.9rem;
+		border-radius: 999px;
+	}
+	.text {
+		font-weight: 600;
 	}
 	.menu button[aria-disabled='true'] {
 		opacity: 0.45;

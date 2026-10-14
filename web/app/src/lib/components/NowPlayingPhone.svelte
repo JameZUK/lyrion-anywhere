@@ -1,10 +1,12 @@
 <script lang="ts">
 	// Now playing on phones and narrow windows (up to 840 px wide). One column the height of
-	// the screen above the tab bar, which never scrolls: a slim top row (close, "Playing on …",
-	// ⋮), the hero (a pager of Cover, Lyrics and Track info, which takes whatever height is
-	// left, the cover shrinking to fit), the title with its rating, artist · album and the
-	// quality badge, the seek bar, the transport, Up next, and a row of four actions (Sleep,
-	// Queue, Visualiser, Volume). Lyrics and track info scroll inside their own page.
+	// the screen above the tab bar, which never scrolls: a slim top row (close and ⋮), the hero
+	// (a pager of Cover, Lyrics and Track info, which takes whatever height is left, the cover
+	// shrinking to fit), the title with its one rating toggle, artist · album and the quality
+	// badge, the seek bar, the transport, a one-line Up next, and a row of three actions (Play
+	// on, which also holds the volume; Lyrics; Queue). ⋮ holds This track (with the full
+	// rating), Sleep timer, Visualiser, Car mode and Alarms (Wave 3.5). Lyrics and track info
+	// scroll inside their own page.
 	import { app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { duration, isRemote, textOf } from '$lib/lms/format';
@@ -39,8 +41,6 @@
 	import SleepSheet from './SleepSheet.svelte';
 	import UpNext from './UpNext.svelte';
 	import Visualiser from './Visualiser.svelte';
-	import VisualiserButton from './VisualiserButton.svelte';
-	import VolumePopover from './VolumePopover.svelte';
 
 	let { reduce = false }: { reduce?: boolean } = $props();
 
@@ -72,11 +72,8 @@
 	// --- the player -------------------------------------------------------------------------------
 	/** This browser is the player (the visualiser needs its audio). */
 	const local = $derived(!!app.current && isThisDevice(app.playerId) && (device.state === 'connected' || device.state === 'reconnecting'));
-	const chip = $derived.by(() => {
-		if (app.moving) return `Moving to ${app.moving}…`;
-		if (!app.current) return 'Choose a player';
-		return `Playing on ${isThisDevice(app.playerId) ? 'this device' : app.nameOf(app.playerId) || 'another player'}`;
-	});
+	/** The player in use, named on the Play on button (the state; "Play on" is the action). */
+	const playerName = $derived(!app.current ? 'Play on' : isThisDevice(app.playerId) ? 'This device' : app.nameOf(app.playerId) || 'Another player');
 	let playOn = $state(false);
 
 	// --- the pager ----------------------------------------------------------------------------------
@@ -108,12 +105,6 @@
 	}
 	$effect(() => () => clearTimeout(toastTimer));
 
-	function toggleVisualiser() {
-		const on = !nowPlaying.visualiser;
-		nowPlaying.setVisualiser(on);
-		if (on && page !== 'art') nowPlaying.setLayout('art');
-		say(on ? STYLE_LABELS[nowPlaying.style] : 'Visualiser off');
-	}
 	function chooseStyle(s: VisualStyle) {
 		closeSheet();
 		nowPlaying.setStyle(s);
@@ -152,8 +143,11 @@
 			if ((!a || a === document.body || !a.isConnected) && el?.isConnected) el.focus();
 		});
 	}
-	const visButton = () => section?.querySelector('[data-visualiser-button]') ?? null;
 	const moreButton = () => section?.querySelector('[data-np-more]') ?? null;
+	/** Lyrics: the pager's lyrics page, or back to the cover. */
+	function toggleLyrics() {
+		nowPlaying.setLayout(page === 'lyrics' ? 'art' : 'lyrics');
+	}
 </script>
 
 <section class="np np-phone" bind:this={section} data-np-phone data-layout={page}>
@@ -161,12 +155,7 @@
 
 	<header class="top">
 		<button class="icon-btn" aria-label="Close Now playing" title="Close Now playing" onclick={() => void back('/home')} data-np-close><Icon name="chevron" size={24} /></button>
-		<div class="playon">
-			<button class="chip" class:remote={app.remote} aria-haspopup="dialog" aria-expanded={playOn} onclick={() => (playOn = !playOn)} data-play-on>
-				<span class="dot" aria-hidden="true"></span><span class="chip-text">{chip}</span><Icon name="chevron" size={16} />
-			</button>
-			{#if playOn}<div class="pop"><PlayerSwitcher onclose={() => (playOn = false)} /></div>{/if}
-		</div>
+		<span></span>
 		<button class="icon-btn" aria-label="More options" aria-haspopup="dialog" onclick={() => openSheet('more')} data-np-more><Icon name="more" size={24} /></button>
 	</header>
 
@@ -205,15 +194,15 @@
 		{#if !app.current && app.playerId && app.playerId === app.deviceMac}
 			<DeviceWait />
 		{:else if !app.current}
-			<h1 class="title">Nothing to control yet</h1>
-			<p class="sub muted">Choose a player with “Choose a player” at the top.</p>
+			<h1 class="title">No player chosen</h1>
+			<p class="sub"><button class="btn primary choose" onclick={() => (playOn = true)} data-choose-player>Choose a player</button></p>
 		{:else if !track && !app.now?.current_title}
 			<h1 class="title">Nothing playing</h1>
-			<p class="sub muted">Pick an album to start. <a class="link" href="#/albums">Browse albums</a></p>
+			<p class="sub muted">Pick an album to start. <a class="link" href="#/library">Go to Library</a></p>
 		{:else}
 			<div class="title-row">
 				{#key trackKey}<h1 class="title" in:fade={swap} title={title}>{title}</h1>{/key}
-				{#if libraryId !== null}<div class="rating"><RatingControl track={libraryId} size={20} compact /></div>{/if}
+				{#if libraryId !== null}<div class="rating"><RatingControl track={libraryId} size={22} toggle /></div>{/if}
 			</div>
 			<div class="sub">
 				<span class="who muted">
@@ -221,6 +210,10 @@
 				</span>
 				{#if badge}
 					<button class="badge" class:hires={badge.hiRes} onclick={() => openSheet('path')} aria-haspopup="dialog" aria-label={`${badgeText(badge)}. Show the signal path`} data-quality-badge>{badgeText(badge)}</button>
+				{/if}
+				{#if sleepIn !== null}
+					<!-- The timer's state (set it, or turn it off, in ⋮ › Sleep timer). -->
+					<span class="sleep-left" role="img" aria-label={`Sleep timer: stops in ${formatLeft(sleepIn)}`} data-sleep-left><Icon name="moon" size={14} /><span aria-hidden="true">{formatLeft(sleepIn)}</span></span>
 				{/if}
 			</div>
 		{/if}
@@ -260,23 +253,28 @@
 		</button>
 	</div>
 
-	<div class="next"><UpNext /></div>
+	<div class="next"><UpNext onopen={() => app.current && openSheet('queue')} /></div>
 
 	<nav class="actions" aria-label="Now playing actions">
 		<button
 			class="np-act"
-			class:set={sleepIn !== null}
-			onclick={() => openSheet('sleep')}
+			class:remote={app.remote}
 			aria-haspopup="dialog"
-			aria-label={sleepIn !== null ? `Sleep timer: stops in ${formatLeft(sleepIn)}` : 'Sleep timer'}
-			disabled={!app.current || !g.other}
-			data-sleep-button
-		><Icon name="moon" size={24} /><span class="np-act-label">{sleepIn !== null ? formatLeft(sleepIn) : 'Sleep'}</span></button>
+			aria-expanded={playOn}
+			aria-label={app.remote ? `Play on… (now ${app.nameOf(app.playerId) || 'another player'})` : 'Play on…'}
+			onclick={() => (playOn = !playOn)}
+			data-play-on
+		><Icon name="output" size={24} /><span class="np-act-label">{playerName}</span></button>
+		<button
+			class="np-act"
+			class:set={page === 'lyrics'}
+			aria-pressed={page === 'lyrics'}
+			aria-label="Lyrics"
+			onclick={toggleLyrics}
+			data-lyrics-button
+		><Icon name="lyrics" size={24} /><span class="np-act-label">Lyrics</span></button>
 		<button class="np-act" onclick={() => openSheet('queue')} aria-haspopup="dialog" aria-label="Queue" disabled={!app.current} data-queue-peek><Icon name="queue" size={24} /><span class="np-act-label">Queue</span></button>
-		{#if local}
-			<VisualiserButton on={nowPlaying.visualiser} style={STYLE_LABELS[nowPlaying.style]} {reduce} ontoggle={toggleVisualiser} onchoose={() => openSheet('styles', visButton())} />
-		{/if}
-		<VolumePopover disabled={!g.volume} />
+		{#if playOn}<div class="pop"><PlayerSwitcher onclose={() => (playOn = false)} volume /></div>{/if}
 	</nav>
 
 	{#if sheet === 'more'}
@@ -284,23 +282,24 @@
 			<div class="rows" data-more-sheet>
 				{#if libraryId !== null}
 					<!-- LMS's own menu for the track: it needs the server (the rest here works without). -->
-					<button class="row" onclick={() => openSheet('track', moreButton())} {...controls.needsServer()} data-track-menu><Icon name="note" /><span>This track<small>Add to a playlist, go to the album and more</small></span></button>
+					<button class="row" onclick={() => openSheet('track', moreButton())} {...controls.needsServer()} data-track-menu><Icon name="note" /><span>This track<small>Your rating, credits, add to a playlist and more</small></span></button>
+				{/if}
+				<button class="row" onclick={() => openSheet('sleep', moreButton())} disabled={!app.current || !g.other} data-sleep-button>
+					<Icon name="moon" /><span>Sleep timer<small>{sleepIn !== null ? `Stops in ${formatLeft(sleepIn)}` : 'Off'}</small></span>
+				</button>
+				{#if local}
+					<button class="row" onclick={() => openSheet('styles', moreButton())} disabled={reduce} data-visualiser-style-row>
+						<Icon name="visualiser" /><span>Visualiser<small>{reduce ? 'Off while your device asks for reduced motion' : nowPlaying.visualiser ? STYLE_LABELS[nowPlaying.style] : 'Off'}</small></span>
+					</button>
 				{/if}
 				{#if app.current}
 					<a class="row" href="#/car" data-car-link><Icon name="car" /><span>Car mode<small>Big buttons for driving</small></span></a>
 					<a class="row" href="#/alarms" data-alarms-link><Icon name="alarm" /><span>Alarms<small>Wake to music on this player</small></span></a>
 				{/if}
-				<a class="row" href="#/rooms" data-rooms-link><Icon name="rooms" /><span>All rooms<small>Every player at a glance</small></span></a>
-				<button class="row" onclick={() => openSheet('path', moreButton())} disabled={!track} data-signal-path-row><Icon name="signal" /><span>Signal path<small>From the file to your ears</small></span></button>
-				{#if local}
-					<button class="row" onclick={() => openSheet('styles', moreButton())} disabled={reduce} data-visualiser-style-row>
-						<Icon name="visualiser" /><span>Visualiser style<small>{reduce ? 'Off while your device asks for reduced motion' : nowPlaying.visualiser ? STYLE_LABELS[nowPlaying.style] : `Off (${STYLE_LABELS[nowPlaying.style]} when on)`}</small></span>
-					</button>
-				{/if}
 			</div>
 		</Sheet>
 	{:else if sheet === 'styles'}
-		<Sheet title="Visualiser style" onclose={closeSheet}>
+		<Sheet title="Visualiser" onclose={closeSheet}>
 			<div class="rows" role="group" aria-label="Visualiser style" data-style-sheet>
 				{#each STYLES as s (s)}
 					<button class="row" aria-pressed={nowPlaying.visualiser && nowPlaying.style === s} onclick={() => chooseStyle(s)} data-style-choice={s}>
@@ -349,46 +348,6 @@
 	.top .icon-btn {
 		width: 48px;
 		height: 48px;
-	}
-	.playon {
-		min-width: 0;
-		display: flex;
-		justify-content: center;
-	}
-	.chip {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		max-width: 100%;
-		min-height: 44px;
-		padding: 0 14px;
-		border: 0;
-		border-radius: 999px;
-		background: color-mix(in srgb, var(--bg-raised) 60%, transparent);
-		color: var(--fg);
-		font: inherit;
-		font-size: 0.875rem;
-		font-weight: 550;
-		cursor: pointer;
-	}
-	.chip:hover {
-		background: color-mix(in srgb, var(--bg-raised) 85%, transparent);
-	}
-	.chip-text {
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.dot {
-		flex: none;
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--fg-muted);
-	}
-	.chip.remote .dot {
-		background: var(--accent);
 	}
 	/* "Play on…": a sheet across the bottom of the screen, above the tab bar. */
 	.pop {
@@ -562,6 +521,15 @@
 	.badge.hires {
 		border-color: var(--accent);
 	}
+	.sleep-left {
+		flex: none;
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+		color: var(--accent);
+		font-size: 0.8rem;
+		font-variant-numeric: tabular-nums;
+	}
 
 	.seek {
 		flex: none;
@@ -625,6 +593,12 @@
 		margin-top: 0;
 	}
 
+	.np-act.remote {
+		color: var(--accent);
+	}
+	.choose {
+		margin-top: 0.25rem;
+	}
 	.actions {
 		flex: none;
 		min-height: 56px;

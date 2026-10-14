@@ -1,11 +1,13 @@
 <script lang="ts">
-	// Stations as cards: tap to start one on the selected player.
+	// Stations as cards: tap to start one on the selected player. Deleting one is in its ⋯
+	// (Wave 3.5: destructive actions live only inside a menu), confirmed in a dialog.
 	import type { Station, StationKind } from '$lib/api/me';
 	import { activeStation } from '$lib/stations/active.svelte';
 	import { me } from '$lib/state/me';
 	import { app } from '$lib/state/app.svelte';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 	import Icon from './Icon.svelte';
+	import RowMenu from './RowMenu.svelte';
 
 	let {
 		stations,
@@ -61,7 +63,7 @@
 				{#if busy === s.id}<span class="muted small">Starting…</span>{/if}
 			</button>
 			{#if removable}
-				<button class="icon-btn" aria-label={`Delete the station ${s.name}`} onclick={() => (deleting = s)}><Icon name="trash" size={18} /></button>
+				<RowMenu label={`More options for ${s.name}`} actions={[{ label: 'Delete station', icon: 'trash', run: () => (deleting = s), danger: true, id: 'delete-station' }]} />
 			{/if}
 		</li>
 	{:else}

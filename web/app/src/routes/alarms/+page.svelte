@@ -132,7 +132,7 @@
 		{/if}
 	</header>
 	{#if !player}
-		<p class="muted">Choose a player first, with the Play on… button.</p>
+		<p class="muted">No player chosen. Choose a player with Play on.</p>
 	{:else}
 		<p class="muted lead">On {playerName}. Alarms are kept by your music server, so they ring even with this app closed.</p>
 		{#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -212,7 +212,7 @@
 								<button class="btn small danger" onclick={() => run(player, (q) => routine.deleteAlarm(q, a.id)).then(() => (confirmDelete = null))} data-confirm-delete>Delete</button>
 								<button class="btn small" onclick={() => (confirmDelete = null)}>Keep</button>
 							{:else}
-								<button class="icon-btn" aria-label={`Delete the ${timeText(a.time)} alarm`} onclick={() => (confirmDelete = a.id)}><Icon name="close" size={18} /></button>
+								<button class="icon-btn" aria-label={`Delete the ${timeText(a.time)} alarm`} onclick={() => (confirmDelete = a.id)}><Icon name="trash" size={18} /></button>
 							{/if}
 						</li>
 					{/each}

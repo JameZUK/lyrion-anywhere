@@ -166,9 +166,6 @@
 	<header>
 		<h1>Home</h1>
 		<div class="tools">
-			{#if layout && !editing}
-				<button class="btn" onclick={startEditing}><Icon name="grip" size={18} />Edit Home</button>
-			{/if}
 			<!-- Settings: no tab of its own on phones, so it lives here (and in the sidebar). -->
 			<a class="icon-btn gear" href="#/settings" aria-label="Settings" title="Settings" data-settings-link><Icon name="settings" size={22} /></a>
 		</div>
@@ -234,11 +231,12 @@
 		{#each layout.shelves.filter((s) => !s.hidden) as s (L.shelfKey(s))}
 			<HomeShelf shelf={s} {stations} {menus} {filters} onstationremoved={(id) => (stations = stations.filter((x) => x.id !== id))} />
 		{:else}
-			<p class="muted">Your Home is empty. Use Edit Home to add shelves.</p>
+			<p class="muted">Your Home is empty. Use Edit Home, at the end of the page, to add shelves.</p>
 		{/each}
 	{/if}
-	<a class="browse" href="#/library"><Icon name="library" size={20} />Browse the library<span class="chev" aria-hidden="true">›</span></a>
 	{#if !editing}<StatsCard />{/if}
+	<!-- Once a month: a quiet text button at the end of Home (Wave 3.5). -->
+	{#if layout && !editing}<button class="link-btn edit-home" onclick={startEditing} data-edit-home>Edit Home</button>{/if}
 </section>
 
 <style>
@@ -314,21 +312,21 @@
 		gap: 0.6rem;
 		margin-bottom: 1rem;
 	}
-	.browse {
-		display: flex;
-		align-items: center;
-		gap: 0.75rem;
-		max-width: 560px;
-		margin-top: 1rem;
-		padding: 0.8rem 0.9rem;
-		border-radius: var(--radius);
-		background: var(--bg-raised);
-		border: 1px solid var(--line);
-		font-weight: 600;
-	}
-	.chev {
-		margin-left: auto;
+	.edit-home {
+		display: block;
+		margin: 1.5rem auto 0.5rem;
+		min-height: 44px;
+		padding: 0 1rem;
+		border: 0;
+		background: none;
 		color: var(--fg-muted);
-		font-size: 1.4rem;
+		font: inherit;
+		font-weight: 600;
+		text-decoration: underline;
+		text-underline-offset: 3px;
+		cursor: pointer;
+	}
+	.edit-home:hover {
+		color: var(--fg);
 	}
 </style>

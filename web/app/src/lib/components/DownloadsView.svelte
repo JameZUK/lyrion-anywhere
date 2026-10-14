@@ -188,7 +188,7 @@
 						{:else}
 							<button class="icon-btn" aria-label="Pause" onclick={() => downloads.pause(i.id)}><Icon name="pause" size={18} /></button>
 						{/if}
-						<button class="icon-btn" aria-label="Cancel" onclick={() => downloads.cancel(i.id)}><Icon name="close" size={18} /></button>
+						<button class="icon-btn" aria-label="Cancel" onclick={() => downloads.cancel(i.id)}><Icon name="stop" size={18} /></button>
 					</li>
 				{/each}
 			</ul>

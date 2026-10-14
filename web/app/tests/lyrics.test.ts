@@ -10,6 +10,7 @@ vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.sv
 const fake = await import('./helpers/fake-app.svelte');
 const { lyrics } = await import('$lib/state/lyrics');
 const { default: NowPlaying } = await import('../src/routes/+page.svelte');
+const { nowPlaying } = await import('$lib/nowplaying/store.svelte');
 
 const SYNCED = {
 	source: 'tags',
@@ -230,7 +231,7 @@ describe('LyricsState', () => {
 });
 
 describe('Now playing', () => {
-	/** Wide windows have the Lyrics button and the peek; phones have the pager's Lyrics page. */
+	/** Wide windows have the peek and the Lyrics layout (Wave 3.5: no Lyrics dialog); phones have the pager's Lyrics page and a Lyrics button for it. */
 	let wide = true;
 	class NoObserver {
 		observe() {}
@@ -255,6 +256,7 @@ describe('Now playing', () => {
 		wide = true;
 		lyrics.reset();
 		lyrics.setPeek(true);
+		nowPlaying.setLayout('art');
 		fake.app.seeks.length = 0;
 		fake.app.players = [{ playerid: '02:00:00:00:00:01', name: 'Test player' }];
 		fake.app.playerId = '02:00:00:00:00:01';
@@ -268,7 +270,8 @@ describe('Now playing', () => {
 	});
 	afterAll(() => vi.unstubAllGlobals());
 
-	test('synced lyrics: a peek with the current line, which opens the view; tapping a line seeks', async () => {
+	test('synced lyrics: a peek with the current line, which opens the Lyrics layout; tapping a line seeks', async () => {
+		nowPlaying.setLayout('art');
 		const r = render(NowPlaying);
 		await waitFor(() => expect(r.container.querySelector('[data-lyrics-peek]')).not.toBeNull());
 		expect(r.container.querySelector('[data-lyrics-peek]')!.textContent).toBe('Second line');
@@ -277,8 +280,11 @@ describe('Now playing', () => {
 		expect(r.container.querySelector('[data-lyrics-peek]')!.textContent).toBe('First line');
 
 		await fireEvent.click(r.container.querySelector('[data-lyrics-peek]')!);
-		const view = document.querySelector('[data-lyrics-view]')!;
+		// One lyrics view: the layout's own pane (the dialog is gone), and no peek on top of it.
+		expect(document.querySelector('[data-lyrics-view]')).toBeNull();
+		const view = r.container.querySelector('[data-side-pane="lyrics"]')!;
 		expect(view).not.toBeNull();
+		expect(r.container.querySelector('[data-lyrics-peek]')).toBeNull();
 		const lines = [...view.querySelectorAll<HTMLButtonElement>('button.line')];
 		expect(lines.map((b) => b.textContent)).toEqual(['First line', 'Second line', '♪']);
 		expect(lines[0]!.getAttribute('aria-current')).toBe('true');
@@ -287,21 +293,27 @@ describe('Now playing', () => {
 		r.unmount();
 	});
 
-	test('no peek when switched off, but the Lyrics button stays', async () => {
+	test('no peek when switched off, but the Lyrics layout stays', async () => {
 		lyrics.setPeek(false);
 		const r = render(NowPlaying);
-		await waitFor(() => expect(r.container.querySelector('[data-lyrics-button]')).not.toBeNull());
+		await waitFor(() => expect(r.container.querySelector('[data-layout-button="lyrics"]')).not.toBeNull());
+		await tick();
 		expect(r.container.querySelector('[data-lyrics-peek]')).toBeNull();
+		// No separate Lyrics button or dialog on wide screens (Wave 3.5).
+		expect(r.container.querySelector('[data-lyrics-button]')).toBeNull();
 		r.unmount();
 	});
 
 	test('plain lyrics: no peek, and the view only scrolls', async () => {
 		answers['/v1/lyrics/track/9'] = { status: 200, body: { source: 'plugin', synced: false, lines: [{ t: 0, text: 'Just words' }] } };
+		nowPlaying.setLayout('art');
 		const r = render(NowPlaying);
-		await waitFor(() => expect(r.container.querySelector('[data-lyrics-button]')).not.toBeNull());
+		await waitFor(() => expect(lyrics.lyrics).not.toBeNull());
+		await tick();
 		expect(r.container.querySelector('[data-lyrics-peek]')).toBeNull();
-		await fireEvent.click(r.container.querySelector('[data-lyrics-button]')!);
-		const view = document.querySelector('[data-lyrics-view]')!;
+		await fireEvent.click(r.container.querySelector('[data-layout-button="lyrics"]')!);
+		const view = r.container.querySelector('[data-side-pane="lyrics"]')!;
+		await waitFor(() => expect(view.textContent).toContain('Just words'));
 		expect(view.querySelector('button.line')).toBeNull();
 		expect(view.textContent).toContain('Just words');
 		expect(view.textContent).toContain('Music & Artist Information');
@@ -313,13 +325,14 @@ describe('Now playing', () => {
 		let r = render(NowPlaying);
 		await tick();
 		await new Promise((res) => setTimeout(res, 0));
-		expect(r.container.querySelector('[data-lyrics-button]')).toBeNull();
+		expect(r.container.querySelector('[data-lyrics-peek]')).toBeNull();
 		r.unmount();
 
 		fake.app.now = { mode: 'play', time: 1, playlist_loop: [{ id: 9, title: 'Radio', remote: 1, 'playlist index': 0 }] };
 		r = render(NowPlaying);
 		await tick();
-		expect(r.container.querySelector('[data-lyrics-button]')).toBeNull();
+		expect(r.container.querySelector('[data-lyrics-peek]')).toBeNull();
+		expect(lyrics.lyrics).toBeNull();
 		r.unmount();
 
 		answers['/v1/lyrics/track/9'] = { status: 200, body: { source: 'tags', synced: true, lines: [{ t: 0, text: '<img src=x onerror="globalThis.pwned=1">' }] } };
@@ -348,9 +361,14 @@ describe('Now playing', () => {
 		expect(lines.map((b) => b.textContent)).toEqual(['First line', 'Second line', '♪']);
 		await fireEvent.click(lines[1]!);
 		expect(fake.app.seeks).toEqual([12.5]);
-		// No peek and no separate Lyrics button on phones.
+		// No peek on phones; the bottom row's Lyrics button shows this page, and again goes back.
 		expect(r.container.querySelector('[data-lyrics-peek]')).toBeNull();
-		expect(r.container.querySelector('[data-lyrics-button]')).toBeNull();
+		const btn = r.container.querySelector<HTMLButtonElement>('[data-lyrics-button]')!;
+		expect(btn.getAttribute('aria-pressed')).toBe('true');
+		await fireEvent.click(btn);
+		expect(r.container.querySelector<HTMLElement>('[data-pager]')!.dataset.page).toBe('art');
+		await fireEvent.click(btn);
+		expect(r.container.querySelector<HTMLElement>('[data-pager]')!.dataset.page).toBe('lyrics');
 		r.unmount();
 
 		answers['/v1/lyrics/track/9'] = { status: 200, body: { source: 'tags', synced: true, lines: [{ t: 0, text: '<img src=x onerror="globalThis.pwned=1">' }] } };

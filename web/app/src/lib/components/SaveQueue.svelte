@@ -16,6 +16,7 @@
 	let {
 		tracks = [],
 		full = false,
+		button = true,
 		onsaved,
 		onopen,
 	}: {
@@ -23,6 +24,8 @@
 		tracks?: readonly { album?: unknown }[];
 		/** A full-width button (in a sheet or side panel). */
 		full?: boolean;
+		/** Its own button; without one, a menu calls `start()` when `available()`. */
+		button?: boolean;
 		/** Say it was saved (the caller shows its own message); otherwise shown here. */
 		onsaved?: (p: SavedPlaylist) => void;
 		/** The playlist is about to be opened (a sheet can close itself). */
@@ -39,7 +42,12 @@
 
 	const shown = $derived(app.isAdmin && serverFeatures.saveQueue && !!app.playerId);
 
-	function start() {
+	/** Offered here: admins only, and only when the gateway can. */
+	export function available(): boolean {
+		return shown;
+	}
+
+	export function start() {
 		suggestion = suggestPlaylistName(tracks);
 		open = true;
 	}
@@ -60,7 +68,7 @@
 	}
 </script>
 
-{#if shown}
+{#if shown && button}
 	<button class="btn" class:full onclick={start} aria-haspopup="dialog" data-save-queue><Icon name="plus" size={18} />Save as playlist</button>
 {/if}
 {#if open && app.playerId}

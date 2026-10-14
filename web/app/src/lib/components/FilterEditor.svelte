@@ -183,7 +183,7 @@
 				<div class="rule" data-rule={f} role="group" aria-labelledby={`rule-${f}`}>
 					<div class="rule-head">
 						<h3 id={`rule-${f}`}>{FIELD_LABELS[f]}</h3>
-						<button type="button" class="icon-btn" aria-label={`Remove the ${FIELD_LABELS[f].toLowerCase()} rule`} onclick={() => removeRule(f)} data-rule-remove={f}><Icon name="close" size={16} /></button>
+						<button type="button" class="icon-btn" aria-label={`Remove the ${FIELD_LABELS[f].toLowerCase()} rule`} onclick={() => removeRule(f)} data-rule-remove={f}><Icon name="minus" size={16} /></button>
 					</div>
 					{#if f === 'genre'}
 						<p class="muted small" id="genre-count" aria-live="polite">{picked.length} of up to {FILTER_LIMITS.genresMax} chosen</p>

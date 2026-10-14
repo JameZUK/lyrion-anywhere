@@ -1,7 +1,8 @@
-// Player-first (SPEC D20): the small output button by the volume opens "Play on…", which
-// lists this device (ticked when in use) and the other players with what each is playing;
-// each other player can be controlled or have playback moved to it. While another player is
-// in use, a strip says so and offers one tap back.
+// Player-first (SPEC D20): the output button opens "Play on…", which lists this device (ticked
+// when in use) and the other players with what each is playing. Wave 3.5: tapping a row plays
+// on that player; moving the playback there is in the row's ⋯; the mini player says which
+// player is in use ("on Lounge"), and the old "Playing on" strip shows only while playback
+// is moving.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
@@ -10,6 +11,8 @@ const fake = await import('./helpers/fake-app.svelte');
 const { default: OutputButton } = await import('$lib/components/OutputButton.svelte');
 const { default: PlayerSwitcher } = await import('$lib/components/PlayerSwitcher.svelte');
 const { default: PlayingElsewhere } = await import('$lib/components/PlayingElsewhere.svelte');
+const { default: PlayerBar } = await import('$lib/components/PlayerBar.svelte');
+const { choose, openMenu } = await import('./helpers/menu');
 const { device } = await import('$lib/player/device.svelte');
 
 const ME = '02:4c:41:00:00:01';
@@ -71,39 +74,42 @@ test('this device first, ticked when in use; other players show what they play',
 	expect(rows[0]!.querySelector('[aria-current="true"]')).not.toBeNull();
 	expect(r.getAllByRole('img', { name: 'In use' })).toHaveLength(1);
 	// This device's own player is not listed again among the others.
-	expect(r.queryByRole('button', { name: 'Control Firefox on Linux' })).toBeNull();
+	expect(r.queryByRole('button', { name: /^Play on Firefox on Linux/ })).toBeNull();
 	await waitFor(() => expect(r.container.textContent).toContain('Playing So What · Miles Davis'));
 	expect(r.container.textContent).toContain('Off');
 });
 
-test('Control switches to the player and closes; nothing is moved', async () => {
+test('tapping a row plays on that player and closes; nothing is moved', async () => {
 	const onclose = vi.fn();
 	const r = render(PlayerSwitcher, { onclose });
-	await fireEvent.click(r.getByRole('button', { name: 'Control Lounge' }));
+	await fireEvent.click(r.getByRole('button', { name: 'Play on Lounge' }));
 	expect(fake.app.playerId).toBe(LOUNGE);
 	expect(onclose).toHaveBeenCalled();
 	expect(fake.moves).toEqual([]);
 });
 
-test('Move here moves playback from the player in use to that one', async () => {
+test('a row’s ⋯ › Move playback to … moves playback from the player in use to that one', async () => {
 	const r = render(PlayerSwitcher, { onclose: () => {} });
-	await fireEvent.click(r.getByRole('button', { name: 'Move playback to Study' }));
+	// One trailing control per row: no Move pill, the action is in the menu.
+	expect(r.queryByRole('button', { name: /^Move/ })).toBeNull();
+	await choose('More options for Study', 'Move playback to Study', r.container);
 	await waitFor(() => expect(fake.moves).toEqual([{ source: ME, target: STUDY, name: 'Study' }]));
 });
 
-test('nothing queued: nothing to move, so no Move here', async () => {
+test('nothing queued: nothing to move, so no row menus', async () => {
 	fake.app.now = { mode: 'stop', playlist_tracks: 0 };
 	const r = render(PlayerSwitcher, { onclose: () => {} });
 	await tick();
-	expect(r.queryAllByRole('button', { name: /^Move playback/ })).toHaveLength(0);
-	expect(r.queryByRole('button', { name: 'Bring playback to this device' })).toBeNull();
+	expect(r.queryAllByRole('button', { name: /^More options for/ })).toHaveLength(0);
+	// And no explanatory paragraph either.
+	expect(r.container.textContent).not.toMatch(/carries on there from the same point/);
 });
 
-test('controlling another player: this device offers to bring the playback here', async () => {
+test('controlling another player: this device’s ⋯ moves the playback here', async () => {
 	fake.app.playerId = LOUNGE;
 	const r = render(PlayerSwitcher, { onclose: () => {} });
-	expect(r.queryByRole('button', { name: 'Move playback to Lounge' }), 'not to itself').toBeNull();
-	await fireEvent.click(r.getByRole('button', { name: 'Bring playback to this device' }));
+	expect(r.queryByRole('button', { name: 'More options for Lounge' }), 'not to itself').toBeNull();
+	await choose('More options for this device', 'Move playback to this device', r.container);
 	await waitFor(() => expect(fake.moves).toEqual([{ source: LOUNGE, target: ME, name: 'this device' }]));
 });
 
@@ -111,7 +117,7 @@ test('choosing this device starts its player if it is not running', async () => 
 	fake.app.playerId = LOUNGE;
 	device.state = 'off';
 	const r = render(PlayerSwitcher, { onclose: () => {} });
-	await fireEvent.click(r.getByRole('button', { name: /This device/ }));
+	await fireEvent.click(r.getByRole('button', { name: /^Play on this device/ }));
 	expect(fake.app.playerId).toBe(ME);
 	expect(start).toHaveBeenCalledTimes(1);
 });
@@ -122,10 +128,10 @@ test("a browser that can't play: this device can't be chosen, and says why", asy
 	vi.stubGlobal('ManagedMediaSource', undefined);
 	fake.app.playerId = LOUNGE;
 	const r = render(PlayerSwitcher, { onclose: () => {} });
-	const here = r.getByRole('button', { name: /This device/ }) as HTMLButtonElement;
+	const here = r.getByRole('button', { name: /^Play on this device/ }) as HTMLButtonElement;
 	expect(here.disabled).toBe(true);
 	expect(here.textContent).toContain("can't play music itself");
-	expect(r.queryByRole('button', { name: 'Bring playback to this device' })).toBeNull();
+	expect(r.queryByRole('button', { name: 'More options for this device' })).toBeNull();
 });
 
 test('hostile player names and titles stay text', async () => {
@@ -138,50 +144,60 @@ test('hostile player names and titles stay text', async () => {
 	expect(r.container.textContent).toContain('<img src=x onerror=alert(1)>');
 });
 
-describe('the "Playing on …" strip', () => {
-	test('hidden while this device is in use', () => {
-		const r = render(PlayingElsewhere);
+describe('which player is in use (Wave 3.5: no "Playing on" strip)', () => {
+	test('this device in use: the mini player names no player, and no strip shows', () => {
+		const r = render(PlayerBar);
+		expect(r.container.querySelector('[data-mini-on]')).toBeNull();
 		expect(r.container.querySelector('[data-strip]')).toBeNull();
 	});
 
-	test('names the other player, with one tap back to this device', async () => {
+	test('another player: the mini player says "on Lounge", first on its line; still no strip', () => {
 		fake.app.playerId = LOUNGE;
-		const r = render(PlayingElsewhere);
-		expect(r.getByRole('status').textContent).toContain('Playing on Lounge');
-		await fireEvent.click(r.getByRole('button', { name: 'Back to this device' }));
-		expect(fake.app.playerId).toBe(ME);
-		expect(start, 'already running: not started again').not.toHaveBeenCalled();
-		expect(fake.moves).toEqual([]);
-	});
-
-	test('Bring here moves the playback to this device', async () => {
-		fake.app.playerId = LOUNGE;
-		const r = render(PlayingElsewhere);
-		await fireEvent.click(r.getByRole('button', { name: 'Bring playback to this device' }));
-		await waitFor(() => expect(fake.moves).toEqual([{ source: LOUNGE, target: ME, name: 'this device' }]));
+		fake.app.now = { mode: 'play', playlist_tracks: 6, playlist_loop: [{ title: 'So What', artist: 'Miles Davis', album: 'Kind of Blue' }] };
+		const r = render(PlayerBar);
+		const on = r.container.querySelector('[data-mini-on]')!;
+		expect(on.textContent).toBe('on Lounge');
+		expect(on.parentElement!.textContent!.trim()).toBe('on Lounge · Miles Davis · Kind of Blue');
+		expect(r.getByRole('link', { name: /^Now playing: So What, on Lounge/ })).toBeTruthy();
+		expect(r.container.querySelector('[data-strip]')).toBeNull();
+		expect(r.queryByRole('button', { name: /Bring|Back to this device/ })).toBeNull();
 	});
 
 	test('a group is named by its members', () => {
 		fake.app.playerId = LOUNGE;
 		fake.app.now = { mode: 'play', playlist_tracks: 2, sync_master: LOUNGE, sync_slaves: STUDY };
-		const r = render(PlayingElsewhere);
-		expect(r.getByRole('status').textContent).toContain('Playing on Lounge + Study');
+		const r = render(PlayerBar);
+		expect(r.container.querySelector('[data-mini-on]')!.textContent).toBe('on Lounge + Study');
 	});
 
-	test('while moving, it says where to', () => {
+	test('no player chosen: the mini player says so, and how to choose one', () => {
+		fake.app.playerId = '';
+		fake.app.now = null;
+		const r = render(PlayerBar);
+		expect(r.container.querySelector('.title')!.textContent).toBe('No player chosen');
+		expect(r.container.querySelector('.sub')!.textContent).toContain('Choose a player');
+	});
+
+	test('the strip shows only while playback is moving, and says where to', () => {
+		fake.app.playerId = LOUNGE;
+		let r = render(PlayingElsewhere);
+		expect(r.container.querySelector('[data-strip]')).toBeNull();
+		r.unmount();
 		fake.app.moving = 'Study';
-		const r = render(PlayingElsewhere);
+		r = render(PlayingElsewhere);
 		expect(r.getByRole('status').textContent).toContain('Moving playback to Study…');
+		expect(r.queryAllByRole('button')).toHaveLength(0);
 		fake.app.moving = '';
 	});
 
-	test("a browser that can't play: no offer to come back here", () => {
-		vi.stubGlobal('AudioWorkletNode', undefined);
-		vi.stubGlobal('MediaSource', undefined);
-		vi.stubGlobal('ManagedMediaSource', undefined);
+	test('what the strip offered is in Play on…: back to this device, and moving the playback here', async () => {
 		fake.app.playerId = LOUNGE;
-		const r = render(PlayingElsewhere);
-		expect(r.getByRole('status').textContent).toContain('Playing on Lounge');
-		expect(r.queryAllByRole('button')).toHaveLength(0);
+		const r = render(PlayerSwitcher, { onclose: () => {} });
+		const menu = await openMenu('More options for this device', r.container);
+		expect(menu.textContent).toContain('Move playback to this device');
+		await fireEvent.keyDown(menu, { key: 'Escape' });
+		await fireEvent.click(r.getByRole('button', { name: /^Play on this device/ }));
+		expect(fake.app.playerId).toBe(ME);
+		expect(fake.moves).toEqual([]);
 	});
 });

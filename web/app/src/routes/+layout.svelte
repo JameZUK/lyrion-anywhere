@@ -256,7 +256,7 @@
 					</a>
 				{/each}
 			</nav>
-			<main class="content" class:has-strip={app.remote && !offlinePlayer.active} class:on-np={path === '/' && !offlinePlayer.active}>
+			<main class="content" class:has-strip={!!app.moving && !offlinePlayer.active} class:on-np={path === '/' && !offlinePlayer.active}>
 				{#if heldBack}
 					<button class="banner resume tap" onclick={() => {}}>
 						<Icon name="play" size={16} /><span>Playing on this device. Tap here (or anywhere) to turn the sound on.</span>
@@ -402,13 +402,17 @@
 		position: relative;
 		isolation: isolate;
 	}
-	/* Room for the "Playing on …" strip above the player bar. Now playing shows the strip
-	   itself, so the bar's is hidden there. */
+	/* Room for the "Moving playback…" strip above the player bar, while it shows. */
 	.content.has-strip:not(.on-np) {
 		padding-bottom: calc(var(--bar-h) + var(--tabs-h) + var(--strip-h) + 1rem);
 	}
-	.barwrap.on-np :global(.bar > .strip) {
+	/* Now playing has its own transport, seek, volume and Play on at every width: no second
+	   one in the player bar under it (Wave 3.5). */
+	.barwrap.on-np {
 		display: none;
+	}
+	.content.on-np {
+		padding-bottom: calc(var(--tabs-h) + 1rem);
 	}
 	.banner {
 		margin: 1rem clamp(1rem, 3vw, 2.5rem) 0;

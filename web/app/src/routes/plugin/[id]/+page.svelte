@@ -42,7 +42,7 @@
 <section class="page">
 	<BackButton parent="/apps" />
 	{#if !app.playerId}
-		<p class="muted">Choose a player first: plugins browse and play for a player.</p>
+		<p class="muted">No player chosen. Choose a player with Play on: plugins browse and play for a player.</p>
 	{:else if status === 'loading'}
 		<p class="muted">Loading…</p>
 	{:else if status === 'error'}

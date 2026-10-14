@@ -5,6 +5,12 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/sve
 import type { FilterSpec, SmartFilter } from '$lib/api/filters';
 import * as L from '$lib/home/layout';
 
+/** A row's or page's ⋯ (Wave 3.5): open it, then choose an item. */
+async function choose(trigger: HTMLElement, item: string) {
+	await fireEvent.click(trigger);
+	const menu = document.getElementById(trigger.getAttribute('aria-controls')!)!;
+	await fireEvent.click(within(menu).getByRole('menuitem', { name: item }));
+}
 vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const params: Record<string, string> = { id: '3' };
 vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/') } }));
@@ -228,7 +234,7 @@ describe('the Filters chip in Library', () => {
 
 	test('edit replaces the filter', async () => {
 		render(FiltersView);
-		await fireEvent.click(await screen.findByRole('button', { name: 'Edit Late jazz' }));
+		await choose(await screen.findByRole('button', { name: 'More options for Late jazz' }), 'Edit');
 		await fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Early jazz' } });
 		await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 		await waitFor(() => expect(store.updated).toHaveLength(1));
@@ -239,12 +245,12 @@ describe('the Filters chip in Library', () => {
 
 	test('delete asks first; Cancel keeps it', async () => {
 		render(FiltersView);
-		await fireEvent.click(await screen.findByRole('button', { name: 'Delete Late jazz' }));
+		await choose(await screen.findByRole('button', { name: 'More options for Late jazz' }), 'Delete');
 		const confirm = screen.getByRole('alertdialog');
 		expect(within(confirm).getByText('Delete “Late jazz”?')).toBeTruthy();
 		await fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
 		expect(store.deleted).toEqual([]);
-		await fireEvent.click(screen.getByRole('button', { name: 'Delete Late jazz' }));
+		await choose(screen.getByRole('button', { name: 'More options for Late jazz' }), 'Delete');
 		await fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
 		await waitFor(() => expect(store.deleted).toEqual([3]));
 		await waitFor(() => expect(screen.queryByRole('link', { name: /Late jazz/ })).toBeNull());
@@ -253,14 +259,14 @@ describe('the Filters chip in Library', () => {
 	test('play loads the first albums through the album play path; shuffle turns shuffle on first', async () => {
 		store.albums = Array.from({ length: 70 }, (_, i) => 100 + i);
 		render(FiltersView);
-		await fireEvent.click(await screen.findByRole('button', { name: 'Play Late jazz' }));
+		await choose(await screen.findByRole('button', { name: 'More options for Late jazz' }), 'Play');
 		await waitFor(() => expect(sentPlay()).toHaveLength(50));
 		expect(store.asked[0]).toEqual([3, 0, 50]);
 		expect(sentPlay()[0]).toEqual(['playlistcontrol', 'cmd:load', 'album_id:100']);
 		expect(sentPlay()[49]).toEqual(['playlistcontrol', 'cmd:add', 'album_id:149']);
 		expect(fake.calls.every((c) => c.player === PLAYER)).toBe(true);
 		fake.calls.length = 0;
-		await fireEvent.click(screen.getByRole('button', { name: 'Shuffle Late jazz' }));
+		await choose(screen.getByRole('button', { name: 'More options for Late jazz' }), 'Shuffle');
 		await waitFor(() => expect(sentPlay()).toHaveLength(51));
 		expect(sentPlay()[0]).toEqual(['playlist', 'shuffle', 1]);
 	});
@@ -269,8 +275,8 @@ describe('the Filters chip in Library', () => {
 		fake.app.playerId = '';
 		store.albums = [1];
 		render(FiltersView);
-		await fireEvent.click(await screen.findByRole('button', { name: 'Play Late jazz' }));
-		await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/Choose a player/));
+		await choose(await screen.findByRole('button', { name: 'More options for Late jazz' }), 'Play');
+		await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/No player chosen/));
 		expect(sentPlay()).toEqual([]);
 	});
 

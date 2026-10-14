@@ -6,7 +6,18 @@
 	import { haptics } from '$lib/haptics/haptics.svelte';
 
 	// `compact`: narrower stars (36 × 44 px each, side by side), to share a row with a title.
-	let { track, size = 22, compact = false }: { track: number | null | undefined; size?: number; compact?: boolean } = $props();
+	// `toggle`: one button by the title on Now playing (Wave 3.5): a heart, or a star for those
+	// who rate in stars, on when the user's own rating is at least three stars; a tap loves the
+	// track (five stars) or clears the rating. The full 1–5 rating is in the track's ⋮ menu.
+	// `style`: the user's choice from Settings, unless given (the ⋮ menu always shows stars).
+	let {
+		track,
+		size = 22,
+		compact = false,
+		toggle = false,
+		style,
+	}: { track: number | null | undefined; size?: number; compact?: boolean; toggle?: boolean; style?: 'stars' | 'heart' } = $props();
+	const shape = $derived(style ?? ratings.style);
 	const uid = $props.id();
 
 	$effect(() => {
@@ -50,7 +61,20 @@
 </script>
 
 {#if track}
-	{#if ratings.style === 'heart'}
+	{#if toggle}
+		{@const on = (r?.mine ?? 0) >= 60}
+		<button
+			class="heart"
+			class:on
+			aria-pressed={on}
+			aria-label="Love this track"
+			title={on ? 'Loved. Tap to clear your rating' : 'Love this track'}
+			onclick={() => void set(on ? 0 : 100)}
+			data-rating-toggle={shape}
+		>
+			<svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true"><path d={shape === 'heart' ? HEART : STAR} /></svg>
+		</button>
+	{:else if shape === 'heart'}
 		<button
 			class="heart"
 			class:on={(r?.mine ?? 0) >= 60}

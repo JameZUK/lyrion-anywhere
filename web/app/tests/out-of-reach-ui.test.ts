@@ -1,7 +1,7 @@
 // Controls that need the server, while it is out of reach or busy (2026-10-14): disabled
-// consistently (Play and Download, LMS's More menus, Bring here and Back to this device), each
-// pointing at the connection message to say why; what works without the server (removing a
-// download) stays available.
+// consistently (Play, Shuffle and Download, the header's ⋯ items, LMS's More menus, moving
+// playback in Play on…), each pointing at the connection message to say why; what works
+// without the server (removing a download) stays available.
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import type { DownloadManager } from '$lib/offline/manager.svelte';
@@ -27,7 +27,8 @@ const offline = await import('$lib/offline/index.svelte');
 const downloads = offline.downloads as DownloadManager;
 const { device } = await import('$lib/player/device.svelte');
 const { default: TrackList } = await import('$lib/components/TrackList.svelte');
-const { default: PlayingElsewhere } = await import('$lib/components/PlayingElsewhere.svelte');
+const { default: PlayerSwitcher } = await import('$lib/components/PlayerSwitcher.svelte');
+const { openMenu } = await import('./helpers/menu');
 const { default: AlbumPage } = await import('../src/routes/album/[id]/+page.svelte');
 
 const ME = '02:4c:41:00:00:01';
@@ -85,27 +86,44 @@ describe('the album page', () => {
 		return r;
 	}
 
-	test('in reach: Play, More and Download all work, and say nothing extra', async () => {
+	const HEADER = 'More options for Record';
+
+	test('in reach: Play, Shuffle, Download and the ⋯ items all work, and say nothing extra', async () => {
 		await open();
-		for (const name of ['Play', 'More', 'Download']) {
+		for (const name of ['Play', 'Shuffle', 'Download']) {
 			const b = screen.getByRole('button', { name }) as HTMLButtonElement;
 			expect(b.disabled, name).toBe(false);
 			expect(b.getAttribute('aria-describedby'), name).toBeNull();
 		}
+		const menu = await openMenu(HEADER);
+		for (const item of menu.querySelectorAll('[role=menuitem]')) {
+			expect(item.getAttribute('aria-disabled'), item.textContent!).toBeNull();
+			expect(item.getAttribute('aria-describedby'), item.textContent!).toBeNull();
+		}
 	});
 
-	test('out of reach: Play, Play next, Add, More, Download and the format are all disabled, and say why', async () => {
+	test('out of reach: Play, Shuffle, Download, and Play next, Add, Download as… and More… in ⋯, are all unavailable, and say why', async () => {
 		fake.app.reach = 'unreachable';
 		await open();
-		for (const name of ['Play', 'Play next', 'Add to queue', 'More', 'Download']) {
+		for (const name of ['Play', 'Shuffle', 'Download']) {
 			const b = screen.getByRole('button', { name }) as HTMLButtonElement;
 			expect(b.disabled, name).toBe(true);
 			explained(b);
 		}
-		expect((screen.getByLabelText('Download format') as HTMLSelectElement).disabled).toBe(true);
+		// The ⋯ itself still opens: its items say what can't be done now.
+		const menu = await openMenu(HEADER);
+		const items = [...menu.querySelectorAll<HTMLElement>('[role=menuitem]')];
+		expect(items.map((i) => i.textContent?.trim())).toEqual(['Play next', 'Add to queue', 'Download as…', 'More…']);
+		for (const i of items) {
+			expect(i.getAttribute('aria-disabled'), i.textContent!).toBe('true');
+			explained(i);
+		}
 		(screen.getByRole('button', { name: 'Download' }) as HTMLButtonElement).click();
+		for (const i of items) await fireEvent.click(i);
 		await tick();
 		expect(downloads.items).toEqual([]);
+		expect(document.querySelector('dialog')).toBeNull();
+		expect(fake.calls.filter((c) => c.cmd[0] === 'playlistcontrol' || c.cmd[0] === 'playlist')).toEqual([]);
 	});
 
 	test("out of reach: the track menu's Download and More… are unavailable and say why; nothing happens", async () => {
@@ -130,8 +148,10 @@ describe('the album page', () => {
 	test('busy counts the same as out of reach', async () => {
 		fake.app.reach = 'busy';
 		await open();
-		const more = screen.getByRole('button', { name: 'More' }) as HTMLButtonElement;
-		expect(more.disabled).toBe(true);
+		expect((screen.getByRole('button', { name: 'Play' }) as HTMLButtonElement).disabled).toBe(true);
+		const menu = await openMenu(HEADER);
+		const more = [...menu.querySelectorAll('[role=menuitem]')].find((i) => i.textContent?.trim() === 'More…')!;
+		expect(more.getAttribute('aria-disabled')).toBe('true');
 		expect(more.getAttribute('aria-describedby')).toBe(CONNECTION_ID);
 	});
 });
@@ -148,22 +168,24 @@ describe('the track menu', () => {
 	});
 });
 
-describe('the "Playing on …" strip', () => {
-	test('in reach: Bring here and Back to this device work', () => {
-		render(PlayingElsewhere);
-		for (const name of ['Bring playback to this device', 'Back to this device']) {
-			expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(false);
-		}
+describe('moving playback in Play on… (it took over from the "Playing on" strip)', () => {
+	test('in reach: moving playback to this device works', async () => {
+		const r = render(PlayerSwitcher, { onclose: () => {} });
+		const menu = await openMenu('More options for this device', r.container);
+		const move = menu.querySelector('[role=menuitem]')!;
+		expect(move.textContent).toContain('Move playback to this device');
+		expect(move.getAttribute('aria-disabled')).toBeNull();
 	});
 
-	test('out of reach: both are disabled (they need the server), say why, and do nothing', async () => {
+	test('out of reach: moving playback is unavailable (it needs the server), says why, and does nothing', async () => {
 		fake.app.reach = 'unreachable';
-		render(PlayingElsewhere);
-		for (const name of ['Bring playback to this device', 'Back to this device']) {
-			const b = screen.getByRole('button', { name }) as HTMLButtonElement;
-			expect(b.disabled).toBe(true);
-			explained(b);
-			b.click(); // as a browser does: nothing, for a disabled button
+		const r = render(PlayerSwitcher, { onclose: () => {} });
+		for (const trigger of ['More options for this device']) {
+			const menu = await openMenu(trigger, r.container);
+			const move = menu.querySelector<HTMLElement>('[role=menuitem]')!;
+			expect(move.getAttribute('aria-disabled')).toBe('true');
+			explained(move);
+			await fireEvent.click(move);
 			await tick();
 		}
 		expect(fake.app.playerId).toBe(LOUNGE);

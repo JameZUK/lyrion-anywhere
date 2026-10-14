@@ -169,7 +169,9 @@ describe('every library play action uses the helper', () => {
 	const users = files.filter((f) => PLAYS.test(readFileSync(f, 'utf8')) && !f.includes(`go${'/'}[action]`));
 
 	test('found the call sites', () => {
-		expect(users.length).toBeGreaterThanOrEqual(14);
+		// Fewer since Wave 3.5: album, artist, genre, year and folder headers share PageActions.
+		expect(users.length).toBeGreaterThanOrEqual(12);
+		expect(users.some((f) => f.endsWith('PageActions.svelte'))).toBe(true);
 	});
 
 	test.each(users.map((f) => [f.slice(root.length + 1), f]))('%s', (_name, f) => {

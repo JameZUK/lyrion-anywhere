@@ -171,8 +171,8 @@ h2 {
 		min-height: 44px;
 	}
 }
-/* Now playing on phones: the bottom row of actions (Sleep, Queue, Visualiser, Volume), each
-   an icon over a short label, at least 52 px tall and a quarter of the row wide. */
+/* Now playing on phones: the bottom row of actions (Play on, Lyrics, Queue), each
+   an icon over a short label, at least 52 px tall and a third of the row wide. */
 .np-act {
 	display: grid;
 	justify-items: center;
