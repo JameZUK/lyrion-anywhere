@@ -2,6 +2,16 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Android: four layout fixes
+
+Found by a rendered review of every screen at phone, small-phone and tablet sizes:
+
+- **Queue heading:** with *Save as playlist* offered, the heading was squeezed into one letter per line. It now stays on one line (ellipsised if it must), and the buttons that don't fit move into a ⋮ menu (*More queue actions*), with their labels. Clearing still asks first.
+- **Connection line on Now playing:** the blurred cover behind Now playing spread past its edges and painted over *Can’t reach your server…* and the busy line. The background is now clipped to its bounds, and the line draws above the page.
+- **Album and playlist headers:** the five header buttons wrapped, leaving ⋮ on a line of its own. The row no longer wraps: Play, Shuffle and ⋮ always show; Add to queue and Download move into the ⋮ when there isn't room (its last item, *More…*, opens the usual options).
+- **Library chips:** a chosen chip off the edge (*Downloaded*, say) is now scrolled into view.
+- **Tests:** `LayoutFixesTests` (the heading is one line at phone and pane widths with every action reachable, a menu action still asks first, the ⋮ stays on the Play row at 379, 328 and 300 dp, moved actions work from the menu, nothing moves on a wide screen, the connection line keeps its colour over the ambient cover, the cover doesn't paint outside its bounds, and the chosen chip is wholly on screen, also after choosing another). Each failed before the fix.
+
 ## 2026-10-14: Android 1.13.0 (versionCode 27)
 
 A test build: with the server out of reach, controls that can't work are greyed out (Now playing, mini player, queue, notification, lock screen, Android Auto); on this phone's player, play and pause still work, and next, previous, a queue row and seeking work for tracks the phone has whole, playing on from its own copies; queue rows are marked *Downloaded* or *On this device*; the connection message is one line at the top that never covers the controls; back online, LMS picks up where the phone is if its queue hasn't changed. Includes the airplane-mode freeze fix from 1.12.1.

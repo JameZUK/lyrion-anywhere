@@ -35,6 +35,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import io.github.jamezuk.lyrionanywhere.data.offline.ConnectionUi
 import io.github.jamezuk.lyrionanywhere.ui.R
 
@@ -89,7 +90,8 @@ fun ConnectionFrame(
     content: @Composable () -> Unit,
 ) {
     Column(modifier) {
-        if (message != null) ConnectionLine(message, onDownloads, Modifier.statusBarsPadding())
+        // Drawn above the content, so nothing the page paints past its edge can hide it.
+        if (message != null) ConnectionLine(message, onDownloads, Modifier.zIndex(1f).statusBarsPadding())
         Box(
             Modifier
                 .weight(1f)

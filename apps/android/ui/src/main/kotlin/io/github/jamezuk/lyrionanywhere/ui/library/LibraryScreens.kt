@@ -7,7 +7,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,6 +28,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.DownloadDone
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -81,6 +82,8 @@ import io.github.jamezuk.lyrionanywhere.core.Artist
 import io.github.jamezuk.lyrionanywhere.core.Placement
 import io.github.jamezuk.lyrionanywhere.core.Track
 import io.github.jamezuk.lyrionanywhere.ui.R
+import io.github.jamezuk.lyrionanywhere.ui.components.OverflowRow
+import io.github.jamezuk.lyrionanywhere.ui.components.RowAction
 import io.github.jamezuk.lyrionanywhere.ui.components.ArtworkImage
 import io.github.jamezuk.lyrionanywhere.ui.components.EmptyState
 import io.github.jamezuk.lyrionanywhere.ui.components.ErrorState
@@ -307,7 +310,11 @@ fun ArtistList(
     }
 }
 
-/** Play, Shuffle, Add to queue and More, for an album, artist, playlist or genre. */
+/**
+ * Play, Shuffle, Add to queue, Download and More, for an album, artist, playlist or genre. One
+ * row that never wraps: Play, Shuffle and ⋮ always show; Add to queue and Download move into
+ * the ⋮ (with their labels) when the row is too narrow for them.
+ */
 @Composable
 fun PlayButtons(
     onPlay: (Placement) -> Unit,
@@ -319,33 +326,54 @@ fun PlayButtons(
     onDownload: (() -> Unit)? = null,
     downloadMark: io.github.jamezuk.lyrionanywhere.ui.offline.DownloadMark = io.github.jamezuk.lyrionanywhere.ui.offline.DownloadMark.NONE,
 ) {
-    FlowRow(
-        modifier,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Button(onClick = { onPlay(Placement.PLAY_NOW) }) {
-            Icon(Icons.Outlined.PlayArrow, contentDescription = null)
-            Text(stringResource(playLabel), Modifier.padding(start = 4.dp))
-        }
-        if (onShuffle != null) {
-            FilledTonalButton(onClick = onShuffle) {
-                Icon(Icons.Outlined.Shuffle, contentDescription = null)
-                Text(stringResource(R.string.shuffle), Modifier.padding(start = 4.dp))
-            }
-        }
-        IconButton(onClick = { onPlay(Placement.ADD_TO_QUEUE) }) {
-            Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, contentDescription = stringResource(R.string.action_add_to_queue))
-        }
+    val addLabel = stringResource(R.string.action_add_to_queue)
+    val actions = buildList {
+        add(
+            RowAction(addLabel, Icons.AutoMirrored.Outlined.PlaylistAdd, { onPlay(Placement.ADD_TO_QUEUE) }, tag = "play-buttons-add") {
+                IconButton(onClick = { onPlay(Placement.ADD_TO_QUEUE) }) {
+                    Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, contentDescription = addLabel)
+                }
+            },
+        )
         if (onDownload != null) {
-            io.github.jamezuk.lyrionanywhere.ui.offline.DownloadButton(downloadMark, onDownload)
-        }
-        if (onMore != null) {
-            IconButton(onClick = onMore) {
-                Icon(Icons.Outlined.MoreVert, contentDescription = stringResource(R.string.action_more))
-            }
+            val all = downloadMark == io.github.jamezuk.lyrionanywhere.ui.offline.DownloadMark.ALL
+            val label = stringResource(
+                when (downloadMark) {
+                    io.github.jamezuk.lyrionanywhere.ui.offline.DownloadMark.ALL -> R.string.downloaded
+                    io.github.jamezuk.lyrionanywhere.ui.offline.DownloadMark.SOME -> R.string.download_rest
+                    io.github.jamezuk.lyrionanywhere.ui.offline.DownloadMark.NONE -> R.string.action_download
+                },
+            )
+            add(
+                RowAction(label, if (all) Icons.Outlined.DownloadDone else Icons.Outlined.Download, onDownload, tag = "play-buttons-download") {
+                    io.github.jamezuk.lyrionanywhere.ui.offline.DownloadButton(downloadMark, onDownload)
+                },
+            )
         }
     }
+    OverflowRow(
+        actions = actions,
+        menuLabel = stringResource(R.string.action_more),
+        menuTag = "play-buttons-more",
+        modifier = modifier,
+        spacing = 8.dp,
+        pinned = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { onPlay(Placement.PLAY_NOW) }) {
+                    Icon(Icons.Outlined.PlayArrow, contentDescription = null)
+                    Text(stringResource(playLabel), Modifier.padding(start = 4.dp))
+                }
+                if (onShuffle != null) {
+                    FilledTonalButton(onClick = onShuffle) {
+                        Icon(Icons.Outlined.Shuffle, contentDescription = null)
+                        Text(stringResource(R.string.shuffle), Modifier.padding(start = 4.dp))
+                    }
+                }
+            }
+        },
+        onMore = onMore,
+        moreLabel = stringResource(R.string.action_more_item),
+    )
 }
 
 /** A page header tinted by the artwork's colours: art, kind, title, lines, buttons. */
@@ -701,11 +729,13 @@ fun ArtistScreen(
 }
 
 @Composable
-fun SectionHeader(text: String, modifier: Modifier = Modifier) {
+fun SectionHeader(text: String, modifier: Modifier = Modifier, maxLines: Int = Int.MAX_VALUE) {
     Text(
         text,
         style = MaterialTheme.typography.titleSmall,
         color = MaterialTheme.colorScheme.primary,
+        maxLines = maxLines,
+        overflow = TextOverflow.Ellipsis,
         modifier = modifier
             .padding(start = 16.dp, top = 16.dp, bottom = 4.dp)
             .semantics { heading() },
