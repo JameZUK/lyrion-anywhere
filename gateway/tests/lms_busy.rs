@@ -117,11 +117,16 @@ async fn a_blocked_lms_is_reported_requests_are_refused_at_once_and_recovery_is_
         S::OK
     );
     // Only the stuck request, the watchdog's probe and the last request reached LMS: the
-    // refused one never did.
-    let reached: Vec<String> = h.lms.rpc_calls()[sent_before..]
-        .iter()
-        .map(|p| p[1][0].as_str().unwrap_or("").to_string())
-        .collect();
+    // refused one never did. (The fake records a call once it answers it, and the probe may
+    // still be waking from the freeze when the others are done.)
+    let commands = |from: usize| -> Vec<String> {
+        h.lms.rpc_calls()[from..]
+            .iter()
+            .map(|p| p[1][0].as_str().unwrap_or("").to_string())
+            .collect()
+    };
+    wait_for(|| commands(sent_before).iter().any(|c| c == "serverstatus")).await;
+    let reached = commands(sent_before);
     assert_eq!(
         reached.iter().filter(|c| *c == "albums").count(),
         2,
