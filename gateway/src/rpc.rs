@@ -180,6 +180,19 @@ fn error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
+/// 503 while LMS is blocked (see [`crate::lms_health`]): the client retries shortly.
+pub(crate) fn busy() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(
+            header::RETRY_AFTER,
+            crate::lms_health::RETRY_AFTER_SECS.to_string(),
+        )],
+        Json(json!({ "error": "music server is busy", "busy": true })),
+    )
+        .into_response()
+}
+
 pub async fn rpc(
     State(gw): State<AppState>,
     headers: HeaderMap,
@@ -243,6 +256,11 @@ pub async fn rpc(
     {
         warn!(user = %principal.username, cmd = %summary(&req.cmd), "admin-only plugin denied");
         return error(StatusCode::FORBIDDEN, "this plugin is for admins only");
+    }
+
+    // LMS is blocked: say so at once rather than pile another request up inside it.
+    if gw.lms_health().is_busy() {
+        return busy();
     }
 
     match gw.lms_rpc(&checked).await {
@@ -482,6 +500,7 @@ impl crate::Gateway {
         limit: Duration,
     ) -> Result<Value, LmsFailure> {
         let body = json!({ "id": 1, "method": "slim.request", "params": [player, cmd] });
+        let _waiting = self.lms_health.sent();
         let exchange = async {
             let resp = self
                 .http
@@ -491,6 +510,8 @@ impl crate::Gateway {
                 .send()
                 .await
                 .map_err(|e| LmsFailure::from_reqwest(&e))?;
+            // Any answer at all means LMS isn't blocked.
+            self.lms_health.answered();
             let status = resp.status();
             if !status.is_success() {
                 return Err(LmsFailure {
@@ -521,6 +542,15 @@ impl crate::Gateway {
         Ok(v.get("result").cloned().unwrap_or_else(|| json!({})))
     }
 
+    /// The cheapest question for LMS, asked while it seems blocked: its answer ends the stall.
+    pub(crate) async fn lms_probe(&self) -> Result<Value, String> {
+        self.lms_command(
+            "",
+            &["serverstatus".to_string(), "0".to_string(), "0".to_string()],
+        )
+        .await
+    }
+
     /// Re-read the app and radio menus from LMS to learn their commands.
     pub(crate) async fn refresh_apps(&self) {
         *self.apps_refreshed.lock().unwrap() = Some(std::time::Instant::now());
@@ -533,11 +563,15 @@ impl crate::Gateway {
     }
 
     /// At most one refresh a minute, so unknown commands can't be used to hammer LMS.
+    /// Whether the app menus may be re-read now: not more than once a minute, and never
+    /// while LMS is blocked (the refusal it would delay is given at once instead).
     pub(crate) fn may_refresh_apps(&self) -> bool {
-        self.apps_refreshed
-            .lock()
-            .unwrap()
-            .is_none_or(|t| t.elapsed() > Duration::from_secs(60))
+        !self.lms_health.is_busy()
+            && self
+                .apps_refreshed
+                .lock()
+                .unwrap()
+                .is_none_or(|t| t.elapsed() > Duration::from_secs(60))
     }
 }
 

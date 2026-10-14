@@ -130,6 +130,18 @@ fn auth_quality(text: &str) -> crate::live::Quality {
         .unwrap_or_default()
 }
 
+/// Whether text keepalives were asked for at sign-in (`"keepalive": true`). Anything else,
+/// including a malformed value, means no: only clients that understand them receive them.
+fn auth_keepalive(text: &str) -> bool {
+    if text.len() > MAX_AUTH_MESSAGE || !text.starts_with('{') {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("keepalive").and_then(serde_json::Value::as_bool))
+        .unwrap_or(false)
+}
+
 /// The resume grace asked for at sign-in (`"grace"`, whole seconds): `Ok(None)` when not
 /// asked (or for the bare-token form), `Err` for anything but an integer 0–3600 (a string,
 /// a fraction, a negative or too large a number, `null`, …), which is a policy violation.
@@ -182,13 +194,14 @@ async fn close(mut ws: WebSocket, code: u16, reason: &str) {
 
 async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
     let first = tokio::time::timeout(gw.cfg.auth_timeout, ws.recv()).await;
-    let (auth, quality, grace) = match first {
+    let (auth, quality, grace, text_keepalive) = match first {
         Ok(Some(Ok(Message::Text(t)))) => (
             parse_auth(&gw, t.as_str()),
             auth_quality(t.as_str()),
             auth_grace(t.as_str()),
+            auth_keepalive(t.as_str()),
         ),
-        _ => (None, Default::default(), Ok(None)),
+        _ => (None, Default::default(), Ok(None), false),
     };
     let Some(auth) = auth else {
         warn!("player authentication failed");
@@ -282,7 +295,16 @@ async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
     info!(device = %session.name(), user = %session.device.username, mac = %session.device.mac_string(), resumed, "player attached");
 
     let (sink, stream) = ws.split();
-    let mut writer = tokio::spawn(write_loop(sink, attached.rx, attached.kick.clone()));
+    let keepalive = Keepalive {
+        every: gw.cfg.player_keepalive,
+        text: text_keepalive,
+    };
+    let mut writer = tokio::spawn(write_loop(
+        sink,
+        attached.rx,
+        attached.kick.clone(),
+        keepalive,
+    ));
     let outcome = read_loop(&session, generation, stream, attached.kick).await;
     match outcome {
         ReadEnd::Policy(why) => {
@@ -343,7 +365,9 @@ async fn read_loop(
         let Some(msg) = msg else {
             return ReadEnd::SocketGone;
         };
-        if msg.is_ok() {
+        // A pong only answers the gateway's own keepalive ping (a browser sends it even
+        // while its scripts are suspended), so it says nothing about the player.
+        if msg.as_ref().is_ok_and(|m| !matches!(m, Message::Pong(_))) {
             session.heard_from(generation);
         }
         let data = match msg {
@@ -378,14 +402,29 @@ async fn read_loop(
 enum WriteStep {
     Send(Outbound),
     Kicked((u16, &'static str)),
+    Keepalive,
     Done,
 }
+
+/// The keepalives a player socket gets.
+struct Keepalive {
+    every: Duration,
+    /// Also as text (for clients that asked at sign-in).
+    text: bool,
+}
+
+/// The text keepalive: never a greeting (no `session`), never a frame (not binary).
+pub const KEEPALIVE_TEXT: &str = r#"{"keepalive":true}"#;
 
 async fn write_loop(
     mut sink: futures_util::stream::SplitSink<WebSocket, Message>,
     mut rx: mpsc::Receiver<Outbound>,
     mut kick: watch::Receiver<Kick>,
+    keepalive: Keepalive,
 ) {
+    let mut tick = tokio::time::interval(keepalive.every);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    tick.tick().await;
     loop {
         let step = tokio::select! {
             biased;
@@ -398,10 +437,37 @@ async fn write_loop(
                 },
             },
             k = kicked(&mut kick) => WriteStep::Kicked(k),
+            _ = tick.tick() => WriteStep::Keepalive,
         };
         let (code, reason) = match step {
             WriteStep::Done => return,
             WriteStep::Kicked(k) => k,
+            WriteStep::Keepalive => {
+                let mut msgs = vec![Message::Ping(Default::default())];
+                if keepalive.text {
+                    msgs.push(Message::Text(KEEPALIVE_TEXT.into()));
+                }
+                for m in msgs {
+                    let sent = tokio::select! {
+                        r = sink.send(m) => Ok(r),
+                        k = kicked(&mut kick) => Err(k),
+                    };
+                    match sent {
+                        Ok(Ok(())) => {}
+                        Ok(Err(_)) => return,
+                        Err(k) => {
+                            let close = Message::Close(Some(CloseFrame {
+                                code: k.0,
+                                reason: k.1.into(),
+                            }));
+                            let _ =
+                                tokio::time::timeout(CLOSE_SEND_TIMEOUT, sink.send(close)).await;
+                            return;
+                        }
+                    }
+                }
+                continue;
+            }
             WriteStep::Send(Outbound::Close(code, reason)) => (code, reason),
             WriteStep::Send(Outbound::Frame(f)) => {
                 let sent = tokio::select! {
@@ -428,6 +494,33 @@ async fn write_loop(
 mod tests {
     use super::*;
     use crate::live::Quality;
+
+    /// Text keepalives only for a client that asked with a real `true`: anything else (an
+    /// old client, a string, a number, a bare token, oversize or broken JSON) gets none.
+    #[test]
+    fn text_keepalives_only_when_asked_for() {
+        assert!(auth_keepalive(r#"{"token":"t","keepalive":true}"#));
+        for no in [
+            r#"{"token":"t"}"#,
+            r#"{"token":"t","keepalive":false}"#,
+            r#"{"token":"t","keepalive":"true"}"#,
+            r#"{"token":"t","keepalive":1}"#,
+            r#"{"token":"t","keepalive":null}"#,
+            r#"{"token":"t","keepalive":true"#,
+            "bare-token",
+        ] {
+            assert!(!auth_keepalive(no), "{no}");
+        }
+        let big = format!(
+            r#"{{"token":"{}","keepalive":true}}"#,
+            "x".repeat(MAX_AUTH_MESSAGE)
+        );
+        assert!(!auth_keepalive(&big));
+        // The keepalive can never be taken for a greeting or a control message.
+        let v: serde_json::Value = serde_json::from_str(KEEPALIVE_TEXT).unwrap();
+        assert!(v.get("session").is_none());
+        assert!(parse_control(KEEPALIVE_TEXT).is_none());
+    }
 
     #[test]
     fn control_messages() {

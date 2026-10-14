@@ -47,6 +47,7 @@ pub mod home;
 pub mod info;
 pub mod limits;
 pub mod live;
+pub mod lms_health;
 pub mod lyrics;
 pub mod menu_actions;
 pub mod plays;
@@ -126,6 +127,12 @@ pub struct Config {
     /// Ping interval on quiet WebSockets, so proxies with idle timeouts (Cloudflare drops
     /// after 100 s) keep them open.
     pub ws_keepalive: Duration,
+    /// Keepalive interval on player sockets: a ping, and for clients that ask at sign-in a
+    /// `{"keepalive":true}` text message (browsers don't show pings to scripts). It keeps a
+    /// client from giving up on a socket that is quiet only because LMS is blocked.
+    pub player_keepalive: Duration,
+    /// An LMS request unanswered this long means LMS is blocked (see [`lms_health`]).
+    pub lms_stall_after: Duration,
     /// The system ffmpeg for transcoded downloads (`None`: originals only).
     pub ffmpeg: Option<transcode::Ffmpeg>,
     /// Where transcodes are cached (`None`: no transcoding).
@@ -218,6 +225,8 @@ impl Default for Config {
             strip_flac_pictures: true,
             static_dir: None,
             ws_keepalive: Duration::from_secs(30),
+            player_keepalive: Duration::from_secs(5),
+            lms_stall_after: Duration::from_secs(4),
             ffmpeg: None,
             download_cache_dir: None,
             download_cache_bytes: 2048 * 1024 * 1024,
@@ -305,6 +314,8 @@ pub struct Gateway {
     info: info::InfoCache,
     /// Free slots for live Opus encodes.
     live_slots: Arc<tokio::sync::Semaphore>,
+    /// Whether LMS is answering (see [`lms_health`]).
+    lms_health: lms_health::LmsHealth,
 }
 
 /// Renames a device may make of itself per [`RENAME_WINDOW`] (`PATCH /v1/devices/self`).
@@ -345,7 +356,7 @@ impl Gateway {
             }
             _ => None,
         };
-        Arc::new(Gateway {
+        let gw = Arc::new(Gateway {
             accounts,
             http,
             sessions: Mutex::new(HashMap::new()),
@@ -381,8 +392,18 @@ impl Gateway {
             lyrics: Default::default(),
             info: Default::default(),
             live_slots: Arc::new(tokio::sync::Semaphore::new(cfg.live_transcode_jobs)),
+            lms_health: lms_health::LmsHealth::new(cfg.lms_stall_after),
             cfg,
-        })
+        });
+        // The watchdog needs a runtime; a gateway built outside one (some unit tests) has none.
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(lms_health::watch(Arc::downgrade(&gw)));
+        }
+        gw
+    }
+
+    pub fn lms_health(&self) -> &lms_health::LmsHealth {
+        &self.lms_health
     }
 
     /// The `ffmpeg` that can make Opus, if live streams may be re-encoded at all.

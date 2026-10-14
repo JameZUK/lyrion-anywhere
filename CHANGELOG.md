@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Riding out a blocked music server (gateway)
+
+LMS is one process, and when its music folder sits on network storage that has to spin its disks up, opening a track can block it completely for a minute. Every app then saw "music server unavailable", requests piled up inside LMS, and players dropped and reconnected every 20 seconds. The gateway now notices when LMS has left a request unanswered for 4 seconds and tells the apps (`{"lms":"busy"}` / `{"lms":"ok"}` on `/v1/events`). While LMS is busy it refuses new `/v1/rpc` requests at once with 503 and `Retry-After` instead of queueing them, and keeps one cheap request waiting so it knows the moment LMS is back. Player sockets now get a ping every 5 seconds, and web players that ask get a text keepalive, so they stay connected through the stall. A pong no longer counts as the player speaking, so the gateway keeps reporting to LMS for a browser whose scripts are suspended. Refusing an unknown command no longer waits on a blocked LMS to re-read its app menus. `GET /v1/me` advertises `lms_busy`. Details in `docs/PROTOCOL.md` (*When LMS is busy*).
+
 ## 2026-10-14: Gateway logs slow LMS requests
 
 When LMS is blocked (for example while a network music share waits for its disks to spin up), every request times out and the apps show "music server unavailable", but the log only said "LMS timed out". The gateway now logs any LMS request that takes 5 seconds or more, and every failed one, with the command (`playlist jump`, `albums`) and how long it took, so a stall can be traced to its cause. Labels are log-safe: the command word, plus the sub-command for groups such as `playlist`; never search terms, ids, paths or player addresses.

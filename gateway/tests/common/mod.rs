@@ -456,6 +456,9 @@ pub struct FakeLms {
     pub audio: Arc<Vec<u8>>,
     /// When set, `/stream.mp3` sends its first 1000 bytes and then stalls for ever.
     pub stall_stream: Arc<std::sync::atomic::AtomicBool>,
+    /// While set, JSON-RPC requests get no answer (as when LMS is blocked on slow storage);
+    /// they are answered once it is cleared.
+    pub freeze_rpc: Arc<std::sync::atomic::AtomicBool>,
     /// When set, `/stream.mp3` sends this instead of [`FakeLms::audio`].
     pub stream_body: Arc<Mutex<Option<Arc<Vec<u8>>>>>,
     /// Tracks added by a test (see [`FakeLms::add_track`]): id → (titles item, file).
@@ -633,6 +636,8 @@ impl FakeLms {
         let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let http_addr = http.local_addr().unwrap();
         let stall_stream: Arc<std::sync::atomic::AtomicBool> = Default::default();
+        let freeze_rpc: Arc<std::sync::atomic::AtomicBool> = Default::default();
+        let frozen = freeze_rpc.clone();
         let extra: ExtraTracks = Default::default();
         let plugin: Arc<Mutex<FakePlugin>> = Default::default();
         let stream_body: Arc<Mutex<Option<Arc<Vec<u8>>>>> = Default::default();
@@ -652,6 +657,7 @@ impl FakeLms {
         );
         let app = Router::new().fallback(any(move |req: Request| {
             let (r, stall, ex, pl) = (r.clone(), stall.clone(), ex.clone(), pl.clone());
+            let frozen = frozen.clone();
             let sv = sv.clone();
             let playing = *st_track.lock().unwrap();
             let library = lib.lock().unwrap().clone();
@@ -664,6 +670,9 @@ impl FakeLms {
                     .unwrap_or_default();
                 r.lock().unwrap().http_paths.push(path);
                 if req.uri().path() == "/jsonrpc.js" {
+                    while frozen.load(std::sync::atomic::Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
                     let body = axum::body::to_bytes(req.into_body(), 1 << 20)
                         .await
                         .unwrap_or_default();
@@ -879,6 +888,7 @@ impl FakeLms {
             conns,
             audio,
             stall_stream,
+            freeze_rpc,
             stream_body,
             extra,
             plugin,
@@ -1025,6 +1035,8 @@ pub async fn harness_with(mutate: impl FnOnce(&mut Config)) -> Harness {
         lms_cli: lms.cli_addr.to_string(),
         lms_ips: vec![Ipv4Addr::LOCALHOST],
         auth_timeout: Duration::from_millis(300),
+        // Off unless a test asks: tests read player sockets message by message.
+        player_keepalive: Duration::from_secs(3600),
         plays_secret: Some(PLAYS_SECRET.to_string()),
         ..Config::default()
     };

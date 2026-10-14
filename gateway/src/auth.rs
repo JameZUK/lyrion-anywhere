@@ -396,6 +396,9 @@ pub async fn me(State(gw): State<AppState>, headers: HeaderMap) -> Response {
             "resume_grace": true,
             // POST /v1/account/password (a signed-in user changes their own password).
             "change_password": true,
+            // LMS stalls are reported: {"lms":"busy"|"ok"} on /v1/events, 503 {"busy":true}
+            // from /v1/rpc while busy, and keepalives on /v1/player ("keepalive" at sign-in).
+            "lms_busy": true,
         },
     }))
     .into_response()

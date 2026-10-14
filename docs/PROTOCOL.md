@@ -149,6 +149,7 @@ The client's first message is text, sent within 5 s:
 - **Resume:** `{"token":"…","resume":{"session":"…","secret":"…","received":N}}`. `N` is the number of binary messages the client received in this session before the drop.
 - **Stream level (optional):** either form may add `"quality":"original"|"high"|"low"`, the level of the streams to come (see *Lower-data streams* below). An unknown level is taken as `original`, never refused. Gateways before this feature ignore the field.
 - **Resume grace (optional):** either form may add `"grace":S`, the seconds the client would like the session held after its socket drops (see *Resume*). `S` must be a whole number from 0 to 3600; anything else (a string, a fraction such as `60.0`, a negative or larger number, `null`, …) is a policy violation (close 1008): a new session isn't opened, and a resumable session (right device and secret) is ended. The gateway grants `min(S, its maximum)`; the maximum is 600 s unless the operator sets `--max-resume-grace` (60–3600 s). Without the field, a new session gets the default of 60 s and a resumed one keeps what it was granted before. Send it only to a gateway whose `GET /v1/me` lists `"resume_grace": true` under `features`; older gateways ignore it and hold sessions for 60 s.
+- **Text keepalives (optional):** either form may add `"keepalive":true`. The gateway then also sends the text message `{"keepalive":true}` every 5 s (see *Keepalives* below). Anything but a JSON `true` means no. Ask only when `GET /v1/me` lists `"lms_busy": true` under `features`; older gateways ignore it.
 
 The gateway replies with a text greeting:
 
@@ -182,6 +183,14 @@ The gateway replies with a text greeting:
   - On a seek LMS sends `strm q` and the new `strm s` back to back (about 2 ms apart for MP3), so a client sees them together. Drop queued audio on the `strm q` itself, not on a later check of the player state.
   - `strm f` is not a full flush. LMS sends it when the next track, already streamed, is deleted or moved in its queue, and it keeps the current track playing. Drop only what came after the audible track, keep playing, and answer `STMf`. That includes audio already handed to the output: the core reports it through `trim_count()` / `trim()`, and the web player's WASM host through `take_trim()`.
   - `audg` carries LMS's volume as linear gains (16.16) on LMS's own curve. A client applying it should do so at its output, after any queued audio.
+
+### Keepalives
+
+The gateway pings every player socket every 5 s, whatever LMS is doing. When LMS is blocked (see *When LMS is busy*), the socket is otherwise quiet, and a client that treats a quiet socket as dead would give up on a working connection. Pings prove the gateway is there; they say nothing about LMS.
+
+- A client that sees pings (native apps) can count them as traffic.
+- Browsers don't show pings to scripts, so a web client asks for text keepalives at sign-in (`"keepalive":true`) and gets `{"keepalive":true}` every 5 s as well. It is not a greeting (no `session`) and not a frame (not binary): it only refreshes the client's "last heard" time and is never counted in `received`.
+- The client's pongs are not taken as the player speaking: a browser answers pings even while its scripts are suspended, and the gateway must keep reporting to LMS for such a client (as for a detached client, see *Resume*).
 
 ### Policy violations (close 1008, session ended)
 
@@ -278,6 +287,7 @@ Response: `{"result": {...}}`, or `{"error": "<reason>"}` with one of these stat
 - **400:** malformed request;
 - **413:** body over 8 KiB;
 - **502:** LMS unavailable, or its answer is over 16 MiB (the read stops at the limit).
+- **503** `{"error":"music server is busy","busy":true}` with `Retry-After: 2`: LMS is blocked (see *When LMS is busy*). The request never reached LMS; retry after the pause, or when `/v1/events` says `{"lms":"ok"}`. Authentication, the body and the policy are checked first, so a request that would be refused anyway still gets its 400/401/403.
 
 **Default deny.** A command is allowed only if it is in the allow-list and every argument passes validation:
 - numbers or printable strings of at most 256 characters;
@@ -1068,6 +1078,18 @@ The plugin answers from its cache, local files and whatever online services the 
 ## Events (`WS /v1/events`)
 
 **Connecting:** the first message is the access token, as text. The gateway replies `{"subscribed":true}`, then sends `{"player":"<mac>","event":[...]}` for the caller's permitted players and `{"player":null,"event":["rescan",...]}` for library rescans. `{"resync":true}` means some events were missed, so re-query state.
+
+**LMS status:** `{"lms":"busy","since":<Unix ms>}` when LMS stops answering, and `{"lms":"ok"}` when it answers again (see *When LMS is busy*). A client that subscribes while LMS is busy gets the busy message straight after `{"subscribed":true}`; otherwise it should assume LMS is fine. Older clients ignore both.
+
+### When LMS is busy
+
+LMS is a single process. When something blocks it, typically its music folder on network storage that has to spin its disks up before a file opens, it answers nothing at all, often for 30–70 s, and its players hear nothing either. The gateway (from `features.lms_busy`):
+- marks LMS busy when any request to it has gone unanswered for 4 s (healthy answers take milliseconds), tells every events subscriber, and logs it;
+- refuses new `/v1/rpc` requests at once with 503 `busy` rather than queue more work inside LMS, and doesn't re-read LMS's app menus to refuse an unknown command;
+- keeps one cheap request (`serverstatus`) waiting on LMS, so the moment LMS answers it says `{"lms":"ok"}`;
+- keeps player sockets alive with keepalives, so players carry on with what they have buffered.
+
+Clients should show the state calmly ("the music server is busy"), not as an error or as being offline: the gateway is reachable. They shouldn't queue up refused commands to replay later.
 
 **What is forwarded:** only `playlist`, `mixer`, `power`, `client`, `sync`, `pause`, `play`, `stop`, `time` and `newmetadata` events. Any token that looks like a URL or path, or that response filtering would remove (such as a bare LAN address like `10.0.0.5:9000`), is blanked, as is the id of any other player the user may not see (a `sync` names the players joined). Preference changes (`prefset`) and everything else are never forwarded.
 

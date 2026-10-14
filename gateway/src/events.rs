@@ -396,11 +396,22 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
         gw.cfg.events_per_user,
     );
     let mut rx = gw.events.subscribe(gw.cfg.lms_cli.clone());
+    let mut health = gw.lms_health().subscribe();
     let _ = ws
         .send(Message::Text(
             json!({ "subscribed": true }).to_string().into(),
         ))
         .await;
+    // A client assumes LMS is fine when it (re)connects: only a stall needs saying.
+    let now = *health.borrow_and_update();
+    if now != crate::lms_health::Status::Ok
+        && ws
+            .send(Message::Text(now.message().to_string().into()))
+            .await
+            .is_err()
+    {
+        return;
+    }
     let mut recheck = tokio::time::interval(RECHECK);
     recheck.tick().await;
     let mut keepalive = tokio::time::interval(gw.cfg.ws_keepalive);
@@ -433,6 +444,15 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
                 Some(Ok(_)) => return close(ws, close_code::POLICY, "unexpected message").await,
             },
+            changed = health.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                let msg = health.borrow_and_update().message().to_string();
+                if ws.send(Message::Text(msg.into())).await.is_err() {
+                    return;
+                }
+            }
             _ = &mut evicted => return close(ws, close_code::POLICY, REPLACED).await,
             _ = keepalive.tick() => {
                 if ws.send(Message::Ping(Default::default())).await.is_err() {
