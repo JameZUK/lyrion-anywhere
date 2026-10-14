@@ -22,6 +22,7 @@
 		dragging = false,
 		target = false,
 		buttonsOnly = false,
+		unavailable = false,
 		actions,
 		oncontrol,
 		onplaypause,
@@ -42,6 +43,8 @@
 		target?: boolean;
 		/** This device's own player can't have its volume set here (see device.buttonsOnly). */
 		buttonsOnly?: boolean;
+		/** The server is out of reach (or busy): play/pause, volume, power and sync are disabled. */
+		unavailable?: boolean;
 		actions: readonly RowAction[];
 		oncontrol: () => void;
 		onplaypause: () => void;
@@ -132,7 +135,7 @@
 		</span>
 	</button>
 	<div class="controls">
-		<button class="icon-btn" aria-label={playing ? `Pause ${name}` : `Play ${name}`} onclick={onplaypause} disabled={!status} data-room-play>
+		<button class="icon-btn" aria-label={playing ? `Pause ${name}` : `Play ${name}`} onclick={onplaypause} disabled={!status || unavailable} data-room-play>
 			<Icon name={playing ? 'pause' : 'play'} size={22} />
 		</button>
 		{#if buttonsOnly}
@@ -146,11 +149,11 @@
 				value={volume}
 				aria-label={`${name} volume`}
 				oninput={(e) => slide(Number(e.currentTarget.value))}
-				disabled={!status || !on}
+				disabled={!status || !on || unavailable}
 				data-room-volume
 			/>
 		{/if}
-		<button class="icon-btn" class:on aria-label={`${name} power`} aria-pressed={on} onclick={onpower} disabled={!status} data-room-power>
+		<button class="icon-btn" class:on aria-label={`${name} power`} aria-pressed={on} onclick={onpower} disabled={!status || unavailable} data-room-power>
 			<Icon name="power" size={20} />
 		</button>
 		<button
@@ -159,6 +162,7 @@
 			aria-describedby="rooms-drag-help"
 			onpointerdown={ongrip}
 			onkeydown={ongripkey}
+			disabled={unavailable}
 			data-room-grip
 		>
 			<Icon name="grip" size={20} />

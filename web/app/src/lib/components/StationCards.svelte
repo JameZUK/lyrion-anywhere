@@ -3,6 +3,7 @@
 	import type { Station, StationKind } from '$lib/api/me';
 	import { activeStation } from '$lib/stations/active.svelte';
 	import { me } from '$lib/state/me';
+	import { app } from '$lib/state/app.svelte';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 	import Icon from './Icon.svelte';
 
@@ -51,7 +52,7 @@
 <ul class="cards">
 	{#each stations as s (s.id)}
 		<li class:broken={!!s.broken} class:on={activeStation.playing && activeStation.station?.id === s.id}>
-			<button class="play" onclick={() => play(s)} disabled={busy !== null} aria-label={`Play the station ${s.name}`}>
+			<button class="play" onclick={() => play(s)} disabled={busy !== null || !app.canQueue} aria-label={`Play the station ${s.name}`}>
 				<span class="glyph"><Icon name={s.kind === 'menu' ? 'radio' : 'shuffle'} size={22} /></span>
 				<span class="words">
 					<strong class="ellipsis">{s.name}</strong>

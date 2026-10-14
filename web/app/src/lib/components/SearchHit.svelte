@@ -21,6 +21,7 @@
 	const cover = $derived(cmd.coverPath(hit.cover, top ? 240 : 96));
 
 	function queue(how: cmd.Placement) {
+		if (!app.canQueue) return;
 		onpick?.();
 		void app.queueUp(sel, how);
 	}
@@ -43,10 +44,10 @@
 			</span>
 		</a>
 		{#if hit.kind !== 'artist'}
-			<button class="icon-btn" aria-label={`Play ${hit.name}`} onclick={() => queue('play')} data-hit-play><Icon name="play" size={18} /></button>
+			<button class="icon-btn" aria-label={`Play ${hit.name}`} onclick={() => queue('play')} disabled={!app.canQueue} data-hit-play><Icon name="play" size={18} /></button>
 		{/if}
 	{:else}
-		<button class="main" onclick={() => queue('play')} onkeydown={keys} aria-label={`Play ${hit.name}${hit.sub ? `, ${hit.sub}` : ''}`} aria-keyshortcuts="N A" data-hit-play>
+		<button class="main" onclick={() => queue('play')} disabled={!app.canQueue} onkeydown={keys} aria-label={`Play ${hit.name}${hit.sub ? `, ${hit.sub}` : ''}`} aria-keyshortcuts="N A" data-hit-play>
 			<span class="pic">{#if cover}<Art path={cover} alt="" label={hit.name} />{:else}<Icon name="note" size={top ? 32 : 20} />{/if}</span>
 			<span class="text">
 				<span class="name ellipsis">{hit.name}</span>
@@ -59,9 +60,9 @@
 		bind:this={menu}
 		label={`More options for ${hit.name}`}
 		actions={[
-			...(hit.kind === 'artist' ? [{ label: 'Play', icon: 'play', run: () => queue('play') }] : []),
-			{ label: 'Play next', icon: 'playnext', run: () => queue('next'), shortcut: 'N' },
-			{ label: 'Add to queue', icon: 'plus', run: () => queue('add'), shortcut: 'A' },
+			...(hit.kind === 'artist' ? [{ label: 'Play', icon: 'play', run: () => queue('play'), disabled: !app.canQueue }] : []),
+			{ label: 'Play next', icon: 'playnext', run: () => queue('next'), shortcut: 'N', disabled: !app.canQueue },
+			{ label: 'Add to queue', icon: 'plus', run: () => queue('add'), shortcut: 'A', disabled: !app.canQueue },
 		]}
 	/>
 </div>

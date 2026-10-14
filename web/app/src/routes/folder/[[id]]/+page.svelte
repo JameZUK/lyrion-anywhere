@@ -57,8 +57,8 @@
 		{#if folder !== undefined}
 			{@const f = folder}
 			<div class="actions">
-				<button class="btn primary" onclick={() => app.queueUp({ folder: f }, 'play')} disabled={!hasAudio}><Icon name="play" size={18} />Play all</button>
-				<button class="btn" onclick={() => app.queueUp({ folder: f }, 'add')} disabled={!hasAudio}><Icon name="plus" size={18} />Add to queue</button>
+				<button class="btn primary" onclick={() => app.queueUp({ folder: f }, 'play')} disabled={!hasAudio || !app.canQueue}><Icon name="play" size={18} />Play all</button>
+				<button class="btn" onclick={() => app.queueUp({ folder: f }, 'add')} disabled={!hasAudio || !app.canQueue}><Icon name="plus" size={18} />Add to queue</button>
 				<button class="btn" onclick={() => (ctx = { kind: 'folder', id: f, title })}><Icon name="more" size={18} />More</button>
 			</div>
 		{/if}
@@ -71,22 +71,22 @@
 							<span class="glyph" aria-hidden="true"><Icon name="folder" size={20} /></span>
 							<span class="name ellipsis">{x.name}</span>
 						</a>
-						<button class="icon-btn" aria-label={`Play ${x.name}`} onclick={() => app.queueUp({ folder: x.id }, 'play')}><Icon name="play" size={18} /></button>
+						<button class="icon-btn" aria-label={`Play ${x.name}`} onclick={() => app.queueUp({ folder: x.id }, 'play')} disabled={!app.canQueue}><Icon name="play" size={18} /></button>
 						<button class="icon-btn" aria-label={`More for ${x.name}`} onclick={() => (ctx = { kind: 'folder', id: x.id, title: x.name })}><Icon name="more" size={18} /></button>
 					{:else if x.kind === 'track'}
-						<button class="main" onclick={() => app.queueUp({ track: x.id }, 'play')} aria-label={`Play ${x.name}`}>
+						<button class="main" onclick={() => app.queueUp({ track: x.id }, 'play')} disabled={!app.canQueue} aria-label={`Play ${x.name}`}>
 							<span class="cover"><Art path={x.cover} label={x.name} /></span>
 							<span class="name ellipsis">{x.name}</span>
 							{#if x.duration}<span class="muted dur">{x.duration}</span>{/if}
 						</button>
-						<button class="icon-btn" aria-label={`Add ${x.name} to the queue`} onclick={() => app.queueUp({ track: x.id }, 'add')}><Icon name="plus" size={18} /></button>
+						<button class="icon-btn" aria-label={`Add ${x.name} to the queue`} onclick={() => app.queueUp({ track: x.id }, 'add')} disabled={!app.canQueue}><Icon name="plus" size={18} /></button>
 						<button class="icon-btn" aria-label={`More for ${x.name}`} onclick={() => (ctx = { kind: 'track', id: x.id, title: x.name })}><Icon name="more" size={18} /></button>
 					{:else if x.kind === 'playlist'}
 						<span class="main">
 							<span class="glyph" aria-hidden="true"><Icon name="queue" size={20} /></span>
 							<span class="name ellipsis">{x.name}</span>
 						</span>
-						<button class="icon-btn" aria-label={`Play ${x.name}`} onclick={() => app.queueUp({ playlist: x.id }, 'play')}><Icon name="play" size={18} /></button>
+						<button class="icon-btn" aria-label={`Play ${x.name}`} onclick={() => app.queueUp({ playlist: x.id }, 'play')} disabled={!app.canQueue}><Icon name="play" size={18} /></button>
 					{:else}
 						<span class="main other">
 							<span class="glyph" aria-hidden="true"><Icon name="note" size={20} /></span>

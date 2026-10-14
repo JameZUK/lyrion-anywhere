@@ -185,6 +185,15 @@ class AppState {
 		return this.session?.user.role === 'admin';
 	}
 
+	/**
+	 * Can library "play" actions (play, play next, add to queue, play a playlist, station or
+	 * favourite…) be used now? They all need the server: every one of them is disabled with
+	 * this while it is out of reach or busy.
+	 */
+	get canQueue(): boolean {
+		return this.reach === 'online';
+	}
+
 	get playing(): boolean {
 		return this.now?.mode === 'play';
 	}

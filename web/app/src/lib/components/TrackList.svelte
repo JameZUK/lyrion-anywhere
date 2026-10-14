@@ -15,6 +15,7 @@
 		badge,
 		download,
 		ondownload,
+		disabled = false,
 	}: {
 		tracks: Track[];
 		onplay: (t: Track, index: number) => void;
@@ -28,7 +29,12 @@
 		/** The row menu's download entry for a track ("Download", "Remove download"), or none. */
 		download?: (t: Track) => string | undefined;
 		ondownload?: (t: Track) => void;
+		/** Play, Play next and Add to queue are unavailable (they need the server). */
+		disabled?: boolean;
 	} = $props();
+	// Swipes and N/A keys do nothing while disabled; the menu items show it.
+	const next = $derived(disabled ? undefined : onnext);
+	const add = $derived(disabled ? undefined : onadd);
 
 	// Each row's "More options" is a menu button (WAI-ARIA APG): Enter, Space or the arrow keys
 	// open it with focus on an item; arrows, Home and End move; Escape closes it and puts focus
@@ -104,11 +110,12 @@
 {#if onnext || onadd}<p class="sr-only">On a track, press N to play it next or A to add it to the queue.</p>{/if}
 <ol class="tracks">
 	{#each tracks as t, i (t.id ?? i)}
-		<li class="row" use:swipeRow={{ onright: onnext ? () => onnext(t) : undefined, onleft: onadd ? () => onadd(t) : undefined }}>
+		<li class="row" use:swipeRow={{ onright: next ? () => next(t) : undefined, onleft: add ? () => add(t) : undefined }}>
 			<button
 				class="main"
 				onclick={() => onplay(t, i)}
-				onkeydown={(e) => rowShortcut(e, { next: onnext ? () => onnext(t) : undefined, add: onadd ? () => onadd(t) : undefined })}
+				{disabled}
+				onkeydown={(e) => rowShortcut(e, { next: next ? () => next(t) : undefined, add: add ? () => add(t) : undefined })}
 				aria-label={`Play ${textOf(t.title)}`}
 				aria-keyshortcuts={[onnext ? 'N' : '', onadd ? 'A' : ''].filter(Boolean).join(' ') || undefined}
 			>
@@ -141,8 +148,8 @@
 					</button>
 					{#if open === i}
 						<div class="menu" role="menu" id={`tl-${uid}-${i}-menu`} aria-labelledby={`tl-${uid}-${i}`} bind:this={menuEl} tabindex="-1" onkeydown={menuKey}>
-							{#if onnext}<button role="menuitem" tabindex="-1" onclick={() => choose(() => onnext(t))}><Icon name="playnext" size={18} />Play next</button>{/if}
-							{#if onadd}<button role="menuitem" tabindex="-1" onclick={() => choose(() => onadd(t))}><Icon name="plus" size={18} />Add to queue</button>{/if}
+							{#if onnext}<button role="menuitem" tabindex="-1" aria-disabled={disabled ? 'true' : undefined} onclick={() => !disabled && choose(() => onnext(t))}><Icon name="playnext" size={18} />Play next</button>{/if}
+							{#if onadd}<button role="menuitem" tabindex="-1" aria-disabled={disabled ? 'true' : undefined} onclick={() => !disabled && choose(() => onadd(t))}><Icon name="plus" size={18} />Add to queue</button>{/if}
 							{#if ondownload && download}
 								{@const label = download(t)}
 								{#if label}<button role="menuitem" tabindex="-1" onclick={() => choose(() => ondownload(t))}><Icon name={label === 'Download' ? 'download' : 'trash'} size={18} />{label}</button>{/if}
@@ -234,6 +241,12 @@
 		border: 1px solid var(--line);
 		border-radius: var(--radius-sm);
 		box-shadow: var(--shadow);
+	}
+	/* Unavailable (the server is out of reach): dimmed, not tappable. */
+	.main:disabled,
+	.menu button[aria-disabled='true'] {
+		opacity: 0.45;
+		cursor: not-allowed;
 	}
 	.menu button {
 		display: flex;

@@ -30,8 +30,8 @@
 		<p class="kind muted">Year</p>
 		<h1>{year === 0 ? 'No year' : year}</h1>
 		<div class="actions">
-			<button class="btn primary" onclick={() => app.queueUp({ year }, 'play')}><Icon name="play" size={18} />Play all</button>
-			<button class="btn" onclick={() => app.queueUp({ year }, 'add')}><Icon name="plus" size={18} />Add to queue</button>
+			<button class="btn primary" onclick={() => app.queueUp({ year }, 'play')} disabled={!app.canQueue}><Icon name="play" size={18} />Play all</button>
+			<button class="btn" onclick={() => app.queueUp({ year }, 'add')} disabled={!app.canQueue}><Icon name="plus" size={18} />Add to queue</button>
 			<button class="btn" onclick={() => (showMore = true)}><Icon name="more" size={18} />More</button>
 		</div>
 		<LibraryNote />

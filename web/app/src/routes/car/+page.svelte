@@ -180,7 +180,7 @@
 				{:else}
 					<ul>
 						{#each favourites as f (f.id)}
-							<li><button class="item" onclick={() => playFavourite(f)} data-car-favourite={f.id}>{textOf(f.name)}</button></li>
+							<li><button class="item" onclick={() => playFavourite(f)} disabled={!app.canQueue} data-car-favourite={f.id}>{textOf(f.name)}</button></li>
 						{/each}
 					</ul>
 				{/if}

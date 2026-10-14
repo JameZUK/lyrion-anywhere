@@ -10,6 +10,7 @@ import { PlayheadSmoother, outputClock } from './output-clock';
 import { MEDIA_TYPE, MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
 import { Reporter, buildReport, diagnosticsSender } from './diagnostics';
 import { fadeGain } from '$lib/lms/sleep';
+import { mayResumeMedia } from './local-plan';
 import {
 	connection,
 	effectiveQuality,
@@ -264,7 +265,7 @@ class DevicePlayer {
 	async #recover() {
 		const media = this.#media;
 		if (media) {
-			if (media.audio.paused && this.detail.output === 'Playing' && !this.held) {
+			if (media.audio.paused && this.detail.output === 'Playing' && mayResumeMedia(this.detail.output, this.held)) {
 				media.resume();
 				this.#note('media element resumed');
 			}
@@ -605,10 +606,11 @@ class DevicePlayer {
 		const resume = async () => {
 			void this.#keepAlive.start();
 			// Not while LMS has the player paused: that would play the old queued audio.
-			if (!String(this.detail.output ?? '').startsWith('Paused') && !this.held) this.#media?.resume();
+			if (mayResumeMedia(String(this.detail.output ?? ''), this.held)) this.#media?.resume();
 			await this.#ctx?.resume().catch(() => {});
 			const ctxOk = !this.#ctx || this.#ctx.state === 'running';
-			const mediaOk = !this.#media || !this.#media.audio.paused;
+			// Held by a pause made here: the element is meant to be paused.
+			const mediaOk = !this.#media || !this.#media.audio.paused || this.held;
 			if (!ctxOk || !mediaOk || !this.needsTap) {
 				if (!this.needsTap) for (const t of events) document.removeEventListener(t, onTap, true);
 				return;
@@ -829,7 +831,7 @@ class DevicePlayer {
 			// A synced start: play at that moment, not at the worker's next tick after it.
 			const wait = m.startAt - (performance.timeOrigin + performance.now());
 			clearTimeout(this.#startTimer);
-			if (wait > 0 && wait < 30_000) this.#startTimer = setTimeout(() => this.#media === media && media.resume(), wait);
+			if (wait > 0 && wait < 30_000) this.#startTimer = setTimeout(() => this.#media === media && mayResumeMedia('Playing', this.held) && media.resume(), wait);
 		}
 		if (m.flush) {
 			clearTimeout(this.#startTimer);

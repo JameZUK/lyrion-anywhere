@@ -21,6 +21,7 @@
 	import RoomCard from '$lib/components/RoomCard.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
 	import { haptics } from '$lib/haptics/haptics.svelte';
+	import { isNetworkError } from '$lib/state/reachability';
 
 	const poller = new RoomsPoller({
 		rpc: (p, c) => api.rpc(p, c),
@@ -60,12 +61,15 @@
 	let notice = $state('');
 	let error = $state('');
 
+	// Every room is a player the app reaches through the server: out of reach (or busy), its
+	// controls are disabled like a remote player's, and nothing is sent.
 	async function send(p: PlayerInfo, c: Command, groups = false) {
+		if (!app.canQueue) return;
 		error = '';
 		try {
 			await api.rpc(p.playerid, c);
 		} catch (e) {
-			error = `${nameOf(p)}: ${(e as Error).message}`;
+			if (!isNetworkError(e)) error = `${nameOf(p)}: ${(e as Error).message}`;
 		}
 		poller.soon(key(p), groups);
 		if (p.playerid === app.playerId) app.soon();
@@ -91,7 +95,7 @@
 	async function syncInto(host: string, joiner: string) {
 		const h = byKey(host);
 		const j = byKey(joiner);
-		if (!h || !j || host === joiner) return;
+		if (!h || !j || host === joiner || !app.canQueue) return;
 		let t;
 		try {
 			t = syncToggle(h.playerid, j.playerid, true);
@@ -120,7 +124,7 @@
 	// Dragging with a pointer: the grip starts it, the room under the pointer is the target.
 	let drag = $state<{ id: string; pointer: number; over: string | null } | null>(null);
 	function gripDown(p: PlayerInfo, e: PointerEvent) {
-		if (e.button > 0 || rooms.length < 2) return;
+		if (e.button > 0 || rooms.length < 2 || !app.canQueue) return;
 		e.preventDefault();
 		(e.currentTarget as Element).setPointerCapture?.(e.pointerId);
 		drag = { id: key(p), pointer: e.pointerId, over: null };
@@ -151,7 +155,7 @@
 		const id = key(p);
 		const ids = rooms.map(key);
 		if (!kb || kb.id !== id) {
-			if (e.key === 'Enter' || e.key === ' ') {
+			if ((e.key === 'Enter' || e.key === ' ') && app.canQueue) {
 				e.preventDefault();
 				if (ids.length < 2) return;
 				kb = { id, over: null };
@@ -188,13 +192,15 @@
 		const id = key(p);
 		const name = nameOf(p);
 		const out: RowAction[] = [{ label: `Control ${name}`, icon: 'speaker', run: () => control(p) }];
-		if (rooms.length > 1) out.push({ label: 'Sync with…', icon: 'link', run: () => (choosing = p) });
-		if (roomGroup(id, poller.groups).length > 1) out.push({ label: 'Play on its own', icon: 'close', run: () => void unsync(p) });
+		const off = !app.canQueue;
+		if (rooms.length > 1) out.push({ label: 'Sync with…', icon: 'link', run: () => (choosing = p), disabled: off });
+		if (roomGroup(id, poller.groups).length > 1) out.push({ label: 'Play on its own', icon: 'close', run: () => void unsync(p), disabled: off });
 		if (canMove && p.playerid !== app.playerId) {
 			out.push({
 				label: 'Move playback here',
 				icon: 'transfer',
 				run: () => void (isThisDevice(p.playerid) ? bringHere() : app.moveTo(app.playerId, p.playerid, name)),
+				disabled: off,
 			});
 		}
 		return out;
@@ -233,6 +239,7 @@
 						dragging={drag?.id === id || kb?.id === id}
 						target={drag?.over === id || kb?.over === id}
 						buttonsOnly={device.buttonsOnly(p.playerid)}
+						unavailable={!app.canQueue}
 						actions={actionsFor(p)}
 						oncontrol={() => control(p)}
 						onplaypause={() => playPause(p)}

@@ -173,8 +173,8 @@
 		{/if}
 		{#if !role}
 			<div class="actions">
-				<button class="btn primary" onclick={() => app.queueUp({ artist: id }, 'play')} disabled={!albums.length}><Icon name="play" size={18} />Play all</button>
-				<button class="btn" onclick={() => app.queueUp({ artist: id }, 'add')} disabled={!albums.length}><Icon name="plus" size={18} />Add to queue</button>
+				<button class="btn primary" onclick={() => app.queueUp({ artist: id }, 'play')} disabled={!albums.length || !app.canQueue}><Icon name="play" size={18} />Play all</button>
+				<button class="btn" onclick={() => app.queueUp({ artist: id }, 'add')} disabled={!albums.length || !app.canQueue}><Icon name="plus" size={18} />Add to queue</button>
 				<button class="btn" onclick={() => (showMore = true)}><Icon name="more" size={18} />More</button>
 			</div>
 		{/if}

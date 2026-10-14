@@ -68,6 +68,9 @@ class FakeApp {
 	get remote() {
 		return !!this.playerId && this.playerId !== this.deviceMac && !!this.current;
 	}
+	get canQueue() {
+		return this.reach === 'online';
+	}
 	get playing() {
 		return this.now?.mode === 'play';
 	}

@@ -73,12 +73,12 @@
 						<span class="chev" aria-hidden="true">›</span>
 					</a>
 				{:else}
-					<button class="main" onclick={() => play(i, 'play')} aria-label={`Play ${textOf(i.name)}`}>
+					<button class="main" onclick={() => play(i, 'play')} disabled={!app.canQueue} aria-label={`Play ${textOf(i.name)}`}>
 						<div class="icon"><Art path={cmd.imagePath(i.image, 96)} alt="" label={textOf(i.name)} /></div>
 						<span class="name ellipsis">{textOf(i.name)}</span>
 					</button>
-					<button class="icon-btn" aria-label={`Play ${textOf(i.name)} next`} onclick={() => play(i, 'next')}><Icon name="playnext" size={18} /></button>
-					<button class="icon-btn" aria-label={`Add ${textOf(i.name)} to the queue`} onclick={() => play(i, 'add')}><Icon name="plus" size={18} /></button>
+					<button class="icon-btn" aria-label={`Play ${textOf(i.name)} next`} onclick={() => play(i, 'next')} disabled={!app.canQueue}><Icon name="playnext" size={18} /></button>
+					<button class="icon-btn" aria-label={`Add ${textOf(i.name)} to the queue`} onclick={() => play(i, 'add')} disabled={!app.canQueue}><Icon name="plus" size={18} /></button>
 				{/if}
 			</li>
 		{/each}

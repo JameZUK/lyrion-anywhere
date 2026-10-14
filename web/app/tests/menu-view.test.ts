@@ -4,7 +4,7 @@ import { tick } from 'svelte';
 
 const calls: unknown[][] = [];
 vi.mock('$lib/state/app.svelte', () => ({
-	app: { playerId: '02:4c:41:00:00:01', soon() {}, queueVersion: 0 },
+	app: { playerId: '02:4c:41:00:00:01', soon() {}, queueVersion: 0, canQueue: true },
 	api: {
 		async rpc(_player: string, cmd: unknown[]) {
 			calls.push(cmd);

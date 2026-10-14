@@ -154,7 +154,7 @@
 					{#each favourites as f (f.id)}
 						<li>
 							{#if Number(f.isaudio) === 1}
-								<button class="chip" onclick={() => app.send(cmd.playFavourite(f.id!, 'play'))} aria-label={`Play ${textOf(f.name)}`}>{textOf(f.name)}</button>
+								<button class="chip" onclick={() => app.send(cmd.playFavourite(f.id!, 'play'))} disabled={!app.canQueue} aria-label={`Play ${textOf(f.name)}`}>{textOf(f.name)}</button>
 							{:else}
 								<a class="chip" href="#/favourites">{textOf(f.name)}</a>
 							{/if}

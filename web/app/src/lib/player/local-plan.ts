@@ -194,3 +194,13 @@ export function reconcile(local: LocalOutcome, now: LmsNow | null, trackAtIndex:
 	if (local.paused) commands.push(['pause', 1]);
 	return { follow: false, commands, release: local.paused ? 'paused' : 'flush' };
 }
+
+/**
+ * May the page resume this device's media element by itself (after the system suspended
+ * the page, on the first tap that unmutes it, or at a synced start)? Only while LMS has the
+ * player playing, and never while a pause made here holds the output: the worker lets the
+ * hold go, and it says when to play again.
+ */
+export function mayResumeMedia(output: unknown, held: boolean): boolean {
+	return !held && typeof output === 'string' && !output.startsWith('Paused') && output !== 'Held';
+}
