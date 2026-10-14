@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Performance measured
+
+`docs/PERFORMANCE.md` now has measurements as well as budgets: the decoders' speed, the gateway's latency, throughput and memory (on the demo stack, and at rest on a live install), the web app's first load and WebAssembly size, and the Android release sizes against their budgets (within them). The decoder measurement found the slow Opus path fixed above. New `tools/demo/bench.py` repeats the gateway figures. Start-up, frames, memory and battery on a phone still need a device.
+
 ## 2026-10-14: Opus decodes about 80 times faster (Android, web player, gateway)
 
 Found while measuring for `docs/PERFORMANCE.md`: the vendored Opus decoder (`third_party/opus-decoder`) computed its inverse MDCT's FFT as a direct O(n²) DFT, with a `sin_cos` per term. Opus therefore decoded at only about 2× real time on a desktop core: enough to play, but close to the limit on a phone, where it costs battery, and in a browser's WebAssembly. Opus is what the phone and the web player stream at *High* and *Data saver*, and what Opus downloads hold.
