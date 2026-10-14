@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Gateway logs slow LMS requests
+
+When LMS is blocked (for example while a network music share waits for its disks to spin up), every request times out and the apps show "music server unavailable", but the log only said "LMS timed out". The gateway now logs any LMS request that takes 5 seconds or more, and every failed one, with the command (`playlist jump`, `albums`) and how long it took, so a stall can be traced to its cause. Labels are log-safe: the command word, plus the sub-command for groups such as `playlist`; never search terms, ids, paths or player addresses.
+
 ## 2026-10-14: Android 1.11.0 (versionCode 24)
 
 A test build with the day's work: Opus about 80 times faster, changing your own password, saving the queue as a playlist, and "Continue on <player>" when back online.

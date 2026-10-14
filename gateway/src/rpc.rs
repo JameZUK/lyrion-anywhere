@@ -27,6 +27,57 @@ const LMS_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const MAX_LMS_RESPONSE: usize = 16 * 1024 * 1024;
 /// Pause before the one retry of an idempotent LMS request.
 const RETRY_PAUSE: Duration = Duration::from_millis(250);
+/// An LMS exchange at least this slow is logged with its command and duration. LMS answers
+/// in milliseconds when healthy; seconds mean it is blocked (e.g. on slow storage).
+const SLOW_LMS: Duration = Duration::from_secs(5);
+/// Commands whose second word says what they do ("playlist jump", "mixer volume").
+const GROUP_COMMANDS: &[&str] = &[
+    "playlist",
+    "mixer",
+    "favorites",
+    "playlists",
+    "alarm",
+    "alarms",
+    "time",
+    "power",
+    "sync",
+];
+
+/// A log-safe label for an LMS command: its first word, plus the second for command groups
+/// such as `playlist jump`. Never search terms, ids, URLs or tagged parameters.
+fn command_label(cmd: &[String]) -> String {
+    fn word(s: &str) -> Option<String> {
+        (!s.is_empty() && s.len() <= 24 && s.chars().all(|c| c.is_ascii_lowercase()))
+            .then(|| s.to_string())
+    }
+    let Some(first) = cmd.first().and_then(|s| word(s)) else {
+        return "?".into();
+    };
+    match cmd.get(1).and_then(|s| word(s)) {
+        Some(second) if GROUP_COMMANDS.contains(&first.as_str()) => format!("{first} {second}"),
+        _ => first,
+    }
+}
+
+/// What to log about a finished LMS exchange, if anything: failures always, successes only
+/// when they took [`SLOW_LMS`] or longer.
+fn exchange_note(
+    cmd: &[String],
+    elapsed: Duration,
+    failure: Option<&str>,
+) -> Option<(String, String)> {
+    match failure {
+        Some(f) => Some((
+            command_label(cmd),
+            format!("failed after {elapsed:.1?}: {f}"),
+        )),
+        None if elapsed >= SLOW_LMS => Some((
+            command_label(cmd),
+            format!("answered slowly in {elapsed:.1?}"),
+        )),
+        None => None,
+    }
+}
 
 /// A failed LMS exchange.
 #[derive(Debug)]
@@ -233,7 +284,7 @@ pub async fn rpc(
             Json(json!({ "result": filtered })).into_response()
         }
         Err(e) => {
-            warn!(error = %e, "LMS JSON-RPC failed");
+            warn!(error = %e, cmd = %summary(&req.cmd), "LMS JSON-RPC failed");
             error(StatusCode::BAD_GATEWAY, "music server unavailable")
         }
     }
@@ -452,9 +503,19 @@ impl crate::Gateway {
                 .map_err(LmsFailure::fatal)
         };
         // One limit for the whole exchange, body included.
-        let bytes = tokio::time::timeout(limit, exchange)
+        let started = std::time::Instant::now();
+        let outcome = tokio::time::timeout(limit, exchange)
             .await
-            .map_err(|_| LmsFailure::fatal("LMS timed out"))??;
+            .map_err(|_| LmsFailure::fatal("LMS timed out"))
+            .and_then(|r| r);
+        if let Some((cmd, note)) = exchange_note(
+            cmd,
+            started.elapsed(),
+            outcome.as_ref().err().map(|f| f.message.as_str()),
+        ) {
+            warn!(cmd = %cmd, "LMS request {note}");
+        }
+        let bytes = outcome?;
         let v: Value =
             serde_json::from_slice(&bytes).map_err(|e| LmsFailure::fatal(e.to_string()))?;
         Ok(v.get("result").cloned().unwrap_or_else(|| json!({})))
@@ -484,6 +545,73 @@ impl crate::Gateway {
 mod tests {
     use super::*;
     use crate::menu_actions::{Action, PValue};
+
+    fn words(w: &[&str]) -> Vec<String> {
+        w.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The label names the command and, for groups, what it does, and nothing else: no
+    /// search terms, ids, tagged parameters or anything that isn't a plain lowercase word.
+    #[test]
+    fn command_labels_are_log_safe() {
+        assert_eq!(
+            command_label(&words(&["playlist", "jump", "3"])),
+            "playlist jump"
+        );
+        assert_eq!(
+            command_label(&words(&["mixer", "volume", "+5"])),
+            "mixer volume"
+        );
+        assert_eq!(
+            command_label(&words(&["albums", "0", "50", "tags:al"])),
+            "albums"
+        );
+        assert_eq!(
+            command_label(&words(&["search", "0", "10", "term:private words"])),
+            "search"
+        );
+        // A second word only for known groups, so free text in that slot never appears.
+        assert_eq!(
+            command_label(&words(&["songinfo", "secretword", "x"])),
+            "songinfo"
+        );
+        assert_eq!(
+            command_label(&words(&["playlist", "Some Title", "x"])),
+            "playlist"
+        );
+        assert_eq!(
+            command_label(&words(&["playlist", "file:///srv/music/a.flac"])),
+            "playlist"
+        );
+        assert_eq!(command_label(&words(&["Albums"])), "?");
+        assert_eq!(command_label(&words(&["status\n", "x"])), "?");
+        assert_eq!(command_label(&words(&[&"a".repeat(25)])), "?");
+        assert_eq!(command_label(&[]), "?");
+    }
+
+    /// Healthy, fast answers log nothing; slow answers and every failure are logged with
+    /// the command and how long it took.
+    #[test]
+    fn slow_or_failed_exchanges_are_noted() {
+        let cmd = words(&["playlist", "jump", "3"]);
+        assert_eq!(exchange_note(&cmd, Duration::from_millis(40), None), None);
+        assert_eq!(
+            exchange_note(&cmd, SLOW_LMS - Duration::from_millis(1), None),
+            None
+        );
+        let (label, note) = exchange_note(&cmd, Duration::from_secs(70), None).unwrap();
+        assert_eq!(label, "playlist jump");
+        assert!(note.contains("slowly") && note.contains("70.0s"), "{note}");
+        let (label, note) =
+            exchange_note(&cmd, Duration::from_secs(30), Some("LMS timed out")).unwrap();
+        assert_eq!(label, "playlist jump");
+        assert!(
+            note.contains("30.0s") && note.contains("LMS timed out"),
+            "{note}"
+        );
+        // A quick failure (connection refused) is still logged.
+        assert!(exchange_note(&cmd, Duration::from_millis(2), Some("connection failed")).is_some());
+    }
 
     fn action(n: i64) -> Action {
         Action {
