@@ -80,7 +80,6 @@ import io.github.jamezuk.lyrionanywhere.ui.player.NowPlayingScreen
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnActions
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnList
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayerUiState
-import io.github.jamezuk.lyrionanywhere.ui.player.PlayingOnStrip
 import io.github.jamezuk.lyrionanywhere.ui.player.QueueEntry
 import io.github.jamezuk.lyrionanywhere.ui.player.isPlayPauseKey
 import io.github.jamezuk.lyrionanywhere.ui.library.isContextMenuKey
@@ -148,11 +147,8 @@ class AccessibilityAuditTests {
 
     @Test
     fun miniPlayer() = audit {
-        MiniPlayer(auditPlayerState(), onOpen = {}, onTogglePlay = {}, onNext = {}, onBringToPhone = {})
+        MiniPlayer(auditPlayerState(), onOpen = {}, onTogglePlay = {}, onNext = {})
     }
-
-    @Test
-    fun playingOnStrip() = audit { PlayingOnStrip(auditPlayerState(), onBackToPhone = {}, onBringToPhone = {}) }
 
     @Test
     fun playOnSheet() = audit {
@@ -169,7 +165,7 @@ class AccessibilityAuditTests {
 
     @Test
     fun library() = audit {
-        LibraryScreen(listOf(VirtualLibrary("ab12", "Classical")), null, {}, onNewMusic = {}, onOpen = {})
+        LibraryScreen(listOf(VirtualLibrary("ab12", "Classical")), null, {}, onOpen = {})
     }
 
     @Test
@@ -267,7 +263,6 @@ class AccessibilityAuditTests {
             error = null,
             onChange = {},
             onRefreshSmart = {},
-            onDownloads = {},
         )
     }
 
@@ -392,7 +387,7 @@ class PrivacyLinkTests {
     private fun settings(handler: UriHandler) = compose.setContent {
         CompositionLocalProvider(LocalUriHandler provides handler) {
             LyrionTheme(dynamicColour = false) {
-                SettingsScreen(SettingsUiState(username = "alice"), "1", "1", {}, {})
+                SettingsScreen(SettingsUiState(username = "alice"), "1", "1", {}, {}, section = io.github.jamezuk.lyrionanywhere.ui.settings.SettingsSection.ABOUT)
             }
         }
     }
@@ -408,7 +403,7 @@ class PrivacyLinkTests {
         val row = compose.onNodeWithTag("privacy-policy").performScrollTo()
         row.assertHasClickAction()
         row.assert(hasText("Privacy policy"))
-        row.assert(hasText("What the app and your server keep, and what they don't"))
+        row.assert(hasText("What the app and your music server keep, and what they don't"))
         row.performClick()
         assertEquals(listOf("https://github.com/JameZUK/lyrion-anywhere/blob/main/docs/PRIVACY.md"), opened)
         assertEquals(PRIVACY_POLICY_URL, opened.single())
@@ -521,19 +516,26 @@ class SpokenLabelTests {
 
     /** Toggles keep one name; on or off is their state. */
     @Test
-    fun thePowerToggleHasAConstantName() {
-        show { NowPlayingScreen(auditPlayerState(), clock = { 0L }, actions = nowPlayingActions()) }
-        // In ⋮ on Now playing.
-        compose.onNodeWithTag("now-playing-more").performClick()
-        compose.onNodeWithTag("more-power")
-            .performScrollTo()
-            .assert(hasText("Power, Player $KITCHEN"))
-            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "On"))
+    fun thePowerItemNamesThePlayerAndWhatItDoes() {
+        // In the player's row of Play on… (Wave 3.5: Rooms folded in), not Now playing's ⋮.
+        val kitchen = samplePlayer(KITCHEN, playing = true)
+        show {
+            PlayOnList(
+                auditPlayerState(),
+                PlayOnActions(onControl = {}, onBackToPhone = {}),
+                rooms = listOf(io.github.jamezuk.lyrionanywhere.ui.player.Room(kitchen, sampleStatus())),
+                roomActions = io.github.jamezuk.lyrionanywhere.ui.player.RoomsActions({}, {}, { _, _ -> }, { _, _ -> }, { _, _ -> }, {}),
+            )
+        }
+        compose.onNodeWithTag("play-on-$KITCHEN-more").performClick()
+        compose.onNodeWithTag("play-on-$KITCHEN-power").assert(hasText("Switch Player $KITCHEN off"))
     }
 
     @Test
     fun theSyncToggleNamesBothPlayers() {
         show { PlayOnList(auditPlayerState(), PlayOnActions(onControl = {}, onBackToPhone = {}, onSync = { _, _ -> })) }
+        // In Group players… (Wave 3.5).
+        compose.onNodeWithTag("group-players").performClick()
         compose.onNodeWithContentDescription("Play Player $LOUNGE in sync with Player $KITCHEN").assertExists()
     }
 

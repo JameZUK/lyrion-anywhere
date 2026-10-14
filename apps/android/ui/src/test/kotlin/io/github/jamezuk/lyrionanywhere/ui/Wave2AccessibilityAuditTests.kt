@@ -66,15 +66,18 @@ class Wave2AccessibilityAuditTests {
     private fun albums() = SparseState(total = 5, pages = mapOf(0 to (1L..5L).map { sampleAlbum(it) }), index = index)
 
     @Test
-    fun libraryOverviewWithChips() = audit {
-        LibraryScreen(emptyList(), null, {}, onNewMusic = {}, onOpen = {}, chip = null, onChip = {})
+    fun libraryOverview() = audit {
+        LibraryScreen(emptyList(), null, {}, onOpen = {})
     }
 
     @Test
     fun albumsAsAGrid() = audit {
-        LibraryScreen(emptyList(), null, {}, onNewMusic = {}, onOpen = {}, chip = LibraryChip.ALBUMS, onChip = {}, chipContent = {
-            AlbumBrowser(albums(), LibraryAlbumOrder.TITLE, true, {}, {}, {}, {}, {}, {}, onQueue = { _, _ -> })
-        })
+        AlbumBrowser(albums(), LibraryAlbumOrder.TITLE, true, {}, {}, {}, {}, {}, {}, onQueue = { _, _ -> }, onRandom = {})
+    }
+
+    @Test
+    fun albumsInARandomOrder() = audit {
+        AlbumBrowser(albums(), LibraryAlbumOrder.TITLE, true, {}, {}, {}, {}, {}, {}, random = true, onRandom = {})
     }
 
     @Test

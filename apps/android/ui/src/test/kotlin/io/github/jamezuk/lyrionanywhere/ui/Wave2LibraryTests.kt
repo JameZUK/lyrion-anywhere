@@ -233,15 +233,13 @@ class Wave2LibraryViewModelTest : MainDispatcherTest() {
     }
 
     @Test
-    fun theChipOrderAndViewAreRemembered() = runTest(dispatcher) {
+    fun theOrderAndViewAreRemembered() = runTest(dispatcher) {
+        // The chips are gone (Wave 3.5: one model); the order and view are still remembered.
         val settings = FakeSettings()
         val vm = LibraryPrefsViewModel(settings)
-        vm.toggleChip(LibraryChip.ALBUMS)
         vm.setOrder(LibraryAlbumOrder.YEAR)
         vm.setGrid(false)
-        assertEquals(LibraryPrefs(LibraryChip.ALBUMS, LibraryAlbumOrder.YEAR, false), settings.state.value.library)
-        // The chosen chip again: back to everything.
-        vm.toggleChip(LibraryChip.ALBUMS)
+        assertEquals(LibraryPrefs(null, LibraryAlbumOrder.YEAR, false), settings.state.value.library)
         assertNull(settings.state.value.library.chip)
         vm.setOrder(LibraryAlbumOrder.RECENTLY_PLAYED)
         assertEquals(LibraryAlbumOrder.RECENTLY_PLAYED, settings.state.value.library.albumOrder)
@@ -313,21 +311,18 @@ class Wave2LibraryScreenTest {
         compose.setContent { LyrionTheme(dynamicColour = false) { content() } }
 
     @Test
-    fun chipsShowOneTypeAndTapAgainForEverything() {
-        val toggled = mutableListOf<LibraryChip>()
-        show {
-            LibraryScreen(
-                emptyList(), null, {}, onNewMusic = {}, onOpen = {},
-                chip = LibraryChip.ARTISTS,
-                onChip = { toggled += it },
-                chipContent = { c -> androidx.compose.material3.Text("Showing $c") },
-            )
-        }
-        compose.onNodeWithText("Showing ARTISTS").assertIsDisplayed()
-        compose.onNodeWithTag("chip-artists").assert(SemanticsMatcher.expectValue(SemanticsProperties.Selected, true))
+    fun oneListOfSectionsThenBrowse() {
+        // Wave 3.5: one model, each section a page of its own (no chips, no second list).
+        val opened = mutableListOf<io.github.jamezuk.lyrionanywhere.ui.library.LibraryDestination>()
+        show { LibraryScreen(emptyList(), null, {}, onOpen = { opened += it }) }
+        compose.onNodeWithTag("library-chips").assertDoesNotExist()
+        compose.onNodeWithText("Artists").performClick()
         compose.onNodeWithText("Downloaded").performClick()
-        compose.onNodeWithTag("chip-artists").performClick()
-        assertEquals(listOf(LibraryChip.DOWNLOADED, LibraryChip.ARTISTS), toggled)
+        compose.onNodeWithText("Browse").assertIsDisplayed()
+        assertEquals(
+            listOf(io.github.jamezuk.lyrionanywhere.ui.library.LibraryDestination.ARTISTS, io.github.jamezuk.lyrionanywhere.ui.library.LibraryDestination.DOWNLOADS),
+            opened,
+        )
     }
 
     private fun albums(total: Int, index: List<IndexEntry> = emptyList()) = SparseState(
@@ -551,9 +546,11 @@ class Wave2LibraryScreenTest {
         }
         compose.onNodeWithTag("search-top").assertIsDisplayed()
         compose.onNodeWithText("Top result").assertIsDisplayed()
-        // An album row has a play button; tracks play from their rows.
-        compose.onNodeWithContentDescription("Play Album 7").performClick()
-        assertEquals("play ${Selection.Album(7)} PLAY_NOW", log.last())
+        // An album row has one trailing control, ⋮, whose sheet plays it (Wave 3.5); tracks
+        // play from their rows.
+        compose.onNodeWithContentDescription("Play Album 7").assertDoesNotExist()
+        compose.onNodeWithContentDescription("More options for Album 7").performClick()
+        assertEquals("more", log.last())
         // There are more tracks than shown: "See all" shows that type alone.
         compose.onNodeWithContentDescription("See all: Tracks").performClick()
         assertEquals("type TRACKS", log.last())
@@ -588,7 +585,7 @@ class Wave2LibraryScreenTest {
 
     @Test
     fun aLibraryWithoutChipsStillShowsTheOverview() {
-        show { LibraryScreen(emptyList(), null, {}, onNewMusic = {}, onOpen = {}) }
+        show { LibraryScreen(emptyList(), null, {}, onOpen = {}) }
         compose.onNodeWithTag("library-chips").assertDoesNotExist()
         compose.onNodeWithText("Albums").assertIsDisplayed()
     }

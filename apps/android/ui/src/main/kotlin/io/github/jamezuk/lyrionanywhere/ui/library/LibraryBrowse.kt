@@ -30,6 +30,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Shuffle
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.DropdownMenu
@@ -97,62 +98,6 @@ import io.github.jamezuk.lyrionanywhere.ui.menus.MoreRequest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
-/** A chip's label. */
-@Composable
-fun libraryChipLabel(c: LibraryChip): String = stringResource(
-    when (c) {
-        LibraryChip.ALBUMS -> R.string.lib_albums
-        LibraryChip.ARTISTS -> R.string.lib_artists
-        LibraryChip.PLAYLISTS -> R.string.lib_playlists
-        LibraryChip.FAVOURITES -> R.string.lib_favourites
-        LibraryChip.FILTERS -> R.string.lib_filters
-        LibraryChip.DOWNLOADED -> R.string.chip_downloaded
-    },
-)
-
-/** The Library's type chips (Spotify style): tap one to show only that; tap it again for everything. */
-@Composable
-fun LibraryChips(selected: LibraryChip?, onToggle: (LibraryChip) -> Unit, modifier: Modifier = Modifier) {
-    val group = stringResource(R.string.library_types)
-    val scroll = rememberScrollState()
-    // Where each chip sits (left edge and width, in the scrolled row), so the chosen one can
-    // be scrolled into view: a chip chosen elsewhere (or restored) may be off the edge.
-    val spans = remember { mutableStateMapOf<LibraryChip, Pair<Int, Int>>() }
-    val margin = with(LocalDensity.current) { 24.dp.roundToPx() }
-    val span = selected?.let { spans[it] }
-    LaunchedEffect(selected, span, scroll.viewportSize) {
-        val (left, width) = span ?: return@LaunchedEffect
-        val view = scroll.viewportSize
-        if (view <= 0) return@LaunchedEffect
-        val target = when {
-            left - margin < scroll.value -> left - margin
-            left + width + margin > scroll.value + view -> left + width + margin - view
-            else -> return@LaunchedEffect
-        }
-        scroll.animateScrollTo(target.coerceIn(0, scroll.maxValue))
-    }
-    Row(
-        modifier
-            .fillMaxWidth()
-            .horizontalScroll(scroll)
-            .padding(horizontal = 12.dp)
-            .semantics { contentDescription = group }
-            .testTag("library-chips"),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        LibraryChip.entries.forEach { c ->
-            FilterChip(
-                selected = c == selected,
-                onClick = { onToggle(c) },
-                label = { Text(libraryChipLabel(c)) },
-                modifier = Modifier
-                    .onPlaced { p -> (p.positionInParent().x.toInt() to p.size.width).let { if (spans[c] != it) spans[c] = it } }
-                    .testTag("chip-${c.name.lowercase()}"),
-            )
-        }
-    }
-}
-
 @Composable
 fun librarySortLabel(order: LibraryAlbumOrder): String = stringResource(
     when (order) {
@@ -164,16 +109,26 @@ fun librarySortLabel(order: LibraryAlbumOrder): String = stringResource(
     },
 )
 
-/** The albums' order and view: "Sort: A–Z" (a menu) and grid or list. */
+/**
+ * The albums' order and view: "Sort: A–Z" (a menu, with Random as the last order, Wave 3.5:
+ * Random is a sort, not a page) and grid or list. While random, "Shuffle again" is beside it.
+ */
 @Composable
-fun AlbumBrowseBar(sort: LibraryAlbumOrder, grid: Boolean, onSort: (LibraryAlbumOrder) -> Unit, onGrid: (Boolean) -> Unit) {
+fun AlbumBrowseBar(
+    sort: LibraryAlbumOrder,
+    grid: Boolean,
+    onSort: (LibraryAlbumOrder) -> Unit,
+    onGrid: (Boolean) -> Unit,
+    random: Boolean = false,
+    onRandom: (() -> Unit)? = null,
+) {
     var open by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.weight(1f)) {
             TextButton(onClick = { open = true }, modifier = Modifier.testTag("album-sort")) {
                 Icon(Icons.AutoMirrored.Outlined.Sort, contentDescription = null)
                 Text(
-                    stringResource(R.string.sort_label, librarySortLabel(sort)),
+                    stringResource(R.string.sort_label, if (random) stringResource(R.string.sort_random) else librarySortLabel(sort)),
                     Modifier.padding(start = 8.dp),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -181,20 +136,41 @@ fun AlbumBrowseBar(sort: LibraryAlbumOrder, grid: Boolean, onSort: (LibraryAlbum
             }
             DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
                 LibraryAlbumOrder.OFFERED.forEach { s ->
+                    val chosen = s == sort && !random
                     DropdownMenuItem(
                         text = { Text(librarySortLabel(s)) },
                         onClick = {
                             open = false
                             onSort(s)
                         },
-                        trailingIcon = if (s == sort) {
+                        trailingIcon = if (chosen) {
                             { Icon(Icons.Outlined.Check, contentDescription = null) }
                         } else {
                             null
                         },
-                        modifier = Modifier.semantics { selected = s == sort }.testTag("album-sort-${s.name.lowercase()}"),
+                        modifier = Modifier.semantics { selected = chosen }.testTag("album-sort-${s.name.lowercase()}"),
                     )
                 }
+                if (onRandom != null) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.sort_random)) },
+                        onClick = {
+                            open = false
+                            onRandom()
+                        },
+                        trailingIcon = if (random) {
+                            { Icon(Icons.Outlined.Check, contentDescription = null) }
+                        } else {
+                            null
+                        },
+                        modifier = Modifier.semantics { selected = random }.testTag("album-sort-random"),
+                    )
+                }
+            }
+        }
+        if (random && onRandom != null) {
+            IconButton(onClick = onRandom, modifier = Modifier.testTag("album-reshuffle")) {
+                Icon(Icons.Outlined.Shuffle, contentDescription = stringResource(R.string.shuffle_again))
             }
         }
         // Says what it does next (a toggle's label mustn't depend on colour or state alone).
@@ -237,9 +213,13 @@ fun AlbumBrowser(
     onMore: (MoreRequest) -> Unit,
     modifier: Modifier = Modifier,
     onQueue: ((Album, Placement) -> Unit)? = null,
+    /** Albums in a random order (one batch) instead of [sort]. */
+    random: Boolean = false,
+    /** Choose the random order, or shuffle it again; null: not offered. */
+    onRandom: (() -> Unit)? = null,
 ) {
     Column(modifier.fillMaxSize()) {
-        AlbumBrowseBar(sort, grid, onSort, onGrid)
+        AlbumBrowseBar(sort, grid, onSort, onGrid, random, onRandom)
         when {
             state.failedEmpty -> ErrorState(state.error!!, onRetry)
             state.total == null -> LoadingState()

@@ -47,8 +47,8 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 | **Native audio output** | Android | A Rust engine with AAudio output opened at each track's sample rate; bit-perfect by default (see [Sound and DSP](#sound-and-dsp)) |
 | **Background playback and media controls** | Both | Lock screen, notification, Bluetooth and headset buttons (Media Session on the web, a Media3 session on Android); audio focus, ducking and "becoming noisy" on Android |
 | **Survives network dropouts** | Both | The gateway holds the player's session while the connection is down and keeps LMS believing the player is there, so playback resumes where it was. 60 s by default; up to 10 minutes on Android |
-| **Read-ahead for gaps in the signal** | Android | The next track is fetched to the phone long before the current one ends, so tunnels and dead spots don't stop the music. On by default (also on mobile data), in *Settings › Playback on this phone › Gaps in the signal*. The signal path and *Play on…* show how much listening is held ("4 min buffered ahead") |
-| **Replay cache** | Android | Tracks streamed in full are kept on the phone, so a replay or a skip back plays from it after checking a hash of the whole file, using almost no data; the signal path says *From cache*. Off, 500 MB, 1 GB (default), 2 GB or 5 GB, with a *Clear* button, in *Settings › Playback on this phone*. Needs the download permission, and is emptied on sign-out or when the permission is removed |
+| **Read-ahead for gaps in the signal** | Android | The next track is fetched to the phone long before the current one ends, so tunnels and dead spots don't stop the music. On by default (also on mobile data), in *Settings › Playback on this phone › Gaps in the signal* (web) or *Settings › About › Advanced* (Android). The signal path and *Play on…* show how much listening is held ("4 min buffered ahead") |
+| **Replay cache** | Android | Tracks streamed in full are kept on the phone, so a replay or a skip back plays from it after checking a hash of the whole file, using almost no data; the signal path says *From cache*. Off, 500 MB, 1 GB (default), 2 GB or 5 GB, with a *Clear* button, in *Settings › About › Advanced*. Needs the download permission, and is emptied on sign-out or when the permission is removed |
 | **Streams from your downloads** | Android | At Original quality, a FLAC stream of an album you've downloaded plays from the downloaded file once its audio is proven identical (STREAMINFO and a full MD5 check), so it costs only a short probe of data. The signal path says *From downloads* |
 | **Restart after a long gap** | Android | If the connection was gone longer than the grace, the phone restarts the track heard last at the point last heard, once LMS confirms nothing else has changed |
 | **Carry on after a reload** | Web | Reload the page and this device carries on with the same track at the same time. Browsers need a tap before sound: a banner says so |
@@ -66,7 +66,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 <p align="center">
   <img src="images/web/play-on-phone.png" alt="The Play on… sheet on a phone: this device ticked, then the other players with what each is playing, a Move here button on each, and sync group toggles" width="250">
   &nbsp;
-  <img src="images/android/play-on.png" alt="The Android Play on… sheet: this phone, the other players you may control with their tracks, and buttons to move playback or join a group" width="250">
+  <img src="images/android/play-on.png" alt="The Android Play on… sheet: this phone and the other players you may control with their tracks, each with a menu, and a Group players row" width="250">
 </p>
 <p align="center">
   <img src="images/web/rooms-desktop.png" alt="Rooms in a desktop browser: a card for each player with its artwork, track, play/pause, volume, power, sleep time left and next alarm" width="820">
@@ -74,11 +74,11 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 
 | Feature | Where | Details |
 |---|---|---|
-| **Play on…** | Both | A small output button opens a sheet listing this device, every other player you may control (with what each is playing) and sync groups. Long-press the mini player to open it too |
-| **"Playing on …" strip** | Both | Whenever another player is in use, a strip says so, with one tap back to this device |
+| **Play on…** | Both | A small output button opens a sheet listing this device, every other player you may control (with what each is playing) and sync groups. Long-press the mini player to open it too. Android: a tap on a row controls that player; *Move playback to …* is in the row's ⋮; *Group players…* is one row; a grouped player says who it plays with |
+| **Which player** | Both | Whenever another player is in use the app says so, with one tap back to this device. Web: a strip. Android: the mini player's second line ("on Kitchen", with a speaker); going back to this phone, or moving playback here, is in *Play on…* |
 | **Move playback** | Both | *Move here* carries another player's queue, track, position, shuffle and repeat to this device and stops it there; *Bring here* does the reverse; radio and app streams move too. Same recipe on every client (see [`PROTOCOL.md`](PROTOCOL.md#transfer-move-playback-between-players)) |
-| **Sync groups** | Both | Join or leave the controlled player's group; the player button names the group ("Lounge + Study") |
-| **Rooms** | Both | Every player you may control as a card: artwork, track, play/pause, volume, power, sleep time left and the next alarm. Tap to control, drag one card onto another to sync (or *Sync with…*, or the keyboard / TalkBack), *Play on its own* to unsync, a long press to move playback there |
+| **Sync groups** | Both | Join or leave the controlled player's group; the player button names the group ("Lounge + Study"). Android: in *Play on… › Group players…* |
+| **Rooms** | Both | Every player you may control as a card: artwork, track, play/pause, volume, power, sleep time left and the next alarm. Tap to control, drag one card onto another to sync (or *Sync with…*, or the keyboard / TalkBack), *Play on its own* to unsync, a long press to move playback there. Android (Wave 3.5): on phones Rooms is part of *Play on…* (each row's ⋮ plays or pauses, opens alarms and switches the player on or off; the controlled and playing players have a volume slider); the Rooms page is the expanded view on large windows, each card with play/pause, volume and ⋮ (power is in ⋮; drag the cover to sync) |
 | **Alarms** | Both | LMS's own alarms for any player you may control: time, days, once or weekly, what to play (the current queue, favourites, playlists, random mixes or sounds), shuffle and volume; an on/off switch per alarm and for all of a player's alarms. They ring on hardware players with no app open |
 | **Player permissions** | Server | Listeners see and control only their own devices and the home players an admin granted them; admins control every player |
 
@@ -90,9 +90,9 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 <p align="center">
   <img src="images/web/library-phone.png" alt="The Library on a phone: type chips, sort options and an album grid" width="250">
   &nbsp;
-  <img src="images/android/library.png" alt="The Android Library: chips for Albums, Artists, Playlists, Favourites, Filters and Downloaded above an album grid" width="250">
+  <img src="images/android/library.png" alt="The Android Albums page: a sort menu, a grid or list switch and an album grid" width="250">
   &nbsp;
-  <img src="images/android/album.png" alt="An album page on Android: large artwork, year, genre and format, Play, Shuffle, Add and More buttons, and the tracks by disc" width="250">
+  <img src="images/android/album.png" alt="An album page on Android: large artwork, year, genre and format, Play, Shuffle, Download and More buttons, and the tracks by disc" width="250">
 </p>
 <p align="center">
   <img src="images/web/album-desktop.png" alt="An album page in a desktop browser: the cover and album details, Play, Play next, More and Download buttons, the track list, and a Review section with a Read more button" width="820">
@@ -104,13 +104,13 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 | Feature | Where | Details |
 |---|---|---|
 | **All of LMS's "My Music"** | Both | New Music, albums, artists by role (album artists by default, all artists, composers, conductors and bands where the library has them), genres (albums or artists), years, compilations, random albums ("Shuffle again"), the music folder (browsed by id; paths never reach the app), playlists and favourites |
-| **Library chips, sort and view** | Both | Chips for Albums, Artists, Playlists, Favourites and Filters (Android also Downloaded); albums by Recently added, A–Z, Artist or Year, as a grid or a list; remembered on the device |
+| **Library sections, sort and view** | Both | Web: chips for Albums, Artists, Playlists, Favourites and Filters. Android: one list (Albums, Artists, Playlists, Favourites, Downloaded, Smart playlists, then Browse: Genres, Years, Compilations, Folders, Apps & Radio), each a page of its own. Albums by Recently added, A–Z, Artist or Year (Android also Random, one batch with *Shuffle again*), as a grid or a list; remembered on the device |
 | **A–Z fast scroller** | Both | Built from LMS's own index, so a letter loads only its own page; works with the keyboard, screen readers and TalkBack |
 | **Virtual libraries** | Both | When LMS has any, a picker narrows every browse list; remembered per user on the device |
-| **Album pages** | Both | Artwork, details (year, genre, format such as "FLAC 24/96"), discs, play and queue buttons (Shuffle on Android), More, and the album's review where the server has one |
-| **Artist pages** | Both | Albums grouped (Albums, Appears on, Compilations), "Appears as" chips by role, Play all, Shuffle and More, and the artist's biography and photo where the server has them |
+| **Album pages** | Both | Artwork, details (year, genre, format such as "FLAC 24/96"), discs, play and queue buttons (Shuffle on Android), More, and the album's review where the server has one. Android: the header is Play, Shuffle, Download and ⋮ on one row that never wraps; ⋮ holds Play next, Add to queue and Start radio |
+| **Artist pages** | Both | Albums grouped (Albums, Appears on, Compilations), "Appears as" chips by role, Play, Shuffle and More, and the artist's biography and photo where the server has them |
 | **Tappable credits** | Both | Track information lists everyone LMS credits by role; each name opens that person's albums in that role ("Name · Composer") |
-| **Smart filters** | Both | A rule builder (1–20 genres, a decade, an artist in an optional role, compilations or not; an order and up to 500 albums), saved per user on the server; each filter has its own page, and Play and Shuffle load its first 50 albums. A filter can be a Home shelf |
+| **Smart playlists (smart filters)** | Both | A rule builder (1–20 genres, a decade, an artist in an optional role, compilations or not; an order and up to 500 albums), saved per user on the server; each filter has its own page, and Play and Shuffle load its first 50 albums. A filter can be a Home shelf |
 | **"More…" menus** | Both | Play now, Play next and Add to queue, then LMS's own context menu for the track, album, artist, genre, year, folder or playlist, including every plugin action |
 | **Apps, radio and plugins, found automatically** | Both | Whatever LMS offers (podcasts, radio directories, streaming services, AudioMuse-AI, Custom Browse, Random Mix and more) appears with nothing hard-coded, including plugins that add themselves to My Music. Each is judged from its own top menu: ones that need setting up in LMS say so; empty or broken ones are tucked behind "Show all" |
 | **Favourites and saved playlists** | Both | Browse and play; admins can also create, rename, delete, reorder and remove tracks from playlists (shared household data, so listeners can't change them) |
@@ -135,7 +135,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 <p align="center">
   <img src="images/web/queue-phone.png" alt="The queue on a phone, in three sections: Now playing, Up next and Then, with drag handles and a Clear upcoming button" width="250">
   &nbsp;
-  <img src="images/android/queue.png" alt="The Android Queue tab: the selected player's queue in sections, with drag handles and links marking gapless tracks of one album" width="250">
+  <img src="images/android/queue.png" alt="The Android Queue tab: a one-line summary with a menu, then the selected player's queue, each row with a menu and a drag handle" width="250">
 </p>
 
 | Feature | Where | Details |
@@ -145,9 +145,11 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 | **Checked edits** | Both, Server | Removes and moves are checked against the entry on the server first, so an edit made after someone else changed the queue can't hit the wrong track |
 | **Clear** | Both | *Clear upcoming* (asks first, removes from the end checking each entry), or *Clear all* for a long queue |
 | **Save as playlist** | Both, Server | Admins save the queue as a saved playlist from the Queue page, the queue peek and the queue beside Now playing. The name starts as the album (for a one-album queue) or the date, and is checked as it's typed; a playlist of that name is replaced only if you say so. Then a message with a link to the new playlist. Radio and streaming entries are saved as LMS saves them, by their URL |
-| **Shuffle and repeat** | Both | Shuffle cycles Off, Tracks and Albums (a long press offers all three); consecutive tracks of one album carry a gapless link mark |
+| **Shuffle and repeat** | Both | Shuffle cycles Off, Tracks and Albums (a long press offers all three). Web: consecutive tracks of one album carry a gapless link mark. Android: whether a track plays straight on is in its Track info |
 | **Queue peek** | Both | Swipe up on the cover (or the Queue button) for the queue in a sheet; a Queue tab on phones |
 | **On this device marks** | Web | Each queue row shows *Downloaded* (any player) or *On this device* (the stream this browser holds in full, while it is the player), also in the row's accessible name. With the server out of reach, rows that can't be played here are dimmed and can't be tapped |
+| **Offline marks** | Android | One *Downloaded* mark (a filled ↓ in a circle) on every track row whose track is downloaded: the queue, album and playlist pages. The *On this device* mark (kept from streaming) shows only while your music server is out of reach |
+| **Queue actions** | Android | The header is one line ("12 tracks on Lounge") with ⋮: *Save as playlist*, *Clear upcoming* and *Clear queue*. A row has its ⋮ (Play next, Move up, Move down, Remove) and a drag handle |
 
 ## Now playing, lyrics, visualiser and signal path
 
@@ -156,7 +158,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
   &nbsp;
   <img src="images/web/lyrics-phone.png" alt="Synced lyrics on a phone, with the current line highlighted and kept in view" width="250">
   &nbsp;
-  <img src="images/android/now-playing-light.png" alt="The Android Now playing in the light theme, with the cover, star rating, quality badge and waveform seek bar" width="250">
+  <img src="images/android/now-playing-light.png" alt="The Android Now playing in the light theme, with the cover, a rating star, quality badge and waveform seek bar" width="250">
 </p>
 <p align="center">
   <img src="images/android/signal-path.png" alt="The Android signal path: source, decoding, each processing stage, the output and whether the route is bit-perfect" width="250">
@@ -166,18 +168,18 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 
 | Feature | Where | Details |
 |---|---|---|
-| **One screen that never scrolls** | Both | On phones the transport is always fully on screen (checked at 360 × 640): a top row (close, "Playing on …", ⋮), the hero, the title with its rating, artist and album with the quality badge, the waveform seek bar, the transport, Up next, and four actions (Sleep, Queue, Visualiser, Volume) |
+| **One screen that never scrolls** | Both | On phones the transport is always fully on screen (checked at 360 × 640). Android (Wave 3.5): the tab bar is hidden on Now playing; a top row (close, the sleep timer's time left while one runs, ⋮), the hero, the title with one rating control, artist and album with the quality badge, the waveform seek bar, the transport, a one-line Up next (on taller phones), and three actions: Play on (named after the player), Lyrics and Queue. ⋮ holds the full rating, Sleep timer, Volume, the visualiser and its style, the track's options, car mode, alarms and the player's power. Web: a top row (close, "Playing on …", ⋮) and four actions (Sleep, Queue, Visualiser, Volume) |
 | **Hero pager: Cover, Lyrics, Track info** | Both | Swipe between them, use the dots (tabs for screen readers) or the keys 1–3; remembered per device. Wide windows keep the art on the left with lyrics or info beside it, and can pin the queue |
 | **Waveform seek bar** | Both | Each track's waveform, analysed on your server, as the seek bar, with elapsed and remaining time; a plain bar where analysis is off |
 | **Lyrics** | Both | From the file's tags (plain or synced LRC), or from the *Music & Artist Information* plugin if installed. Synced lyrics highlight the line and follow it; tap a line to seek there. An optional one-line peek on Android |
 | **Track info and credits** | Both | Album and year, artist, genre, format, length and credits as links |
 | **Artist biographies, photos and album reviews** | Both | From the *Music & Artist Information* plugin, cleaned to plain text on the server; photos only through the gateway's image proxy |
 | **Quality badge and signal path** | Both | e.g. **FLAC 24/96 · Hi-Res** or **MP3 320**; tapping it opens the signal path: the source, decoding, re-encoding, volume and processing, the output and its rate, and (Android) the route, buffered cushion and a bit-perfect verdict with every reason it falls short |
-| **Ratings** | Both | Stars (half steps by keyboard or TalkBack) or a heart, as each user chooses; kept per user on the server by stable key, blended with LMS's shared rating, and passed to Ratings Light where installed. Rated offline on Android, sent later |
-| **Up next** | Both | The next track under the transport; swipe it away (or ✕) to remove it, with Undo |
+| **Ratings** | Both | Stars (half steps by keyboard or TalkBack) or a heart, as each user chooses; kept per user on the server by stable key, blended with LMS's shared rating, and passed to Ratings Light where installed. Rated offline on Android, sent later. Android: one control by the title (the heart toggles; the star opens the full 1–5 rating, which is also in ⋮ and on the heart's long press) |
+| **Up next** | Both | The next track under the transport; swipe it away to remove it, with Undo (web: or ✕; Android: one line of text, also removable with TalkBack's action or Delete) |
 | **Ambient background** | Both | The cover blurred and drifting behind Now playing, with a scrim that keeps text at WCAG AA over any cover; still under reduced motion, battery saver and on low-power devices; off in high contrast |
 | **Art-driven colour** | Android | Album, artist and Now playing pages take their colour from the cover, with every text colour adjusted to meet contrast |
-| **Visualiser** | Both | Bars, Scope, VU meters (with needle ballistics and peak hold) and Glow (a halo in the cover's own colours that pulses on the beat). Only while this device is the player; off by default, off under reduced motion (and battery saver on Android), and decorative for screen readers. One button: tap to switch on or off, long-press or swipe to change style. Also for downloads on Android |
+| **Visualiser** | Both | Bars, Scope, VU meters (with needle ballistics and peak hold) and Glow (a halo in the cover's own colours that pulses on the beat). Only while this device is the player; off by default, off under reduced motion (and battery saver on Android), and decorative for screen readers. One switch (Android: in ⋮): tap to switch on or off, long-press or swipe to change style. Also for downloads on Android |
 | **Mini player gestures** | Both | Swipe left or right for next or previous, up or tap to open Now playing, long-press for *Play on…*; each also a button, key and screen-reader action |
 
 ## Sound and DSP
@@ -185,7 +187,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 <p align="center">
   <img src="images/android/sound-settings.png" alt="Android Settings › Sound: a Bit-perfect indicator, preamp, loudness levelling, parametric EQ with per-output profiles, loudness-compensated volume, crossfeed, dither and transitions" width="250">
   &nbsp;
-  <img src="images/android/gaps-settings.png" alt="Android Settings › Gaps in the signal: switches for reading ahead the next track and doing so on mobile data too" width="250">
+  <img src="images/android/gaps-settings.png" alt="Android Settings › About › Advanced: reading ahead the next track (also on mobile data) and the replay cache" width="250">
 </p>
 
 All of these are on Android, for this phone's player, and are **off by default**, so playback stays bit-perfect. A *Bit-perfect* indicator changes as soon as any stage is on, and the signal path shows each stage. They apply to streaming and downloads alike.
@@ -215,7 +217,7 @@ All of these are on Android, for this phone's player, and are **off by default**
 | Feature | Where | Details |
 |---|---|---|
 | **Customisable Home** | Both | Your own shelves (recently played, stations, new music, most played, on this day, random albums, favourites, playlists, a genre, a station, a smart filter or a pinned menu), saved per user on the server so every device shows the same. Edit in place: reorder by dragging or Move up/down, hide, add, remove, reset |
-| **Stations** | Both | Endless stations computed on the server from your library and history: forgotten favourites, fresh, deep cuts, several genres, a decade (optionally favouring what you've played). A single genre plays as LMS's Random Mix. Stations avoid your last 200 plays |
+| **Stations** | Both | Endless stations computed on the server from your library and history: forgotten favourites, fresh, deep cuts, several genres, a decade (optionally favouring what you've played). A single genre plays as LMS's Random Mix. Stations avoid your last 200 plays. Android: a tap plays a station; deleting one is in its ⋮ (or a long press), never on the card |
 | **Save as station, Pin to Home** | Both | Save any plugin menu item (a mix, say) as a station or pin it to Home. What is stored is a reference to the action LMS offered, replayed under your own permissions each time; if LMS stops offering it, the station says so and nothing runs |
 | **Start radio and More like this** | Android (Web: Start radio in car mode) | From a track, album or artist: AudioMuse-AI's mixes where the server has them, or LMS's Don't Stop The Music. Hidden when the server offers neither |
 | **Voice search** | Android | "Play … on Lyrion Anywhere" from the phone's assistant, and voice search in car mode and Android Auto |
@@ -231,7 +233,7 @@ All of these are on Android, for this phone's player, and are **off by default**
 | **Download for offline listening** | Both | Albums (or the rest of one), playlists and single tracks; on the web also all of an artist's albums. Local library files only, never streaming services or radio |
 | **Three formats** | Both | Original (bit-perfect), Opus 160 kb/s or MP3 320 kb/s, with separate defaults for Wi-Fi and mobile data. Transcoded formats need `ffmpeg` on the server; an admin can limit the formats per user or turn downloads off |
 | **Resumable downloads** | Both | Two at a time, resumed with HTTP ranges after a break (even after a reload or restart), checked against the server's size and stable key; pause, resume and cancel |
-| **Wi-Fi only and a storage cap** | Both | Android: optional, in *Settings › Downloads and storage*. Web: *Download on Wi-Fi only* is on by default and works where the browser reports mobile data (Chrome on Android), with *Waiting for Wi-Fi* and a *Download now* override; elsewhere downloads always start. A storage limit (none by default) refuses a download that won't fit, saying how much it needs and how much is free |
+| **Wi-Fi only and a storage cap** | Both | Android: optional, in *Settings › Downloads › Download options*. Web: *Download on Wi-Fi only* is on by default and works where the browser reports mobile data (Chrome on Android), with *Waiting for Wi-Fi* and a *Download now* override; elsewhere downloads always start. A storage limit (none by default) refuses a download that won't fit, saying how much it needs and how much is free |
 | **Smart downloads** | Android | *Keep recently added albums offline (N)* and *Keep favourites offline*, refreshed on Wi-Fi within the storage cap; they never remove your own downloads |
 | **Downloads page** | Both | What is downloading, what is on the device (by album; on the web also playlists as their own groups), storage used, remove and remove all; the web page also shows the storage limit, the browser's quota and whether it keeps storage persistent. Removing a playlist or album keeps tracks another download still needs |
 | **Offline mode** | Both | When the server can't be reached, the downloaded library is shown and plays on the device; Android switches back by itself when the server returns |
@@ -241,8 +243,8 @@ All of these are on Android, for this phone's player, and are **off by default**
 | **A busy music server** | Web | When LMS stops answering for a while (its music share spinning up, say), the gateway says so at once instead of letting requests pile up. The web app shows a calm *Your music server is busy. Waiting for it…* status rather than an error or offline mode, keeps playing what it has buffered and stays connected, polls less often until LMS answers, then catches up by itself. Controls that need LMS are disabled meanwhile, as when the server is out of reach; nothing is queued to run later |
 | **Controls that work without the server** | Web | When the server can't be reached for more than 3 s (or the browser is offline), controls that can't work are greyed out rather than failing. With this browser as the player, Play/Pause still works (the position is kept), Next, Previous and the queue jump to tracks on this device (downloads, or the stream it holds) and back, a download can be sought, and playback goes on to the next track here at the end of one (or stops, saying the next one needs the server). The lock screen offers only what works; library play actions and the Rooms page's controls are disabled too. When the server is back, LMS is told where this device got to, unless someone changed the queue meanwhile; nothing done here, nothing told. One compact *Can't reach your server* chip at the top of the page, on phones too, never over the controls, and no error per command. Every control that needs the server (Download, LMS's More menus, *Bring here* and *Back to this device* too) is greyed out the same way, and says why: its tooltip and description point at the chip |
 | **Reloads with the server away** | Web | A route typed into the address bar opens in the app instead of reloading it. A page that does load while the server is out of reach comes back signed in (provisionally, until the server confirms it) and shows what was last playing, rather than a bare *Can't reach* page; the same while the music server is busy. Offline mode's splash is only for a device with nobody signed in |
-| **Offline playback** | Both | Android: the app's own queue through the same engine as streaming (DSP, levelling, bit-perfect USB, gapless, signal path), with the notification and Bluetooth buttons. Web: the browser's audio element with lock-screen controls |
-| **Continue on a player** | Both | Back online with downloads queued (playing or paused), a prompt offers *Continue on* a player you may control (this device's own player when it was the one in use, else the last one used), or *Not now*. It never happens by itself. The queue goes in order, at the current track and position, playing or paused as it was; then the downloads stop. Tracks no longer in the library are skipped and counted; if anything fails, the downloads carry on |
+| **Offline playback** | Both | Android: the app's own queue through the same engine as streaming (DSP, levelling, bit-perfect USB, gapless, signal path), with the notification and Bluetooth buttons. Web: the browser's audio element with lock-screen controls. Android (Wave 3.5): downloads use the main mini player, Now playing (Stop is in ⋮) and Queue tab, as a player called *Downloads*; the downloads queue can't be edited |
+| **Continue on a player** | Both | Back online with downloads queued (playing or paused), a prompt offers *Continue on* a player you may control (this device's own player when it was the one in use, else the last one used), or *Not now* (Android: a one-line banner, with ▾ to choose the player and ✕ for Not now). It never happens by itself. The queue goes in order, at the current track and position, playing or paused as it was; then the downloads stop. Tracks no longer in the library are skipped and counted; if anything fails, the downloads carry on |
 | **Plays counted in LMS** | Both, Server | Each play heard offline (half the track or 240 s) is queued on the device and sent when back online; LMS's play count and last played are updated. Retries never count twice; the web Downloads page shows "N plays waiting to sync" |
 | **Downloads kept per user** | Both | Another account signing in on the same device doesn't see them. Signing out asks whether to remove them (keeping is the default) |
 | **Revocation clears downloads** | Android | A device revoked by the server deletes its downloads at its next connection |

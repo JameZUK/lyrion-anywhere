@@ -82,6 +82,8 @@ class RenameScreenTests {
                     libraryVersion = "1",
                     onSignOut = {},
                     onLicences = {},
+                    // Settings › This device (Wave 3.5).
+                    section = io.github.jamezuk.lyrionanywhere.ui.settings.SettingsSection.DEVICE,
                     onRename = { renamed += it },
                 )
             }
@@ -105,7 +107,7 @@ class RenameScreenTests {
     fun noRenameRowWithoutASignIn() {
         compose.setContent {
             LyrionTheme(dynamicColour = false) {
-                SettingsScreen(SettingsUiState(username = "alice"), "1", "1", {}, {})
+                SettingsScreen(SettingsUiState(username = "alice"), "1", "1", {}, {}, section = io.github.jamezuk.lyrionanywhere.ui.settings.SettingsSection.DEVICE)
             }
         }
         compose.onNodeWithText("This phone").assertDoesNotExist()

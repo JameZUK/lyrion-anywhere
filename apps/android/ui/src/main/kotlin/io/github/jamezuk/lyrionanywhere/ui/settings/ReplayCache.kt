@@ -7,7 +7,8 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.RadioButton
+import io.github.jamezuk.lyrionanywhere.ui.components.Choice
+import io.github.jamezuk.lyrionanywhere.ui.components.ChoiceRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -24,6 +25,9 @@ import io.github.jamezuk.lyrionanywhere.data.ReplayCache
 import io.github.jamezuk.lyrionanywhere.data.ReplayCacheUsage
 import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.offline.formatBytes
+
+/** Stands for "no size chosen" while the account may not keep anything. */
+private const val NOT_ALLOWED = -1L
 
 /** "500 MB", "1 GB", "5 GB"; null for off (shown as "Off"). */
 fun replayCacheSizeName(bytes: Long): String? = when {
@@ -61,18 +65,17 @@ fun ReplayCacheSetting(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp).testTag("replay-cache-explain"),
         )
-        Column(Modifier.selectableGroup()) {
-            ReplayCache.CHOICES.forEach { choice ->
-                val selected = allowed && choice == bytes
-                ListItem(
-                    leadingContent = { RadioButton(selected = selected, onClick = null, enabled = allowed) },
-                    headlineContent = { Text(replayCacheSizeName(choice) ?: stringResource(R.string.mode_off)) },
-                    modifier = Modifier
-                        .selectable(selected = selected, enabled = allowed, role = Role.RadioButton) { onSize(choice) }
-                        .testTag("replay-cache-size-$choice"),
-                )
-            }
-        }
+        // The size: one row with a picker (Wave 3.5); without the permission every size is
+        // shown disabled and none chosen.
+        val off = stringResource(R.string.mode_off)
+        ChoiceRow(
+            title = stringResource(R.string.replay_cache_size),
+            choices = ReplayCache.CHOICES.map { c -> Choice(c, replayCacheSizeName(c) ?: off, tag = "replay-cache-size-$c", enabled = allowed) },
+            selected = if (allowed) bytes else NOT_ALLOWED,
+            onSelect = onSize,
+            tag = "replay-cache-size",
+            current = if (allowed) null else off,
+        )
         if (allowed) {
             val used = usage?.takeIf { it.tracks > 0 }
             Text(

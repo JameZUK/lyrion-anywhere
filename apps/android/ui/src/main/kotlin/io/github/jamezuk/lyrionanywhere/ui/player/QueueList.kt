@@ -97,8 +97,10 @@ class QueueDrag {
 }
 
 /**
- * The queue's heading, with "Clear upcoming" (the tracks after the current one) and "Clear
- * queue", each asking first. For a long queue, Clear upcoming offers Clear all instead.
+ * The queue's header: one quiet line ("12 tracks on Lounge") and ⋮ with Save as playlist,
+ * Clear upcoming (the tracks after the current one) and Clear queue, each clear asking first.
+ * For a long queue, Clear upcoming offers Clear all instead. (The page's own title says
+ * "Queue", so the header doesn't.)
  */
 @Composable
 fun QueueHeader(
@@ -112,50 +114,46 @@ fun QueueHeader(
     onSaveAsPlaylist: (() -> Unit)? = null,
     /** False while the server can't be reached: the queue can't be changed (greyed out). */
     enabled: Boolean = true,
+    /** The downloads queue (it says so, and has no actions). */
+    downloads: Boolean = false,
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var confirmUpcoming by rememberSaveable { mutableStateOf(false) }
-    // The heading stays on one line; the buttons that don't fit move into a labelled ⋮ menu.
-    val actions = buildList {
+    val actions = if (downloads) emptyList() else buildList {
         if (onSaveAsPlaylist != null && count > 0) {
-            val label = stringResource(R.string.save_queue_action)
-            add(
-                RowAction(label, Icons.AutoMirrored.Outlined.PlaylistAdd, onSaveAsPlaylist, enabled, tag = "save-queue") {
-                    TextButton(onClick = onSaveAsPlaylist, enabled = enabled, modifier = Modifier.testTag("save-queue")) {
-                        Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, contentDescription = null)
-                        Text(label, Modifier.padding(start = 4.dp))
-                    }
-                },
-            )
+            add(RowAction(stringResource(R.string.save_queue_action), Icons.AutoMirrored.Outlined.PlaylistAdd, onSaveAsPlaylist, enabled, tag = "save-queue") {})
         }
         if (upcoming != null && upcoming > 0) {
-            val label = stringResource(R.string.queue_clear_upcoming)
-            add(
-                RowAction(label, null, { confirmUpcoming = true }, enabled, tag = "clear-upcoming") {
-                    TextButton(onClick = { confirmUpcoming = true }, enabled = enabled, modifier = Modifier.testTag("clear-upcoming")) {
-                        Text(label)
-                    }
-                },
-            )
+            add(RowAction(stringResource(R.string.queue_clear_upcoming), Icons.Outlined.ClearAll, { confirmUpcoming = true }, enabled, tag = "clear-upcoming") {})
         }
         if (count > 0) {
-            val label = stringResource(R.string.queue_clear)
-            add(
-                RowAction(label, Icons.Outlined.ClearAll, { confirm = true }, enabled, tag = "clear-queue") {
-                    TextButton(onClick = { confirm = true }, enabled = enabled, modifier = Modifier.testTag("clear-queue")) {
-                        Icon(Icons.Outlined.ClearAll, contentDescription = null)
-                        Text(label, Modifier.padding(start = 4.dp))
-                    }
-                },
-            )
+            add(RowAction(stringResource(R.string.queue_clear), Icons.Outlined.Delete, { confirm = true }, enabled, tag = "clear-queue") {})
         }
     }
+    val summary = if (downloads) {
+        LocalResources.current.getQuantityString(R.plurals.queue_summary_downloads, count, count)
+    } else if (count > 0) {
+        LocalResources.current.getQuantityString(R.plurals.queue_summary, count, count, playerName)
+    } else {
+        playerName
+    }
+    // Every action is in the menu: the header never wraps, whatever the width or text size.
     OverflowRow(
-        actions = actions,
+        actions = emptyList(),
+        menuItems = actions,
         menuLabel = stringResource(R.string.queue_more),
         menuTag = "queue-actions",
-        modifier = Modifier.fillMaxWidth(),
-        lead = { SectionHeader(stringResource(R.string.section_queue), Modifier.testTag("queue-title"), maxLines = 1) },
+        modifier = Modifier.fillMaxWidth().padding(end = 4.dp),
+        lead = {
+            Text(
+                summary,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp).testTag("queue-title"),
+            )
+        },
     )
     if (confirm) {
         ConfirmDialog(
@@ -207,7 +205,7 @@ private fun ConfirmDialog(title: String, text: String, confirm: String, onConfir
  * Alt+Down move the focused row and Delete removes it.
  *
  * With [sections] the queue shows Now playing, Up next and Then; without, it is flat.
- * Consecutive tracks of an album get a small link mark between them (gapless).
+ * (Whether a track plays straight on from the one before is in its Track info, not here.)
  */
 fun LazyListScope.queueItems(
     entries: List<QueueEntry>,
@@ -220,6 +218,8 @@ fun LazyListScope.queueItems(
     marks: (Track) -> QueueMark = { QueueMark.NONE },
     /** Which controls work (while the server is away: rows not on the phone are dimmed). */
     gate: ControlGate = ControlGate.ONLINE,
+    /** False: a queue that can't be edited (the downloads queue), rows only play. */
+    editable: Boolean = true,
 ) {
     if (entries.isEmpty() && !hasMore) {
         item(key = "queue-empty") { Text(stringResource(R.string.queue_empty), Modifier.padding(16.dp)) }
@@ -233,8 +233,7 @@ fun LazyListScope.queueItems(
                     i == sections.upNext.first -> SectionHeader(stringResource(R.string.up_next), Modifier.testTag("section-up-next"))
                     i == sections.thenFrom -> SectionHeader(stringResource(R.string.section_then), Modifier.testTag("section-then"))
                 }
-                if (i > 0 && Gapless.follows(entries[i - 1].track, e.track)) GaplessMark(i)
-                QueueRow(i, e, entries.size, currentIndex, drag, actions, marks(e.track), gate)
+                QueueRow(i, e, entries.size, currentIndex, drag, actions, marks(e.track), gate, editable)
             }
         }
     }
@@ -251,40 +250,21 @@ fun LazyListScope.queueItems(
     }
 }
 
-/** The link mark between two tracks that play straight on (presentation only). */
-@Composable
-private fun GaplessMark(index: Int) {
-    val label = stringResource(R.string.gapless_marker)
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .padding(start = 36.dp)
-            .testTag("gapless-$index")
-            .semantics { contentDescription = label },
-    ) {
-        Icon(
-            Icons.Outlined.Link,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(14.dp),
-        )
-    }
-}
+/**
+ * The mark a queue row shows: downloaded (the one offline mark), or kept on the phone (only
+ * while your music server is out of reach: otherwise the cache goes unmentioned).
+ */
+internal fun shownMark(mark: QueueMark, gate: ControlGate): QueueMark =
+    if (mark == QueueMark.ON_DEVICE && gate.online) QueueMark.NONE else mark
 
 /** A queue row's mark: an icon with its own label, for TalkBack too. */
 @Composable
 internal fun QueueMarkIcon(mark: QueueMark, index: Int) {
-    val (icon, label) = when (mark) {
+    when (mark) {
         QueueMark.NONE -> return
-        QueueMark.DOWNLOADED -> Icons.Outlined.DownloadDone to R.string.queue_mark_downloaded
-        QueueMark.ON_DEVICE -> Icons.Outlined.OfflinePin to R.string.queue_mark_on_device
+        QueueMark.DOWNLOADED -> io.github.jamezuk.lyrionanywhere.ui.components.OfflineMark(Modifier.testTag("queue-mark-$index"))
+        QueueMark.ON_DEVICE -> io.github.jamezuk.lyrionanywhere.ui.components.CacheMark(Modifier.testTag("queue-mark-$index"))
     }
-    Icon(
-        icon,
-        contentDescription = stringResource(label),
-        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(end = 8.dp).size(18.dp).testTag("queue-mark-$index"),
-    )
 }
 
 @Composable
@@ -297,9 +277,10 @@ private fun QueueRow(
     actions: QueueActions,
     mark: QueueMark = QueueMark.NONE,
     gate: ControlGate = ControlGate.ONLINE,
+    canEdit: Boolean = true,
 ) {
     // While the server is away: no edits, and only rows on the phone can be played.
-    val editable = gate.other
+    val editable = gate.other && canEdit
     val playable = gate.canJump(mark)
     val haptics = LocalHapticFeedback.current
     val dismiss = rememberSwipeToDismissBoxState()
@@ -360,8 +341,8 @@ private fun QueueRow(
                     showArt = true,
                     onMore = { menu = true }.takeIf { editable },
                     enabled = playable,
-                    badge = if (mark != QueueMark.NONE) {
-                        { QueueMarkIcon(mark, index) }
+                    badge = if (shownMark(mark, gate) != QueueMark.NONE) {
+                        { QueueMarkIcon(shownMark(mark, gate), index) }
                     } else {
                         null
                     },

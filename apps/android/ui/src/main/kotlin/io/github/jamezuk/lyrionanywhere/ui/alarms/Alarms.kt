@@ -32,6 +32,7 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -270,7 +271,7 @@ fun AlarmsScreen(vm: AlarmsViewModel, playerName: String, modifier: Modifier = M
                                         .testTag("alarm-switch-${a.id}"),
                                 )
                                 IconButton(onClick = { confirmDelete = a.id }, modifier = Modifier.testTag("alarm-delete-${a.id}")) {
-                                    Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.alarm_delete, time))
+                                    Icon(Icons.Outlined.Delete, contentDescription = stringResource(R.string.alarm_delete, time))
                                 }
                             }
                         }

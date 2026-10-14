@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -41,13 +42,21 @@ class StreamingQualitySettingTest {
                 }
             }
         }
-        compose.onNodeWithText("Wi-Fi: Original · Mobile data: High").assertExists()
-        compose.onNodeWithTag("stream-quality-setting").performClick()
+        // A row with a picker each (Wave 3.5), showing the current level.
+        compose.onNodeWithTag("stream-quality-setting").assertExists()
+        compose.onNodeWithTag("stream-quality-wifi").assertTextContains("Original")
+        compose.onNodeWithTag("stream-quality-mobile").assertTextContains("High")
+        compose.onNodeWithTag("stream-quality-wifi").performClick()
         compose.onNodeWithTag("stream-quality-wifi-original").assertIsSelected()
+        compose.onNodeWithText("Cancel").performClick()
+        compose.onNodeWithTag("stream-quality-mobile").performClick()
         compose.onNodeWithTag("stream-quality-mobile-high").assertIsSelected()
         compose.onNodeWithTag("stream-quality-mobile-low").assertIsNotSelected()
         compose.onNodeWithTag("stream-quality-mobile-low").performClick()
+        compose.onNodeWithTag("stream-quality-mobile").performClick()
         compose.onNodeWithTag("stream-quality-mobile-low").assertIsSelected()
+        compose.onNodeWithText("Cancel").performClick()
+        compose.onNodeWithTag("stream-quality-wifi").performClick()
         compose.onNodeWithTag("stream-quality-wifi-high").performClick()
         assertEquals(
             listOf(
@@ -56,8 +65,8 @@ class StreamingQualitySettingTest {
             ),
             changes,
         )
-        compose.onNodeWithText("Done").performClick()
-        compose.onNodeWithText("Wi-Fi: High · Mobile data: Data saver").assertExists()
+        compose.onNodeWithTag("stream-quality-wifi").assertTextContains("High")
+        compose.onNodeWithTag("stream-quality-mobile").assertTextContains("Data saver")
     }
 
     @Test

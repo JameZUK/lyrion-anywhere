@@ -54,7 +54,7 @@ fun PlacesHost(h: HostState) {
     val places = rememberAppPlaces()
     when (h.phase) {
         Phase.SIGNING_IN -> Text("Signing in…")
-        Phase.OFFLINE -> Text("Downloaded music")
+        Phase.OFFLINE -> Text("Downloaded")
         Phase.MAIN -> places.Keep(h.account) { TestMain(h.connection) }
     }
 }

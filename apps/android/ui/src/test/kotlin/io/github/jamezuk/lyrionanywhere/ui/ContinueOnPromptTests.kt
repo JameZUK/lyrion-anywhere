@@ -8,6 +8,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -77,13 +78,17 @@ class ContinueOnPromptTests {
             }
         }
         compose.onNodeWithText("Back online. Continue on Kitchen?").assertIsDisplayed()
+        // One line since Wave 3.5: ▾ says what would move and lists the players.
+        compose.onNodeWithTag("continue-on-choose").performClick()
         compose.onNodeWithText("12 tracks from your downloads, playing now").assertIsDisplayed()
         compose.onNodeWithTag("continue-on-choice-aa:bb:cc:dd:ee:01").assertIsSelected()
+        compose.onNodeWithTag("continue-on-choice-aa:bb:cc:dd:ee:01").performClick()
         compose.onNodeWithText("Continue").performClick()
+        compose.onNodeWithTag("continue-on-choose").performClick()
         compose.onNodeWithTag("continue-on-choice-phone").performClick()
         compose.onNodeWithText("Back online. Continue on This phone?").assertIsDisplayed()
         compose.onNodeWithText("Continue").performClick()
-        compose.onNodeWithText("Not now").performClick()
+        compose.onNodeWithContentDescription("Not now").performClick()
         assertEquals(listOf(choices[1], choices[0]), picked)
         assertEquals(1, notNow)
     }
@@ -110,7 +115,7 @@ class ContinueOnPromptTests {
         }
         compose.onNodeWithText("Moving your downloads queue to Kitchen…").assertIsDisplayed()
         compose.onNodeWithText("Continue").assertIsNotEnabled()
-        compose.onNodeWithText("Not now").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Not now").assertIsNotEnabled()
 
         // It failed: the prompt stays, with why, and the downloads carry on.
         state = ContinueOnState(tracks = 3, result = HandOffResult.Failed(AppError.Offline("connection lost")), resultTarget = "Kitchen")

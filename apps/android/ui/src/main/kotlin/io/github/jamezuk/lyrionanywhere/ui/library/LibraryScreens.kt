@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
+import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Download
@@ -56,6 +57,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -311,9 +313,10 @@ fun ArtistList(
 }
 
 /**
- * Play, Shuffle, Add to queue, Download and More, for an album, artist, playlist or genre. One
- * row that never wraps: Play, Shuffle and ⋮ always show; Add to queue and Download move into
- * the ⋮ (with their labels) when the row is too narrow for them.
+ * A page header's buttons (album, artist, playlist, genre): Play, Shuffle, Download (where
+ * downloads are offered here) and ⋮. One row that never wraps. ⋮ opens the item's sheet
+ * ([onMore]), which has Play next, Add to queue and Download too; without one, ⋮ is a small
+ * menu of Play next and Add to queue. On a row too narrow for Download, it is left to ⋮.
  */
 @Composable
 fun PlayButtons(
@@ -326,15 +329,7 @@ fun PlayButtons(
     onDownload: (() -> Unit)? = null,
     downloadMark: io.github.jamezuk.lyrionanywhere.ui.offline.DownloadMark = io.github.jamezuk.lyrionanywhere.ui.offline.DownloadMark.NONE,
 ) {
-    val addLabel = stringResource(R.string.action_add_to_queue)
     val actions = buildList {
-        add(
-            RowAction(addLabel, Icons.AutoMirrored.Outlined.PlaylistAdd, { onPlay(Placement.ADD_TO_QUEUE) }, tag = "play-buttons-add") {
-                IconButton(onClick = { onPlay(Placement.ADD_TO_QUEUE) }) {
-                    Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, contentDescription = addLabel)
-                }
-            },
-        )
         if (onDownload != null) {
             val all = downloadMark == io.github.jamezuk.lyrionanywhere.ui.offline.DownloadMark.ALL
             val label = stringResource(
@@ -346,10 +341,21 @@ fun PlayButtons(
             )
             add(
                 RowAction(label, if (all) Icons.Outlined.DownloadDone else Icons.Outlined.Download, onDownload, tag = "play-buttons-download") {
-                    io.github.jamezuk.lyrionanywhere.ui.offline.DownloadButton(downloadMark, onDownload)
+                    io.github.jamezuk.lyrionanywhere.ui.offline.DownloadButton(downloadMark, onDownload, Modifier.testTag("play-buttons-download"))
                 },
             )
         }
+    }
+    val nextLabel = stringResource(R.string.action_play_next)
+    val addLabel = stringResource(R.string.action_add_to_queue)
+    // Without a sheet of its own, ⋮ still offers where else it can go in the queue.
+    val menuItems = if (onMore == null) {
+        listOf(
+            RowAction(nextLabel, Icons.AutoMirrored.Outlined.PlaylistPlay, { onPlay(Placement.PLAY_NEXT) }, tag = "play-buttons-next") {},
+            RowAction(addLabel, Icons.AutoMirrored.Outlined.PlaylistAdd, { onPlay(Placement.ADD_TO_QUEUE) }, tag = "play-buttons-add") {},
+        )
+    } else {
+        emptyList()
     }
     OverflowRow(
         actions = actions,
@@ -359,20 +365,22 @@ fun PlayButtons(
         spacing = 8.dp,
         pinned = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { onPlay(Placement.PLAY_NOW) }) {
+                Button(onClick = { onPlay(Placement.PLAY_NOW) }, modifier = Modifier.testTag("play-buttons-play")) {
                     Icon(Icons.Outlined.PlayArrow, contentDescription = null)
-                    Text(stringResource(playLabel), Modifier.padding(start = 4.dp))
+                    Text(stringResource(playLabel), Modifier.padding(start = 4.dp), maxLines = 1)
                 }
                 if (onShuffle != null) {
-                    FilledTonalButton(onClick = onShuffle) {
+                    FilledTonalButton(onClick = onShuffle, modifier = Modifier.testTag("play-buttons-shuffle")) {
                         Icon(Icons.Outlined.Shuffle, contentDescription = null)
-                        Text(stringResource(R.string.shuffle), Modifier.padding(start = 4.dp))
+                        Text(stringResource(R.string.shuffle), Modifier.padding(start = 4.dp), maxLines = 1)
                     }
                 }
             }
         },
         onMore = onMore,
         moreLabel = stringResource(R.string.action_more_item),
+        menuItems = menuItems,
+        dropMoved = true,
     )
 }
 
@@ -513,7 +521,6 @@ fun AlbumScreen(
                                 )
                             },
                         )
-                        io.github.jamezuk.lyrionanywhere.ui.discovery.StartRadioButton(actions.discovery, actions.onStartRadio)
                         if (review != null) {
                             ExpandableInfo(stringResource(R.string.info_review), review, Modifier.padding(horizontal = 16.dp))
                         }
@@ -538,6 +545,7 @@ fun AlbumScreen(
                                     showArtist = d.variousArtists,
                                     onMore = More.track(track)?.let { r -> { actions.onMore(r) } },
                                     modifier = m,
+                                    downloaded = track.id != null && track.id in actions.downloaded,
                                 )
                             }
                         }
@@ -578,6 +586,8 @@ fun TrackRow(
     enabled: Boolean = true,
     /** A small mark before the duration (e.g. where the track is on the phone). */
     badge: (@Composable () -> Unit)? = null,
+    /** Downloaded: the one "available offline" mark (when no other [badge] is given). */
+    downloaded: Boolean = false,
 ) {
     val playLabel = stringResource(R.string.play_track)
     val title = track.title.ifEmpty { stringResource(R.string.unknown_track) }
@@ -615,7 +625,7 @@ fun TrackRow(
         supportingContent = track.artist?.takeIf { showArtist }?.let { { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) } },
         trailingContent = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                badge?.invoke()
+                if (badge != null) badge() else if (downloaded) io.github.jamezuk.lyrionanywhere.ui.components.OfflineMark(Modifier.testTag("offline-mark"))
                 track.durationSecs?.let { Text(formatDuration(it)) }
                 if (onMore != null) {
                     IconButton(onClick = onMore) { Icon(Icons.Outlined.MoreVert, stringResource(R.string.more_for, title)) }
@@ -690,7 +700,6 @@ fun ArtistScreen(
                                     onPlay = actions.onPlay,
                                     onShuffle = actions.onShuffle,
                                     onMore = { actions.onMore(More.artist(Artist(id, name))) },
-                                    playLabel = R.string.action_play_all,
                                     modifier = Modifier.padding(top = 8.dp),
                                 )
                             },

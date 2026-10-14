@@ -23,6 +23,12 @@ import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PrivacyTip
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Smartphone
+import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.outlined.Album
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Tune
+import io.github.jamezuk.lyrionanywhere.ui.components.NavRow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -202,6 +208,48 @@ val LICENCES = listOf(
     Licence("Material Symbols", "Apache-2.0"),
 )
 
+/**
+ * The pages of Settings (Wave 3.5 rule 5): the index lists them, each with a one-line summary
+ * of what's set. Engine and diagnostic options are under About › Advanced.
+ */
+enum class SettingsSection(val tag: String) {
+    ACCOUNT("settings-account"),
+    PLAYBACK("settings-playback"),
+    NOW_PLAYING("settings-now-playing"),
+    DOWNLOADS("settings-downloads"),
+    HISTORY("settings-history"),
+    DEVICE("settings-device"),
+    ABOUT("settings-about"),
+    ADVANCED("settings-advanced"),
+}
+
+/** A section's name: the index row's title and its page's title. */
+@Composable
+fun settingsSectionTitle(s: SettingsSection): String = stringResource(
+    when (s) {
+        SettingsSection.ACCOUNT -> R.string.section_account
+        SettingsSection.PLAYBACK -> R.string.settings_playback
+        SettingsSection.NOW_PLAYING -> R.string.now_playing
+        SettingsSection.DOWNLOADS -> R.string.title_downloads
+        SettingsSection.HISTORY -> R.string.section_history
+        SettingsSection.DEVICE -> R.string.section_this_device
+        SettingsSection.ABOUT -> R.string.section_about
+        SettingsSection.ADVANCED -> R.string.settings_advanced
+    },
+)
+
+/** The index's one-line summaries that need the app's state (null: none shown). */
+data class SettingsSummaries(
+    val playback: String? = null,
+    val nowPlaying: String? = null,
+    val history: String? = null,
+)
+
+/**
+ * Settings: with no [section], the index (Account, Playback, Now playing, Downloads,
+ * Listening history, This device, About), each row opening its page through [onSection];
+ * with one, that page. A page's rows come from the slots below, so nothing moved is lost.
+ */
 @Composable
 fun SettingsScreen(
     state: SettingsUiState,
@@ -210,6 +258,10 @@ fun SettingsScreen(
     onSignOut: (removeDownloads: Boolean) -> Unit,
     onLicences: () -> Unit,
     modifier: Modifier = Modifier,
+    /** The page shown; null for the index. */
+    section: SettingsSection? = null,
+    onSection: (SettingsSection) -> Unit = {},
+    summaries: SettingsSummaries = SettingsSummaries(),
     onSound: () -> Unit = {},
     onDownloads: () -> Unit = {},
     onStorage: () -> Unit = {},
@@ -239,215 +291,251 @@ fun SettingsScreen(
     var confirm by rememberSaveable { mutableStateOf(false) }
     var renaming by rememberSaveable { mutableStateOf(false) }
     var changingPassword by rememberSaveable { mutableStateOf(false) }
-    LazyColumn(modifier.fillMaxSize()) {
-        if (defaultPlayer != null) {
-            item { SectionHeader(stringResource(R.string.section_default_player)) }
-            item { defaultPlayer() }
-        }
-        if (sleepFade != null) {
-            item { sleepFade() }
-            if (lyrics == null) item { HorizontalDivider() }
-        }
-        if (lyrics != null) {
-            item { lyrics() }
-            if (streaming == null) item { HorizontalDivider() }
-        }
-        if (visualiser != null) {
-            item { visualiser() }
-            if (streaming == null) item { HorizontalDivider() }
-        }
-        if (streaming != null) {
-            item { streaming() }
-            item { HorizontalDivider() }
-        }
-        if (ratings != null) {
-            item { ratings() }
-            item { HorizontalDivider() }
-        }
-        if (device != null) {
-            item { SectionHeader(stringResource(R.string.section_this_device)) }
-            item { device() }
-            item { HorizontalDivider() }
-        }
-        state.sound?.let { sound ->
-            item { SectionHeader(stringResource(R.string.section_playback)) }
-            item {
-                ListItem(
-                    leadingContent = { Icon(Icons.Outlined.GraphicEq, contentDescription = null) },
-                    headlineContent = { Text(stringResource(R.string.title_sound)) },
-                    supportingContent = {
-                        Text(
+    val playback = defaultPlayer != null || streaming != null || sleepFade != null || state.sound != null
+    val nowPlaying = lyrics != null || visualiser != null || ratings != null
+    val thisDevice = device != null || state.deviceName.isNotEmpty()
+    LazyColumn(modifier.fillMaxSize().testTag(section?.tag ?: "settings-index")) {
+        when (section) {
+            null -> {
+                item {
+                    NavRow(
+                        settingsSectionTitle(SettingsSection.ACCOUNT),
+                        listOf(state.username, state.serverName).filter { it.isNotEmpty() }.joinToString(" · "),
+                        { onSection(SettingsSection.ACCOUNT) },
+                        icon = Icons.Outlined.Person,
+                        tag = SettingsSection.ACCOUNT.tag,
+                    )
+                }
+                if (playback) {
+                    item {
+                        NavRow(settingsSectionTitle(SettingsSection.PLAYBACK), summaries.playback, { onSection(SettingsSection.PLAYBACK) }, icon = Icons.Outlined.PlayCircle, tag = SettingsSection.PLAYBACK.tag)
+                    }
+                }
+                if (nowPlaying) {
+                    item {
+                        NavRow(settingsSectionTitle(SettingsSection.NOW_PLAYING), summaries.nowPlaying, { onSection(SettingsSection.NOW_PLAYING) }, icon = Icons.Outlined.Album, tag = SettingsSection.NOW_PLAYING.tag)
+                    }
+                }
+                if (state.downloadsOffered) {
+                    item {
+                        NavRow(
+                            settingsSectionTitle(SettingsSection.DOWNLOADS),
+                            downloadsSummary(state),
+                            { onSection(SettingsSection.DOWNLOADS) },
+                            icon = Icons.Outlined.Download,
+                            tag = SettingsSection.DOWNLOADS.tag,
+                        )
+                    }
+                }
+                if (history != null) {
+                    item {
+                        NavRow(settingsSectionTitle(SettingsSection.HISTORY), summaries.history, { onSection(SettingsSection.HISTORY) }, icon = Icons.Outlined.History, tag = SettingsSection.HISTORY.tag)
+                    }
+                }
+                if (thisDevice) {
+                    item {
+                        NavRow(settingsSectionTitle(SettingsSection.DEVICE), state.deviceName.ifEmpty { null }, { onSection(SettingsSection.DEVICE) }, icon = Icons.Outlined.Smartphone, tag = SettingsSection.DEVICE.tag)
+                    }
+                }
+                item {
+                    NavRow(
+                        settingsSectionTitle(SettingsSection.ABOUT),
+                        stringResource(R.string.settings_about_summary, appVersion),
+                        { onSection(SettingsSection.ABOUT) },
+                        icon = Icons.Outlined.Info,
+                        tag = SettingsSection.ABOUT.tag,
+                    )
+                }
+            }
+            SettingsSection.ACCOUNT -> {
+                item {
+                    ListItem(
+                        leadingContent = { Icon(Icons.Outlined.Person, contentDescription = null) },
+                        headlineContent = { Text(state.username) },
+                        supportingContent = {
+                            Text(stringResource(if (state.account?.isAdmin == true) R.string.role_admin else R.string.role_listener))
+                        },
+                    )
+                }
+                item {
+                    ListItem(
+                        leadingContent = { Icon(Icons.Outlined.Dns, contentDescription = null) },
+                        headlineContent = { Text(stringResource(R.string.server)) },
+                        supportingContent = { Text(state.serverName) },
+                    )
+                }
+                state.account?.let { a ->
+                    item {
+                        ListItem(
+                            leadingContent = { Icon(Icons.Outlined.Security, contentDescription = null) },
+                            headlineContent = { Text(stringResource(R.string.two_step_verification)) },
+                            supportingContent = {
+                                Text(stringResource(if (a.twoStepEnabled) R.string.two_step_on else R.string.two_step_off))
+                            },
+                        )
+                    }
+                    // Only where the server offers it (older gateways don't).
+                    if (a.canChangePassword) {
+                        item {
+                            ListItem(
+                                leadingContent = { Icon(Icons.Outlined.Password, contentDescription = null) },
+                                headlineContent = { Text(stringResource(R.string.password_change)) },
+                                supportingContent = { Text(stringResource(R.string.password_change_row)) },
+                                modifier = Modifier
+                                    .testTag("change-password")
+                                    .clickable(enabled = !state.passwordChanging) { changingPassword = true },
+                            )
+                        }
+                        if (changingPassword) {
+                            item {
+                                ChangePasswordEditor(
+                                    twoStep = a.twoStepEnabled,
+                                    busy = state.passwordChanging,
+                                    error = state.passwordError,
+                                    changed = state.passwordChanged,
+                                    onSubmit = onChangePassword,
+                                    onDismiss = {
+                                        changingPassword = false
+                                        onClosePasswordForm()
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+                item {
+                    ListItem(
+                        leadingContent = { Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = null) },
+                        headlineContent = { Text(stringResource(R.string.action_sign_out)) },
+                        supportingContent = { Text(stringResource(R.string.sign_out_explained)) },
+                        modifier = Modifier.clickable(enabled = !state.signingOut) { confirm = true },
+                    )
+                }
+            }
+            SettingsSection.PLAYBACK -> {
+                if (defaultPlayer != null) item { defaultPlayer() }
+                if (streaming != null) item { streaming() }
+                if (sleepFade != null) item { sleepFade() }
+                state.sound?.let { sound ->
+                    item {
+                        NavRow(
+                            stringResource(R.string.title_sound),
                             if (sound.bitPerfect) {
                                 stringResource(R.string.sound_row_bit_perfect)
                             } else {
                                 stringResource(R.string.sound_row_processing, stageNames(sound.activeStages))
                             },
-                        )
-                    },
-                    modifier = Modifier.clickable(onClick = onSound),
-                )
-            }
-            if (gaps != null) item { gaps() }
-            item { HorizontalDivider() }
-        }
-        if (history != null) {
-            item { SectionHeader(stringResource(R.string.section_history)) }
-            item { history() }
-            item { HorizontalDivider() }
-        }
-        if (state.downloadsOffered) {
-            item { SectionHeader(stringResource(R.string.section_offline)) }
-            item {
-                ListItem(
-                    leadingContent = { Icon(Icons.Outlined.Download, contentDescription = null) },
-                    headlineContent = { Text(stringResource(R.string.title_downloads)) },
-                    supportingContent = { Text(stringResource(R.string.storage_used, formatBytes(state.downloadedBytes))) },
-                    modifier = Modifier.clickable(onClick = onDownloads),
-                )
-            }
-            item {
-                ListItem(
-                    leadingContent = { Icon(Icons.Outlined.Storage, contentDescription = null) },
-                    headlineContent = { Text(stringResource(R.string.title_storage)) },
-                    supportingContent = { Text(stringResource(R.string.storage_row)) },
-                    modifier = Modifier.clickable(onClick = onStorage),
-                )
-            }
-            item { HorizontalDivider() }
-        }
-        item { SectionHeader(stringResource(R.string.section_account)) }
-        item {
-            ListItem(
-                leadingContent = { Icon(Icons.Outlined.Person, contentDescription = null) },
-                headlineContent = { Text(state.username) },
-                supportingContent = {
-                    Text(
-                        stringResource(
-                            if (state.account?.isAdmin == true) R.string.role_admin else R.string.role_listener,
-                        ),
-                    )
-                },
-            )
-        }
-        if (state.deviceName.isNotEmpty()) {
-            item {
-                ListItem(
-                    leadingContent = { Icon(Icons.Outlined.Smartphone, contentDescription = null) },
-                    headlineContent = { Text(stringResource(R.string.this_phone_name)) },
-                    supportingContent = {
-                        val error = state.renameError?.let { errorMessage(it) }
-                        Text(
-                            error ?: stringResource(R.string.this_phone_name_explained, state.deviceName),
-                            // A failed rename is announced as it appears.
-                            modifier = if (error != null) {
-                                Modifier.semantics { liveRegion = LiveRegionMode.Polite }
-                            } else {
-                                Modifier
-                            },
-                        )
-                    },
-                    trailingContent = { Text(stringResource(R.string.action_rename)) },
-                    modifier = Modifier.clickable(enabled = !state.renaming) { renaming = !renaming },
-                )
-            }
-            if (renaming) {
-                item {
-                    RenameDeviceEditor(
-                        current = state.deviceName,
-                        onRename = { name ->
-                            renaming = false
-                            onRename(name)
-                        },
-                        onDismiss = { renaming = false },
-                    )
-                }
-            }
-        }
-        item {
-            ListItem(
-                leadingContent = { Icon(Icons.Outlined.Dns, contentDescription = null) },
-                headlineContent = { Text(stringResource(R.string.server)) },
-                supportingContent = { Text(state.serverName) },
-            )
-        }
-        state.account?.let { a ->
-            item {
-                ListItem(
-                    leadingContent = { Icon(Icons.Outlined.Security, contentDescription = null) },
-                    headlineContent = { Text(stringResource(R.string.two_step_verification)) },
-                    supportingContent = {
-                        Text(stringResource(if (a.twoStepEnabled) R.string.two_step_on else R.string.two_step_off))
-                    },
-                )
-            }
-            // Only where the server offers it (older gateways don't).
-            if (a.canChangePassword) {
-                item {
-                    ListItem(
-                        leadingContent = { Icon(Icons.Outlined.Password, contentDescription = null) },
-                        headlineContent = { Text(stringResource(R.string.password_change)) },
-                        supportingContent = { Text(stringResource(R.string.password_change_row)) },
-                        modifier = Modifier
-                            .testTag("change-password")
-                            .clickable(enabled = !state.passwordChanging) { changingPassword = true },
-                    )
-                }
-                if (changingPassword) {
-                    item {
-                        ChangePasswordEditor(
-                            twoStep = a.twoStepEnabled,
-                            busy = state.passwordChanging,
-                            error = state.passwordError,
-                            changed = state.passwordChanged,
-                            onSubmit = onChangePassword,
-                            onDismiss = {
-                                changingPassword = false
-                                onClosePasswordForm()
-                            },
+                            onSound,
+                            icon = Icons.Outlined.GraphicEq,
+                            tag = "settings-sound",
                         )
                     }
                 }
             }
-        }
-        item {
-            ListItem(
-                leadingContent = { Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = null) },
-                headlineContent = { Text(stringResource(R.string.action_sign_out)) },
-                supportingContent = { Text(stringResource(R.string.sign_out_explained)) },
-                modifier = Modifier.clickable(enabled = !state.signingOut) { confirm = true },
-            )
-        }
-        item { HorizontalDivider() }
-        item { SectionHeader(stringResource(R.string.section_about)) }
-        item {
-            ListItem(
-                leadingContent = {
-                    Image(painterResource(R.drawable.logo), contentDescription = null, modifier = Modifier.size(40.dp))
-                },
-                headlineContent = { Text(stringResource(R.string.app_name_full)) },
-                supportingContent = { Text(stringResource(R.string.version_line, appVersion, libraryVersion)) },
-            )
-        }
-        item {
-            ListItem(
-                leadingContent = { Icon(Icons.Outlined.Gavel, contentDescription = null) },
-                headlineContent = { Text(stringResource(R.string.licences)) },
-                modifier = Modifier.clickable(onClick = onLicences),
-            )
-        }
-        item {
-            val uriHandler = LocalUriHandler.current
-            ListItem(
-                leadingContent = { Icon(Icons.Outlined.PrivacyTip, contentDescription = null) },
-                headlineContent = { Text(stringResource(R.string.privacy_policy)) },
-                supportingContent = { Text(stringResource(R.string.privacy_policy_body)) },
-                modifier = Modifier
-                    .testTag("privacy-policy")
-                    .clickable {
-                        // No browser (or a locked-down profile) must not crash the app.
-                        runCatching { uriHandler.openUri(PRIVACY_POLICY_URL) }
-                    },
-            )
+            SettingsSection.NOW_PLAYING -> {
+                if (lyrics != null) item { lyrics() }
+                if (visualiser != null) item { visualiser() }
+                if (ratings != null) {
+                    item { HorizontalDivider() }
+                    item { ratings() }
+                }
+            }
+            SettingsSection.DOWNLOADS -> {
+                item {
+                    NavRow(
+                        stringResource(R.string.title_downloads),
+                        stringResource(R.string.storage_used, formatBytes(state.downloadedBytes)),
+                        onDownloads,
+                        icon = Icons.Outlined.Download,
+                        tag = "settings-downloads-manager",
+                    )
+                }
+                item {
+                    NavRow(stringResource(R.string.title_storage), stringResource(R.string.storage_row), onStorage, icon = Icons.Outlined.Storage, tag = "settings-download-options")
+                }
+            }
+            SettingsSection.HISTORY -> if (history != null) item { history() }
+            SettingsSection.DEVICE -> {
+                if (state.deviceName.isNotEmpty()) {
+                    item {
+                        ListItem(
+                            leadingContent = { Icon(Icons.Outlined.Smartphone, contentDescription = null) },
+                            headlineContent = { Text(stringResource(R.string.this_phone_name)) },
+                            supportingContent = {
+                                val error = state.renameError?.let { errorMessage(it) }
+                                Text(
+                                    error ?: stringResource(R.string.this_phone_name_explained, state.deviceName),
+                                    // A failed rename is announced as it appears.
+                                    modifier = if (error != null) {
+                                        Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                                    } else {
+                                        Modifier
+                                    },
+                                )
+                            },
+                            trailingContent = { Text(stringResource(R.string.action_rename)) },
+                            modifier = Modifier.clickable(enabled = !state.renaming) { renaming = !renaming },
+                        )
+                    }
+                    if (renaming) {
+                        item {
+                            RenameDeviceEditor(
+                                current = state.deviceName,
+                                onRename = { name ->
+                                    renaming = false
+                                    onRename(name)
+                                },
+                                onDismiss = { renaming = false },
+                            )
+                        }
+                    }
+                }
+                if (device != null) item { device() }
+            }
+            SettingsSection.ABOUT -> {
+                item {
+                    ListItem(
+                        leadingContent = {
+                            Image(painterResource(R.drawable.logo), contentDescription = null, modifier = Modifier.size(40.dp))
+                        },
+                        headlineContent = { Text(stringResource(R.string.app_name_full)) },
+                        supportingContent = { Text(stringResource(R.string.version_line, appVersion, libraryVersion)) },
+                    )
+                }
+                item {
+                    ListItem(
+                        leadingContent = { Icon(Icons.Outlined.Gavel, contentDescription = null) },
+                        headlineContent = { Text(stringResource(R.string.licences)) },
+                        modifier = Modifier.clickable(onClick = onLicences),
+                    )
+                }
+                item {
+                    val uriHandler = LocalUriHandler.current
+                    ListItem(
+                        leadingContent = { Icon(Icons.Outlined.PrivacyTip, contentDescription = null) },
+                        headlineContent = { Text(stringResource(R.string.privacy_policy)) },
+                        supportingContent = { Text(stringResource(R.string.privacy_policy_body)) },
+                        modifier = Modifier
+                            .testTag("privacy-policy")
+                            .clickable {
+                                // No browser (or a locked-down profile) must not crash the app.
+                                runCatching { uriHandler.openUri(PRIVACY_POLICY_URL) }
+                            },
+                    )
+                }
+                if (gaps != null) {
+                    item {
+                        NavRow(
+                            settingsSectionTitle(SettingsSection.ADVANCED),
+                            stringResource(R.string.settings_advanced_summary),
+                            { onSection(SettingsSection.ADVANCED) },
+                            icon = Icons.Outlined.Tune,
+                            tag = SettingsSection.ADVANCED.tag,
+                        )
+                    }
+                }
+            }
+            SettingsSection.ADVANCED -> if (gaps != null) item { gaps() }
         }
     }
     if (confirm) {
@@ -462,6 +550,13 @@ fun SettingsScreen(
         )
     }
 }
+
+/** "1.18 GB · 34 tracks" (the Downloads row of the index). */
+@Composable
+private fun downloadsSummary(state: SettingsUiState): String = listOf(
+    formatBytes(state.downloadedBytes),
+    androidx.compose.ui.platform.LocalResources.current.getQuantityString(R.plurals.track_count, state.downloadedTracks, state.downloadedTracks),
+).joinToString(" · ")
 
 @Composable
 fun LicencesScreen(modifier: Modifier = Modifier) {

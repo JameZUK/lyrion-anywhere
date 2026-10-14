@@ -16,6 +16,8 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
@@ -95,18 +97,21 @@ class TransferScreenTest {
     fun eachOtherPlayerOffersMovePlaybackHere() {
         val moved = mutableListOf<String>()
         sheet(state(), PlayOnActions(onControl = {}, onBackToPhone = {}, onMoveHere = { moved += it }))
-        compose.onNodeWithText("Moving playback replaces the other player's queue.").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Move playback to Player $KITCHEN").performClick()
+        // A secondary action in each row's ⋮ (Wave 3.5; the paragraph about it went).
+        compose.onNodeWithText("Moving playback replaces the other player's queue.").assertDoesNotExist()
+        compose.onNodeWithTag("play-on-$KITCHEN-more").performClick()
+        compose.onNodeWithText("Move playback to Player $KITCHEN").performClick()
         assertEquals(listOf(KITCHEN), moved)
         // Not for the player already being controlled.
-        compose.onNodeWithContentDescription("Move playback to Player $PHONE").assertDoesNotExist()
+        compose.onNodeWithTag("play-on-$PHONE-more").assertDoesNotExist()
     }
 
     @Test
     fun whileControllingAnotherPlayerThePhoneRowOffersBringToThisPhone() {
         var brought = 0
         sheet(state(selected = KITCHEN), PlayOnActions(onControl = {}, onBackToPhone = {}, onBringToPhone = { brought++ }))
-        compose.onNodeWithContentDescription("Bring to this phone").performClick()
+        compose.onNodeWithTag("play-on-phone-more").performClick()
+        compose.onNodeWithText("Move playback to this phone").performClick()
         assertEquals(1, brought)
     }
 
@@ -118,7 +123,8 @@ class TransferScreenTest {
             PlayOnActions(onControl = {}, onBackToPhone = {}, onMoveHere = { moved += it }),
         )
         compose.onNodeWithText("Moving playback to Kitchen: copying the queue…").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Move playback to Player $LOUNGE").performClick()
+        compose.onNodeWithTag("play-on-$LOUNGE-more").performClick()
+        compose.onNodeWithTag("play-on-$LOUNGE-move").assertIsNotEnabled().performClick()
         assertTrue(moved.isEmpty())
     }
 
@@ -136,22 +142,22 @@ class TransferScreenTest {
     }
 
     @Test
-    fun theStripOffersBringToThisPhoneAndShowsProgress() {
+    fun theMiniPlayerShowsProgressAndPlayOnWontMoveAgain() {
         var brought = 0
+        val running = state(selected = KITCHEN, transfer = TransferState.Running(PHONE, "Phone", TransferStage.GROUPING))
         compose.setContent {
             LyrionTheme(dynamicColour = false) {
-                MiniPlayer(
-                    state(selected = KITCHEN, transfer = TransferState.Running(PHONE, "Phone", TransferStage.GROUPING)),
-                    onOpen = {},
-                    onTogglePlay = {},
-                    onNext = {},
-                    onBringToPhone = { brought++ },
-                )
+                androidx.compose.foundation.layout.Column {
+                    MiniPlayer(running, onOpen = {}, onTogglePlay = {}, onNext = {})
+                    PlayOnList(running, PlayOnActions(onControl = {}, onBackToPhone = {}, onBringToPhone = { brought++ }))
+                }
             }
         }
-        compose.onNodeWithText("Moving playback to Phone…").assertIsDisplayed()
-        // Not offered again while one is running.
-        compose.onNodeWithText("Bring to this phone").assertDoesNotExist()
+        compose.onAllNodesWithText("Moving playback to Phone…")[0].assertIsDisplayed()
+        // Moving playback here (Play on…) is not offered again while one is running.
+        compose.onNodeWithTag("play-on-phone-more").performClick()
+        compose.onNodeWithTag("play-on-phone-move").assertIsNotEnabled()
+        assertEquals(0, brought)
     }
 
     @Test
@@ -202,6 +208,8 @@ class SyncScreenTest {
                 )
             }
         }
+        // In Group players… (Wave 3.5).
+        compose.onNodeWithTag("group-players").performClick()
         compose.onNodeWithTag("sync-$LOUNGE").assertIsOn().performClick()
         compose.onNodeWithTag("sync-$PHONE").assertDoesNotExist()
         assertEquals(listOf(LOUNGE to false), calls)
@@ -217,6 +225,7 @@ class SyncScreenTest {
                 PlayOnList(state(selected = PHONE), PlayOnActions(onControl = {}, onBackToPhone = {}, onSync = { id, on -> calls += id to on }))
             }
         }
+        compose.onNodeWithTag("group-players").performClick()
         compose.onNodeWithTag("sync-$KITCHEN").assertIsOff().performClick()
         assertEquals(listOf(KITCHEN to true), calls)
     }
@@ -333,10 +342,13 @@ class QueueScreenTest {
     fun clearingAsksFirst() {
         var cleared = 0
         compose.setContent { LyrionTheme(dynamicColour = false) { QueueHeader(3, "Kitchen", onClear = { cleared++ }) } }
+        // The header's actions are in its ⋮ (Wave 3.5).
+        compose.onNodeWithTag("queue-actions").performClick()
         compose.onNodeWithText("Clear queue").performClick()
         compose.onNodeWithText("This removes every track from the queue of Kitchen.").assertIsDisplayed()
         compose.onNodeWithText("Cancel").performClick()
         assertEquals(0, cleared)
+        compose.onNodeWithTag("queue-actions").performClick()
         compose.onNodeWithText("Clear queue").performClick()
         compose.onNodeWithText("Clear").performClick()
         assertEquals(1, cleared)
@@ -346,6 +358,7 @@ class QueueScreenTest {
     fun anEmptyQueueOffersNoClear() {
         compose.setContent { LyrionTheme(dynamicColour = false) { QueueHeader(0, "Kitchen", onClear = {}) } }
         compose.onNodeWithText("Clear queue").assertDoesNotExist()
+        compose.onNodeWithTag("queue-actions").assertDoesNotExist()
     }
 }
 

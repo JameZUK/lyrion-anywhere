@@ -4,6 +4,10 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.ui.platform.testTag
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -137,9 +141,9 @@ fun HomeScreen(
             if (edit != null && feed.layoutLoaded) {
                 item {
                     Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.Center) {
-                        OutlinedButton(onClick = actions.onEdit, modifier = Modifier.testTag("home-edit")) {
-                            Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Text(stringResource(R.string.home_edit), Modifier.padding(start = 8.dp))
+                        // A quiet text button: editing Home is occasional (Wave 3.5).
+                        TextButton(onClick = actions.onEdit, modifier = Modifier.testTag("home-edit")) {
+                            Text(stringResource(R.string.home_edit))
                         }
                     }
                 }
@@ -358,13 +362,26 @@ fun stationKind(spec: StationSpec): String = when (spec) {
     is StationSpec.Menu -> stringResource(R.string.station_kind_menu)
 }
 
+/**
+ * A station: a tap plays it. Deleting it (destructive) is in its ⋮ and on a long press, never
+ * on the card's face (Wave 3.5 rule 3); TalkBack has it as an action.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun StationCard(s: Station, playing: Boolean, actions: HomeActions) {
     var confirmDelete by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
     val start = stringResource(R.string.station_play, s.name)
+    val deleteLabel = stringResource(R.string.station_delete, s.name)
     Card(
         Modifier.fillMaxWidth().heightIn(min = 96.dp)
-            .clickable(role = Role.Button, onClickLabel = start) { actions.onStation(s) },
+            .combinedClickable(
+                role = Role.Button,
+                onClickLabel = start,
+                onLongClickLabel = deleteLabel,
+                onLongClick = { menu = true },
+            ) { actions.onStation(s) }
+            .semantics { customActions = listOf(CustomAccessibilityAction(deleteLabel) { confirmDelete = true; true }) },
     ) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(
@@ -374,15 +391,27 @@ private fun StationCard(s: Station, playing: Boolean, actions: HomeActions) {
             )
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Text(s.name, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(
-                    s.broken ?: if (playing) stringResource(R.string.station_playing) else stationKind(s.spec),
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                // The kind, unless it only repeats the name ("Forgotten favourites").
+                val line = s.broken ?: if (playing) stringResource(R.string.station_playing) else stationKind(s.spec)
+                if (!line.equals(s.name, ignoreCase = true)) {
+                    Text(line, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
             }
-            IconButton(onClick = { confirmDelete = true }) {
-                Icon(Icons.Outlined.Delete, stringResource(R.string.station_delete, s.name))
+            Box {
+                IconButton(onClick = { menu = true }, modifier = Modifier.testTag("station-more")) {
+                    Icon(Icons.Outlined.MoreVert, stringResource(R.string.more_for, s.name))
+                }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.station_delete_short)) },
+                        leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
+                        onClick = {
+                            menu = false
+                            confirmDelete = true
+                        },
+                        modifier = Modifier.testTag("station-delete"),
+                    )
+                }
             }
         }
     }

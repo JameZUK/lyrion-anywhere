@@ -16,7 +16,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.RadioButton
+import io.github.jamezuk.lyrionanywhere.ui.components.Choice
+import io.github.jamezuk.lyrionanywhere.ui.components.ChoiceRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -55,19 +56,6 @@ private fun recentName(n: Int): String =
     if (n <= 0) stringResource(R.string.mode_off) else pluralStringResource(R.plurals.smart_recent_n, n, n)
 
 @Composable
-private fun <T> Choices(options: List<T>, selected: T, label: @Composable (T) -> String, onSelect: (T) -> Unit) {
-    Column(Modifier.selectableGroup()) {
-        options.forEach { o ->
-            ListItem(
-                leadingContent = { RadioButton(selected = o == selected, onClick = null) },
-                headlineContent = { Text(label(o)) },
-                modifier = Modifier.selectable(selected = o == selected, role = Role.RadioButton) { onSelect(o) },
-            )
-        }
-    }
-}
-
-@Composable
 private fun SwitchRow(title: String, detail: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     ListItem(
         headlineContent = { Text(title) },
@@ -77,7 +65,11 @@ private fun SwitchRow(title: String, detail: String, checked: Boolean, onChange:
     )
 }
 
-/** Settings → Downloads and storage: the cap, the formats, Wi-Fi only, smart downloads. */
+/**
+ * Settings › Downloads › Download options: the storage limit, the formats, Wi-Fi only and
+ * smart downloads. Each list of options is one row with a picker (Wave 3.5). The downloads
+ * themselves (progress, what's on the phone) are the Downloads page, one level up.
+ */
 @Composable
 fun StorageSettingsScreen(
     state: OfflineState,
@@ -85,49 +77,38 @@ fun StorageSettingsScreen(
     error: AppError?,
     onChange: ((DownloadSettings) -> DownloadSettings) -> Unit,
     onRefreshSmart: () -> Unit,
-    onDownloads: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val d = state.settings
     LazyColumn(modifier.fillMaxSize().testTag("storage-settings"), contentPadding = PaddingValues(bottom = 24.dp)) {
         item {
-            ListItem(
-                leadingContent = { Icon(Icons.Outlined.Download, contentDescription = null) },
-                headlineContent = { Text(stringResource(R.string.title_downloads)) },
-                supportingContent = {
-                    Text(
-                        if (d.capBytes > 0) {
-                            stringResource(R.string.storage_used_of, formatBytes(state.usedBytes), formatBytes(d.capBytes))
-                        } else {
-                            stringResource(R.string.storage_used, formatBytes(state.usedBytes))
-                        },
-                    )
-                },
-                modifier = Modifier.clickable(onClick = onDownloads),
+            ChoiceRow(
+                title = stringResource(R.string.storage_cap),
+                choices = DownloadSettings.CAP_CHOICES.mapIndexed { i, c -> Choice(c, capName(c), tag = "storage-cap-$i") },
+                selected = d.capBytes,
+                onSelect = { c -> onChange { it.copy(capBytes = c) } },
+                tag = "storage-cap",
+                note = stringResource(R.string.storage_cap_body),
             )
-            HorizontalDivider()
         }
-        item { SectionHeader(stringResource(R.string.storage_cap)) }
         item {
-            Text(
-                stringResource(R.string.storage_cap_body),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(horizontal = 16.dp),
+            ChoiceRow(
+                title = stringResource(R.string.format_wifi),
+                choices = DownloadFormat.entries.map { Choice(it, formatName(it), tag = "format-wifi-${it.name.lowercase()}") },
+                selected = d.wifiFormat,
+                onSelect = { f -> onChange { it.copy(wifiFormat = f) } },
+                tag = "format-wifi",
+                note = stringResource(R.string.format_note),
             )
-            Choices(DownloadSettings.CAP_CHOICES, d.capBytes, { capName(it) }) { c -> onChange { it.copy(capBytes = c) } }
         }
-        item { SectionHeader(stringResource(R.string.format_wifi)) }
         item {
-            Choices(DownloadFormat.entries, d.wifiFormat, { formatName(it) }) { f -> onChange { it.copy(wifiFormat = f) } }
-        }
-        item { SectionHeader(stringResource(R.string.format_mobile)) }
-        item {
-            Choices(DownloadFormat.entries, d.mobileFormat, { formatName(it) }) { f -> onChange { it.copy(mobileFormat = f) } }
-            Text(
-                stringResource(R.string.format_note),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp),
+            ChoiceRow(
+                title = stringResource(R.string.format_mobile),
+                choices = DownloadFormat.entries.map { Choice(it, formatName(it), tag = "format-mobile-${it.name.lowercase()}") },
+                selected = d.mobileFormat,
+                onSelect = { f -> onChange { it.copy(mobileFormat = f) } },
+                tag = "format-mobile",
+                note = stringResource(R.string.format_note),
             )
         }
         item {
@@ -140,17 +121,14 @@ fun StorageSettingsScreen(
         }
         item { SectionHeader(stringResource(R.string.smart_downloads)) }
         item {
-            Text(
-                stringResource(R.string.smart_downloads_body),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(horizontal = 16.dp),
+            ChoiceRow(
+                title = stringResource(R.string.smart_recent),
+                choices = DownloadSettings.RECENT_CHOICES.mapIndexed { i, n -> Choice(n, recentName(n), tag = "smart-recent-$i") },
+                selected = d.smartRecentAlbums,
+                onSelect = { n -> onChange { it.copy(smartRecentAlbums = n) } },
+                tag = "smart-recent",
+                note = stringResource(R.string.smart_downloads_body),
             )
-        }
-        item { SectionHeader(stringResource(R.string.smart_recent)) }
-        item {
-            Choices(DownloadSettings.RECENT_CHOICES, d.smartRecentAlbums, { recentName(it) }) { n ->
-                onChange { it.copy(smartRecentAlbums = n) }
-            }
         }
         item {
             SwitchRow(

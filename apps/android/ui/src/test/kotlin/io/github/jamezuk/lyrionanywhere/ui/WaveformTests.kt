@@ -138,6 +138,8 @@ class WaveformScreenTests {
                     libraryVersion = "1",
                     onSignOut = {},
                     onLicences = {},
+                    // Settings › Playback (Wave 3.5).
+                    section = io.github.jamezuk.lyrionanywhere.ui.settings.SettingsSection.PLAYBACK,
                     onSound = { opened = true },
                 )
             }
@@ -160,6 +162,7 @@ class WaveformScreenTests {
                     libraryVersion = "1",
                     onSignOut = {},
                     onLicences = {},
+                    section = io.github.jamezuk.lyrionanywhere.ui.settings.SettingsSection.PLAYBACK,
                 )
             }
         }
@@ -170,7 +173,7 @@ class WaveformScreenTests {
     fun noSoundSettingsWithoutALocalPlayer() {
         compose.setContent {
             LyrionTheme(dynamicColour = false) {
-                SettingsScreen(SettingsUiState(username = "alice"), "1", "1", {}, {})
+                SettingsScreen(SettingsUiState(username = "alice"), "1", "1", {}, {}, section = io.github.jamezuk.lyrionanywhere.ui.settings.SettingsSection.PLAYBACK)
             }
         }
         compose.onNodeWithText("Sound").assertDoesNotExist()

@@ -19,7 +19,7 @@
     <string name="two_step_prompt">Enter the 6-digit code from your authenticator app.</string>
     <string name="two_step_code">Two-step code</string>
     <string name="pair_title">Pair this phone</string>
-    <string name="pair_body">In the web app, open Settings and choose Add another device (or ask your server’s admin for a code), then scan the QR code it shows. Or type the pairing code.</string>
+    <string name="pair_body">In the web app, open Settings and choose Add another device (or ask your music server’s admin for a code), then scan the QR code it shows. Or type the pairing code.</string>
     <string name="pairing_code">Pairing code</string>
     <string name="camera_preview">Camera view for scanning the pairing QR code</string>
     <string name="server_scan_note">Or scan the QR code from Add another device in the web app’s settings (or Add a device in the server’s Lyrion Anywhere settings): it fills in the server for you.</string>
@@ -35,7 +35,7 @@
     <string name="pair_link_refused_title">Not a pairing link</string>
     <string name="pair_link_refused_body">The link that opened the app isn’t a valid Lyrion Anywhere pairing link, so it was ignored. Nothing was changed.</string>
     <string name="restoring">Signing in…</string>
-    <string name="unreachable_title">Can\'t reach your server</string>
+    <string name="unreachable_title">Can\'t reach your music server</string>
     <string name="unreachable_body">%1$s isn\'t answering. You\'re still signed in; check your connection and try again.</string>
 
     <!-- Actions -->
@@ -55,7 +55,6 @@
     <string name="action_previous">Previous track</string>
     <string name="action_play_next">Play next</string>
     <string name="action_add_to_queue">Add to queue</string>
-    <string name="action_play_all">Play all</string>
 
     <!-- Navigation -->
     <string name="nav_home">Home</string>
@@ -100,7 +99,7 @@
 
     <!-- Players -->
     <string name="section_queue">Queue</string>
-    <string name="choose_player_first">No player is chosen yet. Choose where to play.</string>
+    <string name="choose_player_first">No player chosen.</string>
     <string name="player_playing">Playing</string>
     <string name="player_idle">Ready</string>
     <string name="player_off">Switched off</string>
@@ -119,12 +118,11 @@
     <string name="mode_off">Off</string>
     <string name="position">Position in track</string>
     <string name="volume">Volume</string>
-    <string name="power_named">Power, %1$s</string>
     <string name="toggle_on">On</string>
     <string name="queued_play_now">Playing now</string>
     <string name="queued_next">Playing next</string>
     <string name="queued_add">Added to the queue</string>
-    <string name="no_player_selected">Choose a player first</string>
+    <string name="no_player_selected">No player chosen. Choose a player first.</string>
 
     <!-- Settings -->
     <string name="section_account">Account</string>
@@ -147,7 +145,7 @@
     <string name="password_same">The new password must be different from the current one.</string>
     <string name="password_error_wrong">The current password or two-step code isn’t right.</string>
     <string name="password_error_refused">Not changed: %1$s.</string>
-    <string name="password_error_offline">Can’t reach your server. Nothing was changed; try again.</string>
+    <string name="password_error_offline">Can’t reach your music server. Nothing was changed; try again.</string>
     <string name="password_error_signed_out">You’re signed out. Sign in again to change your password.</string>
     <string name="password_changed">Password changed. This phone stays signed in.</string>
     <plurals name="password_signed_out_others">
@@ -168,7 +166,7 @@
     <string name="version_line">App %1$s · core %2$s</string>
     <string name="licences">Open-source licences</string>
     <string name="privacy_policy">Privacy policy</string>
-    <string name="privacy_policy_body">What the app and your server keep, and what they don\'t</string>
+    <string name="privacy_policy_body">What the app and your music server keep, and what they don\'t</string>
     <string name="licences_intro">Lyrion Anywhere is free software under the GNU GPL (version 2 or later). It is built on these open-source components:</string>
 
     <!-- This phone as a player, and its signal path -->
@@ -209,7 +207,7 @@
     <string name="levelling_rg_album">ReplayGain, album</string>
     <string name="levelling_rg_album_body">Keeps an album\'s own dynamics, from its album gain tags.</string>
     <string name="levelling_r128">Server analysis (EBU R128)</string>
-    <string name="levelling_r128_body">Each track measured by your server, falling back to ReplayGain tags.</string>
+    <string name="levelling_r128_body">Each track measured by your music server, falling back to ReplayGain tags.</string>
     <string name="sound_preamp">Preamp</string>
     <string name="sound_preamp_value">Preamp: %1$s</string>
     <string name="sound_limiter">True-peak limiter</string>
@@ -290,7 +288,7 @@
 
     <!-- States and errors -->
     <string name="loading">Loading</string>
-    <string name="error_offline">Can\'t reach your server. Check your connection and try again.</string>
+    <string name="error_offline">Can\'t reach your music server. Check your connection and try again.</string>
     <string name="error_signed_out">You\'ve been signed out. Please sign in again.</string>
     <string name="error_two_step_required">Enter your two-step code.</string>
     <string name="error_forbidden">You don\'t have permission to do that.</string>
@@ -319,15 +317,13 @@
     <string name="play_named">Play %1$s</string>
     <string name="add_named">Add %1$s to the queue</string>
     <string name="kind_artist">Artist</string>
-    <string name="new_music">New Music</string>
-    <string name="new_music_detail">Recently added albums</string>
     <string name="lib_albums">Albums</string>
     <string name="lib_artists">Artists</string>
     <string name="lib_genres">Genres</string>
     <string name="lib_years">Years</string>
     <string name="lib_compilations">Compilations</string>
-    <string name="lib_random">Random Albums</string>
-    <string name="lib_folder">Music Folder</string>
+    <string name="lib_random">Random albums</string>
+    <string name="lib_folder">Folders</string>
     <string name="lib_playlists">Playlists</string>
     <string name="lib_favourites">Favourites</string>
     <string name="lib_apps">Apps &amp; Radio</string>
@@ -346,7 +342,7 @@
     <string name="no_year">No year</string>
     <string name="no_playlists">No saved playlists yet.</string>
     <string name="playlist_empty">This playlist is empty.</string>
-    <string name="no_favourites">No favourites here yet. Add them in LMS or any LMS app.</string>
+    <string name="no_favourites">No favourites here yet. Add them in your music server or any of its apps.</string>
     <string name="folder_empty">This folder is empty.</string>
     <string name="untitled">Untitled</string>
     <string name="nothing_here">Nothing here yet.</string>
@@ -394,9 +390,9 @@
     <string name="apps_radio">Radio</string>
     <string name="apps_apps">Apps</string>
     <string name="apps_plugins">Plugins</string>
-    <string name="apps_none">No apps installed in LMS.</string>
+    <string name="apps_none">No apps installed in your music server.</string>
     <string name="apps_need_player">Tip: choose a player first; some apps need one to browse.</string>
-    <string name="apps_needs_setup">Needs setting up in LMS</string>
+    <string name="apps_needs_setup">Needs setting up in your music server</string>
     <string name="apps_not_usable">Not usable here</string>
     <string name="apps_show_all">Show all</string>
     <string name="apps_hide_unusable">Hide unusable</string>
@@ -410,11 +406,7 @@
     <string name="this_phone">This phone</string>
     <string name="play_on_title">Play on…</string>
     <string name="play_on_other_label">Playing on %1$s. Choose where to play</string>
-    <string name="playing_on">Playing on %1$s</string>
-    <string name="back_to_phone">Back to this phone</string>
     <string name="no_other_players">No other players are available to you.</string>
-    <string name="sync_groups">Synchronised groups</string>
-    <string name="sync_group_detail">Playing in step</string>
     <string name="section_default_player">Default player</string>
     <string name="default_player_phone">This phone</string>
     <string name="default_player_phone_detail">Start by playing on this phone</string>
@@ -424,8 +416,6 @@
 
     <!-- Transfer (docs/PROTOCOL.md › Transfer) -->
     <string name="move_here_named">Move playback to %1$s</string>
-    <string name="bring_to_phone">Bring to this phone</string>
-    <string name="move_replaces_queue">Moving playback replaces the other player\'s queue.</string>
     <string name="transfer_reading">Moving playback to %1$s: reading the queue…</string>
     <string name="transfer_grouping">Moving playback to %1$s…</string>
     <string name="transfer_starting">Moving playback to %1$s: starting it…</string>
@@ -485,9 +475,8 @@
     <string name="choose_playlist">Choose a playlist to see it here.</string>
 
     <!-- Offline (A5): downloads, the offline library and player, storage settings -->
-    <string name="section_offline">Offline</string>
     <string name="title_downloads">Downloads</string>
-    <string name="title_storage">Downloads and storage</string>
+    <string name="title_storage">Download options</string>
     <string name="storage_row">Storage limit, formats, Wi-Fi only and smart downloads</string>
     <string name="storage_used">%1$s used</string>
     <string name="storage_used_of">%1$s used of %2$s</string>
@@ -527,7 +516,7 @@
     <string name="download_retry_for">Retry %1$s</string>
     <string name="download_cancel_for">Cancel %1$s</string>
     <string name="various_artists">Various artists</string>
-    <string name="downloads_forbidden">Your account isn’t allowed to download. Ask your server’s administrator to turn downloads on.</string>
+    <string name="downloads_forbidden">Your account isn’t allowed to download. Ask your music server’s administrator to turn downloads on.</string>
     <string name="downloads_wait_connection">Downloads carry on when you’re back online.</string>
     <string name="downloads_wait_wifi">Downloads are waiting for Wi-Fi.</string>
     <string name="downloads_empty">Nothing downloaded yet. Use Download on an album, playlist or track to keep it on this phone.</string>
@@ -536,7 +525,7 @@
     <string name="downloads_pause_all">Pause all</string>
     <string name="downloads_resume_all">Resume all</string>
     <string name="downloads_cancel_all">Cancel all</string>
-    <string name="downloads_done">On this phone</string>
+    <string name="downloads_done">Downloaded</string>
     <string name="downloads_remove_all">Remove all downloads</string>
     <string name="downloads_remove_all_title">Remove all downloads?</string>
     <string name="downloads_remove_all_body">This removes %1$s of music from this phone. You can download it again later.</string>
@@ -545,7 +534,7 @@
     <string name="remove_download_body">Remove “%1$s” from this phone? You can download it again later.</string>
     <string name="remove_download_named">Remove the download of %1$s</string>
     <string name="play_album_named">Play %1$s</string>
-    <string name="offline_library">Downloaded music</string>
+    <string name="offline_library">Downloaded</string>
     <string name="offline_nothing">Nothing has been downloaded on this phone, so there is nothing to play offline.</string>
     <string name="offline_album_gone">This album is no longer on this phone.</string>
     <string name="offline_available">Available offline</string>
@@ -558,22 +547,20 @@
     <!-- The music server stopped answering for a while (its storage waking up, say); the app stays connected. -->
     <string name="connection_server_busy">Your music server is busy. Waiting for it…</string>
     <!-- The server can't be reached (offline controls): one line, above the screen. -->
-    <string name="connection_unreachable_short">Can’t reach your server.</string>
+    <string name="connection_unreachable_short">Can’t reach your music server.</string>
     <!-- … while this phone carries on playing what it holds. -->
-    <string name="connection_unreachable_here">Can’t reach your server. Playing from this device.</string>
+    <string name="connection_unreachable_here">Can’t reach your music server. Playing from this device.</string>
     <!-- Now playing, stopped at a track's end with the server away. -->
-    <string name="next_needs_server">Next track needs your server</string>
+    <string name="next_needs_server">Next track needs your music server</string>
     <!-- Queue marks: where a track is on this phone. -->
-    <string name="queue_mark_downloaded">Downloaded</string>
     <string name="queue_mark_on_device">On this device</string>
     <string name="playing_downloads">Downloads</string>
-    <string name="playing_downloads_on_phone">Playing downloads on this phone</string>
     <string name="format_original">Original (as in your library)</string>
     <string name="format_mp3">MP3 (320 kb/s)</string>
     <string name="format_opus">Opus (160 kb/s, smallest)</string>
     <string name="format_wifi">Format on Wi-Fi</string>
     <string name="format_mobile">Format on mobile data</string>
-    <string name="format_note">Where your server can’t convert a track, the original is downloaded.</string>
+    <string name="format_note">Where your music server can’t convert a track, the original is downloaded.</string>
     <string name="storage_cap">Storage limit</string>
     <string name="storage_cap_body">The most space downloads may use. Smart downloads make room within it; your own downloads are never removed automatically.</string>
     <string name="storage_no_limit">No limit</string>
@@ -587,7 +574,7 @@
         <item quantity="other">The latest %1$d albums</item>
     </plurals>
     <string name="smart_favourites">Keep favourites offline</string>
-    <string name="smart_favourites_body">Tracks and albums from your library in your LMS favourites.</string>
+    <string name="smart_favourites_body">Tracks and albums from your library in your music server’s favourites.</string>
     <string name="smart_refresh">Refresh smart downloads now</string>
     <string name="smart_refreshing">Refreshing…</string>
     <string name="sign_out_downloads_body">This phone has %1$s of downloaded music. Keep it for when you sign in again, or remove it now?</string>
@@ -624,7 +611,7 @@
     <string name="home_shelf_station">Station</string>
     <string name="home_shelf_menu">Pinned menu</string>
     <string name="home_shelf_genre">Genre</string>
-    <string name="home_shelf_filter">Smart filter</string>
+    <string name="home_shelf_filter">Smart playlist</string>
     <string name="home_shelf_named">%1$s: %2$s</string>
     <string name="stations_none">No stations yet.</string>
     <string name="station_new">New station</string>
@@ -643,7 +630,7 @@
     <string name="station_kind_menu">Saved from a menu</string>
     <string name="station_decade_mine">Favour what I\'ve played</string>
     <string name="station_broken">This station can\'t play: %1$s</string>
-    <string name="station_no_player">Choose a player first, with Play on…</string>
+    <string name="station_no_player">No player chosen. Choose a player first.</string>
     <!-- Menus: saving items -->
     <string name="menu_save_station">Save as station: %1$s</string>
     <string name="menu_pin">Pin to Home: %1$s</string>
@@ -653,7 +640,7 @@
     <!-- Listening history (docs/plans/wave1-design.md §8) -->
     <string name="section_history">Listening history</string>
     <string name="history_record">Keep a listening history</string>
-    <string name="history_explained">What you play through Lyrion Anywhere, for Recently played, Most played and stations. Kept for 13 months on your server and never shared with other users.</string>
+    <string name="history_explained">What you play here, for Recently played, Most played and stations, kept for 13 months and never shared.</string>
     <string name="history_view">View history</string>
     <string name="history_clear">Clear history</string>
     <string name="history_clear_title">Clear your listening history?</string>
@@ -680,8 +667,8 @@
     <string name="sleep_scope_player">This player</string>
     <string name="sleep_scope_group">This sync group</string>
     <string name="sleep_scope_all">All players</string>
-    <string name="sleep_note_fade">Fades out over %1$d s on this phone (Settings). Other players fade over LMS\'s last minute, then stop and turn off.</string>
-    <string name="sleep_note_no_fade">No fade-out on this phone (Settings). Other players fade over LMS\'s last minute, then stop and turn off.</string>
+    <string name="sleep_note_fade">Fades out over %1$d s on this phone (Settings). Other players fade over their last minute, then stop and turn off.</string>
+    <string name="sleep_note_no_fade">No fade-out on this phone (Settings). Other players fade over their last minute, then stop and turn off.</string>
     <string name="sleep_set">Sleep timer set: stops in %1$s</string>
     <string name="sleep_cancelled">Sleep timer off</string>
     <string name="sleep_unknown">Can\'t tell when that ends (a stream with no set length?)</string>
@@ -690,7 +677,7 @@
     <string name="sleep_left_hours">%1$d h %2$d min</string>
     <string name="sleep_left_whole_hours">%1$d h</string>
     <string name="settings_sleep_fade">Sleep timer fade-out</string>
-    <string name="settings_sleep_fade_detail">How long this phone\'s player fades out before the sleep timer stops it. Other players follow LMS: they fade over the last minute.</string>
+    <string name="settings_sleep_fade_detail">How long this phone fades out before the sleep timer stops it.</string>
     <string name="sleep_fade_off">Off</string>
     <plurals name="sleep_fade_seconds">
         <item quantity="one">%1$d second</item>
@@ -714,12 +701,12 @@
     <string name="lyrics_from_plugin">From Music &amp; Artist Information</string>
     <string name="lyrics_from_tags">From the file’s tags</string>
     <string name="settings_lyrics_peek">Show the current lyric line</string>
-    <string name="settings_lyrics_peek_detail">On Now playing, when a track has synced lyrics. All lyrics are always a tap away with the Lyrics button.</string>
+    <string name="settings_lyrics_peek_detail">On Now playing, when a track has synced lyrics.</string>
     <!-- Streaming quality (docs/plans/streaming-quality.md) -->
     <string name="action_done">Done</string>
     <string name="settings_stream_quality">Streaming quality</string>
     <string name="stream_quality_summary">Wi-Fi: %1$s · Mobile data: %2$s</string>
-    <string name="stream_quality_explain">For this phone’s player. High and Data saver re-encode lossless tracks to Opus on your server, when it offers this; other tracks are sent as they are. Changes apply from the next track.</string>
+    <string name="stream_quality_explain">High and Data saver re-encode lossless tracks to Opus on your music server, when it offers this.</string>
     <string name="stream_quality_on_wifi">On Wi-Fi</string>
     <string name="stream_quality_on_mobile">On mobile data</string>
     <string name="stream_quality_original">Original</string>
@@ -743,7 +730,7 @@
     <string name="settings_rating_style">Rate with</string>
     <string name="rating_style_stars">Stars</string>
     <string name="rating_style_heart">A heart</string>
-    <string name="settings_ratings_detail">Your ratings are yours: kept on your server for your account. Where the server has the Ratings Light plugin, your rating also becomes its shared rating for the track.</string>
+    <string name="settings_ratings_detail">Kept on your music server for your account (and shared through Ratings Light, where installed).</string>
     <string name="clear_ratings">Clear my ratings</string>
     <plurals name="ratings_cleared">
         <item quantity="one">%1$d rating cleared</item>
@@ -773,7 +760,7 @@
     <string name="alarm_on">%1$s alarm on</string>
     <string name="alarm_next">Next: %1$s</string>
     <string name="alarm_once">once</string>
-    <string name="alarms_choose_player">Choose a player first, with the Play on… button.</string>
+    <string name="alarms_choose_player">No player chosen. Choose a player with Play on….</string>
     <string name="every_day">Every day</string>
     <string name="weekdays">Weekdays</string>
     <string name="weekends">Weekends</string>
@@ -859,8 +846,6 @@
     </plurals>
     <string name="no_albums_role">No albums in this role.</string>
     <!-- Library chips, sort, view and A–Z. -->
-    <string name="chip_downloaded">Downloaded</string>
-    <string name="library_types">Show only</string>
     <string name="sort_recently_added">Recently added</string>
     <string name="sort_recently_played">Recently played</string>
     <string name="no_recently_played">Nothing played yet. What you play shows here.</string>
@@ -896,7 +881,7 @@
     <string name="visual_glow">Glow</string>
     <string name="visual_vu">VU meters</string>
     <string name="settings_visualiser">Visualiser</string>
-    <string name="settings_visualiser_detail">On Now playing while this phone is playing. It stays off in battery saver and when animations are removed.</string>
+    <string name="settings_visualiser_detail">On Now playing while this phone is playing (off in battery saver).</string>
     <string name="layout_show_art">Show the cover</string>
     <string name="layout_show_lyrics">Show the lyrics</string>
     <string name="layout_show_info">Show the track info</string>
@@ -916,7 +901,7 @@
     <string name="room_more">More for %1$s</string>
     <string name="room_control">Control %1$s</string>
     <string name="room_transfer">Move playback to %1$s</string>
-    <string name="room_move_here">Move playback here</string>
+    <string name="room_move_here">Move playback to this player</string>
     <string name="room_sync_with">Sync with…</string>
     <string name="room_sync_title">Sync %1$s with…</string>
     <string name="room_sync_named">Sync %1$s with %2$s</string>
@@ -941,7 +926,7 @@
     <string name="car_elapsed">%1$s of %2$s</string>
     <string name="car_stop">Stop</string>
     <string name="car_auto_title">Open car mode by itself</string>
-    <string name="car_auto_detail">When this phone connects to a car over Bluetooth, car mode opens while the app is open, or when you next open it. It leaves when that car disconnects. The car’s name and address stay on this phone.</string>
+    <string name="car_auto_detail">Car mode opens when this phone connects to a car over Bluetooth, and leaves when it disconnects.</string>
     <string name="car_auto_off">Off (only from Now playing)</string>
     <string name="car_auto_any">Any car audio</string>
     <string name="car_auto_device">This device</string>
@@ -956,8 +941,8 @@
     <!-- Haptics (§5.4) -->
     <string name="section_this_device">This device</string>
     <string name="settings_haptics">Haptics</string>
-    <string name="settings_haptics_detail">Light ticks when you skip by swiping, scrub, change the volume, drag, rate and set a sleep timer. Follows your phone’s touch feedback setting.</string>
-    <string name="settings_haptics_system_off">Light ticks when you skip by swiping, scrub, change the volume, drag, rate and set a sleep timer. Touch feedback is off in your phone’s settings, so there are none now.</string>
+    <string name="settings_haptics_detail">Light ticks as you swipe, scrub, drag and rate, following your phone’s touch feedback.</string>
+    <string name="settings_haptics_system_off">Touch feedback is off in your phone’s settings, so there are none now.</string>
 
     <!-- Dynamic colour (§5.5) -->
     <string name="settings_dynamic_colour">Wallpaper colours</string>
@@ -994,12 +979,11 @@
     <string name="output_eq_file">A file for it</string>
 
     <!-- Smart filters (docs/plans/wave2-design.md §5.6) -->
-    <string name="lib_filters">Filters</string>
-    <string name="filters_title">Smart filters</string>
+    <string name="filters_title">Smart playlists</string>
     <string name="filters_explained">Albums chosen by rules: genres, a decade, an artist, compilations. Kept for your account on every device.</string>
     <string name="filters_full">You have the most allowed (%1$d). Delete one to make another.</string>
-    <string name="filters_none">No smart filters yet. Use New filter to make one.</string>
-    <string name="filter_new">New filter</string>
+    <string name="filters_none">No smart playlists yet. Use New smart playlist to make one.</string>
+    <string name="filter_new">New smart playlist</string>
     <string name="filter_open">Open filter</string>
     <string name="filter_play">Play %1$s</string>
     <string name="filter_shuffle">Shuffle %1$s</string>
@@ -1012,8 +996,8 @@
     <string name="filter_action_delete">Delete</string>
     <string name="filter_delete_title">Delete “%1$s”?</string>
     <string name="filter_delete_body">The filter is removed from every device. Your music isn’t touched.</string>
-    <string name="filter_editor_new">New smart filter</string>
-    <string name="filter_editor_edit">Edit smart filter</string>
+    <string name="filter_editor_new">New smart playlist</string>
+    <string name="filter_editor_edit">Edit smart playlist</string>
     <string name="filter_close">Close without saving</string>
     <string name="filter_name">Name</string>
     <string name="filter_rules">Rules</string>
@@ -1071,8 +1055,6 @@
     <string name="info_length">Length</string>
     <string name="now_playing_more">More</string>
     <string name="car_mode_detail">Big buttons for driving</string>
-    <string name="alarms_detail">Wake to music on %1$s</string>
-    <string name="rooms_all_detail">Every player at a glance</string>
     <string name="signal_path_detail">From the file to your ears</string>
     <string name="track_options">Track options</string>
     <string name="action_sleep">Sleep</string>
@@ -1088,11 +1070,11 @@
     <string name="up_next_remove_named">Remove %1$s from the queue</string>
     <string name="sound_player_level">Player level</string>
     <string name="sound_player_level_value">Player level: %1$d%%</string>
-    <string name="sound_player_level_body">Lyrion\'s own level for this phone\'s player, applied before the phone\'s volume. Normally left at 100%; LMS can still change it.</string>
+    <string name="sound_player_level_body">Your music server\'s own level for this phone\'s player, applied before the phone\'s volume; normally left at 100%.</string>
     <string name="sound_player_level_off">Turn on Play on this phone to set its level.</string>
     <!-- Gaps in the signal: reading ahead (rolling cache, Phase A) -->
     <string name="gaps_title">Gaps in the signal</string>
-    <string name="gaps_explain">This phone fetches the next track well before the current one ends, so tunnels, lifts and patchy mobile data don\'t stop the music. What it fetches is deleted once it has played, unless the replay cache keeps it.</string>
+    <string name="gaps_explain">The next track is fetched well before the current one ends, so tunnels and patchy mobile data don\'t stop the music.</string>
     <string name="read_ahead">Read ahead the next track</string>
     <string name="read_ahead_detail">Keeps up to a track in hand on this phone</string>
     <string name="read_ahead_mobile">On mobile data too</string>
@@ -1101,7 +1083,7 @@
     <string name="cushion_ahead">%1$s buffered ahead</string>
     <!-- The replay cache (rolling cache, Phase B) -->
     <string name="replay_cache_title">Replay cache</string>
-    <string name="replay_cache_explain">Tracks this phone has streamed in full are kept on it, so playing one again or skipping back uses almost no data. The least recently played go first when it is full.</string>
+    <string name="replay_cache_explain">Tracks streamed in full are kept, so playing one again or skipping back uses almost no data.</string>
     <string name="replay_cache_not_allowed">Your account isn\'t allowed to download, so nothing is kept on this phone: tracks fetched ahead are deleted once they have played.</string>
     <plurals name="replay_cache_used">
         <item quantity="one">%1$s for %2$d track</item>
@@ -1123,4 +1105,40 @@
         <item quantity="one">%1$d second</item>
         <item quantity="other">%1$d seconds</item>
     </plurals>
+    <!-- Wave 3.5: declutter -->
+    <string name="mini_on_player">on %1$s</string>
+    <string name="rating_rate">Rate this track</string>
+    <string name="info_gapless">Gapless</string>
+    <string name="gapless_into_next">Plays straight on into the next track</string>
+    <plurals name="queue_summary_downloads">
+        <item quantity="one">%1$d downloaded track, playing on this phone</item>
+        <item quantity="other">%1$d downloaded tracks, playing on this phone</item>
+    </plurals>
+    <plurals name="queue_summary">
+        <item quantity="one">%1$d track on %2$s</item>
+        <item quantity="other">%1$d tracks on %2$s</item>
+    </plurals>
+    <string name="station_delete_short">Delete station</string>
+    <string name="replay_cache_size">Size</string>
+    <string name="choice_change">Change</string>
+    <string name="settings_playback">Playback</string>
+    <string name="settings_advanced">Advanced</string>
+    <string name="settings_advanced_summary">Read ahead and the replay cache</string>
+    <string name="settings_about_summary">Version %1$s</string>
+    <string name="settings_summary_playback">Starts on %1$s</string>
+    <string name="settings_summary_lyrics_on">Lyric line on</string>
+    <string name="settings_summary_visualiser">Visualiser: %1$s</string>
+    <string name="settings_summary_on">On</string>
+    <string name="settings_summary_off">Off</string>
+    <string name="group_players">Group players…</string>
+    <string name="group_players_detail">Play other players in step with %1$s</string>
+    <string name="group_players_title">In step with %1$s</string>
+    <string name="player_in_step_with">%1$s · with %2$s</string>
+    <string name="move_playback_to_phone">Move playback to this phone</string>
+    <string name="smart_playlists">Smart playlists</string>
+    <string name="section_browse">Browse</string>
+    <string name="stream_quality_wifi_row">Streaming quality on Wi-Fi</string>
+    <string name="stream_quality_mobile_row">Streaming quality on mobile data</string>
+    <string name="room_switch_off">Switch %1$s off</string>
+    <string name="room_switch_on">Switch %1$s on</string>
 </resources>

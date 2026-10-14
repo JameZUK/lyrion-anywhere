@@ -44,6 +44,8 @@ object ConnectionTags {
     const val BANNER = "connection-banner"
     const val PILL = "connection-reconnecting"
     const val BUSY = "connection-server-busy"
+    /** Playback moving to another player (it takes the slot first). */
+    const val MOVING = "status-moving"
     /** The screen's content under the line. */
     const val CONTENT = "connection-content"
 }
@@ -76,10 +78,31 @@ fun connectionMessage(c: ConnectionUi, playingHere: Boolean): ConnectionMessage?
     else -> null
 }
 
+/** What the one status slot shows (Wave 3.5 rule 1), at most one thing at a time. */
+sealed interface StatusSlot {
+    /** Playback is being moved to another player ([text] says where and how far). */
+    data class Moving(val text: String) : StatusSlot
+
+    /** The link to your music server ([message]). */
+    data class Link(val message: ConnectionMessage) : StatusSlot
+}
+
 /**
- * The screen under one connection line (the offline controls spec): the line sits at the
- * top and takes its own space, so it never covers the transport, the seek bar or the queue;
- * the content keeps clear of the status bar as before (the line handles it while shown).
+ * The one lasting state to show, by priority: moving playback, then out of reach, then busy,
+ * then reconnecting (pure, tested on the JVM). Offers (Continue on…) and results (snackbars)
+ * are not lasting states and never take the slot.
+ */
+fun statusSlot(moving: String?, message: ConnectionMessage?): StatusSlot? = when {
+    moving != null -> StatusSlot.Moving(moving)
+    message != null -> StatusSlot.Link(message)
+    else -> null
+}
+
+/**
+ * The screen under the one status slot (Wave 3.5 rule 1; the offline controls spec): the
+ * line sits at the top and takes its own space, so it never covers the transport, the seek
+ * bar or the queue; the content keeps clear of the status bar as before (the line handles it
+ * while shown). [moving] is a move of playback in progress, which outranks [message].
  */
 @Composable
 fun ConnectionFrame(
@@ -87,18 +110,46 @@ fun ConnectionFrame(
     /** Opens the downloads (null: not offered, e.g. already there). */
     onDownloads: (() -> Unit)?,
     modifier: Modifier = Modifier,
+    moving: String? = null,
     content: @Composable () -> Unit,
 ) {
+    val slot = statusSlot(moving, message)
     Column(modifier) {
         // Drawn above the content, so nothing the page paints past its edge can hide it.
-        if (message != null) ConnectionLine(message, onDownloads, Modifier.zIndex(1f).statusBarsPadding())
+        when (slot) {
+            null -> {}
+            is StatusSlot.Moving -> MovingLine(slot.text, Modifier.zIndex(1f).statusBarsPadding())
+            is StatusSlot.Link -> ConnectionLine(slot.message, onDownloads, Modifier.zIndex(1f).statusBarsPadding())
+        }
         Box(
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
                 .testTag(ConnectionTags.CONTENT)
-                .then(if (message != null) Modifier.consumeWindowInsets(WindowInsets.statusBars) else Modifier),
+                .then(if (slot != null) Modifier.consumeWindowInsets(WindowInsets.statusBars) else Modifier),
         ) { content() }
+    }
+}
+
+/** The slot while playback moves to another player: a progress line and where it goes. */
+@Composable
+fun MovingLine(text: String, modifier: Modifier = Modifier) {
+    val colours = MaterialTheme.colorScheme
+    Surface(
+        color = colours.secondaryContainer,
+        contentColor = colours.onSecondaryContainer,
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag(ConnectionTags.MOVING)
+            .clearAndSetSemantics {
+                contentDescription = text
+                liveRegion = LiveRegionMode.Polite
+            },
+    ) {
+        Column {
+            androidx.compose.material3.LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+        }
     }
 }
 

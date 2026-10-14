@@ -52,6 +52,13 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.foundation.layout.Box
+import androidx.compose.runtime.remember
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -178,6 +185,17 @@ fun downloadStatusText(item: DownloadItem): String = when (item.state) {
 private fun DownloadRow(item: DownloadItem, actions: DownloadsActions) {
     val title = item.title.ifEmpty { stringResource(R.string.download_track_id, item.trackId) }
     val status = downloadStatusText(item)
+    val resume = item.state == DownloadState.PAUSED || item.state == DownloadState.FAILED
+    val toggleLabel = stringResource(
+        when {
+            item.state == DownloadState.FAILED -> R.string.download_retry_for
+            resume -> R.string.download_resume_for
+            else -> R.string.download_pause_for
+        },
+        title,
+    )
+    val cancelLabel = stringResource(R.string.download_cancel_for, title)
+    val toggle = { if (resume) actions.onResume(item.trackId) else actions.onPause(item.trackId) }
     ListItem(
         headlineContent = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = {
@@ -193,26 +211,48 @@ private fun DownloadRow(item: DownloadItem, actions: DownloadsActions) {
                 }
             }
         },
+        // One trailing control (Wave 3.5 rule 3): ⋮ with pause (resume or retry) and cancel,
+        // both also TalkBack actions on the row.
         trailingContent = {
-            Row {
-                when (item.state) {
-                    DownloadState.PAUSED, DownloadState.FAILED -> IconButton(onClick = { actions.onResume(item.trackId) }) {
-                        Icon(
-                            if (item.state == DownloadState.FAILED) Icons.Outlined.Refresh else Icons.Outlined.PlayArrow,
-                            contentDescription = stringResource(
-                                if (item.state == DownloadState.FAILED) R.string.download_retry_for else R.string.download_resume_for,
-                                title,
-                            ),
-                        )
-                    }
-                    else -> IconButton(onClick = { actions.onPause(item.trackId) }) {
-                        Icon(Icons.Outlined.Pause, contentDescription = stringResource(R.string.download_pause_for, title))
-                    }
+            var menu by remember { mutableStateOf(false) }
+            Box {
+                IconButton(onClick = { menu = true }, modifier = Modifier.testTag("download-more-${item.trackId}")) {
+                    Icon(Icons.Outlined.MoreVert, contentDescription = stringResource(R.string.more_for, title))
                 }
-                IconButton(onClick = { actions.onCancel(item.trackId) }) {
-                    Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.download_cancel_for, title))
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text(toggleLabel) },
+                        leadingIcon = {
+                            Icon(
+                                when {
+                                    item.state == DownloadState.FAILED -> Icons.Outlined.Refresh
+                                    resume -> Icons.Outlined.PlayArrow
+                                    else -> Icons.Outlined.Pause
+                                },
+                                contentDescription = null,
+                            )
+                        },
+                        onClick = {
+                            menu = false
+                            toggle()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(cancelLabel) },
+                        leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
+                        onClick = {
+                            menu = false
+                            actions.onCancel(item.trackId)
+                        },
+                    )
                 }
             }
+        },
+        modifier = Modifier.semantics {
+            customActions = listOf(
+                CustomAccessibilityAction(toggleLabel) { toggle(); true },
+                CustomAccessibilityAction(cancelLabel) { actions.onCancel(item.trackId); true },
+            )
         },
     )
 }
@@ -296,13 +336,31 @@ fun DownloadsScreen(state: DownloadsUiState, actions: DownloadsActions, modifier
         if (state.albums.isNotEmpty()) {
             item { SectionHeader(stringResource(R.string.downloads_done)) }
             items(state.albums, key = { "al-${it.albumRef}" }) { album ->
+                // One trailing control (Wave 3.5 rule 3): ⋮ with Play and (destructive, so
+                // only here) Remove download.
                 OfflineAlbumRow(album, onOpen = { actions.onAlbum(album.albumRef) }) {
-                    Row {
-                        IconButton(onClick = { actions.onPlayAlbum(album.albumRef) }) {
-                            Icon(Icons.Outlined.PlayArrow, contentDescription = stringResource(R.string.play_album_named, album.title))
+                    var menu by remember { mutableStateOf(false) }
+                    Box {
+                        IconButton(onClick = { menu = true }) {
+                            Icon(Icons.Outlined.MoreVert, contentDescription = stringResource(R.string.more_for, album.title))
                         }
-                        IconButton(onClick = { confirmAlbum = album.albumRef }) {
-                            Icon(Icons.Outlined.Delete, contentDescription = stringResource(R.string.remove_download_named, album.title))
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.play_album_named, album.title)) },
+                                leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null) },
+                                onClick = {
+                                    menu = false
+                                    actions.onPlayAlbum(album.albumRef)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.remove_download_named, album.title)) },
+                                leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
+                                onClick = {
+                                    menu = false
+                                    confirmAlbum = album.albumRef
+                                },
+                            )
                         }
                     }
                 }
