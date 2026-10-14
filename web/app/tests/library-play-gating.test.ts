@@ -153,8 +153,8 @@ describe('Rooms', () => {
 
 describe('every library play action uses the helper', () => {
 	// A guard for new code: any component or page that queues or plays from the library
-	// must disable it with `canQueue` (go/[action] acts on a link, not a control: app.queueUp
-	// refuses there by itself).
+	// must disable it with `canQueue`, or `controls.needsServer()` (the same test, and it says
+	// why) (go/[action] acts on a link, not a control: app.queueUp refuses there by itself).
 	const root = `${__dirname}/../src`;
 	const files: string[] = [];
 	const walk = (d: string) => {
@@ -175,6 +175,6 @@ describe('every library play action uses the helper', () => {
 	test.each(users.map((f) => [f.slice(root.length + 1), f]))('%s', (_name, f) => {
 		const src = readFileSync(f, 'utf8');
 		// Album page: through TrackList's `disabled` too.
-		expect(src).toMatch(/canQueue/);
+		expect(src).toMatch(/canQueue|controls\.needsServer\(/);
 	});
 });

@@ -14,6 +14,63 @@ export function go(route: string, opts: { replaceState?: boolean; keepFocus?: bo
 	return goto(href(route), opts);
 }
 
+// --- Hash changes from outside the router -----------------------------------------------
+// A route typed into the address bar, or opened from a link elsewhere, changes the hash
+// without SvelteKit's router, and SvelteKit then reloads the whole page. That stops this
+// device's player, and while the server is out of reach a reload can't sign in again. Such a
+// change is routed in the app instead.
+
+/** The key SvelteKit puts in the history entries it makes itself. */
+const ROUTER_ENTRY = 'sveltekit:history';
+
+/** The route part of a hash (`#/album/7#top` is `/album/7`). */
+const routeOf = (hash: string) => hash.replace(/^#/, '').split('#')[0] || '/';
+
+/**
+ * The in-app link to route to for a `popstate` with history `state`, now that the hash is
+ * `now` while the app shows `shown`, or null to leave it to SvelteKit: its own history entries
+ * (Back and Forward), the same page (an anchor on it), and anything that isn't an app route.
+ */
+export function outsideRoute(state: unknown, now: string, shown: string): string | null {
+	if (routerEntry(state)) return null;
+	const route = routeOf(now);
+	if (!route.startsWith('/') || route.startsWith('//') || route === routeOf(shown)) return null;
+	return href(route);
+}
+
+const routerEntry = (state: unknown) => !!state && typeof state === 'object' && ROUTER_ENTRY in state;
+
+/**
+ * Route hash changes made outside the router in the app (see above). `shown` is the hash of
+ * the page the app shows. Returns a function that stops it.
+ *
+ * The browser has already added a history entry the router knows nothing about, so the app
+ * steps back over it first (to the entry of the page it shows, which the router ignores), and
+ * then goes to the route as if a link had been followed: history stays as the router expects.
+ */
+export function routeOutsideHashChanges(shown: () => string): () => void {
+	let pending: string | null = null;
+	const onpopstate = (e: PopStateEvent) => {
+		if (pending !== null) {
+			// Stepped back to the page shown: now go on to the route asked for.
+			const to = pending;
+			pending = null;
+			// After the router has seen this event too (it would cancel a navigation started
+			// before it ran).
+			if (routerEntry(e.state)) setTimeout(() => void goto(to), 0);
+			return;
+		}
+		const to = outsideRoute(e.state, location.hash, shown());
+		if (to === null) return;
+		// Before SvelteKit's own listener sees it (capturing listeners on the window run first).
+		e.stopImmediatePropagation();
+		pending = to;
+		history.back();
+	};
+	addEventListener('popstate', onpopstate, { capture: true });
+	return () => removeEventListener('popstate', onpopstate, { capture: true });
+}
+
 // --- Back -------------------------------------------------------------------------------
 // An installed iPhone web app has no browser Back button, so detail pages have their own. It
 // goes back through the app's own history when there is some (so it returns to wherever the

@@ -40,8 +40,11 @@ import {
 import type { Track } from '$lib/lms/types';
 import { upNextTracker } from '$lib/queue/upnext.svelte';
 import { stateOf } from '$lib/queue/tracker';
+import { forgetLastKnown, loadLastKnown, saveLastKnown } from './last-known';
 
 const PLAYER_KEY = 'anywhere.player';
+/** How often the selected player's state is noted for the next page load (and on leaving). */
+const REMEMBER_MS = 10_000;
 /** The last player other than this device (for falling back when this device can't play). */
 const REMOTE_KEY = 'anywhere.player.remote';
 
@@ -67,6 +70,8 @@ export const analyses = new AnalysisClient((url, signal) =>
 class AppState {
 	session = $state<Session | null>(null);
 	status = $state<SessionStatus>('unknown');
+	/** Signed in as far as this device knows, waiting for the server to confirm it (see session.ts). */
+	provisional = $state(false);
 	players = $state<PlayerInfo[]>([]);
 	playerId = $state<string>('');
 	now = $state<PlayerStatus | null>(null);
@@ -124,6 +129,9 @@ class AppState {
 	#watchers = new Set<(e: LmsEvent | 'resync') => void>();
 	/** Bumped by every start and stop of the signed-in session. */
 	#run = 0;
+	/** `now` is the last state seen before this page loaded, not fresh from the server. */
+	#stale = false;
+	#rememberedAt = 0;
 
 	constructor() {
 		this.#events = new EventsClient(session, {
@@ -163,10 +171,18 @@ class AppState {
 		}
 		session.subscribe((s, st) => {
 			const was = this.status;
+			const wasProvisional = this.provisional;
 			this.session = s;
 			this.status = st;
+			this.provisional = session.provisional;
 			if (st === 'signed-in' && was !== 'signed-in') this.#started();
 			if (st === 'signed-out' && was === 'signed-in') this.#stopped();
+			if (st === 'signed-out') forgetLastKnown();
+			// The server has confirmed the sign-in this page started with: catch up at once.
+			if (st === 'signed-in' && wasProvisional && !session.provisional) {
+				void this.loadPlayers();
+				this.soon();
+			}
 		});
 	}
 
@@ -263,6 +279,7 @@ class AppState {
 	async #started() {
 		this.sleepFade = loadFade(this.session?.user?.username ?? '');
 		this.#chooseStart();
+		this.#restoreLastKnown();
 		// This device was the player before a reload: LMS lists it again only once it has
 		// reconnected, so hold the choice rather than switching to another player meanwhile.
 		if (this.playerId && loadResume()?.mac === this.playerId) this.#preferred = this.playerId;
@@ -282,8 +299,32 @@ class AppState {
 		document.addEventListener('visibilitychange', this.#onVisible);
 	}
 
+	/**
+	 * Show what the chosen player was last seen doing until the server says otherwise: a page
+	 * loaded while it is busy or out of reach then shows that (greyed, with the connection
+	 * message) rather than nothing.
+	 */
+	#restoreLastKnown() {
+		const last = loadLastKnown(this.session?.user?.username ?? '', this.playerId);
+		if (!last || this.players.length) return;
+		this.players = [last.player];
+		this.now = last.now;
+		this.elapsed = typeof last.now.time === 'number' ? last.now.time : 0;
+		this.#stale = true;
+	}
+
+	/** Note what the selected player is doing, for the next page load (see last-known.ts). */
+	rememberNow() {
+		const user = this.session?.user?.username;
+		const player = this.current;
+		if (!user || !player || !this.now || this.#stale) return;
+		this.#rememberedAt = Date.now();
+		saveLastKnown({ user, player: $state.snapshot(player), now: { ...$state.snapshot(this.now), time: this.elapsed } });
+	}
+
 	#stopped() {
 		this.#run++;
+		this.#stale = false;
 		this.#events.stop();
 		clearTimeout(this.#pending);
 		clearInterval(this.#poll);
@@ -493,10 +534,12 @@ class AppState {
 			const s = await api.rpc<PlayerStatus>(id, cmd.status());
 			if (id !== this.playerId) return; // switched meanwhile
 			this.now = s;
+			this.#stale = false;
 			upNextTracker.observe(id, stateOf(s));
 			this.elapsed = typeof s.time === 'number' ? s.time : 0;
 			this.#statusAt = performance.now();
 			this.error = '';
+			if (Date.now() - this.#rememberedAt > REMEMBER_MS) this.rememberNow();
 			void this.#sleepCheck(id, s);
 		} catch (e) {
 			this.#failed(e);
@@ -505,7 +548,8 @@ class AppState {
 
 	#advance() {
 		const s = this.now;
-		if (!s || s.mode !== 'play' || typeof s.time !== 'number') return;
+		// The last state seen before the page loaded: where it is now isn't known.
+		if (!s || this.#stale || s.mode !== 'play' || typeof s.time !== 'number') return;
 		const t = s.time + (performance.now() - this.#statusAt) / 1000;
 		this.elapsed = s.duration ? Math.min(t, s.duration) : t;
 	}

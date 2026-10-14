@@ -153,13 +153,13 @@
 
 	<div class="centre">
 		<div class="transport">
-			<button class="icon-btn" aria-label="Previous" onclick={() => controls.previous()} disabled={!g.previous}>
+			<button class="icon-btn" aria-label="Previous" onclick={() => controls.previous()} disabled={!g.previous} {...controls.why(!g.previous)}>
 				<Icon name="prev" />
 			</button>
-			<button class="icon-btn play" aria-label={app.playing ? 'Pause' : 'Play'} onclick={() => controls.toggle()} disabled={!g.playPause}>
+			<button class="icon-btn play" aria-label={app.playing ? 'Pause' : 'Play'} onclick={() => controls.toggle()} disabled={!g.playPause} {...controls.why(!g.playPause)}>
 				<Icon name={app.playing ? 'pause' : 'play'} size={24} />
 			</button>
-			<button class="icon-btn" aria-label="Next" onclick={() => controls.next()} disabled={!g.next}>
+			<button class="icon-btn" aria-label="Next" onclick={() => controls.next()} disabled={!g.next} {...controls.why(!g.next)}>
 				<Icon name="next" />
 			</button>
 		</div>

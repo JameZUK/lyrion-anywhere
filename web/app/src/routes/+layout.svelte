@@ -3,7 +3,7 @@
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { afterNavigate } from '$app/navigation';
-	import { noteNavigation } from '$lib/nav';
+	import { noteNavigation, routeOutsideHashChanges } from '$lib/nav';
 	import { MAIN_TABS, tabFor } from '$lib/nav-tabs';
 	import { documentTitle, pageTitle } from '$lib/title.svelte';
 	import { api, app, session } from '$lib/state/app.svelte';
@@ -25,6 +25,7 @@
 	import { forgetOwner, rememberOwner } from '$lib/offline/settings';
 	import { library } from '$lib/state/library.svelte';
 	import { controls, local } from '$lib/player/controls.svelte';
+	import { CONNECTION_ID } from '$lib/state/reachability';
 	// Keeps a playing station topped up wherever the user goes.
 	import '$lib/stations/active.svelte';
 
@@ -42,7 +43,8 @@
 
 	// Diagnostics for troubleshooting: report once signed in (capabilities, playback choice).
 	$effect(() => {
-		if (app.status === 'signed-in') {
+		// Not before the server has confirmed the sign-in: the player needs a real token.
+		if (app.status === 'signed-in' && !app.provisional) {
 			// Test the media-element path quietly, so this device can use it at once. Then start
 			// this device's player by itself if it is the one to use (SPEC D20: player-first), or
 			// if it was playing before a reload: it connects now, and the first tap anywhere
@@ -62,7 +64,8 @@
 	// it after a while (e.g. the server can't reach back): use another player, and say why.
 	const waitingForDevice = $derived(!!app.playerId && app.playerId === app.deviceMac && !app.current);
 	$effect(() => {
-		if (!waitingForDevice) return;
+		// Waiting for the server to confirm the sign-in first: the player hasn't started yet.
+		if (!waitingForDevice || app.provisional) return;
 		if (device.state === 'error') {
 			untrack(() => app.deviceFailed());
 			return;
@@ -84,7 +87,8 @@
 		if (app.status === 'offline') handoff.wentOffline();
 		if (app.status === 'signed-in' && user) {
 			rememberOwner(user);
-			void downloads.setUser(user, true);
+			// Downloads carry on once the server has confirmed the sign-in.
+			void downloads.setUser(user, !app.provisional);
 			void plays.setUser(user, true);
 			void library.start(user, (c) => api.rpc('', c));
 			// Back from offline with downloads queued: offer "Continue on <player>" (SPEC §8.4).
@@ -114,6 +118,8 @@
 
 	// Note where this device is in the queue when the page goes away, to carry on after a reload.
 	function rememberPosition() {
+		// What the selected player is doing, shown after a reload until the server answers.
+		app.rememberNow();
 		const now = app.now;
 		const index = Number(now?.playlist_cur_index);
 		if (!device.mac || app.playerId !== device.mac || !now || !Number.isFinite(index)) return;
@@ -219,6 +225,8 @@
 
 	// Back on detail pages needs to know whether there is an app page behind this one.
 	afterNavigate((n) => noteNavigation({ type: n.type, delta: n.delta }));
+	// A route typed into the address bar opens in the app, rather than reloading the page.
+	$effect(() => routeOutsideHashChanges(() => page.url.hash));
 </script>
 
 <svelte:head>
@@ -262,7 +270,7 @@
 				{/if}
 				<!-- One connection message, at every width, taking its own room (never over the controls). -->
 				{#if controls.message}
-					<p class="chip" class:busy={app.reach === 'busy'} role="status" data-connection={app.reach}>
+					<p class="chip" class:busy={app.reach === 'busy'} role="status" id={CONNECTION_ID} data-connection={app.reach}>
 						<Icon name={app.reach === 'busy' ? 'clock' : 'offline'} size={16} /><span>{controls.message}</span>
 					</p>
 				{/if}

@@ -15,6 +15,7 @@
 	import type { TrackBadge } from '$lib/components/track-badge';
 	import DownloadBar from '$lib/components/DownloadBar.svelte';
 	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
+	import { controls } from '$lib/player/controls.svelte';
 
 	let ctx = $state<{ kind: cmd.InfoKind; id: number; title: string } | null>(null);
 
@@ -127,11 +128,11 @@
 				</p>
 				<p class="muted">{[textOf(album.year), `${tracks.length} tracks`, duration(totalTime)].filter(Boolean).join(' · ')}</p>
 				<div class="actions">
-					<!-- These need the server: disabled while it is out of reach. -->
-					<button class="btn primary" onclick={() => app.queueUp({ album: id }, 'play')} disabled={!app.canQueue}><Icon name="play" size={18} />Play</button>
-					<button class="btn" onclick={() => app.queueUp({ album: id }, 'next')} disabled={!app.canQueue}><Icon name="playnext" size={18} />Play next</button>
-					<button class="btn" onclick={() => app.queueUp({ album: id }, 'add')} disabled={!app.canQueue}><Icon name="plus" size={18} />Add to queue</button>
-					<button class="btn" onclick={() => (ctx = { kind: 'album', id, title: textOf(album?.album) })}><Icon name="more" size={18} />More</button>
+					<!-- These need the server (More is LMS's own menu): disabled while it is out of reach. -->
+					<button class="btn primary" onclick={() => app.queueUp({ album: id }, 'play')} {...controls.needsServer()}><Icon name="play" size={18} />Play</button>
+					<button class="btn" onclick={() => app.queueUp({ album: id }, 'next')} {...controls.needsServer()}><Icon name="playnext" size={18} />Play next</button>
+					<button class="btn" onclick={() => app.queueUp({ album: id }, 'add')} {...controls.needsServer()}><Icon name="plus" size={18} />Add to queue</button>
+					<button class="btn" onclick={() => (ctx = { kind: 'album', id, title: textOf(album?.album) })} {...controls.needsServer()} data-album-more><Icon name="more" size={18} />More</button>
 				</div>
 				<DownloadBar tracks={requests} ref={`album:${id}`} onremoved={(keys) => offlinePlayer.forget(keys)} />
 				{#if trackMsg}<p class="small muted" role="alert">{trackMsg}</p>{/if}

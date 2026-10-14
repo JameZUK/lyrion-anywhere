@@ -43,7 +43,7 @@ vi.mock('$lib/state/app.svelte', () => ({
 		rpc: async (_p: string, c: unknown[]) => (c[0] === 'albums' ? { albums_loop: [ALBUM] } : { titles_loop: TRACKS }),
 		art: () => Promise.reject(new Error('offline')),
 	},
-	app: { queueUp: vi.fn() },
+	app: { queueUp: vi.fn(), reach: 'online', canQueue: true },
 	session: { current: null },
 }));
 vi.mock('$app/state', () => ({ page: { params: { id: '7' }, url: new URL('http://app.example/#/album/7') } }));

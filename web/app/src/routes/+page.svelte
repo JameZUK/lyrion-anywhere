@@ -221,7 +221,8 @@
 			<button class="btn act" onclick={() => (showQueue = true)} aria-haspopup="dialog" aria-label="Queue" disabled={!app.current} data-queue-peek><Icon name="queue" size={18} /><span class="label">Queue</span></button>
 		{/if}
 		{#if typeof track?.id === 'number' && track.id > 0}
-			<button class="btn act" onclick={() => (showMore = true)} aria-label="More"><Icon name="more" size={18} /><span class="label">More</span></button>
+			<!-- The track's menu is LMS's own: it needs the server. -->
+			<button class="btn act" onclick={() => (showMore = true)} aria-label="More" {...controls.needsServer()} data-np-more><Icon name="more" size={18} /><span class="label">More</span></button>
 		{/if}
 	</div>
 
@@ -347,11 +348,11 @@
 
 		<div class="transport">
 			<ShuffleButton value={app.now?.['playlist shuffle']} onchange={(m) => app.send(cmd.shuffle(m))} disabled={!g.other} />
-			<button class="icon-btn big" aria-label="Previous" onclick={() => controls.previous()} disabled={!g.previous}><Icon name="prev" size={30} /></button>
-			<button class="icon-btn play" aria-label={app.playing ? 'Pause' : 'Play'} onclick={() => controls.toggle()} disabled={!g.playPause}>
+			<button class="icon-btn big" aria-label="Previous" onclick={() => controls.previous()} disabled={!g.previous} {...controls.why(!g.previous)}><Icon name="prev" size={30} /></button>
+			<button class="icon-btn play" aria-label={app.playing ? 'Pause' : 'Play'} onclick={() => controls.toggle()} disabled={!g.playPause} {...controls.why(!g.playPause)}>
 				<Icon name={app.playing ? 'pause' : 'play'} size={34} />
 			</button>
-			<button class="icon-btn big" aria-label="Next" onclick={() => controls.next()} disabled={!g.next}><Icon name="next" size={30} /></button>
+			<button class="icon-btn big" aria-label="Next" onclick={() => controls.next()} disabled={!g.next} {...controls.why(!g.next)}><Icon name="next" size={30} /></button>
 			<button
 				class="icon-btn"
 				class:on={repeat > 0}
