@@ -4,13 +4,15 @@
 //! - [`OfflineLibrary`]: what is on the device for one user on one server (no network);
 //! - [`Downloader`]: the download manager (network), feeding the library;
 //! - [`sync_plays`]: sends plays recorded offline to `POST /v1/plays`;
-//! - [`plan_smart`]: which smart downloads to fetch or drop.
+//! - [`plan_smart`]: which smart downloads to fetch or drop;
+//! - [`resolve_offline_tracks`]: the queued downloads' current LMS ids, for "Continue on".
 //!
 //! Playing downloads is [`crate::OfflinePlayer`], through the same engine as streaming.
 
 pub mod download;
 pub mod index;
 pub mod plays;
+pub mod resolve;
 pub mod store;
 
 use std::collections::HashSet;
@@ -28,6 +30,7 @@ pub use download::{
 };
 pub use index::{DownloadFormat, DownloadOrigin, OfflineTrack};
 pub use plays::{PlayRecord, PlayVerdict, PlaysSyncOutcome};
+pub use resolve::{OfflineTrackRef, resolve_offline_tracks};
 pub(crate) use store::scope_name;
 pub use store::{OfflineAlbum, OfflineLibrary, remove_offline_data};
 

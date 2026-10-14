@@ -433,3 +433,63 @@ async fn checked_queue_edits_change_only_the_entry_seen() {
     }
     assert_eq!(h.lms.rpc_calls().len(), n);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_track_list_loads_in_order_through_the_policy() {
+    // "Continue on <player>" (SPEC §8.4): the offline queue's confirmed ids, in order.
+    let h = Harness::start().await;
+    let (s, _) = h.alice().await;
+    let me = s.current().unwrap().device.player_id;
+    h.accounts.grant_player("alice", HOME_PLAYER).unwrap();
+    let players = Players::new(s.clone());
+
+    let ids: Vec<i64> = (100_000..100_060).collect();
+    let before = h.lms.rpc_calls().len();
+    players
+        .load_track_list(HOME_PLAYER.into(), ids.clone(), 50)
+        .await
+        .unwrap();
+    let calls = since(&h, before);
+    assert!(calls.len() >= 3, "{calls:?}");
+    assert!(calls.iter().all(|c| c[0] == json!(HOME_PLAYER)));
+    assert_eq!(calls[0][1][1], "cmd:load");
+    assert!(
+        calls[1..calls.len() - 1]
+            .iter()
+            .all(|c| c[1][1] == "cmd:add")
+    );
+    let sent: Vec<i64> = calls[..calls.len() - 1]
+        .iter()
+        .flat_map(|c| {
+            c[1][2]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("track_id:")
+                .split(',')
+                .map(|v| v.parse::<i64>().unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(sent, ids, "every id, in order");
+    assert_eq!(
+        *calls.last().unwrap(),
+        json!([HOME_PLAYER, ["playlist", "index", "50"]])
+    );
+
+    // A player alice may not control: refused, and nothing reaches LMS.
+    let bobs = bob(&h).await.current().unwrap().device.player_id;
+    let before = h.lms.rpc_calls().len();
+    let r = players.load_track_list(bobs, vec![1, 2], 0).await;
+    assert!(matches!(r, Err(ApiError::Forbidden { .. })), "{r:?}");
+    assert!(since(&h, before).is_empty());
+    // Malformed ids, players or starts: nothing leaves the device.
+    for (p, ids, start) in [
+        (me.clone(), vec![], 0),
+        (me.clone(), vec![1, 0], 0),
+        (me.clone(), vec![1, 2], 5),
+        ("../x".to_string(), vec![1], 0),
+    ] {
+        assert!(players.load_track_list(p, ids, start).await.is_err());
+    }
+    assert!(since(&h, before).is_empty());
+}

@@ -86,8 +86,9 @@ pub use model::*;
 pub use offline::{
     DownloadFailure, DownloadFormat, DownloadItem, DownloadObserver, DownloadOrigin,
     DownloadPolicy, DownloadRequest, DownloadState, Downloader, DownloadsSnapshot, FormatChoice,
-    NetworkKind, OfflineAlbum, OfflineLibrary, OfflineTrack, PlayRecord, PlayVerdict,
-    PlaysSyncOutcome, SmartPlan, plan_smart, remove_offline_data, sync_plays,
+    NetworkKind, OfflineAlbum, OfflineLibrary, OfflineTrack, OfflineTrackRef, PlayRecord,
+    PlayVerdict, PlaysSyncOutcome, SmartPlan, plan_smart, remove_offline_data,
+    resolve_offline_tracks, sync_plays,
 };
 pub use player::{
     CrossfeedSetting, DitherSetting, DspSettings, EqProfileSummary, Levelling, LocalPlayback,

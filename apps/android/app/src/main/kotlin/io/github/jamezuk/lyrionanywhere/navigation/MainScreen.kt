@@ -214,6 +214,10 @@ import io.github.jamezuk.lyrionanywhere.ui.settings.SoundScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SoundViewModel
 import io.github.jamezuk.lyrionanywhere.ui.settings.actions
 import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadMessage
+import io.github.jamezuk.lyrionanywhere.ui.offline.ContinueOnPrompt
+import io.github.jamezuk.lyrionanywhere.ui.offline.continueChoices
+import io.github.jamezuk.lyrionanywhere.ui.offline.defaultContinueChoice
+import io.github.jamezuk.lyrionanywhere.data.offline.HandOffResult
 import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsActions
 import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsScreen
 import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsViewModel
@@ -633,6 +637,30 @@ fun MainScreen(
                 // The server can't be reached: say so here, on the screen the user is on.
                 if (connection.unreachable && !inCar && !inStory && destination?.hasRoute(DownloadsRoute::class) != true) {
                     ServerUnreachableBanner(onDownloads = { nav.navigate(DownloadsRoute) { launchSingleTop = true } })
+                }
+                // Back online with downloads queued: "Continue on <player>?" (SPEC §8.4).
+                if (!inCar && !inStory) {
+                    val handOff by container.continueOn.state.collectAsStateWithLifecycle()
+                    if (handOff.offered || handOff.result != null) {
+                        val phoneName = stringResource(R.string.this_phone)
+                        val choices = remember(playerState.players, playerState.local.playerId, phoneName) {
+                            continueChoices(playerState.players, playerState.local.playerId, phoneName, phoneAvailable = true)
+                        }
+                        ContinueOnPrompt(
+                            state = handOff,
+                            choices = choices,
+                            default = defaultContinueChoice(choices, playerState.selectedId, playerState.local.playerId),
+                            onContinue = { c ->
+                                container.continueOn.continueOn(c.id, c.name) { r, id ->
+                                    if (r is HandOffResult.Moved && id != null) {
+                                        if (id == playerState.local.playerId) player.backToPhone() else player.select(id)
+                                    }
+                                }
+                            },
+                            onNotNow = container.continueOn::dismiss,
+                            onDismissResult = container.continueOn::clearResult,
+                        )
+                    }
                 }
                 if (!onNowPlaying && offlineUi.state.active) {
                     // Downloads have this phone: their own mini player.

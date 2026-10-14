@@ -5,6 +5,19 @@ Dated entries, newest first.
 ## 2026-10-14: Web: no lone queue button on wide Now playing
 
 In windows wide enough for the queue beside Now playing (1200 px and over), the button that pins or hides it sat on a line of its own under the Art, Lyrics and Info tabs. The Queue action in the row of actions now does that job there (pressed while the queue is shown); in narrower windows it still peeks at the queue.
+## 2026-10-14: Continue on a player when back online (web and Android)
+
+Back online with downloads queued on the device, the app now offers to hand the queue to an LMS player (SPEC §8.4). A non-blocking prompt, "Back online. Continue on <player>?", with a choice of player and *Not now*; it never happens by itself.
+
+- **Players:** the ones this user may control, as *Play on…* lists them, plus this device's own player. The default is this device's player when it was in use, else the last one used.
+- **Tracks:** each queued download is checked with `GET /v1/download/track/{id}/info`. Its id is used only when the gateway's stable key for it is the download's own. Tracks LMS no longer has, or whose id now names another file, are skipped, and the app says how many. Any other failure stops the hand-off before anything is sent.
+- **Hand-off:** through the existing RPC policy, as Transfer's copy recipe: power on, shuffle off, the ids in order (batched to the gateway's id-list limit), the current track and position, paused if it was paused. Then the local player stops. If anything fails, it keeps playing and the prompt says why. A queue that changes while it is checked is checked again.
+- **Sign-in ended while offline:** the queue is kept in memory and offered (paused) once the same user signs in again, never to another account. A deliberate sign-out forgets it.
+- **Rust layer** (`mobile`): `resolve_offline_tracks` (the `/info` lookups, four at a time, each id once; malformed ids and keys are never sent) and `Players.load_track_list` (the queue in order, from a start index). No gateway changes: only endpoints and commands the policy already allows.
+- **Tests:**
+  - Rust: unit tests for the lookup (renumbered, gone, malformed, refused) and the list commands. Integration tests against the real gateway: lookups (with downloads turned off: refused as a whole; signed out), and a list load in order with a refused player and malformed input sending nothing.
+  - Web (vitest): resolution with unresolvable keys, order, position and play state, batching, a failure leaving the downloads alone, a changed queue, another user's queue, and when the prompt appears.
+  - Android: JVM tests for the hand-off use case, the offer and the controller, and a Robolectric test for the prompt.
 
 ## 2026-10-13: Rolling cache, Phase C: downloads stand in for Original FLAC streams
 

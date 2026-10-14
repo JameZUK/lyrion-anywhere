@@ -401,7 +401,11 @@ class RustOfflineRepository(
         return withContext(io) { s.rateOffline(trackId, key, rating, clock() / 1000) }
     }
 
+    /** Called as the user signs out on purpose (the "Continue on" offer forgets its queue). */
+    @Volatile var beforeSignOut: () -> Unit = {}
+
     override suspend fun signOut(removeDownloads: Boolean) {
+        beforeSignOut()
         // Plays heard offline go first, while the sign-in still works.
         withTimeoutOrNull(SIGN_OUT_SYNC_MS) { sendPlays() }
         lock.withLock {

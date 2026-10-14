@@ -193,6 +193,23 @@ class AppContainer(context: Context, scope: CoroutineScope) {
         now = { android.os.SystemClock.elapsedRealtime() },
     ).also { it.start() }
 
+    /** "Continue on <player>": back online, offer to hand the downloads queue to a player (SPEC §8.4). */
+    val continueOn = io.github.jamezuk.lyrionanywhere.data.offline.ContinueOnController(
+        scope = scope,
+        auth = accountImpl.state,
+        connection = offlineMode.ui,
+        network = network.kind,
+        offlinePlayer = offlinePlayer,
+        owner = offlineImpl.state,
+        players = players,
+        resolver = io.github.jamezuk.lyrionanywhere.data.offline.RustTrackResolver(accountImpl),
+        localPlayer = localPlayer,
+        clock = { android.os.SystemClock.elapsedRealtime() },
+    ).also {
+        it.start()
+        offlineImpl.beforeSignOut = it::forget
+    }
+
     init {
         // Only one of the phone's two players makes sound at a time.
         PlaybackArbiter(scope, localPlayer, players, offlinePlayer).start()

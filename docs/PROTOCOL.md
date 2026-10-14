@@ -405,6 +405,15 @@ Only if LMS won't group the two (step 4 never succeeds). It can move **library t
 
 Loading always starts T playing, whatever S was doing.
 
+### Continue on a player: the offline queue (SPEC §8.4)
+
+The same copy recipe, from the device's own downloads rather than a player. No new endpoint or command.
+
+1. For each queued download, `GET /v1/download/track/{id}/info` with the id it was downloaded with (each id once, a few at a time). Use the id only if the answer's `key` is the download's stable key. A 404, or another key, means the track is skipped and counted. Any other answer (401, 403, 429, 5xx, no connection) stops here, with nothing sent.
+2. `T`: `power 1`, `playlist shuffle 0`, then the confirmed ids in play order as in step 3 above, starting at the current track (or the next confirmed one if it was skipped).
+3. If the position is ≥ 2 s: `T`: `time <floor(position)>`, adding the time taken if the downloads were playing. If they were paused: `T`: `pause 1`.
+4. Only now stop the local player. If any step fails, leave it as it was.
+
 ## Synchronised playback: how our players keep time
 
 Our players (Android, and browsers) take part in LMS sync groups alongside Squeezeboxes and squeezelite. LMS keeps a group together using three things, and our players do each the way a hardware player does (behaviour checked against the LMS 9.0 source: `Slim::Player::StreamingController`, `Squeezebox2`, `Player`).

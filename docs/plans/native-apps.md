@@ -752,7 +752,8 @@ Built. **Verified on the host and on the JVM (Robolectric); nothing has run on a
 - *Keep favourites offline* finds only favourites LMS identifies by library id. Favourites saved by file location can't be resolved through the gateway (it strips URLs, rightly), so many may be skipped; a gateway lookup would fix it.
 - Offline playback uses ReplayGain tags for levelling: R128 analyses aren't cached for offline use.
 - The widget and the Quick Settings tile don't show downloads playing.
-- Not built: "continue on <player>" when back online, ratings sync-back, refreshing a download when its library file changes, and a free-space check before downloading (a full disk fails the download cleanly).
+- "Continue on <player>" when back online: built 2026-10-14 (SPEC §8.4), verified on the JVM and against the real gateway in the Rust tests only. A track whose id a rescan renumbered is skipped, as there is no lookup by key.
+- Not built: ratings sync-back, refreshing a download when its library file changes, and a free-space check before downloading (a full disk fails the download cleanly).
 - While signed in with a network but an unreachable server, offline mode relies on this phone's player failing to reconnect, so it needs *Play on this phone* on.
 
 ### A6 status (2026-10-11): car and discovery
