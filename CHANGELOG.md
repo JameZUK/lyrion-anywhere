@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Android 1.13.0 (versionCode 27)
+
+A test build: with the server out of reach, controls that can't work are greyed out (Now playing, mini player, queue, notification, lock screen, Android Auto); on this phone's player, play and pause still work, and next, previous, a queue row and seeking work for tracks the phone has whole, playing on from its own copies; queue rows are marked *Downloaded* or *On this device*; the connection message is one line at the top that never covers the controls; back online, LMS picks up where the phone is if its queue hasn't changed. Includes the airplane-mode freeze fix from 1.12.1.
+
 ## 2026-10-14: Web: controls that work (or honestly don't) when the server is out of reach
 
 The owner's report: with the server gone, skip and pause stayed tappable but failed, and the connection message got in the way. The web app now:
