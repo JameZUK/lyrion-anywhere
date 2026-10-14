@@ -255,3 +255,107 @@ test('the control message', () => {
   assert.equal(qualityMessage('low'), '{"quality":"low"}');
   assert.equal(qualityMessage('evil"}'), '{"quality":"original"}');
 });
+
+// --- LMS busy: text keepalives on the player socket (docs/PROTOCOL.md) -------------------
+
+import { classifyText, routeMessage } from '../../static/player/reconnect.js';
+
+test('the sign-in asks for keepalives only when told to', () => {
+  assert.equal(signInMessage('tok', null, 'original', false), 'tok');
+  assert.equal(signInMessage('tok', null, 'original'), 'tok');
+  assert.equal(signInMessage('tok', null, 'original', 'yes'), 'tok'); // only a real true
+  assert.deepEqual(JSON.parse(signInMessage('tok', null, 'original', true)), { token: 'tok', keepalive: true });
+  assert.deepEqual(JSON.parse(signInMessage('t', { session: 's', secret: 'x', received: 4 }, 'low', true)), {
+    token: 't',
+    resume: { session: 's', secret: 'x', received: 4 },
+    quality: 'low',
+    keepalive: true,
+  });
+});
+
+test('a keepalive is exactly {"keepalive":true}', () => {
+  assert.equal(classifyText('{"keepalive":true}'), 'keepalive');
+  assert.equal(classifyText(' { "keepalive" : true } '), 'keepalive');
+  for (const bad of ['{"keepalive":false}', '{"keepalive":1}', '{"keepalive":"true"}', '{"keepalive":null}']) {
+    assert.equal(classifyText(bad), null, bad);
+  }
+});
+
+test('a keepalive carrying greeting fields is neither a keepalive nor a greeting', () => {
+  for (const f of ['session', 'secret', 'mac', 'name', 'resumed', 'grace']) {
+    const m = JSON.stringify({ keepalive: true, [f]: 'x' });
+    assert.equal(classifyText(m), null, m);
+  }
+  const mixed = { keepalive: true, session: 's', secret: 'x', mac: 'm', name: 'n', resumed: false };
+  assert.equal(classifyText(JSON.stringify(mixed)), null);
+});
+
+test('the greeting is recognised by its session and secret', () => {
+  const g = { session: 's1', secret: 'x', mac: '02:00:00:00:00:01', name: 'Test', resumed: false, grace: 60 };
+  assert.deepEqual(classifyText(JSON.stringify(g)), { greeting: g });
+  for (const bad of [{ session: 's1' }, { secret: 'x' }, { session: 1, secret: 'x' }, { session: 's', secret: null }, {}]) {
+    assert.equal(classifyText(JSON.stringify(bad)), null, JSON.stringify(bad));
+  }
+});
+
+test('junk text is ignored, never thrown on', () => {
+  const junk = [
+    '',
+    'not json',
+    '{',
+    'null',
+    'true',
+    '42',
+    '"keepalive"',
+    '[{"keepalive":true}]',
+    '[]',
+    '{"__proto__":{"keepalive":true}}',
+    'x'.repeat(5000),
+    `{"keepalive":true,"pad":"${'x'.repeat(5000)}"}`,
+  ];
+  for (const j of junk) assert.equal(classifyText(j), null, j.slice(0, 40));
+  for (const v of [undefined, null, 3, {}, new ArrayBuffer(2)]) assert.equal(classifyText(v), null);
+  // Random strings from a JSON-ish alphabet: never a throw.
+  let seed = 7;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+  const alphabet = '{}[]":,truefalsnkepliv\\ 0123456789sesioncrt';
+  for (let i = 0; i < 2000; i++) {
+    let s = '';
+    for (let n = Math.floor(rnd() * 40); n > 0; n--) s += alphabet[Math.floor(rnd() * alphabet.length)];
+    const r = classifyText(s);
+    assert.ok(r === null || r === 'keepalive' || typeof r === 'object');
+  }
+});
+
+test('routing: a keepalive goes nowhere, frames are the only thing counted', () => {
+  const seen = { frames: 0, greeting: 0, ignored: 0 };
+  const to = {
+    frames: () => seen.frames++,
+    greeting: () => seen.greeting++,
+    ignored: () => seen.ignored++,
+  };
+  routeMessage('{"keepalive":true}', to);
+  routeMessage('{"keepalive":true}', to);
+  assert.deepEqual(seen, { frames: 0, greeting: 0, ignored: 0 });
+  routeMessage('{"keepalive":true,"session":"s","secret":"x"}', to);
+  routeMessage('garbage', to);
+  assert.deepEqual(seen, { frames: 0, greeting: 0, ignored: 2 });
+  routeMessage(new ArrayBuffer(4), to);
+  routeMessage('{"session":"s","secret":"x","mac":"m","name":"n","resumed":true}', to);
+  assert.deepEqual(seen, { frames: 1, greeting: 1, ignored: 2 });
+});
+
+test('the worker: every message refreshes last heard; keepalives asked for only with lms_busy', () => {
+  const src = readFileSync(new URL('../../static/player/player-worker.js', import.meta.url), 'utf8');
+  // Every message is routed through routeMessage, after noting that the socket is alive.
+  assert.match(src, /ws\.onmessage = \(m\) => \{[^}]*lastHeard = now\(\);\s*routeMessage\(m\.data, \{/);
+  assert.doesNotMatch(src, /onGreeting\(JSON\.parse/);
+  // Frames are counted in onFrames only.
+  assert.equal((src.match(/received\+\+/g) ?? []).length, 1);
+  assert.match(src, /function onFrames\(data\) \{\s*received\+\+;/);
+  // Keepalives are asked for only when the gateway lists lms_busy.
+  assert.match(src, /busyFeature = me\?\.features\?\.lms_busy === true;/);
+  assert.match(src, /signInMessage\(token, resume \? \{ session, secret, received \} : null, quality, busyFeature === true\)/);
+  // The features are learned (briefly) before the first sign-in.
+  assert.match(src, /await learnFeatures\(\d+\);\s*connect\(false\);/);
+});

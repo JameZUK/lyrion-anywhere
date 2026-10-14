@@ -7,6 +7,9 @@ export interface LmsEvent {
 	event: string[];
 }
 
+/** LMS's health, from the gateway: busy (not answering, since `since` ms) or answering again. */
+export type LmsHealth = { lms: 'busy'; since: number | null } | { lms: 'ok' };
+
 export type EventsState = 'connecting' | 'live' | 'retrying' | 'stopped';
 
 export interface EventsHandlers {
@@ -14,6 +17,8 @@ export interface EventsHandlers {
 	/** Some events were missed (or the socket reconnected): re-query everything. */
 	onResync: () => void;
 	onState?: (s: EventsState) => void;
+	/** The music server stopped answering, or answers again (gateways with `lms_busy`). */
+	onLms?: (h: LmsHealth) => void;
 }
 
 /** Backoff with jitter: ~1 s, 2 s, 4 s … up to ~30 s. */
@@ -22,7 +27,7 @@ export function eventsBackoff(attempt: number, random = Math.random): number {
 }
 
 /** Parse one message from the gateway; anything unexpected is ignored. */
-export function parseEventMessage(text: unknown): LmsEvent | 'resync' | 'subscribed' | null {
+export function parseEventMessage(text: unknown): LmsEvent | LmsHealth | 'resync' | 'subscribed' | null {
 	if (typeof text !== 'string' || text.length > 65_536) return null;
 	let m: unknown;
 	try {
@@ -34,6 +39,13 @@ export function parseEventMessage(text: unknown): LmsEvent | 'resync' | 'subscri
 	const o = m as Record<string, unknown>;
 	if (o.subscribed === true) return 'subscribed';
 	if (o.resync === true) return 'resync';
+	if ('lms' in o && ('event' in o || 'player' in o)) return null; // neither one nor the other
+	if (o.lms === 'ok') return { lms: 'ok' };
+	if (o.lms === 'busy') {
+		const since = typeof o.since === 'number' && Number.isSafeInteger(o.since) && o.since >= 0 ? o.since : null;
+		return { lms: 'busy', since };
+	}
+	if ('lms' in o) return null; // a state this client doesn't know
 	if (!Array.isArray(o.event) || !o.event.every((t) => typeof t === 'string')) return null;
 	if (o.player !== null && typeof o.player !== 'string') return null;
 	return { player: o.player as string | null, event: o.event as string[] };
@@ -77,8 +89,11 @@ export class EventsClient {
 			if (msg === 'subscribed') {
 				this.#attempt = 0;
 				this.h.onState?.('live');
+				// LMS is assumed to answer: if it is busy, the gateway says so straight after.
+				this.h.onLms?.({ lms: 'ok' });
 				this.h.onResync(); // anything may have changed while we were away
 			} else if (msg === 'resync') this.h.onResync();
+			else if (msg && 'lms' in msg) this.h.onLms?.(msg);
 			else if (msg) this.h.onEvent(msg);
 		};
 		ws.onclose = async (e) => {

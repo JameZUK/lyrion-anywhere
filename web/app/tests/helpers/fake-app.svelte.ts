@@ -42,6 +42,7 @@ class FakeApp {
 	now = $state<PlayerStatus | null>(null);
 	queueVersion = $state(0);
 	error = $state('');
+	serverBusy = $state(false);
 	soon = () => {};
 	/** Event watchers (Rooms); tests call `emit` to deliver one. */
 	watchers = new Set<(e: { player: string | null; event: string[] } | 'resync') => void>();

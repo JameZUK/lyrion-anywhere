@@ -1,5 +1,5 @@
 // LMS commands through the gateway's allow-list (POST /v1/rpc) and artwork (GET /v1/art).
-import { ApiError, bearer, callJson } from './http';
+import { ApiError, bearer, callJson, isBusy } from './http';
 import type { SessionManager } from './session';
 
 export type Command = (string | number)[];
@@ -52,21 +52,35 @@ export class Api {
 	// LMS resizes artwork on its single thread: don't flood it (HTTP/2 has no per-host cap).
 	#artLimit = new Limiter(6);
 
+	/**
+	 * Told about every command's outcome as far as LMS's health goes: the error when the
+	 * gateway said the music server is busy, null when LMS answered. Other failures say
+	 * nothing either way.
+	 */
+	onHealth: (busy: ApiError | null) => void = () => {};
+
 	constructor(
 		private session: SessionManager,
 		private artCacheSize = 300,
 	) {}
 
 	/** Run an LMS command. `player` is a player id, or '' for library queries. */
-	rpc<T = Record<string, unknown>>(player: string, cmd: Command): Promise<T> {
-		return this.session.authed(async (token) => {
-			const r = await callJson<{ result?: T }>('/v1/rpc', {
-				method: 'POST',
-				headers: { ...bearer(token), 'Content-Type': 'application/json' },
-				body: JSON.stringify({ player, cmd }),
+	async rpc<T = Record<string, unknown>>(player: string, cmd: Command): Promise<T> {
+		try {
+			const result = await this.session.authed(async (token) => {
+				const r = await callJson<{ result?: T }>('/v1/rpc', {
+					method: 'POST',
+					headers: { ...bearer(token), 'Content-Type': 'application/json' },
+					body: JSON.stringify({ player, cmd }),
+				});
+				return (r?.result ?? {}) as T;
 			});
-			return (r?.result ?? {}) as T;
-		});
+			this.onHealth(null);
+			return result;
+		} catch (e) {
+			if (isBusy(e)) this.onHealth(e);
+			throw e;
+		}
 	}
 
 	/**
