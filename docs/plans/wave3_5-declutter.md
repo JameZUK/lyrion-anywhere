@@ -2,6 +2,12 @@
 
 Started on 2026-10-14, from a rendered review of every screen on both apps: phone, small phone, tablet and desktop, light and dark, against the demo library. The finding is the same on both. The features are good, but each wave added its control **beside** the existing ones rather than **instead of** them. Almost every fix is a deletion, a merge or a move, not a redesign. No feature is lost: anything taken off a screen gets a named new home.
 
+## Decisions (owner, 2026-10-14)
+
+- **All three phases** go ahead. Phase 3's merges start with a short design section written here before they are built.
+- **Ratings:** one favourite/rating toggle by the title on Now playing; the full 1–5 rating stays in ⋮.
+- **The "Playing on" strip goes.** The player shows in the mini player; moving playback lives in *Play on…*; a strip appears only while a move is in progress.
+
 ## Rules both apps follow from now on
 
 1. **One status slot.**
