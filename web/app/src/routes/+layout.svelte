@@ -17,7 +17,6 @@
 	import MediaSession from '$lib/components/MediaSession.svelte';
 	import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import OfflineBar from '$lib/components/OfflineBar.svelte';
 	import OfflineMode from '$lib/components/OfflineMode.svelte';
 	import { downloads, handoff, offlinePlayer, plays } from '$lib/offline/index.svelte';
 	import { snapshotOf } from '$lib/offline/handoff.svelte';
@@ -241,18 +240,16 @@
 					</a>
 				{/each}
 			</nav>
-			<main class="content" class:on-np={path === '/' && !offlinePlayer.active}>
+			<main class="content" class:on-np={path === '/'}>
 				<!-- The one status line (Wave 3.5, rule 1): moving > out of reach > busy > reconnecting,
 				     then this device's offers. At every width, in its own room, never over the controls. -->
 				<StatusSlot />
 				{@render children()}
 			</main>
 		</div>
-		{#if offlinePlayer.active}
-			<div class="barwrap"><OfflineBar /></div>
-		{:else}
-			<div class="barwrap" class:on-np={path === '/'}><PlayerBar /></div>
-		{/if}
+		<!-- One mini player, for the selected player and for this device's downloads alike
+		     (Wave 3.5: two engines, one face). -->
+		<div class="barwrap" class:on-np={path === '/'}><PlayerBar /></div>
 		<!-- Results and offers: one snackbar at a time (see Snackbar). -->
 		<ContinueOn />
 		<Snackbar message={app.error || app.notice} ondismiss={() => ((app.error = ''), (app.notice = ''))} timeout={10000} />

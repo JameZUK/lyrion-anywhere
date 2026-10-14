@@ -73,6 +73,28 @@ Started on 2026-10-14, from a rendered review of every screen on both apps: phon
 | 13 | **Rooms folds into *Play on…*** (one player manager instead of two; Rooms remains as the expanded view on tablet and desktop). Card controls go from 6 to 3. | Needs a short design first |
 | 14 | **Downloads playback uses the main mini player and Now playing** (the engines stay separate; the UI is one). Downloads then appear in the main Queue. | Removes the "two apps" feel offline |
 
+## Phase 3 design (web, 2026-10-14)
+
+Written before building items 13 and 14. It follows the Android design (merged separately) wherever the web can, so the two apps match; the differences are listed.
+
+### 13. Rooms folds into *Play on…* (web)
+
+- ***Play on…* is the one player manager on phones.** Each player is one row: a tap plays on it (phase 1). Its ⋯ holds what a Rooms card had: *Move playback to <player>*, *Play <player>* or *Pause <player>*, *Alarms* (that player's, on the Alarms page) and *Switch <player> on* or *off*. The volume of the player in use sits at the top of the sheet (phase 1). Sync stays one *Group players…* row; a grouped player says who it plays with.
+- **The data:** the sheet and Rooms share one player manager (`lib/rooms/manager.svelte.ts`): every player's status read through `RoomsPoller` only while the sheet or the page is open (every 5 s and on events, at most 20 players), and the same actions (play/pause, volume, power, sync, move).
+- **Rooms stays the expanded view on tablets and desktops**, in the sidebar. *Play on…* links to it there only; on a phone (760 px and under) the sheet has everything.
+- **A Rooms card goes from six controls to three:** play/pause, the volume slider and ⋯ (*Play on <player>*, *Move playback to <player>*, *Sync with…*, *Play on its own*, *Alarms*, *Switch <player> off*). A switched-off player shows one *Switch on* button in place of play/pause. The grip goes: a pointer drags a card by its cover onto another to sync them, and *Sync with…* in ⋯ is the keyboard and screen-reader way. The instructions paragraph goes. A tap on the card still plays on that room.
+- **Now playing's ⋯ loses Alarms:** it is the player's row in *Play on…*, and a Rooms card's ⋯ (one way in per place).
+- **The one status slot** carries a move in progress for Rooms too.
+- **Differences from Android:** the web has no long press to move playback on a card (it is in ⋯); the controlled player's volume is at the top of *Play on…* rather than under its row.
+
+### 14. Downloads playback through the main mini player and Now playing (web)
+
+- **Two engines, one face.** The downloads engine (`lib/offline/player.svelte.ts`) stays its own. An adapter (`lib/player/now.svelte.ts`) gives the main screens one view of what plays: from the downloads engine while its queue is active, otherwise from the selected LMS player. `controls` sends play/pause, next, previous, seek and a queue jump to the downloads engine while it plays.
+- **The main mini player** shows downloads while they play (the title, then "Downloads · artist"), with play/pause, next and previous (swipes too) and *Play on…*; a tap opens the main **Now playing**: the cover from the device, the title, artist and album, a plain seek bar (no waveform), the transport, Up next from the downloads queue, and *Play on · Lyrics · Queue*. LMS-only controls are left out for downloads: the rating, shuffle and repeat, the sleep timer, the quality badge and signal path, This track, Car mode and Alarms. **Stop playing downloads** (ending the downloads queue) is in ⋮.
+- **Downloads appear in the main Queue** (the page and the sheet): a row plays from that track; the downloads queue can't be edited there (the engine has no such operations), so no ⋯, handles or clear.
+- **The separate downloads bar goes** from the signed-in app. Offline mode's splash (a device where nobody is signed in, with no server to sign in to) keeps its own small bar: there is no main app around it to show.
+- **Differences from Android:** web downloads have no visualiser (the browser's audio element feeds no analyser) and no shuffle or repeat (the web engine plays its queue in order).
+
 ## Naming (one term each, both apps)
 
 | Concept | Today | Use |

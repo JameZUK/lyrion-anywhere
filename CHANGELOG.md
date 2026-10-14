@@ -2,6 +2,23 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Web: Wave 3.5 declutter, phase 3 (merges)
+
+The third phase of [the declutter plan](docs/plans/wave3_5-declutter.md) for the web app, after its web design section (written there, beside Android's).
+
+- **Rooms folds into Play on… (one player manager).** Play on… and Rooms now share one manager (`lib/rooms/manager.svelte.ts`). It reads every player's status only while one of them is open, and the actions (play/pause, volume, power, sync, moving playback) are the same in both.
+  - **On phones, Play on… has everything:** a player's ⋯ holds *Move playback to <player>*, *Play/Pause <player>*, *Alarms* (that player's) and *Switch <player> on/off*.
+  - **Rooms stays the expanded view** on tablets and desktops (the sidebar, and a link in Play on… there only).
+  - **A Rooms card has three controls:** play/pause, volume and ⋯ (*Play on <player>*, *Move playback to <player>*, *Sync with…*, *Play on its own*, *Alarms*, *Switch <player> off*). A switched-off room shows one *Switch on* button instead.
+  - **Gone:** the power button, the grip and the instructions paragraph. To sync, drag a card by its cover onto another, or use *Sync with…* from the keyboard and screen readers. While the server is out of reach, Rooms says it will update when your music server is back.
+  - **Now playing's ⋯ no longer has Alarms:** a player's alarms are its row in Play on… and its card in Rooms.
+- **Downloads play through the main mini player, Now playing and Queue (two engines, one face).** The downloads engine stays its own. An adapter (`lib/player/now.svelte.ts`) gives the main screens one view of what plays, and `controls` sends the transport to the downloads engine while its queue is active.
+  - **The mini player** shows the download ("Downloads · artist"), with play/pause, next and previous (swipes too) and Play on….
+  - **Now playing** shows its cover, title, a plain seek bar and the transport, with Up next from the downloads queue. ⋮/⋯ has *Stop playing downloads*. The rating, quality badge, sleep timer, This track, Car mode and the visualiser are left out for downloads.
+  - **The Queue page and sheet** list the downloads in play order: a tap plays from that track, and the queue can't be edited there. The selected player's queue isn't read meanwhile.
+  - **The separate downloads bar has gone** from the signed-in app. Offline mode's splash (nobody signed in on this device) keeps its own.
+- **Tests:** `tests/downloads-one-face.test.ts` (the transport and the view while downloads play, the mini player, both Now playing layouts, the Queue page and sheet, hostile titles) and the Rooms and Play on… tests (three controls, Switch on, power and alarms in ⋯, drag by the cover, the shared menu, reading only while open).
+
 ## 2026-10-14: Web: Wave 3.5 declutter, phase 2 (structure)
 
 The second phase of [the declutter plan](docs/plans/wave3_5-declutter.md) for the web app. Nothing was removed: every setting and section has a new home, each reached by a test.

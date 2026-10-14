@@ -8,6 +8,7 @@
 	import { textOf } from '$lib/lms/format';
 	import { isSwipe, removeChecked, restoreTrack } from '$lib/lms/queue-edit';
 	import { upNext } from '$lib/lms/upnext';
+	import { now } from '$lib/player/now.svelte';
 	import type { Track } from '$lib/lms/types';
 	import Snackbar from './Snackbar.svelte';
 	import { tick } from 'svelte';
@@ -17,7 +18,9 @@
 	/** A swipe must travel this far (px) to remove. */
 	const SWIPE_REMOVE_PX = 90;
 
-	const next = $derived(upNext(app.now));
+	// While this device plays its downloads: the next download (nothing to remove: the downloads
+	// queue isn't edited here).
+	const next = $derived(now.downloads ? (now.nextDownload ? { track: now.nextDownload, index: now.index + 1 } : null) : upNext(app.now));
 	/** Hidden at once when removed, until the next status says what follows now. */
 	let removed = $state<string | null>(null);
 	let undo = $state<{ track: Track; index: number; player: string } | null>(null);
@@ -33,6 +36,7 @@
 	const artist = $derived(textOf(next?.track.artist));
 
 	async function remove() {
+		if (now.downloads) return;
 		const n = shown;
 		const player = app.playerId;
 		if (!n || !player) return;
@@ -87,7 +91,7 @@
 	// --- swipe sideways to remove (touch and pen; vertical movement stays a scroll) ---------
 
 	function down(e: PointerEvent) {
-		if (e.pointerType === 'mouse' || swipe) return;
+		if (e.pointerType === 'mouse' || swipe || now.downloads) return;
 		swipe = { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, active: false };
 	}
 	function move(e: PointerEvent) {
@@ -130,7 +134,7 @@
 			class="row"
 			href="#/queue"
 			aria-haspopup={onopen ? 'dialog' : undefined}
-			aria-label={`Up next: ${title}${artist ? ` by ${artist}` : ''}. Opens the queue; press Delete to remove it from the queue.`}
+			aria-label={`Up next: ${title}${artist ? ` by ${artist}` : ''}. Opens the queue${now.downloads ? '' : '; press Delete to remove it from the queue'}.`}
 			style:transform={swipe?.active ? `translateX(${swipe.dx}px)` : undefined}
 			style:opacity={swipe?.active ? Math.max(0.3, 1 - Math.abs(swipe.dx) / 240) : undefined}
 			{onclick}

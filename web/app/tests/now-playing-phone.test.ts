@@ -233,7 +233,7 @@ describe('top row', () => {
 		r.unmount();
 	});
 
-	test('⋮ opens a sheet of about four: This track, Sleep timer, Visualiser, Car mode and Alarms', async () => {
+	test('⋮ opens a sheet of about four: This track, Sleep timer, Visualiser and Car mode', async () => {
 		const r = render(NowPlaying);
 		await tick();
 		const more = r.getByRole('button', { name: 'More options' });
@@ -241,12 +241,12 @@ describe('top row', () => {
 		await fireEvent.click(more);
 		const sheet = document.querySelector('dialog[open] [data-more-sheet]')!;
 		expect(sheet).not.toBeNull();
-		expect(sheet.textContent).toMatch(/This track.*Sleep timer.*Visualiser.*Car mode.*Alarms/);
-		// Each meaning has one way in: Signal path is the badge's, Rooms is in Play on….
-		expect(sheet.textContent).not.toMatch(/Signal path|All rooms/);
-		expect(sheet.querySelectorAll('.row').length).toBe(5);
+		expect(sheet.textContent).toMatch(/This track.*Sleep timer.*Visualiser.*Car mode/);
+		// Each meaning has one way in: Signal path is the badge's; Rooms and a player's Alarms
+		// are in Play on….
+		expect(sheet.textContent).not.toMatch(/Signal path|All rooms|Alarms/);
+		expect(sheet.querySelectorAll('.row').length).toBe(4);
 		expect(sheet.querySelector('[data-car-link]')!.getAttribute('href')).toBe('#/car');
-		expect(sheet.querySelector('[data-alarms-link]')!.getAttribute('href')).toBe('#/alarms');
 		// Sleep timer: the sheet gives way to the timer's; closing it returns to ⋮.
 		await fireEvent.click(sheet.querySelector('[data-sleep-button]')!);
 		await waitFor(() => expect(document.querySelector('dialog[open] [data-sleep-sheet]')).not.toBeNull());

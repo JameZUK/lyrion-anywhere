@@ -34,6 +34,8 @@
 	import { controls } from '$lib/player/controls.svelte';
 	import { MARK_LABELS } from '$lib/player/local-plan';
 	import { isNetworkError } from '$lib/state/reachability';
+	import { now } from '$lib/player/now.svelte';
+	import DownloadsQueue from '$lib/components/DownloadsQueue.svelte';
 
 	/** How long a swiped row takes to slide out before it is removed. */
 	const SLIDE_MS = 180;
@@ -82,7 +84,8 @@
 
 	async function load() {
 		const id = app.playerId;
-		if (!id) return;
+		// This device plays its downloads: the page shows their queue, not the player's.
+		if (!id || now.downloads) return;
 		const seq = editSeq;
 		try {
 			const r = await api.rpc<PlayerStatus>(id, cmd.queue(0, 500));
@@ -115,6 +118,7 @@
 	$effect(() => {
 		void app.playerId;
 		void app.queueVersion;
+		void now.downloads;
 		untrack(() => void load());
 	});
 	// Another player: its queue hasn't been read yet.
@@ -486,6 +490,18 @@
 	</li>
 {/snippet}
 
+{#if now.downloads}
+	<!-- This device plays its downloads: their queue here, in play order (Wave 3.5: one Queue). -->
+	<section class="page" data-queue-downloads>
+		<header>
+			<div>
+				<h1>Queue</h1>
+				<p class="muted">Downloads · {now.queue.length} {now.queue.length === 1 ? 'track' : 'tracks'}</p>
+			</div>
+		</header>
+		<DownloadsQueue />
+	</section>
+{:else}
 <section class="page">
 	<header>
 		<div>
@@ -532,6 +548,8 @@
 		{#if total > tracks.length}<p class="muted">Showing the first {tracks.length} of {total}.</p>{/if}
 	{/if}
 </section>
+
+{/if}
 
 {#if confirmClear}
 	<ConfirmDialog

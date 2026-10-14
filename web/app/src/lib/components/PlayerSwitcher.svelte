@@ -7,14 +7,16 @@
 	import { untrack } from 'svelte';
 	import { api, app, session } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
-	import { bringHere, isThisDevice, moveTo, useThisDevice } from '$lib/player/outputs';
+	import { bringHere, isThisDevice, useThisDevice } from '$lib/player/outputs';
 	import * as cmd from '$lib/lms/commands';
 	import { textOf } from '$lib/lms/format';
 	import { groupFromStatus, groupLabel, groupOf, syncGroupsFrom, syncToggle } from '$lib/lms/sync';
-	import type { PlayerStatus, SyncGroupsResult } from '$lib/lms/types';
+	import type { PlayerInfo, PlayerStatus, SyncGroupsResult } from '$lib/lms/types';
 	import Icon from './Icon.svelte';
 	import VolumeSlider from './VolumeSlider.svelte';
-	import RowMenu from './RowMenu.svelte';
+	import RowMenu, { type RowAction } from './RowMenu.svelte';
+	import { PlayerManager } from '$lib/rooms/manager.svelte';
+	import { go } from '$lib/nav';
 	import Switch from './Switch.svelte';
 	import { controls } from '$lib/player/controls.svelte';
 
@@ -64,33 +66,42 @@
 		useThisDevice();
 		onclose();
 	}
-	function move(id: string) {
-		onclose();
-		void moveTo(id);
-	}
 	function bring() {
 		onclose();
 		void bringHere();
 	}
+	/** This device's ⋯: move the playback here; its player's alarms, once LMS lists it. */
+	const hereActions = $derived.by((): RowAction[] => {
+		const out: RowAction[] = [];
+		if (!hereSelected && device.supported && canMove) out.push({ label: 'Move playback to this device', icon: 'transfer', run: bring, disabled: offline, why: controls.why(offline), id: 'move' });
+		const mine = app.players.find((p) => isThisDevice(p.playerid));
+		if (mine)
+			out.push({
+				label: 'Alarms',
+				icon: 'alarm',
+				run: () => {
+					onclose();
+					app.select(mine.playerid);
+					void go('/alarms');
+				},
+				id: 'alarms',
+			});
+		return out;
+	});
 
-	// --- what each player is playing --------------------------------------------------------
+	// --- what each player is playing, and its menu: the one player manager (Wave 3.5) -------
 
-	let playing = $state<Record<string, string>>({});
-	async function loadPlaying() {
-		const list = others.slice(0, 24);
-		const out: Record<string, string> = {};
-		await Promise.all(
-			list.map(async (p) => {
-				try {
-					const s = await api.rpc<PlayerStatus>(p.playerid, cmd.nowPlaying());
-					out[p.playerid] = describe(s);
-				} catch {
-					/* leave it out */
-				}
-			}),
-		);
-		playing = out;
-	}
+	const manager = new PlayerManager({
+		rpc: (p, c) => api.rpc(p, c),
+		// Play on… reads the groups itself (for its Group players… view), and no alarm times.
+		groups: false,
+		visible: () => document.visibilityState !== 'hidden',
+		app,
+		bringHere,
+		isThisDevice,
+		why: (off) => controls.why(off),
+	});
+	const playing = $derived(Object.fromEntries(others.map((p) => [p.playerid, manager.status(p)]).filter(([, s]) => !!s).map(([id, s]) => [id, describe(s as PlayerStatus)])) as Record<string, string>);
 	function describe(s: PlayerStatus): string {
 		if (Number(s.power ?? 1) === 0) return 'Off';
 		const t = s.playlist_loop?.[0];
@@ -98,6 +109,17 @@
 		if (s.mode === 'play') return what ? `Playing ${what}` : 'Playing';
 		if (s.mode === 'pause') return what ? `Paused: ${what}` : 'Paused';
 		return what ? `Stopped: ${what}` : 'Idle';
+	}
+	/** A player's ⋯: move playback there (closing the sheet), play/pause it, its alarms, power. */
+	function rowActions(p: PlayerInfo): RowAction[] {
+		return manager
+			.actionsFor(p, {
+				alarms: () => {
+					app.select(p.playerid);
+					void go('/alarms');
+				},
+			})
+			.map((a) => (a.id === 'move' || a.id === 'alarms' ? { ...a, run: () => (onclose(), a.run()) } : a));
 	}
 
 	// --- sync groups ----------------------------------------------------------------------
@@ -119,10 +141,12 @@
 	}
 	$effect(() => {
 		void app.players;
-		untrack(() => {
-			void loadGroups();
-			void loadPlaying();
-		});
+		untrack(() => void loadGroups());
+	});
+	// Every player's status while the sheet is open (and none once it closes).
+	$effect(() => {
+		manager.start(() => others);
+		return () => manager.stop();
 	});
 
 	/** The selected player's group: from `syncgroups ?`, else from its own status. */
@@ -216,14 +240,13 @@
 					</span>
 					{#if hereSelected}<span class="tick"><Icon name="check" size={20} label="In use" /></span>{/if}
 				</button>
-				{#if !hereSelected && device.supported && canMove}
-					<RowMenu label="More options for this device" actions={[{ label: 'Move playback to this device', icon: 'transfer', run: bring, disabled: offline, why: controls.why(offline), id: 'move' }]} />
-				{/if}
+				{#if hereActions.length}<RowMenu label="More options for this device" actions={hereActions} />{/if}
 			</li>
 
 			{#each others as p (p.playerid)}
 				{@const on = p.playerid.toLowerCase() === selected}
 				{@const name = textOf(p.name)}
+				{@const acts = rowActions(p)}
 				<li class="output" class:selected={on}>
 					<button class="row choice" aria-current={on ? 'true' : undefined} onclick={() => control(p.playerid)} aria-label={`Play on ${name}${on ? ' (in use)' : ''}`} data-output={p.playerid}>
 						<Icon name="speaker" />
@@ -236,9 +259,9 @@
 						{#if p.isplaying}<span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>{/if}
 						{#if on}<span class="tick"><Icon name="check" size={20} label="In use" /></span>{/if}
 					</button>
-					{#if !on && canMove}
-						<!-- One trailing control (Wave 3.5 rule 3): moving playback is the row's secondary action. -->
-						<RowMenu label={`More options for ${name}`} actions={[{ label: `Move playback to ${name}`, icon: 'transfer', run: () => move(p.playerid), disabled: offline, why: controls.why(offline), id: 'move' }]} />
+					{#if acts.length}
+						<!-- One trailing control (Wave 3.5 rule 3): what Rooms' card had is in the row's ⋯. -->
+						<RowMenu label={`More options for ${name}`} actions={acts} />
 					{/if}
 				</li>
 			{/each}
@@ -255,6 +278,7 @@
 			</button>
 		{/if}
 		{#if app.players.length > 1}
+			<!-- The expanded view, on tablets and desktops; on a phone this sheet has everything. -->
 			<a class="row choice rooms" href="#/rooms" onclick={onclose} data-rooms-link><Icon name="rooms" /><span class="grow"><span class="name">Rooms</span><span class="sub muted">Every player at a glance</span></span><span class="chev" aria-hidden="true">›</span></a>
 		{/if}
 	{:else}
@@ -373,6 +397,11 @@
 	.group-row,
 	.rooms {
 		margin-top: 0.15rem;
+	}
+	@media (max-width: 760px) {
+		.rooms {
+			display: none;
+		}
 	}
 	.group-row:hover,
 	.rooms:hover {

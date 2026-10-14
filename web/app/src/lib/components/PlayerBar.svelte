@@ -14,24 +14,34 @@
 	import { formatLeft, sleepLeft } from '$lib/lms/sleep';
 	import { haptics } from '$lib/haptics/haptics.svelte';
 	import { controls } from '$lib/player/controls.svelte';
+	import { now } from '$lib/player/now.svelte';
 
 	let seeking = $state<number | null>(null);
 	let volume = $state<number | null>(null);
 	let volTimer: ReturnType<typeof setTimeout> | undefined;
 
-	const track = $derived(app.now?.playlist_loop?.[0]);
-	const total = $derived(app.now?.duration ?? track?.duration ?? 0);
-	const shownTime = $derived(seeking ?? app.elapsed);
+	// What plays: the selected player, or this device's downloads (Wave 3.5: one mini player).
+	const track = $derived(now.track);
+	const total = $derived(now.duration);
+	const shownTime = $derived(seeking ?? now.elapsed);
 	const vol = $derived(volume ?? app.now?.['mixer volume'] ?? 0);
-	const title = $derived(textOf(track?.title ?? app.now?.current_title) || (app.current ? 'Nothing playing' : 'No player chosen'));
-	const sub = $derived(app.current ? [textOf(track?.artist), textOf(track?.album)].filter(Boolean).join(' · ') : 'Choose a player');
+	const title = $derived(
+		now.downloads ? textOf(track?.title) || 'Downloads' : textOf(track?.title ?? app.now?.current_title) || (app.current ? 'Nothing playing' : 'No player chosen'),
+	);
+	const sub = $derived(
+		now.downloads
+			? ['Downloads', textOf(track?.artist)].filter(Boolean).join(' · ')
+			: app.current
+				? [textOf(track?.artist), textOf(track?.album)].filter(Boolean).join(' · ')
+				: 'Choose a player',
+	);
 	/** Which player is in use, when it isn't this device (Wave 3.5: no separate strip for it). */
-	const on = $derived(app.remote ? playerLabel(app.playerId, app.now, app.players) || app.nameOf(app.playerId) || 'another player' : '');
+	const on = $derived(!now.downloads && app.remote ? playerLabel(app.playerId, app.now, app.players) || app.nameOf(app.playerId) || 'another player' : '');
 	/** Which controls work now (all of them while the server is in reach). */
 	const g = $derived(controls.gates);
-	const canSeek = $derived(total > 0 && app.now?.can_seek !== 0 && g.seek);
-	const sleepIn = $derived(sleepLeft(app.now));
-	const thumb = $derived(coverPath(track?.coverid ?? track?.artwork_track_id, 120));
+	const canSeek = $derived(total > 0 && (now.downloads || app.now?.can_seek !== 0) && g.seek);
+	const sleepIn = $derived(now.downloads ? null : sleepLeft(app.now));
+	const thumb = $derived(now.downloads ? null : coverPath(track?.coverid ?? track?.artwork_track_id, 120));
 
 	// --- gestures on the mini player (gesture.ts): swipe for next/previous, up to open, a
 	// long-press for Play on…; each also has a button and a keyboard shortcut ---------------
@@ -125,7 +135,7 @@
 </script>
 
 <footer class="bar" aria-label="Player">
-	{#if thumb}<div class="tint" aria-hidden="true"><Art path={thumb} alt="" rounded="0" /></div>{/if}
+	{#if thumb || now.localCover}<div class="tint" aria-hidden="true"><Art path={thumb} local={now.localCover} alt="" rounded="0" /></div>{/if}
 	<a
 		class="now"
 		href="#/"
@@ -142,11 +152,11 @@
 		{oncontextmenu}
 		data-mini-player
 	>
-		<div class="thumb"><Art path={thumb} alt="" label={title} /></div>
+		<div class="thumb"><Art path={thumb} local={now.localCover} alt="" label={title} /></div>
 		<div class="meta">
 			<div class="title ellipsis">{title}</div>
 			<div class="sub ellipsis muted">
-				{#if sleepIn !== null}<span class="moon" title={`Sleep timer: ${formatLeft(sleepIn)}`}><Icon name="moon" size={13} /></span>{/if}{#if on}<span class="on" data-mini-on>on {on}</span>{#if sub}{' · '}{/if}{/if}<span class:pick={!app.current}>{sub}</span>
+				{#if sleepIn !== null}<span class="moon" title={`Sleep timer: ${formatLeft(sleepIn)}`}><Icon name="moon" size={13} /></span>{/if}{#if on}<span class="on" data-mini-on>on {on}</span>{#if sub}{' · '}{/if}{/if}<span class:pick={!app.current && !now.downloads}>{sub}</span>
 			</div>
 		</div>
 	</a>
@@ -157,8 +167,8 @@
 			<button class="icon-btn" aria-label="Previous" onclick={() => controls.previous()} disabled={!g.previous} {...controls.why(!g.previous)}>
 				<Icon name="prev" />
 			</button>
-			<button class="icon-btn play" aria-label={app.playing ? 'Pause' : 'Play'} onclick={() => controls.toggle()} disabled={!g.playPause} {...controls.why(!g.playPause)}>
-				<Icon name={app.playing ? 'pause' : 'play'} size={24} />
+			<button class="icon-btn play" aria-label={controls.playing ? 'Pause' : 'Play'} onclick={() => controls.toggle()} disabled={!g.playPause} {...controls.why(!g.playPause)}>
+				<Icon name={controls.playing ? 'pause' : 'play'} size={24} />
 			</button>
 			<button class="icon-btn" aria-label="Next" onclick={() => controls.next()} disabled={!g.next} {...controls.why(!g.next)}>
 				<Icon name="next" />

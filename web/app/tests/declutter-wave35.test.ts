@@ -21,7 +21,20 @@ vi.mock('$lib/offline/index.svelte', async () => {
 	const plays = new PlaySync({ store: offlineStore, authed: (fn) => fn('t'), fetch: hang });
 	// The offline player as the hand-off sees it: two downloaded tracks, the first playing.
 	const key = (id: number) => String(id).padStart(64, '0');
-	const offlinePlayer = { queue: [{ id: 5, key: key(5) }, { id: 6, key: key(6) }], index: 0, position: 12, playing: true, user: 'alice', active: true, stop: vi.fn(), forget: vi.fn() };
+	// Empty (not playing downloads) unless a test fills it.
+	const offlinePlayer = {
+		queue: [] as { id: number; key: string }[],
+		index: 0,
+		position: 12,
+		playing: true,
+		user: 'alice',
+		get active() {
+			return this.queue.length > 0;
+		},
+		stop: vi.fn(),
+		forget: vi.fn(),
+		key,
+	};
 	const handoff = new HandoffOffer();
 	const lookupTrack = async (id: number) => ({ id, key: key(id) });
 	return { offlineStore, downloads, plays, offlinePlayer, handoff, lookupTrack };
@@ -263,11 +276,16 @@ describe('rule 1: one message at a time', () => {
 });
 
 describe('Continue on… (a snackbar with an action)', () => {
+	const player = offline.offlinePlayer as unknown as { queue: { id: number; key: string }[]; key: (id: number) => string };
 	beforeEach(() => {
+		player.queue = [5, 6].map((id) => ({ id, key: player.key(id) }));
 		handoff.offered = 'alice';
 		handoff.busy = '';
 	});
-	afterEach(() => handoff.dismiss());
+	afterEach(() => {
+		handoff.dismiss();
+		player.queue = [];
+	});
 
 	test('offers the player last used, with Continue and Other player…; Not now (dismiss) withdraws it', async () => {
 		const { default: ContinueOn } = await import('$lib/components/ContinueOn.svelte');
@@ -303,13 +321,13 @@ describe('Continue on… (a snackbar with an action)', () => {
 });
 
 describe('wide Now playing: Queue and ⋯, no second transport', () => {
-	test('the action row is exactly Queue and ⋯; ⋯ holds Sleep timer, This track, Signal path, Car mode and Alarms', async () => {
+	test('the action row is exactly Queue and ⋯; ⋯ holds Sleep timer, This track, Signal path and Car mode', async () => {
 		const { default: NowPlaying } = await import('../src/routes/+page.svelte');
 		const r = render(NowPlaying);
 		await tick();
 		const bar = r.container.querySelector('.np .bar')!;
 		expect([...bar.querySelectorAll(':scope > button, :scope > .rowmenu > button')].map((b) => b.getAttribute('aria-label'))).toEqual(['Show the queue beside Now playing', 'More options']);
-		expect(await menuItems('More options', r.container)).toEqual(['Sleep timer', 'This track', 'Signal path', 'Car mode', 'Alarms']);
+		expect(await menuItems('More options', r.container)).toEqual(['Sleep timer', 'This track', 'Signal path', 'Car mode']);
 		// No Lyrics button or dialog: the Lyrics layout is the one way in (and the L key).
 		expect(r.container.querySelector('[data-lyrics-button]')).toBeNull();
 		// The player's name by the volume, as the Play on button (the mini player is hidden here).

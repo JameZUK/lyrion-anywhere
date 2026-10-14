@@ -322,6 +322,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 - **Seek:** LMS sends a flush and the new stream back to back (about 2 ms apart for MP3). The player drops its queued audio on the flush itself, counted by the core, not on a timer that may never see the stopped state in between. In media-element mode the play head is then moved to where the new audio starts, so the browser also drops audio it had already decoded. After a seek, or from stopped, playback starts once 0.5 s is decoded if the stream is arriving at least twice as fast as it plays (a library file, not live radio), and the 8 s queue fills while playing. The connection log records each seek's timing (new stream, first bytes, started, queued, heard).
 - Transfer playback between players (move the queue and position).
 - **Rooms** (_Wave 2 part 3, 2026-10-13; `docs/plans/wave2-design.md` §4.3_): every permitted player as a card (art, track, play/pause, volume, power, sleep remaining, next alarm); tap to control, drag one onto another (or "Sync with…", or the keyboard) to sync, "Play on its own" to unsync, "Move playback here" for Transfer. Status is read every 5 s and on events, for at most 20 players, only while the view is open.
+  - _Web, Wave 3.5 (2026-10-14):_ Rooms and Play on… share one player manager (`lib/rooms/manager.svelte.ts`, over the same poller). A card is play/pause, volume and ⋯ (Play on, Move playback to, Sync with…, Play on its own, Alarms, Switch on/off); an off player shows *Switch on* instead; a pointer drags a card by its cover. On phones Play on… is the manager (each player's ⋯ holds move, play/pause, alarms and power); Rooms is the expanded view on tablets and desktops.
 
 **Now playing and queue**
 - Large art view, track info (format, bitrate, source) and progress.
@@ -350,6 +351,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 **Offline (§8)**
 - Download buttons on track/album/playlist (and "Download all albums" on an artist), a downloads page with progress, and storage usage.
 - Offline mode with a local queue and browse of downloaded content.
+  - _Web, Wave 3.5 (2026-10-14):_ downloads play through the main mini player, Now playing and Queue. The downloads engine (`lib/offline/player.svelte.ts`) stays separate; `lib/player/now.svelte.ts` gives the screens one view of what plays, and `controls` sends the transport to the downloads engine while its queue is active. LMS-only controls are left out for downloads, and *Stop playing downloads* is in Now playing's ⋮.
 
 **Account and admin**
 - Change password, enable TOTP, and list/revoke own devices and sessions.

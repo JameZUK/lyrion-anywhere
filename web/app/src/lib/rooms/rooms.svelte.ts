@@ -22,7 +22,10 @@ export const roomStatus = (): Command => ['status', '-', 1, 'tags:alcJ'];
 
 export interface RoomsDeps {
 	rpc: (player: string, c: Command) => Promise<unknown>;
-	alarms: (player: string) => Promise<AlarmListing>;
+	/** Each player's alarms (none read without it: Play on… shows no alarm times). */
+	alarms?: (player: string) => Promise<AlarmListing>;
+	/** Read the sync groups too (Play on… reads its own, for its Group players… view). */
+	groups?: boolean;
 	/** Whether the page can be seen (polls are skipped while it is hidden). */
 	visible?: () => boolean;
 	now?: () => Date;
@@ -123,6 +126,7 @@ export class RoomsPoller {
 	}
 
 	async #pollGroups(run: number) {
+		if (this.#deps.groups === false) return;
 		if (this.rooms().length < 2) {
 			this.groups = [];
 			return;
@@ -145,12 +149,14 @@ export class RoomsPoller {
 
 	/** Read every room's next alarm (on opening, and when alarms change). */
 	async loadAlarms(run = this.#run) {
+		const alarms = this.#deps.alarms;
+		if (!alarms) return;
 		const now = this.#deps.now?.() ?? new Date();
 		const out: Record<string, Date | null> = {};
 		await Promise.all(
 			this.#ids().map(async (id) => {
 				try {
-					const l = await this.#deps.alarms(id);
+					const l = await alarms(id);
 					out[id] = l.enabled ? nextAlarm(l.alarms, now) : null;
 				} catch {
 					out[id] = null;
@@ -182,11 +188,3 @@ export function alarmText(d: Date | null | undefined, now: Date = new Date()): s
 	return `${d.toLocaleDateString('en-GB', { weekday: 'short' })} ${time}`;
 }
 
-/** Where a keyboard drag goes next: the arrow keys step through the other rooms, round. */
-export function stepTarget(ids: readonly string[], from: string, current: string | null, by: 1 | -1): string | null {
-	const others = ids.filter((id) => id !== from);
-	if (!others.length) return null;
-	const at = current ? others.indexOf(current) : -1;
-	if (at < 0) return by > 0 ? others[0]! : others.at(-1)!;
-	return others[(at + by + others.length) % others.length]!;
-}

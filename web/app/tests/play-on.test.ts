@@ -96,11 +96,17 @@ test('a row’s ⋯ › Move playback to … moves playback from the player in u
 	await waitFor(() => expect(fake.moves).toEqual([{ source: ME, target: STUDY, name: 'Study' }]));
 });
 
-test('nothing queued: nothing to move, so no row menus', async () => {
+test('nothing queued: nothing to move, so no Move in any row’s menu', async () => {
 	fake.app.now = { mode: 'stop', playlist_tracks: 0 };
 	const r = render(PlayerSwitcher, { onclose: () => {} });
-	await tick();
-	expect(r.queryAllByRole('button', { name: /^More options for/ })).toHaveLength(0);
+	await waitFor(() => expect(r.container.textContent).toContain('Playing So What'));
+	for (const b of r.queryAllByRole('button', { name: /^More options for/ })) {
+		await fireEvent.click(b);
+		expect(r.queryAllByRole('menuitem', { name: /^Move playback/ })).toHaveLength(0);
+		await fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+	}
+	await fireEvent.click(r.getByRole('button', { name: 'More options for this device' }));
+	expect(r.queryAllByRole('menuitem', { name: /^Move playback/ })).toHaveLength(0);
 	// And no explanatory paragraph either.
 	expect(r.container.textContent).not.toMatch(/carries on there from the same point/);
 });
@@ -108,7 +114,11 @@ test('nothing queued: nothing to move, so no row menus', async () => {
 test('controlling another player: this device’s ⋯ moves the playback here', async () => {
 	fake.app.playerId = LOUNGE;
 	const r = render(PlayerSwitcher, { onclose: () => {} });
-	expect(r.queryByRole('button', { name: 'More options for Lounge' }), 'not to itself').toBeNull();
+	// Not to itself: the player in use has no Move in its menu.
+	await waitFor(() => expect(r.container.textContent).toContain('Playing So What'));
+	await fireEvent.click(r.getByRole('button', { name: 'More options for Lounge' }));
+	expect(r.queryAllByRole('menuitem', { name: /^Move playback/ })).toHaveLength(0);
+	await fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
 	await choose('More options for this device', 'Move playback to this device', r.container);
 	await waitFor(() => expect(fake.moves).toEqual([{ source: LOUNGE, target: ME, name: 'this device' }]));
 });
@@ -131,7 +141,9 @@ test("a browser that can't play: this device can't be chosen, and says why", asy
 	const here = r.getByRole('button', { name: /^Play on this device/ }) as HTMLButtonElement;
 	expect(here.disabled).toBe(true);
 	expect(here.textContent).toContain("can't play music itself");
-	expect(r.queryByRole('button', { name: 'More options for this device' })).toBeNull();
+	// Its ⋯ offers no move here (its player's alarms only, as LMS lists it).
+	await fireEvent.click(r.getByRole('button', { name: 'More options for this device' }));
+	expect(r.queryAllByRole('menuitem', { name: /^Move playback/ })).toHaveLength(0);
 });
 
 test('hostile player names and titles stay text', async () => {

@@ -5,8 +5,8 @@
 	// shrinking to fit), the title with its one rating toggle, artist · album and the quality
 	// badge, the seek bar, the transport, a one-line Up next, and a row of three actions (Play
 	// on, which also holds the volume; Lyrics; Queue). ⋮ holds This track (with the full
-	// rating), Sleep timer, Visualiser, Car mode and Alarms (Wave 3.5). Lyrics and track info
-	// scroll inside their own page.
+	// rating), Sleep timer, Visualiser and Car mode (Wave 3.5; a player's Alarms are its row in
+	// Play on…). Lyrics and track info scroll inside their own page.
 	import { app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { duration, isRemote, textOf } from '$lib/lms/format';
@@ -14,6 +14,8 @@
 	import { formatLeft, sleepLeft } from '$lib/lms/sleep';
 	import { device } from '$lib/player/device.svelte';
 	import { controls } from '$lib/player/controls.svelte';
+	import { now } from '$lib/player/now.svelte';
+	import { offlinePlayer } from '$lib/offline/index.svelte';
 	import { isThisDevice } from '$lib/player/outputs';
 	import { nowPlaying } from '$lib/nowplaying/store.svelte';
 	import { STYLES, STYLE_LABELS, type VisualStyle } from '$lib/visual/draw';
@@ -45,12 +47,14 @@
 
 	let { reduce = false }: { reduce?: boolean } = $props();
 
-	// --- what is playing ------------------------------------------------------------------------
-	const track = $derived(app.now?.playlist_loop?.[0]);
-	const total = $derived(app.now?.duration ?? track?.duration ?? 0);
+	// --- what is playing: the selected player, or this device's downloads (Wave 3.5: one Now
+	// playing; LMS-only controls are left out for downloads) ---------------------------------------
+	const downloads = $derived(now.downloads);
+	const track = $derived(now.track);
+	const total = $derived(now.duration);
 	let seeking = $state<number | null>(null);
-	const shown = $derived(seeking ?? app.elapsed);
-	const title = $derived(textOf(track?.title ?? app.now?.current_title));
+	const shown = $derived(seeking ?? now.elapsed);
+	const title = $derived(textOf(track?.title ?? (downloads ? '' : app.now?.current_title)));
 	const artist = $derived(textOf(track?.artist));
 	const album = $derived(textOf(track?.album));
 	const artistHref = $derived(cmd.link('artist', track?.artist_id));
@@ -58,8 +62,8 @@
 	const repeat = $derived(Number(app.now?.['playlist repeat'] ?? 0));
 	/** Which controls work now (all of them while the server is in reach). */
 	const g = $derived(controls.gates);
-	const badge = $derived(quality(track));
-	const sleepIn = $derived(sleepLeft(app.now));
+	const badge = $derived(downloads ? null : quality(track));
+	const sleepIn = $derived(downloads ? null : sleepLeft(app.now));
 	const coverOf = (size: number) => cmd.coverPath(track?.coverid ?? track?.artwork_track_id, size);
 	/** Art and title cross-fade between tracks (not under "reduce motion"). */
 	const trackKey = $derived(`${track?.id ?? ''}|${title}`);
@@ -69,10 +73,12 @@
 	$effect(() => {
 		void lyrics.load(libraryId);
 	});
+	/** The rating and the track's LMS menu: the selected player's library tracks only. */
+	const rateable = $derived(!downloads && libraryId !== null);
 
 	// --- the player -------------------------------------------------------------------------------
 	/** This browser is the player (the visualiser needs its audio). */
-	const local = $derived(!!app.current && isThisDevice(app.playerId) && (device.state === 'connected' || device.state === 'reconnecting'));
+	const local = $derived(!downloads && !!app.current && isThisDevice(app.playerId) && (device.state === 'connected' || device.state === 'reconnecting'));
 	/** The player in use, named on the Play on button (the state; "Play on" is the action). */
 	const playerName = $derived(!app.current ? 'Play on' : isThisDevice(app.playerId) ? 'This device' : app.nameOf(app.playerId) || 'Another player');
 	let playOn = $state(false);
@@ -157,14 +163,14 @@
 	</header>
 
 	<div class="hero">
-		<NowPlayingPager page={page} onpage={(p) => nowPlaying.setLayout(p)} onpeek={() => app.current && openSheet('queue')} still={reduce}>
+		<NowPlayingPager page={page} onpage={(p) => nowPlaying.setLayout(p)} onpeek={() => (app.current || downloads) && openSheet('queue')} still={reduce}>
 			{#snippet cover()}
 				<div class="stage">
 					<div class="art-box" class:glowing>
 						{#if glowing}<GlowHalo path={coverOf(120)} playing={app.playing} still={reduce} />{/if}
 						{#key trackKey}
 							<div class="cover" in:fade={swap}>
-								<Art path={coverOf(800)} alt={title ? `Cover of ${album}` : ''} label={title} rounded="var(--radius)" eager />
+								<Art path={coverOf(800)} local={now.localCover} alt={title ? `Cover of ${album}` : ''} label={title} rounded="var(--radius)" eager />
 							</div>
 						{/key}
 						{#if visualising}
@@ -188,9 +194,9 @@
 	</div>
 
 	<div class="meta">
-		{#if !app.current && app.playerId && app.playerId === app.deviceMac}
+		{#if !downloads && !app.current && app.playerId && app.playerId === app.deviceMac}
 			<DeviceWait />
-		{:else if !app.current}
+		{:else if !downloads && !app.current}
 			<h1 class="title">No player chosen</h1>
 			<p class="sub"><button class="btn primary choose" onclick={() => (playOn = true)} data-choose-player>Choose a player</button></p>
 		{:else if !track && !app.now?.current_title}
@@ -199,7 +205,7 @@
 		{:else}
 			<div class="title-row">
 				{#key trackKey}<h1 class="title" in:fade={swap} title={title}>{title}</h1>{/key}
-				{#if libraryId !== null}<div class="rating"><RatingControl track={libraryId} size={22} toggle /></div>{/if}
+				{#if rateable && libraryId !== null}<div class="rating"><RatingControl track={libraryId} size={22} toggle /></div>{/if}
 			</div>
 			<div class="sub">
 				<span class="who muted">
@@ -218,10 +224,10 @@
 
 	<div class="seek">
 		<SeekBar
-			trackId={libraryId}
+			trackId={downloads ? null : libraryId}
 			value={shown}
 			{total}
-			disabled={!total || app.now?.can_seek === 0 || !g.seek}
+			disabled={!total || (!downloads && app.now?.can_seek === 0) || !g.seek}
 			oninput={(v) => (seeking = v)}
 			onchange={async (v) => {
 				await controls.seek(v);
@@ -234,8 +240,8 @@
 	<div class="transport">
 		<ShuffleButton value={app.now?.['playlist shuffle']} onchange={(m) => app.send(cmd.shuffle(m))} disabled={!g.other} />
 		<button class="icon-btn big" aria-label="Previous" onclick={() => controls.previous()} disabled={!g.previous} {...controls.why(!g.previous)}><Icon name="prev" size={30} /></button>
-		<button class="icon-btn play" aria-label={app.playing ? 'Pause' : 'Play'} onclick={() => controls.toggle()} disabled={!g.playPause} {...controls.why(!g.playPause)}>
-			<Icon name={app.playing ? 'pause' : 'play'} size={34} />
+		<button class="icon-btn play" aria-label={controls.playing ? 'Pause' : 'Play'} onclick={() => controls.toggle()} disabled={!g.playPause} {...controls.why(!g.playPause)}>
+			<Icon name={controls.playing ? 'pause' : 'play'} size={34} />
 		</button>
 		<button class="icon-btn big" aria-label="Next" onclick={() => controls.next()} disabled={!g.next} {...controls.why(!g.next)}><Icon name="next" size={30} /></button>
 		<button
@@ -250,7 +256,7 @@
 		</button>
 	</div>
 
-	<div class="next"><UpNext onopen={() => app.current && openSheet('queue')} /></div>
+	<div class="next"><UpNext onopen={() => (app.current || downloads) && openSheet('queue')} /></div>
 
 	<nav class="actions" aria-label="Now playing actions">
 		<button
@@ -270,28 +276,33 @@
 			onclick={toggleLyrics}
 			data-lyrics-button
 		><Icon name="lyrics" size={24} /><span class="np-act-label">Lyrics</span></button>
-		<button class="np-act" onclick={() => openSheet('queue')} aria-haspopup="dialog" aria-label="Queue" disabled={!app.current} data-queue-peek><Icon name="queue" size={24} /><span class="np-act-label">Queue</span></button>
+		<button class="np-act" onclick={() => openSheet('queue')} aria-haspopup="dialog" aria-label="Queue" disabled={!app.current && !downloads} data-queue-peek><Icon name="queue" size={24} /><span class="np-act-label">Queue</span></button>
 		{#if playOn}<div class="pop"><PlayerSwitcher onclose={() => (playOn = false)} volume /></div>{/if}
 	</nav>
 
 	{#if sheet === 'more'}
 		<Sheet title="More" onclose={closeSheet}>
 			<div class="rows" data-more-sheet>
-				{#if libraryId !== null}
+				{#if downloads}
+					<!-- The downloads engine's own: end its queue (the selected player is untouched). -->
+					<button class="row" onclick={() => (closeSheet(), offlinePlayer.stop())} data-stop-downloads><Icon name="stop" /><span>Stop playing downloads<small>Back to {app.current ? app.nameOf(app.playerId) || 'the player' : 'your players'}</small></span></button>
+				{/if}
+				{#if rateable}
 					<!-- LMS's own menu for the track: it needs the server (the rest here works without). -->
 					<button class="row" onclick={() => openSheet('track', moreButton())} {...controls.needsServer()} data-track-menu><Icon name="note" /><span>This track<small>Your rating, credits, add to a playlist and more</small></span></button>
 				{/if}
-				<button class="row" onclick={() => openSheet('sleep', moreButton())} disabled={!app.current || !g.other} data-sleep-button>
-					<Icon name="moon" /><span>Sleep timer<small>{sleepIn !== null ? `Stops in ${formatLeft(sleepIn)}` : 'Off'}</small></span>
-				</button>
+				{#if !downloads}
+					<button class="row" onclick={() => openSheet('sleep', moreButton())} disabled={!app.current || !g.other} data-sleep-button>
+						<Icon name="moon" /><span>Sleep timer<small>{sleepIn !== null ? `Stops in ${formatLeft(sleepIn)}` : 'Off'}</small></span>
+					</button>
+				{/if}
 				{#if local}
 					<button class="row" onclick={() => openSheet('styles', moreButton())} disabled={reduce} data-visualiser-style-row>
 						<Icon name="visualiser" /><span>Visualiser<small>{reduce ? 'Off while your device asks for reduced motion' : nowPlaying.visualiser ? STYLE_LABELS[nowPlaying.style] : 'Off'}</small></span>
 					</button>
 				{/if}
-				{#if app.current}
+				{#if app.current && !downloads}
 					<a class="row" href="#/car" data-car-link><Icon name="car" /><span>Car mode<small>Big buttons for driving</small></span></a>
-					<a class="row" href="#/alarms" data-alarms-link><Icon name="alarm" /><span>Alarms<small>Wake to music on this player</small></span></a>
 				{/if}
 			</div>
 		</Sheet>
@@ -314,7 +325,7 @@
 		<SignalPath onclose={closeSheet} />
 	{:else if sheet === 'queue'}
 		<QueuePeek onclose={closeSheet} />
-	{:else if sheet === 'track' && libraryId !== null}
+	{:else if sheet === 'track' && rateable && libraryId !== null}
 		<ContextMenu kind="track" id={libraryId} {title} onclose={closeSheet} />
 	{/if}
 </section>
