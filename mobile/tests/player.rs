@@ -2566,3 +2566,300 @@ async fn a_different_master_is_not_matched() {
     assert!(!r.obs.saw(|s| s.from_downloads));
     r.player.stop();
 }
+
+// ---------------------------------------------------------------------------------------
+// Offline controls: the phone's own controls while the server can't be reached
+// ---------------------------------------------------------------------------------------
+
+/// What the user does on the phone while the server is away, in [`server_away`].
+#[derive(Clone, Copy, PartialEq)]
+enum AwayActs {
+    /// Nothing: everything is as before (no command for LMS on return).
+    Nothing,
+    /// Pause, play, pause again: paused on return.
+    PauseResumePause,
+}
+
+/// A track plays at queue position 2 (LMS's view and the app's agree), then the network
+/// goes for a few seconds (within the 120 s grace) while the user does `acts`. Returns the
+/// rig and the commands for this player that LMS received after the return.
+async fn server_away(acts: AwayActs) -> (Rig, Vec<serde_json::Value>) {
+    use anywhere_mobile::LocalRepeat;
+    let mut r = rig_opts(RigOpts {
+        proxy: true,
+        spool: true,
+        max_grace_s: Some(120),
+        pace: Some(1.0),
+        ..RigOpts::default()
+    })
+    .await;
+    let rate = 22_050usize;
+    *r.h.lms.status.lock().unwrap() = Some(serde_json::json!({
+        "mode": "play", "time": 0, "playlist_cur_index": "2",
+        "playlist_loop": [{"playlist index": 2, "id": 1, "duration": 30}]
+    }));
+    r.player
+        .set_queue_snapshot(vec![7, 8, 1, 9], Some(2), LocalRepeat::Off);
+    let track = flac::encode(rate as u32, 16, &flac::noise(rate * 30, 16, 91));
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(track));
+    let mac = r.mac;
+    let me = format_mac(&mac);
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMs", 1, 20).await;
+    let pulled = r.pulled.clone();
+    wait_for("2 s heard", move || pulled.frames() >= rate * 2).await;
+    let lms = &r.h.lms;
+    wait_for("the track's position", || {
+        lms.rpc_calls()
+            .iter()
+            .any(|p| p[0] == me.as_str() && p[1][0] == "status" && p[1][1] == "-")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Online, the phone's own controls are off: LMS decides.
+    assert!(r.player.status().offline_controls.is_none());
+    assert!(!r.player.local_pause(), "online, LMS's commands are used");
+    let calls_before = r.h.lms.rpc_calls().len();
+    let proxy = r.proxy.as_ref().unwrap();
+    proxy.set_down(true);
+    r.player.set_network_available(false);
+    let p = r.player.clone();
+    wait_for("the phone's controls", move || {
+        p.status().offline_controls.is_some_and(|c| c.play_pause)
+    })
+    .await;
+    let c = r.player.status().offline_controls.unwrap();
+    assert_eq!((c.index, c.track_id), (Some(2), Some(1)));
+    assert!(c.playing && !c.local && !c.waiting_for_server);
+    assert!(
+        !c.next && !c.previous && !c.seek,
+        "nothing else is on the phone"
+    );
+    assert!(!r.player.local_next(), "greyed out, and refused");
+    assert!(!r.player.local_jump(3));
+    if acts == AwayActs::PauseResumePause {
+        assert!(r.player.local_pause());
+        let p = r.player.clone();
+        wait_for("paused", move || {
+            p.status().playback == LocalPlayback::Paused
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let held_at = r.pulled.frames();
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert_eq!(r.pulled.frames(), held_at, "silent while paused");
+        assert!(
+            r.player
+                .status()
+                .offline_controls
+                .is_some_and(|c| !c.playing && c.play_pause)
+        );
+        assert!(r.player.local_play());
+        let pulled = r.pulled.clone();
+        wait_for("playing again", move || {
+            pulled.frames() > held_at + rate / 4
+        })
+        .await;
+        assert!(r.player.local_pause());
+        let p = r.player.clone();
+        wait_for("paused again", move || {
+            p.status().playback == LocalPlayback::Paused
+        })
+        .await;
+    } else {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    proxy.set_down(false);
+    r.player.set_network_available(true);
+    let p = r.player.clone();
+    wait_for("back", move || {
+        p.status().connection == PlayerConnection::Connected
+    })
+    .await;
+    assert_eq!(r.count("HELO"), 1, "the same session, resumed");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(r.player.status().offline_controls.is_none());
+    let sent: Vec<serde_json::Value> = r.h.lms.rpc_calls()[calls_before..]
+        .iter()
+        .filter(|p| p[0] == me.as_str() && p[1][0] != "status")
+        .map(|p| p[1].clone())
+        .collect();
+    (r, sent)
+}
+
+/// With the server away, pause and play work at once on the phone, keeping the position;
+/// on its return LMS is told the phone is paused (it never lost the player).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_the_server_away_pause_and_play_work_on_the_phone() {
+    let (r, sent) = server_away(AwayActs::PauseResumePause).await;
+    assert_eq!(sent, vec![serde_json::json!(["pause", "1"])], "{sent:?}");
+    r.player.stop();
+}
+
+/// Regression guard: nothing done on the phone, nothing told to LMS (as before).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_the_server_away_and_nothing_done_lms_is_told_nothing() {
+    let (r, sent) = server_away(AwayActs::Nothing).await;
+    assert!(sent.is_empty(), "{sent:?}");
+    r.player.stop();
+}
+
+/// With the server away, "next" plays the next entry from its download (track 2 is
+/// downloaded, track 3 isn't): bit-identical, and it then stops and waits for the server.
+/// On its return a new session starts, and LMS is put where the phone is, paused, if its
+/// queue still has that track there (`changed`: someone changed it meanwhile). `by_hand`:
+/// the user taps next; otherwise the first track ends by itself and the next follows.
+async fn skip_to_a_download_with_the_server_away(changed: bool, by_hand: bool) {
+    use anywhere_mobile::{LocalAvailability, LocalRepeat};
+    let mut r = rig_opts(RigOpts {
+        proxy: true,
+        spool: true,
+        max_grace_s: Some(120),
+        pace: Some(1.0),
+        downloads: Some(true),
+        downloads_dir: true,
+        ..RigOpts::default()
+    })
+    .await;
+    let (t1, t2) = (library_flac(91, "One"), library_flac(92, "Two"));
+    r.h.lms.add_track(1, "flc", t1.clone());
+    r.h.lms.add_track(2, "flc", t2.clone());
+    download_originals(&r, &[2]).await;
+    assert_eq!(
+        r.player.local_availability(vec![1, 2, 3, 0, -1]),
+        vec![
+            LocalAvailability::None,
+            LocalAvailability::Downloaded,
+            LocalAvailability::None,
+            LocalAvailability::None,
+            LocalAvailability::None,
+        ]
+    );
+    *r.h.lms.status.lock().unwrap() = Some(serde_json::json!({
+        "mode": "play", "time": 0, "playlist_cur_index": "0",
+        "playlist_loop": [{"playlist index": 0, "id": 1, "duration": 3}]
+    }));
+    r.player
+        .set_queue_snapshot(vec![1, 2, 3], Some(0), LocalRepeat::Off);
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(t1.clone()));
+    let mac = r.mac;
+    let me = format_mac(&mac);
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMs", 1, 20).await;
+    let lms = &r.h.lms;
+    wait_for("the track's position", || {
+        lms.rpc_calls()
+            .iter()
+            .any(|p| p[0] == me.as_str() && p[1][0] == "status" && p[1][1] == "-")
+    })
+    .await;
+    let proxy = r.proxy.as_ref().unwrap();
+    proxy.set_down(true);
+    r.player.set_network_available(false);
+    let p = r.player.clone();
+    wait_for("next is on the phone", move || {
+        p.status().offline_controls.is_some_and(|c| c.next)
+    })
+    .await;
+    let c = r.player.status().offline_controls.unwrap();
+    assert!(!c.previous, "the first entry, and not on the phone");
+    if by_hand {
+        assert!(r.player.local_next());
+    }
+    let p = r.player.clone();
+    wait_for("playing the download", move || {
+        let s = p.status();
+        s.from_downloads
+            && s.playback == LocalPlayback::Playing
+            && s.offline_controls
+                .is_some_and(|c| c.local && c.index == Some(1) && c.track_id == Some(2))
+    })
+    .await;
+    // Previous from its start goes back to entry 0, which isn't on the phone.
+    assert!(!r.player.local_previous());
+    // It plays to its end, then waits: entry 2 needs the server.
+    let p = r.player.clone();
+    for _ in 0..1500 {
+        if p.status()
+            .offline_controls
+            .is_some_and(|c| c.waiting_for_server)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let c = r.player.status().offline_controls.unwrap();
+    assert!(c.waiting_for_server && !c.play_pause && !c.next, "{c:?}");
+    let want = flac::decode(&t2).1;
+    let got = r.pulled.all();
+    assert!(got.len() >= want.len());
+    assert_bits_equal(
+        &got[got.len() - want.len()..],
+        &want,
+        "the download, whole, last",
+    );
+    // Back: LMS lost the player meanwhile (a new session), and shows its queue.
+    let id_there = if changed { 9 } else { 2 };
+    *r.h.lms.status.lock().unwrap() = Some(serde_json::json!({
+        "mode": "stop", "playlist_cur_index": "0",
+        "playlist_loop": [{"playlist index": 1, "id": id_there}]
+    }));
+    let calls_before = r.h.lms.rpc_calls().len();
+    proxy.set_down(false);
+    r.player.set_network_available(true);
+    wait_for("a new session's HELO", || r.count("HELO") == 2).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let calls = r.h.lms.rpc_calls()[calls_before..].to_vec();
+    let sent: Vec<serde_json::Value> = calls
+        .iter()
+        .filter(|p| p[0] == me.as_str() && p[1][0] != "status")
+        .map(|p| p[1].clone())
+        .collect();
+    assert!(
+        calls
+            .iter()
+            .any(|p| p[0] == me.as_str()
+                && p[1] == serde_json::json!(["status", "1", "1", "tags:x"])),
+        "the position was checked with LMS first"
+    );
+    if changed {
+        assert!(sent.is_empty(), "the queue changed: LMS decides ({sent:?})");
+    } else {
+        assert_eq!(
+            sent,
+            vec![
+                serde_json::json!(["playlist", "index", "1"]),
+                serde_json::json!(["pause", "1"]),
+            ]
+        );
+    }
+    assert!(r.player.status().offline_controls.is_none());
+    r.player.stop();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_the_server_away_next_plays_a_download_and_lms_follows_on_return() {
+    skip_to_a_download_with_the_server_away(false, true).await;
+}
+
+/// The track LMS sent ends with the server away: the next entry, downloaded, follows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_the_server_away_a_track_end_carries_on_into_a_download() {
+    skip_to_a_download_with_the_server_away(false, false).await;
+}
+
+/// Negative: the queue changed while the server was away: the phone's state is dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_the_server_away_a_changed_queue_is_left_to_lms() {
+    skip_to_a_download_with_the_server_away(true, true).await;
+}

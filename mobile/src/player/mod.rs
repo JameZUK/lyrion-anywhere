@@ -7,6 +7,8 @@
 //!
 //! - [`LocalPlayer`]: start/stop, DSP settings, a local hold (pause at once, for "becoming
 //!   noisy"), ducking, and a [`SignalPathInfo`] snapshot.
+//! - While the server can't be reached, the phone's own controls ([`LocalPlayer::local_play`]
+//!   and the rest; [`OfflineControls`] says which work): see `outage`.
 //! - Output: AAudio from Rust on Android ([`OutputKind::AAudio`]); elsewhere, or as a
 //!   fallback, the host pulls PCM with [`LocalPlayer::read_pcm`] ([`OutputKind::Pull`]).
 //!
@@ -31,6 +33,7 @@ mod downloads;
 mod engine;
 mod local;
 mod offline;
+mod outage;
 mod queue;
 mod signal;
 mod spool;
@@ -46,6 +49,7 @@ pub use negotiate::{
     MixerOffer, NotBitPerfect, OfferBlocker, OutputNegotiator, OutputOffers, PcmEncoding,
 };
 pub use offline::{OfflinePlayer, OfflinePlayerObserver, OfflinePlayerStatus};
+pub use outage::{LocalAvailability, OfflineControls};
 pub use pipeline::{
     CrossfeedSetting, DitherSetting, DspSettings, EqProfileSummary, Levelling, check_eq_profile,
 };
@@ -157,6 +161,10 @@ pub struct LocalPlayerStatus {
     /// The track heard now is playing from its download on the phone.
     #[uniffi(default = false)]
     pub from_downloads: bool,
+    /// While the server can't be reached: what the phone's own controls can do (`None`
+    /// while connected, or with nothing to play).
+    #[uniffi(default = None)]
+    pub offline_controls: Option<OfflineControls>,
 }
 
 impl Default for LocalPlayerStatus {
@@ -180,6 +188,7 @@ impl Default for LocalPlayerStatus {
             read_ahead: false,
             from_cache: false,
             from_downloads: false,
+            offline_controls: None,
         }
     }
 }
@@ -353,6 +362,8 @@ pub struct LocalPlayer {
     network: Mutex<bool>,
     /// Tests: how much of a track read-ahead waits to be heard (kept across restarts).
     ready_after_ms: Mutex<Option<u64>>,
+    /// LMS's queue as the app last saw it (kept across restarts).
+    snapshot: Mutex<outage::Snapshot>,
 }
 
 /// How much the replay cache holds.
@@ -441,6 +452,7 @@ impl LocalPlayer {
             loudness_reference: Mutex::new(None),
             network: Mutex::new(true),
             ready_after_ms: Mutex::new(None),
+            snapshot: Mutex::new(outage::Snapshot::default()),
         })
     }
 
@@ -579,6 +591,7 @@ impl LocalPlayer {
                 negotiator: Mutex::new(self.negotiator.lock().unwrap().clone()),
                 visual: self.visual.clone(),
             }),
+            spooled: Mutex::new(Vec::new()),
         });
         let pull = Arc::new(Mutex::new(PullSlot::default()));
         let output = make_output(cfg.output, &pull)?;
@@ -642,6 +655,7 @@ impl LocalPlayer {
         if let Some(ms) = *self.ready_after_ms.lock().unwrap() {
             let _ = cmds.send(Cmd::SetReadyAfter(ms));
         }
+        let _ = cmds.send(Cmd::Queue(self.snapshot.lock().unwrap().clone()));
         *run = Some(Run {
             shared,
             cmds,
@@ -798,6 +812,112 @@ impl LocalPlayer {
         }
     }
 
+    // --- While the server can't be reached (offline controls) ------------------------------
+
+    /// LMS's queue for this player as the app last read it: its track ids in play order
+    /// (anything that isn't a library track as 0), the position LMS said is current, and
+    /// the repeat mode. While the server can't be reached, the phone's controls work on
+    /// this. Untrusted: bounded, and checked again on use. Kept across restarts.
+    pub fn set_queue_snapshot(
+        &self,
+        track_ids: Vec<i64>,
+        current_index: Option<u32>,
+        repeat: LocalRepeat,
+    ) {
+        let snap = outage::Snapshot::new(track_ids, current_index, repeat);
+        *self.snapshot.lock().unwrap() = snap.clone();
+        self.send(Cmd::Queue(snap));
+    }
+
+    /// Where each of these LMS tracks is on the phone, whole (for the queue's marks, and
+    /// which entries can be played while the server can't be reached): a download, or a
+    /// stream kept whole (the replay cache, or spooled). In the order given; at most
+    /// [`outage::MAX_SNAPSHOT`]. Blocking (reads the downloads' index): call it off the
+    /// main thread.
+    pub fn local_availability(&self, track_ids: Vec<i64>) -> Vec<LocalAvailability> {
+        let cfg = self.config.lock().unwrap().clone();
+        let mut sources = outage::Sources::default();
+        if let (Some(root), Some(scope)) =
+            (cfg.downloads_dir.as_deref(), cache_scope(&self.session))
+            && let Some(d) = downloads::Downloads::open(root, &scope)
+        {
+            sources.downloads = d.by_track();
+        }
+        // The configured size: opening the cache never empties it here.
+        if cfg.stream_cache_bytes > 0
+            && let Some(c) = cfg
+                .cache_dir
+                .as_deref()
+                .and_then(|d| session_cache(&self.session, d, Some(cfg.stream_cache_bytes)))
+        {
+            let level = cache::level_byte(*self.quality.lock().unwrap());
+            let c = c.lock().unwrap();
+            sources.cache = c
+                .whole_tracks(level)
+                .into_iter()
+                .map(|(id, e)| {
+                    let path = c.path_of(&e.fp);
+                    (id, (e, path))
+                })
+                .collect();
+        }
+        let spooled = self
+            .run
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|r| r.shared.spooled.lock().unwrap().clone())
+            .unwrap_or_default();
+        track_ids
+            .into_iter()
+            .take(outage::MAX_SNAPSHOT)
+            .map(|id| match sources.availability(id) {
+                LocalAvailability::None if id > 0 && spooled.contains(&id) => {
+                    LocalAvailability::OnDevice
+                }
+                a => a,
+            })
+            .collect()
+    }
+
+    /// Play, on the phone, while the server can't be reached (see
+    /// [`OfflineControls::play_pause`]). Returns whether the controls allowed it now; the
+    /// engine checks again as it acts. False while connected: use LMS's commands then.
+    pub fn local_play(&self) -> bool {
+        self.local(outage::LocalCmd::Play, |c| c.play_pause)
+    }
+
+    /// Pause, on the phone, keeping the position (see [`LocalPlayer::local_play`]).
+    pub fn local_pause(&self) -> bool {
+        self.local(outage::LocalCmd::Pause, |c| c.play_pause)
+    }
+
+    /// The next queue entry, from the phone's copy (see [`OfflineControls::next`]).
+    pub fn local_next(&self) -> bool {
+        self.local(outage::LocalCmd::Next, |c| c.next)
+    }
+
+    /// The previous entry, or the start of this one past its first seconds (see
+    /// [`OfflineControls::previous`]).
+    pub fn local_previous(&self) -> bool {
+        self.local(outage::LocalCmd::Previous, |c| c.previous)
+    }
+
+    /// Play the queue entry at `index` from the phone's copy, if it has one.
+    pub fn local_jump(&self, index: u32) -> bool {
+        let id = self.snapshot.lock().unwrap().id(index as usize);
+        let here = id.is_some_and(|id| {
+            self.local_availability(vec![id]).first() != Some(&LocalAvailability::None)
+        });
+        here && self.local(outage::LocalCmd::Jump(index), |_| true)
+    }
+
+    /// Go to `ms` in the track playing, if the phone has it whole (see
+    /// [`OfflineControls::seek`]).
+    pub fn local_seek(&self, ms: u64) -> bool {
+        self.local(outage::LocalCmd::Seek(ms), |c| c.seek)
+    }
+
     /// [`OutputKind::Pull`] only: up to `max_frames` frames (at most 16,384) of audio at
     /// the returned rate. When the rate changes, reopen the host's output at the new rate
     /// before playing the block.
@@ -890,6 +1010,21 @@ pub fn remove_stream_spools(cache_dir: String) -> Result<(), ApiError> {
 }
 
 impl LocalPlayer {
+    fn send(&self, c: Cmd) {
+        if let Some(r) = self.run.lock().unwrap().as_ref() {
+            let _ = r.cmds.send(c);
+        }
+    }
+
+    /// Send a local control if the controls allow it now (by the last status).
+    fn local(&self, c: outage::LocalCmd, allowed: fn(&OfflineControls) -> bool) -> bool {
+        let ok = self.status().offline_controls.as_ref().is_some_and(allowed);
+        if ok {
+            self.send(Cmd::Local(c));
+        }
+        ok
+    }
+
     /// Tests: how much of a track must be heard before read-ahead reports it ready (the
     /// core's default is 20 s). Not part of the app's API.
     #[doc(hidden)]

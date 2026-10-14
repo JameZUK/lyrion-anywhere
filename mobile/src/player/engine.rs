@@ -34,12 +34,16 @@
 //!   track heard last where it was, once LMS confirms that track is still there and nobody
 //!   paused or stopped it (`protocol::restart_commands`);
 //! - an expired access token is renewed and the socket reconnects; a refusal or a
-//!   takeover by another connection stops for good.
+//!   takeover by another connection stops for good;
+//! - while the link is down the phone's own controls work on what it holds (`super::outage`):
+//!   play and pause at once; a skip, a jump or a seek plays its own copies of the queue (a
+//!   "takeover", which leaves LMS's session: a new one starts when the server is back, and
+//!   LMS is then told where the phone is, if its queue still has that track there).
 //!
 //! Only this thread touches the core player, the pipeline and the output; the real-time
 //! output callback only reads the ring.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -61,6 +65,8 @@ use super::audio::{AudioPath, AudioSource, OutputShared, dsp_transitions};
 use super::cache::{self, Digest, Pin, SharedCache, StreamHash};
 use super::clock::mono_ns;
 use super::downloads::{self, Downloads, FlacHead, Found};
+use super::local::{LocalTrack, Opener};
+use super::outage::{self, LocalCmd, OfflineControls, Snapshot, Sources, Takeover};
 use super::output::AudioOutput;
 use super::pipeline::{DspSettings, Levelling};
 use super::protocol::{self, CloseAction, Greeting};
@@ -125,6 +131,10 @@ pub(crate) enum Cmd {
     SetReadyAfter(u64),
     /// The replay cache's size (bytes; 0: off).
     SetCacheBytes(u64),
+    /// LMS's queue as the app last saw it (for the controls while the server is away).
+    Queue(Snapshot),
+    /// A control used on the phone while the server can't be reached.
+    Local(LocalCmd),
 }
 
 /// Most bytes handed to the decoder per call of the feeder (a tick is 20 ms: 50 MB/s).
@@ -143,6 +153,11 @@ const REJOIN_MARGIN_MS: u64 = 250;
 const RESTART_SETTLE: Duration = Duration::from_millis(1000);
 /// Queue positions remembered (by track sequence number).
 const POSITIONS_KEEP: usize = 8;
+/// A stream that LMS said began within this much of its track's start is the whole track
+/// (LMS's `time`, asked a moment after the stream starts, less what was heard since).
+const WHOLE_FROM_MS: u64 = 1_000;
+/// While the server can't be reached, what is on the phone is looked at again this often.
+const SOURCES_EVERY: Duration = Duration::from_secs(10);
 
 /// What to do about a stall (an underrun) now that audio may be available again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,6 +310,8 @@ pub(crate) struct Shared {
     pub observer: Arc<dyn LocalPlayerObserver>,
     /// The ring, the hold, the route and the negotiator.
     pub out: Arc<OutputShared>,
+    /// Tracks whose stream is spooled whole now (for the queue's "on this device" marks).
+    pub spooled: Mutex<Vec<i64>>,
 }
 
 struct StreamTask {
@@ -401,6 +418,24 @@ pub(crate) struct Engine {
     /// While the link to LMS is down: where to restart if the session is lost.
     gap: Option<protocol::GapWatch>,
     restart: Option<tokio::task::AbortHandle>,
+    // Offline controls (`super::outage`).
+    /// LMS's queue as the app last saw it.
+    snapshot: Snapshot,
+    /// Playing the phone's own copies of the queue, with no server.
+    takeover: Option<Takeover>,
+    /// The user played, paused, skipped or sought on the phone while the link was down: on
+    /// reconnecting, the phone's state is the truth (see `protocol::restart_commands`).
+    acted: bool,
+    /// Stopped at the end of a track: the next one needs the server.
+    waiting_for_server: bool,
+    /// Where each track is on the phone, whole, and when that was looked at.
+    sources: Option<(Instant, Sources)>,
+    /// Spools kept whole for a takeover (their files go when they do).
+    held_spools: Vec<(Spool, i64, LocalTrack)>,
+    /// The `strm` format of recent streams (by number).
+    stream_formats: VecDeque<(u64, u8)>,
+    /// What the controls can do now (while the link is down).
+    controls: Option<OfflineControls>,
     // Audio: pipeline, ring, output and its negotiated route.
     audio: AudioPath,
     underruns_seen: u64,
@@ -416,7 +451,13 @@ pub(crate) struct Engine {
     player_gen: u64,
     // Reporting.
     last_status_at: Option<Instant>,
-    last_status_key: Option<(PlayerConnection, LocalPlayback, u32, bool)>,
+    last_status_key: Option<(
+        PlayerConnection,
+        LocalPlayback,
+        u32,
+        bool,
+        Option<ControlsKey>,
+    )>,
     last_signal: Option<SignalPathInfo>,
     stopped: bool,
 }
@@ -465,6 +506,14 @@ impl Engine {
             positions: VecDeque::new(),
             gap: None,
             restart: None,
+            snapshot: Snapshot::default(),
+            takeover: None,
+            acted: false,
+            waiting_for_server: false,
+            sources: None,
+            held_spools: Vec::new(),
+            stream_formats: VecDeque::new(),
+            controls: None,
             server: core.server().clone(),
             core,
             http: Http::private()?,
@@ -573,7 +622,13 @@ impl Engine {
                         if let Some(c) = &self.cache {
                             c.lock().unwrap().set_cap(b);
                         }
+                        self.sources = None;
                     }
+                    Some(Cmd::Queue(q)) => {
+                        self.snapshot = q;
+                        self.publish_status(true);
+                    }
+                    Some(Cmd::Local(c)) => self.local_command(c),
                     // The app let go of the player, or asked to stop.
                     Some(Cmd::Stop) | None => self.shutdown("stopped").await,
                 },
@@ -606,6 +661,7 @@ impl Engine {
             reason: reason.into(),
         };
         self.player = None;
+        self.end_takeover();
         self.drop_spools();
         self.publish_status(true);
         self.publish_signal(true);
@@ -614,7 +670,10 @@ impl Engine {
 
     /// Close the output for good (stopping): Android's normal mixing is restored.
     fn close_output(&mut self) {
-        let src = self.player.as_mut().map(|p| p as &mut dyn AudioSource);
+        let src = match self.takeover.as_mut() {
+            Some(t) => Some(&mut t.source as &mut dyn AudioSource),
+            None => self.player.as_mut().map(|p| p as &mut dyn AudioSource),
+        };
         self.audio.close_output(src);
     }
 
@@ -747,7 +806,7 @@ impl Engine {
         let (out_tx, out_rx) = mpsc::unbounded_channel();
         self.ws_out = Some(out_tx);
         self.open = false;
-        self.connection = if self.player.is_some() {
+        self.connection = if self.player.is_some() || self.takeover.is_some() {
             PlayerConnection::Reconnecting { delay_ms: 0 }
         } else {
             PlayerConnection::Connecting
@@ -784,12 +843,24 @@ impl Engine {
         self.disconnected_at = None;
         self.connection = PlayerConnection::Connected;
         let fresh = !g.resumed || self.player.is_none();
+        // The user acted on the phone while the server was away: the phone's state is the
+        // truth (where it is, paused or not), if LMS's queue still agrees.
+        let acted = std::mem::take(&mut self.acted);
+        let local_point = if acted { self.local_point() } else { None };
+        let core_paused = self.core_paused();
         // A session lost while playing: where to restart (a resumed one needs nothing).
-        let restart_at = self
+        let gap_point = self
             .gap
             .take()
             .filter(|w| fresh && self.player.is_some() && !w.blocked)
             .and_then(|w| w.point);
+        let restart_at = if acted {
+            local_point.filter(|_| fresh)
+        } else {
+            gap_point
+        };
+        self.waiting_for_server = false;
+        self.end_takeover();
         self.session = Some((g.session.clone(), g.secret.clone()));
         // A resumed session without a grant keeps what it was granted before.
         if g.grace.is_some() || fresh {
@@ -851,6 +922,10 @@ impl Engine {
         } else {
             // Back after a gap: is the player (still) in a sync group?
             self.look_up_sync_group();
+            // LMS never lost the player; it is told only whether the phone is paused.
+            if let Some(cmds) = protocol::resumed_commands(acted, core_paused) {
+                self.tell_lms(cmds);
+            }
         }
         self.update_link();
         let queued: Vec<_> = self.outbox.drain(..).collect();
@@ -888,6 +963,8 @@ impl Engine {
                 self.audio.pipeline.unconfigure();
                 self.shared.out.ring.set_hold(true);
                 self.player = None;
+                self.end_takeover();
+                self.acted = false;
                 self.drop_spools();
                 if code == Some(1008)
                     && let Some(c) = &self.cache
@@ -1320,6 +1397,8 @@ impl Engine {
             index: pos.index,
             track_id: pos.track_id,
             elapsed_ms: began.saturating_add(p.status().elapsed_ms),
+            paused: false,
+            local: false,
         })
     }
 
@@ -1444,6 +1523,11 @@ impl Engine {
         };
         self.stream_ids += 1;
         let id = self.stream_ids;
+        self.stream_formats.retain(|(s, _)| *s != n);
+        self.stream_formats.push_back((n, format));
+        while self.stream_formats.len() > POSITIONS_KEEP {
+            self.stream_formats.pop_front();
+        }
         // A spool for it, on disk where possible (an older one for this number is gone).
         self.spools.retain(|s| s.n != n);
         self.spools
@@ -1501,11 +1585,13 @@ impl Engine {
         let Some(c) = self.active_cache().cloned() else {
             return;
         };
-        let track = self
+        let (track, whole) = self
             .positions
             .iter()
             .find(|(seq, _, _)| u64::from(*seq) + 1 == n)
-            .map(|(_, p, _)| p.track_id);
+            .map_or((None, false), |(_, p, began)| {
+                (Some(p.track_id), *began < WHOLE_FROM_MS)
+            });
         let Some(spool) = self.spools.iter_mut().find(|s| s.n == n) else {
             return;
         };
@@ -1524,8 +1610,10 @@ impl Engine {
                 len: d.len,
                 sha256: d.sha256,
                 track,
+                whole,
             },
         );
+        self.sources = None;
         if let Some(to) = kept {
             spool.kept_by_cache(to, Pin::adopted(&c, d.fp));
         }
@@ -1673,6 +1761,10 @@ impl Engine {
         let now_ns = mono_ns();
         let now = self.ms_at(now_ns);
         let ring = self.shared.out.ring.clone();
+        if self.takeover.is_some() {
+            self.tick_takeover();
+            return;
+        }
 
         // Frames that have become audible since the last tick, exact as of now.
         let played = self.audio.played_at(now_ns);
@@ -1756,6 +1848,7 @@ impl Engine {
         let cap_bytes = ring.capacity() as u64 * 4;
         p.set_host_buffer(ring.len() as u64 * 4, cap_bytes.min(rate * 8 * 2));
         self.run_actions();
+        self.after_last_track();
         self.publish_status(false);
         self.publish_signal(false);
     }
@@ -1792,6 +1885,456 @@ impl Engine {
         }
     }
 
+    // --- Offline controls (`super::outage`) ---------------------------------------------
+
+    /// The link to LMS is down (no socket, or no network) with something to play: the
+    /// phone's own controls apply.
+    fn offline(&self) -> bool {
+        (self.player.is_some() || self.takeover.is_some()) && !(self.open && self.network)
+    }
+
+    /// Look again at what is on the phone, whole (at most every [`SOURCES_EVERY`] unless
+    /// `force`).
+    fn refresh_sources(&mut self, force: bool) {
+        if !force
+            && self
+                .sources
+                .as_ref()
+                .is_some_and(|(at, _)| at.elapsed() < SOURCES_EVERY)
+        {
+            return;
+        }
+        let mut s = Sources::default();
+        if let Some(d) = &self.downloads {
+            s.downloads = d.by_track();
+        }
+        // The cache only while it may be used (never with the download permission gone).
+        if let Some(c) = self
+            .cache
+            .as_ref()
+            .filter(|_| self.cache_bytes > 0 && self.downloads_allowed != Some(false))
+        {
+            let c = c.lock().unwrap();
+            s.cache = c
+                .whole_tracks(cache::level_byte(self.quality))
+                .into_iter()
+                .map(|(id, e)| {
+                    let path = c.path_of(&e.fp);
+                    (id, (e, path))
+                })
+                .collect();
+        }
+        s.spools = self.whole_spools();
+        self.sources = Some((Instant::now(), s));
+    }
+
+    /// Streams spooled whole whose track LMS named from its start, by track: those held for
+    /// a takeover, and the player's own.
+    fn whole_spools(&self) -> HashMap<i64, LocalTrack> {
+        let mut out: HashMap<i64, LocalTrack> = self
+            .held_spools
+            .iter()
+            .map(|(_, id, t)| (*id, t.clone()))
+            .collect();
+        for sp in &self.spools {
+            let Some(path) = sp.whole_file() else {
+                continue;
+            };
+            let known = self
+                .positions
+                .iter()
+                .find(|(seq, _, _)| u64::from(*seq) + 1 == sp.n)
+                .filter(|(_, _, began)| *began < WHOLE_FROM_MS)
+                .map(|(_, p, _)| p.track_id);
+            let ext = self
+                .stream_formats
+                .iter()
+                .find(|(n, _)| *n == sp.n)
+                .and_then(|(_, f)| anywhere_core::decode::format_extension(*f));
+            if let (Some(id), Some(ext)) = (known, ext) {
+                out.insert(
+                    id,
+                    LocalTrack {
+                        key: format!("spool:{}", sp.n),
+                        track_id: id,
+                        path: path.to_path_buf(),
+                        ext: ext.into(),
+                        duration_secs: 0.0,
+                        album: None,
+                    },
+                );
+            }
+        }
+        out
+    }
+
+    /// Whether queue position `i` is on the phone, whole (as last looked at).
+    fn available(&self, i: usize) -> bool {
+        let Some((_, s)) = &self.sources else {
+            return false;
+        };
+        self.snapshot
+            .id(i)
+            .is_some_and(|id| s.availability(id) != outage::LocalAvailability::None)
+    }
+
+    /// Where playback is, for the controls (`None`: online, or nothing to play).
+    fn offline_moment(&self) -> Option<outage::Moment> {
+        if !self.offline() {
+            return None;
+        }
+        if let Some(t) = &self.takeover {
+            let cur = t.current();
+            return Some(outage::Moment {
+                cur,
+                track_id: cur.and_then(|i| self.snapshot.id(i)),
+                elapsed_ms: t.elapsed_ms(),
+                playing: t.playing() && !t.waiting,
+                loaded: true,
+                local: true,
+                waiting: t.waiting,
+            });
+        }
+        let p = self.player.as_ref()?;
+        let st = p.status();
+        let heard = self.heard_point();
+        // Where LMS said the track heard is; the app's queue decides if it moved since.
+        let cur = match heard {
+            Some(h) => self
+                .snapshot
+                .position_of(h.track_id, Some(h.index as usize)),
+            None => self.snapshot.current(),
+        };
+        let held = self.shared.out.hold.load(Ordering::Acquire);
+        Some(outage::Moment {
+            cur,
+            track_id: heard.map(|h| h.track_id),
+            elapsed_ms: heard.map_or(st.elapsed_ms, |h| h.elapsed_ms),
+            playing: st.output == OutputState::Playing && !held && !self.waiting_for_server,
+            loaded: matches!(st.output, OutputState::Playing | OutputState::Paused { .. })
+                && p.playing_track().is_some(),
+            local: false,
+            waiting: self.waiting_for_server,
+        })
+    }
+
+    /// Work out what the controls can do now (none while online).
+    fn update_controls(&mut self) {
+        if !self.offline() {
+            self.controls = None;
+            return;
+        }
+        self.refresh_sources(false);
+        self.controls = self
+            .offline_moment()
+            .map(|m| outage::controls(&self.snapshot, m, &|i| self.available(i)));
+    }
+
+    /// The player LMS was driving is paused (by LMS, or on the phone), or held.
+    fn core_paused(&self) -> bool {
+        let held = self.shared.out.hold.load(Ordering::Acquire);
+        self.player
+            .as_ref()
+            .is_some_and(|p| held || matches!(p.status().output, OutputState::Paused { .. }))
+    }
+
+    /// Where the phone is after the user acted on it, for LMS.
+    fn local_point(&self) -> Option<protocol::RestartPoint> {
+        if let Some(t) = &self.takeover {
+            return t.point(&self.snapshot);
+        }
+        let paused = self.core_paused() || self.waiting_for_server;
+        self.heard_point().map(|p| protocol::RestartPoint {
+            paused,
+            local: true,
+            ..p
+        })
+    }
+
+    /// A control used on the phone while the server can't be reached. Only what the
+    /// controls allow now is done (the app greys out the rest).
+    fn local_command(&mut self, c: LocalCmd) {
+        if !self.offline() {
+            return;
+        }
+        self.refresh_sources(true);
+        let Some(m) = self.offline_moment() else {
+            return;
+        };
+        let gate = outage::controls(&self.snapshot, m, &|i| self.available(i));
+        let cur = gate.index.map(|i| i as usize);
+        let done = match c {
+            LocalCmd::Play if gate.play_pause => self.local_play(),
+            LocalCmd::Pause if gate.play_pause => self.local_pause(),
+            LocalCmd::Next if gate.next => cur
+                .and_then(|c| self.snapshot.next_of(c))
+                .is_some_and(|to| self.local_go(to, 0, true)),
+            LocalCmd::Previous if gate.previous => cur.is_some_and(
+                |c| match outage::previous_step(&self.snapshot, c, m.elapsed_ms) {
+                    outage::Back::Restart => self.local_go(c, 0, true),
+                    outage::Back::To(to) => self.local_go(to, 0, true),
+                },
+            ),
+            LocalCmd::Jump(i) if self.available(i as usize) => self.local_go(i as usize, 0, true),
+            LocalCmd::Seek(ms) if gate.seek => {
+                cur.is_some_and(|c| self.local_go(c, ms, m.playing || m.waiting))
+            }
+            _ => false,
+        };
+        if done {
+            self.acted = true;
+            self.waiting_for_server = false;
+        }
+        self.publish_status(true);
+    }
+
+    fn local_play(&mut self) -> bool {
+        // An explicit play lifts a hold (headphones unplugged, focus lost).
+        self.shared.out.hold.store(false, Ordering::Release);
+        if let Some(t) = self.takeover.as_mut() {
+            t.source.play();
+            return true;
+        }
+        if self
+            .player
+            .as_ref()
+            .is_some_and(|p| matches!(p.status().output, OutputState::Paused { .. }))
+        {
+            self.tell_core(b'u');
+        }
+        true
+    }
+
+    fn local_pause(&mut self) -> bool {
+        if let Some(t) = self.takeover.as_mut() {
+            t.source.pause();
+            self.shared.out.ring.set_hold(true);
+            return true;
+        }
+        if self
+            .player
+            .as_ref()
+            .is_some_and(|p| p.status().output == OutputState::Playing)
+        {
+            self.tell_core(b'p');
+            self.shared.out.ring.set_hold(true);
+        }
+        true
+    }
+
+    /// Pause (`p`) or unpause (`u`) the player LMS was driving, as LMS would. What it would
+    /// tell LMS is dropped: on reconnecting, LMS is told the phone's state instead.
+    fn tell_core(&mut self, command: u8) {
+        self.run_actions();
+        let now = self.now_ms();
+        let (Some(p), Some(frame)) = (self.player.as_mut(), outage::local_strm(command)) else {
+            return;
+        };
+        let _ = p.on_control_data(&frame, now);
+        let _ = p.take_actions();
+    }
+
+    /// Play queue position `index`, `ms` in, from the phone's copies (`play`: or paused
+    /// there). False if it isn't on the phone.
+    fn local_go(&mut self, index: usize, ms: u64, play: bool) -> bool {
+        if play {
+            self.shared.out.hold.store(false, Ordering::Release);
+        }
+        if self.takeover.is_none() {
+            return self.begin_takeover(index, ms, play);
+        }
+        let (Some((_, sources)), Some(t)) = (&self.sources, self.takeover.as_mut()) else {
+            return false;
+        };
+        t.play_from(&self.snapshot, sources, index, ms, play)
+    }
+
+    /// Leave LMS's player for the phone's own copies of the queue, from `index`. Its
+    /// session goes too: a new one starts when the server is back, and LMS is then told
+    /// where the phone is.
+    fn begin_takeover(&mut self, index: usize, ms: u64, play: bool) -> bool {
+        let opener = self.opener();
+        let seed = u64::from(getrandom::u32().unwrap_or(0x9e37)) << 32 | self.now_ms();
+        let Some((_, sources)) = &self.sources else {
+            return false;
+        };
+        let Some(t) = Takeover::start(&self.snapshot, sources, index, ms, play, opener, seed)
+        else {
+            return false;
+        };
+        // Streams spooled whole stay on the phone while the takeover may play them.
+        let spooled = self.whole_spools();
+        for sp in std::mem::take(&mut self.spools) {
+            let key = format!("spool:{}", sp.n);
+            if let Some((id, t)) = spooled.iter().find(|(_, t)| t.key == key) {
+                self.held_spools.push((sp, *id, t.clone()));
+            }
+        }
+        self.close_stream();
+        self.player = None;
+        self.drop_queued_audio();
+        self.audio.forget_plan();
+        self.from_cache.clear();
+        self.from_downloads.clear();
+        self.session = None;
+        self.outbox.clear();
+        self.gap = None;
+        if let Some(r) = self.restart.take() {
+            r.abort();
+        }
+        // A reconnect under way would resume LMS's session: start afresh instead.
+        if let Some(task) = self.ws_task.take() {
+            task.abort();
+            self.ws_out = None;
+            if self.network {
+                let delay = protocol::backoff(self.attempt, protocol::random01());
+                self.reconnect_at = Some((Instant::now() + delay, false));
+            } else {
+                self.waiting_for_network = Some(false);
+            }
+        }
+        if let Some((at, _)) = self.reconnect_at {
+            self.reconnect_at = Some((at, false));
+        }
+        if let Some(w) = self.waiting_for_network.as_mut() {
+            *w = false;
+        }
+        self.takeover = Some(t);
+        true
+    }
+
+    /// Stop playing the phone's own copies (the server is back, or the player stops).
+    fn end_takeover(&mut self) {
+        if let Some(mut t) = self.takeover.take() {
+            t.source.stop();
+            self.audio.drop_queued_audio();
+            self.audio.forget_plan();
+            self.shared.out.ring.set_hold(true);
+        }
+        self.held_spools.clear();
+        self.sources = None;
+    }
+
+    /// Opens a track for the takeover: a plain file only (never a symlink), and a replay
+    /// cache entry only once its whole file has been checked against its hash (once per
+    /// entry; a mismatch deletes it).
+    fn opener(&self) -> Opener {
+        let cache = self.cache.clone();
+        let checked: Mutex<HashSet<cache::Digest>> = Mutex::new(HashSet::new());
+        Box::new(move |t: &LocalTrack| {
+            if let Some(hex) = t.key.strip_prefix(outage::CACHE_KEY) {
+                let gone = || "the copy on this phone has gone".to_string();
+                let fp = cache::Digest::parse(hex).ok_or_else(gone)?;
+                let c = cache.as_ref().ok_or_else(gone)?;
+                if !checked.lock().unwrap().contains(&fp) {
+                    let entry = c.lock().unwrap().lookup(&fp).ok_or_else(gone)?;
+                    if cache::verify(&t.path, &entry, &[]).is_err() {
+                        c.lock().unwrap().remove(&fp);
+                        return Err("the copy on this phone doesn't match".into());
+                    }
+                    checked.lock().unwrap().insert(fp);
+                }
+            }
+            let f = cache::open_plain(&t.path)
+                .map_err(|e| format!("not on this phone ({})", e.kind()))?;
+            anywhere_core::decode::FileDecoder::open(Box::new(f), Some(&t.ext))
+        })
+    }
+
+    /// One tick of the takeover: as the offline player's, through the same audio path.
+    fn tick_takeover(&mut self) {
+        let ring = self.shared.out.ring.clone();
+        let Some(t) = self.takeover.as_mut() else {
+            return;
+        };
+        let played = self.audio.played();
+        if played > 0 {
+            t.source.played(played);
+        }
+        t.source.decode_ahead();
+        if t.source.flush_count() != t.last_flush {
+            t.last_flush = t.source.flush_count();
+            self.audio.drop_queued_audio();
+            self.audio.forget_plan();
+        }
+        self.audio
+            .poll_output(Some(&mut t.source as &mut dyn AudioSource));
+        let facts = t.source.fact_seqs();
+        self.audio.fill(&mut t.source, false, &|_| None, &|seq| {
+            facts
+                .iter()
+                .find(|(s, _)| *s == seq)
+                .and_then(|(_, f)| f.clone())
+        });
+        if let Some(e) = self.audio.take_error()
+            && let Ok(mut st) = self.shared.status.lock()
+        {
+            st.last_error = Some(e);
+        }
+        let playing = t.playing();
+        if playing && !t.was_playing {
+            self.shared.out.hold.store(false, Ordering::Release);
+        }
+        t.was_playing = playing;
+        // The end of what the phone holds in a row: stop, and wait for the server.
+        if t.check_end(ring.is_empty() && self.audio.idle()) {
+            self.audio.drop_queued_audio();
+            self.audio.forget_plan();
+        }
+        // Plays heard with no server aren't recorded here: LMS records what it plays.
+        let _ = t.source.take_events();
+        let user_hold = self.shared.out.hold.load(Ordering::Acquire);
+        let playing = t.playing();
+        ring.set_hold(user_hold || !playing);
+        ring.set_expect_data(
+            playing && !user_hold && !(t.source.audio_exhausted() && self.audio.idle()),
+        );
+        self.publish_status(false);
+        self.publish_signal(false);
+    }
+
+    /// With the link down, the track LMS sent has played out and nothing follows it: carry
+    /// on with the next entry if it is on the phone, or stop there and wait for the server.
+    fn after_last_track(&mut self) {
+        if self.takeover.is_some() || self.waiting_for_server || !self.offline() {
+            return;
+        }
+        let Some(p) = &self.player else { return };
+        let ended = p.status().output == OutputState::Playing
+            && p.playing_track().is_some()
+            && p.audio_exhausted()
+            && self.audio.idle()
+            && self.shared.out.ring.is_empty()
+            && self.spools.is_empty()
+            && self.stream.is_none();
+        if !ended {
+            return;
+        }
+        self.refresh_sources(true);
+        let cur = self.offline_moment().and_then(|m| m.cur);
+        match cur.and_then(|c| self.snapshot.after_end(c)) {
+            Some(next) if self.available(next) && self.begin_takeover(next, 0, true) => {
+                self.acted = true;
+            }
+            _ => self.waiting_for_server = true,
+        }
+        self.publish_status(true);
+    }
+
+    /// Send LMS these commands for this player (best effort).
+    fn tell_lms(&self, cmds: Vec<Vec<serde_json::Value>>) {
+        let Some(mac) = self.mac else { return };
+        let core = self.core.clone();
+        tokio::spawn(async move {
+            let player = format_mac(&mac);
+            for c in cmds {
+                if core.rpc(&player, c).await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
     // --- Reporting ----------------------------------------------------------------------
 
     fn current_status(&self) -> LocalPlayerStatus {
@@ -1804,6 +2347,19 @@ impl Engine {
             0
         };
         let (playback, elapsed_ms, core_ms, error, input_bytes) = match &self.player {
+            _ if self.takeover.is_some() => {
+                let t = self.takeover.as_ref().expect("a takeover");
+                let playback = match t.source.transport() {
+                    _ if t.waiting => LocalPlayback::Paused,
+                    super::local::Transport::Playing if t.source.playing_track().is_none() => {
+                        LocalPlayback::Buffering
+                    }
+                    super::local::Transport::Playing => LocalPlayback::Playing,
+                    super::local::Transport::Paused => LocalPlayback::Paused,
+                    super::local::Transport::Stopped => LocalPlayback::Stopped,
+                };
+                (playback, t.elapsed_ms(), t.source.buffered_ms(), None, 0)
+            }
             Some(p) => {
                 let s = p.status();
                 let playback = match s.output {
@@ -1850,13 +2406,29 @@ impl Engine {
             resume_window_ms: protocol::resume_for(self.grace).as_millis() as u64,
             read_ahead: self.read_ahead && self.spool_dir.is_some(),
             from_cache: self.hearing_from_cache(),
-            from_downloads: self.hearing_from(&self.from_downloads),
+            from_downloads: self.hearing_from_downloads(),
+            offline_controls: self.controls.clone(),
         }
     }
 
-    /// The track heard now came from the replay cache.
+    /// The track heard now came from the replay cache (or, with no server, a kept stream).
     fn hearing_from_cache(&self) -> bool {
-        self.hearing_from(&self.from_cache)
+        match &self.takeover {
+            Some(t) => t
+                .current_track()
+                .is_some_and(|c| !c.key.starts_with(outage::DOWNLOAD_KEY)),
+            None => self.hearing_from(&self.from_cache),
+        }
+    }
+
+    /// The track heard now came from a download.
+    fn hearing_from_downloads(&self) -> bool {
+        match &self.takeover {
+            Some(t) => t
+                .current_track()
+                .is_some_and(|c| c.key.starts_with(outage::DOWNLOAD_KEY)),
+            None => self.hearing_from(&self.from_downloads),
+        }
     }
 
     /// The track heard now is one of `streams` (by number).
@@ -1868,8 +2440,15 @@ impl Engine {
     }
 
     fn publish_status(&mut self, force: bool) {
+        self.update_controls();
         let st = self.current_status();
-        let key = (st.connection.clone(), st.playback, st.output_rate, st.held);
+        let key = (
+            st.connection.clone(),
+            st.playback,
+            st.output_rate,
+            st.held,
+            st.offline_controls.as_ref().map(controls_key),
+        );
         let due = self
             .last_status_at
             .is_none_or(|t| t.elapsed() >= STATUS_EVERY);
@@ -1880,16 +2459,22 @@ impl Engine {
         if force || changed || due {
             self.last_status_at = Some(Instant::now());
             self.last_status_key = Some(key);
+            if let Ok(mut s) = self.shared.spooled.lock() {
+                *s = self.whole_spools().into_keys().collect();
+            }
             self.shared.observer.on_status(st);
         }
     }
 
     fn publish_signal(&mut self, force: bool) {
         let force = force || self.audio.take_signal_dirty();
-        let mut path = self.player.as_ref().and_then(|p| self.audio.signal_path(p));
+        let mut path = match &self.takeover {
+            Some(t) => self.audio.signal_path(&t.source),
+            None => self.player.as_ref().and_then(|p| self.audio.signal_path(p)),
+        };
         if let Some(p) = &mut path {
             p.from_cache = self.hearing_from_cache();
-            p.from_downloads = self.hearing_from(&self.from_downloads);
+            p.from_downloads = self.hearing_from_downloads();
         }
         if !force && path == self.last_signal {
             return;
@@ -1900,6 +2485,22 @@ impl Engine {
         }
         self.shared.observer.on_signal_path(path);
     }
+}
+
+/// What of the offline controls makes a status worth sending at once when it changes.
+type ControlsKey = (Option<u32>, bool, bool, bool, bool, bool, bool, bool);
+
+fn controls_key(c: &OfflineControls) -> ControlsKey {
+    (
+        c.index,
+        c.playing,
+        c.play_pause,
+        c.next,
+        c.previous,
+        c.seek,
+        c.local,
+        c.waiting_for_server,
+    )
 }
 
 /// A content type from the gateway, made safe to put in a header line for LMS.
