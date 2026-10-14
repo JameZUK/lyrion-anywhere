@@ -204,7 +204,19 @@
 		{/if}
 		{#if app.current}<a class="btn act" href="#/car" aria-label="Car mode" data-car-link><Icon name="car" size={18} /><span class="label">Car</span></a>{/if}
 		{#if app.current}<a class="btn act" href="#/alarms" aria-label="Alarms" data-alarms-link><Icon name="alarm" size={18} /><span class="label">Alarms</span></a>{/if}
-		<button class="btn act" onclick={() => (showQueue = true)} aria-haspopup="dialog" aria-label="Queue" disabled={!app.current} data-queue-peek><Icon name="queue" size={18} /><span class="label">Queue</span></button>
+		{#if roomy && app.current}
+			<!-- With room for it, Queue pins or hides the queue beside Now playing. -->
+			<button
+				class="btn act"
+				class:set={nowPlaying.queuePanel}
+				aria-pressed={nowPlaying.queuePanel}
+				aria-label="Show the queue beside Now playing"
+				onclick={() => nowPlaying.setQueuePanel(!nowPlaying.queuePanel)}
+				data-queue-panel-toggle
+			><Icon name="queue" size={18} /><span class="label">Queue</span></button>
+		{:else}
+			<button class="btn act" onclick={() => (showQueue = true)} aria-haspopup="dialog" aria-label="Queue" disabled={!app.current} data-queue-peek><Icon name="queue" size={18} /><span class="label">Queue</span></button>
+		{/if}
 		{#if typeof track?.id === 'number' && track.id > 0}
 			<button class="btn act" onclick={() => (showMore = true)} aria-label="More"><Icon name="more" size={18} /><span class="label">More</span></button>
 		{/if}
@@ -240,16 +252,6 @@
 					data-visualiser-style
 				>{STYLE_LABELS[nowPlaying.style]}</button>
 			{/if}
-		{/if}
-		{#if roomy && app.current}
-			<button
-				class="icon-btn mode"
-				class:on={nowPlaying.queuePanel}
-				aria-pressed={nowPlaying.queuePanel}
-				aria-label="Show the queue beside Now playing"
-				onclick={() => nowPlaying.setQueuePanel(!nowPlaying.queuePanel)}
-				data-queue-panel-toggle
-			><Icon name="queue" size={20} /></button>
 		{/if}
 	</div>
 

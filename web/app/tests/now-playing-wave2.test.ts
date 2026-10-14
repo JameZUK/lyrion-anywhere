@@ -222,6 +222,11 @@ describe('layouts', () => {
 		await waitFor(() => expect(q.querySelector('[data-side-queue="now"]')).not.toBeNull());
 		const toggle = r.container.querySelector<HTMLButtonElement>('[data-queue-panel-toggle]')!;
 		expect(toggle.getAttribute('aria-pressed')).toBe('true');
+		// It is the Queue action itself, not a button of its own under the layout tabs.
+		expect(toggle.closest('.modes')).toBeNull();
+		expect(r.container.querySelector('.modes [aria-label*="queue" i]')).toBeNull();
+		expect(toggle.textContent).toContain('Queue');
+		expect(r.container.querySelector('[data-queue-peek]')).toBeNull();
 		await fireEvent.click(toggle);
 		expect(r.container.querySelector('[data-queue-side]')).toBeNull();
 		expect(JSON.parse(localStorage.getItem(NOW_PLAYING_KEY)!).queuePanel).toBe(false);
@@ -234,6 +239,8 @@ describe('layouts', () => {
 		await tick();
 		expect(r.container.querySelector('[data-queue-side]')).toBeNull();
 		expect(r.container.querySelector('[data-queue-panel-toggle]')).toBeNull();
+		// The Queue action peeks at the queue instead.
+		expect(r.container.querySelector('[data-queue-peek]')).not.toBeNull();
 		r.unmount();
 	});
 });

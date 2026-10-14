@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Web: no lone queue button on wide Now playing
+
+In windows wide enough for the queue beside Now playing (1200 px and over), the button that pins or hides it sat on a line of its own under the Art, Lyrics and Info tabs. The Queue action in the row of actions now does that job there (pressed while the queue is shown); in narrower windows it still peeks at the queue.
+
 ## 2026-10-13: Rolling cache, Phase C: downloads stand in for Original FLAC streams
 
 When the phone plays a track at Original quality that is downloaded as its original FLAC, it now fetches only the stream's first bytes and plays the rest from the download. The audio is bit-identical.
