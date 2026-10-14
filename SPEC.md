@@ -350,6 +350,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 
 **Account and admin**
 - Change password, enable TOTP, and list/revoke own devices and sessions.
+  - **Change password (built 2026-10-14, web and Android):** *Settings › Account › Change password* asks for the current password, the new one twice, and a two-step code when that is on (`POST /v1/account/password`, docs/PROTOCOL.md). Wrong guesses count towards the sign-in lockouts. The user's other devices stay signed in by default: each is paired with its own tokens, and the password isn't one of them. The form lists them afterwards and offers "Also sign out my other devices" for the user who wants them gone. Unused pairing codes are dropped. Shown only when `/v1/me` lists `change_password`. A separate list/revoke of one's own devices is not built yet.
 - Admins can manage users, devices and the audit log (the same functions as the LMS settings page).
 
 **Quality of life**

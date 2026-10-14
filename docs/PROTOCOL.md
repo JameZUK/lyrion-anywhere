@@ -31,11 +31,12 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
 | `POST /v1/auth/pair` | `{"code","device_name"}`, plus the optional client fields | Same, with `refresh_token` in the body (native apps) |
 | `POST /v1/auth/refresh` | none (cookie), or `{"refresh_token"}`; either may add the optional client fields | A new access token and a **rotated** refresh token |
 | `POST /v1/auth/logout` | bearer access token | 204; revokes this device and ends its sessions. Sends `Clear-Site-Data: "cache"` |
-| `GET /v1/me` | bearer access token | `{user, device, features}` (`features.analysis`: the server offers track analysis; `features.resume_grace`: the player socket's sign-in takes `grace`) |
+| `GET /v1/me` | bearer access token | `{user, device, features}` (`features.analysis`: the server offers track analysis; `features.resume_grace`: the player socket's sign-in takes `grace`; `features.change_password`: `POST /v1/account/password` is there) |
 | `GET /v1/account` | bearer access token | `{username, role, totp_enabled, downloads: {enabled, formats}}` (`formats`: what this user may download that this server can produce; see [Downloads](#downloads)) |
 | `POST /v1/account/totp/setup` | `{"password"}` | `{secret, uri, qr_svg}`: a new secret, active once confirmed. A wrong password is 401 and counts towards a lockout of its own (per user), separate from sign-in |
 | `POST /v1/account/totp/confirm` | `{"code"}` | 204; two-step is now on |
 | `POST /v1/account/totp/disable` | `{"password","code"}` | 204; two-step is now off |
+| `POST /v1/account/password` | `{"current","new","code"?,"sign_out_others"?}`, bearer access token | `{signed_out, other_devices}`: the caller's own password is changed (see **Changing your password**) |
 | `PATCH /v1/devices/self` | `{"name"}`, bearer access token | `{id, name}`: renames the caller's own device (see **Devices**) |
 | `POST /v1/devices/pair` | `{"password"}`, bearer access token | `{code, expires_in}`: a one-time pairing code for another device of the caller's own (see [Pairing links](#pairing-links-native-apps)) |
 
@@ -58,6 +59,14 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
   - **Codes:** each code works once; ±1 step is accepted for clock drift. Wrong codes count towards the same lockouts as wrong passwords.
   - **Turning it on** needs the account password, so a stolen access token alone can't add an authenticator.
   - **Turning it off** needs the password and a current code.
+- **Changing your password** (`POST /v1/account/password`): a signed-in user changes their own password. Admins set anyone's with `POST /admin/v1/users/{name}/password`, which signs that user out everywhere.
+  - **Body:** `{"current": "…", "new": "…", "code": "123456", "sign_out_others": false}`. `code` is needed only when two-step is on; `sign_out_others` is optional (default `false`). Unknown fields, duplicates, wrong types and bodies over 4 KiB are refused (400, or 413 for size). Like the `/v1/auth/*` calls, it needs `X-Anywhere-Client` and an allowed `Origin`, and only a bearer access token is accepted, never a cookie.
+  - **The new password** must pass the same policy as an admin's (10–1024 characters) and differ from the current one; otherwise 400 with the reason in `error` (`password must be at least 10 characters`, `password too long`, `the new password must be different from the current one`). These are checked before the current password, so they cost no attempt.
+  - **Wrong credentials** are **403**, not 401, so clients don't take them for an expired token and send the same guess again after renewing: `{"error":"the current password or two-step code is wrong"}`, or `{"error":"two-step code required","totp_required":true}` when two-step is on and no code was sent. 401 means only a missing, expired or revoked access token.
+  - **Rate limits:** a wrong password or code counts as a failed sign-in, against the user's account-change lock (shared with two-step setup and `POST /v1/devices/pair`), the caller's address (which also stops its sign-ins) and the username's sign-in lock. Five failures lock them: 429 with `Retry-After` (seconds), as at sign-in. Failed sign-ins from that address lock this call too.
+  - **On success:** 200 `{"signed_out": 0, "other_devices": [{"id", "name", "client_kind", "client_platform", "last_seen"}]}` with `Cache-Control: no-store`. The caller's device stays signed in. The user's other devices stay signed in too (each holds its own tokens, not the password) and are listed so the user can see them; with `"sign_out_others": true` they are revoked instead and counted in `signed_out`. Pairing codes the user had made and not yet used stop working.
+  - **Audit:** `user.password_changed` (detail `self`; an admin's reset has an empty detail) and `password.change_failed` with the client address. The passwords are never logged.
+  - **Detecting it:** `GET /v1/me` lists `"change_password": true` under `features`; clients hide the form on older gateways.
   - **Lost authenticator:** the admin can reset two-step for a user.
   - **Not affected:** refresh and pairing, because the device was verified when it signed in.
 - **Devices:** each login (or pairing) is a device with its own player MAC. A browser can pass its previous `device_id` to keep the same LMS player, as long as the device belongs to the same user (the web app always does). A user has at most 20 active devices: signing in (or pairing) another revokes the least recently seen one and ends its live session (audit event `device.evicted`).

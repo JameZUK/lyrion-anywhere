@@ -332,6 +332,42 @@ pub struct DeviceInfo {
     pub user_agent: Option<String>,
 }
 
+/// One of a user's own devices, as they see it (no addresses or MACs).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct OwnDevice {
+    pub id: i64,
+    pub name: String,
+    /// `pwa`, `browser` or `android`, as the client last reported.
+    pub client_kind: Option<String>,
+    /// E.g. "Safari on iPadOS" or "Pixel 8".
+    pub client_platform: Option<String>,
+    pub last_seen: Option<i64>,
+}
+
+/// A signed-in user's request to change their own password
+/// ([`Accounts::change_own_password`]).
+pub struct OwnPasswordChange<'a> {
+    pub user: i64,
+    pub username: &'a str,
+    /// The device asking (it stays signed in).
+    pub device: i64,
+    pub current: &'a str,
+    pub new: &'a str,
+    /// The two-step code, needed when two-step is on.
+    pub code: Option<&'a str>,
+    /// Also sign out the user's other devices.
+    pub sign_out_others: bool,
+}
+
+/// What [`Accounts::change_own_password`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasswordChanged {
+    /// Devices signed out with it (their live sessions are the caller's to end).
+    pub revoked: Vec<i64>,
+    /// The user's other devices, still signed in.
+    pub others: Vec<OwnDevice>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct AuditEntry {
     pub at: i64,
@@ -1681,6 +1717,139 @@ impl Accounts {
             [user],
         )?;
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Changing one's own password
+    // -----------------------------------------------------------------------
+
+    /// A signed-in user changes their own password (`POST /v1/account/password`), from
+    /// `device`, at `client` (its address, as for [`Self::login`]).
+    ///
+    /// - The new password must pass the policy and differ from the current one; both are
+    ///   checked first, so a refused request costs no password check and no attempt.
+    /// - Needs the current password, and a two-step code when that is on. Wrong ones count
+    ///   as failed sign-ins: against this user's account-change lock (shared with two-step
+    ///   setup and pairing codes), the client's address (a hard lock that also stops its
+    ///   sign-ins) and the username's sign-in lock (soft, as at sign-in). So a stolen access
+    ///   token buys no more guesses here than at the sign-in form.
+    /// - Outstanding pairing codes the user made are dropped (whoever saw one could still
+    ///   sign in with it). The user's other devices stay signed in unless `sign_out_others`:
+    ///   each holds its own tokens, not the password. The caller's own device always stays.
+    pub fn change_own_password(
+        &self,
+        req: &OwnPasswordChange<'_>,
+        client: &str,
+    ) -> Result<PasswordChanged, AuthError> {
+        check_password(req.new)?;
+        if req.new == req.current {
+            return Err(AuthError::BadInput(
+                "the new password must be different from the current one",
+            ));
+        }
+        let username = req.username;
+        let client_key = format!("client:{client}");
+        let attempt = self.begin_attempt(
+            vec![format!("confirm:{username}"), client_key.clone()],
+            Some((format!("user:{username}"), client_key)),
+        )?;
+        // Disabled (or deleted) since the token was issued: refused like a wrong token.
+        let hash: String = self
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT password_hash FROM users WHERE id = ?1 AND disabled = 0",
+                [req.user],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or(AuthError::Invalid)?;
+        if !self.check_password_hash(req.current, &hash)? {
+            attempt.failed();
+            self.audit(
+                "password.change_failed",
+                Some(username),
+                Some(req.device),
+                client,
+            );
+            return Err(AuthError::Invalid);
+        }
+        match self.second_factor(req.user, req.code)? {
+            SecondFactor::Off | SecondFactor::Accepted => {}
+            // The password was right: neither a failure nor a success.
+            SecondFactor::Missing => return Err(AuthError::TotpRequired),
+            SecondFactor::Wrong => {
+                attempt.failed();
+                self.audit(
+                    "password.change_failed",
+                    Some(username),
+                    Some(req.device),
+                    client,
+                );
+                return Err(AuthError::Invalid);
+            }
+        }
+        attempt.succeeded();
+        let new_hash = hash_password(req.new)?;
+        {
+            let db = self.db.lock().unwrap();
+            // Only over the hash that was checked: of two changes racing with the same
+            // current password, one wins and the other is told the password is wrong.
+            let n = db.execute(
+                "UPDATE users SET password_hash = ?1 WHERE id = ?2 AND password_hash = ?3",
+                params![new_hash, req.user, hash],
+            )?;
+            if n == 0 {
+                return Err(AuthError::Invalid);
+            }
+            db.execute("DELETE FROM pairing_codes WHERE user_id = ?1", [req.user])?;
+        }
+        // The same event as an admin's reset; the detail says who. Never the password.
+        self.audit(
+            "user.password_changed",
+            Some(username),
+            Some(req.device),
+            "self",
+        );
+        let mut revoked = Vec::new();
+        if req.sign_out_others {
+            for d in self.own_devices(req.user)? {
+                if d.id != req.device && self.revoke_device(d.id)? {
+                    revoked.push(d.id);
+                }
+            }
+        }
+        let others = self
+            .own_devices(req.user)?
+            .into_iter()
+            .filter(|d| d.id != req.device)
+            .collect();
+        Ok(PasswordChanged { revoked, others })
+    }
+
+    /// A user's devices that are still signed in, oldest first.
+    pub fn own_devices(&self, user: i64) -> Result<Vec<OwnDevice>, AuthError> {
+        let db = self.db.lock().unwrap();
+        let mut st = db.prepare(
+            "SELECT id, name, client_kind, client_platform, last_seen FROM devices
+             WHERE user_id = ?1 AND revoked = 0 ORDER BY id",
+        )?;
+        let rows = st.query_map([user], |r| {
+            let kind: Option<String> = r.get(2)?;
+            let platform: Option<String> = r.get(3)?;
+            Ok(OwnDevice {
+                id: r.get(0)?,
+                name: clean_device_name(&r.get::<_, String>(1)?),
+                client_kind: kind
+                    .as_deref()
+                    .and_then(ClientKind::parse)
+                    .map(|k| k.as_str().to_string()),
+                client_platform: platform.as_deref().and_then(clean_platform),
+                last_seen: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     // -----------------------------------------------------------------------

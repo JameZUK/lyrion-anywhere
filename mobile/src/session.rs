@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::error::ApiError;
-use crate::model::{AccountInfo, Device, SignedIn, User, UserRole};
+use crate::model::{AccountInfo, Device, OwnDevice, PasswordChanged, SignedIn, User, UserRole};
 use crate::server::{Server, normalise_pairing_code};
 use crate::transport::{self, CLIENT_HEADER, Http};
 
@@ -190,6 +190,81 @@ fn clean_device_name(name: &str) -> String {
 
 /// A device name the gateway takes: 1 to 64 characters once trimmed, no control characters
 /// (it cleans names further). The trimmed name, or `None`.
+/// The gateway's password policy (checked again there): 10 to 1024 characters.
+const MIN_PASSWORD: usize = 10;
+const MAX_PASSWORD: usize = 1024;
+/// Most other devices read from a password change's answer (the gateway allows 20).
+const MAX_OWN_DEVICES: usize = 64;
+
+/// The body of `POST /v1/account/password`, checked before anything is sent.
+fn change_password_body(
+    current: &str,
+    new: &str,
+    code: Option<&str>,
+    sign_out_others: bool,
+) -> Result<Value, ApiError> {
+    if current.is_empty() || current.len() > MAX_PASSWORD {
+        return Err(ApiError::invalid("enter your current password"));
+    }
+    if new.chars().count() < MIN_PASSWORD {
+        return Err(ApiError::invalid("password must be at least 10 characters"));
+    }
+    if new.len() > MAX_PASSWORD {
+        return Err(ApiError::invalid("password too long"));
+    }
+    if new == current {
+        return Err(ApiError::invalid(
+            "the new password must be different from the current one",
+        ));
+    }
+    let mut body = json!({ "current": current, "new": new, "sign_out_others": sign_out_others });
+    if let Some(code) = code {
+        let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+        if code.len() != 6 || !code.chars().all(|c| c.is_ascii_digit()) {
+            return Err(ApiError::invalid(
+                "the code is the 6 digits from your authenticator app",
+            ));
+        }
+        body["code"] = json!(code);
+    }
+    Ok(body)
+}
+
+/// Read a password change's answer: anything malformed in a device is dropped, not trusted.
+fn parse_password_changed(v: &Value) -> Result<PasswordChanged, ApiError> {
+    let signed_out = v["signed_out"]
+        .as_u64()
+        .ok_or_else(|| ApiError::bad_response("no signed_out in answer"))?;
+    let list = v["other_devices"]
+        .as_array()
+        .ok_or_else(|| ApiError::bad_response("no other_devices in answer"))?;
+    let other_devices = list
+        .iter()
+        .take(MAX_OWN_DEVICES)
+        .filter_map(|d| {
+            let name = crate::model::clean_text(d["name"].as_str()?);
+            Some(OwnDevice {
+                id: d["id"].as_i64()?,
+                name: name.chars().take(64).collect(),
+                platform: d["client_platform"]
+                    .as_str()
+                    .map(|p| {
+                        crate::model::clean_text(p)
+                            .chars()
+                            .take(48)
+                            .collect::<String>()
+                    })
+                    .filter(|p| !p.trim().is_empty()),
+                last_seen: d["last_seen"].as_i64(),
+            })
+        })
+        .collect();
+    Ok(PasswordChanged {
+        signed_out: signed_out.min(u32::MAX as u64) as u32,
+        other_devices,
+    })
+}
+
 fn valid_device_name(name: &str) -> Option<String> {
     let n = name.trim();
     let count = n.chars().count();
@@ -590,12 +665,47 @@ impl Session {
     /// `GET /v1/account`: account settings (two-step, downloads).
     pub async fn account(&self) -> Result<AccountInfo, ApiError> {
         let v = self.core.get_json("v1/account").await?;
+        // What the server offers comes from `/v1/me`; without it, offer nothing new.
+        let can_change_password = match self.core.get_json("v1/me").await {
+            Ok(me) => me["features"]["change_password"].as_bool() == Some(true),
+            Err(_) => false,
+        };
         Ok(AccountInfo {
             username: crate::model::clean_text(v["username"].as_str().unwrap_or("")),
             is_admin: v["role"].as_str() == Some("admin"),
             two_step_enabled: v["totp_enabled"].as_bool().unwrap_or(false),
             downloads_enabled: v["downloads"]["enabled"].as_bool().unwrap_or(false),
+            can_change_password,
         })
+    }
+
+    /// Change this user's password (`POST /v1/account/password`). Needs the current
+    /// password, and the two-step code when two-step is on (without it:
+    /// [`ApiError::TwoStepRequired`]). A wrong password or code is
+    /// [`ApiError::Forbidden`]; it counts towards the sign-in lock, and the sign-in here is
+    /// kept. Other devices stay signed in unless `sign_out_others`; this one always does.
+    pub async fn change_password(
+        &self,
+        current: String,
+        new: String,
+        two_step_code: Option<String>,
+        sign_out_others: bool,
+    ) -> Result<PasswordChanged, ApiError> {
+        let body = change_password_body(&current, &new, two_step_code.as_deref(), sign_out_others)?;
+        let url = self.core.server.endpoint("v1/account/password");
+        let core = &self.core;
+        let v = core
+            .authed(|token| {
+                transport::send_json(
+                    core.http
+                        .post(url.clone())
+                        .header(CLIENT_HEADER, "1")
+                        .bearer_auth(&token)
+                        .json(&body),
+                )
+            })
+            .await?;
+        parse_password_changed(&v)
     }
 }
 
@@ -685,6 +795,83 @@ mod tests {
         bad_mac["device"]["mac"] = json!("not-a-mac");
         assert_eq!(parse_issued(&bad_mac).unwrap().who.device.player_id, "");
         assert!(parse_issued(&json!([])).is_err());
+    }
+
+    #[test]
+    fn password_changes_are_checked_before_sending() {
+        let new = "a new password 1";
+        let ok = change_password_body("old password", new, Some(" 123 456 "), true).unwrap();
+        assert_eq!(
+            ok,
+            json!({ "current": "old password", "new": new, "code": "123456", "sign_out_others": true })
+        );
+        let no_code = change_password_body("old password", new, None, false).unwrap();
+        assert!(no_code.get("code").is_none());
+        for (cur, new, code) in [
+            ("", new, None),
+            ("old password", "short", None),
+            ("old password", &*"x".repeat(1025), None),
+            ("same password", "same password", None),
+            ("old password", new, Some("12345")),
+            ("old password", new, Some("abcdef")),
+            ("old password", new, Some("1234567")),
+        ] {
+            assert!(
+                matches!(
+                    change_password_body(cur, new, code, false),
+                    Err(ApiError::InvalidInput { .. })
+                ),
+                "{cur:?} {new:?} {code:?}"
+            );
+        }
+        // Ten characters of any script count as ten.
+        assert!(change_password_body("old password", &"é".repeat(10), None, false).is_ok());
+    }
+
+    #[test]
+    fn password_change_answers_are_read_strictly() {
+        let v = json!({
+            "signed_out": 0,
+            "other_devices": [
+                { "id": 2, "name": "Kitchen\u{7}", "client_kind": "browser",
+                  "client_platform": "Firefox on Linux", "last_seen": 1_700_000_000 },
+                { "id": 3, "name": "Tablet", "client_platform": " " },
+                { "id": "4", "name": "bad id" },
+                { "id": 5 },
+                "nonsense",
+            ]
+        });
+        let c = parse_password_changed(&v).unwrap();
+        assert_eq!(c.signed_out, 0);
+        assert_eq!(
+            c.other_devices,
+            vec![
+                OwnDevice {
+                    id: 2,
+                    name: "Kitchen".into(),
+                    platform: Some("Firefox on Linux".into()),
+                    last_seen: Some(1_700_000_000),
+                },
+                OwnDevice {
+                    id: 3,
+                    name: "Tablet".into(),
+                    platform: None,
+                    last_seen: None,
+                },
+            ]
+        );
+        let many: Vec<Value> = (0..500).map(|i| json!({ "id": i, "name": "d" })).collect();
+        let c = parse_password_changed(&json!({ "signed_out": 3, "other_devices": many })).unwrap();
+        assert_eq!(c.other_devices.len(), MAX_OWN_DEVICES);
+        assert_eq!(c.signed_out, 3);
+        for bad in [
+            json!({}),
+            json!({ "signed_out": -1, "other_devices": [] }),
+            json!({ "signed_out": 1 }),
+            json!([]),
+        ] {
+            assert!(parse_password_changed(&bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

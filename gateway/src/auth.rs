@@ -392,6 +392,8 @@ pub async fn me(State(gw): State<AppState>, headers: HeaderMap) -> Response {
             // The player socket's sign-in takes "grace" (seconds to hold the session for a
             // client that lost its connection); the greeting says what was granted.
             "resume_grace": true,
+            // POST /v1/account/password (a signed-in user changes their own password).
+            "change_password": true,
         },
     }))
     .into_response()
@@ -536,6 +538,84 @@ pub async fn totp_disable(
     .await;
     match result {
         Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(e)) => auth_error(e),
+        Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Account self-service: password
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChangePasswordRequest {
+    current: String,
+    new: String,
+    /// The two-step code, when two-step is on.
+    code: Option<String>,
+    /// Also sign out the user's other devices (they stay signed in otherwise).
+    #[serde(default)]
+    sign_out_others: bool,
+}
+
+/// `POST /v1/account/password` `{"current", "new", "code"?, "sign_out_others"?}`: change
+/// the caller's own password. Wrong credentials are 403, not 401, so a client doesn't take
+/// them for an expired token and send the same guess again after renewing it.
+pub async fn change_password(
+    State(gw): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if !csrf_ok(&gw, &headers) {
+        return error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Some(p) = principal(&gw, &headers) else {
+        return error(StatusCode::UNAUTHORIZED, "invalid credentials");
+    };
+    let req: ChangePasswordRequest = match parse(&body) {
+        Ok(r) => r,
+        Err((status, msg)) => return error(status, msg),
+    };
+    let client = client_id(&gw, peer, &headers);
+    let accounts = gw.accounts().clone();
+    let result = tokio::task::spawn_blocking(move || {
+        accounts.change_own_password(
+            &crate::accounts::OwnPasswordChange {
+                user: p.user_id,
+                username: &p.username,
+                device: p.device_id,
+                current: &req.current,
+                new: &req.new,
+                code: req.code.as_deref(),
+                sign_out_others: req.sign_out_others,
+            },
+            &client,
+        )
+    })
+    .await;
+    match result {
+        Ok(Ok(changed)) => {
+            gw.end_sessions_for(&changed.revoked).await;
+            let mut r = Json(json!({
+                "signed_out": changed.revoked.len(),
+                "other_devices": changed.others,
+            }))
+            .into_response();
+            r.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            r
+        }
+        Ok(Err(AuthError::Invalid)) => error(
+            StatusCode::FORBIDDEN,
+            "the current password or two-step code is wrong",
+        ),
+        Ok(Err(AuthError::TotpRequired)) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "two-step code required", "totp_required": true })),
+        )
+            .into_response(),
         Ok(Err(e)) => auth_error(e),
         Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     }

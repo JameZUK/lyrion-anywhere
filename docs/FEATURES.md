@@ -308,6 +308,7 @@ All of these are on Android, for this phone's player, and are **off by default**
 |---|---|---|
 | **Accounts of its own** | Server | Created by an admin (no self sign-up), independent of LMS's own password; roles *admin* and *listener* |
 | **Two-step verification** | Both, Server | Optional TOTP per user, turned on in the web app (*Settings › Account*) with the password and an authenticator app; codes asked for at sign-in on both apps. Admins can reset it |
+| **Change your password** | Both, Server | *Settings › Account › Change password* on the web and Android: the current password, the new one twice and a two-step code when that is on. Wrong guesses count towards the sign-in lockouts. Your other devices stay signed in and are listed afterwards; tick *Also sign out my other devices* to end them instead. Admins can still set anyone's password (that signs the user out everywhere) |
 | **Stay signed in** | Server | A device in use stays signed in; one unused for the sign-in lifetime (90 days by default, 1–365) must sign in again |
 | **Add a device by QR code** | Both, Server | Admins: *Add a device* on the plugin's settings page. Users: *Settings › Account › Add another device* in the web app (with the password). The Android app scans the QR code or takes a `lyrion-anywhere://pair` link, and always asks before signing in |
 | **Name your device** | Both | Rename this device (*Settings › This device* on the web, *Settings › This phone* on Android); its LMS player is renamed too |

@@ -534,7 +534,7 @@ class DocScreenshotsPhone : DocShots() {
                 SettingsScreen(
                     state = SettingsUiState(
                         username = "alex",
-                        account = AccountInfo("alex", false, true, false),
+                        account = AccountInfo("alex", false, true, false, true),
                         sound = SoundSettings(),
                         downloadsOffered = true,
                         downloadedBytes = 1_271_000_000,

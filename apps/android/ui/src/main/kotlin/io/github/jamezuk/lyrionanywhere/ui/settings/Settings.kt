@@ -18,6 +18,7 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Gavel
 import androidx.compose.material.icons.outlined.GraphicEq
+import androidx.compose.material.icons.outlined.Password
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PrivacyTip
 import androidx.compose.material.icons.outlined.Security
@@ -53,6 +54,8 @@ import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.data.AuthState
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
+import io.github.jamezuk.lyrionanywhere.data.PasswordChangeError
+import io.github.jamezuk.lyrionanywhere.data.PasswordChangeResult
 import io.github.jamezuk.lyrionanywhere.data.SoundSettings
 import io.github.jamezuk.lyrionanywhere.data.offline.OfflineRepository
 import io.github.jamezuk.lyrionanywhere.ui.offline.formatBytes
@@ -85,6 +88,12 @@ data class SettingsUiState(
     val renaming: Boolean = false,
     /** Why the last rename failed, if it did. */
     val renameError: AppError? = null,
+    /** A password change is being sent. */
+    val passwordChanging: Boolean = false,
+    /** Why the last password change failed, if it did. */
+    val passwordError: PasswordChangeError? = null,
+    /** The password was changed (shown until the form is closed). */
+    val passwordChanged: PasswordChangeResult.Changed? = null,
 )
 
 /** A name the server takes for this phone (it cleans it further), trimmed; or null. */
@@ -137,6 +146,23 @@ class SettingsViewModel(
                 is ApiResult.Err -> _state.update { it.copy(renaming = false, renameError = r.error) }
             }
         }
+    }
+
+    /** Change the password; the outcome shows in the form ([SettingsUiState.passwordChanged]). */
+    fun changePassword(current: String, new: String, code: String?, signOutOthers: Boolean) {
+        if (_state.value.passwordChanging) return
+        _state.update { it.copy(passwordChanging = true, passwordError = null, passwordChanged = null) }
+        viewModelScope.launch {
+            when (val r = account.changePassword(current, new, code, signOutOthers)) {
+                is PasswordChangeResult.Changed -> _state.update { it.copy(passwordChanging = false, passwordChanged = r) }
+                is PasswordChangeResult.Failed -> _state.update { it.copy(passwordChanging = false, passwordError = r.error) }
+            }
+        }
+    }
+
+    /** The password form was closed: forget its outcome. */
+    fun closePasswordForm() {
+        _state.update { it.copy(passwordError = null, passwordChanged = null) }
     }
 
     /**
@@ -206,9 +232,13 @@ fun SettingsScreen(
     device: (@Composable () -> Unit)? = null,
     /** Gaps in the signal: reading the next track ahead (rolling cache), with this phone's player. */
     gaps: (@Composable () -> Unit)? = null,
+    /** Change the password: current, new, the two-step code (null without two-step), sign out others. */
+    onChangePassword: (current: String, new: String, code: String?, signOutOthers: Boolean) -> Unit = { _, _, _, _ -> },
+    onClosePasswordForm: () -> Unit = {},
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var renaming by rememberSaveable { mutableStateOf(false) }
+    var changingPassword by rememberSaveable { mutableStateOf(false) }
     LazyColumn(modifier.fillMaxSize()) {
         if (defaultPlayer != null) {
             item { SectionHeader(stringResource(R.string.section_default_player)) }
@@ -349,6 +379,34 @@ fun SettingsScreen(
                         Text(stringResource(if (a.twoStepEnabled) R.string.two_step_on else R.string.two_step_off))
                     },
                 )
+            }
+            // Only where the server offers it (older gateways don't).
+            if (a.canChangePassword) {
+                item {
+                    ListItem(
+                        leadingContent = { Icon(Icons.Outlined.Password, contentDescription = null) },
+                        headlineContent = { Text(stringResource(R.string.password_change)) },
+                        supportingContent = { Text(stringResource(R.string.password_change_row)) },
+                        modifier = Modifier
+                            .testTag("change-password")
+                            .clickable(enabled = !state.passwordChanging) { changingPassword = true },
+                    )
+                }
+                if (changingPassword) {
+                    item {
+                        ChangePasswordEditor(
+                            twoStep = a.twoStepEnabled,
+                            busy = state.passwordChanging,
+                            error = state.passwordError,
+                            changed = state.passwordChanged,
+                            onSubmit = onChangePassword,
+                            onDismiss = {
+                                changingPassword = false
+                                onClosePasswordForm()
+                            },
+                        )
+                    }
+                }
             }
         }
         item {
