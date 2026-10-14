@@ -22,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
@@ -185,7 +186,9 @@ fun AmbientBackground(
     val alpha = remember(scheme.background, scheme.onBackground, scheme.onSurfaceVariant, scheme.primary, dark) {
         Ambient.scrimAlpha(scheme, dark)
     }
-    Box(modifier.fillMaxSize().background(scheme.background).testTag("ambient")) {
+    // Clipped: the drifting cover is scaled and blurred past its bounds, and must not paint
+    // over what sits above the page, such as the connection line.
+    Box(modifier.fillMaxSize().clipToBounds().background(scheme.background).testTag("ambient")) {
         if (artwork != null && !highContrast) {
             val drift = if (still) {
                 null

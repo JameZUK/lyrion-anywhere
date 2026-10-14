@@ -47,6 +47,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -63,7 +64,10 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.utf16CodePoint
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
@@ -110,10 +114,27 @@ fun libraryChipLabel(c: LibraryChip): String = stringResource(
 @Composable
 fun LibraryChips(selected: LibraryChip?, onToggle: (LibraryChip) -> Unit, modifier: Modifier = Modifier) {
     val group = stringResource(R.string.library_types)
+    val scroll = rememberScrollState()
+    // Where each chip sits (left edge and width, in the scrolled row), so the chosen one can
+    // be scrolled into view: a chip chosen elsewhere (or restored) may be off the edge.
+    val spans = remember { mutableStateMapOf<LibraryChip, Pair<Int, Int>>() }
+    val margin = with(LocalDensity.current) { 24.dp.roundToPx() }
+    val span = selected?.let { spans[it] }
+    LaunchedEffect(selected, span, scroll.viewportSize) {
+        val (left, width) = span ?: return@LaunchedEffect
+        val view = scroll.viewportSize
+        if (view <= 0) return@LaunchedEffect
+        val target = when {
+            left - margin < scroll.value -> left - margin
+            left + width + margin > scroll.value + view -> left + width + margin - view
+            else -> return@LaunchedEffect
+        }
+        scroll.animateScrollTo(target.coerceIn(0, scroll.maxValue))
+    }
     Row(
         modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
+            .horizontalScroll(scroll)
             .padding(horizontal = 12.dp)
             .semantics { contentDescription = group }
             .testTag("library-chips"),
@@ -124,7 +145,9 @@ fun LibraryChips(selected: LibraryChip?, onToggle: (LibraryChip) -> Unit, modifi
                 selected = c == selected,
                 onClick = { onToggle(c) },
                 label = { Text(libraryChipLabel(c)) },
-                modifier = Modifier.testTag("chip-${c.name.lowercase()}"),
+                modifier = Modifier
+                    .onPlaced { p -> (p.positionInParent().x.toInt() to p.size.width).let { if (spans[c] != it) spans[c] = it } }
+                    .testTag("chip-${c.name.lowercase()}"),
             )
         }
     }

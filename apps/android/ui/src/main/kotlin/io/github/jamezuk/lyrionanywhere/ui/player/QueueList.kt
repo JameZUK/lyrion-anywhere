@@ -4,7 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -71,6 +70,8 @@ import androidx.compose.ui.zIndex
 import io.github.jamezuk.lyrionanywhere.core.Track
 import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.components.HapticSteps
+import io.github.jamezuk.lyrionanywhere.ui.components.OverflowRow
+import io.github.jamezuk.lyrionanywhere.ui.components.RowAction
 import io.github.jamezuk.lyrionanywhere.ui.library.SectionHeader
 import io.github.jamezuk.lyrionanywhere.ui.library.TrackRow
 import kotlinx.coroutines.launch
@@ -114,28 +115,48 @@ fun QueueHeader(
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var confirmUpcoming by rememberSaveable { mutableStateOf(false) }
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Box(Modifier.weight(1f)) { SectionHeader(stringResource(R.string.section_queue)) }
-        FlowRow(horizontalArrangement = Arrangement.End) {
-            if (onSaveAsPlaylist != null && count > 0) {
-                TextButton(onClick = onSaveAsPlaylist, enabled = enabled, modifier = Modifier.testTag("save-queue")) {
-                    Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, contentDescription = null)
-                    Text(stringResource(R.string.save_queue_action), Modifier.padding(start = 4.dp))
-                }
-            }
-            if (upcoming != null && upcoming > 0) {
-                TextButton(onClick = { confirmUpcoming = true }, enabled = enabled, modifier = Modifier.testTag("clear-upcoming")) {
-                    Text(stringResource(R.string.queue_clear_upcoming))
-                }
-            }
-            if (count > 0) {
-                TextButton(onClick = { confirm = true }, enabled = enabled, modifier = Modifier.testTag("clear-queue")) {
-                    Icon(Icons.Outlined.ClearAll, contentDescription = null)
-                    Text(stringResource(R.string.queue_clear), Modifier.padding(start = 4.dp))
-                }
-            }
+    // The heading stays on one line; the buttons that don't fit move into a labelled ⋮ menu.
+    val actions = buildList {
+        if (onSaveAsPlaylist != null && count > 0) {
+            val label = stringResource(R.string.save_queue_action)
+            add(
+                RowAction(label, Icons.AutoMirrored.Outlined.PlaylistAdd, onSaveAsPlaylist, enabled, tag = "save-queue") {
+                    TextButton(onClick = onSaveAsPlaylist, enabled = enabled, modifier = Modifier.testTag("save-queue")) {
+                        Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, contentDescription = null)
+                        Text(label, Modifier.padding(start = 4.dp))
+                    }
+                },
+            )
+        }
+        if (upcoming != null && upcoming > 0) {
+            val label = stringResource(R.string.queue_clear_upcoming)
+            add(
+                RowAction(label, null, { confirmUpcoming = true }, enabled, tag = "clear-upcoming") {
+                    TextButton(onClick = { confirmUpcoming = true }, enabled = enabled, modifier = Modifier.testTag("clear-upcoming")) {
+                        Text(label)
+                    }
+                },
+            )
+        }
+        if (count > 0) {
+            val label = stringResource(R.string.queue_clear)
+            add(
+                RowAction(label, Icons.Outlined.ClearAll, { confirm = true }, enabled, tag = "clear-queue") {
+                    TextButton(onClick = { confirm = true }, enabled = enabled, modifier = Modifier.testTag("clear-queue")) {
+                        Icon(Icons.Outlined.ClearAll, contentDescription = null)
+                        Text(label, Modifier.padding(start = 4.dp))
+                    }
+                },
+            )
         }
     }
+    OverflowRow(
+        actions = actions,
+        menuLabel = stringResource(R.string.queue_more),
+        menuTag = "queue-actions",
+        modifier = Modifier.fillMaxWidth(),
+        lead = { SectionHeader(stringResource(R.string.section_queue), Modifier.testTag("queue-title"), maxLines = 1) },
+    )
     if (confirm) {
         ConfirmDialog(
             title = stringResource(R.string.queue_clear_confirm_title),

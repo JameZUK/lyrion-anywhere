@@ -314,6 +314,7 @@
     <string name="action_add_short">Add</string>
     <string name="action_close">Close</string>
     <string name="action_more">More options</string>
+    <string name="action_more_item">More…</string>
     <string name="more_for">More options for %1$s</string>
     <string name="play_named">Play %1$s</string>
     <string name="add_named">Add %1$s to the queue</string>
@@ -812,6 +813,7 @@
     <string name="queue_clear_stopped">The queue changed, so clearing stopped part-way.</string>
     <!-- Save the queue as a playlist (admins). -->
     <string name="save_queue_action">Save as playlist</string>
+    <string name="queue_more">More queue actions</string>
     <string name="save_queue_title">Save queue as playlist</string>
     <string name="save_queue_name">Name</string>
     <string name="save_queue_saving">Saving…</string>
