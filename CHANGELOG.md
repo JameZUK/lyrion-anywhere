@@ -10,7 +10,7 @@ Found by a rendered review of every screen at phone, small-phone and tablet size
 - **Connection line on Now playing:** the blurred cover behind Now playing spread past its edges and painted over *Can’t reach your server…* and the busy line. The background is now clipped to its bounds, and the line draws above the page.
 - **Album and playlist headers:** the five header buttons wrapped, leaving ⋮ on a line of its own. The row no longer wraps: Play, Shuffle and ⋮ always show; Add to queue and Download move into the ⋮ when there isn't room (its last item, *More…*, opens the usual options).
 - **Library chips:** a chosen chip off the edge (*Downloaded*, say) is now scrolled into view.
-- **Tests:** `LayoutFixesTests` (the heading is one line at phone and pane widths with every action reachable, a menu action still asks first, the ⋮ stays on the Play row at 379, 328 and 300 dp, moved actions work from the menu, nothing moves on a wide screen, the connection line keeps its colour over the ambient cover, the cover doesn't paint outside its bounds, and the chosen chip is wholly on screen, also after choosing another). Each failed before the fix.
+- **Tests:** `LayoutFixesTests` (the heading is one line, its buttons on one row, at 411, 360 and 240 dp with every action reachable, a menu action still asks first, the ⋮ stays on the Play row at 379, 328 and 300 dp, moved actions work from the menu, nothing moves on a wide screen, the connection line keeps its colour over the ambient cover, the cover doesn't paint outside its bounds, and the chosen chip is wholly on screen, also after choosing another). Each failed before the fix, bar the two wide-screen guards.
 
 ## 2026-10-14: Android 1.13.0 (versionCode 27)
 

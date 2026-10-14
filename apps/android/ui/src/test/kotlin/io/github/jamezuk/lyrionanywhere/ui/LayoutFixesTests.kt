@@ -97,18 +97,35 @@ class LayoutFixesTests {
 
     // B1: the queue heading.
 
-    @Test
-    fun theQueueHeadingStaysOnOneLineOnAPhone() {
-        queueHeader(360)
-        assertEquals(1, compose.onNodeWithTag("queue-title", useUnmergedTree = true).lines())
+    /** The heading is one line, and the buttons left in the row sit on one row beside it. */
+    private fun assertOneLineHeader() {
+        assertEquals(1, compose.onNodeWithText("Queue", useUnmergedTree = true).lines())
         compose.onNodeWithText("Queue").assertIsDisplayed()
+        val rows = listOf("save-queue", "clear-upcoming", "clear-queue", "queue-actions")
+            .flatMap { compose.onAllNodes(androidx.compose.ui.test.hasTestTag(it)).fetchSemanticsNodes() }
+            .map { it.positionInRoot.y + it.size.height / 2f }
+        assertTrue("the header's buttons wrapped: $rows", rows.all { abs(it - rows.first()) < 2f })
+    }
+
+    @Test
+    @Config(sdk = [35], qualifiers = "w411dp-h900dp-xhdpi")
+    fun theQueueHeadingStaysOnOneLineOnATypicalPhone() {
+        queueHeader(411)
+        assertOneLineHeader()
+        assertQueueActionsReachable()
+    }
+
+    @Test
+    fun theQueueHeadingStaysOnOneLineOnASmallPhone() {
+        queueHeader(360)
+        assertOneLineHeader()
         assertQueueActionsReachable()
     }
 
     @Test
     fun theQueueHeadingStaysOnOneLineInANarrowPane() {
         queueHeader(240)
-        assertEquals(1, compose.onNodeWithTag("queue-title", useUnmergedTree = true).lines())
+        assertOneLineHeader()
         assertQueueActionsReachable()
     }
 
