@@ -73,6 +73,27 @@ Started on 2026-10-14, from a rendered review of every screen on both apps: phon
 | 13 | **Rooms folds into *Play on…*** (one player manager instead of two; Rooms remains as the expanded view on tablet and desktop). Card controls go from 6 to 3. | Needs a short design first |
 | 14 | **Downloads playback uses the main mini player and Now playing** (the engines stay separate; the UI is one). Downloads then appear in the main Queue. | Removes the "two apps" feel offline |
 
+## Phase 3 design (Android, 2026-10-14)
+
+Written before building items 13 and 14, as the decisions asked.
+
+### 13. Rooms folds into *Play on…*
+
+- ***Play on…* is the one player manager on phones.** Each player is one row: a tap controls it (as in phase 2). Its ⋮ holds what Rooms' card had: *Move playback to <player>*, *Play <player>* or *Pause <player>*, *Alarms* and *Switch <player> on/off*. The controlled player, and any player that is playing, has its volume slider under its name. Sync stays one *Group players…* row (phase 2); a grouped player says who it plays with.
+- **The data:** the sheet reads every player's status, alarms and volume through the same view model Rooms uses, only while it is open (the 5-second refresh and the 20-player cap stay).
+- **Rooms stays as the expanded view on large windows** (a rail or drawer instead of the tab bar). *All rooms* is offered in *Play on…* there only; on a phone the sheet has everything.
+- **A Rooms card goes from six controls to three:** play/pause, the volume slider and ⋮. Power moves into ⋮ (*Switch Kitchen off*); the drag handle goes (drag the cover onto another card instead; *Sync with…* and the TalkBack actions stay); a tap on the card still controls the room and a long press still moves playback there.
+- **Now playing's ⋮ loses Alarms and Power:** they are the player's row in *Play on…* (one way in).
+- **The one status slot** carries a move in progress for Rooms too (Rooms' own band goes).
+
+### 14. Downloads playback through the main mini player and Now playing
+
+- **Two engines, one face.** The downloads engine (`OfflinePlayerRepository`) stays its own. An adapter (`DownloadsPlayer`) shows what it plays as the main screens read a player: a player called *Downloads*, its status (track, position, shuffle, repeat), its queue in play order, and covers from the phone.
+- **The main mini player** shows downloads while they play ("artist · Downloads"), with play/pause, next, previous and *Play on…*; a tap opens the main **Now playing** (cover, lyrics and info pages, waveform-less seek bar, transport, Up next, Play on · Lyrics · Queue, the visualiser and the phone's volume in ⋮). LMS-only controls are left out for downloads: the rating, the sleep timer, the signal path row, alarms and power. **Stop** (end the downloads queue) is in ⋮.
+- **Downloads appear in the main Queue tab** and the queue sheet: a row plays from that track; the queue can't be edited (no clear, move or remove), as the engine has no such operations.
+- **Offline mode** (the server out of reach, the whole app) uses the same mini player and Now playing; the downloads-only Now playing and mini player go.
+- The old route to the downloads' Now playing opens the main one, so notification taps and shortcuts still land.
+
 ## Phase 3 design (web, 2026-10-14)
 
 Written before building items 13 and 14. It follows the Android design (merged separately) wherever the web can, so the two apps match; the differences are listed.

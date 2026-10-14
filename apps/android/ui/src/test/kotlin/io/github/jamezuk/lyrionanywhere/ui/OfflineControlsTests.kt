@@ -474,7 +474,7 @@ class OfflineControlsScreenTests {
             }
         }
         compose.onNodeWithTag(ConnectionTags.BANNER)
-            .assertContentDescriptionEquals("Can’t reach your server. Playing from this device.")
+            .assertContentDescriptionEquals("Can’t reach your music server. Playing from this device.")
             .assertHasClickAction()
             .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.LiveRegion))
             .performClick()
@@ -518,7 +518,7 @@ class OfflineControlsScreenTests {
                 actions = nowPlayingActions(),
             )
         }
-        compose.onNodeWithText("Next track needs your server").assertExists()
+        compose.onNodeWithText("Next track needs your music server").assertExists()
         compose.onNodeWithTag("play-pause").assertIsNotEnabled()
         compose.onNodeWithTag("next").assertIsNotEnabled()
         compose.onNodeWithTag("previous").assertIsEnabled()

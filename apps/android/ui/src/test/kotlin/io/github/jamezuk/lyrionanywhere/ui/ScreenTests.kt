@@ -131,7 +131,7 @@ class ScreenTests {
                 )
             }
         }
-        for (label in listOf("Pause", "Next track", "Previous track", "Shuffle", "Repeat", "Volume on Player aa:00:00:00:00:01", "Position in track")) {
+        for (label in listOf("Pause", "Next track", "Previous track", "Shuffle", "Repeat", "Position in track")) {
             compose.onNodeWithContentDescription(label).assertIsDisplayed()
         }
         compose.onNodeWithText("Track 1").assertIsDisplayed()
@@ -139,6 +139,9 @@ class ScreenTests {
         assertEquals(1, toggled)
         // Not this phone: no signal path.
         compose.onNodeWithText("Signal path").assertDoesNotExist()
+        // The volume is in ⋮ since Wave 3.5.
+        compose.onNodeWithTag("now-playing-more").performClick()
+        compose.onNodeWithText("Volume on Player aa:00:00:00:00:01").assertIsDisplayed()
     }
 
     private fun panel(path: io.github.jamezuk.lyrionanywhere.core.SignalPathInfo?) {

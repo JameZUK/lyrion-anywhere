@@ -86,6 +86,7 @@ class Wave2Part4AccessibilityAuditTests {
     @Test
     fun carModeSettingWithTheRefusalNote() {
         audit { CarModeSettingView(CarModeSetting(), {}, FakeCarAccess(permitted = false, answer = false)) }
+        compose.onNodeWithTag("car-auto-setting").performClick()
         compose.onNodeWithTag("car-auto-ANY_CAR").performClick()
         compose.onNodeWithTag("car-auto-refused").assertExists()
         compose.assertAccessible()
@@ -94,6 +95,7 @@ class Wave2Part4AccessibilityAuditTests {
     @Test
     fun carModeDevicePicker() {
         audit { CarModeSettingView(CarModeSetting(CarAutoOpen.THIS_DEVICE, "Example Car Kit", "0A:1B:2C:3D:4E:5F"), {}, FakeCarAccess(permitted = true)) }
+        compose.onNodeWithTag("car-auto-setting").performClick()
         compose.onNodeWithTag("car-auto-THIS_DEVICE").performClick()
         compose.onNodeWithTag("car-pick-list").assertExists()
         compose.assertAccessible()

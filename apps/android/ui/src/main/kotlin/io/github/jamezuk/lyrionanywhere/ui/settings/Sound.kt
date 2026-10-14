@@ -398,6 +398,7 @@ fun SoundScreen(state: SoundUiState, actions: SoundActions, modifier: Modifier =
         item {
             RadioGroup(
                 label = stringResource(R.string.sound_levelling),
+                tag = "sound-levelling",
                 options = listOf(
                     Triple(LevellingMode.OFF, R.string.levelling_off, R.string.levelling_off_body),
                     Triple(LevellingMode.REPLAYGAIN_TRACK, R.string.levelling_rg_track, R.string.levelling_rg_track_body),
@@ -495,10 +496,10 @@ fun SoundScreen(state: SoundUiState, actions: SoundActions, modifier: Modifier =
         }
         item { HorizontalDivider() }
 
-        item { SectionHeader(stringResource(R.string.sound_section_crossfeed)) }
         item {
             RadioGroup(
-                label = null, // The section header above names it.
+                label = stringResource(R.string.sound_section_crossfeed),
+                tag = "sound-crossfeed",
                 options = listOf(
                     Triple(CrossfeedMode.OFF, R.string.crossfeed_off, null),
                     Triple(CrossfeedMode.LIGHT, R.string.crossfeed_light, null),
@@ -511,10 +512,10 @@ fun SoundScreen(state: SoundUiState, actions: SoundActions, modifier: Modifier =
         }
         item { HorizontalDivider() }
 
-        item { SectionHeader(stringResource(R.string.sound_section_transitions)) }
         item {
             RadioGroup(
-                label = null, // The section header above names it.
+                label = stringResource(R.string.sound_section_transitions),
+                tag = "sound-transitions",
                 options = listOf(
                     Triple(TransitionsMode.OFF, R.string.transitions_off, R.string.transitions_off_body),
                     Triple(TransitionsMode.CROSSFADE, R.string.transitions_crossfade, R.string.transitions_crossfade_body),
@@ -539,18 +540,11 @@ fun SoundScreen(state: SoundUiState, actions: SoundActions, modifier: Modifier =
         }
         item { HorizontalDivider() }
 
-        item { SectionHeader(stringResource(R.string.sound_section_dither)) }
-        item {
-            Text(
-                stringResource(R.string.sound_dither_body),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp),
-            )
-        }
         item {
             RadioGroup(
-                label = null, // The section header above names it.
+                label = stringResource(R.string.sound_section_dither),
+                tag = "sound-dither",
+                note = stringResource(R.string.sound_dither_body),
                 options = listOf(
                     Triple(DitherMode.TPDF, R.string.dither_tpdf, null),
                     Triple(DitherMode.TPDF_SHAPED, R.string.dither_shaped, null),
@@ -640,28 +634,26 @@ private fun SwitchRow(
     )
 }
 
-/** Radio choices; [label] names the group, or null when the section header above already does. */
+/** A choice of modes: one row named [label], showing the current one, with a picker (Wave 3.5). */
 @Composable
 private fun <T> RadioGroup(
-    label: String?,
+    label: String,
+    tag: String,
     options: List<Triple<T, Int, Int?>>,
     selected: T,
     onSelect: (T) -> Unit,
+    note: String? = null,
 ) {
-    Column(Modifier.selectableGroup().semantics { if (label != null) contentDescription = label }) {
-        options.forEach { (value, title, body) ->
-            ListItem(
-                leadingContent = { RadioButton(selected = value == selected, onClick = null) },
-                headlineContent = { Text(stringResource(title)) },
-                supportingContent = body?.let { { Text(stringResource(it)) } },
-                modifier = Modifier.selectable(
-                    selected = value == selected,
-                    role = Role.RadioButton,
-                    onClick = { onSelect(value) },
-                ),
-            )
-        }
-    }
+    io.github.jamezuk.lyrionanywhere.ui.components.ChoiceRow(
+        title = label,
+        choices = options.map { (value, title, body) ->
+            io.github.jamezuk.lyrionanywhere.ui.components.Choice(value, stringResource(title), body?.let { stringResource(it) })
+        },
+        selected = selected,
+        onSelect = onSelect,
+        tag = tag,
+        note = note,
+    )
 }
 
 /** A slider in dB steps; the value is saved when the finger lifts. */

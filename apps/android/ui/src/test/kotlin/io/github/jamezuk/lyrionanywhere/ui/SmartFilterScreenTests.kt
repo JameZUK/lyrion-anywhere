@@ -116,8 +116,11 @@ class SmartFilterScreenTests {
         compose.onNodeWithText("Late night jazz").assertIsDisplayed()
         compose.onNodeWithText("2 genres · 1960s").assertExists()
         compose.onNodeWithText("An artist (composer) · No compilations").assertExists()
-        compose.onNodeWithContentDescription("Play Late night jazz").performClick()
-        compose.onNodeWithContentDescription("Shuffle Example Composer").performClick()
+        // Play and Shuffle are in each row's ⋮ (Wave 3.5 rule 3).
+        compose.onNodeWithContentDescription("More for Late night jazz").performClick()
+        compose.onNodeWithTag("filter-play-11").performClick()
+        compose.onNodeWithContentDescription("More for Example Composer").performClick()
+        compose.onNodeWithTag("filter-shuffle-12").performClick()
         assertEquals(listOf(11L to false, 12L to true), played)
         compose.onNodeWithText("Late night jazz").performClick()
         assertEquals(listOf(11L), opened)
@@ -255,7 +258,7 @@ class SmartFilterScreenTests {
     fun theDialogClosesWithoutSaving() {
         var cancels = 0
         show { FilterEditorDialog(FilterEditorUi(editing = LATE_JAZZ, name = "Late night jazz"), FilterEditorActions(onCancel = { cancels++ })) }
-        compose.onNodeWithText("Edit smart filter").assertExists()
+        compose.onNodeWithText("Edit smart playlist").assertExists()
         compose.onNodeWithContentDescription("Close without saving").performClick()
         assertEquals(1, cancels)
     }
@@ -333,8 +336,8 @@ class SmartFilterScreenTests {
             )
         }
         // The shelves are named after their filters; a deleted one is still there to remove.
-        compose.onNodeWithContentDescription("Remove: Smart filter: Late night jazz").assertExists()
-        compose.onNodeWithContentDescription("Remove: Smart filter").assertExists()
+        compose.onNodeWithContentDescription("Remove: Smart playlist: Late night jazz").assertExists()
+        compose.onNodeWithContentDescription("Remove: Smart playlist").assertExists()
         compose.onNodeWithText("Add a shelf").performClick()
         compose.onNodeWithTag("home-add-filter-11").assertDoesNotExist()
         compose.onNodeWithTag("home-add-filter-12").performScrollTo().performClick()
@@ -343,19 +346,13 @@ class SmartFilterScreenTests {
     }
 
     @Test
-    fun libraryHasAFiltersChip() {
-        val toggled = mutableListOf<LibraryChip>()
-        show {
-            LibraryScreen(
-                emptyList(), null, {}, onNewMusic = {}, onOpen = {},
-                chip = LibraryChip.FILTERS,
-                onChip = { toggled += it },
-                chipContent = { c -> androidx.compose.material3.Text("Showing $c") },
-            )
-        }
-        compose.onNodeWithText("Showing FILTERS").assertExists()
-        compose.onNodeWithTag("chip-filters").performClick()
-        assertEquals(listOf(LibraryChip.FILTERS), toggled)
+    fun libraryHasSmartPlaylists() {
+        // A section of the Library (Wave 3.5: one model, no chips), named as on the web.
+        val opened = mutableListOf<io.github.jamezuk.lyrionanywhere.ui.library.LibraryDestination>()
+        show { LibraryScreen(emptyList(), null, {}, onOpen = { opened += it }) }
+        compose.onNodeWithTag("chip-filters").assertDoesNotExist()
+        compose.onNodeWithText("Smart playlists").performClick()
+        assertEquals(listOf(io.github.jamezuk.lyrionanywhere.ui.library.LibraryDestination.FILTERS), opened)
     }
 
     @Test

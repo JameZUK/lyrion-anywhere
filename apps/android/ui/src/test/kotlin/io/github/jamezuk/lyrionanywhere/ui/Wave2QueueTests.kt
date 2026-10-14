@@ -276,10 +276,10 @@ class Wave2QueueScreenTest {
     }
 
     @Test
-    fun gaplessTracksAreMarkedWithALabel() {
+    fun gaplessIsNoLongerMarkedInTheQueue() {
+        // Wave 3.5 rule 2: gapless shows in Track info only (Wave35Phase1Tests checks it there).
         queue()
-        compose.onNodeWithTag("gapless-1")
-            .assert(SemanticsMatcher.expectValue(SemanticsProperties.ContentDescription, listOf("Plays straight on from the track before")))
+        compose.onNodeWithTag("gapless-1").assertDoesNotExist()
         compose.onNodeWithTag("gapless-2").assertDoesNotExist()
     }
 
@@ -317,12 +317,14 @@ class Wave2QueueScreenTest {
         compose.setContent {
             LyrionTheme(dynamicColour = false) { QueueHeader(5, "Kitchen", onClear = { all++ }, upcoming = 3, onClearUpcoming = { upcoming++ }) }
         }
+        // The header's actions are in its ⋮ (Wave 3.5).
+        compose.onNodeWithTag("queue-actions").performClick()
         compose.onNodeWithText("Clear upcoming").performClick()
         compose.onNodeWithText("This removes the 3 tracks after the current one from the queue of Kitchen.").assertIsDisplayed()
         compose.onNodeWithText("Cancel").performClick()
         assertEquals(0, upcoming)
+        compose.onNodeWithTag("queue-actions").performClick()
         compose.onNodeWithText("Clear upcoming").performClick()
-        compose.onNodeWithTag("clear-upcoming").assertIsDisplayed()
         compose.onNodeWithText("Clear upcoming tracks?").assertIsDisplayed()
         // The dialog's own button (the header's has the same words).
         compose.onNode(hasText("Clear upcoming") and hasAnyAncestor(isDialog())).performClick()
@@ -337,6 +339,7 @@ class Wave2QueueScreenTest {
         compose.setContent {
             LyrionTheme(dynamicColour = false) { QueueHeader(300, "Kitchen", onClear = { all++ }, upcoming = 250, onClearUpcoming = { upcoming++ }) }
         }
+        compose.onNodeWithTag("queue-actions").performClick()
         compose.onNodeWithText("Clear upcoming").performClick()
         compose.onNodeWithText("Clear all").performClick()
         assertEquals(0, upcoming)

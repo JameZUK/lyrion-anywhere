@@ -108,10 +108,15 @@ fun DocScreen(title: String, back: Boolean = false, actions: @Composable () -> U
 
 /**
  * The app's main frame on a phone: the screen, the mini player (unless [mini] is null) and
- * the four tabs, as `MainScreen.kt` lays them out.
+ * the four tabs, as `MainScreen.kt` lays them out. With neither a tab nor a mini player it is
+ * Now playing, which has the whole screen (no tabs, Wave 3.5), clear of the gesture bar.
  */
 @Composable
 fun PhoneShell(tab: MainTab?, mini: PlayerUiState?, content: @Composable () -> Unit) {
+    if (tab == null && mini == null) {
+        Box(Modifier.fillMaxSize().navigationBarsPadding()) { content() }
+        return
+    }
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         bottomBar = {

@@ -271,11 +271,13 @@ class CarModeSettingTests {
     fun refusedGoesBackToOffWithANote() {
         val access = FakeCarAccess(permitted = false, answer = false)
         show(access)
+        compose.onNodeWithTag("car-auto-setting").performClick()
         compose.onNodeWithTag("car-auto-ANY_CAR").performClick()
         assertEquals(1, access.asked)
         assertEquals(listOf(CarModeSetting()), kept)
         compose.onNodeWithTag("car-auto-refused").assertExists()
         // Off never asks.
+        compose.onNodeWithTag("car-auto-setting").performClick()
         compose.onNodeWithTag("car-auto-OFF").performClick()
         assertEquals(1, access.asked)
     }
@@ -284,10 +286,13 @@ class CarModeSettingTests {
     fun grantedAnyCarIsKeptAndNotAskedAgain() {
         val access = FakeCarAccess(permitted = false, answer = true)
         show(access)
+        compose.onNodeWithTag("car-auto-setting").performClick()
         compose.onNodeWithTag("car-auto-ANY_CAR").performClick()
         assertEquals(CarModeSetting(CarAutoOpen.ANY_CAR), kept.last())
         compose.onNodeWithTag("car-auto-refused").assertDoesNotExist()
+        compose.onNodeWithTag("car-auto-setting").performClick()
         compose.onNodeWithTag("car-auto-OFF").performClick()
+        compose.onNodeWithTag("car-auto-setting").performClick()
         compose.onNodeWithTag("car-auto-ANY_CAR").performClick()
         assertEquals(1, access.asked)
     }
@@ -296,13 +301,14 @@ class CarModeSettingTests {
     fun thisDeviceIsPickedFromThePairedOnes() {
         val access = FakeCarAccess(permitted = true)
         show(access)
+        compose.onNodeWithTag("car-auto-setting").performClick()
         compose.onNodeWithTag("car-auto-THIS_DEVICE").performClick()
         compose.onNodeWithTag("car-pick-list").assertExists()
         compose.onNodeWithText("Car audio").assertExists()
         compose.onNodeWithTag("car-pick-0A:1B:2C:3D:4E:5F").performClick()
         assertEquals(CarModeSetting(CarAutoOpen.THIS_DEVICE, "Example Car Kit", "0A:1B:2C:3D:4E:5F"), kept.last())
         // The chosen device's name shows under the option.
-        compose.onNodeWithText("Example Car Kit").assertExists()
+        compose.onNodeWithText("Example Car Kit", substring = true).assertExists()
         assertEquals(0, access.asked)
     }
 
@@ -310,6 +316,7 @@ class CarModeSettingTests {
     fun noPairedDevicesSaysSoAndKeepsTheSetting() {
         val access = FakeCarAccess(permitted = true, devices = emptyList())
         show(access)
+        compose.onNodeWithTag("car-auto-setting").performClick()
         compose.onNodeWithTag("car-auto-THIS_DEVICE").performClick()
         compose.onNodeWithText("No paired Bluetooth devices", substring = true).assertExists()
         compose.onNodeWithText("Cancel").performClick()
@@ -552,12 +559,15 @@ class OfflineVisualiserAndCarButtonTests {
             }
         }
         compose.onNodeWithTag("visualiser").assertDoesNotExist()
+        // The visualiser's switch is in ⋮ (Wave 3.5: downloads use the main Now playing).
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("visualiser-button").performClick()
         // It draws over the cover, which stays.
         compose.onNodeWithTag("visualiser", useUnmergedTree = true).assertExists()
         compose.onNodeWithTag("artwork").assertExists()
         assertTrue(source.active.contains(true))
         // A long press chooses the style.
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("visualiser-button").performTouchInput { longClick() }
         compose.onNodeWithTag("visual-style-SCOPE").performClick()
         assertEquals(listOf("on true", "style SCOPE"), chosen)
@@ -591,6 +601,7 @@ class OfflineVisualiserAndCarButtonTests {
         // runs for the glow.
         compose.onNodeWithTag("visualiser").assertDoesNotExist()
         compose.onNodeWithTag("glow-halo").assertExists()
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("visualiser-button").assertTextEquals("Glow")
         assertEquals(listOf(true), source.active)
     }

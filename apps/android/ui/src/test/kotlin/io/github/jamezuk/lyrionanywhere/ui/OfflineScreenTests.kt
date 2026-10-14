@@ -10,6 +10,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
@@ -85,14 +86,20 @@ class OfflineScreenTests {
         compose.onNodeWithText("3.0 MB used of 1.00 GB").assertIsDisplayed()
         compose.onNodeWithText("1.0 MB of 4.0 MB").assertIsDisplayed()
         compose.onNodeWithText("The storage limit for downloads is reached.").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Pause Song 4").performClick()
-        compose.onNodeWithContentDescription("Retry Song 5").performClick()
-        compose.onNodeWithContentDescription("Cancel Song 4").performClick()
+        // Each row's controls are in its ⋮ (Wave 3.5 rule 3).
+        compose.onNodeWithContentDescription("More options for Song 4").performClick()
+        compose.onNodeWithText("Pause Song 4").performClick()
+        compose.onNodeWithContentDescription("More options for Song 5").performClick()
+        compose.onNodeWithText("Retry Song 5").performClick()
+        compose.onNodeWithContentDescription("More options for Song 4").performClick()
+        compose.onNodeWithText("Cancel Song 4").performClick()
         compose.onNodeWithText("Pause all").performClick()
-        compose.onNodeWithContentDescription("Play Record").performClick()
+        compose.onNodeWithContentDescription("More options for Record").performClick()
+        compose.onNodeWithText("Play Record").performClick()
         compose.onNodeWithText("Record").performClick()
         // Removing asks first.
-        compose.onNodeWithContentDescription("Remove the download of Record").performClick()
+        compose.onNodeWithContentDescription("More options for Record").performClick()
+        compose.onNodeWithText("Remove the download of Record").performClick()
         compose.onNodeWithText("Remove download?").assertIsDisplayed()
         compose.onNode(hasText("Remove") and hasClickAction()).performClick()
         compose.onNodeWithTag("downloads").performScrollToNode(hasText("Remove all downloads"))
@@ -141,7 +148,7 @@ class OfflineScreenTests {
             }
         }
         compose.onNodeWithTag("offline-banner").assertIsDisplayed()
-        compose.onNodeWithText("Downloaded music").assertIsDisplayed()
+        compose.onNodeWithText("Downloaded").assertIsDisplayed()
         compose.onNodeWithText("Try again").performClick()
         compose.onNodeWithContentDescription("Play Second").performClick()
         assertTrue(retried)
@@ -196,8 +203,9 @@ class OfflineScreenTests {
                 )
             }
         }
-        compose.onNodeWithTag("offline-mini-player").assertIsDisplayed()
-        compose.onNodeWithText("Playing downloads on this phone").assertIsDisplayed()
+        // The main mini player and Now playing, for downloads (Wave 3.5 item 14).
+        compose.onNodeWithTag("mini-player").assertIsDisplayed()
+        compose.onNodeWithText("Band · Downloads").assertIsDisplayed()
         // Constant names; the mode is the toggle's state.
         compose.onNodeWithContentDescription("Repeat")
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Repeating the queue"))
@@ -206,7 +214,9 @@ class OfflineScreenTests {
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
             .performClick()
         compose.onNodeWithContentDescription("Previous track").performClick()
-        compose.onNodeWithContentDescription("Stop playing downloads").performClick()
+        // Stop is in ⋮.
+        compose.onNodeWithTag("now-playing-more").performClick()
+        compose.onNodeWithTag("offline-stop").performClick()
         // The queue opens as a sheet from the Queue action.
         compose.onNodeWithTag("queue-button").performClick()
         compose.onNodeWithText("Song 1").performClick()
@@ -223,11 +233,11 @@ class OfflineScreenTests {
                 error = null,
                 onChange = { settings = it(settings) },
                 onRefreshSmart = {},
-                onDownloads = {},
             )
         }
-        compose.onNodeWithText("No limit").assertIsSelected()
-        compose.onNodeWithText("5.00 GB").performClick()
+        // The limit is a row with a picker (Wave 3.5).
+        compose.onNodeWithTag("storage-cap").assertTextContains("No limit").performClick()
+        compose.onNode(hasText("5.00 GB") and androidx.compose.ui.test.isSelectable()).performClick()
         assertEquals(5 * DownloadSettings.GB, settings.capBytes)
         compose.onNodeWithTag("storage-settings").performScrollToNode(hasText("Download on Wi-Fi only"))
         compose.onNodeWithText("Download on Wi-Fi only").performClick()

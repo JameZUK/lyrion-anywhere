@@ -89,6 +89,7 @@ import io.github.jamezuk.lyrionanywhere.ui.components.LocalWindowLayout
 import io.github.jamezuk.lyrionanywhere.ui.components.WindowLayout
 import io.github.jamezuk.lyrionanywhere.ui.player.TransferState
 import io.github.jamezuk.lyrionanywhere.ui.player.errorWithDetail
+import io.github.jamezuk.lyrionanywhere.ui.player.transferText
 import io.github.jamezuk.lyrionanywhere.core.AlbumSort
 import io.github.jamezuk.lyrionanywhere.core.LibraryFilter
 import io.github.jamezuk.lyrionanywhere.core.Placement
@@ -175,7 +176,6 @@ import io.github.jamezuk.lyrionanywhere.ui.components.connectionMessage
 import io.github.jamezuk.lyrionanywhere.data.offline.ConnectionUi
 import androidx.compose.ui.Alignment
 import io.github.jamezuk.lyrionanywhere.ui.components.LoadingState
-import io.github.jamezuk.lyrionanywhere.data.LibraryChip
 import io.github.jamezuk.lyrionanywhere.core.ArtistRole
 import androidx.compose.material3.TextButton
 import io.github.jamezuk.lyrionanywhere.ui.library.YearsScreen
@@ -211,6 +211,10 @@ import io.github.jamezuk.lyrionanywhere.ui.settings.ReadAheadSetting
 import io.github.jamezuk.lyrionanywhere.ui.settings.ReplayCacheSetting
 import io.github.jamezuk.lyrionanywhere.ui.settings.LicencesScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsScreen
+import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsSection
+import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsSummaries
+import io.github.jamezuk.lyrionanywhere.ui.settings.settingsSectionTitle
+import io.github.jamezuk.lyrionanywhere.ui.player.visualStyleName
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.settings.SoundScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SoundViewModel
@@ -225,8 +229,7 @@ import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsScreen
 import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineAlbumScreen
 import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineAlbumViewModel
-import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineMiniPlayer
-import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineNowPlayingScreen
+import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsPlayer
 import io.github.jamezuk.lyrionanywhere.ui.offline.OfflinePlayerViewModel
 import io.github.jamezuk.lyrionanywhere.ui.offline.StorageSettingsScreen
 import io.github.jamezuk.lyrionanywhere.ui.offline.StorageSettingsViewModel
@@ -248,9 +251,21 @@ import kotlinx.serialization.Serializable
 
 @Serializable data object SearchRoute
 
-@Serializable data object NewMusicRoute
+/**
+ * Albums (Wave 3.5: one album browser): [order] is a [io.github.jamezuk.lyrionanywhere.data.LibraryAlbumOrder]
+ * name to start in (Home's "See all" for recently added), [ALBUMS_RANDOM] for random, or null
+ * for the remembered order.
+ */
+@Serializable data class AlbumsRoute(val order: String? = null)
 
-@Serializable data object AlbumsRoute
+/** The random order of [AlbumsRoute] (not a stored order: random has no page of its own). */
+const val ALBUMS_RANDOM = "RANDOM"
+
+/** Smart playlists (smart filters, Wave 2 §5.6), a page of the Library. */
+@Serializable data object SmartPlaylistsRoute
+
+/** The music downloaded to this phone (the Library's Downloaded). */
+@Serializable data object DownloadedRoute
 
 @Serializable data object ArtistsRoute
 
@@ -263,8 +278,6 @@ import kotlinx.serialization.Serializable
 @Serializable data class YearRoute(val year: Int)
 
 @Serializable data object CompilationsRoute
-
-@Serializable data object RandomRoute
 
 /** A music folder; 0 for the top level. */
 @Serializable data class FolderRoute(val id: Long = 0, val name: String = "")
@@ -316,6 +329,9 @@ import kotlinx.serialization.Serializable
 @Serializable data object CarModeRoute
 
 @Serializable data object SettingsRoute
+
+/** One page of Settings (Wave 3.5): a [io.github.jamezuk.lyrionanywhere.ui.settings.SettingsSection] name. */
+@Serializable data class SettingsSectionRoute(val section: String)
 
 @Serializable data object LicencesRoute
 
@@ -493,6 +509,17 @@ fun MainScreen(
     // "More…" sheet and "Play on…" sheet.
     var more by remember { mutableStateOf<MoreRequest?>(null) }
     var outputs by rememberSaveable { mutableStateOf(false) }
+    // A move that didn't work is a result (Wave 3.5 rule 1): a snackbar, unless Play on… is
+    // open, which shows it with its detail.
+    LaunchedEffect(playerState.transfer, outputs) {
+        val t = playerState.transfer
+        if (!outputs && t !is TransferState.Running && t != TransferState.Idle) {
+            transferText(res, t)?.let { text ->
+                player.dismissTransfer()
+                snackbar.showSnackbar(text, duration = SnackbarDuration.Long)
+            }
+        }
+    }
     val openMore: (MoreRequest) -> Unit = { more = it }
     val openOutputs = {
         player.loadOutputs()
@@ -603,23 +630,133 @@ fun MainScreen(
         )
     }
 
+    // Settings: the index, or one of its pages (Wave 3.5 rule 5); the same rows either way.
+    val settingsPage: @Composable (SettingsSection?) -> Unit = { section ->
+        val vm = viewModel { SettingsViewModel(container.account, container.localPlayer, container.offline) }
+        val ui by vm.state.collectAsStateWithLifecycle()
+        val historyVm = viewModel { HistoryViewModel(container.me) }
+        val historyUi by historyVm.state.collectAsStateWithLifecycle()
+        LaunchedEffect(historyVm) {
+            historyVm.messages.collect { m ->
+                snackbar.showSnackbar(
+                    when (m) {
+                        HistoryMessage.Cleared -> res.getString(R.string.history_cleared)
+                        is HistoryMessage.Failed -> errorText(res, m.error)
+                    },
+                )
+            }
+        }
+        val app by container.settings.settings.collectAsStateWithLifecycle(AppSettings())
+        val startsOn = when (playerState.defaultPlayer) {
+            io.github.jamezuk.lyrionanywhere.data.DefaultPlayer.THIS_PHONE -> stringResource(R.string.default_player_phone)
+            io.github.jamezuk.lyrionanywhere.data.DefaultPlayer.LAST_USED -> stringResource(R.string.default_player_last)
+            io.github.jamezuk.lyrionanywhere.data.DefaultPlayer.SPECIFIC ->
+                playerState.players.firstOrNull { it.id == playerState.defaultPlayerId }?.name ?: stringResource(R.string.default_player_phone)
+        }
+        val visualiserSummary = stringResource(
+            R.string.settings_summary_visualiser,
+            if (playerState.nowPlaying.visualiser) visualStyleName(playerState.nowPlaying.visualStyle) else stringResource(R.string.mode_off),
+        )
+        val summaries = SettingsSummaries(
+            playback = stringResource(R.string.settings_summary_playback, startsOn),
+            nowPlaying = listOfNotNull(
+                stringResource(R.string.settings_summary_lyrics_on).takeIf { playerState.lyricsPeek },
+                visualiserSummary,
+            ).joinToString(" · "),
+            history = historyUi.enabled?.let { on -> stringResource(if (on) R.string.settings_summary_on else R.string.settings_summary_off) },
+        )
+        SettingsScreen(
+            state = ui,
+            appVersion = BuildConfig.VERSION_NAME,
+            libraryVersion = remember { libraryVersion() },
+            section = section,
+            onSection = { nav.navigate(SettingsSectionRoute(it.name)) },
+            summaries = summaries,
+            onSignOut = vm::signOut,
+            onRename = vm::rename,
+            onChangePassword = vm::changePassword,
+            onClosePasswordForm = vm::closePasswordForm,
+            onLicences = { nav.navigate(LicencesRoute) },
+            onSound = { nav.navigate(SoundRoute) },
+            onDownloads = { nav.navigate(DownloadsRoute) },
+            onStorage = { nav.navigate(StorageRoute) },
+            defaultPlayer = { DefaultPlayerSetting(playerState, player::setDefaultPlayer) },
+            history = {
+                HistorySettings(
+                    historyUi,
+                    onEnabled = historyVm::setEnabled,
+                    onView = { nav.navigate(HistoryRoute) },
+                    onClear = historyVm::clear,
+                    onStats = { nav.navigate(StatsRoute) },
+                )
+            },
+            sleepFade = { SleepFadeSetting(playerState.sleepFade, player::setSleepFade) },
+            lyrics = { LyricsPeekSetting(playerState.lyricsPeek, player::setLyricsPeek) },
+            visualiser = {
+                VisualiserSetting(
+                    playerState.nowPlaying.visualiser,
+                    playerState.nowPlaying.visualStyle,
+                    player::setVisualiser,
+                    player::setVisualStyle,
+                )
+            },
+            ratings = {
+                RatingsSetting(playerState.ratingStyle, player::setRatingStyle, player::clearRatings)
+            },
+            streaming = {
+                StreamingQualitySetting(app.streaming) { s -> scope.launch { container.settings.setStreaming(s) } }
+            },
+            device = { DeviceSettings(container, scope) },
+            gaps = {
+                ReadAheadSetting(app.readAhead) { s -> scope.launch { container.settings.setReadAhead(s) } }
+                val local by container.localPlayer.state.collectAsStateWithLifecycle()
+                LaunchedEffect(Unit) { container.localPlayer.refreshReplayCache() }
+                ReplayCacheSetting(
+                    bytes = app.replayCacheBytes,
+                    usage = local.replayCache,
+                    downloadsAllowed = ui.account?.downloadsEnabled,
+                    onSize = { b -> scope.launch { container.settings.setReplayCacheBytes(b) } },
+                    onClear = { scope.launch { container.localPlayer.clearReplayCache() } },
+                )
+            },
+        )
+    }
+
+    val downloadsNowPlaying: @Composable () -> Unit = {
+        DownloadsNowPlaying(
+            offlineVm,
+            offlineUi,
+            onClose = { nav.popBackStack() },
+            onOutputs = openOutputs,
+            onMore = { t -> More.track(t)?.let(openMore) },
+            onCarMode = { nav.navigate(CarModeRoute) { launchSingleTop = true } },
+            twoPane = LocalWindowLayout.current.nowPlayingTwoPane,
+            wide = LocalWindowLayout.current.nowPlayingWide,
+            base = playerState,
+        )
+    }
     val backStack by nav.currentBackStackEntryAsState()
     val destination = backStack?.destination
     // Which navigation the window gets: a bottom bar on phones, a rail or drawer on larger
     // screens. The bottom bar handles the gesture/navigation inset itself; otherwise the
     // content (and the mini player) must keep clear of it.
     val suiteType = NavigationSuiteScaffoldDefaults.calculateFromAdaptiveInfo(currentWindowAdaptiveInfo())
-    val bottomBarNav = suiteType == NavigationSuiteType.NavigationBar
     // Car mode (Wave 2 §5.1): opened by its button, or by itself for a car (Settings).
     val inCar = destination?.hasRoute(CarModeRoute::class) == true
     // "Your year in sound" has the whole screen too.
     val inStory = destination?.hasRoute(YearStoryRoute::class) == true
+    // Now playing is a sheet over the app (as in other players): no tabs under it, so its
+    // Queue isn't beside a Queue tab and the cover keeps the room. Without the bar, the
+    // content keeps clear of the gesture area itself.
+    val onNowPlayingRoute = destination?.hasRoute(NowPlayingRoute::class) == true ||
+        destination?.hasRoute(OfflineNowPlayingRoute::class) == true
+    val bottomBarNav = suiteType == NavigationSuiteType.NavigationBar && !onNowPlayingRoute
     val car = rememberCarMode(container, scope, inCar, onOpen = { nav.navigate(CarModeRoute) { launchSingleTop = true } }, onLeave = { nav.popBackStack() })
     // "Start radio" and "Sleep 30 min" from the launcher (Wave 2 §5.5).
     ShortcutRequests(container, player, snackbar) { e -> discoveryText(e) }
     NavigationSuiteScaffold(
-        // Car mode has the whole screen.
-        layoutType = if (inCar || inStory) NavigationSuiteType.None else suiteType,
+        // Car mode, the year story and Now playing have the whole screen.
+        layoutType = if (wholeScreen(onNowPlayingRoute, inCar, inStory)) NavigationSuiteType.None else suiteType,
         navigationSuiteItems = {
             MainTab.entries.forEach { tab ->
                 val route = tab.route()
@@ -645,8 +782,7 @@ fun MainScreen(
             },
             bottomBar = {
               Column(if (bottomBarNav) Modifier else Modifier.navigationBarsPadding()) {
-                val onNowPlaying = destination?.hasRoute(NowPlayingRoute::class) == true ||
-                    destination?.hasRoute(OfflineNowPlayingRoute::class) == true || inCar || inStory
+                val onNowPlaying = onNowPlayingRoute || inCar || inStory
                 // Back online with downloads queued: "Continue on <player>?" (SPEC §8.4).
                 if (!inCar && !inStory) {
                     val handOff by container.continueOn.state.collectAsStateWithLifecycle()
@@ -672,13 +808,8 @@ fun MainScreen(
                     }
                 }
                 if (!onNowPlaying && offlineUi.state.active) {
-                    // Downloads have this phone: their own mini player.
-                    OfflineMiniPlayer(
-                        offlineUi,
-                        onOpen = { nav.navigate(OfflineNowPlayingRoute) },
-                        onToggle = offlineVm::toggle,
-                        onNext = offlineVm::next,
-                    )
+                    // Downloads have this phone: the same mini player, driving their engine (Wave 3.5).
+                    DownloadsMiniPlayer(offlineVm, offlineUi, onOpen = { nav.navigate(NowPlayingRoute) }, onOutputs = openOutputs)
                 } else if (!onNowPlaying) {
                     MiniPlayer(
                         state = playerState,
@@ -686,9 +817,6 @@ fun MainScreen(
                         onTogglePlay = player::togglePlay,
                         onNext = player::next,
                         onOutputs = openOutputs,
-                        onBackToPhone = player::backToPhone,
-                        onBringToPhone = player::bringToPhone,
-                        onDismissTransfer = player::dismissTransfer,
                         onPrevious = player::previous,
                     )
                 }
@@ -703,7 +831,9 @@ fun MainScreen(
             val connectionLine = connectionMessage(connection, playingHere).takeIf { !inCar && !inStory }
             val toDownloads = { nav.navigate(DownloadsRoute) { launchSingleTop = true } }
                 .takeIf { destination?.hasRoute(DownloadsRoute::class) != true }
-            ConnectionFrame(connectionLine, toDownloads, Modifier.padding(padding)) {
+            // The one status slot (Wave 3.5 rule 1): a move of playback outranks the link.
+            val moving = (playerState.transfer as? TransferState.Running)?.let { transferText(res, it) }
+            ConnectionFrame(connectionLine, toDownloads, Modifier.padding(padding), moving = moving.takeIf { !inCar && !inStory }) {
             BoxWithConstraints(Modifier.fillMaxSize()) {
             val layout = WindowLayout.of(maxWidth.value, maxHeight.value)
             CompositionLocalProvider(LocalWindowLayout provides layout) {
@@ -740,7 +870,9 @@ fun MainScreen(
                             actions = HomeActions(
                                 onAlbum = { openAlbum(it.id) },
                                 onMore = openMore,
-                                onSeeAll = { d -> if (d == null) nav.navigate(NewMusicRoute) else nav.openLibrary(d) },
+                                onSeeAll = { d ->
+                                    if (d == null) nav.navigate(AlbumsRoute(io.github.jamezuk.lyrionanywhere.data.LibraryAlbumOrder.NEWEST.name)) else nav.openLibrary(d)
+                                },
                                 onFavourite = { f ->
                                     if (f.isFolder) nav.navigate(FavouritesRoute(f.id, f.name)) else player.playFavourite(f.id, Placement.PLAY_NOW)
                                 },
@@ -777,146 +909,70 @@ fun MainScreen(
                     }
                 }
                 composable<LibraryRoute> {
-                    val prefsVm = viewModel { LibraryPrefsViewModel(container.settings) }
-                    val prefs by prefsVm.prefs.collectAsStateWithLifecycle()
                     Screen(title = stringResource(R.string.nav_library)) {
-                        val p = prefs
-                        if (p == null) {
-                            LoadingState()
-                        } else {
-                            LibraryScreen(
-                                libraries = libraries,
-                                chosenLibrary = chosenLibrary,
-                                onChooseLibrary = { id -> scope.launch { container.libraries.choose(id) } },
-                                onNewMusic = { nav.navigate(NewMusicRoute) },
-                                onOpen = { d ->
-                                    // The types with a chip open as that chip (Wave 2 §3.2).
-                                    when (d) {
-                                        LibraryDestination.ALBUMS -> prefsVm.toggleChip(LibraryChip.ALBUMS)
-                                        LibraryDestination.ARTISTS -> prefsVm.toggleChip(LibraryChip.ARTISTS)
-                                        LibraryDestination.PLAYLISTS -> prefsVm.toggleChip(LibraryChip.PLAYLISTS)
-                                        LibraryDestination.FAVOURITES -> prefsVm.toggleChip(LibraryChip.FAVOURITES)
-                                        LibraryDestination.DOWNLOADS -> prefsVm.toggleChip(LibraryChip.DOWNLOADED)
-                                        else -> nav.openLibrary(d)
-                                    }
+                        LibraryScreen(
+                            libraries = libraries,
+                            chosenLibrary = chosenLibrary,
+                            onChooseLibrary = { id -> scope.launch { container.libraries.choose(id) } },
+                            onOpen = { d -> nav.openLibrary(d) },
+                        )
+                    }
+                }
+                composable<SmartPlaylistsRoute> {
+                    val vm = viewModel(key = "library-filters") {
+                        FiltersViewModel(container.filters, container.players, player::target)
+                    }
+                    val ui by vm.state.collectAsStateWithLifecycle()
+                    LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(filterMessageText(res, it)) } }
+                    // Back from a filter's page (edited or deleted there): read the list again.
+                    LaunchedEffect(Unit) { vm.load() }
+                    // The filter being edited: 0 for a new one, null when the builder is closed.
+                    var editing by rememberSaveable { mutableStateOf<Long?>(null) }
+                    var session by rememberSaveable { mutableIntStateOf(0) }
+                    Screen(title = stringResource(R.string.smart_playlists), onBack = { nav.popBackStack() }) {
+                        FiltersScreen(
+                            ui,
+                            FiltersActions(
+                                onOpen = { nav.navigate(FilterRoute(it.id, it.name)) },
+                                onNew = {
+                                    session++
+                                    editing = 0L
                                 },
-                                chip = p.chip,
-                                onChip = prefsVm::toggleChip,
-                                chipContent = { chip ->
-                                    when (chip) {
-                                        LibraryChip.ALBUMS -> {
-                                            val vm = viewModel(key = "library-albums") {
-                                                LibraryAlbumsViewModel(container.library, p.albumOrder, libraryId, container.me)
-                                            }
-                                            val ui by vm.state.collectAsStateWithLifecycle()
-                                            val sort by vm.order.collectAsStateWithLifecycle()
-                                            AlbumBrowser(
-                                                ui,
-                                                sort = sort,
-                                                grid = p.albumGrid,
-                                                onSort = { s ->
-                                                    vm.setOrder(s)
-                                                    prefsVm.setOrder(s)
-                                                },
-                                                onGrid = prefsVm::setGrid,
-                                                onEnsure = vm::ensure,
-                                                onRetry = vm::retry,
-                                                onAlbum = { openAlbum(it.id) },
-                                                onMore = openMore,
-                                                onQueue = { a, placement -> player.enqueue(Selection.Album(a.id), placement) },
-                                            )
-                                        }
-                                        LibraryChip.ARTISTS -> {
-                                            val vm = viewModel(key = "library-artists") { LibraryArtistsViewModel(container.library, libraryId) }
-                                            val ui by vm.state.collectAsStateWithLifecycle()
-                                            val views by vm.views.collectAsStateWithLifecycle()
-                                            val view by vm.view.collectAsStateWithLifecycle()
-                                            ArtistBrowser(
-                                                ui,
-                                                views = views,
-                                                view = view,
-                                                onView = vm::setView,
-                                                onEnsure = vm::ensure,
-                                                onRetry = vm::retry,
-                                                onArtist = { nav.navigate(ArtistRoute(it.id, it.name)) },
-                                                onMore = openMore,
-                                            )
-                                        }
-                                        LibraryChip.PLAYLISTS -> {
-                                            val vm = viewModel(key = "library-playlists") { PlaylistsViewModel(container.library) }
-                                            val ui by vm.state.collectAsStateWithLifecycle()
-                                            PlaylistsScreen(
-                                                ui,
-                                                onPlaylist = { nav.navigate(PlaylistRoute(it.id, it.name)) },
-                                                onLoadMore = vm::loadMore,
-                                                onMore = openMore,
-                                            )
-                                        }
-                                        LibraryChip.FAVOURITES -> {
-                                            val vm = viewModel(key = "library-favourites") { FavouritesViewModel(container.library, null) }
-                                            val ui by vm.state.collectAsStateWithLifecycle()
-                                            FavouritesScreen(
-                                                ui,
-                                                onRetry = vm::reload,
-                                                onFolder = { nav.navigate(FavouritesRoute(it.id, it.name)) },
-                                                onPlay = { f, placement -> player.playFavourite(f.id, placement) },
-                                            )
-                                        }
-                                        LibraryChip.FILTERS -> {
-                                            val vm = viewModel(key = "library-filters") {
-                                                FiltersViewModel(container.filters, container.players, player::target)
-                                            }
-                                            val ui by vm.state.collectAsStateWithLifecycle()
-                                            LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(filterMessageText(res, it)) } }
-                                            // Back from a filter's page (edited or deleted there): read the list again.
-                                            LaunchedEffect(Unit) { vm.load() }
-                                            // The filter being edited: 0 for a new one, null when the builder is closed.
-                                            var editing by rememberSaveable { mutableStateOf<Long?>(null) }
-                                            var session by rememberSaveable { mutableIntStateOf(0) }
-                                            FiltersScreen(
-                                                ui,
-                                                FiltersActions(
-                                                    onOpen = { nav.navigate(FilterRoute(it.id, it.name)) },
-                                                    onNew = {
-                                                        session++
-                                                        editing = 0L
-                                                    },
-                                                    onEdit = {
-                                                        session++
-                                                        editing = it.id
-                                                    },
-                                                    onPlay = vm::play,
-                                                    onDelete = vm::delete,
-                                                    onRetry = vm::load,
-                                                ),
-                                            )
-                                            editing?.let { id ->
-                                                val initial = (ui.filters as? Loadable.Ready)?.value?.firstOrNull { it.id == id }
-                                                if (id == 0L || initial != null) {
-                                                    FilterEditorHost(
-                                                        key = "filter-editor-$session",
-                                                        make = { FilterEditorViewModel(container.filters, container.library, initial) },
-                                                        onSaved = { f ->
-                                                            editing = null
-                                                            vm.saved(f, added = id == 0L)
-                                                        },
-                                                        onClose = { editing = null },
-                                                    )
-                                                }
-                                            }
-                                        }
-                                        LibraryChip.DOWNLOADED -> OfflineLibraryScreen(
-                                            offlineState.albums,
-                                            onAlbum = { nav.navigate(OfflineAlbumRoute(it)) },
-                                            onPlayAlbum = { ref ->
-                                                val tracks = OfflineAlbumViewModel.albumOf(offlineState, ref).tracks
-                                                if (tracks.isNotEmpty()) container.offlinePlayer.play(tracks, 0, false)
-                                            },
-                                        )
-                                    }
+                                onEdit = {
+                                    session++
+                                    editing = it.id
                                 },
+                                onPlay = vm::play,
+                                onDelete = vm::delete,
+                                onRetry = vm::load,
+                            ),
+                        )
+                    }
+                    editing?.let { id ->
+                        val initial = (ui.filters as? Loadable.Ready)?.value?.firstOrNull { it.id == id }
+                        if (id == 0L || initial != null) {
+                            FilterEditorHost(
+                                key = "filter-editor-$session",
+                                make = { FilterEditorViewModel(container.filters, container.library, initial) },
+                                onSaved = { f ->
+                                    editing = null
+                                    vm.saved(f, added = id == 0L)
+                                },
+                                onClose = { editing = null },
                             )
                         }
+                    }
+                }
+                composable<DownloadedRoute> {
+                    Screen(title = stringResource(R.string.downloaded), onBack = { nav.popBackStack() }) {
+                        OfflineLibraryScreen(
+                            offlineState.albums,
+                            onAlbum = { nav.navigate(OfflineAlbumRoute(it)) },
+                            onPlayAlbum = { ref ->
+                                val tracks = OfflineAlbumViewModel.albumOf(offlineState, ref).tracks
+                                if (tracks.isNotEmpty()) container.offlinePlayer.play(tracks, 0, false)
+                            },
+                        )
                     }
                 }
                 composable<SearchRoute> {
@@ -986,31 +1042,54 @@ fun MainScreen(
                         }
                     }
                 }
-                composable<NewMusicRoute> {
-                    val vm = viewModel { AlbumsViewModel(container.library, sort = AlbumSort.NEWEST, libraryId = libraryId) }
-                    val ui by vm.state.collectAsStateWithLifecycle()
-                    Screen(title = stringResource(R.string.new_music), onBack = { nav.popBackStack() }) {
-                        AlbumGrid(ui, onAlbum = { openAlbum(it.id) }, onLoadMore = vm::loadMore, onMore = openMore)
-                    }
-                }
-                composable<AlbumsRoute> {
-                    val vm = viewModel { AlbumsViewModel(container.library, libraryId = libraryId) }
-                    val ui by vm.state.collectAsStateWithLifecycle()
-                    val sort by vm.sort.collectAsStateWithLifecycle()
+                composable<AlbumsRoute> { entry ->
+                    // The one album browser (Wave 3.5): the remembered order, or the one asked
+                    // for (Home's "See all": recently added, or random).
+                    val route = entry.toRoute<AlbumsRoute>()
+                    val prefsVm = viewModel { LibraryPrefsViewModel(container.settings) }
+                    val prefs by prefsVm.prefs.collectAsStateWithLifecycle()
+                    val p = prefs
                     var chosen by rememberSaveable { mutableStateOf<Long?>(null) }
-                    Screen(
-                        title = stringResource(R.string.lib_albums),
-                        onBack = { nav.popBackStack() },
-                        actions = { AlbumSortMenu(sort, vm::setSort) },
-                    ) {
-                        if (LocalWindowLayout.current.listDetail) {
-                            ListDetail(
-                                list = { AlbumGrid(ui, onAlbum = { chosen = it.id }, onLoadMore = vm::loadMore, onMore = openMore) },
-                                detail = chosen?.let { id -> { albumPage(id) } },
-                                placeholder = { EmptyState(stringResource(R.string.choose_album)) },
-                            )
+                    Screen(title = stringResource(R.string.lib_albums), onBack = { nav.popBackStack() }) {
+                        if (p == null) {
+                            LoadingState()
                         } else {
-                            AlbumGrid(ui, onAlbum = { openAlbum(it.id) }, onLoadMore = vm::loadMore, onMore = openMore)
+                            val random = route.order == ALBUMS_RANDOM
+                            val order = io.github.jamezuk.lyrionanywhere.data.LibraryAlbumOrder.entries.firstOrNull { it.name == route.order } ?: p.albumOrder
+                            val vm = viewModel(key = "albums-${route.order}") {
+                                LibraryAlbumsViewModel(container.library, order, libraryId, container.me, random = random)
+                            }
+                            val ui by vm.state.collectAsStateWithLifecycle()
+                            val sort by vm.order.collectAsStateWithLifecycle()
+                            val isRandom by vm.random.collectAsStateWithLifecycle()
+                            val browser = @Composable { onAlbum: (io.github.jamezuk.lyrionanywhere.core.Album) -> Unit ->
+                                AlbumBrowser(
+                                    ui,
+                                    sort = sort,
+                                    grid = p.albumGrid,
+                                    onSort = { s ->
+                                        vm.setOrder(s)
+                                        prefsVm.setOrder(s)
+                                    },
+                                    onGrid = prefsVm::setGrid,
+                                    onEnsure = vm::ensure,
+                                    onRetry = vm::retry,
+                                    onAlbum = onAlbum,
+                                    onMore = openMore,
+                                    onQueue = { a, placement -> player.enqueue(Selection.Album(a.id), placement) },
+                                    random = isRandom,
+                                    onRandom = vm::shuffle,
+                                )
+                            }
+                            if (LocalWindowLayout.current.listDetail) {
+                                ListDetail(
+                                    list = { browser { chosen = it.id } },
+                                    detail = chosen?.let { id -> { albumPage(id) } },
+                                    placeholder = { EmptyState(stringResource(R.string.choose_album)) },
+                                )
+                            } else {
+                                browser { openAlbum(it.id) }
+                            }
                         }
                     }
                 }
@@ -1034,37 +1113,24 @@ fun MainScreen(
                         )
                     }
                 }
-                composable<RandomRoute> {
-                    val vm = viewModel {
-                        AlbumsViewModel(container.library, sort = AlbumSort.RANDOM, libraryId = libraryId, batch = RANDOM_BATCH)
-                    }
-                    val ui by vm.state.collectAsStateWithLifecycle()
-                    Screen(
-                        title = stringResource(R.string.lib_random),
-                        onBack = { nav.popBackStack() },
-                        actions = {
-                            IconButton(onClick = vm::reload) {
-                                Icon(Icons.Outlined.Shuffle, contentDescription = stringResource(R.string.shuffle_again))
-                            }
-                        },
-                    ) {
-                        AlbumGrid(ui, onAlbum = { openAlbum(it.id) }, onLoadMore = vm::loadMore, onMore = openMore)
-                    }
-                }
                 composable<ArtistsRoute> {
-                    val vm = viewModel { ArtistsViewModel(container.library, libraryId = libraryId) }
+                    // The one artist browser (Wave 3.5): roles, A–Z, read where looked at.
+                    val vm = viewModel(key = "library-artists") { LibraryArtistsViewModel(container.library, libraryId) }
                     val ui by vm.state.collectAsStateWithLifecycle()
                     val views by vm.views.collectAsStateWithLifecycle()
                     val view by vm.view.collectAsStateWithLifecycle()
                     var chosen by rememberSaveable { mutableStateOf<Pair<Long, String>?>(null) }
                     Screen(title = stringResource(R.string.lib_artists), onBack = { nav.popBackStack() }) {
                         val list = @Composable { onArtist: (io.github.jamezuk.lyrionanywhere.core.Artist) -> Unit ->
-                            ArtistList(
+                            ArtistBrowser(
                                 ui,
+                                views = views,
+                                view = view,
+                                onView = vm::setView,
+                                onEnsure = vm::ensure,
+                                onRetry = vm::retry,
                                 onArtist = onArtist,
-                                onLoadMore = vm::loadMore,
                                 onMore = openMore,
-                                header = { ArtistViewChips(views, view, vm::setView) },
                             )
                         }
                         if (LocalWindowLayout.current.listDetail) {
@@ -1363,7 +1429,7 @@ fun MainScreen(
                                 onArtist = { id, name -> nav.navigate(ArtistRoute(id, name)) },
                                 onAlbum = openAlbum,
                                 onStory = { nav.navigate(YearStoryRoute(it)) },
-                                onHistorySettings = { nav.navigate(SettingsRoute) { launchSingleTop = true } },
+                                onHistorySettings = { nav.navigate(SettingsSectionRoute(SettingsSection.HISTORY.name)) { launchSingleTop = true } },
                             ),
                         )
                     }
@@ -1379,7 +1445,7 @@ fun MainScreen(
                         onClose = { nav.popBackStack() },
                         onRetry = vm::retry,
                         sharer = sharer,
-                        onHistorySettings = { nav.navigate(SettingsRoute) { launchSingleTop = true } },
+                        onHistorySettings = { nav.navigate(SettingsSectionRoute(SettingsSection.HISTORY.name)) { launchSingleTop = true } },
                     )
                 }
                 composable<AlbumRoute> { entry ->
@@ -1397,6 +1463,11 @@ fun MainScreen(
                 composable<NowPlayingRoute> {
                     LaunchedEffect(playerState.selectedId, playerState.status?.queueIndex, playerState.status?.queueLength) {
                         player.loadQueue()
+                    }
+                    // Downloads playing on this phone: the same Now playing, driving their engine.
+                    if (offlineUi.state.active) {
+                        downloadsNowPlaying()
+                        return@composable
                     }
                     // No top app bar: a small close chevron over the art instead (back and the
                     // swipe down close too).
@@ -1450,6 +1521,20 @@ fun MainScreen(
                 composable<QueueRoute> {
                     LaunchedEffect(playerState.selectedId, playerState.status?.queueIndex, playerState.status?.queueLength) {
                         player.loadQueue()
+                    }
+                    // Downloads playing on this phone: their queue, in the same Queue tab.
+                    val downloadsQueue = if (offlineUi.state.active) DownloadsPlayer.state(offlineUi, stringResource(R.string.playing_downloads), playerState) else null
+                    if (downloadsQueue != null) {
+                        Screen(title = stringResource(R.string.nav_queue)) {
+                            QueueScreen(
+                                downloadsQueue,
+                                QueueScreenActions(
+                                    queue = DownloadsPlayer.queueActions(offlineVm::jumpTo, downloadsQueue.queue),
+                                    onChoosePlayer = openOutputs,
+                                ),
+                            )
+                        }
+                        return@composable
                     }
                     Screen(title = stringResource(R.string.nav_queue)) {
                         QueueScreen(
@@ -1537,7 +1622,6 @@ fun MainScreen(
                             error,
                             onChange = vm::update,
                             onRefreshSmart = vm::refreshSmart,
-                            onDownloads = { nav.navigate(DownloadsRoute) },
                         )
                     }
                 }
@@ -1560,84 +1644,18 @@ fun MainScreen(
                     }
                 }
                 composable<OfflineNowPlayingRoute> {
-                    OfflineNowPlayingScreen(
-                        offlineUi,
-                        offlineClock,
-                        offlineNowPlayingActions(offlineVm),
-                        visual = offlineVm,
-                        onClose = { nav.popBackStack() },
-                    )
+                    downloadsNowPlaying()
                 }
                 composable<SettingsRoute> {
-                    val vm = viewModel { SettingsViewModel(container.account, container.localPlayer, container.offline) }
-                    val ui by vm.state.collectAsStateWithLifecycle()
-                    val historyVm = viewModel { HistoryViewModel(container.me) }
-                    val historyUi by historyVm.state.collectAsStateWithLifecycle()
-                    LaunchedEffect(historyVm) {
-                        historyVm.messages.collect { m ->
-                            snackbar.showSnackbar(
-                                when (m) {
-                                    HistoryMessage.Cleared -> res.getString(R.string.history_cleared)
-                                    is HistoryMessage.Failed -> errorText(res, m.error)
-                                },
-                            )
-                        }
-                    }
                     Screen(title = stringResource(R.string.title_settings), onBack = { nav.popBackStack() }) {
-                        SettingsScreen(
-                            state = ui,
-                            appVersion = BuildConfig.VERSION_NAME,
-                            libraryVersion = remember { libraryVersion() },
-                            onSignOut = vm::signOut,
-                            onRename = vm::rename,
-                            onChangePassword = vm::changePassword,
-                            onClosePasswordForm = vm::closePasswordForm,
-                            onLicences = { nav.navigate(LicencesRoute) },
-                            onSound = { nav.navigate(SoundRoute) },
-                            onDownloads = { nav.navigate(DownloadsRoute) },
-                            onStorage = { nav.navigate(StorageRoute) },
-                            defaultPlayer = { DefaultPlayerSetting(playerState, player::setDefaultPlayer) },
-                            history = {
-                                HistorySettings(
-                                    historyUi,
-                                    onEnabled = historyVm::setEnabled,
-                                    onView = { nav.navigate(HistoryRoute) },
-                                    onClear = historyVm::clear,
-                                    onStats = { nav.navigate(StatsRoute) },
-                                )
-                            },
-                            sleepFade = { SleepFadeSetting(playerState.sleepFade, player::setSleepFade) },
-                            lyrics = { LyricsPeekSetting(playerState.lyricsPeek, player::setLyricsPeek) },
-                            visualiser = {
-                                VisualiserSetting(
-                                    playerState.nowPlaying.visualiser,
-                                    playerState.nowPlaying.visualStyle,
-                                    player::setVisualiser,
-                                    player::setVisualStyle,
-                                )
-                            },
-                            ratings = {
-                                RatingsSetting(playerState.ratingStyle, player::setRatingStyle, player::clearRatings)
-                            },
-                            streaming = {
-                                val app by container.settings.settings.collectAsStateWithLifecycle(AppSettings())
-                                StreamingQualitySetting(app.streaming) { s -> scope.launch { container.settings.setStreaming(s) } }
-                            },
-                            device = { DeviceSettings(container, scope) },
-                            gaps = {
-                                val app by container.settings.settings.collectAsStateWithLifecycle(AppSettings())
-                                ReadAheadSetting(app.readAhead) { s -> scope.launch { container.settings.setReadAhead(s) } }
-                                val local by container.localPlayer.state.collectAsStateWithLifecycle()
-                                LaunchedEffect(Unit) { container.localPlayer.refreshReplayCache() }
-                                ReplayCacheSetting(
-                                    bytes = app.replayCacheBytes,
-                                    usage = local.replayCache,
-                                    downloadsAllowed = ui.account?.downloadsEnabled,
-                                    onSize = { b -> scope.launch { container.settings.setReplayCacheBytes(b) } },
-                                    onClear = { scope.launch { container.localPlayer.clearReplayCache() } },
-                                )
-                            },
-                        )
+                        settingsPage(null)
+                    }
+                }
+                composable<SettingsSectionRoute> { entry ->
+                    val section = SettingsSection.entries.firstOrNull { it.name == entry.toRoute<SettingsSectionRoute>().section }
+                        ?: SettingsSection.ACCOUNT
+                    Screen(title = settingsSectionTitle(section), onBack = { nav.popBackStack() }) {
+                        settingsPage(section)
                     }
                 }
                 composable<CarModeRoute> {
@@ -1748,10 +1766,34 @@ fun MainScreen(
 
     // "Play on…" (D20): this phone, other players and sync groups.
     if (outputs) {
+        // Rooms folded into Play on… (Wave 3.5 item 13): every player's play/pause, volume,
+        // alarms and power, read only while the sheet is open.
+        val roomsVm = viewModel(key = "play-on-rooms") { RoomsViewModel(container.players, container.events, container.alarms) }
+        androidx.compose.runtime.DisposableEffect(roomsVm) {
+            roomsVm.start()
+            onDispose { roomsVm.stop() }
+        }
+        val rooms by roomsVm.state.collectAsStateWithLifecycle()
+        // The expanded view of every room stays for large windows only.
+        val large = NavigationSuiteScaffoldDefaults.calculateFromAdaptiveInfo(currentWindowAdaptiveInfo()) != NavigationSuiteType.NavigationBar
         ModalBottomSheet(onDismissRequest = { outputs = false }) {
             Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
                 PlayOnList(
                     playerState,
+                    rooms = rooms.rooms,
+                    roomActions = RoomsActions(
+                        onControl = { id -> player.select(id) },
+                        onTogglePlay = roomsVm::togglePlay,
+                        onVolume = roomsVm::setVolume,
+                        onPower = roomsVm::setPower,
+                        onSync = roomsVm::sync,
+                        onUnsync = roomsVm::unsync,
+                        onAlarms = { id, name ->
+                            outputs = false
+                            nav.navigate(AlarmsRoute(id, name))
+                        },
+                    ),
+                    actions =
                     PlayOnActions(
                         onControl = { id ->
                             player.select(id)
@@ -1768,7 +1810,7 @@ fun MainScreen(
                         onAllRooms = {
                             outputs = false
                             nav.navigate(RoomsRoute)
-                        },
+                        }.takeIf { large },
                     ),
                 )
             }
@@ -1783,8 +1825,11 @@ fun MainScreen(
     }
 }
 
-/** Random albums come as one batch: paging a random order would only repeat albums. */
-private const val RANDOM_BATCH = 60
+/**
+ * Whether a screen has the whole window, with no tabs or rail: Now playing (a sheet over the
+ * app, as in other players: Wave 3.5), car mode and the year story.
+ */
+internal fun wholeScreen(nowPlaying: Boolean, car: Boolean, story: Boolean): Boolean = nowPlaying || car || story
 
 @Composable
 private fun MenuRouteScreen(
@@ -1803,17 +1848,18 @@ private fun MenuRouteScreen(
 
 private fun NavHostController.openLibrary(d: LibraryDestination) = navigate(
     when (d) {
-        LibraryDestination.ALBUMS -> AlbumsRoute
+        LibraryDestination.ALBUMS -> AlbumsRoute()
         LibraryDestination.ARTISTS -> ArtistsRoute
         LibraryDestination.GENRES -> GenresRoute
         LibraryDestination.YEARS -> YearsRoute
         LibraryDestination.COMPILATIONS -> CompilationsRoute
-        LibraryDestination.RANDOM -> RandomRoute
+        LibraryDestination.RANDOM -> AlbumsRoute(ALBUMS_RANDOM)
         LibraryDestination.FOLDER -> FolderRoute()
         LibraryDestination.PLAYLISTS -> PlaylistsRoute
         LibraryDestination.FAVOURITES -> FavouritesRoute()
         LibraryDestination.APPS -> AppsRoute
-        LibraryDestination.DOWNLOADS -> DownloadsRoute
+        LibraryDestination.DOWNLOADS -> DownloadedRoute
+        LibraryDestination.FILTERS -> SmartPlaylistsRoute
     },
 )
 

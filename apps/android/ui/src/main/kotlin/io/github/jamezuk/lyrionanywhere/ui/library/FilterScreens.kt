@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.RemoveCircleOutline
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FilterAlt
@@ -216,19 +217,34 @@ private fun FilterRow(f: SmartFilter, playing: Boolean, actions: FiltersActions,
         leadingContent = { Icon(Icons.Outlined.FilterAlt, contentDescription = null) },
         headlineContent = { Text(f.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
         supportingContent = { Text(filterSummary(f), maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        // One trailing control (Wave 3.5 rule 3): ⋮ with Play, Shuffle, Edit and Delete.
         trailingContent = {
             Row {
-                IconButton(onClick = { actions.onPlay(f, false) }, enabled = !playing, modifier = Modifier.testTag("filter-play-${f.id}")) {
-                    Icon(Icons.Outlined.PlayArrow, stringResource(R.string.filter_play, f.name))
-                }
-                IconButton(onClick = { actions.onPlay(f, true) }, enabled = !playing, modifier = Modifier.testTag("filter-shuffle-${f.id}")) {
-                    Icon(Icons.Outlined.Shuffle, stringResource(R.string.filter_shuffle, f.name))
-                }
                 Box {
                     IconButton(onClick = { menu = true }, modifier = Modifier.testTag("filter-more-${f.id}")) {
                         Icon(Icons.Outlined.MoreVert, stringResource(R.string.filter_more, f.name))
                     }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.action_play)) },
+                            leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null) },
+                            enabled = !playing,
+                            onClick = {
+                                menu = false
+                                actions.onPlay(f, false)
+                            },
+                            modifier = Modifier.testTag("filter-play-${f.id}"),
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.shuffle)) },
+                            leadingIcon = { Icon(Icons.Outlined.Shuffle, contentDescription = null) },
+                            enabled = !playing,
+                            onClick = {
+                                menu = false
+                                actions.onPlay(f, true)
+                            },
+                            modifier = Modifier.testTag("filter-shuffle-${f.id}"),
+                        )
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.filter_action_edit)) },
                             leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
@@ -505,7 +521,7 @@ private fun RuleCard(k: RuleKind, ui: FilterEditorUi, actions: FilterEditorActio
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(label, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f).semantics { heading() })
                 IconButton(onClick = { actions.onRemoveRule(k) }, modifier = Modifier.testTag("filter-remove-${k.name.lowercase()}")) {
-                    Icon(Icons.Outlined.Close, stringResource(R.string.filter_rule_remove, label.lowercase()))
+                    Icon(Icons.Outlined.RemoveCircleOutline, stringResource(R.string.filter_rule_remove, label.lowercase()))
                 }
             }
             Column(Modifier.padding(end = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

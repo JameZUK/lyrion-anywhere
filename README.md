@@ -58,7 +58,7 @@ LMS itself never touches the internet. One small, hardened gateway sits behind y
 ### On Android (native app)
 
 <p align="center">
-  <img src="docs/images/android/now-playing.png" alt="The Android app's Now playing: the album cover, title with a star rating, artist and album with a quality badge, a waveform seek bar, transport controls and four actions along the bottom" width="250">
+  <img src="docs/images/android/now-playing.png" alt="The Android app's Now playing: the album cover, title with one rating star, artist and album with a quality badge, a waveform seek bar, transport controls, an Up next line and Play on, Lyrics and Queue along the bottom" width="250">
   &nbsp;
   <img src="docs/images/android/signal-path.png" alt="The Android signal path sheet: source format, each processing stage, the output route to a USB DAC and a bit-perfect verdict" width="250">
   &nbsp;

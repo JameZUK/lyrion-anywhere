@@ -85,7 +85,8 @@ fun QueueScreen(state: PlayerUiState, actions: QueueScreenActions, modifier: Mod
                     state.upcoming,
                     actions.onClearUpcoming,
                     onSaveAsPlaylist = actions.onSaveQueue.takeIf { state.canSaveQueue },
-                    enabled = state.gate.other,
+                    enabled = state.gate.other && !state.downloads,
+                    downloads = state.downloads,
                 )
             }
         }
@@ -98,6 +99,7 @@ fun QueueScreen(state: PlayerUiState, actions: QueueScreenActions, modifier: Mod
             sections = state.sections,
             marks = state::markOf,
             gate = state.gate,
+            editable = !state.downloads,
         )
     }
 }

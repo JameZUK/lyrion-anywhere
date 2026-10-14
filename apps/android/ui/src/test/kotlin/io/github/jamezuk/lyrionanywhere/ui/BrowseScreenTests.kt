@@ -7,6 +7,7 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
@@ -42,7 +43,7 @@ import io.github.jamezuk.lyrionanywhere.ui.player.MiniPlayer
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnActions
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnList
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayerUiState
-import io.github.jamezuk.lyrionanywhere.ui.player.PlayingOnStrip
+import androidx.compose.ui.test.onNodeWithTag
 import io.github.jamezuk.lyrionanywhere.ui.theme.LyrionTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -73,34 +74,46 @@ class BrowseScreenTests {
         syncGroups = listOf(SyncGroup(listOf(KITCHEN, PHONE))),
     )
 
+    /**
+     * The "Playing on" strip is gone (Wave 3.5): the mini player says which player, and going
+     * back to this phone is the This phone row of *Play on…*.
+     */
     @Test
-    fun theStripSaysWhichPlayerAndGoesBackToThePhone() {
+    fun theMiniPlayerSaysWhichPlayerAndPlayOnGoesBackToThePhone() {
         var back = 0
+        var outputs = 0
         compose.setContent {
-            LyrionTheme(dynamicColour = false) { PlayingOnStrip(state(KITCHEN), onBackToPhone = { back++ }) }
+            LyrionTheme(dynamicColour = false) {
+                androidx.compose.foundation.layout.Column {
+                    MiniPlayer(state(KITCHEN), onOpen = {}, onTogglePlay = {}, onNext = {}, onOutputs = { outputs++ })
+                    PlayOnList(state(KITCHEN), PlayOnActions(onControl = {}, onBackToPhone = { back++ }))
+                }
+            }
         }
-        compose.onNodeWithText("Playing on Player $KITCHEN").assertIsDisplayed()
-        compose.onNodeWithText("Back to this phone").performClick()
+        compose.onNodeWithText("on Player $KITCHEN", substring = true).assertIsDisplayed()
+        compose.onNode(hasText("This phone") and hasClickAction()).performClick()
         assertEquals(1, back)
+        assertEquals(0, outputs)
     }
 
     @Test
-    fun noStripWhileThisPhoneIsThePlayer() {
+    fun noPlayerNameWhileThisPhoneIsThePlayer() {
         compose.setContent {
-            LyrionTheme(dynamicColour = false) { PlayingOnStrip(state(PHONE), onBackToPhone = {}) }
+            LyrionTheme(dynamicColour = false) { MiniPlayer(state(PHONE), onOpen = {}, onTogglePlay = {}, onNext = {}) }
         }
+        compose.onNodeWithTag("mini-player-on", useUnmergedTree = true).assertDoesNotExist()
         compose.onNodeWithText("Back to this phone").assertDoesNotExist()
     }
 
     @Test
-    fun theMiniPlayerHasTheOutputButtonAndTheStrip() {
+    fun theMiniPlayerHasTheOutputButtonAndThePlayerName() {
         var outputs = 0
         compose.setContent {
             LyrionTheme(dynamicColour = false) {
                 MiniPlayer(state(KITCHEN), onOpen = {}, onTogglePlay = {}, onNext = {}, onOutputs = { outputs++ })
             }
         }
-        compose.onNodeWithText("Playing on Player $KITCHEN").assertIsDisplayed()
+        compose.onNodeWithText("on Player $KITCHEN", substring = true).assertIsDisplayed()
         compose.onNodeWithContentDescription("Playing on Player $KITCHEN. Choose where to play").performClick()
         assertEquals(1, outputs)
     }
@@ -119,9 +132,11 @@ class BrowseScreenTests {
         compose.onNodeWithText("Ready as “Test phone”").assertIsDisplayed()
         // The other player, what it plays, and that it is the one controlled.
         compose.onNode(hasText("Player $KITCHEN") and hasClickAction()).assertIsSelected()
-        compose.onNodeWithText("Track 9 · Artist").assertIsDisplayed()
-        compose.onNodeWithText("Synchronised groups").assertIsDisplayed()
-        compose.onNodeWithText("Player $KITCHEN + Player $PHONE").performClick()
+        // A grouped player says who it plays in step with (Wave 3.5: no separate list of groups).
+        compose.onNodeWithText("Track 9 · Artist", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("with Player $PHONE", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Synchronised groups").assertDoesNotExist()
+        compose.onNode(hasText("Player $KITCHEN") and hasClickAction()).performClick()
         compose.onNodeWithText("This phone").performClick()
         assertEquals(listOf(KITCHEN), controlled)
         assertEquals(1, back)
@@ -135,8 +150,11 @@ class BrowseScreenTests {
                 DefaultPlayerSetting(state(PHONE), onChoose = { d, id -> chosen += d to id })
             }
         }
-        compose.onNode(hasText("This phone") and hasClickAction()).assertIsSelected()
+        // A row with a picker (Wave 3.5).
+        compose.onNodeWithTag("default-player-setting").assertTextContains("This phone").performClick()
+        compose.onNode(hasText("This phone") and androidx.compose.ui.test.isSelectable()).assertIsSelected()
         compose.onNodeWithText("Last used").performClick()
+        compose.onNodeWithTag("default-player-setting").performClick()
         compose.onNodeWithText("Player $KITCHEN").performClick()
         assertEquals(listOf(DefaultPlayer.LAST_USED to null, DefaultPlayer.SPECIFIC to KITCHEN), chosen)
     }
@@ -147,11 +165,13 @@ class BrowseScreenTests {
         var libraries by mutableStateOf(emptyList<VirtualLibrary>())
         compose.setContent {
             LyrionTheme(dynamicColour = false) {
-                LibraryScreen(libraries, null, {}, onNewMusic = {}, onOpen = { opened += it })
+                LibraryScreen(libraries, null, {}, onOpen = { opened += it })
             }
         }
         compose.onNodeWithText("Whole library").assertDoesNotExist()
-        compose.onNodeWithText("New Music").assertIsDisplayed()
+        // One model (Wave 3.5): the sections, then Browse; New music is a sort of Albums.
+        compose.onNodeWithText("New Music").assertDoesNotExist()
+        compose.onNodeWithText("Albums").assertIsDisplayed()
         compose.onNodeWithText("Apps & Radio").performScrollTo().performClick()
         assertEquals(listOf(LibraryDestination.APPS), opened)
         libraries = listOf(VirtualLibrary("ab12", "Classical"))
@@ -189,10 +209,11 @@ class BrowseScreenTests {
         compose.onNodeWithText("Disc 2").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Play").performClick()
         compose.onNodeWithText("Shuffle").performClick()
-        compose.onNodeWithContentDescription("Add to queue").performClick()
+        // Add to queue is in the album's sheet, behind ⋮ (Wave 3.5; theMoreSheetOffersPlayActionsThenLmsItems).
+        compose.onNodeWithContentDescription("Add to queue").assertDoesNotExist()
         compose.onNodeWithContentDescription("More options").performClick()
         compose.onNodeWithContentDescription("More options for Track 2").performScrollTo().performClick()
-        assertEquals(listOf(Placement.PLAY_NOW, Placement.ADD_TO_QUEUE), played)
+        assertEquals(listOf(Placement.PLAY_NOW), played)
         assertEquals(1, shuffled)
         assertEquals(listOf(7L, 2L), more.map { it.id })
     }
@@ -237,7 +258,7 @@ class BrowseScreenTests {
             LyrionTheme(dynamicColour = false) { AppsScreen(ui, onOpen = {}, onRetry = {}, onToggleShowAll = { toggled++ }) }
         }
         compose.onNodeWithText("Some App").assertIsDisplayed()
-        compose.onNodeWithText("Needs setting up in LMS").assertIsDisplayed()
+        compose.onNodeWithText("Needs setting up in your music server").assertIsDisplayed()
         compose.onNodeWithText("Some Radio").assertDoesNotExist()
         compose.onNodeWithText("1 app is hidden: it shows nothing here, or the music server couldn't open it.").assertIsDisplayed()
         compose.onNodeWithText("Show all").performClick()

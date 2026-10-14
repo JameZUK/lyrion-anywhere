@@ -35,7 +35,6 @@ import io.github.jamezuk.lyrionanywhere.ui.components.ConnectionFrame
 import io.github.jamezuk.lyrionanywhere.ui.components.ConnectionMessage
 import io.github.jamezuk.lyrionanywhere.ui.components.ConnectionTags
 import io.github.jamezuk.lyrionanywhere.ui.docs.DocArt
-import io.github.jamezuk.lyrionanywhere.ui.library.LibraryChips
 import io.github.jamezuk.lyrionanywhere.ui.library.PlayButtons
 import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadMark
 import io.github.jamezuk.lyrionanywhere.ui.player.QueueHeader
@@ -97,10 +96,13 @@ class LayoutFixesTests {
 
     // B1: the queue heading.
 
-    /** The heading is one line, and the buttons left in the row sit on one row beside it. */
+    /**
+     * The header's line ("5 tracks on Kitchen" since Wave 3.5: the page's title says Queue) is
+     * one line, and what is left in the row sits on one row beside it.
+     */
     private fun assertOneLineHeader() {
-        assertEquals(1, compose.onNodeWithText("Queue", useUnmergedTree = true).lines())
-        compose.onNodeWithText("Queue").assertIsDisplayed()
+        assertEquals(1, compose.onNodeWithTag("queue-title", useUnmergedTree = true).lines())
+        compose.onNodeWithText("5 tracks on Kitchen").assertIsDisplayed()
         val rows = listOf("save-queue", "clear-upcoming", "clear-queue", "queue-actions")
             .flatMap { compose.onAllNodes(androidx.compose.ui.test.hasTestTag(it)).fetchSemanticsNodes() }
             .map { it.positionInRoot.y + it.size.height / 2f }
@@ -147,10 +149,12 @@ class LayoutFixesTests {
 
     @Test
     @Config(sdk = [35], qualifiers = "w1280dp-h800dp-xhdpi")
-    fun aWideQueueHeaderNeedsNoMenu() {
+    fun aWideQueueHeaderKeepsItsActionsInItsMenu() {
+        // Wave 3.5: the header's actions are always in its ⋮, whatever the width.
         queueHeader(800)
+        listOf("save-queue", "clear-upcoming", "clear-queue").forEach { compose.onNodeWithTag(it).assertDoesNotExist() }
+        compose.onNodeWithTag("queue-actions").performClick()
         listOf("save-queue", "clear-upcoming", "clear-queue").forEach { compose.onNodeWithTag(it).assertIsDisplayed() }
-        compose.onNodeWithTag("queue-actions").assertDoesNotExist()
     }
 
     // B2: the connection line over Now playing's ambient background.
@@ -242,30 +246,47 @@ class LayoutFixesTests {
     }
 
     @Test
-    fun aMovedHeaderActionIsInTheMenuWithItsLabel() {
-        var added = 0
+    fun aNarrowHeaderLeavesDownloadToTheItemsSheet() {
+        // Wave 3.5: Play · Shuffle · Download · ⋮, and ⋮ opens the item's sheet (which has Play
+        // next, Add to queue and Download): too narrow for Download, it is left to the sheet
+        // rather than put in a menu that opens another.
         var downloads = 0
         var more = 0
-        playButtons(300, more = { more++ }, download = { downloads++ }, add = { added++ })
+        playButtons(240, more = { more++ }, download = { downloads++ })
         compose.onNodeWithContentDescription("Add to queue").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Download the rest").assertDoesNotExist()
+        compose.onNodeWithContentDescription("More options").performClick()
+        assertEquals(listOf(0, 1), listOf(downloads, more))
+    }
+
+    @Test
+    fun withoutAnItemSheetTheMenuOffersPlayNextAndAddToQueue() {
+        val placed = mutableListOf<io.github.jamezuk.lyrionanywhere.core.Placement>()
+        compose.setContent {
+            LyrionTheme(dynamicColour = false) {
+                PlayButtons(onPlay = { placed += it }, onShuffle = null, onMore = null)
+            }
+        }
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithText("Play next").performClick()
         compose.onNodeWithContentDescription("More options").performClick()
         compose.onNodeWithText("Add to queue").performClick()
-        compose.onNodeWithContentDescription("More options").performClick()
-        compose.onNodeWithText("Download the rest").performClick()
-        compose.onNodeWithContentDescription("More options").performClick()
-        compose.onNodeWithText("More…").performClick()
-        assertEquals(listOf(1, 1, 1), listOf(added, downloads, more))
+        assertEquals(
+            listOf(io.github.jamezuk.lyrionanywhere.core.Placement.PLAY_NEXT, io.github.jamezuk.lyrionanywhere.core.Placement.ADD_TO_QUEUE),
+            placed,
+        )
     }
 
     @Test
     @Config(sdk = [35], qualifiers = "w1280dp-h800dp-xhdpi")
-    fun aWideHeaderShowsEveryButtonAndTheMenuOpensMore() {
+    fun aWideHeaderIsPlayShuffleDownloadAndTheMenu() {
         var more = 0
-        playButtons(600, more = { more++ })
-        compose.onNodeWithContentDescription("Add to queue").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Download the rest").assertIsDisplayed()
+        var downloads = 0
+        playButtons(600, more = { more++ }, download = { downloads++ })
+        compose.onNodeWithContentDescription("Add to queue").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Download the rest").assertIsDisplayed().performClick()
         compose.onNodeWithContentDescription("More options").performClick()
-        assertEquals(1, more)
+        assertEquals(listOf(1, 1), listOf(downloads, more))
     }
 
     // B5: the chosen Library chip.
@@ -279,24 +300,20 @@ class LayoutFixesTests {
     }
 
     @Test
-    fun theChosenChipIsScrolledIntoView() {
-        compose.setContent { LyrionTheme(dynamicColour = false) { LibraryChips(LibraryChip.DOWNLOADED, {}) } }
+    fun theLibraryHasNoChipsToLoseOffTheEdge() {
+        // Wave 3.5 took the chips away (one model): every section is a row, wholly on screen.
+        compose.setContent {
+            LyrionTheme(dynamicColour = false) {
+                io.github.jamezuk.lyrionanywhere.ui.library.LibraryScreen(emptyList(), null, {}, onOpen = {})
+            }
+        }
         compose.waitForIdle()
-        assertWhollyOnScreen("chip-downloaded")
-    }
-
-    @Test
-    fun choosingAnotherChipBringsItIntoView() {
-        var chosen by mutableStateOf<LibraryChip?>(LibraryChip.ALBUMS)
-        compose.setContent { LyrionTheme(dynamicColour = false) { LibraryChips(chosen, { chosen = it }) } }
-        compose.waitForIdle()
-        assertWhollyOnScreen("chip-albums")
-        chosen = LibraryChip.DOWNLOADED
-        compose.waitForIdle()
-        assertWhollyOnScreen("chip-downloaded")
-        chosen = LibraryChip.ALBUMS
-        compose.waitForIdle()
-        assertWhollyOnScreen("chip-albums")
+        compose.onNodeWithTag("library-chips").assertDoesNotExist()
+        listOf("Albums", "Artists", "Playlists", "Downloaded").forEach { name ->
+            val node = compose.onNodeWithText(name).assertIsDisplayed().fetchSemanticsNode()
+            val root = compose.onRoot().fetchSemanticsNode().size.width
+            assertTrue("$name ends off-screen", node.positionInRoot.x + node.size.width <= root)
+        }
     }
 
     private fun close(a: Int, b: Int): Boolean {

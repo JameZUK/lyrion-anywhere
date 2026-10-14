@@ -19,6 +19,8 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import io.github.jamezuk.lyrionanywhere.ui.components.Choice
+import io.github.jamezuk.lyrionanywhere.ui.components.ChoiceRow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -109,36 +111,26 @@ fun CarModeSettingView(setting: CarModeSetting, onChange: (CarModeSetting) -> Un
     }
     val label = stringResource(R.string.car_auto_title)
     Column {
-        ListItem(
-            leadingContent = { Icon(Icons.Outlined.DirectionsCar, contentDescription = null) },
-            headlineContent = { Text(label) },
-            supportingContent = { Text(stringResource(R.string.car_auto_detail)) },
+        // One row with a picker (Wave 3.5).
+        val device = setting.deviceName.takeIf { setting.auto == CarAutoOpen.THIS_DEVICE && it.isNotEmpty() }
+        val choices = listOf(
+            Choice(CarAutoOpen.OFF, stringResource(R.string.car_auto_off), tag = "car-auto-${CarAutoOpen.OFF.name}"),
+            Choice(CarAutoOpen.ANY_CAR, stringResource(R.string.car_auto_any), tag = "car-auto-${CarAutoOpen.ANY_CAR.name}"),
+            Choice(CarAutoOpen.THIS_DEVICE, stringResource(R.string.car_auto_device), device, tag = "car-auto-${CarAutoOpen.THIS_DEVICE.name}"),
         )
-        Column(Modifier.selectableGroup().semantics { contentDescription = label }) {
-            val options = listOf(
-                Triple(CarAutoOpen.OFF, R.string.car_auto_off, null),
-                Triple(CarAutoOpen.ANY_CAR, R.string.car_auto_any, null),
-                Triple(
-                    CarAutoOpen.THIS_DEVICE,
-                    R.string.car_auto_device,
-                    setting.deviceName.takeIf { setting.auto == CarAutoOpen.THIS_DEVICE && it.isNotEmpty() },
-                ),
-            )
-            options.forEach { (option, title, detail) ->
-                val selected = setting.auto == option
-                ListItem(
-                    leadingContent = { RadioButton(selected = selected, onClick = null) },
-                    headlineContent = { Text(stringResource(title)) },
-                    supportingContent = detail?.let { { Text(it) } },
-                    modifier = Modifier
-                        .selectable(selected = selected, role = Role.RadioButton) {
-                            // Choosing This device again picks another device.
-                            if (!selected || option == CarAutoOpen.THIS_DEVICE) step(option, CarSettingFlow.choose(option, access.granted()))
-                        }
-                        .testTag("car-auto-${option.name}"),
-                )
-            }
-        }
+        ChoiceRow(
+            title = label,
+            choices = choices,
+            selected = setting.auto,
+            onSelect = { option ->
+                // Choosing This device again picks another device.
+                if (setting.auto != option || option == CarAutoOpen.THIS_DEVICE) step(option, CarSettingFlow.choose(option, access.granted()))
+            },
+            icon = Icons.Outlined.DirectionsCar,
+            tag = "car-auto-setting",
+            note = stringResource(R.string.car_auto_detail),
+            current = listOfNotNull(choices.first { it.value == setting.auto }.label, device).joinToString(": "),
+        )
         if (refused) {
             Text(
                 stringResource(R.string.car_auto_refused),

@@ -111,22 +111,31 @@ class SoundScreenTests {
         compose.onNode(hasScrollAction()).performScrollToNode(hasText(text))
     }
 
+    /** Open the picker of the choice row tagged [tag] (Wave 3.5: modes are rows with pickers). */
+    private fun open(tag: String) {
+        compose.onNode(hasScrollAction()).performScrollToNode(androidx.compose.ui.test.hasTestTag(tag))
+        compose.onNodeWithTag(tag).performClick()
+    }
+
+    private fun option(text: String) = compose.onNode(hasText(text) and androidx.compose.ui.test.isSelectable())
+
     @Test
     fun theDefaultIsBitPerfect() {
         show(SoundUiState())
         compose.onNodeWithTag("sound-indicator").assertTextContains("Bit-perfect")
         compose.onNodeWithText("Every stage is off: samples leave the player exactly as decoded.").assertIsDisplayed()
-        compose.onAllNodesWithText("Off").onFirst().assertIsSelected()
         compose.onNode(hasText("Bit-perfect USB output") and isToggleable()).assertIsOn()
+        open("sound-levelling")
+        option("Off").assertIsSelected()
     }
 
     @Test
     fun transitionsAreOffByDefaultAndCanBeChosen() {
         show(SoundUiState())
-        scrollTo("Smart transitions")
-        compose.onNodeWithText("Gapless").assertIsSelected()
         compose.onNodeWithTag("crossfade").assertDoesNotExist()
-        compose.onNodeWithText("Smart transitions").performClick()
+        open("sound-transitions")
+        option("Gapless").assertIsSelected()
+        option("Smart transitions").performClick()
         assertEquals(listOf("transitions SMART"), actions.calls)
     }
 
@@ -139,7 +148,8 @@ class SoundScreenTests {
         ).assertIsDisplayed()
         scrollTo("Crossfade: up to 4 s")
         compose.onNodeWithText("Crossfade: up to 4 s").assertIsDisplayed()
-        compose.onNodeWithText("Crossfade").assertIsSelected()
+        open("sound-transitions")
+        option("Crossfade").assertIsSelected()
     }
 
     @Test
@@ -150,19 +160,21 @@ class SoundScreenTests {
             "These change the samples: preamp, levelling. Turn them off for bit-perfect playback.",
         ).assertIsDisplayed()
         compose.onNodeWithText("Preamp: −3.0 dB").assertIsDisplayed()
-        compose.onNodeWithText("Server analysis (EBU R128)").assertIsSelected()
+        open("sound-levelling")
+        option("Server analysis (EBU R128)").assertIsSelected()
     }
 
     @Test
     fun choicesReachTheActions() {
         show(SoundUiState())
-        compose.onNodeWithText("ReplayGain, album").performClick()
+        open("sound-levelling")
+        option("ReplayGain, album").performClick()
         compose.onNode(hasText("Bit-perfect USB output") and isToggleable()).performClick()
         compose.onNode(hasText("True-peak limiter") and isToggleable()).performClick()
-        scrollTo("Natural")
-        compose.onNodeWithText("Natural").performClick()
-        scrollTo("TPDF, noise-shaped")
-        compose.onNodeWithText("TPDF, noise-shaped").performClick()
+        open("sound-crossfeed")
+        option("Natural").performClick()
+        open("sound-dither")
+        option("TPDF, noise-shaped").performClick()
         assertEquals(
             listOf(
                 "levelling REPLAYGAIN_ALBUM",

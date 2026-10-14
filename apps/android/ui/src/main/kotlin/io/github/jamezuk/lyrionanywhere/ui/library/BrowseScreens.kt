@@ -64,6 +64,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.material.icons.outlined.FilterAlt
+import io.github.jamezuk.lyrionanywhere.ui.components.PlacementMenu
+import io.github.jamezuk.lyrionanywhere.ui.components.placementActions
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
@@ -99,93 +103,66 @@ import io.github.jamezuk.lyrionanywhere.ui.components.errorMessage
 import io.github.jamezuk.lyrionanywhere.ui.menus.More
 import io.github.jamezuk.lyrionanywhere.ui.menus.MoreRequest
 
-/** Where the Library page leads. */
+/** Where the Library page leads (each one page of its own, Wave 3.5: one model). */
 enum class LibraryDestination(val label: Int, val icon: ImageVector) {
     ALBUMS(R.string.lib_albums, Icons.Outlined.Album),
     ARTISTS(R.string.lib_artists, Icons.Outlined.Person),
+    PLAYLISTS(R.string.lib_playlists, Icons.AutoMirrored.Outlined.QueueMusic),
+    FAVOURITES(R.string.lib_favourites, Icons.Outlined.Favorite),
+
+    /** The music downloaded to this phone (the downloads manager is in Settings). */
+    DOWNLOADS(R.string.downloaded, Icons.Outlined.DownloadDone),
+
+    /** Smart playlists (smart filters, Wave 2 §5.6). */
+    FILTERS(R.string.smart_playlists, Icons.Outlined.FilterAlt),
     GENRES(R.string.lib_genres, Icons.Outlined.Style),
     YEARS(R.string.lib_years, Icons.Outlined.CalendarMonth),
     COMPILATIONS(R.string.lib_compilations, Icons.Outlined.ViewModule),
-    RANDOM(R.string.lib_random, Icons.Outlined.Shuffle),
     FOLDER(R.string.lib_folder, Icons.Outlined.Folder),
-    PLAYLISTS(R.string.lib_playlists, Icons.AutoMirrored.Outlined.QueueMusic),
-    FAVOURITES(R.string.lib_favourites, Icons.Outlined.Favorite),
     APPS(R.string.lib_apps, Icons.Outlined.Radio),
 
-    /** Music downloaded to this phone (offline). */
-    DOWNLOADS(R.string.title_downloads, Icons.Outlined.DownloadDone),
+    /** Albums in a random order (a sort of Albums; Home's Random albums lead there). */
+    RANDOM(R.string.lib_random, Icons.Outlined.Shuffle),
 }
 
-private val BROWSE = listOf(
+/** The Library's sections, then the ways to browse (Random is a sort of Albums). */
+private val SECTIONS = listOf(
     LibraryDestination.ALBUMS,
     LibraryDestination.ARTISTS,
+    LibraryDestination.PLAYLISTS,
+    LibraryDestination.FAVOURITES,
+    LibraryDestination.DOWNLOADS,
+    LibraryDestination.FILTERS,
+)
+private val BROWSE = listOf(
     LibraryDestination.GENRES,
     LibraryDestination.YEARS,
     LibraryDestination.COMPILATIONS,
-    LibraryDestination.RANDOM,
     LibraryDestination.FOLDER,
-)
-private val MORE = listOf(
-    LibraryDestination.PLAYLISTS,
-    LibraryDestination.FAVOURITES,
     LibraryDestination.APPS,
-    LibraryDestination.DOWNLOADS,
 )
 
 /**
- * The Library page, as the web app's: New Music first, then LMS's "My Music", then the
- * app's other collections; a virtual-library picker only when LMS has libraries.
+ * The Library page (Wave 3.5, one model): one list of its sections (Albums, Artists,
+ * Playlists, Favourites, Downloaded, Smart playlists), then Browse (Genres, Years,
+ * Compilations, Folders, Apps & Radio). Each opens a page of its own; New music and Random
+ * are sorts of Albums. A virtual-library picker only when LMS has libraries.
  */
 @Composable
 fun LibraryScreen(
     libraries: List<VirtualLibrary>,
     chosenLibrary: String?,
     onChooseLibrary: (String?) -> Unit,
-    onNewMusic: () -> Unit,
     onOpen: (LibraryDestination) -> Unit,
     modifier: Modifier = Modifier,
-    /** The type chip chosen (Wave 2 §3.2); null: the overview below. */
-    chip: io.github.jamezuk.lyrionanywhere.data.LibraryChip? = null,
-    onChip: ((io.github.jamezuk.lyrionanywhere.data.LibraryChip) -> Unit)? = null,
-    /** What a chip shows. */
-    chipContent: @Composable (io.github.jamezuk.lyrionanywhere.data.LibraryChip) -> Unit = {},
 ) {
-    if (chip != null && onChip != null) {
-        Column(modifier.fillMaxSize()) {
-            LibraryChips(chip, onChip, Modifier.padding(vertical = 4.dp))
-            Box(Modifier.weight(1f)) { chipContent(chip) }
-        }
-        return
-    }
-    LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
-        if (onChip != null) {
-            item { LibraryChips(null, onChip, Modifier.padding(vertical = 4.dp)) }
-        }
+    LazyColumn(modifier.fillMaxSize().testTag("library"), contentPadding = PaddingValues(bottom = 16.dp)) {
         if (libraries.isNotEmpty()) {
             item { LibraryPicker(libraries, chosenLibrary, onChooseLibrary) }
         }
-        item {
-            Card(
-                onClick = onNewMusic,
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                ),
-                modifier = Modifier.fillMaxWidth().padding(16.dp),
-            ) {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.NewReleases, contentDescription = null, modifier = Modifier.size(32.dp))
-                    Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
-                        Text(stringResource(R.string.new_music), style = MaterialTheme.typography.titleLarge)
-                        Text(stringResource(R.string.new_music_detail), style = MaterialTheme.typography.bodyMedium)
-                    }
-                    Icon(Icons.Outlined.ChevronRight, contentDescription = null)
-                }
-            }
-        }
+        items(SECTIONS) { d -> DestinationRow(d, onOpen) }
+        item { SectionHeader(stringResource(R.string.section_browse)) }
         items(BROWSE) { d -> DestinationRow(d, onOpen) }
-        item { SectionHeader(stringResource(R.string.section_more)) }
-        items(MORE) { d -> DestinationRow(d, onOpen) }
     }
 }
 
@@ -345,7 +322,6 @@ fun CollectionHeader(
             onPlay = onPlay,
             onShuffle = null,
             onMore = onMore,
-            playLabel = R.string.action_play_all,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
         if (tabs.isNotEmpty()) {
@@ -399,7 +375,7 @@ fun FolderScreen(
         modifier,
         key = { i, f -> "${f.id}-$i" },
         header = if (!isTop && onPlayAll != null && state.items.any { it.kind != FolderKind.OTHER }) {
-            { PlayButtons(onPlay = onPlayAll, onShuffle = null, onMore = null, playLabel = R.string.action_play_all, modifier = Modifier.padding(16.dp)) }
+            { PlayButtons(onPlay = onPlayAll, onShuffle = null, onMore = null, modifier = Modifier.padding(16.dp)) }
         } else {
             null
         },
@@ -416,20 +392,11 @@ fun FolderScreen(
             },
             headlineContent = { Text(name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
             supportingContent = f.duration?.let { { Text(it) } },
+            // One trailing control (Wave 3.5 rule 3): ⋮, whose sheet plays, plays next and adds.
             trailingContent = {
-                Row {
-                    if (folder) {
-                        IconButton(onClick = { onPlay(f, Placement.PLAY_NOW) }) {
-                            Icon(Icons.Outlined.PlayArrow, stringResource(R.string.play_named, name))
-                        }
-                    }
-                    if (f.kind != FolderKind.OTHER) {
-                        IconButton(onClick = { onPlay(f, Placement.ADD_TO_QUEUE) }) {
-                            Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, stringResource(R.string.add_named, name))
-                        }
-                        IconButton(onClick = { onMore(More.folder(f)) }) {
-                            Icon(Icons.Outlined.MoreVert, stringResource(R.string.more_for, name))
-                        }
+                if (f.kind != FolderKind.OTHER) {
+                    IconButton(onClick = { onMore(More.folder(f)) }) {
+                        Icon(Icons.Outlined.MoreVert, stringResource(R.string.more_for, name))
                     }
                 }
             },
@@ -505,6 +472,7 @@ fun PlaylistScreen(
                         onClick = { onPlay(Placement.PLAY_NOW, i) },
                         showArt = true,
                         onMore = More.track(t)?.let { r -> { onMore(r) } },
+                        downloaded = t.id != null && t.id in downloaded,
                         modifier = m,
                     )
                 }
@@ -538,23 +506,18 @@ fun FavouritesScreen(
                             ArtworkImage(f.artwork, 120, contentDescription = null, modifier = Modifier.size(40.dp), corner = 4.dp)
                         },
                         headlineContent = { Text(f.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                        // One trailing control: a folder's chevron, or ⋮ with Play next and Add
+                        // to queue (also TalkBack actions on the row).
                         trailingContent = if (f.isFolder) {
                             { Icon(Icons.Outlined.ChevronRight, contentDescription = null) }
                         } else {
-                            {
-                                Row {
-                                    IconButton(onClick = { onPlay(f, Placement.PLAY_NEXT) }) {
-                                        Icon(Icons.AutoMirrored.Outlined.QueueMusic, stringResource(R.string.menu_play_next, f.name))
-                                    }
-                                    IconButton(onClick = { onPlay(f, Placement.ADD_TO_QUEUE) }) {
-                                        Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, stringResource(R.string.add_named, f.name))
-                                    }
-                                }
-                            }
+                            { PlacementMenu(f.name, onPlayNext = { onPlay(f, Placement.PLAY_NEXT) }, onAdd = { onPlay(f, Placement.ADD_TO_QUEUE) }) }
                         },
-                        modifier = Modifier.clickable(
-                            onClickLabel = stringResource(if (f.isFolder) R.string.open_folder else R.string.action_play),
-                        ) { if (f.isFolder) onFolder(f) else onPlay(f, Placement.PLAY_NOW) },
+                        modifier = Modifier
+                            .clickable(
+                                onClickLabel = stringResource(if (f.isFolder) R.string.open_folder else R.string.action_play),
+                            ) { if (f.isFolder) onFolder(f) else onPlay(f, Placement.PLAY_NOW) }
+                            .then(if (f.isFolder) Modifier else Modifier.placementActions(f.name, { onPlay(f, Placement.PLAY_NEXT) }, { onPlay(f, Placement.ADD_TO_QUEUE) })),
                     )
                 }
             }

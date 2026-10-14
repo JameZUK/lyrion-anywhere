@@ -131,6 +131,11 @@ data class PlayerUiState(
     val downloaded: Set<Long> = emptySet(),
     /** Tracks this phone's player holds whole (its "On this device" marks). */
     val onDevice: Set<Long> = emptySet(),
+    /**
+     * This is the downloads playing on this phone (Wave 3.5: shown with the main screens,
+     * the engine its own): no LMS-only controls (rating, sleep timer, queue edits).
+     */
+    val downloads: Boolean = false,
 ) {
     /** Whether the server can be reached. */
     val reachability: Reachability get() = connection.reachability
@@ -160,7 +165,7 @@ data class PlayerUiState(
     val playing: Boolean get() = gate.playing ?: (status?.mode == PlaybackMode.PLAYING)
 
     /** The selected player is this phone. */
-    val localSelected: Boolean get() = local.playerId != null && local.playerId == selectedId
+    val localSelected: Boolean get() = downloads || (local.playerId != null && local.playerId == selectedId)
 
     /** Controlling a player other than this phone (shown as "Playing on …", D20). */
     val controllingOther: Boolean get() = selectedId != null && !localSelected

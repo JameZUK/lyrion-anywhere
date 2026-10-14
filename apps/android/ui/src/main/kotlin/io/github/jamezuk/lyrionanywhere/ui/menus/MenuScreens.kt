@@ -49,6 +49,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -136,42 +142,58 @@ private fun MenuRow(item: MenuItem, index: Int, input: String, onInput: (String)
                 colors = transparent,
                 leadingContent = item.icon?.let { { ArtworkImage(it, 120, contentDescription = null, modifier = Modifier.size(40.dp), corner = 4.dp) } },
                 headlineContent = { Text(label, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                // One trailing control (Wave 3.5 rule 3): ⋮ with what the item offers (Play next,
+                // Add to queue, Save as station or Pin to Home, More options), each also a
+                // TalkBack action; a folder's chevron or an action's ▷ say what a tap does.
                 trailingContent = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        val next = item.playNext
-                        val add = item.add
-                        val more = item.more
-                        if (item.kind == MenuItemKind.PLAYABLE || item.kind == MenuItemKind.FOLDER) {
-                            if (next != null) {
-                                IconButton(onClick = { navigator.act(item, next, PLAY_NEXT) }) {
-                                    Icon(Icons.AutoMirrored.Outlined.QueueMusic, stringResource(R.string.menu_play_next, label))
-                                }
-                            }
-                            if (add != null) {
-                                IconButton(onClick = { navigator.act(item, add, ADD) }) {
-                                    Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, stringResource(R.string.menu_add, label))
-                                }
-                            }
+                    val next = item.playNext
+                    val add = item.add
+                    val more = item.more
+                    val playable = item.kind == MenuItemKind.PLAYABLE || item.kind == MenuItemKind.FOLDER
+                    val save = navigator.canSave(item)
+                    val entries = buildList<Triple<String, ImageVector, () -> Unit>> {
+                        if (playable && next != null) {
+                            add(Triple(stringResource(R.string.menu_play_next, label), Icons.AutoMirrored.Outlined.QueueMusic) { navigator.act(item, next, PLAY_NEXT) })
                         }
-                        when (navigator.canSave(item)) {
-                            SaveKind.STATION -> IconButton(onClick = { navigator.save(item, index, SaveKind.STATION) }) {
-                                Icon(Icons.Outlined.Radio, stringResource(R.string.menu_save_station, label))
-                            }
-                            SaveKind.PIN -> IconButton(onClick = { navigator.save(item, index, SaveKind.PIN) }) {
-                                Icon(Icons.Outlined.PushPin, stringResource(R.string.menu_pin, label))
-                            }
+                        if (playable && add != null) {
+                            add(Triple(stringResource(R.string.menu_add, label), Icons.AutoMirrored.Outlined.PlaylistAdd) { navigator.act(item, add, ADD) })
+                        }
+                        when (save) {
+                            SaveKind.STATION -> add(Triple(stringResource(R.string.menu_save_station, label), Icons.Outlined.Radio) { navigator.save(item, index, SaveKind.STATION) })
+                            SaveKind.PIN -> add(Triple(stringResource(R.string.menu_pin, label), Icons.Outlined.PushPin) { navigator.save(item, index, SaveKind.PIN) })
                             null -> {}
                         }
                         if (more != null) {
-                            IconButton(onClick = { navigator.act(item, more, MORE) }) {
-                                Icon(Icons.Outlined.MoreVert, stringResource(R.string.menu_more, label))
+                            add(Triple(stringResource(R.string.menu_more, label), Icons.Outlined.MoreVert) { navigator.act(item, more, MORE) })
+                        }
+                    }
+                    when {
+                        entries.size == 1 && more != null -> IconButton(onClick = entries.single().third) {
+                            Icon(Icons.Outlined.MoreVert, entries.single().first)
+                        }
+                        entries.isNotEmpty() -> {
+                            var open by remember { mutableStateOf(false) }
+                            Box {
+                                IconButton(onClick = { open = true }, modifier = Modifier.testTag("menu-row-more-$index")) {
+                                    Icon(Icons.Outlined.MoreVert, stringResource(R.string.more_for, label))
+                                }
+                                DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                                    entries.forEach { (text, icon, act) ->
+                                        DropdownMenuItem(
+                                            text = { Text(text) },
+                                            leadingIcon = { Icon(icon, contentDescription = null) },
+                                            onClick = {
+                                                open = false
+                                                act()
+                                            },
+                                        )
+                                    }
+                                }
                             }
                         }
-                        when (item.kind) {
-                            MenuItemKind.FOLDER -> Icon(Icons.Outlined.ChevronRight, contentDescription = null)
-                            MenuItemKind.ACTION -> Icon(Icons.Outlined.PlayArrow, contentDescription = null)
-                            else -> {}
-                        }
+                        item.kind == MenuItemKind.FOLDER -> Icon(Icons.Outlined.ChevronRight, contentDescription = null)
+                        item.kind == MenuItemKind.ACTION -> Icon(Icons.Outlined.PlayArrow, contentDescription = null)
+                        else -> {}
                     }
                 },
                 modifier = Modifier.clickable(
