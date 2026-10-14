@@ -2,6 +2,17 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Web: a busy music server is shown calmly, and the app waits for it
+
+LMS is a single process: when its music share stalls it can freeze for up to a minute. Before, the web app piled up status requests, showed a raw error banner, and its player abandoned and resumed its socket over and over. With a gateway listing the `lms_busy` feature (docs/PROTOCOL.md), the web app now:
+
+- **Shows a calm status:** *Your music server is busy. Waiting for it…* (`role="status"`), from the events stream's `{"lms":"busy"}` or a `503` with `busy: true`. No error banner, no offline mode. Errors from other pages say *The music server is busy; try again in a moment.*
+- **Doesn't stack requests:** status requests run one at a time (a poll while one is waiting is skipped; an event meanwhile asks for one more afterwards). While busy, the poll backs off from 2 s to 16 s, never sooner than `Retry-After`.
+- **Recovers by itself:** on `{"lms":"ok"}` or the first command that succeeds, the status clears and the players and status are fetched at once. The events stream assumes LMS answers when it (re)subscribes.
+- **Says when a command didn't happen:** a command refused as busy shows a short note. It is never queued and replayed later.
+- **Keeps the player connected:** the player worker asks for text keepalives at sign-in (`"keepalive": true`), only when the gateway lists `lms_busy`, and learns the features before its first sign-in. A keepalive only refreshes when the socket was last heard: it is never taken for a greeting nor counted for resume. Text that is neither a valid greeting nor a keepalive is now ignored (before, any text was taken for a greeting).
+- **Tests:** the busy 503 and `Retry-After` parsing (negatives: other 5xx, `busy` not `true`, HTTP dates, oversize values), `lms` events (unknown and mixed messages ignored), the backoff gate, the one-at-a-time runner, the app's busy, error, notice and recovery transitions against a fake gateway, and a regression test that status requests no longer overlap. For the worker: keepalive and greeting classification with fuzzed input, routing (keepalives never reach the greeting or the frame count), and the opt-in only with `lms_busy`.
+
 ## 2026-10-13: Rolling cache, Phase C: downloads stand in for Original FLAC streams
 
 When the phone plays a track at Original quality that is downloaded as its original FLAC, it now fetches only the stream's first bytes and plays the rest from the download. The audio is bit-identical.

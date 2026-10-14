@@ -213,6 +213,11 @@
 						<button class="btn" onclick={() => device.stop()}>Dismiss</button>
 					</div>
 				{/if}
+				{#if app.serverBusy}
+					<div class="banner resume busy" role="status">
+						<span>Your music server is busy. Waiting for it…</span>
+					</div>
+				{/if}
 				{#if app.notice}
 					<div class="banner resume notice" role="status">
 						<span>{app.notice}</span>

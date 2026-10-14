@@ -2,7 +2,7 @@
 // status (polled, and refreshed at once on events), and smooth progress between polls.
 import { SessionManager, type SessionStatus } from '$lib/api/session';
 import { Api } from '$lib/api/rpc';
-import { EventsClient, type EventsState, type LmsEvent } from '$lib/api/events';
+import { EventsClient, type EventsState, type LmsEvent, type LmsHealth } from '$lib/api/events';
 import type { Session } from '$lib/api/auth';
 import * as cmd from '$lib/lms/commands';
 import type { PlayerInfo, PlayersResult, PlayerStatus } from '$lib/lms/types';
@@ -21,7 +21,8 @@ import {
 import { refusalText, transfer } from '$lib/lms/transfer';
 import { textOf } from '$lib/lms/format';
 import { AnalysisClient } from '$lib/analysis/client';
-import { ApiError, CLIENT_HEADER, bearer } from '$lib/api/http';
+import { ApiError, BUSY_MESSAGE, CLIENT_HEADER, bearer, isBusy } from '$lib/api/http';
+import { BusyGate, POLL_MS, Single } from './busy';
 import {
 	armedOver,
 	choiceSeconds,
@@ -50,7 +51,6 @@ function stored(key: string): string {
 		return ''; // storage blocked
 	}
 }
-const POLL_MS = 2000;
 
 export const session = new SessionManager();
 export const api = new Api(session);
@@ -73,6 +73,8 @@ class AppState {
 	elapsed = $state(0);
 	events = $state<EventsState>('stopped');
 	error = $state('');
+	/** The music server isn't answering for now (busy): a calm status, not an error. */
+	serverBusy = $state(false);
 	/** Bumped when the library changes (rescan), so views can reload. */
 	libraryVersion = $state(0);
 	/** Bumped when the queue may have changed. */
@@ -100,6 +102,12 @@ class AppState {
 	#statusAt = 0;
 	#pending: ReturnType<typeof setTimeout> | undefined;
 	#events: EventsClient;
+	#busy = new BusyGate();
+	/** Status requests, one at a time: a poll never stacks on one still waiting. */
+	#refresher = new Single(
+		() => this.#refreshNow(),
+		() => !this.#busy.busy,
+	);
 	/** Views that follow every player's events (Rooms), with 'resync' when some were missed. */
 	#watchers = new Set<(e: LmsEvent | 'resync') => void>();
 	/** Bumped by every start and stop of the signed-in session. */
@@ -126,7 +134,9 @@ class AppState {
 				this.soon();
 			},
 			onState: (s) => (this.events = s),
+			onLms: (h) => this.#onLms(h),
 		});
+		api.onHealth = (e) => (e ? this.#markBusy(e.retryAfter) : this.#markOk());
 		session.subscribe((s, st) => {
 			const was = this.status;
 			this.session = s;
@@ -232,7 +242,8 @@ class AppState {
 		clearInterval(this.#poll);
 		clearInterval(this.#tick);
 		this.#poll = setInterval(() => {
-			if (document.visibilityState === 'visible') void this.refresh();
+			// While LMS is busy, ask less often (the events stream says when it answers again).
+			if (document.visibilityState === 'visible' && this.#busy.mayPoll(Date.now())) void this.#refresher.poll();
 		}, POLL_MS);
 		this.#tick = setInterval(() => this.#advance(), 250);
 		document.addEventListener('visibilitychange', this.#onVisible);
@@ -254,7 +265,34 @@ class AppState {
 		this.#preferred = '';
 		this.armed = null;
 		this.#upcoming = null;
+		this.#busy.markOk();
+		this.serverBusy = false;
 		upNextTracker.reset();
+	}
+
+	/** From the events stream: LMS stopped answering, or answers again. */
+	#onLms(h: LmsHealth) {
+		if (h.lms === 'busy') this.#markBusy(null, h.since);
+		else this.#markOk();
+	}
+
+	/** LMS is busy: say so calmly (any error banner is explained by it) and poll less. */
+	#markBusy(retryAfter: number | null, since: number | null = null) {
+		this.#busy.markBusy(Date.now(), retryAfter, since);
+		if (!this.serverBusy) {
+			this.serverBusy = true;
+			this.error = '';
+		}
+	}
+
+	/** LMS answers again: clear the status and catch up at once. */
+	#markOk() {
+		if (!this.#busy.markOk()) return;
+		this.serverBusy = false;
+		if (this.notice === BUSY_MESSAGE) this.notice = '';
+		if (this.status !== 'signed-in') return;
+		void this.loadPlayers();
+		this.soon();
 	}
 
 	#onVisible = () => {
@@ -280,7 +318,7 @@ class AppState {
 				this.soon();
 			}
 		} catch (e) {
-			this.error = (e as Error).message;
+			if (!isBusy(e)) this.error = (e as Error).message;
 		}
 	}
 
@@ -346,7 +384,7 @@ class AppState {
 			this.notice = 'error' in r ? `Couldn't move playback: ${r.error}` : refusalText(r.refusal, this.moving);
 			return false;
 		} catch (e) {
-			this.notice = `Couldn't move playback: ${(e as Error).message}`;
+			this.notice = isBusy(e) ? BUSY_MESSAGE : `Couldn't move playback: ${(e as Error).message}`;
 			return false;
 		} finally {
 			this.moving = '';
@@ -365,7 +403,12 @@ class AppState {
 		this.#pending = setTimeout(() => void this.refresh(), 120);
 	}
 
-	async refresh() {
+	/** Refresh the selected player's status; one request at a time (a call meanwhile asks again after it). */
+	refresh(): Promise<void> {
+		return this.#refresher.run();
+	}
+
+	async #refreshNow() {
 		const id = this.playerId;
 		if (!id || !this.current) return;
 		try {
@@ -378,7 +421,7 @@ class AppState {
 			this.error = '';
 			void this.#sleepCheck(id, s);
 		} catch (e) {
-			this.error = (e as Error).message;
+			if (!isBusy(e)) this.error = (e as Error).message;
 		}
 	}
 
@@ -396,7 +439,9 @@ class AppState {
 		try {
 			await api.rpc(id, c);
 		} catch (e) {
-			this.error = (e as Error).message;
+			// Refused while LMS is busy: it didn't happen, and isn't replayed later.
+			if (isBusy(e)) this.notice = BUSY_MESSAGE;
+			else this.error = (e as Error).message;
 		}
 		this.soon();
 	}

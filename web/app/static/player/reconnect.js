@@ -251,15 +251,58 @@ export function sanitiseQuality(q) {
 /**
  * The first message on the player socket: the bare token for a new session at the original
  * level (as always), otherwise JSON with the session to resume and the level. Gateways
- * ignore a level they don't know, so it is always safe to send here.
+ * ignore a level they don't know, so it is always safe to send here. `keepalive` asks for
+ * text keepalives: only for a gateway listing `lms_busy` (older ones never send them).
  */
-export function signInMessage(token, resume, quality) {
+export function signInMessage(token, resume, quality, keepalive = false) {
   const q = sanitiseQuality(quality);
-  if (!resume && q === 'original') return token;
+  if (!resume && q === 'original' && keepalive !== true) return token;
   const m = { token };
   if (resume) m.resume = { session: resume.session, secret: resume.secret, received: resume.received };
   if (q !== 'original') m.quality = q;
+  if (keepalive === true) m.keepalive = true;
   return JSON.stringify(m);
+}
+
+// The greeting's fields: a text message carrying any of them is never a keepalive.
+const GREETING_FIELDS = ['session', 'secret', 'mac', 'name', 'resumed', 'grace'];
+
+/**
+ * What a text message on the player socket is (docs/PROTOCOL.md):
+ * - 'keepalive': exactly `{"keepalive":true}` (sent every 5 s to a client that asked for
+ *   it, so a socket left waiting on a busy LMS isn't taken for dead). It only shows the
+ *   socket is alive: it is not a greeting and carries no sequence number;
+ * - { greeting }: the gateway's greeting (a session and secret, as strings);
+ * - null: anything else (not JSON, oversized, or a mixture of the two), which is ignored.
+ */
+export function classifyText(text) {
+  if (typeof text !== 'string' || text.length > 4096) return null;
+  let m;
+  try {
+    m = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return null;
+  if ('keepalive' in m) {
+    if (m.keepalive !== true || GREETING_FIELDS.some((f) => f in m)) return null;
+    return 'keepalive';
+  }
+  if (typeof m.session !== 'string' || typeof m.secret !== 'string') return null;
+  return { greeting: m };
+}
+
+/**
+ * Route one message from the player socket: binary to `frames` (the only kind counted for
+ * resume), a greeting to `greeting`, a keepalive nowhere, and anything else to `ignored`.
+ * The caller has already noted that the socket is alive.
+ */
+export function routeMessage(data, to) {
+  if (typeof data !== 'string') return to.frames(data);
+  const t = classifyText(data);
+  if (t === 'keepalive') return;
+  if (t) to.greeting(t.greeting);
+  else to.ignored();
 }
 
 /** A change of level mid-session: only for a gateway listing `stream_quality` (older ones end the session on it). */

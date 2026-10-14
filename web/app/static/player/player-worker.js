@@ -12,7 +12,7 @@ const V = new URL(self.location.href).searchParams.get('v');
 const early = [];
 onmessage = (e) => early.push(e);
 const VQ = V && /^[\w.-]{1,64}$/.test(V) ? `?v=${V}` : '';
-const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, closeAction, describeSeek, loadCore, qualityMessage, sanitiseQuality, signInMessage, socketSilent, streamFailureAction } =
+const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, closeAction, describeSeek, loadCore, qualityMessage, routeMessage, sanitiseQuality, signInMessage, socketSilent, streamFailureAction } =
   await import(`./reconnect.js${VQ}`);
 const { Presentation } = await import(`./presentation.js${VQ}`);
 const { VisualTap } = await import(`./visual.js${VQ}`);
@@ -42,6 +42,8 @@ let token = '';
 // session change it (null until known; docs/plans/streaming-quality.md).
 let quality = 'original';
 let qualityFeature = null;
+// Whether the gateway reports LMS being busy and sends text keepalives on request (null until known).
+let busyFeature = null;
 let session = '';
 let secret = '';
 let sink = null; // MessagePort to the AudioWorklet
@@ -180,6 +182,9 @@ onmessage = async (e) => {
     // The build version in the URLs: a browser can't pair an old cached copy with a new app.
     core = await loadCore(self.location.href, (u) => import(u));
     wasmMemory = core.wasm.memory ?? null;
+    // Learn the gateway's features first (briefly), so even the first sign-in can ask for
+    // keepalives; if that fails, it is asked again after the greeting.
+    await learnFeatures(3000);
     connect(false);
   } else if (msg.cmd === 'visual') {
     // The page shows the visualiser (or stopped showing it).
@@ -245,20 +250,29 @@ function sendQuality() {
   if (open && qualityFeature === true && ws?.readyState === WebSocket.OPEN) ws.send(qualityMessage(quality));
 }
 
-/** Ask the gateway once whether a session may change its level. */
-async function learnQualityFeature() {
+/**
+ * Ask the gateway once which features it has: whether a session may change its level, and
+ * whether it sends keepalives (asked for at the next sign-in).
+ */
+async function learnFeatures(timeoutMs = 0) {
   if (qualityFeature !== null) return;
+  const abort = new AbortController();
+  const timer = timeoutMs > 0 ? setTimeout(() => abort.abort(), timeoutMs) : 0;
   try {
     const r = await fetch(new URL('/v1/me', self.location.origin), {
       headers: { Authorization: `Bearer ${token}`, 'X-Anywhere-Client': '1' },
       cache: 'no-store',
+      signal: abort.signal,
     });
     if (!r.ok) return;
     const me = await r.json();
     qualityFeature = me?.features?.stream_quality === true;
+    busyFeature = me?.features?.lms_busy === true;
     sendQuality();
   } catch {
-    // Offline or refused: asked again on the next connection.
+    // Offline, refused or slow: asked again on the next connection.
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -268,12 +282,16 @@ function connect(resume) {
   ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
-    ws.send(signInMessage(token, resume ? { session, secret, received } : null, quality));
+    ws.send(signInMessage(token, resume ? { session, secret, received } : null, quality, busyFeature === true));
   };
   ws.onmessage = (m) => {
+    // Anything at all shows the socket is alive (a keepalive is only for this).
     lastHeard = now();
-    if (typeof m.data === 'string') onGreeting(JSON.parse(m.data));
-    else onFrames(m.data);
+    routeMessage(m.data, {
+      frames: onFrames,
+      greeting: onGreeting,
+      ignored: () => log('ignored an unexpected text message from the gateway'),
+    });
   };
   ws.onclose = (e) => onClose(e.code, e.reason);
 }
@@ -299,7 +317,7 @@ function onGreeting(g) {
   secret = g.secret;
   open = true;
   lastHeard = now();
-  void learnQualityFeature();
+  void learnFeatures();
   attempt = 0;
   if (!g.resumed || !player) {
     // A fresh session: LMS sees a new connection, so start from a clean player.
