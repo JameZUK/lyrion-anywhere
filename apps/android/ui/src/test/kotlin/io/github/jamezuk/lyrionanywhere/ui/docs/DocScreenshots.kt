@@ -482,7 +482,7 @@ class DocScreenshotsPhone : DocShots() {
         ) {
             PlayOnList(
                 DocStates.player(),
-                PlayOnActions(onControl = {}, onBackToPhone = {}, onMoveHere = {}, onBringToPhone = {}, onSync = { _, _ -> }, onAllRooms = {}),
+                PlayOnActions(onControl = {}, onBackToPhone = {}, onMoveHere = {}, onBringToPhone = {}, onSync = { _, _ -> }),
                 Modifier.padding(bottom = 24.dp),
             )
         }
@@ -521,7 +521,7 @@ class DocScreenshotsPhone : DocShots() {
         },
     ) {
         PhoneShell(tab = null, mini = DocStates.mini) {
-            DocScreen(stringResource(R.string.title_settings), back = true) {
+            DocScreen(stringResource(R.string.settings_advanced), back = true) {
                 SettingsScreen(
                     state = SettingsUiState(
                         username = "alex",

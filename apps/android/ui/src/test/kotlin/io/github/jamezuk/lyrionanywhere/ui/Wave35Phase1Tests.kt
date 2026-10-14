@@ -231,7 +231,7 @@ class Wave35Phase1Tests {
         }
         compose.onNodeWithTag("now-playing-more").performClick()
         // Sleep, volume and the visualiser (were buttons), the full rating (were five stars).
-        for (tag in listOf("sleep-button", "volume-button", "visualiser-button", "more-visualiser-style", "more-rate", "more-track", "more-car-mode", "more-alarms", "more-power")) {
+        for (tag in listOf("sleep-button", "volume-button", "visualiser-button", "more-visualiser-style", "more-rate", "more-track", "more-car-mode")) {
             compose.onNodeWithTag(tag).performScrollTo().assertExists()
         }
         compose.onNodeWithTag("sleep-button").performClick()

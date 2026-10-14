@@ -229,8 +229,7 @@ import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsScreen
 import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineAlbumScreen
 import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineAlbumViewModel
-import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineMiniPlayer
-import io.github.jamezuk.lyrionanywhere.ui.offline.OfflineNowPlayingScreen
+import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsPlayer
 import io.github.jamezuk.lyrionanywhere.ui.offline.OfflinePlayerViewModel
 import io.github.jamezuk.lyrionanywhere.ui.offline.StorageSettingsScreen
 import io.github.jamezuk.lyrionanywhere.ui.offline.StorageSettingsViewModel
@@ -723,6 +722,19 @@ fun MainScreen(
         )
     }
 
+    val downloadsNowPlaying: @Composable () -> Unit = {
+        DownloadsNowPlaying(
+            offlineVm,
+            offlineUi,
+            onClose = { nav.popBackStack() },
+            onOutputs = openOutputs,
+            onMore = { t -> More.track(t)?.let(openMore) },
+            onCarMode = { nav.navigate(CarModeRoute) { launchSingleTop = true } },
+            twoPane = LocalWindowLayout.current.nowPlayingTwoPane,
+            wide = LocalWindowLayout.current.nowPlayingWide,
+            base = playerState,
+        )
+    }
     val backStack by nav.currentBackStackEntryAsState()
     val destination = backStack?.destination
     // Which navigation the window gets: a bottom bar on phones, a rail or drawer on larger
@@ -796,13 +808,8 @@ fun MainScreen(
                     }
                 }
                 if (!onNowPlaying && offlineUi.state.active) {
-                    // Downloads have this phone: their own mini player.
-                    OfflineMiniPlayer(
-                        offlineUi,
-                        onOpen = { nav.navigate(OfflineNowPlayingRoute) },
-                        onToggle = offlineVm::toggle,
-                        onNext = offlineVm::next,
-                    )
+                    // Downloads have this phone: the same mini player, driving their engine (Wave 3.5).
+                    DownloadsMiniPlayer(offlineVm, offlineUi, onOpen = { nav.navigate(NowPlayingRoute) }, onOutputs = openOutputs)
                 } else if (!onNowPlaying) {
                     MiniPlayer(
                         state = playerState,
@@ -1457,6 +1464,11 @@ fun MainScreen(
                     LaunchedEffect(playerState.selectedId, playerState.status?.queueIndex, playerState.status?.queueLength) {
                         player.loadQueue()
                     }
+                    // Downloads playing on this phone: the same Now playing, driving their engine.
+                    if (offlineUi.state.active) {
+                        downloadsNowPlaying()
+                        return@composable
+                    }
                     // No top app bar: a small close chevron over the art instead (back and the
                     // swipe down close too).
                     NowPlayingScreen(
@@ -1509,6 +1521,20 @@ fun MainScreen(
                 composable<QueueRoute> {
                     LaunchedEffect(playerState.selectedId, playerState.status?.queueIndex, playerState.status?.queueLength) {
                         player.loadQueue()
+                    }
+                    // Downloads playing on this phone: their queue, in the same Queue tab.
+                    val downloadsQueue = if (offlineUi.state.active) DownloadsPlayer.state(offlineUi, stringResource(R.string.playing_downloads), playerState) else null
+                    if (downloadsQueue != null) {
+                        Screen(title = stringResource(R.string.nav_queue)) {
+                            QueueScreen(
+                                downloadsQueue,
+                                QueueScreenActions(
+                                    queue = DownloadsPlayer.queueActions(offlineVm::jumpTo, downloadsQueue.queue),
+                                    onChoosePlayer = openOutputs,
+                                ),
+                            )
+                        }
+                        return@composable
                     }
                     Screen(title = stringResource(R.string.nav_queue)) {
                         QueueScreen(
@@ -1618,13 +1644,7 @@ fun MainScreen(
                     }
                 }
                 composable<OfflineNowPlayingRoute> {
-                    OfflineNowPlayingScreen(
-                        offlineUi,
-                        offlineClock,
-                        offlineNowPlayingActions(offlineVm),
-                        visual = offlineVm,
-                        onClose = { nav.popBackStack() },
-                    )
+                    downloadsNowPlaying()
                 }
                 composable<SettingsRoute> {
                     Screen(title = stringResource(R.string.title_settings), onBack = { nav.popBackStack() }) {
@@ -1746,10 +1766,34 @@ fun MainScreen(
 
     // "Play on…" (D20): this phone, other players and sync groups.
     if (outputs) {
+        // Rooms folded into Play on… (Wave 3.5 item 13): every player's play/pause, volume,
+        // alarms and power, read only while the sheet is open.
+        val roomsVm = viewModel(key = "play-on-rooms") { RoomsViewModel(container.players, container.events, container.alarms) }
+        androidx.compose.runtime.DisposableEffect(roomsVm) {
+            roomsVm.start()
+            onDispose { roomsVm.stop() }
+        }
+        val rooms by roomsVm.state.collectAsStateWithLifecycle()
+        // The expanded view of every room stays for large windows only.
+        val large = NavigationSuiteScaffoldDefaults.calculateFromAdaptiveInfo(currentWindowAdaptiveInfo()) != NavigationSuiteType.NavigationBar
         ModalBottomSheet(onDismissRequest = { outputs = false }) {
             Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
                 PlayOnList(
                     playerState,
+                    rooms = rooms.rooms,
+                    roomActions = RoomsActions(
+                        onControl = { id -> player.select(id) },
+                        onTogglePlay = roomsVm::togglePlay,
+                        onVolume = roomsVm::setVolume,
+                        onPower = roomsVm::setPower,
+                        onSync = roomsVm::sync,
+                        onUnsync = roomsVm::unsync,
+                        onAlarms = { id, name ->
+                            outputs = false
+                            nav.navigate(AlarmsRoute(id, name))
+                        },
+                    ),
+                    actions =
                     PlayOnActions(
                         onControl = { id ->
                             player.select(id)
@@ -1766,7 +1810,7 @@ fun MainScreen(
                         onAllRooms = {
                             outputs = false
                             nav.navigate(RoomsRoute)
-                        },
+                        }.takeIf { large },
                     ),
                 )
             }

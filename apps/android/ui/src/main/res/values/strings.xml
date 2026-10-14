@@ -118,7 +118,6 @@
     <string name="mode_off">Off</string>
     <string name="position">Position in track</string>
     <string name="volume">Volume</string>
-    <string name="power_named">Power, %1$s</string>
     <string name="toggle_on">On</string>
     <string name="queued_play_now">Playing now</string>
     <string name="queued_next">Playing next</string>
@@ -407,7 +406,6 @@
     <string name="this_phone">This phone</string>
     <string name="play_on_title">Play on…</string>
     <string name="play_on_other_label">Playing on %1$s. Choose where to play</string>
-    <string name="playing_on">Playing on %1$s</string>
     <string name="no_other_players">No other players are available to you.</string>
     <string name="section_default_player">Default player</string>
     <string name="default_player_phone">This phone</string>
@@ -557,7 +555,6 @@
     <!-- Queue marks: where a track is on this phone. -->
     <string name="queue_mark_on_device">On this device</string>
     <string name="playing_downloads">Downloads</string>
-    <string name="playing_downloads_on_phone">Playing downloads on this phone</string>
     <string name="format_original">Original (as in your library)</string>
     <string name="format_mp3">MP3 (320 kb/s)</string>
     <string name="format_opus">Opus (160 kb/s, smallest)</string>
@@ -1058,8 +1055,6 @@
     <string name="info_length">Length</string>
     <string name="now_playing_more">More</string>
     <string name="car_mode_detail">Big buttons for driving</string>
-    <string name="alarms_detail">Wake to music on %1$s</string>
-    <string name="rooms_all_detail">Every player at a glance</string>
     <string name="signal_path_detail">From the file to your ears</string>
     <string name="track_options">Track options</string>
     <string name="action_sleep">Sleep</string>
@@ -1115,6 +1110,10 @@
     <string name="rating_rate">Rate this track</string>
     <string name="info_gapless">Gapless</string>
     <string name="gapless_into_next">Plays straight on into the next track</string>
+    <plurals name="queue_summary_downloads">
+        <item quantity="one">%1$d downloaded track, playing on this phone</item>
+        <item quantity="other">%1$d downloaded tracks, playing on this phone</item>
+    </plurals>
     <plurals name="queue_summary">
         <item quantity="one">%1$d track on %2$s</item>
         <item quantity="other">%1$d tracks on %2$s</item>
@@ -1140,4 +1139,6 @@
     <string name="section_browse">Browse</string>
     <string name="stream_quality_wifi_row">Streaming quality on Wi-Fi</string>
     <string name="stream_quality_mobile_row">Streaming quality on mobile data</string>
+    <string name="room_switch_off">Switch %1$s off</string>
+    <string name="room_switch_on">Switch %1$s on</string>
 </resources>

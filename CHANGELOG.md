@@ -2,6 +2,15 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Android declutter, phase 3 (Wave 3.5)
+
+The merges of `docs/plans/wave3_5-declutter.md` for Android, built from the design section written there first.
+
+- **Rooms folds into *Play on…*** (item 13): one player manager. Each player's row has, in its ⋮, *Move playback to …*, *Play/Pause …*, *Alarms* and *Switch … on/off*; the controlled player and any playing one have a volume slider. The sheet reads the players' status only while open. *All rooms* (the expanded view) is offered on large windows only. A Rooms card has three controls (play/pause, volume, ⋮): power moved into ⋮, the drag handle went (drag the cover instead; *Sync with…* and the TalkBack actions stay), and a switched-off room is one line. Now playing's ⋮ lost Alarms and Power (they are the player's row in *Play on…*). A move in progress is in the status slot on Rooms too.
+- **Downloads use the main mini player and Now playing** (item 14): the downloads engine stays its own, and an adapter (`DownloadsPlayer`) shows its queue as a player called *Downloads*. The mini player says "artist · Downloads"; Now playing is the same screen as for any player (Lyrics and Info pages, the visualiser, the phone's volume), without the LMS-only rating and sleep timer, and with *Stop* in ⋮. **Downloads appear in the main Queue tab** (and the queue sheet), where a row plays from that track; the downloads queue can't be edited. Offline mode uses the same screens; the downloads-only Now playing and mini player are gone.
+- **Docs screenshots** refreshed (`-PrecordDocScreenshots`).
+- **Tests:** `Wave35Phase3Tests` (Play on rows do what Rooms' cards did, an idle player has no slider, a Rooms card has three controls with power in ⋮, the downloads adapter's player, status and queue, nothing loaded is no player, downloads on the main Now playing with Stop and without LMS controls, the mini player says Downloads, downloads in the Queue tab play from a row). Existing tests follow power, alarms, the visualiser and Stop to their new places.
+
 ## 2026-10-14: Android declutter, phase 2 (Wave 3.5)
 
 The structural part of `docs/plans/wave3_5-declutter.md` for Android (item 11 is web-only). Nothing was removed: every setting and action has a page and a test.

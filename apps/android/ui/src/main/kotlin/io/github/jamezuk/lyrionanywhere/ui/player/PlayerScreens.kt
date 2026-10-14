@@ -39,6 +39,7 @@ import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material.icons.outlined.RepeatOne
 import androidx.compose.material.icons.outlined.SkipNext
 import androidx.compose.material.icons.outlined.Speaker
+import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Lyrics
 import androidx.compose.foundation.layout.heightIn
@@ -248,7 +249,10 @@ fun MiniPlayer(
                             modifier = Modifier.size(14.dp).padding(end = 2.dp).testTag("mini-moon"),
                         )
                     }
-                    MiniPlayerLine(track.artist, state.selected?.name?.takeIf { state.controllingOther })
+                    MiniPlayerLine(
+                        listOfNotNull(track.artist, stringResource(R.string.playing_downloads).takeIf { state.downloads }).joinToString(" · ").ifEmpty { null },
+                        state.selected?.name?.takeIf { state.controllingOther },
+                    )
                 }
             }
             }
@@ -612,7 +616,8 @@ private fun NowPlayingContent(
                             state.upcoming,
                             actions.onClearUpcoming,
                             onSaveAsPlaylist = actions.onSaveQueue.takeIf { state.canSaveQueue },
-                            enabled = state.gate.other,
+                            enabled = state.gate.other && !state.downloads,
+                            downloads = state.downloads,
                         )
                     }
                     queueItems(
@@ -624,6 +629,7 @@ private fun NowPlayingContent(
                         sections = state.sections,
                         marks = state::markOf,
                         gate = state.gate,
+                        editable = !state.downloads,
                     )
                 }
             }
@@ -778,33 +784,6 @@ internal class VisualiserButtonModel(
 )
 
 /**
- * The visualiser's one button (for the action row): a tap switches it on or off, a long
- * press chooses the style. Off, and saying why, in battery saver or with animations removed.
- */
-@Composable
-internal fun VisualiserAction(m: VisualiserButtonModel, modifier: Modifier = Modifier) {
-    val blocked = m.block != VisualBlock.NONE
-    val on = m.on && !blocked
-    val state = when (m.block) {
-        VisualBlock.BATTERY_SAVER -> stringResource(R.string.visualiser_off_battery)
-        VisualBlock.ANIMATIONS_OFF -> stringResource(R.string.visualiser_off_motion)
-        VisualBlock.NONE -> if (on) visualStyleName(m.style) else stringResource(R.string.mode_off)
-    }
-    NowPlayingAction(
-        icon = Icons.Outlined.GraphicEq,
-        label = if (on) visualStyleName(m.style) else stringResource(R.string.visualiser),
-        description = stringResource(R.string.visualiser),
-        onClick = m.onToggle,
-        on = on,
-        enabled = !blocked,
-        state = state,
-        onLongClick = m.onStyles,
-        onLongClickLabel = stringResource(R.string.visualiser_choose_style),
-        modifier = modifier.testTag("visualiser-button"),
-    )
-}
-
-/**
  * The title (with the one rating control), details, seek bar, transport, a one-line "Up
  * next" and three actions: Play on, Lyrics and Queue.
  */
@@ -835,7 +814,7 @@ private fun NowPlayingControls(
         NowPlayingMeta(
             title = track?.title ?: stringResource(R.string.nothing_playing),
             subtitle = listOfNotNull(track?.artist, track?.album).joinToString(" · "),
-            rating = if ((track?.id ?: 0) > 0) {
+            rating = if ((track?.id ?: 0) > 0 && !state.downloads) {
                 { RatingToggle(state.rating, state.ratingStyle, state.ratingFailed, actions.onRate, onRate) }
             } else {
                 null
@@ -968,9 +947,9 @@ private fun RateRow(state: PlayerUiState, actions: NowPlayingActions) {
 
 /**
  * ⋮ on Now playing: the track's rating, then the sleep timer, the volume, the visualiser
- * (while this phone plays), the track's own options, car mode, alarms and the player's
- * power. The signal path is the quality badge's (here only when there is no badge); every
- * room is in *Play on…*.
+ * (while this phone plays), the track's own options and car mode; for downloads, Stop. The
+ * signal path is the quality badge's (here only when there is no badge); every room, and a
+ * player's alarms and power, are in *Play on…*.
  */
 @Composable
 private fun MoreSheet(
@@ -988,16 +967,19 @@ private fun MoreSheet(
     val gate = state.gate
     val track = status.current
     NowPlayingSheet(stringResource(R.string.now_playing_more), "now-playing-more-sheet", onDismiss) {
-        if ((track?.id ?: 0) > 0) RateRow(state, actions)
-        val left = SleepTimer.left(status)
-        SheetRow(
-            Icons.Outlined.Bedtime,
-            stringResource(R.string.sleep_timer),
-            left?.let { stringResource(R.string.sleep_timer_left, sleepLeftText(it)) },
-            onClick = onSleep,
-            tag = "sleep-button",
-            enabled = gate.other,
-        )
+        // The downloads player has no LMS: no rating, no sleep timer (Wave 3.5 item 14).
+        if ((track?.id ?: 0) > 0 && !state.downloads) RateRow(state, actions)
+        if (!state.downloads) {
+            val left = SleepTimer.left(status)
+            SheetRow(
+                Icons.Outlined.Bedtime,
+                stringResource(R.string.sleep_timer),
+                left?.let { stringResource(R.string.sleep_timer_left, sleepLeftText(it)) },
+                onClick = onSleep,
+                tag = "sleep-button",
+                enabled = gate.other,
+            )
+        }
         SheetRow(
             Icons.AutoMirrored.Outlined.VolumeUp,
             stringResource(R.string.volume_on, volume.name),
@@ -1018,7 +1000,7 @@ private fun MoreSheet(
                 tag = "more-visualiser-style",
             )
         }
-        if (track?.quality == null) {
+        if (track?.quality == null && !state.downloads) {
             SheetRow(Icons.Outlined.GraphicEq, stringResource(R.string.signal_path), stringResource(R.string.signal_path_detail), onPath, tag = "more-signal-path")
         }
         val more = actions.onMore
@@ -1034,23 +1016,13 @@ private fun MoreSheet(
                 open()
             }, tag = "more-car-mode")
         }
-        actions.onAlarms?.let { open ->
-            SheetRow(Icons.Outlined.Alarm, stringResource(R.string.alarms), stringResource(R.string.alarms_detail, playerName), {
+        // The player's alarms and power are its row's in Play on… (Wave 3.5: one player manager).
+        actions.onStop?.let { stop ->
+            SheetRow(Icons.Outlined.Stop, stringResource(R.string.action_stop), stringResource(R.string.offline_stop), {
                 onDismiss()
-                open()
-            }, tag = "more-alarms")
+                stop()
+            }, tag = "offline-stop")
         }
-        val powerState = stringResource(if (status.powered) R.string.toggle_on else R.string.mode_off)
-        ListItem(
-            leadingContent = { Icon(Icons.Outlined.PowerSettingsNew, contentDescription = null) },
-            headlineContent = { Text(stringResource(R.string.power_named, playerName)) },
-            trailingContent = { Switch(checked = status.powered, onCheckedChange = null) },
-            colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent),
-            modifier = Modifier
-                .toggleable(value = status.powered, role = Role.Switch, onValueChange = actions.onPower)
-                .semantics { stateDescription = powerState }
-                .testTag("more-power"),
-        )
     }
 }
 
@@ -1158,6 +1130,8 @@ data class NowPlayingActions(
     val onRooms: (() -> Unit)? = null,
     /** Open car mode (Wave 2 §5.1; null: not offered). */
     val onCarMode: (() -> Unit)? = null,
+    /** Stop the downloads playing on this phone (Wave 3.5: downloads use this screen); null: not offered. */
+    val onStop: (() -> Unit)? = null,
 )
 
 /**

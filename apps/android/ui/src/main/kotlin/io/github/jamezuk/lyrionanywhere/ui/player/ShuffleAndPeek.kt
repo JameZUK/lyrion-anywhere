@@ -145,7 +145,8 @@ fun QueuePeekSheet(state: PlayerUiState, actions: NowPlayingActions, onDismiss: 
                     upcoming = state.upcoming,
                     onClearUpcoming = actions.onClearUpcoming,
                     onSaveAsPlaylist = actions.onSaveQueue.takeIf { state.canSaveQueue },
-                    enabled = state.gate.other,
+                    enabled = state.gate.other && !state.downloads,
+                    downloads = state.downloads,
                 )
             }
             queueItems(
@@ -157,6 +158,7 @@ fun QueuePeekSheet(state: PlayerUiState, actions: NowPlayingActions, onDismiss: 
                 sections = state.sections,
                 marks = state::markOf,
                 gate = state.gate,
+                editable = !state.downloads,
             )
         }
     }

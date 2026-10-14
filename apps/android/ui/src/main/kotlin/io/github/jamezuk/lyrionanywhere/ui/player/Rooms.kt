@@ -138,8 +138,8 @@ fun RoomsScreen(
     var dragBy by remember { mutableStateOf(Offset.Zero) }
     val over = dragging?.let { RoomDrop.target(dragAt, cards, it) }
     var syncing by rememberSaveable { mutableStateOf<String?>(null) }
+    // A move in progress is in the app's one status slot (Wave 3.5), not here.
     Column(modifier.fillMaxSize()) {
-        TransferStatus(transfer, onDismissTransfer)
         LazyVerticalGrid(
             columns = GridCells.Adaptive(minSize = 320.dp),
             contentPadding = PaddingValues(12.dp),
@@ -304,7 +304,11 @@ private fun RoomCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    ArtworkImage(track?.artwork, 120, contentDescription = null, modifier = Modifier.size(56.dp), corner = 6.dp)
+                    // Drag the cover onto another card to sync (Wave 3.5: no handle of its own;
+                    // "Sync with…" in the menu and the TalkBack actions are its alternatives).
+                    Box(handle.size(56.dp).testTag("room-drag-${room.id}").clearAndSetSemantics {}) {
+                        ArtworkImage(track?.artwork, 120, contentDescription = null, modifier = Modifier.size(56.dp), corner = 6.dp)
+                    }
                     Column(Modifier.weight(1f)) {
                         Text(
                             name,
@@ -334,17 +338,6 @@ private fun RoomCard(
                         }
                     }
                 }
-                // Drag onto another card to sync. Its alternatives are the menu's "Sync
-                // with…" and the TalkBack actions above, so screen readers skip it.
-                Box(
-                    handle
-                        .size(48.dp)
-                        .testTag("room-drag-${room.id}")
-                        .clearAndSetSemantics {},
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Outlined.DragIndicator, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
                 RoomMenu(room, group.isNotEmpty(), canTransfer, actions, onSyncWith, others.isNotEmpty())
             }
             RoomControls(room, actions)
@@ -367,10 +360,11 @@ private fun roomLine(room: Room): String {
     }
 }
 
-/** Play/pause, power and volume, each named with the room. */
+/** Play/pause and volume, each named with the room (power is in the card's menu, Wave 3.5). */
 @Composable
 private fun RoomControls(room: Room, actions: RoomsActions) {
-    val s = room.status ?: return
+    // A room switched off is one line (Wave 3.5): switching it on is in its menu.
+    val s = room.status?.takeIf { it.powered } ?: return
     val name = room.name
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
         IconButton(onClick = { actions.onTogglePlay(room.id) }, enabled = s.connected, modifier = Modifier.testTag("room-play-${room.id}")) {
@@ -378,15 +372,6 @@ private fun RoomControls(room: Room, actions: RoomsActions) {
                 if (room.playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
                 contentDescription = stringResource(if (room.playing) R.string.room_pause else R.string.room_play, name),
             )
-        }
-        val powerState = stringResource(if (s.powered) R.string.toggle_on else R.string.mode_off)
-        IconToggleButton(
-            checked = s.powered,
-            onCheckedChange = { actions.onPower(room.id, it) },
-            enabled = s.connected,
-            modifier = Modifier.testTag("room-power-${room.id}").semantics { stateDescription = powerState },
-        ) {
-            Icon(Icons.Outlined.PowerSettingsNew, contentDescription = stringResource(R.string.power_named, name))
         }
         Icon(
             Icons.AutoMirrored.Outlined.VolumeUp,
@@ -459,7 +444,7 @@ private fun RoomExtras(room: Room) {
     }
 }
 
-/** The card's menu: Sync with…, Leave the group, Move playback here, Alarms. */
+/** The card's menu: Sync with…, Leave the group, Move playback here, Alarms, and power. */
 @Composable
 private fun RoomMenu(
     room: Room,
@@ -512,6 +497,17 @@ private fun RoomMenu(
                         open = false
                         alarms(room.id, room.name)
                     },
+                )
+            }
+            room.status?.takeIf { it.connected }?.let { s ->
+                DropdownMenuItem(
+                    text = { Text(stringResource(if (s.powered) R.string.room_switch_off else R.string.room_switch_on, room.name)) },
+                    leadingIcon = { Icon(Icons.Outlined.PowerSettingsNew, contentDescription = null) },
+                    onClick = {
+                        open = false
+                        actions.onPower(room.id, !s.powered)
+                    },
+                    modifier = Modifier.testTag("room-power-${room.id}"),
                 )
             }
         }

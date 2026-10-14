@@ -303,7 +303,9 @@ class Wave2Part3ScreenTests {
         compose.onNodeWithContentDescription("Kitchen volume").assertExists()
         compose.onNodeWithContentDescription("Pause Kitchen").performClick()
         compose.onNodeWithContentDescription("Play Lounge").performClick()
-        compose.onNodeWithContentDescription("Power, Kitchen").performClick()
+        // Power is in the card's menu (Wave 3.5: three controls a card).
+        compose.onNodeWithTag("room-menu-$KITCHEN_ID").performClick()
+        compose.onNodeWithTag("room-power-$KITCHEN_ID").performClick()
         compose.onNodeWithTag("room-head-$KITCHEN_ID").performClick()
         compose.onNodeWithTag("room-alarm-$KITCHEN_ID").assertExists()
         compose.onNodeWithTag("room-sleep-$KITCHEN_ID").assertExists()

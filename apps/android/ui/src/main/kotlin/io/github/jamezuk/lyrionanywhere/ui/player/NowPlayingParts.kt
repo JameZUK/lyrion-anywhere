@@ -128,45 +128,6 @@ internal fun NowPlayingTopRow(
     }
 }
 
-/**
- * "Playing on <player> ▾": which player this screen controls; a tap opens *Play on…*
- * ([onClick] null: a plain label, as for downloads).
- */
-@Composable
-internal fun PlayingOnChip(text: String, phone: Boolean, onClick: (() -> Unit)?) {
-    val content: @Composable () -> Unit = {
-        Row(
-            Modifier.padding(start = 12.dp, end = if (onClick != null) 6.dp else 12.dp, top = 6.dp, bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(if (phone) Icons.Outlined.PhoneAndroid else Icons.Outlined.Speaker, contentDescription = null, modifier = Modifier.size(16.dp))
-            Text(
-                text,
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 6.dp).weight(1f, fill = false),
-            )
-            if (onClick != null) Icon(Icons.Outlined.ArrowDropDown, contentDescription = null, modifier = Modifier.size(20.dp))
-        }
-    }
-    val colour = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.9f)
-    if (onClick != null) {
-        val label = stringResource(R.string.play_on_title)
-        Surface(
-            onClick = onClick,
-            shape = CircleShape,
-            color = colour,
-            modifier = Modifier
-                .testTag("playing-on-chip")
-                .semantics { clickAction(label = label) { onClick(); true } },
-            content = content,
-        )
-    } else {
-        Surface(shape = CircleShape, color = colour, modifier = Modifier.testTag("playing-on-chip"), content = content)
-    }
-}
-
 /** A page's name, for its tab and the actions that show it. */
 @Composable
 fun layoutName(l: NowPlayingLayout): String = stringResource(

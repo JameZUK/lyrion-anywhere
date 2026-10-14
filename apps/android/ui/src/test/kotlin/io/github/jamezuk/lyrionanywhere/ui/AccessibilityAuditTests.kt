@@ -516,14 +516,19 @@ class SpokenLabelTests {
 
     /** Toggles keep one name; on or off is their state. */
     @Test
-    fun thePowerToggleHasAConstantName() {
-        show { NowPlayingScreen(auditPlayerState(), clock = { 0L }, actions = nowPlayingActions()) }
-        // In ⋮ on Now playing.
-        compose.onNodeWithTag("now-playing-more").performClick()
-        compose.onNodeWithTag("more-power")
-            .performScrollTo()
-            .assert(hasText("Power, Player $KITCHEN"))
-            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "On"))
+    fun thePowerItemNamesThePlayerAndWhatItDoes() {
+        // In the player's row of Play on… (Wave 3.5: Rooms folded in), not Now playing's ⋮.
+        val kitchen = samplePlayer(KITCHEN, playing = true)
+        show {
+            PlayOnList(
+                auditPlayerState(),
+                PlayOnActions(onControl = {}, onBackToPhone = {}),
+                rooms = listOf(io.github.jamezuk.lyrionanywhere.ui.player.Room(kitchen, sampleStatus())),
+                roomActions = io.github.jamezuk.lyrionanywhere.ui.player.RoomsActions({}, {}, { _, _ -> }, { _, _ -> }, { _, _ -> }, {}),
+            )
+        }
+        compose.onNodeWithTag("play-on-$KITCHEN-more").performClick()
+        compose.onNodeWithTag("play-on-$KITCHEN-power").assert(hasText("Switch Player $KITCHEN off"))
     }
 
     @Test

@@ -15,6 +15,14 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Input
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
+import androidx.compose.material3.Slider
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Alarm
+import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -98,47 +106,89 @@ data class PlayOnActions(
     val onAllRooms: (() -> Unit)? = null,
 )
 
+/** One entry of a player row's ⋮. */
+private class RowItem(val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector, val enabled: Boolean, val tag: String, val run: () -> Unit)
+
 /**
- * A player row's ⋮ (its one trailing control): "Move playback to <player>" (the secondary
- * action, Wave 3.5: tapping the row is the primary one, controlling it). Shows nothing when
- * there is nothing to offer.
+ * A player row's ⋮ (its one trailing control, Wave 3.5): the secondary actions (tapping the
+ * row is the primary one, controlling it): Move playback to <player>, and, with Rooms folded
+ * in, play or pause it, its alarms and its power. Shows nothing when there is nothing in it.
  */
 @Composable
-private fun PlayerRowMenu(
-    name: String,
-    move: (() -> Unit)?,
-    moveEnabled: Boolean,
-    tag: String,
-    moveLabel: String = stringResource(R.string.move_here_named, name),
-) {
-    if (move == null) return
+private fun PlayerRowMenu(name: String, items: List<RowItem>, tag: String) {
+    if (items.isEmpty()) return
     var open by remember { mutableStateOf(false) }
     Box {
         IconButton(onClick = { open = true }, modifier = Modifier.testTag("$tag-more")) {
             Icon(Icons.Outlined.MoreVert, contentDescription = stringResource(R.string.more_for, name))
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            DropdownMenuItem(
-                text = { Text(moveLabel) },
-                leadingIcon = { Icon(Icons.AutoMirrored.Outlined.Input, contentDescription = null) },
-                enabled = moveEnabled,
-                onClick = {
-                    open = false
-                    move()
-                },
-                modifier = Modifier.testTag("$tag-move"),
-            )
+            items.forEach { item ->
+                DropdownMenuItem(
+                    text = { Text(item.label) },
+                    leadingIcon = { Icon(item.icon, contentDescription = null) },
+                    enabled = item.enabled,
+                    onClick = {
+                        open = false
+                        item.run()
+                    },
+                    modifier = Modifier.testTag("$tag-${item.tag}"),
+                )
+            }
         }
     }
 }
 
+/** A player's volume in Play on… (the controlled player, and any playing one). */
+@Composable
+private fun RowVolume(room: Room, onVolume: (String, Int) -> Unit) {
+    val s = room.status ?: return
+    var dragging by remember { mutableStateOf(false) }
+    var value by remember { mutableFloatStateOf(0f) }
+    val shown = if (dragging) value else s.volume.toFloat()
+    val label = stringResource(R.string.room_volume, room.name)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.AutoMirrored.Outlined.VolumeUp, contentDescription = null, modifier = Modifier.size(18.dp))
+        Slider(
+            value = shown,
+            onValueChange = {
+                dragging = true
+                value = it
+            },
+            onValueChangeFinished = {
+                dragging = false
+                onVolume(room.id, value.toInt())
+            },
+            valueRange = 0f..100f,
+            enabled = s.connected,
+            modifier = Modifier
+                .padding(start = 8.dp)
+                .weight(1f)
+                .testTag("play-on-volume-${room.id}")
+                .semantics {
+                    contentDescription = label
+                    stateDescription = "${shown.toInt()}%"
+                },
+        )
+    }
+}
+
 /**
- * "Play on…" (Wave 3.5): this phone and the other players this account may control. Tapping a
- * row controls that player; its ⋮ moves playback there. *Group players…* joins players to the
- * controlled one's group, and a grouped player says who it plays with.
+ * "Play on…" (Wave 3.5), the one player manager: this phone and the other players this
+ * account may control. Tapping a row controls that player; its ⋮ moves playback there and,
+ * with [rooms] (Rooms folded in), plays or pauses it, opens its alarms and switches it on or
+ * off; the controlled player and any playing one have a volume slider. *Group players…* joins
+ * players to the controlled one's group. *All rooms* (the expanded view) is offered by the
+ * caller on large windows only.
  */
 @Composable
-fun PlayOnList(state: PlayerUiState, actions: PlayOnActions, modifier: Modifier = Modifier) {
+fun PlayOnList(
+    state: PlayerUiState,
+    actions: PlayOnActions,
+    modifier: Modifier = Modifier,
+    rooms: List<Room> = emptyList(),
+    roomActions: RoomsActions? = null,
+) {
     var grouping by rememberSaveable { mutableStateOf(false) }
     val busy = state.transfer is TransferState.Running
     val hasQueue = state.status?.current != null
@@ -151,8 +201,14 @@ fun PlayOnList(state: PlayerUiState, actions: PlayOnActions, modifier: Modifier 
         TransferStatus(state.transfer, actions.onDismissTransfer)
         val phone = state.localSelected || (state.selectedId == null && state.waitingForPhone)
         val phoneName = stringResource(R.string.this_phone)
+        val phoneItems = buildList {
+            // What the "Playing on" strip offered: move what the other player plays here.
+            actions.onBringToPhone?.takeIf { state.controllingOther && hasQueue && !phone }?.let { bring ->
+                add(RowItem(stringResource(R.string.move_playback_to_phone), Icons.AutoMirrored.Outlined.Input, !busy, "move", bring))
+            }
+        }
         ListItem(
-            leadingContent = { Icon(Icons.Outlined.PhoneAndroid, contentDescription = null) },
+            leadingContent = { Icon(if (phone) Icons.Outlined.Check else Icons.Outlined.PhoneAndroid, contentDescription = null) },
             headlineContent = { Text(phoneName) },
             supportingContent = {
                 Column {
@@ -160,15 +216,7 @@ fun PlayOnList(state: PlayerUiState, actions: PlayOnActions, modifier: Modifier 
                     CushionLine(state.local.cushionMs, Modifier.testTag("phone-cushion"))
                 }
             },
-            trailingContent = {
-                if (phone) {
-                    Icon(Icons.Outlined.Check, contentDescription = null)
-                } else {
-                    // What the "Playing on" strip offered: move what the other player plays here.
-                    val bring = actions.onBringToPhone?.takeIf { state.controllingOther && hasQueue }
-                    PlayerRowMenu(phoneName, bring, moveEnabled = !busy, tag = "play-on-phone", moveLabel = stringResource(R.string.move_playback_to_phone))
-                }
-            },
+            trailingContent = { PlayerRowMenu(phoneName, phoneItems, tag = "play-on-phone") },
             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
             modifier = Modifier.selectable(selected = phone, role = Role.RadioButton, onClick = actions.onBackToPhone),
         )
@@ -183,18 +231,47 @@ fun PlayOnList(state: PlayerUiState, actions: PlayOnActions, modifier: Modifier 
         }
         others.forEach { p ->
             val selected = p.id == state.selectedId
+            val room = rooms.firstOrNull { it.id == p.id }
+            val status = room?.status
+            val items = buildList {
+                actions.onMoveHere?.takeIf { state.selectedId != null && !selected }?.let { m ->
+                    add(RowItem(stringResource(R.string.move_here_named, p.name), Icons.AutoMirrored.Outlined.Input, !busy && hasQueue, "move") { m(p.id) })
+                }
+                if (roomActions != null && status != null && status.connected) {
+                    add(
+                        RowItem(
+                            stringResource(if (room.playing) R.string.room_pause else R.string.room_play, p.name),
+                            if (room.playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                            true,
+                            "play",
+                        ) { roomActions.onTogglePlay(p.id) },
+                    )
+                    roomActions.onAlarms?.let { alarms ->
+                        add(RowItem(stringResource(R.string.alarms), Icons.Outlined.Alarm, true, "alarms") { alarms(p.id, p.name) })
+                    }
+                    add(
+                        RowItem(
+                            stringResource(if (status.powered) R.string.room_switch_off else R.string.room_switch_on, p.name),
+                            Icons.Outlined.PowerSettingsNew,
+                            true,
+                            "power",
+                        ) { roomActions.onPower(p.id, !status.powered) },
+                    )
+                }
+            }
             ListItem(
-                leadingContent = { Icon(Icons.Outlined.Speaker, contentDescription = null) },
+                leadingContent = { Icon(if (selected) Icons.Outlined.Check else Icons.Outlined.Speaker, contentDescription = null) },
                 headlineContent = { Text(p.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                supportingContent = { Text(playerLine(p, state), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                trailingContent = {
-                    if (selected) {
-                        Icon(Icons.Outlined.Check, contentDescription = null)
-                    } else {
-                        val move = actions.onMoveHere?.takeIf { state.selectedId != null }?.let { m -> { m(p.id) } }
-                        PlayerRowMenu(p.name, move, moveEnabled = !busy && hasQueue, tag = "play-on-${p.id}")
+                supportingContent = {
+                    Column {
+                        Text(playerLine(p, state), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        // The controlled player and any playing one: their volume, at hand.
+                        if (roomActions != null && room != null && status?.powered == true && (selected || room.playing)) {
+                            RowVolume(room, roomActions.onVolume)
+                        }
                     }
                 },
+                trailingContent = { PlayerRowMenu(p.name, items, tag = "play-on-${p.id}") },
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                 modifier = Modifier.selectable(selected = selected, role = Role.RadioButton) { actions.onControl(p.id) },
             )
@@ -302,34 +379,5 @@ fun DefaultPlayerSetting(
         icon = Icons.Outlined.Devices,
         tag = "default-player-setting",
         current = missing?.let { stringResource(R.string.default_player_missing) },
-    )
-}
-
-/** A compact "now playing" card for Home: small, so the library comes first (D20). */
-@Composable
-fun CompactPlayerCard(state: PlayerUiState, onOpen: () -> Unit, modifier: Modifier = Modifier) {
-    val track = state.status?.current ?: return
-    ListItem(
-        overlineContent = {
-            Text(
-                if (state.controllingOther) {
-                    stringResource(R.string.playing_on, state.selected?.name ?: "")
-                } else {
-                    stringResource(if (state.playing) R.string.now_playing else R.string.paused)
-                },
-            )
-        },
-        headlineContent = { Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        supportingContent = track.artist?.let { { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) } },
-        leadingContent = {
-            ArtworkImage(
-                track.artwork,
-                120,
-                contentDescription = null,
-                modifier = Modifier.size(48.dp),
-                corner = 6.dp,
-            )
-        },
-        modifier = modifier.clickable(onClickLabel = stringResource(R.string.open_now_playing), onClick = onOpen),
     )
 }

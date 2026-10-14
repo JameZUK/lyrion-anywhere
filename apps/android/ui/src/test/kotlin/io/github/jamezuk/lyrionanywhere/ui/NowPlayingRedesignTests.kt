@@ -272,9 +272,12 @@ class NowPlayingRedesignScreenTest {
             nowPlayingActions().copy(onCarMode = { opened += "car" }, onAlarms = { opened += "alarms" }, onRooms = { opened += "rooms" }, onMore = { opened += "track" }),
         )
         compose.onNodeWithTag("now-playing-more").performClick()
-        for (tag in listOf("more-rate", "sleep-button", "volume-button", "visualiser-button", "more-visualiser-style", "more-car-mode", "more-alarms", "more-track", "more-power")) {
+        for (tag in listOf("more-rate", "sleep-button", "volume-button", "visualiser-button", "more-visualiser-style", "more-car-mode", "more-track")) {
             compose.onNodeWithTag(tag).assertExists()
         }
+        // A player's alarms and power are its row in Play on… (Wave 3.5 phase 3).
+        compose.onNodeWithTag("more-alarms").assertDoesNotExist()
+        compose.onNodeWithTag("more-power").assertDoesNotExist()
         // One way in (Wave 3.5): every room is in Play on…, the signal path is the badge's.
         compose.onNodeWithTag("more-rooms").assertDoesNotExist()
         compose.onNodeWithTag("more-signal-path").assertDoesNotExist()
@@ -525,6 +528,7 @@ class NowPlayingRedesignAccessibilityTest {
                 OfflineNowPlayingScreen(ui, clock = { 0L }, actions = OfflineNowPlayingActions(), onClose = {}, visual = FakeVisualSource(), phoneVolume = FakePhoneVolume())
             }
         }
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("volume-button").performClick()
         compose.assertAccessible()
     }

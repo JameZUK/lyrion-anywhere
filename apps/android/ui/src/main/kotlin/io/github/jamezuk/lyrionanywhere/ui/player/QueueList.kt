@@ -114,10 +114,12 @@ fun QueueHeader(
     onSaveAsPlaylist: (() -> Unit)? = null,
     /** False while the server can't be reached: the queue can't be changed (greyed out). */
     enabled: Boolean = true,
+    /** The downloads queue (it says so, and has no actions). */
+    downloads: Boolean = false,
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var confirmUpcoming by rememberSaveable { mutableStateOf(false) }
-    val actions = buildList {
+    val actions = if (downloads) emptyList() else buildList {
         if (onSaveAsPlaylist != null && count > 0) {
             add(RowAction(stringResource(R.string.save_queue_action), Icons.AutoMirrored.Outlined.PlaylistAdd, onSaveAsPlaylist, enabled, tag = "save-queue") {})
         }
@@ -128,7 +130,9 @@ fun QueueHeader(
             add(RowAction(stringResource(R.string.queue_clear), Icons.Outlined.Delete, { confirm = true }, enabled, tag = "clear-queue") {})
         }
     }
-    val summary = if (count > 0) {
+    val summary = if (downloads) {
+        LocalResources.current.getQuantityString(R.plurals.queue_summary_downloads, count, count)
+    } else if (count > 0) {
         LocalResources.current.getQuantityString(R.plurals.queue_summary, count, count, playerName)
     } else {
         playerName
@@ -214,6 +218,8 @@ fun LazyListScope.queueItems(
     marks: (Track) -> QueueMark = { QueueMark.NONE },
     /** Which controls work (while the server is away: rows not on the phone are dimmed). */
     gate: ControlGate = ControlGate.ONLINE,
+    /** False: a queue that can't be edited (the downloads queue), rows only play. */
+    editable: Boolean = true,
 ) {
     if (entries.isEmpty() && !hasMore) {
         item(key = "queue-empty") { Text(stringResource(R.string.queue_empty), Modifier.padding(16.dp)) }
@@ -227,7 +233,7 @@ fun LazyListScope.queueItems(
                     i == sections.upNext.first -> SectionHeader(stringResource(R.string.up_next), Modifier.testTag("section-up-next"))
                     i == sections.thenFrom -> SectionHeader(stringResource(R.string.section_then), Modifier.testTag("section-then"))
                 }
-                QueueRow(i, e, entries.size, currentIndex, drag, actions, marks(e.track), gate)
+                QueueRow(i, e, entries.size, currentIndex, drag, actions, marks(e.track), gate, editable)
             }
         }
     }
@@ -271,9 +277,10 @@ private fun QueueRow(
     actions: QueueActions,
     mark: QueueMark = QueueMark.NONE,
     gate: ControlGate = ControlGate.ONLINE,
+    canEdit: Boolean = true,
 ) {
     // While the server is away: no edits, and only rows on the phone can be played.
-    val editable = gate.other
+    val editable = gate.other && canEdit
     val playable = gate.canJump(mark)
     val haptics = LocalHapticFeedback.current
     val dismiss = rememberSwipeToDismissBoxState()

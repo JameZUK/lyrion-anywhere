@@ -18,6 +18,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.navigation.NavDestination.Companion.hasRoute
+import androidx.navigation.compose.currentBackStackEntryAsState
+import io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsPlayer
+import io.github.jamezuk.lyrionanywhere.ui.offline.OfflinePlayerUi
+import io.github.jamezuk.lyrionanywhere.ui.player.MiniPlayer
+import io.github.jamezuk.lyrionanywhere.ui.player.NowPlayingActions
+import io.github.jamezuk.lyrionanywhere.ui.player.NowPlayingScreen
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -111,12 +118,11 @@ fun OfflineApp(
             }
         },
         bottomBar = {
-            OfflineMiniPlayer(
-                player,
-                onOpen = { nav.navigate(OfflineNowPlayingRoute) },
-                onToggle = playerVm::toggle,
-                onNext = playerVm::next,
-            )
+            // The main mini player (Wave 3.5: one face for both engines), hidden on Now playing.
+            val destination = nav.currentBackStackEntryAsState().value?.destination
+            if (destination?.hasRoute(OfflineNowPlayingRoute::class) != true) {
+                DownloadsMiniPlayer(playerVm, player, onOpen = { nav.navigate(OfflineNowPlayingRoute) })
+            }
         },
     ) { padding ->
         NavHost(nav, startDestination = OfflineLibraryRoute, modifier = Modifier.padding(padding)) {
@@ -173,13 +179,7 @@ fun OfflineApp(
             }
             composable<OfflineNowPlayingRoute> {
                 // No top app bar: a small close chevron over the art instead.
-                OfflineNowPlayingScreen(
-                    player,
-                    offlineClock,
-                    offlineNowPlayingActions(playerVm),
-                    visual = playerVm,
-                    onClose = { nav.popBackStack() },
-                )
+                DownloadsNowPlaying(playerVm, player, onClose = { nav.popBackStack() })
             }
         }
     }
@@ -195,6 +195,48 @@ fun OfflineApp(
             onDismiss = { askSignOut = false },
         )
     }
+}
+
+/**
+ * The downloads playing on this phone, as the main player screens show a player (Wave 3.5
+ * item 14): the main Now playing, driving the downloads engine. [onOutputs] opens *Play on…*
+ * where there is a server to offer players.
+ */
+@Composable
+internal fun DownloadsNowPlaying(
+    vm: OfflinePlayerViewModel,
+    ui: OfflinePlayerUi,
+    onClose: () -> Unit,
+    onOutputs: () -> Unit = {},
+    onMore: ((io.github.jamezuk.lyrionanywhere.core.Track) -> Unit)? = null,
+    onCarMode: (() -> Unit)? = null,
+    twoPane: Boolean = false,
+    wide: Boolean = false,
+    base: io.github.jamezuk.lyrionanywhere.ui.player.PlayerUiState = io.github.jamezuk.lyrionanywhere.ui.player.PlayerUiState(),
+) {
+    // The queue ended or was stopped: nothing to show, so back to where it was opened.
+    if (!ui.state.active) {
+        LaunchedEffect(Unit) { onClose() }
+        return
+    }
+    OfflineNowPlayingScreen(
+        ui,
+        offlineClock,
+        offlineNowPlayingActions(vm).copy(onOutputs = onOutputs),
+        visual = vm,
+        onClose = onClose,
+        twoPane = twoPane,
+        wide = wide,
+        base = base,
+        onMore = onMore,
+        onCarMode = onCarMode,
+    )
+}
+
+/** The main mini player, for the downloads playing on this phone. */
+@Composable
+internal fun DownloadsMiniPlayer(vm: OfflinePlayerViewModel, ui: OfflinePlayerUi, onOpen: () -> Unit, onOutputs: () -> Unit = {}) {
+    OfflineMiniPlayer(ui, onOpen = onOpen, onToggle = vm::toggle, onNext = vm::next, onPrevious = vm::previous, onOutputs = onOutputs)
 }
 
 internal fun offlineNowPlayingActions(vm: OfflinePlayerViewModel) = OfflineNowPlayingActions(

@@ -559,12 +559,15 @@ class OfflineVisualiserAndCarButtonTests {
             }
         }
         compose.onNodeWithTag("visualiser").assertDoesNotExist()
+        // The visualiser's switch is in ⋮ (Wave 3.5: downloads use the main Now playing).
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("visualiser-button").performClick()
         // It draws over the cover, which stays.
         compose.onNodeWithTag("visualiser", useUnmergedTree = true).assertExists()
         compose.onNodeWithTag("artwork").assertExists()
         assertTrue(source.active.contains(true))
         // A long press chooses the style.
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("visualiser-button").performTouchInput { longClick() }
         compose.onNodeWithTag("visual-style-SCOPE").performClick()
         assertEquals(listOf("on true", "style SCOPE"), chosen)
@@ -598,6 +601,7 @@ class OfflineVisualiserAndCarButtonTests {
         // runs for the glow.
         compose.onNodeWithTag("visualiser").assertDoesNotExist()
         compose.onNodeWithTag("glow-halo").assertExists()
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("visualiser-button").assertTextEquals("Glow")
         assertEquals(listOf(true), source.active)
     }

@@ -203,8 +203,9 @@ class OfflineScreenTests {
                 )
             }
         }
-        compose.onNodeWithTag("offline-mini-player").assertIsDisplayed()
-        compose.onNodeWithText("Playing downloads on this phone").assertIsDisplayed()
+        // The main mini player and Now playing, for downloads (Wave 3.5 item 14).
+        compose.onNodeWithTag("mini-player").assertIsDisplayed()
+        compose.onNodeWithText("Band · Downloads").assertIsDisplayed()
         // Constant names; the mode is the toggle's state.
         compose.onNodeWithContentDescription("Repeat")
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Repeating the queue"))
@@ -213,7 +214,9 @@ class OfflineScreenTests {
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
             .performClick()
         compose.onNodeWithContentDescription("Previous track").performClick()
-        compose.onNodeWithContentDescription("Stop playing downloads").performClick()
+        // Stop is in ⋮.
+        compose.onNodeWithTag("now-playing-more").performClick()
+        compose.onNodeWithTag("offline-stop").performClick()
         // The queue opens as a sheet from the Queue action.
         compose.onNodeWithTag("queue-button").performClick()
         compose.onNodeWithText("Song 1").performClick()

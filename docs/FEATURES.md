@@ -66,7 +66,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 <p align="center">
   <img src="images/web/play-on-phone.png" alt="The Play on… sheet on a phone: this device ticked, then the other players with what each is playing, a Move here button on each, and sync group toggles" width="250">
   &nbsp;
-  <img src="images/android/play-on.png" alt="The Android Play on… sheet: this phone, the other players you may control with their tracks, and buttons to move playback or join a group" width="250">
+  <img src="images/android/play-on.png" alt="The Android Play on… sheet: this phone and the other players you may control with their tracks, each with a menu, and a Group players row" width="250">
 </p>
 <p align="center">
   <img src="images/web/rooms-desktop.png" alt="Rooms in a desktop browser: a card for each player with its artwork, track, play/pause, volume, power, sleep time left and next alarm" width="820">
@@ -78,7 +78,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 | **Which player** | Both | Whenever another player is in use the app says so, with one tap back to this device. Web: a strip. Android: the mini player's second line ("on Kitchen", with a speaker); going back to this phone, or moving playback here, is in *Play on…* |
 | **Move playback** | Both | *Move here* carries another player's queue, track, position, shuffle and repeat to this device and stops it there; *Bring here* does the reverse; radio and app streams move too. Same recipe on every client (see [`PROTOCOL.md`](PROTOCOL.md#transfer-move-playback-between-players)) |
 | **Sync groups** | Both | Join or leave the controlled player's group; the player button names the group ("Lounge + Study"). Android: in *Play on… › Group players…* |
-| **Rooms** | Both | Every player you may control as a card: artwork, track, play/pause, volume, power, sleep time left and the next alarm. Tap to control, drag one card onto another to sync (or *Sync with…*, or the keyboard / TalkBack), *Play on its own* to unsync, a long press to move playback there |
+| **Rooms** | Both | Every player you may control as a card: artwork, track, play/pause, volume, power, sleep time left and the next alarm. Tap to control, drag one card onto another to sync (or *Sync with…*, or the keyboard / TalkBack), *Play on its own* to unsync, a long press to move playback there. Android (Wave 3.5): on phones Rooms is part of *Play on…* (each row's ⋮ plays or pauses, opens alarms and switches the player on or off; the controlled and playing players have a volume slider); the Rooms page is the expanded view on large windows, each card with play/pause, volume and ⋮ (power is in ⋮; drag the cover to sync) |
 | **Alarms** | Both | LMS's own alarms for any player you may control: time, days, once or weekly, what to play (the current queue, favourites, playlists, random mixes or sounds), shuffle and volume; an on/off switch per alarm and for all of a player's alarms. They ring on hardware players with no app open |
 | **Player permissions** | Server | Listeners see and control only their own devices and the home players an admin granted them; admins control every player |
 
@@ -92,7 +92,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
   &nbsp;
   <img src="images/android/library.png" alt="The Android Albums page: a sort menu, a grid or list switch and an album grid" width="250">
   &nbsp;
-  <img src="images/android/album.png" alt="An album page on Android: large artwork, year, genre and format, Play, Shuffle, Add and More buttons, and the tracks by disc" width="250">
+  <img src="images/android/album.png" alt="An album page on Android: large artwork, year, genre and format, Play, Shuffle, Download and More buttons, and the tracks by disc" width="250">
 </p>
 <p align="center">
   <img src="images/web/album-desktop.png" alt="An album page in a desktop browser: the cover and album details, Play, Play next, More and Download buttons, the track list, and a Review section with a Read more button" width="820">
@@ -135,7 +135,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 <p align="center">
   <img src="images/web/queue-phone.png" alt="The queue on a phone, in three sections: Now playing, Up next and Then, with drag handles and a Clear upcoming button" width="250">
   &nbsp;
-  <img src="images/android/queue.png" alt="The Android Queue tab: the selected player's queue in sections, with drag handles and links marking gapless tracks of one album" width="250">
+  <img src="images/android/queue.png" alt="The Android Queue tab: a one-line summary with a menu, then the selected player's queue, each row with a menu and a drag handle" width="250">
 </p>
 
 | Feature | Where | Details |
@@ -158,7 +158,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
   &nbsp;
   <img src="images/web/lyrics-phone.png" alt="Synced lyrics on a phone, with the current line highlighted and kept in view" width="250">
   &nbsp;
-  <img src="images/android/now-playing-light.png" alt="The Android Now playing in the light theme, with the cover, star rating, quality badge and waveform seek bar" width="250">
+  <img src="images/android/now-playing-light.png" alt="The Android Now playing in the light theme, with the cover, a rating star, quality badge and waveform seek bar" width="250">
 </p>
 <p align="center">
   <img src="images/android/signal-path.png" alt="The Android signal path: source, decoding, each processing stage, the output and whether the route is bit-perfect" width="250">
@@ -187,7 +187,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 <p align="center">
   <img src="images/android/sound-settings.png" alt="Android Settings › Sound: a Bit-perfect indicator, preamp, loudness levelling, parametric EQ with per-output profiles, loudness-compensated volume, crossfeed, dither and transitions" width="250">
   &nbsp;
-  <img src="images/android/gaps-settings.png" alt="Android Settings › Gaps in the signal: switches for reading ahead the next track and doing so on mobile data too" width="250">
+  <img src="images/android/gaps-settings.png" alt="Android Settings › About › Advanced: reading ahead the next track (also on mobile data) and the replay cache" width="250">
 </p>
 
 All of these are on Android, for this phone's player, and are **off by default**, so playback stays bit-perfect. A *Bit-perfect* indicator changes as soon as any stage is on, and the signal path shows each stage. They apply to streaming and downloads alike.
@@ -242,7 +242,7 @@ All of these are on Android, for this phone's player, and are **off by default**
 | **Controls with the server away** | Android | While the server can't be reached, controls that can't work are greyed out (everywhere: Now playing, the mini player, the queue, the notification, the lock screen and Android Auto). On this phone's player, play and pause still work at once, and next, previous, a queue row and seeking work for tracks the phone has whole (downloaded, or kept from streaming), playing on from its own copies until the next track needs the server. Queue rows are marked *Downloaded* or *On this device*. Back online, LMS picks up where the phone is, if its queue hasn't changed |
 | **A busy music server** | Web | When LMS stops answering for a while (its music share spinning up, say), the gateway says so at once instead of letting requests pile up. The web app shows a calm *Your music server is busy. Waiting for it…* status rather than an error or offline mode, keeps playing what it has buffered and stays connected, polls less often until LMS answers, then catches up by itself. Controls that need LMS are disabled meanwhile, as when the server is out of reach; nothing is queued to run later |
 | **Controls that work without the server** | Web | When the server can't be reached for more than 3 s (or the browser is offline), controls that can't work are greyed out rather than failing. With this browser as the player, Play/Pause still works (the position is kept), Next, Previous and the queue jump to tracks on this device (downloads, or the stream it holds) and back, a download can be sought, and playback goes on to the next track here at the end of one (or stops, saying the next one needs the server). The lock screen offers only what works; library play actions and the Rooms page's controls are disabled too. When the server is back, LMS is told where this device got to, unless someone changed the queue meanwhile; nothing done here, nothing told. One compact *Can't reach your server* chip at the top of the page, on phones too, never over the controls, and no error per command |
-| **Offline playback** | Both | Android: the app's own queue through the same engine as streaming (DSP, levelling, bit-perfect USB, gapless, signal path), with the notification and Bluetooth buttons. Web: the browser's audio element with lock-screen controls |
+| **Offline playback** | Both | Android: the app's own queue through the same engine as streaming (DSP, levelling, bit-perfect USB, gapless, signal path), with the notification and Bluetooth buttons. Web: the browser's audio element with lock-screen controls. Android (Wave 3.5): downloads use the main mini player, Now playing (Stop is in ⋮) and Queue tab, as a player called *Downloads*; the downloads queue can't be edited |
 | **Continue on a player** | Both | Back online with downloads queued (playing or paused), a prompt offers *Continue on* a player you may control (this device's own player when it was the one in use, else the last one used), or *Not now* (Android: a one-line banner, with ▾ to choose the player and ✕ for Not now). It never happens by itself. The queue goes in order, at the current track and position, playing or paused as it was; then the downloads stop. Tracks no longer in the library are skipped and counted; if anything fails, the downloads carry on |
 | **Plays counted in LMS** | Both, Server | Each play heard offline (half the track or 240 s) is queued on the device and sent when back online; LMS's play count and last played are updated. Retries never count twice; the web Downloads page shows "N plays waiting to sync" |
 | **Downloads kept per user** | Both | Another account signing in on the same device doesn't see them. Signing out asks whether to remove them (keeping is the default) |
