@@ -39,8 +39,11 @@ class NarrowPhoneTests {
         }
         // The actions are all still there, in their own row; the rest is in ⋮.
         compose.onNodeWithTag("now-playing-actions").assertExists()
-        compose.onNodeWithTag("sleep-button").assertExists()
+        compose.onNodeWithTag("play-on-button").assertExists()
+        compose.onNodeWithTag("lyrics-action").assertExists()
         compose.onNodeWithTag("queue-button").assertExists()
+        compose.onNodeWithTag("now-playing-more").performClick()
+        compose.onNodeWithTag("sleep-button").assertExists()
         compose.onNodeWithTag("volume-button").performClick()
         val node = compose.onNodeWithTag("volume-slider").fetchSemanticsNode()
         val lengthDp = node.size.width / node.layoutInfo.density.density

@@ -2,6 +2,20 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Android declutter, phase 1 (Wave 3.5)
+
+The quick wins of `docs/plans/wave3_5-declutter.md`, Android column. Each control that left a screen has a named new home, and every one is still reachable (tested).
+
+- **No "Playing on" strip.** The mini player's second line says which other player it controls ("on Lounge", with a speaker); this phone's name isn't repeated. *Back to this phone* is the This phone row of *Play on…*, and *Bring to this phone* is its *Move playback here*. A move in progress still shows above the mini player.
+- **Page headers** (album, playlist, artist, genre, year): Play · Shuffle · Download · ⋮ on one row. ⋮ opens the item's sheet, which has Play next, Add to queue, Download and Start radio (Start radio left the album page); where a header has no sheet, ⋮ offers Play next and Add to queue. Too narrow for Download, the header leaves it to the sheet rather than nest menus. "Play all" is "Play".
+- **Queue:** the header is one line ("12 tracks on Lounge") with ⋮ (*Save as playlist*, *Clear upcoming*, *Clear queue*); rows keep one ⋮ and the drag handle; the gapless link marks are gone (Track info says *Gapless: plays straight on…*).
+- **Now playing:** the tab bar is hidden (Now playing is a sheet over the app); one rating control by the title (the heart toggles; with stars, one star opens the full 1–5 rating; the full rating is also in ⋮ and on the heart's long press, with TalkBack's half steps kept); "Up next" is one line of text (still swiped away, or removed with TalkBack's action or Delete; hidden on short screens so the cover keeps its size: about 160 dp at 360×640, from 70); the bottom row is **Play on** (named after the player) · **Lyrics** · **Queue**. Sleep timer, Volume, the visualiser's switch and its style moved into ⋮; a running sleep timer shows in the top row (a tap changes it). The chip at the top went (Play on is in the bottom row); All rooms left ⋮ (it is in *Play on…*), and so did the signal path when the quality badge, which opens it, is shown.
+- **Home:** station cards have no bin: a tap plays, ⋮ (or a long press) deletes, and TalkBack has *Delete station* on the card; a subtitle that only repeats the name is dropped. *Edit Home* is a quiet text button.
+- **Continue on…** is a one-line banner: "Back online. Continue on Lounge?", ▾ to choose the player (it says what would move), Continue, and ✕ for Not now.
+- **Marks:** one *Downloaded* mark (a filled ↓ in a circle) on track rows of the queue, album and playlist pages; the *On this device* mark only while your music server is out of reach. ✕ now only closes or dismisses: deleting an alarm shows a bin, removing a filter rule a ⊖, switching the visualiser off its own icon.
+- **One trailing control per row:** download rows (pause/resume/retry and cancel), downloaded albums (play, remove), favourites (play next, add), folders, smart filters (play, shuffle, edit, delete), plugin menu rows and search results (album ▷, playlist ▷) now have one ⋮, with TalkBack actions where they had buttons.
+- **Tests:** `Wave35Phase1Tests` (the mini player names the other player with no strip; Move playback here and Back to this phone in *Play on…*; header buttons on one row at 1.3× text; the queue header and its menu; at most one control per queue row and no gapless marks; Now playing's one rating control and three actions; the full rating from the star and from ⋮; the heart and its long press; every action taken off Now playing reachable from ⋮; Up next removable by TalkBack; gapless in Track info; All rooms only in *Play on…*; stations deleted from their menu and by TalkBack; the one-line Continue on banner; the offline mark on track and album rows; the cache mark only out of reach; favourites' Play next and Add from ⋮), `Wave35SmallPhoneTests` (the cover at least 160 dp at 360×640), `WholeScreenTest` (Now playing hides the tabs). Existing tests follow the actions to their new places.
+
 ## 2026-10-14: Android: four layout fixes
 
 Found by a rendered review of every screen at phone, small-phone and tablet sizes:

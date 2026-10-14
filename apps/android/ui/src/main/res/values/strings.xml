@@ -1123,4 +1123,15 @@
         <item quantity="one">%1$d second</item>
         <item quantity="other">%1$d seconds</item>
     </plurals>
+    <!-- Wave 3.5: declutter -->
+    <string name="mini_on_player">on %1$s</string>
+    <string name="move_playback_here">Move playback here</string>
+    <string name="rating_rate">Rate this track</string>
+    <string name="info_gapless">Gapless</string>
+    <string name="gapless_into_next">Plays straight on into the next track</string>
+    <plurals name="queue_summary">
+        <item quantity="one">%1$d track on %2$s</item>
+        <item quantity="other">%1$d tracks on %2$s</item>
+    </plurals>
+    <string name="station_delete_short">Delete station</string>
 </resources>

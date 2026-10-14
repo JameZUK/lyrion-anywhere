@@ -97,10 +97,13 @@ class LayoutFixesTests {
 
     // B1: the queue heading.
 
-    /** The heading is one line, and the buttons left in the row sit on one row beside it. */
+    /**
+     * The header's line ("5 tracks on Kitchen" since Wave 3.5: the page's title says Queue) is
+     * one line, and what is left in the row sits on one row beside it.
+     */
     private fun assertOneLineHeader() {
-        assertEquals(1, compose.onNodeWithText("Queue", useUnmergedTree = true).lines())
-        compose.onNodeWithText("Queue").assertIsDisplayed()
+        assertEquals(1, compose.onNodeWithTag("queue-title", useUnmergedTree = true).lines())
+        compose.onNodeWithText("5 tracks on Kitchen").assertIsDisplayed()
         val rows = listOf("save-queue", "clear-upcoming", "clear-queue", "queue-actions")
             .flatMap { compose.onAllNodes(androidx.compose.ui.test.hasTestTag(it)).fetchSemanticsNodes() }
             .map { it.positionInRoot.y + it.size.height / 2f }
@@ -147,10 +150,12 @@ class LayoutFixesTests {
 
     @Test
     @Config(sdk = [35], qualifiers = "w1280dp-h800dp-xhdpi")
-    fun aWideQueueHeaderNeedsNoMenu() {
+    fun aWideQueueHeaderKeepsItsActionsInItsMenu() {
+        // Wave 3.5: the header's actions are always in its ⋮, whatever the width.
         queueHeader(800)
+        listOf("save-queue", "clear-upcoming", "clear-queue").forEach { compose.onNodeWithTag(it).assertDoesNotExist() }
+        compose.onNodeWithTag("queue-actions").performClick()
         listOf("save-queue", "clear-upcoming", "clear-queue").forEach { compose.onNodeWithTag(it).assertIsDisplayed() }
-        compose.onNodeWithTag("queue-actions").assertDoesNotExist()
     }
 
     // B2: the connection line over Now playing's ambient background.
@@ -242,30 +247,47 @@ class LayoutFixesTests {
     }
 
     @Test
-    fun aMovedHeaderActionIsInTheMenuWithItsLabel() {
-        var added = 0
+    fun aNarrowHeaderLeavesDownloadToTheItemsSheet() {
+        // Wave 3.5: Play · Shuffle · Download · ⋮, and ⋮ opens the item's sheet (which has Play
+        // next, Add to queue and Download): too narrow for Download, it is left to the sheet
+        // rather than put in a menu that opens another.
         var downloads = 0
         var more = 0
-        playButtons(300, more = { more++ }, download = { downloads++ }, add = { added++ })
+        playButtons(240, more = { more++ }, download = { downloads++ })
         compose.onNodeWithContentDescription("Add to queue").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Download the rest").assertDoesNotExist()
+        compose.onNodeWithContentDescription("More options").performClick()
+        assertEquals(listOf(0, 1), listOf(downloads, more))
+    }
+
+    @Test
+    fun withoutAnItemSheetTheMenuOffersPlayNextAndAddToQueue() {
+        val placed = mutableListOf<io.github.jamezuk.lyrionanywhere.core.Placement>()
+        compose.setContent {
+            LyrionTheme(dynamicColour = false) {
+                PlayButtons(onPlay = { placed += it }, onShuffle = null, onMore = null)
+            }
+        }
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithText("Play next").performClick()
         compose.onNodeWithContentDescription("More options").performClick()
         compose.onNodeWithText("Add to queue").performClick()
-        compose.onNodeWithContentDescription("More options").performClick()
-        compose.onNodeWithText("Download the rest").performClick()
-        compose.onNodeWithContentDescription("More options").performClick()
-        compose.onNodeWithText("More…").performClick()
-        assertEquals(listOf(1, 1, 1), listOf(added, downloads, more))
+        assertEquals(
+            listOf(io.github.jamezuk.lyrionanywhere.core.Placement.PLAY_NEXT, io.github.jamezuk.lyrionanywhere.core.Placement.ADD_TO_QUEUE),
+            placed,
+        )
     }
 
     @Test
     @Config(sdk = [35], qualifiers = "w1280dp-h800dp-xhdpi")
-    fun aWideHeaderShowsEveryButtonAndTheMenuOpensMore() {
+    fun aWideHeaderIsPlayShuffleDownloadAndTheMenu() {
         var more = 0
-        playButtons(600, more = { more++ })
-        compose.onNodeWithContentDescription("Add to queue").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Download the rest").assertIsDisplayed()
+        var downloads = 0
+        playButtons(600, more = { more++ }, download = { downloads++ })
+        compose.onNodeWithContentDescription("Add to queue").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Download the rest").assertIsDisplayed().performClick()
         compose.onNodeWithContentDescription("More options").performClick()
-        assertEquals(1, more)
+        assertEquals(listOf(1, 1), listOf(downloads, more))
     }
 
     // B5: the chosen Library chip.

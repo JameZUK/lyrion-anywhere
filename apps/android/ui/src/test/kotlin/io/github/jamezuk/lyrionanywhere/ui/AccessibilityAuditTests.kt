@@ -80,7 +80,6 @@ import io.github.jamezuk.lyrionanywhere.ui.player.NowPlayingScreen
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnActions
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnList
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayerUiState
-import io.github.jamezuk.lyrionanywhere.ui.player.PlayingOnStrip
 import io.github.jamezuk.lyrionanywhere.ui.player.QueueEntry
 import io.github.jamezuk.lyrionanywhere.ui.player.isPlayPauseKey
 import io.github.jamezuk.lyrionanywhere.ui.library.isContextMenuKey
@@ -148,11 +147,8 @@ class AccessibilityAuditTests {
 
     @Test
     fun miniPlayer() = audit {
-        MiniPlayer(auditPlayerState(), onOpen = {}, onTogglePlay = {}, onNext = {}, onBringToPhone = {})
+        MiniPlayer(auditPlayerState(), onOpen = {}, onTogglePlay = {}, onNext = {})
     }
-
-    @Test
-    fun playingOnStrip() = audit { PlayingOnStrip(auditPlayerState(), onBackToPhone = {}, onBringToPhone = {}) }
 
     @Test
     fun playOnSheet() = audit {

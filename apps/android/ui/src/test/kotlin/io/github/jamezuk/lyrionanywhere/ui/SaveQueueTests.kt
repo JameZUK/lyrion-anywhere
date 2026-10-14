@@ -4,6 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -154,8 +155,12 @@ class SaveQueueScreenTest {
                 QueueHeader(3, "Kitchen", onClear = {}, onSaveAsPlaylist = if (offered) ({ opened++ }) else null)
             }
         }
+        compose.onNodeWithTag("queue-actions").performClick()
         compose.onNodeWithTag("save-queue").assertDoesNotExist()
+        compose.onNodeWithTag("clear-queue").performClick()
+        compose.onNodeWithText("Cancel").performClick()
         offered = true
+        compose.onNodeWithTag("queue-actions").performClick()
         compose.onNodeWithTag("save-queue").performClick()
         assertEquals(1, opened)
     }

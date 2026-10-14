@@ -551,9 +551,11 @@ class Wave2LibraryScreenTest {
         }
         compose.onNodeWithTag("search-top").assertIsDisplayed()
         compose.onNodeWithText("Top result").assertIsDisplayed()
-        // An album row has a play button; tracks play from their rows.
-        compose.onNodeWithContentDescription("Play Album 7").performClick()
-        assertEquals("play ${Selection.Album(7)} PLAY_NOW", log.last())
+        // An album row has one trailing control, ⋮, whose sheet plays it (Wave 3.5); tracks
+        // play from their rows.
+        compose.onNodeWithContentDescription("Play Album 7").assertDoesNotExist()
+        compose.onNodeWithContentDescription("More options for Album 7").performClick()
+        assertEquals("more", log.last())
         // There are more tracks than shown: "See all" shows that type alone.
         compose.onNodeWithContentDescription("See all: Tracks").performClick()
         assertEquals("type TRACKS", log.last())

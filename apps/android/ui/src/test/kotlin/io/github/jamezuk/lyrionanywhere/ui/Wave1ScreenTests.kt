@@ -181,7 +181,9 @@ class NowPlayingWave1Test {
     @Test
     fun theMoonOpensTheSleepTimer() {
         nowPlaying()
-        compose.onNodeWithContentDescription("Sleep timer").performClick()
+        // In ⋮ since Wave 3.5.
+        compose.onNodeWithTag("now-playing-more").performClick()
+        compose.onNodeWithTag("sleep-button").performClick()
         compose.waitForIdle()
         compose.onNodeWithTag("sleep-30").performClick()
         assertEquals(listOf("sleep ${SleepChoice.Minutes(30)} ${SleepScope.PLAYER}"), calls)
@@ -190,10 +192,10 @@ class NowPlayingWave1Test {
     @Test
     fun aRunningTimerShowsTheTimeLeftAndItsSheetTurnsItOff() {
         nowPlaying(wave1State(sleepSecs = 1620.0))
-        // The Sleep action's label is the time left.
+        // The moon in the top row says the time left (Wave 3.5).
         compose.onNodeWithContentDescription("Sleep timer: stops in 27 min").assertIsDisplayed()
-        compose.onNodeWithTag("sleep-button").assertTextEquals("27 min")
-        compose.onNodeWithTag("sleep-button").performClick()
+        compose.onNodeWithTag("sleep-pill").assertTextEquals("27 min")
+        compose.onNodeWithTag("sleep-pill").performClick()
         compose.onNodeWithTag("sleep-off").performClick()
         assertEquals(listOf("cancel"), calls)
     }
@@ -201,8 +203,8 @@ class NowPlayingWave1Test {
     @Test
     fun upNextShowsTheNextTrack() {
         nowPlaying()
-        compose.onNodeWithText("UP NEXT").assertIsDisplayed()
-        compose.onNodeWithText("Next song — Other band").assertIsDisplayed()
+        compose.onNodeWithText("Up next").assertIsDisplayed()
+        compose.onNodeWithText("Next song — Other band", substring = true).assertIsDisplayed()
     }
 
     @Test

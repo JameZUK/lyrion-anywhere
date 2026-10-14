@@ -3,6 +3,8 @@ package io.github.jamezuk.lyrionanywhere.ui.player
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Column
@@ -258,18 +260,19 @@ fun SleepChoices(
 }
 
 /**
- * "Up next" under the transport (Wave 1 §3): one compact line, the next track with its
- * cover. Tap opens the queue; ✕ (or a swipe, the Remove action or Delete) takes it out of
- * the queue, with Undo. Without [onRemove] it can't be removed (downloads).
+ * "Up next" under the transport: one quiet line of text, the next track's title and artist.
+ * A tap opens the queue. Taking it out of the queue stays possible without a button: a swipe
+ * (either way), the Remove action for TalkBack, or Delete on a keyboard (with Undo). Without
+ * [onRemove] it can't be removed (downloads).
  */
 @Composable
 fun UpNextRow(track: Track, onOpenQueue: () -> Unit, onRemove: (() -> Unit)?, modifier: Modifier = Modifier) {
-    UpNextLine(track.title, track.artist, track.artwork, onOpenQueue, onRemove, modifier)
+    UpNextLine(track.title, track.artist, onOpenQueue, onRemove, modifier)
 }
 
-/** [UpNextRow] from its parts (a download's cover key, too). */
+/** [UpNextRow] from its parts (a download's, too). */
 @Composable
-fun UpNextLine(title: String, artist: String?, artwork: String?, onOpenQueue: () -> Unit, onRemove: (() -> Unit)?, modifier: Modifier = Modifier) {
+fun UpNextLine(title: String, artist: String?, onOpenQueue: () -> Unit, onRemove: (() -> Unit)?, modifier: Modifier = Modifier) {
     val dismiss = rememberSwipeToDismissBoxState()
     val scope = rememberCoroutineScope()
     val remove = stringResource(R.string.up_next_remove)
@@ -284,8 +287,7 @@ fun UpNextLine(title: String, artist: String?, artwork: String?, onOpenQueue: ()
             scope.launch { dismiss.snapTo(SwipeToDismissBoxValue.Settled) }
         },
         backgroundContent = {
-            // Only while swiping: the line is translucent, so a resting background would show
-            // through it (a red wash and a bin behind the close button).
+            // Only while swiping: at rest nothing shows behind the line.
             if (dismiss.dismissDirection != SwipeToDismissBoxValue.Settled) {
                 Box(
                     Modifier
@@ -301,11 +303,11 @@ fun UpNextLine(title: String, artist: String?, artwork: String?, onOpenQueue: ()
         },
         modifier = modifier.fillMaxWidth().testTag("up-next"),
     ) {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.85f),
-            modifier = Modifier
+        Row(
+            Modifier
                 .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .clip(RoundedCornerShape(12.dp))
                 .clickable(onClickLabel = stringResource(R.string.up_next_open_queue), onClick = onOpenQueue)
                 .onPreviewKeyEvent { e ->
                     if (onRemove != null && e.type == KeyEventType.KeyDown && (e.key == Key.Delete || e.key == Key.Backspace)) {
@@ -318,31 +320,24 @@ fun UpNextLine(title: String, artist: String?, artwork: String?, onOpenQueue: ()
                 .semantics(mergeDescendants = true) {
                     contentDescription = label
                     if (onRemove != null) customActions = listOf(CustomAccessibilityAction(remove) { onRemove(); true })
-                },
+                }
+                .padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
         ) {
-            Row(Modifier.padding(start = 8.dp, top = 4.dp, bottom = 4.dp, end = 0.dp), verticalAlignment = Alignment.CenterVertically) {
-                ArtworkImage(artwork, 120, contentDescription = null, modifier = Modifier.size(40.dp), corner = 8.dp)
-                Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                    Text(
-                        stringResource(R.string.up_next).uppercase(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        line,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
-                if (onRemove != null) {
-                    IconButton(onClick = onRemove, modifier = Modifier.testTag("up-next-remove")) {
-                        Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.up_next_remove_named, title), modifier = Modifier.size(20.dp))
-                    }
-                } else {
-                    Spacer(Modifier.width(12.dp))
-                }
-            }
+            Text(
+                stringResource(R.string.up_next),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+            Text(
+                " · $line",
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
         }
     }
 }

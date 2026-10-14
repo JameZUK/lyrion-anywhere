@@ -116,8 +116,11 @@ class SmartFilterScreenTests {
         compose.onNodeWithText("Late night jazz").assertIsDisplayed()
         compose.onNodeWithText("2 genres · 1960s").assertExists()
         compose.onNodeWithText("An artist (composer) · No compilations").assertExists()
-        compose.onNodeWithContentDescription("Play Late night jazz").performClick()
-        compose.onNodeWithContentDescription("Shuffle Example Composer").performClick()
+        // Play and Shuffle are in each row's ⋮ (Wave 3.5 rule 3).
+        compose.onNodeWithContentDescription("More for Late night jazz").performClick()
+        compose.onNodeWithTag("filter-play-11").performClick()
+        compose.onNodeWithContentDescription("More for Example Composer").performClick()
+        compose.onNodeWithTag("filter-shuffle-12").performClick()
         assertEquals(listOf(11L to false, 12L to true), played)
         compose.onNodeWithText("Late night jazz").performClick()
         assertEquals(listOf(11L), opened)

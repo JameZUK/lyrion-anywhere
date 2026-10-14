@@ -42,7 +42,7 @@ import io.github.jamezuk.lyrionanywhere.ui.player.MiniPlayer
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnActions
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayOnList
 import io.github.jamezuk.lyrionanywhere.ui.player.PlayerUiState
-import io.github.jamezuk.lyrionanywhere.ui.player.PlayingOnStrip
+import androidx.compose.ui.test.onNodeWithTag
 import io.github.jamezuk.lyrionanywhere.ui.theme.LyrionTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -73,34 +73,46 @@ class BrowseScreenTests {
         syncGroups = listOf(SyncGroup(listOf(KITCHEN, PHONE))),
     )
 
+    /**
+     * The "Playing on" strip is gone (Wave 3.5): the mini player says which player, and going
+     * back to this phone is the This phone row of *Play on…*.
+     */
     @Test
-    fun theStripSaysWhichPlayerAndGoesBackToThePhone() {
+    fun theMiniPlayerSaysWhichPlayerAndPlayOnGoesBackToThePhone() {
         var back = 0
+        var outputs = 0
         compose.setContent {
-            LyrionTheme(dynamicColour = false) { PlayingOnStrip(state(KITCHEN), onBackToPhone = { back++ }) }
+            LyrionTheme(dynamicColour = false) {
+                androidx.compose.foundation.layout.Column {
+                    MiniPlayer(state(KITCHEN), onOpen = {}, onTogglePlay = {}, onNext = {}, onOutputs = { outputs++ })
+                    PlayOnList(state(KITCHEN), PlayOnActions(onControl = {}, onBackToPhone = { back++ }))
+                }
+            }
         }
-        compose.onNodeWithText("Playing on Player $KITCHEN").assertIsDisplayed()
-        compose.onNodeWithText("Back to this phone").performClick()
+        compose.onNodeWithText("on Player $KITCHEN", substring = true).assertIsDisplayed()
+        compose.onNode(hasText("This phone") and hasClickAction()).performClick()
         assertEquals(1, back)
+        assertEquals(0, outputs)
     }
 
     @Test
-    fun noStripWhileThisPhoneIsThePlayer() {
+    fun noPlayerNameWhileThisPhoneIsThePlayer() {
         compose.setContent {
-            LyrionTheme(dynamicColour = false) { PlayingOnStrip(state(PHONE), onBackToPhone = {}) }
+            LyrionTheme(dynamicColour = false) { MiniPlayer(state(PHONE), onOpen = {}, onTogglePlay = {}, onNext = {}) }
         }
+        compose.onNodeWithTag("mini-player-on", useUnmergedTree = true).assertDoesNotExist()
         compose.onNodeWithText("Back to this phone").assertDoesNotExist()
     }
 
     @Test
-    fun theMiniPlayerHasTheOutputButtonAndTheStrip() {
+    fun theMiniPlayerHasTheOutputButtonAndThePlayerName() {
         var outputs = 0
         compose.setContent {
             LyrionTheme(dynamicColour = false) {
                 MiniPlayer(state(KITCHEN), onOpen = {}, onTogglePlay = {}, onNext = {}, onOutputs = { outputs++ })
             }
         }
-        compose.onNodeWithText("Playing on Player $KITCHEN").assertIsDisplayed()
+        compose.onNodeWithText("on Player $KITCHEN", substring = true).assertIsDisplayed()
         compose.onNodeWithContentDescription("Playing on Player $KITCHEN. Choose where to play").performClick()
         assertEquals(1, outputs)
     }
@@ -189,10 +201,11 @@ class BrowseScreenTests {
         compose.onNodeWithText("Disc 2").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Play").performClick()
         compose.onNodeWithText("Shuffle").performClick()
-        compose.onNodeWithContentDescription("Add to queue").performClick()
+        // Add to queue is in the album's sheet, behind ⋮ (Wave 3.5; theMoreSheetOffersPlayActionsThenLmsItems).
+        compose.onNodeWithContentDescription("Add to queue").assertDoesNotExist()
         compose.onNodeWithContentDescription("More options").performClick()
         compose.onNodeWithContentDescription("More options for Track 2").performScrollTo().performClick()
-        assertEquals(listOf(Placement.PLAY_NOW, Placement.ADD_TO_QUEUE), played)
+        assertEquals(listOf(Placement.PLAY_NOW), played)
         assertEquals(1, shuffled)
         assertEquals(listOf(7L, 2L), more.map { it.id })
     }

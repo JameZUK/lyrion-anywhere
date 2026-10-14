@@ -66,61 +66,6 @@ fun OutputButton(state: PlayerUiState, onClick: () -> Unit, modifier: Modifier =
     }
 }
 
-/**
- * Says plainly when another player is being controlled (D20), with one tap back to this
- * phone. Shows nothing while this phone is the player. The buttons wrap below the name
- * when there isn't room (large text), so the name is never squeezed out.
- */
-@Composable
-fun PlayingOnStrip(
-    state: PlayerUiState,
-    onBackToPhone: () -> Unit,
-    modifier: Modifier = Modifier,
-    onBringToPhone: (() -> Unit)? = null,
-) {
-    if (!state.controllingOther) return
-    val name = state.selected?.name ?: return
-    val bg = MaterialTheme.colorScheme.tertiaryContainer
-    val fg = MaterialTheme.colorScheme.onTertiaryContainer
-    Column(
-        modifier
-            .fillMaxWidth()
-            .background(bg)
-            .padding(start = 16.dp, end = 4.dp, top = 4.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(end = 12.dp)) {
-            Icon(Icons.Outlined.Speaker, contentDescription = null, tint = fg)
-            Text(
-                stringResource(R.string.playing_on, name),
-                color = fg,
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 8.dp)
-                    .testTag("playing-on")
-                    // Announced when the controlled player changes.
-                    .semantics { liveRegion = LiveRegionMode.Polite },
-            )
-        }
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
-        ) {
-            // Moving playback here needs a player with something queued, and none in progress.
-            if (onBringToPhone != null && state.status?.current != null && state.transfer !is TransferState.Running) {
-                TextButton(onClick = onBringToPhone) {
-                    Text(stringResource(R.string.bring_to_phone), color = fg)
-                }
-            }
-            TextButton(onClick = onBackToPhone) {
-                Text(stringResource(R.string.back_to_phone), color = fg)
-            }
-        }
-    }
-}
-
 /** What the "Play on…" sheet can do. */
 data class PlayOnActions(
     val onControl: (String) -> Unit,
@@ -199,11 +144,14 @@ fun PlayOnList(state: PlayerUiState, actions: PlayOnActions, modifier: Modifier 
                     .weight(1f)
                     .selectable(selected = phone, role = Role.RadioButton, onClick = actions.onBackToPhone),
             )
+            // What the "Playing on" strip offered: move what the other player plays here.
             val bring = actions.onBringToPhone
             if (bring != null && state.controllingOther && state.status?.current != null) {
-                IconButton(onClick = bring, enabled = state.transfer !is TransferState.Running) {
-                    Icon(Icons.AutoMirrored.Outlined.Input, contentDescription = stringResource(R.string.bring_to_phone))
-                }
+                TextButton(
+                    onClick = bring,
+                    enabled = state.transfer !is TransferState.Running,
+                    modifier = Modifier.padding(end = 8.dp).testTag("play-on-bring-here"),
+                ) { Text(stringResource(R.string.move_playback_here)) }
             }
         }
         val others = state.otherPlayers

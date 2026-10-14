@@ -191,6 +191,8 @@ class Wave2Part3ScreenTests {
         nowPlaying(phonePlayingState(), nowPlayingActions().copy(onVisualiser = { on += it }, onVisualStyle = { styles += it }), source)
         compose.onNodeWithTag("visualiser").assertDoesNotExist()
         assertTrue("nothing analysed while off", source.active.isEmpty())
+        // The visualiser's switch is in ⋮ since Wave 3.5.
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("visualiser-button").performClick()
         compose.onNodeWithTag("visualiser", useUnmergedTree = true).assertExists()
         assertEquals(listOf(true), on)
@@ -201,6 +203,7 @@ class Wave2Part3ScreenTests {
         assertEquals(listOf(VisualStyle.SCOPE), styles)
         compose.onNodeWithTag("page-ART").assertIsSelected()
         // Off again: the engine is told to stop.
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("visualiser-button").performClick()
         compose.waitForIdle()
         assertEquals(listOf(true, false), source.active)
@@ -212,7 +215,8 @@ class Wave2Part3ScreenTests {
         val node = compose.onNodeWithTag("visualiser", useUnmergedTree = true).fetchSemanticsNode()
         assertTrue(node.children.isEmpty())
         assertEquals(null, node.config.getOrNull(SemanticsProperties.ContentDescription))
-        // Its one button is labelled, its state the style, and a long press chooses another.
+        // Its one switch (in ⋮) is labelled, its state the style, and a long press chooses another.
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithContentDescription("Visualiser")
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Bars"))
             .assert(SemanticsMatcher.keyIsDefined(androidx.compose.ui.semantics.SemanticsActions.OnLongClick))
@@ -234,6 +238,7 @@ class Wave2Part3ScreenTests {
         val source = FakeVisualSource()
         nowPlaying(phonePlayingState(NowPlayingPrefs(visualiser = true)), visual = source)
         compose.onNodeWithTag("visualiser").assertDoesNotExist()
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("visualiser-button").assertIsNotEnabled()
         val state = compose.onNodeWithTag("visualiser-button").fetchSemanticsNode().config.getOrNull(SemanticsProperties.StateDescription)
         assertEquals("Off in battery saver", state)
@@ -258,16 +263,17 @@ class Wave2Part3ScreenTests {
     }
 
     @Test
-    fun theChipOpensPlayOnAndTheMenuAllRooms() {
+    fun playOnOpensFromTheBottomRowAndHasAllRooms() {
         var rooms = 0
         var playOn = 0
         nowPlaying(auditPlayerState(), nowPlayingActions().copy(onRooms = { rooms++ }, onOutputs = { playOn++ }))
-        // The chip at the top opens Play on…; All rooms is in ⋮.
-        compose.onNodeWithTag("playing-on-chip").assertTextContains("Playing on", substring = true).performClick()
+        // Play on… is the first bottom action (Wave 3.5); All rooms is in it (playOnOffersAllRooms),
+        // so ⋮ no longer repeats it.
+        compose.onNodeWithTag("play-on-button").performClick()
         assertEquals(1, playOn)
         compose.onNodeWithTag("now-playing-more").performClick()
-        compose.onNodeWithTag("more-rooms").performClick()
-        assertEquals(1, rooms)
+        compose.onNodeWithTag("more-rooms").assertDoesNotExist()
+        assertEquals(0, rooms)
     }
 
     @Test

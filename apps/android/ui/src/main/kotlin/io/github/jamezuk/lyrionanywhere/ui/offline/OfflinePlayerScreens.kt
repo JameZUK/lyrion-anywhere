@@ -311,7 +311,7 @@ fun OfflineNowPlayingScreen(
                 },
             )
             nextTrack?.let { n ->
-                UpNextLine(n.title, n.artist, artOf(n), onOpenQueue = { queueOpen = true }, onRemove = null, modifier = Modifier.padding(top = 4.dp))
+                UpNextLine(n.title, n.artist, onOpenQueue = { queueOpen = true }, onRemove = null, modifier = Modifier.padding(top = 4.dp))
             }
             Row(Modifier.fillMaxWidth().padding(top = 4.dp).testTag("now-playing-actions"), verticalAlignment = Alignment.CenterVertically) {
                 NowPlayingAction(

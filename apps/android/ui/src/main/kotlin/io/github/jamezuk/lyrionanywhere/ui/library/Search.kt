@@ -315,18 +315,13 @@ private fun ArtistResultRow(a: Artist, actions: SearchActions) {
 
 @Composable
 private fun AlbumResultRow(a: Album, actions: SearchActions) {
-    val title = a.title.ifEmpty { stringResource(R.string.unknown_album) }
     BrowseSwipe({ p -> actions.onPlay(Selection.Album(a.id), p) }) { m ->
         AlbumRow(
             a,
             onClick = { actions.onAlbum(a) },
             onMore = { actions.onMore(More.album(a)) },
+            // One trailing control (Wave 3.5 rule 3): ⋮, whose sheet plays it too.
             modifier = m,
-            trailing = {
-                IconButton(onClick = { actions.onPlay(Selection.Album(a.id), Placement.PLAY_NOW) }) {
-                    Icon(Icons.Outlined.PlayArrow, stringResource(R.string.play_named, title))
-                }
-            },
         )
     }
 }
@@ -352,12 +347,7 @@ private fun PlaylistResultRow(p: SavedPlaylist, actions: SearchActions) {
         leadingContent = { Icon(Icons.AutoMirrored.Outlined.QueueMusic, contentDescription = null) },
         headlineContent = { Text(p.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         trailingContent = {
-            Row {
-                IconButton(onClick = { actions.onPlay(Selection.Playlist(p.id), Placement.PLAY_NOW) }) {
-                    Icon(Icons.Outlined.PlayArrow, stringResource(R.string.play_named, p.name))
-                }
-                IconButton(onClick = { actions.onMore(More.playlist(p)) }) { Icon(Icons.Outlined.MoreVert, stringResource(R.string.more_for, p.name)) }
-            }
+            IconButton(onClick = { actions.onMore(More.playlist(p)) }) { Icon(Icons.Outlined.MoreVert, stringResource(R.string.more_for, p.name)) }
         },
         modifier = Modifier.clickable(onClickLabel = stringResource(R.string.open_playlist)) { actions.onPlaylist(p) },
     )

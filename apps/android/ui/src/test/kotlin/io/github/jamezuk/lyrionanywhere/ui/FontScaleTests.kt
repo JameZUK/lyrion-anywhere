@@ -16,7 +16,6 @@ import io.github.jamezuk.lyrionanywhere.ui.menus.ItemSheetContent
 import io.github.jamezuk.lyrionanywhere.ui.menus.SheetTarget
 import io.github.jamezuk.lyrionanywhere.ui.player.MiniPlayer
 import io.github.jamezuk.lyrionanywhere.ui.player.NowPlayingScreen
-import io.github.jamezuk.lyrionanywhere.ui.player.PlayingOnStrip
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsUiState
 import io.github.jamezuk.lyrionanywhere.ui.theme.LyrionTheme
@@ -80,20 +79,18 @@ class FontScaleTests {
 
     @Test
     fun miniPlayer() = large {
-        MiniPlayer(auditPlayerState(), onOpen = {}, onTogglePlay = {}, onNext = {}, onBringToPhone = {})
+        MiniPlayer(auditPlayerState(), onOpen = {}, onTogglePlay = {}, onNext = {})
     }
 
-    /** The "Playing on" strip keeps the player's name in view, with its buttons below. */
+    /** The mini player keeps the controlled player's name in view (it replaced the strip). */
     @Test
     fun playingOnKeepsTheName() {
-        large { PlayingOnStrip(auditPlayerState(), onBackToPhone = {}, onBringToPhone = {}) }
-        val name = compose.onNodeWithTag("playing-on", useUnmergedTree = true)
+        large { MiniPlayer(auditPlayerState(), onOpen = {}, onTogglePlay = {}, onNext = {}) }
+        val name = compose.onNodeWithTag("mini-player-on", useUnmergedTree = true)
         name.assertIsDisplayed()
         val node = name.fetchSemanticsNode()
         val widthDp = node.size.width / node.layoutInfo.density.density
-        assertTrue("the name is only $widthDp dp wide", widthDp >= 200f)
-        compose.onNodeWithText("Back to this phone").assertIsDisplayed()
-        compose.onNodeWithText("Bring to this phone").assertIsDisplayed()
+        assertTrue("the name is only $widthDp dp wide", widthDp >= 40f)
     }
 
     @Test

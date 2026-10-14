@@ -64,6 +64,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import io.github.jamezuk.lyrionanywhere.ui.components.PlacementMenu
+import io.github.jamezuk.lyrionanywhere.ui.components.placementActions
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
@@ -345,7 +347,6 @@ fun CollectionHeader(
             onPlay = onPlay,
             onShuffle = null,
             onMore = onMore,
-            playLabel = R.string.action_play_all,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
         if (tabs.isNotEmpty()) {
@@ -399,7 +400,7 @@ fun FolderScreen(
         modifier,
         key = { i, f -> "${f.id}-$i" },
         header = if (!isTop && onPlayAll != null && state.items.any { it.kind != FolderKind.OTHER }) {
-            { PlayButtons(onPlay = onPlayAll, onShuffle = null, onMore = null, playLabel = R.string.action_play_all, modifier = Modifier.padding(16.dp)) }
+            { PlayButtons(onPlay = onPlayAll, onShuffle = null, onMore = null, modifier = Modifier.padding(16.dp)) }
         } else {
             null
         },
@@ -416,20 +417,11 @@ fun FolderScreen(
             },
             headlineContent = { Text(name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
             supportingContent = f.duration?.let { { Text(it) } },
+            // One trailing control (Wave 3.5 rule 3): ⋮, whose sheet plays, plays next and adds.
             trailingContent = {
-                Row {
-                    if (folder) {
-                        IconButton(onClick = { onPlay(f, Placement.PLAY_NOW) }) {
-                            Icon(Icons.Outlined.PlayArrow, stringResource(R.string.play_named, name))
-                        }
-                    }
-                    if (f.kind != FolderKind.OTHER) {
-                        IconButton(onClick = { onPlay(f, Placement.ADD_TO_QUEUE) }) {
-                            Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, stringResource(R.string.add_named, name))
-                        }
-                        IconButton(onClick = { onMore(More.folder(f)) }) {
-                            Icon(Icons.Outlined.MoreVert, stringResource(R.string.more_for, name))
-                        }
+                if (f.kind != FolderKind.OTHER) {
+                    IconButton(onClick = { onMore(More.folder(f)) }) {
+                        Icon(Icons.Outlined.MoreVert, stringResource(R.string.more_for, name))
                     }
                 }
             },
@@ -505,6 +497,7 @@ fun PlaylistScreen(
                         onClick = { onPlay(Placement.PLAY_NOW, i) },
                         showArt = true,
                         onMore = More.track(t)?.let { r -> { onMore(r) } },
+                        downloaded = t.id != null && t.id in downloaded,
                         modifier = m,
                     )
                 }
@@ -538,23 +531,18 @@ fun FavouritesScreen(
                             ArtworkImage(f.artwork, 120, contentDescription = null, modifier = Modifier.size(40.dp), corner = 4.dp)
                         },
                         headlineContent = { Text(f.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                        // One trailing control: a folder's chevron, or ⋮ with Play next and Add
+                        // to queue (also TalkBack actions on the row).
                         trailingContent = if (f.isFolder) {
                             { Icon(Icons.Outlined.ChevronRight, contentDescription = null) }
                         } else {
-                            {
-                                Row {
-                                    IconButton(onClick = { onPlay(f, Placement.PLAY_NEXT) }) {
-                                        Icon(Icons.AutoMirrored.Outlined.QueueMusic, stringResource(R.string.menu_play_next, f.name))
-                                    }
-                                    IconButton(onClick = { onPlay(f, Placement.ADD_TO_QUEUE) }) {
-                                        Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, stringResource(R.string.add_named, f.name))
-                                    }
-                                }
-                            }
+                            { PlacementMenu(f.name, onPlayNext = { onPlay(f, Placement.PLAY_NEXT) }, onAdd = { onPlay(f, Placement.ADD_TO_QUEUE) }) }
                         },
-                        modifier = Modifier.clickable(
-                            onClickLabel = stringResource(if (f.isFolder) R.string.open_folder else R.string.action_play),
-                        ) { if (f.isFolder) onFolder(f) else onPlay(f, Placement.PLAY_NOW) },
+                        modifier = Modifier
+                            .clickable(
+                                onClickLabel = stringResource(if (f.isFolder) R.string.open_folder else R.string.action_play),
+                            ) { if (f.isFolder) onFolder(f) else onPlay(f, Placement.PLAY_NOW) }
+                            .then(if (f.isFolder) Modifier else Modifier.placementActions(f.name, { onPlay(f, Placement.PLAY_NEXT) }, { onPlay(f, Placement.ADD_TO_QUEUE) })),
                     )
                 }
             }

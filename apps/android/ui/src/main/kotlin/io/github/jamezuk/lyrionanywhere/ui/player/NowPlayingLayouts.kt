@@ -109,6 +109,19 @@ internal fun InfoPanel(state: PlayerUiState, status: PlayerStatus, actions: NowP
                 if (length != null && length > 0) add(R.string.info_length to formatDuration(length))
             }
             rows.forEach { (label, value) -> InfoRow(stringResource(label), value) }
+            // Gapless (Wave 3.5: shown here only, not as marks in the queue).
+            val index = status.queueIndex?.toInt()
+            val before = index?.let { state.queue.getOrNull(it - 1)?.track }?.let { Gapless.follows(it, track) } == true
+            val after = status.next?.let { Gapless.follows(track, it) } == true
+            if (before || after) {
+                InfoRow(
+                    stringResource(R.string.info_gapless),
+                    listOfNotNull(
+                        stringResource(R.string.gapless_marker).takeIf { before },
+                        stringResource(R.string.gapless_into_next).takeIf { after },
+                    ).joinToString("\n"),
+                )
+            }
         }
         val credits = state.credits?.takeIf { track?.id != null && state.creditsTrackId == track.id }.orEmpty()
         val onCredit = actions.onCredit

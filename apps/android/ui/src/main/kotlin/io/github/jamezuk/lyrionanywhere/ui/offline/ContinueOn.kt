@@ -7,6 +7,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ArrowDropDown
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.Button
@@ -75,8 +86,10 @@ fun continueOnResultText(res: Resources, result: HandOffResult?, target: String)
 }
 
 /**
- * "Back online. Continue on <player>?" (SPEC §8.4): non-blocking, above the current screen.
- * Never acts by itself; the choice of player is the user's. Shows the last result too.
+ * "Back online. Continue on <player>?" (SPEC §8.4): a one-line banner above the current
+ * screen (Wave 3.5 rule 1, an offer), with Continue, ▾ to choose another player (which also
+ * says what would move) and ✕ for "Not now". Never acts by itself; the choice of player is the
+ * user's. Shows the last result too.
  */
 @Composable
 fun ContinueOnPrompt(
@@ -98,59 +111,75 @@ fun ContinueOnPrompt(
     val tracks = state.tracks ?: return
     if (choices.isEmpty()) return
     var picked by rememberSaveable { mutableStateOf<String?>(null) }
+    var choosing by remember { mutableStateOf(false) }
     val chosen = choices.firstOrNull { it.tag == picked } ?: default ?: choices.first()
     val busy = state.busy
+    val detailCount = pluralStringResource(R.plurals.continue_on_detail, tracks, tracks)
+    val detail = if (state.playing) stringResource(R.string.continue_on_playing, detailCount) else detailCount
     Column(
         modifier
             .fillMaxWidth()
             .background(colours.secondaryContainer)
-            .padding(horizontal = 16.dp, vertical = 8.dp)
             .testTag("continue-on")
             .semantics { liveRegion = LiveRegionMode.Polite },
     ) {
-        Text(
-            stringResource(R.string.continue_on_title, chosen.name),
-            style = MaterialTheme.typography.titleSmall,
-            color = colours.onSecondaryContainer,
-            modifier = Modifier.semantics { heading() },
-        )
-        val detail = pluralStringResource(R.plurals.continue_on_detail, tracks, tracks)
-        Text(
-            if (state.playing) stringResource(R.string.continue_on_playing, detail) else detail,
-            style = MaterialTheme.typography.bodySmall,
-            color = colours.onSecondaryContainer,
-        )
-        if (choices.size > 1) {
+        if (busy != null) LinearProgressIndicator(Modifier.fillMaxWidth())
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 16.dp, end = 4.dp),
+        ) {
             Text(
-                stringResource(R.string.continue_on_choose),
-                style = MaterialTheme.typography.labelMedium,
+                when {
+                    busy != null -> stringResource(R.string.continue_on_busy, busy)
+                    result != null -> result
+                    else -> stringResource(R.string.continue_on_title, chosen.name)
+                },
+                style = MaterialTheme.typography.bodyMedium,
                 color = colours.onSecondaryContainer,
-                modifier = Modifier.padding(top = 4.dp),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).semantics { heading() },
             )
-            Column(Modifier.selectableGroup()) {
-                for (c in choices) {
-                    val selected = c == chosen
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .selectable(selected = selected, enabled = busy == null, role = Role.RadioButton) { picked = c.tag }
-                            .testTag("continue-on-choice-${c.tag}"),
-                    ) {
-                        RadioButton(selected = selected, onClick = null, enabled = busy == null)
-                        Text(c.name, color = colours.onSecondaryContainer, modifier = Modifier.padding(start = 8.dp))
+            if (choices.size > 1) {
+                Box {
+                    IconButton(onClick = { choosing = true }, enabled = busy == null, modifier = Modifier.testTag("continue-on-choose")) {
+                        Icon(Icons.Outlined.ArrowDropDown, contentDescription = stringResource(R.string.continue_on_choose), tint = colours.onSecondaryContainer)
+                    }
+                    DropdownMenu(expanded = choosing, onDismissRequest = { choosing = false }) {
+                        // What would move, then the players to choose from.
+                        Text(
+                            detail,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        )
+                        Column(Modifier.selectableGroup()) {
+                            for (c in choices) {
+                                val selected = c == chosen
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .selectable(selected = selected, role = Role.RadioButton) {
+                                            picked = c.tag
+                                            choosing = false
+                                        }
+                                        .padding(horizontal = 12.dp)
+                                        .testTag("continue-on-choice-${c.tag}"),
+                                ) {
+                                    RadioButton(selected = selected, onClick = null)
+                                    Text(c.name, modifier = Modifier.padding(start = 8.dp, end = 16.dp))
+                                }
+                            }
+                        }
                     }
                 }
             }
-        }
-        if (busy != null) {
-            Text(stringResource(R.string.continue_on_busy, busy), color = colours.onSecondaryContainer)
-            LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 4.dp))
-        }
-        result?.let { Text(it, color = colours.onSecondaryContainer, modifier = Modifier.padding(vertical = 4.dp)) }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Button(onClick = { onContinue(chosen) }, enabled = busy == null) { Text(stringResource(R.string.continue_on_go)) }
-            TextButton(onClick = onNotNow, enabled = busy == null) { Text(stringResource(R.string.continue_on_not_now)) }
+            TextButton(onClick = { onContinue(chosen) }, enabled = busy == null, modifier = Modifier.testTag("continue-on-go")) {
+                Text(stringResource(R.string.continue_on_go), color = if (busy == null) colours.onSecondaryContainer else Color.Unspecified)
+            }
+            IconButton(onClick = onNotNow, enabled = busy == null, modifier = Modifier.testTag("continue-on-not-now")) {
+                Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.continue_on_not_now), tint = colours.onSecondaryContainer)
+            }
         }
     }
 }

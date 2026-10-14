@@ -35,6 +35,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.SkipNext
@@ -63,6 +64,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
@@ -359,32 +361,35 @@ internal fun NowPlayingMeta(
     below: (@Composable () -> Unit)? = null,
 ) {
     Column(modifier.fillMaxWidth().testTag("now-playing-meta")) {
+        // The rating sits beside both lines (not in the title's), so it costs no height.
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Crossfade(targetState = title, animationSpec = tween(250), label = "title", modifier = Modifier.weight(1f)) { t ->
-                Text(
-                    t,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.fillMaxWidth().semantics { heading() }.testTag("now-playing-title"),
-                )
+            Column(Modifier.weight(1f)) {
+                Crossfade(targetState = title, animationSpec = tween(250), label = "title") { t ->
+                    Text(
+                        t,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth().semantics { heading() }.testTag("now-playing-title"),
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (badge != null) {
+                        Spacer(Modifier.width(8.dp))
+                        badge()
+                    }
+                }
             }
-            rating?.invoke()
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
-            if (badge != null) {
-                Spacer(Modifier.width(8.dp))
-                badge()
-            }
+            if (rating != null) Column(horizontalAlignment = Alignment.CenterHorizontally) { rating() }
         }
         below?.invoke()
     }
@@ -591,7 +596,18 @@ private fun Modifier.vertical(): Modifier = this
 
 /** One row of a Now playing sheet: an icon, a title and a line under it. */
 @Composable
-internal fun SheetRow(icon: ImageVector, title: String, detail: String?, onClick: () -> Unit, tag: String, trailing: (@Composable () -> Unit)? = null) {
+internal fun SheetRow(
+    icon: ImageVector,
+    title: String,
+    detail: String?,
+    onClick: () -> Unit,
+    tag: String,
+    trailing: (@Composable () -> Unit)? = null,
+    /** False: shown faint, and it does nothing (it can't work now). */
+    enabled: Boolean = true,
+    /** Its current value, for TalkBack (e.g. the volume's level). */
+    state: String? = null,
+) {
     ListItem(
         leadingContent = { Icon(icon, contentDescription = null) },
         headlineContent = { Text(title) },
@@ -600,7 +616,9 @@ internal fun SheetRow(icon: ImageVector, title: String, detail: String?, onClick
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
+            .alpha(if (enabled) 1f else 0.38f)
+            .then(if (state != null) Modifier.semantics { stateDescription = state } else Modifier)
             .testTag(tag),
     )
 }
@@ -646,7 +664,7 @@ internal fun VisualiserStyleSheet(on: Boolean, style: VisualStyle, onChoose: (Vi
         }
         if (on) {
             SheetRow(
-                Icons.Outlined.Close,
+                Icons.Outlined.VisibilityOff,
                 stringResource(R.string.visualiser_switch_off),
                 null,
                 onClick = {

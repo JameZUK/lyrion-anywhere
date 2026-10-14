@@ -38,6 +38,11 @@ import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material.icons.outlined.RepeatOne
 import androidx.compose.material.icons.outlined.SkipNext
+import androidx.compose.material.icons.outlined.Speaker
+import androidx.compose.material.icons.outlined.PhoneAndroid
+import androidx.compose.material.icons.outlined.Lyrics
+import androidx.compose.foundation.layout.heightIn
+import io.github.jamezuk.lyrionanywhere.core.RatingStyle
 import androidx.compose.material.icons.outlined.SpeakerGroup
 import androidx.compose.material.icons.outlined.Style
 import androidx.compose.material3.Button
@@ -88,6 +93,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -129,7 +135,8 @@ fun rememberElapsed(state: PlayerUiState, clock: () -> Long): Double {
 
 /**
  * The bar shown above the navigation: what's playing, with play/pause, next and the output
- * button; above it, the "Playing on …" strip when another player is controlled (D20).
+ * button. Which player it controls is part of its second line ("on Lounge", D20), never a
+ * band of its own; a move of playback in progress shows above it.
  *
  * Gestures (Wave 1 §4, as on the web): swipe left/right for the next/previous track (with a
  * haptic tick), swipe up or tap to open Now playing, long-press for *Play on…*. TalkBack
@@ -144,8 +151,6 @@ fun MiniPlayer(
     onTogglePlay: () -> Unit,
     onNext: () -> Unit,
     onOutputs: () -> Unit = {},
-    onBackToPhone: () -> Unit = {},
-    onBringToPhone: (() -> Unit)? = null,
     onDismissTransfer: () -> Unit = {},
     onPrevious: () -> Unit = {},
 ) {
@@ -153,7 +158,6 @@ fun MiniPlayer(
     if (track == null) {
         Column {
             TransferStatus(state.transfer, onDismissTransfer)
-            PlayingOnStrip(state, onBackToPhone, onBringToPhone = onBringToPhone)
             // No player yet, or nothing queued: "Play on…" must still be one tap away (a
             // first-time user has no other way to pick a player).
             if (!state.loading && !state.waitingForPhone) ChoosePlayerBar(state, onOutputs)
@@ -202,7 +206,6 @@ fun MiniPlayer(
     ) {
       Column {
         TransferStatus(state.transfer, onDismissTransfer)
-        PlayingOnStrip(state, onBackToPhone, onBringToPhone = onBringToPhone)
         Row(
             Modifier
                 .testTag("mini-player")
@@ -248,13 +251,7 @@ fun MiniPlayer(
                             modifier = Modifier.size(14.dp).padding(end = 2.dp).testTag("mini-moon"),
                         )
                     }
-                    Text(
-                        listOfNotNull(track.artist, state.selected?.name).joinToString(" · "),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    MiniPlayerLine(track.artist, state.selected?.name?.takeIf { state.controllingOther })
                 }
             }
             }
@@ -265,6 +262,38 @@ fun MiniPlayer(
             }
         }
       }
+    }
+}
+
+/**
+ * The mini player's second line: the artist, and, while another player is controlled, its
+ * name ("on Lounge", with a speaker). This phone's own name is left out (it would say
+ * nothing new).
+ */
+@Composable
+internal fun MiniPlayerLine(artist: String?, otherPlayer: String?) {
+    val colour = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.testTag("mini-player-line")) {
+        if (otherPlayer != null) {
+            Icon(
+                Icons.Outlined.Speaker,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.size(14.dp).padding(end = 2.dp),
+            )
+        }
+        // One line, the player first: with large text the artist is what gets cut short.
+        val line = listOfNotNull(otherPlayer?.let { stringResource(R.string.mini_on_player, it) }, artist).joinToString(" · ")
+        if (line.isNotEmpty()) {
+            Text(
+                line,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+                color = colour,
+                modifier = if (otherPlayer != null) Modifier.testTag("mini-player-on") else Modifier,
+            )
+        }
     }
 }
 
@@ -390,7 +419,7 @@ private fun NowPlayingPlaceholder(state: PlayerUiState, actions: NowPlayingActio
 }
 
 /** Which of Now playing's sheets (or the volume popover) is open. */
-private enum class NowPlayingPanel { NONE, MORE, STYLES, PATH, QUEUE, SLEEP, VOLUME }
+private enum class NowPlayingPanel { NONE, MORE, STYLES, PATH, QUEUE, SLEEP, VOLUME, RATE }
 
 @Composable
 private fun NowPlayingContent(
@@ -512,11 +541,14 @@ private fun NowPlayingContent(
             HeroToast(toast, onGone = { toast = null }, modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp))
         }
     }
+    // While a sleep timer runs, the moon and the time left sit in the top row (a tap changes it).
+    val sleepLeft = SleepTimer.left(status)
     val chip: @Composable () -> Unit = {
-        PlayingOnChip(stringResource(R.string.playing_on, player.name), phone = state.localSelected, onClick = actions.onOutputs)
+        if (sleepLeft != null) SleepPill(sleepLeftText(sleepLeft), onClick = { panel = NowPlayingPanel.SLEEP })
     }
     val volume = rememberNowPlayingVolume(state, status, phoneVolume, actions)
-    val controls: @Composable (Modifier, Boolean) -> Unit = { m, roomy ->
+    val lyricsOn = if (wide) sidePage == NowPlayingLayout.LYRICS else page == NowPlayingLayout.LYRICS
+    val controls: @Composable (Modifier, Boolean, Boolean) -> Unit = { m, roomy, upNext ->
         NowPlayingControls(
             state = state,
             status = status,
@@ -524,18 +556,12 @@ private fun NowPlayingContent(
             actions = actions,
             onShowPath = { panel = NowPlayingPanel.PATH },
             onOpenQueue = openQueue,
-            onLyrics = { setPage(NowPlayingLayout.LYRICS) },
-            lyricsShown = page == NowPlayingLayout.LYRICS && !wide,
+            onLyrics = { setPage(if (lyricsOn && !wide) NowPlayingLayout.ART else NowPlayingLayout.LYRICS) },
+            lyricsShown = lyricsOn,
             roomy = roomy,
             queueShown = wide && queuePanel,
-            visualiser = if (canVisualise) {
-                VisualiserButtonModel(on = visualOn, style = style, block = block, onToggle = { setVisual(!visualOn) }, onStyles = { panel = NowPlayingPanel.STYLES })
-            } else {
-                null
-            },
-            volume = volume,
-            onSleep = { panel = NowPlayingPanel.SLEEP },
-            onVolume = { panel = if (panel == NowPlayingPanel.VOLUME) NowPlayingPanel.NONE else NowPlayingPanel.VOLUME },
+            onRate = { panel = NowPlayingPanel.RATE },
+            upNextShown = upNext,
             modifier = m,
         )
     }
@@ -569,7 +595,7 @@ private fun NowPlayingContent(
             Column(Modifier.weight(1f).fillMaxHeight().padding(horizontal = 16.dp)) {
                 top()
                 hero(Modifier.weight(1f).fillMaxWidth())
-                controls(Modifier.fillMaxWidth(), true)
+                controls(Modifier.fillMaxWidth(), true, true)
             }
             VerticalDivider()
             Column(Modifier.weight(1f).fillMaxHeight().padding(16.dp)) {
@@ -611,16 +637,18 @@ private fun NowPlayingContent(
             // Held sideways a phone is short: the controls may scroll if they must.
             Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
                 top()
-                controls(Modifier.fillMaxWidth(), false)
+                controls(Modifier.fillMaxWidth(), false, true)
             }
         }
         else -> BoxWithConstraints(Modifier.fillMaxSize()) {
             // The lyric line under the title only where the cover can spare the room.
             val roomy = maxHeight >= ROOMY_HEIGHT
+            // On a small phone the cover comes first: "Up next" gives way (the queue is one tap).
+            val upNext = maxHeight >= UP_NEXT_HEIGHT
             Column(Modifier.fillMaxSize().testTag("now-playing-phone")) {
                 Box(Modifier.padding(horizontal = 4.dp)) { top() }
                 hero(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp))
-                controls(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 8.dp), roomy)
+                controls(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 8.dp), roomy, upNext)
             }
         }
     }
@@ -633,11 +661,20 @@ private fun NowPlayingContent(
             state = state,
             status = status,
             actions = actions,
-            styleName = if (canVisualise) styleNames.getValue(style) else null,
+            visualiser = if (canVisualise) {
+                VisualiserButtonModel(on = visualOn, style = style, block = block, onToggle = { setVisual(!visualOn) }, onStyles = { panel = NowPlayingPanel.STYLES })
+            } else {
+                null
+            },
+            volume = volume,
+            onSleep = { panel = NowPlayingPanel.SLEEP },
+            onVolume = { panel = NowPlayingPanel.VOLUME },
             onPath = { panel = NowPlayingPanel.PATH },
-            onStyles = { panel = NowPlayingPanel.STYLES },
             onDismiss = close,
         )
+        NowPlayingPanel.RATE -> NowPlayingSheet(stringResource(R.string.rating_rate), "rate-sheet", close) {
+            RateRow(state, actions)
+        }
         NowPlayingPanel.STYLES -> VisualiserStyleSheet(
             on = visualOn,
             style = style,
@@ -677,6 +714,9 @@ private fun NowPlayingContent(
 
 /** The phone layout's height from which the lyric line shows under the title. */
 private val ROOMY_HEIGHT = 720.dp
+
+/** The phone layout's height from which "Up next" shows (below it, the cover keeps the room). */
+private val UP_NEXT_HEIGHT = 620.dp
 
 /** The volume control's target: a player in LMS, or this phone's media volume. */
 internal class VolumeModel(
@@ -768,7 +808,10 @@ internal fun VisualiserAction(m: VisualiserButtonModel, modifier: Modifier = Mod
     )
 }
 
-/** The title, details, seek bar, transport, "Up next" and the four actions. */
+/**
+ * The title (with the one rating control), details, seek bar, transport, a one-line "Up
+ * next" and three actions: Play on, Lyrics and Queue.
+ */
 @Composable
 private fun NowPlayingControls(
     state: PlayerUiState,
@@ -782,11 +825,10 @@ private fun NowPlayingControls(
     /** Room for the lyric line under the title (it would take it from the cover otherwise). */
     roomy: Boolean,
     queueShown: Boolean,
-    visualiser: VisualiserButtonModel?,
-    volume: VolumeModel,
-    onSleep: () -> Unit,
-    onVolume: () -> Unit,
+    /** Open the full 1–5 rating. */
+    onRate: () -> Unit,
     modifier: Modifier = Modifier,
+    upNextShown: Boolean = true,
 ) {
     val track = status.current
     val elapsed = rememberElapsed(state, clock)
@@ -798,7 +840,7 @@ private fun NowPlayingControls(
             title = track?.title ?: stringResource(R.string.nothing_playing),
             subtitle = listOfNotNull(track?.artist, track?.album).joinToString(" · "),
             rating = if ((track?.id ?: 0) > 0) {
-                { RatingControl(state.rating, state.ratingStyle, state.ratingFailed, actions.onRate) }
+                { RatingToggle(state.rating, state.ratingStyle, state.ratingFailed, actions.onRate, onRate) }
             } else {
                 null
             },
@@ -840,20 +882,26 @@ private fun NowPlayingControls(
             shuffle = { ShuffleButton(status.shuffle, onCycle = actions.onShuffle, onChoose = actions.onShuffleMode, enabled = gate.other) },
             repeat = { RepeatButton(status.repeat, actions.onRepeat, enabled = gate.other) },
         )
-        status.next?.let { next ->
-            UpNextRow(next, onOpenQueue = onOpenQueue, onRemove = actions.onRemoveUpNext, modifier = Modifier.padding(top = 4.dp))
+        status.next?.takeIf { upNextShown }?.let { next ->
+            UpNextRow(next, onOpenQueue = onOpenQueue, onRemove = actions.onRemoveUpNext)
         }
-        Row(Modifier.fillMaxWidth().padding(top = 4.dp).testTag("now-playing-actions"), verticalAlignment = Alignment.CenterVertically) {
-            val left = SleepTimer.left(status)
-            val sleepLeft = left?.let { sleepLeftText(it) }
+        Row(Modifier.fillMaxWidth().testTag("now-playing-actions"), verticalAlignment = Alignment.CenterVertically) {
+            val name = state.selected?.name.orEmpty()
             NowPlayingAction(
-                icon = Icons.Outlined.Bedtime,
-                label = sleepLeft ?: stringResource(R.string.action_sleep),
-                description = if (sleepLeft != null) stringResource(R.string.sleep_timer_left, sleepLeft) else stringResource(R.string.sleep_timer),
+                icon = if (state.localSelected) Icons.Outlined.PhoneAndroid else Icons.Outlined.Speaker,
+                label = if (state.localSelected) stringResource(R.string.this_phone) else name,
+                description = stringResource(R.string.play_on_title),
+                state = name,
                 on = null,
-                enabled = gate.other,
-                onClick = onSleep,
-                modifier = Modifier.weight(1f).testTag("sleep-button"),
+                onClick = actions.onOutputs,
+                modifier = Modifier.weight(1f).testTag("play-on-button"),
+            )
+            NowPlayingAction(
+                icon = Icons.Outlined.Lyrics,
+                label = stringResource(R.string.page_lyrics),
+                on = lyricsShown,
+                onClick = onLyrics,
+                modifier = Modifier.weight(1f).testTag("lyrics-action"),
             )
             NowPlayingAction(
                 icon = Icons.AutoMirrored.Outlined.QueueMusic,
@@ -863,16 +911,26 @@ private fun NowPlayingControls(
                 onClick = onOpenQueue,
                 modifier = Modifier.weight(1f).testTag("queue-button"),
             )
-            if (visualiser != null) VisualiserAction(visualiser, Modifier.weight(1f))
-            NowPlayingAction(
-                icon = Icons.AutoMirrored.Outlined.VolumeUp,
-                label = stringResource(R.string.volume),
-                description = stringResource(R.string.volume_on, volume.name),
-                state = "${volume.percent}%",
-                enabled = gate.volume || state.localSelected,
-                onClick = onVolume,
-                modifier = Modifier.weight(1f).testTag("volume-button"),
-            )
+        }
+    }
+}
+
+/** The moon and the time left, in the top row while a sleep timer runs; a tap changes it. */
+@Composable
+private fun SleepPill(left: String, onClick: () -> Unit) {
+    val label = stringResource(R.string.sleep_timer_left, left)
+    Surface(
+        onClick = onClick,
+        shape = androidx.compose.foundation.shape.CircleShape,
+        color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.9f),
+        modifier = Modifier
+            .heightIn(min = 48.dp)
+            .testTag("sleep-pill")
+            .semantics(mergeDescendants = true) { contentDescription = label },
+    ) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Bedtime, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+            Text(left, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(start = 6.dp))
         }
     }
 }
@@ -900,23 +958,80 @@ internal fun RepeatButton(repeat: RepeatMode, onCycle: () -> Unit, enabled: Bool
     }
 }
 
+/** The full 1–5 rating of the current track (⋮ › Rate, or the rating control's long press). */
+@Composable
+private fun RateRow(state: PlayerUiState, actions: NowPlayingActions) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("more-rate"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(stringResource(R.string.rating_rate), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f).padding(start = 8.dp))
+        RatingControl(state.rating, RatingStyle.STARS, failed = false, onRated = actions.onRate)
+    }
+}
+
 /**
- * ⋮ on Now playing: the occasional things. Car mode, alarms, every room, the signal path and
- * the visualiser's style (while this phone plays); then the track's own options and the
- * player's power.
+ * ⋮ on Now playing: the track's rating, then the sleep timer, the volume, the visualiser
+ * (while this phone plays), the track's own options, car mode, alarms and the player's
+ * power. The signal path is the quality badge's (here only when there is no badge); every
+ * room is in *Play on…*.
  */
 @Composable
 private fun MoreSheet(
     state: PlayerUiState,
     status: PlayerStatus,
     actions: NowPlayingActions,
-    styleName: String?,
+    visualiser: VisualiserButtonModel?,
+    volume: VolumeModel,
+    onSleep: () -> Unit,
+    onVolume: () -> Unit,
     onPath: () -> Unit,
-    onStyles: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val playerName = state.selected?.name.orEmpty()
+    val gate = state.gate
+    val track = status.current
     NowPlayingSheet(stringResource(R.string.now_playing_more), "now-playing-more-sheet", onDismiss) {
+        if ((track?.id ?: 0) > 0) RateRow(state, actions)
+        val left = SleepTimer.left(status)
+        SheetRow(
+            Icons.Outlined.Bedtime,
+            stringResource(R.string.sleep_timer),
+            left?.let { stringResource(R.string.sleep_timer_left, sleepLeftText(it)) },
+            onClick = onSleep,
+            tag = "sleep-button",
+            enabled = gate.other,
+        )
+        SheetRow(
+            Icons.AutoMirrored.Outlined.VolumeUp,
+            stringResource(R.string.volume_on, volume.name),
+            null,
+            onClick = onVolume,
+            tag = "volume-button",
+            enabled = gate.volume || state.localSelected,
+            trailing = { Text("${volume.percent}%") },
+            state = "${volume.percent}%",
+        )
+        if (visualiser != null) {
+            VisualiserRow(visualiser, onDone = onDismiss)
+            SheetRow(
+                Icons.Outlined.Style,
+                stringResource(R.string.visualiser_style_title),
+                visualStyleName(visualiser.style),
+                visualiser.onStyles,
+                tag = "more-visualiser-style",
+            )
+        }
+        if (track?.quality == null) {
+            SheetRow(Icons.Outlined.GraphicEq, stringResource(R.string.signal_path), stringResource(R.string.signal_path_detail), onPath, tag = "more-signal-path")
+        }
+        val more = actions.onMore
+        if (track?.id != null && more != null) {
+            SheetRow(Icons.Outlined.MoreVert, stringResource(R.string.track_options), track.title, {
+                onDismiss()
+                more(track)
+            }, tag = "more-track")
+        }
         actions.onCarMode?.let { open ->
             SheetRow(Icons.Outlined.DirectionsCar, stringResource(R.string.car_mode), stringResource(R.string.car_mode_detail), {
                 onDismiss()
@@ -928,24 +1043,6 @@ private fun MoreSheet(
                 onDismiss()
                 open()
             }, tag = "more-alarms")
-        }
-        actions.onRooms?.let { open ->
-            SheetRow(Icons.Outlined.SpeakerGroup, stringResource(R.string.rooms_all), stringResource(R.string.rooms_all_detail), {
-                onDismiss()
-                open()
-            }, tag = "more-rooms")
-        }
-        SheetRow(Icons.Outlined.GraphicEq, stringResource(R.string.signal_path), stringResource(R.string.signal_path_detail), onPath, tag = "more-signal-path")
-        if (styleName != null) {
-            SheetRow(Icons.Outlined.Style, stringResource(R.string.visualiser_style_title), styleName, onStyles, tag = "more-visualiser-style")
-        }
-        val track = status.current
-        val more = actions.onMore
-        if (track?.id != null && more != null) {
-            SheetRow(Icons.Outlined.MoreVert, stringResource(R.string.track_options), track.title, {
-                onDismiss()
-                more(track)
-            }, tag = "more-track")
         }
         val powerState = stringResource(if (status.powered) R.string.toggle_on else R.string.mode_off)
         ListItem(
@@ -959,6 +1056,47 @@ private fun MoreSheet(
                 .testTag("more-power"),
         )
     }
+}
+
+/**
+ * The visualiser's switch in ⋮ (this phone only): a tap turns it on or off and closes the
+ * sheet so it can be seen; a long press chooses the style. Off, and saying why, in battery
+ * saver or with animations removed.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun VisualiserRow(m: VisualiserButtonModel, onDone: () -> Unit) {
+    val blocked = m.block != VisualBlock.NONE
+    val on = m.on && !blocked
+    val state = when (m.block) {
+        VisualBlock.BATTERY_SAVER -> stringResource(R.string.visualiser_off_battery)
+        VisualBlock.ANIMATIONS_OFF -> stringResource(R.string.visualiser_off_motion)
+        VisualBlock.NONE -> if (on) visualStyleName(m.style) else stringResource(R.string.mode_off)
+    }
+    val description = stringResource(R.string.visualiser)
+    ListItem(
+        leadingContent = { Icon(Icons.Outlined.GraphicEq, contentDescription = null) },
+        headlineContent = { Text(if (on) visualStyleName(m.style) else description) },
+        trailingContent = { Switch(checked = on, onCheckedChange = null, enabled = !blocked) },
+        colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent),
+        modifier = Modifier
+            .combinedClickable(
+                enabled = !blocked,
+                role = Role.Switch,
+                onLongClickLabel = stringResource(R.string.visualiser_choose_style),
+                onLongClick = m.onStyles,
+                onClick = {
+                    m.onToggle()
+                    onDone()
+                },
+            )
+            .semantics(mergeDescendants = true) {
+                contentDescription = description
+                stateDescription = state
+                toggleableState = androidx.compose.ui.state.ToggleableState(on)
+            }
+            .testTag("visualiser-button"),
+    )
 }
 
 /** Space or the play/pause media key, on key down (not on release, or it would toggle twice). */

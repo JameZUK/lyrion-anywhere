@@ -16,6 +16,8 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
@@ -106,7 +108,7 @@ class TransferScreenTest {
     fun whileControllingAnotherPlayerThePhoneRowOffersBringToThisPhone() {
         var brought = 0
         sheet(state(selected = KITCHEN), PlayOnActions(onControl = {}, onBackToPhone = {}, onBringToPhone = { brought++ }))
-        compose.onNodeWithContentDescription("Bring to this phone").performClick()
+        compose.onNodeWithTag("play-on-bring-here").performClick()
         assertEquals(1, brought)
     }
 
@@ -136,22 +138,21 @@ class TransferScreenTest {
     }
 
     @Test
-    fun theStripOffersBringToThisPhoneAndShowsProgress() {
+    fun theMiniPlayerShowsProgressAndPlayOnWontMoveAgain() {
         var brought = 0
+        val running = state(selected = KITCHEN, transfer = TransferState.Running(PHONE, "Phone", TransferStage.GROUPING))
         compose.setContent {
             LyrionTheme(dynamicColour = false) {
-                MiniPlayer(
-                    state(selected = KITCHEN, transfer = TransferState.Running(PHONE, "Phone", TransferStage.GROUPING)),
-                    onOpen = {},
-                    onTogglePlay = {},
-                    onNext = {},
-                    onBringToPhone = { brought++ },
-                )
+                androidx.compose.foundation.layout.Column {
+                    MiniPlayer(running, onOpen = {}, onTogglePlay = {}, onNext = {})
+                    PlayOnList(running, PlayOnActions(onControl = {}, onBackToPhone = {}, onBringToPhone = { brought++ }))
+                }
             }
         }
-        compose.onNodeWithText("Moving playback to Phone…").assertIsDisplayed()
-        // Not offered again while one is running.
-        compose.onNodeWithText("Bring to this phone").assertDoesNotExist()
+        compose.onAllNodesWithText("Moving playback to Phone…")[0].assertIsDisplayed()
+        // Moving playback here (Play on…) is not offered again while one is running.
+        compose.onNodeWithTag("play-on-bring-here").assertIsNotEnabled()
+        assertEquals(0, brought)
     }
 
     @Test
@@ -333,10 +334,13 @@ class QueueScreenTest {
     fun clearingAsksFirst() {
         var cleared = 0
         compose.setContent { LyrionTheme(dynamicColour = false) { QueueHeader(3, "Kitchen", onClear = { cleared++ }) } }
+        // The header's actions are in its ⋮ (Wave 3.5).
+        compose.onNodeWithTag("queue-actions").performClick()
         compose.onNodeWithText("Clear queue").performClick()
         compose.onNodeWithText("This removes every track from the queue of Kitchen.").assertIsDisplayed()
         compose.onNodeWithText("Cancel").performClick()
         assertEquals(0, cleared)
+        compose.onNodeWithTag("queue-actions").performClick()
         compose.onNodeWithText("Clear queue").performClick()
         compose.onNodeWithText("Clear").performClick()
         assertEquals(1, cleared)
@@ -346,6 +350,7 @@ class QueueScreenTest {
     fun anEmptyQueueOffersNoClear() {
         compose.setContent { LyrionTheme(dynamicColour = false) { QueueHeader(0, "Kitchen", onClear = {}) } }
         compose.onNodeWithText("Clear queue").assertDoesNotExist()
+        compose.onNodeWithTag("queue-actions").assertDoesNotExist()
     }
 }
 

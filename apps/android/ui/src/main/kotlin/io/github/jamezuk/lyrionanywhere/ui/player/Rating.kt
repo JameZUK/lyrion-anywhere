@@ -5,6 +5,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.StarHalf
@@ -102,6 +105,99 @@ internal fun RatingControl(rating: TrackRating?, style: RatingStyle, failed: Boo
                     )
                 }
             }
+        }
+    }
+    if (failed) {
+        Text(
+            stringResource(R.string.rating_failed),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.testTag("rating-failed"),
+        )
+    }
+}
+
+/**
+ * The one rating control beside Now playing's title (Wave 3.5): a heart (loved or not) or,
+ * with stars, a single star showing whether the track is rated, which opens the full 1–5
+ * rating ([onOpenRating], also in ⋮). TalkBack keeps "Half a star more/less" on it, and a
+ * long press opens the full rating either way.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+internal fun RatingToggle(
+    rating: TrackRating?,
+    style: RatingStyle,
+    failed: Boolean,
+    onRated: (Int) -> Unit,
+    onOpenRating: () -> Unit,
+) {
+    val haptics = LocalHapticFeedback.current
+    val onRate: (Int) -> Unit = {
+        haptics.performHapticFeedback(HapticSteps.confirm)
+        onRated(it)
+    }
+    val mine = rating?.mine?.toInt()
+    val shown = rating?.rating?.toInt() ?: 0
+    val state = when {
+        mine != null -> stringResource(R.string.rating_yours, mine / 20f)
+        shown > 0 -> stringResource(R.string.rating_shared, shown / 20f)
+        else -> stringResource(R.string.rating_none)
+    }
+    val more = stringResource(R.string.rating_more)
+    val less = stringResource(R.string.rating_less)
+    val rateLabel = stringResource(R.string.rating_rate)
+    val halfSteps = listOf(
+        CustomAccessibilityAction(more) { onRate((mine ?: 0) + 10); true },
+        CustomAccessibilityAction(less) { onRate((mine ?: 0) - 10); true },
+    )
+    if (style == RatingStyle.HEART) {
+        val loved = (mine ?: 0) >= 60
+        val label = stringResource(R.string.rating_love)
+        Box(
+            Modifier
+                .size(48.dp)
+                .combinedClickable(
+                    role = androidx.compose.ui.semantics.Role.Switch,
+                    onLongClickLabel = rateLabel,
+                    onLongClick = onOpenRating,
+                    onClick = { onRate(if (loved) 0 else 100) },
+                )
+                .semantics {
+                    contentDescription = label
+                    toggleableState = androidx.compose.ui.state.ToggleableState(loved)
+                    customActions = listOf(CustomAccessibilityAction(rateLabel) { onOpenRating(); true })
+                }
+                .testTag("rating-heart"),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (loved) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                contentDescription = null,
+                tint = if (loved) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    } else {
+        val label = stringResource(R.string.rating_rate)
+        IconButton(
+            onClick = onOpenRating,
+            modifier = Modifier
+                .semantics {
+                    contentDescription = label
+                    stateDescription = state
+                    customActions = halfSteps
+                }
+                .testTag("rating-toggle"),
+        ) {
+            Icon(
+                when {
+                    shown >= 100 || (shown > 0 && mine != null) -> Icons.Filled.Star
+                    shown > 0 -> Icons.AutoMirrored.Outlined.StarHalf
+                    else -> Icons.Outlined.StarOutline
+                },
+                contentDescription = null,
+                tint = if (mine != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
     if (failed) {

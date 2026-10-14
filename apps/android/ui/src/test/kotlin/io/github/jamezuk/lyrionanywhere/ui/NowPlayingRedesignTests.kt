@@ -199,7 +199,7 @@ private fun assertTransportFits(compose: androidx.compose.ui.test.junit4.Compose
     compose.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.VerticalScrollAxisRange)).assertCountEquals(0)
     // The cover shrank but is still there.
     val cover = compose.onNodeWithTag("artwork").fetchSemanticsNode()
-    val parts = listOf("now-playing-top", "now-playing-pager", "page-dots", "now-playing-meta", "now-playing-title", "rating-stars", "quality-badge", "lyrics-peek", "seek-elapsed", "transport", "up-next", "up-next-remove", "now-playing-actions", "sleep-button")
+    val parts = listOf("now-playing-top", "now-playing-pager", "page-dots", "now-playing-meta", "now-playing-title", "rating-toggle", "quality-badge", "lyrics-peek", "seek-elapsed", "transport", "up-next", "now-playing-actions", "lyrics-action")
         .joinToString { t -> "$t=" + compose.onAllNodesWithTag(t).fetchSemanticsNodes().firstOrNull()?.boundsInRoot?.let { "${it.top / density}-${it.bottom / density}" } }
     assertTrue("no room for the cover (${cover.size.height / density} dp; root ${root.height / density}; $parts)", cover.size.height / density >= 80f)
 }
@@ -255,7 +255,8 @@ class NowPlayingRedesignScreenTest {
         var closed = 0
         var playOn = 0
         show(busyState(), nowPlayingActions(onClose = { closed++ }).copy(onOutputs = { playOn++ }))
-        compose.onNodeWithTag("playing-on-chip").assertTextContains("Playing on Player $KITCHEN_PLAYER").performClick()
+        // Play on is the first of the bottom actions (Wave 3.5), named after the player.
+        compose.onNodeWithTag("play-on-button").assertTextContains("Player $KITCHEN_PLAYER").performClick()
         compose.onNodeWithTag("now-playing-close").performClick()
         assertEquals(1, playOn)
         assertEquals(1, closed)
@@ -271,9 +272,12 @@ class NowPlayingRedesignScreenTest {
             nowPlayingActions().copy(onCarMode = { opened += "car" }, onAlarms = { opened += "alarms" }, onRooms = { opened += "rooms" }, onMore = { opened += "track" }),
         )
         compose.onNodeWithTag("now-playing-more").performClick()
-        for (tag in listOf("more-car-mode", "more-alarms", "more-rooms", "more-signal-path", "more-visualiser-style", "more-track", "more-power")) {
+        for (tag in listOf("more-rate", "sleep-button", "volume-button", "visualiser-button", "more-visualiser-style", "more-car-mode", "more-alarms", "more-track", "more-power")) {
             compose.onNodeWithTag(tag).assertExists()
         }
+        // One way in (Wave 3.5): every room is in Play on…, the signal path is the badge's.
+        compose.onNodeWithTag("more-rooms").assertDoesNotExist()
+        compose.onNodeWithTag("more-signal-path").assertDoesNotExist()
         compose.onNodeWithTag("more-car-mode").performClick()
         compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("more-visualiser-style").performClick()
@@ -298,11 +302,14 @@ class NowPlayingRedesignScreenTest {
     }
 
     @Test
-    fun upNextIsOneLineWithARemoveButton() {
+    fun upNextIsOneLineThatCanStillBeRemoved() {
         var removed = 0
         show(busyState(), nowPlayingActions().copy(onRemoveUpNext = { removed++ }))
-        compose.onNodeWithText("Next song — Artist").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Remove Next song from the queue").performClick()
+        // One line of text, no button: removing it is a swipe or the TalkBack action.
+        compose.onNodeWithText("Next song — Artist", substring = true).assertIsDisplayed()
+        compose.onNodeWithContentDescription("Remove Next song from the queue").assertDoesNotExist()
+        val node = compose.onNodeWithContentDescription("Up next: Next song — Artist").fetchSemanticsNode()
+        compose.runOnUiThread { node.config[SemanticsActions.CustomActions].single { it.label == "Remove from the queue" }.action() }
         assertEquals(1, removed)
     }
 
@@ -321,11 +328,14 @@ class NowPlayingRedesignScreenTest {
         show(busyState(ME), nowPlayingActions().copy(onVisualiser = { on += it }, onVisualStyle = { styles += it }), visual = source)
         // One button: no separate style button any more.
         compose.onAllNodesWithTag("visualiser-style").assertCountEquals(0)
+        // In ⋮ since Wave 3.5.
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("visualiser-button").assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Switch)).performClick()
         // It draws over the cover (which stays), and says which style.
         compose.onNodeWithTag("visualiser", useUnmergedTree = true).assertExists()
         compose.onNodeWithTag("artwork").assertExists()
         compose.onNodeWithTag("hero-toast").assertTextEquals("Bars")
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("visualiser-button").assertTextEquals("Bars")
         // A long press chooses a style.
         compose.onNodeWithTag("visualiser-button").performTouchInput { longClick() }
@@ -340,6 +350,7 @@ class NowPlayingRedesignScreenTest {
         assertEquals(listOf(VisualStyle.GLOW), styles)
         // Off from the sheet.
         compose.onNodeWithTag("page-ART").performClick()
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("visualiser-button").performTouchInput { longClick() }
         compose.onNodeWithTag("visualiser-switch-off").performClick()
         compose.onNodeWithTag("glow-halo").assertDoesNotExist()
@@ -350,6 +361,7 @@ class NowPlayingRedesignScreenTest {
     fun switchingTheVisualiserOnShowsTheCover() {
         val chosen = mutableListOf<NowPlayingLayout>()
         show(busyState(ME, NowPlayingPrefs(layout = NowPlayingLayout.INFO)), nowPlayingActions().copy(onLayout = { chosen += it }), visual = FakeVisualSource())
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("visualiser-button").performClick()
         compose.onNodeWithTag("artwork").assertIsDisplayed()
         assertEquals(listOf(NowPlayingLayout.ART), chosen)
@@ -361,6 +373,7 @@ class NowPlayingRedesignScreenTest {
         Settings.Global.putFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 0f)
         try {
             show(busyState(ME, NowPlayingPrefs(visualiser = true)), visual = FakeVisualSource())
+            compose.onNodeWithTag("now-playing-more").performClick()
             compose.onNodeWithTag("visualiser-button").assertIsNotEnabled()
             val state = compose.onNodeWithTag("visualiser-button").fetchSemanticsNode().config.getOrNull(SemanticsProperties.StateDescription)
             assertEquals("Off while animations are removed", state)
@@ -375,6 +388,7 @@ class NowPlayingRedesignScreenTest {
         val volumes = mutableListOf<Int>()
         val phone = FakePhoneVolume()
         show(busyState(), nowPlayingActions().copy(onVolume = { volumes += it }), volume = phone)
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("volume-button")
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "40%"))
             .performClick()
@@ -393,6 +407,7 @@ class NowPlayingRedesignScreenTest {
         val volumes = mutableListOf<Int>()
         val phone = FakePhoneVolume(max = 15, level = 6)
         show(busyState(ME), nowPlayingActions().copy(onVolume = { volumes += it }), volume = phone)
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("volume-button")
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "40%"))
             .performClick()
@@ -411,6 +426,7 @@ class NowPlayingRedesignScreenTest {
     @Test
     fun aFixedVolumeCantBeChanged() {
         show(busyState(ME), volume = FakePhoneVolume(fixed = true))
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("volume-button").performClick()
         compose.onNodeWithTag("volume-note").assertTextEquals("This output's volume is fixed")
         compose.onNodeWithTag("volume-slider").assertIsNotEnabled()
@@ -419,8 +435,9 @@ class NowPlayingRedesignScreenTest {
     @Test
     fun theSleepActionShowsTheTimeLeft() {
         show(busyState())
-        compose.onNodeWithTag("sleep-button").assertTextEquals("27 min")
-        compose.onNodeWithTag("sleep-button").performClick()
+        // The moon and the time left sit in the top row while it runs (Wave 3.5).
+        compose.onNodeWithTag("sleep-pill").assertTextEquals("27 min")
+        compose.onNodeWithTag("sleep-pill").performClick()
         compose.onNodeWithTag("sleep-sheet").assertExists()
     }
 }
@@ -467,16 +484,23 @@ class NowPlayingRedesignAccessibilityTest {
     fun glowOn() = audit(busyState(ME, NowPlayingPrefs(visualiser = true, visualStyle = VisualStyle.GLOW)), visual = true)
 
     @Test
-    fun theVolumePopover() = audit(busyState()) { compose.onNodeWithTag("volume-button").performClick() }
+    fun theVolumePopover() = audit(busyState()) {
+        compose.onNodeWithTag("now-playing-more").performClick()
+        compose.onNodeWithTag("volume-button").performClick()
+    }
 
     @Test
-    fun theVolumePopoverOnThisPhone() = audit(busyState(ME)) { compose.onNodeWithTag("volume-button").performClick() }
+    fun theVolumePopoverOnThisPhone() = audit(busyState(ME)) {
+        compose.onNodeWithTag("now-playing-more").performClick()
+        compose.onNodeWithTag("volume-button").performClick()
+    }
 
     @Test
     fun theMenu() = audit(busyState(ME), visual = true) { compose.onNodeWithTag("now-playing-more").performClick() }
 
     @Test
     fun theStyleSheet() = audit(busyState(ME, NowPlayingPrefs(visualiser = true)), visual = true) {
+        compose.onNodeWithTag("now-playing-more").performClick()
         compose.onNodeWithTag("visualiser-button").performTouchInput { longClick() }
     }
 
@@ -484,7 +508,10 @@ class NowPlayingRedesignAccessibilityTest {
     fun theSignalPathSheet() = audit(busyState(ME)) { compose.onNodeWithTag("quality-badge").performClick() }
 
     @Test
-    fun theSleepSheet() = audit(busyState()) { compose.onNodeWithTag("sleep-button").performClick() }
+    fun theSleepSheet() = audit(busyState()) {
+        compose.onNodeWithTag("now-playing-more").performClick()
+        compose.onNodeWithTag("sleep-button").performClick()
+    }
 
     @Test
     fun theQueueSheet() = audit(busyState()) { compose.onNodeWithTag("queue-button").performClick() }

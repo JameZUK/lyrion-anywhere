@@ -609,17 +609,22 @@ fun MainScreen(
     // screens. The bottom bar handles the gesture/navigation inset itself; otherwise the
     // content (and the mini player) must keep clear of it.
     val suiteType = NavigationSuiteScaffoldDefaults.calculateFromAdaptiveInfo(currentWindowAdaptiveInfo())
-    val bottomBarNav = suiteType == NavigationSuiteType.NavigationBar
     // Car mode (Wave 2 §5.1): opened by its button, or by itself for a car (Settings).
     val inCar = destination?.hasRoute(CarModeRoute::class) == true
     // "Your year in sound" has the whole screen too.
     val inStory = destination?.hasRoute(YearStoryRoute::class) == true
+    // Now playing is a sheet over the app (as in other players): no tabs under it, so its
+    // Queue isn't beside a Queue tab and the cover keeps the room. Without the bar, the
+    // content keeps clear of the gesture area itself.
+    val onNowPlayingRoute = destination?.hasRoute(NowPlayingRoute::class) == true ||
+        destination?.hasRoute(OfflineNowPlayingRoute::class) == true
+    val bottomBarNav = suiteType == NavigationSuiteType.NavigationBar && !onNowPlayingRoute
     val car = rememberCarMode(container, scope, inCar, onOpen = { nav.navigate(CarModeRoute) { launchSingleTop = true } }, onLeave = { nav.popBackStack() })
     // "Start radio" and "Sleep 30 min" from the launcher (Wave 2 §5.5).
     ShortcutRequests(container, player, snackbar) { e -> discoveryText(e) }
     NavigationSuiteScaffold(
-        // Car mode has the whole screen.
-        layoutType = if (inCar || inStory) NavigationSuiteType.None else suiteType,
+        // Car mode, the year story and Now playing have the whole screen.
+        layoutType = if (wholeScreen(onNowPlayingRoute, inCar, inStory)) NavigationSuiteType.None else suiteType,
         navigationSuiteItems = {
             MainTab.entries.forEach { tab ->
                 val route = tab.route()
@@ -645,8 +650,7 @@ fun MainScreen(
             },
             bottomBar = {
               Column(if (bottomBarNav) Modifier else Modifier.navigationBarsPadding()) {
-                val onNowPlaying = destination?.hasRoute(NowPlayingRoute::class) == true ||
-                    destination?.hasRoute(OfflineNowPlayingRoute::class) == true || inCar || inStory
+                val onNowPlaying = onNowPlayingRoute || inCar || inStory
                 // Back online with downloads queued: "Continue on <player>?" (SPEC §8.4).
                 if (!inCar && !inStory) {
                     val handOff by container.continueOn.state.collectAsStateWithLifecycle()
@@ -686,8 +690,6 @@ fun MainScreen(
                         onTogglePlay = player::togglePlay,
                         onNext = player::next,
                         onOutputs = openOutputs,
-                        onBackToPhone = player::backToPhone,
-                        onBringToPhone = player::bringToPhone,
                         onDismissTransfer = player::dismissTransfer,
                         onPrevious = player::previous,
                     )
@@ -1782,6 +1784,12 @@ fun MainScreen(
         }
     }
 }
+
+/**
+ * Whether a screen has the whole window, with no tabs or rail: Now playing (a sheet over the
+ * app, as in other players: Wave 3.5), car mode and the year story.
+ */
+internal fun wholeScreen(nowPlaying: Boolean, car: Boolean, story: Boolean): Boolean = nowPlaying || car || story
 
 /** Random albums come as one batch: paging a random order would only repeat albums. */
 private const val RANDOM_BATCH = 60

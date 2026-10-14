@@ -39,9 +39,11 @@ class RowAction(
 /**
  * A row that never wraps: [lead] (a heading, one line, ellipsised) takes the width the rest
  * leaves; [pinned] (Play, Shuffle) always shows; [actions] show as their own buttons, in
- * order, while they fit, and the rest move into a ⋮ menu with their labels. The ⋮ is there
- * whenever something is in it, or always when [onMore] is given: then, with nothing moved,
- * it does [onMore] directly; with something moved, [onMore] is the menu's last item.
+ * order, while they fit, and the rest move into a ⋮ menu with their labels. [menuItems] are
+ * always in the menu. The ⋮ is there whenever something is in it, or always when [onMore] is
+ * given: then, with nothing in the menu, it does [onMore] directly; otherwise [onMore] is the
+ * menu's last item. With [dropMoved], what [onMore] opens already offers the actions, so
+ * those that don't fit are left out rather than put in a menu that opens another.
  */
 @Composable
 fun OverflowRow(
@@ -54,6 +56,8 @@ fun OverflowRow(
     pinned: (@Composable () -> Unit)? = null,
     onMore: (() -> Unit)? = null,
     moreLabel: String = menuLabel,
+    menuItems: List<RowAction> = emptyList(),
+    dropMoved: Boolean = false,
 ) {
     SubcomposeLayout(modifier) { constraints ->
         val loose = constraints.copy(minWidth = 0, minHeight = 0)
@@ -80,15 +84,17 @@ fun OverflowRow(
             return parts.sum() + gap * (parts.size - 1).coerceAtLeast(0)
         }
         val max = constraints.maxWidth
-        val shown = if (width(actions.size, onMore != null) <= max) {
+        val alwaysMenu = onMore != null || menuItems.isNotEmpty()
+        val shown = if (width(actions.size, alwaysMenu) <= max) {
             actions.size
         } else {
-            (actions.size - 1 downTo 0).firstOrNull { width(it, true) <= max } ?: 0
+            (actions.size - 1 downTo 0).firstOrNull { width(it, alwaysMenu || !dropMoved) <= max } ?: 0
         }
         val moved = actions.drop(shown)
+        val inMenu = (if (dropMoved && onMore != null) emptyList() else moved) + menuItems
         val actionP = actions.take(shown).mapIndexed { i, a -> subcompose("action-$i", a.inline).map { it.measure(loose) } }
-        val menuP = if (moved.isNotEmpty() || onMore != null) {
-            subcompose("menu") { Menu(moved, menuLabel, menuTag, onMore, moreLabel) }.map { it.measure(loose) }
+        val menuP = if (inMenu.isNotEmpty() || onMore != null) {
+            subcompose("menu") { Menu(inMenu, menuLabel, menuTag, onMore, moreLabel) }.map { it.measure(loose) }
         } else {
             emptyList()
         }
