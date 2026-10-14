@@ -2,6 +2,12 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: README and screenshots brought up to date; Android 1.14.0 release notes
+
+- **README:** the decluttered web and Android apps, controls that keep working while the server is out of reach, the busy-server notice, the rolling cache as built, *Play on…* in place of car mode among the Android highlights, and a folded *More screenshots* gallery of both apps. It notes that change password, save as playlist and the busy notice need a gateway newer than plugin 0.3.0.
+- **Screenshots:** both sets regenerated (`tools/demo/shots.sh` and the Android `DocScreenshots` tests); only three web images changed.
+- **Release notes:** `docs/release-notes/android-1.14.0.md`, covering everything since 1.10.0.
+
 ## 2026-10-14: Web: Wave 3.5 declutter, phase 3 (merges)
 
 The third phase of [the declutter plan](docs/plans/wave3_5-declutter.md) for the web app, after its web design section (written there, beside Android's).

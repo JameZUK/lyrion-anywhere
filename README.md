@@ -13,12 +13,12 @@
   <a href="docs/ARCHITECTURE.md">Architecture</a>
 </p>
 
-Lyrion Anywhere lets you listen to the music on your home Lyrion Music Server (LMS) from anywhere: on your phone on the train, on a laptop at work, in the car. Every phone, tablet and browser you sign in on becomes a real LMS player, streaming your library losslessly, and can also control your home players and move playback between them.
+Lyrion Anywhere lets you listen to the music on your home Lyrion Music Server (LMS) from anywhere: on your phone on the train, on a laptop at work, in the car. Every phone, tablet and browser you sign in on becomes a real LMS player, streaming your library losslessly, and can also control your home players and move playback between them. When the signal drops, it keeps playing from what it already holds.
 
 LMS itself never touches the internet. One small, hardened gateway sits behind your own HTTPS reverse proxy, and it is the only thing anyone outside your home can reach.
 
 <p align="center">
-  <img src="docs/images/web/now-playing-desktop.png" alt="The web app's Now playing page on a desktop browser: a large album cover with the track title, artist and album, a quality badge reading FLAC 24/96 Hi-Res, a waveform seek bar, transport controls and the queue pinned on the right" width="820">
+  <img src="docs/images/web/now-playing-desktop.png" alt="The web app's Now playing page on a desktop browser: a large album cover beside the track title, artist and album, a quality badge reading FLAC 24/96 Hi-Res, the current lyric line, a waveform seek bar, transport controls, an Up next line and the volume, with the queue pinned on the right" width="820">
 </p>
 
 > Screenshots come from the built-in demo ([`tools/demo`](tools/demo)) and the Android app's screenshot tests. The library, players, people and artwork in them are invented.
@@ -34,6 +34,7 @@ LMS itself never touches the internet. One small, hardened gateway sits behind y
 - **Every device is a real player.** Your phone or browser appears in LMS as a Squeezebox-style player, so gapless playback, sync groups, alarms, plugins and play counts all work as they do on any LMS player. It is not a remote control that needs another speaker.
 - **Secure by design.** LMS's own ports stay on your home network. The gateway allows only an explicit list of commands, checks every argument, strips file paths and LAN addresses from every answer, and has its own accounts with optional two-step verification.
 - **Lossless where it matters, frugal where it counts.** FLAC plays as FLAC. On mobile data the gateway can re-encode to Opus on the fly, and offline downloads can be the original files or smaller copies.
+- **Honest when the server is away.** If your server can't be reached, controls that can't work are greyed out, while the ones that can keep working on the device: pause, resume, and skipping to tracks it already holds. A server that is merely busy (say, its music drive spinning up) is shown calmly as busy, not offline.
 - **A native Android app**, sharing a Rust audio engine and network layer with the planned iOS app: bit-perfect USB output, optional DSP, Android Auto, offline downloads, and read-ahead that rides out tunnels and dead spots.
 - **Made for LMS.** Apps, radio and plugins (AudioMuse-AI, Custom Browse, podcasts, streaming services and more) appear by themselves, with nothing hard-coded.
 
@@ -42,37 +43,80 @@ LMS itself never touches the internet. One small, hardened gateway sits behind y
 ### In the browser (installable web app)
 
 <p align="center">
-  <img src="docs/images/web/now-playing-phone.png" alt="Now playing on a phone, dark theme: the cover fills the top of the screen above the title, a waveform seek bar, large transport controls, a one-line Up next and three actions: Play on, Lyrics and Queue" width="250">
+  <img src="docs/images/web/now-playing-phone.png" alt="Now playing on a phone, dark theme: the cover fills the top of the screen above the title with a rating star, a quality badge, a waveform seek bar, large transport controls, a one-line Up next and three actions: Lounge (the player in use), Lyrics and Queue" width="250">
   &nbsp;
-  <img src="docs/images/web/home-phone.png" alt="Home on a phone: shelves of recently played albums, stations and new music, with a card summarising this month's listening" width="250">
+  <img src="docs/images/web/home-phone.png" alt="Home on a phone: shelves of recently played albums, stations and new music, with the mini player naming the players in use, on Lounge and Kitchen" width="250">
   &nbsp;
-  <img src="docs/images/web/queue-phone.png" alt="The queue on a phone, in sections: Now playing, Up next and Then, each row with a drag handle and a ⋯ menu" width="250">
+  <img src="docs/images/web/play-on-phone.png" alt="The Play on sheet on a phone: a volume slider, then every player with what it is doing, this device first, Lounge ticked as the one in use, and Group players at the bottom" width="250">
 </p>
 
 - **Plays on the device straight away:** sign in and press Play. Lossless decoding runs in WebAssembly; on iPhone, iPad and Android it keeps playing with the screen locked.
-- **Your whole library:** New Music, albums, artists by role, genres, years, compilations, the music folder, playlists, favourites, smart filters, and every app and radio service LMS offers.
+- **Uncluttered:** one row of Library sections, Play · Shuffle · Download · ⋯ on every album and playlist, one ⋯ per row, one status line at the top, and Settings in seven short sections.
+- **Your whole library:** albums (including recently added and random), artists by role, playlists, favourites, smart playlists, genres, years, compilations, folders, downloads, and every app and radio service LMS offers.
 - **Now playing that earns its space:** waveform seek bar, synced lyrics, artist biographies, a visualiser, a quality badge that opens the signal path, and a sleep timer.
 - **Your own Home, stations and listening stats,** including a "Your year in sound" story you can share as an image made on the device.
-- **Rooms:** every player at a glance; drag one onto another to sync them.
+- **Play on… and Rooms:** every player and what it is playing; move playback, group players, switch them on or off and set their alarms. On a wide screen Rooms shows them as cards: drag one cover onto another to sync them.
+- **Downloads:** albums, playlists, artists and tracks for offline listening, with a storage limit and an optional Wi-Fi only setting; they play through the normal player screens.
 
 ### On Android (native app)
 
 <p align="center">
-  <img src="docs/images/android/now-playing.png" alt="The Android app's Now playing: the album cover, title with one rating star, artist and album with a quality badge, a waveform seek bar, transport controls, an Up next line and Play on, Lyrics and Queue along the bottom" width="250">
+  <img src="docs/images/android/now-playing.png" alt="The Android app's Now playing: the album cover, the title with one rating star, artist and album with a quality badge, the current lyric line, a waveform seek bar, transport controls, an Up next line and Lounge, Lyrics and Queue along the bottom" width="250">
+  &nbsp;
+  <img src="docs/images/android/play-on.png" alt="The Android Play on sheet: this phone, ready and with four minutes buffered ahead, then Lounge ticked as the player in use, Study, Garden Room switched off, and Group players" width="250">
   &nbsp;
   <img src="docs/images/android/signal-path.png" alt="The Android signal path sheet: source format, each processing stage, the output route to a USB DAC and a bit-perfect verdict" width="250">
-  &nbsp;
-  <img src="docs/images/android/car-mode.png" alt="Car mode on Android: huge artwork and giant previous, play/pause and next buttons in white and amber on black" width="250">
 </p>
 
 - **Bit-perfect audio:** a Rust engine with AAudio output, bit-perfect by default, and bit-perfect to a USB DAC on Android 14 and later where the DAC supports it.
 - **Optional DSP, all off by default:** loudness levelling (ReplayGain or the server's EBU R128 analysis), parametric EQ with AutoEq import and per-output profiles, loudness-compensated volume, crossfeed, dither, and smart crossfades that never cross into a gapless album.
 - **Android Auto, car mode, widgets, a Quick Settings tile and app shortcuts.**
-- **Offline:** downloads (including smart downloads of recent albums and favourites), an offline mode, and plays counted in LMS when you are back online.
-- **Gaps in the signal:** the next track is fetched long before the current one ends, and a session survives up to ten minutes without a connection.
+- **Offline:** downloads (including smart downloads of recent albums and favourites), an offline mode, plays counted in LMS when you are back online, and *Continue on…* any player where you left off.
+- **Gaps in the signal:** the next track is fetched long before the current one ends, and a session survives up to ten minutes without a connection. A replay cache plays repeats and skips back from the phone, and an album downloaded as FLAC stands in for Original-quality streams.
+- **Out of reach, not out of action:** while the server can't be reached, the phone keeps playing, pausing and skipping between tracks it holds; the queue marks which tracks are on the phone, and what you did is passed back when the server returns.
 - **Layouts for phones, tablets and foldables.**
 
-**Get it:** signed APKs are on the [releases page](https://github.com/JameZUK/lyrion-anywhere/releases) (tags `android-v*`); `…-arm64-v8a.apk` suits most phones and the universal `.apk` works on any. Check the files against `SHA256SUMS`. Google Play and F-Droid listings are being prepared. The source is in [`apps/android`](apps/android).
+**Get it:** signed APKs are on the [releases page](https://github.com/JameZUK/lyrion-anywhere/releases) (tags `android-v*`; the latest is 1.14.0); `…-arm64-v8a.apk` suits most phones and the universal `.apk` works on any. Check the files against `SHA256SUMS`. Google Play and F-Droid listings are being prepared. The source is in [`apps/android`](apps/android).
+
+<details>
+<summary><strong>More screenshots</strong></summary>
+
+**Web app**
+
+<p align="center">
+  <img src="docs/images/web/queue-phone.png" alt="The queue on a phone, in sections: Played, Now playing, Up next and Then, each row with a drag handle and a ⋯ menu" width="200">
+  <img src="docs/images/web/library-phone.png" alt="Library on a phone: one row of sections with Albums selected, a sort choice and a grid of album covers with an A to Z scroller" width="200">
+  <img src="docs/images/web/lyrics-phone.png" alt="Synced lyrics on a phone, the current line highlighted above the title, seek bar and controls" width="200">
+  <img src="docs/images/web/settings-phone.png" alt="Settings on a phone: seven sections, each with a one-line summary of its current setting" width="200">
+</p>
+<p align="center">
+  <img src="docs/images/web/album-desktop.png" alt="An album page on a desktop browser: the cover, title and artist, Play, Shuffle, Download and ⋯, a review and the track list" width="400">
+  <img src="docs/images/web/rooms-desktop.png" alt="Rooms on a desktop browser: a card for each player with what it is playing, play/pause, volume and ⋯, and Switch on for one that is off" width="400">
+</p>
+<p align="center">
+  <img src="docs/images/web/stats-desktop.png" alt="Your listening on a desktop browser: listening totals, a button to play Your year in sound, and the most played artists, albums and tracks" width="400">
+  <img src="docs/images/web/now-playing-desktop-dark.png" alt="Now playing on a desktop browser in the dark theme, with the queue pinned on the right" width="400">
+</p>
+
+**Android app**
+
+<p align="center">
+  <img src="docs/images/android/home.png" alt="Home on Android: recently played, stations and recently added shelves" width="200">
+  <img src="docs/images/android/queue.png" alt="The queue on Android: the player and track count, then rows with cover, title, length, ⋮ and a drag handle" width="200">
+  <img src="docs/images/android/downloads.png" alt="Downloads on Android: storage used, downloads in progress with Pause all and Cancel all, and downloaded albums" width="200">
+  <img src="docs/images/android/car-mode.png" alt="Car mode on Android: huge artwork and giant previous, play/pause and next buttons in white and amber on black" width="200">
+</p>
+<p align="center">
+  <img src="docs/images/android/now-playing-light.png" alt="Now playing on Android in the light theme" width="200">
+  <img src="docs/images/android/sound-settings.png" alt="Sound settings on Android: a bit-perfect verdict, bit-perfect USB output, the player level, loudness levelling, preamp and a true-peak limiter" width="200">
+  <img src="docs/images/android/gaps-settings.png" alt="Gaps in the signal and replay cache settings on Android: read ahead the next track, on mobile data too, and the cache size" width="200">
+  <img src="docs/images/android/stats.png" alt="Your listening on Android: totals for the month and the most played artists" width="200">
+</p>
+<p align="center">
+  <img src="docs/images/android/tablet-now-playing.png" alt="Now playing on an Android tablet: the cover and controls on the left, synced lyrics in the middle and the queue on the right" width="820">
+</p>
+
+</details>
 
 ## How it works
 
@@ -124,15 +168,15 @@ Each group has a full breakdown, with the platforms each feature runs on, in [`d
 | [Players, rooms and sync](docs/FEATURES.md#players-rooms-and-sync) | *Play on…*, move playback between players, sync groups, Rooms, alarms |
 | [Library and browsing](docs/FEATURES.md#library-and-browsing) | All of LMS's "My Music", virtual libraries, credits, A–Z scroller, smart filters, apps, radio and plugins |
 | [Search](docs/FEATURES.md#search) | Grouped results, recent searches, search inside apps |
-| [Queue](docs/FEATURES.md#queue) | Sections, drag, swipe, Undo, checked edits, album-aware shuffle |
+| [Queue](docs/FEATURES.md#queue) | Sections, drag, swipe, Undo, checked edits, album-aware shuffle, save as a playlist, marks for tracks on this device |
 | [Now playing](docs/FEATURES.md#now-playing-lyrics-visualiser-and-signal-path) | Waveform seek bar, lyrics, info, visualiser, quality badge and signal path, ratings |
 | [Sound](docs/FEATURES.md#sound-and-dsp) | Bit-perfect output, levelling, EQ, loudness, crossfeed, dither, transitions (Android) |
 | [Discovery](docs/FEATURES.md#discovery-and-radio) | Home shelves, stations, Start radio, More like this |
-| [Offline](docs/FEATURES.md#offline-and-downloads) | Downloads in three formats, offline mode, plays synced back |
+| [Offline](docs/FEATURES.md#offline-and-downloads) | Downloads in three formats, offline mode, plays synced back, controls that keep working while the server is out of reach |
 | [Your listening](docs/FEATURES.md#listening-history-stats-and-your-year) | Private listening history, stats, "Your year in sound" |
 | [Car and system](docs/FEATURES.md#car-android-auto-widgets-and-system-surfaces) | Car mode, Android Auto, widgets, tile, shortcuts, haptics, Media Session |
 | [Appearance and accessibility](docs/FEATURES.md#appearance-and-accessibility) | Material, Classic and High contrast themes; tested contrast; screen readers and keyboards |
-| [Accounts and admin](docs/FEATURES.md#accounts-devices-roles-and-admin) | Per-user accounts, roles, player grants, QR pairing, device list, diagnostics |
+| [Accounts and admin](docs/FEATURES.md#accounts-devices-roles-and-admin) | Per-user accounts, roles, player grants, QR pairing, change your own password, device list, diagnostics |
 | [Security](docs/FEATURES.md#security-features) and [privacy](docs/FEATURES.md#privacy-controls) | See below |
 
 ## Quick start
@@ -184,8 +228,8 @@ The full policy, including Google Play's Data safety answers, is [`docs/PRIVACY.
 
 ## Project status and roadmap
 
-- **Built and in use:** the gateway and LMS plugin, the web app, and the Android app (releases tagged `android-v*`). See [`CHANGELOG.md`](CHANGELOG.md) for what changed and when.
-- **Rolling cache for patchy mobile data:** *Phase A* (whole-track read-ahead to disk and a resume grace of up to ten minutes) is built on Android and awaiting testing on real phones. *Phase B*, a replay cache so replays and skips back don't re-download, and *Phase C*, which plays Original-quality streams from FLAC files already downloaded, are built too. Design: [`docs/plans/wave3-design.md`](docs/plans/wave3-design.md) §2.
+- **Built and in use:** the gateway and LMS plugin, the web app, and the Android app (1.14.0, releases tagged `android-v*`). See [`CHANGELOG.md`](CHANGELOG.md) for what changed and when.
+- **Recently finished:** a declutter of every screen on the web and Android ([`docs/plans/wave3_5-declutter.md`](docs/plans/wave3_5-declutter.md)); controls that work while the server is out of reach; riding out a busy server; and the rolling cache for patchy mobile data (read-ahead to disk, a ten-minute resume grace, a replay cache and downloads standing in for streams; design in [`docs/plans/wave3-design.md`](docs/plans/wave3-design.md) §2). Change password, save the queue as a playlist and the busy notice need a gateway newer than plugin 0.3.0; they arrive with the next plugin release.
 - **iOS app:** planned, on the same Rust layer and protocol, with CarPlay. It will be licensed GPL with an App Store exception for the project's own code (SPEC D17).
 - **Later:** passkeys, a cryptographic release signature for the plugin's bundled gateways, smart filters with track-level rules, a guest queue, album booklets. Store listings for the Android app (Google Play, F-Droid) are being prepared.
 
