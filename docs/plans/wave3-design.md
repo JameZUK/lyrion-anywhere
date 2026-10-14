@@ -9,6 +9,8 @@ Agreed with the owner on 2026-10-13:
 1. **Listening stats and "Your year"** (D7). Built on the per-user listening history the gateway already keeps.
 2. **Rolling cache** (H3), for the Android player on patchy mobile data. It starts as an investigation, written up here before it is built.
 
+3. **Wave 3.5: declutter** (agreed on 2026-10-14). The waves added features faster than the screens absorbed them. A review of every screen on Android and the web (rendered, at phone, tablet and desktop sizes) finds what crowds each one, and an agreed plan removes, merges or moves it, keeping both apps consistent. No new features.
+
 **Later**, by the owner's choice:
 - **Smart filters v2** (X7): "any" rules, track-level rules and download rules. Picked up if a need for track-level rules appears; v1 covers albums by genre, decade, artist and compilation.
 - **Smart Shuffle and DJ styles** (X3): largely covered by Start radio, More like this and stations.
