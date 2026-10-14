@@ -23,7 +23,8 @@ t "settings page QR encoder present" '[ -f "$X/HTML/EN/plugins/LyrionAnywhere/se
 t "settings page files are ASCII (no mojibake)" '! LC_ALL=C grep -rlP "[^\x00-\x7f]" "$X/HTML" --include=*.html --include=*.js --include=*.css | grep -q .'
 t "web app present" '[ -f "$X/web/index.html" ] && [ -d "$X/web/_app/immutable" ] && [ -f "$X/web/player/pkg/anywhere_wasm_bg.wasm" ] && [ -f "$X/web/player/player-worker.js" ]'
 t "web app has no inline script (CSP)" '! grep -q -E "<script>|<script [^>]*>[^<]" "$X/web/index.html"'
-t "no tests, dotfiles, or local config in the zip" '[ -z "$(cd "$X" && find . \( -name "*.t" -o -name ".*" -o -name "*.bak" -o -name "local.*" -o -name "*.env" \) ! -name . | head -1)" ]'
+t "no tests, dotfiles, or local config in the zip" '[ -z "$(cd "$X" && find . \( -name "*.t" -o -name ".*" -o -name "*.bak" -o -name "*.env" -o \( -name "local.*" ! -name "*.js" \) \) ! -name . | head -1)" ]'
+# The web app's own code may be called local.js (web/player/local.js); local config never is.
 t "no web sources or tests in the zip" '[ ! -d "$X/web/tests" ] && [ ! -d "$X/web/src" ] && [ ! -d "$X/web/node_modules" ]'
 
 echo "# gateways"

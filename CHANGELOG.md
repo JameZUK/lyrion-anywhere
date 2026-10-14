@@ -2,6 +2,12 @@
 
 Dated entries, newest first.
 
+## 2026-10-14: Plugin 0.4.0 (prepared)
+
+The server side for Android 1.14.0: the gateway's busy-LMS handling and slow-request log, *Change password* (`POST /v1/account/password`), *Save the queue as a playlist* (`POST /v1/players/{player}/queue/save`) and the faster Opus decoder; and the web app's Wave 3.5 declutter, out-of-reach controls, busy notice and fuller downloads. The plugin's Perl is unchanged since 0.3.0. Notes: `docs/release-notes/v0.4.0.md`.
+
+- **Release check fixed:** `tools/test-release.sh` refused the zip because the web player's `web/player/local.js` matched its `local.*` pattern for local config. JavaScript files are now let through. A planted `dev/local.env`, `local.deploy.sh`, `local.json` or dotfile is still caught. A full local build (`tools/build-release.sh`) passes all 22 checks.
+
 ## 2026-10-14: Android: a track that ends just before the server goes away carries on
 
 Found by CI, where `with_the_server_away_a_track_end_carries_on_into_a_download` failed in 3 of 4 runs. If the track LMS sent played out while LMS was still in reach (`STMu` sent, the next track not yet sent) and the link went down moments later, the phone stopped there, even with the next entry downloaded: it only carried on from a player still "playing". On a slow runner the 3-second test track ended before the test cut the link. On a phone, a track that ends in the seconds before a lost link is noticed would stop the same way.
