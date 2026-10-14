@@ -581,7 +581,14 @@ private fun NowPlayingContent(
                 val drag = remember { QueueDrag() }
                 LazyColumn(Modifier.width(360.dp).fillMaxHeight().testTag("queue-pane"), contentPadding = PaddingValues(vertical = 8.dp)) {
                     item(key = "queue-header") {
-                        QueueHeader(state.queue.size, player.name, actions.onClearQueue, state.upcoming, actions.onClearUpcoming)
+                        QueueHeader(
+                            state.queue.size,
+                            player.name,
+                            actions.onClearQueue,
+                            state.upcoming,
+                            actions.onClearUpcoming,
+                            onSaveAsPlaylist = actions.onSaveQueue.takeIf { state.canSaveQueue },
+                        )
                     }
                     queueItems(state.queue, status.queueIndex?.toInt(), drag, actions.queueActions(), hasMore = state.queueMore, sections = state.sections)
                 }
@@ -971,6 +978,8 @@ data class NowPlayingActions(
     val onPlayNextInQueue: (Int) -> Unit = {},
     /** Take out every track after the current one (after asking). */
     val onClearUpcoming: () -> Unit = {},
+    /** Open "Save as playlist" (offered only when [PlayerUiState.canSaveQueue]). */
+    val onSaveQueue: () -> Unit = {},
     /** One shuffle mode (the shuffle button's long-press choice). */
     val onShuffleMode: (ShuffleMode) -> Unit = {},
     /** Now playing's page, visualiser and queue panel were changed (to remember them). */

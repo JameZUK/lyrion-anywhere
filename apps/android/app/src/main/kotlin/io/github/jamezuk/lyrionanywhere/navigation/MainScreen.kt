@@ -83,6 +83,8 @@ import io.github.jamezuk.lyrionanywhere.ui.components.HomeSettingsButton
 import io.github.jamezuk.lyrionanywhere.ui.player.QueueActions
 import io.github.jamezuk.lyrionanywhere.ui.player.QueueScreen
 import io.github.jamezuk.lyrionanywhere.ui.player.QueueScreenActions
+import io.github.jamezuk.lyrionanywhere.ui.player.SaveQueueDialogView
+import io.github.jamezuk.lyrionanywhere.ui.player.saveQueueToday
 import io.github.jamezuk.lyrionanywhere.ui.components.LocalWindowLayout
 import io.github.jamezuk.lyrionanywhere.ui.components.WindowLayout
 import io.github.jamezuk.lyrionanywhere.ui.player.TransferState
@@ -352,6 +354,7 @@ private fun messageText(res: Resources, m: PlayerMessage): String = when (m) {
     is PlayerMessage.StationStopped -> res.getString(R.string.station_broken, m.reason)
     PlayerMessage.QueueChanged -> res.getString(R.string.queue_changed)
     PlayerMessage.ClearStopped -> res.getString(R.string.queue_clear_stopped)
+    is PlayerMessage.SavedPlaylist -> res.getString(R.string.save_queue_saved, m.name.take(80))
 }
 
 /** "45 s", "27 min", "1 h 5 min" (as the web app and Now playing). */
@@ -464,12 +467,18 @@ fun MainScreen(
     LaunchedEffect(player) {
         player.messages.collect { m ->
             val undo = (m as? PlayerMessage.Removed)?.canUndo == true
+            val saved = m as? PlayerMessage.SavedPlaylist
             val result = snackbar.showSnackbar(
                 messageText(res, m),
-                actionLabel = if (undo) res.getString(R.string.action_undo) else null,
+                actionLabel = when {
+                    undo -> res.getString(R.string.action_undo)
+                    saved != null -> res.getString(R.string.save_queue_open)
+                    else -> null
+                },
                 duration = SnackbarDuration.Short,
             )
             if (undo && result == SnackbarResult.ActionPerformed) player.undoRemove((m as PlayerMessage.Removed).token)
+            if (saved != null && result == SnackbarResult.ActionPerformed) nav.navigate(PlaylistRoute(saved.id, saved.name))
         }
     }
 
@@ -1389,6 +1398,7 @@ fun MainScreen(
                             onLoadMoreQueue = player::loadMoreQueue,
                             onPlayNextInQueue = player::playNextInQueue,
                             onClearUpcoming = player::clearUpcoming,
+                            onSaveQueue = { player.openSaveQueue(saveQueueToday()) },
                             onShuffleMode = player::setShuffle,
                             onLayout = player::setLayout,
                             onVisualiser = player::setVisualiser,
@@ -1418,6 +1428,7 @@ fun MainScreen(
                                     onPlayNext = player::playNextInQueue,
                                 ),
                                 onClearUpcoming = player::clearUpcoming,
+                                onSaveQueue = { player.openSaveQueue(saveQueueToday()) },
                                 onChoosePlayer = openOutputs,
                                 onRetry = player::refresh,
                             ),
@@ -1693,6 +1704,11 @@ fun MainScreen(
                 },
             )
         }
+    }
+
+    // "Save as playlist" (from the Queue tab, the queue panel or the queue peek).
+    playerState.saveQueue?.let { d ->
+        SaveQueueDialogView(d, onSave = player::saveQueue, onChangeName = player::saveQueueChangeName, onDismiss = player::closeSaveQueue)
     }
 
     // "Play on…" (D20): this phone, other players and sync groups.

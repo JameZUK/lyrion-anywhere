@@ -757,6 +757,28 @@
     </plurals>
     <string name="action_clear_all">Clear all</string>
     <string name="queue_clear_stopped">The queue changed, so clearing stopped part-way.</string>
+    <!-- Save the queue as a playlist (admins). -->
+    <string name="save_queue_action">Save as playlist</string>
+    <string name="save_queue_title">Save queue as playlist</string>
+    <string name="save_queue_name">Name</string>
+    <string name="save_queue_saving">Saving…</string>
+    <string name="save_queue_exists_title">Replace playlist?</string>
+    <string name="save_queue_exists">A playlist called “%1$s” already exists. Replace it with this queue?</string>
+    <string name="save_queue_replace">Replace</string>
+    <string name="save_queue_change_name">Change name</string>
+    <string name="save_queue_empty">The queue is empty: there’s nothing to save.</string>
+    <string name="save_queue_failed">Couldn’t save the playlist. Check the connection and try again.</string>
+    <string name="save_queue_failed_detail">Couldn’t save the playlist: %1$s</string>
+    <string name="save_queue_saved">Saved as “%1$s”</string>
+    <string name="save_queue_open">Open</string>
+    <string name="save_queue_name_empty">Give the playlist a name.</string>
+    <string name="save_queue_name_long">Names are at most 100 characters.</string>
+    <string name="save_queue_name_hidden">Names can’t contain control or invisible characters.</string>
+    <string name="save_queue_name_reserved_chars">Names can’t contain / \\ : * ? \" &lt; &gt; or |.</string>
+    <string name="save_queue_name_dots">Names can’t contain “..”.</string>
+    <string name="save_queue_name_leading_dot">Names can’t start with a dot.</string>
+    <string name="save_queue_name_trailing_dot">Names can’t end with a dot.</string>
+    <string name="save_queue_name_reserved">That name is reserved.</string>
     <string name="gapless_marker">Plays straight on from the track before</string>
     <string name="queue_peek">Show the queue</string>
     <!-- Shuffle (Off, Tracks, Albums). -->
