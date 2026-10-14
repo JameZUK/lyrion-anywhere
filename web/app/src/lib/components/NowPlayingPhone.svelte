@@ -243,11 +243,11 @@
 
 	<div class="transport">
 		<ShuffleButton value={app.now?.['playlist shuffle']} onchange={(m) => app.send(cmd.shuffle(m))} disabled={!g.other} />
-		<button class="icon-btn big" aria-label="Previous" onclick={() => controls.previous()} disabled={!g.previous}><Icon name="prev" size={30} /></button>
-		<button class="icon-btn play" aria-label={app.playing ? 'Pause' : 'Play'} onclick={() => controls.toggle()} disabled={!g.playPause}>
+		<button class="icon-btn big" aria-label="Previous" onclick={() => controls.previous()} disabled={!g.previous} {...controls.why(!g.previous)}><Icon name="prev" size={30} /></button>
+		<button class="icon-btn play" aria-label={app.playing ? 'Pause' : 'Play'} onclick={() => controls.toggle()} disabled={!g.playPause} {...controls.why(!g.playPause)}>
 			<Icon name={app.playing ? 'pause' : 'play'} size={34} />
 		</button>
-		<button class="icon-btn big" aria-label="Next" onclick={() => controls.next()} disabled={!g.next}><Icon name="next" size={30} /></button>
+		<button class="icon-btn big" aria-label="Next" onclick={() => controls.next()} disabled={!g.next} {...controls.why(!g.next)}><Icon name="next" size={30} /></button>
 		<button
 			class="icon-btn"
 			class:on={repeat > 0}
@@ -283,7 +283,8 @@
 		<Sheet title="More" onclose={closeSheet}>
 			<div class="rows" data-more-sheet>
 				{#if libraryId !== null}
-					<button class="row" onclick={() => openSheet('track', moreButton())} data-track-menu><Icon name="note" /><span>This track<small>Add to a playlist, go to the album and more</small></span></button>
+					<!-- LMS's own menu for the track: it needs the server (the rest here works without). -->
+					<button class="row" onclick={() => openSheet('track', moreButton())} {...controls.needsServer()} data-track-menu><Icon name="note" /><span>This track<small>Add to a playlist, go to the album and more</small></span></button>
 				{/if}
 				{#if app.current}
 					<a class="row" href="#/car" data-car-link><Icon name="car" /><span>Car mode<small>Big buttons for driving</small></span></a>

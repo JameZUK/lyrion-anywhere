@@ -15,6 +15,7 @@
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import InfoText from '$lib/components/InfoText.svelte';
 	import ArtistDownload from '$lib/components/ArtistDownload.svelte';
+	import { controls } from '$lib/player/controls.svelte';
 	import { NO_ARTIST_INFO, sanitiseArtistInfo, type ArtistInfo } from '$lib/info/info';
 
 	let showMore = $state(false);
@@ -173,9 +174,10 @@
 		{/if}
 		{#if !role}
 			<div class="actions">
-				<button class="btn primary" onclick={() => app.queueUp({ artist: id }, 'play')} disabled={!albums.length || !app.canQueue}><Icon name="play" size={18} />Play all</button>
-				<button class="btn" onclick={() => app.queueUp({ artist: id }, 'add')} disabled={!albums.length || !app.canQueue}><Icon name="plus" size={18} />Add to queue</button>
-				<button class="btn" onclick={() => (showMore = true)}><Icon name="more" size={18} />More</button>
+				<button class="btn primary" onclick={() => app.queueUp({ artist: id }, 'play')} {...controls.needsServer(albums.length > 0)}><Icon name="play" size={18} />Play all</button>
+				<button class="btn" onclick={() => app.queueUp({ artist: id }, 'add')} {...controls.needsServer(albums.length > 0)}><Icon name="plus" size={18} />Add to queue</button>
+				<!-- LMS's own menu for the artist: it needs the server. -->
+				<button class="btn" onclick={() => (showMore = true)} {...controls.needsServer()} data-artist-more><Icon name="more" size={18} />More</button>
 			</div>
 		{/if}
 		<ArtistDownload {albums} />

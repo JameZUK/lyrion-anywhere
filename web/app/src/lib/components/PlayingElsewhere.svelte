@@ -6,6 +6,7 @@
 	import { device } from '$lib/player/device.svelte';
 	import { bringHere, useThisDevice } from '$lib/player/outputs';
 	import Icon from './Icon.svelte';
+	import { controls } from '$lib/player/controls.svelte';
 
 	let { compact = false }: { compact?: boolean } = $props();
 	const name = $derived(playerLabel(app.playerId, app.now, app.players) || 'another player');
@@ -21,10 +22,11 @@
 		<Icon name="output" size={16} />
 		<span class="text"><span class="on-label">Playing on</span> <strong>{name}</strong></span>
 		{#if device.supported}
+			<!-- Both need the server (moving the queue; starting this device's player). -->
 			{#if hasQueue}
-				<button class="link-btn" onclick={() => void bringHere()} aria-label="Bring playback to this device">Bring here</button>
+				<button class="link-btn" onclick={() => void bringHere()} aria-label="Bring playback to this device" {...controls.needsServer()} data-bring-here>Bring here</button>
 			{/if}
-			<button class="link-btn" onclick={useThisDevice} aria-label="Back to this device"><span class="long">Back to this device</span><span class="short">This device</span></button>
+			<button class="link-btn" onclick={useThisDevice} aria-label="Back to this device" {...controls.needsServer()} data-this-device><span class="long">Back to this device</span><span class="short">This device</span></button>
 		{/if}
 	</div>
 {/if}
@@ -66,7 +68,11 @@
 		cursor: pointer;
 		white-space: nowrap;
 	}
-	.link-btn:hover {
+	.link-btn:disabled {
+		opacity: 0.5;
+		cursor: default;
+	}
+	.link-btn:hover:not(:disabled) {
 		background: color-mix(in srgb, var(--accent-fg) 15%, transparent);
 	}
 	.short {

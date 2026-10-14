@@ -4,7 +4,7 @@
 // this device when it is the player (./local.svelte) and are disabled otherwise.
 import { api, app } from '$lib/state/app.svelte';
 import * as cmd from '$lib/lms/commands';
-import { connectionMessage } from '$lib/state/reachability';
+import { connectionMessage, explain, needsServer } from '$lib/state/reachability';
 import { downloads, offlineStore } from '$lib/offline/index.svelte';
 import { device } from './device.svelte';
 import { gates, type Gates, type LocalKind } from './local-plan';
@@ -66,6 +66,20 @@ class Controls {
 	/** The one connection message ('' while in reach). */
 	get message(): string {
 		return connectionMessage(app.reach, local.engaged && local.source !== null && !local.paused, local.engaged ? local.waiting : '');
+	}
+
+	/**
+	 * Attributes for a control that needs the server (Play on a library page, Download, LMS's
+	 * menus, moving playback…): disabled while it is out of reach or busy, as `app.canQueue`,
+	 * and pointing at the connection message. `ok`: anything else the control needs.
+	 */
+	needsServer(ok = true) {
+		return needsServer(app.reach, this.message, ok);
+	}
+
+	/** Why a control is `disabled`, when the connection is the reason (title and description). */
+	why(disabled: boolean) {
+		return explain(disabled, app.reach, this.message);
 	}
 
 	/** The queue mark for entry `index` (LMS track `id`). */

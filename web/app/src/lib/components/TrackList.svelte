@@ -4,6 +4,7 @@
 	import { duration, textOf } from '$lib/lms/format';
 	import Icon from './Icon.svelte';
 	import { rowShortcut, swipeRow } from '$lib/gestures/swipe';
+	import { controls } from '$lib/player/controls.svelte';
 
 	let {
 		tracks,
@@ -29,7 +30,7 @@
 		/** The row menu's download entry for a track ("Download", "Remove download"), or none. */
 		download?: (t: Track) => string | undefined;
 		ondownload?: (t: Track) => void;
-		/** Play, Play next and Add to queue are unavailable (they need the server). */
+		/** The server can't be used now: Play, Play next, Add to queue, Download and More… need it. */
 		disabled?: boolean;
 	} = $props();
 	// Swipes and N/A keys do nothing while disabled; the menu items show it.
@@ -115,6 +116,7 @@
 				class="main"
 				onclick={() => onplay(t, i)}
 				{disabled}
+				{...controls.why(disabled)}
 				onkeydown={(e) => rowShortcut(e, { next: next ? () => next(t) : undefined, add: add ? () => add(t) : undefined })}
 				aria-label={`Play ${textOf(t.title)}`}
 				aria-keyshortcuts={[onnext ? 'N' : '', onadd ? 'A' : ''].filter(Boolean).join(' ') || undefined}
@@ -148,13 +150,16 @@
 					</button>
 					{#if open === i}
 						<div class="menu" role="menu" id={`tl-${uid}-${i}-menu`} aria-labelledby={`tl-${uid}-${i}`} bind:this={menuEl} tabindex="-1" onkeydown={menuKey}>
-							{#if onnext}<button role="menuitem" tabindex="-1" aria-disabled={disabled ? 'true' : undefined} onclick={() => !disabled && choose(() => onnext(t))}><Icon name="playnext" size={18} />Play next</button>{/if}
-							{#if onadd}<button role="menuitem" tabindex="-1" aria-disabled={disabled ? 'true' : undefined} onclick={() => !disabled && choose(() => onadd(t))}><Icon name="plus" size={18} />Add to queue</button>{/if}
+							{#if onnext}<button role="menuitem" tabindex="-1" aria-disabled={disabled ? 'true' : undefined} {...controls.why(disabled)} onclick={() => !disabled && choose(() => onnext(t))}><Icon name="playnext" size={18} />Play next</button>{/if}
+							{#if onadd}<button role="menuitem" tabindex="-1" aria-disabled={disabled ? 'true' : undefined} {...controls.why(disabled)} onclick={() => !disabled && choose(() => onadd(t))}><Icon name="plus" size={18} />Add to queue</button>{/if}
 							{#if ondownload && download}
 								{@const label = download(t)}
-								{#if label}<button role="menuitem" tabindex="-1" onclick={() => choose(() => ondownload(t))}><Icon name={label === 'Download' ? 'download' : 'trash'} size={18} />{label}</button>{/if}
+								<!-- Downloading needs the server; removing a download doesn't. -->
+								{@const off = disabled && label === 'Download'}
+								{#if label}<button role="menuitem" tabindex="-1" aria-disabled={off ? 'true' : undefined} {...controls.why(off)} onclick={() => !off && choose(() => ondownload(t))}><Icon name={label === 'Download' ? 'download' : 'trash'} size={18} />{label}</button>{/if}
 							{/if}
-							{#if onmore}<button role="menuitem" tabindex="-1" onclick={() => choose(() => onmore(t))}><Icon name="more" size={18} />More…</button>{/if}
+							<!-- LMS's own menu for the track: it needs the server. -->
+							{#if onmore}<button role="menuitem" tabindex="-1" aria-disabled={disabled ? 'true' : undefined} {...controls.why(disabled)} onclick={() => !disabled && choose(() => onmore(t))}><Icon name="more" size={18} />More…</button>{/if}
 						</div>
 					{/if}
 				</div>

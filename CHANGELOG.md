@@ -12,6 +12,29 @@ Found by a rendered review of every screen at phone, small-phone and tablet size
 - **Library chips:** a chosen chip off the edge (*Downloaded*, say) is now scrolled into view.
 - **Tests:** `LayoutFixesTests` (the heading is one line, its buttons on one row, at 411, 360 and 240 dp with every action reachable, a menu action still asks first, the ⋮ stays on the Play row at 379, 328 and 300 dp, moved actions work from the menu, nothing moves on a wide screen, the connection line keeps its colour over the ambient cover, the cover doesn't paint outside its bounds, and the chosen chip is wholly on screen, also after choosing another). Each failed before the fix, bar the two wide-screen guards.
 
+## 2026-10-14: Web: three fixes when the server is out of reach
+
+Found by a rendered review of the web app with the server out of reach or busy.
+
+- **No more bare "Can’t reach the music server" page after a reload.** The cause: SvelteKit's hash router reloads the whole page when the hash changes outside its router (a route typed into the address bar, a link from elsewhere, a script setting `location.hash`). Links inside the app never did this. A reload while the server was out of reach then couldn't sign in again, so the app fell back to offline mode's splash.
+  - **A route typed into the address bar now opens in the app.** It steps back over the browser's own history entry and follows the route like a link, so Back and Forward work as usual. The page isn't reloaded, so this device's player doesn't stop.
+  - **A page that does load while the server is away comes back signed in.** This applies when someone was signed in on this device, and only *provisionally*: there is no token, and no request is sent until the server confirms the sign-in. If the server refuses it, the user is signed out. The device keeps only who was signed in and as which device (never a token), checked field by field when read, and forgets it at sign-out. Offline mode's splash is now only for a device where nobody is signed in. The player, downloads and the "this device's player didn't start" fallback wait for the confirmation.
+- **Now playing no longer says "Nothing to control yet" while the music server is busy.** This happened after a reload while LMS was busy. The selected player's last state is now kept on the device (per user, size-capped, checked when read, forgotten at sign-out). A page loaded while the server is busy or out of reach shows that state with the connection chip, its position held still, until the server answers.
+- **Controls that need the server are greyed out consistently, and say why.** This covers:
+  - Download and its format, Download now, Resume and Try again on album, playlist and artist pages;
+  - the album and artist **More** (LMS's own menu);
+  - the track menu's **Download** and **More…**;
+  - Now playing's **More** and **This track**;
+  - the "Playing on" strip's **Bring here** and **Back to this device**.
+
+  Removing or pausing a download, and the other Now playing items that work without the server, stay available. Disabled controls, including Play and the transport, have a `title` and `aria-describedby` that point at the connection chip. They all go through one helper, `controls.needsServer()`, which is the same test as `app.canQueue`.
+- **Tests:**
+  - the address-bar routing (refusing anything that isn't an app route, plus a robustness sweep) and the listener's history handling;
+  - the provisional sign-in: no empty token is ever sent, the server's refusal signs out, sign-out wins, and a malformed or tampered stored profile is no profile at all (with a robustness sweep);
+  - the last-known state (per user and player, malformed and oversize input, a robustness sweep);
+  - the real app state after a load while busy or out of reach;
+  - the greyed controls and their descriptions on the album page, the track menu and the strip.
+
 ## 2026-10-14: Android 1.13.0 (versionCode 27)
 
 A test build: with the server out of reach, controls that can't work are greyed out (Now playing, mini player, queue, notification, lock screen, Android Auto); on this phone's player, play and pause still work, and next, previous, a queue row and seeking work for tracks the phone has whole, playing on from its own copies; queue rows are marked *Downloaded* or *On this device*; the connection message is one line at the top that never covers the controls; back online, LMS picks up where the phone is if its queue hasn't changed. Includes the airplane-mode freeze fix from 1.12.1.

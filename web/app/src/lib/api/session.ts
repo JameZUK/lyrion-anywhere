@@ -24,6 +24,43 @@ type Listener = (s: Session | null, status: SessionStatus) => void;
 /** Set while a sign-out has not reached the server yet: the next page load must not restore. */
 export const SIGNED_OUT_KEY = 'anywhere.signedOut';
 
+/**
+ * Who is signed in on this device (never a token: the access token stays in memory and the
+ * refresh token in its HttpOnly cookie). A page loaded while the server is out of reach uses
+ * it to bring the app back as it was, rather than a bare "can't reach" page; the server still
+ * decides once it answers.
+ */
+export const PROFILE_KEY = 'anywhere.session';
+
+/** The part of a session kept across page loads. */
+export type Profile = Pick<Session, 'user' | 'device'>;
+
+const text = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
+
+/** A stored profile, checked field by field: anything malformed is no profile at all. */
+export function parseProfile(raw: string | null | undefined): Profile | null {
+	if (!raw || raw.length > 2048) return null;
+	let v: unknown;
+	try {
+		v = JSON.parse(raw);
+	} catch {
+		return null;
+	}
+	if (!v || typeof v !== 'object') return null;
+	const { user, device } = v as Record<string, unknown>;
+	if (!user || typeof user !== 'object' || !device || typeof device !== 'object') return null;
+	const u = user as Record<string, unknown>;
+	const d = device as Record<string, unknown>;
+	if (!text(u.username, 200) || (u.role !== 'admin' && u.role !== 'listener')) return null;
+	if (!Number.isSafeInteger(d.id) || (d.id as number) <= 0 || typeof d.name !== 'string' || d.name.length > 200) return null;
+	// The player id only if it looks like one (the app checks it again where it uses it).
+	const mac = typeof d.mac === 'string' && /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(d.mac) ? d.mac : undefined;
+	return {
+		user: { username: u.username, role: u.role },
+		device: { id: d.id as number, name: d.name, ...(mac ? { mac } : {}) },
+	};
+}
+
 type Flags = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
 function safeLocal(): Flags | undefined {
@@ -43,6 +80,12 @@ export interface AuthApi {
 export class SessionManager {
 	current: Session | null = null;
 	status: SessionStatus = 'unknown';
+	/**
+	 * Signed in as far as this device knows, but not confirmed yet: the page loaded while the
+	 * server was out of reach. There is no token (requests wait for a real one); the sign-in is
+	 * confirmed, or ended if the server refuses it, as soon as the server answers.
+	 */
+	provisional = false;
 	#listeners = new Set<Listener>();
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#renewing: Promise<boolean> | null = null;
@@ -91,12 +134,31 @@ export class SessionManager {
 		for (const fn of this.#listeners) fn(this.current, this.status);
 	}
 
+	#profile(s: Session | null) {
+		try {
+			if (s) this.flags?.setItem(PROFILE_KEY, JSON.stringify({ user: s.user, device: s.device }));
+			else this.flags?.removeItem(PROFILE_KEY);
+		} catch {
+			/* storage blocked: a load while out of reach shows offline mode instead */
+		}
+	}
+
+	#storedProfile(): Profile | null {
+		try {
+			return parseProfile(this.flags?.getItem(PROFILE_KEY));
+		} catch {
+			return null;
+		}
+	}
+
 	#set(s: Session | null) {
 		clearTimeout(this.#timer);
 		clearTimeout(this.#retry);
 		this.#attempt = 0;
 		this.current = s;
+		this.provisional = false;
 		this.status = s ? 'signed-in' : 'signed-out';
+		this.#profile(s);
 		if (s) {
 			const ms = Math.max(30_000, s.expires_in * 1000 - RENEW_BEFORE_MS);
 			this.#timer = setTimeout(() => void this.renew('timer'), ms);
@@ -131,8 +193,17 @@ export class SessionManager {
 			if (refused(e)) {
 				this.#set(null);
 			} else {
-				// Can't tell yet: keep the sign-in and try again shortly.
-				if (this.status !== 'offline') {
+				// Can't tell yet: keep the sign-in and try again shortly. Someone was signed in
+				// here: carry on as them meanwhile (provisionally, with no token), so a page
+				// loaded while the server is away brings the app back, not a bare "can't reach"
+				// page. Offline mode is left for a device with nobody signed in.
+				const profile = this.status === 'signed-in' ? null : this.#storedProfile();
+				if (profile) {
+					this.current = { access_token: '', expires_in: 0, ...profile };
+					this.provisional = true;
+					this.status = 'signed-in';
+					this.#emit();
+				} else if (this.status !== 'offline' && this.status !== 'signed-in') {
 					this.status = 'offline';
 					this.#emit();
 				}
@@ -220,6 +291,11 @@ export class SessionManager {
 	/** Run an authenticated call; on 401, renew the token once and retry. */
 	async authed<T>(fn: (token: string) => Promise<T>): Promise<T> {
 		if (!this.current) throw new ApiError(401, 'not signed in');
+		// Not confirmed yet: get a real token first (no request ever goes with an empty one).
+		if (this.provisional && !(await this.renew())) {
+			if (!this.current) throw new ApiError(401, 'not signed in');
+			throw new TypeError('Can’t reach your server.');
+		}
 		const token = this.token;
 		try {
 			return await fn(token);

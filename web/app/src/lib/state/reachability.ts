@@ -73,6 +73,29 @@ export const BUSY_TEXT = 'Your music server is busy. Waiting for it…';
 export const UNREACHABLE_TEXT = 'Can’t reach your server.';
 export const LOCAL_TEXT = 'Can’t reach your server. Playing from this device.';
 
+/** The connection message's element id, for the controls it explains. */
+export const CONNECTION_ID = 'connection-status';
+
+/** What a disabled control says about why (nothing when the connection isn't the reason). */
+export interface Explained {
+	title?: string;
+	'aria-describedby'?: string;
+}
+
+/** Point a control disabled by the connection at the connection message. */
+export function explain(disabled: boolean, state: Reachability, message: string): Explained {
+	return disabled && state !== 'online' && message ? { title: message, 'aria-describedby': CONNECTION_ID } : {};
+}
+
+/**
+ * The attributes of a control that needs the server: disabled unless it is in reach and `ok`
+ * (anything else the control needs), and saying why when the connection is the reason.
+ */
+export function needsServer(state: Reachability, message: string, ok = true): Explained & { disabled: boolean } {
+	const disabled = state !== 'online' || !ok;
+	return { disabled, ...explain(disabled, state, message) };
+}
+
 /**
  * The one connection message: '' while online. `playingHere`: this device plays on by
  * itself; `waiting`: why it stopped (e.g. the next track needs the server), if it did.

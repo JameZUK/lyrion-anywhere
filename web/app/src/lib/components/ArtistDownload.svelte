@@ -11,6 +11,7 @@
 	import { defaultFormat, networkType } from '$lib/offline/settings';
 	import { FORMATS, FORMAT_LABELS, type Format } from '$lib/offline/types';
 	import Icon from './Icon.svelte';
+	import { controls } from '$lib/player/controls.svelte';
 
 	/** Most albums fetched for one artist download. */
 	const MAX_ALBUMS = 200;
@@ -69,7 +70,7 @@
 	<div class="dl" data-testid="artist-download">
 		{#if held > 0 && held === progress.count - progress.done - progress.failed - progress.paused}
 			<span class="dl-state" role="status"><Icon name="download" size={18} />Waiting for Wi-Fi ({held} {held === 1 ? 'track' : 'tracks'})</span>
-			<button class="btn" onclick={() => downloads.downloadNow(mine)}>Download now</button>
+			<button class="btn" onclick={() => downloads.downloadNow(mine)} {...controls.needsServer()}>Download now</button>
 			<button class="btn" onclick={() => downloads.cancelAll(mine)}><Icon name="close" size={18} />Cancel</button>
 		{:else if progress.busy}
 			<span class="dl-state" role="status">Downloading {progress.done} of {progress.count} · {Math.round(progress.fraction * 100)}%</span>
@@ -78,15 +79,16 @@
 			<button class="btn" onclick={() => downloads.cancelAll(mine)}><Icon name="close" size={18} />Cancel</button>
 		{:else if progress.paused > 0}
 			<span class="dl-state" role="status">Download paused ({progress.done} of {progress.count})</span>
-			<button class="btn" onclick={() => downloads.resumeAll(mine)}><Icon name="play" size={18} />Resume</button>
+			<button class="btn" onclick={() => downloads.resumeAll(mine)} {...controls.needsServer()}><Icon name="play" size={18} />Resume</button>
 			<button class="btn" onclick={() => downloads.cancelAll(mine)}><Icon name="close" size={18} />Cancel</button>
 		{:else}
-			<button class="btn" onclick={downloadAll} disabled={!downloads.online || busy}>
+			<!-- Fetching needs the server; pausing, cancelling and removing don't. -->
+			<button class="btn" onclick={downloadAll} {...controls.needsServer(downloads.online && !busy)} data-download>
 				<Icon name="download" size={18} />{busy ? 'Preparing…' : savedAlbums ? 'Download the other albums' : 'Download all albums'}
 			</button>
 			<label class="fmt">
 				<span class="sr-only">Download format</span>
-				<select bind:value={choice}>
+				<select bind:value={choice} {...controls.needsServer(downloads.online)}>
 					<option value="auto">{FORMAT_LABELS[auto]} ({onWifi ? 'Wi-Fi' : 'mobile data'} default)</option>
 					{#each FORMATS as f (f)}<option value={f}>{FORMAT_LABELS[f]}</option>{/each}
 				</select>
