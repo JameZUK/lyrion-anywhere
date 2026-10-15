@@ -451,6 +451,16 @@ impl FakeLms {
                             ]);
                         }
                     }
+                    // `time ?`: LMS's own idea of the position, the status's `time`.
+                    if cmd == "time" && arg1 == "?" {
+                        let t = so
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .and_then(|st| st.get("time").cloned())
+                            .unwrap_or(json!(12.5));
+                        result = json!({"_time": t});
+                    }
                     let reply = json!({"id": 1, "method": "slim.request", "result": result});
                     return ([("content-type", "application/json")], reply.to_string())
                         .into_response();

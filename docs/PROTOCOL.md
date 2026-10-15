@@ -245,7 +245,7 @@ What the Android player does (`mobile/src/player/engine.rs`), as an example:
 - **Grace:** it asks for `"grace":600` when `/v1/me` lists `resume_grace`, and resumes until 5 s before the grace in the greeting runs out (55 s when the greeting has none, or an out-of-range one).
 - **Stream downloads:** a broken download is retried from its offset, with the backoff above, until the granted grace has run out since the first failure in a row (60 s without a grant). A 4xx other than an expired token fails the track at once.
 - **No network:** when the phone reports no network, it drops the socket, stops trying until the network is back, then tries at once (the grace still counts from the drop).
-- **While detached:** its STATs wait in an outbox of 2000 frames. When it is full, `STMt` heartbeats go first, so `STMs`, `STMd`, `STMo`, `STMr` and `STMu` survive a long gap.
+- **While detached:** its STATs wait in an outbox of 2000 frames. When it is full, `STMt` heartbeats go first, so `STMs`, `STMd`, `STMo`, `STMr` and `STMu` survive a long gap. They are sent in order when the session resumes, with one exception in a sync group: a mid-track `STMo` held through the gap is dropped (see *Synchronised playback › Rejoining after a gap*).
 
 ## Streams
 
@@ -490,6 +490,19 @@ Applied anywhere earlier, they would only take effect once the audio queued ahea
 | Player start delay (`startDelay`) | 0 | Leave at 0: a start our players can't make is caught up exactly. |
 | Network packet latency (`packetLatency`) | 2 ms | Leave. |
 | Synchronised players startup delay (server, `syncStartDelay`) | 200 ms | Leave. Raising it lets a Bluetooth phone start without dropping its first few hundred ms. |
+
+### Rejoining after a gap (Android)
+
+When the phone's link to the gateway stalls while it is in a group, the others play on. Once the link is back and audio arrives, the phone gets back in step by itself (`mobile/src/player/engine.rs`):
+- **Short stall:** if it has decoded more than the stall (plus 250 ms), it drops that much audio and carries on with the others. It waits up to 2 s for that much to arrive.
+- **Longer stall:** it has LMS restart the group where the others are now: `time <t>`, where `t` is where the phone stopped plus the time it has been stalled. LMS flushes and restarts every member there, in step; the others hear a short gap.
+  - LMS's current track (`status - 2 tags:xed`) is checked first. Nothing is sent if LMS isn't playing (someone paused or stopped the group), if the current track is no longer the one that stalled (the queue changed, or the group moved on), if `t` is within 1 s of the track's end or past it (LMS moves the group on itself), or if the stall is longer than any session lasts.
+  - Not LMS's `time ?`: with the phone as the group's master, it lags at the point LMS last heard from the phone. In the live check, a 14 s stall sent the whole group back about 14 s.
+  - Only when the phone never learnt the track's queue position (a radio stream, or LMS didn't answer) does it fall back on `time ?`.
+- **The underrun report:** the phone tells LMS `STMo` when its output runs dry mid-track. Sent while the link is down, it waits in the outbox. In a group, the phone drops it on reconnecting (with the `STMr` for its recovery, if one followed), and sends no `STMr` when the audio comes back. While LMS is still streaming the track, a member's `STMo` makes LMS pause the whole group until every member has rebuffered. Arriving after the gap, it no longer describes anything LMS should act on: in the live check, the others went silent for 4 to 15 s.
+  - **Still sent:** alone, everything held goes as before (LMS rebuffering one player is harmless); the `STMo` sent in place of `STMu` when everything received has played out with the link down (it is about the end of the track); and any underrun while the link is up, including one after the rejoin.
+  - Group membership is as last known before the gap; the phone asks again on reconnecting.
+- **Live check:** `mobile/tests/live_sync.rs` (opt-in, against a real LMS) asserts that, after the rejoin, the phone is within 100 ms of the group; LMS doesn't pause the others for more than 1 s; and a restart moves them by at most 1.5 s.
 
 ### Measured (simulation)
 

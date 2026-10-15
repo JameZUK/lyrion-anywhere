@@ -29,7 +29,9 @@
 //!   when the phone has no network: reconnecting then waits for it, and starts at once
 //!   when it returns;
 //! - after a stall, a player in a sync group skips what the others played meanwhile, or
-//!   has LMS restart the group in step when too little is buffered to do that;
+//!   has LMS restart the group in step, where the others are, when too little is buffered
+//!   to do that; an underrun report (`STMo`) held through the gap isn't sent to LMS then,
+//!   since LMS would pause the whole group for it;
 //! - a gap longer than the grace, while playing, ends in a new session that restarts the
 //!   track heard last where it was, once LMS confirms that track is still there and nobody
 //!   paused or stopped it (`protocol::restart_commands`);
@@ -370,7 +372,8 @@ pub(crate) struct Engine {
     /// Protocol errors close together, and when the last was: each backs off further, so
     /// a server that keeps sending a bad frame isn't reconnected to in a tight loop.
     bad_frames: (u32, Option<Instant>),
-    outbox: VecDeque<Vec<u8>>,
+    /// Frames for LMS held while the link is down (see [`protocol::release_outbox`]).
+    outbox: VecDeque<protocol::Held>,
     connection: PlayerConnection,
     // Player.
     player: Option<Player>,
@@ -936,8 +939,18 @@ impl Engine {
             }
         }
         self.update_link();
-        let queued: Vec<_> = self.outbox.drain(..).collect();
-        for b in queued {
+        // What waited through the gap goes to LMS now, except, in a sync group, a stale
+        // mid-track `STMo`: LMS would pause the whole group to rebuffer, while this player
+        // handles the stall itself (see `protocol::release_outbox` for the reasoning).
+        // Group membership is as last known: a fresh session has emptied the outbox, and a
+        // resumed one asks again just above, but that answer is still on its way.
+        let released = protocol::release_outbox(&mut self.outbox, self.in_sync_group);
+        if released.stall_unreported
+            && let Some(p) = &mut self.player
+        {
+            p.withdraw_underrun_report();
+        }
+        for b in released.frames {
             self.send_ws(Out::Binary(b));
         }
         if let Some((n, bytes)) = self.player.as_ref().and_then(Player::open_stream) {
@@ -1038,9 +1051,23 @@ impl Engine {
     fn send_ws(&mut self, msg: Out) {
         if let (true, Some(out)) = (self.open, &self.ws_out) {
             let _ = out.send(msg);
-        } else if let Out::Binary(b) = msg {
-            // Held until the session resumes; acknowledgements are only useful live.
-            protocol::push_outbox(&mut self.outbox, b, protocol::OUTBOX_LIMIT);
+        } else if let Out::Binary(frame) = msg {
+            // Held until the session resumes; acknowledgements are only useful live. An
+            // `STMo` sent while the track is still arriving is an underrun mid-track (the
+            // core's `output_underrun`), as opposed to the one sent in place of `STMu` once
+            // everything received has played out: only the first may be dropped on a
+            // grouped rejoin. Frames are dispatched as soon as the core makes them, so its
+            // state now is its state then.
+            let gap_underrun = protocol::is_stat_event(&frame, b"STMo")
+                && self.player.as_ref().is_some_and(|p| !p.audio_exhausted());
+            protocol::push_outbox(
+                &mut self.outbox,
+                protocol::Held {
+                    frame,
+                    gap_underrun,
+                },
+                protocol::OUTBOX_LIMIT,
+            );
         }
     }
 
@@ -1450,37 +1477,66 @@ impl Engine {
         self.restart = Some(task.abort_handle());
     }
 
-    /// A stalled player in a sync group had too little audio to skip the stall: ask LMS to
-    /// restart the group where it is (`time` with the group's own position). LMS then
-    /// flushes and restarts every member at that point, in step (the others hear a short
-    /// pause). Minimal by design: LMS never pulls a member back into line by itself.
-    fn rejoin_group(&mut self) {
+    /// A stalled player in a sync group had too little audio to skip the stall (it has been
+    /// stalled `stalled_ms`): ask LMS to restart the group where the others are now. LMS
+    /// then flushes and restarts every member at that point, in step (the others hear a
+    /// short gap). Minimal by design: LMS never pulls a member back into line by itself.
+    ///
+    /// Where the others are is where this player stopped plus the time it has been stalled
+    /// (they played on meanwhile), checked against LMS's current track first
+    /// ([`protocol::rejoin_command`]: nothing is sent if the track changed, LMS isn't
+    /// playing, or the point is past the track's end). Not LMS's `time ?`: with this player
+    /// the group's master, that lags by however long LMS last heard from it, and the whole
+    /// group went back 14 s after a 14 s stall in the live check. Only when the track's
+    /// queue position was never learnt (a radio stream, or LMS didn't answer) is LMS's
+    /// own `time ?` used, as before.
+    fn rejoin_group(&mut self, stalled_ms: u64) {
         let Some(mac) = self.mac else { return };
         if self.rejoin.as_ref().is_some_and(|t| !t.is_finished()) {
             return;
         }
+        // Nothing has been heard since the stall began, so what was heard last is where it
+        // stopped.
+        let point = self.heard_point().map(|h| protocol::RejoinPoint {
+            index: h.index,
+            track_id: h.track_id,
+            stalled_at_ms: h.elapsed_ms,
+            stalled_ms,
+        });
+        let decided = Instant::now();
         let core = self.core.clone();
         let task = tokio::spawn(async move {
             let player = format_mac(&mac);
-            let Ok(answer) = core
-                .rpc(
-                    &player,
-                    vec![serde_json::json!("time"), serde_json::json!("?")],
-                )
-                .await
-            else {
-                return;
-            };
-            if let Some(t) = protocol::group_time(&answer) {
-                let _ = core
+            let cmd = if let Some(point) = point {
+                let Ok(st) = core.rpc(&player, protocol::stream_status_command()).await else {
+                    return;
+                };
+                // The others played on while LMS was asked.
+                let waited = u64::try_from(decided.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let point = protocol::RejoinPoint {
+                    stalled_ms: point.stalled_ms.saturating_add(waited),
+                    ..point
+                };
+                protocol::rejoin_command(&point, &st)
+            } else {
+                let Ok(answer) = core
                     .rpc(
                         &player,
-                        vec![
-                            serde_json::json!("time"),
-                            serde_json::json!(format!("{t:.3}")),
-                        ],
+                        vec![serde_json::json!("time"), serde_json::json!("?")],
                     )
-                    .await;
+                    .await
+                else {
+                    return;
+                };
+                protocol::group_time(&answer).map(|t| {
+                    vec![
+                        serde_json::json!("time"),
+                        serde_json::json!(format!("{t:.3}")),
+                    ]
+                })
+            };
+            if let Some(cmd) = cmd {
+                let _ = core.rpc(&player, cmd).await;
             }
         });
         self.rejoin = Some(task.abort_handle());
@@ -1883,10 +1939,10 @@ impl Engine {
             }
             StallStep::Resume => {
                 self.stall_wait = None;
-                if let StallResume::NotEnoughBuffered { .. } =
+                if let StallResume::NotEnoughBuffered { stalled_ms, .. } =
                     p.resume_after_stall(self.in_sync_group, now)
                 {
-                    self.rejoin_group();
+                    self.rejoin_group(stalled_ms);
                 }
                 false
             }

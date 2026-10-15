@@ -273,6 +273,9 @@ pub struct Player {
     host_buffered: (u64, u64),
     /// An underrun has been reported (STMo) and audio has not flowed since.
     underrun_reported: bool,
+    /// The host never delivered that report (see [`Player::withdraw_underrun_report`]), so
+    /// the audio flowing again is not reported either.
+    underrun_withdrawn: bool,
     /// Ignore `audg`: samples leave at 100 % (see [`Player::set_fixed_volume`]).
     fixed_volume: bool,
     /// The host applies the volume at its output (see [`Player::set_host_volume`]).
@@ -344,6 +347,7 @@ impl Player {
             last_trim: None,
             host_buffered: (0, 0),
             underrun_reported: false,
+            underrun_withdrawn: false,
             fixed_volume: false,
             host_volume: false,
             quick_start_ms: None,
@@ -514,6 +518,17 @@ impl Player {
         if self.output == OutputState::Playing && streaming && !self.underrun_reported {
             self.underrun_reported = true;
             self.send_stat(*b"STMo", 0);
+        }
+    }
+
+    /// The host dropped the `STMo` it was holding for LMS (a sync group member that rejoins
+    /// after a gap handles the stall itself, and LMS must not pause the whole group for a
+    /// report that is stale by then). The stall goes on as before: it is still timed, and no
+    /// second `STMo` is sent for it; but since LMS never heard of it, the audio flowing
+    /// again sends no `STMr`. Does nothing unless an underrun is reported and unrecovered.
+    pub fn withdraw_underrun_report(&mut self) {
+        if self.underrun_reported {
+            self.underrun_withdrawn = true;
         }
     }
 
@@ -947,9 +962,10 @@ impl Player {
     /// Report that `frames` previously pulled have now been played.
     pub fn played(&mut self, mut frames: u64) {
         // Audio flowing again after an `STMo` (read-ahead mode tells LMS with `STMr`).
-        let resumed = frames > 0 && self.underrun_reported;
+        let resumed = frames > 0 && self.underrun_reported && !self.underrun_withdrawn;
         if frames > 0 {
             self.underrun_reported = false;
+            self.underrun_withdrawn = false;
             self.stall_since = None;
         }
         let mut started = false;
@@ -2892,6 +2908,65 @@ mod tests {
             assert_eq!(count(&ev, "STMs"), 0);
             assert_eq!(count(&ev, "STMr"), usize::from(mode), "mode {mode}: {ev:?}");
         }
+    }
+
+    /// An `STMo` the host withdrew (never delivered) is followed by no `STMr` when the audio
+    /// comes back, and no second `STMo` while the same stall lasts; the next underrun, after
+    /// audio has flowed, is reported as usual.
+    #[test]
+    fn a_withdrawn_underrun_report_sends_no_stmr_and_the_next_underrun_is_reported() {
+        let mut p = read_ahead();
+        let mut now = 0;
+        let full = wav(44100, 44100 * 4);
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&full[..44 + WAV_BYTES_PER_SEC], now);
+        play_ms(&mut p, 1500, &mut now);
+        p.take_actions();
+        p.output_underrun();
+        assert_eq!(events(&p.take_actions()), vec!["STMo"]);
+        p.withdraw_underrun_report();
+        p.output_underrun();
+        assert!(p.take_actions().is_empty(), "still one report per stall");
+        assert!(p.stall_ms(now + 10).is_some(), "the stall is still timed");
+        p.on_stream_data(
+            &full[44 + WAV_BYTES_PER_SEC..44 + 2 * WAV_BYTES_PER_SEC],
+            now,
+        );
+        play_ms(&mut p, 300, &mut now);
+        let ev = events(&p.take_actions());
+        assert_eq!(count(&ev, "STMr"), 0, "{ev:?}");
+        assert_eq!(count(&ev, "STMs"), 0, "{ev:?}");
+        assert_eq!(p.stall_ms(now), None);
+        // A real underrun later is reported, and its recovery too.
+        play_ms(&mut p, 2000, &mut now);
+        p.take_actions();
+        p.output_underrun();
+        assert_eq!(events(&p.take_actions()), vec!["STMo"]);
+        p.on_stream_data(&full[44 + 2 * WAV_BYTES_PER_SEC..], now);
+        p.on_stream_end(now);
+        play_ms(&mut p, 300, &mut now);
+        assert_eq!(count(&events(&p.take_actions()), "STMr"), 1);
+    }
+
+    /// Withdrawing with nothing reported, or after the audio came back, changes nothing.
+    #[test]
+    fn withdrawing_without_an_unrecovered_underrun_does_nothing() {
+        let mut p = read_ahead();
+        let mut now = 0;
+        let full = wav(44100, 44100 * 4);
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&full[..44 + WAV_BYTES_PER_SEC], now);
+        play_ms(&mut p, 500, &mut now);
+        p.take_actions();
+        p.withdraw_underrun_report();
+        play_ms(&mut p, 1000, &mut now);
+        p.take_actions();
+        p.output_underrun();
+        assert_eq!(events(&p.take_actions()), vec!["STMo"]);
+        p.on_stream_data(&full[44 + WAV_BYTES_PER_SEC..], now);
+        p.on_stream_end(now);
+        play_ms(&mut p, 300, &mut now);
+        assert_eq!(count(&events(&p.take_actions()), "STMr"), 1);
     }
 
     /// A player with 15 s of a track decoding, 1 s heard, still streaming.
