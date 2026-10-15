@@ -193,7 +193,12 @@ fn decoder_survives_random_and_truncated_streams() {
         input.set_eof();
         for _ in 0..10_000 {
             match dec.work(64, &mut |_, _| {}) {
-                anywhere_core::decode::DecodeStatus::Progress => {}
+                DecodeStatus::Progress => {}
+                // A caught panic would have aborted the web player (M13).
+                DecodeStatus::Failed(e) => {
+                    assert_ne!(e, CAUGHT_PANIC, "seed {seed} panicked the decoder");
+                    break;
+                }
                 _ => break,
             }
         }
@@ -395,7 +400,7 @@ fn stream_decode(file: &[u8], fmt: u8) -> DecodeStatus {
 }
 
 /// The streaming decoder's message when it caught a panic (native builds only).
-const CAUGHT_PANIC: &str = "decode: the decoder failed on this stream";
+const CAUGHT_PANIC: &str = anywhere_core::decode::STREAM_DECODER_PANICKED;
 
 /// Regression: hostile WAV header fields through the streaming decoder (the player's path,
 /// shared with the web player). Symphonia's WAV reader overflowed on some of these in debug
