@@ -143,7 +143,7 @@ export class Api {
 		if (!url) return Promise.reject(new ApiError(400, 'bad art path'));
 		return this.session.authed((token) =>
 			this.#artLimit.run(async () => {
-				const resp = await fetch(url, { headers: bearer(token), cache: 'force-cache' });
+				const resp = await fetch(url, { headers: bearer(token), cache: 'default' });
 				if (!resp.ok) throw new ApiError(resp.status, `art HTTP ${resp.status}`);
 				const type = resp.headers.get('content-type') ?? '';
 				if (!/^image\//.test(type)) throw new ApiError(415, 'not an image');
