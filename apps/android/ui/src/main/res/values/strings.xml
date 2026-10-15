@@ -1131,6 +1131,19 @@
     <string name="read_ahead_mobile_detail">A track skipped early still uses its data</string>
     <string name="read_ahead_mobile_off">Turn on reading ahead first</string>
     <string name="cushion_ahead">%1$s buffered ahead</string>
+    <!-- The output clock: how the engine knows what the speaker plays (sync rests on it) -->
+    <string name="output_clock_device">Output clock: device · latency %1$d ms</string>
+    <string name="output_clock_estimated">Output clock: estimated · latency about %1$d ms</string>
+    <string name="output_clock_device_spoken">Output clock: the device\'s own timestamp, latency %1$s</string>
+    <string name="output_clock_estimated_spoken">Output clock: estimated, latency about %1$s</string>
+    <plurals name="output_clock_errors">
+        <item quantity="one">%1$d clock error a minute</item>
+        <item quantity="other">%1$d clock errors a minute</item>
+    </plurals>
+    <plurals name="output_latency_spoken">
+        <item quantity="one">%1$d millisecond</item>
+        <item quantity="other">%1$d milliseconds</item>
+    </plurals>
     <!-- The replay cache (rolling cache, Phase B) -->
     <string name="replay_cache_title">Replay cache</string>
     <string name="replay_cache_explain">Tracks streamed in full are kept, so playing one again or skipping back uses almost no data.</string>

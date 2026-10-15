@@ -165,6 +165,27 @@ pub struct LocalPlayerStatus {
     /// while connected, or with nothing to play).
     #[uniffi(default = None)]
     pub offline_controls: Option<OfflineControls>,
+    /// How the engine knows what the speaker is playing (`None`: no output open). The
+    /// position LMS is told, and so sync with other players, rests on it.
+    #[uniffi(default = None)]
+    pub output_clock: Option<OutputClock>,
+    /// About how long a frame takes from being handed to the device to being heard (ms):
+    /// measured from the device's timestamp, or, without one, the device's buffer.
+    #[uniffi(default = 0)]
+    pub output_latency_ms: u32,
+    /// Device timestamps that were unusable (missing, stale, from the future) or jumped,
+    /// in the last minute. Non-zero: the device clock can't be relied on.
+    #[uniffi(default = 0)]
+    pub output_clock_errors: u32,
+}
+
+/// How the engine knows what the speaker is playing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum OutputClock {
+    /// The device's own presentation timestamp (exact, latency included).
+    Device,
+    /// No usable timestamp: what was handed to the device, less its buffer.
+    Estimated,
 }
 
 impl Default for LocalPlayerStatus {
@@ -189,6 +210,9 @@ impl Default for LocalPlayerStatus {
             from_cache: false,
             from_downloads: false,
             offline_controls: None,
+            output_clock: None,
+            output_latency_ms: 0,
+            output_clock_errors: 0,
         }
     }
 }

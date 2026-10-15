@@ -12,7 +12,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::clock::Timestamp;
+use super::clock::{Presentation, Timestamp};
 use super::negotiate::PcmEncoding;
 use super::ring::{Consumer, Ring};
 
@@ -49,6 +49,19 @@ pub trait AudioOutput: Send {
     /// frames from this stream's open (the ring's device clock is reset then too). `None`
     /// if the output can't say: positions are then taken as heard when handed over.
     fn timestamp(&self) -> Option<Timestamp> {
+        None
+    }
+    /// Only the device's own presentation timestamp, for telling what is heard: unlike
+    /// [`AudioOutput::timestamp`], never a stand-in when the device has none to give.
+    fn presentation(&self) -> Presentation {
+        match self.timestamp() {
+            Some(ts) => Presentation::At(ts),
+            None => Presentation::Unsupported,
+        }
+    }
+    /// Frames the device holds between being handed over and being heard (its buffer), if
+    /// it can tell: what is taken off what was handed over when there is no timestamp.
+    fn buffer_frames(&self) -> Option<u64> {
         None
     }
 }
@@ -129,7 +142,7 @@ mod aaudio {
         Clockid,
     };
 
-    use super::{AudioOutput, Opened, OutputEvent, PcmEncoding, Timestamp};
+    use super::{AudioOutput, Opened, OutputEvent, PcmEncoding, Presentation, Timestamp};
     use crate::player::clock::mono_ns;
     use crate::player::ring::{CHANNELS, Ring};
 
@@ -292,6 +305,33 @@ mod aaudio {
                     })
                 }
             }
+        }
+
+        /// AAudio's presentation timestamp only: a failed call is reported as such (not
+        /// replaced by the frames read), so the status can say the device clock is missing.
+        fn presentation(&self) -> Presentation {
+            let Some(s) = self.stream.as_ref() else {
+                return Presentation::Unsupported;
+            };
+            match s.timestamp(Clockid::Monotonic) {
+                Ok(t) => Presentation::At(Timestamp {
+                    frame: t.frame_position,
+                    at_ns: t.time_nanoseconds,
+                }),
+                Err(_) => Presentation::Unavailable,
+            }
+        }
+
+        /// The stream's buffer size (what AAudio keeps queued ahead of the device), or two
+        /// bursts if it won't say.
+        fn buffer_frames(&self) -> Option<u64> {
+            let s = self.stream.as_ref()?;
+            let size = s.buffer_size_in_frames();
+            if size > 0 {
+                return Some(size as u64);
+            }
+            let burst = s.frames_per_burst();
+            (burst > 0).then(|| burst as u64 * 2)
         }
     }
 

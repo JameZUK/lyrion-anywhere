@@ -10,6 +10,7 @@ import io.github.jamezuk.lyrionanywhere.core.DspSettings
 import io.github.jamezuk.lyrionanywhere.core.Levelling
 import io.github.jamezuk.lyrionanywhere.core.MixerOffer
 import io.github.jamezuk.lyrionanywhere.core.OfferBlocker
+import io.github.jamezuk.lyrionanywhere.core.OutputClock
 import io.github.jamezuk.lyrionanywhere.core.OutputNegotiator
 import io.github.jamezuk.lyrionanywhere.core.OutputOffers
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayback
@@ -430,6 +431,20 @@ class LocalPlayerRepositoryTest {
         assertNull(LocalPlayerState(enabled = true, status = s.copy(cushionMs = 999u)).cushionMs)
         assertNull(LocalPlayerState(enabled = true, status = s.copy(connection = PlayerConnection.Stopped("x"))).cushionMs)
         assertNull(LocalPlayerState().cushionMs)
+    }
+
+    /** The output clock shown comes from the status; nothing while no output is open. */
+    @Test
+    fun theOutputTimingComesFromTheStatus() {
+        val s = status().copy(outputClock = OutputClock.DEVICE, outputLatencyMs = 38u, outputClockErrors = 0u)
+        assertEquals(OutputTiming(OutputClock.DEVICE, 38, 0), LocalPlayerState(enabled = true, status = s).outputTiming)
+        assertEquals(
+            OutputTiming(OutputClock.ESTIMATED, 90, 12),
+            LocalPlayerState(enabled = true, status = s.copy(outputClock = OutputClock.ESTIMATED, outputLatencyMs = 90u, outputClockErrors = 12u)).outputTiming,
+        )
+        assertNull(LocalPlayerState(enabled = true, status = s.copy(outputClock = null)).outputTiming)
+        assertNull(LocalPlayerState(enabled = true, status = status()).outputTiming)
+        assertNull(LocalPlayerState().outputTiming)
     }
 
     /** Streaming quality: the setting for the network the phone is on, before the engine starts and on every change. */

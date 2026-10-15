@@ -355,7 +355,7 @@ fun SignalPathSheet(state: PlayerUiState, onDismiss: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (state.localSelected) {
-                SignalPathPanel(state.local.signalPath, quality = state.local.streamQuality, metered = state.local.metered, eq = state.local.eqInUse?.name, cushionMs = state.local.cushionMs)
+                SignalPathPanel(state.local.signalPath, quality = state.local.streamQuality, metered = state.local.metered, eq = state.local.eqInUse?.name, cushionMs = state.local.cushionMs, outputTiming = state.local.outputTiming)
             } else {
                 val q = state.status?.current?.quality
                 Card(Modifier.fillMaxWidth()) {

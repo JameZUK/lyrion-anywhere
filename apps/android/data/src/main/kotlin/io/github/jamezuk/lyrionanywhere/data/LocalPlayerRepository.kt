@@ -11,6 +11,7 @@ import io.github.jamezuk.lyrionanywhere.core.LocalPlayerObserver
 import io.github.jamezuk.lyrionanywhere.core.LocalPlayerStatus
 import io.github.jamezuk.lyrionanywhere.core.LocalRepeat
 import io.github.jamezuk.lyrionanywhere.core.OfflineControls
+import io.github.jamezuk.lyrionanywhere.core.OutputClock
 import io.github.jamezuk.lyrionanywhere.core.OutputKind
 import io.github.jamezuk.lyrionanywhere.core.OutputNegotiator
 import io.github.jamezuk.lyrionanywhere.core.OutputRoute
@@ -34,6 +35,13 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/**
+ * The output's clock: the device's own timestamp or an estimate, the latency from handing
+ * audio to the device to hearing it (ms), and unusable or jumping timestamps in the last
+ * minute.
+ */
+data class OutputTiming(val clock: OutputClock, val latencyMs: Long, val errorsPerMinute: Long = 0)
 
 /** This phone as an LMS player ("Play on this phone"). */
 data class LocalPlayerState(
@@ -66,6 +74,15 @@ data class LocalPlayerState(
     val cushionMs: Long?
         get() = status?.takeIf { it.readAhead && it.connection !is PlayerConnection.Stopped }
             ?.cushionMs?.toLong()?.takeIf { it >= 1_000 }
+
+    /**
+     * How the engine knows what the speaker is playing, for the signal path (null: no
+     * output open). What the position reported to LMS, and so sync, rests on.
+     */
+    val outputTiming: OutputTiming?
+        get() = status?.let { s ->
+            s.outputClock?.let { OutputTiming(it, s.outputLatencyMs.toLong(), s.outputClockErrors.toLong()) }
+        }
 
     /** The Sound settings as they apply on the current output. */
     val effectiveSound: SoundSettings get() = sound.forOutput(output)
