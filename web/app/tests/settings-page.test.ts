@@ -12,12 +12,14 @@ const fake = await import('./helpers/fake-app.svelte');
 const { SECTIONS, sectionOf } = await import('$lib/settings/sections');
 
 let account = { username: 'demo', role: 'admin', totp_enabled: false };
+let meFeatures: Record<string, boolean> = { change_password: true };
+const DEVICES = { devices: [{ id: 1, name: 'Test browser', current: true }, { id: 2, name: 'Phone', client_platform: 'Pixel 8', current: false }] };
 const posts: { path: string; body: unknown }[] = [];
 beforeAll(() => {
 	vi.stubGlobal('fetch', async (path: string, init?: RequestInit) => {
 		if (init?.method === 'POST') posts.push({ path, body: init.body ? JSON.parse(String(init.body)) : null });
 		const p = String(path);
-		const body = p.endsWith('/v1/account') ? account : p.endsWith('/v1/me') ? { features: { change_password: true } } : {};
+		const body = p.endsWith('/v1/account') ? account : p.endsWith('/v1/me') ? { features: meFeatures } : p.endsWith('/v1/devices') ? DEVICES : {};
 		return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
 	});
 	fake.app.players = [{ playerid: '02:00:00:00:00:01', name: 'Test player' }];
@@ -145,6 +147,24 @@ test('Account: one row per action, each asking for the password once, in its own
 	}
 	// Sign out is there too.
 	expect(r.getByRole('button', { name: /Sign out/ })).toBeTruthy();
+	r.unmount();
+});
+
+test('Account › Your devices: only when the gateway offers it, in its own dialog', async () => {
+	meFeatures = { change_password: true, devices: true };
+	const r = await section('account');
+	await waitFor(() => expect(r.container.querySelector('[data-account-row="devices"]')).not.toBeNull());
+	expect([...r.container.querySelectorAll('[data-account-row]')].map((b) => (b as HTMLElement).dataset.accountRow)).toEqual(['password', 'two-step', 'devices', 'device']);
+	await fireEvent.click(r.container.querySelector('[data-account-row="devices"]')!);
+	const dialog = await waitFor(() => document.querySelector<HTMLDialogElement>('dialog[open] [data-your-devices]')!);
+	await waitFor(() => expect(dialog.querySelectorAll('[data-device]')).toHaveLength(2));
+	expect(dialog.querySelector('[data-device="1"] [data-this-device]')).not.toBeNull();
+	expect(dialog.querySelector('[data-sign-out-device="2"]')).not.toBeNull();
+	// Nothing asks for the password here.
+	expect(dialog.querySelectorAll('input[type=password]')).toHaveLength(0);
+	document.querySelector<HTMLDialogElement>('dialog[open]')!.close();
+	await waitFor(() => expect(document.querySelector('dialog[open]')).toBeNull());
+	meFeatures = { change_password: true };
 	r.unmount();
 });
 

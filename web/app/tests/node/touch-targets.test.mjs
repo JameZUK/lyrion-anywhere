@@ -108,3 +108,9 @@ test('car mode: every target at least 76 px', () => {
 	// No visualiser in car mode.
 	assert.doesNotMatch(car, /Visualiser/);
 });
+
+test('Your devices: each Sign out and the device rows are 44 px targets', () => {
+	const c = read('lib/components/YourDevices.svelte');
+	assert.ok(px(rule(c, '.btn {'), 'min-height') >= 44);
+	assert.ok(px(rule(c, '.device {'), 'min-height') >= 44);
+});

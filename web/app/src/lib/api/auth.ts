@@ -1,6 +1,6 @@
 // Sign-in for the browser (spec §9). The refresh token lives only in an HttpOnly cookie the
 // page can't read; the 15-minute access token is kept in memory only.
-import { bearer, callJson } from './http';
+import { ApiError, bearer, callJson } from './http';
 
 export interface User {
 	username: string;
@@ -239,13 +239,17 @@ export async function totpDisable(token: string, password: string, code: string)
 /** Optional features the gateway offers (`GET /v1/me`); missing ones are off. */
 export interface Features {
 	change_password?: boolean;
+	/** "Your devices": `GET /v1/devices` and signing devices out. */
+	devices?: boolean;
 }
 
 /** What this gateway offers. An older gateway that doesn't say gives no features. */
 export async function features(token: string): Promise<Features> {
 	const me = await callJson<{ features?: unknown }>('/v1/me', { headers: bearer(token) });
 	const f = me?.features;
-	return f && typeof f === 'object' ? { change_password: (f as Record<string, unknown>).change_password === true } : {};
+	if (!f || typeof f !== 'object') return {};
+	const r = f as Record<string, unknown>;
+	return { change_password: r.change_password === true, devices: r.devices === true };
 }
 
 /** One of the user's own devices, as the gateway lists them. */
@@ -289,6 +293,39 @@ export const changePassword = (token: string, c: PasswordChange) =>
 			...(c.signOutOthers ? { sign_out_others: true } : {}),
 		}),
 	});
+
+/** One of the user's signed-in devices, for "Your devices" (`GET /v1/devices`). */
+export interface MyDevice {
+	id: number;
+	name: string;
+	client_kind: string | null;
+	client_platform: string | null;
+	/** Unix seconds. */
+	created_at: number | null;
+	/** Unix seconds, to the minute. */
+	last_seen: number | null;
+	/** The device asking: this one. */
+	current: boolean;
+}
+
+/** The raw device list (checked by `cleanDevices` in `$lib/account/devices`). */
+export async function myDevices(token: string): Promise<unknown> {
+	const r = await callJson<{ devices?: unknown }>('/v1/devices', { headers: bearer(token) });
+	return r?.devices;
+}
+
+/** Sign out another of this user's devices. 404: it had gone already (or never was theirs). */
+export async function signOutDevice(token: string, id: number): Promise<void> {
+	if (!Number.isSafeInteger(id) || id <= 0) throw new ApiError(404, 'no such device');
+	await callJson(`/v1/devices/${id}`, { method: 'DELETE', headers: bearer(token) });
+}
+
+/** Sign out all this user's devices but this one; how many were signed out. */
+export async function signOutOtherDevices(token: string): Promise<number> {
+	const r = await callJson<{ signed_out?: unknown }>('/v1/devices/sign-out-others', { method: 'POST', headers: bearer(token) });
+	const n = Number(r?.signed_out);
+	return Number.isSafeInteger(n) && n >= 0 ? n : 0;
+}
 
 /** Group a base32 key in fours for reading aloud or typing. */
 export const groupKey = (secret: string) => secret.replace(/(.{4})(?=.)/g, '$1 ');
