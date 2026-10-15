@@ -655,12 +655,24 @@ impl Decoder {
                     } else {
                         false
                     };
+                    let mut redundancy = redundancy;
                     let mut celt_to_silk = false;
                     let mut redundancy_bytes = 0usize;
                     if redundancy {
                         celt_to_silk = ec.dec_bit_logp(1);
                         redundancy_bytes = ec.dec_uint(256) as usize + 2;
-                        ec.shrink_storage(redundancy_bytes);
+                        // Lyrion Anywhere (H2, see PATCHES.md): the count comes from the
+                        // packet. If it leaves less of the frame than the bits already
+                        // read, the redundancy is invalid: drop it, as libopus does, rather
+                        // than slice out of range below.
+                        let remaining = frame.len().checked_sub(redundancy_bytes);
+                        if remaining.is_none_or(|r| (r as i64) * 8 < i64::from(ec.tell())) {
+                            redundancy = false;
+                            celt_to_silk = false;
+                            redundancy_bytes = 0;
+                        } else {
+                            ec.shrink_storage(redundancy_bytes);
+                        }
                     }
                     let mut celt_to_silk_audio = Vec::new();
                     let mut celt_to_silk_samples = 0usize;

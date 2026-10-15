@@ -10,8 +10,10 @@
 //!   build for `wasm32-unknown-unknown`;
 //! - a pure-Rust decoder keeps every host's build simple (Android NDK, iOS, desktop).
 //!
-//! The feature is still off for the WebAssembly build: browsers decode Opus natively, and
-//! the web player doesn't need the extra code.
+//! The WebAssembly build enables the feature too (`wasm/Cargo.toml`), so Opus streams play
+//! in the web player. There a panic aborts the whole instance (`panic = "abort"`, and
+//! [`crate::decode::StreamDecoder::work`] can't catch it), so the vendored decoder must
+//! never panic on hostile packets: `third_party/opus-decoder/tests/robustness.rs`.
 //!
 //! Scope: channel mapping family 0, and family 1 with one or two channels (Ogg Opus as
 //! LMS and the download transcoder produce it). Output is always 48 kHz, as RFC 7845

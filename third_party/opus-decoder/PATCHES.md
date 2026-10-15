@@ -24,3 +24,17 @@ The patch adds `FftPlan`: a mixed-radix forward FFT (radix 4, 2, 3 and 5, with a
 - Lyrion Anywhere's `core/tests/opus.rs`, including a speed floor that the old code fails.
 
 **Found by:** the decoder speed measurement for `docs/PERFORMANCE.md` (`core/examples/decode_speed.rs`).
+
+## `lib.rs`: Hybrid redundancy longer than the frame
+
+In Hybrid packets the redundancy byte count is read from the packet (2 to 257) and the redundant CELT frame was then taken as `&frame[frame.len() - redundancy_bytes..]` with no check, in both the CELT-to-SILK and the SILK-to-CELT branch. A short Hybrid frame with the redundancy flag set and a large count panicked the decoder: an overflow in debug builds, an out-of-range slice in release builds. In the browser build (`panic = "abort"`) that aborts the whole WebAssembly player; native hosts caught it but failed the stream.
+
+libopus drops the redundancy when what is left of the frame after the redundant bytes is shorter than the bits already read. The patch applies the same rule (without shrinking the range decoder's storage) before either branch uses the count.
+
+**Tested by:** `tests/robustness.rs` (added): two crafted packets, one per branch, that panicked the unpatched decoder; random short Hybrid frames; random packets for every TOC configuration, frame-count code and length 0 to 300; truncated and bit-flipped copies of real SILK, Hybrid, CELT and code 3 packets (`tests/fixtures/*.pkts`, made by us with FFmpeg's libopus from a synthetic signal); and the multistream wrapper. Each decode runs under `catch_unwind` and any panic fails the test.
+
+**Found by:** Lyrion Anywhere's code review of 15 October 2026 (H2).
+
+## `Cargo.toml`: standalone tests
+
+The manifest gains an empty `[workspace]` table and a lock file, so `cargo test --locked --manifest-path third_party/opus-decoder/Cargo.toml` runs the crate's own tests (CI does this). The `criterion` dev-dependency is dropped: the benches are not vendored. The `robustness` test target is added.
