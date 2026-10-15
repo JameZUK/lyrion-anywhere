@@ -657,8 +657,7 @@ pub struct FlacCheck {
 /// caught and reported as an error, as for [`decode_seekable`].
 pub fn verify_flac(mut source: Box<dyn MediaSource>) -> Result<FlacCheck, String> {
     check_file_headers(&mut source)?;
-    catch(move || verify_flac_inner(source))
-        .unwrap_or_else(|| Err(FILE_DECODER_PANICKED.into()))
+    catch(move || verify_flac_inner(source)).unwrap_or_else(|| Err(FILE_DECODER_PANICKED.into()))
 }
 
 fn verify_flac_inner(source: Box<dyn MediaSource>) -> Result<FlacCheck, String> {

@@ -144,12 +144,12 @@ fn corrupt_opus_never_panics() {
             // checksums valid.
             _ => {
                 for (page, body) in &pages[2..] {
-                    if body.is_empty() || r.next() % 3 != 0 {
+                    if body.is_empty() || !r.next().is_multiple_of(3) {
                         continue;
                     }
                     for _ in 0..1 + r.next() % 6 {
                         let k = body.start + (r.next() % body.len() as u64) as usize;
-                        b[k] = if r.next() % 2 == 0 {
+                        b[k] = if r.next().is_multiple_of(2) {
                             b[k] ^ (1 << (r.next() % 8))
                         } else {
                             r.next() as u8
@@ -187,7 +187,10 @@ fn page_packets(page: &[u8]) -> Vec<Vec<u8>> {
     assert_eq!(page[5] & 1, 0, "a continued packet");
     let nseg = usize::from(page[26]);
     let lacing = &page[27..27 + nseg];
-    assert!(lacing.last().is_some_and(|&l| l < 255), "an unfinished packet");
+    assert!(
+        lacing.last().is_some_and(|&l| l < 255),
+        "an unfinished packet"
+    );
     let mut out = Vec::new();
     let mut cur = Vec::new();
     let mut at = 27 + nseg;
@@ -229,15 +232,14 @@ fn rebuild_page(page: &[u8], packets: &[Vec<u8>]) -> Vec<u8> {
 #[test]
 fn a_hostile_hybrid_packet_in_ogg_does_not_panic() {
     const SILK_TO_CELT: [u8; 45] = [
-        0x60, 0x2f, 0x6b, 0xc3, 0xd5, 0x01, 0xd8, 0x95, 0x2e, 0xc0, 0x56, 0x4e, 0x3e, 0x7a,
-        0xa0, 0x37, 0x89, 0x50, 0x65, 0x96, 0x98, 0xff, 0xed, 0xeb, 0x7c, 0x85, 0x23, 0x0b,
-        0x8c, 0xb7, 0x0b, 0x96, 0x23, 0x34, 0x9a, 0x73, 0xc0, 0x51, 0x66, 0x02, 0x70, 0x1e,
-        0xb6, 0xd6, 0x65,
+        0x60, 0x2f, 0x6b, 0xc3, 0xd5, 0x01, 0xd8, 0x95, 0x2e, 0xc0, 0x56, 0x4e, 0x3e, 0x7a, 0xa0,
+        0x37, 0x89, 0x50, 0x65, 0x96, 0x98, 0xff, 0xed, 0xeb, 0x7c, 0x85, 0x23, 0x0b, 0x8c, 0xb7,
+        0x0b, 0x96, 0x23, 0x34, 0x9a, 0x73, 0xc0, 0x51, 0x66, 0x02, 0x70, 0x1e, 0xb6, 0xd6, 0x65,
     ];
     const CELT_TO_SILK: [u8; 32] = [
-        0x60, 0x1f, 0xba, 0x7b, 0x32, 0xf2, 0x93, 0x06, 0x9b, 0x12, 0xe6, 0xd7, 0x33, 0xd1,
-        0x90, 0x4d, 0x24, 0x04, 0xe4, 0x5b, 0x10, 0xdc, 0x31, 0x31, 0x20, 0x5c, 0x27, 0xda,
-        0x12, 0x1e, 0xbd, 0xdd,
+        0x60, 0x1f, 0xba, 0x7b, 0x32, 0xf2, 0x93, 0x06, 0x9b, 0x12, 0xe6, 0xd7, 0x33, 0xd1, 0x90,
+        0x4d, 0x24, 0x04, 0xe4, 0x5b, 0x10, 0xdc, 0x31, 0x31, 0x20, 0x5c, 0x27, 0xda, 0x12, 0x1e,
+        0xbd, 0xdd,
     ];
     let pages = ogg_pages(FIXTURE);
     for hostile in [&SILK_TO_CELT[..], &CELT_TO_SILK[..]] {
@@ -251,7 +253,10 @@ fn a_hostile_hybrid_packet_in_ogg_does_not_panic() {
         b.extend_from_slice(&FIXTURE[page.end..]);
         let (st, rate, pcm) = decode(&b, b'u');
         if let DecodeStatus::Failed(e) = &st {
-            assert_ne!(e, STREAM_DECODER_PANICKED, "the hostile packet panicked the decoder");
+            assert_ne!(
+                e, STREAM_DECODER_PANICKED,
+                "the hostile packet panicked the decoder"
+            );
         }
         assert_eq!(st, DecodeStatus::Finished);
         assert_eq!(rate, 48_000);
