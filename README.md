@@ -230,7 +230,7 @@ The full policy, including Google Play's Data safety answers, is [`docs/PRIVACY.
 
 - **Built and in use:** the gateway and LMS plugin, the web app, and the Android app (1.14.0, releases tagged `android-v*`). See [`CHANGELOG.md`](CHANGELOG.md) for what changed and when.
 - **Recently finished:** a declutter of every screen on the web and Android ([`docs/plans/wave3_5-declutter.md`](docs/plans/wave3_5-declutter.md)); controls that work while the server is out of reach; riding out a busy server; and the rolling cache for patchy mobile data (read-ahead to disk, a ten-minute resume grace, a replay cache and downloads standing in for streams; design in [`docs/plans/wave3-design.md`](docs/plans/wave3-design.md) §2). Change password, save the queue as a playlist and the busy notice need a gateway newer than plugin 0.3.0; they arrive with the next plugin release.
-- **iOS app:** planned, on the same Rust layer and protocol, with CarPlay. It will be licensed GPL with an App Store exception for the project's own code (SPEC D17).
+- **iOS app:** planned, on the same Rust layer and protocol, with CarPlay. Its code is covered by the project's App Store exception ([`LICENSE-EXCEPTION`](LICENSE-EXCEPTION), SPEC D17).
 - **Later:** passkeys, a cryptographic release signature for the plugin's bundled gateways, smart filters with track-level rules, a guest queue, album booklets. Store listings for the Android app (Google Play, F-Droid) are being prepared.
 
 ## Documentation
@@ -268,6 +268,8 @@ cd apps/android && ./gradlew assembleDebug testDebugUnitTest lint
 ## Licence
 
 GPL-2.0-or-later. See [`LICENSE`](LICENSE). Binaries that include Apache-2.0-licensed dependencies are distributed under the terms of GPLv3.
+
+The project's own code also carries an additional permission that lets the apps be distributed through app stores such as Apple's App Store, as long as the full source stays available under the GPL. See [`LICENSE-EXCEPTION`](LICENSE-EXCEPTION).
 
 ## Acknowledgements
 

@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: App Store exception added to the licence
+
+- **`LICENSE-EXCEPTION`:** the project's own code may now be distributed through app stores such as Apple's App Store or TestFlight, whose terms add restrictions the GPL alone doesn't allow, as long as the full source stays available under the GPL and the store's terms are the only added restrictions (SPEC D17). Third-party components keep their own licences; the mobile app's dependency tree has no other GPL code. The licence is otherwise unchanged: GPL-2.0-or-later.
+
 ## 2026-10-15: Plugin 0.4.0 released
 
 The server side for Android 1.14.0: the gateway's busy-LMS handling and slow-request log, *Change password* (`POST /v1/account/password`), *Save the queue as a playlist* (`POST /v1/players/{player}/queue/save`) and the faster Opus decoder; and the web app's Wave 3.5 declutter, out-of-reach controls, busy notice and fuller downloads. The plugin's Perl is unchanged since 0.3.0. Notes: `docs/release-notes/v0.4.0.md`. The release also carries the Android 1.14.0 APKs, with their checksums in `SHA256SUMS-android.txt`.
