@@ -148,6 +148,7 @@ test('album page: Downloaded ✓ and Remove download once every track is here', 
 	// Destructive: only in ⋯.
 	expect(screen.queryByRole('button', { name: 'Remove download' })).toBeNull();
 	await choose('More options for An <b>Album</b>', 'Remove download');
+	await fireEvent.click(await vi.waitFor(() => { const b = document.querySelector('dialog[data-confirm-dialog] [data-confirm-ok]'); if (!b) throw new Error('no confirm'); return b; })); // it asks first
 	await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy());
 	expect(await store.listTracks('alice')).toEqual([]);
 });
@@ -229,6 +230,7 @@ test('Downloads page: playlists are their own group; removing one keeps tracks a
 	const order = screen.getAllByRole('button', { name: /^Play (Shared|Only in mix)$/ }).map((b) => b.getAttribute('aria-label'));
 	expect(order.slice(0, 2)).toEqual(['Play Only in mix', 'Play Shared']);
 	await fireEvent.click(screen.getByRole('button', { name: 'Remove <b>Mix</b>' }));
+	await fireEvent.click(await vi.waitFor(() => { const b = document.querySelector('dialog[data-confirm-dialog] [data-confirm-ok]'); if (!b) throw new Error('no confirm'); return b; })); // it asks first
 	await vi.waitFor(() => expect(screen.queryByRole('heading', { name: 'Playlists' })).toBeNull());
 	expect(screen.getByText(/1 track stays on this device/)).toBeTruthy();
 	expect((await store.listTracks('alice')).map((t) => [t.id, t.refs])).toEqual([[1, ['album:7']]]);
@@ -351,4 +353,22 @@ test('sign-out with nothing downloaded does not ask', async () => {
 	render(SignOut, { count: 0, onsignout });
 	await fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
 	expect(onsignout).toHaveBeenCalledWith(false);
+});
+
+// Regression (review, Web low): a sign-out that failed (IndexedDB refusing) was silent.
+test('a failed sign-out says so, and the buttons work again', async () => {
+	const { default: SignOut } = await import('$lib/components/SignOut.svelte');
+	const onsignout = vi.fn(async () => {
+		throw new DOMException('broken', 'UnknownError');
+	});
+	const r = render(SignOut, { count: 0, onsignout });
+	await fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+	expect((await screen.findByRole('alert')).textContent).toBe('Couldn’t sign out. Try again.');
+	expect((screen.getByRole('button', { name: 'Sign out' }) as HTMLButtonElement).disabled).toBe(false);
+	r.unmount();
+
+	render(SignOut, { count: 2, onsignout });
+	await fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+	await fireEvent.click(screen.getByRole('button', { name: 'Remove downloads and sign out' }));
+	expect((await screen.findByRole('alert')).textContent).toBe('Couldn’t remove your downloads, so you’re still signed in. Try again.');
 });

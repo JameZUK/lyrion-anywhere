@@ -129,7 +129,7 @@
 				<p class="muted">{[textOf(album.year), `${tracks.length} tracks`, duration(totalTime)].filter(Boolean).join(' · ')}</p>
 				<!-- Play, Shuffle, Download and ⋯ (Play next, Add to queue, Download as…, More…, Remove download). -->
 				<PageActions sel={{ album: id }} title={textOf(album.album)} onmore={() => (ctx = { kind: 'album', id, title: textOf(album?.album) })} extra={dl?.actions() ?? []}>
-					{#snippet download()}<DownloadBar bind:this={dl} tracks={requests} ref={`album:${id}`} onremoved={(keys) => offlinePlayer.forget(keys)} />{/snippet}
+					{#snippet download()}<DownloadBar bind:this={dl} tracks={requests} ref={`album:${id}`} name={textOf(album?.album)} onremoved={(keys) => offlinePlayer.forget(keys)} />{/snippet}
 				</PageActions>
 				{#if trackMsg}<p class="small muted" role="alert">{trackMsg}</p>{/if}
 			</div>

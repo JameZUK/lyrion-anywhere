@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { ApiError } from '$lib/api/http';
+	import { loginError } from '$lib/account/login';
 	import { session } from '$lib/state/app.svelte';
 
 	let username = $state('');
@@ -19,16 +20,10 @@
 			password = '';
 			code = '';
 		} catch (err) {
+			message = loginError(err, needCode);
 			if (err instanceof ApiError && err.totpRequired) {
 				needCode = true;
-				message = 'Enter the code from your authenticator app.';
 				queueMicrotask(() => codeInput?.focus());
-			} else if (err instanceof ApiError && err.status === 429) {
-				message = 'Too many attempts. Wait a while and try again.';
-			} else if (err instanceof ApiError && err.status === 401) {
-				message = needCode ? 'That code or password is not right.' : 'Username or password is not right.';
-			} else {
-				message = 'Could not reach the server. Check your connection.';
 			}
 		} finally {
 			busy = false;

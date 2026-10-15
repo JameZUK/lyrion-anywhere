@@ -80,6 +80,22 @@ describe('http', () => {
 		expect(init.headers).toMatchObject({ Authorization: 'Bearer t', 'Content-Type': 'application/json' });
 	});
 
+	// Regression (review, Web low): a proxy's SPA fallback answered /v1/auth/refresh with 200
+	// and index.html, which read as {} and was retried for ever as "can't reach".
+	test('a 2xx whose body is not JSON is a bad gateway, not an empty answer', async () => {
+		vi.stubGlobal('fetch', async () => new Response('<!doctype html><html></html>', { status: 200, headers: { 'content-type': 'text/html' } }));
+		const e = await callJson('/v1/auth/refresh').catch((x) => x);
+		expect(e).toBeInstanceOf(ApiError);
+		expect(e).toMatchObject({ status: 502 });
+		vi.stubGlobal('fetch', async () => new Response('{"truncated', { status: 200, headers: { 'content-type': 'application/json' } }));
+		await expect(callJson('/v1/x')).rejects.toMatchObject({ status: 502 });
+		// An empty 2xx body (and 204) still read as nothing to say.
+		vi.stubGlobal('fetch', async () => new Response('', { status: 200 }));
+		expect(await callJson('/v1/x')).toEqual({});
+		vi.stubGlobal('fetch', async () => new Response(null, { status: 204 }));
+		expect(await callJson('/v1/x')).toBeNull();
+	});
+
 	test('a non-JSON error body still gives a clean error', async () => {
 		vi.stubGlobal('fetch', async () => new Response('<html>502</html>', { status: 502 }));
 		await expect(callJson('/v1/rpc')).rejects.toMatchObject({ status: 502, message: 'HTTP 502' });
@@ -418,6 +434,8 @@ describe('rpc and art', () => {
 		expect(url).toBe('/v1/art/music/12/cover_300x300');
 		expect(url).not.toContain('t1');
 		expect(init.headers).toMatchObject({ Authorization: 'Bearer t1' });
+		// Never a stale copy forced from the browser cache, which isn't kept apart per account.
+		expect(init.cache).toBe('default');
 	});
 
 	// Regression: Api.art trusted its path, so "imageproxy/x/image/.%2E/.%2E/.%2E/.%2E/me"

@@ -10,6 +10,7 @@
 	import { playable } from '$lib/offline/player.svelte';
 	import OfflineCover from './OfflineCover.svelte';
 	import Icon from './Icon.svelte';
+	import ConfirmDialog from './ConfirmDialog.svelte';
 
 	// `embedded`: Library's Downloads section (an h2 title for screen readers, no page padding).
 	let { offline = false, embedded = false }: { offline?: boolean; embedded?: boolean } = $props();
@@ -94,26 +95,52 @@
 	function kept(n: number) {
 		note = n ? `${n} ${n === 1 ? 'track stays' : 'tracks stay'} on this device: another download still needs ${n === 1 ? 'it' : 'them'}.` : '';
 	}
+	/** A removal is running: every remove control is off until it ends. */
+	let busy = $state(false);
+	/** What went wrong removing, shown until the next removal. */
+	let failed = $state('');
+	/** A removal waiting for a yes: what goes, and how. */
+	let confirming = $state<{ name: string; tracks: number; run: () => Promise<{ removed: string[]; kept: number }> } | null>(null);
+
+	/** Runs one removal at a time; a failure is said, never thrown. */
+	async function guarded(run: () => Promise<void>, error: string) {
+		if (busy) return;
+		busy = true;
+		failed = '';
+		try {
+			await run();
+		} catch {
+			failed = error;
+		} finally {
+			busy = false;
+		}
+	}
 	/** An album (by id) or tracks without one: what they were downloaded for goes. */
-	async function removeAlbum(g: Group) {
-		const r = g.albumId !== null ? await downloads.removeAlbum(g.albumId) : await downloads.removeTracks(g.tracks.map((t) => t.key));
-		offlinePlayer.forget(r.removed);
-		kept(r.kept);
+	function askAlbum(g: Group) {
+		confirming = { name: g.album, tracks: g.tracks.length, run: () => (g.albumId !== null ? downloads.removeAlbum(g.albumId) : downloads.removeTracks(g.tracks.map((t) => t.key))) };
 	}
-	async function removeTrack(t: StoredTrack) {
-		const r = await downloads.removeTracks([t.key]);
-		offlinePlayer.forget(r.removed);
-		kept(r.kept);
+	function askTrack(t: StoredTrack) {
+		confirming = { name: t.title, tracks: 1, run: () => downloads.removeTracks([t.key]) };
 	}
-	async function removePlaylist(p: PlaylistGroup) {
-		const r = await downloads.removePlaylist(p.playlistId);
-		offlinePlayer.forget(r.removed);
-		kept(r.kept);
+	function askPlaylist(p: PlaylistGroup) {
+		confirming = { name: p.name, tracks: p.tracks.length, run: () => downloads.removePlaylist(p.playlistId) };
 	}
-	async function removeAll() {
+	function confirmed() {
+		const what = confirming;
+		confirming = null;
+		if (!what) return;
+		void guarded(async () => {
+			const r = await what.run();
+			offlinePlayer.forget(r.removed);
+			kept(r.kept);
+		}, 'Couldn’t remove the download. Try again.');
+	}
+	function removeAll() {
 		confirmAll = false;
-		offlinePlayer.stop();
-		await downloads.removeAll();
+		void guarded(async () => {
+			offlinePlayer.stop();
+			await downloads.removeAll();
+		}, 'Couldn’t remove your downloads. Try again.');
 	}
 	const pct = (n: number) => `${Math.round(n * 100)}%`;
 </script>
@@ -128,6 +155,7 @@
 		<p class="note" role="status"><Icon name="offline" size={18} /> You’re offline. Your downloads still play.</p>
 	{/if}
 	{#if downloads.error}<p class="error" role="alert">{downloads.error}</p>{/if}
+	{#if failed}<p class="error" role="alert" data-remove-failed>{failed}</p>{/if}
 
 	<div class="card storage">
 		<p>
@@ -154,11 +182,11 @@
 			{#if confirmAll}
 				<div class="row" role="group" aria-label="Confirm removing all downloads">
 					<span>Remove all {downloads.saved.length} downloaded tracks from this device?</span>
-					<button class="btn danger" onclick={removeAll}><Icon name="trash" size={18} />Remove all</button>
+					<button class="btn danger" onclick={removeAll} disabled={busy}><Icon name="trash" size={18} />Remove all</button>
 					<button class="btn" onclick={() => (confirmAll = false)}>Cancel</button>
 				</div>
 			{:else}
-				<button class="btn" onclick={() => (confirmAll = true)}><Icon name="trash" size={18} />Remove all…</button>
+				<button class="btn" onclick={() => (confirmAll = true)} disabled={busy}><Icon name="trash" size={18} />Remove all…</button>
 			{/if}
 		{/if}
 	</div>
@@ -215,7 +243,7 @@
 						<div class="aact">
 							<button class="icon-btn play" aria-label={`Play ${p.name}`} onclick={() => offlinePlayer.playList(user, p.tracks, 0)}><Icon name="play" size={20} /></button>
 							<button class="icon-btn" aria-label={`Show tracks of ${p.name}`} aria-expanded={open === p.id} onclick={() => (open = open === p.id ? null : p.id)}><Icon name="chevron" size={20} /></button>
-							<button class="icon-btn" aria-label={`Remove ${p.name}`} onclick={() => removePlaylist(p)}><Icon name="trash" size={20} /></button>
+							<button class="icon-btn" aria-label={`Remove ${p.name}`} onclick={() => askPlaylist(p)} disabled={busy}><Icon name="trash" size={20} /></button>
 						</div>
 					</div>
 					{#if open === p.id}
@@ -254,7 +282,7 @@
 						<div class="aact">
 							<button class="icon-btn play" aria-label={`Play ${g.album}`} onclick={() => offlinePlayer.playList(user, g.tracks, 0)}><Icon name="play" size={20} /></button>
 							<button class="icon-btn" aria-label={`Show tracks of ${g.album}`} aria-expanded={open === g.id} onclick={() => (open = open === g.id ? null : g.id)}><Icon name="chevron" size={20} /></button>
-							<button class="icon-btn" aria-label={`Remove ${g.album}`} onclick={() => removeAlbum(g)}><Icon name="trash" size={20} /></button>
+							<button class="icon-btn" aria-label={`Remove ${g.album}`} onclick={() => askAlbum(g)} disabled={busy}><Icon name="trash" size={20} /></button>
 						</div>
 					</div>
 					{#if open === g.id}
@@ -269,7 +297,7 @@
 										</span>
 										<span class="muted small">{duration(t.duration)}</span>
 									</button>
-									<button class="icon-btn" aria-label={`Remove ${t.title}`} onclick={() => removeTrack(t)}><Icon name="trash" size={18} /></button>
+									<button class="icon-btn" aria-label={`Remove ${t.title}`} onclick={() => askTrack(t)} disabled={busy}><Icon name="trash" size={18} /></button>
 								</li>
 							{/each}
 						</ol>
@@ -281,6 +309,17 @@
 		<p class="muted">Nothing downloaded yet.{offline ? '' : ' Open an album or a playlist and choose Download to play it without a connection.'}</p>
 	{/if}
 </section>
+
+{#if confirming}
+	<ConfirmDialog
+		title={`Remove the download of “${confirming.name}”?`}
+		message={`${confirming.tracks} downloaded ${confirming.tracks === 1 ? 'track goes' : 'tracks go'} from this device. Any that another download still needs will stay.`}
+		confirmLabel="Remove"
+		danger
+		onconfirm={confirmed}
+		oncancel={() => (confirming = null)}
+	/>
+{/if}
 
 <style>
 	.dl-head {

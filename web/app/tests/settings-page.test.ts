@@ -12,13 +12,20 @@ const fake = await import('./helpers/fake-app.svelte');
 const { SECTIONS, sectionOf } = await import('$lib/settings/sections');
 
 let account = { username: 'demo', role: 'admin', totp_enabled: false };
-let meFeatures: Record<string, boolean> = { change_password: true };
+const ME_FEATURES = { change_password: true };
+let meFeatures: Record<string, boolean> = { ...ME_FEATURES };
 const DEVICES = { devices: [{ id: 1, name: 'Test browser', current: true }, { id: 2, name: 'Phone', client_platform: 'Pixel 8', current: false }] };
 const posts: { path: string; body: unknown }[] = [];
+/** While set, two-step setup answers only once it resolves. */
+let totpGate: Promise<void> | null = null;
 beforeAll(() => {
 	vi.stubGlobal('fetch', async (path: string, init?: RequestInit) => {
 		if (init?.method === 'POST') posts.push({ path, body: init.body ? JSON.parse(String(init.body)) : null });
 		const p = String(path);
+		if (p.endsWith('/v1/account/totp/setup')) {
+			if (totpGate) await totpGate;
+			return new Response(JSON.stringify({ secret: 'JBSWY3DPEHPK3PXP', uri: 'otpauth://totp/x', qr_svg: '<svg/>' }), { status: 200, headers: { 'content-type': 'application/json' } });
+		}
 		const body = p.endsWith('/v1/account') ? account : p.endsWith('/v1/me') ? { features: meFeatures } : p.endsWith('/v1/devices') ? DEVICES : {};
 		return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
 	});
@@ -27,6 +34,10 @@ beforeAll(() => {
 	fake.session.current = { user: { username: 'demo', role: 'admin' }, device: { id: 1, name: 'Test browser' } };
 });
 afterAll(() => vi.unstubAllGlobals());
+// A test that turns a feature on never leaks it into the next, even if it fails part-way.
+afterEach(() => {
+	meFeatures = { ...ME_FEATURES };
+});
 
 async function section(id: string) {
 	params.section = id;
@@ -164,7 +175,6 @@ test('Account › Your devices: only when the gateway offers it, in its own dial
 	expect(dialog.querySelectorAll('input[type=password]')).toHaveLength(0);
 	document.querySelector<HTMLDialogElement>('dialog[open]')!.close();
 	await waitFor(() => expect(document.querySelector('dialog[open]')).toBeNull());
-	meFeatures = { change_password: true };
 	r.unmount();
 });
 
@@ -178,6 +188,32 @@ test('Account › Two-step verification: one name for the code everywhere ("Auth
 	expect(within(dialog as HTMLElement).getByRole('button', { name: 'Turn off' })).toBeTruthy();
 	account = { ...account, totp_enabled: false };
 	r.unmount();
+});
+
+// Regression (review, Web low): a double tap on Turn on asked for two secrets, the second
+// replacing the first while the QR for the first was shown.
+test('Account › Two-step verification: Turn on asks for one secret however often it is tapped', async () => {
+	let release!: () => void;
+	totpGate = new Promise((r) => (release = r));
+	posts.length = 0;
+	try {
+		const r = await section('account');
+		await waitFor(() => expect(r.container.querySelector('[data-account-row="two-step"]')!.textContent).toContain('Off'));
+		await fireEvent.click(r.container.querySelector('[data-account-row="two-step"]')!);
+		const dialog = (await waitFor(() => document.querySelector<HTMLElement>('dialog[open] [data-two-step]')!)) as HTMLElement;
+		await fireEvent.input(within(dialog).getByLabelText('Password'), { target: { value: 'pw' } });
+		const form = dialog.querySelector('form')!;
+		await fireEvent.submit(form);
+		await fireEvent.submit(form);
+		expect((within(dialog).getByRole('button', { name: /Turn on|Turning on/ }) as HTMLButtonElement).disabled).toBe(true);
+		release();
+		await waitFor(() => expect(dialog.querySelector('img.qr')).not.toBeNull());
+		expect(posts.filter((p) => p.path.endsWith('/v1/account/totp/setup'))).toHaveLength(1);
+		document.querySelector<HTMLDialogElement>('dialog[open]')!.close();
+		r.unmount();
+	} finally {
+		totpGate = null;
+	}
 });
 
 test('hostile values stay text on the index (a player name in the summary)', async () => {

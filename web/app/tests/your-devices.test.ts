@@ -269,6 +269,162 @@ describe('the list', () => {
 		r.unmount();
 	});
 
+	test('a failed load offers Retry, and Retry loads the list', async () => {
+		let fail = true;
+		const load = vi.fn(async () => {
+			if (fail) throw new ApiError(503, 'busy');
+			return LIST;
+		});
+		const r = render(YourDevices, { load, signOut: async () => {}, signOutOthers: async () => 0, now: () => NOW });
+		await settle();
+		expect(r.container.querySelector('[data-devices-message]')!.textContent).toMatch(/busy/);
+		const retry = r.container.querySelector<HTMLButtonElement>('[data-devices-retry]');
+		expect(retry).not.toBeNull();
+		expect(retry!.textContent).toBe('Try again');
+		fail = false;
+		await fireEvent.click(retry!);
+		await settle();
+		expect(load).toHaveBeenCalledTimes(2);
+		expect([...r.container.querySelectorAll('[data-device]')]).toHaveLength(3);
+		expect(r.container.querySelector('[data-devices-retry]')).toBeNull();
+		expect(r.container.querySelector('[data-devices-message]')).toBeNull();
+		r.unmount();
+	});
+
+	test('a refresh that answers late never brings back a device signed out since', async () => {
+		// The server's list at the moment each load is asked for; each answer is held until released.
+		let server = LIST;
+		const held: { snapshot: unknown[]; release: () => void }[] = [];
+		let first = true;
+		const load = vi.fn(() => {
+			const snapshot = server;
+			if (first) {
+				first = false;
+				return Promise.resolve(snapshot);
+			}
+			return new Promise<unknown>((res) => held.push({ snapshot, release: () => res(snapshot) }));
+		});
+		const signOut = vi.fn(async (id: number) => {
+			server = server.filter((d) => d.id !== id);
+		});
+		const r = render(YourDevices, { load, signOut, signOutOthers: async () => 0, now: () => NOW });
+		await settle();
+		await fireEvent.click(r.container.querySelector('[data-sign-out-device="2"]')!);
+		await confirm(true);
+		expect(held).toHaveLength(1); // the refresh after signing out Phone is in flight
+		// A second sign-out while it is in flight (the button may be off, as it should be).
+		await fireEvent.click(r.container.querySelector('[data-sign-out-device="3"]')!);
+		await settle();
+		if (document.querySelector('dialog[open][data-confirm-dialog]')) await confirm(true);
+		// The answers come back newest first.
+		for (const h of [...held].reverse()) {
+			h.release();
+			await settle();
+		}
+		if (signOut.mock.calls.some(([id]) => id === 3)) {
+			expect(r.container.querySelector('[data-device="3"]')).toBeNull();
+		} else {
+			// It waited: now it can go.
+			held.length = 0;
+			await fireEvent.click(r.container.querySelector('[data-sign-out-device="3"]')!);
+			await confirm(true);
+			for (const h of held) h.release();
+			await settle();
+		}
+		expect([...r.container.querySelectorAll<HTMLElement>('[data-device]')].map((li) => li.dataset.device)).toEqual(['1']);
+		expect(signOut.mock.calls.map(([id]) => id)).toEqual([2, 3]);
+		r.unmount();
+	});
+
+	test('a sign-out that worked keeps its message, and the device goes, even if the refresh fails', async () => {
+		let n = 0;
+		const load = vi.fn(async () => {
+			if (n++ > 0) throw new ApiError(503, 'busy');
+			return LIST;
+		});
+		const r = render(YourDevices, { load, signOut: async () => {}, signOutOthers: async () => 0, now: () => NOW });
+		await settle();
+		await fireEvent.click(r.container.querySelector('[data-sign-out-device="2"]')!);
+		await confirm(true);
+		expect(load).toHaveBeenCalledTimes(2);
+		const msg = r.container.querySelector('[data-devices-message]')!;
+		expect(msg.textContent).toBe('“Phone” was signed out.');
+		expect(msg.classList.contains('error')).toBe(false);
+		expect(r.container.querySelector('[data-device="2"]')).toBeNull();
+		expect(r.container.querySelector('[data-device="3"]')).not.toBeNull();
+		r.unmount();
+	});
+
+	test('signing out all others clears them from the list even if the refresh fails', async () => {
+		let n = 0;
+		const load = vi.fn(async () => {
+			if (n++ > 0) throw new TypeError('Failed to fetch');
+			return LIST;
+		});
+		const r = render(YourDevices, { load, signOut: async () => {}, signOutOthers: async () => 2, now: () => NOW });
+		await settle();
+		await fireEvent.click(r.container.querySelector('[data-sign-out-others]')!);
+		await confirm(true);
+		expect(r.container.querySelector('[data-devices-message]')!.textContent).toBe('2 other devices were signed out.');
+		expect([...r.container.querySelectorAll<HTMLElement>('[data-device]')].map((li) => li.dataset.device)).toEqual(['1']);
+		r.unmount();
+	});
+
+	test('a 409 (this device) reaching the list is an error and signs nothing out', async () => {
+		const { r, signOutOthers } = setup({
+			signOut: async () => {
+				throw new ApiError(409, 'this is the device you are using; sign out instead');
+			},
+		});
+		await settle();
+		await fireEvent.click(r.container.querySelector('[data-sign-out-device="2"]')!);
+		await confirm(true);
+		const msg = r.container.querySelector('[data-devices-message]')!;
+		expect(msg.textContent).toMatch(/use Sign out/);
+		expect(msg.classList.contains('error')).toBe(true);
+		expect(signOutOthers).not.toHaveBeenCalled();
+		expect([...r.container.querySelectorAll('[data-device]')]).toHaveLength(3);
+		r.unmount();
+	});
+
+	test('a session that ends mid-operation says so', async () => {
+		const { r } = setup({
+			signOut: async () => {
+				throw new ApiError(401, 'invalid credentials');
+			},
+		});
+		await settle();
+		await fireEvent.click(r.container.querySelector('[data-sign-out-device="3"]')!);
+		await confirm(true);
+		const msg = r.container.querySelector('[data-devices-message]')!;
+		expect(msg.textContent).toBe('Your session has ended. Sign in again.');
+		expect(msg.classList.contains('error')).toBe(true);
+		r.unmount();
+	});
+
+	test('confirming twice signs the device out once', async () => {
+		const { r, signOut } = setup();
+		await settle();
+		await fireEvent.click(r.container.querySelector('[data-sign-out-device="2"]')!);
+		const dialog = await waitFor(() => document.querySelector<HTMLDialogElement>('dialog[open][data-confirm-dialog]')!);
+		const ok = dialog.querySelector<HTMLButtonElement>('[data-confirm-ok]')!;
+		await fireEvent.click(ok);
+		await fireEvent.click(ok);
+		await settle();
+		expect(signOut).toHaveBeenCalledTimes(1);
+		r.unmount();
+	});
+
+	test('an empty list says no other devices are signed in', async () => {
+		const { r } = setup({ list: [] });
+		await settle();
+		expect(r.container.querySelectorAll('[data-device]')).toHaveLength(0);
+		expect(r.container.querySelector('[data-no-other-devices]')).not.toBeNull();
+		expect(r.container.querySelector('[data-sign-out-others]')).toBeNull();
+		expect(r.container.querySelector('[data-devices-retry]')).toBeNull();
+		r.unmount();
+	});
+
 	test('hostile names stay text', async () => {
 		const evil = '<img src=x onerror="window.__pwned=1">';
 		const { r } = setup({ list: [{ id: 1, name: 'Me', current: true }, { id: 5, name: evil, client_platform: '<script>alert(1)</script>' }] });

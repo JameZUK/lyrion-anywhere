@@ -43,13 +43,26 @@ export async function callJson<T>(path: string, init: RequestInit = {}): Promise
 		headers: { ...CLIENT_HEADER, ...(init.headers as Record<string, string> | undefined) },
 	});
 	if (resp.status === 204) return null as T;
-	const body = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+	const text = await resp.text().catch(() => '');
+	let parsed: unknown = {};
+	let malformed = false;
+	if (text.trim()) {
+		try {
+			parsed = JSON.parse(text);
+		} catch {
+			malformed = true;
+		}
+	}
+	// A success that isn't JSON came from something in the way (a proxy's fallback page,
+	// say), not the gateway: never read it as an empty answer.
+	if (resp.ok && malformed) throw new ApiError(502, 'the server sent something that isn’t the gateway’s answer');
+	const body = (parsed && typeof parsed === 'object' ? parsed : {}) as Record<string, unknown>;
 	if (!resp.ok) {
 		const busy = resp.status === 503 && body.busy === true;
 		const msg = busy ? BUSY_MESSAGE : typeof body.error === 'string' ? body.error : `HTTP ${resp.status}`;
 		throw new ApiError(resp.status, msg, body.totp_required === true, retryAfterOf(resp.headers?.get?.('retry-after') ?? null), body);
 	}
-	return body as T;
+	return parsed as T;
 }
 
 /** A `Retry-After` in whole seconds (1 to a day); dates and nonsense give undefined. */

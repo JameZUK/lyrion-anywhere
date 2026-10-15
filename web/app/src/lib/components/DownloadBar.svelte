@@ -9,6 +9,7 @@
 	import { refsOf, type Format, type Ref } from '$lib/offline/types';
 	import Icon from './Icon.svelte';
 	import FormatPicker from './FormatPicker.svelte';
+	import ConfirmDialog from './ConfirmDialog.svelte';
 	import type { RowAction } from './RowMenu.svelte';
 	import { controls } from '$lib/player/controls.svelte';
 
@@ -16,6 +17,7 @@
 		tracks,
 		ref,
 		group,
+		name,
 		onremoved,
 	}: {
 		tracks: DownloadRequest[];
@@ -23,6 +25,8 @@
 		ref: Ref;
 		/** A playlist's name and order, for the Downloads page. */
 		group?: { name: string; ids: number[] };
+		/** The album's or playlist's name, for the confirm before removing. */
+		name?: string;
 		/** Keys of the tracks deleted by "Remove download" (the offline player forgets them). */
 		onremoved?: (keys: string[]) => void;
 	} = $props();
@@ -30,6 +34,10 @@
 	let refused = $state('');
 	let note = $state('');
 	let picking = $state(false);
+	/** "Remove download" asked: waiting for a yes. */
+	let confirming = $state(false);
+	/** A removal is running: no second one starts. */
+	let removing = $state(false);
 	const mine = (i: { refs: string[] }) => i.refs.includes(ref);
 
 	/** Each track once (a playlist may hold one twice). */
@@ -62,29 +70,47 @@
 	}
 
 	async function remove() {
+		if (removing) return;
+		removing = true;
 		refused = '';
-		const id = Number(ref.slice(ref.indexOf(':') + 1));
-		let removed: string[] = [];
-		let kept = 0;
-		if (ref.startsWith('playlist:')) ({ removed, kept } = await downloads.removePlaylist(id));
-		else {
-			const a = await downloads.removeAlbum(id);
-			// Tracks of this album saved under another album id (a rescan) go too.
-			const rest = list.map((t) => downloads.savedById(t.id)?.key).filter((k): k is string => !!k);
-			const b = await downloads.removeTracks(rest);
-			removed = [...a.removed, ...b.removed];
-			kept = b.kept;
+		note = '';
+		try {
+			const id = Number(ref.slice(ref.indexOf(':') + 1));
+			let removed: string[] = [];
+			let kept = 0;
+			if (ref.startsWith('playlist:')) ({ removed, kept } = await downloads.removePlaylist(id));
+			else {
+				const a = await downloads.removeAlbum(id);
+				// Tracks of this album saved under another album id (a rescan) go too.
+				const rest = list.map((t) => downloads.savedById(t.id)?.key).filter((k): k is string => !!k);
+				const b = await downloads.removeTracks(rest);
+				removed = [...a.removed, ...b.removed];
+				kept = b.kept;
+			}
+			onremoved?.(removed);
+			note = kept ? `${kept} ${kept === 1 ? 'track stays' : 'tracks stay'}: another download still needs ${kept === 1 ? 'it' : 'them'}.` : '';
+		} catch {
+			refused = 'Couldn’t remove the download. Try again.';
+		} finally {
+			removing = false;
 		}
-		onremoved?.(removed);
-		note = kept ? `${kept} ${kept === 1 ? 'track stays' : 'tracks stay'}: another download still needs ${kept === 1 ? 'it' : 'them'}.` : '';
 	}
+
+	const shownName = $derived(name ?? group?.name);
+	const confirmTitle = $derived(
+		shownName ? `Remove the download of “${shownName}”?` : ref.startsWith('playlist:') ? 'Remove this playlist’s download?' : 'Remove this album’s download?',
+	);
+	const confirmMessage = $derived(
+		`${savedCount} downloaded ${savedCount === 1 ? 'track goes' : 'tracks go'} from this device. Any that another download still needs will stay.`,
+	);
 
 	/** For the page's ⋯ menu: Download as… and (last, destructive) Remove download. */
 	export function actions(): RowAction[] {
 		if (!list.length) return [];
 		const out: RowAction[] = [];
 		if (!allSaved && !active) out.push({ label: 'Download as…', icon: 'download', run: () => (picking = true), disabled: server.disabled, why: controls.why(server.disabled), id: 'download-as' });
-		if (savedCount) out.push({ label: 'Remove download', icon: 'trash', run: () => void remove(), danger: true, id: 'remove-download' });
+		if (savedCount || removing)
+			out.push({ label: 'Remove download', icon: 'trash', run: () => !removing && (confirming = true), disabled: removing, danger: true, id: 'remove-download' });
 		return out;
 	}
 </script>
@@ -131,6 +157,19 @@
 	</div>
 {/if}
 {#if picking}<FormatPicker onchoose={(f) => void download(f)} onclose={() => (picking = false)} />{/if}
+{#if confirming}
+	<ConfirmDialog
+		title={confirmTitle}
+		message={confirmMessage}
+		confirmLabel="Remove"
+		danger
+		onconfirm={() => {
+			confirming = false;
+			void remove();
+		}}
+		oncancel={() => (confirming = false)}
+	/>
+{/if}
 
 <style>
 	/* Its parts sit in the header's row of actions (the line under it wraps to its own row). */
