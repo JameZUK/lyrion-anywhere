@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: Plugin 0.5.0 and Android 1.15.3 released
+
+Plugin [0.5.0](https://github.com/JameZUK/lyrion-anywhere/releases/tag/v0.5.0) (the full-review fixes, *Your devices*, the sync-group and stand-in heartbeat fixes, the web player's media-element sync corrections and start fix, *Sync with…* in Play on…) and Android [1.15.3](https://github.com/JameZUK/lyrion-anywhere/releases/tag/android-v1.15.3) (*Your devices*, playing with the screen off, the audio-focus and network-flap fixes, the output clock on the Signal path, *Sync with…*, Wi-Fi-only downloads by default). Notes: `docs/release-notes/v0.5.0.md` and `docs/release-notes/android-1.15.3.md`. The plugin release is *Latest*; the Android release stays a pre-release so the repository URL keeps serving the plugin.
+
 ## 2026-10-15: Docs: the README is a front page again; detail moved to docs/
 
 Asked for by the owner: the README had grown to every list and table in the project. It is now a front page: a tagline (Lyrion Music Server brought into the mobile age: any device becomes a player, anywhere), a pitch that credits LMS and the Squeezebox world, *What it can do* (the strongest true capabilities first, sync with the players at home among them, each grounded in docs/FEATURES.md, SPEC D22 and D25 and the tests), *Under the bonnet* (the sans-I/O Rust core, its decoders, the 64-bit DSP that is bit-transparent when bypassed, track analysis and the signal path, the gateway and plugin, the resumable player tunnel and rolling cache), the screenshots, the How-it-works diagram, a three-step Quick start, a Documentation table linking every page, the licence and a one-line acknowledgement.
