@@ -39,6 +39,7 @@ import io.github.jamezuk.lyrionanywhere.ui.library.PlayButtons
 import io.github.jamezuk.lyrionanywhere.ui.settings.SignOutDialog
 import io.github.jamezuk.lyrionanywhere.ui.theme.LyrionTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -240,8 +241,9 @@ class OfflineScreenTests {
         compose.onNode(hasText("5.00 GB") and androidx.compose.ui.test.isSelectable()).performClick()
         assertEquals(5 * DownloadSettings.GB, settings.capBytes)
         compose.onNodeWithTag("storage-settings").performScrollToNode(hasText("Download on Wi-Fi only"))
+        // On by default (as on the web), so the tap turns it off.
         compose.onNodeWithText("Download on Wi-Fi only").performClick()
-        assertTrue(settings.wifiOnly)
+        assertFalse(settings.wifiOnly)
         compose.onNodeWithTag("storage-settings").performScrollToNode(hasText("Keep favourites offline"))
         compose.onNodeWithText("Keep favourites offline").performClick()
         assertTrue(settings.smartFavourites)

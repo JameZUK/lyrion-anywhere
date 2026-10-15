@@ -12,8 +12,8 @@ data class DownloadSettings(
     val wifiFormat: DownloadFormat = DownloadFormat.ORIGINAL,
     /** The format on mobile data. */
     val mobileFormat: DownloadFormat = DownloadFormat.OPUS,
-    /** Download only on Wi-Fi; on mobile data downloads wait. */
-    val wifiOnly: Boolean = false,
+    /** Download only on Wi-Fi (on by default, as on the web); on mobile data downloads wait. */
+    val wifiOnly: Boolean = true,
     /** Most storage downloads may use, in bytes (0: no limit). */
     val capBytes: Long = 0,
     /** "Keep recently added albums offline": how many (0: off). */

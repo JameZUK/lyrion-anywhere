@@ -53,7 +53,7 @@ class DownloadSettingsTest {
         val d = DataStoreSettings(store()).settings.first().downloads
         assertEquals(DownloadFormat.ORIGINAL, d.wifiFormat)
         assertEquals(DownloadFormat.OPUS, d.mobileFormat)
-        assertFalse(d.wifiOnly)
+        assertTrue(d.wifiOnly)
         assertEquals(0L, d.capBytes)
         assertFalse(d.smartOn)
         val p = d.policy()
