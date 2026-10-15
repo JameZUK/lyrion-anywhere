@@ -396,6 +396,9 @@ pub async fn me(State(gw): State<AppState>, headers: HeaderMap) -> Response {
             "resume_grace": true,
             // POST /v1/account/password (a signed-in user changes their own password).
             "change_password": true,
+            // GET /v1/devices, DELETE /v1/devices/{id}, POST /v1/devices/sign-out-others
+            // (a user sees and signs out their own devices).
+            "devices": true,
             // LMS stalls are reported: {"lms":"busy"|"ok"} on /v1/events, 503 {"busy":true}
             // from /v1/rpc while busy, and keepalives on /v1/player ("keepalive" at sign-in).
             "lms_busy": true,
@@ -710,6 +713,124 @@ pub async fn rename_self(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Your devices
+// ---------------------------------------------------------------------------
+
+/// Take one "Your devices" request from the user's allowance; a 429 when it is used up.
+fn device_requests_exhausted(gw: &AppState, user: i64) -> Option<Response> {
+    (!gw.device_requests.take(user, std::time::Instant::now()))
+        .then(|| auth_error(AuthError::Locked(crate::DEVICE_REQUEST_WINDOW)))
+}
+
+fn no_store(mut r: Response) -> Response {
+    r.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    r
+}
+
+/// `GET /v1/devices`: the caller's own signed-in devices, oldest first, with `current`
+/// marking the one asking. Never anyone else's, and nothing a user needn't see (no
+/// addresses, MACs, user agents or tokens). `last_seen` is to the minute.
+pub async fn own_devices(State(gw): State<AppState>, headers: HeaderMap) -> Response {
+    let Some(p) = principal(&gw, &headers) else {
+        return error(StatusCode::UNAUTHORIZED, "invalid credentials");
+    };
+    if let Some(r) = device_requests_exhausted(&gw, p.user_id) {
+        return r;
+    }
+    match gw.accounts().own_devices(p.user_id) {
+        Ok(devices) => {
+            let list: Vec<_> = devices
+                .into_iter()
+                .map(|d| {
+                    json!({
+                        "id": d.id,
+                        "name": d.name,
+                        "client_kind": d.client_kind,
+                        "client_platform": d.client_platform,
+                        "created_at": d.created_at,
+                        "last_seen": d.last_seen,
+                        "current": d.id == p.device_id,
+                    })
+                })
+                .collect();
+            no_store(Json(json!({ "devices": list })).into_response())
+        }
+        Err(e) => auth_error(e),
+    }
+}
+
+/// A device id from the path: a positive decimal number, nothing else.
+fn device_id(raw: &str) -> Option<i64> {
+    if raw.is_empty() || raw.len() > 18 || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    raw.parse().ok().filter(|&id| id > 0)
+}
+
+/// `DELETE /v1/devices/{id}`: sign out one of the caller's own other devices. Its tokens
+/// stop working and its live sessions end at once. Another user's device, or one that
+/// doesn't exist or is already signed out, is 404 alike. The device asking is refused
+/// with 409: signing out of this device is `POST /v1/auth/logout`, which also clears the
+/// browser's cookie and cached data.
+pub async fn sign_out_device(
+    State(gw): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(raw): axum::extract::Path<String>,
+) -> Response {
+    if !csrf_ok(&gw, &headers) {
+        return error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Some(p) = principal(&gw, &headers) else {
+        return error(StatusCode::UNAUTHORIZED, "invalid credentials");
+    };
+    if let Some(r) = device_requests_exhausted(&gw, p.user_id) {
+        return r;
+    }
+    let Some(id) = device_id(&raw) else {
+        return error(StatusCode::NOT_FOUND, "no such device");
+    };
+    if id == p.device_id {
+        return error(
+            StatusCode::CONFLICT,
+            "this is the device you are using; sign out instead",
+        );
+    }
+    match gw.accounts().revoke_own_device(p.user_id, &p.username, id) {
+        Ok(true) => {
+            gw.end_sessions_for(&[id]).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(false) => error(StatusCode::NOT_FOUND, "no such device"),
+        Err(e) => auth_error(e),
+    }
+}
+
+/// `POST /v1/devices/sign-out-others`: sign out all the caller's devices but this one.
+/// Answers `{"signed_out": n}`.
+pub async fn sign_out_others(State(gw): State<AppState>, headers: HeaderMap) -> Response {
+    if !csrf_ok(&gw, &headers) {
+        return error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Some(p) = principal(&gw, &headers) else {
+        return error(StatusCode::UNAUTHORIZED, "invalid credentials");
+    };
+    if let Some(r) = device_requests_exhausted(&gw, p.user_id) {
+        return r;
+    }
+    match gw
+        .accounts()
+        .revoke_other_own_devices(p.user_id, &p.username, p.device_id)
+    {
+        Ok(revoked) => {
+            gw.end_sessions_for(&revoked).await;
+            no_store(Json(json!({ "signed_out": revoked.len() })).into_response())
+        }
+        Err(e) => auth_error(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -718,6 +839,31 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert(name, HeaderValue::from_bytes(v).unwrap());
         h
+    }
+
+    #[test]
+    fn device_ids_are_plain_positive_numbers() {
+        assert_eq!(device_id("1"), Some(1));
+        assert_eq!(device_id("42"), Some(42));
+        assert_eq!(device_id("007"), Some(7));
+        for bad in [
+            "",
+            "0",
+            "-1",
+            "+1",
+            " 1",
+            "1 ",
+            "1.0",
+            "1e3",
+            "0x1",
+            "self",
+            "١",
+            "9999999999999999999",
+            "1%00",
+            "../1",
+        ] {
+            assert_eq!(device_id(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

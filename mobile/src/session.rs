@@ -19,7 +19,9 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::error::ApiError;
-use crate::model::{AccountInfo, Device, OwnDevice, PasswordChanged, SignedIn, User, UserRole};
+use crate::model::{
+    AccountInfo, Device, MyDevice, OwnDevice, PasswordChanged, SignedIn, User, UserRole,
+};
 use crate::server::{Server, normalise_pairing_code};
 use crate::transport::{self, CLIENT_HEADER, Http};
 
@@ -263,6 +265,56 @@ fn parse_password_changed(v: &Value) -> Result<PasswordChanged, ApiError> {
         signed_out: signed_out.min(u32::MAX as u64) as u32,
         other_devices,
     })
+}
+
+/// A device's platform as the gateway reported it, cleaned and cut to its 48 characters.
+fn clean_platform(v: &Value) -> Option<String> {
+    v.as_str()
+        .map(|p| {
+            crate::model::clean_text(p)
+                .chars()
+                .take(48)
+                .collect::<String>()
+        })
+        .filter(|p| !p.trim().is_empty())
+}
+
+/// Read `GET /v1/devices`: anything malformed in a device is dropped, not trusted, and at
+/// most one device is taken as this one.
+fn parse_my_devices(v: &Value) -> Result<Vec<MyDevice>, ApiError> {
+    let list = v["devices"]
+        .as_array()
+        .ok_or_else(|| ApiError::bad_response("no devices in answer"))?;
+    let mut seen_current = false;
+    let mut seen_ids = std::collections::HashSet::new();
+    Ok(list
+        .iter()
+        .take(MAX_OWN_DEVICES)
+        .filter_map(|d| {
+            let id = d["id"].as_i64().filter(|id| *id > 0)?;
+            if !seen_ids.insert(id) {
+                return None;
+            }
+            let name: String = crate::model::clean_text(d["name"].as_str()?)
+                .chars()
+                .take(64)
+                .collect();
+            let current = d["current"].as_bool() == Some(true) && !seen_current;
+            seen_current |= current;
+            Some(MyDevice {
+                id,
+                name,
+                kind: d["client_kind"]
+                    .as_str()
+                    .filter(|k| matches!(*k, "android" | "pwa" | "browser"))
+                    .map(str::to_string),
+                platform: clean_platform(&d["client_platform"]),
+                created_at: d["created_at"].as_i64(),
+                last_seen: d["last_seen"].as_i64(),
+                current,
+            })
+        })
+        .collect())
 }
 
 fn valid_device_name(name: &str) -> Option<String> {
@@ -666,9 +718,12 @@ impl Session {
     pub async fn account(&self) -> Result<AccountInfo, ApiError> {
         let v = self.core.get_json("v1/account").await?;
         // What the server offers comes from `/v1/me`; without it, offer nothing new.
-        let can_change_password = match self.core.get_json("v1/me").await {
-            Ok(me) => me["features"]["change_password"].as_bool() == Some(true),
-            Err(_) => false,
+        let (can_change_password, can_manage_devices) = match self.core.get_json("v1/me").await {
+            Ok(me) => (
+                me["features"]["change_password"].as_bool() == Some(true),
+                me["features"]["devices"].as_bool() == Some(true),
+            ),
+            Err(_) => (false, false),
         };
         Ok(AccountInfo {
             username: crate::model::clean_text(v["username"].as_str().unwrap_or("")),
@@ -676,7 +731,67 @@ impl Session {
             two_step_enabled: v["totp_enabled"].as_bool().unwrap_or(false),
             downloads_enabled: v["downloads"]["enabled"].as_bool().unwrap_or(false),
             can_change_password,
+            can_manage_devices,
         })
+    }
+
+    /// "Your devices" (`GET /v1/devices`): this user's signed-in devices, oldest first,
+    /// with this one marked `current`. Only offered when
+    /// [`AccountInfo::can_manage_devices`].
+    pub async fn my_devices(&self) -> Result<Vec<MyDevice>, ApiError> {
+        let v = self.core.get_json("v1/devices").await?;
+        parse_my_devices(&v)
+    }
+
+    /// Sign out another of this user's devices (`DELETE /v1/devices/{id}`): its sign-in
+    /// ends at once, and it must sign in again. True if it was signed out; false if it had
+    /// already gone (signed out elsewhere, or not this user's). This device can't be signed
+    /// out this way: use [`Session::logout`].
+    pub async fn sign_out_device(&self, device_id: i64) -> Result<bool, ApiError> {
+        if device_id <= 0 {
+            return Err(ApiError::invalid("no such device"));
+        }
+        let url = self
+            .core
+            .server
+            .endpoint(&format!("v1/devices/{device_id}"));
+        let core = &self.core;
+        let result = core
+            .authed(|token| {
+                transport::send_json(
+                    core.http
+                        .delete(url.clone())
+                        .header(CLIENT_HEADER, "1")
+                        .bearer_auth(&token),
+                )
+            })
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            Err(ApiError::InvalidInput { detail }) if detail == "no such device" => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Sign out all this user's other devices (`POST /v1/devices/sign-out-others`); this
+    /// one stays signed in. Returns how many were signed out.
+    pub async fn sign_out_other_devices(&self) -> Result<u32, ApiError> {
+        let url = self.core.server.endpoint("v1/devices/sign-out-others");
+        let core = &self.core;
+        let v = core
+            .authed(|token| {
+                transport::send_json(
+                    core.http
+                        .post(url.clone())
+                        .header(CLIENT_HEADER, "1")
+                        .bearer_auth(&token),
+                )
+            })
+            .await?;
+        let n = v["signed_out"]
+            .as_u64()
+            .ok_or_else(|| ApiError::bad_response("no signed_out in answer"))?;
+        Ok(n.min(u32::MAX as u64) as u32)
     }
 
     /// Change this user's password (`POST /v1/account/password`). Needs the current
@@ -853,6 +968,82 @@ mod tests {
         }
         // Ten characters of any script count as ten.
         assert!(change_password_body("old password", &"é".repeat(10), None, false).is_ok());
+    }
+
+    #[test]
+    fn device_lists_are_read_strictly() {
+        let v = json!({
+            "devices": [
+                { "id": 1, "name": "Phone\u{7}", "client_kind": "android",
+                  "client_platform": "Pixel 8", "created_at": 1_600_000_000,
+                  "last_seen": 1_700_000_040, "current": true },
+                { "id": 2, "name": "Kitchen", "client_kind": "toaster",
+                  "client_platform": " ", "current": "yes" },
+                // A second "current" is not believed.
+                { "id": 3, "name": "Tablet", "current": true },
+                // Malformed or repeated ids, missing names: dropped.
+                { "id": "4", "name": "bad id" },
+                { "id": 0, "name": "zero" },
+                { "id": -5, "name": "negative" },
+                { "id": 1, "name": "again" },
+                { "id": 6 },
+                "nonsense",
+            ]
+        });
+        let list = parse_my_devices(&v).unwrap();
+        assert_eq!(
+            list,
+            vec![
+                MyDevice {
+                    id: 1,
+                    name: "Phone".into(),
+                    kind: Some("android".into()),
+                    platform: Some("Pixel 8".into()),
+                    created_at: Some(1_600_000_000),
+                    last_seen: Some(1_700_000_040),
+                    current: true,
+                },
+                MyDevice {
+                    id: 2,
+                    name: "Kitchen".into(),
+                    kind: None,
+                    platform: None,
+                    created_at: None,
+                    last_seen: None,
+                    current: false,
+                },
+                MyDevice {
+                    id: 3,
+                    name: "Tablet".into(),
+                    kind: None,
+                    platform: None,
+                    created_at: None,
+                    last_seen: None,
+                    current: false,
+                },
+            ]
+        );
+        let long = "x".repeat(500);
+        let one = parse_my_devices(&json!({ "devices": [
+            { "id": 9, "name": long, "client_platform": long }
+        ]}))
+        .unwrap();
+        assert_eq!(one[0].name.chars().count(), 64);
+        assert_eq!(one[0].platform.as_ref().unwrap().chars().count(), 48);
+        let many: Vec<Value> = (1..500).map(|i| json!({ "id": i, "name": "d" })).collect();
+        assert_eq!(
+            parse_my_devices(&json!({ "devices": many })).unwrap().len(),
+            MAX_OWN_DEVICES
+        );
+        for bad in [
+            json!(null),
+            json!([]),
+            json!({}),
+            json!({ "devices": "x" }),
+            json!({ "devices": {} }),
+        ] {
+            assert!(parse_my_devices(&bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
