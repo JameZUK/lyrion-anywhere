@@ -376,3 +376,126 @@ async fn the_rpc_endpoint_still_refuses_ratings_light() {
         .unwrap();
     assert_eq!(r.status(), S::FORBIDDEN);
 }
+
+/// Give the fake library tracks `ids`, all the same file as track 1 (so they share its
+/// stable key, and an offline batch can name them all with one key).
+fn add_copies_of_track_1(h: &Harness, ids: std::ops::RangeInclusive<u64>) {
+    let mut extra = h.lms.extra.lock().unwrap();
+    for id in ids {
+        let item = json!({"id": id, "title": "Copy", "type": "flc", "url": TRACK_URL,
+                          "filesize": 5, "duration": "200"});
+        extra.insert(id, (item, b"audio".to_vec()));
+    }
+}
+
+/// Regression (M4): a batch wrote LMS's shared rating once per track, serially, each with
+/// the 30 s LMS time limit, so 500 ratings against an LMS whose Ratings Light hangs held the
+/// request for hours. The shared writes now have a short limit and a budget per request:
+/// the user's own ratings are all kept, and the request ends within seconds.
+#[tokio::test]
+async fn a_large_batch_against_a_hanging_ratings_light_ends_quickly() {
+    let h = harness().await;
+    let key = key_of(&h, 1).await;
+    add_copies_of_track_1(&h, 1000..=1499);
+    h.lms.hang_rpc.lock().unwrap().insert("ratingslight".into());
+    let t = now();
+    let ratings: Vec<Value> = (1000..1500u64)
+        .map(|id| json!({"track": id, "key": key, "rating": 80, "at": t - 60}))
+        .collect();
+    let started = std::time::Instant::now();
+    let r = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        call(
+            &h,
+            "POST",
+            "/v1/me/ratings",
+            Some(&h.tok_a),
+            Some(json!({ "ratings": ratings })),
+        ),
+    )
+    .await;
+    let (s, v) = r.expect("the batch must end within its bound, not 500 × the LMS timeout");
+    assert_eq!(s, S::OK, "{v}");
+    assert_eq!(v, json!({"applied": 500, "skipped": 0}));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(15),
+        "{:?}",
+        started.elapsed()
+    );
+    let writes = shared_writes(&h).len();
+    assert!(writes < 500, "{writes} shared writes to a hanging LMS");
+    // The user's own ratings were all kept.
+    let (_, v) = call(
+        &h,
+        "GET",
+        "/v1/me/ratings?tracks=1000,1499",
+        Some(&h.tok_a),
+        None,
+    )
+    .await;
+    assert_eq!(v["ratings"][0]["mine"], 80, "{v}");
+    assert_eq!(v["ratings"][1]["mine"], 80, "{v}");
+}
+
+/// Regression (M4): batches had no in-flight limit per user. A second batch while one is
+/// running is refused as a second upload of plays is (429 with `Retry-After`); another
+/// user is not held up.
+#[tokio::test]
+async fn one_ratings_batch_at_a_time_per_user() {
+    let h = std::sync::Arc::new(harness().await);
+    let key = key_of(&h, 1).await;
+    add_copies_of_track_1(&h, 1000..=1001);
+    h.lms.hang_rpc.lock().unwrap().insert("ratingslight".into());
+    let t = now();
+    let body = json!({"ratings": [
+        {"track": 1000, "key": key, "rating": 80, "at": t - 60},
+        {"track": 1001, "key": key, "rating": 60, "at": t - 60},
+    ]});
+    let first = {
+        let (h, body) = (h.clone(), body.clone());
+        tokio::spawn(
+            async move { call(&h, "POST", "/v1/me/ratings", Some(&h.tok_a), Some(body)).await },
+        )
+    };
+    wait_for(|| !shared_writes(&h).is_empty()).await;
+    let r = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        reqwest::Client::new()
+            .post(h.url("/v1/me/ratings"))
+            .bearer_auth(&h.tok_a)
+            .json(&body)
+            .send(),
+    )
+    .await
+    .expect("a second batch is refused at once")
+    .unwrap();
+    assert_eq!(r.status(), S::TOO_MANY_REQUESTS);
+    assert!(r.headers().contains_key("retry-after"));
+    // Bob is not held up by alice's batch (a clear writes nothing shared).
+    let (s, v) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        call(
+            &h,
+            "POST",
+            "/v1/me/ratings",
+            Some(&h.tok_b),
+            Some(json!({"ratings": [{"track": 1, "key": key, "rating": 0, "at": t - 60}]})),
+        ),
+    )
+    .await
+    .expect("another user's batch runs");
+    assert_eq!(s, S::OK, "{v}");
+    // Once the first ends, the slot is free again.
+    let (s, v) = tokio::time::timeout(std::time::Duration::from_secs(20), first)
+        .await
+        .expect("the first batch ends within its bound")
+        .unwrap();
+    assert_eq!(s, S::OK, "{v}");
+    let (s, v) = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        call(&h, "POST", "/v1/me/ratings", Some(&h.tok_a), Some(body)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(s, S::OK, "{v}");
+}

@@ -1016,13 +1016,13 @@ Each user's own ratings, blended with LMS's shared rating (docs/plans/wave2-desi
 - **Values:** 0–100 in steps of 10 (half stars); 0 clears. A heart is 100.
 - **Keyed by the stable track key,** so a rating survives a rescan that renumbers the track. Only local library tracks can be rated (streams have no stable key).
 - **The blend:** `rating` is (3 × `mine` + `shared`) / 4 where both exist, else whichever exists. `shared` is LMS's own rating (tag `R`), set by Ratings Light or other apps.
-- **Written through:** where the Ratings Light plugin is installed, a rating is also set there (`ratingslight setratingpercentnoclient`), so the shared rating follows the last user to rate. Clients can't send that command themselves.
+- **Written through:** where the Ratings Light plugin is installed, a rating is also set there (`ratingslight setratingpercentnoclient`), so the shared rating follows the last user to rate. Clients can't send that command themselves. Each write has a 3 s limit. An offline batch spends at most 10 s on them and stops at the first one LMS doesn't take (Ratings Light missing or hanging); the user's own ratings are all kept either way.
 
 | Request | Body | Answer |
 |---|---|---|
 | `GET /v1/me/ratings?tracks=1,2,…` (at most 200) | | `{"ratings":[{"track","mine","shared","rating"}]}`, for the tracks LMS knows |
 | `PUT /v1/me/ratings/{track}` | `{"rating": n}` | The same, for that track (404 for a stream or an unknown track) |
-| `POST /v1/me/ratings` | `{"ratings":[{"track","key","rating","at"}]}` (at most 500) | `{"applied","skipped"}`. Ratings made offline: `key` must be the track's stable key as LMS knows it now; `at` (Unix seconds) can't be in the future or before 2020; the newest rating of a track wins, so a batch can be sent again |
+| `POST /v1/me/ratings` | `{"ratings":[{"track","key","rating","at"}]}` (at most 500) | `{"applied","skipped"}`. Ratings made offline: `key` must be the track's stable key as LMS knows it now; `at` (Unix seconds) can't be in the future or before 2020; the newest rating of a track wins, so a batch can be sent again. One batch at a time per user: another while one is running is `429` with `Retry-After`, as for `/v1/plays` |
 | `DELETE /v1/me/ratings` | | `{"removed": n}` |
 | `GET` / `PUT /v1/me/ratings/style` | `{"style":"stars"\|"heart"}` | How the user rates, on every device; `GET` also gives `count` |
 

@@ -304,6 +304,8 @@ pub struct Gateway {
     device_requests: plays::Window,
     /// Requests to `/v1/me/…` per user a minute.
     me_requests: plays::Window,
+    /// Users with an offline ratings batch in flight (one at a time each).
+    rating_batches: Mutex<std::collections::HashSet<i64>>,
     /// Station batches per user a minute.
     station_batches: plays::Window,
     /// Tracks each station served lately (never repeated soon).
@@ -392,6 +394,7 @@ impl Gateway {
                 history::ME_REQUESTS_PER_MINUTE,
                 Duration::from_secs(60),
             ),
+            rating_batches: Default::default(),
             station_batches: plays::Window::new(
                 stations::BATCHES_PER_MINUTE,
                 Duration::from_secs(60),

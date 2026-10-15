@@ -38,6 +38,15 @@ pub const MAX_PER_USER: usize = 100_000;
 /// How much more the user's own rating counts than LMS's shared one.
 pub const MINE_WEIGHT: u32 = 3;
 const MAX_BODY: usize = 128 * 1024;
+/// Time limit for one write of LMS's shared rating (Ratings Light answers at once, or
+/// not at all).
+pub const SHARED_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+/// Longest one offline batch may spend writing LMS's shared ratings. What is left when it
+/// runs out (or once a write fails or times out) is not written: the user's own ratings are
+/// all kept, and the shared rating is LMS's, best effort.
+pub const SHARED_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+/// Seconds a client is told to wait while its previous batch is still running.
+const BUSY_RETRY_AFTER: u64 = 5;
 
 /// A rating: 0–100 in steps of 10 (half stars).
 pub fn rating_ok(r: i64) -> bool {
@@ -234,16 +243,49 @@ async fn lookup(gw: &AppState, ids: &[u64], salt: &str) -> Result<Vec<Known>, Re
 }
 
 /// Also set LMS's shared rating, through Ratings Light where it is installed (ignored
-/// otherwise).
-async fn write_shared(gw: &AppState, id: u64, rating: u32) {
+/// otherwise), within `limit` (at most [`SHARED_WRITE_TIMEOUT`]). `false` if LMS didn't
+/// take it.
+async fn write_shared(gw: &AppState, id: u64, rating: u32, limit: std::time::Duration) -> bool {
     let cmd = [
         "ratingslight".to_string(),
         "setratingpercentnoclient".into(),
         id.to_string(),
         rating.to_string(),
     ];
-    if let Err(e) = gw.lms_command("", &cmd).await {
-        tracing::debug!(error = %e, "Ratings Light not reachable");
+    match gw
+        .lms_command_within("", &cmd, limit.min(SHARED_WRITE_TIMEOUT))
+        .await
+    {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::debug!(error = %e, "Ratings Light not reachable");
+            false
+        }
+    }
+}
+
+/// A user's one batch slot, freed when dropped.
+struct BatchSlot<'a> {
+    gw: &'a AppState,
+    user: i64,
+}
+
+impl<'a> BatchSlot<'a> {
+    fn take(gw: &'a AppState, user: i64) -> Option<Self> {
+        // Not `then_some`: that would build (and so drop, freeing the slot) a guard even
+        // when the slot is taken.
+        let free = gw.rating_batches.lock().unwrap().insert(user);
+        if free {
+            Some(BatchSlot { gw, user })
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for BatchSlot<'_> {
+    fn drop(&mut self) {
+        self.gw.rating_batches.lock().unwrap().remove(&self.user);
     }
 }
 
@@ -343,7 +385,7 @@ pub async fn put(
     }
     // Clearing takes back only the user's own rating: LMS's shared one is everyone's.
     if rating > 0 {
-        write_shared(&gw, id, rating).await;
+        write_shared(&gw, id, rating, SHARED_WRITE_TIMEOUT).await;
     }
     let mine = (rating > 0).then_some(rating);
     ok(json!({"track": id, "mine": mine, "shared": k.shared, "rating": blend(mine, k.shared)}))
@@ -354,6 +396,18 @@ pub async fn batch(State(gw): State<AppState>, headers: HeaderMap, body: Body) -
     let p = match caller(&gw, &headers) {
         Ok(p) => p,
         Err(r) => return r,
+    };
+    // One batch at a time per user, as for uploads of plays.
+    let Some(_slot) = BatchSlot::take(&gw, p.user_id) else {
+        let mut r = error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "another upload of ratings is running",
+        );
+        r.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            axum::http::HeaderValue::from(BUSY_RETRY_AFTER),
+        );
+        return r;
     };
     let body = match body_json(&headers, body, MAX_BODY).await {
         Ok(b) => b,
@@ -432,9 +486,13 @@ pub async fn batch(State(gw): State<AppState>, headers: HeaderMap, body: Body) -
             Err(_) => return internal(),
         }
     }
-    for (id, rating) in shared {
-        if rating > 0 {
-            write_shared(&gw, id, rating).await;
+    // Within the budget, and only while LMS takes them: a hanging or missing Ratings
+    // Light costs one short wait, not one per track.
+    let deadline = std::time::Instant::now() + SHARED_BUDGET;
+    for (id, rating) in shared.into_iter().filter(|(_, r)| *r > 0) {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() || !write_shared(&gw, id, rating, left).await {
+            break;
         }
     }
     ok(json!({ "applied": applied, "skipped": skipped }))
