@@ -2,6 +2,22 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: Android: a phone rejoining a sync group no longer pauses the others or moves them back
+
+Found by the live check of A6 (`mobile/tests/live_sync.rs`). When the phone's link stalled while it was in a sync group, the other speakers went silent for 4 to 15 s once it came back. After a long stall, LMS also restarted the whole group about 14 s back.
+
+- **Stale underrun report dropped** (`mobile/src/player/protocol.rs`, `engine.rs`): the `STMo` ("my output ran dry") sent mid-track while the link was down waited in the outbox and reached LMS on reconnect. LMS then paused the whole group to rebuffer. In a group, the phone now drops that held `STMo` (and the `STMr` for its recovery) when the link returns, since it handles the stall itself. The core sends no `STMr` for a report LMS never heard (`Player::withdraw_underrun_report`).
+  - **Unchanged:** a phone on its own, the `STMo` sent in place of `STMu` at the end of the audio received, and any underrun while the link is up.
+- **Restart at the group's position:** a phone with too little audio to skip the stall had LMS restart the group at `time ?`. With the phone as master, that lags at the phone's own stall point. It now restarts at where it stopped plus the time stalled, after checking with LMS that the same track is still playing.
+  - **Nothing is sent** if LMS isn't playing (paused or stopped meanwhile), the track changed, the point is within 1 s of the track's end or past it, or the stall is longer than any session lasts.
+  - **Fallback:** `time ?` is used only when the track's queue position was never learnt (a radio stream).
+- **Tests:**
+  - Regression tests that fail before the fix: the engine against the fake LMS (no `STMo` or `STMr` reaches LMS; the restart lands where the others are; no seek for a changed track, a paused group or past the end), and the core's withdrawn report.
+  - Negatives: alone, the held `STMo` still reaches LMS; a real underrun after the rejoin is still reported.
+  - Unit and robustness tests for the outbox release and the restart point, including arbitrary LMS answers and frames.
+  - The live check now asserts what it only reported before: the others paused at most 1 s, and a restart moves them at most 1.5 s. It has yet to be run against the fix.
+- **Docs:** docs/PROTOCOL.md, "Rejoining after a gap"; SPEC D22; the design doc's "A6 live check".
+
 ## 2026-10-15: Plugin 0.4.0 released
 
 The server side for Android 1.14.0: the gateway's busy-LMS handling and slow-request log, *Change password* (`POST /v1/account/password`), *Save the queue as a playlist* (`POST /v1/players/{player}/queue/save`) and the faster Opus decoder; and the web app's Wave 3.5 declutter, out-of-reach controls, busy notice and fuller downloads. The plugin's Perl is unchanged since 0.3.0. Notes: `docs/release-notes/v0.4.0.md`. The release also carries the Android 1.14.0 APKs, with their checksums in `SHA256SUMS-android.txt`.

@@ -1838,10 +1838,47 @@ async fn random_cuts_and_resumes_never_panic() {
     wait_for("spools deleted on stop", move || spool_files(&c).is_empty()).await;
 }
 
-/// A6: a player in a sync group that stalled for longer than it has audio to skip asks
-/// LMS to restart the group where it is, rather than playing on out of step.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_grouped_player_too_far_behind_after_a_gap_asks_lms_to_restart_the_group() {
+// --- Rejoining a sync group after a gap (A6) ---------------------------------------------
+
+/// What happens around the gap, in [`grouped_gap`].
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum GroupGap {
+    /// The others play on through the gap; LMS's own `time` lags at the stall point.
+    Playing,
+    /// Not in a group at all.
+    Alone,
+    /// The group moved on to another track during the gap.
+    TrackChanged,
+    /// Someone paused the group during the gap.
+    Paused,
+    /// The track is shorter than where the others would be now.
+    PastTheEnd,
+    /// LMS never said where the track is in the queue (a radio stream).
+    PositionUnknown,
+}
+
+/// What [`grouped_gap`] saw.
+struct GroupGapSeen {
+    rig: Rig,
+    /// How far into the track the output stopped (s), and when.
+    stalled_at_s: f64,
+    stalled: std::time::Instant,
+    /// The `time` commands the player sent LMS by itself, with when each was seen.
+    seeks: Vec<(serde_json::Value, std::time::Instant)>,
+    /// Whether it asked LMS's own `time ?`.
+    asked_time: bool,
+    /// `STMo` and `STMr` LMS heard, from the stall on.
+    stmo: usize,
+    stmr: usize,
+}
+
+/// The track at queue position 0 (30 s long, LMS says) plays; only the first 256 KiB of
+/// its stream arrive (about 3 s). The network goes until the output has run dry, stays down
+/// 3 s more, and comes back; then the rest of the stream arrives, only about a second more
+/// (the stream is cut short so that too little arrives to skip the stall, and a grouped
+/// player has LMS restart the group). The player is in a sync group unless `case` is
+/// `Alone`; LMS's status during the gap follows `case`.
+async fn grouped_gap(case: GroupGap) -> GroupGapSeen {
     let mut r = rig_opts(RigOpts {
         proxy: true,
         spool: true,
@@ -1851,13 +1888,23 @@ async fn a_grouped_player_too_far_behind_after_a_gap_asks_lms_to_restart_the_gro
     })
     .await;
     let me = format_mac(&r.mac);
-    r.h.lms
-        .syncs
-        .members
-        .lock()
-        .unwrap()
-        .insert(me.clone(), HOME_PLAYER.to_string());
-    let track = flac::encode(44_100, 16, &flac::noise(44_100 * 3, 16, 71));
+    if case != GroupGap::Alone {
+        r.h.lms
+            .syncs
+            .members
+            .lock()
+            .unwrap()
+            .insert(me.clone(), HOME_PLAYER.to_string());
+    }
+    let remote = u8::from(case == GroupGap::PositionUnknown);
+    let status = |mode: &str, time: f64, cur: u32, id: u64, duration: f64| {
+        serde_json::json!({"mode": mode, "time": time, "playlist_cur_index": cur.to_string(),
+            "playlist_loop": [{"playlist index": cur, "id": id, "duration": duration,
+                "remote": remote}]})
+    };
+    *r.h.lms.status.lock().unwrap() = Some(status("play", 0.0, 0, 1, 30.0));
+    let rate = 22_050usize;
+    let track = flac::encode(rate as u32, 16, &flac::noise(rate * 4, 16, 71));
     let gate = Arc::new(tokio::sync::Notify::new());
     r.h.lms.streams.lock().unwrap().push_back(StreamPlan {
         body: track,
@@ -1868,6 +1915,16 @@ async fn a_grouped_player_too_far_behind_after_a_gap_asks_lms_to_restart_the_gro
     r.send(strm_s(b'f', &mac)).await;
     let pulled = r.pulled.clone();
     wait_for("audio", move || pulled.frames() > 10_000).await;
+    // The player has asked LMS about the track (and its group).
+    let lms = &r.h.lms;
+    wait_for("the track's position", || {
+        lms.rpc_calls()
+            .iter()
+            .any(|p| p[0] == me.as_str() && p[1][0] == "status" && p[1][1] == "-")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let calls_before = r.h.lms.rpc_calls().len();
     let statuses = r.obs.statuses.lock().unwrap().len();
     r.proxy.as_ref().unwrap().set_down(true);
     for _ in 0..1000 {
@@ -1876,24 +1933,162 @@ async fn a_grouped_player_too_far_behind_after_a_gap_asks_lms_to_restart_the_gro
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    // Stalled for far longer than the rest of the track lasts.
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert!(r.player.status().underruns > 0, "the audio ran out");
+    let stalled = std::time::Instant::now();
+    let stalled_at_s = r.pulled.frames() as f64 / rate as f64;
+    let events_before = r.h.lms.slim_events().len();
+    // Meanwhile, at LMS (`time` lags at the stall point, as LMS's does for a silent master).
+    *r.h.lms.status.lock().unwrap() = Some(match case {
+        GroupGap::TrackChanged => status("play", 1.0, 1, 2, 30.0),
+        GroupGap::Paused => status("pause", 1.0, 0, 1, 30.0),
+        GroupGap::PastTheEnd => status("play", 1.0, 0, 1, stalled_at_s + 4.0),
+        _ => status("play", 1.0, 0, 1, 30.0),
+    });
+    tokio::time::sleep(Duration::from_secs(3)).await;
     r.proxy.as_ref().unwrap().set_down(false);
     wait_reconnected(&r, statuses, 20).await;
     gate.notify_one();
-    let lms = &r.h.lms;
-    let asked = || {
-        lms.rpc_calls()
-            .iter()
-            .any(|p| p[0] == me.as_str() && p[1] == serde_json::json!(["time", "?"]))
-    };
-    for _ in 0..1500 {
-        if asked() {
-            break;
+    // The player waits up to 2 s for audio to skip the stall, then decides.
+    let mut seeks: Vec<(serde_json::Value, std::time::Instant)> = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    while std::time::Instant::now() < deadline {
+        let calls = r.h.lms.rpc_calls();
+        for c in &calls[calls_before..] {
+            if c[0] == me.as_str()
+                && c[1][0] == "time"
+                && c[1][1] != "?"
+                && !seeks.iter().any(|(s, _)| s == &c[1])
+            {
+                seeks.push((c[1].clone(), std::time::Instant::now()));
+            }
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(asked(), "LMS was asked where the group is");
+    let asked_time = r.h.lms.rpc_calls()[calls_before..]
+        .iter()
+        .any(|p| p[0] == me.as_str() && p[1] == serde_json::json!(["time", "?"]));
+    let ev = r.h.lms.slim_events();
+    let since = &ev[events_before.min(ev.len())..];
+    let stmo = since.iter().filter(|e| *e == "STMo").count();
+    let stmr = since.iter().filter(|e| *e == "STMr").count();
+    GroupGapSeen {
+        rig: r,
+        stalled_at_s,
+        stalled,
+        seeks,
+        asked_time,
+        stmo,
+        stmr,
+    }
+}
+
+/// Regression (live check, 2026-10-13): a grouped player that rejoins after a gap doesn't
+/// send LMS the underrun (`STMo`) it held through the gap, which made LMS pause the whole
+/// group for 4 to 15 s, nor its recovery (`STMr`); and it has LMS restart the group where
+/// the others are now (where it stopped plus the time stalled), not at LMS's lagging
+/// `time ?` (which moved the group 14 s back).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_grouped_player_rejoins_without_pausing_the_group_or_moving_it_back() {
+    let seen = grouped_gap(GroupGap::Playing).await;
+    assert_eq!(seen.stmo, 0, "the stale STMo never reached LMS");
+    assert_eq!(seen.stmr, 0, "nor its recovery");
+    assert!(!seen.asked_time, "LMS's own (lagging) time wasn't used");
+    assert_eq!(seen.seeks.len(), 1, "{:?}", seen.seeks);
+    let (cmd, at) = &seen.seeks[0];
+    let t: f64 = cmd[1].as_str().unwrap().parse().unwrap();
+    let want = seen.stalled_at_s + at.duration_since(seen.stalled).as_secs_f64();
+    assert!(
+        (t - want).abs() < 0.5,
+        "restarted at {t} s; stalled at {} s, the others at {want} s",
+        seen.stalled_at_s
+    );
+    assert!(t > seen.stalled_at_s + 3.0, "moved forward, past the gap");
+    let me = format_mac(&seen.rig.mac);
+    assert!(
+        seen.rig
+            .h
+            .lms
+            .rpc_calls()
+            .iter()
+            .any(|p| p[0] == me.as_str()
+                && p[1] == serde_json::json!(["status", "-", "2", "tags:xed"])),
+        "the track was checked with LMS first"
+    );
+    seen.rig.player.stop();
+}
+
+/// Negative: alone, the underrun held through the gap reaches LMS as before, and nothing
+/// is restarted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn alone_the_held_underrun_still_reaches_lms() {
+    let seen = grouped_gap(GroupGap::Alone).await;
+    assert_eq!(seen.stmo, 1, "{:?}", seen.rig.h.lms.slim_events());
+    assert!(seen.seeks.is_empty(), "{:?}", seen.seeks);
+    assert!(!seen.asked_time);
+    seen.rig.player.stop();
+}
+
+/// Negative: the group moved on to another track during the gap: no seek, which would land
+/// in the wrong track.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_grouped_rejoin_does_not_seek_a_changed_track() {
+    let seen = grouped_gap(GroupGap::TrackChanged).await;
+    assert!(seen.seeks.is_empty(), "{:?}", seen.seeks);
+    assert_eq!(seen.stmo, 0);
+    seen.rig.player.stop();
+}
+
+/// Negative: the group was paused during the gap: the others aren't where the time
+/// stalled says, so nothing moves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_grouped_rejoin_does_not_seek_a_paused_group() {
+    let seen = grouped_gap(GroupGap::Paused).await;
+    assert!(seen.seeks.is_empty(), "{:?}", seen.seeks);
+    seen.rig.player.stop();
+}
+
+/// The others would be past the end of the track by now: no seek past its end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_grouped_rejoin_does_not_seek_past_the_end() {
+    let seen = grouped_gap(GroupGap::PastTheEnd).await;
+    assert!(seen.seeks.is_empty(), "{:?}", seen.seeks);
+    seen.rig.player.stop();
+}
+
+/// Without the track's queue position (a radio stream), the player falls back on LMS's own
+/// `time ?`, as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_grouped_rejoin_without_a_known_position_asks_lms_where_the_group_is() {
+    let seen = grouped_gap(GroupGap::PositionUnknown).await;
+    assert!(seen.asked_time, "LMS was asked where the group is");
+    let cmds: Vec<_> = seen.seeks.iter().map(|(c, _)| c.clone()).collect();
+    assert_eq!(cmds, vec![serde_json::json!(["time", "1.000"])]);
+    assert_eq!(seen.stmo, 0);
+    seen.rig.player.stop();
+}
+
+/// Negative: after a grouped rejoin dropped the stale `STMo`, a real underrun with the link
+/// up is reported to LMS as usual.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_real_underrun_after_a_grouped_rejoin_is_still_reported() {
+    let seen = grouped_gap(GroupGap::Playing).await;
+    assert_eq!(seen.stmo, 0);
+    let mut r = seen.rig;
+    // The rest of the stream played after the stall (so audio flowed again); then a new
+    // track starves with the link up.
+    let heard_s = r.pulled.frames() as f64 / 22_050.0;
+    assert!(heard_s > seen.stalled_at_s + 0.5, "{heard_s} s heard");
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let track = flac::encode(22_050, 16, &flac::noise(22_050 * 10, 16, 72));
+    r.h.lms.streams.lock().unwrap().push_back(StreamPlan {
+        body: track,
+        gate_at: Some((256 * 1024, gate.clone())),
+    });
+    let mac = r.mac;
+    r.send(strm_frame(b'q', b'0', "")).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMo", 1, 20).await;
+    gate.notify_one();
     r.player.stop();
 }
 

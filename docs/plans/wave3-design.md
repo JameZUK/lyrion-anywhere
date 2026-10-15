@@ -95,7 +95,7 @@ Agreed with the owner on 2026-10-13:
 
 ## 2. Rolling cache (part 2)
 
-**Status:** design agreed on 2026-10-13 (see the decisions at the end). Spike S1 done; Phase A built on 2026-10-13. What remains for Phase A is the manual testing on a real phone (see "Manual" under Tests). The live check of A6's rejoin is built (`mobile/tests/live_sync.rs`): the phone rejoins in step, but LMS pauses the rest of the group meanwhile, and a long stall moves the whole group back (open: see "A6 live check").
+**Status:** design agreed on 2026-10-13 (see the decisions at the end). Spike S1 done; Phase A built on 2026-10-13. What remains for Phase A is the manual testing on a real phone (see "Manual" under Tests). The live check of A6's rejoin is built (`mobile/tests/live_sync.rs`): the phone rejoins in step. LMS paused the rest of the group meanwhile, and a long stall moved the whole group back; both fixed on 2026-10-15 (see "A6 live check"), and the live check now asserts both, but has yet to be run against the fix.
 - **Gateway** (A3, A4): grace negotiation, `--max-resume-grace`, history from jiffies, heartbeats capped at the track's end. Built.
 - **Core** (A2, A4, A6 in the core): built (see "Core built" under A2).
 - **Mobile engine** (A1, the client's A3, A6, `strm f`): built on 2026-10-13 (see "Mobile engine built" under A1).
@@ -259,10 +259,10 @@ Worst-case cushion: about one track. At any moment it is the rest of the current
   - **Long stall:** the others paused for 14.7 s, then the engine's `time ?` / `time <t>` restarted the group 13.7 to 13.9 s back, at the engine's own stall point.
     - **Why:** during a rebuffer, `time ?` gives the position LMS paused the master at. The engine was the master, so that was its own stale position.
     - **Result:** the group replays the stretch the phone missed. The design wanted the phone to jump forward to the group, not the group to go back.
-  - **To decide (not fixed: it changes A4/A6's design, not a detail of the code):**
-    - in a group, drop a mid-track `STMo` still queued when the link comes back, since the engine handles the stall itself; LMS would then never pause the others;
-    - restart at the group's position (the stall point plus the time stalled) rather than at the answer to `time ?`;
-    - or leave the realignment to LMS's rebuffer altogether.
+  - **Decided and fixed (2026-10-15, approved by the owner):**
+    - in a group, a mid-track `STMo` still queued when the link comes back is dropped (with the `STMr` for its recovery), since the engine handles the stall itself; LMS then never pauses the others for it. Alone, the end-of-track `STMo` and any underrun with the link up are unchanged;
+    - the group restarts at its own position (the stall point plus the time stalled), checked against LMS's current track, rather than at the answer to `time ?`. Nothing is sent if LMS isn't playing, the track changed, or the point is at or past the track's end;
+    - details in docs/PROTOCOL.md, "Rejoining after a gap". The live check asserts both (the others paused at most 1 s; a restart moves them at most 1.5 s).
 
 **A1. Disk spool for the live stream** (`mobile/src/player/engine.rs`, new `player/spool.rs`). Effort: M.
 - **Writing:**

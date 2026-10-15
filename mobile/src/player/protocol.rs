@@ -95,10 +95,10 @@ pub fn parse_features(me: &Value) -> Features {
 /// oldest `STMt` (a heartbeat, of no use once stale) goes first, so the events that matter
 /// (`STMs`, `STMd`, `STMo`, `STMr`, `STMu`…) survive a long gap; only an outbox full of
 /// those drops its oldest.
-pub fn push_outbox(outbox: &mut VecDeque<Vec<u8>>, frame: Vec<u8>, limit: usize) {
+pub fn push_outbox<F: AsRef<[u8]>>(outbox: &mut VecDeque<F>, frame: F, limit: usize) {
     outbox.push_back(frame);
     while outbox.len() > limit {
-        match outbox.iter().position(|f| is_heartbeat(f)) {
+        match outbox.iter().position(|f| is_heartbeat(f.as_ref())) {
             Some(i) => {
                 outbox.remove(i);
             }
@@ -111,7 +111,84 @@ pub fn push_outbox(outbox: &mut VecDeque<Vec<u8>>, frame: Vec<u8>, limit: usize)
 
 /// A `STAT` frame for `STMt` (opcode, length, then the event code).
 pub fn is_heartbeat(frame: &[u8]) -> bool {
-    frame.len() >= 12 && &frame[..4] == b"STAT" && &frame[8..12] == b"STMt"
+    is_stat_event(frame, b"STMt")
+}
+
+/// A `STAT` frame for `event` (opcode, length, then the event code).
+pub fn is_stat_event(frame: &[u8], event: &[u8; 4]) -> bool {
+    frame.len() >= 12 && &frame[..4] == b"STAT" && &frame[8..12] == event
+}
+
+/// A frame for LMS held while the link is down.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Held {
+    pub frame: Vec<u8>,
+    /// An `STMo` for an underrun mid-track (the track still arriving: the gap starved the
+    /// output), as opposed to the one sent in place of `STMu` when everything received has
+    /// played out (see [`release_outbox`]).
+    pub gap_underrun: bool,
+}
+
+impl AsRef<[u8]> for Held {
+    fn as_ref(&self) -> &[u8] {
+        &self.frame
+    }
+}
+
+/// What [`release_outbox`] gives back.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Released {
+    /// The frames to send LMS, oldest first.
+    pub frames: Vec<Vec<u8>>,
+    /// The output is still stalled from an underrun whose `STMo` was dropped: the player
+    /// must not report its recovery either (`Player::withdraw_underrun_report`).
+    pub stall_unreported: bool,
+}
+
+/// Empty the outbox when the session resumes after a gap, for sending. Everything is sent
+/// in order, except in a sync group (`grouped`, as last known), where a mid-track `STMo`
+/// held through the gap is dropped, with the `STMr` that reported its recovery, if one
+/// followed it.
+///
+/// Why: that `STMo` said "I have run out" at the time, but LMS only hears it now, after the
+/// others have played on through the gap. While LMS is still streaming the track, a
+/// member's `STMo` makes it pause the whole group and wait for every member to rebuffer
+/// (4 to 15 s of silence on the other speakers in the live check), then restart them at
+/// the stalled member's own stale position. A rejoining member already handles its stall
+/// itself: it skips what the others played meanwhile, or has LMS restart the group at the
+/// group's position ([`rejoin_command`]). So that report no longer describes anything LMS
+/// should act on. Everything else is kept:
+/// - alone (not grouped), LMS rebuffering the one player is harmless and expected;
+/// - the `STMo` sent in place of `STMu` (everything received played out with the link
+///   down: not `gap_underrun`) is about the end of the track, which LMS must hear;
+/// - frames sent while the link is up never wait here, so an underrun after the rejoin is
+///   reported as usual.
+pub fn release_outbox(outbox: &mut VecDeque<Held>, grouped: bool) -> Released {
+    let mut out = Released {
+        frames: Vec::with_capacity(outbox.len()),
+        stall_unreported: false,
+    };
+    // A dropped `STMo` whose recovery (`STMr`) is still to come.
+    let mut drop_resume = false;
+    for h in outbox.drain(..) {
+        // Only ever an `STMo`, whatever the tag says.
+        if grouped && h.gap_underrun && is_stat_event(&h.frame, b"STMo") {
+            drop_resume = true;
+            out.stall_unreported = true;
+            continue;
+        }
+        if is_stat_event(&h.frame, b"STMo") {
+            drop_resume = false;
+            out.stall_unreported = false;
+        } else if is_stat_event(&h.frame, b"STMr") {
+            out.stall_unreported = false;
+            if std::mem::take(&mut drop_resume) {
+                continue;
+            }
+        }
+        out.frames.push(h.frame);
+    }
+    out
 }
 
 fn hex32(v: &Value) -> Option<String> {
@@ -417,6 +494,65 @@ fn lms_seconds(v: Option<&Value>) -> Option<u64> {
         _ => return None,
     };
     (t.is_finite() && (0.0..1e7).contains(&t)).then_some((t * 1000.0) as u64)
+}
+
+/// The longest stall a rejoin moves the group past: no resumed session lasts longer (the
+/// most grace a gateway may grant). Anything longer is not a position to trust.
+pub const MAX_REJOIN_STALL_MS: u64 = MAX_GRACE * 1000;
+/// A rejoin that would land this close to the track's end (or past it) moves nothing.
+pub const REJOIN_END_MARGIN_MS: u64 = 1_000;
+
+/// Where a stalled member of a sync group stopped, for having LMS restart the group where
+/// the others are now (see [`rejoin_command`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RejoinPoint {
+    /// The stalled track's playlist position and library id.
+    pub index: u32,
+    pub track_id: i64,
+    /// How far into the track the output stopped (ms).
+    pub stalled_at_ms: u64,
+    /// How long it has been stalled, up to the moment the command is sent (ms).
+    pub stalled_ms: u64,
+}
+
+/// The `time` command that restarts the group where the others are now: where this player
+/// stalled plus the time it has been stalled, from LMS's answer to
+/// [`stream_status_command`] (the current track). LMS's own `time ?` is no good for this:
+/// with this player the group's master, it lags by however long LMS last heard from it
+/// (13.7 to 13.9 s in the live check after a 14 s stall), so the whole group would be sent
+/// back to replay what this player missed.
+///
+/// `None` (nothing is sent; LMS is left to it) when the point can't be vouched for:
+/// - LMS isn't playing (someone paused or stopped the group during the gap: the others are
+///   not where the time stalled says);
+/// - LMS's current track is not the stalled one (the queue changed, someone skipped, or
+///   the group moved on to the next track): a seek would land in the wrong track;
+/// - the point is at or within [`REJOIN_END_MARGIN_MS`] of the track's end (the others
+///   have finished it, or are about to): LMS moves the group on to the next track itself,
+///   and a seek past the end would fight that;
+/// - the stall is longer than [`MAX_REJOIN_STALL_MS`].
+///
+/// The answer is untrusted; anything malformed means no command.
+pub fn rejoin_command(point: &RejoinPoint, status: &Value) -> Option<Vec<Value>> {
+    if status.get("mode")?.as_str()? != "play" {
+        return None;
+    }
+    if point.stalled_ms > MAX_REJOIN_STALL_MS {
+        return None;
+    }
+    let pos = stream_position(status, true)?;
+    if pos.index != point.index || pos.track_id != point.track_id {
+        return None;
+    }
+    let target = point.stalled_at_ms.checked_add(point.stalled_ms)?;
+    if let Some(d) = stream_track(status, true)?.duration_s {
+        let end = (d * 1000.0) as u64;
+        if target.saturating_add(REJOIN_END_MARGIN_MS) >= end {
+            return None;
+        }
+    }
+    let secs = target as f64 / 1000.0;
+    Some(vec![json!("time"), json!(format!("{secs:.3}"))])
 }
 
 /// Where to restart playback if the session is lost: the track heard last, by playlist
@@ -1251,6 +1387,332 @@ mod tests {
             };
             push_outbox(&mut o, f, 100);
             assert!(o.len() <= 100);
+        }
+    }
+
+    fn held(event: &[u8; 4], tag: u8, gap_underrun: bool) -> Held {
+        Held {
+            frame: stat(event, tag),
+            gap_underrun,
+        }
+    }
+
+    fn released_events(r: &Released) -> Vec<(String, u8)> {
+        r.frames
+            .iter()
+            .map(|f| (String::from_utf8_lossy(&f[8..12]).into_owned(), f[12]))
+            .collect()
+    }
+
+    /// Regression (live check, 2026-10-13): in a sync group, a mid-track `STMo` held through
+    /// the gap is not sent on the rejoin (LMS would pause the whole group to rebuffer), nor
+    /// the `STMr` that reported its recovery. Everything else goes, in order.
+    #[test]
+    fn a_grouped_rejoin_drops_the_stale_mid_track_stmo() {
+        let mut o = VecDeque::new();
+        for h in [
+            held(b"STMt", 1, false),
+            held(b"STMo", 2, true),
+            held(b"STMt", 3, false),
+        ] {
+            push_outbox(&mut o, h, OUTBOX_LIMIT);
+        }
+        let r = release_outbox(&mut o, true);
+        assert!(o.is_empty());
+        assert_eq!(
+            released_events(&r),
+            vec![("STMt".into(), 1), ("STMt".into(), 3)]
+        );
+        assert!(r.stall_unreported, "still stalled: its recovery isn't told");
+
+        // Recovered during the gap: the STMr pairing with the dropped STMo goes too.
+        let mut o: VecDeque<Held> = [
+            held(b"STMo", 1, true),
+            held(b"STMt", 2, false),
+            held(b"STMr", 3, false),
+            held(b"STMd", 4, false),
+        ]
+        .into();
+        let r = release_outbox(&mut o, true);
+        assert_eq!(
+            released_events(&r),
+            vec![("STMt".into(), 2), ("STMd".into(), 4)]
+        );
+        assert!(!r.stall_unreported);
+    }
+
+    /// Negative: alone, every held frame goes to LMS as before, the mid-track `STMo` and its
+    /// `STMr` included.
+    #[test]
+    fn a_rejoin_alone_sends_everything_held() {
+        let frames = [
+            held(b"STMt", 1, false),
+            held(b"STMo", 2, true),
+            held(b"STMr", 3, false),
+            held(b"STMo", 4, true),
+        ];
+        let mut o: VecDeque<Held> = frames.clone().into();
+        let r = release_outbox(&mut o, false);
+        assert_eq!(r.frames.len(), 4);
+        assert!(r.frames.iter().zip(&frames).all(|(a, b)| *a == b.frame));
+        assert!(!r.stall_unreported);
+    }
+
+    /// Negative: in a group, the end-of-track `STMo` (sent in place of `STMu`, everything
+    /// received played out) and the events around it are kept; so is an `STMr` that isn't
+    /// a dropped underrun's recovery (an answer to an unpause before the gap).
+    #[test]
+    fn a_grouped_rejoin_keeps_end_of_track_reports() {
+        let mut o: VecDeque<Held> = [
+            held(b"STMr", 1, false),
+            held(b"STMs", 2, false),
+            held(b"STMo", 3, true),
+            held(b"STMr", 4, false),
+            held(b"STMd", 5, false),
+            held(b"STMo", 6, false),
+        ]
+        .into();
+        let r = release_outbox(&mut o, true);
+        assert_eq!(
+            released_events(&r),
+            vec![
+                ("STMr".into(), 1),
+                ("STMs".into(), 2),
+                ("STMd".into(), 5),
+                ("STMo".into(), 6)
+            ]
+        );
+        assert!(!r.stall_unreported, "the stall LMS heard of is reported");
+        // A kept STMo between a dropped one and an STMr: that STMr is the kept one's.
+        let mut o: VecDeque<Held> = [
+            held(b"STMo", 1, true),
+            held(b"STMo", 2, false),
+            held(b"STMr", 3, false),
+        ]
+        .into();
+        let r = release_outbox(&mut o, true);
+        assert_eq!(
+            released_events(&r),
+            vec![("STMo".into(), 2), ("STMr".into(), 3)]
+        );
+    }
+
+    /// Robustness: any frames at all, tagged or not, never panic, and nothing but `STMo`s
+    /// and `STMr`s is ever dropped.
+    #[test]
+    fn releasing_arbitrary_frames_never_panics() {
+        let mut seed = 0x9e37_79b9u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..500 {
+            let mut o = VecDeque::new();
+            for _ in 0..(next() % 40) {
+                let r = next();
+                let frame = match r % 6 {
+                    0 => stat(b"STMo", r as u8),
+                    1 => stat(b"STMr", r as u8),
+                    2 => stat(b"STMt", r as u8),
+                    3 => vec![r as u8; (r % 15) as usize],
+                    4 => b"STAT\0\0\0\x04STMo".to_vec(),
+                    _ => stat(b"STMd", 0),
+                };
+                let gap_underrun = (r >> 9) % 2 == 0;
+                push_outbox(
+                    &mut o,
+                    Held {
+                        frame,
+                        gap_underrun,
+                    },
+                    30,
+                );
+            }
+            let others = |frames: &mut dyn Iterator<Item = &Vec<u8>>| {
+                frames
+                    .filter(|f| !is_stat_event(f, b"STMo") && !is_stat_event(f, b"STMr"))
+                    .count()
+            };
+            let before = others(&mut o.iter().map(|h| &h.frame));
+            let grouped = next() % 3 == 0;
+            let r = release_outbox(&mut o, grouped);
+            assert_eq!(others(&mut r.frames.iter()), before);
+            assert!(o.is_empty());
+        }
+    }
+
+    fn rejoin_point() -> RejoinPoint {
+        RejoinPoint {
+            index: 3,
+            track_id: 42,
+            stalled_at_ms: 95_000,
+            stalled_ms: 14_250,
+        }
+    }
+
+    /// LMS's answer to `status - 2 tags:xed`: playing track 42 at position 3 (240.5 s
+    /// long), its `time` lagging at the stalled member's own stale position.
+    fn rejoin_status() -> Value {
+        json!({"mode": "play", "time": 95.0, "playlist_cur_index": "3",
+        "playlist_loop": [
+            {"playlist index": 3, "id": 42, "duration": "240.5"},
+            {"playlist index": 4, "id": 43, "duration": 200}
+        ]})
+    }
+
+    /// Regression (live check, 2026-10-13): the group restarts where the others are now,
+    /// the stall point plus the time stalled, not at LMS's lagging `time`.
+    #[test]
+    fn a_rejoin_restarts_the_group_where_the_others_are() {
+        assert_eq!(
+            rejoin_command(&rejoin_point(), &rejoin_status()),
+            Some(vec![json!("time"), json!("109.250")])
+        );
+        // A track with no duration given: still the group's position.
+        let mut st = rejoin_status();
+        st["playlist_loop"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("duration");
+        assert_eq!(
+            rejoin_command(&rejoin_point(), &st),
+            Some(vec![json!("time"), json!("109.250")])
+        );
+        // Numbers or strings, as LMS gives them.
+        let st = json!({"mode": "play", "playlist_cur_index": 3,
+            "playlist_loop": [{"playlist index": "3", "id": "42", "duration": 240}]});
+        assert!(rejoin_command(&rejoin_point(), &st).is_some());
+    }
+
+    /// Negative: the track changed during the gap (another track current, or the stalled
+    /// one elsewhere in the queue), so no seek lands in the wrong track.
+    #[test]
+    fn no_rejoin_seek_when_the_track_changed() {
+        let p = rejoin_point();
+        let mut moved_on = rejoin_status();
+        moved_on["playlist_cur_index"] = json!("4");
+        moved_on["playlist_loop"] = json!([{"playlist index": 4, "id": 43, "duration": 200}]);
+        assert_eq!(rejoin_command(&p, &moved_on), None);
+        let mut replaced = rejoin_status();
+        replaced["playlist_loop"][0]["id"] = json!(99);
+        assert_eq!(rejoin_command(&p, &replaced), None);
+        let mut shifted = rejoin_status();
+        shifted["playlist_cur_index"] = json!("2");
+        shifted["playlist_loop"][0]["playlist index"] = json!(2);
+        assert_eq!(rejoin_command(&p, &shifted), None);
+        let mut radio = rejoin_status();
+        radio["playlist_loop"][0]["remote"] = json!(1);
+        assert_eq!(rejoin_command(&p, &radio), None);
+    }
+
+    /// Negative: LMS paused or stopped the group during the gap: the others aren't where
+    /// the time stalled says, so nothing moves.
+    #[test]
+    fn no_rejoin_seek_when_lms_is_not_playing() {
+        for mode in ["pause", "stop", "", "PLAY"] {
+            let mut st = rejoin_status();
+            st["mode"] = json!(mode);
+            assert_eq!(rejoin_command(&rejoin_point(), &st), None, "{mode}");
+        }
+        let mut st = rejoin_status();
+        st.as_object_mut().unwrap().remove("mode");
+        assert_eq!(rejoin_command(&rejoin_point(), &st), None);
+    }
+
+    /// The others have finished the track, or are about to: no seek to (or past) its end.
+    #[test]
+    fn no_rejoin_seek_past_the_end_of_the_track() {
+        let st = rejoin_status();
+        let end = 240_500;
+        let at = |stalled_ms| RejoinPoint {
+            stalled_ms,
+            ..rejoin_point()
+        };
+        assert_eq!(rejoin_command(&at(end - 95_000), &st), None, "at the end");
+        assert_eq!(rejoin_command(&at(end - 95_000 + 60_000), &st), None);
+        assert_eq!(
+            rejoin_command(&at(end - 95_000 - REJOIN_END_MARGIN_MS), &st),
+            None,
+            "within the margin"
+        );
+        let just_before = end - 95_000 - REJOIN_END_MARGIN_MS - 1;
+        assert_eq!(
+            rejoin_command(&at(just_before), &st),
+            Some(vec![json!("time"), json!("239.499")])
+        );
+    }
+
+    /// Bounded: an absurd stall (longer than any session lasts), or one that overflows,
+    /// moves nothing.
+    #[test]
+    fn no_rejoin_seek_for_an_absurd_stall() {
+        let mut st = rejoin_status();
+        st["playlist_loop"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("duration");
+        let at = |stalled_at_ms, stalled_ms| RejoinPoint {
+            stalled_at_ms,
+            stalled_ms,
+            ..rejoin_point()
+        };
+        assert!(rejoin_command(&at(0, MAX_REJOIN_STALL_MS), &st).is_some());
+        assert_eq!(rejoin_command(&at(0, MAX_REJOIN_STALL_MS + 1), &st), None);
+        assert_eq!(rejoin_command(&at(u64::MAX, 1), &st), None);
+        assert_eq!(rejoin_command(&at(0, u64::MAX), &st), None);
+    }
+
+    /// Untrusted answers: arbitrary shapes never panic, and a command is only ever `time`
+    /// at the point worked out, for the stalled track.
+    #[test]
+    fn rejoin_answers_are_untrusted() {
+        let parts = [
+            json!(null),
+            json!(-1),
+            json!(3),
+            json!("3"),
+            json!(42),
+            json!("42"),
+            json!(1e300),
+            json!(f64::MIN_POSITIVE),
+            json!("x"),
+            json!([]),
+            json!({}),
+            json!("play"),
+            json!("99999999999999999999"),
+        ];
+        let p = rejoin_point();
+        let mut seed = 0x1234_5678u64;
+        for _ in 0..20_000 {
+            let mut pick = || {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                parts[(seed % parts.len() as u64) as usize].clone()
+            };
+            let st = json!({
+                "mode": pick(),
+                "playlist_cur_index": pick(),
+                "playlist repeat": pick(),
+                "playlist_loop": [
+                    {"playlist index": pick(), "id": pick(), "remote": pick(),
+                     "duration": pick()},
+                    pick()
+                ]
+            });
+            if let Some(cmd) = rejoin_command(&p, &st) {
+                assert_eq!(cmd, vec![json!("time"), json!("109.250")]);
+            }
+        }
+        for st in [
+            json!(null),
+            json!([]),
+            json!("play"),
+            json!({"mode": "play"}),
+        ] {
+            assert_eq!(rejoin_command(&p, &st), None);
         }
     }
 

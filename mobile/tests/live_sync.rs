@@ -30,10 +30,15 @@
 //! [`MAX_OFFSET_MS`] after it. The engine's figure is its status from its last 20 ms tick, so
 //! it reads up to 20 ms early (about 10 ms on average); the bound allows for that.
 //!
-//! Also reported, not asserted: how long LMS held the other member paused, and how far a
-//! restart moved it. Both are an open problem (see "A6 live check" in the design doc): the
-//! engine's `STMo` reaches LMS on reconnect, and LMS then pauses and rebuffers the whole
-//! group.
+//! What the other member hears is asserted too (see "A6 live check" in the design doc):
+//! - LMS holds it paused (`strm p`, not a sync correction) for at most
+//!   [`MAX_OTHERS_PAUSED_MS`] in either phase. Before 2026-10-15 the engine's `STMo`, held
+//!   through the gap, reached LMS on reconnect and LMS paused the whole group to rebuffer
+//!   it, for 4 to 15 s; a grouped engine now drops that stale report.
+//! - The long stall's restart moves it by at most [`MAX_JUMP_MS`]: the engine restarts the
+//!   group where the others are (its stall point plus the time stalled). Before, it used
+//!   LMS's `time ?`, which lagged at the engine's own stall point, and the group went back
+//!   about 14 s.
 //!
 //! **Clean-up**, also on failure: stop, clear the test player's queue, unsync both, restore
 //! the test player's name, and `client forget` the second player until LMS no longer lists
@@ -64,6 +69,12 @@ use serde_json::{Value, json};
 
 /// The largest offset accepted between the engine and the group after a rejoin.
 const MAX_OFFSET_MS: i64 = 100;
+/// The longest LMS may hold the other member paused around a rejoin (it should not pause it
+/// at all: this allows for a stray pause unrelated to the gap).
+const MAX_OTHERS_PAUSED_MS: u64 = 1_000;
+/// The furthest a restart may move the other member, either way: the engine's estimate of
+/// where the group is, less the round trips to LMS and LMS's own restart.
+const MAX_JUMP_MS: i64 = 1_500;
 /// Tracks loaded must be at least this long, so each phase stays within the first.
 const MIN_TRACK_S: f64 = 240.0;
 
@@ -842,6 +853,21 @@ async fn run(env: &LiveEnv, e: &Engine, fake: &Fake) {
     assert!(
         long.after_ms.abs() <= MAX_OFFSET_MS,
         "after LMS restarted the group the engine is within {MAX_OFFSET_MS} ms of it: {long}"
+    );
+    for (what, p) in [("short", &short), ("long", &long)] {
+        assert!(
+            p.others_paused_ms <= MAX_OTHERS_PAUSED_MS,
+            "after a {what} stall LMS doesn't pause the others to rebuffer (at most \
+             {MAX_OTHERS_PAUSED_MS} ms): {p}"
+        );
+    }
+    let jump = long
+        .jump_ms
+        .unwrap_or_else(|| panic!("the restart point was measured: {long}"));
+    assert!(
+        jump.abs() <= MAX_JUMP_MS,
+        "the restart leaves the others where they were (within {MAX_JUMP_MS} ms), not back at \
+         the engine's stall point: {long}"
     );
 }
 
