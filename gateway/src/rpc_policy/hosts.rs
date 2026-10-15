@@ -144,7 +144,7 @@ fn embeds_local_ipv4(labels: &[&str]) -> bool {
 }
 
 /// Decode `%xx` escapes (URL parsers decode them in hosts); anything malformed is kept.
-fn percent_decoded(s: &str) -> String {
+pub(crate) fn percent_decoded(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;

@@ -222,8 +222,8 @@ pub async fn login(
     .await;
     match result {
         Ok(Ok((t, refresh_in))) => {
-            gw.accounts()
-                .record_client(t.principal.device_id, addr, &info);
+            let device = t.principal.device_id;
+            gw.db(move |a| a.record_client(device, addr, &info)).await;
             // Devices signed out to stay within the per-user limit.
             gw.end_sessions_for(&t.evicted).await;
             token_response(t, refresh_in)
@@ -262,10 +262,15 @@ pub async fn pair(
     };
     let addr = crate::client_addr(&gw.cfg, peer, &headers);
     let client = client_id(&gw, peer, &headers);
-    match gw.accounts().pair(&req.code, &req.device_name, &client) {
+    let paired = gw
+        .db(move |a| {
+            let t = a.pair(&req.code, &req.device_name, &client)?;
+            a.record_client(t.principal.device_id, addr, &info);
+            Ok(t)
+        })
+        .await;
+    match paired {
         Ok(t) => {
-            gw.accounts()
-                .record_client(t.principal.device_id, addr, &info);
             gw.end_sessions_for(&t.evicted).await;
             token_response(t, RefreshIn::Body)
         }
@@ -333,13 +338,17 @@ pub async fn refresh(
         page = %diag_header(&headers, "x-anywhere-page"),
         "refresh requested"
     );
-    match gw.accounts().refresh(&token) {
-        Ok(t) => {
-            let addr = crate::client_addr(&gw.cfg, peer, &headers);
-            gw.accounts()
-                .record_client(t.principal.device_id, addr, &info);
-            token_response(t, refresh_in)
-        }
+    // A transaction with a commit, then a write: on the blocking pool (M7).
+    let addr = crate::client_addr(&gw.cfg, peer, &headers);
+    let renewed = gw
+        .db(move |a| {
+            let t = a.refresh(&token)?;
+            a.record_client(t.principal.device_id, addr, &info);
+            Ok(t)
+        })
+        .await;
+    match renewed {
+        Ok(t) => token_response(t, refresh_in),
         Err(AuthError::Reused(device)) => {
             // A stolen refresh token: the device is revoked, so end its live session too.
             gw.end_sessions_for(&[device]).await;
@@ -360,7 +369,8 @@ pub async fn logout(State(gw): State<AppState>, headers: HeaderMap) -> Response 
     let Some(token) = bearer(&headers) else {
         return error(StatusCode::UNAUTHORIZED, "invalid credentials");
     };
-    match gw.accounts().logout(token) {
+    let token = token.to_string();
+    match gw.db(move |a| a.logout(&token)).await {
         Ok(Some(device)) => {
             gw.end_sessions_for(&[device]).await;
             let mut h = HeaderMap::new();
@@ -717,9 +727,11 @@ pub async fn rename_self(
 // Your devices
 // ---------------------------------------------------------------------------
 
-/// Take one "Your devices" request from the user's allowance; a 429 when it is used up.
-fn device_requests_exhausted(gw: &AppState, user: i64) -> Option<Response> {
-    (!gw.device_requests.take(user, std::time::Instant::now()))
+/// Take one "Your devices" request from the asking device's allowance; a 429 when it is
+/// used up. Per device, not per user: a stolen device's token must not be able to use up
+/// the allowance its owner needs, on another device, to sign it out.
+fn device_requests_exhausted(gw: &AppState, device: i64) -> Option<Response> {
+    (!gw.device_requests.take(device, std::time::Instant::now()))
         .then(|| auth_error(AuthError::Locked(crate::DEVICE_REQUEST_WINDOW)))
 }
 
@@ -736,10 +748,11 @@ pub async fn own_devices(State(gw): State<AppState>, headers: HeaderMap) -> Resp
     let Some(p) = principal(&gw, &headers) else {
         return error(StatusCode::UNAUTHORIZED, "invalid credentials");
     };
-    if let Some(r) = device_requests_exhausted(&gw, p.user_id) {
+    if let Some(r) = device_requests_exhausted(&gw, p.device_id) {
         return r;
     }
-    match gw.accounts().own_devices(p.user_id) {
+    let user = p.user_id;
+    match gw.db(move |a| a.own_devices(user)).await {
         Ok(devices) => {
             let list: Vec<_> = devices
                 .into_iter()
@@ -785,7 +798,7 @@ pub async fn sign_out_device(
     let Some(p) = principal(&gw, &headers) else {
         return error(StatusCode::UNAUTHORIZED, "invalid credentials");
     };
-    if let Some(r) = device_requests_exhausted(&gw, p.user_id) {
+    if let Some(r) = device_requests_exhausted(&gw, p.device_id) {
         return r;
     }
     let Some(id) = device_id(&raw) else {
@@ -797,7 +810,11 @@ pub async fn sign_out_device(
             "this is the device you are using; sign out instead",
         );
     }
-    match gw.accounts().revoke_own_device(p.user_id, &p.username, id) {
+    let (user, username, from) = (p.user_id, p.username.clone(), p.device_id);
+    match gw
+        .db(move |a| a.revoke_own_device(user, &username, id, from))
+        .await
+    {
         Ok(true) => {
             gw.end_sessions_for(&[id]).await;
             StatusCode::NO_CONTENT.into_response()
@@ -816,12 +833,13 @@ pub async fn sign_out_others(State(gw): State<AppState>, headers: HeaderMap) -> 
     let Some(p) = principal(&gw, &headers) else {
         return error(StatusCode::UNAUTHORIZED, "invalid credentials");
     };
-    if let Some(r) = device_requests_exhausted(&gw, p.user_id) {
+    if let Some(r) = device_requests_exhausted(&gw, p.device_id) {
         return r;
     }
+    let (user, username, keep) = (p.user_id, p.username.clone(), p.device_id);
     match gw
-        .accounts()
-        .revoke_other_own_devices(p.user_id, &p.username, p.device_id)
+        .db(move |a| a.revoke_other_own_devices(user, &username, keep))
+        .await
     {
         Ok(revoked) => {
             gw.end_sessions_for(&revoked).await;

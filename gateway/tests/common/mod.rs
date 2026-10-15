@@ -350,6 +350,11 @@ pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
             {"id": "settingsXfade", "node": "settingsAudio", "actions": {"go": {"cmd": ["crossfadesettings"], "player": 0}}},
             {"id": "playerpower", "node": "home", "actions": {"do": {"cmd": ["power", "0"]}}}
         ]}),
+        // A plugin's own menu: a search box (whatever the user types goes to the plugin).
+        "someplugin" => json!({"count": 1, "item_loop": [
+            {"text": "Search", "type": "search", "actions": {"go": {"cmd": ["someplugin", "items"],
+             "params": {"search": "__TAGGEDINPUT__", "menu": "someplugin"}}}}
+        ]}),
         // Don't Stop The Music's settings menu for a player: off, with three providers.
         "dontstopthemusicsetting" => json!({"count": 4, "item_loop": [
             {"text": "Disabled", "radio": 1, "actions": {"do": {"player": 0, "cmd": ["playerpref", "plugin.dontstopthemusic:provider", 0]}}},
@@ -470,6 +475,9 @@ pub struct FakeLms {
     /// When set, saved playlists and `playlist save` are answered from this
     /// ([`FakeLms::set_saved_playlists`]).
     pub saved: Arc<Mutex<Option<FakeSaved>>>,
+    /// JSON-RPC commands (by first word) that are recorded but never answered, as when a
+    /// plugin hangs inside LMS.
+    pub hang_rpc: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 /// The fake LMS's saved playlists, and the length of every player's queue.
@@ -648,6 +656,8 @@ impl FakeLms {
         let lib = albums.clone();
         let saved: Arc<Mutex<Option<FakeSaved>>> = Default::default();
         let sv = saved.clone();
+        let hang_rpc: Arc<Mutex<std::collections::HashSet<String>>> = Default::default();
+        let hung = hang_rpc.clone();
         let (r, a, stall, ex, pl) = (
             rec.clone(),
             audio.clone(),
@@ -659,6 +669,7 @@ impl FakeLms {
             let (r, stall, ex, pl) = (r.clone(), stall.clone(), ex.clone(), pl.clone());
             let frozen = frozen.clone();
             let sv = sv.clone();
+            let hung = hung.clone();
             let playing = *st_track.lock().unwrap();
             let library = lib.lock().unwrap().clone();
             let a = sb.lock().unwrap().clone().unwrap_or_else(|| a.clone());
@@ -695,6 +706,9 @@ impl FakeLms {
                         .find(|ids| ids.contains(','))
                         .map(|ids| ids.split(',').filter_map(|i| i.parse().ok()).collect());
                     r.lock().unwrap().rpc.push(params.clone());
+                    if hung.lock().unwrap().contains(&cmd) {
+                        futures_util::future::pending::<()>().await;
+                    }
                     let added = track_id.and_then(|id| ex.lock().unwrap().get(&id).cloned());
                     let words = params[1].as_array().cloned().unwrap_or_default();
                     let plugin_answer = if cmd == "anywhere"
@@ -718,7 +732,11 @@ impl FakeLms {
                             let loop_: Vec<serde_json::Value> = many
                                 .unwrap()
                                 .into_iter()
-                                .filter_map(|id| fake_track(id, a.len()))
+                                .filter_map(|id| {
+                                    fake_track(id, a.len()).or_else(|| {
+                                        ex.lock().unwrap().get(&id).map(|e| e.0.clone())
+                                    })
+                                })
                                 .collect();
                             serde_json::json!({"count": loop_.len(), "titles_loop": loop_})
                         }
@@ -894,6 +912,7 @@ impl FakeLms {
             plugin,
             status_track,
             saved,
+            hang_rpc,
         }
     }
 

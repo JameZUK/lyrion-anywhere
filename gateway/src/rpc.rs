@@ -228,11 +228,11 @@ pub async fn rpc(
         gw.refresh_apps().await;
         checked = rpc_policy::check(&who, &player, &req.cmd, &gw.apps());
     }
-    let checked = match checked {
-        Ok(c) => c,
+    let (checked, via_menu) = match checked {
+        Ok(c) => (c, false),
         Err(denied) => match gw.menu_action(&principal, &scope, &player, &req.cmd) {
             // Not in the fixed allow-list, but an action LMS offered this device in a menu.
-            Some(Ok(c)) => c,
+            Some(Ok(c)) => (c, true),
             Some(Err(refusal)) => {
                 warn!(user = %principal.username, cmd = %summary(&req.cmd), reason = ?refusal, "menu action denied");
                 return error(StatusCode::FORBIDDEN, menu_refusal(&refusal, &denied.0));
@@ -256,6 +256,18 @@ pub async fn rpc(
     {
         warn!(user = %principal.username, cmd = %summary(&req.cmd), "admin-only plugin denied");
         return error(StatusCode::FORBIDDEN, "this plugin is for admins only");
+    }
+
+    // A URL in free text whose name resolves into the home network or to the server: LMS or
+    // a plugin would fetch it. Refused as the name checks refuse a local URL written out.
+    if let Some(i) = crate::art::first_resolving_local(&checked.cmd, &gw.cfg.host_answers).await {
+        warn!(user = %principal.username, cmd = %summary(&req.cmd), "free-text URL resolves locally");
+        let message = match checked.cmd[i].split_once(':') {
+            _ if via_menu => "malformed command".to_string(),
+            Some((k, _)) => format!("bad value for {k}"),
+            None => "bad value".to_string(),
+        };
+        return error(StatusCode::FORBIDDEN, &message);
     }
 
     // LMS is blocked: say so at once rather than pile another request up inside it.

@@ -650,6 +650,9 @@ pub struct Accounts {
     seen: Mutex<HashMap<i64, Instant>>,
     /// Renewals per device in the current window: (window start, count).
     refreshes: Mutex<HashMap<i64, (Instant, u32)>>,
+    /// Tests only: how long each device-bookkeeping and renewal write stalls (ms), as on a
+    /// disk that has stopped answering. 0 in production.
+    write_stall_ms: AtomicU64,
 }
 
 fn now_secs() -> i64 {
@@ -826,6 +829,7 @@ impl Accounts {
             forget: Mutex::new(Default::default()),
             seen: Mutex::new(HashMap::new()),
             refreshes: Mutex::new(HashMap::new()),
+            write_stall_ms: AtomicU64::new(0),
         })
     }
 
@@ -1220,6 +1224,7 @@ impl Accounts {
         let presented = fingerprint_of_hash(&h);
         type Row = (i64, i64, i64, Option<i64>, Option<Vec<u8>>);
         let mut db = self.db.lock().unwrap();
+        self.stall_write();
         let tx = db.transaction()?;
         let row: Option<Row> = tx
             .query_row(
@@ -1854,17 +1859,19 @@ impl Accounts {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// A user signs out one of their own devices (`DELETE /v1/devices/{id}`). Returns false,
-    /// changing nothing, unless `device_id` is one of `user`'s signed-in devices: another
-    /// user's device is indistinguishable from one that doesn't exist. The device's live
-    /// sessions are the caller's to end.
+    /// A user signs out one of their own devices (`DELETE /v1/devices/{id}`) from another,
+    /// `from`. Returns false, changing nothing, unless `device_id` is one of `user`'s
+    /// signed-in devices: another user's device is indistinguishable from one that doesn't
+    /// exist. The device's live sessions are the caller's to end. Audited as
+    /// `device.revoked`, detail `self from <from>`.
     pub fn revoke_own_device(
         &self,
         user: i64,
         username: &str,
         device_id: i64,
+        from: i64,
     ) -> Result<bool, AuthError> {
-        self.revoke(device_id, Some((user, username)))
+        self.revoke(device_id, Some((user, username, from)))
     }
 
     /// A user signs out all their devices but `keep` (the one asking). Returns the devices
@@ -1877,7 +1884,7 @@ impl Accounts {
     ) -> Result<Vec<i64>, AuthError> {
         let mut revoked = Vec::new();
         for d in self.own_devices(user)? {
-            if d.id != keep && self.revoke(d.id, Some((user, username)))? {
+            if d.id != keep && self.revoke(d.id, Some((user, username, keep)))? {
                 revoked.push(d.id);
             }
         }
@@ -2166,13 +2173,15 @@ impl Accounts {
     }
 
     /// Revoke a device; with `owner` (user id and name), only if it is that user's.
-    fn revoke(&self, device_id: i64, owner: Option<(i64, &str)>) -> Result<bool, AuthError> {
+    /// `owner`: a user signing out one of their own devices, from another (user id, name,
+    /// the device acting); `None` for an admin or the system.
+    fn revoke(&self, device_id: i64, owner: Option<(i64, &str, i64)>) -> Result<bool, AuthError> {
         let n = {
             let db = self.db.lock().unwrap();
             let n = db.execute(
                 "UPDATE devices SET revoked = 1, revoked_at = ?2, last_addr = NULL, user_agent = NULL
                  WHERE id = ?1 AND revoked = 0 AND (?3 IS NULL OR user_id = ?3)",
-                params![device_id, now_secs(), owner.map(|(id, _)| id)],
+                params![device_id, now_secs(), owner.map(|(id, _, _)| id)],
             )?;
             if n == 0 && owner.is_some() {
                 // Not this user's (or already gone): touch nothing of anyone else's.
@@ -2206,10 +2215,13 @@ impl Accounts {
         self.seen.lock().unwrap().remove(&device_id);
         if n > 0 {
             match owner {
-                // Signed out by its own user, from one of their devices.
-                Some((_, username)) => {
-                    self.audit("device.revoked", Some(username), Some(device_id), "self")
-                }
+                // Signed out by its own user, from one of their devices: which one.
+                Some((_, username, from)) => self.audit(
+                    "device.revoked",
+                    Some(username),
+                    Some(device_id),
+                    &format!("self from {from}"),
+                ),
                 None => self.audit("device.revoked", None, Some(device_id), ""),
             }
         }
@@ -2253,6 +2265,21 @@ impl Accounts {
     }
 
     fn note_seen_at(&self, device_id: i64, addr: std::net::IpAddr, now: Instant) -> bool {
+        if !self.claim_seen_at(device_id, now) {
+            return false;
+        }
+        self.write_seen(device_id, addr);
+        true
+    }
+
+    /// The in-memory half of [`Self::note_seen`]: is a write of the device's last address due
+    /// (and if so, it is counted as done)? Cheap, so callers on async workers check it inline
+    /// and run [`Self::write_seen`] off them only when it says so.
+    pub fn claim_seen(&self, device_id: i64) -> bool {
+        self.claim_seen_at(device_id, Instant::now())
+    }
+
+    fn claim_seen_at(&self, device_id: i64, now: Instant) -> bool {
         {
             let mut seen = self.seen.lock().unwrap();
             if let Some(at) = seen.get(&device_id)
@@ -2271,18 +2298,26 @@ impl Accounts {
             }
             seen.insert(device_id, now);
         }
-        let _ = self.db.lock().unwrap().execute(
+        true
+    }
+
+    /// The database half of [`Self::note_seen`]: write the device's last address and time.
+    pub fn write_seen(&self, device_id: i64, addr: std::net::IpAddr) {
+        let db = self.db.lock().unwrap();
+        self.stall_write();
+        let _ = db.execute(
             "UPDATE devices SET last_seen = ?1, last_addr = ?2 WHERE id = ?3 AND revoked = 0",
             params![now_secs(), addr.to_string(), device_id],
         );
-        true
     }
 
     /// At sign-in and renewal: record where the device is and what it said about itself
     /// (always written; parts the client didn't send are left as they were).
     pub fn record_client(&self, device_id: i64, addr: std::net::IpAddr, info: &ClientInfo) {
         self.seen.lock().unwrap().insert(device_id, Instant::now());
-        let _ = self.db.lock().unwrap().execute(
+        let db = self.db.lock().unwrap();
+        self.stall_write();
+        let _ = db.execute(
             "UPDATE devices SET last_seen = ?1, last_addr = ?2,
                client_kind = COALESCE(?3, client_kind),
                client_platform = COALESCE(?4, client_platform),
@@ -2390,6 +2425,23 @@ impl Accounts {
         Ok((name, true))
     }
 
+    /// Make the device-bookkeeping and renewal writes (`note_seen`, `record_client`,
+    /// `touch_device`, `refresh`) stall for `d` each, holding the database, as a disk that
+    /// has stopped answering would (tests only).
+    #[doc(hidden)]
+    pub fn stall_writes_for_test(&self, d: Duration) {
+        self.write_stall_ms
+            .store(d.as_millis() as u64, Ordering::Relaxed);
+    }
+
+    /// See [`Self::stall_writes_for_test`]: called with the database lock held.
+    fn stall_write(&self) {
+        let ms = self.write_stall_ms.load(Ordering::Relaxed);
+        if ms > 0 {
+            std::thread::sleep(Duration::from_millis(ms));
+        }
+    }
+
     /// Make every outstanding pairing code expired (tests only).
     #[doc(hidden)]
     pub fn expire_pairing_codes_for_test(&self) {
@@ -2416,7 +2468,9 @@ impl Accounts {
     }
 
     pub fn touch_device(&self, device_id: i64) {
-        let _ = self.db.lock().unwrap().execute(
+        let db = self.db.lock().unwrap();
+        self.stall_write();
+        let _ = db.execute(
             "UPDATE devices SET last_seen = ?1 WHERE id = ?2",
             params![now_secs(), device_id],
         );
@@ -5537,25 +5591,38 @@ mod tests {
 
         // Someone else's device: refused, and nothing of theirs is touched (its refresh
         // token still renews, its access token still works).
-        assert!(!a.revoke_own_device(alice, "alice", admin_device).unwrap());
+        assert!(
+            !a.revoke_own_device(alice, "alice", admin_device, 1)
+                .unwrap()
+        );
         assert!(a.authenticate(&theirs.access).is_some());
         assert!(a.device_active(admin_device));
         let renewed = a.refresh(&theirs.refresh).unwrap();
         // Nor one that doesn't exist.
-        assert!(!a.revoke_own_device(alice, "alice", 999_999).unwrap());
-        assert!(!a.revoke_own_device(alice, "alice", -1).unwrap());
+        assert!(!a.revoke_own_device(alice, "alice", 999_999, 1).unwrap());
+        assert!(!a.revoke_own_device(alice, "alice", -1, 1).unwrap());
 
         // Their own: signed out, tokens dead.
         assert!(
-            a.revoke_own_device(alice, "alice", phone.principal.device_id)
-                .unwrap()
+            a.revoke_own_device(
+                alice,
+                "alice",
+                phone.principal.device_id,
+                mine.principal.device_id
+            )
+            .unwrap()
         );
         assert!(a.authenticate(&phone.access).is_none());
         assert!(a.refresh(&phone.refresh).is_err());
         // Only once.
         assert!(
-            !a.revoke_own_device(alice, "alice", phone.principal.device_id)
-                .unwrap()
+            !a.revoke_own_device(
+                alice,
+                "alice",
+                phone.principal.device_id,
+                mine.principal.device_id
+            )
+            .unwrap()
         );
         assert!(a.authenticate(&mine.access).is_some());
         assert!(a.authenticate(&renewed.access).is_some());
@@ -5568,7 +5635,7 @@ mod tests {
             .unwrap();
         assert_eq!(e.username.as_deref(), Some("alice"));
         assert_eq!(e.device_id, Some(phone.principal.device_id));
-        assert_eq!(e.detail, "self");
+        assert_eq!(e.detail, format!("self from {}", mine.principal.device_id));
     }
 
     #[test]

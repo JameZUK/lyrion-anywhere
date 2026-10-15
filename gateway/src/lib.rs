@@ -203,6 +203,10 @@ pub struct Config {
     pub history_lookup_delay: Duration,
     /// Time limit for looking one artist's name up for the listening stats.
     pub stats_lookup_timeout: Duration,
+    /// Fixed answers for host names, consulted before DNS when the gateway checks where a
+    /// URL would lead (the image proxy, URLs in free text): like a hosts file. Empty in
+    /// production; tests use it to give a public-looking name a local address.
+    pub host_answers: std::collections::HashMap<String, Vec<IpAddr>>,
 }
 
 impl Default for Config {
@@ -260,6 +264,7 @@ impl Default for Config {
             plays_budget: Duration::from_secs(30),
             history_lookup_delay: Duration::from_millis(1500),
             stats_lookup_timeout: stats::LOOKUP_TIMEOUT,
+            host_answers: Default::default(),
         }
     }
 }
@@ -294,11 +299,13 @@ pub struct Gateway {
     plays: plays::PlayLimits,
     /// Renames of a device by its own user ([`RENAMES_PER_WINDOW`] per [`RENAME_WINDOW`]).
     renames: plays::Window,
-    /// "Your devices" requests per user ([`DEVICE_REQUESTS_PER_WINDOW`] per
+    /// "Your devices" requests per asking device ([`DEVICE_REQUESTS_PER_WINDOW`] per
     /// [`DEVICE_REQUEST_WINDOW`]).
     device_requests: plays::Window,
     /// Requests to `/v1/me/…` per user a minute.
     me_requests: plays::Window,
+    /// Users with an offline ratings batch in flight (one at a time each).
+    rating_batches: Mutex<std::collections::HashSet<i64>>,
     /// Station batches per user a minute.
     station_batches: plays::Window,
     /// Tracks each station served lately (never repeated soon).
@@ -387,6 +394,7 @@ impl Gateway {
                 history::ME_REQUESTS_PER_MINUTE,
                 Duration::from_secs(60),
             ),
+            rating_batches: Default::default(),
             station_batches: plays::Window::new(
                 stations::BATCHES_PER_MINUTE,
                 Duration::from_secs(60),
@@ -444,6 +452,22 @@ impl Gateway {
         &self.accounts
     }
 
+    /// Run database work on tokio's blocking pool, never on an async worker. SQLite writes
+    /// commit (and fsync) under the store's one lock: on a disk that stalls, work done
+    /// inline would hold up every task on that worker (player sessions, their heartbeats)
+    /// and then, through the lock, the other workers too. Here only the request that needs
+    /// the write waits.
+    pub(crate) async fn db<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Accounts) -> T + Send + 'static,
+    ) -> T {
+        let accounts = self.accounts.clone();
+        match tokio::task::spawn_blocking(move || f(&accounts)).await {
+            Ok(v) => v,
+            Err(e) => std::panic::resume_unwind(e.into_panic()),
+        }
+    }
+
     /// The track analysis service, if it is on.
     pub fn analysis(&self) -> Option<&analysis::Analysis> {
         self.analysis.as_ref()
@@ -488,9 +512,10 @@ impl Gateway {
         owner: Option<i64>,
         name: &str,
     ) -> Result<String, accounts::AuthError> {
+        let wanted = name.to_string();
         let (name, changed) = self
-            .accounts
-            .rename_device_if_changed(device_id, owner, name)?;
+            .db(move |a| a.rename_device_if_changed(device_id, owner, &wanted))
+            .await?;
         if !changed {
             return Ok(name);
         }
@@ -738,9 +763,13 @@ async fn note_device_use(
         .and_then(|v| v.strip_prefix("Bearer "))
         .and_then(|t| gw.accounts.authenticate(t))
         .map(|p| p.device_id);
-    if let Some(device) = device {
+    // The throttle is checked here (cheap, in memory); the rare write that follows runs on
+    // the blocking pool.
+    if let Some(device) = device
+        && gw.accounts.claim_seen(device)
+    {
         let addr = client_addr(&gw.cfg, peer, req.headers());
-        gw.accounts.note_seen(device, addr);
+        gw.db(move |a| a.write_seen(device, addr)).await;
     }
     next.run(req).await
 }

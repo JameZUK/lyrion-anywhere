@@ -236,7 +236,7 @@ async fn paired_devices_are_listed_and_can_be_signed_out() {
 #[tokio::test]
 async fn signing_out_a_device_kills_its_tokens_and_ends_its_session_at_once() {
     let mut h = harness().await;
-    let (laptop, _) = sign_in(&h, "alice", "Laptop", json!({})).await;
+    let (laptop, laptop_id) = sign_in(&h, "alice", "Laptop", json!({})).await;
     let a_id = device_of(&h, &h.tok_a).await;
     let tok_a = h.tok_a.clone();
     let (mut ws, _lms) = player(&mut h, &tok_a).await;
@@ -264,7 +264,7 @@ async fn signing_out_a_device_kills_its_tokens_and_ends_its_session_at_once() {
     let e = log.iter().find(|e| e.event == "device.revoked").unwrap();
     assert_eq!(e.username.as_deref(), Some("alice"));
     assert_eq!(e.device_id, Some(a_id));
-    assert_eq!(e.detail, "self");
+    assert_eq!(e.detail, format!("self from {laptop_id}"));
 }
 
 #[tokio::test]
@@ -366,12 +366,12 @@ async fn malformed_device_ids_are_refused() {
         "1%2F2",
         "self%00",
     ] {
+        // Every one decodes as UTF-8, so reaches the handler: the same 404 as a device
+        // that doesn't exist, never anything that tells the shapes apart.
         let r = delete(&h, &h.tok_a, id).await;
-        assert!(
-            r.status() == S::NOT_FOUND || r.status() == S::BAD_REQUEST,
-            "{id}: {}",
-            r.status()
-        );
+        assert_eq!(r.status(), S::NOT_FOUND, "{id}");
+        let v: Value = r.json().await.unwrap();
+        assert_eq!(v["error"], "no such device", "{id}");
     }
     // Other shapes never reach a handler that signs anything out.
     for path in ["/v1/devices/1/2", "/v1/devices/", "/v1/devices/self"] {
@@ -514,24 +514,77 @@ async fn cross_site_sign_outs_are_refused() {
 }
 
 #[tokio::test]
-async fn requests_are_rate_limited_per_user() {
+async fn requests_are_rate_limited_per_device() {
     let h = harness().await;
     let (phone, _) = sign_in(&h, "alice", "Phone", json!({})).await;
     let limit = anywhere_gateway::DEVICE_REQUESTS_PER_WINDOW;
-    // Shared across the user's devices and the three endpoints.
+    // Shared across the three endpoints, for one device.
     for i in 0..limit {
-        let token = if i % 2 == 0 { &h.tok_a } else { &phone };
-        assert_eq!(get(&h, "/v1/devices", token).await.status(), S::OK, "{i}");
+        assert_eq!(get(&h, "/v1/devices", &phone).await.status(), S::OK, "{i}");
     }
-    let r = get(&h, "/v1/devices", &h.tok_a).await;
+    let r = get(&h, "/v1/devices", &phone).await;
     assert_eq!(r.status(), S::TOO_MANY_REQUESTS);
     assert!(r.headers().contains_key("retry-after"));
     assert_eq!(others(&h, &phone).await.status(), S::TOO_MANY_REQUESTS);
     assert_eq!(delete(&h, &phone, "1").await.status(), S::TOO_MANY_REQUESTS);
     // Refused requests sign nothing out.
     assert_eq!(get(&h, "/v1/me", &h.tok_a).await.status(), S::OK);
+    assert_eq!(get(&h, "/v1/me", &phone).await.status(), S::OK);
     // Bob has his own allowance.
     assert_eq!(get(&h, "/v1/devices", &h.tok_b).await.status(), S::OK);
+}
+
+/// Regression (M5): the allowance was per user, so whoever held a stolen device's access
+/// token could loop `GET /v1/devices` and keep its owner, on another device, from signing
+/// it out (429). Each device now has its own.
+#[tokio::test]
+async fn a_stolen_device_cannot_starve_its_owners_sign_out() {
+    let h = harness().await;
+    let (stolen, stolen_id) = sign_in(&h, "alice", "Phone", json!({})).await;
+    for _ in 0..anywhere_gateway::DEVICE_REQUESTS_PER_WINDOW + 5 {
+        get(&h, "/v1/devices", &stolen).await;
+    }
+    assert_eq!(
+        get(&h, "/v1/devices", &stolen).await.status(),
+        S::TOO_MANY_REQUESTS
+    );
+    // The owner, on another device, still lists and signs the stolen one out.
+    let mine = list(&h, &h.tok_a).await;
+    assert!(mine.iter().any(|d| d["id"] == stolen_id), "{mine:?}");
+    let r = delete(&h, &h.tok_a, &stolen_id.to_string()).await;
+    assert_eq!(r.status(), S::NO_CONTENT);
+    assert_eq!(get(&h, "/v1/me", &stolen).await.status(), S::UNAUTHORIZED);
+    // As does signing out every other device.
+    let (stolen2, _) = sign_in(&h, "alice", "Tablet", json!({})).await;
+    for _ in 0..anywhere_gateway::DEVICE_REQUESTS_PER_WINDOW + 5 {
+        get(&h, "/v1/devices", &stolen2).await;
+    }
+    let r = others(&h, &h.tok_a).await;
+    assert_eq!(r.status(), S::OK);
+    assert_eq!(get(&h, "/v1/me", &stolen2).await.status(), S::UNAUTHORIZED);
+}
+
+/// The audit log says which device did the signing out (M5): `self from <device id>`.
+#[tokio::test]
+async fn the_audit_log_names_the_device_that_signed_out() {
+    let h = harness().await;
+    let a_id = device_of(&h, &h.tok_a).await;
+    let (_, phone_id) = sign_in(&h, "alice", "Phone", json!({})).await;
+    let (_, tablet_id) = sign_in(&h, "alice", "Tablet", json!({})).await;
+    assert_eq!(
+        delete(&h, &h.tok_a, &phone_id.to_string()).await.status(),
+        S::NO_CONTENT
+    );
+    assert_eq!(others(&h, &h.tok_a).await.status(), S::OK);
+    let log = h.accounts.audit_log(100).unwrap();
+    for id in [phone_id, tablet_id] {
+        let e = log
+            .iter()
+            .find(|e| e.event == "device.revoked" && e.device_id == Some(id))
+            .unwrap_or_else(|| panic!("no audit entry for {id}: {log:?}"));
+        assert_eq!(e.username.as_deref(), Some("alice"));
+        assert_eq!(e.detail, format!("self from {a_id}"));
+    }
 }
 
 #[tokio::test]

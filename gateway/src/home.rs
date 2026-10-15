@@ -352,7 +352,8 @@ pub async fn put(State(gw): State<AppState>, headers: HeaderMap, body: Body) -> 
             Err(_) => return internal(),
         }
     }
-    match save(gw.accounts(), p.user_id, Some(&layout)) {
+    let (user, saved) = (p.user_id, layout.clone());
+    match gw.db(move |a| save(a, user, Some(&saved))).await {
         Ok(()) => answer(&layout, false),
         Err(_) => internal(),
     }
@@ -364,7 +365,8 @@ pub async fn reset(State(gw): State<AppState>, headers: HeaderMap) -> Response {
         Ok(p) => p,
         Err(r) => return r,
     };
-    match save(gw.accounts(), p.user_id, None) {
+    let user = p.user_id;
+    match gw.db(move |a| save(a, user, None)).await {
         Ok(()) => answer(&default_layout(), true),
         Err(_) => internal(),
     }
