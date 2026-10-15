@@ -345,3 +345,151 @@ test('nonsense trims are ignored, and a refused removal is noted, not thrown', a
 	out.stop();
 	out.trimFrom(1); // after stop: nothing
 });
+
+/**
+ * An element whose play() behaves as a browser's: `results` says how each call ends ('ok', or
+ * the error name to reject with). An AbortError comes from a load or source change while the
+ * play was pending: the element is paused again afterwards, without a pause event.
+ */
+function playable(out: MediaOutput, results: string[]) {
+	const state = { paused: true, t: 0 };
+	control(out, state);
+	const calls: string[] = [];
+	out.audio.play = vi.fn(async () => {
+		const r = results.shift() ?? 'ok';
+		calls.push(r);
+		if (r === 'NotAllowedError') throw new DOMException('not allowed', r);
+		state.paused = false;
+		if (r !== 'ok') {
+			await Promise.resolve();
+			state.paused = true;
+			throw new DOMException('The operation was aborted.', r);
+		}
+	});
+	return { state, calls };
+}
+
+// Live, iPadOS PWA: the tap's play() was aborted by a stream restart at the same moment and
+// nothing tried again, so the element stayed paused while everything else carried on as if
+// it were playing.
+test('an aborted play() is tried again once the element is ready (canplay)', async () => {
+	const note = vi.fn();
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors, note });
+	await out.start();
+	const { state, calls } = playable(out, ['AbortError', 'ok']);
+	const onPlaying = vi.fn();
+	out.onPlaying = onPlaying;
+	await expect(out.resume()).resolves.toBe(false);
+	expect(state.paused).toBe(true);
+	out.audio.dispatchEvent(new Event('canplay'));
+	await settle();
+	expect(calls).toEqual(['AbortError', 'ok']);
+	expect(state.paused).toBe(false);
+	expect(out.playing).toBe(true);
+	expect(onPlaying).toHaveBeenCalledTimes(1);
+	expect(note).toHaveBeenCalledWith(expect.stringMatching(/retrying play \(1\) after canplay/));
+	out.stop();
+});
+
+test('an aborted play() is retried at each segment appended until it plays', async () => {
+	const note = vi.fn();
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors, note });
+	await out.start();
+	const { state, calls } = playable(out, ['AbortError', 'AbortError', 'AbortError', 'ok']);
+	await out.resume();
+	out.append(new Uint8Array([1]));
+	await settle();
+	out.append(new Uint8Array([2]));
+	await settle();
+	expect(state.paused).toBe(true);
+	out.append(new Uint8Array([3]));
+	await settle();
+	expect(calls).toEqual(['AbortError', 'AbortError', 'AbortError', 'ok']);
+	expect(state.paused).toBe(false);
+	// Playing: further segments call play() no more.
+	out.append(new Uint8Array([4]));
+	await settle();
+	expect(calls).toHaveLength(4);
+	expect(note.mock.calls.filter(([m]) => /retrying play/.test(m))).toHaveLength(3);
+	out.stop();
+});
+
+test('no retry after a pause or a stop', async () => {
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors });
+	await out.start();
+	const { calls } = playable(out, ['AbortError']);
+	await out.resume();
+	out.pause();
+	out.audio.dispatchEvent(new Event('canplay'));
+	out.append(new Uint8Array([1]));
+	await settle();
+	expect(calls).toEqual(['AbortError']);
+	out.stop();
+});
+
+test('a refused play() (no gesture) reports the block and is not retried by itself', async () => {
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors });
+	await out.start();
+	const { calls } = playable(out, ['NotAllowedError', 'ok']);
+	const onBlocked = vi.fn();
+	out.onBlocked = onBlocked;
+	await expect(out.resume()).resolves.toBe(false);
+	expect(onBlocked).toHaveBeenCalledTimes(1);
+	expect(out.blocked).toBe(true);
+	expect(out.playing).toBe(false);
+	out.audio.dispatchEvent(new Event('canplay'));
+	out.append(new Uint8Array([1]));
+	await settle();
+	expect(calls).toEqual(['NotAllowedError']);
+	// The tap: plays.
+	await expect(out.resume()).resolves.toBe(true);
+	expect(out.blocked).toBe(false);
+	expect(out.playing).toBe(true);
+	out.stop();
+});
+
+test('retries that keep failing end in the blocked state, not silence', async () => {
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors });
+	await out.start();
+	playable(out, Array(50).fill('AbortError'));
+	const onBlocked = vi.fn();
+	out.onBlocked = onBlocked;
+	await out.resume();
+	for (let i = 0; i < 20; i++) {
+		out.audio.dispatchEvent(new Event('canplay'));
+		await settle();
+	}
+	expect(onBlocked).toHaveBeenCalledTimes(1);
+	expect(out.blocked).toBe(true);
+	out.stop();
+});
+
+test('pausedAt: where it stopped playing; null while playing or before it ever played', async () => {
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors });
+	await out.start();
+	const { state } = playable(out, ['NotAllowedError', 'ok']);
+	await out.resume();
+	expect(out.pausedAt).toBeNull(); // never played
+	await out.resume();
+	state.t = 4;
+	out.pause();
+	state.paused = true;
+	state.t = 9; // moved while paused: not where it stopped
+	out.audio.dispatchEvent(new Event('pause'));
+	expect(out.pausedAt).toBe(4);
+	await out.resume();
+	expect(out.pausedAt).toBeNull();
+	out.stop();
+});
+
+test('a deferred start opens the source but does not call play() until asked', async () => {
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors, deferPlay: true });
+	await out.start();
+	expect(out.audio.play).not.toHaveBeenCalled();
+	expect(out.blocked).toBe(true);
+	out.append(new Uint8Array([1]));
+	await settle();
+	expect(FakeSourceBuffer.last!.appended).toHaveLength(1);
+	expect(out.audio.play).not.toHaveBeenCalled();
+	out.stop();
+});

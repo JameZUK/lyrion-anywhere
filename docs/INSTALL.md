@@ -296,7 +296,7 @@ From a phone **off your Wi-Fi** (on mobile data):
 | **Sign-in fails with "too many attempts"** | The lockout is working (5 failures in 15 minutes). It applies to the address that failed: wait 15 minutes, or sign in from another network (mobile data); repeated lockouts last longer, up to a day. Someone guessing your password from elsewhere can slow sign-ins for your username to a couple a minute, but can't lock you out. Signing in on more than 10 new devices in an hour is also refused for an hour. If it happens to everyone, the proxy isn't passing the real client address (see §4 and §4.3). |
 | **Two-step codes are always wrong** | The device's clock, or the server's, is wrong. Both need the correct time (NTP). |
 | **"Can't reach the music server. Trying again…"** | The phone is offline, or the gateway is down. The app keeps your sign-in and reconnects by itself. |
-| **No sound after reloading the page** | Browsers only start sound after a tap. Tap anywhere on the page (a banner says so). |
+| **No sound after reloading the page or reopening the home-screen app** | Browsers only start sound after a tap. Tap anywhere on the page (a banner says so; it stays until the sound really is on). |
 | **Playback stops when the screen locks (iPhone/iPad)** | Check *Settings › This device*. If it says Web Audio, the browser refused the background-capable mode. The device's **Diagnostics** show why; please include them in a bug report. |
 | **A plugin shows "Needs setting up in LMS"** | It needs an account or settings in LMS itself (e.g. a streaming service). Set it up in LMS's own settings. |
 | **The settings page says "refused: use the Lyrion Anywhere settings page"** | LMS was restarted since the page was opened. Reload the page. |

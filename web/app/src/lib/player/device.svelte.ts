@@ -11,6 +11,7 @@ import { MEDIA_TYPE, MODE_LABELS, chooseMode, detectEnvironment, loadPreference,
 import { Reporter, buildReport, diagnosticsSender } from './diagnostics';
 import { fadeGain } from '$lib/lms/sleep';
 import { mayResumeMedia } from './local-plan';
+import { needsGesture, rememberAutoplay } from './autoplay';
 import {
 	connection,
 	effectiveQuality,
@@ -94,6 +95,10 @@ class DevicePlayer {
 	#mediaBroken = false;
 	/** Started without a tap (after a reload, or switching output). */
 	#auto = false;
+	/** Media mode, started without a tap: the browser's answer to its play() is remembered. */
+	#autoProbe = false;
+	/** Stops listening for the tap that unmutes (see #resumeOnNextTap). */
+	#tapCleanup: (() => void) | null = null;
 	/** Called when the player is connected (the app selects it). */
 	onConnected: ((mac: string) => void) | null = null;
 	/** The last connection was a fresh session (LMS saw a new player), not a resumed one. */
@@ -266,8 +271,8 @@ class DevicePlayer {
 		const media = this.#media;
 		if (media) {
 			if (media.audio.paused && this.detail.output === 'Playing' && mayResumeMedia(this.detail.output, this.held)) {
-				media.resume();
-				this.#note('media element resumed');
+				// Noted once it really plays; a refusal asks for a tap (see MediaOutput.onBlocked).
+				void media.resume().then((ok) => ok && this.#note('media element resumed'));
 			}
 			return;
 		}
@@ -502,13 +507,29 @@ class DevicePlayer {
 			this.#configureAudioSession();
 			let port: MessagePort | undefined;
 			if (choice.mode === 'media' && choice.source) {
-				// The element's play() runs first, inside the tap.
+				// The element's play() runs first, inside the tap. Without one, on a browser known
+				// to refuse it, the element waits for the tap and says so at once.
+				const defer = !!opts.auto && needsGesture();
+				this.#autoProbe = !!opts.auto && !defer;
 				const out = new MediaOutput({
 					source: choice.source,
 					mime: choice.mime ?? undefined,
 					note: (m) => this.#note(m),
 					onFail: (why) => void this.#mediaFailed(why),
+					deferPlay: defer,
 				});
+				out.onBlocked = () => {
+					if (this.#media !== out) return;
+					if (this.#autoProbe) rememberAutoplay(true);
+					this.#autoProbe = false;
+					this.#resumeOnNextTap();
+				};
+				out.onPlaying = () => {
+					if (this.#media !== out) return;
+					if (this.#autoProbe) rememberAutoplay(false);
+					this.#autoProbe = false;
+					this.#soundOn();
+				};
 				out.onExternalPause = () => {
 					// The system paused us (a call, another app's audio): pause the player in LMS
 					// too, so every controller shows it paused and Play resumes it, rather than
@@ -526,6 +547,10 @@ class DevicePlayer {
 				this.#media = out;
 				this.#elementVolume = new ElementVolume(out.audio);
 				this.#applyVolume();
+				if (defer) {
+					this.#note('this browser plays only after a tap: waiting for one');
+					this.#resumeOnNextTap();
+				}
 				await out.start();
 				if (!live()) {
 					out.stop(); // stop() has stopped it already; this is harmless
@@ -594,7 +619,12 @@ class DevicePlayer {
 		await this.autoStart();
 	}
 
-	/** The browser held the sound back (no tap): unmute on the next tap or key press. */
+	/**
+	 * The browser held the sound back (no tap): unmute on the next tap or key press. In media
+	 * mode the hold lasts until the element really plays (#soundOn): a tap whose play() is
+	 * aborted (a stream restart at the same moment) leaves the element to try again by itself
+	 * once the new audio is in, and a refused one keeps waiting for the next tap.
+	 */
 	#resumeOnNextTap() {
 		if (this.needsTap) return;
 		this.needsTap = true;
@@ -604,23 +634,35 @@ class DevicePlayer {
 		// listening until the sound really is on.
 		const events = ['pointerup', 'touchend', 'click', 'keydown'] as const;
 		const resume = async () => {
+			if (!this.needsTap) return this.#tapCleanup?.();
 			void this.#keepAlive.start();
-			// Not while LMS has the player paused: that would play the old queued audio.
-			if (mayResumeMedia(String(this.detail.output ?? ''), this.held)) this.#media?.resume();
-			await this.#ctx?.resume().catch(() => {});
-			const ctxOk = !this.#ctx || this.#ctx.state === 'running';
-			// Held by a pause made here: the element is meant to be paused.
-			const mediaOk = !this.#media || !this.#media.audio.paused || this.held;
-			if (!ctxOk || !mediaOk || !this.needsTap) {
-				if (!this.needsTap) for (const t of events) document.removeEventListener(t, onTap, true);
+			const media = this.#media;
+			if (media) {
+				// Held by a pause made here: the element is meant to be paused.
+				if (this.held) return this.#soundOn();
+				// Not while LMS has the player paused: that would play the old queued audio. The
+				// hold ends when it really plays (onPlaying), not when it is asked to.
+				if (mayResumeMedia(String(this.detail.output ?? ''), this.held)) await media.resume();
 				return;
 			}
-			for (const t of events) document.removeEventListener(t, onTap, true);
-			this.needsTap = false;
-			this.#note(`audio resumed (${this.#ctx?.state ?? 'media'})`);
+			await this.#ctx?.resume().catch(() => {});
+			if (this.#ctx && this.#ctx.state !== 'running') return;
+			this.#soundOn();
 		};
 		const onTap = () => void resume();
 		for (const t of events) document.addEventListener(t, onTap, true);
+		this.#tapCleanup = () => {
+			for (const t of events) document.removeEventListener(t, onTap, true);
+			this.#tapCleanup = null;
+		};
+	}
+
+	/** The sound is really on: end the hold, if there is one. */
+	#soundOn() {
+		if (!this.needsTap) return;
+		this.#tapCleanup?.();
+		this.needsTap = false;
+		this.#note(`audio resumed (${this.#ctx?.state ?? 'media'})`);
 	}
 
 	stop(final: DeviceState = 'stopped') {
@@ -631,6 +673,8 @@ class DevicePlayer {
 		this.#history.active = false;
 		this.wasActive = false;
 		this.needsTap = false;
+		this.#tapCleanup?.();
+		this.#autoProbe = false;
 		this.#keepAlive.stop();
 		clearInterval(this.#posTimer);
 		clearInterval(this.#restartTimer);
@@ -774,8 +818,15 @@ class DevicePlayer {
 		const now = performance.now();
 		const at = performance.timeOrigin + now;
 		let t = raw;
-		if (media.audio.paused) this.#smoother.reset();
-		else t = Math.min(this.#smoother.update(raw, at / 1000), raw + SMOOTH_MAX_LEAD_S);
+		const playing = !media.audio.paused;
+		if (playing) t = Math.min(this.#smoother.update(raw, at / 1000), raw + SMOOTH_MAX_LEAD_S);
+		else {
+			this.#smoother.reset();
+			// Paused: what was heard ends where it paused (nothing, if it never started). A play
+			// head that moved since (a seek, the browser snapping it onto buffered audio) was not
+			// heard, and the core must never count audio that did not play.
+			t = Math.min(raw, media.pausedAt ?? this.#lastPos);
+		}
 		if (t > this.#lastPos) {
 			const frames = this.#timeline.frames(this.#lastPos, t);
 			this.#lastPos = t;
@@ -799,6 +850,7 @@ class DevicePlayer {
 				this.#advancedAt = now;
 			}
 		}
+		if (!playing && raw > this.#lastPos) this.#lastPos = raw; // moved, unheard: skip it
 	}
 
 	async #onMedia(m: Record<string, unknown>) {
@@ -820,9 +872,10 @@ class DevicePlayer {
 		if (m.init instanceof Uint8Array) media.append(m.init);
 		if (m.segment instanceof Uint8Array) media.append(m.segment);
 		if (m.pause) media.pause();
+		// Refused for want of a gesture: only the tap can start it (see #resumeOnNextTap).
 		if (m.play) {
 			clearTimeout(this.#startTimer);
-			media.resume();
+			if (!media.blocked) void media.resume();
 		}
 		// LMS's sync skips and pauses never come here: the worker makes them in the audio
 		// before muxing (static/player/media-sync.js). Seeking or pausing the element for them
@@ -831,7 +884,7 @@ class DevicePlayer {
 			// A synced start: play at that moment, not at the worker's next tick after it.
 			const wait = m.startAt - (performance.timeOrigin + performance.now());
 			clearTimeout(this.#startTimer);
-			if (wait > 0 && wait < 30_000) this.#startTimer = setTimeout(() => this.#media === media && mayResumeMedia('Playing', this.held) && media.resume(), wait);
+			if (wait > 0 && wait < 30_000) this.#startTimer = setTimeout(() => this.#media === media && mayResumeMedia('Playing', this.held) && !media.blocked && media.resume(), wait);
 		}
 		if (m.flush) {
 			clearTimeout(this.#startTimer);
