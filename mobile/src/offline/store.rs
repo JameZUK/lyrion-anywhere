@@ -57,6 +57,9 @@ struct State {
 #[derive(uniffi::Object)]
 pub struct OfflineLibrary {
     dir: PathBuf,
+    /// Whose it is: [`scope_name`] of its server and user, checked against the session
+    /// before anything is sent from it or downloaded into it.
+    scope: String,
     state: Mutex<State>,
 }
 
@@ -446,6 +449,19 @@ impl OfflineLibrary {
             .unwrap_or(0)
     }
 
+    /// Refuse a session signed in as anyone but this library's owner (a handle kept across
+    /// an account switch): [`ApiError::WrongAccount`], or `Unauthorised` with nobody
+    /// signed in. Sending its plays or downloading into it for another account would mix
+    /// two accounts' data.
+    pub(crate) fn check_owner(&self, session: &crate::session::Session) -> Result<(), ApiError> {
+        let who = session.current().ok_or(ApiError::Unauthorised)?;
+        if scope_name(&session.server().url(), &who.user.username) == self.scope {
+            Ok(())
+        } else {
+            Err(ApiError::WrongAccount)
+        }
+    }
+
     fn remove_where(&self, pred: impl Fn(&OfflineTrack) -> bool) -> Result<u32, ApiError> {
         let mut st = self.state.lock().unwrap();
         let (gone, kept): (Vec<_>, Vec<_>) = st.tracks.drain(..).partition(|t| pred(t));
@@ -479,6 +495,7 @@ impl OfflineLibrary {
         let dir = scope_dir(&root, &server_url, &username)?;
         let lib = OfflineLibrary {
             dir,
+            scope: scope_name(&server_url, &username),
             state: Mutex::new(State {
                 tracks: Vec::new(),
                 plays: Vec::new(),

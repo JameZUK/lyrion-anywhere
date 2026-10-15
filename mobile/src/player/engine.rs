@@ -144,6 +144,14 @@ const FEED_PER_CALL: usize = 1024 * 1024;
 /// How long the first connection waits for `/v1/me` (to know whether to ask for a longer
 /// resume grace) before going ahead without it.
 const FEATURES_WAIT: Duration = Duration::from_secs(2);
+/// A connection that has lived this long after its greeting counts as working: the
+/// reconnect backoff starts again from the beginning. Sooner (a server that greets and
+/// drops the connection at once), each reconnect waits longer.
+const STABLE_AFTER: Duration = Duration::from_secs(5);
+/// The network coming back reconnects at once only this long after the last connection
+/// was opened (Android reports several changes a second during a handover); an outage
+/// at least this long also starts the backoff again.
+const NETWORK_SETTLE: Duration = Duration::from_millis(1500);
 /// In a sync group, how long to wait after a stall for enough audio to skip the stall
 /// before deciding (see [`stall_step`]).
 const REJOIN_WAIT: Duration = Duration::from_secs(2);
@@ -366,6 +374,11 @@ pub(crate) struct Engine {
     ws_task: Option<tokio::task::AbortHandle>,
     open: bool,
     attempt: u32,
+    /// When the open connection was greeted, until it has lived [`STABLE_AFTER`].
+    greeted_at: Option<Instant>,
+    /// When a connection was last opened, and when the network last went.
+    last_connect: Option<Instant>,
+    network_lost_at: Option<Instant>,
     disconnected_at: Option<Instant>,
     reconnect_at: Option<(Instant, bool)>,
     renewals_in_a_row: u32,
@@ -544,6 +557,9 @@ impl Engine {
             ws_task: None,
             open: false,
             attempt: 0,
+            greeted_at: None,
+            last_connect: None,
+            network_lost_at: None,
             disconnected_at: None,
             reconnect_at: None,
             renewals_in_a_row: 0,
@@ -650,6 +666,8 @@ impl Engine {
 
     /// Leave LMS cleanly: `BYE!` (the player disappears from LMS at once), then close.
     async fn shutdown(&mut self, reason: &str) {
+        // First, so nothing moves the group while the player leaves.
+        self.cancel_restarts();
         if self.open
             && let Some(out) = &self.ws_out
         {
@@ -660,9 +678,6 @@ impl Engine {
         }
         self.close_stream();
         if let Some(t) = self.ws_task.take() {
-            t.abort();
-        }
-        if let Some(t) = self.restart.take() {
             t.abort();
         }
         self.gap = None;
@@ -756,7 +771,8 @@ impl Engine {
 
     /// The app says whether the phone has a network. Without one, the socket is dropped at
     /// once (its grace starts) and no reconnect is tried until the network is back; then
-    /// one is tried at once.
+    /// one is tried at once, or [`NETWORK_SETTLE`] after the last if that was only just
+    /// now (a flapping network).
     fn set_network(&mut self, up: bool) {
         if up == self.network {
             return;
@@ -767,6 +783,7 @@ impl Engine {
             return;
         }
         if !up {
+            self.network_lost_at = Some(Instant::now());
             if self.ws_task.is_some() || self.open {
                 if let Some(t) = self.ws_task.take() {
                     t.abort();
@@ -776,11 +793,22 @@ impl Engine {
                 self.waiting_for_network = Some(resume);
             }
         } else {
-            self.attempt = 0;
+            let now = Instant::now();
+            // A real outage starts the backoff again; a flap doesn't.
+            if self
+                .network_lost_at
+                .is_none_or(|t| now.duration_since(t) >= NETWORK_SETTLE)
+            {
+                self.attempt = 0;
+            }
+            // At once, unless a connection was opened only just now.
+            let at = self
+                .last_connect
+                .map_or(now, |t| (t + NETWORK_SETTLE).max(now));
             if let Some(resume) = self.waiting_for_network.take() {
-                self.reconnect_at = Some((Instant::now(), resume));
+                self.reconnect_at = Some((at, resume));
             } else if let Some((_, resume)) = self.reconnect_at {
-                self.reconnect_at = Some((Instant::now(), resume));
+                self.reconnect_at = Some((at, resume));
             }
         }
         self.update_link();
@@ -814,6 +842,8 @@ impl Engine {
             t.abort();
         }
         self.ws_gen += 1;
+        self.last_connect = Some(Instant::now());
+        self.greeted_at = None;
         let (out_tx, out_rx) = mpsc::unbounded_channel();
         self.ws_out = Some(out_tx);
         self.open = false;
@@ -849,7 +879,9 @@ impl Engine {
 
     fn on_greeting(&mut self, g: Greeting) {
         self.open = true;
-        self.attempt = 0;
+        // The backoff starts again only once this connection has lived a while (see
+        // `on_tick`): a server that greets and drops at once is not retried every 0.5 s.
+        self.greeted_at = Some(Instant::now());
         self.renewals_in_a_row = 0;
         self.disconnected_at = None;
         self.connection = PlayerConnection::Connected;
@@ -889,17 +921,12 @@ impl Engine {
             self.from_downloads.clear();
             self.in_sync_group = false;
             self.stall_wait = None;
-            if let Some(t) = self.rejoin.take() {
-                t.abort();
-            }
+            self.cancel_restarts();
             self.drop_queued_audio();
             // Track numbers start again with the new player.
             self.loudness.clear();
             self.facts.clear();
             self.positions.clear();
-            if let Some(t) = self.restart.take() {
-                t.abort();
-            }
             self.gate = None;
             self.player_gen += 1;
             if let Some(t) = self.lookup.take() {
@@ -976,9 +1003,7 @@ impl Engine {
             CloseAction::Stop => {
                 // Refused, revoked, signed out or replaced: nothing of it is kept.
                 self.gap = None;
-                if let Some(t) = self.restart.take() {
-                    t.abort();
-                }
+                self.cancel_restarts();
                 self.close_stream();
                 self.close_output();
                 self.audio.pipeline.unconfigure();
@@ -1477,6 +1502,18 @@ impl Engine {
         self.restart = Some(task.abort_handle());
     }
 
+    /// Drop any restart or sync-group rejoin under way: they ask LMS to move this player
+    /// (and a rejoin, its whole group), which must not happen once the player has stopped,
+    /// been stopped by the server, or left LMS for the phone's own copies.
+    fn cancel_restarts(&mut self) {
+        if let Some(t) = self.restart.take() {
+            t.abort();
+        }
+        if let Some(t) = self.rejoin.take() {
+            t.abort();
+        }
+    }
+
     /// A stalled player in a sync group had too little audio to skip the stall (it has been
     /// stalled `stalled_ms`): ask LMS to restart the group where the others are now. LMS
     /// then flushes and restarts every member at that point, in step (the others hear a
@@ -1800,6 +1837,10 @@ impl Engine {
     }
 
     fn on_tick(&mut self) {
+        if self.open && self.greeted_at.is_some_and(|t| t.elapsed() >= STABLE_AFTER) {
+            self.greeted_at = None;
+            self.attempt = 0;
+        }
         if self.ws_gen == 0 && self.connect_at.is_some_and(|t| Instant::now() >= t) && !self.stopped
         {
             // `/v1/me` didn't answer in time: connect without asking for a longer grace.
@@ -2243,9 +2284,7 @@ impl Engine {
         self.session = None;
         self.outbox.clear();
         self.gap = None;
-        if let Some(r) = self.restart.take() {
-            r.abort();
-        }
+        self.cancel_restarts();
         // A reconnect under way would resume LMS's session: start afresh instead.
         if let Some(task) = self.ws_task.take() {
             task.abort();
@@ -3062,6 +3101,30 @@ async fn pause_before_retry(
     tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + delay)).await;
 }
 
+/// How many of the stream's first bytes are still to be asked for (`?limit=`), with `got`
+/// received: `None` once there are none left (or none were asked for).
+fn prefix_left(prefix_end: Option<u64>, got: u64) -> Option<u64> {
+    prefix_end
+        .and_then(|e| e.checked_sub(got))
+        .filter(|left| *left > 0)
+}
+
+/// A stream task's watchdog: should the task panic, the engine is told the stream failed
+/// (the track ends with what arrived) instead of waiting on it for ever. A task that ends
+/// normally has always said how it ended.
+struct StreamWatch {
+    id: u64,
+    tx: mpsc::UnboundedSender<Ev>,
+}
+
+impl Drop for StreamWatch {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let _ = self.tx.send(Ev::StreamFailed { id: self.id });
+        }
+    }
+}
+
 /// Fetch stream `n` of the session, resuming at the byte offset already delivered after a
 /// network failure or a 5xx, with backoff, for as long as the gateway holds the session
 /// (`budget`, from the first failure in a row); anything else fails the track.
@@ -3069,6 +3132,10 @@ async fn pause_before_retry(
 /// With the replay cache in use, the stream's first bytes are fingerprinted as they
 /// arrive; on a checked hit the download stops and the rest comes from the cache.
 async fn stream_task(job: StreamJob) {
+    let _watch = StreamWatch {
+        id: job.id,
+        tx: job.tx.clone(),
+    };
     let StreamJob {
         id,
         n,
@@ -3117,7 +3184,13 @@ async fn stream_task(job: StreamJob) {
             }
             Err(_) => String::new(), // fails as a network error below and is retried
         };
-        let url = server.stream_url(&session, n, got, prefix_end.map(|e| e - got));
+        // A gateway that sent more than asked for (an older or a hostile one) leaves
+        // nothing of the first bytes to ask for: the rest, from where it broke.
+        let limit = prefix_left(prefix_end, got);
+        if limit.is_none() {
+            prefix_end = None;
+        }
+        let url = server.stream_url(&session, n, got, limit);
         let status = match http.get(url).bearer_auth(&token).send().await {
             Ok(resp) if resp.status().as_u16() == 200 => {
                 if !headers_seen {
@@ -3237,6 +3310,32 @@ async fn stream_task(job: StreamJob) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_bytes_left_never_underflow() {
+        assert_eq!(prefix_left(None, 0), None);
+        assert_eq!(prefix_left(Some(100), 0), Some(100));
+        assert_eq!(prefix_left(Some(100), 40), Some(60));
+        assert_eq!(prefix_left(Some(100), 100), None);
+        // More than was asked for arrived (M10): nothing left, no underflow.
+        assert_eq!(prefix_left(Some(100), 101), None);
+        assert_eq!(prefix_left(Some(100), u64::MAX), None);
+    }
+
+    #[tokio::test]
+    async fn a_stream_task_that_panics_still_reports_a_failure() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let t = tokio::spawn(async move {
+            let _watch = StreamWatch { id: 7, tx };
+            panic!("boom");
+        });
+        assert!(t.await.unwrap_err().is_panic());
+        assert!(matches!(rx.recv().await, Some(Ev::StreamFailed { id: 7 })));
+        // A task that ends normally says nothing more.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        drop(StreamWatch { id: 8, tx });
+        assert!(rx.recv().await.is_none());
+    }
 
     #[test]
     fn bad_frames_close_together_back_off_further() {

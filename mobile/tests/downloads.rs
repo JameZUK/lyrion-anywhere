@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use anywhere_mobile::ApiError;
 use anywhere_mobile::offline::store::scope_name;
 use anywhere_mobile::{
     DownloadFailure, DownloadFormat, DownloadObserver, DownloadOrigin, DownloadPolicy,
@@ -866,6 +867,50 @@ async fn plays_are_sent_once_and_kept_by_an_older_server() {
     let out = sync_plays(session, lib).await.unwrap();
     assert_eq!(out.sent, 0);
     assert_eq!(s.fake.script.lock().unwrap().plays.len(), 1);
+}
+
+/// M14 regression: a library opened for another account (a stale handle held across an
+/// account switch) is refused by everything that sends from it or downloads into it, and
+/// nothing reaches the server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn another_accounts_library_is_refused() {
+    let fake = Fake::start(audio(10), vec![]).await;
+    // Signed in as alice.
+    let session = fake.session().await;
+    let url = session.server().url();
+    let root = temp_root();
+    let bobs = OfflineLibrary::open(root.clone(), url.clone(), "bob".into()).unwrap();
+    let elsewhere =
+        OfflineLibrary::open(root, "https://music.example.com/".into(), "alice".into()).unwrap();
+    for lib in [&bobs, &elsewhere] {
+        lib.record_play(5, &key_of(5), 1_800_000_000, 200);
+        assert!(lib.rate_offline(5, key_of(5), 80, 1_800_000_000));
+    }
+    fake.script.lock().unwrap().log.clear();
+    for lib in [bobs.clone(), elsewhere.clone()] {
+        let r = sync_plays(session.clone(), lib.clone()).await;
+        assert_eq!(r, Err(ApiError::WrongAccount));
+        assert_eq!(lib.pending_plays(), 1, "kept for its own account");
+        let r = anywhere_mobile::sync_ratings(session.clone(), lib.clone()).await;
+        assert_eq!(r, Err(ApiError::WrongAccount));
+        assert_eq!(lib.pending_ratings(), 1);
+        let dl = Downloader::new(
+            session.clone(),
+            lib.clone(),
+            DownloadPolicy::default(),
+            NetworkKind::Wifi,
+            Arc::new(Seen::default()),
+        );
+        assert!(matches!(dl, Err(ApiError::WrongAccount)));
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let log = fake.script.lock().unwrap().log.clone();
+    assert!(log.is_empty(), "nothing sent: {log:?}");
+    // Alice's own library works as before.
+    let mine = OfflineLibrary::open(temp_root(), url, "alice".into()).unwrap();
+    mine.record_play(5, &key_of(5), 1_800_000_000, 200);
+    let out = sync_plays(session.clone(), mine).await.unwrap();
+    assert_eq!(out.sent, 1);
 }
 
 // --- The real gateway ----------------------------------------------------------------------

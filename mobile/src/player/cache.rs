@@ -757,7 +757,9 @@ pub(crate) fn verify(path: &Path, e: &Entry, received: &[u8]) -> io::Result<File
 static OPEN: Mutex<Vec<(PathBuf, Weak<Mutex<StreamCache>>)>> = Mutex::new(Vec::new());
 
 /// The replay cache for `scope` under `root` (validated), shared with anything else that
-/// has it open. `cap`: set it (`None` keeps the current one, or 0 for a cache opened here).
+/// has it open. `cap`: set it. `None` (totals, clearing: the cap is not known here) keeps
+/// whatever is there: an open cache keeps its cap, and one opened here gets the largest
+/// cap, so nothing is evicted until a player sets the real one.
 pub(crate) fn shared(root: &str, scope: &str, cap: Option<u64>) -> io::Result<SharedCache> {
     let root = spool::validate_root(root)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad cache folder"))?;
@@ -778,7 +780,7 @@ pub(crate) fn shared(root: &str, scope: &str, cap: Option<u64>) -> io::Result<Sh
     let c = Arc::new(Mutex::new(StreamCache::open(
         &root,
         scope,
-        cap.unwrap_or(0),
+        cap.unwrap_or(MAX_CAP),
     )?));
     open.push((dir, Arc::downgrade(&c)));
     Ok(c)
@@ -1427,6 +1429,54 @@ mod tests {
         assert_eq!(c.lock().unwrap().totals(), Totals::default());
         // Missing roots are fine.
         remove_all_except(&root.join("missing"), None).unwrap();
+    }
+
+    /// H1 regression: asking for the totals of a cache nobody holds open (cap unknown)
+    /// must keep everything; only a known, smaller cap evicts.
+    #[test]
+    fn an_unknown_cap_keeps_a_cache_that_is_not_open() {
+        let root = temp_root();
+        let rs = root.to_str().unwrap();
+        let bytes = vec![5u8; 1000];
+        {
+            let c = shared(rs, SCOPE, Some(1 << 30)).unwrap();
+            for n in 1..=3u8 {
+                let src = spool_file(&root, &format!("{n}.spool"), &bytes);
+                assert!(
+                    c.lock()
+                        .unwrap()
+                        .adopt(&src, new_entry(d(n), &bytes))
+                        .is_some()
+                );
+            }
+        }
+        // Every handle is gone, so each call opens it afresh.
+        for _ in 0..2 {
+            let c = shared(rs, SCOPE, None).unwrap();
+            assert_eq!(
+                c.lock().unwrap().totals(),
+                Totals {
+                    bytes: 3000,
+                    count: 3
+                }
+            );
+        }
+        for n in 1..=3u8 {
+            assert!(
+                cache_dir(&root)
+                    .join(format!("{}.{EXT}", d(n).hex()))
+                    .exists()
+            );
+        }
+        // A real, smaller cap on a fresh open still evicts.
+        let c = shared(rs, SCOPE, Some(2000)).unwrap();
+        assert_eq!(c.lock().unwrap().totals().count, 2);
+        drop(c);
+        let c = shared(rs, SCOPE, None).unwrap();
+        assert_eq!(c.lock().unwrap().totals().count, 2);
+        // And on a cache already open.
+        c.lock().unwrap().set_cap(1000);
+        assert_eq!(c.lock().unwrap().totals().count, 1);
     }
 
     #[cfg(unix)]

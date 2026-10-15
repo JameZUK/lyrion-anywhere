@@ -136,6 +136,8 @@ struct RigOpts {
     downloads: Option<bool>,
     /// Give the player a downloads folder (Phase C).
     downloads_dir: bool,
+    /// With `counting`: the gateway never sees `?limit=` (it sends more than asked).
+    ignore_limit: bool,
 }
 
 async fn rig(with_proxy: bool) -> Rig {
@@ -195,7 +197,9 @@ async fn rig_opts(o: RigOpts) -> Rig {
     if let Some(on) = o.downloads {
         h.accounts.set_downloads("alice", on, None).unwrap();
     }
-    let proxy = if o.counting {
+    let proxy = if o.counting && o.ignore_limit {
+        Some(Proxy::start_ignoring_limit(h.addr).await)
+    } else if o.counting {
         Some(Proxy::start_counting(h.addr).await)
     } else if o.proxy || o.old_gateway {
         let rewrite = o.old_gateway.then(|| {
@@ -1855,6 +1859,8 @@ enum GroupGap {
     PastTheEnd,
     /// LMS never said where the track is in the queue (a radio stream).
     PositionUnknown,
+    /// LMS is slow to answer the rejoin's check, and the player is stopped meanwhile.
+    StoppedWhileAsking,
 }
 
 /// What [`grouped_gap`] saw.
@@ -1947,12 +1953,49 @@ async fn grouped_gap(case: GroupGap) -> GroupGapSeen {
     tokio::time::sleep(Duration::from_secs(3)).await;
     r.proxy.as_ref().unwrap().set_down(false);
     wait_reconnected(&r, statuses, 20).await;
+    let stream_status = |p: &serde_json::Value| {
+        p[0] == me.as_str() && p[1] == serde_json::json!(["status", "-", "2", "tags:xed"])
+    };
+    let checks_before =
+        r.h.lms
+            .rpc_calls()
+            .iter()
+            .filter(|p| stream_status(p))
+            .count();
+    if case == GroupGap::StoppedWhileAsking {
+        r.h.lms.hold_status();
+    }
     gate.notify_one();
+    let resumed = std::time::Instant::now();
     // The player waits up to 2 s for audio to skip the stall, then decides.
     let mut seeks: Vec<(serde_json::Value, std::time::Instant)> = Vec::new();
-    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    let mut checks = checks_before;
+    let mut stopped = false;
+    let watch = if case == GroupGap::StoppedWhileAsking {
+        10
+    } else {
+        6
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(watch);
     while std::time::Instant::now() < deadline {
         let calls = r.h.lms.rpc_calls();
+        let now_checks = calls.iter().filter(|p| stream_status(p)).count();
+        // The rejoin's check comes once the 2 s wait for audio is over; anything sooner
+        // (the reconnect's own look at the track) is answered at once. Stop the player
+        // while LMS is slow to answer the rejoin, and answer while it is still leaving.
+        if case == GroupGap::StoppedWhileAsking && !stopped {
+            if resumed.elapsed() < Duration::from_millis(1500) {
+                r.h.lms.release_status();
+                r.h.lms.hold_status();
+                checks = now_checks;
+            } else if now_checks > checks {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                r.player.stop();
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                r.h.lms.release_status();
+                stopped = true;
+            }
+        }
         for c in &calls[calls_before..] {
             if c[0] == me.as_str()
                 && c[1][0] == "time"
@@ -2065,6 +2108,26 @@ async fn a_grouped_rejoin_without_a_known_position_asks_lms_where_the_group_is()
     assert_eq!(cmds, vec![serde_json::json!(["time", "1.000"])]);
     assert_eq!(seen.stmo, 0);
     seen.rig.player.stop();
+}
+
+/// M9 regression: a rejoin waiting on a slow LMS is dropped when the player is stopped; the
+/// other speakers in the group are not moved afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopping_during_a_grouped_rejoin_moves_nobody() {
+    let seen = grouped_gap(GroupGap::StoppedWhileAsking).await;
+    let me = format_mac(&seen.rig.mac);
+    assert!(
+        seen.rig
+            .h
+            .lms
+            .rpc_calls()
+            .iter()
+            .any(|p| p[0] == me.as_str()
+                && p[1] == serde_json::json!(["status", "-", "2", "tags:xed"])),
+        "the rejoin asked LMS"
+    );
+    assert!(!seen.rig.player.is_running());
+    assert!(seen.seeks.is_empty(), "{:?}", seen.seeks);
 }
 
 /// Negative: after a grouped rejoin dropped the stale `STMo`, a real underrun with the link
@@ -2479,6 +2542,87 @@ async fn losing_the_download_permission_deletes_the_cache() {
     wait_for("deleted", move || p.stream_cache_totals().count == 0).await;
     assert!(cache_files(r.cache.as_ref().unwrap()).is_empty());
     r.player.stop();
+}
+
+/// M10 regression: a gateway that sends more than `?limit=` asked for, and whose body then
+/// breaks, must not leave the track waiting for ever: the retry carries on from where the
+/// stream broke and the track plays to its end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn more_than_the_first_bytes_then_a_break_still_finishes_the_track() {
+    let mut r = rig_opts(RigOpts {
+        spool: true,
+        counting: true,
+        ignore_limit: true,
+        cache_bytes: GIB,
+        downloads: Some(true),
+        max_grace_s: Some(120),
+        ..RigOpts::default()
+    })
+    .await;
+    // Something in the cache, so the next stream is asked for its first bytes only.
+    let t1 = flac::encode(44_100, 16, &flac::noise(44_100 * 2, 16, 81));
+    let t2 = flac::encode(44_100, 16, &flac::noise(44_100 * 3, 16, 82));
+    assert!(t2.len() > 300_000);
+    let gate = Arc::new(tokio::sync::Notify::new());
+    {
+        let mut s = r.h.lms.streams.lock().unwrap();
+        s.push_back(StreamPlan::whole(t1));
+        s.push_back(StreamPlan {
+            body: t2,
+            gate_at: Some((256 * 1024, gate.clone())),
+        });
+    }
+    r.send(audg_full()).await;
+    play_once(&mut r, 1).await;
+    let p = r.player.clone();
+    wait_for("kept", move || p.stream_cache_totals().count == 1).await;
+    let before = r.proxy.as_ref().unwrap().down_bytes.load(Ordering::SeqCst);
+    let mac = r.mac;
+    r.send(strm_s(b'f', &mac)).await;
+    // Well past the first bytes (96 KiB) before the break.
+    let proxy = r.proxy.as_ref().unwrap();
+    wait_for("past the first bytes", || {
+        proxy.down_bytes.load(Ordering::SeqCst) - before > 200 * 1024
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let statuses = r.obs.statuses.lock().unwrap().len();
+    r.proxy.as_ref().unwrap().cut_all();
+    wait_reconnected(&r, statuses, 20).await;
+    gate.notify_one();
+    r.wait_event("STMd", 2, 30).await;
+    r.player.stop();
+}
+
+/// H1 regression: Settings asking for the totals while no player holds the cache open
+/// (stopped, "Play on this phone" off) must not empty it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn totals_with_no_player_running_keep_the_cache() {
+    let mut r = cache_rig(true).await;
+    let track = flac::encode(44_100, 16, &flac::noise(44_100 * 2, 16, 78));
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(track.clone()));
+    r.send(audg_full()).await;
+    play_once(&mut r, 1).await;
+    let p = r.player.clone();
+    wait_for("kept", move || p.stream_cache_totals().count == 1).await;
+    r.stop_pulling();
+    r.player.stop();
+    let p = r.player.clone();
+    wait_for("stopped", move || !p.is_running()).await;
+    let cache = r.cache.clone().unwrap();
+    let dir = cache.to_string_lossy().into_owned();
+    // Nothing in this process holds the cache any more.
+    drop(r.player);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    for _ in 0..3 {
+        let t = anywhere_mobile::stream_cache_totals(r.session.clone(), dir.clone());
+        assert_eq!((t.count, t.bytes), (1, track.len() as u64));
+    }
+    assert_eq!(cache_files(&cache).len(), 1, "the file is still there");
 }
 
 /// Signing out (the gateway closes the player's socket with 1008) deletes the cache, as
@@ -3163,4 +3307,122 @@ async fn a_track_that_ended_long_before_the_server_went_away_stays_stopped() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_player_lms_stopped_stays_stopped_with_the_server_away() {
     track_end_then_away(Before::LmsStops).await;
+}
+
+// --- Reconnect pacing (M11) ----------------------------------------------------------------
+
+/// A fake gateway whose player socket greets and then closes at once (LMS restarting
+/// mid-upgrade, or a duplicate player), every time. Its refresh endpoint always signs in.
+/// When each player socket was opened.
+async fn greet_then_close_gateway() -> (Arc<Mutex<Vec<std::time::Instant>>>, Arc<Server>) {
+    use axum::extract::ws::{Message, WebSocketUpgrade};
+    use axum::routing::{any, post};
+
+    let opened: Arc<Mutex<Vec<std::time::Instant>>> = Arc::default();
+    let o = opened.clone();
+    let app = axum::Router::new()
+        .route(
+            "/v1/auth/refresh",
+            post(|| async {
+                axum::Json(serde_json::json!({
+                    "access_token": "access",
+                    "refresh_token": "refresh",
+                    "expires_in": 900,
+                    "user": {"username": "alice", "role": "listener"},
+                    "device": {"id": 1, "name": "Phone", "mac": "02:4c:41:00:00:01"},
+                }))
+            }),
+        )
+        .route(
+            "/v1/player",
+            any(move |ws: WebSocketUpgrade| {
+                let o = o.clone();
+                async move {
+                    o.lock().unwrap().push(std::time::Instant::now());
+                    ws.on_upgrade(|mut s| async move {
+                        let _ = s.recv().await;
+                        let greeting = serde_json::json!({
+                            "session": "0123456789abcdef0123456789abcdef",
+                            "secret": "fedcba9876543210fedcba9876543210",
+                            "mac": "02:4c:41:00:00:01",
+                            "name": "Phone",
+                            "resumed": false,
+                            "grace": 60,
+                        });
+                        let _ = s.send(Message::Text(greeting.to_string().into())).await;
+                        let _ = s.send(Message::Close(None)).await;
+                    })
+                }
+            }),
+        );
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    (opened, Server::new(format!("http://{addr}")).unwrap())
+}
+
+/// M11 regression: a server that greets and then closes at once is reconnected to with a
+/// growing backoff, not every half second for ever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_that_greets_then_closes_gets_a_growing_backoff() {
+    let (opened, server) = greet_then_close_gateway().await;
+    let store = MemStore::with(anywhere_mobile::StoredCredentials {
+        refresh_token: "refresh-start".into(),
+        device_id: 1,
+    });
+    let session = Session::new(server, store, "Test phone".into()).unwrap();
+    let player = LocalPlayer::new(
+        session,
+        LocalPlayerConfig {
+            output: OutputKind::Pull,
+            max_sample_rate: 192_000,
+            cache_dir: None,
+            read_ahead: true,
+            stream_cache_bytes: 0,
+            downloads_dir: None,
+            dsp: DspSettings::default(),
+        },
+    );
+    player.start(Arc::new(Obs::default())).unwrap();
+    let o = opened.clone();
+    wait_for("connected", move || !o.lock().unwrap().is_empty()).await;
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    player.stop();
+    let at = opened.lock().unwrap().clone();
+    let gaps: Vec<Duration> = at.windows(2).map(|w| w[1] - w[0]).collect();
+    // About 0.5, 1, 2 and 4 s (±20 %): five or six in 8 s, not sixteen.
+    assert!(at.len() <= 7, "{} connections in 8 s: {gaps:?}", at.len());
+    assert!(gaps.len() >= 3, "{gaps:?}");
+    assert!(
+        gaps[2] > gaps[0] && *gaps.last().unwrap() >= Duration::from_millis(1500),
+        "the delay grows: {gaps:?}"
+    );
+}
+
+/// M11 regression: the network flapping (as Android reports during a handover) does not
+/// reconnect on every report.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn network_flaps_do_not_reconnect_on_every_report() {
+    let r = rig_opts(RigOpts {
+        proxy: true,
+        ..RigOpts::default()
+    })
+    .await;
+    let statuses = r.obs.statuses.lock().unwrap().len();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let proxy = r.proxy.as_ref().unwrap();
+    let before = proxy.accepted.load(Ordering::SeqCst);
+    for _ in 0..20 {
+        r.player.set_network_available(false);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        r.player.set_network_available(true);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    wait_reconnected(&r, statuses, 20).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let made = proxy.accepted.load(Ordering::SeqCst) - before;
+    assert!(made <= 3, "{made} connections for 20 flaps in a second");
+    // And it is connected at the end.
+    assert_eq!(r.player.status().connection, PlayerConnection::Connected);
+    r.player.stop();
 }

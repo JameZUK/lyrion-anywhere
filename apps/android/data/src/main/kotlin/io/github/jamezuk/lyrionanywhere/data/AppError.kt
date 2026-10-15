@@ -56,6 +56,9 @@ fun <T> ApiResult<T>.getOrNull(): T? = (this as? ApiResult.Ok)?.value
 
 fun <T> ApiResult<T>.errorOrNull(): AppError? = (this as? ApiResult.Err)?.error
 
+/** Why another account's downloads were refused (see [ApiException.WrongAccount]). */
+const val WRONG_ACCOUNT = "These downloads belong to another account."
+
 /** Map anything thrown by the Rust layer (cancellation is never swallowed). */
 fun Throwable.toAppError(): AppError = when (this) {
     is CancellationException -> throw this
@@ -67,6 +70,11 @@ fun Throwable.toAppError(): AppError = when (this) {
     is ApiException.ServerBusy -> AppError.ServerBusy(retryAfterSecs.toLong())
     is ApiException.Server -> AppError.Server(status.toInt(), detail)
     is ApiException.InvalidInput -> AppError.InvalidInput(detail)
+    // Typed by status in Rust (404, 409); shown as before.
+    is ApiException.NotFound -> AppError.InvalidInput(detail)
+    is ApiException.Conflict -> AppError.InvalidInput(detail)
+    // Another account's downloads were passed: refused, nothing sent.
+    is ApiException.WrongAccount -> AppError.Forbidden(WRONG_ACCOUNT)
     else -> AppError.Unexpected(this::class.java.simpleName)
 }
 

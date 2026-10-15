@@ -87,13 +87,23 @@ pub async fn sync_plays(
     session: Arc<Session>,
     library: Arc<OfflineLibrary>,
 ) -> Result<PlaysSyncOutcome, ApiError> {
-    if !session.has_sign_in() {
-        return Err(ApiError::Unauthorised);
-    }
+    owned_by(&session, &library).await?;
     let api = HttpPlays {
         core: session.core().clone(),
     };
     Ok(plays::flush(&api, || library.plays(), |keys| library.drop_plays(keys)).await)
+}
+
+/// Check that `library` belongs to the account `session` is signed in as, learning who
+/// that is first if need be (a restored sign-in). Nothing is sent otherwise.
+pub(crate) async fn owned_by(session: &Session, library: &OfflineLibrary) -> Result<(), ApiError> {
+    if !session.has_sign_in() {
+        return Err(ApiError::Unauthorised);
+    }
+    if session.current().is_none() {
+        session.core().access_token().await?;
+    }
+    library.check_owner(session)
 }
 
 /// What smart downloads should change.

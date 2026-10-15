@@ -173,7 +173,9 @@ pub(crate) async fn fetch(core: &Arc<Core>, track_id: i64) -> Result<AnalysisOut
                     let reason = match e {
                         ApiError::Forbidden { detail }
                         | ApiError::Server { detail, .. }
-                        | ApiError::InvalidInput { detail } => detail,
+                        | ApiError::InvalidInput { detail }
+                        | ApiError::NotFound { detail }
+                        | ApiError::Conflict { detail } => detail,
                         other => other.to_string(),
                     };
                     Ok(AnalysisOutcome::Unavailable { reason })

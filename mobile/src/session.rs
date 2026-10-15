@@ -745,8 +745,9 @@ impl Session {
 
     /// Sign out another of this user's devices (`DELETE /v1/devices/{id}`): its sign-in
     /// ends at once, and it must sign in again. True if it was signed out; false if it had
-    /// already gone (signed out elsewhere, or not this user's). This device can't be signed
-    /// out this way: use [`Session::logout`].
+    /// already gone (signed out elsewhere, or not this user's: the gateway's 404). This
+    /// device can't be signed out this way ([`ApiError::Conflict`], the gateway's 409): use
+    /// [`Session::logout`].
     pub async fn sign_out_device(&self, device_id: i64) -> Result<bool, ApiError> {
         if device_id <= 0 {
             return Err(ApiError::invalid("no such device"));
@@ -768,7 +769,8 @@ impl Session {
             .await;
         match result {
             Ok(_) => Ok(true),
-            Err(ApiError::InvalidInput { detail }) if detail == "no such device" => Ok(false),
+            // Gone already, or never this user's: by the status, not the gateway's wording.
+            Err(ApiError::NotFound { .. }) => Ok(false),
             Err(e) => Err(e),
         }
     }
