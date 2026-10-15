@@ -27,6 +27,20 @@ class BackgroundPlayback {
         _refusals.update { if (it == Int.MAX_VALUE) it else it + 1 }
     }
 
+    private val _focusRefusals = MutableStateFlow(0)
+
+    /**
+     * How many times Android refused audio focus because the app was in the background
+     * (this run). Android 15+ grants focus only to an app on screen or running a foreground
+     * service; such a refusal is played through, not obeyed (a call is told apart).
+     */
+    val focusRefusals: StateFlow<Int> = _focusRefusals.asStateFlow()
+
+    /** Android refused audio focus to playback started from elsewhere while in the background. */
+    fun focusRefusedInBackground() {
+        _focusRefusals.update { if (it == Int.MAX_VALUE) it else it + 1 }
+    }
+
     companion object {
         /**
          * Whether to offer to let the app run unrestricted: only while this phone is a

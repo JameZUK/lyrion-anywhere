@@ -2,6 +2,15 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: Android player: a resume from another device no longer pauses the group
+
+Seen live: the phone was in a sync group with a tablet, paused, screen off. Play on the tablet resumed the group, the phone played for under a second, then sent `pause` (70 ms after the resume, and again 300 ms later) and the whole group stopped. When LMS said play, the playback service asked for audio focus and paused LMS on a refusal. Since Android 15, an app that is neither on screen nor running a foreground service is refused focus outright, so every resume from another controller while the app was in the background was refused, and answered by pausing everyone. A skip worked because the engine never stopped.
+
+- **Order:** when LMS (or the downloads) starts playing, the service is nudged into the foreground (`mediaPlayback`) before focus is asked for, and a refusal is asked again over about 2 s while the service gets there (`PlayFocusGate`).
+- **Refusals told apart** (`FocusRefusals`, pure): refused while the app is on screen or a call is ringing or on is a real conflict and pauses at once, as before. Refused after the retries with the app wholly in the background (not on screen, the service not in the foreground, no call) is the background rule: playback carries on and the refusal is counted (`BackgroundPlayback.focusRefusals`, apart from the foreground refusals). Refused with the service in the foreground still pauses. Focus lost after it was granted (another app, a call) is handled as before.
+- **Once per start:** one focus decision per start of playback (repeated reports before a stop make none), and a pause for a refusal is not sent again within 3 s, so a bouncing status can't pause twice.
+- **Tests:** `PlayFocusGateTest` (Robolectric, the real `AudioFocusHandler` over a shadow `AudioManager` that refuses focus in the background and during a call) and `FocusRefusalsTest`. 10 of 12 failed against the old behaviour: the foreground first, a background refusal played through and counted, a conclusion only after about 2 s, a grant on a retry, a call on screen pausing once through a status bounce, one decision per start, a stop while retrying deciding nothing, and the pure rules. The two that passed guard what stays: a refusal in the foreground service pauses, and a later start after the cool-down is decided afresh. `BackgroundPlaybackTest` covers the new count.
+
 ## 2026-10-15: Android player: the socket survives a network flap
 
 Seen live: the phone (on Wi-Fi, screen on, playing in a sync group) lost its player socket about once a minute. The gateway logged "Connection reset without closing handshake". Android reports the default network lost, and the next one's capabilities a moment later, whenever it picks the default again (Wi-Fi scoring, a fallback to mobile data, a validation blip). The app passed that loss straight to the engine, and the engine dropped the socket at once by aborting its task. That left the gateway's unread keepalives in the receive buffer, so the kernel reset the connection.

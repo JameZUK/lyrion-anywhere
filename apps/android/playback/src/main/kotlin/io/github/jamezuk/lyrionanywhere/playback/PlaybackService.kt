@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -85,6 +86,7 @@ class PlaybackService : MediaLibraryService() {
     private lateinit var audio: AudioManager
     private var volumeFollower: PhoneVolumeFollower? = null
     private val policy = AudioFocusPolicy()
+    private lateinit var playFocus: PlayFocusGate
     private var noisyRegistered = false
     private var playing = false
     private var lmsPlayer: LmsSessionPlayer? = null
@@ -148,13 +150,7 @@ class PlaybackService : MediaLibraryService() {
         focus = AudioFocusHandler(audio) { change ->
             for (action in policy.onChange(change, playing)) {
                 when (action) {
-                    FocusAction.Pause -> if (offline != null && offlineActive) {
-                        offline.setHold(true)
-                        offline.pause()
-                    } else {
-                        host.localPlayer.setHold(true)
-                        scope.launch { controller.pause() }
-                    }
+                    FocusAction.Pause -> pauseForFocus()
                     FocusAction.Resume -> if (offline != null && offlineActive) {
                         offline.play()
                     } else {
@@ -165,6 +161,27 @@ class PlaybackService : MediaLibraryService() {
                         offline?.setDuck(action.on)
                     }
                 }
+            }
+        }
+        // Focus when playback starts: the foreground first, then focus; a refusal the
+        // background rule explains is played through (see [PlayFocusGate]).
+        playFocus = PlayFocusGate(
+            scope = scope,
+            // Media3 takes the foreground once the session reports playing; nudge it now.
+            bringToForeground = { if (isPlaybackOngoing) triggerNotificationUpdate() },
+            request = focus::request,
+            onScreen = { host.appForeground?.value == true },
+            serviceForeground = { foregroundServiceType != ServiceInfo.FOREGROUND_SERVICE_TYPE_NONE },
+            inCall = { audio.mode in CALL_MODES },
+            clock = SystemClock::elapsedRealtime,
+        ) { decision ->
+            when (decision) {
+                FocusDecision.GRANTED -> Unit
+                // Refused (a call is in progress): don't play over it.
+                FocusDecision.PAUSE -> if (playing) pauseForFocus()
+                // Refused only because the app is in the background (Android 15+): pausing
+                // would pause the whole sync group, so play on, and note it.
+                FocusDecision.PLAY_WITHOUT_FOCUS -> host.backgroundPlayback?.focusRefusedInBackground()
             }
         }
         val player = LmsSessionPlayer(Looper.getMainLooper(), controller.snapshot, controller, scope, requests)
@@ -262,10 +279,23 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    /** Silence at once and pause whichever source plays (focus lost or refused). */
+    private fun pauseForFocus() {
+        val offline = host.offlinePlayer
+        if (offline != null && offlineActive) {
+            offline.setHold(true)
+            offline.pause()
+        } else {
+            host.localPlayer.setHold(true)
+            scope.launch { controller.pause() }
+        }
+    }
+
     private fun onPlayingChanged(wantsToPlay: Boolean, enabled: Boolean) {
         if (!enabled) {
             // "Play on this phone" was switched off and no downloads are loaded.
             playing = false
+            playFocus.onStop()
             setNoisyReceiver(false)
             volumeFollower?.setActive(false)
             focus.abandon()
@@ -275,14 +305,11 @@ class PlaybackService : MediaLibraryService() {
         playing = wantsToPlay
         volumeFollower?.setActive(wantsToPlay)
         if (wantsToPlay) {
-            if (!focus.request()) {
-                // Refused (a call is in progress): don't play over it.
-                host.localPlayer.setHold(true)
-                scope.launch { controller.pause() }
-                return
-            }
             setNoisyReceiver(true)
+            // Once per start of playback; a refusal pauses only for a real conflict.
+            playFocus.onPlay()
         } else {
+            playFocus.onStop()
             // The locks stay a while yet (see [LockKeeper]).
             setNoisyReceiver(false)
             // Keep focus through a transient loss so we can resume; give it up otherwise.
@@ -349,6 +376,7 @@ class PlaybackService : MediaLibraryService() {
         // The engine clears any mixer attributes through the negotiator that set them.
         host.localPlayer.setOutputNegotiator(null)
         host.offlinePlayer?.setOutputNegotiator(null)
+        playFocus.onStop()
         setNoisyReceiver(false)
         focus.abandon()
         locks.hold(false)
@@ -360,6 +388,13 @@ class PlaybackService : MediaLibraryService() {
         super.onDestroy()
     }
 }
+
+/** Audio modes in which a call is ringing or on: a focus refusal then is a real conflict. */
+private val CALL_MODES = setOf(
+    AudioManager.MODE_RINGTONE,
+    AudioManager.MODE_IN_CALL,
+    AudioManager.MODE_IN_COMMUNICATION,
+)
 
 /**
  * When to hold the wake and Wi-Fi locks: while this phone plays or its engine starts a
