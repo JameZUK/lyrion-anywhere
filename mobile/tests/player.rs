@@ -3303,3 +3303,121 @@ async fn a_track_that_ended_long_before_the_server_went_away_stays_stopped() {
 async fn a_player_lms_stopped_stays_stopped_with_the_server_away() {
     track_end_then_away(Before::LmsStops).await;
 }
+
+// --- Reconnect pacing (M11) ----------------------------------------------------------------
+
+/// A fake gateway whose player socket greets and then closes at once (LMS restarting
+/// mid-upgrade, or a duplicate player), every time. Its refresh endpoint always signs in.
+/// When each player socket was opened.
+async fn greet_then_close_gateway() -> (Arc<Mutex<Vec<std::time::Instant>>>, Arc<Server>) {
+    use axum::extract::ws::{Message, WebSocketUpgrade};
+    use axum::routing::{any, post};
+
+    let opened: Arc<Mutex<Vec<std::time::Instant>>> = Arc::default();
+    let o = opened.clone();
+    let app = axum::Router::new()
+        .route(
+            "/v1/auth/refresh",
+            post(|| async {
+                axum::Json(serde_json::json!({
+                    "access_token": "access",
+                    "refresh_token": "refresh",
+                    "expires_in": 900,
+                    "user": {"username": "alice", "role": "listener"},
+                    "device": {"id": 1, "name": "Phone", "mac": "02:4c:41:00:00:01"},
+                }))
+            }),
+        )
+        .route(
+            "/v1/player",
+            any(move |ws: WebSocketUpgrade| {
+                let o = o.clone();
+                async move {
+                    o.lock().unwrap().push(std::time::Instant::now());
+                    ws.on_upgrade(|mut s| async move {
+                        let _ = s.recv().await;
+                        let greeting = serde_json::json!({
+                            "session": "0123456789abcdef0123456789abcdef",
+                            "secret": "fedcba9876543210fedcba9876543210",
+                            "mac": "02:4c:41:00:00:01",
+                            "name": "Phone",
+                            "resumed": false,
+                            "grace": 60,
+                        });
+                        let _ = s.send(Message::Text(greeting.to_string().into())).await;
+                        let _ = s.send(Message::Close(None)).await;
+                    })
+                }
+            }),
+        );
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    (opened, Server::new(format!("http://{addr}")).unwrap())
+}
+
+/// M11 regression: a server that greets and then closes at once is reconnected to with a
+/// growing backoff, not every half second for ever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_that_greets_then_closes_gets_a_growing_backoff() {
+    let (opened, server) = greet_then_close_gateway().await;
+    let store = MemStore::with(anywhere_mobile::StoredCredentials {
+        refresh_token: "refresh-start".into(),
+        device_id: 1,
+    });
+    let session = Session::new(server, store, "Test phone".into()).unwrap();
+    let player = LocalPlayer::new(
+        session,
+        LocalPlayerConfig {
+            output: OutputKind::Pull,
+            max_sample_rate: 192_000,
+            cache_dir: None,
+            read_ahead: true,
+            stream_cache_bytes: 0,
+            downloads_dir: None,
+            dsp: DspSettings::default(),
+        },
+    );
+    player.start(Arc::new(Obs::default())).unwrap();
+    let o = opened.clone();
+    wait_for("connected", move || !o.lock().unwrap().is_empty()).await;
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    player.stop();
+    let at = opened.lock().unwrap().clone();
+    let gaps: Vec<Duration> = at.windows(2).map(|w| w[1] - w[0]).collect();
+    // About 0.5, 1, 2 and 4 s (±20 %): five or six in 8 s, not sixteen.
+    assert!(at.len() <= 7, "{} connections in 8 s: {gaps:?}", at.len());
+    assert!(gaps.len() >= 3, "{gaps:?}");
+    assert!(
+        gaps[2] > gaps[0] && *gaps.last().unwrap() >= Duration::from_millis(1500),
+        "the delay grows: {gaps:?}"
+    );
+}
+
+/// M11 regression: the network flapping (as Android reports during a handover) does not
+/// reconnect on every report.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn network_flaps_do_not_reconnect_on_every_report() {
+    let r = rig_opts(RigOpts {
+        proxy: true,
+        ..RigOpts::default()
+    })
+    .await;
+    let statuses = r.obs.statuses.lock().unwrap().len();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let proxy = r.proxy.as_ref().unwrap();
+    let before = proxy.accepted.load(Ordering::SeqCst);
+    for _ in 0..20 {
+        r.player.set_network_available(false);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        r.player.set_network_available(true);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    wait_reconnected(&r, statuses, 20).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let made = proxy.accepted.load(Ordering::SeqCst) - before;
+    assert!(made <= 3, "{made} connections for 20 flaps in a second");
+    // And it is connected at the end.
+    assert_eq!(r.player.status().connection, PlayerConnection::Connected);
+    r.player.stop();
+}

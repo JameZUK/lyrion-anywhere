@@ -144,6 +144,14 @@ const FEED_PER_CALL: usize = 1024 * 1024;
 /// How long the first connection waits for `/v1/me` (to know whether to ask for a longer
 /// resume grace) before going ahead without it.
 const FEATURES_WAIT: Duration = Duration::from_secs(2);
+/// A connection that has lived this long after its greeting counts as working: the
+/// reconnect backoff starts again from the beginning. Sooner (a server that greets and
+/// drops the connection at once), each reconnect waits longer.
+const STABLE_AFTER: Duration = Duration::from_secs(5);
+/// The network coming back reconnects at once only this long after the last connection
+/// was opened (Android reports several changes a second during a handover); an outage
+/// at least this long also starts the backoff again.
+const NETWORK_SETTLE: Duration = Duration::from_millis(1500);
 /// In a sync group, how long to wait after a stall for enough audio to skip the stall
 /// before deciding (see [`stall_step`]).
 const REJOIN_WAIT: Duration = Duration::from_secs(2);
@@ -366,6 +374,11 @@ pub(crate) struct Engine {
     ws_task: Option<tokio::task::AbortHandle>,
     open: bool,
     attempt: u32,
+    /// When the open connection was greeted, until it has lived [`STABLE_AFTER`].
+    greeted_at: Option<Instant>,
+    /// When a connection was last opened, and when the network last went.
+    last_connect: Option<Instant>,
+    network_lost_at: Option<Instant>,
     disconnected_at: Option<Instant>,
     reconnect_at: Option<(Instant, bool)>,
     renewals_in_a_row: u32,
@@ -544,6 +557,9 @@ impl Engine {
             ws_task: None,
             open: false,
             attempt: 0,
+            greeted_at: None,
+            last_connect: None,
+            network_lost_at: None,
             disconnected_at: None,
             reconnect_at: None,
             renewals_in_a_row: 0,
@@ -755,7 +771,8 @@ impl Engine {
 
     /// The app says whether the phone has a network. Without one, the socket is dropped at
     /// once (its grace starts) and no reconnect is tried until the network is back; then
-    /// one is tried at once.
+    /// one is tried at once, or [`NETWORK_SETTLE`] after the last if that was only just
+    /// now (a flapping network).
     fn set_network(&mut self, up: bool) {
         if up == self.network {
             return;
@@ -766,6 +783,7 @@ impl Engine {
             return;
         }
         if !up {
+            self.network_lost_at = Some(Instant::now());
             if self.ws_task.is_some() || self.open {
                 if let Some(t) = self.ws_task.take() {
                     t.abort();
@@ -775,11 +793,22 @@ impl Engine {
                 self.waiting_for_network = Some(resume);
             }
         } else {
-            self.attempt = 0;
+            let now = Instant::now();
+            // A real outage starts the backoff again; a flap doesn't.
+            if self
+                .network_lost_at
+                .is_none_or(|t| now.duration_since(t) >= NETWORK_SETTLE)
+            {
+                self.attempt = 0;
+            }
+            // At once, unless a connection was opened only just now.
+            let at = self
+                .last_connect
+                .map_or(now, |t| (t + NETWORK_SETTLE).max(now));
             if let Some(resume) = self.waiting_for_network.take() {
-                self.reconnect_at = Some((Instant::now(), resume));
+                self.reconnect_at = Some((at, resume));
             } else if let Some((_, resume)) = self.reconnect_at {
-                self.reconnect_at = Some((Instant::now(), resume));
+                self.reconnect_at = Some((at, resume));
             }
         }
         self.update_link();
@@ -813,6 +842,8 @@ impl Engine {
             t.abort();
         }
         self.ws_gen += 1;
+        self.last_connect = Some(Instant::now());
+        self.greeted_at = None;
         let (out_tx, out_rx) = mpsc::unbounded_channel();
         self.ws_out = Some(out_tx);
         self.open = false;
@@ -848,7 +879,9 @@ impl Engine {
 
     fn on_greeting(&mut self, g: Greeting) {
         self.open = true;
-        self.attempt = 0;
+        // The backoff starts again only once this connection has lived a while (see
+        // `on_tick`): a server that greets and drops at once is not retried every 0.5 s.
+        self.greeted_at = Some(Instant::now());
         self.renewals_in_a_row = 0;
         self.disconnected_at = None;
         self.connection = PlayerConnection::Connected;
@@ -1804,6 +1837,14 @@ impl Engine {
     }
 
     fn on_tick(&mut self) {
+        if self.open
+            && self
+                .greeted_at
+                .is_some_and(|t| t.elapsed() >= STABLE_AFTER)
+        {
+            self.greeted_at = None;
+            self.attempt = 0;
+        }
         if self.ws_gen == 0 && self.connect_at.is_some_and(|t| Instant::now() >= t) && !self.stopped
         {
             // `/v1/me` didn't answer in time: connect without asking for a longer grace.
