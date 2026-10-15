@@ -2511,6 +2511,7 @@ impl Engine {
             .lock()
             .ok()
             .and_then(|s| s.last_error.clone());
+        let clock = self.audio.output_clock();
         LocalPlayerStatus {
             connection: self.connection.clone(),
             playback,
@@ -2529,6 +2530,9 @@ impl Engine {
             from_cache: self.hearing_from_cache(),
             from_downloads: self.hearing_from_downloads(),
             offline_controls: self.controls.clone(),
+            output_clock: clock.clock,
+            output_latency_ms: clock.latency_ms,
+            output_clock_errors: clock.errors_per_min,
         }
     }
 

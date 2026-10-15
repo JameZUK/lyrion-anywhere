@@ -17,8 +17,9 @@ use std::time::Duration;
 use anywhere_core::proto::{Strm, encode_server_frame, format_mac};
 use anywhere_mobile::{
     DspSettings, LocalPlayback, LocalPlayer, LocalPlayerConfig, LocalPlayerObserver,
-    LocalPlayerStatus, MixerOffer, NotBitPerfect, OfferBlocker, OutputKind, OutputNegotiator,
-    OutputOffers, PcmEncoding, PlayerConnection, Server, Session, SignalPathInfo, SignalVerdict,
+    LocalPlayerStatus, MixerOffer, NotBitPerfect, OfferBlocker, OutputClock, OutputKind,
+    OutputNegotiator, OutputOffers, PcmEncoding, PlayerConnection, Server, Session, SignalPathInfo,
+    SignalVerdict,
 };
 use common::flac;
 use common::*;
@@ -518,6 +519,12 @@ async fn a_rate_change_reopens_the_output_at_the_new_rate() {
     );
     assert!(!path.resampled);
     assert!(r.obs.saw(|s| s.output_rate == 96_000));
+    // A host that pulls PCM has no device clock: the status says the position is estimated
+    // (and, with no buffer reported, no latency is assumed), and counts no errors for it.
+    assert!(r.obs.saw(|s| s.output_clock == Some(OutputClock::Estimated)
+        && s.output_latency_ms == 0
+        && s.output_clock_errors == 0));
+    assert!(r.obs.saw(|s| s.output_clock.is_none()));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

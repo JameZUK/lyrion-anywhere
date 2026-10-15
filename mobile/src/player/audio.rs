@@ -141,6 +141,9 @@ pub(crate) struct AudioPath {
     heard_pos: u64,
     /// The visualiser's analysis (nothing while the app hasn't asked for it).
     visual: VisualTap,
+    /// How what is heard is known at the output (the device's timestamp or an estimate),
+    /// with its latency and errors, for the status.
+    meter: clock::OutputMeter,
 }
 
 /// What the transitions ask about tracks, from the engine's lookups and the pipeline.
@@ -195,7 +198,13 @@ impl AudioPath {
             transitions: Transitions::new(transitions),
             heard_pos: 0,
             visual: VisualTap::default(),
+            meter: clock::OutputMeter::default(),
         })
+    }
+
+    /// How the output's position is known now, for the status.
+    pub(crate) fn output_clock(&self) -> clock::OutputClockReport {
+        self.meter.report()
     }
 
     /// The signal path may have changed since the last call.
@@ -220,10 +229,11 @@ impl AudioPath {
 
     /// Source frames that have become audible since the last call, as of monotonic time
     /// `now_ns`: what the output has presented by then (from its timestamp), not just what
-    /// it has been handed. Without a timestamp, what it has been handed.
+    /// it has been handed. Without a usable timestamp, what it has been handed less the
+    /// device's buffer.
     pub(crate) fn played_at(&mut self, now_ns: i64) -> u64 {
-        let ring = &self.out.ring;
         let dev = self.heard_frame(now_ns);
+        let ring = &self.out.ring;
         let pos = ring.presented_pos(dev).max(self.heard_pos);
         self.heard_pos = pos;
         let played = self.pipeline.played(pos);
@@ -231,15 +241,16 @@ impl AudioPath {
         played
     }
 
-    /// The device frame being heard at `now_ns`.
-    fn heard_frame(&self, now_ns: i64) -> u64 {
+    /// The device frame being heard at `now_ns` (and, on the way, the output clock's
+    /// latency and errors for the status).
+    fn heard_frame(&mut self, now_ns: i64) -> u64 {
         let written = self.out.ring.device_frames();
-        match (self.output.timestamp(), self.pipeline.out_rate()) {
-            (Some(ts), Some(rate)) if ts.usable(now_ns) => {
-                clock::frame_at(ts, rate, now_ns, written)
-            }
-            _ => written,
-        }
+        let Some(rate) = self.pipeline.out_rate() else {
+            return written;
+        };
+        let pres = self.output.presentation();
+        let buffer = self.output.buffer_frames();
+        self.meter.heard(now_ns, rate, written, pres, buffer)
     }
 
     /// Apply one of LMS's sync corrections at the output: `host_ns` converts the core's
@@ -308,6 +319,7 @@ impl AudioPath {
     /// Close the output for good (stopping): Android's normal mixing is restored.
     pub(crate) fn close_output(&mut self, src: Option<&mut dyn AudioSource>) {
         self.output.close();
+        self.meter.closed();
         self.clear_mixer_attributes();
         self.route_state = RouteState::default();
         self.out_encoding = PcmEncoding::Float;
@@ -483,6 +495,7 @@ impl AudioPath {
             return false;
         }
         self.output.close();
+        self.meter.closed();
         self.current_source = source;
         let spec = SourceSpec {
             rate,
@@ -585,6 +598,7 @@ impl AudioPath {
         self.out_encoding = encoding;
         self.pipeline.set_output_bits(bits);
         self.output_failed_at = None;
+        self.meter.opened();
     }
 
     fn reopen_output(&mut self, src: Option<&mut dyn AudioSource>) {
@@ -592,6 +606,7 @@ impl AudioPath {
             return;
         };
         self.output.close();
+        self.meter.closed();
         self.output_failed_at = None;
         self.signal_dirty = true;
         if self.negotiator().is_some() || self.route_state.direct {
@@ -611,7 +626,10 @@ impl AudioPath {
         let ring = self.out.ring.clone();
         let out = self.pipeline.out_rate().unwrap_or(src_rate);
         match self.output.open(&ring, out, PcmEncoding::Float) {
-            Ok(o) => self.device = o.device,
+            Ok(o) => {
+                self.device = o.device;
+                self.meter.opened();
+            }
             Err(_) => {
                 // The new device can't take that rate: start over (fallbacks, resampling).
                 self.pipeline.unconfigure();
@@ -714,4 +732,169 @@ pub(crate) fn dsp_transitions(dsp: &DspSettings) -> super::transitions::Transiti
         fade_s: dsp.crossfade_s,
     }
     .sanitised()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::player::clock::{OutputClock, Presentation, Timestamp};
+    use crate::player::ring::Consumer;
+
+    /// What the fake output reports, and the ring's consumer it took (the "device").
+    #[derive(Default)]
+    struct FakeState {
+        presentation: Option<Presentation>,
+        buffer: Option<u64>,
+        consumer: Option<Consumer>,
+    }
+
+    /// A test double for an output device: opens at any rate, reports whatever timestamp
+    /// and buffer the test sets, and lets the test play frames through it.
+    struct FakeOutput(Arc<Mutex<FakeState>>);
+
+    impl AudioOutput for FakeOutput {
+        fn open(
+            &mut self,
+            ring: &Arc<Ring>,
+            rate: u32,
+            encoding: PcmEncoding,
+        ) -> Result<super::super::output::Opened, String> {
+            let mut s = self.0.lock().unwrap();
+            s.consumer = None;
+            s.consumer = Some(ring.consumer().ok_or("in use")?);
+            ring.reset_device_clock();
+            Ok(super::super::output::Opened {
+                rate,
+                encoding,
+                device: "Fake".into(),
+            })
+        }
+
+        fn close(&mut self) {
+            self.0.lock().unwrap().consumer = None;
+        }
+
+        fn poll_event(&mut self) -> Option<OutputEvent> {
+            None
+        }
+
+        fn timestamp(&self) -> Option<Timestamp> {
+            match self.0.lock().unwrap().presentation {
+                Some(Presentation::At(ts)) => Some(ts),
+                _ => None,
+            }
+        }
+
+        fn presentation(&self) -> Presentation {
+            self.0
+                .lock()
+                .unwrap()
+                .presentation
+                .unwrap_or(Presentation::Unsupported)
+        }
+
+        fn buffer_frames(&self) -> Option<u64> {
+            self.0.lock().unwrap().buffer
+        }
+    }
+
+    const RATE: u32 = 48_000;
+
+    /// An audio path on the fake output, open at 48 kHz, with a second of audio queued.
+    fn path_with_audio() -> (AudioPath, Arc<Mutex<FakeState>>) {
+        let ring = Ring::new(1 << 18);
+        let out = Arc::new(OutputShared {
+            ring: ring.clone(),
+            hold: AtomicBool::new(false),
+            route: Mutex::new(OutputRoute::default()),
+            negotiator: Mutex::new(None),
+            visual: Arc::new(VisualShared::default()),
+        });
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let mut path = AudioPath::new(
+            out,
+            Box::new(FakeOutput(state.clone())),
+            DspSettings::default(),
+        )
+        .unwrap();
+        assert!(path.open_output(RATE, None, &mut NoSource));
+        let block = vec![0.25f32; RATE as usize * CHANNELS];
+        path.pipeline
+            .push_counted(&block, 0, None, None, None, u64::from(RATE));
+        assert!(path.pipeline.write_pending(&mut path.producer));
+        ring.set_hold(false);
+        (path, state)
+    }
+
+    /// The device takes `frames` frames from the ring.
+    fn play(state: &Arc<Mutex<FakeState>>, frames: usize) {
+        let mut buf = vec![0f32; frames * CHANNELS];
+        state
+            .lock()
+            .unwrap()
+            .consumer
+            .as_mut()
+            .unwrap()
+            .read(&mut buf);
+    }
+
+    /// No usable timestamp and a 4800-frame device buffer at 48 kHz: what is reported as
+    /// heard is 100 ms less than what was handed over, and it never goes backwards.
+    #[test]
+    fn without_a_timestamp_the_device_buffer_is_taken_off() {
+        let (mut path, state) = path_with_audio();
+        state.lock().unwrap().buffer = Some(4800);
+        state.lock().unwrap().presentation = Some(Presentation::Unavailable);
+        play(&state, 24_000);
+        let now = clock::mono_ns();
+        assert_eq!(path.out.ring.device_frames(), 24_000);
+        let mut heard = path.played_at(now);
+        assert_eq!(heard, 24_000 - 4800, "100 ms less than written");
+        let report = path.output_clock();
+        assert_eq!(report.clock, Some(OutputClock::Estimated));
+        assert_eq!(report.latency_ms, 100);
+        // The buffer grows (AAudio may enlarge it): what was heard stays heard.
+        state.lock().unwrap().buffer = Some(9600);
+        play(&state, 960);
+        heard += path.played_at(now + 20_000_000);
+        assert_eq!(heard, 24_000 - 4800);
+        // And carries on as more is played.
+        for i in 0..20 {
+            play(&state, 960);
+            heard += path.played_at(now + (i + 2) * 20_000_000);
+            assert!(heard >= 24_000 - 4800);
+        }
+        assert_eq!(heard, 24_000 + 21 * 960 - 9600);
+    }
+
+    /// With a usable timestamp, what is heard comes from it, and the latency is measured.
+    #[test]
+    fn with_a_timestamp_the_device_clock_is_used() {
+        let (mut path, state) = path_with_audio();
+        state.lock().unwrap().buffer = Some(4800);
+        play(&state, 24_000);
+        let now = clock::mono_ns();
+        state.lock().unwrap().presentation = Some(Presentation::At(Timestamp {
+            frame: 24_000 - 1920,
+            at_ns: now,
+        }));
+        assert_eq!(path.played_at(now), 24_000 - 1920);
+        let report = path.output_clock();
+        assert_eq!(report.clock, Some(OutputClock::Device));
+        assert_eq!(report.latency_ms, 40);
+        assert_eq!(report.errors_per_min, 0);
+    }
+
+    /// Closing the output: no clock to report.
+    #[test]
+    fn a_closed_output_has_no_clock() {
+        let (mut path, state) = path_with_audio();
+        play(&state, 4800);
+        path.played_at(clock::mono_ns());
+        assert!(path.output_clock().clock.is_some());
+        path.close_output(None);
+        assert_eq!(path.output_clock().clock, None);
+    }
 }

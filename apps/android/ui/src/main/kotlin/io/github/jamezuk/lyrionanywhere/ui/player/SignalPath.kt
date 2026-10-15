@@ -35,6 +35,8 @@ import io.github.jamezuk.lyrionanywhere.core.SignalPathInfo
 import io.github.jamezuk.lyrionanywhere.core.SignalStage
 import io.github.jamezuk.lyrionanywhere.core.SignalVerdict
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerState
+import io.github.jamezuk.lyrionanywhere.data.OutputTiming
+import io.github.jamezuk.lyrionanywhere.core.OutputClock
 import io.github.jamezuk.lyrionanywhere.ui.R
 
 /** "44.1 kHz", "96 kHz", "176.4 kHz". */
@@ -89,6 +91,38 @@ fun CushionLine(ms: Long?, modifier: Modifier = Modifier) {
     )
 }
 
+/**
+ * "Output clock: device · latency 38 ms" or "Output clock: estimated · latency about 90 ms",
+ * with the device timestamp's errors a minute when there are any: whether the position this
+ * phone reports to LMS (and so its sync with other players) comes from the device's own
+ * clock. Nothing while no output is open.
+ */
+@Composable
+fun OutputClockLine(timing: OutputTiming?, modifier: Modifier = Modifier) {
+    timing ?: return
+    val ms = timing.latencyMs.coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
+    val errors = timing.errorsPerMinute.coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
+    val device = timing.clock == OutputClock.DEVICE
+    val errorText = if (errors > 0) pluralStringResource(R.plurals.output_clock_errors, errors, errors) else null
+    val shown = listOfNotNull(
+        stringResource(if (device) R.string.output_clock_device else R.string.output_clock_estimated, ms),
+        errorText,
+    ).joinToString(" · ")
+    val spoken = listOfNotNull(
+        stringResource(
+            if (device) R.string.output_clock_device_spoken else R.string.output_clock_estimated_spoken,
+            pluralStringResource(R.plurals.output_latency_spoken, ms, ms),
+        ),
+        errorText,
+    ).joinToString(", ")
+    Text(
+        shown,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier.semantics { contentDescription = spoken },
+    )
+}
+
 @Composable
 private fun verdictText(v: SignalVerdict): String = stringResource(
     when (v) {
@@ -115,6 +149,8 @@ fun SignalPathPanel(
     eq: String? = null,
     /** Listening held ahead while reading ahead (ms; null: none to show). */
     cushionMs: Long? = null,
+    /** How the engine knows what the speaker plays (null: not known or no output). */
+    outputTiming: OutputTiming? = null,
 ) {
     Card(modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -183,6 +219,7 @@ fun SignalPathPanel(
                 stringResource(R.string.signal_output),
                 listOf(path.outputDevice, formatRate(path.outputRate), path.outputFormat).joinToString(" · "),
             )
+            OutputClockLine(outputTiming, Modifier.testTag("signal-output-clock"))
             val note = when {
                 path.bitPerfect -> R.string.signal_note_bit_perfect
                 path.engineBitPerfect -> R.string.signal_note_mixer
