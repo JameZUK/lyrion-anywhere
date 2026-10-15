@@ -452,6 +452,22 @@ impl Gateway {
         &self.accounts
     }
 
+    /// Run database work on tokio's blocking pool, never on an async worker. SQLite writes
+    /// commit (and fsync) under the store's one lock: on a disk that stalls, work done
+    /// inline would hold up every task on that worker (player sessions, their heartbeats)
+    /// and then, through the lock, the other workers too. Here only the request that needs
+    /// the write waits.
+    pub(crate) async fn db<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Accounts) -> T + Send + 'static,
+    ) -> T {
+        let accounts = self.accounts.clone();
+        match tokio::task::spawn_blocking(move || f(&accounts)).await {
+            Ok(v) => v,
+            Err(e) => std::panic::resume_unwind(e.into_panic()),
+        }
+    }
+
     /// The track analysis service, if it is on.
     pub fn analysis(&self) -> Option<&analysis::Analysis> {
         self.analysis.as_ref()
@@ -496,9 +512,10 @@ impl Gateway {
         owner: Option<i64>,
         name: &str,
     ) -> Result<String, accounts::AuthError> {
+        let wanted = name.to_string();
         let (name, changed) = self
-            .accounts
-            .rename_device_if_changed(device_id, owner, name)?;
+            .db(move |a| a.rename_device_if_changed(device_id, owner, &wanted))
+            .await?;
         if !changed {
             return Ok(name);
         }
@@ -746,9 +763,13 @@ async fn note_device_use(
         .and_then(|v| v.strip_prefix("Bearer "))
         .and_then(|t| gw.accounts.authenticate(t))
         .map(|p| p.device_id);
-    if let Some(device) = device {
+    // The throttle is checked here (cheap, in memory); the rare write that follows runs on
+    // the blocking pool.
+    if let Some(device) = device
+        && gw.accounts.claim_seen(device)
+    {
         let addr = client_addr(&gw.cfg, peer, req.headers());
-        gw.accounts.note_seen(device, addr);
+        gw.db(move |a| a.write_seen(device, addr)).await;
     }
     next.run(req).await
 }

@@ -290,8 +290,16 @@ async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
         session.detach(&gw, generation);
         return;
     }
-    gw.accounts.touch_device(session.device.device_id);
-    gw.accounts.note_seen(session.device.device_id, addr);
+    // Off the async workers (M7): a stalled disk must not hold up other sessions.
+    let device = session.device.device_id;
+    let seen = gw.accounts.claim_seen(device);
+    gw.db(move |a| {
+        a.touch_device(device);
+        if seen {
+            a.write_seen(device, addr);
+        }
+    })
+    .await;
     info!(device = %session.name(), user = %session.device.username, mac = %session.device.mac_string(), resumed, "player attached");
 
     let (sink, stream) = ws.split();

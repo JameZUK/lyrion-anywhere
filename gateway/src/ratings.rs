@@ -380,7 +380,12 @@ pub async fn put(
     let Some(k) = known.into_iter().next() else {
         return error(StatusCode::NOT_FOUND, "no such track");
     };
-    if set(gw.accounts(), p.user_id, &k.key, id, rating, unix_now()).is_err() {
+    let (user, key) = (p.user_id, k.key.clone());
+    if gw
+        .db(move |a| set(a, user, &key, id, rating, unix_now()))
+        .await
+        .is_err()
+    {
         return internal();
     }
     // Clearing takes back only the user's own rating: LMS's shared one is everyone's.
@@ -469,23 +474,32 @@ pub async fn batch(State(gw): State<AppState>, headers: HeaderMap, body: Body) -
             Err(r) => return r,
         }
     }
-    let (mut applied, mut skipped) = (0, 0);
-    // What LMS's shared rating ends as: one write per track, never a clear.
-    let mut shared: std::collections::BTreeMap<u64, u32> = Default::default();
-    for (id, key, rating, at) in wanted {
-        if !known.iter().any(|k| k.id == id && k.key == key) {
-            skipped += 1; // not that track (any more)
-            continue;
-        }
-        match set(gw.accounts(), p.user_id, &key, id, rating, at) {
-            Ok(true) => {
-                applied += 1;
-                shared.insert(id, rating);
+    // Up to 500 writes: on the blocking pool (M7).
+    let user = p.user_id;
+    let stored = gw
+        .db(move |a| {
+            let (mut applied, mut skipped) = (0, 0);
+            // What LMS's shared rating ends as: one write per track, never a clear.
+            let mut shared: std::collections::BTreeMap<u64, u32> = Default::default();
+            for (id, key, rating, at) in wanted {
+                if !known.iter().any(|k| k.id == id && k.key == key) {
+                    skipped += 1; // not that track (any more)
+                    continue;
+                }
+                match set(a, user, &key, id, rating, at)? {
+                    true => {
+                        applied += 1;
+                        shared.insert(id, rating);
+                    }
+                    false => skipped += 1, // a newer rating is kept
+                }
             }
-            Ok(false) => skipped += 1, // a newer rating is kept
-            Err(_) => return internal(),
-        }
-    }
+            Ok::<_, AuthError>((applied, skipped, shared))
+        })
+        .await;
+    let Ok((applied, skipped, shared)) = stored else {
+        return internal();
+    };
     // Within the budget, and only while LMS takes them: a hanging or missing Ratings
     // Light costs one short wait, not one per track.
     let deadline = std::time::Instant::now() + SHARED_BUDGET;
@@ -504,7 +518,8 @@ pub async fn delete_all(State(gw): State<AppState>, headers: HeaderMap) -> Respo
         Ok(p) => p,
         Err(r) => return r,
     };
-    match clear(gw.accounts(), p.user_id) {
+    let user = p.user_id;
+    match gw.db(move |a| clear(a, user)).await {
         Ok(n) => ok(json!({ "removed": n })),
         Err(_) => internal(),
     }
@@ -548,7 +563,8 @@ pub async fn put_style(State(gw): State<AppState>, headers: HeaderMap, body: Bod
             );
         }
     };
-    match set_style(gw.accounts(), p.user_id, heart) {
+    let user = p.user_id;
+    match gw.db(move |a| set_style(a, user, heart)).await {
         Ok(()) => ok(json!({ "style": if heart { "heart" } else { "stars" } })),
         Err(_) => internal(),
     }

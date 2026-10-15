@@ -650,6 +650,9 @@ pub struct Accounts {
     seen: Mutex<HashMap<i64, Instant>>,
     /// Renewals per device in the current window: (window start, count).
     refreshes: Mutex<HashMap<i64, (Instant, u32)>>,
+    /// Tests only: how long each device-bookkeeping and renewal write stalls (ms), as on a
+    /// disk that has stopped answering. 0 in production.
+    write_stall_ms: AtomicU64,
 }
 
 fn now_secs() -> i64 {
@@ -826,6 +829,7 @@ impl Accounts {
             forget: Mutex::new(Default::default()),
             seen: Mutex::new(HashMap::new()),
             refreshes: Mutex::new(HashMap::new()),
+            write_stall_ms: AtomicU64::new(0),
         })
     }
 
@@ -1220,6 +1224,7 @@ impl Accounts {
         let presented = fingerprint_of_hash(&h);
         type Row = (i64, i64, i64, Option<i64>, Option<Vec<u8>>);
         let mut db = self.db.lock().unwrap();
+        self.stall_write();
         let tx = db.transaction()?;
         let row: Option<Row> = tx
             .query_row(
@@ -2260,6 +2265,21 @@ impl Accounts {
     }
 
     fn note_seen_at(&self, device_id: i64, addr: std::net::IpAddr, now: Instant) -> bool {
+        if !self.claim_seen_at(device_id, now) {
+            return false;
+        }
+        self.write_seen(device_id, addr);
+        true
+    }
+
+    /// The in-memory half of [`Self::note_seen`]: is a write of the device's last address due
+    /// (and if so, it is counted as done)? Cheap, so callers on async workers check it inline
+    /// and run [`Self::write_seen`] off them only when it says so.
+    pub fn claim_seen(&self, device_id: i64) -> bool {
+        self.claim_seen_at(device_id, Instant::now())
+    }
+
+    fn claim_seen_at(&self, device_id: i64, now: Instant) -> bool {
         {
             let mut seen = self.seen.lock().unwrap();
             if let Some(at) = seen.get(&device_id)
@@ -2278,18 +2298,26 @@ impl Accounts {
             }
             seen.insert(device_id, now);
         }
-        let _ = self.db.lock().unwrap().execute(
+        true
+    }
+
+    /// The database half of [`Self::note_seen`]: write the device's last address and time.
+    pub fn write_seen(&self, device_id: i64, addr: std::net::IpAddr) {
+        let db = self.db.lock().unwrap();
+        self.stall_write();
+        let _ = db.execute(
             "UPDATE devices SET last_seen = ?1, last_addr = ?2 WHERE id = ?3 AND revoked = 0",
             params![now_secs(), addr.to_string(), device_id],
         );
-        true
     }
 
     /// At sign-in and renewal: record where the device is and what it said about itself
     /// (always written; parts the client didn't send are left as they were).
     pub fn record_client(&self, device_id: i64, addr: std::net::IpAddr, info: &ClientInfo) {
         self.seen.lock().unwrap().insert(device_id, Instant::now());
-        let _ = self.db.lock().unwrap().execute(
+        let db = self.db.lock().unwrap();
+        self.stall_write();
+        let _ = db.execute(
             "UPDATE devices SET last_seen = ?1, last_addr = ?2,
                client_kind = COALESCE(?3, client_kind),
                client_platform = COALESCE(?4, client_platform),
@@ -2397,6 +2425,23 @@ impl Accounts {
         Ok((name, true))
     }
 
+    /// Make the device-bookkeeping and renewal writes (`note_seen`, `record_client`,
+    /// `touch_device`, `refresh`) stall for `d` each, holding the database, as a disk that
+    /// has stopped answering would (tests only).
+    #[doc(hidden)]
+    pub fn stall_writes_for_test(&self, d: Duration) {
+        self.write_stall_ms
+            .store(d.as_millis() as u64, Ordering::Relaxed);
+    }
+
+    /// See [`Self::stall_writes_for_test`]: called with the database lock held.
+    fn stall_write(&self) {
+        let ms = self.write_stall_ms.load(Ordering::Relaxed);
+        if ms > 0 {
+            std::thread::sleep(Duration::from_millis(ms));
+        }
+    }
+
     /// Make every outstanding pairing code expired (tests only).
     #[doc(hidden)]
     pub fn expire_pairing_codes_for_test(&self) {
@@ -2423,7 +2468,9 @@ impl Accounts {
     }
 
     pub fn touch_device(&self, device_id: i64) {
-        let _ = self.db.lock().unwrap().execute(
+        let db = self.db.lock().unwrap();
+        self.stall_write();
+        let _ = db.execute(
             "UPDATE devices SET last_seen = ?1 WHERE id = ?2",
             params![now_secs(), device_id],
         );

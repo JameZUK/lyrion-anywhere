@@ -136,7 +136,7 @@ For players that connect through the gateway, the plugin:
 ### Storage
 
 - State lives in the LMS prefs directory.
-- Account data (users, devices, tokens, audit log) lives in the gateway's SQLite database (D12), not in LMS prefs.
+- Account data (users, devices, tokens, audit log) lives in the gateway's SQLite database (D12), not in LMS prefs. Writes on request and session paths (sign-in, renewal, device bookkeeping, player attach, listening history, ratings, Home, stations, filters) run on tokio's blocking pool, never on an async worker, so a stalling disk holds up only the request that needs the write, not player sessions and their heartbeats. Reads still share the database's one lock, so a long stall can still delay requests that read; the loopback admin API also writes inline.
 
 ---
 

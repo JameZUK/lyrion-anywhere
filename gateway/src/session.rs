@@ -531,22 +531,31 @@ impl Session {
                     played_at,
                     seconds,
                 } => {
-                    let row = gw.note_play(
-                        self.device.user_id,
-                        &track,
-                        played_at,
-                        seconds,
-                        Source::Live,
-                    );
-                    self.state.lock().unwrap().tracker.recorded(serial, row);
+                    // Off the session's task (M7): a stalled disk must not stop it relaying.
+                    let Some(me) = gw.session(&self.id) else {
+                        continue;
+                    };
+                    let gw = gw.clone();
+                    let user = self.device.user_id;
+                    tokio::spawn(async move {
+                        let g = gw.clone();
+                        let row = tokio::task::spawn_blocking(move || {
+                            g.note_play(user, &track, played_at, seconds, Source::Live)
+                        })
+                        .await
+                        .ok()
+                        .flatten();
+                        let more = me.state.lock().unwrap().tracker.recorded(serial, row);
+                        me.run_steps(more.into_iter().collect());
+                    });
                 }
                 Step::Update { row, seconds } => {
-                    let _ = crate::history::update_seconds(
-                        gw.accounts(),
-                        self.device.user_id,
-                        row,
-                        seconds,
-                    );
+                    let user = self.device.user_id;
+                    let gw = gw.clone();
+                    tokio::spawn(async move {
+                        gw.db(move |a| crate::history::update_seconds(a, user, row, seconds))
+                            .await
+                    });
                 }
             }
         }

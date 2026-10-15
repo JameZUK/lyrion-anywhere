@@ -465,7 +465,7 @@ pub async fn record(State(gw): State<AppState>, headers: HeaderMap, body: Body) 
 impl crate::Gateway {
     #[allow(clippy::too_many_arguments)]
     async fn record_one(
-        &self,
+        self: &std::sync::Arc<Self>,
         p: &crate::accounts::Principal,
         play: &Play,
         secret: &str,
@@ -510,7 +510,7 @@ impl crate::Gateway {
     /// Look the track up, apply the counting rule and the rate limit, then have LMS record
     /// it. The key has been claimed.
     async fn forward(
-        &self,
+        self: &std::sync::Arc<Self>,
         p: &crate::accounts::Principal,
         play: &Play,
         secret: &str,
@@ -595,13 +595,12 @@ impl crate::Gateway {
             && let Some(salt) = self.download_salt()
         {
             let info = crate::history::TrackInfo::from_track(track, &salt);
-            self.note_play(
-                p.user_id,
-                &info,
-                play.played_at,
-                play.seconds,
-                crate::history::Source::Offline,
-            );
+            // A database write: on the blocking pool (M7).
+            let (gw, user, at, seconds) = (self.clone(), p.user_id, play.played_at, play.seconds);
+            let _ = tokio::task::spawn_blocking(move || {
+                gw.note_play(user, &info, at, seconds, crate::history::Source::Offline)
+            })
+            .await;
         }
         outcome
     }

@@ -471,7 +471,14 @@ struct Listen {
     row: Option<i64>,
     /// A record step has been issued.
     recording: bool,
+    /// The serial of the record step that will give this listen its row (its own, or that
+    /// of the listen it continues after a seek).
+    record_serial: Option<u64>,
 }
+
+/// Listens that ended while their record step was still being carried out, kept (a few)
+/// until it reports their row, so the time heard in the end is still stored.
+const MAX_AWAITING_ROW: usize = 16;
 
 /// One player's listening, from its own status reports (pure: no I/O, the caller supplies
 /// the clocks and carries out the [`Step`]s).
@@ -489,6 +496,8 @@ pub struct Tracker {
     first_report: Option<Instant>,
     /// Milliseconds heard so far in the session, over every listen.
     credited_ms: u64,
+    /// Ended listens whose row is not known yet: (record serial, seconds heard).
+    awaiting_row: Vec<(u64, f64)>,
 }
 
 impl Tracker {
@@ -515,7 +524,7 @@ impl Tracker {
             // A new track has started. The listen so far waits until LMS says which track
             // this is (it may be the same one, restarted by a seek).
             if let Some(old) = self.prev.take() {
-                out.extend(finish(old.0));
+                out.extend(self.end_listen(old.0));
             }
             if let Some(l) = self.listen.take() {
                 self.prev = Some((l, now));
@@ -528,6 +537,7 @@ impl Tracker {
                 heard_ms: 0,
                 row: None,
                 recording: false,
+                record_serial: None,
             });
             self.last = Some((elapsed_ms, jiffies));
             self.playing = true;
@@ -573,16 +583,21 @@ impl Tracker {
         let Some(l) = self.listen.as_mut().filter(|l| l.serial == serial) else {
             return out;
         };
+        let mut ended_prev = None;
         if let Some((p, ended)) = self.prev.take() {
             let same = matches!((&p.track, &track), (Some(a), Some(b)) if a.id == b.id);
             if same && now.saturating_duration_since(ended) <= MERGE_WITHIN {
                 l.heard_ms = l.heard_ms.saturating_add(p.heard_ms);
                 l.row = p.row;
                 l.recording = p.recording;
+                l.record_serial = p.record_serial;
                 l.started = p.started;
             } else {
-                out.extend(finish(p));
+                ended_prev = Some(p);
             }
+        }
+        if let Some(p) = ended_prev {
+            out.extend(self.end_listen(p));
         }
         if let Some(l) = self.listen.as_mut().filter(|l| l.serial == serial) {
             l.track = track;
@@ -592,26 +607,50 @@ impl Tracker {
     }
 
     /// The record step for listen `serial` was carried out (`row`: its id, or `None` if
-    /// history is off or it failed).
-    pub fn recorded(&mut self, serial: u64, row: Option<i64>) {
-        if let Some(l) = self.listen.as_mut().filter(|l| l.serial == serial) {
+    /// history is off or it failed). The step is carried out off the session's task, so the
+    /// listen may have gone on (after a seek), or ended, meanwhile: an ended one's final time
+    /// heard is stored now.
+    pub fn recorded(&mut self, serial: u64, row: Option<i64>) -> Option<Step> {
+        let mine = |l: &Listen| l.record_serial == Some(serial);
+        if let Some(l) = self.listen.as_mut().filter(|l| mine(l)) {
             l.row = row;
-        } else if let Some((p, _)) = self.prev.as_mut().filter(|(p, _)| p.serial == serial) {
+        } else if let Some((p, _)) = self.prev.as_mut().filter(|(p, _)| mine(p)) {
             p.row = row;
+        } else if let Some(i) = self.awaiting_row.iter().position(|(s, _)| *s == serial) {
+            let (_, seconds) = self.awaiting_row.remove(i);
+            return row.map(|row| Step::Update { row, seconds });
         }
+        None
     }
 
     /// The session ended: whatever is still going ends here.
     pub fn finish(&mut self) -> Vec<Step> {
         let mut out = Vec::new();
         if let Some((p, _)) = self.prev.take() {
-            out.extend(finish(p));
+            out.extend(self.end_listen(p));
         }
         if let Some(l) = self.listen.take() {
-            out.extend(finish(l));
+            out.extend(self.end_listen(l));
         }
         self.playing = false;
         out
+    }
+
+    /// A listen is over: store the seconds heard, now if its row is known, else once its
+    /// record step reports it (see [`Self::recorded`]).
+    fn end_listen(&mut self, l: Listen) -> Option<Step> {
+        let seconds = l.heard_ms as f64 / 1000.0;
+        match (l.row, l.record_serial) {
+            (Some(row), _) => Some(Step::Update { row, seconds }),
+            (None, Some(serial)) if l.recording => {
+                if self.awaiting_row.len() >= MAX_AWAITING_ROW {
+                    self.awaiting_row.remove(0);
+                }
+                self.awaiting_row.push((serial, seconds));
+                None
+            }
+            _ => None,
+        }
     }
 
     /// Seconds heard of the current listen (for tests and diagnostics).
@@ -636,6 +675,7 @@ impl Tracker {
             return None;
         }
         l.recording = true;
+        l.record_serial = Some(l.serial);
         Some(Step::Record {
             serial: l.serial,
             track: track.clone(),
@@ -643,13 +683,6 @@ impl Tracker {
             seconds,
         })
     }
-}
-
-fn finish(l: Listen) -> Option<Step> {
-    l.row.map(|row| Step::Update {
-        row,
-        seconds: l.heard_ms as f64 / 1000.0,
-    })
 }
 
 impl crate::Gateway {
@@ -903,7 +936,8 @@ pub async fn delete(State(gw): State<AppState>, headers: HeaderMap) -> Response 
         Ok(p) => p,
         Err(r) => return r,
     };
-    match clear(gw.accounts(), p.user_id) {
+    let user = p.user_id;
+    match gw.db(move |a| clear(a, user)).await {
         Ok(n) => {
             gw.station_served.forget_user(p.user_id);
             gw.stats.forget_user(p.user_id);
@@ -946,7 +980,8 @@ pub async fn patch(State(gw): State<AppState>, headers: HeaderMap, body: Body) -
             );
         }
     };
-    match set_enabled(gw.accounts(), p.user_id, on) {
+    let user = p.user_id;
+    match gw.db(move |a| set_enabled(a, user, on)).await {
         Ok(()) => {
             // Stats answers are dropped too (switched off, they must show nothing).
             gw.stats.forget_user(p.user_id);
@@ -1342,6 +1377,63 @@ mod tests {
             out.extend(t.on_stat(*b"STMt", elapsed0 + s * 1000, wall as u32, c.at(wall), 0));
         }
         out
+    }
+
+    /// The record step runs off the session's task (M7), so its row can arrive after the
+    /// listen ended: the final time heard is stored then, and only once.
+    #[test]
+    fn a_listen_that_ends_before_its_row_is_known_still_stores_its_time() {
+        let c = Clock(Instant::now());
+        let mut t = Tracker::default();
+        t.on_stat(*b"STMs", 0, 0, c.at(0), 1000);
+        t.resolved(1, Some(track(5, 1, 100.0)), c.at(1500));
+        let steps = play_for(&mut t, &c, 0, 0, 50);
+        assert!(
+            matches!(steps[..], [Step::Record { serial: 1, .. }]),
+            "{steps:?}"
+        );
+        play_for(&mut t, &c, 50_000, 50_000, 10);
+        // The session ends while the record step is still being carried out.
+        assert!(t.finish().is_empty());
+        assert_eq!(
+            t.recorded(1, Some(77)),
+            Some(Step::Update {
+                row: 77,
+                seconds: 60.0
+            })
+        );
+        assert_eq!(t.recorded(1, Some(77)), None);
+        // A record step that failed (no row): nothing to update.
+        let mut t = Tracker::default();
+        t.on_stat(*b"STMs", 0, 0, c.at(0), 1000);
+        t.resolved(1, Some(track(5, 1, 100.0)), c.at(1500));
+        play_for(&mut t, &c, 0, 0, 50);
+        t.finish();
+        assert_eq!(t.recorded(1, None), None);
+    }
+
+    /// A seek continues a listen whose row is still on its way: the row reaches it.
+    #[test]
+    fn a_row_arriving_after_a_seek_reaches_the_continued_listen() {
+        let c = Clock(Instant::now());
+        let mut t = Tracker::default();
+        t.on_stat(*b"STMs", 0, 0, c.at(0), 1000);
+        t.resolved(1, Some(track(5, 1, 100.0)), c.at(1500));
+        play_for(&mut t, &c, 0, 0, 50);
+        // A seek: the same track starts again.
+        t.on_stat(*b"STMs", 70_000, 51_000, c.at(51_000), 1051);
+        assert!(
+            t.resolved(2, Some(track(5, 1, 100.0)), c.at(52_000))
+                .is_empty()
+        );
+        assert_eq!(t.recorded(1, Some(77)), None);
+        // The next track ends it: the row is known.
+        t.on_stat(*b"STMs", 0, 60_000, c.at(60_000), 1060);
+        let steps = t.resolved(3, Some(track(6, 1, 100.0)), c.at(61_000));
+        assert!(
+            matches!(steps[..], [Step::Update { row: 77, .. }]),
+            "{steps:?}"
+        );
     }
 
     #[test]

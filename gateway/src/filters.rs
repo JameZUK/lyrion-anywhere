@@ -674,7 +674,8 @@ pub async fn create(State(gw): State<AppState>, headers: HeaderMap, body: Body) 
         Ok(d) => d,
         Err(e) => return error(StatusCode::BAD_REQUEST, e),
     };
-    match add(gw.accounts(), p.user_id, &draft) {
+    let (user, stored) = (p.user_id, draft.clone());
+    match gw.db(move |a| add(a, user, &stored)).await {
         Ok(id) => {
             let f = Filter {
                 id,
@@ -712,7 +713,8 @@ pub async fn update(
         Ok(d) => d,
         Err(e) => return error(StatusCode::BAD_REQUEST, e),
     };
-    match replace(gw.accounts(), p.user_id, id, &draft) {
+    let (user, stored) = (p.user_id, draft.clone());
+    match gw.db(move |a| replace(a, user, id, &stored)).await {
         Ok(true) => {
             gw.filter_results.forget(p.user_id, id);
             ok(Filter {
@@ -740,7 +742,8 @@ pub async fn delete(
     let Some(id) = parse_id(&id) else {
         return not_found();
     };
-    match remove(gw.accounts(), p.user_id, id) {
+    let user = p.user_id;
+    match gw.db(move |a| remove(a, user, id)).await {
         Ok(true) => {
             gw.filter_results.forget(p.user_id, id);
             ok(json!({"removed": true}))

@@ -1015,13 +1015,17 @@ impl crate::Gateway {
         let result = self.check_menu_ref(p, scope, player, m).await;
         match &result {
             Err(Replay::Broken(why)) => {
-                let _ = set_broken(self.accounts(), p.user_id, station, Some(why));
+                let (user, why) = (p.user_id, *why);
+                let _ = self
+                    .db(move |a| set_broken(a, user, station, Some(why)))
+                    .await;
                 return Err(Replay::Broken(why));
             }
             Err(Replay::Unavailable) => return Err(Replay::Unavailable),
             Ok(()) => {}
         }
-        let _ = set_broken(self.accounts(), p.user_id, station, None);
+        let user = p.user_id;
+        let _ = self.db(move |a| set_broken(a, user, station, None)).await;
         self.lms_command(player, action)
             .await
             .map_err(|_| Replay::Unavailable)?;
@@ -1103,7 +1107,8 @@ pub async fn list_stations(State(gw): State<AppState>, headers: HeaderMap) -> Re
         Ok(p) => p,
         Err(r) => return r,
     };
-    if seed(gw.accounts(), p.user_id).is_err() {
+    let user = p.user_id;
+    if gw.db(move |a| seed(a, user)).await.is_err() {
         return internal();
     }
     match list(gw.accounts(), p.user_id, PinKind::Station) {
@@ -1162,16 +1167,15 @@ pub async fn create_station(
             }
         }
     }
-    if seed(gw.accounts(), p.user_id).is_err() {
+    let user = p.user_id;
+    if gw.db(move |a| seed(a, user)).await.is_err() {
         return internal();
     }
-    match add(
-        gw.accounts(),
-        p.user_id,
-        PinKind::Station,
-        &name,
-        &spec.to_json(),
-    ) {
+    let (user, stored_name, stored_spec) = (p.user_id, name.clone(), spec.to_json());
+    match gw
+        .db(move |a| add(a, user, PinKind::Station, &stored_name, &stored_spec))
+        .await
+    {
         Ok(id) => {
             let mut r = ok(
                 json!({"id": id, "name": name, "kind": spec.kind(), "spec": spec.to_json(), "broken": null}),
@@ -1201,7 +1205,8 @@ async fn delete_pin(gw: AppState, headers: HeaderMap, id: String, kind: PinKind)
     let Some(id) = parse_id(&id) else {
         return error(StatusCode::NOT_FOUND, "not found");
     };
-    match remove(gw.accounts(), p.user_id, kind, id) {
+    let user = p.user_id;
+    match gw.db(move |a| remove(a, user, kind, id)).await {
         Ok(true) => ok(json!({"removed": true})),
         Ok(false) => error(StatusCode::NOT_FOUND, "not found"),
         Err(_) => internal(),
@@ -1364,7 +1369,11 @@ pub async fn create_menu(State(gw): State<AppState>, headers: HeaderMap, body: B
         }
     }
     let spec = json!({"steps": menu.steps});
-    match add(gw.accounts(), p.user_id, PinKind::Menu, &name, &spec) {
+    let (user, stored_name, stored_spec) = (p.user_id, name.clone(), spec.clone());
+    match gw
+        .db(move |a| add(a, user, PinKind::Menu, &stored_name, &stored_spec))
+        .await
+    {
         Ok(id) => {
             let mut r = ok(json!({"id": id, "name": name, "steps": menu.steps, "broken": null}));
             *r.status_mut() = StatusCode::CREATED;
@@ -1423,12 +1432,14 @@ pub async fn open_menu(
     };
     match gw.replay_steps(&p, &scope, &player, &menu.steps).await {
         Ok((result, offered)) => {
-            let _ = set_broken(gw.accounts(), p.user_id, id, None);
+            let user = p.user_id;
+            let _ = gw.db(move |a| set_broken(a, user, id, None)).await;
             gw.remember_menu_actions(p.device_id, offered.into_actions());
             ok(json!({"result": result}))
         }
         Err(Replay::Broken(why)) => {
-            let _ = set_broken(gw.accounts(), p.user_id, id, Some(why));
+            let user = p.user_id;
+            let _ = gw.db(move |a| set_broken(a, user, id, Some(why))).await;
             let mut r = ok(json!({"error": why, "broken": true}));
             *r.status_mut() = StatusCode::CONFLICT;
             r
