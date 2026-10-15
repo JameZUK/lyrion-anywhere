@@ -177,6 +177,11 @@ pub struct LocalPlayerStatus {
     /// in the last minute. Non-zero: the device clock can't be relied on.
     #[uniffi(default = 0)]
     pub output_clock_errors: u32,
+    /// Times the app said the network went, in the last minute (Android re-picking its
+    /// default network reports a loss and a return within a moment). Non-zero: the phone's
+    /// network is unsettled; a loss shorter than the settle time leaves the socket alone.
+    #[uniffi(default = 0)]
+    pub network_flaps: u32,
 }
 
 /// How the engine knows what the speaker is playing.
@@ -213,6 +218,7 @@ impl Default for LocalPlayerStatus {
             output_clock: None,
             output_latency_ms: 0,
             output_clock_errors: 0,
+            network_flaps: 0,
         }
     }
 }

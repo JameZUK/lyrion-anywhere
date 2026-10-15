@@ -55,7 +55,8 @@ use http_body_util::BodyExt;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::{Connector, connect_async_tls_with_config};
 
 use anywhere_core::player::{
@@ -149,9 +150,20 @@ const FEATURES_WAIT: Duration = Duration::from_secs(2);
 /// drops the connection at once), each reconnect waits longer.
 const STABLE_AFTER: Duration = Duration::from_secs(5);
 /// The network coming back reconnects at once only this long after the last connection
-/// was opened (Android reports several changes a second during a handover); an outage
-/// at least this long also starts the backoff again.
+/// was opened (Android reports several changes a second during a handover).
 const NETWORK_SETTLE: Duration = Duration::from_millis(1500);
+/// A live socket outlasts a loss of the network this short: Android reports the default
+/// network lost and back within a moment whenever it picks it again (Wi-Fi scoring, a
+/// fallback to mobile data, a validation blip), and dropping a working socket for that
+/// cost a reconnect about once a minute (live, 2026-10-15). A socket that really has died
+/// meanwhile is caught by [`SOCKET_IDLE`] and [`SOCKET_SEND_TIMEOUT`].
+const NETWORK_LOSS_SETTLE: Duration = Duration::from_secs(2);
+/// Longest the close handshake may take when the engine closes a socket on purpose.
+const CLOSE_WAIT: Duration = Duration::from_secs(1);
+/// Network losses are counted over this long ([`LocalPlayerStatus::network_flaps`]).
+const FLAP_WINDOW: Duration = Duration::from_secs(60);
+/// No more than this many are remembered.
+const MAX_FLAPS: usize = 1_000;
 /// In a sync group, how long to wait after a stall for enough audio to skip the stall
 /// before deciding (see [`stall_step`]).
 const REJOIN_WAIT: Duration = Duration::from_secs(2);
@@ -315,6 +327,8 @@ const LOUDNESS_KEEP: usize = 8;
 enum Out {
     Binary(Vec<u8>),
     Text(String),
+    /// Close the socket cleanly (a close frame, then the gateway's answer) and end.
+    Close,
 }
 
 /// State shared with the app-facing [`super::LocalPlayer`].
@@ -376,9 +390,13 @@ pub(crate) struct Engine {
     attempt: u32,
     /// When the open connection was greeted, until it has lived [`STABLE_AFTER`].
     greeted_at: Option<Instant>,
-    /// When a connection was last opened, and when the network last went.
+    /// When a connection was last opened.
     last_connect: Option<Instant>,
-    network_lost_at: Option<Instant>,
+    /// The app said the network went while the socket was live, then: the socket is kept
+    /// until [`NETWORK_LOSS_SETTLE`] has passed without the network coming back.
+    network_lost_pending: Option<Instant>,
+    /// When the app said the network went, over the last [`FLAP_WINDOW`].
+    flaps: VecDeque<Instant>,
     disconnected_at: Option<Instant>,
     reconnect_at: Option<(Instant, bool)>,
     renewals_in_a_row: u32,
@@ -559,7 +577,8 @@ impl Engine {
             attempt: 0,
             greeted_at: None,
             last_connect: None,
-            network_lost_at: None,
+            network_lost_pending: None,
+            flaps: VecDeque::new(),
             disconnected_at: None,
             reconnect_at: None,
             renewals_in_a_row: 0,
@@ -668,13 +687,21 @@ impl Engine {
     async fn shutdown(&mut self, reason: &str) {
         // First, so nothing moves the group while the player leaves.
         self.cancel_restarts();
+        self.network_lost_pending = None;
         if self.open
-            && let Some(out) = &self.ws_out
+            && let Some(out) = self.ws_out.take()
         {
             let bye = ClientMsg::Bye.encode();
             let _ = out.send(Out::Binary(bye));
-            // Give the socket task a moment to deliver it.
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            // Then a close frame, so the gateway sees the socket closed, not reset.
+            let _ = out.send(Out::Close);
+            // Give the socket task a moment to deliver both.
+            if let Some(t) = &self.ws_task {
+                let until = Instant::now() + CLOSE_WAIT + Duration::from_millis(250);
+                while !t.is_finished() && Instant::now() < until {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
         }
         self.close_stream();
         if let Some(t) = self.ws_task.take() {
@@ -769,11 +796,68 @@ impl Engine {
         }
     }
 
-    /// The app says whether the phone has a network. Without one, the socket is dropped at
-    /// once (its grace starts) and no reconnect is tried until the network is back; then
-    /// one is tried at once, or [`NETWORK_SETTLE`] after the last if that was only just
-    /// now (a flapping network).
+    /// The app says whether the phone has a network. A live socket outlasts a loss shorter
+    /// than [`NETWORK_LOSS_SETTLE`] untouched (see [`Engine::settle_network`]); otherwise
+    /// see [`Engine::apply_network`].
     fn set_network(&mut self, up: bool) {
+        let said_up = self.network && self.network_lost_pending.is_none();
+        if up == said_up {
+            return;
+        }
+        if !up {
+            self.count_flap();
+        }
+        if up && self.network_lost_pending.take().is_some() {
+            // Back within the settle time: the socket was never touched.
+            self.publish_status(true);
+            return;
+        }
+        if !up && self.open && !self.stopped {
+            self.network_lost_pending = Some(Instant::now());
+            self.publish_status(true);
+            return;
+        }
+        self.apply_network(up);
+    }
+
+    /// A loss of the network that has outlasted [`NETWORK_LOSS_SETTLE`] is applied.
+    fn settle_network(&mut self) {
+        if self
+            .network_lost_pending
+            .is_some_and(|t| t.elapsed() >= NETWORK_LOSS_SETTLE)
+        {
+            self.network_lost_pending = None;
+            self.apply_network(false);
+        }
+    }
+
+    fn count_flap(&mut self) {
+        let now = Instant::now();
+        while self
+            .flaps
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= FLAP_WINDOW)
+            || self.flaps.len() >= MAX_FLAPS
+        {
+            self.flaps.pop_front();
+        }
+        self.flaps.push_back(now);
+    }
+
+    /// Network losses the app reported in the last minute.
+    fn flaps_per_min(&self) -> u32 {
+        self.flaps
+            .iter()
+            .filter(|t| t.elapsed() < FLAP_WINDOW)
+            .count() as u32
+    }
+
+    /// The network's state, as it now stands. Without one, the socket is closed (its grace
+    /// starts) and no reconnect is tried until the network is back; then the backoff starts
+    /// again and one is tried at once, or [`NETWORK_SETTLE`] after the last if that was
+    /// only just now (a flapping network). So a "gone, back" while reconnecting (the app's
+    /// "reconnect now") retries at once.
+    fn apply_network(&mut self, up: bool) {
         if up == self.network {
             return;
         }
@@ -783,32 +867,35 @@ impl Engine {
             return;
         }
         if !up {
-            self.network_lost_at = Some(Instant::now());
-            if self.ws_task.is_some() || self.open {
-                if let Some(t) = self.ws_task.take() {
-                    t.abort();
-                }
+            if self.open {
+                self.close_socket(true);
+                self.on_closed(None, "");
+            } else if let Some(t) = self.ws_task.take() {
+                // Still connecting: nothing has been said on it yet.
+                t.abort();
                 self.on_closed(None, "");
             } else if let Some((_, resume)) = self.reconnect_at.take() {
                 self.waiting_for_network = Some(resume);
+                self.connection = PlayerConnection::Reconnecting { delay_ms: 0 };
             }
         } else {
             let now = Instant::now();
-            // A real outage starts the backoff again; a flap doesn't.
-            if self
-                .network_lost_at
-                .is_none_or(|t| now.duration_since(t) >= NETWORK_SETTLE)
-            {
-                self.attempt = 0;
-            }
+            self.attempt = 0;
             // At once, unless a connection was opened only just now.
             let at = self
                 .last_connect
                 .map_or(now, |t| (t + NETWORK_SETTLE).max(now));
-            if let Some(resume) = self.waiting_for_network.take() {
+            let resume = self
+                .waiting_for_network
+                .take()
+                .or(self.reconnect_at.map(|(_, r)| r));
+            if let Some(resume) = resume {
                 self.reconnect_at = Some((at, resume));
-            } else if let Some((_, resume)) = self.reconnect_at {
-                self.reconnect_at = Some((at, resume));
+                if matches!(self.connection, PlayerConnection::Reconnecting { .. }) {
+                    self.connection = PlayerConnection::Reconnecting {
+                        delay_ms: at.saturating_duration_since(now).as_millis() as u64,
+                    };
+                }
             }
         }
         self.update_link();
@@ -834,6 +921,27 @@ impl Engine {
     fn send_quality(&mut self) {
         if self.open && self.quality_feature == Some(true) {
             self.send_ws(Out::Text(protocol::quality_message(self.quality)));
+        }
+    }
+
+    /// Close the live socket on purpose: a close frame first, so the gateway sees a clean
+    /// close rather than a reset (dropping a socket with unread data in its buffer makes
+    /// the kernel reset the connection). Its task finishes by itself, within
+    /// [`CLOSE_WAIT`], reporting nothing more; with `ignore_rest`, what it delivered before
+    /// is ignored too.
+    fn close_socket(&mut self, ignore_rest: bool) {
+        if ignore_rest {
+            self.ws_gen += 1;
+        }
+        if let Some(out) = self.ws_out.take() {
+            let _ = out.send(Out::Close);
+        }
+        if let Some(t) = self.ws_task.take() {
+            // In case it is stuck (a send that never completes).
+            tokio::spawn(async move {
+                tokio::time::sleep(CLOSE_WAIT * 2).await;
+                t.abort();
+            });
         }
     }
 
@@ -989,6 +1097,11 @@ impl Engine {
     }
 
     fn on_closed(&mut self, code: Option<u16>, reason: &str) {
+        if self.network_lost_pending.take().is_some() {
+            // The network went and then the socket did: the loss was real.
+            self.network = false;
+            let _ = self.net_tx.send(false);
+        }
         let was_open = self.open;
         self.open = false;
         self.ws_out = None;
@@ -1107,11 +1220,11 @@ impl Engine {
                 let now = self.now_ms();
                 let Some(p) = &mut self.player else { return };
                 if p.on_control_data(&bytes, now).is_err() {
-                    // A protocol error: drop the socket and resume, backing off more for
+                    // A protocol error: close the socket and resume, backing off more for
                     // each one close to the last (up to the usual most).
-                    if let Some(t) = self.ws_task.take() {
-                        t.abort();
-                    }
+                    // What it already delivered is still heeded, as before: the rest of a
+                    // run of bad frames is used up at once, not one per reconnect.
+                    self.close_socket(false);
                     let n = bad_frame_streak(self.bad_frames, Instant::now());
                     self.bad_frames = (n, Some(Instant::now()));
                     self.attempt = self.attempt.max(n - 1);
@@ -1838,6 +1951,7 @@ impl Engine {
     }
 
     fn on_tick(&mut self) {
+        self.settle_network();
         if self.open && self.greeted_at.is_some_and(|t| t.elapsed() >= STABLE_AFTER) {
             self.greeted_at = None;
             self.attempt = 0;
@@ -2533,6 +2647,7 @@ impl Engine {
             output_clock: clock.clock,
             output_latency_ms: clock.latency_ms,
             output_clock_errors: clock.errors_per_min,
+            network_flaps: self.flaps_per_min(),
         }
     }
 
@@ -2765,6 +2880,9 @@ async fn socket_task(
                         let (code, reason) = frame
                             .map(|f| (Some(u16::from(f.code)), f.reason.to_string()))
                             .unwrap_or((None, String::new()));
+                        // Answer it (the answer is queued while reading): the close handshake
+                        // completes, rather than the socket being dropped with it unsent.
+                        let _ = tokio::time::timeout(CLOSE_WAIT, ws.flush()).await;
                         if protocol::close_action(code, &reason) == CloseAction::Reauthenticate
                             && let Err(ApiError::Unauthorised) = core.renew(Some(&token)).await
                         {
@@ -2785,6 +2903,21 @@ async fn socket_task(
                 let msg = match out {
                     Out::Binary(b) => Message::Binary(b.into()),
                     Out::Text(t) => Message::Text(t.into()),
+                    Out::Close => {
+                        // Leave cleanly: a close frame, then (briefly) the gateway's answer.
+                        // The engine has moved on: nothing more is reported.
+                        let frame = CloseFrame {
+                            code: CloseCode::Normal,
+                            reason: "".into(),
+                        };
+                        let _ = tokio::time::timeout(CLOSE_WAIT, async {
+                            if ws.close(Some(frame)).await.is_ok() {
+                                while let Some(Ok(_)) = ws.next().await {}
+                            }
+                        })
+                        .await;
+                        return;
+                    }
                 };
                 if !matches!(tokio::time::timeout(SOCKET_SEND_TIMEOUT, ws.send(msg)).await, Ok(Ok(()))) {
                     let _ = tx.send(closed(None, ""));

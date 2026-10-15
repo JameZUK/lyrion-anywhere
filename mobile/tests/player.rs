@@ -139,6 +139,8 @@ struct RigOpts {
     downloads_dir: bool,
     /// With `counting`: the gateway never sees `?limit=` (it sends more than asked).
     ignore_limit: bool,
+    /// A proxy that records what the player sends on each connection.
+    record: bool,
 }
 
 async fn rig(with_proxy: bool) -> Rig {
@@ -198,7 +200,9 @@ async fn rig_opts(o: RigOpts) -> Rig {
     if let Some(on) = o.downloads {
         h.accounts.set_downloads("alice", on, None).unwrap();
     }
-    let proxy = if o.counting && o.ignore_limit {
+    let proxy = if o.record {
+        Some(Proxy::start_recording(h.addr).await)
+    } else if o.counting && o.ignore_limit {
         Some(Proxy::start_ignoring_limit(h.addr).await)
     } else if o.counting {
         Some(Proxy::start_counting(h.addr).await)
@@ -3506,12 +3510,17 @@ async fn a_server_that_greets_then_closes_gets_a_growing_backoff() {
 }
 
 /// M11 regression: the network flapping (as Android reports during a handover) does not
-/// reconnect on every report.
+/// reconnect on every report. Since the live socket outlasts a loss shorter than the
+/// settle time, it doesn't reconnect at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn network_flaps_do_not_reconnect_on_every_report() {
     let r = rig_opts(RigOpts {
         proxy: true,
         ..RigOpts::default()
+    })
+    .await;
+    wait_for("connected", || {
+        r.player.status().connection == PlayerConnection::Connected
     })
     .await;
     let statuses = r.obs.statuses.lock().unwrap().len();
@@ -3524,11 +3533,243 @@ async fn network_flaps_do_not_reconnect_on_every_report() {
         r.player.set_network_available(true);
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    wait_reconnected(&r, statuses, 20).await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
     let made = proxy.accepted.load(Ordering::SeqCst) - before;
-    assert!(made <= 3, "{made} connections for 20 flaps in a second");
-    // And it is connected at the end.
-    assert_eq!(r.player.status().connection, PlayerConnection::Connected);
+    assert_eq!(made, 0, "{made} connections for 20 flaps in a second");
+    assert_eq!(
+        not_connected_since(&r, statuses),
+        Vec::<PlayerConnection>::new(),
+        "connected throughout"
+    );
+    assert_eq!(r.player.status().network_flaps, 20);
     r.player.stop();
+}
+
+// --- The network coming and going under a live socket (live, 2026-10-15) ----------------
+
+/// The player socket (the first one), once it has been seen.
+async fn player_socket(r: &Rig) -> Arc<ConnLog> {
+    let proxy = r.proxy.as_ref().unwrap();
+    wait_for("the player socket", || !proxy.player_sockets().is_empty()).await;
+    proxy.player_sockets()[0].clone()
+}
+
+/// Statuses from `from` on that were not `Connected`.
+fn not_connected_since(r: &Rig, from: usize) -> Vec<PlayerConnection> {
+    r.obs.statuses.lock().unwrap()[from..]
+        .iter()
+        .map(|s| s.connection.clone())
+        .filter(|c| *c != PlayerConnection::Connected)
+        .collect()
+}
+
+/// Live regression: Android reports the default network lost and back within a moment
+/// whenever it picks the default again (Wi-Fi scoring, a validation blip); the engine
+/// dropped the working socket at once, by aborting its task, which left the gateway's
+/// unread keepalives in the receive buffer, so the kernel reset the connection (the
+/// gateway logged "Connection reset without closing handshake" about once a minute). A
+/// loss that comes back within the settle time leaves the socket alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_brief_network_flap_leaves_a_live_socket_alone() {
+    let mut r = rig_opts(RigOpts {
+        record: true,
+        pace: Some(1.0),
+        ..RigOpts::default()
+    })
+    .await;
+    let track = flac::encode(48_000, 16, &flac::noise(48_000 * 12, 16, 7));
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(track));
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    let pulled = r.pulled.clone();
+    wait_for("audio", move || pulled.frames() > 48_000).await;
+    let socket = player_socket(&r).await;
+    let statuses = r.obs.statuses.lock().unwrap().len();
+
+    r.player.set_network_available(false);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    r.player.set_network_available(true);
+    let heard = r.pulled.frames();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let proxy = r.proxy.as_ref().unwrap();
+    assert_eq!(proxy.player_sockets().len(), 1, "no new player socket");
+    assert_eq!(socket.end(), None, "the socket is still open");
+    assert!(
+        !socket.ws_opcodes().contains(&8),
+        "no close frame: {:?}",
+        socket.ws_opcodes()
+    );
+    assert_eq!(
+        not_connected_since(&r, statuses),
+        Vec::<PlayerConnection>::new(),
+        "connected throughout"
+    );
+    assert_eq!(r.player.status().connection, PlayerConnection::Connected);
+    assert!(
+        r.pulled.frames() > heard + 48_000 * 2,
+        "the audio played on"
+    );
+    assert_eq!(r.count("HELO"), 1);
+    assert_eq!(r.h.lms.slim_accepted.load(Ordering::SeqCst), 1);
+    assert_eq!(r.player.status().network_flaps, 1, "the flap is counted");
+    r.player.stop();
+}
+
+/// The network gone for real: once the settle time has passed, the socket is closed with a
+/// WebSocket close frame (the gateway sees a clean close, not a reset), nothing is tried
+/// while there is no network, and the session resumes when it is back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_real_network_loss_closes_the_socket_cleanly_and_resumes_on_its_return() {
+    let r = rig_opts(RigOpts {
+        record: true,
+        max_grace_s: Some(120),
+        ..RigOpts::default()
+    })
+    .await;
+    wait_for("connected", || {
+        r.player.status().connection == PlayerConnection::Connected
+    })
+    .await;
+    let socket = player_socket(&r).await;
+    let statuses = r.obs.statuses.lock().unwrap().len();
+
+    r.player.set_network_available(false);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert!(
+        matches!(
+            r.player.status().connection,
+            PlayerConnection::Reconnecting { .. }
+        ),
+        "{:?}",
+        r.player.status().connection
+    );
+    let ops = socket.ws_opcodes();
+    assert_eq!(ops.last(), Some(&8), "a close frame last: {ops:?}");
+    assert_ne!(socket.end(), Some(ClientEnd::Reset), "closed, not reset");
+    let proxy = r.proxy.as_ref().unwrap();
+    assert_eq!(
+        proxy.player_sockets().len(),
+        1,
+        "nothing tried without a network"
+    );
+
+    r.player.set_network_available(true);
+    wait_reconnected(&r, statuses, 5).await;
+    assert_eq!(proxy.player_sockets().len(), 2);
+    assert_eq!(r.count("HELO"), 1, "resumed");
+    r.player.stop();
+}
+
+/// The app's "reconnect now" (`reconnectNow`) says "gone, back" while the engine is
+/// waiting to reconnect: with no socket to keep, the backoff starts again and a connection
+/// is tried at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_loss_and_return_while_reconnecting_resets_the_backoff() {
+    let r = rig_opts(RigOpts {
+        proxy: true,
+        ..RigOpts::default()
+    })
+    .await;
+    wait_for("connected", || {
+        r.player.status().connection == PlayerConnection::Connected
+    })
+    .await;
+    let proxy = r.proxy.as_ref().unwrap();
+    proxy.set_down(true);
+    for _ in 0..2_000 {
+        if matches!(r.player.status().connection, PlayerConnection::Reconnecting { delay_ms } if delay_ms >= 2_000)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        matches!(r.player.status().connection, PlayerConnection::Reconnecting { delay_ms } if delay_ms >= 2_000),
+        "{:?}",
+        r.player.status().connection
+    );
+    let tries = proxy.accepted.load(Ordering::SeqCst);
+    let asked = std::time::Instant::now();
+
+    r.player.set_network_available(false);
+    r.player.set_network_available(true);
+
+    let a = proxy.accepted.clone();
+    wait_for("a try", move || a.load(Ordering::SeqCst) > tries).await;
+    assert!(
+        asked.elapsed() < Duration::from_millis(1_700),
+        "tried at once, not after the backoff: {:?}",
+        asked.elapsed()
+    );
+    // That try fails too (the server is still out of reach): the next follows after the
+    // first step of the backoff (at most 0.6 s), not the step it had reached (over 3 s).
+    let tried = std::time::Instant::now();
+    let a = proxy.accepted.clone();
+    wait_for("the next try", move || a.load(Ordering::SeqCst) > tries + 1).await;
+    assert!(
+        tried.elapsed() < Duration::from_millis(1_200),
+        "the backoff started again: the next try came after {:?}",
+        tried.elapsed()
+    );
+    proxy.set_down(false);
+    r.player.stop();
+}
+
+/// Stopping leaves the gateway cleanly: `BYE!`, then a WebSocket close frame (not a reset).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopping_sends_bye_then_a_close_frame() {
+    let r = rig_opts(RigOpts {
+        record: true,
+        ..RigOpts::default()
+    })
+    .await;
+    wait_for("connected", || {
+        r.player.status().connection == PlayerConnection::Connected
+    })
+    .await;
+    let socket = player_socket(&r).await;
+    r.player.stop();
+    wait_for("BYE!", || {
+        r.h.lms.slim_events().contains(&"BYE!".to_string())
+    })
+    .await;
+    let s = socket.clone();
+    wait_for("a close frame", move || s.ws_opcodes().contains(&8)).await;
+    let ops = socket.ws_opcodes();
+    let bye = ops.iter().rposition(|&o| o == 2).unwrap();
+    let close = ops.iter().position(|&o| o == 8).unwrap();
+    assert!(bye < close, "BYE! before the close: {ops:?}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_ne!(socket.end(), Some(ClientEnd::Reset), "closed, not reset");
+}
+
+/// Signing out: the gateway closes the socket, and the engine answers its close frame
+/// before letting go, so the close handshake completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn signing_out_answers_the_gateways_close_frame() {
+    let r = rig_opts(RigOpts {
+        record: true,
+        ..RigOpts::default()
+    })
+    .await;
+    wait_for("connected", || {
+        r.player.status().connection == PlayerConnection::Connected
+    })
+    .await;
+    let socket = player_socket(&r).await;
+    r.session.logout().await.unwrap();
+    let obs = r.obs.clone();
+    wait_for("stopped", move || {
+        obs.saw(|s| matches!(s.connection, PlayerConnection::Stopped { .. }))
+    })
+    .await;
+    let s = socket.clone();
+    wait_for("a close frame", move || s.ws_opcodes().contains(&8)).await;
+    assert_ne!(socket.end(), Some(ClientEnd::Reset), "closed, not reset");
 }

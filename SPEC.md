@@ -458,6 +458,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
     - The player's trouble counts only while the app is in use (in the foreground, after a 10 s grace on return) or while it plays.
     - On return to the foreground, the player retries at once instead of waiting out its back-off. A sign-in that couldn't be checked is tried again.
     - No network at all (flight mode, no signal) counts at once, foreground or not, after 3 s to ride out a handover.
+    - _2026-10-15:_ the app reports no network only after none has been back for 1.5 s (Wi-Fi to mobile data and back still changes at once, for downloads), and the player keeps a live socket through a loss shorter than 2 s. Before this, Android re-picking its default network dropped the phone's player socket about once a minute. Losses reported in the last minute show on the signal path when there are any.
   - **On the current screen:** while reconnecting, "Reconnecting…". After 5 s of counted trouble, or with no network, "Can’t reach your server." ("… Playing from this device." while the phone plays on). Tapping it opens the downloads. It is one line at the top of the screen that takes its own space (2026-10-14: it used to float over the controls). Lists keep what they last loaded: a reload that fails doesn't replace them with an error.
   - **Offline mode takes the whole screen** only:
     - when there's no network as the app opens;

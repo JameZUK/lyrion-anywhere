@@ -442,6 +442,10 @@ class LocalPlayerRepositoryTest {
             OutputTiming(OutputClock.ESTIMATED, 90, 12),
             LocalPlayerState(enabled = true, status = s.copy(outputClock = OutputClock.ESTIMATED, outputLatencyMs = 90u, outputClockErrors = 12u)).outputTiming,
         )
+        assertEquals(
+            OutputTiming(OutputClock.DEVICE, 38, 0, networkFlapsPerMinute = 3),
+            LocalPlayerState(enabled = true, status = s.copy(networkFlaps = 3u)).outputTiming,
+        )
         assertNull(LocalPlayerState(enabled = true, status = s.copy(outputClock = null)).outputTiming)
         assertNull(LocalPlayerState(enabled = true, status = status()).outputTiming)
         assertNull(LocalPlayerState().outputTiming)

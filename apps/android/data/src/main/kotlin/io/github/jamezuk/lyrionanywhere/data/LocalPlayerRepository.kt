@@ -39,9 +39,10 @@ import kotlinx.coroutines.withContext
 /**
  * The output's clock: the device's own timestamp or an estimate, the latency from handing
  * audio to the device to hearing it (ms), and unusable or jumping timestamps in the last
- * minute.
+ * minute. Also the network losses Android reported in the last minute: non-zero means the
+ * phone's network is unsettled (a loss shorter than the settle time keeps the socket).
  */
-data class OutputTiming(val clock: OutputClock, val latencyMs: Long, val errorsPerMinute: Long = 0)
+data class OutputTiming(val clock: OutputClock, val latencyMs: Long, val errorsPerMinute: Long = 0, val networkFlapsPerMinute: Long = 0)
 
 /** This phone as an LMS player ("Play on this phone"). */
 data class LocalPlayerState(
@@ -81,7 +82,7 @@ data class LocalPlayerState(
      */
     val outputTiming: OutputTiming?
         get() = status?.let { s ->
-            s.outputClock?.let { OutputTiming(it, s.outputLatencyMs.toLong(), s.outputClockErrors.toLong()) }
+            s.outputClock?.let { OutputTiming(it, s.outputLatencyMs.toLong(), s.outputClockErrors.toLong(), s.networkFlaps.toLong()) }
         }
 
     /** The Sound settings as they apply on the current output. */

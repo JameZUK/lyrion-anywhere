@@ -103,7 +103,8 @@ fun OutputClockLine(timing: OutputTiming?, modifier: Modifier = Modifier) {
     val ms = timing.latencyMs.coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
     val errors = timing.errorsPerMinute.coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
     val device = timing.clock == OutputClock.DEVICE
-    val errorText = if (errors > 0) pluralStringResource(R.plurals.output_clock_errors, errors, errors) else null
+    val flaps = timing.networkFlapsPerMinute.coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
+    val errorText = listOfNotNull(if (errors > 0) pluralStringResource(R.plurals.output_clock_errors, errors, errors) else null, if (flaps > 0) pluralStringResource(R.plurals.network_flaps, flaps, flaps) else null).joinToString(" · ").ifEmpty { null }
     val shown = listOfNotNull(
         stringResource(if (device) R.string.output_clock_device else R.string.output_clock_estimated, ms),
         errorText,

@@ -57,6 +57,15 @@ class OutputClockTest {
             .assert(spoken("Output clock: estimated, latency about 90 milliseconds, 12 clock errors a minute"))
         timing = OutputTiming(OutputClock.DEVICE, 1, 1)
         compose.onNodeWithText("Output clock: device · latency 1 ms · 1 clock error a minute").assertExists()
+        compose.onNodeWithText("network loss", substring = true).assertDoesNotExist()
+
+        // Network losses, too, only when there are any.
+        timing = OutputTiming(OutputClock.ESTIMATED, 90, 12, networkFlapsPerMinute = 3)
+        compose.onNodeWithText("Output clock: estimated · latency about 90 ms · 12 clock errors a minute · 3 network losses a minute").assertExists()
+        timing = OutputTiming(OutputClock.DEVICE, 38, 0, networkFlapsPerMinute = 1)
+        compose.onNodeWithText("Output clock: device · latency 38 ms · 1 network loss a minute").assertExists()
+        compose.onNodeWithTag("signal-output-clock")
+            .assert(spoken("Output clock: the device's own timestamp, latency 38 milliseconds, 1 network loss a minute"))
 
         // No output open: no line.
         timing = null
