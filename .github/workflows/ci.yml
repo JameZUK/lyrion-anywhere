@@ -187,15 +187,26 @@ jobs:
             echo "::notice::release $GITHUB_REF_NAME already exists; not replacing it"
             exit 0
           fi
+          # Explicitly Latest: LMS installs fetch releases/latest/download/repo.xml.
           gh release create "$GITHUB_REF_NAME" dist/*.zip dist/repo.xml dist/SHA256SUMS \
-            --verify-tag --title "Lyrion Anywhere $version" --notes-file "$notes"
+            --verify-tag --latest --title "Lyrion Anywhere $version" --notes-file "$notes"
+      - name: Check LMS's repository URL serves this release (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          CHECK_LATEST_TRIES: '6'
+          CHECK_LATEST_DELAY: '20'
+        run: |
+          version=$(sed -n 's:.*<version>\(.*\)</version>.*:\1:p' plugin/Plugins/LyrionAnywhere/install.xml)
+          tools/check-latest.sh --expect-version "$version"
 
   android-release:
     # Android releases come from `android-v*` tags only. (The plugin's `release` job above
     # publishes on `refs/tags/v*`, which `refs/tags/android-v*` never matches.) Built from
     # scratch without the shared caches, signed with the release key from the repository's
-    # secrets (docs/RELEASING.md), and published as a pre-release for the owner to check and
-    # promote.
+    # secrets (docs/RELEASING.md), and published as a pre-release, which it must stay: LMS
+    # installs fetch plugin updates from releases/latest/download/repo.xml, and GitHub's
+    # "latest" is the newest full release, so promoting an Android release would make that a
+    # 404 for every install. The last step checks the URL still serves the plugin.
     if: startsWith(github.ref, 'refs/tags/android-v')
     needs: [test, android, supply-chain]
     runs-on: ubuntu-latest
@@ -307,5 +318,10 @@ jobs:
             exit 0
           fi
           gh release create "$GITHUB_REF_NAME" dist-android/* \
-            --verify-tag --prerelease --title "Lyrion Anywhere for Android $VERSION" \
+            --verify-tag --prerelease --latest=false --title "Lyrion Anywhere for Android $VERSION" \
             --notes-file "docs/release-notes/android-$VERSION.md"
+      - name: Check LMS's repository URL still serves the plugin
+        env:
+          CHECK_LATEST_TRIES: '6'
+          CHECK_LATEST_DELAY: '20'
+        run: tools/check-latest.sh
