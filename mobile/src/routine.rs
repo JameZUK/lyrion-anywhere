@@ -565,9 +565,7 @@ pub async fn sync_ratings(
     session: Arc<Session>,
     library: Arc<crate::offline::OfflineLibrary>,
 ) -> Result<RatingsSyncOutcome, ApiError> {
-    if !session.has_sign_in() {
-        return Err(ApiError::Unauthorised);
-    }
+    crate::offline::owned_by(&session, &library).await?;
     let mut sent = 0;
     loop {
         let q = library.queued_ratings();

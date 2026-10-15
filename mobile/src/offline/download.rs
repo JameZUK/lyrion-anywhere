@@ -1394,6 +1394,8 @@ impl Downloader {
         network: NetworkKind,
         observer: Arc<dyn DownloadObserver>,
     ) -> Result<Arc<Self>, ApiError> {
+        // Only into the signed-in account's own library.
+        library.check_owner(&session)?;
         let http = Http::private()?;
         let (tx, rx) = mpsc::unbounded_channel();
         let snapshot = Arc::new(Mutex::new(DownloadsSnapshot {

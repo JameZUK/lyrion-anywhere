@@ -34,6 +34,11 @@ pub enum ApiError {
     /// The request was refused locally (or by the server) as malformed.
     #[error("invalid input: {detail}")]
     InvalidInput { detail: String },
+    /// The offline library passed belongs to another account (or server) than the one
+    /// signed in: nothing was sent from it or downloaded into it. Open the signed-in
+    /// account's own library.
+    #[error("these downloads belong to another account")]
+    WrongAccount,
 }
 
 impl ApiError {
