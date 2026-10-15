@@ -2,6 +2,28 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: Web: join a sync group from Play on…
+
+As on Android, the controlled player can join another player's group from *Play on…*.
+
+- **Sync with… row:** an indented row sits directly under the controlled player's row (This device, or the remote player in use). It reads *Sync with…* when the player plays alone and "In sync with Study" when it is grouped. It opens a picker of every other player you may control. A group is one entry named after its members ("Lounge + Kitchen"), and the player's own group comes first, marked *This group*. Choosing an entry makes the controlled player join that group and play what it plays. *Leave the group* takes it out.
+- **Each other player's ⋯:** gains *Join its group*. When that player is already in our group, the item is *Leave the group* instead.
+- **The other direction is unchanged but renamed:** *Group players…* is now *Bring players into step with Lounge…*. Its switches bring other players into this player's group.
+- **What is sent:** `<X> sync <Y>` makes Y join X's group (checked against LMS 9.1; see `lib/lms/sync.ts`). Joining therefore sends `<chosen> sync <this player>`, using the first member for a group, and leaving sends `<this player> sync -`. It goes through the gateway's existing RPC path, and only players you may control are listed or sent.
+- **Needs the server:** the row, the picker and the menu items are disabled while the server is out of reach or busy, and they point at the connection message. A result (an error, or going back to the list) is applied only if the same player is still selected.
+- **Tests:** `tests/player-switcher-join.test.ts` (new; all but one failed before the change). It covers:
+  - the row in both states and where it sits;
+  - the picker, with groups collapsed and the own group marked and disabled;
+  - choosing a lone player or a group sends the right command for the right player;
+  - *Leave the group*, and Back;
+  - *Join its group* and *Leave the group* in the rows' ⋯;
+  - disabled with a reason when out of reach and when busy, with nothing sent;
+  - a failure is shown, but not after the selection changed;
+  - hostile player names stay text;
+  - the new label for the other direction.
+
+  `tests/node/touch-targets.test.mjs`: the row, the picker entries and *Leave the group* are 44 px targets (this failed before the change). `player-switcher-sync.test.ts` and `rooms.test.ts` were updated for the new labels and menu item.
+
 ## 2026-10-15: Android player: the output clock, measured and shown
 
 Seen live: an Android phone (its own speaker) and an iPad web player in a sync group. LMS saw their play points aligned, yet the iPad was heard about 100 ms ahead of the phone. The phone reports as heard what its audio device's timestamp says was presented. Without a usable timestamp it fell back on everything handed to the device, which is ahead of the speaker by the device's buffer and output latency (40 to 120 ms is typical on Android). Nothing on the phone said which was in use, so this couldn't be told apart.

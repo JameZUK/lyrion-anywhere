@@ -397,12 +397,12 @@ describe('the Rooms page', () => {
 		r.unmount();
 	});
 
-	test('Play on… is the same manager: a row’s ⋯ holds what a card had (move, play/pause, alarms, power)', async () => {
+	test('Play on… is the same manager: a row’s ⋯ holds what a card had (move, play/pause, alarms, power), and Join its group', async () => {
 		const r = render(PlayerSwitcher, { onclose: () => {} });
 		await waitFor(() => expect(r.container.textContent).toContain('Playing Morning tune'));
 		await fireEvent.click(r.getByRole('button', { name: 'More options for Kitchen' }));
 		const items = [...r.container.querySelectorAll<HTMLElement>('[role="menuitem"]')].map((b) => b.textContent?.trim());
-		expect(items).toEqual(['Move playback to Kitchen', 'Pause Kitchen', 'Alarms', 'Switch Kitchen off']);
+		expect(items).toEqual(['Move playback to Kitchen', 'Pause Kitchen', 'Join its group', 'Alarms', 'Switch Kitchen off']);
 		fake.calls.length = 0;
 		await fireEvent.click([...r.container.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((b) => b.textContent?.includes('Pause Kitchen'))!);
 		await waitFor(() => expect(sent('pause')).toEqual([{ player: KITCHEN, cmd: ['pause', 1] }]));
