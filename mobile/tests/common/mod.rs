@@ -887,6 +887,80 @@ pub struct Proxy {
     /// Bytes passed from the gateway to the client, when counting (see
     /// [`Proxy::start_counting`]): what a phone would download.
     pub down_bytes: Arc<std::sync::atomic::AtomicU64>,
+    /// Each connection, when recording (see [`Proxy::start_recording`]), oldest first.
+    pub conns: Arc<Mutex<Vec<Arc<ConnLog>>>>,
+}
+
+/// What a client sent on one connection through a recording proxy, and how its side ended.
+#[derive(Default)]
+pub struct ConnLog {
+    pub up: Mutex<Vec<u8>>,
+    /// `None` while the client's side is open (or the gateway's side ended first).
+    pub end: Mutex<Option<ClientEnd>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientEnd {
+    /// An orderly end of the stream (FIN).
+    Closed,
+    /// The client reset the connection (RST): it went away without closing.
+    Reset,
+    /// Any other read error.
+    Failed,
+}
+
+impl ConnLog {
+    /// The request line the client opened with.
+    pub fn is_player_socket(&self) -> bool {
+        self.up.lock().unwrap().starts_with(b"GET /v1/player")
+    }
+
+    /// The opcodes of the WebSocket frames the client sent (after its upgrade request).
+    pub fn ws_opcodes(&self) -> Vec<u8> {
+        client_ws_opcodes(&self.up.lock().unwrap())
+    }
+
+    pub fn end(&self) -> Option<ClientEnd> {
+        *self.end.lock().unwrap()
+    }
+}
+
+/// The opcodes of the WebSocket frames in what a client sent on a connection (its HTTP
+/// upgrade request first): 1 text, 2 binary, 8 close, 9 ping, 10 pong. A frame cut short
+/// ends the list.
+pub fn client_ws_opcodes(up: &[u8]) -> Vec<u8> {
+    let Some(start) = up.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return Vec::new();
+    };
+    let mut b = &up[start + 4..];
+    let mut ops = Vec::new();
+    while b.len() >= 2 {
+        let op = b[0] & 0x0f;
+        let mut len = (b[1] & 0x7f) as usize;
+        let mut at: usize = 2;
+        if len == 126 {
+            if b.len() < 4 {
+                break;
+            }
+            len = usize::from(u16::from_be_bytes([b[2], b[3]]));
+            at = 4;
+        } else if len == 127 {
+            if b.len() < 10 {
+                break;
+            }
+            len = u64::from_be_bytes(b[2..10].try_into().unwrap()) as usize;
+            at = 10;
+        }
+        if b[1] & 0x80 != 0 {
+            at += 4;
+        }
+        if b.len() < at.saturating_add(len) {
+            break;
+        }
+        ops.push(op);
+        b = &b[at + len..];
+    }
+    ops
 }
 
 /// Copy `from` to `to`, replacing `find` with `replace` (same length) within each piece.
@@ -895,10 +969,22 @@ async fn copy_rewriting(
     mut to: tokio::net::tcp::OwnedWriteHalf,
     rewrite: Option<(Vec<u8>, Vec<u8>)>,
     counter: Option<Arc<std::sync::atomic::AtomicU64>>,
+    log: Option<Arc<ConnLog>>,
 ) {
     let mut buf = vec![0u8; 64 * 1024];
     loop {
-        let n = match from.read(&mut buf).await {
+        let read = from.read(&mut buf).await;
+        if let Some(log) = &log {
+            match &read {
+                Ok(0) => *log.end.lock().unwrap() = Some(ClientEnd::Closed),
+                Ok(n) => log.up.lock().unwrap().extend_from_slice(&buf[..*n]),
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
+                    *log.end.lock().unwrap() = Some(ClientEnd::Reset)
+                }
+                Err(_) => *log.end.lock().unwrap() = Some(ClientEnd::Failed),
+            }
+        }
+        let n = match read {
             Ok(0) | Err(_) => return,
             Ok(n) => n,
         };
@@ -934,6 +1020,12 @@ impl Proxy {
         Self::start_with(target, None, None, true).await
     }
 
+    /// A proxy that keeps what each client sends and how its side ends ([`Proxy::conns`]):
+    /// to tell a clean WebSocket close from a reset.
+    pub async fn start_recording(target: SocketAddr) -> Proxy {
+        Self::start_full(target, None, None, false, true).await
+    }
+
     /// A counting proxy that hides `?limit=` from the gateway (renamed, so it is ignored):
     /// a gateway that sends more than it was asked for.
     pub async fn start_ignoring_limit(target: SocketAddr) -> Proxy {
@@ -952,6 +1044,16 @@ impl Proxy {
         up: Option<(Vec<u8>, Vec<u8>)>,
         count: bool,
     ) -> Proxy {
+        Self::start_full(target, rewrite, up, count, false).await
+    }
+
+    async fn start_full(
+        target: SocketAddr,
+        rewrite: Option<(Vec<u8>, Vec<u8>)>,
+        up: Option<(Vec<u8>, Vec<u8>)>,
+        count: bool,
+        record: bool,
+    ) -> Proxy {
         for (a, b) in rewrite.iter().chain(up.iter()) {
             assert_eq!(a.len(), b.len());
         }
@@ -964,6 +1066,8 @@ impl Proxy {
         let down_bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let (c, f, a, d) = (cut.clone(), freeze.clone(), accepted.clone(), down.clone());
         let counter = count.then(|| down_bytes.clone());
+        let conns: Arc<Mutex<Vec<Arc<ConnLog>>>> = Arc::default();
+        let logs = conns.clone();
         tokio::spawn(async move {
             while let Ok((mut client, _)) = listener.accept().await {
                 a.fetch_add(1, Ordering::SeqCst);
@@ -976,16 +1080,37 @@ impl Proxy {
                 let rewrite = rewrite.clone();
                 let up = up.clone();
                 let counter = counter.clone();
+                let log: Option<Arc<ConnLog>> = record.then(|| {
+                    let log = Arc::new(ConnLog::default());
+                    logs.lock().unwrap().push(log.clone());
+                    log
+                });
                 tokio::spawn(async move {
                     let Ok(mut upstream) = tokio::net::TcpStream::connect(target).await else {
                         return;
                     };
+                    if log.is_some() {
+                        // Both ways to the end: the client is still heard after the
+                        // gateway's side has closed (its answer to a close frame).
+                        let (cr, cw) = client.into_split();
+                        let (ur, uw) = upstream.into_split();
+                        tokio::select! {
+                            _ = async {
+                                tokio::join!(
+                                    copy_rewriting(cr, uw, None, None, log),
+                                    copy_rewriting(ur, cw, None, None, None),
+                                )
+                            } => {}
+                            _ = stop.recv() => {}
+                        }
+                        return;
+                    }
                     if rewrite.is_some() || up.is_some() || counter.is_some() {
                         let (cr, cw) = client.into_split();
                         let (ur, uw) = upstream.into_split();
                         tokio::select! {
-                            _ = copy_rewriting(cr, uw, up, None) => {}
-                            _ = copy_rewriting(ur, cw, rewrite, counter) => {}
+                            _ = copy_rewriting(cr, uw, up, None, None) => {}
+                            _ = copy_rewriting(ur, cw, rewrite, counter, None) => {}
                             _ = stop.recv() => {}
                         }
                         return;
@@ -1010,7 +1135,19 @@ impl Proxy {
             accepted,
             down,
             down_bytes,
+            conns,
         }
+    }
+
+    /// The player-socket connections so far, oldest first (when recording).
+    pub fn player_sockets(&self) -> Vec<Arc<ConnLog>> {
+        self.conns
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.is_player_socket())
+            .cloned()
+            .collect()
     }
 
     /// Drop every open connection (as a phone losing its network would).

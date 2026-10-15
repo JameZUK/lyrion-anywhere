@@ -2,6 +2,24 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: Android player: the socket survives a network flap
+
+Seen live: the phone (on Wi-Fi, screen on, playing in a sync group) lost its player socket about once a minute. The gateway logged "Connection reset without closing handshake". Android reports the default network lost, and the next one's capabilities a moment later, whenever it picks the default again (Wi-Fi scoring, a fallback to mobile data, a validation blip). The app passed that loss straight to the engine, and the engine dropped the socket at once by aborting its task. That left the gateway's unread keepalives in the receive buffer, so the kernel reset the connection.
+
+- **Android:** a loss of the default network (or the default losing INTERNET) counts as no network only after none has been back for 1.5 s (`DefaultNetworkTracker` in `NetworkMonitor.kt`). A late loss of the network that was replaced is ignored. Wi-Fi and mobile data still change at once, for the downloads policy.
+- **Engine:** a live socket outlasts a reported loss shorter than 2 s untouched: no close, no reconnect, the backoff unchanged. A socket that really died meanwhile is still caught by the idle and send timeouts, and its loss then counts as the network's.
+- **Clean closes:** a loss that lasts closes the socket with a WebSocket close frame. Stopping sends `BYE!`, then a close frame. A protocol error closes the same way. A close from the gateway (sign-out, refusal) is answered before the socket is let go.
+- **Reconnect now:** "gone, back" while already reconnecting still retries at once, and now always starts the backoff again (before, a quick pair kept the long delay it had reached).
+- **Instrumentation:** the player status carries `network_flaps`, the losses reported in the last minute. The signal path shows "· 3 network losses a minute" on the output-clock line when there are any.
+- **Tests:** `tests/player.rs` (each failed before the fix):
+  - a loss and return 300 ms apart while playing: the gateway sees no disconnect and the audio plays on;
+  - a 5 s loss: a close frame, not a reset, nothing tried meanwhile, and the session resumes when the network returns;
+  - "gone, back" while reconnecting: a try at once and the first step of the backoff after it;
+  - stopping: `BYE!` then a close frame;
+  - signing out: the gateway's close is answered.
+
+  The test proxy can now record what a client sends and how its side ends. The M11 flap test now expects no reconnect at all. Android: `NetworkTrackerTest` (5 of 8 failed against the old pass-through behaviour) covers a loss followed by a network within the grace never showing offline, a loss alone showing offline after the grace, Wi-Fi to mobile with nothing in between, a late loss of the replaced network, capability changes that keep INTERNET, and repeated losses. `LocalPlayerRepositoryTest` and `OutputClockTests` cover the new count.
+
 ## 2026-10-15: Web: join a sync group from Play on…
 
 As on Android, the controlled player can join another player's group from *Play on…*.

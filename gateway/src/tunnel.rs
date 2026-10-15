@@ -396,7 +396,7 @@ async fn read_loop(
             // (live, 2026-10-15: a phone's socket went every minute with no cause logged).
             Ok(Message::Close(frame)) => {
                 let (code, reason) = frame
-                    .map(|f| (u16::from(f.code), f.reason.to_string()))
+                    .map(|f| (f.code, f.reason.to_string()))
                     .unwrap_or((0, String::new()));
                 info!(mac = %session.device.mac_string(), code, reason = %reason, "player closed its socket");
                 return ReadEnd::SocketGone;

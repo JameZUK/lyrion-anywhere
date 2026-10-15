@@ -1140,6 +1140,11 @@
         <item quantity="one">%1$d clock error a minute</item>
         <item quantity="other">%1$d clock errors a minute</item>
     </plurals>
+    <!-- Network losses Android reported in the last minute (the player keeps its socket through short ones) -->
+    <plurals name="network_flaps">
+        <item quantity="one">%1$d network loss a minute</item>
+        <item quantity="other">%1$d network losses a minute</item>
+    </plurals>
     <plurals name="output_latency_spoken">
         <item quantity="one">%1$d millisecond</item>
         <item quantity="other">%1$d milliseconds</item>
