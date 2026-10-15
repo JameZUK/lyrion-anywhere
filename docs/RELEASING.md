@@ -11,6 +11,17 @@ Two things are released from this repository, from different tags:
 - The Android job runs only on `refs/tags/android-v*`.
 - Both publish only after the other jobs pass for that commit.
 
+### Android releases stay pre-releases
+
+LMS installs find plugin updates at `https://github.com/JameZUK/lyrion-anywhere/releases/latest/download/repo.xml`. GitHub's *latest* is the newest full (non-pre-)release. The plugin's `v*` releases are full releases, published with `--latest`; Android releases are pre-releases and must stay so. **Never promote an `android-v*` release to a full release, and never tick "Set as the latest release" on one.** If one becomes Latest, that URL is a 404 and every LMS install silently stops seeing plugin updates, security fixes included. The Android release is still public and downloadable as a pre-release; the README and release notes link to it directly.
+
+Guards:
+- `tools/check-latest.sh [--expect-version <v>]` fetches that URL and fails unless it is the plugin's `repo.xml` (and that version). Run it after any change on the releases page.
+- CI runs it after publishing a plugin release (expecting the new version) and after publishing an Android one.
+- The *Plugin repository URL* workflow (`.github/workflows/repo-xml.yml`) runs it whenever a release is published, promoted, edited or deleted, weekly, and on demand.
+
+If it fails: edit the Android release back to a pre-release, and mark the newest `v*` release as Latest.
+
 Choosing a version number is the owner's decision; nothing here picks one.
 
 ## Plugin releases (`v*`)
@@ -125,7 +136,7 @@ Alternatively, use *Settings → Secrets and variables → Actions → New repos
    - `apksigner verify --print-certs` shows the expected certificate;
    - install the per-ABI APK on a phone over the previous version (it must update in place);
    - sign in, play, download, and go offline.
-4. Promote it to a full release on GitHub when happy.
+4. Leave it as a pre-release: never promote it (see *Android releases stay pre-releases* above). The job's last step checks the plugin repository URL still works.
 
 ### Google Play
 

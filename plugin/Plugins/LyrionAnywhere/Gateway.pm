@@ -33,6 +33,8 @@ use constant ADMIN_PORT     => 9445;    # default loopback port of the admin API
 use constant STDERR_FILE    => 'gateway.stderr';   # the gateway's stderr, in the data dir
 use constant STDERR_LINES   => 5;       # how many of its last lines the status shows
 use constant PID_FILE       => 'gateway.pid';      # the running gateway's pid, in the data dir
+use constant SETTINGS_FILE  => 'settings.authorised';   # the settings page's values, in the data dir
+use constant SETTINGS_MAGIC => 'lyrion-anywhere authorised settings 1';
 use constant BACKOFF_FIRST  => 5;       # first restart delay (seconds); doubles each time
 use constant BACKOFF_MAX    => 300;     # ... up to this
 use constant TERM_GRACE     => 5;       # seconds after SIGTERM before SIGKILL
@@ -54,6 +56,7 @@ my $warned_override = '';  # the ignored gateway path last warned about
 my $launched_admin;        # the admin address the running gateway was started with
 my @dying;                 # gateways sent SIGTERM and not yet reaped: { proc, pid, kill_at, killed }
 my $orphan_tries = 0;      # signals sent to a gateway left behind by an earlier LMS
+my $settings_notice = '';  # prefs changed outside the settings page and put back, for the status
 
 # Where process information comes from (Linux). Tests point it at a fake tree.
 our $PROC_ROOT = '/proc';
@@ -357,7 +360,7 @@ sub admin_listen {
 # The development gateway path, if it is set and allowed; otherwise undef (the bundled,
 # checksum-verified binary is used).
 sub gateway_override {
-	my $p = $prefs->get('gateway_path');
+	my $p = @_ ? shift : $prefs->get('gateway_path');
 	return undef unless defined $p && $p ne '';
 	if (($ENV{+ALLOW_GATEWAY_PATH_ENV} // '') ne '1') {
 		if ($warned_override ne $p) {
@@ -470,35 +473,158 @@ sub register_validators {
 	}
 }
 
+# --- settings only the settings page may change ---------------------------------------
+#
+# These prefs decide what the gateway exposes and whom it trusts. The settings page needs
+# its own token to save them, but LMS's `pref` command (open to any web page through
+# jsonrpc.js while LMS's optional CSRF check is off, its default) can set them after a
+# syntax check only. So the page, the one authorised writer, also keeps a copy of them in
+# the data directory (0700, file 0600), which `pref` cannot reach. The gateway always runs
+# with the copy's values; a pref that differs is put back, logged and shown in the status.
+my @GUARDED = qw(listen public_url trusted_proxies client_ip_header gateway_path ffmpeg_path download_cache_mb);
+
+sub guarded_prefs { @GUARDED }
+sub settings_file { catfile(data_dir(), SETTINGS_FILE) }
+sub settings_notice { $settings_notice }
+
+# One value per line: UTF-8, with '%', '=' and anything outside printable ASCII escaped.
+sub _encode_value {
+	my $v = shift // '';
+	$v = "$v";
+	utf8::encode($v) if utf8::is_utf8($v);
+	$v =~ s/([^\x21-\x24\x26-\x3c\x3e-\x7e])/sprintf('%%%02X', ord $1)/ge;
+	return $v;
+}
+
+sub _decode_value {
+	my $v = shift // '';
+	$v =~ s/%([0-9A-F]{2})/chr hex $1/ge;
+	utf8::decode($v);
+	return $v;
+}
+
+# The copy as { name => value }, or undef if there is none (or it is not one of ours).
+sub read_authorised {
+	my $file = shift // settings_file();
+	return undef if -l $file;
+	open my $fh, '<:raw', $file or return undef;
+	my $head = <$fh> // '';
+	$head =~ s/\r?\n\z//;
+	if ($head ne SETTINGS_MAGIC) { close $fh; return undef }
+	my %known = map { $_ => 1 } @GUARDED;
+	my %v;
+	while (my $line = <$fh>) {
+		$line =~ s/\r?\n\z//;
+		next unless $line =~ /^([a-z_]{1,64})=([\x21-\x7e]*)\z/ && $known{$1};
+		$v{$1} = _decode_value($2);
+	}
+	close $fh;
+	return \%v;
+}
+
+# Write the copy: the given values, or the current prefs. Returns 1 on success.
+sub record_authorised {
+	my $values = shift;
+	my $dir = data_dir();
+	mkdir $dir, 0700 unless -d $dir;
+	my $file = settings_file();
+	my $tmp = "$file.tmp";
+	unlink $tmp;
+	my $fh;
+	unless (sysopen($fh, $tmp, POSIX::O_WRONLY() | POSIX::O_CREAT() | POSIX::O_EXCL(), 0600)) {
+		$log->warn("could not write $file: $!");
+		return 0;
+	}
+	binmode $fh;
+	my $ok = print $fh SETTINGS_MAGIC, "\n";
+	for my $n (@GUARDED) {
+		my $v = $values ? $values->{$n} : $prefs->get($n);
+		$ok &&= print $fh "$n=", _encode_value($v), "\n";
+	}
+	$ok = close($fh) && $ok;
+	chmod 0600, $tmp;
+	unless ($ok && rename $tmp, $file) {
+		$log->warn("could not write $file: $!");
+		unlink $tmp;
+		return 0;
+	}
+	return 1;
+}
+
+# The settings page saved: its values are now the authorised ones.
+sub settings_saved {
+	record_authorised();
+	$settings_notice = '';
+}
+
+# The values to run with: the copy's, with any pref changed outside the page put back.
+# First run (no copy yet): the current values are accepted and recorded.
+sub authorised_values {
+	my %live = map { $_ => $prefs->get($_) } @GUARDED;
+	my $copy = read_authorised();
+	unless ($copy) {
+		$log->info('recording the current gateway settings as the settings page\'s') if -e settings_file();
+		record_authorised(\%live);
+		$settings_notice = '';
+		return \%live;
+	}
+	my (%use, @changed, $missing);
+	for my $n (@GUARDED) {
+		if (!exists $copy->{$n}) {
+			# A setting this copy predates: the current value stands.
+			$use{$n} = $live{$n};
+			$missing = 1;
+			next;
+		}
+		$use{$n} = $copy->{$n};
+		push @changed, $n if _encode_value($live{$n}) ne _encode_value($copy->{$n});
+	}
+	if (@changed) {
+		# Best effort: a value that is no longer valid (ffmpeg removed) is refused by the
+		# validator, but the gateway still runs with the copy's value, checked again below.
+		$prefs->set($_, $use{$_}) for @changed;
+		$settings_notice = 'Settings changed outside the Lyrion Anywhere settings page were reverted ('
+			. join(', ', @changed) . '). Change them on the settings page and save.';
+		$log->warn('gateway settings changed outside the settings page (for example with the '
+			. '`pref` command) were reverted: ' . join(', ', @changed));
+	}
+	record_authorised(\%use) if $missing;
+	return \%use;
+}
+
 sub _options {
 	my $server = preferences('server');
 	my $cli    = preferences('plugin.cli');
-	my $public = $prefs->get('public_url') || '';
+	my $auth   = authorised_values();
+	my $public = $auth->{public_url} || '';
+	$public = '' unless valid_origin($public);
 	# Stored values are checked again: one that is no longer valid (e.g. ffmpeg removed) is
 	# left out rather than stopping the gateway from starting.
-	my $ffmpeg = $prefs->get('ffmpeg_path') // '';
+	my $ffmpeg = $auth->{ffmpeg_path} // '';
 	$ffmpeg = '' unless valid_ffmpeg_path($ffmpeg);
-	my $cache = $prefs->get('download_cache_mb') // '';
+	my $cache = $auth->{download_cache_mb} // '';
 	$cache = '' unless valid_cache_mb($cache);
 	my $transcode = $prefs->get('transcode');
 	my $analysis = $prefs->get('analysis');
-	my $ip_header = $prefs->get('client_ip_header') // '';
+	my $ip_header = $auth->{client_ip_header} // '';
 	$ip_header = '' unless valid_client_ip_header($ip_header);
+	my $override = gateway_override($auth->{gateway_path});
 	return (
+		dev_binary        => $override ? 1 : 0,
 		client_ip_header  => $ip_header,
 		ffmpeg            => $ffmpeg,
 		transcode         => (defined $transcode && $transcode eq '0') ? 0 : 1,
 		analysis          => (defined $analysis && $analysis eq '0') ? 0 : 1,
 		download_cache_mb => $cache,
-		binary          => binary_path(basedir => $basedir, override => gateway_override()),
-		listen          => $prefs->get('listen') || '127.0.0.1:9443',
+		binary          => binary_path(basedir => $basedir, override => $override),
+		listen          => $auth->{listen} || '127.0.0.1:9443',
 		admin_listen    => admin_listen(),
 		data_dir        => data_dir(),
 		http_port       => $server->get('httpport') || 9000,
 		cli_port        => ($cli && $cli->get('cliport')) || 9090,
 		log_file        => log_file(),
 		static_dir      => web_dir($basedir),
-		trusted_proxies => [ split_list($prefs->get('trusted_proxies')) ],
+		trusted_proxies => [ split_list($auth->{trusted_proxies}) ],
 		allowed_origins => [ $public ? $public : () ],
 	);
 }
@@ -652,6 +778,7 @@ sub state {
 		listen    => $o{listen},
 		error     => $last_error,
 		uptime    => ($proc && $started_at) ? _now() - $started_at : 0,
+		settings_notice => $settings_notice,
 	};
 }
 
@@ -680,7 +807,7 @@ sub _launch {
 		$log->error($last_error);
 		return;
 	}
-	if (!gateway_override()) {
+	if (!$o{dev_binary}) {
 		if (my $bad = verify_binary($argv->[0], $basedir)) {
 			$last_error = $bad;
 			$log->error($last_error);

@@ -18,7 +18,7 @@ Native apps use the same documented protocol: the Android app is built (`apps/an
 | # | Decision | Choice |
 |---|---|---|
 | D1 | How a remote device plays audio | **Real Slimproto player.** The device appears in LMS as a normal player (gapless, sync groups, full LMS behaviour). |
-| D2 | Server build | **Perl LMS plugin + Rust gateway sidecar.** The gateway reuses the core's fuzzed Slimproto parser. Rust gives compile-time data-race safety and no garbage collector (low RAM on small LMS hosts). Changed from Go on 2026-10-10. |
+| D2 | Server build | **Perl LMS plugin + Rust gateway sidecar.** The gateway reuses the core's Slimproto parser and its robustness tests. Rust gives compile-time data-race safety and no garbage collector (low RAM on small LMS hosts). Changed from Go on 2026-10-10. |
 | D3 | Client stack | **Shared Rust core.** Compiled to WebAssembly for the web app, with UniFFI bindings for the later native apps. |
 | D4 | Web interface | **Full-featured web app is a v1 goal.** Native apps come later, on the same protocol. |
 | D5 | Offline download format | **Chosen by the user per download:** original, or a transcode (Opus/MP3), with a default for each network type. |
@@ -101,11 +101,11 @@ Native apps use the same documented protocol: the Android app is built (`apps/an
 
 **Built (0.1.0, 2026-10-10):** settings (enable, listen address, public URL, trusted proxies, development gateway path), user/role/two-step/grant/device/audit management, `anywhere …` LMS commands, gateway supervision with restart backoff. **Release (2026-10-10):** `tools/build-release.sh` builds the zip and `repo.xml`. It includes static gateways for x86_64/aarch64/armhf Linux, which the plugin checks against `Bin/SHA256SUMS` before running, and the browser player. **Still to come:** a cryptographic release signature (the checksums catch corruption and partial updates, not a malicious repository), macOS/Windows gateways, proxy self-test, streaming policy, player integration, packaging.
 
-**Trust boundary.** Account management runs through LMS's own JSON-RPC/CLI (`anywhere …` commands) and its settings page. LMS's JSON-RPC (9000) and CLI (9090) are unauthenticated on the LAN by default, and `/jsonrpc.js` accepts cross-origin `text/plain` POSTs, so any web page a LAN user opens could send `anywhere …` commands blind. Every admin command therefore needs `csrf:<token>`: 128 random bits made when LMS starts, kept in memory only, and given only to the settings page, which other sites cannot read. That includes the read-only ones (users, devices with their last addresses and browsers, diagnostics, the audit log), since 2026-10; only `anywhere status` needs no token. The settings form carries the same token and nothing is saved without it (LMS's own anti-CSRF check is off by default, 2026-10-13). The admin secret goes only to the gateway the plugin started, on the port it started it with (on Linux, a port that process holds): changing `admin_port` through `pref` never redirects it. `anywhere restart` never starts a gateway that is turned off. The plugin keeps the gateway's pid in its data directory and, after an LMS crash, stops a gateway left running only when `/proc/<pid>/cmdline` shows it is ours, serving our data directory. Someone with direct LAN access to an open LMS can still read the page and so manage accounts, just as they can already control LMS; the settings page says to turn on LMS's password protection. Prefs get the same validation through LMS's `pref` command as through the page, and the development gateway path is honoured only when LMS runs with `ANYWHERE_ALLOW_GATEWAY_PATH=1`. Remote users can never reach these commands: the gateway's RPC allow-list reserves `anywhere`.
+**Trust boundary.** Account management runs through LMS's own JSON-RPC/CLI (`anywhere …` commands) and its settings page. LMS's JSON-RPC (9000) and CLI (9090) are unauthenticated on the LAN by default, and `/jsonrpc.js` accepts cross-origin `text/plain` POSTs, so any web page a LAN user opens could send `anywhere …` commands blind. Every admin command therefore needs `csrf:<token>`: 128 random bits made when LMS starts, kept in memory only, and given only to the settings page, which other sites cannot read. That includes the read-only ones (users, devices with their last addresses and browsers, diagnostics, the audit log), since 2026-10; only `anywhere status` needs no token. The settings form carries the same token and nothing is saved without it (LMS's own anti-CSRF check is off by default, 2026-10-13). The admin secret goes only to the gateway the plugin started, on the port it started it with (on Linux, a port that process holds): changing `admin_port` through `pref` never redirects it. `anywhere restart` never starts a gateway that is turned off. The plugin keeps the gateway's pid in its data directory and, after an LMS crash, stops a gateway left running only when `/proc/<pid>/cmdline` shows it is ours, serving our data directory. Someone with direct LAN access to an open LMS can still read the page and so manage accounts, just as they can already control LMS; the settings page says to turn on LMS's password protection. LMS's `pref` command can still set the plugin's prefs without our token (after the same syntax checks as the page), so the settings page, the one authorised writer, also records the gateway's security-relevant settings (listen address, public URL, trusted proxies, client address header, gateway path, ffmpeg path, download cache size) in `settings.authorised` (0600) in the 0700 data directory, which `pref` cannot reach. The gateway is always started with the recorded values; a pref that differs is put back, logged and shown in the page's status ("changed outside the settings page; reverted"), so a page that blind-POSTs `pref plugin.lyrionanywhere:listen 0.0.0.0:9443` to `/jsonrpc.js` changes nothing (2026-10-15). On first run, with no record yet, the current values are recorded. The development gateway path is honoured only when LMS runs with `ANYWHERE_ALLOW_GATEWAY_PATH=1`. Remote users can never reach these commands: the gateway's RPC allow-list reserves `anywhere`.
 
 ### Settings page (in LMS)
 
-- Enable/disable, public URL, a proxy self-test, and a warning if LMS ports are reachable from the public URL.
+- Enable/disable, listen address, public URL, trusted proxies and client address header, with a note that LMS's own ports are open on the LAN. _Future:_ a proxy self-test and a warning if LMS ports are reachable from the public URL (not built).
 - Users: create/disable/delete, role (`listener` / `admin`), permitted players, download permission and allowed formats. These are managed through the gateway's admin API (D12); the plugin stores no account data itself.
 - Devices: list, rename and revoke. Device pairing via QR code (public URL + one-time code, valid 10 minutes, single use): admins make codes for any user (*Add a device*), users for themselves in the web app (*Add another device*, with their password, a few an hour). The QR code holds a `lyrion-anywhere://pair` link, drawn by the project's own encoder (2026-10-12).
 - Policy: default streaming quality (Wi-Fi/cellular), and the server-side transcode cache size.
@@ -113,7 +113,7 @@ Native apps use the same documented protocol: the Android app is built (`apps/an
 
 ### Gateway supervision
 
-- Picks the right binary for the OS/architecture and verifies its release signature.
+- Picks the right binary for the OS/architecture and checks it against `Bin/SHA256SUMS` from the same zip before running it. This is an integrity check (corruption, partial updates), not authenticity: there is no release signature yet (future work, §9.3).
 - Starts, stops, health-checks and restarts it.
 
 ### Gateway admin API and LMS-side helpers (127.0.0.1 only, shared secret generated at install)
@@ -535,12 +535,12 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 | Sniffing on hostile Wi-Fi | TLS via the proxy; gateway rejects non-TLS remote requests |
 | Resource exhaustion | Caps on sessions per device, frame/body size, concurrent streams and downloads, transcode jobs; event sockets per device (4) and user (16), oldest closed first; artwork requests in flight per user (8) and overall (32), images streamed rather than buffered; LMS JSON-RPC answers read up to 16 MiB; 15 s limits on request heads, idle keep-alive and request bodies; at most 1024 open connections (`--max-connections`) and 64 per non-proxy address |
 | LAN user creating remote accounts | Plugin commands are reachable only through LMS itself (LAN, LMS password protection); `anywhere` is reserved in the gateway allow-list so remote users can't call it; admin API on loopback with a secret |
-| Misconfigured proxy exposing the LAN | Gateway binds to localhost by default; plugin self-test checks LMS ports aren't publicly reachable |
+| Misconfigured proxy exposing the LAN | Gateway binds to localhost by default; the listen address and trusted proxies can be changed only on the settings page (§4); the nginx example forwards nothing but the gateway. A plugin self-test that LMS ports aren't publicly reachable is future work |
 
 ### 9.3 Hardening
 
 - Structured audit log of logins, pairings, revocations, denied commands and downloads. Kept for one year, at most the newest 100,000 entries (2026-10).
-- Pinned dependencies. Signed releases; the plugin verifies the gateway signature.
+- Pinned dependencies (lock files; CI actions pinned by commit). Release files carry `SHA256SUMS`, and the plugin checks each bundled gateway against `Bin/SHA256SUMS` before running it: an integrity check only, since the list ships in the same zip. _Future:_ signed releases (or build provenance) and a plugin that verifies the gateway's signature.
 - An external security review is a release gate for v1 (§11).
 
 ---
@@ -570,7 +570,7 @@ The **v1 release** is Phases 0–3.
    1. resume and automatic client reconnect (the first phone test lost the player on a weak-signal dropout);
    2. accounts, pairing and sessions;
    3. the RPC allow-list, events and art;
-   4. the plugin settings page and gateway supervision (_done 2026-10-10; signature check and packaging remain_);
+   4. the plugin settings page and gateway supervision (_done 2026-10-10, with a SHA256SUMS integrity check and packaging; a signature check remains_);
    5. the screen-locked phone tests (Android, iOS);
    6. nginx config and the Docker image (_done 2026-10-10: `deploy/`, `Dockerfile`, `docs/DEPLOY.md`_).
    - **Gate:** an external security review, plus scanner tests proving LMS paths are unreachable.
@@ -607,11 +607,11 @@ Every component is tested for security, stability and reliability, and security 
 
 | Layer | Security | Stability | Reliability |
 |---|---|---|---|
-| Rust core | Fuzzing (`cargo-fuzz`) and arbitrary-input tests for the Slimproto parser and decoder; must never panic or allocate unbounded memory | Unit tests for the player state machine, framing edge cases and rate changes | Gapless/resume/back-pressure scenario tests; WASM build tested in a headless browser |
-| Gateway (Rust) | Negative tests per endpoint: no/expired/forged/revoked tokens, wrong-MAC HELO, forged stream paths, `serv`, every denied RPC command, `file://` URLs, path traversal in art/download routes, oversize frames, rate limits, CSRF/Origin, header spoofing from untrusted sources. A scanner suite proves LMS paths are unreachable. `cargo-fuzz` on frame and request parsers (shared with core) | Unit tests; mutation checks that each security test fails when its protection is removed | Integration tests against a fake LMS (Slimproto + HTTP + CometD): resume within grace, reconnect, timeouts, LMS restart during play |
-| Plugin (Perl) | Settings input validation (CR/LF, ranges, enums); internal API secret enforcement; track resolution only from library | `prove` tests with stubbed `Slim::*` modules | Sidecar supervision (crash, restart, signature failure) |
+| Rust core | Deterministic, seeded robustness tests (arbitrary and adversarial input from a fixed-seed PRNG, so failures reproduce) for the Slimproto parser and decoder; must never panic or allocate unbounded memory. Coverage-guided fuzzing (`cargo-fuzz`) is not set up yet (future work) | Unit tests for the player state machine, framing edge cases and rate changes | Gapless/resume/back-pressure scenario tests; WASM build tested in a headless browser |
+| Gateway (Rust) | Negative tests per endpoint: no/expired/forged/revoked tokens, wrong-MAC HELO, forged stream paths, `serv`, every denied RPC command, `file://` URLs, path traversal in art/download routes, oversize frames, rate limits, CSRF/Origin, header spoofing from untrusted sources. A scanner suite proves LMS paths are unreachable. Seeded robustness tests on frame and request parsers (shared with core) | Unit tests; mutation checks that each security test fails when its protection is removed | Integration tests against a fake LMS (Slimproto + HTTP + CometD): resume within grace, reconnect, timeouts, LMS restart during play |
+| Plugin (Perl) | Settings input validation (CR/LF, ranges, enums); internal API secret enforcement; track resolution only from library | `prove` tests with stubbed `Slim::*` modules | Sidecar supervision (crash, restart, checksum failure) |
 | Web app | CSP compliance; XSS tests with hostile tag metadata; auth flows (login, TOTP, logout, revoked session) | Component tests (Vitest) | Playwright end-to-end tests against gateway + fake LMS; offline mode and sync-back |
-| Live (opt-in) | Proxy self-test against a real deployment | — | Muted dedicated test player on a real LMS, config from gitignored `dev/local.env` |
+| Live (opt-in) | Careful checks against a real deployment (a proxy self-test is future work) | — | Muted dedicated test player on a real LMS, config from gitignored `dev/local.env` |
 
 Other rules:
 - Security fixes get a regression test that fails before the fix.
@@ -626,7 +626,7 @@ Other rules:
 - **Changelog:** `CHANGELOG.md` with dated entries, newest first.
 - **Plugin release:**
   - tag `vX.Y.Z`; `tools/build-release.sh` builds the plugin zip, gateway binaries and `repo.xml`, and is run by GitHub Actions
-  - the version is single-sourced and stamped into `install.xml`, the plugin's VERSION constant and the manifest
+  - the version is single-sourced in `install.xml`: `Plugin.pm` reads its VERSION from it at load (`plugin/t/12-version.t`), `tools/build-release.sh` takes the zip name and `repo.xml` version from it, and the release job checks the tag and `Plugin.pm` against it
 - **No homelab details in the repo:** real hostnames, IPs and credentials live in gitignored local files (`.env.local`, `dev/local.*`). Committed examples use placeholders.
 - **Clean-room reimplementation:** squeezelite (GPL-3.0) and Material Skin are references for behaviour only. Their code is not copied, and they are credited in the README.
 - **Plugin tests:** Perl tests use stubbed `Slim::*` modules (`prove`). Live end-to-end tests drive a muted test player and restore its state afterwards.

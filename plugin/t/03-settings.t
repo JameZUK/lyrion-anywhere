@@ -119,6 +119,7 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 	$prefs->set(listen => '127.0.0.1:9443');
 	$prefs->set(public_url => 'https://music.example.com');
 	$prefs->set(gateway_path => '');
+	Plugins::LyrionAnywhere::Gateway::settings_saved();   # as if the page had saved these
 	my %forged = (saveSettings => 1, pref_enabled => 1, pref_listen => '0.0.0.0:9443',
 		pref_public_url => 'https://evil.example.com', pref_gateway_path => $exe);
 	for my $case (['no token', undef], ['empty token', ''], ['wrong token', 'ab' x 16],
@@ -222,10 +223,12 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 # data attribute (the script checks it is an https address before using it).
 {
 	$prefs->set(public_url => 'https://music.example.com');
+	Plugins::LyrionAnywhere::Gateway::settings_saved();
 	my $params = {};
 	Plugins::LyrionAnywhere::Settings->handler(undef, $params);
 	is($params->{anywhere_public_url}, 'https://music.example.com', 'page is given the public URL');
 	$prefs->set(public_url => '');
+	Plugins::LyrionAnywhere::Gateway::settings_saved();
 	$params = {};
 	Plugins::LyrionAnywhere::Settings->handler(undef, $params);
 	is($params->{anywhere_public_url}, '', 'empty when unset');

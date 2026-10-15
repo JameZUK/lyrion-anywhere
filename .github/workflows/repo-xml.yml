@@ -1,0 +1,28 @@
+name: Plugin repository URL
+
+# LMS installs fetch plugin updates from releases/latest/download/repo.xml. GitHub's
+# "latest" is the newest full (non-pre-)release, so promoting an Android pre-release, or
+# marking one Latest, makes that URL a 404 and every install silently stops seeing plugin
+# updates. This fails loudly whenever a release changes, and weekly in case of a hand edit
+# that sends no event. See docs/RELEASING.md.
+
+on:
+  release:
+    types: [published, released, prereleased, edited, deleted]
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: releases/latest/download/repo.xml is the plugin's
+        env:
+          CHECK_LATEST_TRIES: '6'
+          CHECK_LATEST_DELAY: '20'
+        run: tools/check-latest.sh

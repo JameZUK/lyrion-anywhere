@@ -15,7 +15,20 @@ use Slim::Utils::Timers;
 use Plugins::LyrionAnywhere::Commands;
 use Plugins::LyrionAnywhere::Gateway;
 
-use constant VERSION => '0.2.0';
+use File::Basename ();
+use File::Spec;
+
+# The version has one source: install.xml, which LMS and the release job read too.
+sub version_from {
+	my $file = shift;
+	open my $fh, '<', $file or return 'unknown';
+	local $/;
+	my $xml = <$fh> // '';
+	close $fh;
+	return $xml =~ m{<version>\s*([0-9]+(?:\.[0-9]+)*)\s*</version>} ? $1 : 'unknown';
+}
+
+use constant VERSION => version_from(File::Spec->catfile(File::Basename::dirname(__FILE__), 'install.xml'));
 
 my $log = Slim::Utils::Log->addLogCategory({
 	category     => 'plugin.lyrionanywhere',

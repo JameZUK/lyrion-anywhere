@@ -66,12 +66,14 @@ ok(!timer_for('_check') && !timer_for('_launch'), 'no timers left after stop');
 
 # A missing binary is reported, not crashed on.
 $prefs->set(gateway_path => "$dir/missing");
+Plugins::LyrionAnywhere::Gateway::settings_saved();   # as the settings page would
 my $started = @Proc::Background::STARTED;
 Plugins::LyrionAnywhere::Gateway->start;
 like(Plugins::LyrionAnywhere::Gateway->state->{error}, qr/not found/);
 is(scalar @Proc::Background::STARTED, $started, 'nothing started');
 Plugins::LyrionAnywhere::Gateway->stop;
 $prefs->set(gateway_path => $bin);
+Plugins::LyrionAnywhere::Gateway::settings_saved();   # as the settings page would
 
 # --- crash loop: one pending restart at a time, so the backoff really reaches 60 s -------
 {
@@ -193,6 +195,7 @@ $prefs->set(gateway_path => $bin);
 	Plugins::LyrionAnywhere::Gateway->restart;
 	$now += 3600;   # a long, stable run
 	$prefs->set(gateway_path => "$dir/missing");
+	Plugins::LyrionAnywhere::Gateway::settings_saved();   # as the settings page would
 	$Proc::Background::OBJECTS[-1]->die;
 	my @waits;
 	for (1 .. 4) {
@@ -206,6 +209,7 @@ $prefs->set(gateway_path => $bin);
 	is_deeply(\@waits, [5, 10, 20, 40], 'failed launches keep backing off');
 	Plugins::LyrionAnywhere::Gateway->stop;
 	$prefs->set(gateway_path => $bin);
+	Plugins::LyrionAnywhere::Gateway::settings_saved();   # as the settings page would
 }
 
 # --- stopping never blocks LMS; a gateway that ignores SIGTERM gets SIGKILL ---------------

@@ -76,7 +76,7 @@ LMS itself never touches the internet. One small, hardened gateway sits behind y
 - **Out of reach, not out of action:** while the server can't be reached, the phone keeps playing, pausing and skipping between tracks it holds; the queue marks which tracks are on the phone, and what you did is passed back when the server returns.
 - **Layouts for phones, tablets and foldables.**
 
-**Get it:** signed APKs are on the [releases page](https://github.com/JameZUK/lyrion-anywhere/releases) (tags `android-v*`; the latest is 1.14.0); `…-arm64-v8a.apk` suits most phones and the universal `.apk` works on any. Check the files against `SHA256SUMS`. Google Play and F-Droid listings are being prepared. The source is in [`apps/android`](apps/android).
+**Get it:** signed APKs are on the [releases page](https://github.com/JameZUK/lyrion-anywhere/releases) (tags `android-v*`, the latest 1.14.0; they are marked pre-release on GitHub so that *Latest* stays the LMS plugin, whose repository URL depends on it); `…-arm64-v8a.apk` suits most phones and the universal `.apk` works on any. Check the files against `SHA256SUMS`. Google Play and F-Droid listings are being prepared. The source is in [`apps/android`](apps/android).
 
 <details>
 <summary><strong>More screenshots</strong></summary>
@@ -229,7 +229,7 @@ The full policy, including Google Play's Data safety answers, is [`docs/PRIVACY.
 ## Project status and roadmap
 
 - **Built and in use:** the gateway and LMS plugin, the web app, and the Android app (1.14.0, releases tagged `android-v*`). See [`CHANGELOG.md`](CHANGELOG.md) for what changed and when.
-- **Recently finished:** a declutter of every screen on the web and Android ([`docs/plans/wave3_5-declutter.md`](docs/plans/wave3_5-declutter.md)); controls that work while the server is out of reach; riding out a busy server; and the rolling cache for patchy mobile data (read-ahead to disk, a ten-minute resume grace, a replay cache and downloads standing in for streams; design in [`docs/plans/wave3-design.md`](docs/plans/wave3-design.md) §2). Change password, save the queue as a playlist and the busy notice need a gateway newer than plugin 0.3.0; they arrive with the next plugin release.
+- **Recently finished:** a declutter of every screen on the web and Android ([`docs/plans/wave3_5-declutter.md`](docs/plans/wave3_5-declutter.md)); controls that work while the server is out of reach; riding out a busy server; and the rolling cache for patchy mobile data (read-ahead to disk, a ten-minute resume grace, a replay cache and downloads standing in for streams; design in [`docs/plans/wave3-design.md`](docs/plans/wave3-design.md) §2). Change password, save the queue as a playlist and the busy notice arrived with plugin 0.4.0 (they need its gateway).
 - **iOS app:** planned, on the same Rust layer and protocol, with CarPlay. Its code is covered by the project's App Store exception ([`LICENSE-EXCEPTION`](LICENSE-EXCEPTION), SPEC D17).
 - **Later:** passkeys, a cryptographic release signature for the plugin's bundled gateways, smart filters with track-level rules, a guest queue, album booklets. Store listings for the Android app (Google Play, F-Droid) are being prepared.
 

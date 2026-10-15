@@ -2,7 +2,7 @@
 //!
 //! Control bytes come from the server side of a tunnel and stream bytes from the network,
 //! so every parser and state machine is driven here with arbitrary and adversarial input.
-//! (Coverage-guided fuzzing via cargo-fuzz complements these deterministic tests.)
+//! These are seeded, deterministic tests, not coverage-guided fuzzing (no cargo-fuzz yet).
 
 use anywhere_core::decode::{DecodeStatus, InputBuffer, StreamDecoder};
 use anywhere_core::player::{Player, PlayerConfig};

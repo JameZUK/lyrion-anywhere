@@ -1,8 +1,9 @@
 package Plugins::LyrionAnywhere::Settings;
 
-# Settings page. Gateway options are ordinary LMS prefs, cleaned before they are saved;
-# accounts, devices and the audit log are managed live through `anywhere …` commands
-# (see Commands.pm and the page's script).
+# Settings page. Gateway options are ordinary LMS prefs, cleaned before they are saved, and
+# the security-relevant ones are also recorded where LMS's `pref` command cannot change them
+# (see Gateway::authorised_values). Accounts, devices and the audit log are managed live
+# through `anywhere …` commands (see Commands.pm and the page's script).
 
 use strict;
 use warnings;
@@ -143,6 +144,9 @@ sub handler {
 	# LMS serves the page's script and stylesheet with a week-long cache; stamping their
 	# URLs with the files' modification time makes browsers fetch them again after an update.
 	$params->{anywhere_assets} = assets_stamp();
+	# Gateway settings changed outside this page (LMS's `pref` command) are put back before
+	# the page shows them, so it never displays, or saves again, a value it did not set.
+	Plugins::LyrionAnywhere::Gateway::authorised_values();
 	# The address the apps use, for pairing QR codes (the page checks it again).
 	$params->{anywhere_public_url} = $prefs->get('public_url') // '';
 	$params->{anywhere_gateway_path_allowed} =
@@ -171,6 +175,8 @@ sub handler {
 		# Messages can echo submitted text: escape before they reach the page.
 		$params->{warning} = join('<br>', map { escape_html($_) } @$errors) if @$errors;
 		my $result = $class->SUPER::handler($client, $params);
+		# This page is the one authorised writer: what it saved is what the gateway runs with.
+		Plugins::LyrionAnywhere::Gateway::settings_saved();
 		my $changed = grep { ($before{$_} // '') ne ($prefs->get($_) // '') } keys %before;
 		if ($changed) {
 			if ($prefs->get('enabled')) { Plugins::LyrionAnywhere::Gateway->restart }

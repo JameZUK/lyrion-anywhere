@@ -242,6 +242,9 @@ SKIP: {
 	Plugins::LyrionAnywhere::Admin::call('users', {}, sub {}, sub { $error = shift });
 	is($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1]{url}, "http://127.0.0.1:$port/admin/v1/users", 'the gateway holds its port: sent');
 	Plugins::LyrionAnywhere::Gateway->stop;
+	# Let the first one go: while it is still exiting, the next start waits for it (on a timer),
+	# and the check below would see no gateway at all rather than the wrong port holder.
+	for (1 .. 100) { Plugins::LyrionAnywhere::Gateway::_reap(); last unless kill 0, $pid; select undef, undef, undef, 0.05 }
 
 	# Another local program holds the port the gateway was told to use.
 	# (The gateway process starts first, so it doesn't inherit the other program's socket.)
