@@ -2,6 +2,15 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: Docs: the README is a front page again; detail moved to docs/
+
+Asked for by the owner: the README had grown to every list and table in the project. It is now a front page: a tagline (Lyrion Music Server brought into the mobile age: any device becomes a player, anywhere), a pitch that credits LMS and the Squeezebox world, *What it can do* (the strongest true capabilities first, sync with the players at home among them, each grounded in docs/FEATURES.md, SPEC D22 and D25 and the tests), *Under the bonnet* (the sans-I/O Rust core, its decoders, the 64-bit DSP that is bit-transparent when bypassed, track analysis and the signal path, the gateway and plugin, the resumable player tunnel and rolling cache), the screenshots, the How-it-works diagram, a three-step Quick start, a Documentation table linking every page, the licence and a one-line acknowledgement.
+
+- **New pages:** `docs/SECURITY.md` (security and privacy in brief, and how to report a vulnerability; links both ways with `docs/PRIVACY.md`), `docs/PLATFORMS.md` (platform support, getting the Android app, project status and roadmap, brought up to plugin 0.5.0 and Android 1.15.3) and `docs/BUILDING.md` (the commands CI runs for the Rust workspace, the web app, the plugin and Android; the demo; live tests; contributing; the open-source acknowledgements).
+- **docs/FEATURES.md:** opens with *Highlights* (what makes it different, then the browser and Android lists from the README), and its contents are the README's former *Features at a glance* table. *Synchronised playback* now describes media-element corrections and rejoining a group after a gap.
+- **docs/README.md:** the index of every page, with a line on each; the Building row points at `docs/BUILDING.md`, and Wave 3.5's plan is listed.
+- **Checked:** every relative link and anchor in README.md, SPEC.md, CHANGELOG.md, docs/*.md and the release notes resolves (231 links, none broken).
+
 ## 2026-10-15: Android player: a resume from another device no longer pauses the group
 
 Seen live: the phone was in a sync group with a tablet, paused, screen off. Play on the tablet resumed the group, the phone played for under a second, then sent `pause` (70 ms after the resume, and again 300 ms later) and the whole group stopped. When LMS said play, the playback service asked for audio focus and paused LMS on a refusal. Since Android 15, an app that is neither on screen nor running a foreground service is refused focus outright, so every resume from another controller while the app was in the background was refused, and answered by pausing everyone. A skip worked because the engine never stopped.
