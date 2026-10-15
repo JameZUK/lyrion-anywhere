@@ -176,13 +176,36 @@ class SettingsViewModel(
         }
     }
 
-    /** Your devices: (re)load the list. */
+    /**
+     * Your devices: (re)load the list. A list that loads clears an earlier failure (an
+     * action's outcome stays); one that doesn't is said, with Try again on an empty page.
+     */
     fun loadDevices() {
         viewModelScope.launch {
             when (val r = account.myDevices()) {
-                is ApiResult.Ok -> _state.update { it.copy(devices = r.value) }
+                is ApiResult.Ok -> _state.update {
+                    it.copy(devices = r.value, devicesMessage = it.devicesMessage.takeUnless { m -> m is DevicesMessage.Failed })
+                }
                 is ApiResult.Err -> _state.update { it.copy(devicesMessage = DevicesMessage.Failed(r.error)) }
             }
+        }
+    }
+
+    /**
+     * After an action: read the list again, still busy until it is in (so a second action
+     * can't start from a stale list and the two lists can't land out of order). The action's
+     * message stays whatever the reload comes to; if the reload fails, what the action
+     * removed ([gone]) is taken off the list here instead, so no revoked device keeps its
+     * Sign out button.
+     */
+    private suspend fun reloadAfter(message: DevicesMessage, gone: (MyDevice) -> Boolean) {
+        val fresh = (account.myDevices() as? ApiResult.Ok)?.value
+        _state.update {
+            it.copy(
+                devices = fresh ?: if (message is DevicesMessage.Failed) it.devices else it.devices?.filterNot(gone),
+                devicesMessage = message,
+                devicesBusy = false,
+            )
         }
     }
 
@@ -195,8 +218,7 @@ class SettingsViewModel(
                 is ApiResult.Ok -> if (r.value) DevicesMessage.SignedOut(device.name) else DevicesMessage.AlreadyGone
                 is ApiResult.Err -> DevicesMessage.Failed(r.error)
             }
-            _state.update { it.copy(devicesBusy = false, devicesMessage = message) }
-            loadDevices()
+            reloadAfter(message) { it.id == device.id }
         }
     }
 
@@ -209,8 +231,7 @@ class SettingsViewModel(
                 is ApiResult.Ok -> DevicesMessage.SignedOutOthers(r.value)
                 is ApiResult.Err -> DevicesMessage.Failed(r.error)
             }
-            _state.update { it.copy(devicesBusy = false, devicesMessage = message) }
-            loadDevices()
+            reloadAfter(message) { !it.current }
         }
     }
 
@@ -615,6 +636,7 @@ fun SettingsScreen(
                 nowSeconds = nowSeconds,
                 onSignOut = { confirmSignOut = it.id },
                 onSignOutOthers = { confirmSignOut = ALL_OTHERS },
+                onRetry = onLoadDevices,
             )
         }
     }

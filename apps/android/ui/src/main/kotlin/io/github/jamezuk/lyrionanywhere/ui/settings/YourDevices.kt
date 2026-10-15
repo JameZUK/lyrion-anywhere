@@ -31,6 +31,7 @@ import io.github.jamezuk.lyrionanywhere.data.LastUsed
 import io.github.jamezuk.lyrionanywhere.data.lastUsed
 import io.github.jamezuk.lyrionanywhere.data.orderDevices
 import io.github.jamezuk.lyrionanywhere.ui.R
+import io.github.jamezuk.lyrionanywhere.ui.components.ErrorState
 import io.github.jamezuk.lyrionanywhere.ui.components.errorMessage
 
 /**
@@ -45,6 +46,7 @@ fun LazyListScope.yourDevicesItems(
     nowSeconds: () -> Long,
     onSignOut: (MyDevice) -> Unit,
     onSignOutOthers: () -> Unit,
+    onRetry: () -> Unit = {},
 ) {
     item {
         Text(
@@ -55,8 +57,14 @@ fun LazyListScope.yourDevicesItems(
         )
     }
     if (devices == null) {
-        if (message == null) {
-            item { Text(stringResource(R.string.your_devices_loading), Modifier.padding(16.dp).testTag("devices-loading")) }
+        when (message) {
+            null -> item { Text(stringResource(R.string.your_devices_loading), Modifier.padding(16.dp).testTag("devices-loading")) }
+            // Nothing to show at all: the failure, with Try again (as other pages have).
+            is DevicesMessage.Failed -> {
+                item { ErrorState(message.error, onRetry, Modifier.testTag("devices-load-failed")) }
+                return
+            }
+            else -> {}
         }
     } else {
         val ordered = orderDevices(devices)

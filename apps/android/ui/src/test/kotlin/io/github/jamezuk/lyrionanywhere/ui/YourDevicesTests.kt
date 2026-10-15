@@ -3,7 +3,12 @@ package io.github.jamezuk.lyrionanywhere.ui
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -14,6 +19,8 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.github.jamezuk.lyrionanywhere.core.AccountInfo
 import io.github.jamezuk.lyrionanywhere.core.MyDevice
+import io.github.jamezuk.lyrionanywhere.data.AccountRepository
+import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.data.AuthState
 import io.github.jamezuk.lyrionanywhere.data.DevicesMessage
@@ -22,6 +29,7 @@ import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsSection
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsUiState
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.theme.LyrionTheme
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -102,6 +110,89 @@ class YourDevicesViewModelTest : MainDispatcherTest() {
         fresh.loadDevices()
         assertNull(fresh.state.value.devices)
         assertEquals(DevicesMessage.Failed(AppError.Offline()), fresh.state.value.devicesMessage)
+    }
+}
+
+/** The fake account, with the list read held until the test lets it through. */
+private class GatedAccount(val inner: FakeAccount) : AccountRepository by inner {
+    var gate: CompletableDeferred<Unit>? = null
+    var loads = 0
+
+    override suspend fun myDevices(): ApiResult<List<MyDevice>> {
+        loads++
+        gate?.await()
+        return inner.myDevices()
+    }
+}
+
+/** M21: messages that go stale, overlapping actions, and a failed first load. */
+class YourDevicesMessagesTest : MainDispatcherTest() {
+    private fun signedIn(): FakeAccount = FakeAccount().apply {
+        _state.value = AuthState.SignedInState(SERVER, WHO)
+        accountInfo = AccountInfo("alice", false, true, false, true, true)
+        devices = mutableListOf(THIS, LAPTOP, KITCHEN)
+    }
+
+    @Test
+    fun aLoadThatWorksClearsAnEarlierLoadFailure() = runTest(dispatcher) {
+        val account = signedIn()
+        account.devicesError = AppError.Offline()
+        val vm = SettingsViewModel(account)
+        vm.loadDevices()
+        assertEquals(DevicesMessage.Failed(AppError.Offline()), vm.state.value.devicesMessage)
+        account.devicesError = null
+        vm.loadDevices()
+        assertEquals(listOf(THIS, LAPTOP, KITCHEN), vm.state.value.devices)
+        assertNull(vm.state.value.devicesMessage)
+    }
+
+    @Test
+    fun aFailedReloadKeepsTheSignOutMessageAndDropsTheDevice() = runTest(dispatcher) {
+        val account = signedIn()
+        val vm = SettingsViewModel(account)
+        vm.loadDevices()
+        // The shared rate limit refuses the reload straight after the sign-out.
+        account.devicesError = AppError.RateLimited(60)
+        vm.signOutDevice(LAPTOP)
+        assertEquals(DevicesMessage.SignedOut("Laptop"), vm.state.value.devicesMessage)
+        assertEquals(listOf(THIS, KITCHEN), vm.state.value.devices)
+        assertFalse(vm.state.value.devicesBusy)
+
+        vm.signOutOtherDevices()
+        assertEquals(DevicesMessage.SignedOutOthers(1), vm.state.value.devicesMessage)
+        assertEquals(listOf(THIS), vm.state.value.devices)
+    }
+
+    @Test
+    fun anAlreadyGoneDeviceLeavesTheListEvenIfTheReloadFails() = runTest(dispatcher) {
+        val account = signedIn()
+        val vm = SettingsViewModel(account)
+        vm.loadDevices()
+        account.devices.remove(LAPTOP)
+        account.devicesError = AppError.ServerBusy(30)
+        vm.signOutDevice(LAPTOP)
+        assertEquals(DevicesMessage.AlreadyGone, vm.state.value.devicesMessage)
+        assertEquals(listOf(THIS, KITCHEN), vm.state.value.devices)
+    }
+
+    @Test
+    fun noSecondSignOutWhileTheListIsBeingReadAgain() = runTest(dispatcher) {
+        val account = GatedAccount(signedIn())
+        val vm = SettingsViewModel(account)
+        vm.loadDevices()
+        val gate = CompletableDeferred<Unit>().also { account.gate = it }
+        vm.signOutDevice(LAPTOP)
+        // Signed out; the list is still being read: busy, so nothing else can start.
+        assertEquals(listOf(2L), account.inner.signedOutDevices)
+        assertTrue(vm.state.value.devicesBusy)
+        vm.signOutDevice(KITCHEN)
+        vm.signOutOtherDevices()
+        assertEquals(listOf(2L), account.inner.signedOutDevices)
+        assertEquals(0, account.inner.othersSignedOut)
+        gate.complete(Unit)
+        assertFalse(vm.state.value.devicesBusy)
+        assertEquals(listOf(THIS, KITCHEN), vm.state.value.devices)
+        assertEquals(DevicesMessage.SignedOut("Laptop"), vm.state.value.devicesMessage)
     }
 }
 
@@ -218,6 +309,76 @@ class YourDevicesScreenTests {
         compose.waitForIdle()
         compose.onNodeWithTag("sign-out-device-dialog").assertDoesNotExist()
         assertTrue(page.signedOut.isEmpty())
+    }
+
+    /** M21: a failed first load offers Try again, which reads the list again. */
+    @Test
+    fun aFailedFirstLoadOffersRetry() {
+        val page = Page(
+            SettingsUiState(username = "alice", devicesMessage = DevicesMessage.Failed(AppError.Offline())),
+            SettingsSection.YOUR_DEVICES,
+        )
+        show(page)
+        compose.waitForIdle()
+        assertEquals(1, page.loads)
+        compose.onNodeWithText("Try again").assertIsDisplayed().performClick()
+        assertEquals(2, page.loads)
+    }
+
+    @Test
+    fun noSignOutWhileBusy() {
+        val page = Page(
+            SettingsUiState(username = "alice", devices = listOf(THIS, LAPTOP), devicesBusy = true),
+            SettingsSection.YOUR_DEVICES,
+        )
+        show(page)
+        compose.onNodeWithTag("sign-out-device-2").assertIsNotEnabled()
+        compose.onNodeWithTag("sign-out-others").assertIsNotEnabled()
+    }
+
+    private fun messageColour(): Color {
+        val results = mutableListOf<TextLayoutResult>()
+        compose.onNodeWithTag("devices-message").fetchSemanticsNode()
+            .config[SemanticsActions.GetTextLayoutResult].action!!.invoke(results)
+        return results.single().layoutInput.style.color
+    }
+
+    @Test
+    fun aFailureIsShownInTheErrorColour() {
+        var error = Color.Unspecified
+        var normal = Color.Unspecified
+        var state by mutableStateOf(
+            SettingsUiState(
+                username = "alice",
+                devices = listOf(THIS, LAPTOP),
+                devicesMessage = DevicesMessage.Failed(AppError.RateLimited(60)),
+            ),
+        )
+        compose.setContent {
+            LyrionTheme(dynamicColour = false) {
+                error = MaterialTheme.colorScheme.error
+                normal = MaterialTheme.colorScheme.onSurface
+                SettingsScreen(
+                    state = state,
+                    appVersion = "1",
+                    libraryVersion = "1",
+                    onSignOut = {},
+                    onLicences = {},
+                    section = SettingsSection.YOUR_DEVICES,
+                    onSection = {},
+                    onLoadDevices = {},
+                    onSignOutDevice = {},
+                    onSignOutOtherDevices = {},
+                    nowSeconds = { NOW },
+                )
+            }
+        }
+        compose.onNodeWithTag("devices-message").assertIsDisplayed()
+        assertEquals(error, messageColour())
+        state = state.copy(devicesMessage = DevicesMessage.SignedOut("Laptop"))
+        compose.waitForIdle()
+        assertEquals(normal, messageColour())
+        assertTrue(error != normal)
     }
 
     @Test
