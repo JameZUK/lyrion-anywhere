@@ -244,7 +244,10 @@ async fn a_gateway_that_keeps_refusing_gets_backoff_not_a_refresh_loop() {
     tokio::time::sleep(Duration::from_millis(2500)).await;
     let refreshes = counts.refreshes.load(Ordering::SeqCst);
     let sockets = counts.sockets.load(Ordering::SeqCst);
-    assert!(refreshes <= 6, "{refreshes} refreshes in about three seconds");
+    assert!(
+        refreshes <= 6,
+        "{refreshes} refreshes in about three seconds"
+    );
     assert!(sockets <= 5, "{sockets} connections in about three seconds");
     assert!(store.saves() <= 6, "{} secure-store saves", store.saves());
 }

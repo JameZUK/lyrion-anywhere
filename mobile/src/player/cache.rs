@@ -1462,7 +1462,11 @@ mod tests {
             );
         }
         for n in 1..=3u8 {
-            assert!(cache_dir(&root).join(format!("{}.{EXT}", d(n).hex())).exists());
+            assert!(
+                cache_dir(&root)
+                    .join(format!("{}.{EXT}", d(n).hex()))
+                    .exists()
+            );
         }
         // A real, smaller cap on a fresh open still evicts.
         let c = shared(rs, SCOPE, Some(2000)).unwrap();

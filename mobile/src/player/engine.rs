@@ -1837,11 +1837,7 @@ impl Engine {
     }
 
     fn on_tick(&mut self) {
-        if self.open
-            && self
-                .greeted_at
-                .is_some_and(|t| t.elapsed() >= STABLE_AFTER)
-        {
+        if self.open && self.greeted_at.is_some_and(|t| t.elapsed() >= STABLE_AFTER) {
             self.greeted_at = None;
             self.attempt = 0;
         }

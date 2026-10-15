@@ -1956,7 +1956,12 @@ async fn grouped_gap(case: GroupGap) -> GroupGapSeen {
     let stream_status = |p: &serde_json::Value| {
         p[0] == me.as_str() && p[1] == serde_json::json!(["status", "-", "2", "tags:xed"])
     };
-    let checks_before = r.h.lms.rpc_calls().iter().filter(|p| stream_status(p)).count();
+    let checks_before =
+        r.h.lms
+            .rpc_calls()
+            .iter()
+            .filter(|p| stream_status(p))
+            .count();
     if case == GroupGap::StoppedWhileAsking {
         r.h.lms.hold_status();
     }
