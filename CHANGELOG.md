@@ -24,6 +24,17 @@ As on Android, the controlled player can join another player's group from *Play 
 
   `tests/node/touch-targets.test.mjs`: the row, the picker entries and *Leave the group* are 44 px targets (this failed before the change). `player-switcher-sync.test.ts` and `rooms.test.ts` were updated for the new labels and menu item.
 
+## 2026-10-15: Android: join another player's group from Play on…
+
+Asked for by the owner, who couldn't find how to sync: the only ways were *Group players…*, which brings other players into step with the one you control (the inverse), and the Rooms page's ⋮.
+
+- **Sync with…:** in *Play on…*, an indented row under the controlled player (or under *This phone*) reads "Sync with…", or "In sync with Lounge" while it is grouped. It opens a picker, as the web app's: "Sync Kitchen with…", the note "Kitchen joins that group and plays what it plays.", the player's own group first, marked "This group" and not a choice, then every other player you may control, a group as one entry ("Study + Hall", with "2 players"), and *Leave the group* while grouped. Phone and large windows share the one sheet.
+- **Join its group:** each other player's ⋮ in *Play on…* has *Join its group*, or *Leave the group* when that player already plays with the controlled one.
+- **Direction:** joining sends `<chosen> sync <this player>` (the argument joins the subject's group, as LMS takes it; a group is joined through its first member), never the other way round, which would pull the chosen player onto this one's queue. Leaving sends `<this player> sync -`. Both go through the existing `setSynced`, so the gateway's allow-list is unchanged.
+- **Clearer inverse:** *Group players…* is now *Bring players into step with Kitchen…*, its switches "Bring Lounge into step".
+- **Reliability:** the change shows at once and is put back, with a message, if refused; an answer is applied only while the same player is controlled and no later join or leave was made. Greyed out, saying why, while the music server is out of reach or busy.
+- **Tests:** `JoinGroupTests` (written first; 19 of them failed against stubs): the view model sends `sync <chosen> <this> true` and nothing else, leaving takes only this player out, a refusal is put back and said, a late answer after switching player or after a later change is not applied, nothing is sent offline, busy, for itself, an unknown player or with no player; the picker's model (own group first, groups as one entry joined through their first member, unknown ids ignored); Compose tests of the row in both states and under *This phone*, the picker's entries and note, choosing an entry, *Leave the group*, the row's ⋮ (*Join its group* / *Leave the group*), offline and busy disabled with the reason, the renamed inverse, an accessibility audit, and a large window.
+
 ## 2026-10-15: Android player: the output clock, measured and shown
 
 Seen live: an Android phone (its own speaker) and an iPad web player in a sync group. LMS saw their play points aligned, yet the iPad was heard about 100 ms ahead of the phone. The phone reports as heard what its audio device's timestamp says was presented. Without a usable timestamp it fell back on everything handed to the device, which is ahead of the speaker by the device's buffer and output latency (40 to 120 ms is typical on Android). Nothing on the phone said which was in use, so this couldn't be told apart.

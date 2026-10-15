@@ -495,7 +495,6 @@
     <string name="continue_on_empty">Nothing to continue: the downloads queue is empty.</string>
 
     <!-- Sync groups -->
-    <string name="sync_with">Play %1$s in sync with %2$s</string>
 
     <!-- Queue editing -->
     <string name="queue_clear">Clear queue</string>
@@ -1193,8 +1192,20 @@
     <string name="settings_summary_visualiser">Visualiser: %1$s</string>
     <string name="settings_summary_on">On</string>
     <string name="settings_summary_off">Off</string>
-    <string name="group_players">Group players…</string>
-    <string name="group_players_detail">Play other players in step with %1$s</string>
+    <string name="group_players">Bring players into step with %1$s…</string>
+    <string name="group_players_detail">They join this group and play what it plays</string>
+    <string name="group_players_bring">Bring %1$s into step</string>
+    <!-- Play on…: the controlled player joins another player's group (2026-10-15) -->
+    <string name="sync_in_sync_with">In sync with %1$s</string>
+    <string name="sync_picker_note">%1$s joins that group and plays what it plays.</string>
+    <string name="sync_this_group">This group</string>
+    <string name="sync_none">No other players to sync with.</string>
+    <string name="sync_blocked_offline">Can’t change groups while your music server is out of reach.</string>
+    <string name="join_its_group">Join its group</string>
+    <plurals name="sync_group_size">
+        <item quantity="one">%1$d player</item>
+        <item quantity="other">%1$d players</item>
+    </plurals>
     <string name="group_players_title">In step with %1$s</string>
     <string name="player_in_step_with">%1$s · with %2$s</string>
     <string name="move_playback_to_phone">Move playback to this phone</string>
