@@ -18,16 +18,25 @@
 	let asking = $state(false);
 	let busy = $state(false);
 
+	/** What went wrong with the last try, if it did. */
+	let failed = $state('');
+
 	async function go(remove: boolean) {
+		if (busy) return;
 		busy = true;
+		failed = '';
 		try {
 			await onsignout(remove);
+		} catch {
+			failed = remove ? 'Couldn’t remove your downloads, so you’re still signed in. Try again.' : 'Couldn’t sign out. Try again.';
 		} finally {
 			busy = false;
 			asking = false;
 		}
 	}
 </script>
+
+{#if failed}<p class="error" role="alert">{failed}</p>{/if}
 
 {#if asking}
 	<div class="ask" role="group" aria-labelledby="signout-q">

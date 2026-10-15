@@ -354,3 +354,21 @@ test('sign-out with nothing downloaded does not ask', async () => {
 	await fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
 	expect(onsignout).toHaveBeenCalledWith(false);
 });
+
+// Regression (review, Web low): a sign-out that failed (IndexedDB refusing) was silent.
+test('a failed sign-out says so, and the buttons work again', async () => {
+	const { default: SignOut } = await import('$lib/components/SignOut.svelte');
+	const onsignout = vi.fn(async () => {
+		throw new DOMException('broken', 'UnknownError');
+	});
+	const r = render(SignOut, { count: 0, onsignout });
+	await fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+	expect((await screen.findByRole('alert')).textContent).toBe('Couldn’t sign out. Try again.');
+	expect((screen.getByRole('button', { name: 'Sign out' }) as HTMLButtonElement).disabled).toBe(false);
+	r.unmount();
+
+	render(SignOut, { count: 2, onsignout });
+	await fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+	await fireEvent.click(screen.getByRole('button', { name: 'Remove downloads and sign out' }));
+	expect((await screen.findByRole('alert')).textContent).toBe('Couldn’t remove your downloads, so you’re still signed in. Try again.');
+});
