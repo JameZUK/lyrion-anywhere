@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: Issue templates, and private vulnerability reporting switched on
+
+For the forum announcement, which sends bug reports to GitHub Issues. `.github/ISSUE_TEMPLATE/` has a bug-report form (where it happens, versions, reverse proxy, what happened, steps, logs, and two required ticks: personal details replaced with placeholders, and not a security vulnerability), a feature-request form, and `config.yml` with contact links to private vulnerability reporting and the troubleshooting section. The repository's private vulnerability reporting was off, although `docs/SECURITY.md` already pointed at it; it is now on, so the *Report a vulnerability* button exists.
+
 ## 2026-10-15: README: the How-it-works diagram is a drawn SVG, and the docs are link-checked in CI
 
 The owner asked whether *How it works* was meant to be a diagram. It was a Mermaid block, which GitHub renders in an iframe 180 px tall: the text was too small to read, GitHub's zoom buttons sat over the Lyrion Music Server box, and on a phone the whole thing was a smudge. Other viewers (the GitHub app, package pages, plain Markdown renderers) show Mermaid as source.

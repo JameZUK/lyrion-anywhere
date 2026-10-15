@@ -1,0 +1,31 @@
+name: Feature request
+description: Something you'd like it to do
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a look at [docs/FEATURES.md](https://github.com/JameZUK/lyrion-anywhere/blob/main/docs/FEATURES.md) and the plans in [docs/plans/](https://github.com/JameZUK/lyrion-anywhere/tree/main/docs/plans) first, in case it already exists or is on the list.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like, and why?
+      description: The situation you're in and what you'd like to happen. A use case helps more than a design.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where?
+      multiple: true
+      options:
+        - Android app
+        - Web app
+        - LMS plugin or the gateway
+        - Documentation
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: How another player or app does it, screenshots, or constraints such as offline use, mobile data or the car.

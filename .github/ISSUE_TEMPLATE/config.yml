@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/JameZUK/lyrion-anywhere/security/advisories/new
+    about: Privately, through GitHub's advisory form. Please don't open a public issue for it.
+  - name: Installation guide and troubleshooting
+    url: https://github.com/JameZUK/lyrion-anywhere/blob/main/docs/INSTALL.md#9-troubleshooting
+    about: The set-up steps, the reverse proxy, and fixes for the usual symptoms.

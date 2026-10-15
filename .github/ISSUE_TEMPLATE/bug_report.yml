@@ -1,0 +1,71 @@
+name: Bug report
+description: Something doesn't work the way the documentation says it should
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Two things first:
+
+        - **Security vulnerabilities** go through private reporting, not an issue: https://github.com/JameZUK/lyrion-anywhere/security/advisories/new
+        - **Nothing personal, please.** Before pasting anything, replace hostnames, addresses, usernames, player names and tokens with placeholders such as `music.example.com` and `10.0.0.10`. The gateway scrubs its answers, but logs and screenshots can still carry them.
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where does it happen?
+      options:
+        - Android app
+        - Web app in a browser
+        - Web app installed on the home screen (PWA)
+        - LMS plugin or the gateway
+        - Reverse proxy or set-up
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: The plugin version (LMS Settings › Plugins), the app version or the browser and OS, and the LMS version.
+      placeholder: "plugin 0.5.0, Android app 1.15.3 on Android 15 (or Safari on iPadOS 26), LMS 9.1.1 on Debian 12"
+    validations:
+      required: true
+  - type: input
+    id: proxy
+    attributes:
+      label: Reverse proxy
+      placeholder: "nginx (the deploy/nginx configuration), Caddy, Traefik, Cloudflare Tunnel, none"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and diagnostics
+      description: |
+        Gateway: `lyrion-anywhere.log` in LMS's log folder (Docker: `docker logs lyrion-anywhere`). Plugin: LMS's `server.log`, with *Settings › Advanced › Logging › Lyrion Anywhere* raised to Debug. Web app: *Settings › Advanced › Diagnostics*. Android: the crash report's *Copy* button, if one appeared. Check them for anything personal first.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before sending
+      options:
+        - label: I've replaced hostnames, addresses, usernames, player names and tokens with placeholders.
+          required: true
+        - label: This is not a security vulnerability (those go through private reporting).
+          required: true
