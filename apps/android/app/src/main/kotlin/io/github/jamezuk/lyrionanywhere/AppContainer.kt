@@ -182,6 +182,12 @@ class AppContainer(context: Context, scope: CoroutineScope) {
     val downloads = DownloadActions(offline, scope)
 
     /** Offline mode: the server can't be reached, so the app shows and plays downloads. */
+    /** Whether the app is in the foreground (an activity started). */
+    val appForeground = AppForeground().foreground
+
+    /** How well this phone's player keeps going with the screen off. */
+    val backgroundPlayback = io.github.jamezuk.lyrionanywhere.data.BackgroundPlayback()
+
     val offlineMode = OfflineModeController(
         scope = scope,
         auth = accountImpl.state,
@@ -190,7 +196,7 @@ class AppContainer(context: Context, scope: CoroutineScope) {
         retry = { accountImpl.retry() },
         // Android cuts a backgrounded app's network when it isn't playing: the phone's
         // player losing the server then doesn't count, and it reconnects on return.
-        foreground = AppForeground().foreground,
+        foreground = appForeground,
         playing = localPlayer.state.map(OfflineModeController::playingOf),
         reconnectNow = { localPlayer.reconnectNow() },
         now = { android.os.SystemClock.elapsedRealtime() },

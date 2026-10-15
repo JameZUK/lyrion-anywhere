@@ -56,6 +56,8 @@ data class AppSettings(
     val nowPlaying: NowPlayingPrefs = NowPlayingPrefs(),
     /** Haptics, the theme's colours and car mode (on this device; Wave 2 §5). */
     val device: DevicePrefs = DevicePrefs(),
+    /** The offer to let the player run unrestricted in the background was dismissed. */
+    val backgroundPromptDismissed: Boolean = false,
 )
 
 /** How car mode opens by itself (Wave 2 §5.1). */
@@ -222,6 +224,9 @@ interface SettingsStore {
 
     /** Haptics, the theme's colours and car mode (checked before they are kept). */
     suspend fun setDevicePrefs(prefs: DevicePrefs) {}
+
+    /** The offer to run unrestricted in the background was dismissed (it isn't made again). */
+    suspend fun setBackgroundPromptDismissed(dismissed: Boolean) {}
 }
 
 /** A user name fit to remember as the offline owner. */
@@ -272,7 +277,12 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
                     deviceAddress = it[CAR_ADDRESS].orEmpty(),
                 ).sanitised(),
             ),
+            backgroundPromptDismissed = it[BACKGROUND_PROMPT_DISMISSED] ?: false,
         )
+    }
+
+    override suspend fun setBackgroundPromptDismissed(dismissed: Boolean) {
+        store.edit { e -> e[BACKGROUND_PROMPT_DISMISSED] = dismissed }
     }
 
     override suspend fun setDevicePrefs(prefs: DevicePrefs) {
@@ -435,6 +445,7 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         val NP_STYLE = stringPreferencesKey("now_playing_visual_style")
         val NP_QUEUE_PANEL = booleanPreferencesKey("now_playing_queue_panel")
         val HAPTICS = booleanPreferencesKey("haptics")
+        val BACKGROUND_PROMPT_DISMISSED = booleanPreferencesKey("background_prompt_dismissed")
         val DYNAMIC_COLOUR = booleanPreferencesKey("dynamic_colour")
         val CAR_AUTO = stringPreferencesKey("car_mode_auto")
         val CAR_NAME = stringPreferencesKey("car_mode_device_name")

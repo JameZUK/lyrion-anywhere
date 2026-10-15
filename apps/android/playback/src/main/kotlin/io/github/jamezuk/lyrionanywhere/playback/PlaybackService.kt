@@ -32,6 +32,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
@@ -79,6 +81,7 @@ class PlaybackService : MediaLibraryService() {
     private lateinit var host: PlaybackHost
     private lateinit var focus: AudioFocusHandler
     private lateinit var locks: PlaybackLocks
+    private val keeper = LockKeeper()
     private lateinit var audio: AudioManager
     private var volumeFollower: PhoneVolumeFollower? = null
     private val policy = AudioFocusPolicy()
@@ -180,6 +183,23 @@ class PlaybackService : MediaLibraryService() {
         session = MediaLibrarySession.Builder(this, if (offlineActive) offlineSessionPlayer ?: player else player, callback)
             .apply { launch?.let { setSessionActivity(it) } }
             .build()
+        // Android refused the foreground (playback started or came back while the app was
+        // in the background, with battery optimisation on): noted, so Settings can offer to
+        // let the app run unrestricted. Media3 shows the notification without it meanwhile.
+        host.backgroundPlayback?.let { bg ->
+            setListener(object : Listener {
+                override fun onForegroundServiceStartNotAllowedException() = bg.foregroundRefused()
+            })
+        }
+        host.appForeground?.let { fg ->
+            scope.launch {
+                // The app opened (Android lets a service go to the foreground then): if
+                // playback carried on without the foreground because Android refused it in
+                // the background, take it back now. Media3 otherwise tries again only when
+                // the player's state next changes.
+                fg.collect { open -> if (open && isPlaybackOngoing) triggerNotificationUpdate() }
+            }
+        }
         // Bit-perfect USB output: the engines ask this before opening their output.
         val negotiator = UsbDacNegotiator(audio) { host.localPlayer.state.value.sound.bitPerfectUsb }
         host.localPlayer.setOutputNegotiator(negotiator)
@@ -202,6 +222,25 @@ class PlaybackService : MediaLibraryService() {
                 .collect { (wantsToPlay, enabled) -> onPlayingChanged(wantsToPlay, enabled) }
         }
         scope.launch {
+            // The wake and Wi-Fi locks: while playing, while the engine starts a track (LMS
+            // may not have said so yet), and for a while after, so a track change or a
+            // queue replaced from elsewhere never finds the phone asleep (see [LockKeeper]).
+            combine(
+                controller.snapshot.map { (mapSnapshot(it).playWhenReady || it.local.engineActive) to it.local.enabled },
+                offlineFlow,
+            ) { (lmsActive, enabled), (offlinePlaying, active) ->
+                (if (active) offlinePlaying else lmsActive) to (enabled || active)
+            }
+                .distinctUntilChanged()
+                .collectLatest { (active, enabled) ->
+                    while (true) {
+                        val (hold, recheckIn) = keeper.decide(enabled, active, SystemClock.elapsedRealtime())
+                        locks.hold(hold)
+                        delay(recheckIn ?: break)
+                    }
+                }
+        }
+        scope.launch {
             offlineFlow.map { it.second }.distinctUntilChanged().collect { active ->
                 // The session shows (and its buttons drive) whichever source is active.
                 val target = if (active) offlineSessionPlayer else lmsPlayer
@@ -216,9 +255,9 @@ class PlaybackService : MediaLibraryService() {
             }
         }
         scope.launch {
-            // Keep the wake lock's timeout fresh while playing (each track change).
+            // Keep the wake lock's timeout fresh while held (each track change).
             controller.snapshot.map { it.status?.current?.id }.distinctUntilChanged().collect {
-                if (playing) locks.hold(true)
+                if (locks.held) locks.hold(true)
             }
         }
     }
@@ -227,7 +266,6 @@ class PlaybackService : MediaLibraryService() {
         if (!enabled) {
             // "Play on this phone" was switched off and no downloads are loaded.
             playing = false
-            locks.hold(false)
             setNoisyReceiver(false)
             volumeFollower?.setActive(false)
             focus.abandon()
@@ -244,10 +282,9 @@ class PlaybackService : MediaLibraryService() {
                 return
             }
             setNoisyReceiver(true)
-            locks.hold(true)
         } else {
+            // The locks stay a while yet (see [LockKeeper]).
             setNoisyReceiver(false)
-            locks.hold(false)
             // Keep focus through a transient loss so we can resume; give it up otherwise.
             if (!policy.resumeOnGain) focus.abandon()
         }
@@ -324,6 +361,46 @@ class PlaybackService : MediaLibraryService() {
     }
 }
 
+/**
+ * When to hold the wake and Wi-Fi locks: while this phone plays or its engine starts a
+ * track, and for [graceMs] after. Letting go the moment playback stops let the phone
+ * sleep between LMS's flush and the next track's start (a track change, or a queue
+ * replaced from another device), and with the screen off nothing ran until it woke.
+ * Pure: unit-tested on the JVM.
+ */
+class LockKeeper(private val graceMs: Long = GRACE_MS) {
+    /** When playback was last active (null: not since the player was switched on). */
+    private var activeAt: Long? = null
+
+    /**
+     * Whether to hold the locks at [now] (a monotonic clock, ms), and in how many ms to
+     * ask again (null: only when the inputs change). [enabled]: this phone is a player (or
+     * has downloads loaded); [active]: playing, or about to.
+     */
+    fun decide(enabled: Boolean, active: Boolean, now: Long): Pair<Boolean, Long?> {
+        if (!enabled) {
+            activeAt = null
+            return false to null
+        }
+        if (active) {
+            activeAt = now
+            return true to null
+        }
+        val since = activeAt ?: return false to null
+        val left = graceMs - (now - since).coerceAtLeast(0)
+        if (left <= 0) {
+            activeAt = null
+            return false to null
+        }
+        return true to left
+    }
+
+    companion object {
+        /** How long the locks stay after playback stops (a slow queue load included). */
+        const val GRACE_MS = 90_000L
+    }
+}
+
 /** A partial wake lock and a Wi-Fi lock, held while this phone plays. */
 class PlaybackLocks(context: Context) {
     private val wake = context.getSystemService(PowerManager::class.java)
@@ -337,7 +414,12 @@ class PlaybackLocks(context: Context) {
         .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "LyrionAnywhere:playback")
         .apply { setReferenceCounted(false) }
 
+    /** The locks are held (as last asked). */
+    var held = false
+        private set
+
     fun hold(on: Boolean) {
+        held = on
         if (on) {
             // Renewed on every track change; the timeout is only a safety net.
             wake.acquire(WAKE_TIMEOUT_MS)

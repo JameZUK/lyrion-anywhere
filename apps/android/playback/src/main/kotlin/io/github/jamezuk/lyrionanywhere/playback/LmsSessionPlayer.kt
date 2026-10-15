@@ -2,6 +2,7 @@ package io.github.jamezuk.lyrionanywhere.playback
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -43,12 +44,22 @@ class LmsSessionPlayer(
     private val scope: CoroutineScope,
     /** What the car asks to play (none: the session plays nothing by id). */
     private val requests: PlayRequests? = null,
+    /** A monotonic clock (ms), for [SessionHoldover]. */
+    private val clock: () -> Long = SystemClock::elapsedRealtime,
 ) : SimpleBasePlayer(looper) {
     private var snapshot = snapshots.value
+    private val holdover = SessionHoldover()
+
+    /** What the session shows now (with a playlist kept through a gap, see [SessionHoldover]). */
+    private var shown: SessionState = mapSnapshot(snapshot)
 
     /** A play request is under way: it starts playback itself. */
     private var requesting = false
-    private val main = Handler(looper).asCoroutineDispatcher()
+    private val handler = Handler(looper)
+    private val main = handler.asCoroutineDispatcher()
+
+    /** The kept playlist goes by itself once its time is up. */
+    private val recheck = Runnable { invalidateState() }
 
     init {
         scope.launch(main) {
@@ -59,7 +70,13 @@ class LmsSessionPlayer(
         }
     }
 
-    override fun getState(): State = buildState(snapshot, requests != null)
+    override fun getState(): State {
+        val (s, changesIn) = holdover.apply(mapSnapshot(snapshot), snapshot, clock())
+        shown = s
+        handler.removeCallbacks(recheck)
+        if (changesIn != null) handler.postDelayed(recheck, changesIn)
+        return buildState(snapshot, requests != null, s)
+    }
 
     private fun run(block: suspend () -> Unit): ListenableFuture<*> {
         val done = SettableFuture.create<Any?>()
@@ -105,7 +122,7 @@ class LmsSessionPlayer(
     override fun handleStop(): ListenableFuture<*> = run { actions.pause() }
 
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
-        val mapped = mapSnapshot(snapshot)
+        val mapped = shown
         return run {
             when (seekCommand) {
                 Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> actions.next()
@@ -122,12 +139,21 @@ class LmsSessionPlayer(
         }
     }
 
-    override fun handleRelease(): ListenableFuture<*> = SettableFuture.create<Any?>().apply { set(null) }
+    override fun handleRelease(): ListenableFuture<*> {
+        handler.removeCallbacks(recheck)
+        return SettableFuture.create<Any?>().apply { set(null) }
+    }
 
     companion object {
-        /** The session's state for a snapshot. [playRequests]: the car may play items by id. */
-        fun buildState(snapshot: SessionSnapshot, playRequests: Boolean = false): State {
-            val s = mapSnapshot(snapshot)
+        /**
+         * The session's state for a snapshot. [playRequests]: the car may play items by id.
+         * [s]: the snapshot as the session shows it (see [SessionHoldover]).
+         */
+        fun buildState(
+            snapshot: SessionSnapshot,
+            playRequests: Boolean = false,
+            s: SessionState = mapSnapshot(snapshot),
+        ): State {
             val commands = Player.Commands.Builder().addAll(
                 Player.COMMAND_GET_CURRENT_MEDIA_ITEM,
                 Player.COMMAND_GET_TIMELINE,

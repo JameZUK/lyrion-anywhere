@@ -992,6 +992,13 @@
     <string name="settings_dynamic_colour_detail">Colour the app from your wallpaper</string>
     <string name="settings_dynamic_colour_unavailable">Needs Android 12 or later</string>
 
+    <!-- Playing with the screen off: battery optimisation -->
+    <string name="background_playback_title">Playing with the screen off</string>
+    <string name="background_playback_explain">With battery optimisation on, Android may cut this phone’s connection to your server while the screen is off, so a track you change elsewhere waits until the phone wakes. Turn it off for Lyrion Anywhere to keep the player connected.</string>
+    <string name="background_playback_refused">Android has already stopped this phone’s player running in the background. Turn battery optimisation off for Lyrion Anywhere to keep the player connected while the screen is off.</string>
+    <string name="background_playback_allow">Open settings</string>
+    <string name="background_playback_not_now">Not now</string>
+
     <!-- Per-output EQ (§5.3) -->
     <string name="signal_eq_chip">EQ: %1$s</string>
     <string name="eq_curve_title">Curve: %1$s</string>

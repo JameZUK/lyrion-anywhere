@@ -1,9 +1,16 @@
 package io.github.jamezuk.lyrionanywhere.navigation
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.res.Resources
+import android.net.Uri
+import android.os.PowerManager
 import android.os.SystemClock
+import android.provider.Settings
+import io.github.jamezuk.lyrionanywhere.data.BackgroundPlayback
+import io.github.jamezuk.lyrionanywhere.ui.settings.BackgroundPlaybackPrompt
+import io.github.jamezuk.lyrionanywhere.ui.settings.BackgroundPlaybackSetting
 import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
@@ -647,6 +654,17 @@ fun MainScreen(
             }
         }
         val app by container.settings.settings.collectAsStateWithLifecycle(AppSettings())
+        // Playing with the screen off: battery optimisation (read again on each return, as
+        // the user may have just changed it in Android's settings).
+        val settingsContext = LocalContext.current
+        var unrestricted by remember { mutableStateOf(true) }
+        androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
+            unrestricted = ignoresBatteryOptimisation(settingsContext)
+            onPauseOrDispose {}
+        }
+        val refusals by container.backgroundPlayback.refusals.collectAsStateWithLifecycle()
+        val playOnPhone = playerState.local.enabled
+        val openBatterySettings = { openBatteryOptimisationSettings(settingsContext) }
         val startsOn = when (playerState.defaultPlayer) {
             io.github.jamezuk.lyrionanywhere.data.DefaultPlayer.THIS_PHONE -> stringResource(R.string.default_player_phone)
             io.github.jamezuk.lyrionanywhere.data.DefaultPlayer.LAST_USED -> stringResource(R.string.default_player_last)
@@ -710,6 +728,22 @@ fun MainScreen(
                 StreamingQualitySetting(app.streaming) { s -> scope.launch { container.settings.setStreaming(s) } }
             },
             device = { DeviceSettings(container, scope) },
+            backgroundPrompt = if (BackgroundPlayback.shouldPrompt(playOnPhone, unrestricted, app.backgroundPromptDismissed)) {
+                {
+                    BackgroundPlaybackPrompt(
+                        refused = refusals > 0,
+                        onAllow = openBatterySettings,
+                        onDismiss = { scope.launch { container.settings.setBackgroundPromptDismissed(true) } },
+                    )
+                }
+            } else {
+                null
+            },
+            background = if (BackgroundPlayback.shouldOffer(playOnPhone, unrestricted)) {
+                { BackgroundPlaybackSetting(onAllow = openBatterySettings) }
+            } else {
+                null
+            },
             gaps = {
                 ReadAheadSetting(app.readAhead) { s -> scope.launch { container.settings.setReadAhead(s) } }
                 val local by container.localPlayer.state.collectAsStateWithLifecycle()
@@ -1865,6 +1899,28 @@ private fun NavHostController.openLibrary(d: LibraryDestination) = navigate(
         LibraryDestination.FILTERS -> SmartPlaylistsRoute
     },
 )
+
+/** Android lets this app run unrestricted in the background (battery optimisation off). */
+internal fun ignoresBatteryOptimisation(context: Context): Boolean =
+    context.getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(context.packageName) ?: true
+
+/**
+ * Android's list of apps and their battery optimisation (no permission needed, unlike asking
+ * for the exemption directly), or this app's own settings page where that list is missing.
+ */
+internal fun openBatteryOptimisationSettings(context: Context) {
+    val list = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    val details = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    for (intent in listOf(list, details)) {
+        try {
+            context.startActivity(intent)
+            return
+        } catch (_: ActivityNotFoundException) {
+            // Not on this phone: try the next.
+        }
+    }
+}
 
 /** Start the media session service (allowed while the app is in the foreground). */
 private fun startPlaybackService(context: Context) {

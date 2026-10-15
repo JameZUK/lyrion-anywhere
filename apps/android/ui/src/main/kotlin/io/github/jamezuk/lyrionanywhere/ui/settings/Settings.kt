@@ -357,6 +357,10 @@ fun SettingsScreen(
     device: (@Composable () -> Unit)? = null,
     /** Gaps in the signal: reading the next track ahead (rolling cache), with this phone's player. */
     gaps: (@Composable () -> Unit)? = null,
+    /** The one-time offer to let the player run unrestricted (top of Settings; null: none). */
+    backgroundPrompt: (@Composable () -> Unit)? = null,
+    /** The same option in Settings › Playback (null: not needed). */
+    background: (@Composable () -> Unit)? = null,
     /** Change the password: current, new, the two-step code (null without two-step), sign out others. */
     onChangePassword: (current: String, new: String, code: String?, signOutOthers: Boolean) -> Unit = { _, _, _, _ -> },
     onClosePasswordForm: () -> Unit = {},
@@ -378,6 +382,7 @@ fun SettingsScreen(
     LazyColumn(modifier.fillMaxSize().testTag(section?.tag ?: "settings-index")) {
         when (section) {
             null -> {
+                if (backgroundPrompt != null) item { backgroundPrompt() }
                 item {
                     NavRow(
                         settingsSectionTitle(SettingsSection.ACCOUNT),
@@ -508,6 +513,7 @@ fun SettingsScreen(
             SettingsSection.PLAYBACK -> {
                 if (defaultPlayer != null) item { defaultPlayer() }
                 if (streaming != null) item { streaming() }
+                if (background != null) item { background() }
                 if (sleepFade != null) item { sleepFade() }
                 state.sound?.let { sound ->
                     item {
