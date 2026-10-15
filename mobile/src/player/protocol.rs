@@ -91,21 +91,20 @@ pub fn parse_features(me: &Value) -> Features {
     }
 }
 
-/// Hold `frame` for LMS until the session resumes, within `limit` frames. When full, the
-/// oldest `STMt` (a heartbeat, of no use once stale) goes first, so the events that matter
-/// (`STMs`, `STMd`, `STMo`, `STMr`, `STMu`…) survive a long gap; only an outbox full of
-/// those drops its oldest.
+/// Hold `frame` for LMS until the session resumes, within `limit` frames (when full, the
+/// oldest goes). A heartbeat (`STMt`) is never held: once stale it is worse than useless.
+/// The gateway reports for the player while it is away, and the core sends a fresh one
+/// within a second of the link returning; a backlog of held ones, delivered at once with
+/// jiffies a second apart, makes LMS re-base its clock for the player on each and throws
+/// a sync group out (live, 2026-10-15). The events that matter (`STMs`, `STMd`, `STMo`,
+/// `STMr`, `STMu`…) are all kept.
 pub fn push_outbox<F: AsRef<[u8]>>(outbox: &mut VecDeque<F>, frame: F, limit: usize) {
+    if is_heartbeat(frame.as_ref()) {
+        return;
+    }
     outbox.push_back(frame);
     while outbox.len() > limit {
-        match outbox.iter().position(|f| is_heartbeat(f.as_ref())) {
-            Some(i) => {
-                outbox.remove(i);
-            }
-            None => {
-                outbox.pop_front();
-            }
-        }
+        outbox.pop_front();
     }
 }
 
@@ -146,7 +145,8 @@ pub struct Released {
 }
 
 /// Empty the outbox when the session resumes after a gap, for sending. Everything is sent
-/// in order, except in a sync group (`grouped`, as last known), where a mid-track `STMo`
+/// in order, except any heartbeat (`STMt`, never held by [`push_outbox`]; stale whatever
+/// put it there), and in a sync group (`grouped`, as last known), where a mid-track `STMo`
 /// held through the gap is dropped, with the `STMr` that reported its recovery, if one
 /// followed it.
 ///
@@ -171,6 +171,9 @@ pub fn release_outbox(outbox: &mut VecDeque<Held>, grouped: bool) -> Released {
     // A dropped `STMo` whose recovery (`STMr`) is still to come.
     let mut drop_resume = false;
     for h in outbox.drain(..) {
+        if is_heartbeat(&h.frame) {
+            continue;
+        }
         // Only ever an `STMo`, whatever the tag says.
         if grouped && h.gap_underrun && is_stat_event(&h.frame, b"STMo") {
             drop_resume = true;
@@ -1353,7 +1356,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_outbox_drops_heartbeats_before_events() {
+    fn heartbeats_are_never_held_and_a_full_outbox_drops_its_oldest() {
         let mut o = VecDeque::new();
         push_outbox(&mut o, stat(b"STMs", 1), 4);
         for i in 0..3 {
@@ -1366,7 +1369,7 @@ mod tests {
         assert_eq!(
             events,
             vec![&b"STMs"[..], b"STMd", b"STMo", b"STMr"],
-            "every heartbeat went first"
+            "no heartbeat was held"
         );
         // Full of events: the oldest goes.
         push_outbox(&mut o, stat(b"STMu", 5), 4);
@@ -1404,6 +1407,49 @@ mod tests {
             .collect()
     }
 
+    /// Regression (live, 2026-10-15): after a four-minute gap the outbox released about 250
+    /// held `STMt`s at once; LMS took each one's jiffies (a second apart, all arriving
+    /// together) as a new clock epoch for the player, its sync play points went wrong and
+    /// it then sent the group 178 `skipAhead` corrections. A held heartbeat is never sent:
+    /// the gateway spoke for the player meanwhile, and the core sends a fresh one within a
+    /// second of the link returning. Every event around them is kept, in order.
+    #[test]
+    fn held_heartbeats_are_never_released() {
+        for grouped in [false, true] {
+            let mut o = VecDeque::new();
+            for i in 0..100u8 {
+                push_outbox(&mut o, held(b"STMt", i, false), OUTBOX_LIMIT);
+            }
+            push_outbox(&mut o, held(b"STMs", 1, false), OUTBOX_LIMIT);
+            for i in 100..250u8 {
+                push_outbox(&mut o, held(b"STMt", i, false), OUTBOX_LIMIT);
+            }
+            push_outbox(&mut o, held(b"STMd", 2, false), OUTBOX_LIMIT);
+            push_outbox(&mut o, held(b"STMt", 251, false), OUTBOX_LIMIT);
+            let r = release_outbox(&mut o, grouped);
+            assert!(o.is_empty());
+            assert_eq!(
+                released_events(&r),
+                vec![("STMs".into(), 1), ("STMd".into(), 2)],
+                "grouped: {grouped}"
+            );
+        }
+        // However they got there, held heartbeats are not released.
+        let mut o: VecDeque<Held> = [
+            held(b"STMt", 1, false),
+            held(b"STMu", 2, false),
+            held(b"STMt", 3, false),
+            held(b"STMf", 4, false),
+            held(b"STMp", 5, false),
+        ]
+        .into();
+        let r = release_outbox(&mut o, false);
+        assert_eq!(
+            released_events(&r),
+            vec![("STMu".into(), 2), ("STMf".into(), 4), ("STMp".into(), 5)]
+        );
+    }
+
     /// Regression (live check, 2026-10-13): in a sync group, a mid-track `STMo` held through
     /// the gap is not sent on the rejoin (LMS would pause the whole group to rebuffer), nor
     /// the `STMr` that reported its recovery. Everything else goes, in order.
@@ -1419,16 +1465,13 @@ mod tests {
         }
         let r = release_outbox(&mut o, true);
         assert!(o.is_empty());
-        assert_eq!(
-            released_events(&r),
-            vec![("STMt".into(), 1), ("STMt".into(), 3)]
-        );
+        assert_eq!(released_events(&r), vec![]);
         assert!(r.stall_unreported, "still stalled: its recovery isn't told");
 
         // Recovered during the gap: the STMr pairing with the dropped STMo goes too.
         let mut o: VecDeque<Held> = [
             held(b"STMo", 1, true),
-            held(b"STMt", 2, false),
+            held(b"STMs", 2, false),
             held(b"STMr", 3, false),
             held(b"STMd", 4, false),
         ]
@@ -1436,7 +1479,7 @@ mod tests {
         let r = release_outbox(&mut o, true);
         assert_eq!(
             released_events(&r),
-            vec![("STMt".into(), 2), ("STMd".into(), 4)]
+            vec![("STMs".into(), 2), ("STMd".into(), 4)]
         );
         assert!(!r.stall_unreported);
     }
@@ -1446,7 +1489,7 @@ mod tests {
     #[test]
     fn a_rejoin_alone_sends_everything_held() {
         let frames = [
-            held(b"STMt", 1, false),
+            held(b"STMs", 1, false),
             held(b"STMo", 2, true),
             held(b"STMr", 3, false),
             held(b"STMo", 4, true),
@@ -1497,8 +1540,9 @@ mod tests {
         );
     }
 
-    /// Robustness: any frames at all, tagged or not, never panic, and nothing but `STMo`s
-    /// and `STMr`s is ever dropped.
+    /// Robustness: any frames at all, tagged or not, held or put straight in the outbox,
+    /// never panic; no heartbeat is ever released, and nothing else but `STMo`s and
+    /// `STMr`s is ever dropped.
     #[test]
     fn releasing_arbitrary_frames_never_panics() {
         let mut seed = 0x9e37_79b9u64;
@@ -1521,24 +1565,28 @@ mod tests {
                     _ => stat(b"STMd", 0),
                 };
                 let gap_underrun = (r >> 9) % 2 == 0;
-                push_outbox(
-                    &mut o,
-                    Held {
-                        frame,
-                        gap_underrun,
-                    },
-                    30,
-                );
+                let h = Held {
+                    frame,
+                    gap_underrun,
+                };
+                if (r >> 10) % 2 == 0 {
+                    push_outbox(&mut o, h, 30);
+                } else {
+                    o.push_back(h);
+                }
             }
             let others = |frames: &mut dyn Iterator<Item = &Vec<u8>>| {
                 frames
-                    .filter(|f| !is_stat_event(f, b"STMo") && !is_stat_event(f, b"STMr"))
+                    .filter(|f| {
+                        !is_stat_event(f, b"STMo") && !is_stat_event(f, b"STMr") && !is_heartbeat(f)
+                    })
                     .count()
             };
             let before = others(&mut o.iter().map(|h| &h.frame));
             let grouped = next() % 3 == 0;
             let r = release_outbox(&mut o, grouped);
             assert_eq!(others(&mut r.frames.iter()), before);
+            assert!(!r.frames.iter().any(|f| is_heartbeat(f)));
             assert!(o.is_empty());
         }
     }

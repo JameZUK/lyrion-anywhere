@@ -17,7 +17,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::{mpsc, watch};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use anywhere_core::proto::{
     ClientFrameReader, ClientMsg, DEVICE_ID_SOFTWARE, Helo, ServerFrameReader, Stat, Strm,
@@ -123,6 +123,11 @@ struct State {
     from_client: ClientFrameReader,
     /// The client's most recent status report, for heartbeats while detached.
     last_stat: Option<(Stat, Instant)>,
+    /// The jiffies of the last heartbeat the gateway sent LMS for the client, and when:
+    /// a client `STMt` older than that, within [`STALE_GUARD`], is not forwarded.
+    told: Option<(u32, Instant)>,
+    /// LMS sync corrections dropped while the client was away (`pass_from_lms`), for logs.
+    corrections_dropped: u64,
     /// Whether the client last reported itself playing (elapsed time advances).
     playing: bool,
     /// LMS name queries (`setd` id 0, no data) not yet answered by the client.
@@ -152,6 +157,12 @@ const LOOKUPS_PER_MINUTE: usize = 30;
 /// How often the gateway reports status to LMS on behalf of a detached client. LMS drops
 /// players it hasn't heard from for roughly 15 s.
 const DETACHED_HEARTBEAT: Duration = Duration::from_secs(1);
+
+/// How long after the gateway last spoke for the client a client heartbeat older than
+/// what it told LMS is dropped. A client sends what it held through a gap the moment it
+/// resumes; this only has to cover that, and must not silence for long a client whose
+/// clock went back.
+const STALE_GUARD: Duration = Duration::from_secs(5);
 
 pub struct Session {
     pub id: String,
@@ -213,6 +224,8 @@ impl Session {
                 relay: None,
                 from_client: ClientFrameReader::default(),
                 last_stat: None,
+                told: None,
+                corrections_dropped: 0,
                 playing: false,
                 name_queries: 0,
                 last_heard: Instant::now(),
@@ -433,6 +446,7 @@ impl Session {
             }
             st.from_client.push(data);
             let mut frames = Vec::new();
+            let mut stale = 0usize;
             loop {
                 let (op, payload) = match st.from_client.next_frame() {
                     Ok(Some(f)) => f,
@@ -440,7 +454,11 @@ impl Session {
                     Err(e) => return ClientInput::Policy(e.to_string()),
                 };
                 let payload = match self.check_client_frame(&mut st, &op, payload) {
-                    Ok(p) => p,
+                    Ok(Some(p)) => p,
+                    Ok(None) => {
+                        stale += 1;
+                        continue;
+                    }
                     Err(why) => return ClientInput::Policy(why),
                 };
                 let mut frame = Vec::with_capacity(8 + payload.len());
@@ -451,6 +469,13 @@ impl Session {
             }
             if st.from_client.buffered() > ClientFrameReader::MAX_FRAME + 8 {
                 return ClientInput::Policy("oversize frame".into());
+            }
+            if stale > 0 {
+                debug!(
+                    mac = %self.device.mac_string(),
+                    dropped = stale,
+                    "stale client heartbeats not forwarded (older than the gateway's own)"
+                );
             }
             (frames, std::mem::take(&mut st.steps))
         };
@@ -561,13 +586,14 @@ impl Session {
         }
     }
 
-    /// Policy for one client frame. Returns the payload to forward (possibly rewritten).
+    /// Policy for one client frame. Returns the payload to forward (possibly rewritten),
+    /// or `None` for a stale heartbeat that is quietly dropped (see `State::told`).
     fn check_client_frame(
         &self,
         st: &mut State,
         op: &[u8; 4],
         payload: Vec<u8>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Option<Vec<u8>>, String> {
         if op == b"HELO" {
             if st.seen_helo {
                 return Err("repeated HELO".into());
@@ -582,7 +608,7 @@ impl Session {
             st.seen_helo = true;
             let mut out = payload[..36].to_vec();
             out.extend_from_slice(sanitise_capabilities(&h.capabilities).as_bytes());
-            return Ok(out);
+            return Ok(Some(out));
         }
         if !st.seen_helo {
             return Err("first frame must be HELO".into());
@@ -590,6 +616,20 @@ impl Session {
         match op {
             b"STAT" => {
                 let mut stat = Stat::parse(&payload).map_err(|_| "malformed STAT".to_string())?;
+                // The gateway spoke for the client lately (it was away, or silent): LMS
+                // already has a later clock for it than a heartbeat the client held
+                // meanwhile. Sent now, all at once, each would make LMS re-base its clock
+                // for the player and throw a sync group out (live, 2026-10-15). Events are
+                // forwarded whatever their age: LMS must hear them.
+                if let Some((told, at)) = st.told {
+                    // Wrapping: jiffies roll over after 49 days.
+                    let behind = (told.wrapping_sub(stat.jiffies) as i32) > 0;
+                    if at.elapsed() >= STALE_GUARD || !behind {
+                        st.told = None;
+                    } else if &stat.event == b"STMt" {
+                        return Ok(None);
+                    }
+                }
                 let mut payload = payload;
                 // LMS counts the bytes it sent; the client counts what it received, which
                 // is less when the relay dropped FLAC artwork. Report LMS's count.
@@ -600,9 +640,12 @@ impl Session {
                         payload[STAT_BYTES_RECEIVED].copy_from_slice(&sent.to_be_bytes());
                     }
                 }
+                // Not `STMu`: a client with a rolling cache can play on from it after a
+                // track's end, out of LMS's reach; only a pause or a stop freezes the
+                // heartbeats' elapsed time (see `synthesised_stat`).
                 match &stat.event {
                     b"STMs" | b"STMr" => st.playing = true,
-                    b"STMp" | b"STMf" | b"STMu" | b"STMn" => st.playing = false,
+                    b"STMp" | b"STMf" | b"STMn" => st.playing = false,
                     _ => {}
                 }
                 let steps = st.tracker.on_stat(
@@ -614,14 +657,14 @@ impl Session {
                 );
                 st.steps.extend(steps);
                 st.last_stat = Some((stat, Instant::now()));
-                Ok(payload)
+                Ok(Some(payload))
             }
-            b"RESP" | b"META" => Ok(payload),
-            b"DSCO" if payload.len() == 1 => Ok(payload),
-            b"BYE!" if payload.len() <= 1 => Ok(payload),
+            b"RESP" | b"META" => Ok(Some(payload)),
+            b"DSCO" if payload.len() == 1 => Ok(Some(payload)),
+            b"BYE!" if payload.len() <= 1 => Ok(Some(payload)),
             b"SETD" if payload.first() == Some(&0) && st.name_queries > 0 => {
                 st.name_queries -= 1;
-                Ok(name_reply(&payload[1..], &self.name()))
+                Ok(Some(name_reply(&payload[1..], &self.name())))
             }
             b"SETD" => Err("unsolicited SETD".into()),
             _ => Err(format!(
@@ -696,11 +739,14 @@ impl Session {
     }
 
     /// A status report on behalf of the detached client: its last real STAT, with the
-    /// clock (and, if it was playing, the elapsed time) advanced by wall time. The elapsed
-    /// time never passes the end of the track, once LMS has said which track it is (the
-    /// client stops there, or moves on to the next track, which only it can report).
+    /// clock (and, if it was playing, the elapsed time) advanced by wall time, so the play
+    /// point LMS works out from the two stays put. The elapsed time runs on past the end
+    /// of the track: the client plays on from its cache into the next one, which only it
+    /// can report. Stopping it there made the player look stalled to LMS (its clock ran on,
+    /// its position didn't), and in a sync group LMS then sent it, and the others, a
+    /// correction every 2 s (live, 2026-10-15). How far it runs is bounded by the grace.
     fn synthesised_stat(&self, server_timestamp: u32) -> Option<Vec<u8>> {
-        let st = self.state.lock().unwrap();
+        let mut st = self.state.lock().unwrap();
         if !st.seen_helo {
             return None;
         }
@@ -709,16 +755,12 @@ impl Session {
         stat.event = *b"STMt";
         stat.jiffies = stat.jiffies.wrapping_add(dt as u32);
         if st.playing {
-            let reported = stat.elapsed_milliseconds as u64;
-            let mut ms = reported + dt;
-            if let Some(end) = st.tracker.duration_ms() {
-                ms = ms.min(end.max(reported));
-            }
-            let ms = ms.min(u32::MAX as u64);
+            let ms = (stat.elapsed_milliseconds as u64 + dt).min(u32::MAX as u64);
             stat.elapsed_milliseconds = ms as u32;
             stat.elapsed_seconds = (ms / 1000) as u32;
         }
         stat.server_timestamp = server_timestamp;
+        st.told = Some((stat.jiffies, Instant::now()));
         Some(ClientMsg::Stat(stat).encode())
     }
 
@@ -767,6 +809,34 @@ impl Session {
     }
 
     /// Log one LMS frame and send it to the attached socket, if any.
+    /// A frame from LMS for the client (after the checks in `read_lms`): delivered, or kept
+    /// for it while it is away. `None` when it was dropped.
+    ///
+    /// While the client is away, LMS's sync corrections for it are dropped: a skip ahead
+    /// (`strm a`), a pause for an interval (`strm p` with one) and a start at a time
+    /// (`strm u` with one). They describe the moment they were sent; replayed on resume,
+    /// seconds or minutes late, they would make the player jump by their sum. A pause or
+    /// unpause now (interval or time 0), and everything else, is kept as before.
+    fn pass_from_lms(&self, op: [u8; 4], payload: &[u8], limit: usize) -> Option<Delivery> {
+        if &op == b"strm"
+            && let Ok(s) = Strm::parse(payload)
+            && (s.command == b'a' || (matches!(s.command, b'p' | b'u') && s.replay_gain != 0))
+        {
+            let mut st = self.state.lock().unwrap();
+            if !st.ended && st.attached.is_none() {
+                st.corrections_dropped += 1;
+                debug!(
+                    mac = %self.device.mac_string(),
+                    command = %char::from(s.command),
+                    dropped = st.corrections_dropped,
+                    "sync correction for a detached client dropped"
+                );
+                return None;
+            }
+        }
+        Some(self.deliver(encode_server_frame(op, payload), limit))
+    }
+
     fn deliver(&self, frame: Vec<u8>, limit: usize) -> Delivery {
         let mut st = self.state.lock().unwrap();
         if st.ended {
@@ -993,13 +1063,10 @@ async fn read_lms(gw: AppState, session: Arc<Session>, mut rd: tokio::net::tcp::
                 b"setd" => session.note_setd(&payload),
                 _ => {}
             }
-            match session.deliver(
-                encode_server_frame(op, &payload),
-                gw.cfg.detached_queue_limit,
-            ) {
-                Delivery::Ok => {}
-                Delivery::SlowClient(generation) => session.hold_for_resume(&gw, generation),
-                Delivery::Overflow => {
+            match session.pass_from_lms(op, &payload, gw.cfg.detached_queue_limit) {
+                None | Some(Delivery::Ok) => {}
+                Some(Delivery::SlowClient(generation)) => session.hold_for_resume(&gw, generation),
+                Some(Delivery::Overflow) => {
                     warn!(mac = %session.device.mac_string(), "detached queue overflow");
                     session.end(&gw, EndReason::QueueOverflow).await;
                     return;
@@ -1279,76 +1346,349 @@ mod tests {
         (stat.elapsed_milliseconds, stat.elapsed_seconds)
     }
 
-    /// While the client is away (the rolling cache lets that be minutes), heartbeats advance
-    /// the elapsed time, but never past the end of the track LMS said is playing.
-    #[tokio::test]
-    async fn heartbeats_never_run_past_the_end_of_the_track() {
-        let (s, g) = session().await;
-        s.client_bytes(g, &helo(b"flc")).await;
-        let r = s
-            .client_bytes(g, &stat_frame(b"STMs", 1_000, 100_000))
-            .await;
-        assert!(matches!(r, ClientInput::Ok));
-        age_last_stat(&s, Duration::from_secs(30));
-        // The track isn't known yet: elapsed advances by wall time.
-        assert!(heartbeat_elapsed(&s).0 >= 130_000);
-        // LMS says it is a two-minute track.
-        let track = crate::history::TrackInfo {
+    /// The jiffies at which the heartbeat says the track started (its jiffies less its
+    /// elapsed time): what LMS works out the player's play point from.
+    fn heartbeat_start(s: &Session) -> u32 {
+        let f = s.synthesised_stat(0).unwrap();
+        let stat = Stat::parse(&f[8..]).unwrap();
+        stat.jiffies.wrapping_sub(stat.elapsed_milliseconds)
+    }
+
+    fn two_minute_track() -> crate::history::TrackInfo {
+        crate::history::TrackInfo {
             id: 7,
             key: "0".repeat(64),
             album_id: None,
             artist_id: None,
             year: None,
             duration: Some(120.0),
-        };
+        }
+    }
+
+    /// Regression (live, 2026-10-15): while the client is away (the rolling cache lets that
+    /// be minutes) it plays on, past the end of the track LMS knows and into the next. The
+    /// heartbeats used to stop the elapsed time at that track's end while their clock ran
+    /// on, so to LMS the player looked stalled: in a sync group it sent `skipAhead`
+    /// corrections every 2 s for five minutes, and corrected the other members against that
+    /// frozen reference. While the client was playing, elapsed advances with the clock, so
+    /// the play point LMS works out stays put; only a pause or a stop freezes it.
+    #[tokio::test]
+    async fn heartbeats_keep_advancing_past_the_end_of_the_track() {
+        let (s, g) = session().await;
+        s.client_bytes(g, &helo(b"flc")).await;
+        let r = s
+            .client_bytes(g, &stat_frame(b"STMs", 1_000, 100_000))
+            .await;
+        assert!(matches!(r, ClientInput::Ok));
+        let start = 1_000u32.wrapping_sub(100_000);
+        age_last_stat(&s, Duration::from_secs(30));
+        assert!(heartbeat_elapsed(&s).0 >= 130_000);
+        // LMS says it is a two-minute track: elapsed still runs on past its end.
         s.state
             .lock()
             .unwrap()
             .tracker
-            .resolved(1, Some(track.clone()), Instant::now());
-        assert_eq!(heartbeat_elapsed(&s), (120_000, 120));
+            .resolved(1, Some(two_minute_track()), Instant::now());
+        assert!(heartbeat_elapsed(&s).0 >= 130_000);
+        assert_eq!(heartbeat_start(&s), start, "never looks stalled");
         age_last_stat(&s, Duration::from_secs(600));
-        assert_eq!(heartbeat_elapsed(&s), (120_000, 120));
-        // Elapsed the client itself reported past the end is passed on, never lowered.
+        assert!(heartbeat_elapsed(&s).0 >= 700_000);
+        assert_eq!(heartbeat_start(&s), start);
+        // What the client itself reports is passed on.
         let r = s
-            .client_bytes(g, &stat_frame(b"STMt", 2_000, 125_000))
+            .client_bytes(g, &stat_frame(b"STMt", 700_000, 125_000))
             .await;
         assert!(matches!(r, ClientInput::Ok));
         age_last_stat(&s, Duration::from_secs(10));
-        assert_eq!(heartbeat_elapsed(&s), (125_000, 125));
-        // A track without a sensible duration (radio, or a bad value) isn't capped.
-        for d in [
-            None,
-            Some(0.0),
-            Some(-5.0),
-            Some(f64::NAN),
-            Some(f64::INFINITY),
-        ] {
+        assert!(heartbeat_elapsed(&s).0 >= 135_000);
+        assert_eq!(heartbeat_start(&s), 700_000 - 125_000);
+        // Paused or stopped: frozen, as before.
+        for stop in [b"STMp", b"STMf", b"STMn"] {
             let (s, g) = session().await;
             s.client_bytes(g, &helo(b"flc")).await;
             s.client_bytes(g, &stat_frame(b"STMs", 1_000, 100_000))
                 .await;
-            let t = crate::history::TrackInfo {
-                duration: d,
-                ..track.clone()
-            };
-            s.state
-                .lock()
-                .unwrap()
-                .tracker
-                .resolved(1, Some(t), Instant::now());
+            s.client_bytes(g, &stat_frame(stop, 2_000, 101_000)).await;
             age_last_stat(&s, Duration::from_secs(30));
-            assert!(heartbeat_elapsed(&s).0 >= 130_000, "{d:?}");
+            assert_eq!(heartbeat_elapsed(&s), (101_000, 101), "{stop:?}");
         }
-        // Paused: frozen, as before.
+    }
+
+    /// Regression (live, 2026-10-15): a client that reported a track's end (`STMu`) plays
+    /// on from its own cache while away; the heartbeats for it must not look stalled
+    /// either. With a known two-minute track, 30 s and 300 s later the elapsed time has
+    /// moved on with the clock and the start LMS works out is the same.
+    #[tokio::test]
+    async fn heartbeats_advance_after_a_track_end_while_away() {
         let (s, g) = session().await;
         s.client_bytes(g, &helo(b"flc")).await;
         s.client_bytes(g, &stat_frame(b"STMs", 1_000, 100_000))
             .await;
-        s.client_bytes(g, &stat_frame(b"STMp", 2_000, 101_000))
+        s.state
+            .lock()
+            .unwrap()
+            .tracker
+            .resolved(1, Some(two_minute_track()), Instant::now());
+        s.client_bytes(g, &stat_frame(b"STMu", 21_000, 120_000))
             .await;
+        let start = 21_000u32.wrapping_sub(120_000);
+        let mut last = 120_000;
+        for ago in [30, 300] {
+            age_last_stat(&s, Duration::from_secs(ago));
+            let (ms, _) = heartbeat_elapsed(&s);
+            assert!(ms >= 120_000 + ago as u32 * 1000, "{ago} s: {ms}");
+            assert!(ms > last, "never frozen");
+            last = ms;
+            assert_eq!(heartbeat_start(&s), start, "{ago} s");
+        }
+    }
+
+    /// A `strm` frame from LMS with this command and interval (or start time).
+    fn strm_cmd(command: u8, interval: u32) -> Vec<u8> {
+        Strm {
+            command,
+            autostart: b'0',
+            format: b'f',
+            pcm_sample_size: b'?',
+            pcm_sample_rate: b'?',
+            pcm_channels: b'?',
+            pcm_endianness: b'?',
+            threshold: 0,
+            spdif_enable: 0,
+            transition_period: 0,
+            transition_type: b'0',
+            flags: 0,
+            output_threshold: 0,
+            slaves: 0,
+            replay_gain: interval,
+            server_port: 9000,
+            server_ip: 0,
+            request: Vec::new(),
+        }
+        .encode_payload()
+    }
+
+    /// Regression (live, 2026-10-15): while the client is away, LMS's sync corrections for
+    /// it (`strm a` skip ahead, `strm p` with an interval, `strm u` at a time) were kept and
+    /// replayed on resume, minutes late: the player would have jumped by their sum. They
+    /// are dropped while detached. Everything else (stop, start, pause, unpause now, volume)
+    /// is kept and delivered on resume, in order.
+    #[tokio::test]
+    async fn sync_corrections_are_not_kept_for_a_detached_client() {
+        let (s, _) = session().await;
+        s.state.lock().unwrap().attached = None;
+        let frames = [
+            (*b"strm", strm_cmd(b'a', 902), false),
+            (*b"strm", strm_cmd(b'q', 0), true),
+            (*b"strm", strm_cmd(b'a', 2902), false),
+            (*b"strm", strm_cmd(b'p', 500), false),
+            (*b"strm", strm_cmd(b'u', 123_456), false),
+            (*b"strm", strm_cmd(b'a', 902), false),
+            (*b"strm", strm_cmd(b'p', 0), true),
+            (*b"strm", strm_cmd(b'u', 0), true),
+            (*b"strm", strm_cmd(b's', 0), true),
+            (*b"audg", vec![0; 18], true),
+        ];
+        for (op, payload, kept) in &frames {
+            match s.pass_from_lms(*op, payload, 1 << 20) {
+                Some(Delivery::Ok) => assert!(kept),
+                None => assert!(!kept),
+                _ => panic!("unexpected delivery"),
+            }
+        }
+        let mut a = s.attach(0).unwrap();
+        let mut got = Vec::new();
+        while let Ok(Outbound::Frame(f)) = a.rx.try_recv() {
+            got.push(f);
+        }
+        let want: Vec<Vec<u8>> = frames
+            .iter()
+            .filter(|(_, _, kept)| *kept)
+            .map(|(op, p, _)| encode_server_frame(*op, p))
+            .collect();
+        assert_eq!(got, want);
+        // Attached, every correction goes straight through as before.
+        for (op, payload, _) in &frames {
+            assert!(s.pass_from_lms(*op, payload, 1 << 20).is_some());
+        }
+        let mut n = 0;
+        while let Ok(Outbound::Frame(_)) = a.rx.try_recv() {
+            n += 1;
+        }
+        assert_eq!(n, frames.len());
+    }
+
+    /// A session wired to a listener that records what reaches LMS.
+    async fn recording_session() -> (Arc<Session>, u64, Arc<Mutex<Vec<u8>>>) {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let conn = TcpStream::connect(l.local_addr().unwrap()).await.unwrap();
+        let (mut peer, _) = l.accept().await.unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let rec = seen.clone();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 64 * 1024];
+            while let Ok(n) = peer.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                rec.lock().unwrap().extend_from_slice(&buf[..n]);
+            }
+        });
+        let (_, wr) = conn.into_split();
+        let device = Principal {
+            user_id: 1,
+            username: "listener".into(),
+            role: Role::Listener,
+            device_id: 1,
+            device_name: "Test device".into(),
+            mac: MAC,
+        };
+        let s = Arc::new(Session::new(device, wr, std::sync::Weak::new()));
+        let g = s.attach(0).unwrap().generation;
+        (s, g, seen)
+    }
+
+    /// The STAT events and jiffies LMS has received, once a `DSCO` sent after them as
+    /// marker number `mark` (counting from 1, one per call) has arrived.
+    async fn lms_stats(
+        s: &Session,
+        g: u64,
+        seen: &Mutex<Vec<u8>>,
+        mark: usize,
+    ) -> Vec<([u8; 4], u32)> {
+        let marker = frame(b"DSCO", &[0]);
+        assert!(matches!(s.client_bytes(g, &marker).await, ClientInput::Ok));
+        for _ in 0..500 {
+            let bytes = seen.lock().unwrap().clone();
+            let (mut out, mut marks) = (Vec::new(), 0);
+            let mut rest = &bytes[..];
+            while rest.len() >= 8 {
+                let len = u32::from_be_bytes(rest[4..8].try_into().unwrap()) as usize;
+                if rest.len() < 8 + len {
+                    break;
+                }
+                match &rest[..4] {
+                    b"STAT" => {
+                        let stat = Stat::parse(&rest[8..8 + len]).unwrap();
+                        out.push((stat.event, stat.jiffies));
+                    }
+                    b"DSCO" => marks += 1,
+                    _ => {}
+                }
+                rest = &rest[8 + len..];
+            }
+            if marks == mark {
+                return out;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("marker {mark} never reached LMS");
+    }
+
+    /// Regression (live, 2026-10-15): a client resuming after a long gap sent every
+    /// heartbeat it had held meanwhile, all at once (about 250 after four minutes). LMS had
+    /// been told a later clock by the gateway's own heartbeats, re-based its clock for the
+    /// player on each stale one, and threw the sync group out. After the gateway has
+    /// spoken for the client, a client `STMt` older than what it told LMS goes no further;
+    /// newer ones, and every other event however old, are forwarded as before.
+    #[tokio::test]
+    async fn stale_heartbeats_after_a_resume_never_reach_lms() {
+        let (s, g, seen) = recording_session().await;
+        s.client_bytes(g, &helo(b"flc")).await;
+        s.client_bytes(g, &stat_frame(b"STMs", 1_000, 100_000))
+            .await;
+        // Away for 30 s: the gateway tells LMS the clock is now about 31 000.
         age_last_stat(&s, Duration::from_secs(30));
-        assert_eq!(heartbeat_elapsed(&s), (101_000, 101));
+        s.heartbeat(0).await;
+        let told = lms_stats(&s, g, &seen, 1).await;
+        assert_eq!(told.len(), 2);
+        assert_eq!(&told[1].0, b"STMt");
+        assert!(told[1].1 >= 31_000);
+        // Back: the client's held frames arrive, oldest first.
+        let g = s.attach(0).unwrap().generation;
+        for (event, jiffies) in [
+            (b"STMt", 2_000),
+            (b"STMt", 3_000),
+            (b"STMs", 3_500),
+            (b"STMt", 4_000),
+        ] {
+            let r = s.client_bytes(g, &stat_frame(event, jiffies, 0)).await;
+            assert!(matches!(r, ClientInput::Ok));
+        }
+        let after = lms_stats(&s, g, &seen, 2).await;
+        assert_eq!(
+            after[2..],
+            [(*b"STMs", 3_500)],
+            "only the event, none of the stale heartbeats"
+        );
+        // A fresh heartbeat, newer than what LMS was told, goes through.
+        let fresh = told[1].1 + 500;
+        s.client_bytes(g, &stat_frame(b"STMt", fresh, 0)).await;
+        let after = lms_stats(&s, g, &seen, 3).await;
+        assert_eq!(after[2..], [(*b"STMs", 3_500), (*b"STMt", fresh)]);
+        // The dropped ones never became the report the gateway speaks from.
+        assert_eq!(
+            s.state
+                .lock()
+                .unwrap()
+                .last_stat
+                .as_ref()
+                .unwrap()
+                .0
+                .jiffies,
+            fresh
+        );
+    }
+
+    /// Negative: a gateway that never spoke for the client forwards every heartbeat,
+    /// whatever its clock says (a client's clock is its own business).
+    #[tokio::test]
+    async fn heartbeats_are_forwarded_when_the_gateway_never_spoke() {
+        let (s, g, seen) = recording_session().await;
+        s.client_bytes(g, &helo(b"flc")).await;
+        for (event, jiffies) in [(b"STMs", 5_000), (b"STMt", 6_000), (b"STMt", 1_000)] {
+            s.client_bytes(g, &stat_frame(event, jiffies, 0)).await;
+        }
+        let g = s.attach(0).unwrap().generation;
+        s.client_bytes(g, &stat_frame(b"STMt", 500, 0)).await;
+        assert_eq!(
+            lms_stats(&s, g, &seen, 1).await,
+            [
+                (*b"STMs", 5_000),
+                (*b"STMt", 6_000),
+                (*b"STMt", 1_000),
+                (*b"STMt", 500)
+            ]
+        );
+    }
+
+    /// The guard is short-lived: a client whose clock went back (a restarted app resuming
+    /// its session) is not silenced for long. Jiffies wrap after 49 days; a heartbeat just
+    /// past the wrap is newer, not older.
+    #[tokio::test]
+    async fn the_stale_heartbeat_guard_expires_and_handles_the_wrap() {
+        let (s, g, seen) = recording_session().await;
+        s.client_bytes(g, &helo(b"flc")).await;
+        s.client_bytes(g, &stat_frame(b"STMs", u32::MAX - 1_000, 0))
+            .await;
+        s.heartbeat(0).await;
+        let g = s.attach(0).unwrap().generation;
+        s.client_bytes(g, &stat_frame(b"STMt", u32::MAX - 2_000, 0))
+            .await;
+        s.client_bytes(g, &stat_frame(b"STMt", 500, 0)).await;
+        let seen_now = lms_stats(&s, g, &seen, 1).await;
+        assert_eq!(seen_now.last(), Some(&(*b"STMt", 500)), "{seen_now:?}");
+        assert_eq!(seen_now.len(), 3, "the stale one dropped: {seen_now:?}");
+        // The guard set by a heartbeat long ago no longer applies.
+        s.heartbeat(0).await;
+        {
+            let mut st = s.state.lock().unwrap();
+            let (j, _) = st.told.unwrap();
+            st.told = Some((j, Instant::now().checked_sub(STALE_GUARD).unwrap()));
+        }
+        s.client_bytes(g, &stat_frame(b"STMt", 10, 0)).await;
+        let seen_now = lms_stats(&s, g, &seen, 2).await;
+        assert_eq!(seen_now.last(), Some(&(*b"STMt", 10)), "{seen_now:?}");
     }
 
     /// Small deterministic PRNG (xorshift64*), so failures are reproducible from the seed.
