@@ -13,22 +13,69 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 
 **Contents**
 
-- [Playback](#playback)
-- [Players, rooms and sync](#players-rooms-and-sync)
-- [Library and browsing](#library-and-browsing)
-- [Search](#search)
-- [Queue](#queue)
-- [Now playing, lyrics, visualiser and signal path](#now-playing-lyrics-visualiser-and-signal-path)
-- [Sound and DSP](#sound-and-dsp)
-- [Discovery and radio](#discovery-and-radio)
-- [Offline and downloads](#offline-and-downloads)
-- [Listening history, stats and Your year](#listening-history-stats-and-your-year)
-- [Car, Android Auto, widgets and system surfaces](#car-android-auto-widgets-and-system-surfaces)
-- [Appearance and accessibility](#appearance-and-accessibility)
-- [Accounts, devices, roles and admin](#accounts-devices-roles-and-admin)
-- [Security features](#security-features)
-- [Privacy controls](#privacy-controls)
-- [Installation and the installable app](#installation-and-the-installable-app)
+- [Highlights](#highlights): the short version, for the browser and for Android
+- Every feature, by area:
+
+| Area | In short |
+|---|---|
+| [Playback](#playback) | The device is a real LMS player; lossless and gapless; background playback; resume after dropouts and reloads; sleep timer; lower-data streams on mobile data; in step with the other players in a sync group |
+| [Players, rooms and sync](#players-rooms-and-sync) | *Play on…*, move playback between players, sync groups (*Sync with…*), Rooms, alarms |
+| [Library and browsing](#library-and-browsing) | All of LMS's "My Music", virtual libraries, credits, A–Z scroller, smart filters, apps, radio and plugins |
+| [Search](#search) | Grouped results, recent searches, search inside apps |
+| [Queue](#queue) | Sections, drag, swipe, Undo, checked edits, album-aware shuffle, save as a playlist, marks for tracks on this device |
+| [Now playing](#now-playing-lyrics-visualiser-and-signal-path) | Waveform seek bar, lyrics, info, visualiser, quality badge and signal path, ratings |
+| [Sound](#sound-and-dsp) | Bit-perfect output, levelling, EQ, loudness, crossfeed, dither, transitions (Android) |
+| [Discovery](#discovery-and-radio) | Home shelves, stations, Start radio, More like this |
+| [Offline](#offline-and-downloads) | Downloads in three formats, offline mode, plays synced back, controls that keep working while the server is out of reach |
+| [Your listening](#listening-history-stats-and-your-year) | Private listening history, stats, "Your year in sound" |
+| [Car and system](#car-android-auto-widgets-and-system-surfaces) | Car mode, Android Auto, widgets, tile, shortcuts, haptics, Media Session |
+| [Appearance and accessibility](#appearance-and-accessibility) | Material, Classic and High contrast themes; tested contrast; screen readers and keyboards |
+| [Accounts and admin](#accounts-devices-roles-and-admin) | Per-user accounts, roles, player grants, QR pairing, change your own password, Your devices, diagnostics |
+| [Security](#security-features) and [privacy](#privacy-controls) | Enforced by the gateway for every client; the summary is in [`SECURITY.md`](SECURITY.md) |
+| [Installation](#installation-and-the-installable-app) | The plugin, Docker, a tested proxy configuration, the installable web app, Android releases, the demo |
+
+---
+
+## Highlights
+
+### Made for LMS, with every device a real player
+
+- **Every device is a real player.** Your phone or browser appears in LMS as a Squeezebox-style player, so gapless playback, sync groups, alarms, plugins and play counts all work as they do on any LMS player. It is not a remote control that needs another speaker.
+- **In step with the players at home.** In a sync group, the phone or browser reports what is actually heard and applies LMS's corrections at the output, so it plays in step with Squeezeboxes and other players. In the browser's media-element mode (Safari, and any browser playing in the background) the corrections are made in the audio itself. After a dropped connection a phone rejoins in step without pausing the rest of the group (see [Players, rooms and sync](#players-rooms-and-sync) and SPEC D22).
+- **Lossless where it matters, frugal where it counts.** FLAC plays as FLAC. On mobile data the gateway can re-encode to Opus on the fly, and offline downloads can be the original files or smaller copies.
+- **Honest when the server is away.** If your server can't be reached, controls that can't work are greyed out, while the ones that can keep working on the device: pause, resume, and skipping to tracks it already holds. A server that is merely busy (say, its music drive spinning up) is shown calmly as busy, not offline.
+- **Made for LMS.** Apps, radio and plugins (AudioMuse-AI, Custom Browse, podcasts, streaming services and more) appear by themselves, with nothing hard-coded.
+- **For households:** each person has their own account, with their own devices, history and settings. Guests can be limited to the players you choose.
+
+### In the browser (installable web app)
+
+<p align="center">
+  <img src="images/web/now-playing-phone.png" alt="Now playing on a phone, dark theme: the cover fills the top of the screen above the title with a rating star, a quality badge, a waveform seek bar, large transport controls, a one-line Up next and three actions: Lounge (the player in use), Lyrics and Queue" width="250">
+</p>
+
+- **Plays on the device straight away:** sign in and press Play. Lossless decoding runs in WebAssembly; on iPhone, iPad and Android it keeps playing with the screen locked.
+- **Uncluttered:** one row of Library sections, Play · Shuffle · Download · ⋯ on every album and playlist, one ⋯ per row, one status line at the top, and Settings in seven short sections.
+- **Your whole library:** albums (including recently added and random), artists by role, playlists, favourites, smart playlists, genres, years, compilations, folders, downloads, and every app and radio service LMS offers.
+- **Now playing that earns its space:** waveform seek bar, synced lyrics, artist biographies, a visualiser, a quality badge that opens the signal path, and a sleep timer.
+- **Your own Home, stations and listening stats,** including a "Your year in sound" story you can share as an image made on the device.
+- **Play on… and Rooms:** every player and what it is playing; move playback, join or leave sync groups (*Sync with…*), switch players on or off and set their alarms. On a wide screen Rooms shows them as cards: drag one cover onto another to sync them.
+- **Downloads:** albums, playlists, artists and tracks for offline listening, with a storage limit and an optional Wi-Fi only setting; they play through the normal player screens.
+
+### On Android (native app)
+
+<p align="center">
+  <img src="images/android/now-playing.png" alt="The Android app's Now playing: the album cover, the title with one rating star, artist and album with a quality badge, the current lyric line, a waveform seek bar, transport controls, an Up next line and Lounge, Lyrics and Queue along the bottom" width="250">
+</p>
+
+- **Bit-perfect audio:** a Rust engine with AAudio output, bit-perfect by default, and bit-perfect to a USB DAC on Android 14 and later where the DAC supports it.
+- **Optional DSP, all off by default:** loudness levelling (ReplayGain or the server's EBU R128 analysis), parametric EQ with AutoEq import and per-output profiles, loudness-compensated volume, crossfeed, dither, and smart crossfades that never cross into a gapless album.
+- **Android Auto, car mode, widgets, a Quick Settings tile and app shortcuts.**
+- **Offline:** downloads (including smart downloads of recent albums and favourites), an offline mode, plays counted in LMS when you are back online, and *Continue on…* any player where you left off.
+- **Gaps in the signal:** the next track is fetched long before the current one ends, and a session survives up to ten minutes without a connection. A replay cache plays repeats and skips back from the phone, and an album downloaded as FLAC stands in for Original-quality streams.
+- **Out of reach, not out of action:** while the server can't be reached, the phone keeps playing, pausing and skipping between tracks it holds; the queue marks which tracks are on the phone, and what you did is passed back when the server returns.
+- **Layouts for phones, tablets and foldables.**
+
+Where to get the app, and which browsers and Android versions are supported, is in [`PLATFORMS.md`](PLATFORMS.md).
 
 ---
 
@@ -58,7 +105,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 | **Volume on this device** | Web | LMS's volume is applied on the device, so any controller changes what you hear. On iPhone and iPad, where a page can't set the volume, the device's own buttons set it and LMS's volume is held at 100 %. *Automatic*, *Follow LMS volume* or *Device buttons only* |
 | **Volume on the phone** | Android | Now playing's volume sets Android's media volume while the phone is the player (as the hardware keys do); LMS's own level for the phone is under *Settings › Sound › Player level* |
 | **Sleep timer** | Both | 15–90 minutes, a custom length (up to a day), or the end of this track, album or queue; for one player, its sync group or every player you may control. Set as LMS's own sleep, so it works on hardware players and with the app closed. This device fades out first, over a length you choose (off to 2 minutes, 30 s by default) |
-| **Synchronised playback** | Both | In a sync group, the phone or browser reports what is actually heard (allowing for output and Bluetooth latency) and starts and corrects at the output, so it stays in step with hardware players |
+| **Synchronised playback** | Both | In a sync group, the phone or browser reports what is actually heard (allowing for output and Bluetooth latency) and starts and corrects at the output, so it stays in step with hardware players. In the browser's media-element mode (Safari, and any browser playing in the background) LMS's skips and pauses are made in the decoded audio, dropping audio or inserting silence, and registered at once, so the element never seeks or stalls (2026-10-15). A member rejoining after a gap gets back in step itself: it skips what the others played, or has LMS restart the group at the group's own position, and never sends LMS the stale underrun report held through the gap, so the rest of the group plays on (SPEC D22). Android's signal path shows the output clock in use and its latency |
 | **Seek by tapping** | Both | Tapping the seek bar of a paused track plays from there |
 
 ## Players, rooms and sync

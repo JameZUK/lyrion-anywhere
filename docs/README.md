@@ -1,6 +1,6 @@
 # Documentation
 
-Start with the project [`README`](../README.md) for an introduction.
+Every page of Lyrion Anywhere's documentation, with what each covers. Start with the project [`README`](../README.md) for an introduction.
 
 ## Using and running it
 
@@ -8,8 +8,10 @@ Start with the project [`README`](../README.md) for an introduction.
 |---|---|---|
 | [`INSTALL.md`](INSTALL.md) | Everyone setting it up | Step by step: the plugin or Docker, the reverse proxy, users, first sign-in, checks, everyday administration, troubleshooting |
 | [`DEPLOY.md`](DEPLOY.md) | Administrators | The deployment reference: plugin, Docker networking, reverse proxy requirements, CDNs, a checklist |
-| [`FEATURES.md`](FEATURES.md) | Everyone | Every feature, by area, with the platforms it runs on |
-| [`PRIVACY.md`](PRIVACY.md) | Everyone | What the apps and the gateway store, where and for how long; Google Play's Data safety answers |
+| [`FEATURES.md`](FEATURES.md) | Everyone | The highlights, then every feature by area, with the platforms it runs on |
+| [`PLATFORMS.md`](PLATFORMS.md) | Everyone | Supported browsers and devices, getting the Android app, project status and roadmap |
+| [`SECURITY.md`](SECURITY.md) | Everyone | Security and privacy in brief, and how to report a vulnerability |
+| [`PRIVACY.md`](PRIVACY.md) | Everyone | The full privacy policy: what the apps and the gateway store, where and for how long; Google Play's Data safety answers |
 
 ## How it works
 
@@ -25,7 +27,7 @@ Start with the project [`README`](../README.md) for an introduction.
 
 | Document | What it covers |
 |---|---|
-| [`../README.md#building-from-source`](../README.md#building-from-source) | Building and testing everything from source |
+| [`BUILDING.md`](BUILDING.md) | Building and testing everything from source, the demo, live tests, contributing |
 | [`../apps/android/README.md`](../apps/android/README.md) | Building the Android app, and its internals in detail |
 | [`RELEASING.md`](RELEASING.md) | Plugin and Android releases, signing, Google Play and F-Droid |
 | [`../CHANGELOG.md`](../CHANGELOG.md) | What changed and when, newest first |
@@ -43,4 +45,5 @@ These record the agreed designs and what was built, milestone by milestone. The 
 | [`plans/wave1-design.md`](plans/wave1-design.md) | Wave 1: sleep timer, Now playing, listening history, Home, stations, lyrics |
 | [`plans/wave2-design.md`](plans/wave2-design.md) | Wave 2: alarms, ratings, library and queue, Now playing layouts, visualiser, Rooms, car mode, smart filters |
 | [`plans/wave3-design.md`](plans/wave3-design.md) | Wave 3: listening stats and Your year; the rolling cache (Phases A, B and C built) |
+| [`plans/wave3_5-declutter.md`](plans/wave3_5-declutter.md) | Wave 3.5: a declutter of every screen on the web and Android |
 | [`phase0-report.md`](phase0-report.md) | The Phase 0 spike that proved the approach |
