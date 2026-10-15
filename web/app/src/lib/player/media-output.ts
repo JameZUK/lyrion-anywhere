@@ -16,6 +16,11 @@ export interface MediaOutputOptions {
 	note?: (msg: string) => void;
 	/** Called once if the element can't play the stream (the caller falls back). */
 	onFail?: (why: string) => void;
+	/**
+	 * Open the source but don't call play() at start: the browser is known to refuse it
+	 * without a gesture, so the caller asks for a tap first (see {@link MediaOutput.resume}).
+	 */
+	deferPlay?: boolean;
 	makeAudio?: () => HTMLAudioElement;
 	ctors?: { managed?: SourceCtor; classic?: SourceCtor };
 }
@@ -26,6 +31,8 @@ const KEEP_BEHIND = 10;
 const END_SLACK = 0.1;
 /** A play head stuck at most this far (seconds) before buffered audio is moved onto it. */
 const MAX_GAP = 0.5;
+/** An aborted play() is tried again at most this often before the user is asked to tap. */
+const MAX_RETRIES = 8;
 
 export class MediaOutput {
 	readonly audio: HTMLAudioElement;
@@ -47,6 +54,22 @@ export class MediaOutput {
 	onExternalPause: (() => void) | null = null;
 	/** This output wants the element playing (it called play() and not pause() since). */
 	#wantPlay = false;
+	/** The browser refused play() for want of a gesture: only a tap's play() can start it. */
+	#blocked = false;
+	/** A play() was aborted (a load or source change meanwhile): try again when ready. */
+	#retrying = false;
+	#retries = 0;
+	/** A play() is in flight. */
+	#playPending = false;
+	/** Where the element stopped playing (null: playing, or it never started). */
+	#pausedAt: number | null = null;
+	/** Called when a play() this output made has really started the element. */
+	onPlaying: (() => void) | null = null;
+	/**
+	 * Called when the browser refused to play without a user gesture (NotAllowedError), or
+	 * retries kept failing: the caller asks for a tap. Nothing is heard until then.
+	 */
+	onBlocked: (() => void) | null = null;
 
 	constructor(private opts: MediaOutputOptions) {
 		this.audio = (opts.makeAudio ?? (() => new Audio()))();
@@ -74,15 +97,22 @@ export class MediaOutput {
 		this.#url = URL.createObjectURL(ms);
 		a.src = this.#url;
 		// Inside the gesture; resolves once there is data to play.
-		this.#wantPlay = true;
-		a.play().catch((e: Error) => this.#note(`media element did not start: ${e.message}`));
+		if (this.opts.deferPlay) {
+			this.#wantPlay = true;
+			this.#blocked = true;
+		} else {
+			void this.#play('start');
+		}
 		await new Promise<void>((resolve, reject) => {
 			ms.addEventListener('sourceopen', () => resolve(), { once: true });
 			setTimeout(() => reject(new Error('media source did not open')), 4_000);
 		});
 		const sb = ms.addSourceBuffer(this.opts.mime ?? MEDIA_TYPE);
 		sb.mode = 'segments';
-		sb.addEventListener('updateend', () => this.#pump());
+		sb.addEventListener('updateend', () => {
+			this.#retry('segment');
+			this.#pump();
+		});
 		sb.addEventListener('error', () => {
 			this.#note('media buffer error');
 			this.#fail('the browser rejected the audio');
@@ -95,12 +125,16 @@ export class MediaOutput {
 			this.#fail(`media error ${a.error?.code ?? ''}`);
 		});
 		ms.addEventListener('sourceclose', () => this.#note('media source closed'));
+		a.addEventListener('playing', () => (this.#pausedAt = null));
 		a.addEventListener('pause', () => {
+			this.#pausedAt ??= a.currentTime;
 			if (!this.#wantPlay || this.#closed || this.#failed) return;
 			this.#wantPlay = false;
 			this.#note('the system paused the media element');
 			this.onExternalPause?.();
 		});
+		// The element is ready again after a load or source change: an aborted play() goes again.
+		for (const type of ['loadedmetadata', 'canplay'] as const) a.addEventListener(type, () => this.#retry(type));
 		a.addEventListener('waiting', () => {
 			if (this.atEnd) this.onDrained?.();
 			else this.unstick();
@@ -239,12 +273,99 @@ export class MediaOutput {
 
 	pause() {
 		this.#wantPlay = false;
+		this.#retrying = false;
+		if (!this.audio.paused) this.#pausedAt ??= this.audio.currentTime;
 		this.audio.pause();
 	}
 
-	resume() {
+	/**
+	 * While paused: the timeline position it stopped playing at, so the caller counts what
+	 * was heard up to there and not a play head moved since. Null if it never played.
+	 */
+	get pausedAt(): number | null {
+		return this.#pausedAt;
+	}
+
+	/**
+	 * Play the element. Resolves with whether it really plays: an aborted play() is tried
+	 * again by itself when the element is ready ({@link onPlaying} says when it plays); a
+	 * refused one ({@link onBlocked}) waits for a tap's call to this.
+	 */
+	resume(): Promise<boolean> {
+		return this.#play('resume');
+	}
+
+	/** The element really plays (not merely asked to). */
+	get playing(): boolean {
+		return !this.#closed && !this.audio.paused && !this.#retrying && !this.#blocked;
+	}
+
+	/** The browser refused to play without a gesture, and no tap has played it since. */
+	get blocked(): boolean {
+		return this.#blocked;
+	}
+
+	#play(how: 'start' | 'resume' | 'retry'): Promise<boolean> {
+		if (this.#closed) return Promise.resolve(false);
 		this.#wantPlay = true;
-		this.audio.play().catch((e: Error) => this.#note(`could not resume the media element: ${e.message}`));
+		if (how !== 'retry') this.#retries = 0;
+		this.#playPending = true;
+		let p: Promise<void>;
+		try {
+			p = Promise.resolve(this.audio.play());
+		} catch (e) {
+			p = Promise.reject(e);
+		}
+		return p.then(
+			() => {
+				this.#playPending = false;
+				if (this.#closed || !this.#wantPlay) return false;
+				this.#blocked = false;
+				this.#retrying = false;
+				this.#pausedAt = null;
+				if (how === 'retry') this.#note(`media element playing again after ${this.#retries} ${this.#retries === 1 ? 'retry' : 'retries'}`);
+				this.#retries = 0;
+				this.onPlaying?.();
+				return true;
+			},
+			(e: unknown) => {
+				this.#playPending = false;
+				if (this.#closed) return false;
+				const err = e as { name?: string; message?: string };
+				const msg = err?.message ?? String(e);
+				this.#note(how === 'start' ? `media element did not start: ${msg}` : how === 'resume' ? `could not resume the media element: ${msg}` : `retry ${this.#retries} failed: ${msg}`);
+				if (!this.#wantPlay) return false; // paused meanwhile: nothing to try again
+				if (err?.name === 'NotAllowedError') {
+					this.#retrying = false;
+					this.#block();
+				} else if (err?.name === 'AbortError') {
+					// Allowed (the browser started it), then interrupted: no tap is needed now.
+					this.#blocked = false;
+					if (this.#retries >= MAX_RETRIES) {
+						this.#retrying = false;
+						this.#note(`media element still not playing after ${this.#retries} retries`);
+						this.#block();
+					} else {
+						this.#retrying = true; // the next canplay, loadedmetadata or segment
+					}
+				}
+				return false;
+			},
+		);
+	}
+
+	#block() {
+		this.#blocked = true;
+		this.onBlocked?.();
+	}
+
+	/** An aborted play() goes again once the element is ready (see {@link #play}). */
+	#retry(after: string) {
+		if (!this.#retrying || !this.#wantPlay || this.#blocked || this.#playPending || this.#closed || this.#failed) return;
+		if (!this.audio.paused) return; // playing after all
+		this.#retries++;
+		this.#note(`media element: retrying play (${this.#retries}) after ${after}`);
+		void this.#play('retry');
 	}
 
 	/**
@@ -293,6 +414,7 @@ export class MediaOutput {
 	stop() {
 		this.#closed = true;
 		this.#wantPlay = false;
+		this.#retrying = false;
 		this.#queue = [];
 		this.audio.pause();
 		this.audio.removeAttribute('src');

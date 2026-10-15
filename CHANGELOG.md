@@ -11,6 +11,25 @@ Seen live: the phone was in a sync group with a tablet, paused, screen off. Play
 - **Once per start:** one focus decision per start of playback (repeated reports before a stop make none), and a pause for a refusal is not sent again within 3 s, so a bouncing status can't pause twice.
 - **Tests:** `PlayFocusGateTest` (Robolectric, the real `AudioFocusHandler` over a shadow `AudioManager` that refuses focus in the background and during a call) and `FocusRefusalsTest`. 10 of 12 failed against the old behaviour: the foreground first, a background refusal played through and counted, a conclusion only after about 2 s, a grant on a retry, a call on screen pausing once through a status bounce, one decision per start, a stop while retrying deciding nothing, and the pure rules. The two that passed guard what stays: a refusal in the foreground service pauses, and a later start after the cool-down is decided afresh. `BackgroundPlaybackTest` covers the new count.
 
+## 2026-10-15: Web player: no silent "playing" after reopening the app on iPad
+
+Seen live (Safari on iPadOS, the home-screen app reopened, media-element mode): the first track played silently while LMS, the core and the UI all treated it as playing, and a skip brought the sound back. The diagnostics log showed the chain. The start without a tap was refused (NotAllowedError) and the page asked for a tap. The tap's `play()` was then aborted (AbortError) by a stream restart at the same moment. Nothing tried again, and the "tap to resume" hold had already been cleared, because the element looked unpaused for an instant after `play()`.
+
+- **The element's real state decides:** `MediaOutput.resume()` resolves with whether the element really plays. An aborted `play()` is tried again once the element is ready, on `loadedmetadata`, `canplay` or the next segment appended. It is tried again at each segment while the player wants it playing and it is paused. After 8 failed tries, the page asks for a tap instead. Each retry is logged ("media element: retrying play (1) after canplay"), and so is the play that follows.
+- **A refused play goes back to "tap anywhere to resume":** this applies wherever the refusal comes from (the start, the worker's play, a synced start, coming back from the background). Until the tap, the worker's play and synced starts don't call `play()` again. The hold ends, and "audio resumed (media)" is logged, only when the element really plays (`onPlaying`). It no longer ends when the tap merely asks it to play. A tap whose play is aborted by a restart leaves the element to start by itself once the new audio is in.
+- **No invented progress:** a paused element reports progress only up to where it stopped (`MediaOutput.pausedAt`). An element that never started reports none. A play head moved while paused (a seek, or Safari snapping it onto buffered audio) is skipped without counting, so the core never reports elapsed time for audio that was not heard.
+- **Asking first where the browser needs a tap:** a refusal of an automatic start is remembered in this browser (`anywhere.playback.gesture`). The next automatic start opens the stream without calling `play()` and shows "tap anywhere to resume" at once. Firefox's `navigator.getAutoplayPolicy('mediaelement')` is used where present. A gesture in hand (`navigator.userActivation.isActive`) always lets the start try. A start that then plays without a tap clears the memory, so browsers that allow it keep starting by themselves.
+- **Tests:** `tests/media-output.test.ts` adds 7 tests and `tests/device-media-resume.test.ts` adds 6. All but the `pausedAt` unit test failed before the fix. They cover:
+  - an AbortError then `canplay` playing again;
+  - retries at each segment until it plays, and none after a pause;
+  - a NotAllowedError blocking until a tap;
+  - endless aborts ending in the blocked state;
+  - a deferred start;
+  - the field report end to end (a tap aborted by a flush plays once the new audio is in, with the hold kept until then);
+  - a refused play putting the hold back with no "audio resumed" claim and 0 frames reported;
+  - a paused element whose play head moves reporting no progress;
+  - the remembered refusal.
+
 ## 2026-10-15: Android player: the socket survives a network flap
 
 Seen live: the phone (on Wi-Fi, screen on, playing in a sync group) lost its player socket about once a minute. The gateway logged "Connection reset without closing handshake". Android reports the default network lost, and the next one's capabilities a moment later, whenever it picks the default again (Wi-Fi scoring, a fallback to mobile data, a validation blip). The app passed that loss straight to the engine, and the engine dropped the socket at once by aborting its task. That left the gateway's unread keepalives in the receive buffer, so the kernel reset the connection.
