@@ -326,6 +326,7 @@ class RustAccountRepository(
         return apiCall { sess.myDevices() }
     }
 
+    /** Ok(false): gone already (the gateway's 404). This device is refused (409) as InvalidInput. */
     override suspend fun signOutDevice(id: Long): ApiResult<Boolean> {
         val sess = _connection.value?.session ?: return ApiResult.Err(AppError.SignedOut)
         return apiCall { sess.signOutDevice(id) }

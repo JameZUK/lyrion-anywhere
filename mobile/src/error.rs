@@ -34,6 +34,13 @@ pub enum ApiError {
     /// The request was refused locally (or by the server) as malformed.
     #[error("invalid input: {detail}")]
     InvalidInput { detail: String },
+    /// The server has no such thing (HTTP 404): an unknown id, or one already gone.
+    #[error("not found: {detail}")]
+    NotFound { detail: String },
+    /// The request conflicts with the current state (HTTP 409), e.g. signing out the very
+    /// device asking from "Your devices".
+    #[error("conflict: {detail}")]
+    Conflict { detail: String },
     /// The offline library passed belongs to another account (or server) than the one
     /// signed in: nothing was sent from it or downloaded into it. Open the signed-in
     /// account's own library.
@@ -88,6 +95,8 @@ impl ApiError {
             503 if retry_after.is_some() => ApiError::RateLimited {
                 retry_after_secs: retry_after.unwrap_or(1).clamp(1, 86_400),
             },
+            404 => ApiError::NotFound { detail },
+            409 => ApiError::Conflict { detail },
             400..=499 => ApiError::InvalidInput { detail },
             _ => ApiError::Server { status, detail },
         }
@@ -101,6 +110,8 @@ impl ApiError {
             ApiError::Unauthorised
                 | ApiError::Forbidden { .. }
                 | ApiError::InvalidInput { .. }
+                | ApiError::NotFound { .. }
+                | ApiError::Conflict { .. }
                 | ApiError::TwoStepRequired
         )
     }
@@ -182,6 +193,25 @@ mod tests {
             ApiError::from_status(408, None, false, None),
             ApiError::Network { .. }
         ));
+        // 404 and 409 are typed by status, whatever the text says (M16).
+        assert_eq!(
+            ApiError::from_status(404, None, false, None),
+            ApiError::NotFound {
+                detail: "HTTP 404".into()
+            }
+        );
+        assert_eq!(
+            ApiError::from_status(409, Some("busy elsewhere"), false, None),
+            ApiError::Conflict {
+                detail: "busy elsewhere".into()
+            }
+        );
+        assert!(matches!(
+            ApiError::from_status(400, Some("no such device"), false, None),
+            ApiError::InvalidInput { .. }
+        ));
+        assert!(ApiError::NotFound { detail: "x".into() }.is_refusal());
+        assert!(!ApiError::WrongAccount.is_refusal());
     }
 
     #[test]

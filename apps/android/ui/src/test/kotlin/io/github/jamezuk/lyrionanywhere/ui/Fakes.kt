@@ -193,7 +193,11 @@ class FakeAccount : AccountRepository {
     override suspend fun signOutDevice(id: Long): ApiResult<Boolean> {
         signOutError?.let { return ApiResult.Err(it) }
         signedOutDevices += id
-        return ApiResult.Ok(devices.removeAll { it.id == id && !it.current })
+        // As the real one: this device is refused (the gateway's 409), not "already gone".
+        if (devices.any { it.id == id && it.current }) {
+            return ApiResult.Err(AppError.InvalidInput("this is the device you are using; sign out instead"))
+        }
+        return ApiResult.Ok(devices.removeAll { it.id == id })
     }
 
     override suspend fun signOutOtherDevices(): ApiResult<Int> {

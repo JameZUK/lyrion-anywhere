@@ -17,6 +17,9 @@ class AppErrorTest {
         assertEquals(AppError.RateLimited(90), ApiException.RateLimited(90u).toAppError())
         assertEquals(AppError.Server(502, "x"), ApiException.Server(502u, "x").toAppError())
         assertEquals(AppError.InvalidInput("bad"), ApiException.InvalidInput("bad").toAppError())
+        assertEquals(AppError.InvalidInput("gone"), ApiException.NotFound("gone").toAppError())
+        assertEquals(AppError.InvalidInput("this one"), ApiException.Conflict("this one").toAppError())
+        assertEquals(AppError.Forbidden(WRONG_ACCOUNT), ApiException.WrongAccount().toAppError())
         assertEquals(AppError.Unexpected("IllegalStateException"), IllegalStateException("secret").toAppError())
     }
 

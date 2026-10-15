@@ -93,7 +93,7 @@ async fn history_and_home_round_trip() {
     assert!(bobs.iter().all(|b| stations.iter().all(|a| a.id != b.id)));
     assert!(matches!(
         bob_me.delete_station(stations[0].id).await,
-        Err(ApiError::InvalidInput { .. })
+        Err(ApiError::NotFound { .. })
     ));
 }
 

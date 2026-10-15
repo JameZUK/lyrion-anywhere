@@ -22,6 +22,11 @@ fn invalid<T: std::fmt::Debug>(r: Result<T, ApiError>) -> bool {
     matches!(r, Err(ApiError::InvalidInput { .. }))
 }
 
+/// The gateway's 404: another user's, or gone (the same answer, so ids can't be probed).
+fn not_found<T: std::fmt::Debug>(r: Result<T, ApiError>) -> bool {
+    matches!(r, Err(ApiError::NotFound { .. }))
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn filters_round_trip_and_stay_the_users_own() {
     let h = Harness::start().await;
@@ -69,7 +74,7 @@ async fn filters_round_trip_and_stay_the_users_own() {
     bob.login("bob".into(), PW.into(), None).await.unwrap();
     let bob = Me::new(bob);
     assert!(bob.filters().await.unwrap().is_empty());
-    assert!(invalid(
+    assert!(not_found(
         bob.update_filter(
             f.id,
             "Mine now".into(),
@@ -80,14 +85,14 @@ async fn filters_round_trip_and_stay_the_users_own() {
         .await
     ));
     let before = h.lms.rpc_calls().len();
-    assert!(invalid(bob.filter_albums(f.id, 0, 50).await));
+    assert!(not_found(bob.filter_albums(f.id, 0, 50).await));
     assert!(albums_queries(&h, before).is_empty());
-    assert!(invalid(bob.delete_filter(f.id).await));
+    assert!(not_found(bob.delete_filter(f.id).await));
     assert_eq!(me.filters().await.unwrap(), vec![updated]);
 
     me.delete_filter(f.id).await.unwrap();
     assert!(me.filters().await.unwrap().is_empty());
-    assert!(invalid(me.delete_filter(f.id).await));
+    assert!(not_found(me.delete_filter(f.id).await));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
