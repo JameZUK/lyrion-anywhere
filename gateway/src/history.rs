@@ -561,6 +561,11 @@ impl Tracker {
         out
     }
 
+    /// The latest listen's serial (the one a [`Step::Lookup`] issued now would name).
+    pub fn serial(&self) -> u64 {
+        self.serial
+    }
+
     /// LMS answered which track listen `serial` is (`None`: not a local library track, or it
     /// couldn't say).
     pub fn resolved(&mut self, serial: u64, track: Option<TrackInfo>, now: Instant) -> Vec<Step> {

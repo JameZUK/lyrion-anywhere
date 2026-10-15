@@ -137,7 +137,17 @@ struct State {
     grace: Duration,
     /// Tracker steps to carry out once the state lock is released.
     steps: Vec<crate::history::Step>,
+    /// A track-start lookup task is waiting: further starts don't spawn another (it looks
+    /// up whichever start is the latest when it wakes).
+    lookup_pending: bool,
+    /// When LMS was last asked which track started, within the past minute.
+    lookups: VecDeque<Instant>,
 }
+
+/// Most track-start lookups (LMS `status` queries) one session may make a minute. A
+/// player starts a new track every few minutes; a client looping `STMs` frames must not
+/// turn the gateway into an amplifier against LMS.
+const LOOKUPS_PER_MINUTE: usize = 30;
 
 /// How often the gateway reports status to LMS on behalf of a detached client. LMS drops
 /// players it hasn't heard from for roughly 15 s.
@@ -210,6 +220,8 @@ impl Session {
                 tracker: Default::default(),
                 grace: crate::Config::default().resume_grace,
                 steps: Vec::new(),
+                lookup_pending: false,
+                lookups: VecDeque::new(),
             }),
         }
     }
@@ -464,16 +476,46 @@ impl Session {
         let Some(gw) = self.gw.upgrade() else { return };
         for step in steps {
             match step {
-                Step::Lookup(generation) => {
+                Step::Lookup(_) => {
+                    // One waiting lookup per session: starts in quick succession are
+                    // coalesced, and only the latest is looked up.
+                    if std::mem::replace(&mut self.state.lock().unwrap().lookup_pending, true) {
+                        continue;
+                    }
                     let Some(me) = gw.session(&self.id) else {
+                        self.state.lock().unwrap().lookup_pending = false;
                         continue;
                     };
                     let gw = gw.clone();
                     tokio::spawn(async move {
-                        tokio::time::sleep(gw.cfg.history_lookup_delay).await;
-                        if me.is_ended() {
-                            return;
-                        }
+                        let delay = gw.cfg.history_lookup_delay;
+                        let mut seen = me.state.lock().unwrap().tracker.serial();
+                        let generation = loop {
+                            tokio::time::sleep(delay).await;
+                            let mut st = me.state.lock().unwrap();
+                            if st.ended {
+                                st.lookup_pending = false;
+                                return;
+                            }
+                            let now = st.tracker.serial();
+                            if now != seen {
+                                // Another start meanwhile: give LMS the full delay for it.
+                                seen = now;
+                                continue;
+                            }
+                            st.lookup_pending = false;
+                            let t = Instant::now();
+                            while st.lookups.front().is_some_and(|x| {
+                                t.saturating_duration_since(*x) >= Duration::from_secs(60)
+                            }) {
+                                st.lookups.pop_front();
+                            }
+                            if st.lookups.len() >= LOOKUPS_PER_MINUTE {
+                                return; // over the cap: this listen stays unidentified
+                            }
+                            st.lookups.push_back(t);
+                            break now;
+                        };
                         let track = gw.playing_track(&me.device.mac_string()).await;
                         let more = me.state.lock().unwrap().tracker.resolved(
                             generation,

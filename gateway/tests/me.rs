@@ -1276,3 +1276,78 @@ async fn pinned_menus_never_replay_urls_that_resolve_locally() {
         h.lms.rpc_calls()
     );
 }
+
+/// Regression (M3): every `STMs` (track started) spawned an LMS `status` lookup, so a client
+/// looping them made the gateway query LMS once per frame. Starts that come faster than the
+/// lookup delay are coalesced: only the latest is looked up.
+#[tokio::test]
+async fn a_storm_of_track_starts_makes_a_bounded_number_of_lms_lookups() {
+    let h = harness_with(|c| c.history_lookup_delay = Duration::from_millis(300)).await;
+    h.lms.add_track(45, "flc", b"audio".to_vec(), 2.0);
+    *h.lms.status_track.lock().unwrap() = Some(45);
+    let mut ws = h.dial().await;
+    connect(&mut ws, &h.tok_a).await;
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
+    // 200 track starts in 2 s.
+    for _ in 0..20 {
+        let mut burst = Vec::new();
+        for _ in 0..10 {
+            burst.extend(stat(b"STMs", 0));
+        }
+        ws.send(Message::Binary(burst.into())).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let n = h.sent(&h.a(), "status").len();
+    assert!(n <= 3, "{n} LMS lookups for 200 track starts");
+    assert!(n >= 1, "the last start is still looked up");
+    let _ = ws.close(None).await;
+}
+
+/// Regression (M3): starts spaced just past the lookup delay each get their lookup, but no
+/// more than the per-session cap (30 a minute) reach LMS.
+#[tokio::test]
+async fn track_start_lookups_are_capped_per_session() {
+    let h = harness_with(live_harness()).await;
+    h.lms.add_track(46, "flc", b"audio".to_vec(), 2.0);
+    *h.lms.status_track.lock().unwrap() = Some(46);
+    let mut ws = h.dial().await;
+    connect(&mut ws, &h.tok_a).await;
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
+    for _ in 0..45 {
+        ws.send(Message::Binary(stat(b"STMs", 0).into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let n = h.sent(&h.a(), "status").len();
+    assert!(n <= 30, "{n} LMS lookups: over the cap");
+    assert!(n >= 20, "{n} LMS lookups: spaced starts were coalesced");
+    let _ = ws.close(None).await;
+}
+
+/// Ordinary track changes, spaced apart, each still get their own lookup (M3).
+#[tokio::test]
+async fn spaced_track_changes_each_get_their_lookup() {
+    let h = harness_with(live_harness()).await;
+    h.lms.add_track(47, "flc", b"audio".to_vec(), 2.0);
+    *h.lms.status_track.lock().unwrap() = Some(47);
+    let mut ws = h.dial().await;
+    connect(&mut ws, &h.tok_a).await;
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        ws.send(Message::Binary(stat(b"STMs", 0).into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    assert_eq!(h.sent(&h.a(), "status").len(), 3);
+    let _ = ws.close(None).await;
+}
