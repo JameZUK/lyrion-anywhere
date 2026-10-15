@@ -4,7 +4,7 @@ Installs over 1.10.0 (same signing key). Signing certificate SHA-256: `86:74:DA:
 
 This release brings together everything since 1.10.0 (the test builds 1.11.0 to 1.13.0 were not published).
 
-Three features need a gateway newer than the one in plugin [0.3.0](https://github.com/JameZUK/lyrion-anywhere/releases/tag/v0.3.0): *Change password*, *Save as playlist* and the "music server is busy" notice. With 0.3.0 everything else works as described.
+Three features need plugin [0.4.0](https://github.com/JameZUK/lyrion-anywhere/releases/tag/v0.4.0) or later on the server: *Change password*, *Save as playlist* and the "music server is busy" notice. With 0.3.0 everything else works as described.
 
 ## What's new
 - **A calmer, tidier app.** Every screen was reviewed for clutter:
