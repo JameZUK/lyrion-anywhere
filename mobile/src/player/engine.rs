@@ -650,6 +650,8 @@ impl Engine {
 
     /// Leave LMS cleanly: `BYE!` (the player disappears from LMS at once), then close.
     async fn shutdown(&mut self, reason: &str) {
+        // First, so nothing moves the group while the player leaves.
+        self.cancel_restarts();
         if self.open
             && let Some(out) = &self.ws_out
         {
@@ -660,9 +662,6 @@ impl Engine {
         }
         self.close_stream();
         if let Some(t) = self.ws_task.take() {
-            t.abort();
-        }
-        if let Some(t) = self.restart.take() {
             t.abort();
         }
         self.gap = None;
@@ -889,17 +888,12 @@ impl Engine {
             self.from_downloads.clear();
             self.in_sync_group = false;
             self.stall_wait = None;
-            if let Some(t) = self.rejoin.take() {
-                t.abort();
-            }
+            self.cancel_restarts();
             self.drop_queued_audio();
             // Track numbers start again with the new player.
             self.loudness.clear();
             self.facts.clear();
             self.positions.clear();
-            if let Some(t) = self.restart.take() {
-                t.abort();
-            }
             self.gate = None;
             self.player_gen += 1;
             if let Some(t) = self.lookup.take() {
@@ -976,9 +970,7 @@ impl Engine {
             CloseAction::Stop => {
                 // Refused, revoked, signed out or replaced: nothing of it is kept.
                 self.gap = None;
-                if let Some(t) = self.restart.take() {
-                    t.abort();
-                }
+                self.cancel_restarts();
                 self.close_stream();
                 self.close_output();
                 self.audio.pipeline.unconfigure();
@@ -1475,6 +1467,18 @@ impl Engine {
             }
         });
         self.restart = Some(task.abort_handle());
+    }
+
+    /// Drop any restart or sync-group rejoin under way: they ask LMS to move this player
+    /// (and a rejoin, its whole group), which must not happen once the player has stopped,
+    /// been stopped by the server, or left LMS for the phone's own copies.
+    fn cancel_restarts(&mut self) {
+        if let Some(t) = self.restart.take() {
+            t.abort();
+        }
+        if let Some(t) = self.rejoin.take() {
+            t.abort();
+        }
     }
 
     /// A stalled player in a sync group had too little audio to skip the stall (it has been
@@ -2243,9 +2247,7 @@ impl Engine {
         self.session = None;
         self.outbox.clear();
         self.gap = None;
-        if let Some(r) = self.restart.take() {
-            r.abort();
-        }
+        self.cancel_restarts();
         // A reconnect under way would resume LMS's session: start afresh instead.
         if let Some(task) = self.ws_task.take() {
             task.abort();

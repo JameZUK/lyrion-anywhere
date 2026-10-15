@@ -1855,6 +1855,8 @@ enum GroupGap {
     PastTheEnd,
     /// LMS never said where the track is in the queue (a radio stream).
     PositionUnknown,
+    /// LMS is slow to answer the rejoin's check, and the player is stopped meanwhile.
+    StoppedWhileAsking,
 }
 
 /// What [`grouped_gap`] saw.
@@ -1947,12 +1949,44 @@ async fn grouped_gap(case: GroupGap) -> GroupGapSeen {
     tokio::time::sleep(Duration::from_secs(3)).await;
     r.proxy.as_ref().unwrap().set_down(false);
     wait_reconnected(&r, statuses, 20).await;
+    let stream_status = |p: &serde_json::Value| {
+        p[0] == me.as_str() && p[1] == serde_json::json!(["status", "-", "2", "tags:xed"])
+    };
+    let checks_before = r.h.lms.rpc_calls().iter().filter(|p| stream_status(p)).count();
+    if case == GroupGap::StoppedWhileAsking {
+        r.h.lms.hold_status();
+    }
     gate.notify_one();
+    let resumed = std::time::Instant::now();
     // The player waits up to 2 s for audio to skip the stall, then decides.
     let mut seeks: Vec<(serde_json::Value, std::time::Instant)> = Vec::new();
-    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    let mut checks = checks_before;
+    let mut stopped = false;
+    let watch = if case == GroupGap::StoppedWhileAsking {
+        10
+    } else {
+        6
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(watch);
     while std::time::Instant::now() < deadline {
         let calls = r.h.lms.rpc_calls();
+        let now_checks = calls.iter().filter(|p| stream_status(p)).count();
+        // The rejoin's check comes once the 2 s wait for audio is over; anything sooner
+        // (the reconnect's own look at the track) is answered at once. Stop the player
+        // while LMS is slow to answer the rejoin, and answer while it is still leaving.
+        if case == GroupGap::StoppedWhileAsking && !stopped {
+            if resumed.elapsed() < Duration::from_millis(1500) {
+                r.h.lms.release_status();
+                r.h.lms.hold_status();
+                checks = now_checks;
+            } else if now_checks > checks {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                r.player.stop();
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                r.h.lms.release_status();
+                stopped = true;
+            }
+        }
         for c in &calls[calls_before..] {
             if c[0] == me.as_str()
                 && c[1][0] == "time"
@@ -2065,6 +2099,26 @@ async fn a_grouped_rejoin_without_a_known_position_asks_lms_where_the_group_is()
     assert_eq!(cmds, vec![serde_json::json!(["time", "1.000"])]);
     assert_eq!(seen.stmo, 0);
     seen.rig.player.stop();
+}
+
+/// M9 regression: a rejoin waiting on a slow LMS is dropped when the player is stopped; the
+/// other speakers in the group are not moved afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopping_during_a_grouped_rejoin_moves_nobody() {
+    let seen = grouped_gap(GroupGap::StoppedWhileAsking).await;
+    let me = format_mac(&seen.rig.mac);
+    assert!(
+        seen.rig
+            .h
+            .lms
+            .rpc_calls()
+            .iter()
+            .any(|p| p[0] == me.as_str()
+                && p[1] == serde_json::json!(["status", "-", "2", "tags:xed"])),
+        "the rejoin asked LMS"
+    );
+    assert!(!seen.rig.player.is_running());
+    assert!(seen.seeks.is_empty(), "{:?}", seen.seeks);
 }
 
 /// Negative: after a grouped rejoin dropped the stale `STMo`, a real underrun with the link

@@ -230,7 +230,12 @@ pub struct FakeLms {
     pub syncs: Syncs,
     /// When set, every `status` answer is this (sync groups still added).
     pub status: Arc<Mutex<Option<Value>>>,
+    /// While set, every `status` answer waits for this to be notified (a slow LMS); see
+    /// [`FakeLms::release_status`].
+    pub status_gate: StatusGate,
 }
+
+pub type StatusGate = Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>;
 
 pub type Library = Arc<Mutex<std::collections::HashMap<u64, (Value, Vec<u8>)>>>;
 
@@ -302,22 +307,25 @@ impl FakeLms {
         let library: Library = Default::default();
         let syncs = Syncs::default();
         let status: Arc<Mutex<Option<Value>>> = Default::default();
-        let (r, paths, plans, lib, sy, so) = (
+        let status_gate: StatusGate = Default::default();
+        let (r, paths, plans, lib, sy, so, sd) = (
             rpc.clone(),
             http_paths.clone(),
             streams.clone(),
             library.clone(),
             syncs.clone(),
             status.clone(),
+            status_gate.clone(),
         );
         let app = Router::new().fallback(any(move |req: Request| {
-            let (r, paths, plans, lib, sy, so) = (
+            let (r, paths, plans, lib, sy, so, sd) = (
                 r.clone(),
                 paths.clone(),
                 plans.clone(),
                 lib.clone(),
                 sy.clone(),
                 so.clone(),
+                sd.clone(),
             );
             async move {
                 let path = req.uri().path().to_string();
@@ -451,6 +459,12 @@ impl FakeLms {
                             ]);
                         }
                     }
+                    let gate = sd.lock().unwrap().clone();
+                    if cmd == "status"
+                        && let Some(gate) = gate
+                    {
+                        gate.notified().await;
+                    }
                     // `time ?`: LMS's own idea of the position, the status's `time`.
                     if cmd == "time" && arg1 == "?" {
                         let t = so
@@ -563,6 +577,19 @@ impl FakeLms {
             library,
             syncs,
             status,
+            status_gate,
+        }
+    }
+
+    /// Hold every `status` answer until [`FakeLms::release_status`].
+    pub fn hold_status(&self) {
+        *self.status_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Notify::new()));
+    }
+
+    /// Answer the `status` requests held so far, and stop holding them.
+    pub fn release_status(&self) {
+        if let Some(g) = self.status_gate.lock().unwrap().take() {
+            g.notify_waiters();
         }
     }
 
