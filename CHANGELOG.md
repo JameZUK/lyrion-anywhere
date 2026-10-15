@@ -2,6 +2,20 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: Android review fixes: Keystore wipe, camera after pairing, Your devices messages, start-up initialiser check
+
+From the full code review of 15 October (M6, M15, M21's Android part and a test-coverage gap).
+
+- **Sign-in kept through a busy Keystore (M6)** (`data/secure/EncryptedCredentialStore.kt`, `AndroidSecureStorage.kt`, `AccountRepository.kt`): the sealed refresh token was deleted on any read or decrypt error, so a cold start while Android's keystore daemon restarted signed the user out and left the device registration on the server. It is now deleted only on a definite integrity failure: a bad tag (tampered with, or another key), a format the app never wrote, a permanently invalidated key or undecodable contents. A `KeyStoreException`, `ProviderException`, I/O error or anything else keeps it and reads as "unavailable".
+  - **Start-up:** an unreadable store shows *Can't open secure storage* with *Try again*, never *signed out*. Nothing is cleared and the server isn't told. Offline mode's retries (and returning to the foreground) try again; once the store reads, the saved sign-in is resumed.
+  - **Key provider:** no replacement key is made when the Keystore throws, or when the alias exists but won't yield its key. A new key is made only when there is none.
+- **Camera off after leaving the pairing screen (M15)** (`ui/onboarding/QrScanner.kt`): leaving before CameraX's provider arrived let it bind the camera afterwards, running with no preview and still reading QR codes. A `CameraLease` now never binds once disposed and releases a camera bound while disposing. The analyser is switched off on disposal. Its on/off flag is now set after composition, not during it. The shared provider future isn't cancelled, as CameraX hands the same one to the next scanner.
+- **Your devices messages (M21, Android)** (`ui/settings/Settings.kt`, `YourDevices.kt`): a list that loads now clears an earlier load failure. After a sign-out the page stays busy until the list has been read again, so a second sign-out can't start from a stale list or land out of order. If that reload fails (the shared limit of 30 a minute, say), the sign-out's message stays and the device just signed out leaves the list. A failed first load shows the error with *Try again*.
+- **Merged manifest checked by the build** (`app/build.gradle.kts`): `verify<Variant>StartupInitialisers` fails the build unless the merged manifest's `androidx.startup.InitializationProvider` lists exactly EmojiCompat, ProcessLifecycle and ProfileInstaller. Every variant's assemble, bundle and lint depend on it. Until now only the source manifest was tested, which can't show what a library's merge adds.
+- **Tests:**
+  - Each fix's regression tests failed before the fix. M6: the store keeps the blob on `IOException`, `ProviderException`, `KeyStoreException`, `UnrecoverableKeyException` and other errors, and still deletes it on `AEADBadTagException`; the repository's start-up with an unreadable store neither clears it nor signs out, and resumes on retry; the key provider makes no replacement key. M15: the camera is never bound when the provider arrives after disposal, both directly and with the composable. M21: view-model and screen tests for each case above, plus the missing test that a failure is shown in the error colour.
+  - The manifest check was confirmed to fail the build when WorkManager's initialiser is let back in.
+
 ## 2026-10-15: Android: a phone rejoining a sync group no longer pauses the others or moves them back
 
 Found by the live check of A6 (`mobile/tests/live_sync.rs`). When the phone's link stalled while it was in a sync group, the other speakers went silent for 4 to 15 s once it came back. After a long stall, LMS also restarted the whole group about 14 s back.
