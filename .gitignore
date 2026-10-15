@@ -21,3 +21,6 @@ plugin/Plugins/LyrionAnywhere/Bin/*/
 plugin/Plugins/LyrionAnywhere/web/
 dist/
 .claude/
+
+# code reviews are kept on the local-only reviews-local branch
+docs/reviews/

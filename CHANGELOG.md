@@ -19,7 +19,7 @@ From the full code review of 15 October (M19, M20, M21's web part and four web l
 
 ## 2026-10-15: Plugin settings guarded against LMS's `pref` command; release and docs fixes from the full review
 
-Fixes for findings M1, M17 and M18 of the full code review (`docs/reviews/2026-10-15-full-review.md`).
+Fixes for findings M1, M17 and M18 of the full code review of 15 October 2026.
 
 - **Gateway settings can only be changed on the settings page (M1, security)** (`plugin/Plugins/LyrionAnywhere/Gateway.pm`, `Settings.pm`): LMS's `pref` command could set the gateway's listen address, public URL, trusted proxies, client address header, ffmpeg path, download cache size and gateway path without the page's token, so any web page a LAN user opened could blind-POST to `/jsonrpc.js` and, at the next gateway start, have it listen on the LAN and trust the page's own forwarded headers. The settings page, the one authorised writer, now records these values in `settings.authorised` (0600, in the 0700 data folder), which `pref` cannot reach. The gateway always starts with the recorded values; a pref that differs is put back, logged, and shown in the page's status as "Settings changed outside the Lyrion Anywhere settings page were reverted (…)". On first run the current values are recorded.
   - **Tests:** `plugin/t/11-authorised-settings.t` (failed before the fix): `pref`-style changes after a page save are not used and are put back, with the notice; the gateway path and ffmpeg path likewise; a forged page save changes nothing; a later page save updates the record and clears the notice; first run; the file's mode; awkward characters round-trip; an unrecognised record is not trusted. The status row is tested in `plugin/t/js/settings.test.mjs`.
@@ -71,7 +71,7 @@ Fixes for findings M2, M3, M4, M5 and M7 of the 15 October code review.
 
 ## 2026-10-15: Android/mobile fixes from the full code review (H1, M8, M9, M10, M11, M14, M16)
 
-From `docs/reviews/2026-10-15-full-review.md`. Each fix has a regression test that failed before it.
+From the full code review of 15 October 2026. Each fix has a regression test that failed before it.
 
 - **H1, replay cache emptied by Settings** (`mobile/src/player/cache.rs`): asking for the cache's totals (or clearing it) while no player held it open opened it with a cap of zero, which deleted every entry. A cap that isn't known now keeps whatever is there; only a player sets the real cap. Tests: a populated cache opened afresh with no cap keeps every file, through the cache and through `stream_cache_totals` with the player stopped; a smaller real cap still evicts.
 - **M8, event socket renewal loop** (`mobile/src/events.rs`): a gateway that kept closing the event socket as "unauthorised" drove a tight loop of token refreshes and secure-store saves. Only a subscription now resets the renewal guard: one renewal is retried at once, then the normal backoff applies. Test: a fake gateway that always refuses sees at most three refreshes before the first wait.
