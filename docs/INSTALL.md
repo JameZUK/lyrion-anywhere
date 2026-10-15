@@ -217,7 +217,7 @@ This works, with two points to watch:
 
   Or, simpler, tell the gateway which header holds the visitor's address: *Client address header* `CF-Connecting-IP` in the plugin settings (Docker: `--client-ip-header CF-Connecting-IP`). The gateway believes it only on requests from your proxy (loopback, or a *Trusted proxy*), so use it only if that proxy accepts connections from Cloudflare alone, such as a Cloudflare Tunnel (`cloudflared`) or a firewall limited to Cloudflare's ranges. Otherwise anyone reaching the proxy directly could pick their own address.
 
-- **Idle timeouts:** Cloudflare closes idle WebSockets after 100 seconds. The gateway pings every 30 seconds, so no change is needed.
+- **Idle timeouts:** Cloudflare closes idle WebSockets after 100 seconds. The gateway pings every 5 seconds, so no change is needed.
 
 ## 5. Create users
 
