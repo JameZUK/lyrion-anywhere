@@ -3064,6 +3064,30 @@ async fn pause_before_retry(
     tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + delay)).await;
 }
 
+/// How many of the stream's first bytes are still to be asked for (`?limit=`), with `got`
+/// received: `None` once there are none left (or none were asked for).
+fn prefix_left(prefix_end: Option<u64>, got: u64) -> Option<u64> {
+    prefix_end
+        .and_then(|e| e.checked_sub(got))
+        .filter(|left| *left > 0)
+}
+
+/// A stream task's watchdog: should the task panic, the engine is told the stream failed
+/// (the track ends with what arrived) instead of waiting on it for ever. A task that ends
+/// normally has always said how it ended.
+struct StreamWatch {
+    id: u64,
+    tx: mpsc::UnboundedSender<Ev>,
+}
+
+impl Drop for StreamWatch {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let _ = self.tx.send(Ev::StreamFailed { id: self.id });
+        }
+    }
+}
+
 /// Fetch stream `n` of the session, resuming at the byte offset already delivered after a
 /// network failure or a 5xx, with backoff, for as long as the gateway holds the session
 /// (`budget`, from the first failure in a row); anything else fails the track.
@@ -3071,6 +3095,10 @@ async fn pause_before_retry(
 /// With the replay cache in use, the stream's first bytes are fingerprinted as they
 /// arrive; on a checked hit the download stops and the rest comes from the cache.
 async fn stream_task(job: StreamJob) {
+    let _watch = StreamWatch {
+        id: job.id,
+        tx: job.tx.clone(),
+    };
     let StreamJob {
         id,
         n,
@@ -3119,7 +3147,13 @@ async fn stream_task(job: StreamJob) {
             }
             Err(_) => String::new(), // fails as a network error below and is retried
         };
-        let url = server.stream_url(&session, n, got, prefix_end.map(|e| e - got));
+        // A gateway that sent more than asked for (an older or a hostile one) leaves
+        // nothing of the first bytes to ask for: the rest, from where it broke.
+        let limit = prefix_left(prefix_end, got);
+        if limit.is_none() {
+            prefix_end = None;
+        }
+        let url = server.stream_url(&session, n, got, limit);
         let status = match http.get(url).bearer_auth(&token).send().await {
             Ok(resp) if resp.status().as_u16() == 200 => {
                 if !headers_seen {
@@ -3239,6 +3273,32 @@ async fn stream_task(job: StreamJob) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_bytes_left_never_underflow() {
+        assert_eq!(prefix_left(None, 0), None);
+        assert_eq!(prefix_left(Some(100), 0), Some(100));
+        assert_eq!(prefix_left(Some(100), 40), Some(60));
+        assert_eq!(prefix_left(Some(100), 100), None);
+        // More than was asked for arrived (M10): nothing left, no underflow.
+        assert_eq!(prefix_left(Some(100), 101), None);
+        assert_eq!(prefix_left(Some(100), u64::MAX), None);
+    }
+
+    #[tokio::test]
+    async fn a_stream_task_that_panics_still_reports_a_failure() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let t = tokio::spawn(async move {
+            let _watch = StreamWatch { id: 7, tx };
+            panic!("boom");
+        });
+        assert!(t.await.unwrap_err().is_panic());
+        assert!(matches!(rx.recv().await, Some(Ev::StreamFailed { id: 7 })));
+        // A task that ends normally says nothing more.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        drop(StreamWatch { id: 8, tx });
+        assert!(rx.recv().await.is_none());
+    }
 
     #[test]
     fn bad_frames_close_together_back_off_further() {

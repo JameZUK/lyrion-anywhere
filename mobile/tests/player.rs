@@ -136,6 +136,8 @@ struct RigOpts {
     downloads: Option<bool>,
     /// Give the player a downloads folder (Phase C).
     downloads_dir: bool,
+    /// With `counting`: the gateway never sees `?limit=` (it sends more than asked).
+    ignore_limit: bool,
 }
 
 async fn rig(with_proxy: bool) -> Rig {
@@ -195,7 +197,9 @@ async fn rig_opts(o: RigOpts) -> Rig {
     if let Some(on) = o.downloads {
         h.accounts.set_downloads("alice", on, None).unwrap();
     }
-    let proxy = if o.counting {
+    let proxy = if o.counting && o.ignore_limit {
+        Some(Proxy::start_ignoring_limit(h.addr).await)
+    } else if o.counting {
         Some(Proxy::start_counting(h.addr).await)
     } else if o.proxy || o.old_gateway {
         let rewrite = o.old_gateway.then(|| {
@@ -2532,6 +2536,56 @@ async fn losing_the_download_permission_deletes_the_cache() {
     let p = r.player.clone();
     wait_for("deleted", move || p.stream_cache_totals().count == 0).await;
     assert!(cache_files(r.cache.as_ref().unwrap()).is_empty());
+    r.player.stop();
+}
+
+/// M10 regression: a gateway that sends more than `?limit=` asked for, and whose body then
+/// breaks, must not leave the track waiting for ever: the retry carries on from where the
+/// stream broke and the track plays to its end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn more_than_the_first_bytes_then_a_break_still_finishes_the_track() {
+    let mut r = rig_opts(RigOpts {
+        spool: true,
+        counting: true,
+        ignore_limit: true,
+        cache_bytes: GIB,
+        downloads: Some(true),
+        max_grace_s: Some(120),
+        ..RigOpts::default()
+    })
+    .await;
+    // Something in the cache, so the next stream is asked for its first bytes only.
+    let t1 = flac::encode(44_100, 16, &flac::noise(44_100 * 2, 16, 81));
+    let t2 = flac::encode(44_100, 16, &flac::noise(44_100 * 3, 16, 82));
+    assert!(t2.len() > 300_000);
+    let gate = Arc::new(tokio::sync::Notify::new());
+    {
+        let mut s = r.h.lms.streams.lock().unwrap();
+        s.push_back(StreamPlan::whole(t1));
+        s.push_back(StreamPlan {
+            body: t2,
+            gate_at: Some((256 * 1024, gate.clone())),
+        });
+    }
+    r.send(audg_full()).await;
+    play_once(&mut r, 1).await;
+    let p = r.player.clone();
+    wait_for("kept", move || p.stream_cache_totals().count == 1).await;
+    let before = r.proxy.as_ref().unwrap().down_bytes.load(Ordering::SeqCst);
+    let mac = r.mac;
+    r.send(strm_s(b'f', &mac)).await;
+    // Well past the first bytes (96 KiB) before the break.
+    let proxy = r.proxy.as_ref().unwrap();
+    wait_for("past the first bytes", || {
+        proxy.down_bytes.load(Ordering::SeqCst) - before > 200 * 1024
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let statuses = r.obs.statuses.lock().unwrap().len();
+    r.proxy.as_ref().unwrap().cut_all();
+    wait_reconnected(&r, statuses, 20).await;
+    gate.notify_one();
+    r.wait_event("STMd", 2, 30).await;
     r.player.stop();
 }
 

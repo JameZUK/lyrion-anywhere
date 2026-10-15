@@ -931,19 +931,28 @@ impl Proxy {
     /// gateway sends: to make it look like an older gateway.
     /// A proxy that counts the bytes the gateway sends ([`Proxy::down_bytes`]).
     pub async fn start_counting(target: SocketAddr) -> Proxy {
-        Self::start_with(target, None, true).await
+        Self::start_with(target, None, None, true).await
+    }
+
+    /// A counting proxy that hides `?limit=` from the gateway (renamed, so it is ignored):
+    /// a gateway that sends more than it was asked for.
+    pub async fn start_ignoring_limit(target: SocketAddr) -> Proxy {
+        let up = Some((b"limit=".to_vec(), b"limix=".to_vec()));
+        Self::start_with(target, None, up, true).await
     }
 
     pub async fn start_rewriting(target: SocketAddr, rewrite: Option<(Vec<u8>, Vec<u8>)>) -> Proxy {
-        Self::start_with(target, rewrite, false).await
+        Self::start_with(target, rewrite, None, false).await
     }
 
+    /// `rewrite` applies to what the gateway sends, `up` to what the client sends.
     async fn start_with(
         target: SocketAddr,
         rewrite: Option<(Vec<u8>, Vec<u8>)>,
+        up: Option<(Vec<u8>, Vec<u8>)>,
         count: bool,
     ) -> Proxy {
-        if let Some((a, b)) = &rewrite {
+        for (a, b) in rewrite.iter().chain(up.iter()) {
             assert_eq!(a.len(), b.len());
         }
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -965,16 +974,17 @@ impl Proxy {
                 let mut stop = c.subscribe();
                 let mut frozen = f.subscribe();
                 let rewrite = rewrite.clone();
+                let up = up.clone();
                 let counter = counter.clone();
                 tokio::spawn(async move {
                     let Ok(mut upstream) = tokio::net::TcpStream::connect(target).await else {
                         return;
                     };
-                    if rewrite.is_some() || counter.is_some() {
+                    if rewrite.is_some() || up.is_some() || counter.is_some() {
                         let (cr, cw) = client.into_split();
                         let (ur, uw) = upstream.into_split();
                         tokio::select! {
-                            _ = copy_rewriting(cr, uw, None, None) => {}
+                            _ = copy_rewriting(cr, uw, up, None) => {}
                             _ = copy_rewriting(ur, cw, rewrite, counter) => {}
                             _ = stop.recv() => {}
                         }
