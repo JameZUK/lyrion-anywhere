@@ -38,3 +38,15 @@ libopus drops the redundancy when what is left of the frame after the redundant 
 ## `Cargo.toml`: standalone tests
 
 The manifest gains an empty `[workspace]` table and a lock file, so `cargo test --locked --manifest-path third_party/opus-decoder/Cargo.toml` runs the crate's own tests (CI does this). The `criterion` dev-dependency is dropped: the benches are not vendored. The `robustness` test target is added.
+
+## Debug logging and trace scaffolding removed (no I/O)
+
+Upstream 0.1.1 shipped its author's debugging code. Two blocks in `celt/mod.rs` opened a log file at a hard-coded path on the author's machine (`OpenOptions::new().create(true).append(true)`) on every CELT frame, under no flag: a failing `open(2)` per frame on Linux and Android, and on any machine where that directory exists, a JSON line per frame for ever. Twenty-seven more such blocks in `celt/mod.rs`, `celt/bands.rs` and `celt/mdct.rs` sat behind trace flags hard-coded to `false`. Elsewhere JSON strings and diagnostic sums were built for loggers that did nothing: on every stereo CELT frame, every intra-energy frame, and at fixed indices of a process-wide packet counter in `silk/mod.rs`.
+
+The patch removes all of it: every `#region agent log` block, the no-op loggers (`append_debug_log`, `append_runtime_debug_log`, `append_anti_collapse_debug_log`, `append_silk_debug_log`, `trace_checkpoint`, `trace_lpc`, `trace_core`), the `debug_trace!` macro and its calls, the trace flags and the blocks they gated, the diagnostic values only those blocks read, the `trace_*` parameters, and the `TRACE_*` global counters (one `fetch_add(SeqCst)` per packet and per CELT frame, shared by every decoder in the process). The `packet_idx` the internals still pass around is now a constant that nothing reads.
+
+Decoding is unchanged: the same PCM and final range, bit for bit, at every output rate and channel count, for the SILK, Hybrid, CELT and code 3 fixtures and the core's Ogg fixtures, including packet loss concealment (checked before and after with a digest of the output), and the crate's unit tests (among them `plan_matches_exact_dft`) pass as before.
+
+**Tested by:** `tests/no_io.rs` (added), which fails if `OpenOptions`, `std::fs`, `std::io::Write`, `File::create`, `File::open`, `/Users/` or `#region agent log` appears in the library sources outside their test modules and doc comments.
+
+**Found by:** Lyrion Anywhere's code review of 15 October 2026 (M22). Worth reporting upstream.

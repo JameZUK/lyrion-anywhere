@@ -11,10 +11,6 @@
     clippy::int_plus_one
 )]
 
-macro_rules! debug_trace {
-    ($($arg:tt)*) => {};
-}
-
 mod celt;
 pub(crate) mod compare;
 mod entropy;
@@ -23,12 +19,9 @@ mod multistream;
 mod packet;
 mod silk;
 use crate::entropy::EcDec;
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) use error::Error;
 pub use multistream::OpusMultistreamDecoder;
-
-static TRACE_DECODE_PACKET_IDX: AtomicUsize = AtomicUsize::new(0);
 
 /// High-level single-stream Opus decoder.
 ///
@@ -475,7 +468,10 @@ impl Decoder {
         packet: Option<&[u8]>,
         out: &mut [i16],
     ) -> Result<usize, Error> {
-        let packet_idx = TRACE_DECODE_PACKET_IDX.fetch_add(1, Ordering::SeqCst);
+        // Upstream numbered packets with a process-wide counter for its debug logging,
+        // which Lyrion Anywhere removed (see PATCHES.md). Nothing reads the index now; it
+        // is still threaded through the SILK and CELT internals.
+        let packet_idx = 0usize;
         let (toc, samples_per_channel_needed) = match packet {
             Some(packet) => {
                 let pp = packet::parse_packet(packet)?;

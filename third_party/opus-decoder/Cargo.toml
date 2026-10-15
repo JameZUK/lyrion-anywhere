@@ -64,6 +64,11 @@ path = "tests/conformance_rfc.rs"
 name = "multistream"
 path = "tests/multistream.rs"
 
+# Lyrion Anywhere: the decoder does no I/O (see PATCHES.md).
+[[test]]
+name = "no_io"
+path = "tests/no_io.rs"
+
 # Lyrion Anywhere: hostile-packet robustness (see PATCHES.md).
 [[test]]
 name = "robustness"

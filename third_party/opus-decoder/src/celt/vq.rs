@@ -133,32 +133,12 @@ pub(crate) fn alg_unquant(
     k: i32,
     spread: i32,
     b: usize,
-    band: usize,
-    trace_packet: bool,
     dec: &mut EcDec<'_>,
     gain: f32,
 ) -> PvqDecodeInfo {
     let decoded = cwrs::decode_pulses(dec, x.len(), k as usize);
     normalise_residual(&decoded.pulses, x, gain);
-    if trace_packet && band == 6 && x.len() >= 4 {
-        debug_trace!(
-            "band6 pre_rot:  {:.6} {:.6} {:.6} {:.6}",
-            x[0],
-            x[1],
-            x[2],
-            x[3]
-        );
-    }
     exp_rotation(x, -1, b.max(1), k, spread);
-    if trace_packet && band == 6 && x.len() >= 4 {
-        debug_trace!(
-            "band6 post_rot: {:.6} {:.6} {:.6} {:.6}",
-            x[0],
-            x[1],
-            x[2],
-            x[3]
-        );
-    }
     PvqDecodeInfo {
         collapse_mask: extract_collapse_mask(&decoded.pulses, x.len(), b.max(1)),
         nc: decoded.nc,

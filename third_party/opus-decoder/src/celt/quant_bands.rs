@@ -11,7 +11,6 @@
 use crate::celt::laplace::ec_laplace_decode;
 use crate::celt::modes::CeltMode;
 use crate::entropy::EcDec;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 const MAX_FINE_BITS: i32 = 8;
 const E_MEANS: [f32; 25] = [
@@ -32,9 +31,6 @@ const BETA_COEF: [f32; 4] = [
 ];
 const BETA_INTRA: f32 = 4915.0 / 32768.0;
 const SMALL_ENERGY_ICDF: [u8; 3] = [2, 1, 0];
-static TRACE_COARSE_CALL_IDX: AtomicUsize = AtomicUsize::new(0);
-static TRACE_FINE_CALL_IDX: AtomicUsize = AtomicUsize::new(0);
-static TRACE_FINALISE_CALL_IDX: AtomicUsize = AtomicUsize::new(0);
 
 const E_PROB_MODEL: [[[u8; 42]; 2]; 4] = [
     [
@@ -103,16 +99,6 @@ pub(crate) fn unquant_coarse_energy(
     lm: usize,
     total_bits: i32,
 ) {
-    let target_idx = None;
-    let coarse_call_idx = TRACE_COARSE_CALL_IDX.fetch_add(1, Ordering::SeqCst);
-    let trace_this_call = target_idx == Some(coarse_call_idx);
-    if trace_this_call {
-        debug_trace!(
-            "R coarse_call_idx={} start tell_frac={}",
-            coarse_call_idx,
-            dec.tell_frac()
-        );
-    }
     let prob_model = &E_PROB_MODEL[lm][usize::from(intra)];
     let mut prev = [0.0f32; 2];
     let (coef, beta) = if intra {
@@ -126,7 +112,6 @@ pub(crate) fn unquant_coarse_energy(
     for i in start..end {
         for c in 0..channels {
             let tell = dec.tell();
-            let tell_frac_before = dec.tell_frac();
             let qi = if total_bits - tell >= 15 {
                 let pi = 2 * i.min(20);
                 ec_laplace_decode(
@@ -142,31 +127,10 @@ pub(crate) fn unquant_coarse_energy(
             } else {
                 -1
             };
-            if trace_this_call {
-                debug_trace!(
-                    "R pkt{} coarse band={} c={} qi={} tell_frac={}",
-                    coarse_call_idx,
-                    i,
-                    c,
-                    qi,
-                    dec.tell_frac()
-                );
-            }
             let q = qi as f32;
             let idx = i + c * mode.nb_ebands;
             old_ebands[idx] = old_ebands[idx].max(-9.0);
             let tmp = coef * old_ebands[idx] + prev[c] + q;
-            if target_idx == Some(0) && coarse_call_idx == 0 && i == 0 && c == 0 {
-                debug_trace!(
-                    "[RUST] pkt0 band0: qi={} q={:.6} coef={:.6} old_before={:.6} prev={:.6} tmp={:.6}",
-                    qi,
-                    q,
-                    coef,
-                    old_ebands[idx],
-                    prev[c],
-                    tmp
-                );
-            }
             old_ebands[idx] = tmp.clamp(-28.0, 28.0);
             prev[c] = prev[c] + q - beta * q;
         }
@@ -188,32 +152,16 @@ pub(crate) fn unquant_fine_energy(
     channels: usize,
     packet_idx: usize,
 ) {
-    let target_idx = None;
-    let fine_call_idx = TRACE_FINE_CALL_IDX.fetch_add(1, Ordering::SeqCst);
     for i in start..end {
         let extra = extra_quant[i];
         if extra <= 0 {
             continue;
         }
-        let tell_before_band = dec.tell_frac();
-        let guard_ok = dec.tell() + (channels as i32) * extra <= (dec.storage() as i32) * 8;
         for c in 0..channels {
-            let nbits_before = dec.nbits_total();
-            let tell_before = dec.tell();
             let q2 = dec.dec_bits(extra as u32) as f32;
             let offset =
                 (q2 + 0.5) * ((1u32 << (14 - extra as u32)) as f32) * (1.0 / 16384.0) - 0.5;
             old_ebands[i + c * mode.nb_ebands] += offset;
-        }
-        if target_idx == Some(fine_call_idx) {
-            debug_trace!(
-                "R pkt{} fine band={} extra={} tell:{}->{}",
-                fine_call_idx,
-                i,
-                extra,
-                tell_before_band,
-                dec.tell_frac()
-            );
         }
     }
 }
@@ -234,8 +182,6 @@ pub(crate) fn unquant_energy_finalise(
     dec: &mut EcDec<'_>,
     channels: usize,
 ) {
-    let target_idx = None;
-    let finalise_call_idx = TRACE_FINALISE_CALL_IDX.fetch_add(1, Ordering::SeqCst);
     let mut bits_left_mut = bits_left;
     let mut old_opt = old_ebands;
     for prio in 0..2 {
@@ -247,27 +193,10 @@ pub(crate) fn unquant_energy_finalise(
                 continue;
             }
             for c in 0..channels {
-                if target_idx == Some(0) && finalise_call_idx == 0 && i == 0 && c == 0 {
-                    debug_trace!(
-                        "[RUST] finalise band0 pre-read: tell={} end_offs={} nb_end_bits={}",
-                        dec.tell(),
-                        dec.end_offs(),
-                        dec.nend_bits()
-                    );
-                }
                 let q2 = dec.dec_bits(1) as f32;
                 let offset = (q2 - 0.5)
                     * ((1u32 << (14 - fine_quant[i] as u32 - 1)) as f32)
                     * (1.0 / 16384.0);
-                if target_idx == Some(0) && finalise_call_idx == 0 && i == 0 && c == 0 {
-                    debug_trace!(
-                        "[RUST] finalise band0: fine_quant={} fine_priority={} q2={} offset={:.6}",
-                        fine_quant[0],
-                        fine_priority[0],
-                        q2 as i32,
-                        offset
-                    );
-                }
                 if let Some(ref mut old) = old_opt {
                     old[i + c * mode.nb_ebands] += offset;
                 }

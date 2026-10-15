@@ -176,7 +176,6 @@ pub(super) fn decode_indices(
 
     state.ec_prev_signal_type = signal_type;
     let seed = dec.dec_icdf(&entropy_tables::UNIFORM4_ICDF, 8) as i8;
-    debug_trace!("silk lbrr side info consumed marker={}", 0);
 
     Ok(DecodedSideInfo {
         signal_type,

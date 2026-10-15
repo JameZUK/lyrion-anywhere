@@ -338,24 +338,6 @@ impl SilkDecoder {
         let (internal_frames, nb_subfr, frame_length) =
             internal_frame_shape(frame_samples_48k, internal_fs_hz)?;
         let mut mono_resampler_history = self.stereo_state.s_mid;
-        if packet_idx == 0 && (12..=15).contains(&config) {
-            append_silk_debug_log(
-                "silk-hybrid-entry",
-                "H65",
-                &format!(
-                    "{{\"packet_idx\":{},\"config\":{},\"internal_fs_khz\":{},\"nb_subfr\":{},\"internal_frames\":{},\"frame_length\":{},\"tell\":{},\"tell_frac\":{}}}",
-                    packet_idx,
-                    config,
-                    internal_fs_hz / 1000,
-                    nb_subfr,
-                    internal_frames,
-                    frame_length,
-                    dec.tell(),
-                    dec.tell_frac()
-                ),
-            );
-            // #endregion
-        }
         let samples_per_channel = (frame_samples_48k * self.fs_hz as usize) / 48_000;
         let needed = samples_per_channel * self.channels as usize;
         if out.len() < needed {
@@ -367,27 +349,12 @@ impl SilkDecoder {
 
         let mut internal_pcm = [[0i16; MAX_INTERNAL_FRAMES * tables::MAX_FRAME_LENGTH]; 2];
         let mut resampled_pcm = [[0i16; MAX_API_FRAME_SAMPLES_48K]; 2];
-        let trace_pkt0 = packet_idx == 0 && silk_trace_enabled();
-        if trace_pkt0 {
-            trace_checkpoint(&dec, packet_idx, "init");
-        }
         for ch in 0..packet_channels as usize {
             let prev_fs_khz = self.lbrr_state[ch].fs_khz;
             let new_fs_khz = internal_fs_hz / 1000;
             if prev_fs_khz != 0 && prev_fs_khz != new_fs_khz {
                 self.core_state[ch] = decode_core::SilkChannelState::default();
                 self.first_frame_after_reset[ch] = true;
-                if (1116..=1120).contains(&packet_idx) {
-                    append_silk_debug_log(
-                        "tv12-silk-fs-reset",
-                        "H112",
-                        &format!(
-                            "{{\"packet_idx\":{},\"channel\":{},\"prev_fs_khz\":{},\"new_fs_khz\":{}}}",
-                            packet_idx, ch, prev_fs_khz, new_fs_khz
-                        ),
-                    );
-                    // #endregion
-                }
             }
             lbrr::configure_channel_state(&mut self.lbrr_state[ch], new_fs_khz, nb_subfr);
         }
@@ -414,44 +381,12 @@ impl SilkDecoder {
             packet_channels as usize,
             internal_frames,
             packet_idx,
-            trace_pkt0,
         ) {
             Ok(parsed) => parsed,
             Err(err) => {
-                if packet_idx == 0 && (12..=15).contains(&config) {
-                    // #region agent log H66
-                    append_silk_debug_log(
-                        "silk-hybrid-parse-header-error",
-                        "H66",
-                        &format!(
-                            "{{\"packet_idx\":{},\"error\":\"{}\",\"tell\":{},\"tell_frac\":{}}}",
-                            packet_idx,
-                            err,
-                            dec.tell(),
-                            dec.tell_frac()
-                        ),
-                    );
-                    // #endregion
-                }
                 return Err(err);
             }
         };
-        if packet_idx == 1118 {
-            let ch = &self.core_state[0];
-            let tail_start = ch.out_buf.len().saturating_sub(8);
-            append_silk_debug_log(
-                "tv12-pkt1118-silk-entry",
-                "H110",
-                &format!(
-                    "{{\"packet_idx\":1118,\"out_buf_tail\":{:?},\"s_lpc_head4\":{:?},\"lag_prev\":{},\"prev_gain_index\":{}}}",
-                    &ch.out_buf[tail_start..],
-                    &ch.s_lpc_q14_buf[..4],
-                    ch.lag_prev,
-                    ch.last_gain_index
-                ),
-            );
-            // #endregion
-        }
         if let Err(err) = consume_lbrr_payload(
             &mut dec,
             &parsed,
@@ -460,27 +395,8 @@ impl SilkDecoder {
             &mut self.lbrr_state,
             frame_length,
             packet_idx,
-            trace_pkt0,
         ) {
-            if packet_idx == 0 && (12..=15).contains(&config) {
-                // #region agent log H67
-                append_silk_debug_log(
-                    "silk-hybrid-lbrr-error",
-                    "H67",
-                    &format!(
-                        "{{\"packet_idx\":{},\"error\":\"{}\",\"tell\":{},\"tell_frac\":{}}}",
-                        packet_idx,
-                        err,
-                        dec.tell(),
-                        dec.tell_frac()
-                    ),
-                );
-                // #endregion
-            }
             return Err(err);
-        }
-        if trace_pkt0 {
-            trace_checkpoint(&dec, packet_idx, "after_lbrr_consume");
         }
         if let Err(err) = consume_main_payload(
             &mut dec,
@@ -497,23 +413,7 @@ impl SilkDecoder {
             &mut self.stereo_state,
             &mut self.prev_decode_only_middle,
             packet_idx,
-            trace_pkt0,
         ) {
-            if packet_idx == 0 && (12..=15).contains(&config) {
-                // #region agent log H68
-                append_silk_debug_log(
-                    "silk-hybrid-main-payload-error",
-                    "H68",
-                    &format!(
-                        "{{\"packet_idx\":{},\"error\":\"{}\",\"tell\":{},\"tell_frac\":{}}}",
-                        packet_idx,
-                        err,
-                        dec.tell(),
-                        dec.tell_frac()
-                    ),
-                );
-                // #endregion
-            }
             return Err(err);
         }
         let mut consumed_redundancy = false;
@@ -525,25 +425,6 @@ impl SilkDecoder {
                 .len()
                 .saturating_sub(((dec.tell() + 7).max(0) as usize) >> 3);
             consumed_redundancy = redundancy_bytes > 0;
-        }
-        if trace_pkt0 {
-            trace_checkpoint(&dec, packet_idx, "after_main_decode");
-        }
-        if packet_idx == 1117 {
-            let ch = &self.core_state[0];
-            let tail_start = ch.out_buf.len().saturating_sub(8);
-            append_silk_debug_log(
-                "tv12-post-pkt1117-silk-state",
-                "H111",
-                &format!(
-                    "{{\"packet_idx\":1117,\"out_buf_tail\":{:?},\"s_lpc_head4\":{:?},\"lag_prev\":{},\"prev_gain_index\":{}}}",
-                    &ch.out_buf[tail_start..],
-                    &ch.s_lpc_q14_buf[..4],
-                    ch.lag_prev,
-                    ch.last_gain_index
-                ),
-            );
-            // #endregion
         }
         out[..needed].fill(0);
         let internal_samples_per_channel = internal_frames * frame_length;
@@ -615,9 +496,6 @@ impl SilkDecoder {
 
         self.prev_packet_channels = packet_channels;
         self.final_range = dec.final_range();
-        if trace_pkt0 {
-            trace_checkpoint(&dec, packet_idx, "after_decode");
-        }
         if dec.is_error() {
             return Err(Error::BadPacket);
         }
@@ -626,7 +504,6 @@ impl SilkDecoder {
             &[parsed.channels[0].lbrr_flags, parsed.channels[1].lbrr_flags],
             packet_channels as usize,
         ) {
-            debug_trace!("silk: consumed LBRR side payload");
         }
 
         Ok(SilkFrameDecode {
@@ -647,70 +524,17 @@ fn parse_header(
     dec: &mut EcDec<'_>,
     packet_channels: usize,
     internal_frames: usize,
-    packet_idx: usize,
-    trace_pkt0: bool,
+    _packet_idx: usize,
 ) -> Result<ParsedHeader, Error> {
     let mut parsed = ParsedHeader::default();
 
     for ch in 0..packet_channels {
-        if packet_idx == 0 {
-            append_silk_debug_log(
-                "silk-header-before-vad",
-                "H69",
-                &format!(
-                    "{{\"packet_idx\":{},\"channel\":{},\"tell\":{},\"tell_frac\":{},\"internal_frames\":{}}}",
-                    packet_idx,
-                    ch,
-                    dec.tell(),
-                    dec.tell_frac(),
-                    internal_frames
-                ),
-            );
-            // #endregion
-        }
         for i in 0..internal_frames {
             parsed.channels[ch].vad_flags[i] = dec.dec_bit_logp(1);
-        }
-        if packet_idx == 0 {
-            append_silk_debug_log(
-                "silk-header-after-vad",
-                "H70",
-                &format!(
-                    "{{\"packet_idx\":{},\"channel\":{},\"tell\":{},\"tell_frac\":{},\"vad_flags\":\"{:?}\"}}",
-                    packet_idx,
-                    ch,
-                    dec.tell(),
-                    dec.tell_frac(),
-                    &parsed.channels[ch].vad_flags[..internal_frames]
-                ),
-            );
-            // #endregion
-        }
-        if trace_pkt0 {
-            trace_checkpoint(dec, packet_idx, &format!("after_vad_flags_ch{}", ch));
         }
 
         let has_lbrr = dec.dec_bit_logp(1);
         parsed.channels[ch].lbrr_flags = unpack_lbrr_flags(dec, has_lbrr, internal_frames)?;
-        if packet_idx == 0 {
-            append_silk_debug_log(
-                "silk-header-after-lbrr",
-                "H71",
-                &format!(
-                    "{{\"packet_idx\":{},\"channel\":{},\"tell\":{},\"tell_frac\":{},\"has_lbrr\":{},\"lbrr_flags\":\"{:?}\"}}",
-                    packet_idx,
-                    ch,
-                    dec.tell(),
-                    dec.tell_frac(),
-                    has_lbrr,
-                    &parsed.channels[ch].lbrr_flags[..internal_frames]
-                ),
-            );
-            // #endregion
-        }
-        if trace_pkt0 {
-            trace_checkpoint(dec, packet_idx, &format!("after_lbrr_flag_ch{}", ch));
-        }
     }
 
     Ok(parsed)
@@ -728,8 +552,7 @@ fn consume_lbrr_payload(
     internal_frames: usize,
     states: &mut [lbrr::ChannelState; 2],
     frame_length: usize,
-    packet_idx: usize,
-    trace_pkt0: bool,
+    _packet_idx: usize,
 ) -> Result<(), Error> {
     for i in 0..internal_frames {
         for (ch, state) in states.iter_mut().enumerate().take(packet_channels) {
@@ -751,9 +574,6 @@ fn consume_lbrr_payload(
                 lbrr::decode_indices(state, dec, header.channels[ch].vad_flags[i], true, cond)?;
             let _ =
                 lbrr::decode_pulses(dec, side.signal_type, side.quant_offset_type, frame_length)?;
-            if trace_pkt0 {
-                trace_checkpoint(dec, packet_idx, &format!("after_lbrr_i{}_ch{}", i, ch));
-            }
         }
     }
     Ok(())
@@ -780,7 +600,6 @@ fn consume_main_payload(
     stereo_state: &mut stereo::StereoState,
     prev_decode_only_middle: &mut bool,
     packet_idx: usize,
-    trace_pkt0: bool,
 ) -> Result<(), Error> {
     let mut signal_types = [[-1i32; MAX_INTERNAL_FRAMES]; 2];
     let mut mid_only_flags = [false; MAX_INTERNAL_FRAMES];
@@ -794,35 +613,9 @@ fn consume_main_payload(
             pred_q13 = stereo::decode_stereo_pred(dec);
             decode_only_middle = !header.channels[1].vad_flags[i] && stereo::decode_mid_only(dec);
             mid_only_flags[i] = decode_only_middle;
-            if trace_pkt0 {
-                trace_checkpoint(dec, packet_idx, &format!("after_stereo_i{}", i));
-            }
-            debug_trace!(
-                "silk: stereo signaling i={} pred0={} pred1={} mid_only={}",
-                i,
-                pred_q13[0],
-                pred_q13[1],
-                decode_only_middle
-            );
         }
 
         for ch in 0..packet_channels {
-            if packet_idx == 0 && i == 0 && ch == 0 {
-                append_silk_debug_log(
-                    "silk-main-after-header",
-                    "H72",
-                    &format!(
-                        "{{\"packet_idx\":{},\"iframe\":{},\"channel\":{},\"tell\":{},\"tell_frac\":{},\"rng\":{}}}",
-                        packet_idx,
-                        i,
-                        ch,
-                        dec.tell(),
-                        dec.tell_frac(),
-                        dec.rng()
-                    ),
-                );
-                // #endregion
-            }
             if ch == 1 && decode_only_middle {
                 continue;
             }
@@ -844,24 +637,6 @@ fn consume_main_payload(
                 false,
                 cond,
             )?;
-            if packet_idx == 0 && i == 0 && ch == 0 {
-                append_silk_debug_log(
-                    "silk-main-after-indices",
-                    "H73",
-                    &format!(
-                        "{{\"packet_idx\":{},\"iframe\":{},\"channel\":{},\"tell\":{},\"tell_frac\":{},\"rng\":{},\"signal_type\":{},\"quant_offset_type\":{}}}",
-                        packet_idx,
-                        i,
-                        ch,
-                        dec.tell(),
-                        dec.tell_frac(),
-                        dec.rng(),
-                        side.signal_type,
-                        side.quant_offset_type
-                    ),
-                );
-                // #endregion
-            }
             update_lpc_from_nlsf(
                 states[ch].fs_khz,
                 &side.nlsf,
@@ -872,42 +647,8 @@ fn consume_main_payload(
                 i,
                 ch,
             );
-            if trace_pkt0 && packet_idx == 0 && i == 0 && ch == 0 {
-                trace_lpc(
-                    packet_idx,
-                    ch,
-                    i,
-                    "pred0",
-                    &pred_coef_q12[ch][i][0],
-                    states[ch].fs_khz,
-                );
-                trace_lpc(
-                    packet_idx,
-                    ch,
-                    i,
-                    "pred1",
-                    &pred_coef_q12[ch][i][1],
-                    states[ch].fs_khz,
-                );
-            }
             let pulses =
                 lbrr::decode_pulses(dec, side.signal_type, side.quant_offset_type, frame_length)?;
-            if packet_idx == 0 && i == 0 && ch == 0 {
-                append_silk_debug_log(
-                    "silk-main-after-pulses",
-                    "H74",
-                    &format!(
-                        "{{\"packet_idx\":{},\"iframe\":{},\"channel\":{},\"tell\":{},\"tell_frac\":{},\"rng\":{}}}",
-                        packet_idx,
-                        i,
-                        ch,
-                        dec.tell(),
-                        dec.tell_frac(),
-                        dec.rng()
-                    ),
-                );
-                // #endregion
-            }
             let frame_params = decode_core::SilkFrameParams {
                 signal_type: side.signal_type,
                 quant_offset_type: side.quant_offset_type,
@@ -927,7 +668,7 @@ fn consume_main_payload(
             };
             signal_types[ch][i] = frame_params.signal_type as i32;
             let pcm_range = i * frame_length..(i + 1) * frame_length;
-            let trace = decode_core::decode_core(
+            decode_core::decode_core(
                 &frame_params,
                 &pred_coef_q12[ch][i],
                 &mut internal_pcm[ch][pcm_range],
@@ -976,13 +717,6 @@ fn consume_main_payload(
                 ltp_gains,
                 output: Vec::new(),
             });
-            if trace_pkt0 && packet_idx == 0 && i == 0 && ch == 0 {
-                trace_core(packet_idx, "exc_Q14", &trace.exc_q14_head);
-                trace_core(packet_idx, "sLPC_Q14", &trace.s_lpc_q14_head);
-            }
-            if trace_pkt0 {
-                trace_checkpoint(dec, packet_idx, &format!("after_main_i{}_ch{}", i, ch));
-            }
         }
 
         if packet_channels == 2 {
@@ -1025,50 +759,7 @@ fn consume_main_payload(
 
         *prev_decode_only_middle = decode_only_middle;
     }
-    if packet_idx == 1118 {
-        let internal_samples_per_channel = internal_frames * frame_length;
-        let head_end = 8.min(internal_samples_per_channel);
-        let tail_start = internal_samples_per_channel.saturating_sub(8);
-        append_silk_debug_log(
-            "tv12-pkt1118-internal-pcm",
-            "H109A",
-            &format!(
-                "{{\"packet_idx\":1118,\"internal_fs_khz\":{},\"signal_type\":{},\"packet_channels\":{},\"internal_frames\":{},\"frame_length\":{},\"head\":{:?},\"tail\":{:?}}}",
-                states[0].fs_khz,
-                signal_types[0][0],
-                packet_channels,
-                internal_frames,
-                frame_length,
-                &internal_pcm[0][..head_end],
-                &internal_pcm[0][tail_start..internal_samples_per_channel]
-            ),
-        );
-    }
     Ok(())
-}
-
-/// Check whether SILK entropy tracing is enabled.
-///
-/// Params: none.
-/// Returns: `false`; runtime tracing is disabled in cleanup builds.
-fn silk_trace_enabled() -> bool {
-    false
-}
-
-/// Append one NDJSON debug line for SILK hybrid tracing.
-///
-/// Params: event `message`, `hypothesis_id`, and raw JSON `data`.
-/// Returns: nothing; runtime debug logging is disabled in cleanup builds.
-fn append_silk_debug_log(message: &str, hypothesis_id: &str, data: &str) {
-    let _ = (message, hypothesis_id, data);
-}
-
-/// Emit packet-0 SILK entropy checkpoint with tell/tell_frac/rng.
-///
-/// Params: immutable entropy decoder `dec`, `packet_idx`, and textual `label`.
-/// Returns: nothing.
-fn trace_checkpoint(dec: &EcDec<'_>, packet_idx: usize, label: &str) {
-    let _ = (dec, packet_idx, label);
 }
 
 /// Decode, optionally interpolate, and convert one NLSF vector to LPC halves.
@@ -1124,30 +815,6 @@ fn update_lpc_from_nlsf(
 
     prev_nlsf_q15[..order].copy_from_slice(&curr_nlsf_q15[..order]);
     *first_frame_after_reset = false;
-}
-
-/// Emit packet-0 LPC trace for one channel/frame half.
-///
-/// Params: `packet_idx`, coded `channel`, internal frame `frame_idx`, `label`,
-/// LPC slice `lpc_q12`, and internal `fs_khz`.
-/// Returns: nothing.
-fn trace_lpc(
-    packet_idx: usize,
-    channel: usize,
-    frame_idx: usize,
-    label: &str,
-    lpc_q12: &[i16],
-    fs_khz: u32,
-) {
-    let _ = (packet_idx, channel, frame_idx, label, lpc_q12, fs_khz);
-}
-
-/// Emit packet-0 SILK core trace for excitation or synthesis state.
-///
-/// Params: `packet_idx`, textual `label`, and signed sample `values`.
-/// Returns: nothing.
-fn trace_core(packet_idx: usize, label: &str, values: &[i32; 8]) {
-    let _ = (packet_idx, label, values);
 }
 
 /// Decode and expand LBRR per-internal-frame flags for one coded channel.
