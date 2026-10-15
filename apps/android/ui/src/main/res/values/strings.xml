@@ -34,6 +34,8 @@
     <string name="pair_link_switch_confirm">Sign out and continue</string>
     <string name="pair_link_refused_title">Not a pairing link</string>
     <string name="pair_link_refused_body">The link that opened the app isn’t a valid Lyrion Anywhere pairing link, so it was ignored. Nothing was changed.</string>
+    <string name="secure_storage_title">Can’t open secure storage</string>
+    <string name="secure_storage_body">Android’s secure storage isn’t responding just now, so your sign-in can’t be read. It’s kept on this phone; try again in a moment.</string>
     <string name="restoring">Signing in…</string>
     <string name="unreachable_title">Can\'t reach your music server</string>
     <string name="unreachable_body">%1$s isn\'t answering. You\'re still signed in; check your connection and try again.</string>

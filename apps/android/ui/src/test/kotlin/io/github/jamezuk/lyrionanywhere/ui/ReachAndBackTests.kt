@@ -215,6 +215,22 @@ class ReachAndBackTests {
         assertEquals(listOf(true), outs)
     }
 
+    /** M6: secure storage that can't be read just now is not "can't reach the server". */
+    @Test
+    fun unreadableSecureStorageSaysSoAndOffersRetry() {
+        var retries = 0
+        content {
+            UnreachableScreen(
+                "music.example.com", "", 0, 0,
+                onRetry = { retries++ }, onSignOut = {}, secureStorage = true,
+            )
+        }
+        compose.onNodeWithText("Can’t open secure storage").assertIsDisplayed()
+        compose.onNodeWithText("Can't reach your music server").assertDoesNotExist()
+        compose.onNodeWithText("Try again").performClick()
+        assertEquals(1, retries)
+    }
+
     // --- the camera refused for good ------------------------------------------------------
 
     @Test

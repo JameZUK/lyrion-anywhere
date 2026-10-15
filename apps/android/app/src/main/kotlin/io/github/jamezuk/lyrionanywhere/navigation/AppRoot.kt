@@ -133,6 +133,7 @@ fun AppRoot(container: AppContainer) {
                 UnreachableScreen(
                     serverName = s.server.name,
                     detail = s.detail,
+                    secureStorage = s.secureStorage,
                     downloadedTracks = downloads.tracks.size,
                     downloadedBytes = downloads.usedBytes,
                     onRetry = { scope.launch { container.account.retry() } },
