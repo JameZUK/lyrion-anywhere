@@ -12,24 +12,30 @@
 	import type { Format } from '$lib/offline/types';
 	import Icon from './Icon.svelte';
 	import FormatPicker from './FormatPicker.svelte';
+	import ConfirmDialog from './ConfirmDialog.svelte';
 	import type { RowAction } from './RowMenu.svelte';
 	import { controls } from '$lib/player/controls.svelte';
 
 	/** Most albums fetched for one artist download. */
 	const MAX_ALBUMS = 200;
 
-	let { albums }: { albums: Album[] } = $props();
+	let { albums, name }: { albums: Album[]; /** The artist, for the confirm before removing. */ name?: string } = $props();
 
 	let busy = $state(false);
 	let msg = $state('');
 	let note = $state('');
 	let picking = $state(false);
+	/** "Remove downloads" asked: waiting for a yes. */
+	let confirming = $state(false);
+	/** The removal loop is running: no second one starts. */
+	let removing = $state(false);
 
 	const ids = $derived(new Set(albums.map((a) => a.id).filter((n): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n > 0)));
 	const mine = (i: DownloadItem) => (i.albumId !== null && ids.has(i.albumId)) || i.refs.some((r) => r.startsWith('album:') && ids.has(Number(r.slice(6))));
 	const progress = $derived(downloads.progress(mine));
 	const held = $derived(downloads.items.filter((i) => mine(i) && downloads.isHeld(i)).length);
 	const savedAlbums = $derived([...ids].filter((id) => downloads.savedFor(`album:${id}`).length > 0).length);
+	const savedTracks = $derived([...ids].reduce((n, id) => n + downloads.savedFor(`album:${id}`).length, 0));
 
 	async function downloadAll(choice: Format | 'auto' = 'auto') {
 		msg = '';
@@ -54,16 +60,31 @@
 	}
 
 	async function removeAll() {
+		if (removing) return;
+		removing = true;
 		msg = '';
 		note = '';
 		let kept = 0;
-		for (const id of ids) {
-			const r = await downloads.removeAlbum(id);
-			offlinePlayer.forget(r.removed);
-			kept += r.kept;
+		try {
+			for (const id of ids) {
+				const r = await downloads.removeAlbum(id);
+				offlinePlayer.forget(r.removed);
+				kept += r.kept;
+			}
+			if (kept) note = `${kept} ${kept === 1 ? 'track stays' : 'tracks stay'}: a downloaded playlist still needs ${kept === 1 ? 'it' : 'them'}.`;
+		} catch {
+			msg = 'Couldn’t remove the downloads. Try again.';
+		} finally {
+			removing = false;
 		}
-		if (kept) note = `${kept} ${kept === 1 ? 'track stays' : 'tracks stay'}: a downloaded playlist still needs ${kept === 1 ? 'it' : 'them'}.`;
 	}
+
+	const confirmTitle = $derived(
+		`Remove the downloads of ${savedAlbums === 1 ? '1 album' : `${savedAlbums} albums`}${name ? ` by ${name}` : ''}?`,
+	);
+	const confirmMessage = $derived(
+		`${savedTracks} downloaded ${savedTracks === 1 ? 'track goes' : 'tracks go'} from this device. Any that a downloaded playlist still needs will stay.`,
+	);
 
 	const waiting = $derived(held > 0 && held === progress.count - progress.done - progress.failed - progress.paused);
 	const active = $derived(waiting || progress.busy || progress.paused > 0);
@@ -74,7 +95,8 @@
 		if (!ids.size) return [];
 		const out: RowAction[] = [];
 		if (!active) out.push({ label: 'Download all as…', icon: 'download', run: () => (picking = true), disabled: server.disabled, why: controls.why(server.disabled), id: 'download-as' });
-		if (savedAlbums) out.push({ label: 'Remove downloads', icon: 'trash', run: () => void removeAll(), danger: true, id: 'remove-download' });
+		if (savedAlbums || removing)
+			out.push({ label: 'Remove downloads', icon: 'trash', run: () => !removing && (confirming = true), disabled: removing, danger: true, id: 'remove-download' });
 		return out;
 	}
 </script>
@@ -112,6 +134,19 @@
 	</div>
 {/if}
 {#if picking}<FormatPicker onchoose={(f) => void downloadAll(f)} onclose={() => (picking = false)} />{/if}
+{#if confirming}
+	<ConfirmDialog
+		title={confirmTitle}
+		message={confirmMessage}
+		confirmLabel="Remove"
+		danger
+		onconfirm={() => {
+			confirming = false;
+			void removeAll();
+		}}
+		oncancel={() => (confirming = false)}
+	/>
+{/if}
 
 <style>
 	/* Its parts sit in the header's row of actions (the line under it wraps to its own row). */

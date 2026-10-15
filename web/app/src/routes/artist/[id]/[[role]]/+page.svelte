@@ -175,10 +175,10 @@
 		{#if !role}
 			<!-- Play, Shuffle, Download all albums and ⋯ (Add to queue, Download all as…, More…, Remove downloads). -->
 			<PageActions sel={{ artist: id }} title={textOf(name)} can={albums.length > 0} next={false} onmore={() => (showMore = true)} extra={dl?.actions() ?? []}>
-				{#snippet download()}<ArtistDownload bind:this={dl} {albums} />{/snippet}
+				{#snippet download()}<ArtistDownload bind:this={dl} {albums} name={textOf(name)} />{/snippet}
 			</PageActions>
 		{:else}
-			<div class="role-dl"><ArtistDownload {albums} /></div>
+			<div class="role-dl"><ArtistDownload {albums} name={textOf(name)} /></div>
 		{/if}
 		{#if !role && info.biography}
 			<InfoText heading="Biography" text={info.biography} />

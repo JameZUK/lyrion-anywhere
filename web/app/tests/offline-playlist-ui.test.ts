@@ -80,6 +80,7 @@ test('tracks already downloaded with an album join the playlist without being fe
 	expect(screen.getAllByLabelText('Downloaded').length).toBe(3); // rows 21, 22 and 21 again
 	// Destructive: only in the page's ⋯.
 	await choose('More options for Road <i>trip</i>', 'Remove download');
+	await fireEvent.click(await vi.waitFor(() => { const b = document.querySelector('dialog[data-confirm-dialog] [data-confirm-ok]'); if (!b) throw new Error('no confirm'); return b; })); // it asks first
 	// 21 stays for its album, so the playlist offers the rest again.
 	await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Download the rest' })).toBeTruthy());
 	expect(await screen.findByText('1 track stays: another download still needs it.')).toBeTruthy();

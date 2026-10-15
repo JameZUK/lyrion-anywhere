@@ -148,6 +148,7 @@ test('album page: Downloaded ✓ and Remove download once every track is here', 
 	// Destructive: only in ⋯.
 	expect(screen.queryByRole('button', { name: 'Remove download' })).toBeNull();
 	await choose('More options for An <b>Album</b>', 'Remove download');
+	await fireEvent.click(await vi.waitFor(() => { const b = document.querySelector('dialog[data-confirm-dialog] [data-confirm-ok]'); if (!b) throw new Error('no confirm'); return b; })); // it asks first
 	await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy());
 	expect(await store.listTracks('alice')).toEqual([]);
 });
@@ -229,6 +230,7 @@ test('Downloads page: playlists are their own group; removing one keeps tracks a
 	const order = screen.getAllByRole('button', { name: /^Play (Shared|Only in mix)$/ }).map((b) => b.getAttribute('aria-label'));
 	expect(order.slice(0, 2)).toEqual(['Play Only in mix', 'Play Shared']);
 	await fireEvent.click(screen.getByRole('button', { name: 'Remove <b>Mix</b>' }));
+	await fireEvent.click(await vi.waitFor(() => { const b = document.querySelector('dialog[data-confirm-dialog] [data-confirm-ok]'); if (!b) throw new Error('no confirm'); return b; })); // it asks first
 	await vi.waitFor(() => expect(screen.queryByRole('heading', { name: 'Playlists' })).toBeNull());
 	expect(screen.getByText(/1 track stays on this device/)).toBeTruthy();
 	expect((await store.listTracks('alice')).map((t) => [t.id, t.refs])).toEqual([[1, ['album:7']]]);
