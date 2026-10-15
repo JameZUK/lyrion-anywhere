@@ -1854,17 +1854,19 @@ impl Accounts {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// A user signs out one of their own devices (`DELETE /v1/devices/{id}`). Returns false,
-    /// changing nothing, unless `device_id` is one of `user`'s signed-in devices: another
-    /// user's device is indistinguishable from one that doesn't exist. The device's live
-    /// sessions are the caller's to end.
+    /// A user signs out one of their own devices (`DELETE /v1/devices/{id}`) from another,
+    /// `from`. Returns false, changing nothing, unless `device_id` is one of `user`'s
+    /// signed-in devices: another user's device is indistinguishable from one that doesn't
+    /// exist. The device's live sessions are the caller's to end. Audited as
+    /// `device.revoked`, detail `self from <from>`.
     pub fn revoke_own_device(
         &self,
         user: i64,
         username: &str,
         device_id: i64,
+        from: i64,
     ) -> Result<bool, AuthError> {
-        self.revoke(device_id, Some((user, username)))
+        self.revoke(device_id, Some((user, username, from)))
     }
 
     /// A user signs out all their devices but `keep` (the one asking). Returns the devices
@@ -1877,7 +1879,7 @@ impl Accounts {
     ) -> Result<Vec<i64>, AuthError> {
         let mut revoked = Vec::new();
         for d in self.own_devices(user)? {
-            if d.id != keep && self.revoke(d.id, Some((user, username)))? {
+            if d.id != keep && self.revoke(d.id, Some((user, username, keep)))? {
                 revoked.push(d.id);
             }
         }
@@ -2166,13 +2168,15 @@ impl Accounts {
     }
 
     /// Revoke a device; with `owner` (user id and name), only if it is that user's.
-    fn revoke(&self, device_id: i64, owner: Option<(i64, &str)>) -> Result<bool, AuthError> {
+    /// `owner`: a user signing out one of their own devices, from another (user id, name,
+    /// the device acting); `None` for an admin or the system.
+    fn revoke(&self, device_id: i64, owner: Option<(i64, &str, i64)>) -> Result<bool, AuthError> {
         let n = {
             let db = self.db.lock().unwrap();
             let n = db.execute(
                 "UPDATE devices SET revoked = 1, revoked_at = ?2, last_addr = NULL, user_agent = NULL
                  WHERE id = ?1 AND revoked = 0 AND (?3 IS NULL OR user_id = ?3)",
-                params![device_id, now_secs(), owner.map(|(id, _)| id)],
+                params![device_id, now_secs(), owner.map(|(id, _, _)| id)],
             )?;
             if n == 0 && owner.is_some() {
                 // Not this user's (or already gone): touch nothing of anyone else's.
@@ -2206,10 +2210,13 @@ impl Accounts {
         self.seen.lock().unwrap().remove(&device_id);
         if n > 0 {
             match owner {
-                // Signed out by its own user, from one of their devices.
-                Some((_, username)) => {
-                    self.audit("device.revoked", Some(username), Some(device_id), "self")
-                }
+                // Signed out by its own user, from one of their devices: which one.
+                Some((_, username, from)) => self.audit(
+                    "device.revoked",
+                    Some(username),
+                    Some(device_id),
+                    &format!("self from {from}"),
+                ),
                 None => self.audit("device.revoked", None, Some(device_id), ""),
             }
         }
@@ -5537,25 +5544,38 @@ mod tests {
 
         // Someone else's device: refused, and nothing of theirs is touched (its refresh
         // token still renews, its access token still works).
-        assert!(!a.revoke_own_device(alice, "alice", admin_device).unwrap());
+        assert!(
+            !a.revoke_own_device(alice, "alice", admin_device, 1)
+                .unwrap()
+        );
         assert!(a.authenticate(&theirs.access).is_some());
         assert!(a.device_active(admin_device));
         let renewed = a.refresh(&theirs.refresh).unwrap();
         // Nor one that doesn't exist.
-        assert!(!a.revoke_own_device(alice, "alice", 999_999).unwrap());
-        assert!(!a.revoke_own_device(alice, "alice", -1).unwrap());
+        assert!(!a.revoke_own_device(alice, "alice", 999_999, 1).unwrap());
+        assert!(!a.revoke_own_device(alice, "alice", -1, 1).unwrap());
 
         // Their own: signed out, tokens dead.
         assert!(
-            a.revoke_own_device(alice, "alice", phone.principal.device_id)
-                .unwrap()
+            a.revoke_own_device(
+                alice,
+                "alice",
+                phone.principal.device_id,
+                mine.principal.device_id
+            )
+            .unwrap()
         );
         assert!(a.authenticate(&phone.access).is_none());
         assert!(a.refresh(&phone.refresh).is_err());
         // Only once.
         assert!(
-            !a.revoke_own_device(alice, "alice", phone.principal.device_id)
-                .unwrap()
+            !a.revoke_own_device(
+                alice,
+                "alice",
+                phone.principal.device_id,
+                mine.principal.device_id
+            )
+            .unwrap()
         );
         assert!(a.authenticate(&mine.access).is_some());
         assert!(a.authenticate(&renewed.access).is_some());
@@ -5568,7 +5588,7 @@ mod tests {
             .unwrap();
         assert_eq!(e.username.as_deref(), Some("alice"));
         assert_eq!(e.device_id, Some(phone.principal.device_id));
-        assert_eq!(e.detail, "self");
+        assert_eq!(e.detail, format!("self from {}", mine.principal.device_id));
     }
 
     #[test]

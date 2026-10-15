@@ -299,7 +299,7 @@ pub struct Gateway {
     plays: plays::PlayLimits,
     /// Renames of a device by its own user ([`RENAMES_PER_WINDOW`] per [`RENAME_WINDOW`]).
     renames: plays::Window,
-    /// "Your devices" requests per user ([`DEVICE_REQUESTS_PER_WINDOW`] per
+    /// "Your devices" requests per asking device ([`DEVICE_REQUESTS_PER_WINDOW`] per
     /// [`DEVICE_REQUEST_WINDOW`]).
     device_requests: plays::Window,
     /// Requests to `/v1/me/…` per user a minute.

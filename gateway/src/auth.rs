@@ -717,9 +717,11 @@ pub async fn rename_self(
 // Your devices
 // ---------------------------------------------------------------------------
 
-/// Take one "Your devices" request from the user's allowance; a 429 when it is used up.
-fn device_requests_exhausted(gw: &AppState, user: i64) -> Option<Response> {
-    (!gw.device_requests.take(user, std::time::Instant::now()))
+/// Take one "Your devices" request from the asking device's allowance; a 429 when it is
+/// used up. Per device, not per user: a stolen device's token must not be able to use up
+/// the allowance its owner needs, on another device, to sign it out.
+fn device_requests_exhausted(gw: &AppState, device: i64) -> Option<Response> {
+    (!gw.device_requests.take(device, std::time::Instant::now()))
         .then(|| auth_error(AuthError::Locked(crate::DEVICE_REQUEST_WINDOW)))
 }
 
@@ -736,7 +738,7 @@ pub async fn own_devices(State(gw): State<AppState>, headers: HeaderMap) -> Resp
     let Some(p) = principal(&gw, &headers) else {
         return error(StatusCode::UNAUTHORIZED, "invalid credentials");
     };
-    if let Some(r) = device_requests_exhausted(&gw, p.user_id) {
+    if let Some(r) = device_requests_exhausted(&gw, p.device_id) {
         return r;
     }
     match gw.accounts().own_devices(p.user_id) {
@@ -785,7 +787,7 @@ pub async fn sign_out_device(
     let Some(p) = principal(&gw, &headers) else {
         return error(StatusCode::UNAUTHORIZED, "invalid credentials");
     };
-    if let Some(r) = device_requests_exhausted(&gw, p.user_id) {
+    if let Some(r) = device_requests_exhausted(&gw, p.device_id) {
         return r;
     }
     let Some(id) = device_id(&raw) else {
@@ -797,7 +799,10 @@ pub async fn sign_out_device(
             "this is the device you are using; sign out instead",
         );
     }
-    match gw.accounts().revoke_own_device(p.user_id, &p.username, id) {
+    match gw
+        .accounts()
+        .revoke_own_device(p.user_id, &p.username, id, p.device_id)
+    {
         Ok(true) => {
             gw.end_sessions_for(&[id]).await;
             StatusCode::NO_CONTENT.into_response()
@@ -816,7 +821,7 @@ pub async fn sign_out_others(State(gw): State<AppState>, headers: HeaderMap) -> 
     let Some(p) = principal(&gw, &headers) else {
         return error(StatusCode::UNAUTHORIZED, "invalid credentials");
     };
-    if let Some(r) = device_requests_exhausted(&gw, p.user_id) {
+    if let Some(r) = device_requests_exhausted(&gw, p.device_id) {
         return r;
     }
     match gw
