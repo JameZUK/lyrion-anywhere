@@ -7,6 +7,7 @@ import android.util.AtomicFile
 import java.io.File
 import java.io.FileNotFoundException
 import java.security.KeyStore
+import java.security.KeyStoreException
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 
@@ -18,7 +19,14 @@ class KeystoreKeyProvider(private val alias: String = ALIAS) : () -> SecretKey {
     @Synchronized
     override fun invoke(): SecretKey {
         val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        (ks.getEntry(alias, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
+        return resolveKey(
+            entry = { ks.getEntry(alias, null) },
+            hasAlias = { ks.containsAlias(alias) },
+            generate = ::generate,
+        )
+    }
+
+    private fun generate(): SecretKey {
         val spec = KeyGenParameterSpec.Builder(
             alias,
             KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
@@ -33,7 +41,24 @@ class KeystoreKeyProvider(private val alias: String = ALIAS) : () -> SecretKey {
             .generateKey()
     }
 
-    private companion object {
+    internal companion object {
+        /**
+         * The key under the alias, or a new one only when there is genuinely none. A Keystore
+         * that throws (its daemon restarting, say) is passed on, and an alias that exists but
+         * won't yield its key is a [KeyStoreException]: a replacement key in either case would
+         * leave the saved sign-in unreadable for good.
+         */
+        fun resolveKey(
+            entry: () -> KeyStore.Entry?,
+            hasAlias: () -> Boolean,
+            generate: () -> SecretKey,
+        ): SecretKey {
+            val found = entry()
+            (found as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
+            if (found != null || hasAlias()) throw KeyStoreException("key entry unavailable")
+            return generate()
+        }
+
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val ALIAS = "lyrion-anywhere.refresh-token"
     }

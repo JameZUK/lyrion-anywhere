@@ -27,8 +27,8 @@ import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.settings.SignOutDialog
 
 /**
- * The server can't be reached (and there are no downloads to show offline): try again, or
- * sign out. Signing out asks first, as it does in Settings, and goes the same way (downloads
+ * The server can't be reached, or the saved sign-in can't be read from secure storage just
+ * now (and there are no downloads to show offline): try again, or sign out. Signing out asks first, as it does in Settings, and goes the same way (downloads
  * kept unless the user chooses to remove them).
  */
 @Composable
@@ -40,6 +40,8 @@ fun UnreachableScreen(
     onRetry: () -> Unit,
     onSignOut: (removeDownloads: Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    /** The saved sign-in couldn't be read from secure storage just now (it is kept). */
+    secureStorage: Boolean = false,
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     Box(modifier.fillMaxSize().safeDrawingPadding().padding(24.dp), contentAlignment = Alignment.Center) {
@@ -48,11 +50,18 @@ fun UnreachableScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(
-                stringResource(R.string.unreachable_title),
+                stringResource(if (secureStorage) R.string.secure_storage_title else R.string.unreachable_title),
                 style = MaterialTheme.typography.headlineSmall,
                 modifier = Modifier.semantics { heading() },
             )
-            Text(stringResource(R.string.unreachable_body, serverName), textAlign = TextAlign.Center)
+            Text(
+                if (secureStorage) {
+                    stringResource(R.string.secure_storage_body)
+                } else {
+                    stringResource(R.string.unreachable_body, serverName)
+                },
+                textAlign = TextAlign.Center,
+            )
             if (detail.isNotBlank()) {
                 Text(
                     detail.take(200),

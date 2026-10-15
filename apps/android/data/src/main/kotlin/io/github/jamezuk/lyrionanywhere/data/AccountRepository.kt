@@ -18,6 +18,8 @@ import io.github.jamezuk.lyrionanywhere.core.SessionObserver
 import io.github.jamezuk.lyrionanywhere.core.SignedIn
 import io.github.jamezuk.lyrionanywhere.core.StationRunner
 import io.github.jamezuk.lyrionanywhere.core.parsePairingInvite
+import io.github.jamezuk.lyrionanywhere.data.secure.SavedCredentials
+import io.github.jamezuk.lyrionanywhere.data.secure.savedSignIn
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -44,8 +46,15 @@ sealed interface AuthState {
     /** A saved sign-in is being checked with the server. */
     data class Restoring(val server: ServerInfo) : AuthState
 
-    /** A saved sign-in, but the server can't be reached (it is kept). */
-    data class Unreachable(val server: ServerInfo, val detail: String = "") : AuthState
+    /**
+     * A saved sign-in, but the server can't be reached (it is kept). `secureStorage`: the
+     * sign-in itself couldn't be read from secure storage just now (it is kept too).
+     */
+    data class Unreachable(
+        val server: ServerInfo,
+        val detail: String = "",
+        val secureStorage: Boolean = false,
+    ) : AuthState
 
     data class SignedInState(val server: ServerInfo, val who: SignedIn) : AuthState
 }
@@ -151,6 +160,11 @@ class RustAccountRepository(
      * builds only: a release build takes `https://` alone, typed, scanned or from a link.
      */
     private val allowPlainLoopback: Boolean = false,
+    /** Creates the Rust session for a server address (replaced in tests). */
+    private val openSession: (url: String) -> Pair<ServerInfo, Session> = { url ->
+        val s = Server(url)
+        ServerInfo(s.url(), s.displayName(), s.isSecure()) to Session(s, secureStore, deviceName)
+    },
 ) : AccountRepository, ConnectionSource {
     private val _state = MutableStateFlow<AuthState>(AuthState.Starting)
     override val state: StateFlow<AuthState> = _state.asStateFlow()
@@ -187,9 +201,7 @@ class RustAccountRepository(
     /** Create the session for `url` (on [io]: it reads the sealed token). */
     private suspend fun open(url: String): ApiResult<ServerInfo> = withContext(io) {
         try {
-            val s = Server(url)
-            val info = info(s)
-            val sess = Session(s, secureStore, deviceName)
+            val (info, sess) = openSession(url)
             sess.setObserver(observer)
             session?.close()
             dropConnection()
@@ -214,10 +226,30 @@ class RustAccountRepository(
     }
 
     private suspend fun restoreLocked(info: ServerInfo) {
-        val sess = session ?: return
+        var sess = session ?: return
         if (!sess.hasSignIn()) {
-            _state.value = AuthState.SignedOut(info)
-            return
+            // The session found no sign-in. If secure storage just couldn't be read (the
+            // Keystore restarting), that is not a sign-out: keep the saved sign-in, tell
+            // nobody, and try again later. If it reads now, start the session again.
+            when (withContext(io) { secureStore.savedSignIn() }) {
+                is SavedCredentials.Unavailable -> {
+                    _state.value = AuthState.Unreachable(info, secureStorage = true)
+                    return
+                }
+                SavedCredentials.Absent -> {
+                    _state.value = AuthState.SignedOut(info)
+                    return
+                }
+                is SavedCredentials.Present -> {
+                    val reopened = open(info.url)
+                    val again = session
+                    if (reopened is ApiResult.Err || again == null || !again.hasSignIn()) {
+                        _state.value = AuthState.SignedOut(info)
+                        return
+                    }
+                    sess = again
+                }
+            }
         }
         _state.value = AuthState.Restoring(info)
         when (val r = apiCall { sess.restore() }) {
