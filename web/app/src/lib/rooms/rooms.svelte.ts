@@ -24,7 +24,7 @@ export interface RoomsDeps {
 	rpc: (player: string, c: Command) => Promise<unknown>;
 	/** Each player's alarms (none read without it: Play on… shows no alarm times). */
 	alarms?: (player: string) => Promise<AlarmListing>;
-	/** Read the sync groups too (Play on… reads its own, for its Group players… view). */
+	/** Read the sync groups too (Play on… reads its own, for its Sync with… picker and Bring players into step… view). */
 	groups?: boolean;
 	/** Whether the page can be seen (polls are skipped while it is hidden). */
 	visible?: () => boolean;

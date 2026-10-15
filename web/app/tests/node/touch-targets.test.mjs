@@ -109,6 +109,15 @@ test('car mode: every target at least 76 px', () => {
 	assert.doesNotMatch(car, /Visualiser/);
 });
 
+test('Play on…: the Sync with… row, its picker and Leave the group are 44 px targets', () => {
+	const c = read('lib/components/PlayerSwitcher.svelte');
+	assert.ok(px(rule(c, '.sync-row {'), 'min-height') >= 44);
+	assert.ok(px(rule(c, '.pick {'), 'min-height') >= 44);
+	assert.ok(px(rule(c, '.leave {'), 'min-height') >= 44);
+	// Each other player's "Join its group" is a RowMenu item (44 px, above).
+	assert.match(c, /<RowMenu label=\{`More options for \$\{name\}`\}/);
+});
+
 test('Your devices: each Sign out and the device rows are 44 px targets', () => {
 	const c = read('lib/components/YourDevices.svelte');
 	assert.ok(px(rule(c, '.btn {'), 'min-height') >= 44);
