@@ -507,7 +507,8 @@ fn analyse_source_enforces_its_limits() {
 
 #[test]
 fn analyse_source_survives_hostile_files() {
-    use anywhere_core::analysis::analyse_source;
+    use anywhere_core::analysis::{AnalyseError, analyse_source};
+    use anywhere_core::decode::FILE_DECODER_PANICKED;
     let rate = 8_000u32;
     let wav = wav16(rate, &tone(rate, &[(0.5, -20.0)]));
     let flac_like = {
@@ -539,13 +540,17 @@ fn analyse_source_survives_hostile_files() {
             _ => b = (0..r.next() % 2000).map(|_| r.next() as u8).collect(),
         }
         let hint = ["wav", "flac", "mp3", "m4a", "ogg"][(r.next() % 5) as usize];
-        // Never a panic; an answer either way.
-        let _ = analyse_source(
+        // Never a panic; an answer either way. A caught panic doesn't count (M13): the
+        // decoder is shared with the web player, where a panic can't be caught.
+        let result = analyse_source(
             source(b),
             Some(hint),
             AnalysisConfig::default(),
             30.0,
             &|| false,
         );
+        if let Err(AnalyseError::Decode(e)) = &result {
+            assert_ne!(e, FILE_DECODER_PANICKED, "case {i} panicked the decoder");
+        }
     }
 }

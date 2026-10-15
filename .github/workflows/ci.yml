@@ -37,6 +37,16 @@ jobs:
         run: cargo test -p anywhere-core --all-features
       - name: Robustness, limiter, analysis and performance tests (release, full matrices)
         run: cargo test -p anywhere-core --release --all-features --test robustness --test dsp_limiter --test analysis --test opus --test dsp_performance
+      # The vendored decoder is its own workspace (third_party/opus-decoder/PATCHES.md), so
+      # `cargo test --workspace` doesn't reach it. Shares the cached target directory.
+      - name: Vendored Opus decoder tests (unit, no I/O, hostile packets)
+        run: cargo test --locked --manifest-path third_party/opus-decoder/Cargo.toml
+        env:
+          CARGO_TARGET_DIR: target
+      - name: Vendored Opus decoder hostile packets (release, full counts)
+        run: cargo test --locked --release --manifest-path third_party/opus-decoder/Cargo.toml --test robustness
+        env:
+          CARGO_TARGET_DIR: target
       - name: Core builds for WebAssembly (proto only)
         run: cargo build -p anywhere-core --no-default-features --target wasm32-unknown-unknown
 

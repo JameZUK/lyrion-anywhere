@@ -305,6 +305,15 @@ pub struct StreamDecoder {
     source: Option<SourceFormat>,
 }
 
+/// The error [`StreamDecoder::work`] reports when it caught a panic in a third-party demuxer
+/// or decoder (native hosts only: WebAssembly builds abort instead). Tests assert that no
+/// hostile input ever produces it, because the same input would abort the web player.
+pub const STREAM_DECODER_PANICKED: &str = "decode: the decoder failed on this stream";
+
+/// The error [`decode_seekable`], [`verify_flac`] and the file decoder's open report when
+/// they caught a panic in a third-party demuxer or decoder (see [`STREAM_DECODER_PANICKED`]).
+pub const FILE_DECODER_PANICKED: &str = "decoder failed on this file";
+
 impl StreamDecoder {
     /// `format` is the Slimproto format code from `strm` (used only as a probe hint).
     pub fn new(input: InputBuffer, format: u8) -> Self {
@@ -352,7 +361,7 @@ impl StreamDecoder {
             match std::panic::catch_unwind(run) {
                 Ok(status) => status,
                 Err(_) => {
-                    let msg = "decode: the decoder failed on this stream".to_string();
+                    let msg = STREAM_DECODER_PANICKED.to_string();
                     self.state = State::Failed(msg.clone());
                     DecodeStatus::Failed(msg)
                 }
@@ -555,12 +564,13 @@ pub const MAX_BAD_PACKETS: u32 = 64;
 /// trip arithmetic overflow checks in debug builds) is caught and reported as an error, so
 /// one bad file can't take its host down.
 pub fn decode_seekable(
-    source: Box<dyn MediaSource>,
+    mut source: Box<dyn MediaSource>,
     ext_hint: Option<&str>,
     sink: &mut dyn FnMut(u32, &[f32]) -> bool,
 ) -> Result<Option<SourceFormat>, String> {
+    check_file_headers(&mut source)?;
     let run = std::panic::AssertUnwindSafe(|| decode_seekable_inner(source, ext_hint, sink));
-    std::panic::catch_unwind(run).unwrap_or_else(|_| Err("decoder failed on this file".into()))
+    std::panic::catch_unwind(run).unwrap_or_else(|_| Err(FILE_DECODER_PANICKED.into()))
 }
 
 fn decode_seekable_inner(
@@ -645,9 +655,9 @@ pub struct FlacCheck {
 /// decode (a bad CRC, a truncated frame), is an error. The host does the I/O (it supplies
 /// `source`); this only reads through it. A panic in the third-party demuxer or decoder is
 /// caught and reported as an error, as for [`decode_seekable`].
-pub fn verify_flac(source: Box<dyn MediaSource>) -> Result<FlacCheck, String> {
-    catch(move || verify_flac_inner(source))
-        .unwrap_or_else(|| Err("decoder failed on this file".into()))
+pub fn verify_flac(mut source: Box<dyn MediaSource>) -> Result<FlacCheck, String> {
+    check_file_headers(&mut source)?;
+    catch(move || verify_flac_inner(source)).unwrap_or_else(|| Err(FILE_DECODER_PANICKED.into()))
 }
 
 fn verify_flac_inner(source: Box<dyn MediaSource>) -> Result<FlacCheck, String> {
@@ -716,6 +726,23 @@ pub fn flac_pcm_md5(samples: &[i32], bits: u32) -> [u8; 16] {
 /// lets Symphonia probe it.
 const FILE_HEADER_CHECK: usize = 1024 * 1024;
 
+/// Refuse a whole file whose WAV headers would trip the third-party reader's overflow
+/// checks ([`check_wav_headers`]) before Symphonia's prober, which scans what it can see,
+/// parses them; then rewind. Every whole-file entry point does this, so the caught panic is
+/// never what saves us.
+fn check_file_headers(source: &mut Box<dyn MediaSource>) -> Result<(), String> {
+    let mut head = Vec::new();
+    source
+        .take(FILE_HEADER_CHECK as u64)
+        .read_to_end(&mut head)
+        .map_err(|e| format!("read: {e}"))?;
+    check_wav_headers(&head).map_err(|e| format!("probe: {e}"))?;
+    source
+        .seek(io::SeekFrom::Start(0))
+        .map_err(|e| format!("read: {e}"))?;
+    Ok(())
+}
+
 /// Decodes a complete local file (a downloaded track) piece by piece, with seeking.
 ///
 /// Unlike [`StreamDecoder`] the source is seekable and wholly present, so the demuxer may
@@ -753,20 +780,10 @@ enum FileState {
 impl FileDecoder {
     /// Probe `source` (`ext_hint`, e.g. "flac", helps the prober).
     pub fn open(mut source: Box<dyn MediaSource>, ext_hint: Option<&str>) -> Result<Self, String> {
-        // Check the headers first: Symphonia's prober scans what it can see.
-        let mut head = Vec::new();
-        (&mut source)
-            .take(FILE_HEADER_CHECK as u64)
-            .read_to_end(&mut head)
-            .map_err(|e| format!("read: {e}"))?;
-        check_wav_headers(&head).map_err(|e| format!("probe: {e}"))?;
-        drop(head);
-        source
-            .seek(io::SeekFrom::Start(0))
-            .map_err(|e| format!("read: {e}"))?;
+        check_file_headers(&mut source)?;
         let hint = ext_hint.map(str::to_string);
         catch(move || Self::open_inner(source, hint.as_deref()))
-            .unwrap_or_else(|| Err("decoder failed on this file".into()))
+            .unwrap_or_else(|| Err(FILE_DECODER_PANICKED.into()))
     }
 
     fn open_inner(source: Box<dyn MediaSource>, ext_hint: Option<&str>) -> Result<Self, String> {

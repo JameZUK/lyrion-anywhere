@@ -172,7 +172,7 @@ The signal processing and analysis are in `core/` (sans-IO, deterministic, `f64`
   - the header's output gain;
   - pre-skip and end trimming, so decoding is sample-accurate.
 - **Format code:** Slimproto's `u` is accepted only in builds that can decode it.
-- **Web:** off for WebAssembly (browsers decode Opus natively).
+- **Web:** first off for WebAssembly (browsers decode Opus natively); later turned on, so the web player decodes Opus in its core too (`wasm/Cargo.toml`). There a panic aborts the player, so the vendored decoder has its own hostile-packet tests (`third_party/opus-decoder/tests/robustness.rs`).
 
 ## 4. Waveform, loudness and track analysis
 

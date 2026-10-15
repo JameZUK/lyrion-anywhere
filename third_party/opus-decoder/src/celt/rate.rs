@@ -285,7 +285,6 @@ fn interp_bits2pulses(
     dec: &mut EcDec<'_>,
     _packet_idx: usize,
 ) -> (usize, i32) {
-    let trace_packet0 = false;
     let c = channels as i32;
     let stereo = channels > 1;
     let alloc_floor = c << BITRES;
@@ -378,14 +377,6 @@ fn interp_bits2pulses(
         *dual_stereo = i32::from(dec.dec_bit_logp(1));
     } else {
         *dual_stereo = 0;
-    }
-    if trace_packet0 {
-        debug_trace!(
-            "[RUST] alloc: coded_bands={} psum={} total_adj={}",
-            coded_bands,
-            psum,
-            total_adj
-        );
     }
 
     let left = total_adj - psum;

@@ -11,7 +11,9 @@
 #![cfg(feature = "opus")]
 
 use anywhere_core::analysis::{AnalysisConfig, analyse_encoded};
-use anywhere_core::decode::{DecodeStatus, InputBuffer, StreamDecoder, format_extension};
+use anywhere_core::decode::{
+    DecodeStatus, InputBuffer, STREAM_DECODER_PANICKED, StreamDecoder, format_extension,
+};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/sine-997hz-stereo.opus");
 
@@ -78,13 +80,50 @@ impl Rng {
     }
 }
 
+/// Ogg's page checksum (CRC-32, polynomial 0x04c11db7, unreflected, initial value 0).
+fn ogg_crc(page: &[u8]) -> u32 {
+    let mut crc = 0u32;
+    for &b in page {
+        crc ^= u32::from(b) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 {
+                (crc << 1) ^ 0x04c1_1db7
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
+}
+
+/// The byte ranges of each Ogg page and of its body (header and segment table excluded).
+fn ogg_pages(b: &[u8]) -> Vec<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 27 <= b.len() && &b[i..i + 4] == b"OggS" {
+        let nseg = usize::from(b[i + 26]);
+        let body = i + 27 + nseg;
+        let len: usize = b[i + 27..body].iter().map(|&x| usize::from(x)).sum();
+        out.push((i..body + len, body..body + len));
+        i = body + len;
+    }
+    out
+}
+
+/// Corrupt Ogg Opus never panics the decoder. A caught panic doesn't count as surviving:
+/// it would abort the web player, where panics can't be caught (M13). Most random damage is
+/// caught by the Ogg page checksum before a packet reaches the Opus decoder, so a quarter
+/// of the cases damage the audio pages and then fix their checksums, which feeds the
+/// decoder hostile packets.
 #[test]
 fn corrupt_opus_never_panics() {
+    let pages = ogg_pages(FIXTURE);
+    assert!(pages.len() > 3);
     let mut r = Rng(0x0b05);
-    let iters = if cfg!(debug_assertions) { 150 } else { 1500 };
+    let iters = if cfg!(debug_assertions) { 300 } else { 3000 };
     for i in 0..iters {
         let mut b = FIXTURE.to_vec();
-        match i % 3 {
+        match i % 4 {
             // Flip bits anywhere (headers, page CRCs, packets).
             0 => {
                 for _ in 0..1 + r.next() % 16 {
@@ -95,18 +134,133 @@ fn corrupt_opus_never_panics() {
             // Truncate.
             1 => b.truncate((r.next() % b.len() as u64) as usize),
             // Overwrite a run with random bytes, past the headers.
-            _ => {
+            2 => {
                 let start = 200 + (r.next() % (b.len() as u64 - 400)) as usize;
                 for byte in &mut b[start..start + 64] {
                     *byte = r.next() as u8;
                 }
             }
+            // Damage the audio pages' bodies (past OpusHead and OpusTags), keeping the
+            // checksums valid.
+            _ => {
+                for (page, body) in &pages[2..] {
+                    if body.is_empty() || !r.next().is_multiple_of(3) {
+                        continue;
+                    }
+                    for _ in 0..1 + r.next() % 6 {
+                        let k = body.start + (r.next() % body.len() as u64) as usize;
+                        b[k] = if r.next().is_multiple_of(2) {
+                            b[k] ^ (1 << (r.next() % 8))
+                        } else {
+                            r.next() as u8
+                        };
+                    }
+                    b[page.start + 22..page.start + 26].fill(0);
+                    let crc = ogg_crc(&b[page.clone()]);
+                    b[page.start + 22..page.start + 26].copy_from_slice(&crc.to_le_bytes());
+                }
+            }
         }
         let (st, _, pcm) = decode(&b, b'u');
-        assert!(matches!(
-            st,
-            DecodeStatus::Finished | DecodeStatus::Failed(_)
-        ));
+        match st {
+            DecodeStatus::Finished => {}
+            DecodeStatus::Failed(e) => assert_ne!(e, STREAM_DECODER_PANICKED, "case {i}"),
+            other => panic!("case {i}: {other:?}"),
+        }
+        assert!(pcm.iter().all(|s| s.is_finite()));
+    }
+}
+
+/// The checksum fix-up above is right: an untouched page keeps its checksum.
+#[test]
+fn ogg_crc_matches_the_fixture() {
+    for (page, _) in ogg_pages(FIXTURE) {
+        let mut p = FIXTURE[page].to_vec();
+        let want = u32::from_le_bytes(p[22..26].try_into().unwrap());
+        p[22..26].fill(0);
+        assert_eq!(ogg_crc(&p), want);
+    }
+}
+
+/// The packets of a page that holds only whole packets.
+fn page_packets(page: &[u8]) -> Vec<Vec<u8>> {
+    assert_eq!(page[5] & 1, 0, "a continued packet");
+    let nseg = usize::from(page[26]);
+    let lacing = &page[27..27 + nseg];
+    assert!(
+        lacing.last().is_some_and(|&l| l < 255),
+        "an unfinished packet"
+    );
+    let mut out = Vec::new();
+    let mut cur = Vec::new();
+    let mut at = 27 + nseg;
+    for &l in lacing {
+        cur.extend_from_slice(&page[at..at + usize::from(l)]);
+        at += usize::from(l);
+        if l < 255 {
+            out.push(std::mem::take(&mut cur));
+        }
+    }
+    out
+}
+
+/// A copy of `page` (its header fields kept) holding `packets`, with a valid checksum.
+fn rebuild_page(page: &[u8], packets: &[Vec<u8>]) -> Vec<u8> {
+    let mut lacing = Vec::new();
+    for p in packets {
+        lacing.extend(std::iter::repeat_n(255u8, p.len() / 255));
+        lacing.push((p.len() % 255) as u8);
+    }
+    let mut out = page[..26].to_vec();
+    out.push(u8::try_from(lacing.len()).unwrap());
+    out.extend_from_slice(&lacing);
+    for p in packets {
+        out.extend_from_slice(p);
+    }
+    out[22..26].fill(0);
+    let crc = ogg_crc(&out);
+    out[22..26].copy_from_slice(&crc.to_le_bytes());
+    out
+}
+
+/// Regression (H2): short Hybrid packets whose redundancy byte count exceeds the frame
+/// panicked the vendored decoder, which in the browser aborts the web player. Here they
+/// arrive the way a hostile stream would deliver them, inside valid Ogg pages: the stream
+/// must decode on (the decoder drops the bad redundancy, as libopus does), and certainly
+/// not end in a caught panic. The two packets are the vendored crate's regression packets
+/// (`third_party/opus-decoder/tests/robustness.rs`), one per redundancy branch.
+#[test]
+fn a_hostile_hybrid_packet_in_ogg_does_not_panic() {
+    const SILK_TO_CELT: [u8; 45] = [
+        0x60, 0x2f, 0x6b, 0xc3, 0xd5, 0x01, 0xd8, 0x95, 0x2e, 0xc0, 0x56, 0x4e, 0x3e, 0x7a, 0xa0,
+        0x37, 0x89, 0x50, 0x65, 0x96, 0x98, 0xff, 0xed, 0xeb, 0x7c, 0x85, 0x23, 0x0b, 0x8c, 0xb7,
+        0x0b, 0x96, 0x23, 0x34, 0x9a, 0x73, 0xc0, 0x51, 0x66, 0x02, 0x70, 0x1e, 0xb6, 0xd6, 0x65,
+    ];
+    const CELT_TO_SILK: [u8; 32] = [
+        0x60, 0x1f, 0xba, 0x7b, 0x32, 0xf2, 0x93, 0x06, 0x9b, 0x12, 0xe6, 0xd7, 0x33, 0xd1, 0x90,
+        0x4d, 0x24, 0x04, 0xe4, 0x5b, 0x10, 0xdc, 0x31, 0x31, 0x20, 0x5c, 0x27, 0xda, 0x12, 0x1e,
+        0xbd, 0xdd,
+    ];
+    let pages = ogg_pages(FIXTURE);
+    for hostile in [&SILK_TO_CELT[..], &CELT_TO_SILK[..]] {
+        // The first audio page (after OpusHead and OpusTags), its first packet replaced.
+        let (page, _) = pages[2].clone();
+        let mut packets = page_packets(&FIXTURE[page.clone()]);
+        assert!(packets.len() > 1);
+        packets[0] = hostile.to_vec();
+        let mut b = FIXTURE[..page.start].to_vec();
+        b.extend(rebuild_page(&FIXTURE[page.clone()], &packets));
+        b.extend_from_slice(&FIXTURE[page.end..]);
+        let (st, rate, pcm) = decode(&b, b'u');
+        if let DecodeStatus::Failed(e) = &st {
+            assert_ne!(
+                e, STREAM_DECODER_PANICKED,
+                "the hostile packet panicked the decoder"
+            );
+        }
+        assert_eq!(st, DecodeStatus::Finished);
+        assert_eq!(rate, 48_000);
+        assert!(pcm.len() > 40_000 * 2, "{} samples", pcm.len());
         assert!(pcm.iter().all(|s| s.is_finite()));
     }
 }

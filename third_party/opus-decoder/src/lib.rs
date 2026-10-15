@@ -11,10 +11,6 @@
     clippy::int_plus_one
 )]
 
-macro_rules! debug_trace {
-    ($($arg:tt)*) => {};
-}
-
 mod celt;
 pub(crate) mod compare;
 mod entropy;
@@ -23,12 +19,9 @@ mod multistream;
 mod packet;
 mod silk;
 use crate::entropy::EcDec;
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) use error::Error;
 pub use multistream::OpusMultistreamDecoder;
-
-static TRACE_DECODE_PACKET_IDX: AtomicUsize = AtomicUsize::new(0);
 
 /// High-level single-stream Opus decoder.
 ///
@@ -475,7 +468,10 @@ impl Decoder {
         packet: Option<&[u8]>,
         out: &mut [i16],
     ) -> Result<usize, Error> {
-        let packet_idx = TRACE_DECODE_PACKET_IDX.fetch_add(1, Ordering::SeqCst);
+        // Upstream numbered packets with a process-wide counter for its debug logging,
+        // which Lyrion Anywhere removed (see PATCHES.md). Nothing reads the index now; it
+        // is still threaded through the SILK and CELT internals.
+        let packet_idx = 0usize;
         let (toc, samples_per_channel_needed) = match packet {
             Some(packet) => {
                 let pp = packet::parse_packet(packet)?;
@@ -655,12 +651,24 @@ impl Decoder {
                     } else {
                         false
                     };
+                    let mut redundancy = redundancy;
                     let mut celt_to_silk = false;
                     let mut redundancy_bytes = 0usize;
                     if redundancy {
                         celt_to_silk = ec.dec_bit_logp(1);
                         redundancy_bytes = ec.dec_uint(256) as usize + 2;
-                        ec.shrink_storage(redundancy_bytes);
+                        // Lyrion Anywhere (H2, see PATCHES.md): the count comes from the
+                        // packet. If it leaves less of the frame than the bits already
+                        // read, the redundancy is invalid: drop it, as libopus does, rather
+                        // than slice out of range below.
+                        let remaining = frame.len().checked_sub(redundancy_bytes);
+                        if remaining.is_none_or(|r| (r as i64) * 8 < i64::from(ec.tell())) {
+                            redundancy = false;
+                            celt_to_silk = false;
+                            redundancy_bytes = 0;
+                        } else {
+                            ec.shrink_storage(redundancy_bytes);
+                        }
                     }
                     let mut celt_to_silk_audio = Vec::new();
                     let mut celt_to_silk_samples = 0usize;

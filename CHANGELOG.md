@@ -42,6 +42,16 @@ From the full code review of 15 October (M6, M15, M21's Android part and a test-
   - Each fix's regression tests failed before the fix. M6: the store keeps the blob on `IOException`, `ProviderException`, `KeyStoreException`, `UnrecoverableKeyException` and other errors, and still deletes it on `AEADBadTagException`; the repository's start-up with an unreadable store neither clears it nor signs out, and resumes on retry; the key provider makes no replacement key. M15: the camera is never bound when the provider arrives after disposal, both directly and with the composable. M21: view-model and screen tests for each case above, plus the missing test that a failure is shown in the error colour.
   - The manifest check was confirmed to fail the build when WorkManager's initialiser is let back in.
 
+## 2026-10-15: Review fixes: the vendored Opus decoder, and the player core
+
+From the full code review of 15 October (H2, M22, M23, M12, M13).
+
+- **Opus: one hostile packet no longer aborts the web player (H2).** A short Hybrid packet claiming more redundancy bytes than it holds panicked the vendored decoder (`third_party/opus-decoder/src/lib.rs`); the web player decodes Opus in WebAssembly, where a panic aborts it. The decoder now drops the bad redundancy, as libopus does. New hostile-packet tests in the vendored crate: every TOC configuration and frame-count code with random payloads, truncated and bit-flipped real SILK, Hybrid and CELT packets, and the two crafted packets that panicked it.
+- **Opus: no more debug logging (M22).** Upstream tried to append to a log file at a fixed path on its author's machine on every CELT frame, and built JSON for no-op loggers. All of it is removed; output is bit-for-bit the same, and a test fails if file I/O comes back.
+- **CI runs the vendored decoder's own tests (M23)**, including the check on the local FFT patch, the no-I/O check and the hostile packets (`third_party/opus-decoder/PATCHES.md`).
+- **Player core: a replaced track no longer leaves the player stuck (M12).** A new stream replacing one still decoding left an unfinished segment behind, so a new track at another sample rate never played and `STMu` never went. A refused codec no longer leaves the player "decoding" for ever (a spurious `STMo` in place of `STMu`).
+- **Robustness tests see panics (M13).** The decoder tests no longer count a caught panic as surviving. They found a real one: whole-file decoding and FLAC verification skipped the WAV header check, so a hostile channel count overflowed Symphonia's WAV reader in debug builds. Every whole-file entry point now checks first.
+
 ## 2026-10-15: Android: a phone rejoining a sync group no longer pauses the others or moves them back
 
 Found by the live check of A6 (`mobile/tests/live_sync.rs`). When the phone's link stalled while it was in a sync group, the other speakers went silent for 4 to 15 s once it came back. After a long stall, LMS also restarted the whole group about 14 s back.

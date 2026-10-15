@@ -9,6 +9,10 @@
 # will likely look very different (and much more reasonable).
 # See Cargo.toml.orig for the original contents.
 
+# Lyrion Anywhere: a workspace of its own, so its tests run standalone
+# (`cargo test --manifest-path third_party/opus-decoder/Cargo.toml`) with its own lock file.
+[workspace]
+
 [package]
 edition = "2024"
 rust-version = "1.85"
@@ -60,9 +64,18 @@ path = "tests/conformance_rfc.rs"
 name = "multistream"
 path = "tests/multistream.rs"
 
+# Lyrion Anywhere: the decoder does no I/O (see PATCHES.md).
+[[test]]
+name = "no_io"
+path = "tests/no_io.rs"
+
+# Lyrion Anywhere: hostile-packet robustness (see PATCHES.md).
+[[test]]
+name = "robustness"
+path = "tests/robustness.rs"
+
 [dependencies.thiserror]
 version = "2.0.18"
 
-[dev-dependencies.criterion]
-version = "0.5"
-features = ["html_reports"]
+# Lyrion Anywhere: the `criterion` dev-dependency is dropped, because the benches are not
+# vendored (see PATCHES.md).

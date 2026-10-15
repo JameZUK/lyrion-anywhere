@@ -728,6 +728,10 @@ impl Player {
     pub fn wants_stream_data(&self) -> bool {
         let queued = self.feeds_next();
         self.feeding().is_some_and(|t| {
+            // Nothing more is fed to an ended input (e.g. a refused codec's track).
+            if t.input_ended {
+                return false;
+            }
             let limit = if t.decoder.is_probing() && !t.decode_done && !queued {
                 PROBE_MAX_BYTES
             } else {
@@ -1145,15 +1149,23 @@ impl Player {
             self.next = Some(track);
         } else {
             self.next = None;
-            self.track = Some(track);
+            if let Some(old) = self.track.replace(track) {
+                // The replaced track decodes no more: its audio so far still plays, but its
+                // segments must end, or the queue never drains past them (M12).
+                self.complete_segments(old.seq);
+            }
         }
         self.stmu_sent = false;
         self.stmu_deferred = false;
         if !codec_ok {
             if let Some(t) = &mut self.track {
-                // Nothing will be fetched or fed.
+                // Nothing will be fetched, fed or decoded: end the decoder's input too, and
+                // count the track as done, so the player isn't left decoding for ever.
                 t.stream_ended = true;
                 t.input_ended = true;
+                t.input.set_eof();
+                t.decode_done = true;
+                t.ready_sent = true;
             }
             self.send_stat(*b"STMn", 0);
             return;
@@ -1173,6 +1185,13 @@ impl Player {
         self.send_stat(*b"STMc", 0);
         if matches!(self.output, OutputState::Stopped) {
             self.output = OutputState::Waiting;
+        }
+    }
+
+    /// Mark every segment of track `seq` complete: nothing more will be decoded for it.
+    fn complete_segments(&mut self, seq: u32) {
+        for s in self.segments.iter_mut().filter(|s| s.seq == seq) {
+            s.complete = true;
         }
     }
 
@@ -1225,6 +1244,7 @@ impl Player {
         if let Some(t) = &self.track
             && t.seq > keep
         {
+            // Its segments go below; `keep`'s, decoded before it, are already complete.
             close |= !t.stream_ended;
             self.track = None;
         }
@@ -2507,6 +2527,107 @@ mod tests {
         p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
         assert!(p.next.is_none());
         assert_eq!(p.track.as_ref().unwrap().seq, 1, "replaced, as before");
+    }
+
+    /// Start a 44.1 kHz track and play some of it, so it is still decoding.
+    fn decoding_44k(p: &mut Player, now: &mut u64) {
+        p.on_control_data(&strm(b's', b'1', b'p', 0), *now).unwrap();
+        p.on_stream_data(&wav(44100, 44100 * 15), *now);
+        p.on_stream_end(*now);
+        play_ms(p, 3000, now);
+        assert!(p.decoding(), "the first track is still decoding");
+    }
+
+    /// Play until nothing more comes out, collecting the output rate at each pull and the
+    /// frames pulled at each rate.
+    fn play_out(p: &mut Player, now: &mut u64) -> Vec<(u32, u64)> {
+        let mut buf = vec![0f32; 441 * 2];
+        let mut by_rate: Vec<(u32, u64)> = Vec::new();
+        let mut idle = 0;
+        while idle < 300 {
+            *now += 10;
+            p.tick(*now);
+            let rate = p.output_rate();
+            let n = p.pull_audio(&mut buf);
+            p.played(n as u64);
+            if n == 0 {
+                idle += 1;
+                continue;
+            }
+            idle = 0;
+            let rate = rate.unwrap();
+            match by_rate.last_mut() {
+                Some((r, f)) if *r == rate => *f += n as u64,
+                _ => by_rate.push((rate, n as u64)),
+            }
+        }
+        by_rate
+    }
+
+    /// Regression (M12): a bare `strm s` replacing a track that is still decoding left that
+    /// track's last segment incomplete for ever. Once its audio was pulled, `output_rate`
+    /// still named it, so a new track at another rate was never pulled, `STMu` never went,
+    /// and every such replacement left another orphan segment behind.
+    #[test]
+    fn a_new_stream_replacing_a_decoding_one_at_another_rate_plays() {
+        let mut p = Player::new(cfg());
+        let mut now = 0;
+        decoding_44k(&mut p, &mut now);
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&wav(48000, 48000 * 2), now);
+        p.on_stream_end(now);
+        p.take_actions();
+        let by_rate = play_out(&mut p, &mut now);
+        // The old track's decoded audio plays out, then all of the new track at 48 kHz.
+        assert_eq!(by_rate.last(), Some(&(48000, 96000)), "{by_rate:?}");
+        assert_eq!(by_rate[0].0, 44100, "{by_rate:?}");
+        assert_eq!(p.output_rate(), None);
+        // Both tracks are done and played out: the end is reported.
+        let ev = events(&p.take_actions());
+        assert_eq!(count(&ev, "STMu"), 1, "{ev:?}");
+        assert_eq!(p.status().output, OutputState::Stopped);
+    }
+
+    #[test]
+    fn repeated_replacements_leave_no_segments_behind() {
+        let mut p = Player::new(cfg());
+        let mut now = 0;
+        for _ in 0..6 {
+            decoding_44k(&mut p, &mut now);
+        }
+        play_out(&mut p, &mut now);
+        p.take_actions();
+        // Only the audible track's segment is kept, for the elapsed time.
+        assert!(p.segments.len() <= 1, "{} segments", p.segments.len());
+        assert!(p.segments.iter().all(|s| s.complete));
+    }
+
+    /// Regression (M12): a refused codec's track set its stream and input as ended but never
+    /// ended the decoder's input, so it probed for ever: the player counted as decoding, a
+    /// dry output sent `STMo` (an underrun) rather than letting `STMu` (the end) go, and it
+    /// asked for stream data that would never come.
+    #[test]
+    fn a_refused_codec_is_not_decoding() {
+        let mut p = Player::new(cfg());
+        let mut now = 0;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&wav(44100, 44100 * 2), now);
+        p.on_stream_end(now);
+        play_ms(&mut p, 200, &mut now);
+        assert_eq!(p.status().output, OutputState::Playing);
+        p.take_actions();
+        // Refused while the first track still plays.
+        p.on_control_data(&strm(b's', b'1', b'w', 0), now).unwrap();
+        assert_eq!(events(&p.take_actions()), vec!["STMn"]);
+        assert!(!p.decoding());
+        assert!(!p.wants_stream_data());
+        assert!(p.fed_streams().is_empty());
+        play_out(&mut p, &mut now);
+        p.output_underrun();
+        let ev = events(&p.take_actions());
+        assert_eq!(count(&ev, "STMo"), 0, "{ev:?}");
+        assert_eq!(count(&ev, "STMn"), 0, "refused once only: {ev:?}");
+        assert_eq!(count(&ev, "STMu"), 1, "{ev:?}");
     }
 
     #[test]
