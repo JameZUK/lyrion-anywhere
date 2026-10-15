@@ -1,8 +1,8 @@
-# Lyrion Anywhere for Android 1.15.2
+# Lyrion Anywhere for Android 1.15.3
 
 Installs over 1.14.0 (same signing key). Signing certificate SHA-256: `86:74:DA:2B:CE:50:26:22:F0:A0:2E:7A:22:50:96:DF:FB:D0:A9:45:17:82:66:25:C9:6C:DD:AF:37:90:D2:85`.
 
-This release brings together everything since 1.14.0 (the test builds 1.15.0 and 1.15.1 were not published).
+This release brings together everything since 1.14.0 (the test builds 1.15.0 to 1.15.2 were not published).
 
 *Your devices* needs plugin [0.5.0](https://github.com/JameZUK/lyrion-anywhere/releases/tag/v0.5.0) or later on the server. Everything else works with 0.4.0.
 
@@ -25,7 +25,7 @@ This release brings together everything since 1.14.0 (the test builds 1.15.0 and
 ## Downloads
 | File | For |
 |---|---|
-| `LyrionAnywhere-android-1.15.2.apk` | Any phone |
+| `LyrionAnywhere-android-1.15.3.apk` | Any phone |
 | `…-arm64-v8a.apk` | Most phones (smaller) |
 | `…-armeabi-v7a.apk` | Older 32-bit phones |
 | `…-x86_64.apk` | Chromebooks and emulators |
