@@ -9,6 +9,8 @@ This release brings together everything since 1.14.0 (the test builds 1.15.0 and
 ## What's new
 - **Your devices** (*Settings › Account*): see every device signed in to your account, when each was last used, and sign out the ones you don't want, one at a time or all the others at once, without changing your password.
 - **Sync groups:** a phone that rejoins a group after a dropped connection no longer pauses the other players or moves them back. It restarts where the others are, after checking with the server that the same track is still playing.
+- **Playing with the screen off:** a track change from another device no longer waits until the phone is woken. The app keeps its playback service, wake lock and Wi-Fi lock through a track change and for 90 s after a stop, and takes the foreground back when you open it. If Android's battery optimisation is still on for the app, Settings now says so and offers to open the system page, because without that exemption Android cuts the phone's connection with the screen off.
+- **Sync groups:** heartbeats queued while the connection was down are no longer replayed on reconnect, which made the server re-base the phone's clock and skip it ahead. The Signal path sheet now shows the output clock in use ("device" or "estimated") and the measured output latency, so sync offsets can be diagnosed; when the device gives no usable timestamp, the device buffer is taken off the reported position instead of being counted as heard.
 - **Download on Wi-Fi only is now on by default.** Turn it off in *Settings › Downloads › Download options* if you want downloads on mobile data.
 - **Fixed:**
   - Opening Settings while the phone was not playing could empty the replay cache.
