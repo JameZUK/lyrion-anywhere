@@ -392,7 +392,19 @@ async fn read_loop(
                 }
                 None => return ReadEnd::Policy("unexpected text message".into()),
             },
-            Ok(Message::Close(_)) | Err(_) => return ReadEnd::SocketGone,
+            // Who hung up, and why, is the first question when a player keeps dropping
+            // (live, 2026-10-15: a phone's socket went every minute with no cause logged).
+            Ok(Message::Close(frame)) => {
+                let (code, reason) = frame
+                    .map(|f| (u16::from(f.code), f.reason.to_string()))
+                    .unwrap_or((0, String::new()));
+                info!(mac = %session.device.mac_string(), code, reason = %reason, "player closed its socket");
+                return ReadEnd::SocketGone;
+            }
+            Err(e) => {
+                info!(mac = %session.device.mac_string(), error = %e, "player socket failed");
+                return ReadEnd::SocketGone;
+            }
         };
         if session.is_ended() {
             return ReadEnd::SocketGone;
