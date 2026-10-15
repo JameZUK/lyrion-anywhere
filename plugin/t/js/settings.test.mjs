@@ -389,6 +389,15 @@ test('a stopped gateway: its controls are off, and the page says why once', asyn
   assert.equal(p.dom.byId.get('aw-offline').getAttribute('hidden'), '', 'no note while running');
 });
 
+test('settings changed outside the page and reverted are reported in the status, as text (M1)', async () => {
+  const notice = 'Settings changed outside the Lyrion Anywhere settings page were reverted (listen). <b>x</b>';
+  const p = await page({ ...BASE, status: { ...RUNNING, settings_notice: notice } });
+  const text = p.dom.byId.get('aw-status').textContent;
+  assert.ok(text.includes(notice), 'the notice is shown verbatim, as text');
+  const quiet = await page({ ...BASE, status: { ...RUNNING, settings_notice: '' } });
+  assert.doesNotMatch(quiet.dom.byId.get('aw-status').textContent, /reverted/, 'nothing shown without a notice');
+});
+
 test('restart warns first and needs a second click; a turned-off gateway is reported', async () => {
   let started = 1;
   const p = await page({ ...BASE, restart: () => (started ? { started: 1 } : { started: 0, message: 'Remote access is turned off, so the gateway was not started.' }) });

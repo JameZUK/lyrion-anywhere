@@ -2,6 +2,13 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: Plugin settings guarded against LMS's `pref` command; release and docs fixes from the full review
+
+Fixes for findings M1, M17 and M18 of the full code review (`docs/reviews/2026-10-15-full-review.md`).
+
+- **Gateway settings can only be changed on the settings page (M1, security)** (`plugin/Plugins/LyrionAnywhere/Gateway.pm`, `Settings.pm`): LMS's `pref` command could set the gateway's listen address, public URL, trusted proxies, client address header, ffmpeg path, download cache size and gateway path without the page's token, so any web page a LAN user opened could blind-POST to `/jsonrpc.js` and, at the next gateway start, have it listen on the LAN and trust the page's own forwarded headers. The settings page, the one authorised writer, now records these values in `settings.authorised` (0600, in the 0700 data folder), which `pref` cannot reach. The gateway always starts with the recorded values; a pref that differs is put back, logged, and shown in the page's status as "Settings changed outside the Lyrion Anywhere settings page were reverted (…)". On first run the current values are recorded.
+  - **Tests:** `plugin/t/11-authorised-settings.t` (failed before the fix): `pref`-style changes after a page save are not used and are put back, with the notice; the gateway path and ffmpeg path likewise; a forged page save changes nothing; a later page save updates the record and clears the notice; first run; the file's mode; awkward characters round-trip; an unrecognised record is not trusted. The status row is tested in `plugin/t/js/settings.test.mjs`.
+
 ## 2026-10-15: Android: a phone rejoining a sync group no longer pauses the others or moves them back
 
 Found by the live check of A6 (`mobile/tests/live_sync.rs`). When the phone's link stalled while it was in a sync group, the other speakers went silent for 4 to 15 s once it came back. After a long stall, LMS also restarted the whole group about 14 s back.

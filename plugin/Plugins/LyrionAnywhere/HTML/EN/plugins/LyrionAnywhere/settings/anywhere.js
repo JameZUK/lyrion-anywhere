@@ -393,6 +393,8 @@
       ['Data', s.data_dir || DASH],
     ];
     if (s.error) rows.push(['Last error', s.error]);
+    // Gateway settings someone changed with LMS's `pref` command, which were put back.
+    if (s.settings_notice) rows.push(['Settings', s.settings_notice]);
     const box = $('aw-status');
     // The button is made once, so the 10-second status update never takes focus away from it
     // or forgets that it is waiting for a confirming click.
