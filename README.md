@@ -123,32 +123,19 @@ LMS itself never touches the internet. One small, hardened gateway sits behind y
 ```mermaid
 flowchart LR
   subgraph Internet
-    WEB["Web app (PWA)<br/>WebAssembly player"]
-    AND["Android app<br/>Rust engine"]
+    WEB["Web app (PWA)"]
+    AND["Android app"]
   end
   subgraph Home["Your home network"]
     RP["Reverse proxy<br/>TLS on :443"]
-    subgraph GW["Lyrion Anywhere gateway (Rust)"]
-      AUTH["Accounts, sign-in,<br/>two-step"]
-      RPC["JSON-RPC allow-list<br/>and response scrubbing"]
-      TUN["Slimproto tunnel<br/>with resume"]
-      STR["Stream relay,<br/>live Opus, downloads"]
-    end
-    subgraph LMS["Lyrion Music Server"]
-      PLG["Lyrion Anywhere plugin<br/>(runs the gateway)"]
-      P3483[":3483 Slimproto"]
-      P9000[":9000 HTTP / JSON-RPC"]
-      P9090[":9090 CLI events"]
-    end
+    GW["Lyrion Anywhere gateway<br/>sign-in · RPC allow-list · Slimproto tunnel · stream relay"]
+    LMS["Lyrion Music Server<br/>:3483 Slimproto · :9000 HTTP · :9090 CLI"]
   end
   WEB -- "HTTPS + WSS" --> RP
   AND -- "HTTPS + WSS" --> RP
   RP -- "HTTP, loopback or LAN" --> GW
-  TUN --> P3483
-  RPC --> P9000
-  STR --> P9000
-  GW --> P9090
-  PLG -. "starts, supervises,<br/>admin API on loopback" .-> GW
+  GW -- "Slimproto, JSON-RPC, CLI" --> LMS
+  LMS -. "the plugin starts and supervises the gateway" .-> GW
 ```
 
 - **Clients** speak only HTTPS and secure WebSockets, to your reverse proxy (nginx, Caddy, Traefik or a Cloudflare Tunnel).
