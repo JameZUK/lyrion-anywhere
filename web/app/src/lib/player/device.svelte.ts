@@ -824,9 +824,9 @@ class DevicePlayer {
 			clearTimeout(this.#startTimer);
 			media.resume();
 		}
-		// LMS's sync corrections, applied to the element (see MediaOutput).
-		if (typeof m.pauseFor === 'number') media.pauseFor(m.pauseFor);
-		if (typeof m.skip === 'number' && media.skipAhead(m.skip)) this.#smoother.reset();
+		// LMS's sync skips and pauses never come here: the worker makes them in the audio
+		// before muxing (static/player/media-sync.js). Seeking or pausing the element for them
+		// stalled it on iPadOS, so LMS asked again at every check.
 		if (typeof m.startAt === 'number' && Number.isFinite(m.startAt)) {
 			// A synced start: play at that moment, not at the worker's next tick after it.
 			const wait = m.startAt - (performance.timeOrigin + performance.now());

@@ -2,6 +2,14 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: Web player: sync corrections in media-element mode
+
+- **Web player:** sync corrections in media-element mode no longer seek or pause the element, which stalled on iPadOS and made LMS repeat the correction every two seconds. Seen with an iPad (the web app as a PWA, media-element mode) synced with an Android phone: LMS asked the iPad to skip ahead about 160 ms at every check for minutes, and the iPad dropped out briefly each time. A seek makes Safari drop the decoded audio and wait while it refills, which lost about as much time as the skip gained, so the play point LMS saw never improved.
+  - The worker now makes LMS's skips and pauses in the audio before it is muxed (`static/player/media-sync.js`): a skip drops that much decoded audio, a pause inserts that much silence, and the element plays on without a break. Both are reported to the core at once, as the Web Audio worklet's are: a skip counts the dropped frames as presented straight away (they never reach the element, so they are never counted again); a pause holds back that many frames of the element's next played reports, and the silence pays them back when it plays. Once the element is past the correction, what is reported is exactly what is heard.
+  - The correction is heard after the audio already appended to the element (up to 8 s, kept so the element doesn't run dry in the background on iOS); LMS sees it at once, so it doesn't ask again meanwhile. A skip of more than the core has decoded drops the rest as it arrives; there is no seek fallback.
+  - `MediaOutput.pauseFor` and `skipAhead` are gone; the page ignores such messages. Web Audio mode is unchanged.
+  - **Tests:** `tests/node/media-sync.test.mjs` (new; failed before the fix): a skip is reported at once and never counted again; a pause stalls the reported position at once and its silence is not counted as track audio; a model of LMS's 2 s check asks for one skip and then nothing; a skip beyond what is decoded; a flush; junk input; random corrections add up to what is heard. `tests/device-media-hold.test.ts`: a skip or pause message never seeks or pauses the element (failed before the fix).
+
 ## 2026-10-15: Web: review fixes for downloads, sign-in and Your devices
 
 From the full code review of 15 October (M19, M20, M21's web part and four web lows).
