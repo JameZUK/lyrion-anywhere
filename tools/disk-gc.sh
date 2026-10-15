@@ -35,10 +35,11 @@ target=${CARGO_TARGET_DIR:-$root/target}
 
 run() { if [ -n "$dry" ]; then echo "would: $*"; else "$@"; fi; }
 
-# A build in progress must never lose files from under it. The `[c]argo` form keeps pgrep
-# from matching this script's own command line.
-if pgrep -x cargo >/dev/null || pgrep -x rustc >/dev/null || pgrep -f '[g]radle' >/dev/null \
-	|| pgrep -f '[d]ocker build' >/dev/null; then
+# A build in progress must never lose files from under it. Gradle's daemon and Kotlin's
+# compile daemon outlive a build, so only an active Gradle client counts. The `[G]` form
+# keeps pgrep from matching this script's own command line.
+if pgrep -x cargo >/dev/null || pgrep -x rustc >/dev/null \
+	|| pgrep -f '[G]radleWrapperMain' >/dev/null || pgrep -f '[d]ocker build' >/dev/null; then
 	echo "disk-gc: a build is running; not now" >&2
 	exit 3
 fi
