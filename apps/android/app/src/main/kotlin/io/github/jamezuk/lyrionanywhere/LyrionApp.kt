@@ -133,6 +133,8 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
     override val events: EventsRepository get() = container.events
     override val art: ArtRepository get() = container.art
     override val offlinePlayer: OfflinePlayerRepository get() = container.offlinePlayer
+    override val backgroundPlayback get() = container.backgroundPlayback
+    override val appForeground get() = container.appForeground
 
     override suspend fun offlineArtwork(albumRef: String): ByteArray? = container.offline.artwork(albumRef)
 

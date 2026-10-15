@@ -37,6 +37,12 @@ interface PlaybackHost {
     /** What the car's browse tree reads and plays (none: no Android Auto). */
     val autoSource: io.github.jamezuk.lyrionanywhere.playback.auto.AutoSource? get() = null
 
+    /** Where Android's refusals to keep playback in the foreground are noted (none: not noted). */
+    val backgroundPlayback: io.github.jamezuk.lyrionanywhere.data.BackgroundPlayback? get() = null
+
+    /** Whether the app is in the foreground (an activity started); none: not known. */
+    val appForeground: kotlinx.coroutines.flow.StateFlow<Boolean>? get() = null
+
     /** Covers for Android Auto's lists, served by the app's own provider (none: no art). */
     val autoArt: io.github.jamezuk.lyrionanywhere.playback.auto.AutoArtCache? get() = null
 }
@@ -168,4 +174,66 @@ fun mapSnapshot(s: SessionSnapshot): SessionState {
         canPrevious = c.previous,
         canJump = false,
     )
+}
+
+/** The engine is starting or playing a track (whatever LMS last said). */
+val LocalPlayerState.engineActive: Boolean
+    get() = running && status?.playback.let { it == LocalPlayback.BUFFERING || it == LocalPlayback.PLAYING }
+
+/**
+ * Keeps the session's playlist through a moment with none, while this phone is still a
+ * player. Changing the queue from another device (LMS stops, clears the playlist, then
+ * loads the new one, which can take a while on a slow library) reads for a moment as no
+ * playlist at all. An empty timeline makes Media3 take the notification away and leave
+ * the foreground at once, and Android doesn't let a backgrounded app go back to the
+ * foreground, so with the screen off the next track would wait for the phone to wake.
+ *
+ * For [holdMs] the last playlist shows instead: buffering while LMS says it plays (or the
+ * engine is already starting the next track), paused otherwise. Not thread-safe: used
+ * from the session's looper.
+ */
+class SessionHoldover(private val holdMs: Long = HOLD_MS) {
+    private var last: SessionState? = null
+    private var emptySince: Long? = null
+
+    /**
+     * What to show for [mapped] (from [snapshot]) at [now] (a monotonic clock, ms), and how
+     * long until that changes by itself (null: it won't).
+     */
+    fun apply(mapped: SessionState, snapshot: SessionSnapshot, now: Long): Pair<SessionState, Long?> {
+        if (mapped.items.isNotEmpty()) {
+            last = mapped
+            emptySince = null
+            return mapped to null
+        }
+        val held = last
+        // No longer a player (switched off, stopped, signed out): nothing to keep.
+        if (!snapshot.local.running || held == null) {
+            forget()
+            return mapped to null
+        }
+        val since = emptySince ?: now.also { emptySince = it }
+        val left = holdMs - (now - since).coerceAtLeast(0)
+        if (left <= 0) {
+            forget()
+            return mapped to null
+        }
+        val wants = snapshot.status?.mode == PlaybackMode.PLAYING || snapshot.local.engineActive
+        val shown = held.copy(
+            playbackState = if (wants) Player.STATE_BUFFERING else Player.STATE_READY,
+            playWhenReady = wants,
+            advancing = false,
+        )
+        return shown to left
+    }
+
+    private fun forget() {
+        last = null
+        emptySince = null
+    }
+
+    companion object {
+        /** How long the last playlist shows while LMS has none (covers a slow load). */
+        const val HOLD_MS = 90_000L
+    }
 }

@@ -2,6 +2,26 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: Android: the next track starts with the screen off
+
+Reported on the 1.15.1 test build: with the screen off, a track changed from another device didn't play until the phone was woken. The gateway's log showed the phone's player socket dropping and resuming every 30 s to a few minutes meanwhile, while the music carried on from what had been read ahead.
+
+- **Cause, from the code:**
+  - Replacing the queue from elsewhere (LMS stops, clears the playlist, then loads the new one) read for a moment as no playlist. The session went idle with an empty timeline, and Media3 then removes the notification and leaves the foreground at once, with no grace. Android doesn't let a backgrounded app go back to the foreground (unless battery optimisation is off for it), so playback carried on as an ordinary background app, whose network Android cuts while the phone dozes.
+  - The wake and Wi-Fi locks were let go the moment LMS's last read status stopped saying "playing", and taken only once the app had read LMS's status again, not when the engine itself started the next track.
+  - Playback started while the app was already in the background is never made a foreground service, for the same reason. That Android rule can't be worked around without the battery optimisation exemption.
+- **Fixes** (`playback/SessionState.kt`, `LmsSessionPlayer.kt`, `PlaybackService.kt`):
+  - `SessionHoldover` keeps the last playlist for up to 90 s while LMS has none and the phone is still a player. It shows as buffering while LMS or the engine is starting a track, and as paused otherwise. It goes by itself once the time is up, and at once when the player is switched off or stopped.
+  - `LockKeeper`: the locks are held while playing, while the engine buffers or plays (before LMS says so), and for 90 s after.
+  - Android's refusals of the foreground are noted (`BackgroundPlayback`). When the app opens while playback carried on without the foreground, the service takes it back.
+  - **Settings:** while this phone is a player and battery optimisation is on for the app, a one-time card explains that Android may cut the player's connection with the screen off and opens Android's battery optimisation list (*Open settings*, or *Not now*, which is remembered). Settings › Playback keeps the option until the app is unrestricted. No new permission: the list needs none, and the app doesn't ask for the exemption directly.
+- **Not changed:** the engine's 25 s quiet-socket watchdog. With the network cut by Doze nothing arrives however long it waits, so a longer limit would only keep a dead socket; the fix is to keep the network.
+- **Tests:**
+  - The regression test (`LmsSessionPlayerTest.aQueueReplacedFromElsewhereKeepsTheSessionThroughTheGap`) failed before the fix: the timeline went empty mid-change.
+  - JVM tests for the holdover (the gap, the clock from the start of the gap, a new playlist, no longer a player, nothing before any playlist, reconnecting) and the lock keeper (the grace, switched off, a clock going backwards), with seeded robustness runs on arbitrary sequences of each.
+  - A Robolectric test that the kept playlist goes by itself after 90 s, and that a jump from it still names LMS's entry.
+  - Compose tests for the card, its refusal wording and buttons, and the row in Settings › Playback. The data module's tests cover when it is offered and that *Not now* survives a restart.
+
 ## 2026-10-15: Web: review fixes for downloads, sign-in and Your devices
 
 From the full code review of 15 October (M19, M20, M21's web part and four web lows).

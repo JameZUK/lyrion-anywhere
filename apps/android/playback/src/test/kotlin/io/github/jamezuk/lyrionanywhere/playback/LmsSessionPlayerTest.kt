@@ -172,4 +172,55 @@ class LmsSessionPlayerTest {
         val p = player()
         assertFalse(p.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM))
     }
+
+    /**
+     * Regression: a queue replaced from another device (LMS stops, clears the playlist,
+     * then loads the new one) used to read for a moment as no playlist at all. The session
+     * then went idle with an empty timeline, Media3 took the notification away and dropped
+     * the foreground service at once, and Android doesn't let a backgrounded app go back
+     * to the foreground: with the screen off the next track waited for the phone to wake.
+     */
+    @Test
+    fun aQueueReplacedFromElsewhereKeepsTheSessionThroughTheGap() {
+        val p = player()
+        assertTrue(p.isPlaying)
+        // Mid-change: LMS stopped, nothing in the playlist yet; the engine flushed.
+        snapshots.value = snapshots.value.copy(
+            local = running(LocalPlayback.STOPPED),
+            status = lmsStatus(mode = PlaybackMode.STOPPED, current = null),
+            queue = emptyList(),
+        )
+        idle()
+        assertFalse("the timeline stays, so the notification and service stay", p.currentTimeline.isEmpty)
+        assertTrue(p.playbackState != Player.STATE_IDLE)
+        assertEquals("Track 11", p.mediaMetadata.title.toString())
+        // The new queue arrives and plays.
+        snapshots.value = snapshots.value.copy(
+            local = running(LocalPlayback.BUFFERING),
+            status = lmsStatus(index = 0, current = track(20, 0)),
+            queue = listOf(track(20, 0), track(21, 1)),
+        )
+        idle()
+        assertEquals(2, p.mediaItemCount)
+        assertEquals("Track 20", p.mediaMetadata.title.toString())
+        assertTrue(p.playWhenReady)
+    }
+
+    @Test
+    fun aKeptPlaylistGoesByItselfOnceItsTimeIsUp() {
+        var now = 0L
+        val p = LmsSessionPlayer(Looper.getMainLooper(), snapshots, actions, scope, clock = { now })
+        idle()
+        snapshots.value = SessionSnapshot(local = running(LocalPlayback.STOPPED), status = lmsStatus(mode = PlaybackMode.STOPPED, current = null))
+        idle()
+        assertEquals(3, p.mediaItemCount)
+        // A jump from the kept list still names LMS's entry.
+        p.seekTo(2, 0)
+        idle()
+        assertEquals("jump 2", actions.calls.last())
+        now = SessionHoldover.HOLD_MS
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(SessionHoldover.HOLD_MS))
+        assertEquals(Player.STATE_IDLE, p.playbackState)
+        assertTrue(p.currentTimeline.isEmpty)
+    }
 }
