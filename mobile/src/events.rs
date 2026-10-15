@@ -152,10 +152,18 @@ enum Outcome {
     Stop(String),
 }
 
+/// How the reconnect loop stands: failed attempts since the last subscription (for the
+/// backoff), and renewals since then (only the first is retried at once).
+#[derive(Default)]
+struct Retries {
+    attempt: u32,
+    renewed: u32,
+}
+
 async fn connect_once(
     core: &Arc<Core>,
     listener: &dyn EventListener,
-    attempt: &mut u32,
+    retries: &mut Retries,
 ) -> Outcome {
     let token = match core.access_token().await {
         Ok(t) => t,
@@ -194,7 +202,7 @@ async fn connect_once(
         match msg {
             Message::Text(t) => match parse_message(t.as_str()) {
                 Some(Parsed::Subscribed) => {
-                    *attempt = 0;
+                    *retries = Retries::default();
                     listener.on_state(EventsState::Live);
                     // Anything may have changed while we were away.
                     listener.on_event(ServerEvent::Resync);
@@ -223,30 +231,26 @@ async fn connect_once(
 }
 
 async fn run(core: Arc<Core>, listener: Arc<dyn EventListener>) {
-    let mut attempt = 0u32;
-    let mut renewed_in_a_row = 0u32;
+    let mut retries = Retries::default();
     loop {
         listener.on_state(EventsState::Connecting);
-        let outcome = connect_once(&core, &*listener, &mut attempt).await;
+        let outcome = connect_once(&core, &*listener, &mut retries).await;
         let retry = match outcome {
             Outcome::Stop(reason) => {
                 listener.on_state(EventsState::Stopped { reason });
                 return;
             }
             // One immediate retry with a fresh token; a server that keeps refusing gets
-            // the normal backoff.
-            Outcome::Renewed if renewed_in_a_row == 0 => {
-                renewed_in_a_row += 1;
-                false
+            // the normal backoff. Only a subscription (in `connect_once`) resets this.
+            Outcome::Renewed => {
+                retries.renewed = retries.renewed.saturating_add(1);
+                retries.renewed > 1
             }
-            Outcome::Renewed | Outcome::Retry => true,
+            Outcome::Retry => true,
         };
-        if attempt == 0 {
-            renewed_in_a_row = 0;
-        }
         if retry {
-            let delay = backoff(attempt, random01());
-            attempt = attempt.saturating_add(1);
+            let delay = backoff(retries.attempt, random01());
+            retries.attempt = retries.attempt.saturating_add(1);
             listener.on_state(EventsState::Retrying {
                 delay_ms: delay.as_millis() as u64,
             });

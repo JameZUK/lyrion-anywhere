@@ -4,9 +4,10 @@
 mod common;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use anywhere_mobile::{Events, EventsState, ServerEvent, Session};
+use anywhere_mobile::{Events, EventsState, Server, ServerEvent, Session, StoredCredentials};
 use common::*;
 
 /// Wait until the gateway is listening to the fake LMS CLI, then send `line` until the
@@ -147,4 +148,103 @@ async fn a_signed_out_session_stops_the_stream() {
             .any(|s| matches!(s, EventsState::Stopped { reason } if reason == "signed out"))
     })
     .await;
+}
+
+/// A fake gateway whose event socket always closes with 1008 "unauthorised", and whose
+/// refresh endpoint always hands out fresh tokens. Counts both.
+#[derive(Default)]
+struct Refusing {
+    refreshes: AtomicUsize,
+    sockets: AtomicUsize,
+}
+
+async fn refusing_gateway() -> (Arc<Refusing>, std::net::SocketAddr) {
+    use axum::extract::ws::{CloseFrame, Message, WebSocketUpgrade};
+    use axum::routing::{any, post};
+
+    let counts = Arc::new(Refusing::default());
+    let (c1, c2) = (counts.clone(), counts.clone());
+    let app = axum::Router::new()
+        .route(
+            "/v1/auth/refresh",
+            post(move || {
+                let c = c1.clone();
+                async move {
+                    let n = c.refreshes.fetch_add(1, Ordering::SeqCst);
+                    axum::Json(serde_json::json!({
+                        "access_token": format!("access-{n}"),
+                        "refresh_token": format!("refresh-{n}"),
+                        "expires_in": 900,
+                        "user": {"username": "alice", "role": "listener"},
+                        "device": {"id": 1, "name": "Phone", "mac": "02:4c:41:00:00:01"},
+                    }))
+                }
+            }),
+        )
+        .route(
+            "/v1/events",
+            any(move |ws: WebSocketUpgrade| {
+                let c = c2.clone();
+                async move {
+                    c.sockets.fetch_add(1, Ordering::SeqCst);
+                    ws.on_upgrade(|mut s| async move {
+                        let _ = s.recv().await;
+                        let _ = s
+                            .send(Message::Close(Some(CloseFrame {
+                                code: 1008,
+                                reason: "unauthorised".into(),
+                            })))
+                            .await;
+                        let _ = s.recv().await;
+                    })
+                }
+            }),
+        );
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    (counts, addr)
+}
+
+/// M8 regression: a gateway that keeps refusing the event socket as "unauthorised" after
+/// every renewal gets one immediate retry, then the normal backoff, not a tight loop of
+/// refreshes and secure-store saves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gateway_that_keeps_refusing_gets_backoff_not_a_refresh_loop() {
+    let (counts, addr) = refusing_gateway().await;
+    let store = MemStore::with(StoredCredentials {
+        refresh_token: "refresh-start".into(),
+        device_id: 1,
+    });
+    let server = Server::new(format!("http://{addr}")).unwrap();
+    let s = Session::new(server, store.clone(), "Phone".into()).unwrap();
+    let c = Arc::new(Collector::default());
+    let _sub = Events::new(s.clone()).subscribe(c.clone()).await;
+    wait_for("backing off", || {
+        c.states()
+            .iter()
+            .any(|s| matches!(s, EventsState::Retrying { .. }))
+    })
+    .await;
+    // Before the first wait: the first token, then at most two renewals.
+    let at_first_wait = counts.refreshes.load(Ordering::SeqCst);
+    assert!(
+        at_first_wait <= 3,
+        "{at_first_wait} refreshes before backing off"
+    );
+    let delay = c
+        .states()
+        .iter()
+        .find_map(|s| match s {
+            EventsState::Retrying { delay_ms } => Some(*delay_ms),
+            _ => None,
+        })
+        .unwrap();
+    assert!(delay >= 500, "a real delay: {delay} ms");
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let refreshes = counts.refreshes.load(Ordering::SeqCst);
+    let sockets = counts.sockets.load(Ordering::SeqCst);
+    assert!(refreshes <= 6, "{refreshes} refreshes in about three seconds");
+    assert!(sockets <= 5, "{sockets} connections in about three seconds");
+    assert!(store.saves() <= 6, "{} secure-store saves", store.saves());
 }
