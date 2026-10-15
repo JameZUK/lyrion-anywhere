@@ -57,11 +57,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -101,6 +103,10 @@ data class PlayOnActions(
     val onBringToPhone: (() -> Unit)? = null,
     /** Join this player to the controlled player's group (true), or take it out (false). */
     val onSync: ((String, Boolean) -> Unit)? = null,
+    /** The controlled player joins this player's group (*Sync with…*, *Join its group*). */
+    val onJoinGroup: ((String) -> Unit)? = null,
+    /** The controlled player leaves its group. */
+    val onLeaveGroup: (() -> Unit)? = null,
     val onDismissTransfer: () -> Unit = {},
     /** Every room at a glance (Wave 2 §4.3); null: not offered. */
     val onAllRooms: (() -> Unit)? = null,
@@ -177,9 +183,10 @@ private fun RowVolume(room: Room, onVolume: (String, Int) -> Unit) {
  * "Play on…" (Wave 3.5), the one player manager: this phone and the other players this
  * account may control. Tapping a row controls that player; its ⋮ moves playback there and,
  * with [rooms] (Rooms folded in), plays or pauses it, opens its alarms and switches it on or
- * off; the controlled player and any playing one have a volume slider. *Group players…* joins
- * players to the controlled one's group. *All rooms* (the expanded view) is offered by the
- * caller on large windows only.
+ * off; the controlled player and any playing one have a volume slider. Under the controlled
+ * player, *Sync with…* joins it to another player's group (each other row's ⋮ has *Join its
+ * group* too); *Bring players into step with …* (the inverse) joins players to the controlled
+ * one's group. *All rooms* (the expanded view) is offered by the caller on large windows only.
  */
 @Composable
 fun PlayOnList(
@@ -190,6 +197,10 @@ fun PlayOnList(
     roomActions: RoomsActions? = null,
 ) {
     var grouping by rememberSaveable { mutableStateOf(false) }
+    var joining by rememberSaveable { mutableStateOf(false) }
+    // *Sync with…*, under the controlled player's row: offered while there is a group to join.
+    val canJoin = actions.onJoinGroup != null && state.selected != null && !state.downloads && JoinGroup.targets(state).isNotEmpty()
+    val syncBlocked = JoinGroup.block(state) != null
     val busy = state.transfer is TransferState.Running
     val hasQueue = state.status?.current != null
     Column(modifier.fillMaxWidth().selectableGroup()) {
@@ -206,6 +217,9 @@ fun PlayOnList(
             actions.onBringToPhone?.takeIf { state.controllingOther && hasQueue && !phone }?.let { bring ->
                 add(RowItem(stringResource(R.string.move_playback_to_phone), Icons.AutoMirrored.Outlined.Input, !busy, "move", bring))
             }
+            state.local.playerId?.takeIf { id -> !phone && state.players.any { it.id == id } }?.let { id ->
+                joinRowItem(state, id, actions, syncBlocked)?.let { add(it) }
+            }
         }
         ListItem(
             leadingContent = { Icon(if (phone) Icons.Outlined.Check else Icons.Outlined.PhoneAndroid, contentDescription = null) },
@@ -220,6 +234,7 @@ fun PlayOnList(
             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
             modifier = Modifier.selectable(selected = phone, role = Role.RadioButton, onClick = actions.onBackToPhone),
         )
+        if (canJoin && phone) SyncRow(state, onOpen = { joining = true })
         val others = state.otherPlayers
         if (others.isEmpty()) {
             Text(
@@ -237,6 +252,7 @@ fun PlayOnList(
                 actions.onMoveHere?.takeIf { state.selectedId != null && !selected }?.let { m ->
                     add(RowItem(stringResource(R.string.move_here_named, p.name), Icons.AutoMirrored.Outlined.Input, !busy && hasQueue, "move") { m(p.id) })
                 }
+                if (!selected) joinRowItem(state, p.id, actions, syncBlocked)?.let { add(it) }
                 if (roomActions != null && status != null && status.connected) {
                     add(
                         RowItem(
@@ -275,6 +291,7 @@ fun PlayOnList(
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                 modifier = Modifier.selectable(selected = selected, role = Role.RadioButton) { actions.onControl(p.id) },
             )
+            if (canJoin && selected) SyncRow(state, onOpen = { joining = true })
         }
         // Grouping: one row, a dialog of who plays in step with the controlled player.
         val sync = actions.onSync
@@ -285,9 +302,9 @@ fun PlayOnList(
                 ?.takeIf { it.size > 1 }
             ListItem(
                 leadingContent = { Icon(Icons.Outlined.SpeakerGroup, contentDescription = null) },
-                headlineContent = { Text(stringResource(R.string.group_players)) },
+                headlineContent = { Text(stringResource(R.string.group_players, syncName(state, current.id))) },
                 supportingContent = {
-                    Text(group?.joinToString(" + ") ?: stringResource(R.string.group_players_detail, current.name), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(group?.joinToString(" + ") ?: stringResource(R.string.group_players_detail), maxLines = 2, overflow = TextOverflow.Ellipsis)
                 },
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                 modifier = Modifier.clickable(enabled = !busy, role = Role.Button) { grouping = true }.testTag("group-players"),
@@ -298,9 +315,157 @@ fun PlayOnList(
     if (grouping && actions.onSync != null) {
         GroupPlayersDialog(state, actions.onSync, onDismiss = { grouping = false })
     }
+    val join = actions.onJoinGroup
+    if (joining && join != null && state.selected != null) {
+        SyncPickerDialog(state, onJoin = join, onLeave = actions.onLeaveGroup, onDismiss = { joining = false })
+    }
 }
 
-/** *Group players…*: each other player, ticked while it plays in step with the controlled one. */
+/** A player's name in the join entries: this phone by that name. */
+@Composable
+private fun syncName(state: PlayerUiState, id: String): String =
+    if (id == state.local.playerId) {
+        stringResource(R.string.this_phone)
+    } else {
+        state.players.firstOrNull { it.id == id }?.name?.ifEmpty { null } ?: id
+    }
+
+/**
+ * A row's ⋮ entry for joining: *Join its group* (the controlled player joins that player's
+ * group), or *Leave the group* when it already plays with the controlled player.
+ */
+@Composable
+private fun joinRowItem(state: PlayerUiState, id: String, actions: PlayOnActions, blocked: Boolean): RowItem? {
+    val me = state.selectedId ?: return null
+    val join = actions.onJoinGroup ?: return null
+    if (id == me || state.downloads) return null
+    return if (SyncChoice.together(me, id, state.syncGroups)) {
+        actions.onLeaveGroup?.let { leave -> RowItem(stringResource(R.string.room_unsync), Icons.Outlined.LinkOff, !blocked, "leave", leave) }
+    } else {
+        RowItem(stringResource(R.string.join_its_group), Icons.Outlined.Link, !blocked, "join") { join(id) }
+    }
+}
+
+/** Why groups can't be changed now, as the join entries say it. */
+@Composable
+private fun syncBlockText(block: SyncBlock): String = stringResource(
+    when (block) {
+        SyncBlock.OFFLINE -> R.string.sync_blocked_offline
+        SyncBlock.BUSY -> R.string.error_server_busy
+    },
+)
+
+/**
+ * *Sync with…*, indented under the controlled player's row: "In sync with <names>" while it
+ * is grouped. Opens the picker; greyed out, saying why, while the server is away or busy.
+ */
+@Composable
+private fun SyncRow(state: PlayerUiState, onOpen: () -> Unit) {
+    val block = JoinGroup.block(state)
+    val partners = JoinGroup.partners(state).map { syncName(state, it) }
+    val headline = if (partners.isEmpty()) {
+        stringResource(R.string.room_sync_with)
+    } else {
+        stringResource(R.string.sync_in_sync_with, partners.joinToString(", "))
+    }
+    ListItem(
+        leadingContent = { Icon(Icons.Outlined.Link, contentDescription = null) },
+        headlineContent = { Text(headline, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        supportingContent = block?.let { b -> { Text(syncBlockText(b)) } },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        modifier = Modifier
+            .padding(start = 40.dp)
+            .clickable(enabled = block == null, role = Role.Button, onClick = onOpen)
+            .testTag("sync-row"),
+    )
+}
+
+/**
+ * The *Sync with…* picker: the controlled player's own group first (marked, not a choice),
+ * then every other player, a group as one entry ("Study + Kitchen"). Choosing one joins the
+ * controlled player to it; *Leave the group* while grouped.
+ */
+@Composable
+private fun SyncPickerDialog(state: PlayerUiState, onJoin: (String) -> Unit, onLeave: (() -> Unit)?, onDismiss: () -> Unit) {
+    val me = state.selected ?: return
+    val myName = syncName(state, me.id)
+    val block = JoinGroup.block(state)
+    val targets = JoinGroup.targets(state)
+    val grouped = JoinGroup.partners(state).isNotEmpty()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.room_sync_title, myName)) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    stringResource(R.string.sync_picker_note, myName),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                block?.let { b ->
+                    Text(
+                        syncBlockText(b),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 8.dp).semantics { liveRegion = LiveRegionMode.Polite },
+                    )
+                }
+                if (targets.none { !it.own }) {
+                    Text(stringResource(R.string.sync_none), modifier = Modifier.padding(top = 8.dp))
+                }
+                targets.forEach { t -> SyncTargetRow(state, t, myName, enabled = block == null, onJoin = { onJoin(t.playerId); onDismiss() }) }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_close)) } },
+        dismissButton = if (grouped && onLeave != null) {
+            {
+                TextButton(
+                    onClick = {
+                        onLeave()
+                        onDismiss()
+                    },
+                    enabled = block == null,
+                    modifier = Modifier.testTag("leave-group"),
+                ) { Text(stringResource(R.string.room_unsync)) }
+            }
+        } else {
+            null
+        },
+    )
+}
+
+/** One entry of the picker: a player, or a group named by its members; the own group marked. */
+@Composable
+private fun SyncTargetRow(state: PlayerUiState, t: SyncTarget, myName: String, enabled: Boolean, onJoin: () -> Unit) {
+    val names = t.memberIds.map { syncName(state, it) }.joinToString(" + ")
+    val size = t.memberIds.size
+    val detail = when {
+        t.own -> stringResource(R.string.sync_this_group)
+        size > 1 -> pluralStringResource(R.plurals.sync_group_size, size, size)
+        else -> null
+    }
+    val label = stringResource(R.string.room_sync_named, myName, names)
+    val icon = when {
+        t.own -> Icons.Outlined.Check
+        size > 1 -> Icons.Outlined.SpeakerGroup
+        else -> Icons.Outlined.Speaker
+    }
+    ListItem(
+        leadingContent = { Icon(icon, contentDescription = null) },
+        headlineContent = { Text(names, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        supportingContent = detail?.let { d -> { Text(d) } },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        modifier = if (t.own) {
+            Modifier.semantics(mergeDescendants = true) { disabled() }.testTag("join-own")
+        } else {
+            Modifier
+                .clickable(enabled = enabled, role = Role.Button, onClickLabel = label, onClick = onJoin)
+                .testTag("join-${t.playerId}")
+        },
+    )
+}
+
+/** *Bring players into step with …*: each other player, ticked while it plays in step with the controlled one. */
 @Composable
 private fun GroupPlayersDialog(state: PlayerUiState, onSync: (String, Boolean) -> Unit, onDismiss: () -> Unit) {
     val current = state.selected ?: return
@@ -311,7 +476,7 @@ private fun GroupPlayersDialog(state: PlayerUiState, onSync: (String, Boolean) -
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 state.otherPlayers.filter { it.id != current.id }.forEach { p ->
                     val together = SyncChoice.together(state.selectedId, p.id, state.syncGroups)
-                    val label = stringResource(R.string.sync_with, p.name, current.name)
+                    val label = stringResource(R.string.group_players_bring, p.name)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier

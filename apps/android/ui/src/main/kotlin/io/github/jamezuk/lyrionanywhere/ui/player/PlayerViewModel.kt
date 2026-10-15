@@ -1101,6 +1101,60 @@ class PlayerViewModel(
         }
     }
 
+    /** Bumped by every join or leave, so an earlier answer can't undo a later change. */
+    private var syncGeneration = 0
+
+    /**
+     * The controlled player joins [targetId]'s group and plays what it plays (*Sync with…*,
+     * *Join its group*): `<target> sync <controlled>`, as LMS takes it (the argument joins the
+     * subject's group). Shown at once; put back if refused.
+     */
+    fun joinGroupOf(targetId: String) {
+        val s = _state.value
+        val me = s.selectedId
+        if (me == null) {
+            _messages.trySend(PlayerMessage.NoPlayer)
+            return
+        }
+        if (s.downloads || JoinGroup.block(s) != null) return
+        if (targetId == me || s.players.none { it.id == targetId }) return
+        if (SyncChoice.together(me, targetId, s.syncGroups)) return
+        changeGroups(me, { SyncChoice.toggled(it, targetId, me, true) }) { players.setSynced(targetId, me, true) }
+    }
+
+    /** The controlled player leaves its group (`<controlled> sync -`); the others play on together. */
+    fun leaveGroup() {
+        val s = _state.value
+        val me = s.selectedId ?: return
+        if (s.downloads || JoinGroup.block(s) != null || JoinGroup.partners(s).isEmpty()) return
+        changeGroups(
+            me,
+            { groups -> groups.map { SyncGroup(it.playerIds.filter { id -> id != me }) }.filter { it.playerIds.size > 1 } },
+        ) { players.setSynced(me, me, false) }
+    }
+
+    /**
+     * Show [optimistic] at once, run [action], then read the groups afresh. The answer is
+     * applied only while [me] is still the controlled player and no later change was made.
+     */
+    private fun changeGroups(me: String, optimistic: (List<SyncGroup>) -> List<SyncGroup>, action: suspend () -> ApiResult<Unit>) {
+        val generation = ++syncGeneration
+        val before = _state.value.syncGroups
+        _state.update { it.copy(syncGroups = optimistic(it.syncGroups)) }
+        viewModelScope.launch {
+            val r = action()
+            fun current() = _state.value.selectedId == me && syncGeneration == generation
+            if (r is ApiResult.Err) {
+                if (current()) _state.update { it.copy(syncGroups = before) }
+                _messages.trySend(PlayerMessage.Failed(r.error))
+            }
+            if (!current()) return@launch
+            val groups = (players.syncGroups() as? ApiResult.Ok)?.value
+            if (groups != null && current()) _state.update { it.copy(syncGroups = groups) }
+            refreshStatus()
+        }
+    }
+
     // --- transfer (docs/PROTOCOL.md › Transfer) ------------------------------------------------
 
     /** A player's name as LMS lists it (the phone's own name for this phone). */

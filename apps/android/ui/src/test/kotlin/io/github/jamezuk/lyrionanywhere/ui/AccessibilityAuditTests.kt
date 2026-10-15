@@ -536,7 +536,7 @@ class SpokenLabelTests {
         show { PlayOnList(auditPlayerState(), PlayOnActions(onControl = {}, onBackToPhone = {}, onSync = { _, _ -> })) }
         // In Group players… (Wave 3.5).
         compose.onNodeWithTag("group-players").performClick()
-        compose.onNodeWithContentDescription("Play Player $LOUNGE in sync with Player $KITCHEN").assertExists()
+        compose.onNodeWithContentDescription("Bring Player $LOUNGE into step").assertExists()
     }
 
     @Test

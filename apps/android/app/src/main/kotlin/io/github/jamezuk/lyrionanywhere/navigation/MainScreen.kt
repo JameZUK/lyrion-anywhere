@@ -1843,6 +1843,8 @@ fun MainScreen(
                         onMoveHere = player::moveTo,
                         onBringToPhone = player::bringToPhone,
                         onSync = player::setSynced,
+                        onJoinGroup = player::joinGroupOf,
+                        onLeaveGroup = player::leaveGroup,
                         onDismissTransfer = player::dismissTransfer,
                         onAllRooms = {
                             outputs = false
