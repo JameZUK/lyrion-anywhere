@@ -2,6 +2,21 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: Web: review fixes for downloads, sign-in and Your devices
+
+From the full code review of 15 October (M19, M20, M21's web part and four web lows).
+
+- **Removing downloads asks first (M19):** *Remove download* (album and playlist pages), *Remove downloads* (artist page) and the remove buttons on the Downloads page (playlist, album, single track) open a confirm that names what goes and how many tracks. A removal runs once however often it is tapped: its control is off while it runs. A failed removal (IndexedDB refusing) says so rather than becoming an unhandled rejection; *Remove all* gets the same guard.
+- **Sign-in says why it was refused (M20):** a 403 (the Origin or CSRF check, often a proxy that drops `Origin`), a 503 busy and a 5xx each have their own message, and other refusals name their status. *Could not reach the server* is kept for requests that never reached it (`lib/account/login.ts`).
+- **Your devices (M21, web):** a failed first load offers *Try again*. The controls stay off until the refresh after a sign-out has finished, and a late answer to an older load is dropped, so a signed-out device can't reappear. A sign-out that worked takes the device off the list at once and keeps its message even if the refresh fails.
+- **Web lows:** a 2xx answer that isn't JSON (a proxy's fallback page) is now a 502 rather than an empty answer. Artwork is fetched with `cache: 'default'`, no longer `force-cache`, which served even stale entries from a browser cache shared between accounts. The two-step forms run one request at a time. A failed sign-out is shown. When downloads were asked to go and can't be removed, the device stays signed in rather than leave them behind (`lib/account/sign-out.ts`).
+- **Tests:** component tests that fail before each fix:
+  - confirm, double activation and failure on all three download surfaces;
+  - each sign-in status;
+  - Retry, an out-of-order refresh, and a failed refresh after a sign-out;
+  - the non-JSON success, the art cache mode, the double *Turn on* and the failed sign-out.
+  - Coverage added for *Your devices*: a 409 and a 401 reaching the list, a double confirm and the empty list. The settings page test resets the gateway's features in `afterEach`.
+
 ## 2026-10-15: Android: a phone rejoining a sync group no longer pauses the others or moves them back
 
 Found by the live check of A6 (`mobile/tests/live_sync.rs`). When the phone's link stalled while it was in a sync group, the other speakers went silent for 4 to 15 s once it came back. After a long stall, LMS also restarted the whole group about 14 s back.
