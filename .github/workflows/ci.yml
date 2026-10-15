@@ -179,6 +179,9 @@ jobs:
           set -eu
           version=$(sed -n 's:.*<version>\(.*\)</version>.*:\1:p' plugin/Plugins/LyrionAnywhere/install.xml)
           [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "tag $GITHUB_REF_NAME doesn't match install.xml version $version" >&2; exit 1; }
+          # Plugin.pm reads its VERSION from install.xml (plugin/t/12-version.t); check it here too.
+          pm=$(cd plugin && PERL5LIB=t/stubs:. perl -e 'package main; use constant WEBUI => 0; require Plugins::LyrionAnywhere::Plugin; print Plugins::LyrionAnywhere::Plugin::VERSION()')
+          [ "$pm" = "$version" ] || { echo "Plugin.pm VERSION $pm doesn't match install.xml version $version" >&2; exit 1; }
           notes="docs/release-notes/$GITHUB_REF_NAME.md"
           [ -f "$notes" ] || { echo "missing $notes" >&2; exit 1; }
           (cd dist && sha256sum *.zip repo.xml > SHA256SUMS)

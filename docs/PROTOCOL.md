@@ -9,6 +9,10 @@ The protocol a client (web app, native app or test CLI) uses to act as an LMS pl
 | `WS /v1/player` | Slimproto tunnel, plus session control |
 | `GET /v1/stream/<session>/<n>[?offset=k][&limit=m]` | Audio for the session's n-th stream |
 
+Other routes on the public listener:
+- `GET /healthz`: returns `ok` with no authentication, for the proxy's or a container's health check. It says nothing about LMS or any user.
+- Every other path is the static web app when the gateway serves one (`--static-dir`), else 404. The API routes are the `/v1/…` ones in this document; the admin API is on a separate listener (below).
+
 Requirements for both endpoints:
 - They must be reached over TLS through a trusted reverse proxy. Plain HTTP is accepted only from loopback.
 - WebSocket upgrades must be same-origin or from an explicitly allowed origin. Clients that send no `Origin` (native apps) are accepted.
@@ -145,6 +149,7 @@ Endpoints:
 - `DELETE /admin/v1/devices/{id}`
 - `GET/POST /admin/v1/settings`: `{"session_days"}` sets the sign-in lifetime (1–365 days). The GET also returns `session_days_default` (90), `session_days_min`, `session_days_max` and the `download_formats` this server can produce
 - `GET /admin/v1/audit`
+- `GET/POST /admin/v1/plugins`: the plugins reserved for admins (see **Admin-only plugins** under [Browse and control](#browse-and-control-post-v1rpc)); the GET also lists what LMS offers as apps, radio and home-menu entries
 
 LMS's HTTP client cannot send `DELETE` or `PATCH`, so the rename has a `POST` form (above) and each delete has one too: `/admin/v1/users/{name}/delete`, `/admin/v1/users/{name}/players/{mac}/remove` and `/admin/v1/devices/{id}/revoke`.
 
