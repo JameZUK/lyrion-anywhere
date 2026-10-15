@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Settings › Account (Wave 3.5): who is signed in, then one row per action (Change password,
-	// Two-step verification, Add another device), each opening its own dialog that asks for the
-	// password once, and Sign out.
+	// Two-step verification, Your devices, Add another device), each opening its own dialog
+	// (those that need the password ask for it once), and Sign out.
 	import { session } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
 	import * as auth from '$lib/api/auth';
@@ -13,12 +13,13 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
 	import SignOut from '$lib/components/SignOut.svelte';
+	import YourDevices from '$lib/components/YourDevices.svelte';
 
 	let account = $state<auth.Account | null>(null);
 	let features = $state<auth.Features>({});
 	let error = $state('');
 	/** The dialog open now, if any. */
-	let open = $state<'password' | 'two-step' | 'device' | null>(null);
+	let open = $state<'password' | 'two-step' | 'devices' | 'device' | null>(null);
 
 	async function loadAccount() {
 		try {
@@ -30,7 +31,8 @@
 	$effect(() => {
 		void loadAccount();
 	});
-	// Older gateways have no password change: the row shows only when the gateway says so.
+	// Older gateways have no password change or device list: those rows show only when the
+	// gateway says so.
 	$effect(() => {
 		session
 			.authed((t) => auth.features(t))
@@ -112,6 +114,11 @@
 	<button class="row" onclick={openTwoStep} aria-haspopup="dialog" disabled={!account} data-account-row="two-step">
 		<Icon name="device" /><span class="grow">Two-step verification</span><span class="value muted">{account ? (account.totp_enabled ? 'On' : 'Off') : '…'}</span><span class="chev" aria-hidden="true">›</span>
 	</button>
+	{#if features.devices}
+		<button class="row" onclick={() => (open = 'devices')} aria-haspopup="dialog" data-account-row="devices">
+			<Icon name="device" /><span class="grow">Your devices</span><span class="chev" aria-hidden="true">›</span>
+		</button>
+	{/if}
 	<button class="row" onclick={() => (open = 'device')} aria-haspopup="dialog" data-account-row="device">
 		<Icon name="plus" /><span class="grow">Add another device</span><span class="chev" aria-hidden="true">›</span>
 	</button>
@@ -153,6 +160,14 @@
 			{/if}
 			<p class="note" role="status" data-two-step-status>{msg}</p>
 		</div>
+	</Sheet>
+{:else if open === 'devices'}
+	<Sheet title="Your devices" onclose={() => (open = null)}>
+		<YourDevices
+			load={() => session.authed((t) => auth.myDevices(t))}
+			signOut={(id) => session.authed((t) => auth.signOutDevice(t, id))}
+			signOutOthers={() => session.authed((t) => auth.signOutOtherDevices(t))}
+		/>
 	</Sheet>
 {:else if open === 'device'}
 	<Sheet title="Add another device" onclose={() => (open = null)}>

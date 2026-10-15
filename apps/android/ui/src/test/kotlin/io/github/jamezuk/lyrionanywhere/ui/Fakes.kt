@@ -179,6 +179,30 @@ class FakeAccount : AccountRepository {
         renames += name
         return renameResult ?: ApiResult.Ok(name)
     }
+
+    /** Your devices: what the server holds; signing out removes from it. */
+    var devices = mutableListOf<io.github.jamezuk.lyrionanywhere.core.MyDevice>()
+    var devicesError: AppError? = null
+    var signOutError: AppError? = null
+    val signedOutDevices = mutableListOf<Long>()
+    var othersSignedOut = 0
+
+    override suspend fun myDevices(): ApiResult<List<io.github.jamezuk.lyrionanywhere.core.MyDevice>> =
+        devicesError?.let { ApiResult.Err(it) } ?: ApiResult.Ok(devices.toList())
+
+    override suspend fun signOutDevice(id: Long): ApiResult<Boolean> {
+        signOutError?.let { return ApiResult.Err(it) }
+        signedOutDevices += id
+        return ApiResult.Ok(devices.removeAll { it.id == id && !it.current })
+    }
+
+    override suspend fun signOutOtherDevices(): ApiResult<Int> {
+        signOutError?.let { return ApiResult.Err(it) }
+        othersSignedOut++
+        val n = devices.count { !it.current }
+        devices.removeAll { !it.current }
+        return ApiResult.Ok(n)
+    }
 }
 
 class FakeLibrary(var totalAlbums: Int = 250) : LibraryRepository {

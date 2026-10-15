@@ -68,14 +68,14 @@ describe('the API call', () => {
 
 	test('features: change_password only when the gateway says so', async () => {
 		reply = { status: 200, body: { user: {}, features: { change_password: true } } };
-		expect(await features('tok')).toEqual({ change_password: true });
+		expect(await features('tok')).toEqual({ change_password: true, devices: false });
 		expect(calls.at(-1)!.url).toBe('/v1/me');
 		reply = { status: 200, body: { user: {}, features: { queue_edit: true } } };
-		expect(await features('tok')).toEqual({ change_password: false });
+		expect(await features('tok')).toEqual({ change_password: false, devices: false });
 		reply = { status: 200, body: { user: {} } };
 		expect(await features('tok')).toEqual({});
 		reply = { status: 200, body: { features: { change_password: 'yes' } } };
-		expect(await features('tok')).toEqual({ change_password: false });
+		expect(await features('tok')).toEqual({ change_password: false, devices: false });
 	});
 });
 

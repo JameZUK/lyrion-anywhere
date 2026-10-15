@@ -341,6 +341,9 @@ pub struct OwnDevice {
     pub client_kind: Option<String>,
     /// E.g. "Safari on iPadOS" or "Pixel 8".
     pub client_platform: Option<String>,
+    /// When it first signed in (Unix seconds).
+    pub created_at: i64,
+    /// When it was last used (Unix seconds), to the minute.
     pub last_seen: Option<i64>,
 }
 
@@ -1812,14 +1815,11 @@ impl Accounts {
             Some(req.device),
             "self",
         );
-        let mut revoked = Vec::new();
-        if req.sign_out_others {
-            for d in self.own_devices(req.user)? {
-                if d.id != req.device && self.revoke_device(d.id)? {
-                    revoked.push(d.id);
-                }
-            }
-        }
+        let revoked = if req.sign_out_others {
+            self.revoke_other_own_devices(req.user, username, req.device)?
+        } else {
+            Vec::new()
+        };
         let others = self
             .own_devices(req.user)?
             .into_iter()
@@ -1832,7 +1832,7 @@ impl Accounts {
     pub fn own_devices(&self, user: i64) -> Result<Vec<OwnDevice>, AuthError> {
         let db = self.db.lock().unwrap();
         let mut st = db.prepare(
-            "SELECT id, name, client_kind, client_platform, last_seen FROM devices
+            "SELECT id, name, client_kind, client_platform, created_at, last_seen FROM devices
              WHERE user_id = ?1 AND revoked = 0 ORDER BY id",
         )?;
         let rows = st.query_map([user], |r| {
@@ -1846,10 +1846,42 @@ impl Accounts {
                     .and_then(ClientKind::parse)
                     .map(|k| k.as_str().to_string()),
                 client_platform: platform.as_deref().and_then(clean_platform),
-                last_seen: r.get(4)?,
+                created_at: r.get(4)?,
+                // Coarse: a user needs "a few minutes ago", not the second.
+                last_seen: r.get::<_, Option<i64>>(5)?.map(|t| t - t.rem_euclid(60)),
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// A user signs out one of their own devices (`DELETE /v1/devices/{id}`). Returns false,
+    /// changing nothing, unless `device_id` is one of `user`'s signed-in devices: another
+    /// user's device is indistinguishable from one that doesn't exist. The device's live
+    /// sessions are the caller's to end.
+    pub fn revoke_own_device(
+        &self,
+        user: i64,
+        username: &str,
+        device_id: i64,
+    ) -> Result<bool, AuthError> {
+        self.revoke(device_id, Some((user, username)))
+    }
+
+    /// A user signs out all their devices but `keep` (the one asking). Returns the devices
+    /// signed out (their live sessions are the caller's to end).
+    pub fn revoke_other_own_devices(
+        &self,
+        user: i64,
+        username: &str,
+        keep: i64,
+    ) -> Result<Vec<i64>, AuthError> {
+        let mut revoked = Vec::new();
+        for d in self.own_devices(user)? {
+            if d.id != keep && self.revoke(d.id, Some((user, username)))? {
+                revoked.push(d.id);
+            }
+        }
+        Ok(revoked)
     }
 
     // -----------------------------------------------------------------------
@@ -2130,13 +2162,22 @@ impl Accounts {
     /// Revoke a device: its refresh tokens are deleted and its access tokens dropped.
     /// Its player MAC is queued for LMS to forget (see [`Accounts::take_players_to_forget`]).
     pub fn revoke_device(&self, device_id: i64) -> Result<bool, AuthError> {
+        self.revoke(device_id, None)
+    }
+
+    /// Revoke a device; with `owner` (user id and name), only if it is that user's.
+    fn revoke(&self, device_id: i64, owner: Option<(i64, &str)>) -> Result<bool, AuthError> {
         let n = {
             let db = self.db.lock().unwrap();
             let n = db.execute(
                 "UPDATE devices SET revoked = 1, revoked_at = ?2, last_addr = NULL, user_agent = NULL
-                 WHERE id = ?1 AND revoked = 0",
-                params![device_id, now_secs()],
+                 WHERE id = ?1 AND revoked = 0 AND (?3 IS NULL OR user_id = ?3)",
+                params![device_id, now_secs(), owner.map(|(id, _)| id)],
             )?;
+            if n == 0 && owner.is_some() {
+                // Not this user's (or already gone): touch nothing of anyone else's.
+                return Ok(false);
+            }
             if n > 0 {
                 let mac: String =
                     db.query_row("SELECT mac FROM devices WHERE id = ?1", [device_id], |r| {
@@ -2164,7 +2205,13 @@ impl Accounts {
             .retain(|_, e| e.principal.device_id != device_id);
         self.seen.lock().unwrap().remove(&device_id);
         if n > 0 {
-            self.audit("device.revoked", None, Some(device_id), "");
+            match owner {
+                // Signed out by its own user, from one of their devices.
+                Some((_, username)) => {
+                    self.audit("device.revoked", Some(username), Some(device_id), "self")
+                }
+                None => self.audit("device.revoked", None, Some(device_id), ""),
+            }
         }
         Ok(n > 0)
     }
@@ -5473,5 +5520,95 @@ mod tests {
             !a.play_overlaps(bob, "key-00002", 1, at, 121).unwrap(),
             "another user"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Signing out one's own devices
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_user_signs_out_only_their_own_devices() {
+        let a = store();
+        let mine = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+        let phone = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let theirs = a.login("admin", PW, None, "Desk", None, "c").unwrap();
+        let alice = mine.principal.user_id;
+        let admin_device = theirs.principal.device_id;
+
+        // Someone else's device: refused, and nothing of theirs is touched (its refresh
+        // token still renews, its access token still works).
+        assert!(!a.revoke_own_device(alice, "alice", admin_device).unwrap());
+        assert!(a.authenticate(&theirs.access).is_some());
+        assert!(a.device_active(admin_device));
+        let renewed = a.refresh(&theirs.refresh).unwrap();
+        // Nor one that doesn't exist.
+        assert!(!a.revoke_own_device(alice, "alice", 999_999).unwrap());
+        assert!(!a.revoke_own_device(alice, "alice", -1).unwrap());
+
+        // Their own: signed out, tokens dead.
+        assert!(
+            a.revoke_own_device(alice, "alice", phone.principal.device_id)
+                .unwrap()
+        );
+        assert!(a.authenticate(&phone.access).is_none());
+        assert!(a.refresh(&phone.refresh).is_err());
+        // Only once.
+        assert!(
+            !a.revoke_own_device(alice, "alice", phone.principal.device_id)
+                .unwrap()
+        );
+        assert!(a.authenticate(&mine.access).is_some());
+        assert!(a.authenticate(&renewed.access).is_some());
+
+        let e = a
+            .audit_log(100)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.event == "device.revoked")
+            .unwrap();
+        assert_eq!(e.username.as_deref(), Some("alice"));
+        assert_eq!(e.device_id, Some(phone.principal.device_id));
+        assert_eq!(e.detail, "self");
+    }
+
+    #[test]
+    fn signing_out_other_devices_keeps_the_callers() {
+        let a = store();
+        let keep = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+        let x = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let y = a.login("alice", PW, None, "Tablet", None, "c").unwrap();
+        let other = a.login("admin", PW, None, "Desk", None, "c").unwrap();
+        let (user, me) = (keep.principal.user_id, keep.principal.device_id);
+        let mut out = a.revoke_other_own_devices(user, "alice", me).unwrap();
+        out.sort();
+        assert_eq!(out, vec![x.principal.device_id, y.principal.device_id]);
+        assert!(a.authenticate(&keep.access).is_some());
+        assert!(a.authenticate(&x.access).is_none() && a.authenticate(&y.access).is_none());
+        assert!(a.authenticate(&other.access).is_some());
+        let left = a.own_devices(user).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].id, me);
+        // Nothing left to do.
+        assert!(
+            a.revoke_other_own_devices(user, "alice", me)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn own_devices_say_when_and_only_to_the_minute() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+        a.db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE devices SET last_seen = 1000059, created_at = 999 WHERE id = ?1",
+                [t.principal.device_id],
+            )
+            .unwrap();
+        let d = &a.own_devices(t.principal.user_id).unwrap()[0];
+        assert_eq!(d.created_at, 999);
+        assert_eq!(d.last_seen, Some(1000020));
     }
 }

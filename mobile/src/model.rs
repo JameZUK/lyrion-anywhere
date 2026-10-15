@@ -100,6 +100,28 @@ pub struct AccountInfo {
     /// The server lets users change their own password (`features.change_password` in
     /// `GET /v1/me`); false on older gateways.
     pub can_change_password: bool,
+    /// The server lets users see and sign out their own devices ("Your devices";
+    /// `features.devices` in `GET /v1/me`); false on older gateways.
+    #[uniffi(default = false)]
+    pub can_manage_devices: bool,
+}
+
+/// One of this user's signed-in devices, for "Your devices"
+/// ([`crate::Session::my_devices`]).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MyDevice {
+    pub id: i64,
+    pub name: String,
+    /// `android`, `pwa` or `browser`, if the device said.
+    pub kind: Option<String>,
+    /// E.g. "Pixel 8" or "Firefox on Linux", if the device said.
+    pub platform: Option<String>,
+    /// When it first signed in (Unix seconds), if known.
+    pub created_at: Option<i64>,
+    /// When it was last used (Unix seconds, to the minute), if known.
+    pub last_seen: Option<i64>,
+    /// The device asking: this one.
+    pub current: bool,
 }
 
 /// One of this user's other devices, still signed in after a password change.

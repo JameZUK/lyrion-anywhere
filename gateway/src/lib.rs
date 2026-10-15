@@ -294,6 +294,9 @@ pub struct Gateway {
     plays: plays::PlayLimits,
     /// Renames of a device by its own user ([`RENAMES_PER_WINDOW`] per [`RENAME_WINDOW`]).
     renames: plays::Window,
+    /// "Your devices" requests per user ([`DEVICE_REQUESTS_PER_WINDOW`] per
+    /// [`DEVICE_REQUEST_WINDOW`]).
+    device_requests: plays::Window,
     /// Requests to `/v1/me/…` per user a minute.
     me_requests: plays::Window,
     /// Station batches per user a minute.
@@ -321,6 +324,10 @@ pub struct Gateway {
 /// Renames a device may make of itself per [`RENAME_WINDOW`] (`PATCH /v1/devices/self`).
 pub const RENAMES_PER_WINDOW: usize = 10;
 pub const RENAME_WINDOW: Duration = Duration::from_secs(60);
+/// Requests a user may make of "Your devices" (`/v1/devices`: listing and signing out) per
+/// [`DEVICE_REQUEST_WINDOW`], across all their devices.
+pub const DEVICE_REQUESTS_PER_WINDOW: usize = 30;
+pub const DEVICE_REQUEST_WINDOW: Duration = Duration::from_secs(60);
 
 pub type AppState = Arc<Gateway>;
 
@@ -375,6 +382,7 @@ impl Gateway {
             analysis: analysis::Analysis::new(&cfg),
             plays: plays::PlayLimits::new(cfg.plays_requests_per_minute, cfg.plays_per_hour),
             renames: plays::Window::new(RENAMES_PER_WINDOW, RENAME_WINDOW),
+            device_requests: plays::Window::new(DEVICE_REQUESTS_PER_WINDOW, DEVICE_REQUEST_WINDOW),
             me_requests: plays::Window::new(
                 history::ME_REQUESTS_PER_MINUTE,
                 Duration::from_secs(60),
@@ -536,8 +544,14 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/account/totp/confirm", post(auth::totp_confirm))
         .route("/v1/account/totp/disable", post(auth::totp_disable))
         .route("/v1/account/password", post(auth::change_password))
+        .route("/v1/devices", get(auth::own_devices))
         .route("/v1/devices/self", axum::routing::patch(auth::rename_self))
         .route("/v1/devices/pair", post(auth::create_pairing_code))
+        .route("/v1/devices/sign-out-others", post(auth::sign_out_others))
+        .route(
+            "/v1/devices/{id}",
+            axum::routing::delete(auth::sign_out_device),
+        )
         .route("/v1/rpc", post(rpc::rpc))
         .route("/v1/diagnostics", post(diagnostics::report))
         .route("/v1/art/{*path}", get(art::art))

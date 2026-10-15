@@ -324,16 +324,26 @@ async fn addresses_are_only_in_the_admin_api() {
     for field in ["last_addr", "user_agent", "client_platform", "127.0.0.1"] {
         assert!(!body.contains(field), "/v1/me exposes {field}: {body}");
     }
-    // No public device list; the admin one isn't routed on the public listener.
-    for path in ["/v1/devices", "/admin/v1/devices"] {
-        let r = reqwest::Client::new()
-            .get(h.url(path))
-            .bearer_auth(&h.tok_a)
-            .send()
-            .await
-            .unwrap();
-        assert!(r.status().is_client_error(), "{path}: {}", r.status());
+    // The user's own device list ("Your devices") carries no addresses or user agents.
+    let r = reqwest::Client::new()
+        .get(h.url("/v1/devices"))
+        .bearer_auth(&h.tok_a)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), reqwest::StatusCode::OK);
+    let body = r.text().await.unwrap();
+    for field in ["last_addr", "user_agent", "mac", "username", "127.0.0.1"] {
+        assert!(!body.contains(field), "/v1/devices exposes {field}: {body}");
     }
+    // The admin list isn't routed on the public listener.
+    let r = reqwest::Client::new()
+        .get(h.url("/admin/v1/devices"))
+        .bearer_auth(&h.tok_a)
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_client_error(), "{}", r.status());
 }
 
 #[tokio::test]

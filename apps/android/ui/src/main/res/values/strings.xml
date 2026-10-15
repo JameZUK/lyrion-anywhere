@@ -155,6 +155,47 @@
     <string name="password_still_signed_in">Still signed in with your account:</string>
     <string name="password_no_other_devices">No other devices are signed in.</string>
     <string name="password_device_platform">%1$s (%2$s)</string>
+    <string name="your_devices">Your devices</string>
+    <string name="your_devices_row">Where you’re signed in; sign out other devices</string>
+    <string name="your_devices_explained">Devices signed in to your account. Signing one out ends its sign-in at once: it has to sign in again to play.</string>
+    <string name="your_devices_this">This device</string>
+    <string name="your_devices_sign_out_named">Sign out %1$s</string>
+    <string name="your_devices_sign_out_others">Sign out all other devices</string>
+    <string name="your_devices_none_other">No other devices are signed in.</string>
+    <string name="your_devices_loading">Loading…</string>
+    <string name="your_devices_confirm_title">Sign out “%1$s”?</string>
+    <string name="your_devices_confirm_body">It will have to sign in again before it can play.</string>
+    <string name="your_devices_confirm_others_title">Sign out all other devices?</string>
+    <plurals name="your_devices_confirm_others_body">
+        <item quantity="one">%1$d device will have to sign in again. This phone stays signed in.</item>
+        <item quantity="other">%1$d devices will have to sign in again. This phone stays signed in.</item>
+    </plurals>
+    <string name="your_devices_sign_out_all">Sign out all</string>
+    <string name="your_devices_signed_out">“%1$s” was signed out.</string>
+    <string name="your_devices_already_gone">That device was already signed out.</string>
+    <string name="your_devices_line">%1$s · %2$s</string>
+    <string name="device_kind_android">Android app</string>
+    <string name="device_kind_pwa">Installed web app</string>
+    <string name="device_kind_browser">Web browser</string>
+    <string name="last_used_now">In use now</string>
+    <string name="last_used_never">Not used yet</string>
+    <string name="last_used_just_now">Last used just now</string>
+    <plurals name="last_used_minutes">
+        <item quantity="one">Last used %1$d minute ago</item>
+        <item quantity="other">Last used %1$d minutes ago</item>
+    </plurals>
+    <plurals name="last_used_hours">
+        <item quantity="one">Last used %1$d hour ago</item>
+        <item quantity="other">Last used %1$d hours ago</item>
+    </plurals>
+    <plurals name="last_used_days">
+        <item quantity="one">Last used %1$d day ago</item>
+        <item quantity="other">Last used %1$d days ago</item>
+    </plurals>
+    <plurals name="last_used_months">
+        <item quantity="one">Last used %1$d month ago</item>
+        <item quantity="other">Last used %1$d months ago</item>
+    </plurals>
     <string name="sign_out_explained">Signs this phone out and removes it from your devices</string>
     <string name="this_phone_name">This phone</string>
     <string name="this_phone_name_explained">Its player is called “%1$s” in your music server</string>
