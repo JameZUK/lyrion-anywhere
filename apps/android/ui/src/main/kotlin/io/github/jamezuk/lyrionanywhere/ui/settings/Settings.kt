@@ -13,6 +13,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
+import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Storage
@@ -38,6 +39,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -55,10 +57,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.jamezuk.lyrionanywhere.core.AccountInfo
+import io.github.jamezuk.lyrionanywhere.core.MyDevice
 import io.github.jamezuk.lyrionanywhere.data.AccountRepository
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.data.AuthState
+import io.github.jamezuk.lyrionanywhere.data.DevicesMessage
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.PasswordChangeError
 import io.github.jamezuk.lyrionanywhere.data.PasswordChangeResult
@@ -100,6 +104,12 @@ data class SettingsUiState(
     val passwordError: PasswordChangeError? = null,
     /** The password was changed (shown until the form is closed). */
     val passwordChanged: PasswordChangeResult.Changed? = null,
+    /** Your devices: the account's signed-in devices (null until loaded). */
+    val devices: List<MyDevice>? = null,
+    /** A device is being signed out. */
+    val devicesBusy: Boolean = false,
+    /** What the last Your devices action came to (one message at a time). */
+    val devicesMessage: DevicesMessage? = null,
 )
 
 /** A name the server takes for this phone (it cleans it further), trimmed; or null. */
@@ -166,6 +176,44 @@ class SettingsViewModel(
         }
     }
 
+    /** Your devices: (re)load the list. */
+    fun loadDevices() {
+        viewModelScope.launch {
+            when (val r = account.myDevices()) {
+                is ApiResult.Ok -> _state.update { it.copy(devices = r.value) }
+                is ApiResult.Err -> _state.update { it.copy(devicesMessage = DevicesMessage.Failed(r.error)) }
+            }
+        }
+    }
+
+    /** Sign out another device (the page has asked first); the list is read again after. */
+    fun signOutDevice(device: MyDevice) {
+        if (device.current || _state.value.devicesBusy) return
+        _state.update { it.copy(devicesBusy = true, devicesMessage = null) }
+        viewModelScope.launch {
+            val message = when (val r = account.signOutDevice(device.id)) {
+                is ApiResult.Ok -> if (r.value) DevicesMessage.SignedOut(device.name) else DevicesMessage.AlreadyGone
+                is ApiResult.Err -> DevicesMessage.Failed(r.error)
+            }
+            _state.update { it.copy(devicesBusy = false, devicesMessage = message) }
+            loadDevices()
+        }
+    }
+
+    /** Sign out every other device (the page has asked first). */
+    fun signOutOtherDevices() {
+        if (_state.value.devicesBusy) return
+        _state.update { it.copy(devicesBusy = true, devicesMessage = null) }
+        viewModelScope.launch {
+            val message = when (val r = account.signOutOtherDevices()) {
+                is ApiResult.Ok -> DevicesMessage.SignedOutOthers(r.value)
+                is ApiResult.Err -> DevicesMessage.Failed(r.error)
+            }
+            _state.update { it.copy(devicesBusy = false, devicesMessage = message) }
+            loadDevices()
+        }
+    }
+
     /** The password form was closed: forget its outcome. */
     fun closePasswordForm() {
         _state.update { it.copy(passwordError = null, passwordChanged = null) }
@@ -221,6 +269,9 @@ enum class SettingsSection(val tag: String) {
     DEVICE("settings-device"),
     ABOUT("settings-about"),
     ADVANCED("settings-advanced"),
+
+    /** Account › Your devices. */
+    YOUR_DEVICES("settings-your-devices"),
 }
 
 /** A section's name: the index row's title and its page's title. */
@@ -235,6 +286,7 @@ fun settingsSectionTitle(s: SettingsSection): String = stringResource(
         SettingsSection.DEVICE -> R.string.section_this_device
         SettingsSection.ABOUT -> R.string.section_about
         SettingsSection.ADVANCED -> R.string.settings_advanced
+        SettingsSection.YOUR_DEVICES -> R.string.your_devices
     },
 )
 
@@ -287,10 +339,18 @@ fun SettingsScreen(
     /** Change the password: current, new, the two-step code (null without two-step), sign out others. */
     onChangePassword: (current: String, new: String, code: String?, signOutOthers: Boolean) -> Unit = { _, _, _, _ -> },
     onClosePasswordForm: () -> Unit = {},
+    /** Your devices: read the list, sign one out, sign out all the others. */
+    onLoadDevices: () -> Unit = {},
+    onSignOutDevice: (MyDevice) -> Unit = {},
+    onSignOutOtherDevices: () -> Unit = {},
+    /** The clock, for "Last used 3 hours ago" (Unix seconds). */
+    nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var renaming by rememberSaveable { mutableStateOf(false) }
     var changingPassword by rememberSaveable { mutableStateOf(false) }
+    // Your devices: the one device (by id) or all the others (-1) waiting for a yes.
+    var confirmSignOut by rememberSaveable { mutableStateOf<Long?>(null) }
     val playback = defaultPlayer != null || streaming != null || sleepFade != null || state.sound != null
     val nowPlaying = lyrics != null || visualiser != null || ratings != null
     val thisDevice = device != null || state.deviceName.isNotEmpty()
@@ -400,6 +460,18 @@ fun SettingsScreen(
                                     },
                                 )
                             }
+                        }
+                    }
+                    // Only where the server offers it (older gateways don't).
+                    if (a.canManageDevices) {
+                        item {
+                            NavRow(
+                                settingsSectionTitle(SettingsSection.YOUR_DEVICES),
+                                stringResource(R.string.your_devices_row),
+                                { onSection(SettingsSection.YOUR_DEVICES) },
+                                icon = Icons.Outlined.Devices,
+                                tag = SettingsSection.YOUR_DEVICES.tag,
+                            )
                         }
                     }
                 }
@@ -536,6 +608,35 @@ fun SettingsScreen(
                 }
             }
             SettingsSection.ADVANCED -> if (gaps != null) item { gaps() }
+            SettingsSection.YOUR_DEVICES -> yourDevicesItems(
+                devices = state.devices,
+                busy = state.devicesBusy,
+                message = state.devicesMessage,
+                nowSeconds = nowSeconds,
+                onSignOut = { confirmSignOut = it.id },
+                onSignOutOthers = { confirmSignOut = ALL_OTHERS },
+            )
+        }
+    }
+    if (section == SettingsSection.YOUR_DEVICES) {
+        LaunchedEffect(Unit) { onLoadDevices() }
+    }
+    confirmSignOut?.let { target ->
+        val others = state.devices.orEmpty().filterNot { it.current }
+        val device = others.firstOrNull { it.id == target }
+        if (target != ALL_OTHERS && device == null) {
+            // Gone from the list meanwhile: nothing to ask about.
+            LaunchedEffect(target) { confirmSignOut = null }
+        } else {
+            SignOutDeviceDialog(
+                device = device,
+                others = others.size,
+                onConfirm = {
+                    confirmSignOut = null
+                    if (device != null) onSignOutDevice(device) else onSignOutOtherDevices()
+                },
+                onDismiss = { confirmSignOut = null },
+            )
         }
     }
     if (confirm) {
@@ -550,6 +651,9 @@ fun SettingsScreen(
         )
     }
 }
+
+/** [SettingsScreen]'s confirm target meaning every other device. */
+private const val ALL_OTHERS = -1L
 
 /** "1.18 GB · 34 tracks" (the Downloads row of the index). */
 @Composable

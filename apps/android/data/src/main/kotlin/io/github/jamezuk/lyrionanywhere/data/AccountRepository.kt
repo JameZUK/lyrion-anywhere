@@ -7,6 +7,7 @@ import io.github.jamezuk.lyrionanywhere.core.Art
 import io.github.jamezuk.lyrionanywhere.core.Events
 import io.github.jamezuk.lyrionanywhere.core.Me
 import io.github.jamezuk.lyrionanywhere.core.Menus
+import io.github.jamezuk.lyrionanywhere.core.MyDevice
 import io.github.jamezuk.lyrionanywhere.core.MusicLibrary
 import io.github.jamezuk.lyrionanywhere.core.PairingInvite
 import io.github.jamezuk.lyrionanywhere.core.Players
@@ -119,6 +120,21 @@ interface AccountRepository {
         code: String?,
         signOutOthers: Boolean,
     ): PasswordChangeResult = PasswordChangeResult.Failed(PasswordChangeError.SignedOut)
+
+    /**
+     * "Your devices": this user's signed-in devices, this phone marked `current`. Offered
+     * only when [AccountInfo.canManageDevices].
+     */
+    suspend fun myDevices(): ApiResult<List<MyDevice>> = ApiResult.Err(AppError.SignedOut)
+
+    /**
+     * Sign out another of this user's devices. True if it was signed out, false if it had
+     * already gone. This phone can't be signed out this way: that is [signOut].
+     */
+    suspend fun signOutDevice(id: Long): ApiResult<Boolean> = ApiResult.Err(AppError.SignedOut)
+
+    /** Sign out all this user's other devices; how many were signed out. */
+    suspend fun signOutOtherDevices(): ApiResult<Int> = ApiResult.Err(AppError.SignedOut)
 }
 
 /**
@@ -303,6 +319,21 @@ class RustAccountRepository(
         val sess = _connection.value?.session
             ?: return PasswordChangeResult.Failed(PasswordChangeError.SignedOut)
         return runPasswordChange { sess.changePassword(current, new, code?.takeIf { it.isNotBlank() }, signOutOthers) }
+    }
+
+    override suspend fun myDevices(): ApiResult<List<MyDevice>> {
+        val sess = _connection.value?.session ?: return ApiResult.Err(AppError.SignedOut)
+        return apiCall { sess.myDevices() }
+    }
+
+    override suspend fun signOutDevice(id: Long): ApiResult<Boolean> {
+        val sess = _connection.value?.session ?: return ApiResult.Err(AppError.SignedOut)
+        return apiCall { sess.signOutDevice(id) }
+    }
+
+    override suspend fun signOutOtherDevices(): ApiResult<Int> {
+        val sess = _connection.value?.session ?: return ApiResult.Err(AppError.SignedOut)
+        return apiCall { sess.signOutOtherDevices().toInt() }
     }
 
     override suspend fun renameDevice(name: String): ApiResult<String> {
