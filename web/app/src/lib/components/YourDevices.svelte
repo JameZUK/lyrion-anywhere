@@ -32,16 +32,37 @@
 
 	const others = $derived(devices?.filter((d) => !d.current) ?? []);
 
-	async function refresh() {
+	/** Each load is numbered: an answer to an older one than the last asked for is dropped. */
+	let seq = 0;
+
+	/** Load the list; what went wrong, or null. A stale answer changes nothing. */
+	async function refresh(): Promise<unknown> {
+		const mine = ++seq;
 		try {
-			devices = cleanDevices(await load());
+			const list = cleanDevices(await load());
+			if (mine === seq) devices = list;
+			return null;
 		} catch (err) {
-			message = { text: devicesError(err), error: true };
+			return mine === seq ? err : null;
 		}
 	}
+
+	/** The first load, or Retry after it failed: a failure is the message, with Retry. */
+	async function initial() {
+		busy = true;
+		message = null;
+		const err = await refresh();
+		if (err) message = { text: devicesError(err), error: true };
+		busy = false;
+	}
 	$effect(() => {
-		void refresh();
+		void initial();
 	});
+
+	/** Take devices off the list here, so it is right even if the refresh after fails. */
+	function drop(gone: (d: MyDevice) => boolean) {
+		if (devices) devices = devices.filter((d) => !gone(d));
+	}
 
 	async function confirmed() {
 		const what = confirming;
@@ -52,19 +73,27 @@
 		try {
 			if (what === 'others') {
 				const n = await signOutOthers();
+				drop((d) => !d.current);
 				message = { text: n === 1 ? '1 other device was signed out.' : `${n} other devices were signed out.`, error: false };
 			} else {
 				await signOut(what.id);
+				drop((d) => d.id === what.id);
 				message = { text: `“${what.name}” was signed out.`, error: false };
 			}
 		} catch (err) {
 			// Gone already: as good as done.
-			if (err instanceof ApiError && err.status === 404) message = { text: devicesError(err), error: false };
-			else message = { text: devicesError(err), error: true };
+			if (err instanceof ApiError && err.status === 404) {
+				if (what !== 'others') drop((d) => d.id === what.id);
+				message = { text: devicesError(err), error: false };
+			} else message = { text: devicesError(err), error: true };
+		}
+		// Busy until the list is fresh, so no second action races this refresh. A failed
+		// refresh leaves the message about what was done (the list is already right).
+		try {
+			await refresh();
 		} finally {
 			busy = false;
 		}
-		await refresh();
 	}
 </script>
 
@@ -72,6 +101,7 @@
 	<p class="muted small">Devices signed in to your account. Signing one out ends its sign-in at once: it has to sign in again to play.</p>
 	{#if devices === null}
 		{#if !message}<p class="muted" data-devices-loading>Loading…</p>{/if}
+		{#if message?.error && !busy}<button class="btn" onclick={() => void initial()} data-devices-retry>Try again</button>{/if}
 	{:else}
 		<ul class="list" data-device-list>
 			{#each devices as d (d.id)}

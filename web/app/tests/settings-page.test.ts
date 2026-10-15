@@ -12,7 +12,8 @@ const fake = await import('./helpers/fake-app.svelte');
 const { SECTIONS, sectionOf } = await import('$lib/settings/sections');
 
 let account = { username: 'demo', role: 'admin', totp_enabled: false };
-let meFeatures: Record<string, boolean> = { change_password: true };
+const ME_FEATURES = { change_password: true };
+let meFeatures: Record<string, boolean> = { ...ME_FEATURES };
 const DEVICES = { devices: [{ id: 1, name: 'Test browser', current: true }, { id: 2, name: 'Phone', client_platform: 'Pixel 8', current: false }] };
 const posts: { path: string; body: unknown }[] = [];
 beforeAll(() => {
@@ -27,6 +28,10 @@ beforeAll(() => {
 	fake.session.current = { user: { username: 'demo', role: 'admin' }, device: { id: 1, name: 'Test browser' } };
 });
 afterAll(() => vi.unstubAllGlobals());
+// A test that turns a feature on never leaks it into the next, even if it fails part-way.
+afterEach(() => {
+	meFeatures = { ...ME_FEATURES };
+});
 
 async function section(id: string) {
 	params.section = id;
@@ -164,7 +169,6 @@ test('Account › Your devices: only when the gateway offers it, in its own dial
 	expect(dialog.querySelectorAll('input[type=password]')).toHaveLength(0);
 	document.querySelector<HTMLDialogElement>('dialog[open]')!.close();
 	await waitFor(() => expect(document.querySelector('dialog[open]')).toBeNull());
-	meFeatures = { change_password: true };
 	r.unmount();
 });
 
