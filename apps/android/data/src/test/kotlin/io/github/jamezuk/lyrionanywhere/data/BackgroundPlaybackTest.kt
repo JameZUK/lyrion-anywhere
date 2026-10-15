@@ -60,6 +60,16 @@ class BackgroundPlaybackTest {
     }
 
     @Test
+    fun backgroundFocusRefusalsAreCountedApart() {
+        val b = BackgroundPlayback()
+        assertEquals(0, b.focusRefusals.value)
+        b.focusRefusedInBackground()
+        b.focusRefusedInBackground()
+        assertEquals(2, b.focusRefusals.value)
+        assertEquals("the foreground refusals are a separate count", 0, b.refusals.value)
+    }
+
+    @Test
     fun theDismissalSurvivesARestart() = runBlocking {
         val before = DataStoreSettings(store())
         assertFalse(before.settings.first().backgroundPromptDismissed)

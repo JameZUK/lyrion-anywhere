@@ -65,6 +65,29 @@ class AudioFocusPolicy {
     }
 }
 
+/** Why audio focus was refused, as far as the app can tell. */
+enum class FocusRefusal {
+    /** A real conflict (a call, or another app holding focus): don't play over it. */
+    CONFLICT,
+
+    /** Android 15+'s rule: no focus for an app neither on screen nor in a foreground service. */
+    BACKGROUND,
+}
+
+/** How to read a refusal of audio focus. Pure: unit-tested on the JVM. */
+object FocusRefusals {
+    /**
+     * A refusal is explained by the background rule only while the app is wholly in the
+     * background: not on screen, the playback service not in the foreground, and no call.
+     * Anything else is a real conflict.
+     */
+    fun classify(onScreen: Boolean, serviceForeground: Boolean, inCall: Boolean): FocusRefusal =
+        if (onScreen || serviceForeground || inCall) FocusRefusal.CONFLICT else FocusRefusal.BACKGROUND
+
+    /** A refusal no retry can change: the app is on screen (the rule doesn't apply) or a call is on. */
+    fun conclusive(onScreen: Boolean, inCall: Boolean): Boolean = onScreen || inCall
+}
+
 /** Requests and abandons audio focus for music; reports changes to [onChange]. */
 class AudioFocusHandler(
     private val audio: AudioManager,
