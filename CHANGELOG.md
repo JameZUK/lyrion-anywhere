@@ -2,6 +2,23 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: Gateway review fixes: SSRF by DNS, two amplifiers, Your devices limit, blocking writes
+
+Fixes for findings M2, M3, M4, M5 and M7 of the 15 October code review.
+
+- **URLs in free text are resolved before they reach LMS (M2)** (`rpc.rs`, `art.rs`, `rpc_policy.rs`, `menu_actions.rs`, `stations.rs`): a search term, typed menu input or pinned-menu step holding a public-looking http(s) URL whose name resolved to a loopback or private address (an A record of 127.0.0.1, an IPv4-mapped private AAAA) could make an LMS plugin fetch from the server itself or the home network. Every http(s) URL in a command's text is now resolved, sharing the image proxy's check (2 s limit, at most four names per command), and the command refused like other sensitive text if any answer is local. Text the user typed may also give no port other than 80 or 443. Pinned menus are checked on every replay. Limits as for artwork: DNS rebinding between the gateway's lookup and LMS's is not caught, and a name that doesn't resolve is judged by its name.
+- **Track-start lookups coalesced and capped (M3)** (`session.rs`, `history.rs`): each `STMs` from a client spawned an LMS `status` query, so a client looping them made the gateway query LMS once per frame. A session now has one lookup waiting at most, which asks only about the latest start, and makes at most 30 a minute.
+- **One ratings batch at a time, shared writes bounded (M4)** (`ratings.rs`): an offline batch wrote LMS's shared rating once per track, serially, with the 30 s LMS limit each, and a user could run any number at once. Now one batch per user at a time (429 with `Retry-After`, as for `/v1/plays`), each shared write has a 3 s limit, and a batch spends at most 10 s on them, stopping at the first that LMS doesn't take. The user's own ratings are always kept.
+- **Your devices allowance per device (M5)** (`auth.rs`, `accounts.rs`): the 30-a-minute limit was per user, so a stolen device's token could keep the owner from signing it out. It is now per device asking. `device.revoked` records which device did it (detail `self from <id>`).
+- **SQLite writes off the async workers (M7)** (`lib.rs` `Gateway::db`, `auth.rs`, `tunnel.rs`, `session.rs`, `plays.rs` and the `/v1/me` stores): token renewal, sign-in and pairing bookkeeping, the last-seen write, player attach, Your devices, renames, listening history, ratings, Home, stations and filters wrote inline on tokio workers under the store's one lock, so a stalling disk could stop player sessions and their heartbeats. They now run on the blocking pool. Not changed: reads still share the lock, and the loopback admin API still writes inline.
+- **Tests**, each regression test failing before its fix:
+  - `gateway/tests/rpc.rs`: search terms, `term:` and typed menu input with URLs resolving to loopback or an IPv4-mapped private address refused with the usual refusal and never sent; ports other than 80 and 443 refused; plain text, public URLs and unresolvable names still pass. `me.rs`: a pinned menu replaying such a URL never reaches LMS. Unit and robustness tests for the URL scanning; the resolver takes fixed answers for tests (`Config::host_answers`).
+  - `me.rs`: 200 `STMs` in 2 s make at most 3 lookups; spaced starts at most 30 a minute; ordinary track changes each still get theirs. Tracker unit tests for a row that arrives after its listen ended or continued.
+  - `ratings.rs`: 500 ratings against a Ratings Light that hangs end within seconds with every rating kept; a second batch while one runs is 429 and another user is not held up.
+  - `own_devices.rs`: a device that has used up its allowance can't stop another of the user's devices listing it and signing it out; the audit detail names the acting device; malformed ids are a strict 404.
+  - `db_stall.rs`: with writes stalled through a test hook, an unrelated request answers at once during a stalled renewal, player attach and last-seen write.
+- **Docs:** docs/PROTOCOL.md (free text, ratings, Your devices); SPEC.md (free text, listening history, the account database).
+
 ## 2026-10-15: Android: a phone rejoining a sync group no longer pauses the others or moves them back
 
 Found by the live check of A6 (`mobile/tests/live_sync.rs`). When the phone's link stalled while it was in a sync group, the other speakers went silent for 4 to 15 s once it came back. After a long stall, LMS also restarted the whole group about 14 s back.
