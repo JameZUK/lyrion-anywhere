@@ -299,7 +299,7 @@ Each milestone ends with: tests green in CI, a security review of new surfaces, 
 | **A5** | Offline | Download manager, smart downloads, storage management, offline mode, `/v1/plays` sync-back |
 | **A6** | Car and discovery | Android Auto; radio and "more like this" through AudioMuse-AI or Don't Stop The Music; smart transitions |
 | **A7** | Release 1.0 | Accessibility audit, performance budgets met, privacy policy, a full pentest of app and protocol, Play Store production, an F-Droid build and GitHub APKs (D16) |
-| **I0–I3** | iOS | After A5: SwiftUI shell over `mobile/`; AVAudioEngine output; CarPlay; App Store (subject to the §6 licensing decision) |
+| **I0–I3** | iOS | **Parked 2026-10-15** (no Apple Developer account or Mac; see [`ios-parked.md`](ios-parked.md) for what exists and how to resume). Plan: SwiftUI shell over `mobile/`; AVAudioEngine output; CarPlay; App Store under the §6 decision (SPEC D17, `LICENSE-EXCEPTION`) |
 | **A8+** | After 1.0 | Parametric EQ with device profiles, crossfeed, visualiser, lyrics, Wear OS, DSD (DoP) |
 
 ### A0 status (2026-10-11)

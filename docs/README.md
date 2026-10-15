@@ -40,6 +40,7 @@ These record the agreed designs and what was built, milestone by milestone. The 
 | Document | What it covers |
 |---|---|
 | [`plans/native-apps.md`](plans/native-apps.md) | The native apps plan (Android first, iOS designed in), with the status of each Android milestone (A0–A7) |
+| [`plans/ios-parked.md`](plans/ios-parked.md) | iOS app: parked on 2026-10-15; what exists and how to resume |
 | [`plans/streaming-quality.md`](plans/streaming-quality.md) | Lower-data streams on mobile data (live Opus) |
 | [`plans/ux-research.md`](plans/ux-research.md) | Research into other players, and the waves of UX work that followed |
 | [`plans/wave1-design.md`](plans/wave1-design.md) | Wave 1: sleep timer, Now playing, listening history, Home, stations, lyrics |
