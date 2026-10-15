@@ -2,6 +2,18 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: Android/mobile fixes from the full code review (H1, M8, M9, M10, M11, M14, M16)
+
+From `docs/reviews/2026-10-15-full-review.md`. Each fix has a regression test that failed before it.
+
+- **H1, replay cache emptied by Settings** (`mobile/src/player/cache.rs`): asking for the cache's totals (or clearing it) while no player held it open opened it with a cap of zero, which deleted every entry. A cap that isn't known now keeps whatever is there; only a player sets the real cap. Tests: a populated cache opened afresh with no cap keeps every file, through the cache and through `stream_cache_totals` with the player stopped; a smaller real cap still evicts.
+- **M8, event socket renewal loop** (`mobile/src/events.rs`): a gateway that kept closing the event socket as "unauthorised" drove a tight loop of token refreshes and secure-store saves. Only a subscription now resets the renewal guard: one renewal is retried at once, then the normal backoff applies. Test: a fake gateway that always refuses sees at most three refreshes before the first wait.
+- **M9, sync-group rejoin outliving the player** (`mobile/src/player/engine.rs`): a rejoin waiting on a slow LMS could still move the other speakers after the player was stopped, stopped by the server or took over playback on the phone. All three now drop it, before the goodbye's wait. Test: LMS holds its answer while the player stops; no `time` reaches LMS.
+- **M10, stream hang on an oversize prefix** (`engine.rs`): a gateway that sent more than `?limit=` asked for, and then broke, made the retry's limit underflow; the stream task panicked and the track waited for ever. The limit is now worked out without underflow, and a watchdog reports a panicking stream task as a failed stream. Tests: a gateway that ignores `?limit=` and breaks; unit tests for the arithmetic and the watchdog.
+- **M11, reconnect pacing** (`engine.rs`): a greeting reset the backoff, so a server that greeted and closed at once was reconnected every 0.5 s for ever. The backoff now starts again only after a connection has lived 5 s. The network coming back reconnects at once only if no connection was opened in the last 1.5 s, and only an outage that long resets the backoff. Tests: greet-then-close gets a growing delay; 20 network flaps in a second make at most three connections.
+- **M14, offline library bound to its account** (`mobile/src/offline/`, `routine.rs`): `sync_plays`, `sync_ratings` and `Downloader::new` refuse a library opened for another account or server with the new `ApiError::WrongAccount`, before anything is sent. Android shows it as a refusal. Test: another account's library is refused by all three and the gateway sees no request. `resolve_offline_tracks` takes no library; the app already checks the queue's owner before "Continue on".
+- **M16, "already signed out" by status** (`mobile/src/error.rs`, `session.rs`): 404 and 409 are now typed (`ApiError::NotFound`, `ApiError::Conflict`). Signing out a device answers "already gone" for any 404, and never for another status whose text happens to match. Android maps both to the same message as before, and the test fake answers for this device as the real repository does. Tests: 404 with any body, 400 and 403 with the old text, 409, 429 with `Retry-After`, and a gateway without the devices feature.
+
 ## 2026-10-15: Android: a phone rejoining a sync group no longer pauses the others or moves them back
 
 Found by the live check of A6 (`mobile/tests/live_sync.rs`). When the phone's link stalled while it was in a sync group, the other speakers went silent for 4 to 15 s once it came back. After a long stall, LMS also restarted the whole group about 14 s back.
