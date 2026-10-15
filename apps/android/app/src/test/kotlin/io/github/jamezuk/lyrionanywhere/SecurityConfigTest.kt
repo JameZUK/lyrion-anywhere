@@ -258,6 +258,7 @@ class SecurityConfigTest {
     @Test
     fun noWorkManagerStartup() {
         // Its start-up initialiser crashed earlier test builds on launch; it stays removed.
+        // The merged manifest (what ships) is checked by the build: verify<Variant>StartupInitialisers.
         val manifest = xml("src/main/AndroidManifest.xml")
         val startup = manifest.children("provider").single {
             it.getAttributeNS(android, "name") == "androidx.startup.InitializationProvider"
