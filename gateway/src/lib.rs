@@ -203,6 +203,10 @@ pub struct Config {
     pub history_lookup_delay: Duration,
     /// Time limit for looking one artist's name up for the listening stats.
     pub stats_lookup_timeout: Duration,
+    /// Fixed answers for host names, consulted before DNS when the gateway checks where a
+    /// URL would lead (the image proxy, URLs in free text): like a hosts file. Empty in
+    /// production; tests use it to give a public-looking name a local address.
+    pub host_answers: std::collections::HashMap<String, Vec<IpAddr>>,
 }
 
 impl Default for Config {
@@ -260,6 +264,7 @@ impl Default for Config {
             plays_budget: Duration::from_secs(30),
             history_lookup_delay: Duration::from_millis(1500),
             stats_lookup_timeout: stats::LOOKUP_TIMEOUT,
+            host_answers: Default::default(),
         }
     }
 }

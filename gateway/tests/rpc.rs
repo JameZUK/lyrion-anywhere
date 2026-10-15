@@ -762,3 +762,180 @@ async fn admin_only_plugins_dstm_providers_are_hidden() {
             .any(|c| c.to_string().contains("AUDIOMUSEAI"))
     );
 }
+
+// --- URLs in free text (M2): judged by where they resolve, not only by name ----------------
+
+/// A harness whose resolver gives public-looking names fixed answers (like a hosts file):
+/// `loop.example.com` is loopback, `mapped.example.com` an IPv4-mapped private address,
+/// `cdn.example.com` a public (TEST-NET) address.
+async fn resolving_harness() -> Harness {
+    harness_with(|c| {
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        c.host_answers
+            .insert("loop.example.com".into(), vec![ip("127.0.0.1")]);
+        c.host_answers.insert(
+            "mapped.example.com".into(),
+            vec![ip("203.0.113.7"), ip("::ffff:10.0.0.10")],
+        );
+        c.host_answers
+            .insert("cdn.example.com".into(), vec![ip("203.0.113.10")]);
+    })
+    .await
+}
+
+/// Free-text values that reached LMS (search terms and typed input).
+fn free_text_calls(h: &Harness) -> Vec<String> {
+    h.lms
+        .rpc_calls()
+        .iter()
+        .flat_map(|c| c[1].as_array().cloned().unwrap_or_default())
+        .filter_map(|w| w.as_str().map(str::to_owned))
+        .filter(|w| w.starts_with("search:") || w.starts_with("term:"))
+        .collect()
+}
+
+/// Regression (M2): a URL in a search term whose name resolves to a local address (here
+/// loopback, or a private address hidden in an IPv4-mapped IPv6 answer) reached LMS, so a
+/// plugin could be made to fetch LMS's own web UI or CLI port. Refused like any other
+/// sensitive text, and never sent.
+#[tokio::test]
+async fn free_text_urls_resolving_to_local_addresses_are_refused() {
+    let h = resolving_harness().await;
+    for url in [
+        "http://loop.example.com/feed.xml",
+        "https://LOOP.example.com./x",
+        "listen to http://mapped.example.com/rss now",
+        "https://cdn.example.com/a http://loop.example.com/b",
+    ] {
+        let r = h
+            .rpc(
+                &h.tok_a,
+                "",
+                json!(["albums", 0, 10, format!("search:{url}")]),
+            )
+            .await;
+        assert_eq!(r.status(), S::FORBIDDEN, "{url}");
+        let body: Value = r.json().await.unwrap();
+        assert_eq!(body["error"], "bad value for search", "{url}");
+        let r = h
+            .rpc(
+                &h.tok_a,
+                "",
+                json!(["search", 0, 10, format!("term:{url}")]),
+            )
+            .await;
+        assert_eq!(r.status(), S::FORBIDDEN, "{url}");
+        let body: Value = r.json().await.unwrap();
+        assert_eq!(body["error"], "bad value for term", "{url}");
+    }
+    assert!(
+        free_text_calls(&h).is_empty(),
+        "reached LMS: {:?}",
+        free_text_calls(&h)
+    );
+}
+
+/// Regression (M2): the same through a plugin's search box (`__TAGGEDINPUT__`), where the
+/// typed text is the only part of the action LMS did not offer.
+#[tokio::test]
+async fn typed_menu_input_resolving_to_local_addresses_is_refused() {
+    let h = resolving_harness().await;
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    let r = h
+        .rpc(&h.tok_a, &mine, json!(["menu", 0, 500, "direct:1"]))
+        .await;
+    assert_eq!(r.status(), S::OK);
+    let r = h
+        .rpc(&h.tok_a, &mine, json!(["someplugin", "menu", 0, 100]))
+        .await;
+    assert_eq!(r.status(), S::OK);
+    let typed = |q: &str| {
+        json!([
+            "someplugin",
+            "items",
+            0,
+            20,
+            format!("search:{q}"),
+            "menu:someplugin"
+        ])
+    };
+    for bad in [
+        "http://loop.example.com/",
+        "http://mapped.example.com/feed",
+        "https://cdn.example.com:9000/feed",
+    ] {
+        let r = h.rpc(&h.tok_a, &mine, typed(bad)).await;
+        assert_eq!(r.status(), S::FORBIDDEN, "{bad}");
+        let body: Value = r.json().await.unwrap();
+        assert_eq!(body["error"], "malformed command", "{bad}");
+    }
+    assert!(
+        free_text_calls(&h).is_empty(),
+        "reached LMS: {:?}",
+        free_text_calls(&h)
+    );
+    // Ordinary words and public URLs still work.
+    for good in ["in our time", "https://cdn.example.com/feed.xml"] {
+        let r = h.rpc(&h.tok_a, &mine, typed(good)).await;
+        assert_eq!(r.status(), S::OK, "{good}");
+    }
+    assert_eq!(free_text_calls(&h).len(), 2);
+}
+
+/// Regression (M2): an explicit port other than 80 or 443 in free text (LMS's web UI on
+/// 9000, its CLI on 9090) is refused whatever the name resolves to; plugins never need one.
+#[tokio::test]
+async fn free_text_urls_with_unusual_ports_are_refused() {
+    let h = resolving_harness().await;
+    for url in [
+        "http://cdn.example.com:9000/",
+        "https://cdn.example.com:9090/x",
+        "http://user@cdn.example.com:8080/",
+        "HTTP://cdn.example.com:00080x/",
+        "http://[2001:db8::1]:9000/",
+        "http://no-such-host.invalid:9000/",
+    ] {
+        let r = h
+            .rpc(
+                &h.tok_a,
+                "",
+                json!(["albums", 0, 10, format!("search:{url}")]),
+            )
+            .await;
+        assert_eq!(r.status(), S::FORBIDDEN, "{url}");
+        let body: Value = r.json().await.unwrap();
+        assert_eq!(body["error"], "bad value for search", "{url}");
+    }
+    assert!(
+        free_text_calls(&h).is_empty(),
+        "reached LMS: {:?}",
+        free_text_calls(&h)
+    );
+}
+
+/// Plain text, public URLs (with or without the standard ports) and names that don't resolve
+/// at all still reach LMS: apps search by feed URL.
+#[tokio::test]
+async fn ordinary_text_and_public_urls_still_pass() {
+    let h = resolving_harness().await;
+    let good = [
+        "AC/DC",
+        "Live 1990/91",
+        "https://cdn.example.com/feed.xml",
+        "http://cdn.example.com:80/feed",
+        "https://cdn.example.com:443/feed",
+        "https://podcasts.example.invalid/feed",
+        "10:30 news",
+    ];
+    for text in good {
+        let r = h
+            .rpc(
+                &h.tok_a,
+                "",
+                json!(["albums", 0, 10, format!("search:{text}")]),
+            )
+            .await;
+        assert_eq!(r.status(), S::OK, "{text}");
+    }
+    assert_eq!(free_text_calls(&h).len(), good.len());
+}

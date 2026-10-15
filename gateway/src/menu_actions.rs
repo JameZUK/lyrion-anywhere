@@ -292,7 +292,9 @@ pub fn parse(raw: &[String]) -> Option<Request> {
 }
 
 impl Action {
-    fn matches(&self, r: &Request) -> bool {
+    /// Does the request match this action? `strict`: typed text must also pass
+    /// [`crate::rpc_policy::typed_text_ok`] (no URL with an unusual port).
+    fn matches(&self, r: &Request, strict: bool) -> bool {
         // Menus must be paged; navigations may be; other commands never are.
         let paging_ok = if self.paged() {
             r.paging.is_some()
@@ -304,7 +306,9 @@ impl Action {
         }
         self.params.iter().all(|(k, v)| match (v, r.params.get(k)) {
             (PValue::Exact(want), Some(got)) => want == got,
-            (PValue::Input, Some(got)) => !got.is_empty(),
+            (PValue::Input, Some(got)) => {
+                !got.is_empty() && (!strict || crate::rpc_policy::typed_text_ok(got))
+            }
             _ => false,
         })
     }
@@ -319,8 +323,11 @@ pub fn allowed(learned: &DeviceActions, raw: &[String], admin: bool) -> Result<(
     if ADMIN_ONLY.contains(&r.cmd[0].as_str()) && !admin {
         return Err(Refusal::AdminOnly);
     }
-    if learned.find(&r) {
+    if learned.find(&r, true) {
         Ok(())
+    } else if learned.find(&r, false) {
+        // Offered, but what the user typed isn't allowed: refused like other bad text.
+        Err(Refusal::Malformed)
     } else {
         Err(Refusal::NotOffered)
     }
@@ -394,10 +401,10 @@ impl DeviceActions {
         self.order.retain(|(_, t)| now.duration_since(*t) < TTL);
     }
 
-    fn find(&self, r: &Request) -> bool {
+    fn find(&self, r: &Request, strict: bool) -> bool {
         self.by_cmd
             .get(&r.cmd)
-            .is_some_and(|l| l.iter().any(|(a, _)| a.matches(r)))
+            .is_some_and(|l| l.iter().any(|(a, _)| a.matches(r, strict)))
     }
 
     pub fn len(&self) -> usize {
@@ -799,8 +806,8 @@ mod tests {
         // The oldest went first.
         let req =
             |i: usize| parse(&strs(&["x", "items", "0", "1", &format!("item_id:{i}")])).unwrap();
-        assert!(!d.find(&req(0)));
-        assert!(d.find(&req(PER_DEVICE + 49)));
+        assert!(!d.find(&req(0), true));
+        assert!(d.find(&req(PER_DEVICE + 49), true));
     }
 
     #[test]

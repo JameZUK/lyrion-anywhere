@@ -303,7 +303,9 @@ Response: `{"result": {...}}`, or `{"error": "<reason>"}` with one of these stat
 - at most 16 arguments;
 - paging `start count` with `count` ≤ 500;
 - `key:value` parameters restricted to known keys per command, each given at most once, with typed values;
-- free-text values (`search:`, `term:`, playlist names, an app's `search:`, text typed into a learned search box) refused if they hold an absolute or Windows path, a `file:` URL, a URL to a local host (see below), a bare LAN address such as `10.0.0.5:9000`, or any URL other than http(s). Public http(s) URLs pass (some apps search by feed URL), as does ordinary text such as "AC/DC" or "Live 1990/91".
+- free-text values (`search:`, `term:`, playlist names, an app's `search:`, text typed into a learned search box) refused if they hold an absolute or Windows path, a `file:` URL, a URL to a local host (see below), a bare LAN address such as `10.0.0.5:9000`, or any URL other than http(s). Public http(s) URLs pass (some apps search by feed URL), as does ordinary text such as "AC/DC" or "Live 1990/91";
+- a URL in typed free text with an explicit port other than 80 or 443 (`http://music.example.com:9000/`) is refused;
+- every http(s) URL in a command's text is resolved by the gateway (2 s limit per name, at most four distinct names per command) and the command refused, as above, if any name resolves to a local address (a public name with an A record of `127.0.0.1`, or an IPv4-mapped private AAAA). A name that does not resolve is judged by its name alone, and DNS rebinding between the gateway's lookup and LMS's is not caught.
 
 | Group | Allowed |
 |---|---|

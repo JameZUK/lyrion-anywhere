@@ -224,7 +224,7 @@ fn url_host(url: &str) -> Option<&str> {
     Some(crate::rpc_policy::authority_host(authority))
 }
 
-/// How long the image proxy waits for a host name to resolve.
+/// How long the gateway waits for a host name to resolve (image proxy, URLs in free text).
 const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Does the URL's host name resolve (here, on the gateway) to any local address? This
@@ -232,12 +232,26 @@ const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 /// the name again when it fetches, so a name whose answer changes between the two lookups
 /// (DNS rebinding) is not caught, and a name that doesn't resolve here, or not within
 /// [`RESOLVE_TIMEOUT`], is allowed (it is still subject to the checks on the name itself).
-async fn resolves_local(url: &str) -> bool {
-    let Some(host) = url_host(url) else {
-        return true;
-    };
+async fn resolves_local(url: &str, answers: &HostAnswers) -> bool {
+    match url_host(url) {
+        Some(host) => host_resolves_local(host, answers).await,
+        None => true,
+    }
+}
+
+/// Fixed answers for host names, consulted before DNS (see `Config::host_answers`).
+pub(crate) type HostAnswers = std::collections::HashMap<String, Vec<std::net::IpAddr>>;
+
+/// Does this host name (as written in a URL, without brackets or port) resolve to any local
+/// address? Address literals are not looked up (they are judged as written by the name
+/// checks), and a name that doesn't resolve within [`RESOLVE_TIMEOUT`] counts as not local.
+pub(crate) async fn host_resolves_local(host: &str, answers: &HostAnswers) -> bool {
     if host.parse::<std::net::IpAddr>().is_ok() || host.contains(':') {
         return false; // an address literal, judged as written by `local_url`
+    }
+    let name = host.trim_end_matches('.').to_ascii_lowercase();
+    if let Some(fixed) = answers.get(&name) {
+        return fixed.iter().any(|ip| crate::rpc_policy::ip_is_local(*ip));
     }
     match tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host((host, 80))).await {
         Ok(Ok(addrs)) => addrs
@@ -245,6 +259,44 @@ async fn resolves_local(url: &str) -> bool {
             .any(|a| crate::rpc_policy::ip_is_local(a.ip())),
         _ => false,
     }
+}
+
+/// Most distinct host names looked up for one command's free text; a command naming more is
+/// refused rather than make the gateway run a burst of lookups.
+const MAX_TEXT_LOOKUPS: usize = 4;
+
+/// The first argument of a command (already through the allow-list or the menu-action
+/// check) holding an http(s) URL whose host resolves to a local address, so that LMS or a
+/// plugin would fetch from the home network or the server itself. The name checks
+/// ([`crate::rpc_policy::text_ok`]) judge a host only as written; this catches public names
+/// with local answers (an A record of 127.0.0.1, an IPv4-mapped private AAAA). Lookups run
+/// together, each within [`RESOLVE_TIMEOUT`], with the same limits as the image proxy's
+/// (see [`resolves_local`]). More than [`MAX_TEXT_LOOKUPS`] distinct hosts: the first
+/// argument past the limit is reported.
+pub(crate) async fn first_resolving_local(args: &[String], answers: &HostAnswers) -> Option<usize> {
+    let mut hosts: Vec<(usize, String)> = Vec::new();
+    for (i, a) in args.iter().enumerate() {
+        for h in crate::rpc_policy::web_url_hosts(a) {
+            if hosts.iter().any(|(_, x)| x.eq_ignore_ascii_case(&h)) {
+                continue;
+            }
+            if hosts.len() == MAX_TEXT_LOOKUPS {
+                return Some(i);
+            }
+            hosts.push((i, h));
+        }
+    }
+    if hosts.is_empty() {
+        return None;
+    }
+    let verdicts =
+        futures_util::future::join_all(hosts.iter().map(|(_, h)| host_resolves_local(h, answers)))
+            .await;
+    hosts
+        .iter()
+        .zip(verdicts)
+        .find(|(_, local)| *local)
+        .map(|((i, _), _)| *i)
 }
 
 /// Collect image URLs from an (already filtered) LMS response: absolute http(s) URLs and
@@ -368,7 +420,7 @@ pub async fn art(
                 tracing::warn!(user = %principal.username, "refused image proxy for an unknown URL");
                 return status(StatusCode::NOT_FOUND);
             }
-            if resolves_local(&url).await {
+            if resolves_local(&url, &gw.cfg.host_answers).await {
                 tracing::warn!(user = %principal.username, "refused image proxy for a URL that resolves locally");
                 return status(StatusCode::NOT_FOUND);
             }
@@ -665,12 +717,27 @@ mod tests {
     /// resolves locally without any network access, via the hosts file.
     #[tokio::test]
     async fn names_resolving_to_local_addresses_are_refused() {
-        assert!(resolves_local("http://localhost/a.png").await);
-        assert!(resolves_local("ftp://cdn.example.com/a.png").await);
+        let none = HostAnswers::default();
+        assert!(resolves_local("http://localhost/a.png", &none).await);
+        assert!(resolves_local("ftp://cdn.example.com/a.png", &none).await);
         // Literals are judged as written; unresolvable names are left to the name checks.
-        assert!(!resolves_local("http://8.8.8.8/a.png").await);
-        assert!(!resolves_local("http://[2001:db8::1]/a.png").await);
-        assert!(!resolves_local("http://no-such-host.invalid/a.png").await);
+        assert!(!resolves_local("http://8.8.8.8/a.png", &none).await);
+        assert!(!resolves_local("http://[2001:db8::1]/a.png", &none).await);
+        assert!(!resolves_local("http://no-such-host.invalid/a.png", &none).await);
+        // Fixed answers (the test hook, like a hosts file) are consulted before DNS.
+        let mut fixed = HostAnswers::default();
+        fixed.insert("cdn.example.com".into(), vec!["127.0.0.1".parse().unwrap()]);
+        fixed.insert(
+            "v6.example.com".into(),
+            vec!["::ffff:10.0.0.10".parse().unwrap()],
+        );
+        fixed.insert(
+            "pub.example.com".into(),
+            vec!["203.0.113.10".parse().unwrap()],
+        );
+        assert!(resolves_local("https://CDN.example.com./a.png", &fixed).await);
+        assert!(resolves_local("https://v6.example.com/a.png", &fixed).await);
+        assert!(!resolves_local("https://pub.example.com/a.png", &fixed).await);
     }
 
     #[test]

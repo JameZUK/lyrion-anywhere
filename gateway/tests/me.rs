@@ -1222,3 +1222,57 @@ async fn a_racing_player_clock_cannot_inflate_listening() {
         0
     );
 }
+
+/// Regression (M2): a pinned menu replays typed search text, so a URL in it whose name
+/// resolves to the server itself must not reach LMS on replay either.
+#[tokio::test]
+async fn pinned_menus_never_replay_urls_that_resolve_locally() {
+    let h = harness_with(|c| {
+        c.host_answers.insert(
+            "loop.example.com".into(),
+            vec!["127.0.0.1".parse().unwrap()],
+        );
+    })
+    .await;
+    let a = h.a();
+    let steps = json!([
+        ["menu", 0, 100, "direct:1"],
+        ["someplugin", "menu", 0, 50],
+        [
+            "someplugin",
+            "items",
+            0,
+            20,
+            "search:http://loop.example.com/",
+            "menu:someplugin"
+        ]
+    ]);
+    let (s, v) = h
+        .call(
+            "POST",
+            "/v1/me/menus",
+            Some(&h.tok_a),
+            Some(json!({"name": "Feed", "steps": steps, "player": a})),
+        )
+        .await;
+    if s == S::CREATED {
+        let id = v["id"].as_i64().unwrap();
+        let (s, v) = h
+            .call(
+                "POST",
+                &format!("/v1/me/menus/{id}/open"),
+                Some(&h.tok_a),
+                Some(json!({"player": a})),
+            )
+            .await;
+        assert_ne!(s, S::OK, "{v}");
+    }
+    assert!(
+        !h.lms
+            .rpc_calls()
+            .iter()
+            .any(|c| c.to_string().contains("loop.example.com")),
+        "reached LMS: {:?}",
+        h.lms.rpc_calls()
+    );
+}

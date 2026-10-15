@@ -350,6 +350,11 @@ pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
             {"id": "settingsXfade", "node": "settingsAudio", "actions": {"go": {"cmd": ["crossfadesettings"], "player": 0}}},
             {"id": "playerpower", "node": "home", "actions": {"do": {"cmd": ["power", "0"]}}}
         ]}),
+        // A plugin's own menu: a search box (whatever the user types goes to the plugin).
+        "someplugin" => json!({"count": 1, "item_loop": [
+            {"text": "Search", "type": "search", "actions": {"go": {"cmd": ["someplugin", "items"],
+             "params": {"search": "__TAGGEDINPUT__", "menu": "someplugin"}}}}
+        ]}),
         // Don't Stop The Music's settings menu for a player: off, with three providers.
         "dontstopthemusicsetting" => json!({"count": 4, "item_loop": [
             {"text": "Disabled", "radio": 1, "actions": {"do": {"player": 0, "cmd": ["playerpref", "plugin.dontstopthemusic:provider", 0]}}},

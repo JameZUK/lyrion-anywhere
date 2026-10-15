@@ -181,6 +181,9 @@ pub fn parse_command(v: &Value) -> Result<Vec<String>, Invalid> {
     Ok(words)
 }
 
+/// Why a station whose text holds a URL resolving into the home network won't run.
+const LOCAL_LINK: &str = "a link in this menu leads into the home network";
+
 fn parse_steps(v: Option<&Value>) -> Result<Vec<Vec<String>>, Invalid> {
     let a = v.and_then(Value::as_array).ok_or("steps must be a list")?;
     if a.is_empty() || a.len() > MAX_STEPS {
@@ -968,6 +971,12 @@ impl crate::Gateway {
                     .map_err(|_| Replay::Broken("this menu item is no longer offered"))?;
                 (player.to_string(), Kind::Plain)
             };
+            if crate::art::first_resolving_local(step, &self.cfg.host_answers)
+                .await
+                .is_some()
+            {
+                return Err(Replay::Broken(LOCAL_LINK));
+            }
             let result = self
                 .lms_command(&target.0, step)
                 .await
@@ -1036,6 +1045,12 @@ impl crate::Gateway {
             }
             menu_actions::allowed(&offered, action, p.role == Role::Admin)
                 .map_err(|_| Replay::Broken("this menu item is no longer offered"))?;
+            if crate::art::first_resolving_local(action, &self.cfg.host_answers)
+                .await
+                .is_some()
+            {
+                return Err(Replay::Broken(LOCAL_LINK));
+            }
         }
         Ok(())
     }

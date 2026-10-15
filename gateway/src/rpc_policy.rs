@@ -142,7 +142,7 @@ fn value_ok(v: V, s: &str) -> bool {
         V::Ids => is_ids(s),
         V::Uint => is_uint(s),
         V::Bool => s == "0" || s == "1",
-        V::Text => !s.is_empty() && text_ok(s),
+        V::Text => !s.is_empty() && typed_text_ok(s),
         V::Tags => !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric()),
         V::Sort => matches!(
             s,
@@ -177,6 +177,55 @@ fn value_ok(v: V, s: &str) -> bool {
 /// "Live 1990/91") passes too.
 pub(crate) fn text_ok(s: &str) -> bool {
     !s.chars().any(char::is_control) && !sensitive_value(s) && !has_non_web_url(s)
+}
+
+/// Free text the user typed (search terms, playlist names, a plugin's search box): as
+/// [`text_ok`], and any http(s) URL in it may name no port other than 80 or 443. LMS's own
+/// web UI and CLI listen on other ports, and no feed or search a plugin is asked for needs
+/// one. Values LMS itself offered in a menu are not held to this (a radio stream on port
+/// 8000 is ordinary there). The host's resolved addresses are checked separately (see
+/// `crate::art::first_resolving_local`), since that needs a lookup.
+pub(crate) fn typed_text_ok(s: &str) -> bool {
+    text_ok(s) && web_url_authorities(s).into_iter().all(standard_port)
+}
+
+/// The authorities (`user@host:port`) of the http(s) URLs in some text.
+pub(crate) fn web_url_authorities(s: &str) -> Vec<&str> {
+    let lower = s.to_ascii_lowercase();
+    lower
+        .match_indices("://")
+        .filter(|(i, _)| matches!(url_scheme(&lower, *i), "http" | "https"))
+        .map(|(i, _)| {
+            // ASCII lower-casing keeps byte offsets, so `s` can be sliced where `lower` was.
+            let rest = &s[i + 3..];
+            let end = rest
+                .find(|c: char| c.is_whitespace() || "/?#\"'<>()\\".contains(c))
+                .unwrap_or(rest.len());
+            &rest[..end]
+        })
+        .collect()
+}
+
+/// The host names (percent-decoded, without port or brackets) of the http(s) URLs in some
+/// text, for resolving.
+pub(crate) fn web_url_hosts(s: &str) -> Vec<String> {
+    web_url_authorities(s)
+        .into_iter()
+        .map(|a| hosts::percent_decoded(authority_host(a).trim_end_matches([',', ';'])))
+        .collect()
+}
+
+/// No port, or 80 or 443 (a sentence's trailing punctuation aside).
+fn standard_port(authority: &str) -> bool {
+    let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let port = match hostport.strip_prefix('[') {
+        Some(v6) => match v6.split_once(']') {
+            Some((_, after)) => after.strip_prefix(':'),
+            None => return false,
+        },
+        None => hostport.split_once(':').map(|(_, p)| p),
+    };
+    port.is_none_or(|p| matches!(p.trim_end_matches(['.', ',', ';']), "" | "80" | "443"))
 }
 
 /// A `scheme://` other than http or https.
@@ -2297,6 +2346,49 @@ mod tests {
         assert_eq!(out, json!({"mode": "play", "sync_slaves": MINE}));
     }
 
+    /// Regression (M2): URLs typed into free text may name no port but 80 or 443, and their
+    /// hosts are extracted (decoded, without port or brackets) for resolving.
+    #[test]
+    fn typed_urls_take_standard_ports_only() {
+        for yes in [
+            "in our time",
+            "AC/DC",
+            "10:30 news",
+            "https://cdn.example.com/feed.xml",
+            "http://cdn.example.com:80/x",
+            "https://cdn.example.com:443/x",
+            "see https://cdn.example.com:443.",
+            "http://user:secret@cdn.example.com/x",
+            "http://[2001:db8::1]/x",
+            "http://[2001:db8::1]:443/x",
+            "ratio 1:2 http://cdn.example.com/",
+        ] {
+            assert!(typed_text_ok(yes), "{yes}");
+        }
+        for no in [
+            "http://cdn.example.com:9000/",
+            "HTTPS://cdn.example.com:9090",
+            "http://user@cdn.example.com:8080/",
+            "http://cdn.example.com:0080/",
+            "http://cdn.example.com:80x/",
+            "http://[2001:db8::1]:9000/",
+            "http://[2001:db8::1/",
+            "a http://cdn.example.com/ and http://cdn.example.com:3483/",
+        ] {
+            assert!(!typed_text_ok(no), "{no}");
+            assert!(text_ok(no), "only the port is wrong: {no}");
+        }
+        assert_eq!(
+            web_url_hosts("a HTTP://u:p@CDN.example.com:443/x, b https://[2001:db8::1]:80/ c"),
+            vec!["CDN.example.com".to_string(), "2001:db8::1".to_string()]
+        );
+        assert_eq!(
+            web_url_hosts("http://loop%2eexample.com/ ftp://x.example.com/"),
+            vec!["loop.example.com".to_string()]
+        );
+        assert!(web_url_hosts("no links here, 10:30").is_empty());
+    }
+
     #[test]
     fn text_scanning_never_panics_on_arbitrary_text() {
         let mut x: u64 = 0x2545_f491_4f6c_dd1d;
@@ -2337,6 +2429,8 @@ mod tests {
                 .map(|_| atoms[(next() % atoms.len() as u64) as usize])
                 .collect();
             let _ = sensitive_value(&s);
+            let _ = typed_text_ok(&s);
+            let _ = web_url_hosts(&s);
             let _ = filter_response(
                 Kind::Plain,
                 json!({"item_loop": [{"text": s.clone()}], "sync_members": s.clone(),
