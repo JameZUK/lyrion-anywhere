@@ -1077,7 +1077,8 @@ impl Engine {
         if let (true, Some(out)) = (self.open, &self.ws_out) {
             let _ = out.send(msg);
         } else if let Out::Binary(frame) = msg {
-            // Held until the session resumes; acknowledgements are only useful live. An
+            // Held until the session resumes; acknowledgements are only useful live, and so
+            // are heartbeats (`push_outbox` never holds an `STMt`). An
             // `STMo` sent while the track is still arriving is an underrun mid-track (the
             // core's `output_underrun`), as opposed to the one sent in place of `STMu` once
             // everything received has played out: only the first may be dropped on a

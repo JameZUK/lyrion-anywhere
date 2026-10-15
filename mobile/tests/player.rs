@@ -1529,6 +1529,105 @@ async fn a_90_second_gap_across_a_boundary_is_covered_and_the_session_resumes() 
     r.player.stop();
 }
 
+/// The jiffies of every `STMt` LMS has received, oldest first.
+fn heartbeat_jiffies(r: &Rig) -> Vec<u32> {
+    r.h.lms
+        .slim_payloads(b"STAT")
+        .iter()
+        .filter_map(|p| anywhere_core::proto::Stat::parse(p).ok())
+        .filter(|s| &s.event == b"STMt")
+        .map(|s| s.jiffies)
+        .collect()
+}
+
+/// Regression (live, 2026-10-15): when the session resumed after a long gap, the player
+/// sent every heartbeat it had held meanwhile (about 250 after four minutes), all at once;
+/// LMS re-based its clock for the player on each, a second apart, and the sync group's play
+/// points went wrong. Across a 30 s gap, LMS hears only the gateway's heartbeats while the
+/// phone is away and then fresh ones from the phone: nothing older than what it was
+/// already told. The events of the track change in the gap (the next track's `STMs` and
+/// `STMd`) still come.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn held_heartbeats_are_not_sent_after_a_gap_but_events_are() {
+    let mut r = rig_opts(RigOpts {
+        proxy: true,
+        spool: true,
+        max_grace_s: Some(120),
+        ready_after_ms: Some(1000),
+        pace: Some(1.0),
+        ..RigOpts::default()
+    })
+    .await;
+    let rate = 22_050usize;
+    let t1 = flac::encode(rate as u32, 16, &flac::noise(rate * 6, 16, 51));
+    let t2 = flac::encode(rate as u32, 16, &flac::noise(rate * 60, 16, 52));
+    {
+        let mut s = r.h.lms.streams.lock().unwrap();
+        s.push_back(StreamPlan::whole(t1));
+        s.push_back(StreamPlan::whole(t2));
+    }
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMd", 1, 20).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("DSCO", 2, 20).await;
+    let pulled = r.pulled.clone();
+    wait_for("two seconds heard", move || pulled.frames() >= rate * 2).await;
+    assert_eq!(r.count("STMs"), 1, "track 2 starts only in the gap");
+    let statuses = r.obs.statuses.lock().unwrap().len();
+    let proxy = r.proxy.as_ref().unwrap();
+    proxy.set_down(true);
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert_eq!(r.count("STMs"), 1, "held until the session resumes");
+    // What LMS has been told of the player's clock so far (by the gateway, lately).
+    let told = heartbeat_jiffies(&r);
+    let latest = *told.iter().max().unwrap();
+    assert!(
+        told.len() > 20,
+        "the gateway kept LMS posted: {}",
+        told.len()
+    );
+    proxy.set_down(false);
+    let back = std::time::Instant::now();
+    wait_reconnected(&r, statuses, 20).await;
+    r.wait_event("STMs", 2, 10).await;
+    r.wait_event("STMd", 2, 10).await;
+    // A fresh heartbeat from the phone soon after the link is back.
+    loop {
+        let after = heartbeat_jiffies(&r);
+        if after[told.len()..].iter().any(|j| *j > latest) {
+            break;
+        }
+        assert!(
+            back.elapsed() < Duration::from_millis(2_500),
+            "no fresh heartbeat after the gap: {:?}",
+            &after[told.len()..]
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let after = heartbeat_jiffies(&r);
+    let stale: Vec<u32> = after[told.len()..]
+        .iter()
+        .copied()
+        .filter(|j| *j < latest)
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "{} heartbeats older than LMS already knew (latest {latest}): {stale:?}",
+        stale.len()
+    );
+    assert!(
+        after.len() - told.len() <= 8,
+        "a heartbeat a second, not a burst: {}",
+        after.len() - told.len()
+    );
+    assert_eq!(r.count("HELO"), 1, "resumed, not a new session");
+    r.stop_pulling();
+    r.player.stop();
+}
+
 /// A gap longer than what is buffered (the stream itself was slow, so little is on the
 /// phone): the audio runs out (`STMo`), and when the network is back the stream resumes
 /// where it was and playback recovers (`STMr`), with no audio lost or repeated.

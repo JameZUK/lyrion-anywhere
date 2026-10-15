@@ -660,13 +660,6 @@ impl Tracker {
             .map_or(0.0, |l| l.heard_ms as f64 / 1000.0)
     }
 
-    /// The duration of the current listen's track, once LMS has said which it is and if it
-    /// has a sensible one (for capping heartbeats while the client is away).
-    pub fn duration_ms(&self) -> Option<u64> {
-        let d = self.listen.as_ref()?.track.as_ref()?.duration?;
-        (d.is_finite() && d > 0.0).then(|| (d.min(crate::plays::MAX_SECONDS) * 1000.0) as u64)
-    }
-
     fn check(&mut self) -> Option<Step> {
         let l = self.listen.as_mut()?;
         let track = l.track.as_ref()?;
