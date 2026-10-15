@@ -2,6 +2,13 @@
 
 Dated entries, newest first.
 
+## 2026-10-15: README: the How-it-works diagram is a drawn SVG, and the docs are link-checked in CI
+
+The owner asked whether *How it works* was meant to be a diagram. It was a Mermaid block, which GitHub renders in an iframe 180 px tall: the text was too small to read, GitHub's zoom buttons sat over the Lyrion Music Server box, and on a phone the whole thing was a smudge. Other viewers (the GitHub app, package pages, plain Markdown renderers) show Mermaid as source.
+
+- **`docs/images/how-it-works.svg`:** a hand-drawn SVG, top to bottom so it reads at phone width, with the same content (the two apps on the internet, port 443 to the reverse proxy, the gateway's four jobs, LMS's three ports never forwarded, the plugin supervising the gateway). It follows the viewer's dark mode through a `prefers-color-scheme` media query inside the SVG, which browsers honour for an `<img>`. Checked in Chromium at 600 px in both schemes: every caption fits its box.
+- **`tools/check-docs.py`:** every relative link, `#anchor` and image in README.md, SPEC.md, CHANGELOG.md and docs/ must resolve (GitHub's heading slug rules, duplicate headings numbered, fenced code skipped), SVG images must parse, and nothing may point outside the repository. Its `--self-test` plants each kind of breakage in a temporary tree and proves it is reported. A new CI job, `docs`, runs both on every push.
+
 ## 2026-10-15: Plugin 0.5.0 and Android 1.15.3 released
 
 Plugin [0.5.0](https://github.com/JameZUK/lyrion-anywhere/releases/tag/v0.5.0) (the full-review fixes, *Your devices*, the sync-group and stand-in heartbeat fixes, the web player's media-element sync corrections and start fix, *Sync with…* in Play on…) and Android [1.15.3](https://github.com/JameZUK/lyrion-anywhere/releases/tag/android-v1.15.3) (*Your devices*, playing with the screen off, the audio-focus and network-flap fixes, the output clock on the Signal path, *Sync with…*, Wi-Fi-only downloads by default). Notes: `docs/release-notes/v0.5.0.md` and `docs/release-notes/android-1.15.3.md`. The plugin release is *Latest*; the Android release stays a pre-release so the repository URL keeps serving the plugin.

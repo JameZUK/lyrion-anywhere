@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 504" width="600" height="504" role="img" aria-labelledby="title desc">
+  <title id="title">How Lyrion Anywhere fits together</title>
+  <desc id="desc">The web app and the Android app on the internet speak HTTPS and secure WebSockets to a reverse proxy on your home network. The proxy forwards to the Lyrion Anywhere gateway, which signs devices in, passes allow-listed commands through, tunnels Slimproto and relays audio. The gateway talks Slimproto, JSON-RPC and the CLI to Lyrion Music Server, whose ports are never forwarded. The LMS plugin starts and supervises the gateway.</desc>
+  <style>
+    :root {
+      --group-fill: #f6f8fa;
+      --group-stroke: #d0d7de;
+      --group-label: #57606a;
+      --box-fill: #ffffff;
+      --box-stroke: #8c959f;
+      --text: #1f2328;
+      --sub: #57606a;
+      --line: #57606a;
+      --accent-fill: #ddf4ff;
+      --accent-stroke: #0969da;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --group-fill: #161b22;
+        --group-stroke: #30363d;
+        --group-label: #8b949e;
+        --box-fill: #0d1117;
+        --box-stroke: #6e7681;
+        --text: #e6edf3;
+        --sub: #8b949e;
+        --line: #8b949e;
+        --accent-fill: #0c2a4d;
+        --accent-stroke: #58a6ff;
+      }
+    }
+    text {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      fill: var(--text);
+    }
+    .group { fill: var(--group-fill); stroke: var(--group-stroke); stroke-width: 1; }
+    .group-label { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; fill: var(--group-label); }
+    .box { fill: var(--box-fill); stroke: var(--box-stroke); stroke-width: 1; }
+    .box.accent { fill: var(--accent-fill); stroke: var(--accent-stroke); stroke-width: 1.5; }
+    .name { font-weight: 600; text-anchor: middle; }
+    .sub { font-size: 12px; fill: var(--sub); text-anchor: middle; }
+    .edge { stroke: var(--line); stroke-width: 1.3; fill: none; marker-end: url(#arrow); }
+    .edge.dotted { stroke-dasharray: 3 3; }
+    .edge-label { font-size: 12px; fill: var(--sub); }
+    #arrow path { fill: var(--line); }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z"/>
+    </marker>
+  </defs>
+
+  <!-- Internet -->
+  <rect class="group" x="16" y="16" width="568" height="96" rx="8"/>
+  <text class="group-label" x="28" y="36">INTERNET</text>
+  <rect class="box" x="64" y="44" width="216" height="52" rx="6"/>
+  <text class="name" x="172" y="65">Web app (PWA)</text>
+  <text class="sub" x="172" y="84">phone, tablet or desktop browser</text>
+  <rect class="box" x="336" y="44" width="216" height="52" rx="6"/>
+  <text class="name" x="444" y="65">Android app</text>
+  <text class="sub" x="444" y="84">phone, tablet, Android Auto</text>
+
+  <!-- Clients to the proxy -->
+  <path class="edge" d="M 172 96 V 176"/>
+  <path class="edge" d="M 444 96 V 176"/>
+  <text class="edge-label" x="308" y="131" text-anchor="middle">HTTPS + WSS, port 443 only</text>
+
+  <!-- Home network -->
+  <rect class="group" x="16" y="140" width="568" height="348" rx="8"/>
+  <text class="group-label" x="28" y="160">YOUR HOME NETWORK</text>
+
+  <rect class="box" x="56" y="176" width="488" height="56" rx="6"/>
+  <text class="name" x="300" y="199">Reverse proxy</text>
+  <text class="sub" x="300" y="219">TLS on port 443 · nginx, Caddy, Traefik or a Cloudflare Tunnel</text>
+
+  <path class="edge" d="M 300 232 V 284"/>
+  <text class="edge-label" x="312" y="262">HTTP, on loopback or the LAN</text>
+
+  <rect class="box accent" x="56" y="284" width="488" height="60" rx="6"/>
+  <text class="name" x="300" y="308">Lyrion Anywhere gateway</text>
+  <text class="sub" x="300" y="328">sign-in · RPC allow-list · Slimproto tunnel · stream relay with replay</text>
+
+  <path class="edge" d="M 140 344 V 412"/>
+  <text class="edge-label" x="152" y="382">Slimproto · JSON-RPC · CLI</text>
+  <path class="edge dotted" d="M 460 412 V 344"/>
+  <text class="edge-label" x="448" y="374" text-anchor="end">the plugin starts and</text>
+  <text class="edge-label" x="448" y="390" text-anchor="end">supervises the gateway</text>
+
+  <rect class="box" x="56" y="412" width="488" height="60" rx="6"/>
+  <text class="name" x="300" y="436">Lyrion Music Server</text>
+  <text class="sub" x="300" y="456">Slimproto 3483 · HTTP 9000 · CLI 9090, never forwarded</text>
+</svg>

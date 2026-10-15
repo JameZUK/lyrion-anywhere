@@ -101,23 +101,9 @@ The detail, with request flows and sequence diagrams, is in [`docs/ARCHITECTURE.
 
 ## How it works
 
-```mermaid
-flowchart LR
-  subgraph Internet
-    WEB["Web app (PWA)"]
-    AND["Android app"]
-  end
-  subgraph Home["Your home network"]
-    RP["Reverse proxy<br/>TLS on :443"]
-    GW["Lyrion Anywhere gateway<br/>sign-in · RPC allow-list · Slimproto tunnel · stream relay"]
-    LMS["Lyrion Music Server<br/>:3483 Slimproto · :9000 HTTP · :9090 CLI"]
-  end
-  WEB -- "HTTPS + WSS" --> RP
-  AND -- "HTTPS + WSS" --> RP
-  RP -- "HTTP, loopback or LAN" --> GW
-  GW -- "Slimproto, JSON-RPC, CLI" --> LMS
-  LMS -. "the plugin starts and supervises the gateway" .-> GW
-```
+<p align="center">
+  <img src="docs/images/how-it-works.svg" alt="How it fits together: the web app and the Android app on the internet reach a reverse proxy on your home network over HTTPS and secure WebSockets on port 443 only. The proxy forwards to the Lyrion Anywhere gateway (sign-in, RPC allow-list, Slimproto tunnel, stream relay with replay), which talks Slimproto, JSON-RPC and the CLI to Lyrion Music Server, whose ports 3483, 9000 and 9090 are never forwarded. The LMS plugin starts and supervises the gateway." width="600">
+</p>
 
 - **Clients** speak only HTTPS and secure WebSockets, to your reverse proxy (nginx, Caddy, Traefik or a Cloudflare Tunnel).
 - **The gateway** is the only process the proxy forwards to. It signs devices in, passes allow-listed LMS commands through and scrubs the answers, tunnels each device's Slimproto player connection over a WebSocket (resuming it after a dropout), and relays audio with a replay window so a broken stream carries on from where it stopped.

@@ -50,6 +50,13 @@ jobs:
       - name: Core builds for WebAssembly (proto only)
         run: cargo build -p anywhere-core --no-default-features --target wasm32-unknown-unknown
 
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Documentation links, anchors and images resolve
+        run: python3 tools/check-docs.py --self-test && python3 tools/check-docs.py
+
   web:
     runs-on: ubuntu-latest
     steps:

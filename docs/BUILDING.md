@@ -47,6 +47,15 @@ cd apps/android && ./gradlew assembleDebug testDebugUnitTest lint
 
 The SDK, NDK and `cargo-ndk` set-up, release builds and build properties are in [`apps/android/README.md`](../apps/android/README.md).
 
+## Documentation
+
+```sh
+python3 tools/check-docs.py --self-test   # the checker catches a missing file, anchor and malformed SVG
+python3 tools/check-docs.py               # every relative link, anchor and image in README.md, SPEC.md, CHANGELOG.md and docs/ resolves
+```
+
+The README's *How it works* diagram is a hand-drawn SVG, `docs/images/how-it-works.svg`, with a `prefers-color-scheme` media query for dark mode; edit it as text and check both schemes in a browser.
+
 ## Try it without an LMS
 
 `tools/demo/run.sh` runs the real gateway and web app against an invented library (see [`tools/demo`](../tools/demo)); sign in at `http://127.0.0.1:19443` as `demo` / `demo-password-123`.
