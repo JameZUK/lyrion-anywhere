@@ -2481,6 +2481,37 @@ async fn losing_the_download_permission_deletes_the_cache() {
     r.player.stop();
 }
 
+/// H1 regression: Settings asking for the totals while no player holds the cache open
+/// (stopped, "Play on this phone" off) must not empty it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn totals_with_no_player_running_keep_the_cache() {
+    let mut r = cache_rig(true).await;
+    let track = flac::encode(44_100, 16, &flac::noise(44_100 * 2, 16, 78));
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(track.clone()));
+    r.send(audg_full()).await;
+    play_once(&mut r, 1).await;
+    let p = r.player.clone();
+    wait_for("kept", move || p.stream_cache_totals().count == 1).await;
+    r.stop_pulling();
+    r.player.stop();
+    let p = r.player.clone();
+    wait_for("stopped", move || !p.is_running()).await;
+    let cache = r.cache.clone().unwrap();
+    let dir = cache.to_string_lossy().into_owned();
+    // Nothing in this process holds the cache any more.
+    drop(r.player);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    for _ in 0..3 {
+        let t = anywhere_mobile::stream_cache_totals(r.session.clone(), dir.clone());
+        assert_eq!((t.count, t.bytes), (1, track.len() as u64));
+    }
+    assert_eq!(cache_files(&cache).len(), 1, "the file is still there");
+}
+
 /// Signing out (the gateway closes the player's socket with 1008) deletes the cache, as
 /// does the app's clean-up call; "Clear" and "Off" empty it too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
