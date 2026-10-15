@@ -18,6 +18,7 @@ const { Presentation } = await import(`./presentation.js${VQ}`);
 const { VisualTap } = await import(`./visual.js${VQ}`);
 const { planTrim } = await import(`./trim.js${VQ}`);
 const { LocalHold, effectiveOutput, parseLocal } = await import(`./local.js${VQ}`);
+const { MediaCorrections } = await import(`./media-sync.js${VQ}`);
 
 const TICK_MS = 20;
 // PCM queued in the worklet ahead of playback. Small, so pause/stop feel immediate.
@@ -92,10 +93,19 @@ let streamReceived = false;
 let outputMode = 'worklet';
 // Seconds of audio to keep queued in the media element: enough to ride out timer throttling
 // while the page is in the background, small enough that buffers stay modest.
+//
+// It is also how late LMS's sync corrections are heard in this mode: they are made in the
+// audio not yet appended (see media-sync.js), so the element plays this much first. They are
+// reported to the core at once, so LMS doesn't repeat them meanwhile; the group is only
+// audibly out of step for these seconds after a correction. Kept as it is: a shorter lead
+// risks the element running dry when iOS throttles a page in the background, which is the
+// reason this mode exists.
 const MEDIA_AHEAD_SECS = 8;
 let segmenter = null;
 let mediaVariant = 0; // init-segment variant the browser's self-test accepted
 let mediaWaiting = false; // flushed; waiting for the main thread's new timeline position
+// LMS's sync skips and pauses, made in the audio before muxing (see media-sync.js).
+const mediaCorrections = new MediaCorrections();
 // The visualiser (Wave 2 §4.1): analyses the PCM going out, only while the page shows it.
 const visual = new VisualTap((rate, channels) => new core.WasmVisualiser(rate, channels));
 
@@ -143,6 +153,7 @@ function flushOutput() {
   presentation.dropRuns();
   timedStart = false;
   localHold.onFlush(now());
+  mediaCorrections.reset();
   if (outputMode === 'media') {
     if (segmenter) {
       mediaWaiting = true;
@@ -221,7 +232,8 @@ onmessage = async (e) => {
       if (frames > 0) seekMark('audible');
       played += frames;
       const at = Number.isFinite(msg.at) ? Math.min(now(), Math.max(0, msg.at - performance.timeOrigin)) : now();
-      player.presented(frames, at);
+      // Less what a sync pause has already told the core of (see media-sync.js).
+      player.presented(mediaCorrections.report(frames), at);
     }
   } else if (msg.cmd === 'media-drained') {
     // Media mode: the element played everything appended (it is waiting for more). Count
@@ -390,16 +402,18 @@ function onFrames(data) {
 
 /**
  * Apply LMS's sync corrections at the output, where they take effect at once and exactly
- * rather than after the audio queued ahead: in the worklet (to the frame), or on the media
- * element (as near as it allows).
+ * rather than after the audio queued ahead: in the worklet (to the frame). The media element
+ * gets the timed start; its skips and pauses are made in the audio before muxing and
+ * reported at once (see media-sync.js), never by seeking or pausing the element, which
+ * stalls it on iPadOS for about as long as the correction gained.
  */
 function applyCorrections() {
   if (!player) return;
   for (const c of player.take_corrections()) {
     if (outputMode === 'media') {
       if (c.type === 'start') postMessage({ media: { startAt: performance.timeOrigin + c.at } });
-      else if (c.type === 'pause') postMessage({ media: { pauseFor: c.ms } });
-      else if (c.type === 'skip') postMessage({ media: { skip: c.ms } });
+      else if (c.type === 'pause') mediaPause(c.ms);
+      else if (c.type === 'skip') mediaSkip(c.ms);
       continue;
     }
     if (!sink || !readyRate) continue;
@@ -646,6 +660,26 @@ function workletTick() {
   }
 }
 
+/** Media mode: LMS's skip, as decoded audio dropped now and counted as presented. */
+function mediaSkip(ms) {
+  const rate = player.output_rate();
+  if (mediaWaiting || !rate) return;
+  const dropped = mediaCorrections.skip(ms, rate, player, now());
+  pulled += dropped;
+  played += dropped;
+  log(`sync: skipped ${ms} ms${dropped < Math.round((ms * rate) / 1000) ? ' (the rest as it is decoded)' : ''}`);
+}
+
+/** Media mode: LMS's pause, as silence in the audio; the core is told at once. */
+function mediaPause(ms) {
+  const rate = player.output_rate();
+  if (mediaWaiting || !segmenter || !rate || segmenter.rate() !== rate) return;
+  // The silence counts as queued audio, or each pause would lengthen the lead for good.
+  pulled += mediaCorrections.pause(ms, rate, segmenter, player.pulled_track());
+  postSegment(segmenter.segment());
+  log(`sync: paused ${ms} ms`);
+}
+
 function postSegment(bytes) {
   if (!bytes) return;
   postMessage({ media: { segment: bytes } }, [bytes.buffer]);
@@ -674,6 +708,12 @@ function mediaTick(output) {
       segmenter.set_variant(mediaVariant);
     }
     postMessage({ media: { init: segmenter.init_segment(), span: { at: segmenter.emitted_seconds(), rate } } });
+  }
+  // The rest of a sync skip that was more than the core had decoded.
+  if (mediaCorrections.pendingSkip > 0) {
+    const dropped = mediaCorrections.dropDue(player, now());
+    pulled += dropped;
+    played += dropped;
   }
   let exhausted = false;
   while (pulled - played < rate * MEDIA_AHEAD_SECS) {

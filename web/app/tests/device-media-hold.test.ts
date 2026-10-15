@@ -45,9 +45,14 @@ class FakeBuffered {
 	}
 }
 class FakeSourceBuffer extends EventTarget {
+	static last: FakeSourceBuffer | null = null;
+	constructor() {
+		super();
+		FakeSourceBuffer.last = this;
+	}
 	mode = '';
 	updating = false;
-	buffered = new FakeBuffered();
+	buffered: { length: number; start(i: number): number; end(i: number): number } = new FakeBuffered();
 	appendBuffer() {}
 	remove() {}
 	abort() {}
@@ -149,4 +154,24 @@ test('…but one held by a pause made here stays paused', async () => {
 	device.local({ release: 'now' });
 	w.say({ media: { play: true } });
 	expect(element().paused).toBe(false);
+});
+
+// Regression: LMS's sync corrections used to seek the element (a skip) or pause it (a pause).
+// On iPadOS a seek stalls the element while it refills, losing about what the skip gained, so
+// LMS asked again at every check and the iPad dropped out every two seconds. The worker now
+// makes them in the audio before muxing; the page must never seek or pause for them.
+test('sync corrections never seek or pause the element', async () => {
+	const w = await playing();
+	const a = element();
+	FakeSourceBuffer.last!.buffered = { length: 1, start: () => 0, end: () => 20 };
+	let t = 5;
+	const seeks: number[] = [];
+	Object.defineProperty(a, 'currentTime', { configurable: true, get: () => t, set: (v: number) => void seeks.push((t = v)) });
+	const pause = vi.spyOn(a, 'pause');
+	w.say({ media: { skip: 160 } });
+	w.say({ media: { pauseFor: 160 } });
+	await settle();
+	expect(seeks).toEqual([]);
+	expect(pause).not.toHaveBeenCalled();
+	expect(a.paused).toBe(false);
 });
