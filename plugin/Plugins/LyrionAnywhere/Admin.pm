@@ -12,6 +12,7 @@ use warnings;
 
 use File::Spec::Functions qw(catfile);
 use JSON::XS::VersionOneAndTwo;
+use MIME::Base64 ();
 
 use Slim::Networking::SimpleAsyncHTTP;
 use Slim::Utils::Log;
@@ -34,6 +35,51 @@ sub valid_device_name {
 	(my $t = $n) =~ s/\A\s+|\s+\z//g;
 	return length($t) >= 1 && length($t) <= 64 && $n !~ /[\x00-\x1f\x7f]/;
 }
+
+# --- Cloudflare Tunnel inputs (docs/plans/cloudflare-tunnel.md, "Inputs") ----------------
+# The gateway checks them all again; these keep anything malformed from being sent at all.
+
+# A public hostname for the tunnel, already lower-cased: 4-253 characters, two or more DNS
+# labels of a-z 0-9 - (1-63 each, no leading or trailing -), no trailing dot, port or path,
+# not an IP address, and not under Cloudflare's own tunnel domains.
+sub valid_hostname {
+	my $h = shift;
+	return 0 if !defined $h || ref $h;
+	$h = lc $h;
+	return 0 unless length($h) >= 4 && length($h) <= 253;
+	return 0 unless $h =~ /\A[a-z0-9-]+(?:\.[a-z0-9-]+)+\z/;
+	for my $label (split /\./, $h, -1) {
+		return 0 unless $label =~ /\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\z/;
+	}
+	# An IPv4 address (or anything ending in a numeric "top-level domain", which none is).
+	return 0 if $h =~ /\.[0-9]+\z/;
+	return 0 if $h =~ /(?:\A|\.)(?:trycloudflare\.com|cfargotunnel\.com)\z/;
+	return 1;
+}
+
+# A tunnel token as Cloudflare's dashboard shows it: 64-4096 characters of base64 (standard
+# or URL alphabet, padding optional) holding a JSON object with "a", "t" and "s". Only the
+# shape is checked here; the gateway checks the fields themselves.
+sub valid_tunnel_token {
+	my $t = shift;
+	return 0 if !defined $t || ref $t;
+	return 0 unless length($t) >= 64 && length($t) <= 4096;
+	return 0 unless $t =~ /\A[A-Za-z0-9+\/_-]+={0,2}\z/;
+	(my $std = $t) =~ tr{-_}{+/};
+	$std =~ s/=+\z//;
+	return 0 if length($std) % 4 == 1;
+	$std .= '=' x ((4 - length($std) % 4) % 4);
+	my $json = MIME::Base64::decode_base64($std);
+	my $data = eval { decode_json($json) };
+	return 0 unless ref $data eq 'HASH';
+	for my $k (qw(a t s)) {
+		return 0 unless defined $data->{$k} && !ref $data->{$k} && length $data->{$k};
+	}
+	return 1;
+}
+
+# A Cloudflare API token: 20-128 characters of A-Z a-z 0-9 _ -.
+sub valid_api_token { my $t = shift; return defined $t && !ref $t && $t =~ /\A[A-Za-z0-9_-]{20,128}\z/ }
 
 sub valid_password {
 	my $p = shift;
@@ -76,7 +122,39 @@ my %OPS = (
 	plugins      => ['GET',  '/admin/v1/plugins'],
 	plugins_admin_only => ['POST', '/admin/v1/plugins', [qw(commands)],
 	                 sub { { admin_only => [grep { length } split /,/, $_[0]{commands} // ''] } }],
+	# Cloudflare Tunnel (docs/plans/cloudflare-tunnel.md, "Build contract"). The status and
+	# log are reads but still need the page's token (they hold the public hostname and log).
+	tunnel_status  => ['GET',  '/admin/v1/tunnel'],
+	tunnel_log     => ['GET',  '/admin/v1/tunnel/log'],
+	tunnel_install => ['POST', '/admin/v1/tunnel/install'],
+	tunnel_update  => ['POST', '/admin/v1/tunnel/update'],
+	tunnel_register => ['POST', '/admin/v1/tunnel/register', [qw(token hostname)],
+	                 sub { { token => $_[0]{token}, hostname => lc $_[0]{hostname} } }],
+	# replace_dns is optional: left out, an existing DNS record is reported, not replaced.
+	tunnel_create  => ['POST', '/admin/v1/tunnel/create', [qw(api_token hostname)],
+	                 sub { { api_token => $_[0]{api_token}, hostname => lc $_[0]{hostname},
+	                         replace_dns => ($_[0]{replace_dns} ? \1 : \0) } }, [qw(replace_dns)]],
+	tunnel_start   => ['POST', '/admin/v1/tunnel/start'],
+	tunnel_stop    => ['POST', '/admin/v1/tunnel/stop'],
+	tunnel_quick   => ['POST', '/admin/v1/tunnel/quick'],
+	tunnel_remove  => ['POST', '/admin/v1/tunnel/remove'],
 );
+
+# Arguments that are secrets: never logged, never put in a result, and masked out of any
+# message (even the gateway's own) before it is shown or logged.
+my @SECRET_ARGS = qw(password token api_token);
+
+# $text with every secret argument's value replaced, so nothing passes one on by accident.
+sub redact {
+	my ($text, $args) = @_;
+	return $text unless defined $text && ref $args eq 'HASH';
+	for my $k (@SECRET_ARGS) {
+		my $v = $args->{$k};
+		next unless defined $v && !ref $v && length $v >= 4;
+		$text =~ s/\Q$v\E/[hidden]/g;
+	}
+	return $text;
+}
 
 sub operations { return sort keys %OPS }
 
@@ -112,6 +190,10 @@ my %CHECK = (
 		my @c = grep { length } split /,/, $v;
 		return @c <= 200 && !grep { length > 64 } @c;
 	},
+	hostname    => \&valid_hostname,
+	token       => \&valid_tunnel_token,
+	api_token   => \&valid_api_token,
+	replace_dns => sub { my $v = $_[0]; defined $v && !ref $v && $v =~ /\A[01]\z/ },
 );
 
 my %MESSAGE = (
@@ -127,6 +209,10 @@ my %MESSAGE = (
 	limit    => 'limit must be 1-1000',
 	days     => 'the sign-in lifetime must be 1-365 days',
 	commands => 'plugin commands are comma-separated words of A-Z a-z 0-9 _ - (at most 200)',
+	hostname => 'the hostname must be a full domain name such as music.example.com: letters, digits and hyphens, with no port, path, trailing dot or IP address, and not under trycloudflare.com or cfargotunnel.com',
+	token    => 'that is not a tunnel token: paste the long token Cloudflare shows for the tunnel (Networks > Tunnels > your tunnel), all of it and nothing else',
+	api_token => 'that is not a Cloudflare API token: it should be 20-128 characters of letters, digits, _ and -',
+	replace_dns => 'replace_dns must be 0 or 1',
 );
 
 # Returns ($method, $path, $body_or_undef) or dies with a user-readable message.
@@ -184,8 +270,10 @@ sub call {
 		},
 		sub {
 			my ($http, $error, $res) = @_;
-			$log->warn("admin API $op failed: " . ($error // 'unknown error'));
-			$err->(_friendly($error, gateway_message($res, $http)));
+			# Only the operation and the transport's error are logged, never the arguments;
+			# redact() guards against a secret echoed back in either.
+			$log->warn(redact("admin API $op failed: " . ($error // 'unknown error'), $args));
+			$err->(redact(_friendly($error, gateway_message($res, $http)), $args));
 		},
 		{ timeout => TIMEOUT },
 	);
