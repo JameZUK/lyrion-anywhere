@@ -483,7 +483,13 @@ impl Gateway {
 
     /// End any live session for these devices (after revocation), then have LMS forget the
     /// players of every device revoked so far, so revoked devices don't pile up as players.
+    /// The menu actions LMS offered them are forgotten too: nothing learned by a revoked
+    /// device may pass to whatever later holds its id.
     pub async fn end_sessions_for(self: &Arc<Self>, device_ids: &[i64]) {
+        self.menu_actions
+            .lock()
+            .unwrap()
+            .retain(|id, _| !device_ids.contains(id));
         let doomed: Vec<Arc<Session>> = self
             .sessions
             .lock()

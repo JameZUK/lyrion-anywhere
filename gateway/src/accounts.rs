@@ -9,7 +9,8 @@
 //!   a short grace for lost responses and concurrent refreshes; see [`Accounts::refresh`]).
 //! - Each device has its own player MAC (locally administered, `02:4c:41:…`).
 //! - Failed logins and pairing attempts are rate-limited with escalating lockouts:
-//!   - per client address, a hard lock;
+//!   - per client address, a hard lock. A success clears only the failures of the user
+//!     who signed in, so an attacker with an account of their own can't reset the lock;
 //!   - per username (and for pairing, across all clients), a soft one: once it trips, the
 //!     clients that failed are refused, and the others share a small budget of
 //!     [`THROTTLED_ATTEMPTS`] a minute. So an attacker can't lock a user out from
@@ -23,7 +24,8 @@
 //!   forgotten, and their rows pruned after [`REVOKED_DEVICE_RETENTION`].
 //! - Optional two-step verification (TOTP, RFC 6238) per user: once enabled, a login needs a
 //!   current code as well as the password. Codes are single use, and wrong codes count
-//!   towards the same lockouts as wrong passwords.
+//!   towards the same lockouts as wrong passwords. So does the right password without a
+//!   code: it costs a password check like any other attempt.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -101,6 +103,9 @@ pub const REFRESH_WINDOW: Duration = Duration::from_secs(60);
 pub const MAX_ACCESS_PER_DEVICE: usize = 8;
 /// Used refresh tokens kept per device for reuse detection (newest first).
 const KEEP_USED_REFRESH: i64 = 32;
+/// Unused refresh tokens kept per device when it signs in again (newest first): the
+/// earlier ones belong to sign-ins the client has replaced.
+const KEEP_UNUSED_REFRESH: i64 = 4;
 /// Revoked devices' players waiting to be forgotten by LMS (beyond this, oldest dropped).
 const FORGET_QUEUE_CAP: usize = 1000;
 /// A device name that has nothing usable left after cleaning.
@@ -434,6 +439,10 @@ struct Lock {
     failed_clients: HashSet<String>,
     budget_start: Instant,
     budget_used: u32,
+    /// Hard keys: how many of `failures` each username's attempts made, so a success
+    /// clears only that user's own (at most [`FAILED_CLIENTS_CAP`] users; failures beyond
+    /// that are nobody's and stay until the window ends).
+    by_user: HashMap<String, u32>,
 }
 
 impl Lock {
@@ -447,12 +456,14 @@ impl Lock {
             failed_clients: HashSet::new(),
             budget_start: now,
             budget_used: 0,
+            by_user: HashMap::new(),
         }
     }
 
     fn roll_window(&mut self, now: Instant) {
         if now.duration_since(self.window_start) > FAILURE_WINDOW {
             self.failures = 0;
+            self.by_user.clear();
             self.window_start = now;
             if !self.locked(now) {
                 self.failed_clients.clear();
@@ -525,12 +536,21 @@ struct Attempt<'a> {
     keys: Vec<String>,
     /// A soft key and the client making the attempt (see [`Accounts::begin_attempt`]).
     soft: Option<(String, String)>,
+    /// The username the attempt was for, if it names one that can exist: its failures on
+    /// the hard keys are its own, cleared by its own success (see [`Attempt::by`]).
+    who: Option<String>,
     done: bool,
 }
 
 impl Attempt<'_> {
     fn all_keys(&self) -> impl Iterator<Item = &String> {
         self.keys.iter().chain(self.soft.as_ref().map(|(k, _)| k))
+    }
+
+    /// Attribute the attempt to `username`.
+    fn by(mut self, username: &str) -> Self {
+        self.who = Some(username.to_string());
+        self
     }
 
     fn release(&self, limits: &mut HashMap<String, Lock>) {
@@ -541,30 +561,59 @@ impl Attempt<'_> {
         }
     }
 
-    fn failed(mut self) {
+    fn failed(self) {
+        self.count_failure(true);
+    }
+
+    /// The right password without the two-step code it needs: counted against the hard
+    /// keys like a failure, so whoever knows the password can't have it checked without
+    /// limit (each check a full hash, holding a permit). Not against the soft key: the
+    /// usual two-step sign-in asks without a code first, and while someone else's wrong
+    /// guesses throttle the username, that must not make the owner's address one that
+    /// failed. The owner's success then clears it.
+    fn needs_code(self) {
+        self.count_failure(false);
+    }
+
+    fn count_failure(mut self, soft_too: bool) {
         self.done = true;
         let mut limits = self.accounts.limits.lock().unwrap();
         let now = Instant::now();
         self.release(&mut limits);
-        for k in self.all_keys() {
-            record_failure_in(&mut limits, k, now);
+        for k in &self.keys {
+            record_failure_in(&mut limits, k, self.who.as_deref(), now);
         }
-        if let Some((k, client)) = &self.soft
-            && let Some(l) = limits.get_mut(k)
-            && l.failed_clients.len() < FAILED_CLIENTS_CAP
-        {
-            l.failed_clients.insert(client.clone());
+        if !soft_too {
+            return;
+        }
+        if let Some((k, client)) = &self.soft {
+            record_failure_in(&mut limits, k, None, now);
+            if let Some(l) = limits.get_mut(k)
+                && l.failed_clients.len() < FAILED_CLIENTS_CAP
+            {
+                l.failed_clients.insert(client.clone());
+            }
         }
     }
 
-    /// Clears the client's own record. A soft key stays locked if it is (the attacker's
-    /// failures still count), but this client is no longer one that failed.
+    /// Clears the user's own failures from the hard keys. An address's failures for other
+    /// usernames (or for none) still count: an attacker with an account of their own must
+    /// not be able to reset the address's lock by signing in to it. A soft key stays
+    /// locked if it is (the attacker's failures still count), but this client is no longer
+    /// one that failed.
     fn succeeded(mut self) {
         self.done = true;
         let mut limits = self.accounts.limits.lock().unwrap();
         self.release(&mut limits);
         for k in &self.keys {
-            limits.remove(k);
+            if let Some(l) = limits.get_mut(k) {
+                let own = self
+                    .who
+                    .as_ref()
+                    .and_then(|w| l.by_user.remove(w))
+                    .unwrap_or(0);
+                l.failures = l.failures.saturating_sub(own);
+            }
         }
         if let Some((k, client)) = &self.soft
             && let Some(l) = limits.get_mut(k)
@@ -610,7 +659,13 @@ fn make_room(limits: &mut HashMap<String, Lock>, now: Instant) {
     }
 }
 
-fn record_failure_in(limits: &mut HashMap<String, Lock>, key: &str, now: Instant) {
+/// Count a failure against `key`, made by `who` (a username) if known.
+fn record_failure_in(
+    limits: &mut HashMap<String, Lock>,
+    key: &str,
+    who: Option<&str>,
+    now: Instant,
+) {
     if !limits.contains_key(key) {
         make_room(limits, now);
     }
@@ -626,6 +681,11 @@ fn record_failure_in(limits: &mut HashMap<String, Lock>, key: &str, now: Instant
         l.locked_until = Some(now + lock);
         l.lockouts += 1;
         l.failures = 0;
+        l.by_user.clear();
+    } else if let Some(w) = who
+        && (l.by_user.len() < FAILED_CLIENTS_CAP || l.by_user.contains_key(w))
+    {
+        *l.by_user.entry(w.to_string()).or_insert(0) += 1;
     }
 }
 
@@ -790,7 +850,7 @@ impl Accounts {
                disabled INTEGER NOT NULL DEFAULT 0,
                created_at INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS devices (
-               id INTEGER PRIMARY KEY,
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                name TEXT NOT NULL,
                mac TEXT NOT NULL UNIQUE,
@@ -990,6 +1050,7 @@ impl Accounts {
         let soft = known_form.then(|| (format!("user:{username}"), client_key.clone()));
         let attempt = self.begin_attempt(vec![client_key], soft)?;
         if !known_form {
+            // Nobody's failure: no success clears it.
             attempt.failed();
             self.audit("login.failed", None, None, client);
             return Err(AuthError::Invalid);
@@ -1004,6 +1065,7 @@ impl Accounts {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?;
+        let attempt = attempt.by(username);
         // Verify even for unknown users, so timing doesn't reveal which usernames exist.
         let hash = row
             .as_ref()
@@ -1021,7 +1083,12 @@ impl Accounts {
         };
         match self.second_factor(user.0, totp)? {
             SecondFactor::Off | SecondFactor::Accepted => {}
-            SecondFactor::Missing => return Err(AuthError::TotpRequired),
+            // Counted against the address (see `Attempt::needs_code`) and audited.
+            SecondFactor::Missing => {
+                attempt.needs_code();
+                self.audit("login.totp_required", Some(username), None, client);
+                return Err(AuthError::TotpRequired);
+            }
             SecondFactor::Wrong => {
                 attempt.failed();
                 self.audit("login.totp_failed", Some(username), None, client);
@@ -1104,7 +1171,7 @@ impl Accounts {
                 return Err(AuthError::Locked(Duration::from_secs(wait as u64)));
             }
         }
-        match self.confirm_password(user, username, password) {
+        match self.confirm_password(user, username, device, password) {
             Ok(attempt) => drop(attempt),
             Err(e) => {
                 if e == AuthError::Invalid {
@@ -1525,7 +1592,8 @@ impl Accounts {
     pub fn logout(&self, access_token: &str) -> Result<Option<i64>, AuthError> {
         match self.authenticate(access_token) {
             Some(p) => {
-                self.revoke_device(p.device_id)?;
+                // Signed out by itself: the audit names it as the device that acted.
+                self.revoke(p.device_id, Some((p.user_id, &p.username, p.device_id)))?;
                 self.audit("logout", Some(&p.username), Some(p.device_id), "");
                 Ok(Some(p.device_id))
             }
@@ -1584,16 +1652,21 @@ impl Accounts {
         })
     }
 
-    /// Check a signed-in user's own password (for account changes), rate-limited per user
-    /// with a lock of its own: only the user's own devices can trip it, and sign-in failures
-    /// (which anyone can cause) don't block it.
+    /// Check a signed-in user's own password (for account changes) from one of their
+    /// devices, rate-limited per user and device with a lock of its own: sign-in failures
+    /// (which anyone can cause) don't block it, and nor do wrong guesses made with another
+    /// of the user's devices (keyed per user, a stolen access token could lock the owner
+    /// out of account changes everywhere for up to a day).
     fn confirm_password(
         &self,
         user: i64,
         username: &str,
+        device: i64,
         password: &str,
     ) -> Result<Attempt<'_>, AuthError> {
-        let attempt = self.begin_attempt(vec![format!("confirm:{username}")], None)?;
+        let attempt = self
+            .begin_attempt(vec![confirm_key(user, device)], None)?
+            .by(username);
         let hash: String = self.db.lock().unwrap().query_row(
             "SELECT password_hash FROM users WHERE id = ?1",
             [user],
@@ -1615,9 +1688,10 @@ impl Accounts {
         &self,
         user: i64,
         username: &str,
+        device: i64,
         password: &str,
     ) -> Result<TotpSetup, AuthError> {
-        match self.confirm_password(user, username, password) {
+        match self.confirm_password(user, username, device, password) {
             Ok(attempt) => drop(attempt),
             Err(e) => {
                 if e == AuthError::Invalid {
@@ -1669,10 +1743,11 @@ impl Accounts {
         &self,
         user: i64,
         username: &str,
+        device: i64,
         password: &str,
         code: &str,
     ) -> Result<(), AuthError> {
-        let attempt = match self.confirm_password(user, username, password) {
+        let attempt = match self.confirm_password(user, username, device, password) {
             Ok(a) => a,
             Err(e) => {
                 if e == AuthError::Invalid {
@@ -1757,10 +1832,12 @@ impl Accounts {
         }
         let username = req.username;
         let client_key = format!("client:{client}");
-        let attempt = self.begin_attempt(
-            vec![format!("confirm:{username}"), client_key.clone()],
-            Some((format!("user:{username}"), client_key)),
-        )?;
+        let attempt = self
+            .begin_attempt(
+                vec![confirm_key(req.user, req.device), client_key.clone()],
+                Some((format!("user:{username}"), client_key)),
+            )?
+            .by(username);
         // Disabled (or deleted) since the token was issued: refused like a wrong token.
         let hash: String = self
             .db
@@ -1785,8 +1862,17 @@ impl Accounts {
         }
         match self.second_factor(req.user, req.code)? {
             SecondFactor::Off | SecondFactor::Accepted => {}
-            // The password was right: neither a failure nor a success.
-            SecondFactor::Missing => return Err(AuthError::TotpRequired),
+            // The password was right; counted as at sign-in (see `Attempt::needs_code`).
+            SecondFactor::Missing => {
+                attempt.needs_code();
+                self.audit(
+                    "password.change_totp_required",
+                    Some(username),
+                    Some(req.device),
+                    client,
+                );
+                return Err(AuthError::TotpRequired);
+            }
             SecondFactor::Wrong => {
                 attempt.failed();
                 self.audit(
@@ -2173,8 +2259,9 @@ impl Accounts {
     }
 
     /// Revoke a device; with `owner` (user id and name), only if it is that user's.
-    /// `owner`: a user signing out one of their own devices, from another (user id, name,
-    /// the device acting); `None` for an admin or the system.
+    /// `owner`: a user signing out one of their own devices, from another or itself (user
+    /// id, name, the device acting); `None` for an admin or the system. A device already
+    /// revoked (or missing) is left alone either way.
     fn revoke(&self, device_id: i64, owner: Option<(i64, &str, i64)>) -> Result<bool, AuthError> {
         let n = {
             let db = self.db.lock().unwrap();
@@ -2183,21 +2270,21 @@ impl Accounts {
                  WHERE id = ?1 AND revoked = 0 AND (?3 IS NULL OR user_id = ?3)",
                 params![device_id, now_secs(), owner.map(|(id, _, _)| id)],
             )?;
-            if n == 0 && owner.is_some() {
-                // Not this user's (or already gone): touch nothing of anyone else's.
+            if n == 0 {
+                // Already revoked, or not this user's, or no such device: touch nothing
+                // (on the admin path as on the owner's).
                 return Ok(false);
             }
-            if n > 0 {
-                let mac: String =
-                    db.query_row("SELECT mac FROM devices WHERE id = ?1", [device_id], |r| {
-                        r.get(0)
-                    })?;
-                let mut q = self.forget.lock().unwrap();
-                if q.len() >= FORGET_QUEUE_CAP {
-                    q.pop_front();
-                }
-                q.push_back(mac);
+            let mac: String =
+                db.query_row("SELECT mac FROM devices WHERE id = ?1", [device_id], |r| {
+                    r.get(0)
+                })?;
+            let mut q = self.forget.lock().unwrap();
+            if q.len() >= FORGET_QUEUE_CAP {
+                q.pop_front();
             }
+            q.push_back(mac);
+            drop(q);
             db.execute(
                 "DELETE FROM refresh_tokens WHERE device_id = ?1",
                 [device_id],
@@ -2213,17 +2300,15 @@ impl Accounts {
             .unwrap()
             .retain(|_, e| e.principal.device_id != device_id);
         self.seen.lock().unwrap().remove(&device_id);
-        if n > 0 {
-            match owner {
-                // Signed out by its own user, from one of their devices: which one.
-                Some((_, username, from)) => self.audit(
-                    "device.revoked",
-                    Some(username),
-                    Some(device_id),
-                    &format!("self from {from}"),
-                ),
-                None => self.audit("device.revoked", None, Some(device_id), ""),
-            }
+        match owner {
+            // Signed out by its own user, from one of their devices (or itself): which one.
+            Some((_, username, from)) => self.audit(
+                "device.revoked",
+                Some(username),
+                Some(device_id),
+                &format!("self from {from}"),
+            ),
+            None => self.audit("device.revoked", None, Some(device_id), ""),
         }
         Ok(n > 0)
     }
@@ -2551,10 +2636,30 @@ impl Accounts {
         Err(AuthError::Storage("could not allocate a player MAC".into()))
     }
 
-    /// Issue a fresh access + refresh pair for a device.
+    /// Issue a fresh access + refresh pair for a device (signing in, new or again). The
+    /// device's unused refresh tokens beyond the newest [`KEEP_UNUSED_REFRESH`] go, with
+    /// their access tokens: they belong to sign-ins the client has replaced, and only
+    /// expiry removed them, so signing in over and over grew the table without bound.
     fn issue(&self, device: i64) -> Result<Tokens, AuthError> {
         let db = self.db.lock().unwrap();
         let minted = mint(&db, device, now_secs())?;
+        let stale: Vec<Vec<u8>> = {
+            let mut st = db.prepare(
+                "SELECT token_hash FROM refresh_tokens WHERE device_id = ?1 AND used = 0
+                 ORDER BY rowid DESC LIMIT -1 OFFSET ?2",
+            )?;
+            st.query_map(params![device, KEEP_UNUSED_REFRESH], |r| r.get(0))?
+                .collect::<Result<_, _>>()?
+        };
+        for h in &stale {
+            db.execute("DELETE FROM refresh_tokens WHERE token_hash = ?1", [h])?;
+        }
+        if !stale.is_empty() {
+            self.access
+                .lock()
+                .unwrap()
+                .retain(|_, e| !stale.iter().any(|s| s[..] == e.refresh[..]));
+        }
         Ok(self.activate(minted))
     }
 
@@ -2670,6 +2775,7 @@ impl Accounts {
             accounts: self,
             keys,
             soft,
+            who: None,
             done: false,
         })
     }
@@ -2764,6 +2870,11 @@ struct Minted {
     refresh_ttl: u64,
 }
 
+/// The rate-limit key for a user's account changes from one of their devices.
+fn confirm_key(user: i64, device: i64) -> String {
+    format!("confirm:{user}:{device}")
+}
+
 fn session_days_on(db: &Connection) -> u32 {
     db.query_row(
         "SELECT value FROM settings WHERE key = 'session_days'",
@@ -2846,11 +2957,23 @@ fn mint(db: &Connection, device: i64, now: i64) -> Result<Minted, AuthError> {
 /// Bring the schema up to date in one transaction: a migration that fails half-way leaves
 /// the database exactly as it was (SQLite's schema changes and `user_version` are both
 /// transactional), to be tried again on the next start.
+///
+/// Foreign keys are off while it runs (SQLite ignores the switch inside a transaction, so
+/// it is set around it): a step that rebuilds a table drops the old one, which with them
+/// on would delete every row that refers to it. Such a step checks the references itself.
 fn migrate(db: &Connection) -> Result<(), AuthError> {
-    let tx = db.unchecked_transaction()?;
-    migrate_steps(&tx)?;
-    tx.commit()?;
-    Ok(())
+    let fk: i64 = db.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+    db.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    let r = (|| {
+        let tx = db.unchecked_transaction()?;
+        migrate_steps(&tx)?;
+        tx.commit()?;
+        Ok(())
+    })();
+    if fk != 0 {
+        db.execute_batch("PRAGMA foreign_keys = ON;")?;
+    }
+    r
 }
 
 fn migrate_steps(db: &Connection) -> Result<(), AuthError> {
@@ -3049,11 +3172,76 @@ fn migrate_steps(db: &Connection) -> Result<(), AuthError> {
              PRAGMA user_version = 12;",
         )?;
     }
+    if version < 13 {
+        // Device ids are never reused (AUTOINCREMENT). Without it SQLite hands a new
+        // device the id of the newest one once that is deleted (a deleted user, a pruned
+        // revocation), and what is keyed by the id (learned menu actions, audit rows)
+        // would pass to it. SQLite can't add AUTOINCREMENT to a table, so it is rebuilt
+        // with every row and id kept; the references to it (refresh tokens, diagnostics)
+        // carry over by name. Safe to run again: skipped once the table has it.
+        let sql: String = db.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'devices'",
+            [],
+            |r| r.get(0),
+        )?;
+        if !sql.contains("AUTOINCREMENT") {
+            let fk: i64 = db.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+            if fk != 0 {
+                // Dropping the old table would cascade to every token and report.
+                return Err(AuthError::Storage(
+                    "rebuilding devices needs foreign keys off".into(),
+                ));
+            }
+            db.execute_batch(
+                "CREATE TABLE devices_new (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                   name TEXT NOT NULL,
+                   mac TEXT NOT NULL UNIQUE,
+                   created_at INTEGER NOT NULL,
+                   last_seen INTEGER,
+                   revoked INTEGER NOT NULL DEFAULT 0,
+                   revoked_at INTEGER,
+                   last_addr TEXT,
+                   client_kind TEXT,
+                   client_platform TEXT,
+                   user_agent TEXT);
+                 INSERT INTO devices_new (id, user_id, name, mac, created_at, last_seen,
+                   revoked, revoked_at, last_addr, client_kind, client_platform, user_agent)
+                 SELECT id, user_id, name, mac, created_at, last_seen,
+                   revoked, revoked_at, last_addr, client_kind, client_platform, user_agent
+                 FROM devices;
+                 DROP TABLE devices;
+                 ALTER TABLE devices_new RENAME TO devices;",
+            )?;
+            for table in ["refresh_tokens", "device_diagnostics"] {
+                let exists: i64 = db.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |r| r.get(0),
+                )?;
+                if exists == 0 {
+                    continue;
+                }
+                let broken: i64 = db.query_row(
+                    "SELECT count(*) FROM pragma_foreign_key_check(?1)",
+                    [table],
+                    |r| r.get(0),
+                )?;
+                if broken > 0 {
+                    return Err(AuthError::Storage(format!(
+                        "rebuilding devices broke references in {table}"
+                    )));
+                }
+            }
+        }
+        db.execute_batch("PRAGMA user_version = 13;")?;
+    }
     Ok(())
 }
 
 /// The schema version [`migrate`] brings a database to.
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -4313,7 +4501,7 @@ mod tests {
 
     fn enrol(a: &Accounts, username: &str) {
         let id = user_id(a, username);
-        let setup = a.totp_begin(id, username, PW).unwrap();
+        let setup = a.totp_begin(id, username, 1, PW).unwrap();
         assert_eq!(setup.secret.len(), 32, "160-bit secret in base32");
         assert!(setup.uri.starts_with("otpauth://totp/Lyrion%20Anywhere:"));
         a.totp_confirm(id, username, &current_code(a, username, 0))
@@ -4331,7 +4519,7 @@ mod tests {
             ),
             "nothing pending"
         );
-        a.totp_begin(id, "alice", PW).unwrap();
+        a.totp_begin(id, "alice", 1, PW).unwrap();
         assert!(matches!(
             a.totp_confirm(id, "alice", "000000"),
             Err(AuthError::BadInput(_))
@@ -4346,7 +4534,10 @@ mod tests {
             .unwrap();
         assert!(a.totp_enabled(id).unwrap());
         assert!(
-            matches!(a.totp_begin(id, "alice", PW), Err(AuthError::BadInput(_))),
+            matches!(
+                a.totp_begin(id, "alice", 1, PW),
+                Err(AuthError::BadInput(_))
+            ),
             "already on"
         );
     }
@@ -4413,10 +4604,10 @@ mod tests {
         let a = store();
         let id = user_id(&a, "alice");
         assert_eq!(
-            a.totp_begin(id, "alice", "wrong password!"),
+            a.totp_begin(id, "alice", 1, "wrong password!"),
             Err(AuthError::Invalid)
         );
-        assert_eq!(a.totp_begin(id, "alice", ""), Err(AuthError::Invalid));
+        assert_eq!(a.totp_begin(id, "alice", 1, ""), Err(AuthError::Invalid));
         // Nothing pending: confirming has nothing to confirm.
         assert!(matches!(
             a.totp_confirm(id, "alice", "123456"),
@@ -4424,10 +4615,10 @@ mod tests {
         ));
         // Wrong passwords here count towards a lockout of their own.
         for _ in 0..MAX_FAILURES - 2 {
-            let _ = a.totp_begin(id, "alice", "wrong password!");
+            let _ = a.totp_begin(id, "alice", 1, "wrong password!");
         }
         assert!(matches!(
-            a.totp_begin(id, "alice", PW),
+            a.totp_begin(id, "alice", 1, PW),
             Err(AuthError::Locked(_))
         ));
     }
@@ -4454,19 +4645,19 @@ mod tests {
         let id = user_id(&a, "alice");
         let code = current_code(&a, "alice", 1);
         assert_eq!(
-            a.totp_disable(id, "alice", "wrong password!", &code),
+            a.totp_disable(id, "alice", 1, "wrong password!", &code),
             Err(AuthError::Invalid)
         );
         assert_eq!(
-            a.totp_disable(id, "alice", PW, "000000"),
+            a.totp_disable(id, "alice", 1, PW, "000000"),
             Err(AuthError::Invalid)
         );
         assert!(a.totp_enabled(id).unwrap());
-        a.totp_disable(id, "alice", PW, &code).unwrap();
+        a.totp_disable(id, "alice", 1, PW, &code).unwrap();
         assert!(!a.totp_enabled(id).unwrap());
         assert!(a.login("alice", PW, None, "x", None, "c").is_ok());
         assert!(matches!(
-            a.totp_disable(id, "alice", PW, &code),
+            a.totp_disable(id, "alice", 1, PW, &code),
             Err(AuthError::BadInput(_))
         ));
     }
@@ -4920,7 +5111,7 @@ mod tests {
             let mut limits = a.limits.lock().unwrap();
             let now = Instant::now();
             for i in 0..LIMITS_CAP + 500 {
-                record_failure_in(&mut limits, &format!("client:flood{i}"), now);
+                record_failure_in(&mut limits, &format!("client:flood{i}"), None, now);
             }
             assert!(limits.len() <= LIMITS_CAP, "{}", limits.len());
             assert!(limits.contains_key("client:victim-lock"));
@@ -5677,5 +5868,355 @@ mod tests {
         let d = &a.own_devices(t.principal.user_id).unwrap()[0];
         assert_eq!(d.created_at, 999);
         assert_eq!(d.last_seen, Some(1000020));
+    }
+
+    // -----------------------------------------------------------------------
+    // Authentication lows from the October review
+    // -----------------------------------------------------------------------
+
+    /// Regression: a sign-in from an address removed its whole record, so an attacker
+    /// holding any valid account could reset the address's cross-username lock every four
+    /// guesses. A success now clears only that user's own failures.
+    #[test]
+    fn a_success_clears_only_the_users_own_failures_from_the_address() {
+        let a = store();
+        a.create_user("mallory", PW, Role::Listener).unwrap();
+        for i in 0..MAX_FAILURES - 1 {
+            assert_eq!(
+                a.login(
+                    &format!("guess{i}"),
+                    "whatever!!",
+                    None,
+                    "x",
+                    None,
+                    "attacker"
+                ),
+                Err(AuthError::Invalid)
+            );
+        }
+        // The attacker's own account signs in from the same address...
+        assert!(a.login("mallory", PW, None, "x", None, "attacker").is_ok());
+        // ...and one more guess still locks the address, for every username.
+        assert_eq!(
+            a.login("guess-last", "whatever!!", None, "x", None, "attacker"),
+            Err(AuthError::Invalid)
+        );
+        assert!(matches!(
+            a.login("mallory", PW, None, "x", None, "attacker"),
+            Err(AuthError::Locked(_))
+        ));
+
+        // A user's own mistakes are still forgiven by their own success.
+        for _ in 0..MAX_FAILURES - 1 {
+            let _ = a.login("alice", "wrong password!", None, "x", None, "home");
+        }
+        assert!(a.login("alice", PW, None, "x", None, "home").is_ok());
+        for _ in 0..MAX_FAILURES - 1 {
+            let _ = a.login("alice", "wrong password!", None, "x", None, "home");
+        }
+        assert!(a.login("alice", PW, None, "x", None, "home").is_ok());
+    }
+
+    /// Regression: the right password without a code (two-step on) was neither counted nor
+    /// audited, so whoever knew the password could have it checked without limit, holding
+    /// the password-check permits.
+    #[test]
+    fn a_missing_code_counts_as_a_failure_and_is_audited() {
+        let a = store();
+        enrol(&a, "alice");
+        let before = a.password_checks();
+        for _ in 0..MAX_FAILURES {
+            assert_eq!(
+                a.login("alice", PW, None, "x", None, "prober"),
+                Err(AuthError::TotpRequired)
+            );
+        }
+        assert!(matches!(
+            a.login("alice", PW, None, "x", None, "prober"),
+            Err(AuthError::Locked(_))
+        ));
+        assert_eq!(a.password_checks() - before, u64::from(MAX_FAILURES));
+        let audited = a
+            .audit_log(100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event == "login.totp_required" && e.detail == "prober")
+            .count();
+        assert_eq!(audited, MAX_FAILURES as usize);
+
+        // The usual two-step sign-in (asked for the code, then giving it) still works, and
+        // leaves nothing counted against the address.
+        assert_eq!(
+            a.login("alice", PW, None, "x", None, "phone"),
+            Err(AuthError::TotpRequired)
+        );
+        let code = current_code(&a, "alice", 1);
+        assert!(
+            a.login("alice", PW, Some(&code), "x", None, "phone")
+                .is_ok()
+        );
+        assert!(
+            a.limits
+                .lock()
+                .unwrap()
+                .get("client:phone")
+                .is_none_or(|l| l.failures == 0)
+        );
+    }
+
+    /// Counting the missing code must not let someone else's wrong guesses (which throttle
+    /// the username) lock the owner out of the usual two-step sign-in from a clean address.
+    #[test]
+    fn a_throttled_two_step_user_still_signs_in_from_elsewhere() {
+        let a = store();
+        enrol(&a, "alice");
+        for i in 0..MAX_FAILURES {
+            let _ = a.login(
+                "alice",
+                "wrong password!",
+                None,
+                "x",
+                None,
+                &format!("bot{i}"),
+            );
+        }
+        assert_eq!(
+            a.login("alice", PW, None, "x", None, "home"),
+            Err(AuthError::TotpRequired)
+        );
+        let code = current_code(&a, "alice", 1);
+        let t = a.login("alice", PW, Some(&code), "x", None, "home");
+        assert!(t.is_ok(), "{t:?}");
+    }
+
+    /// The same for a password change without its code.
+    #[test]
+    fn a_password_change_without_its_code_counts_and_is_audited() {
+        let a = store();
+        enrol(&a, "alice");
+        let code = current_code(&a, "alice", 1);
+        let t = a
+            .login("alice", PW, Some(&code), "Laptop", None, "c")
+            .unwrap();
+        let req = OwnPasswordChange {
+            user: t.principal.user_id,
+            username: "alice",
+            device: t.principal.device_id,
+            current: PW,
+            new: "a much better passphrase",
+            code: None,
+            sign_out_others: false,
+        };
+        for _ in 0..MAX_FAILURES {
+            assert_eq!(
+                a.change_own_password(&req, "c").map(|_| ()),
+                Err(AuthError::TotpRequired)
+            );
+        }
+        assert!(matches!(
+            a.change_own_password(&req, "c"),
+            Err(AuthError::Locked(_))
+        ));
+        let audited = a
+            .audit_log(100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event == "password.change_totp_required")
+            .count();
+        assert_eq!(audited, MAX_FAILURES as usize);
+    }
+
+    /// Regression: account changes were locked per user, so anyone holding one of the
+    /// user's access tokens (15 minutes) could lock the owner out of password change,
+    /// two-step changes and pairing for up to a day. The lock is now per user and device.
+    #[test]
+    fn one_device_cannot_lock_the_users_other_devices_out_of_account_changes() {
+        let a = store();
+        let (alice, laptop) = signed_in(&a, "alice");
+        let (_, phone) = signed_in(&a, "alice");
+        let wrong = OwnPasswordChange {
+            user: alice,
+            username: "alice",
+            device: laptop,
+            current: "wrong password!",
+            new: "a much better passphrase",
+            code: None,
+            sign_out_others: false,
+        };
+        for _ in 0..3 * MAX_FAILURES {
+            let _ = a.change_own_password(&wrong, "198.51.100.66");
+        }
+        // The device that failed is locked out of account changes...
+        assert!(matches!(
+            a.create_own_pairing_code(alice, "alice", laptop, PW),
+            Err(AuthError::Locked(_))
+        ));
+        // ...the owner's other device is not.
+        assert!(a.create_own_pairing_code(alice, "alice", phone, PW).is_ok());
+    }
+
+    fn refresh_rows(a: &Accounts, device: i64) -> i64 {
+        a.db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM refresh_tokens WHERE device_id = ?1",
+                [device],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// Regression: each sign-in reusing a device added an unused refresh row that only
+    /// expiry removed, so the table grew without bound.
+    #[test]
+    fn signing_in_again_on_a_device_keeps_its_refresh_rows_bounded() {
+        let a = store();
+        let first = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+        let d = first.principal.device_id;
+        let mut last = first;
+        for _ in 0..20 {
+            last = a.login("alice", PW, None, "Laptop", Some(d), "c").unwrap();
+            assert_eq!(last.principal.device_id, d);
+        }
+        let rows = refresh_rows(&a, d);
+        assert!(rows <= KEEP_UNUSED_REFRESH, "{rows} rows");
+        // The newest sign-in's token still renews.
+        assert!(a.refresh(&last.refresh).is_ok());
+    }
+
+    /// Regression: device ids were reused once the newest device was deleted, so a new
+    /// device could inherit what was keyed by the old one's id (learned menu actions,
+    /// audit rows).
+    #[test]
+    fn device_ids_are_never_reused() {
+        let a = store();
+        a.create_user("bob", PW, Role::Listener).unwrap();
+        let bob = a.login("bob", PW, None, "Phone", None, "c").unwrap();
+        let gone = bob.principal.device_id;
+        a.delete_user("bob").unwrap();
+        let next = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+        assert!(next.principal.device_id > gone);
+    }
+
+    fn devices_autoincrement(a: &Accounts) -> bool {
+        a.with_db(|db| {
+            db.query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'devices'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+        })
+        .unwrap()
+        .contains("AUTOINCREMENT")
+    }
+
+    /// Version 13 rebuilds the devices table so its ids are never reused, keeping every
+    /// device, its refresh tokens and its diagnostics; it is safe to run again.
+    #[test]
+    fn migration_to_13_keeps_devices_and_stops_id_reuse() {
+        let path = std::env::temp_dir().join(format!("anywhere-mig13-{}.db", crate::random_id()));
+        let (laptop, newest, refresh) = {
+            let a = Accounts::open(&path).unwrap();
+            a.create_user("alice", PW, Role::Listener).unwrap();
+            let laptop = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+            let newest = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+            a.save_diagnostics(laptop.principal.device_id, "{}")
+                .unwrap();
+            // As a version-12 gateway left it: no AUTOINCREMENT on devices.
+            a.with_db(|db| {
+                db.execute_batch(
+                    "PRAGMA foreign_keys = OFF;
+                     CREATE TABLE devices_v12 (
+                       id INTEGER PRIMARY KEY,
+                       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                       name TEXT NOT NULL,
+                       mac TEXT NOT NULL UNIQUE,
+                       created_at INTEGER NOT NULL,
+                       last_seen INTEGER,
+                       revoked INTEGER NOT NULL DEFAULT 0,
+                       revoked_at INTEGER,
+                       last_addr TEXT,
+                       client_kind TEXT,
+                       client_platform TEXT,
+                       user_agent TEXT);
+                     INSERT INTO devices_v12 SELECT * FROM devices;
+                     DROP TABLE devices;
+                     ALTER TABLE devices_v12 RENAME TO devices;
+                     PRAGMA foreign_keys = ON;
+                     PRAGMA user_version = 12;",
+                )
+            })
+            .unwrap();
+            assert_eq!(a.schema_version(), 12);
+            assert!(!devices_autoincrement(&a));
+            (
+                laptop.principal.device_id,
+                newest.principal.device_id,
+                laptop.refresh,
+            )
+        };
+        let a = Accounts::open(&path).unwrap();
+        assert_eq!(a.schema_version(), SCHEMA_VERSION);
+        assert!(devices_autoincrement(&a));
+        assert_eq!(device_row(&a, laptop).name, "Laptop");
+        assert!(a.diagnostics(laptop).unwrap().is_some(), "diagnostics kept");
+        let renewed = a.refresh(&refresh);
+        assert!(renewed.is_ok(), "refresh tokens kept: {renewed:?}");
+        // Running the step again (as after a half-finished upgrade) changes nothing.
+        a.with_db(|db| {
+            db.execute_batch("PRAGMA user_version = 12;")?;
+            migrate(db).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(a.schema_version(), SCHEMA_VERSION);
+        assert!(a.refresh(&renewed.unwrap().refresh).is_ok());
+        // The newest device deleted, the next one gets a new id.
+        a.with_db(|db| db.execute("DELETE FROM devices WHERE id = ?1", [newest]))
+            .unwrap();
+        let next = a.login("alice", PW, None, "Tablet", None, "c").unwrap();
+        assert!(next.principal.device_id > newest);
+        drop(a);
+        for ext in ["db", "db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(ext));
+        }
+    }
+
+    /// The device that signed itself out is named, as when a user signs out another device.
+    #[test]
+    fn signing_out_records_the_device_that_did_it() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+        a.logout(&t.access).unwrap();
+        let e = a
+            .audit_log(100)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.event == "device.revoked")
+            .unwrap();
+        assert_eq!(e.username.as_deref(), Some("alice"));
+        assert_eq!(e.device_id, Some(t.principal.device_id));
+        assert_eq!(e.detail, format!("self from {}", t.principal.device_id));
+    }
+
+    /// Regression: revoking a device that was already revoked (or never existed) still
+    /// deleted rows for its id on the admin path; only the owner path returned early.
+    #[test]
+    fn revoking_a_revoked_device_again_touches_nothing() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+        let d = t.principal.device_id;
+        assert!(a.revoke_device(d).unwrap());
+        // Something recorded for the id since (a report racing the revocation).
+        a.save_diagnostics(d, "{}").unwrap();
+        assert!(!a.revoke_device(d).unwrap());
+        assert!(a.diagnostics(d).unwrap().is_some());
+        let revocations = a
+            .audit_log(100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event == "device.revoked")
+            .count();
+        assert_eq!(revocations, 1);
     }
 }

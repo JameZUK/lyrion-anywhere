@@ -480,7 +480,7 @@ pub async fn totp_setup(
     };
     let accounts = gw.accounts().clone();
     let result = tokio::task::spawn_blocking(move || {
-        accounts.totp_begin(p.user_id, &p.username, &req.password)
+        accounts.totp_begin(p.user_id, &p.username, p.device_id, &req.password)
     })
     .await;
     match result {
@@ -551,7 +551,13 @@ pub async fn totp_disable(
     };
     let accounts = gw.accounts().clone();
     let result = tokio::task::spawn_blocking(move || {
-        accounts.totp_disable(p.user_id, &p.username, &req.password, &req.code)
+        accounts.totp_disable(
+            p.user_id,
+            &p.username,
+            p.device_id,
+            &req.password,
+            &req.code,
+        )
     })
     .await;
     match result {
