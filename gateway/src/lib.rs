@@ -34,6 +34,7 @@ pub mod alarms;
 pub mod analysis;
 pub mod art;
 mod auth;
+pub mod cftunnel;
 /// Demo-only seeding (tools/demo); never in release builds.
 #[cfg(debug_assertions)]
 pub mod demo;
@@ -207,6 +208,12 @@ pub struct Config {
     /// URL would lead (the image proxy, URLs in free text): like a hosts file. Empty in
     /// production; tests use it to give a public-looking name a local address.
     pub host_answers: std::collections::HashMap<String, Vec<IpAddr>>,
+    /// The built-in Cloudflare Tunnel (off by default; the command line turns it on).
+    pub tunnel: cftunnel::Settings,
+    /// The settings that follow a running tunnel (an extra origin, the tunnel's source
+    /// trusted for `CF-Connecting-IP`); empty while none runs. [`origin_allowed`],
+    /// [`client_addr`] and [`require_secure_transport`] consult it.
+    pub tunnel_overrides: cftunnel::Overrides,
 }
 
 impl Default for Config {
@@ -265,6 +272,8 @@ impl Default for Config {
             history_lookup_delay: Duration::from_millis(1500),
             stats_lookup_timeout: stats::LOOKUP_TIMEOUT,
             host_answers: Default::default(),
+            tunnel: Default::default(),
+            tunnel_overrides: Default::default(),
         }
     }
 }
@@ -326,6 +335,8 @@ pub struct Gateway {
     live_slots: Arc<tokio::sync::Semaphore>,
     /// Whether LMS is answering (see [`lms_health`]).
     lms_health: lms_health::LmsHealth,
+    /// The built-in Cloudflare Tunnel.
+    tunnel: Arc<cftunnel::Tunnel>,
 }
 
 /// Renames a device may make of itself per [`RENAME_WINDOW`] (`PATCH /v1/devices/self`).
@@ -340,13 +351,14 @@ pub type AppState = Arc<Gateway>;
 
 impl Gateway {
     pub fn new(cfg: Config, accounts: Arc<Accounts>) -> AppState {
-        let http = reqwest::Client::builder()
+        install_tls_provider();
+        let http = http_client_builder()
             .connect_timeout(cfg.dial_timeout)
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .build()
             .expect("http client");
-        let dl_http = reqwest::Client::builder()
+        let dl_http = http_client_builder()
             .connect_timeout(cfg.dial_timeout)
             .read_timeout(cfg.download_read_timeout)
             .redirect(reqwest::redirect::Policy::none())
@@ -409,6 +421,7 @@ impl Gateway {
             info: Default::default(),
             live_slots: Arc::new(tokio::sync::Semaphore::new(cfg.live_transcode_jobs)),
             lms_health: lms_health::LmsHealth::new(cfg.lms_stall_after),
+            tunnel: cftunnel::Tunnel::new(cfg.tunnel.clone(), cfg.tunnel_overrides.clone()),
             cfg,
         });
         // The watchdog needs a runtime; a gateway built outside one (some unit tests) has none.
@@ -420,6 +433,11 @@ impl Gateway {
 
     pub fn lms_health(&self) -> &lms_health::LmsHealth {
         &self.lms_health
+    }
+
+    /// The built-in Cloudflare Tunnel.
+    pub fn tunnel(&self) -> &Arc<cftunnel::Tunnel> {
+        &self.tunnel
     }
 
     /// The `ffmpeg` that can make Opus, if live streams may be re-encoded at all.
@@ -827,7 +845,7 @@ async fn require_secure_transport(
     next: Next,
 ) -> Response {
     let ip = canonical(peer.ip());
-    let trusted = ip.is_loopback() || gw.cfg.trusted_proxies.iter().any(|p| canonical(*p) == ip);
+    let trusted = is_trusted_proxy(&gw.cfg, ip);
     let proto = req
         .headers()
         .get("x-forwarded-proto")
@@ -851,10 +869,12 @@ fn client_ip(cfg: &Config, peer: SocketAddr, headers: &HeaderMap) -> String {
     client_key(client_addr(cfg, peer, headers))
 }
 
-/// Loopback and the configured reverse proxies.
+/// Loopback, the configured reverse proxies, and a running tunnel's non-loopback source.
 fn is_trusted_proxy(cfg: &Config, ip: IpAddr) -> bool {
     let ip = canonical(ip);
-    ip.is_loopback() || cfg.trusted_proxies.iter().any(|p| canonical(*p) == ip)
+    ip.is_loopback()
+        || cfg.trusted_proxies.iter().any(|p| canonical(*p) == ip)
+        || cfg.tunnel_overrides.trusted_proxy(ip)
 }
 
 /// The client's address. A request straight from an untrusted peer is that peer. From a
@@ -870,7 +890,12 @@ pub(crate) fn client_addr(cfg: &Config, peer: SocketAddr, headers: &HeaderMap) -
     if !is_trusted_proxy(cfg, peer_ip) {
         return peer_ip;
     }
-    if let Some(name) = &cfg.client_ip_header {
+    // While a tunnel runs, its requests carry the client's address in CF-Connecting-IP.
+    let tunnel_header = cfg
+        .tunnel_overrides
+        .from_tunnel(peer_ip)
+        .then(|| axum::http::HeaderName::from_static(cftunnel::CLIENT_IP_HEADER));
+    if let Some(name) = tunnel_header.as_ref().or(cfg.client_ip_header.as_ref()) {
         let mut values = headers.get_all(name).iter();
         if let (Some(v), None) = (values.next(), values.next())
             && let Some(ip) = v.to_str().ok().and_then(parse_forwarded)
@@ -966,7 +991,9 @@ fn origin_allowed(cfg: &Config, headers: &HeaderMap) -> bool {
     let Ok(origin) = origin.to_str() else {
         return false;
     };
-    if cfg.allowed_origins.iter().any(|o| o == origin) {
+    if cfg.allowed_origins.iter().any(|o| o == origin)
+        || cfg.tunnel_overrides.origin_allowed(origin)
+    {
         return true;
     }
     let host = headers
@@ -977,6 +1004,31 @@ fn origin_allowed(cfg: &Config, headers: &HeaderMap) -> bool {
     !host.is_empty()
         && (origin == format!("https://{host}")
             || (plain_http_request && origin == format!("http://{host}")))
+}
+
+/// Make ring rustls's process-wide provider (for any client built without our configuration,
+/// such as a test's `reqwest::Client::new()`). Harmless if one is already installed.
+pub fn install_tls_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+/// A `reqwest` client builder with rustls on the ring provider and the bundled web roots
+/// (never the system's store, which a distroless image lacks). Every client the gateway makes
+/// starts here.
+pub fn http_client_builder() -> reqwest::ClientBuilder {
+    static TLS: std::sync::OnceLock<rustls::ClientConfig> = std::sync::OnceLock::new();
+    let tls = TLS.get_or_init(|| {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add_parsable_certificates(webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned());
+        rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("ring supports the default TLS versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth()
+    });
+    reqwest::Client::builder().tls_backend_preconfigured(tls.clone())
 }
 
 /// A random 128-bit identifier (hex).
@@ -1212,5 +1264,43 @@ mod tests {
             ("origin", "https://evil.example")
         ]));
         assert!(!ok(&[("origin", "null")]));
+    }
+
+    #[test]
+    fn a_running_tunnel_adds_its_origin_and_client_header_until_it_stops() {
+        let cfg = Config::default();
+        let lo: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        let lan: SocketAddr = "10.0.0.10:5000".parse().unwrap();
+        let outsider: SocketAddr = "203.0.113.50:5000".parse().unwrap();
+        let h = headers(&[
+            ("origin", "https://music.example.com"),
+            ("host", "127.0.0.1:9443"),
+            ("cf-connecting-ip", "198.51.100.7"),
+        ]);
+        let before = || {
+            assert!(!origin_allowed(&cfg, &h));
+            assert_eq!(client_ip(&cfg, lo, &h), "127.0.0.1");
+            assert!(!is_trusted_proxy(&cfg, lan.ip()));
+        };
+        before();
+        // On loopback.
+        cfg.tunnel_overrides
+            .set("music.example.com", "127.0.0.1:9443".parse().unwrap());
+        assert!(origin_allowed(&cfg, &h));
+        assert_eq!(client_ip(&cfg, lo, &h), "198.51.100.7");
+        assert_eq!(client_ip(&cfg, outsider, &h), "203.0.113.50");
+        assert_eq!(client_ip(&cfg, lan, &h), "10.0.0.10");
+        assert!(!is_trusted_proxy(&cfg, lan.ip()));
+        // Another origin is still refused.
+        let evil = headers(&[("origin", "https://evil.example"), ("host", "x")]);
+        assert!(!origin_allowed(&cfg, &evil));
+        // On a LAN listen address: that address is trusted for the duration.
+        cfg.tunnel_overrides
+            .set("music.example.com", "10.0.0.10:9443".parse().unwrap());
+        assert!(is_trusted_proxy(&cfg, lan.ip()));
+        assert_eq!(client_ip(&cfg, lan, &h), "198.51.100.7");
+        assert_eq!(client_ip(&cfg, outsider, &h), "203.0.113.50");
+        cfg.tunnel_overrides.clear();
+        before();
     }
 }

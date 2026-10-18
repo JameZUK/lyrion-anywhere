@@ -93,6 +93,15 @@ enum Cmd {
         /// that don't ask get 60 s).
         #[arg(long, default_value_t = 600, value_parser = clap::value_parser!(u64).range(60..=3600))]
         max_resume_grace: u64,
+        /// A system-installed cloudflared (absolute path) for the built-in Cloudflare Tunnel,
+        /// instead of the pinned release the gateway downloads on request.
+        #[arg(long, conflicts_with = "no_tunnel")]
+        cloudflared: Option<PathBuf>,
+        /// Turn off the built-in Cloudflare Tunnel: its admin actions answer 409 and its state
+        /// is "unsupported". (Otherwise it is available under <data-dir>/tunnel, but nothing is
+        /// downloaded or run until the admin asks.)
+        #[arg(long)]
+        no_tunnel: bool,
     },
     /// Administer accounts directly (before the LMS plugin is set up).
     Admin {
@@ -174,7 +183,12 @@ fn main() {
             analysis_cache_mb,
             max_connections,
             max_resume_grace,
+            cloudflared,
+            no_tunnel,
         } => {
+            if cloudflared.as_ref().is_some_and(|p| !p.is_absolute()) {
+                fail("--cloudflared must be an absolute path");
+            }
             if !admin_listen.ip().is_loopback() {
                 fail("--admin-listen must be a loopback address");
             }
@@ -214,8 +228,22 @@ fn main() {
                 max_resume_grace: std::time::Duration::from_secs(max_resume_grace),
                 // Plays are signed for the plugin with the secret it already reads.
                 plays_secret: Some(admin_secret.clone()),
+                tunnel: anywhere_gateway::cftunnel::Settings {
+                    enabled: !no_tunnel,
+                    dir: Some(data_dir.join("tunnel")),
+                    system_binary: cloudflared,
+                    listen,
+                    ..Default::default()
+                },
                 ..Config::default()
             };
+            // A tunnel to a non-loopback listen address connects from that address: it
+            // isn't held to the per-address connection cap (it is this host).
+            let mut serve_trusted = trusted_proxies.clone();
+            let tunnel_source = anywhere_gateway::cftunnel::ingress_target(listen).ip();
+            if !no_tunnel && !tunnel_source.is_loopback() {
+                serve_trusted.push(tunnel_source);
+            }
             let body_timeout = cfg.body_timeout;
             let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| fail(e));
             rt.block_on(async move {
@@ -235,6 +263,8 @@ fn main() {
                 let admin_app = admin::router(gw.clone(), admin_secret).layer(
                     axum::middleware::from_fn_with_state(body_timeout, limits::body_deadline),
                 );
+                let tunnel = gw.tunnel().clone();
+                tunnel.startup().await;
                 let public_app = router(gw);
                 let a = tokio::spawn(limits::serve(
                     adminl,
@@ -250,17 +280,42 @@ fn main() {
                     public_app,
                     ServeLimits {
                         max_connections: max_connections as usize,
-                        trusted_proxies,
+                        trusted_proxies: serve_trusted,
                         ..ServeLimits::default()
                     },
-                    async {
-                        let _ = tokio::signal::ctrl_c().await;
-                    },
+                    shutdown_signal(),
                 )
                 .await;
                 a.abort();
+                // Stop cloudflared on the way out (the registered tunnel comes back with the
+                // gateway if it was running).
+                tunnel.shutdown().await;
             });
         }
+    }
+}
+
+/// SIGINT (Ctrl-C) or SIGTERM (what the LMS plugin and service managers send).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+        tracing::info!("shutting down");
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
 
