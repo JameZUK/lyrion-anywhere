@@ -7,8 +7,10 @@
 
 	// `compact`: narrower stars (36 × 44 px each, side by side), to share a row with a title.
 	// `toggle`: one button by the title on Now playing (Wave 3.5): a heart, or a star for those
-	// who rate in stars, on when the user's own rating is at least three stars; a tap loves the
-	// track (five stars) or clears the rating. The full 1–5 rating is in the track's ⋮ menu.
+	// who rate in stars, lit when the rating shown is at least three stars: the user's own in
+	// the accent colour, or, failing that, the rating LMS holds for the track, muted (so a
+	// track rated in LMS before shows as rated here; issue #14). A tap loves the track (five
+	// stars) or clears the user's own rating. The full 1–5 rating is in the track's ⋮ menu.
 	// `style`: the user's choice from Settings, unless given (the ⋮ menu always shows stars).
 	let {
 		track,
@@ -62,25 +64,31 @@
 
 {#if track}
 	{#if toggle}
-		{@const on = (r?.mine ?? 0) >= 60}
+		{@const loved = (r?.mine ?? 0) >= 60}
+		{@const on = shown >= 60}
 		<button
 			class="heart"
 			class:on
-			aria-pressed={on}
-			aria-label="Love this track"
-			title={on ? 'Loved. Tap to clear your rating' : 'Love this track'}
-			onclick={() => void set(on ? 0 : 100)}
+			class:shared={on && !loved}
+			aria-pressed={loved}
+			aria-label={on && !loved ? `Rated ${shown / 20} of 5 on the server. Love this track` : 'Love this track'}
+			title={loved ? 'Loved. Tap to clear your rating' : on ? `Rated ${shown / 20} of 5 on the server. Tap to love it` : 'Love this track'}
+			onclick={() => void set(loved ? 0 : 100)}
 			data-rating-toggle={shape}
 		>
 			<svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true"><path d={shape === 'heart' ? HEART : STAR} /></svg>
 		</button>
 	{:else if shape === 'heart'}
+		{@const loved = (r?.mine ?? 0) >= 60}
+		{@const on = shown >= 60}
 		<button
 			class="heart"
-			class:on={(r?.mine ?? 0) >= 60}
-			aria-pressed={(r?.mine ?? 0) >= 60}
-			aria-label="Love this track"
-			onclick={() => void set((r?.mine ?? 0) >= 60 ? 0 : 100)}
+			class:on
+			class:shared={on && !loved}
+			aria-pressed={loved}
+			aria-label={on && !loved ? `Rated ${shown / 20} of 5 on the server. Love this track` : 'Love this track'}
+			title={loved ? 'Loved. Tap to clear your rating' : on ? `Rated ${shown / 20} of 5 on the server. Tap to love it` : 'Love this track'}
+			onclick={() => void set(loved ? 0 : 100)}
 			data-rating-heart
 		>
 			<svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true"><path d={HEART} /></svg>
@@ -163,6 +171,11 @@
 	.heart.on path {
 		fill: var(--accent);
 		stroke: var(--accent);
+	}
+	/* Lit only by the rating LMS holds, not the user's own: muted, as the full control's stars. */
+	.heart.on.shared path {
+		fill: var(--fg-muted);
+		stroke: var(--fg-muted);
 	}
 	.heart:focus-visible {
 		outline: 2px solid var(--accent);

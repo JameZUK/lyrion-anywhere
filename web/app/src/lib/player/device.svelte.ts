@@ -82,6 +82,8 @@ class DevicePlayer {
 	mac = $state('');
 	name = $state('');
 	detail = $state<DeviceStatus>({});
+	/** Run when this device's output goes from not playing to playing (see `onPlaying`). */
+	#onPlaying = new Set<() => void>();
 	#history = new PersistentLog();
 	log = $state<string[]>(this.#history.lines);
 	/** This tab was playing before a reload: it resumes by itself (see `resumeAfterReload`). */
@@ -961,8 +963,25 @@ class DevicePlayer {
 		// The worker reports status every 20 ms; the UI only needs a few updates a second.
 		if (m.status && typeof m.status === 'object' && performance.now() - this.#detailAt > 500) {
 			this.#detailAt = performance.now();
-			this.detail = m.status as DeviceStatus;
+			this.applyStatus(m.status as DeviceStatus);
 		}
+	}
+
+	/**
+	 * Take a status report from the worker: the UI's `detail`, and the start-of-playing hook
+	 * when the output goes from anything else to 'Playing' (a hold and its release don't
+	 * change `output`, so they never count as a start).
+	 */
+	applyStatus(s: DeviceStatus) {
+		const was = String(this.detail.output ?? '');
+		this.detail = s;
+		if (was !== 'Playing' && String(s.output ?? '') === 'Playing') for (const fn of [...this.#onPlaying]) fn();
+	}
+
+	/** Run `fn` whenever this device's own output starts playing; returns the way to stop. */
+	onPlaying(fn: () => void): () => void {
+		this.#onPlaying.add(fn);
+		return () => void this.#onPlaying.delete(fn);
 	}
 }
 

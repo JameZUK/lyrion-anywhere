@@ -4,6 +4,7 @@
 	// downloads in progress or waiting for Wi-Fi, and playback. Removing a playlist or an
 	// album keeps the tracks another download still needs.
 	import { downloads, offlinePlayer, plays } from '$lib/offline/index.svelte';
+	import { controls } from '$lib/player/controls.svelte';
 	import { formatBytes, loadPrefs, storageInfo, type StorageInfo } from '$lib/offline/settings';
 	import { FORMAT_LABELS, refsOf, type StoredTrack } from '$lib/offline/types';
 	import { duration } from '$lib/lms/format';
@@ -241,7 +242,7 @@
 							<span class="muted small">{p.tracks.length} {p.tracks.length === 1 ? 'track' : 'tracks'} · {formatBytes(p.size)}</span>
 						</div>
 						<div class="aact">
-							<button class="icon-btn play" aria-label={`Play ${p.name}`} onclick={() => offlinePlayer.playList(user, p.tracks, 0)}><Icon name="play" size={20} /></button>
+							<button class="icon-btn play" aria-label={`Play ${p.name}`} onclick={() => controls.playDownloads(user, p.tracks, 0)}><Icon name="play" size={20} /></button>
 							<button class="icon-btn" aria-label={`Show tracks of ${p.name}`} aria-expanded={open === p.id} onclick={() => (open = open === p.id ? null : p.id)}><Icon name="chevron" size={20} /></button>
 							<button class="icon-btn" aria-label={`Remove ${p.name}`} onclick={() => askPlaylist(p)} disabled={busy}><Icon name="trash" size={20} /></button>
 						</div>
@@ -250,7 +251,7 @@
 						<ol class="tracks">
 							{#each p.tracks as t, i (t.key)}
 								<li>
-									<button class="tmain" onclick={() => offlinePlayer.playList(user, p.tracks, i)} aria-label={`Play ${t.title}`}>
+									<button class="tmain" onclick={() => controls.playDownloads(user, p.tracks, i)} aria-label={`Play ${t.title}`}>
 										<span class="num muted">{i + 1}</span>
 										<span class="ttext">
 											<span class="ellipsis" class:now={offlinePlayer.current?.key === t.key}>{t.title}</span>
@@ -280,7 +281,7 @@
 							<span class="muted small">{g.tracks.length} {g.tracks.length === 1 ? 'track' : 'tracks'} · {formatBytes(g.size)}</span>
 						</div>
 						<div class="aact">
-							<button class="icon-btn play" aria-label={`Play ${g.album}`} onclick={() => offlinePlayer.playList(user, g.tracks, 0)}><Icon name="play" size={20} /></button>
+							<button class="icon-btn play" aria-label={`Play ${g.album}`} onclick={() => controls.playDownloads(user, g.tracks, 0)}><Icon name="play" size={20} /></button>
 							<button class="icon-btn" aria-label={`Show tracks of ${g.album}`} aria-expanded={open === g.id} onclick={() => (open = open === g.id ? null : g.id)}><Icon name="chevron" size={20} /></button>
 							<button class="icon-btn" aria-label={`Remove ${g.album}`} onclick={() => askAlbum(g)} disabled={busy}><Icon name="trash" size={20} /></button>
 						</div>
@@ -289,7 +290,7 @@
 						<ol class="tracks">
 							{#each g.tracks as t, i (t.key)}
 								<li>
-									<button class="tmain" onclick={() => offlinePlayer.playList(user, g.tracks, i)} aria-label={`Play ${t.title}`}>
+									<button class="tmain" onclick={() => controls.playDownloads(user, g.tracks, i)} aria-label={`Play ${t.title}`}>
 										<span class="num muted">{t.tracknum ?? i + 1}</span>
 										<span class="ttext">
 											<span class="ellipsis" class:now={offlinePlayer.current?.key === t.key}>{t.title}</span>

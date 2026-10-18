@@ -43,5 +43,12 @@ export class FakeOffline {
 		this.calls.push('stop');
 		this.queue = [];
 	}
+	async playList(user: string, tracks: unknown[], start = 0) {
+		this.calls.push(`playList ${user} ${tracks.length} ${start}`);
+		this.user = user;
+		this.queue = tracks;
+		this.index = start;
+		this.playing = true;
+	}
 	forget() {}
 }

@@ -8,6 +8,7 @@ import { api, app } from '$lib/state/app.svelte';
 import * as cmd from '$lib/lms/commands';
 import { connectionMessage, explain, needsServer } from '$lib/state/reachability';
 import { downloads, offlinePlayer, offlineStore } from '$lib/offline/index.svelte';
+import type { StoredTrack } from '$lib/offline/types';
 import { device } from './device.svelte';
 import { gates, type Gates, type LocalKind } from './local-plan';
 import { LocalPlayback } from './local.svelte';
@@ -165,6 +166,40 @@ class Controls {
 		}
 		return app.seek(seconds);
 	}
+
+	/**
+	 * Play downloads on this device (issue #11). Two engines must never sound at once: whatever
+	 * this device is already playing is paused first, through LMS while the server is in reach
+	 * and held here otherwise, so what is heard is always what the screens show and control.
+	 */
+	async playDownloads(user: string, tracks: StoredTrack[], start = 0): Promise<void> {
+		this.quietStream();
+		await offlinePlayer.playList(user, tracks, start);
+	}
+
+	/** Pause what this device plays on the server's behalf, if anything is audible. */
+	quietStream() {
+		// Out of reach and playing on by itself (its stream, or a download from LMS's queue).
+		if (local.engaged && !local.paused && local.source !== null) {
+			local.toggle();
+			return;
+		}
+		if (!device.mac || String(device.detail.output ?? '') !== 'Playing' || device.held) return;
+		if (app.reach === 'online') {
+			// The usual pause when this device is the player being controlled; else straight to
+			// this device's own player, whichever one the screens show.
+			if (this.thisDevice) void app.send(cmd.pause(true));
+			else void api.rpc(device.mac, cmd.pause(true)).catch(() => {});
+			return;
+		}
+		device.local({ hold: true });
+	}
 }
 
 export const controls = new Controls();
+
+// The server's music starting on this device ends the downloads: one engine at a time, and the
+// transport goes back to LMS (issue #11). Pausing the stream to start downloads is no start.
+device.onPlaying(() => {
+	if (offlinePlayer.active) offlinePlayer.stop();
+});

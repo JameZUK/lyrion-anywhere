@@ -36,6 +36,6 @@ Signing in for the first time is covered in [`INSTALL.md`](INSTALL.md#6-first-si
   - controls that work while the server is out of reach, and riding out a busy server;
   - the rolling cache for patchy mobile data: read-ahead to disk, a ten-minute resume grace, a replay cache and downloads standing in for streams (design in [`plans/wave3-design.md`](plans/wave3-design.md) §2).
 - **iOS app:** planned, on the same Rust layer and protocol, with CarPlay. Its code is covered by the project's App Store exception ([`LICENSE-EXCEPTION`](../LICENSE-EXCEPTION), SPEC D17).
-- **Later:** passkeys, a cryptographic release signature for the plugin's bundled gateways, smart filters with track-level rules, a guest queue, album booklets. Store listings for the Android app (Google Play, F-Droid) are being prepared.
+- **Later:** passkeys, a cryptographic release signature for the plugin's bundled gateways, smart filters with track-level rules, a guest queue, album booklets, and a multi-track cache-ahead for browsers (today only the Android app reads ahead; GitHub issue #13). Store listings for the Android app (Google Play, F-Droid) are being prepared.
 
 The milestones and decisions behind all of this are in [`SPEC.md`](../SPEC.md) and the design plans listed in the [documentation index](README.md#design-plans-and-history).

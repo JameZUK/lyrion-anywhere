@@ -71,7 +71,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 - **Optional DSP, all off by default:** loudness levelling (ReplayGain or the server's EBU R128 analysis), parametric EQ with AutoEq import and per-output profiles, loudness-compensated volume, crossfeed, dither, and smart crossfades that never cross into a gapless album.
 - **Android Auto, car mode, widgets, a Quick Settings tile and app shortcuts.**
 - **Offline:** downloads (including smart downloads of recent albums and favourites), an offline mode, plays counted in LMS when you are back online, and *Continue on…* any player where you left off.
-- **Gaps in the signal:** the next track is fetched long before the current one ends, and a session survives up to ten minutes without a connection. A replay cache plays repeats and skips back from the phone, and an album downloaded as FLAC stands in for Original-quality streams.
+- **Gaps in the signal** (Android app): the next track is fetched long before the current one ends, and a session survives up to ten minutes without a connection. A replay cache plays repeats and skips back from the phone, and an album downloaded as FLAC stands in for Original-quality streams. In a browser, only the current track is held: it plays to its end and the gateway keeps the player's place for up to ten minutes, but the next track needs the server. A multi-track cache for browsers is a possible later improvement (GitHub issue #13).
 - **Out of reach, not out of action:** while the server can't be reached, the phone keeps playing, pausing and skipping between tracks it holds; the queue marks which tracks are on the phone, and what you did is passed back when the server returns.
 - **Layouts for phones, tablets and foldables.**
 

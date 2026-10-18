@@ -184,6 +184,51 @@ describe('layout', () => {
 		r.unmount();
 	});
 
+	test('a track rated in LMS shows as rated here, muted, until the user loves it (issue #14)', async () => {
+		// Before: the toggle lit only for the user's own rating, so a track rated 4 or 5 stars in
+		// LMS showed a blank star on phones while the wide layout's five stars showed the rating.
+		const { ratings } = await import('$lib/state/ratings');
+		const { routine } = await import('$lib/state/me');
+		ratings.reset();
+		const fetched = vi.spyOn(routine, 'ratings').mockResolvedValue([{ track: 11, mine: null, shared: 80, rating: 80 }]);
+		const styled = vi.spyOn(routine, 'style').mockResolvedValue({ style: 'stars', count: 0 });
+		const rated = vi.spyOn(routine, 'rate').mockImplementation(async (track, value) => ({ track, mine: value > 0 ? value : null, shared: 80, rating: value > 0 ? value : 80 }));
+		const r = render(NowPlaying);
+		const toggle = await waitFor(() => {
+			const t = r.container.querySelector<HTMLButtonElement>('[data-rating-toggle].on');
+			expect(t).not.toBeNull();
+			return t!;
+		});
+		expect(toggle.classList.contains('shared')).toBe(true);
+		expect(toggle.getAttribute('aria-pressed')).toBe('false');
+		expect(toggle.getAttribute('aria-label')).toBe('Rated 4 of 5 on the server. Love this track');
+		expect(toggle.getAttribute('title')).toBe('Rated 4 of 5 on the server. Tap to love it');
+		// Loving it makes it the user's own (accent, pressed).
+		await fireEvent.click(toggle);
+		await waitFor(() => expect(toggle.getAttribute('aria-pressed')).toBe('true'));
+		expect(toggle.classList.contains('shared')).toBe(false);
+		expect(toggle.getAttribute('title')).toBe('Loved. Tap to clear your rating');
+		// Clearing the user's own rating leaves the server's showing again.
+		await fireEvent.click(toggle);
+		await waitFor(() => expect(toggle.getAttribute('aria-pressed')).toBe('false'));
+		expect(toggle.classList.contains('on')).toBe(true);
+		expect(toggle.classList.contains('shared')).toBe(true);
+		// Two stars on the server is not "rated" for the toggle: the full control in ⋮ shows it.
+		r.unmount();
+		ratings.reset();
+		fetched.mockResolvedValue([{ track: 11, mine: null, shared: 40, rating: 40 }]);
+		const r2 = render(NowPlaying);
+		await tick();
+		await waitFor(() => expect(fetched).toHaveBeenCalledTimes(2));
+		await tick();
+		expect(r2.container.querySelector('[data-rating-toggle].on')).toBeNull();
+		r2.unmount();
+		fetched.mockRestore();
+		styled.mockRestore();
+		rated.mockRestore();
+		ratings.reset();
+	});
+
 	test('a stream has no rating and no lyrics page content; the controls stay', async () => {
 		fake.app.now = status({ playlist_loop: [{ title: 'Radio Example', remote: 1 }] });
 		const r = render(NowPlaying);

@@ -2,6 +2,15 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: Web fixes from the first GitHub issues
+
+The forum testers' first reports, filed as GitHub issues #9 to #14.
+
+- **Ratings on phones (#14).** The one rating toggle beside the title on Now playing lit only for the user's own rating, so a track rated 4 or 5 stars in LMS showed a blank star on an iPhone while the wide layout's five stars showed it. It now lights for the rating shown: the user's own in the accent colour, or the rating LMS holds for the track, muted, with the label saying "Rated 4 of 5 on the server". A tap still loves the track or clears the user's own rating; the server's rating stays showing after a clear. The heart style behaves the same.
+- **Downloads over the stream (#11).** Playing a downloaded album while this device streamed from LMS left both audible, with the transport on the downloads and no way to reach the stream. Now `controls.playDownloads` pauses whatever this device plays for the server first (through LMS while in reach, held here when out of reach, including a download playing from LMS's queue), and the server's music starting on this device stops the downloads, so what is heard is always what the screens show. Pausing the stream to start downloads is not a start, so it never stops them. Tests: `tests/downloads-exclusive.test.ts`.
+- **Documentation (#13).** FEATURES and PLATFORMS now say that read-ahead, the replay cache and downloads standing in for streams are the Android app's; a browser holds only the current track. A multi-track cache for browsers is noted as a later improvement.
+- The scrubbing report (#12) could not be reproduced on the owner's iPad; the reporter has been asked for details. Bit-perfect output from Safari (#9) is not possible from a web page and waits for the iOS app.
+
 ## 2026-10-18: Plugin 0.5.1 released
 
 A web-app-only release carrying the entry below (the stream named in the quality badge and signal path, and *Automatic* explained per browser). The gateway and the plugin's behaviour are as in 0.5.0; Android 1.15.3 remains current. Notes: `docs/release-notes/v0.5.1.md`.
