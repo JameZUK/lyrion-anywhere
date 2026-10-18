@@ -14,6 +14,7 @@ Where Lyrion Anywhere runs, how to get the Android app, and what is built, in pr
 | **Android app** | Android 10 (API 29) or later | Bit-perfect USB DAC output on Android 14 or later where the phone and DAC offer it; wallpaper colours and the sharper ambient blur on Android 12 or later; Android Auto |
 | **iOS app** | Planned | Designed in: the shared Rust layer ([`mobile/`](../mobile)) already covers networking, the player engine and downloads |
 | **Gateway** | Linux x86_64, aarch64, armhf (via the plugin); any Docker host | LMS 9.0 or later |
+| **Built-in Cloudflare Tunnel** | Linux x86_64, aarch64, armhf (via the plugin); Docker with a `cloudflared` sidecar | Not on Windows or macOS, where the plugin has no gateway. Needs a domain on Cloudflare (a free plan is enough), or none for the one-hour temporary tunnel. See [`INSTALL.md`](INSTALL.md#option-c-built-in-cloudflare-tunnel) |
 
 Every client plays in LMS sync groups; how each one keeps in step is in [`FEATURES.md`](FEATURES.md#playback) (*Synchronised playback*) and [`PROTOCOL.md`](PROTOCOL.md).
 

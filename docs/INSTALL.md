@@ -1,6 +1,6 @@
 # Installing Lyrion Anywhere
 
-This guide takes you from a working LMS at home to playing your music on your phone over the internet. It takes about half an hour if you already have a domain name; most of that time is setting up HTTPS.
+This guide takes you from a working LMS at home to playing your music on your phone over the internet. It takes about half an hour if you already have a domain name; most of that time is setting up HTTPS. With a domain on Cloudflare, the plugin's built-in Cloudflare Tunnel ([Option C](#option-c-built-in-cloudflare-tunnel)) replaces the HTTPS set-up altogether.
 
 Every name and address here is an example. Throughout:
 
@@ -16,6 +16,7 @@ Every name and address here is an example. Throughout:
 2. [Install the gateway](#2-install-the-gateway)
    - [Option A: the LMS plugin (recommended)](#option-a-the-lms-plugin-recommended)
    - [Option B: Docker](#option-b-docker)
+   - [Option C: built-in Cloudflare Tunnel](#option-c-built-in-cloudflare-tunnel)
 3. [Configure the plugin](#3-configure-the-plugin)
 4. [Set up HTTPS (reverse proxy)](#4-set-up-https-reverse-proxy)
 5. [Create users](#5-create-users)
@@ -35,6 +36,7 @@ You need:
 - **A domain name** you can point at your home, e.g. `music.example.com`. A free dynamic-DNS name works, as does a subdomain of a domain you own.
 - **A reverse proxy with an HTTPS certificate** for that name: nginx, Caddy, Traefik or similar. Let's Encrypt certificates are free. If you have nothing yet, [Caddy](https://caddyserver.com) is the quickest (§4.2): it gets and renews certificates by itself.
 - **Port 443 forwarded** from your router to the reverse proxy (and port 80, if your certificate tool uses HTTP validation).
+- **Or, instead of the last three:** a domain on Cloudflare and the plugin's built-in Cloudflare Tunnel ([Option C](#option-c-built-in-cloudflare-tunnel)), which needs no reverse proxy, no certificate and no forwarded port.
 - **Optional: `ffmpeg`** on the machine running the gateway (e.g. `sudo apt install ffmpeg`; it needs the `libmp3lame` and `libopus` encoders, which distribution packages include). It is used for offline downloads as MP3 or Opus, and for the lower-data streams (*High* and *Data saver*) that phones can ask for on mobile data. Without it, downloads are offered in their original format only and streams are always sent as they are. Lyrion Anywhere doesn't bundle ffmpeg.
 
 What you must **not** do: forward or expose LMS's own ports (3483, 9000, 9090) to the internet. Lyrion Anywhere exists so that you never have to.
@@ -42,6 +44,13 @@ What you must **not** do: forward or expose LMS's own ports (3483, 9000, 9090) t
 ```
  phone / browser ──HTTPS──▶ reverse proxy ──HTTP──▶ gateway ──▶ LMS
   (internet)                  (port 443)          (port 9443)   (LAN only)
+```
+
+With the built-in Cloudflare Tunnel (Option C), the connection is made the other way round, from your home outwards:
+
+```
+ phone / browser ──HTTPS──▶ Cloudflare ◀──outbound── cloudflared ──HTTP──▶ gateway ──▶ LMS
+  (internet)               (its edge)                (on the LMS machine)  (port 9443)
 ```
 
 ## 2. Install the gateway
@@ -129,6 +138,8 @@ The main `serve` options:
 | `--max-connections` | 1024 | Open client connections at once (16–65536); beyond this, new ones wait. Request heads and bodies each have 15 s, and idle keep-alive connections close after 15 s. |
 | `--static-dir` | | The web app to serve at `/` (`/web` in the Docker image; the plugin passes its bundled copy). |
 | `--log-file` | | Append logs to this file instead of standard output (the plugin uses `lyrion-anywhere.log` in LMS's log folder). |
+| `--cloudflared` | | For the built-in Cloudflare Tunnel (Option C): run this system-installed `cloudflared` (an absolute path) instead of downloading the pinned one. *Install* and *Update* then do nothing, and *Remove* leaves that program in place. |
+| `--no-tunnel` | | Turn the built-in Cloudflare Tunnel off: its status says it is unavailable and its actions are refused. |
 
 The Docker image has no ffmpeg, so downloads from it are original-format only and streams are never re-encoded.
 
@@ -138,6 +149,109 @@ The image is static, has no shell and runs as an unprivileged user. Host network
 - pass `--listen 0.0.0.0:9443` inside the container;
 - publish with `-p 127.0.0.1:9443:9443`;
 - add the bridge's gateway address as `--trusted-proxy`.
+
+For a Cloudflare Tunnel with Docker, run `cloudflared` as a second container beside the gateway: see [`DEPLOY.md`](DEPLOY.md#cloudflare-tunnel-with-docker-a-sidecar).
+
+### Option C: built-in Cloudflare Tunnel
+
+The plugin (Option A) can set up a Cloudflare Tunnel for you, in place of the reverse proxy, certificate and port forwarding of section 4. The gateway runs Cloudflare's `cloudflared` program on the LMS machine. It dials out to Cloudflare, and Cloudflare serves `https://music.example.com` from its own network and passes each request back down that connection. Nothing at home listens on the internet, and your router needs no forwarded port.
+
+Install the plugin as in Option A first. Everything below happens in the **Cloudflare Tunnel** section of its settings page (*Settings › Plugins › Lyrion Anywhere*), and replaces section 4.
+
+**What you need:**
+
+- **A domain on Cloudflare**, i.e. one whose DNS Cloudflare hosts. The free plan is fine. You choose a name under it for Lyrion Anywhere, e.g. `music.example.com`.
+- **The plugin on Linux** (x86_64, aarch64 or armhf), as for Option A. On other systems the section says *Cloudflare Tunnel is not available on this server. It needs Linux on x86_64, aarch64 or armhf.* With Docker, use a sidecar instead ([`DEPLOY.md`](DEPLOY.md#cloudflare-tunnel-with-docker-a-sidecar)).
+- **Outbound access from the LMS machine** (nothing inbound):
+  - `github.com` on port 443, to download `cloudflared` (GitHub sends the file from a `githubusercontent.com` host);
+  - Cloudflare's network on port **7844**, over UDP and TCP, while the tunnel runs (Cloudflare's [firewall notes](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/tunnel-with-firewall/) list the hosts). A firewall that only lets port 443 out will stop the tunnel connecting;
+  - `api.cloudflare.com` on port 443, for *Create it for me* only.
+
+Your music then flows through Cloudflare's network, under [Cloudflare's terms](https://www.cloudflare.com/terms/), which are theirs to set and change. Cloudflare Tunnel is Cloudflare's service; Lyrion Anywhere only sets it up and runs it for you.
+
+#### Step 1: install `cloudflared`
+
+The section starts with *Not installed. Nothing is downloaded or run until you press Install, which fetches Cloudflare's cloudflared program at the version this release of the plugin pins, and checks it.* Press **Install**.
+
+The gateway downloads the official `cloudflared` release for your machine from GitHub, at the version pinned in this release of Lyrion Anywhere, and checks it against the SHA-256 checksum built into the gateway. Anything that doesn't match is refused. The page shows the download's progress, then *Installed. No tunnel is registered yet: register one below, or try a temporary tunnel.* `cloudflared` never updates itself; it moves to a new version only when a Lyrion Anywhere release does, and the page then offers **Update**.
+
+Then register a tunnel in one of two ways.
+
+#### Step 2, way 1: *I have a tunnel token*
+
+You create the tunnel in Cloudflare's dashboard, and paste its token here.
+
+1. In Cloudflare's dashboard, open *Networking › Tunnels* (in the older Zero Trust dashboard, *Networks › Tunnels*), choose **Create a tunnel** and, if asked, the *Cloudflared* type. Give it a name, e.g. `lyrion-anywhere`.
+2. Cloudflare then shows commands to install a connector. Don't run them: the gateway is the connector. Copy the token from one of them (the long string after `--token`).
+3. Give the tunnel a public hostname (Cloudflare now calls it a *published application route*): the subdomain and domain you chose, e.g. `music` and `example.com`, with the service URL `http://127.0.0.1:9443`. That is the gateway's *Listen address*. If you changed it to a LAN address, e.g. `10.0.0.20:9443`, use `http://10.0.0.20:9443` instead. Cloudflare adds the DNS record for the name itself.
+4. On the settings page, under **I have a tunnel token**, paste the token into *Tunnel token*, enter the same name (`music.example.com`) as *Public hostname*, and press **Register and start**.
+
+The hostname you enter here is the one the gateway accepts requests for and puts in pairing QR codes. It must be the one you set in Cloudflare's dashboard; the gateway can't check that for you.
+
+#### Step 2, way 2: *Create it for me*
+
+The gateway does the work in your Cloudflare account through Cloudflare's API.
+
+1. In Cloudflare's dashboard, under *My Profile › API Tokens*, create a custom token with exactly these three permissions:
+   - *Account › Cloudflare Tunnel › Edit*
+   - *Zone › DNS › Edit*
+   - *Zone › Zone › Read*
+
+   You can limit it to the one account and the one zone (domain) you will use. Giving it a short expiry is a good idea too.
+2. On the settings page, under **Create it for me**, paste it into *API token*, enter the *Public hostname* you want (e.g. `music.example.com`), and press **Create and start**.
+
+The gateway then finds the zone that holds the name, creates a tunnel named `lyrion-anywhere-music-example-com`, points it at the gateway's listen address, adds the DNS record (a proxied `CNAME` to the tunnel), and fetches the tunnel's token. The page names each step as it goes. If a step fails, the page says which one and gives Cloudflare's own message, and the gateway deletes the tunnel it had just created so that nothing is left half-made.
+
+**The API token is used for that one exchange and is never stored or logged.** The gateway keeps only the resulting tunnel token, as in way 1. Once it is running you can delete the API token in Cloudflare.
+
+If a DNS record for the name already exists, the gateway stops and says *a DNS record for music.example.com already exists; tick Replace to overwrite it*. Tick **Replace an existing DNS record** only if that record is one you no longer need, then try again.
+
+#### Step 3: check it is connected
+
+The section shows *Connected to Cloudflare (4 connections).*, or however many connections `cloudflared` holds, and its log underneath (*Copy log* copies it). Open `https://music.example.com/healthz` from a phone on mobile data: it shows `ok`. Then carry on with [section 5](#5-create-users).
+
+The tunnel starts again by itself whenever the gateway starts (with LMS), and `cloudflared` is restarted if it stops, after a pause that grows from 2 seconds to a minute.
+
+#### Public URL and Client address header while a tunnel runs
+
+You don't need to change either setting. While the tunnel runs, the gateway accepts requests for the tunnel's address and reads each visitor's real address from Cloudflare's `CF-Connecting-IP` header on the requests that come through the tunnel. The page shows this under both fields:
+
+- *Overridden by the Cloudflare Tunnel while it runs: the gateway uses https://music.example.com.*
+- *Overridden by the Cloudflare Tunnel while it runs: the gateway reads CF-Connecting-IP on requests that come through the tunnel.*
+
+Your own values are kept, and apply again when the tunnel stops. *Add a device* QR codes use the tunnel's address while a tunnel is registered. If the gateway listens on a LAN address rather than loopback, the gateway trusts that address as the tunnel's source for as long as the tunnel runs.
+
+#### Try a temporary tunnel first
+
+**Try a temporary tunnel** needs no Cloudflare account and no domain. The page warns, as it should: *Test only. The address is random, Cloudflare gives no guarantee for it, and this plugin stops it after one hour. For everyday use, register a tunnel below.*
+
+- It installs `cloudflared` if needed, and starts one of Cloudflare's free *quick tunnels*. Cloudflare gives it a random address under `trycloudflare.com`, shown on the page as a link and a QR code for your phone, with a countdown (*Stops in 59:05.*).
+- It stops after an hour, when you press **Stop the temporary tunnel**, when the gateway stops, or when you start a registered tunnel. It can't run while a registered tunnel runs. It is never restarted with the gateway, and each start gets a new address.
+- Nothing about it is stored: no token, no address.
+- **Anyone who has the address can reach this server's sign-in page until the temporary tunnel stops.** Sign-in, two-step verification and the lockouts apply as on any public address, because it is one.
+
+#### Everyday use: Stop, Start, Update, Remove
+
+- **Stop** stops the tunnel. It then stays stopped, across gateway and LMS restarts too, until you press **Start**.
+- **Update** appears when a new Lyrion Anywhere release pins a newer `cloudflared`. It stops the tunnel, downloads and checks the new version, and starts the tunnel again if it was running.
+- **Remove** (press it twice to confirm) stops the tunnel and deletes `cloudflared` and the stored tunnel token from this server. The tunnel and its DNS record stay in your Cloudflare account until you delete them there.
+- **Changing the hostname or the token:** the registration forms are shown only while no tunnel is registered. Press **Remove**, then **Install** again, and register afresh.
+
+#### If something goes wrong
+
+The section's status line says what failed, and its log has `cloudflared`'s own output, with tokens and ids masked. The gateway log (section 9) has the gateway's side.
+
+| Symptom | Likely cause and fix |
+|---|---|
+| **Could not download cloudflared from GitHub (…). The LMS server must be able to reach github.com.** | The LMS machine has no route to GitHub on port 443, or no working DNS. Allow it out, then press **Install** again. *GitHub answered 404…* means the pinned release is missing; please report it. |
+| **The downloaded cloudflared did not match the checksum pinned in this release, so it was not installed.** | What arrived was not the official file: a damaged download, or something on your network rewriting it. Nothing was kept. Try again; if it keeps happening, check for a proxy or filter that intercepts HTTPS. |
+| **The downloaded cloudflared does not run on this system, so it was removed.** | The file was the official one, but it would not start here (`cloudflared --version` failed). Please report it with your machine's details. |
+| **Running, but not connected to Cloudflare: trying again.** (or it stays at *Starting: connecting to Cloudflare…*) | `cloudflared` can't reach Cloudflare's network. Allow outbound port 7844, UDP and TCP. If the log mentions an invalid or unknown tunnel, the token is wrong or the tunnel was deleted in Cloudflare: **Remove** and register again. |
+| **Connected, but the address shows a Cloudflare error page or a plain 404** | The tunnel's public hostname in Cloudflare doesn't point at the gateway (way 1). Its service URL must be the gateway's listen address, e.g. `http://127.0.0.1:9443`, and its name the one you registered. |
+| **a DNS record for music.example.com already exists; tick Replace to overwrite it** | *Create it for me* found a record for that name. Tick **Replace an existing DNS record**, or choose another name. The tunnel it had created was deleted again. |
+| **no zone on this account contains music.example.com (the API token needs Zone › Zone › Read)** | The name isn't under any domain the API token can see. Check the spelling, that the domain is on that Cloudflare account, and that the token has *Zone › Zone › Read* for that zone. |
+| **… the API token is missing a permission; it needs Account › Cloudflare Tunnel › Edit, Zone › DNS › Edit and Zone › Zone › Read.** | The message starts with the step that failed. Edit the API token in Cloudflare to add the missing permission (for the right account and zone), then press **Create and start** again. |
+| **The stored tunnel token could not be read: register the tunnel again.** | The token file was removed or damaged. **Remove**, **Install**, and register again. |
 
 ## 3. Configure the plugin
 
@@ -149,7 +263,7 @@ Open *Settings › Plugins › Lyrion Anywhere* in LMS. (Docker users: the same 
 | **Listen address** | `127.0.0.1:9443` if the reverse proxy runs on the LMS machine. Otherwise the LMS machine's LAN address, e.g. `10.0.0.20:9443`; then firewall that port so only the proxy can reach it. |
 | **Public URL** | `https://music.example.com`, exactly as people will type it. An `http://` address is saved only if you also tick *Allow http:// anyway* (it sends passwords unencrypted; for testing on a private network only). |
 | **Trusted proxies** | The proxy's LAN address (e.g. `10.0.0.10`) if it runs on another machine; otherwise leave empty. |
-| **Client address header** | Leave empty, unless you're behind Cloudflare or another CDN: see §4.3. |
+| **Client address header** | Leave empty, unless you're behind Cloudflare or another CDN: see §4.3. The built-in Cloudflare Tunnel (Option C) needs neither this nor *Public URL* changed: it overrides both while it runs. |
 | **Gateway path** (under *Advanced (for developers)*) | Leave empty. It's for development and ignored unless LMS is started with `ANYWHERE_ALLOW_GATEWAY_PATH=1`. |
 | **Transcoded downloads** | *Offer MP3 and Opus* ticked (the default) to offer MP3 and Opus downloads as well as the original. Needs ffmpeg (§1). Unticking it also turns off the lower-data streams for mobile data, which use the same ffmpeg. |
 | **ffmpeg path** | Leave empty to use `ffmpeg` from the system path. Otherwise the absolute path to a program named `ffmpeg`, e.g. `/usr/local/bin/ffmpeg`. |
@@ -164,10 +278,13 @@ The same page has these sections:
 - **Plugins › Admins only:** the plugins LMS offers remote devices. Tick one to hide it from listeners and refuse its use, e.g. a plugin with server maintenance actions.
 - **Devices:** every signed-in device: its user, what kind of client it is (*Installed web app*, *Browser tab* or *Android app*, with the browser or phone, and the browser's full identification underneath), the internet address it was last seen from (as your reverse proxy passed it on, so set *Trusted proxies* and, behind a CDN, *Client address header* correctly), when, its *Diagnostics*, *Rename* (its player in LMS is renamed too) and *Sign out* (e.g. for a lost phone). The address and browser details are kept only while the device stays signed in, and are shown only here. Users can rename their own device too: in the web app under *Settings › This device*, and in the Android app under *Settings › This phone*.
 - **Recent activity:** sign-ins, failures and administrative changes.
+- **Cloudflare Tunnel:** the built-in tunnel, its status and log: see [Option C](#option-c-built-in-cloudflare-tunnel).
 
 > **Your LAN and LMS's own security.** By default, LMS's web interface and control ports (9000, 9090) don't ask for a password on your home network. Anyone on your network can therefore open this settings page. Changes to remote accounts are only accepted from this page (other web sites can't make them through LMS), but if other people use your network, turn on LMS's password protection under *Settings › Advanced › Security*. Note that the gateway has no setting for an LMS user name and password: it connects to LMS's CLI (9090) without logging in, for the apps' live updates. If LMS's CLI refuses it, the gateway log says `LMS closed its CLI connection without answering`, and the apps get no live updates until it lets the gateway in.
 
 ## 4. Set up HTTPS (reverse proxy)
+
+If you use the built-in Cloudflare Tunnel ([Option C](#option-c-built-in-cloudflare-tunnel)), skip this section: the tunnel takes the proxy's place.
 
 The proxy terminates HTTPS and passes requests, including WebSockets, to the gateway. Whatever proxy you use, it must:
 
@@ -206,7 +323,7 @@ music.example.com {
 
 ### 4.3 Behind Cloudflare or another CDN
 
-This works, with two points to watch:
+If your domain is on Cloudflare, the simplest way is the plugin's built-in Cloudflare Tunnel ([Option C](#option-c-built-in-cloudflare-tunnel)), which needs no proxy and sets the gateway's client address header itself. With your own proxy behind Cloudflare's CDN, this works, with two points to watch:
 
 - **Pass the real client address.** Otherwise every request seems to come from the CDN, and one bad password locks everyone out. In nginx, use the realip module, trusting only the CDN's published ranges:
 
@@ -215,7 +332,7 @@ This works, with two points to watch:
   set_real_ip_from 173.245.48.0/20;   # …and the rest of Cloudflare's published IPv4/IPv6 ranges
   ```
 
-  Or, simpler, tell the gateway which header holds the visitor's address: *Client address header* `CF-Connecting-IP` in the plugin settings (Docker: `--client-ip-header CF-Connecting-IP`). The gateway believes it only on requests from your proxy (loopback, or a *Trusted proxy*), so use it only if that proxy accepts connections from Cloudflare alone, such as a Cloudflare Tunnel (`cloudflared`) or a firewall limited to Cloudflare's ranges. Otherwise anyone reaching the proxy directly could pick their own address.
+  Or, simpler, tell the gateway which header holds the visitor's address: *Client address header* `CF-Connecting-IP` in the plugin settings (Docker: `--client-ip-header CF-Connecting-IP`). The gateway believes it only on requests from your proxy (loopback, or a *Trusted proxy*), so use it only if that proxy accepts connections from Cloudflare alone, such as a Cloudflare Tunnel (`cloudflared`) you run yourself, or a firewall limited to Cloudflare's ranges. Otherwise anyone reaching the proxy directly could pick their own address.
 
 - **Idle timeouts:** Cloudflare closes idle WebSockets after 100 seconds. The gateway pings every 5 seconds, so no change is needed.
 
@@ -302,6 +419,7 @@ From a phone **off your Wi-Fi** (on mobile data):
 | **The settings page says "refused: use the Lyrion Anywhere settings page"** | LMS was restarted since the page was opened. Reload the page. |
 | **The settings page has no logo, or shows odd characters such as "Settings âº Advanced"** | A plugin version from before 2026-10-11. Update the plugin. |
 | **Every device's address is the proxy's (e.g. 127.0.0.1)** | The gateway doesn't trust the proxy, or the proxy doesn't send `X-Forwarded-For`. Set *Trusted proxies* (a proxy on another machine) and, behind Cloudflare or another CDN, *Client address header*; see §4. |
+| **The Cloudflare Tunnel section shows *Failed: …* or won't connect** | See the table at the end of [Option C](#if-something-goes-wrong). |
 
 **Logs:**
 - **Gateway:** `lyrion-anywhere.log` in LMS's log folder, e.g. `/var/log/squeezeboxserver/` (Docker: `docker logs lyrion-anywhere`).
@@ -314,8 +432,8 @@ From a phone **off your Wi-Fi** (on mobile data):
   - *Plugin from a release:* LMS offers the update under *Settings › Plugins*.
   - *Manual install:* replace the `LyrionAnywhere` folder with the new zip's contents, then restart LMS.
   - *Docker:* rebuild the image and re-create the container.
-  - Accounts and devices live in the data folder (`…/prefs/lyrion-anywhere/` or the Docker volume) and carry over.
-- **Uninstalling:** untick and remove the plugin in *Settings › Plugins*, then remove the proxy's site configuration. To delete all accounts too, delete the data folder.
+  - Accounts and devices live in the data folder (`…/prefs/lyrion-anywhere/` or the Docker volume) and carry over, as does the built-in Cloudflare Tunnel (`tunnel/` in the same folder). When an update pins a newer `cloudflared`, the plugin's settings page offers **Update**.
+- **Uninstalling:** untick and remove the plugin in *Settings › Plugins*, then remove the proxy's site configuration. With the built-in Cloudflare Tunnel, press **Remove** in its section first, then delete the tunnel and its DNS record in Cloudflare's dashboard. To delete all accounts too, delete the data folder.
 
 ---
 
