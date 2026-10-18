@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: Plugin 0.5.1 released
+
+A web-app-only release carrying the entry below (the stream named in the quality badge and signal path, and *Automatic* explained per browser). The gateway and the plugin's behaviour are as in 0.5.0; Android 1.15.3 remains current. Notes: `docs/release-notes/v0.5.1.md`.
+
 ## 2026-10-18: The web app says what is actually streaming
 
 Forum users on iPhones set *High*, saw the signal path describe their 96 kHz FLAC as 48 kHz "in MP4", and asked whether it was a display error. Half of it was. The gateway really had re-encoded the FLAC to Opus, which is always 48 kHz, and Safari plays through a media element fed losslessly as FLAC in MP4; but the panel never said "Opus", and its verdict came from the library track, so it could read "Lossless to the browser" while a lossy stream played. Nobody could tell from the app whether Opus was in use at all. This applies to every browser, not just Safari: the information comes from the player engine, not the browser.
