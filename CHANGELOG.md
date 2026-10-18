@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: Plugin 0.5.5 released
+
+Internet radio plays: the gateway has LMS proxy streams for these players (the entry below). Everything else as in 0.5.4; Android 1.15.4 remains current. Notes: `docs/release-notes/v0.5.5.md`.
+
 ## 2026-10-18: Internet radio plays (LMS proxies streams for these players)
 
 The owner found that Shoutcast and other internet stations would not play. The gateway log showed why: LMS told the player to fetch the station straight from the broadcaster's address (*direct streaming*, which LMS does for capable players), the gateway refused that `strm` as it must (these players only ever talk to the gateway), and the player reported the stream unsupported. The fix is in the gateway, so it covers plugin and Docker installs alike:
