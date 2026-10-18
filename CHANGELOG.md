@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: Plugin 0.5.2 released
+
+The fixes for GitHub issues #14 and #11, the documentation for #13, the gateway's authentication lows from the October review (schema 13: the devices table rebuilt with `AUTOINCREMENT`, every row kept), and the quieter event log. Android 1.15.3 remains current. Notes: `docs/release-notes/v0.5.2.md`.
+
 ## 2026-10-18: Quieter event log, tidier tests, a steadier player test
 
 - **Gateway:** an LMS CLI event line over 16 KiB was logged as a warning whenever it was dropped. A user's log showed three per menu change: LMS's `menustatus` and `displaynotify` lines for a controller, which the gateway never forwards. The warning is now kept for oversize lines of a kind the gateway does forward (`playlist`, `mixer`, `power` and the rest); other kinds are dropped at debug level. Test: `only_oversize_lines_we_would_forward_are_worth_a_warning`.
