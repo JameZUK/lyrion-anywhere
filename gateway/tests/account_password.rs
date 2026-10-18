@@ -292,15 +292,8 @@ async fn two_step_users_need_a_code() {
                 .is_none()
         );
     }
-    // A right code with a wrong password is still refused.
-    let r = change(
-        &h,
-        &h.tok_a,
-        json!({ "current": "not my password", "new": NEW_PW, "code": code_for(&secret, 1) }),
-    )
-    .await;
-    assert_eq!(r.status(), S::FORBIDDEN);
-
+    // (Asking without a code counted like a failure, as each bad code did: four so far,
+    // one short of the lock.)
     let r = change(
         &h,
         &h.tok_a,
@@ -308,6 +301,14 @@ async fn two_step_users_need_a_code() {
     )
     .await;
     assert_eq!(r.status(), S::OK);
+    // A right code with a wrong password (the old one, now) is still refused.
+    let r = change(
+        &h,
+        &h.tok_a,
+        json!({ "current": PW, "new": "yet another passphrase", "code": code_for(&secret, 2) }),
+    )
+    .await;
+    assert_eq!(r.status(), S::FORBIDDEN);
     // Two-step is still on for the new password.
     let r = login(&h, "alice", NEW_PW).await;
     assert_eq!(r.status(), S::UNAUTHORIZED);

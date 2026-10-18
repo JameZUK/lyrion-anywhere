@@ -531,7 +531,7 @@ An installable PWA served by the gateway, responsive from phone to desktop. It i
 | Threat | Mitigation |
 |---|---|
 | Internet scanner hits LMS bugs (9.2.0 path traversal, `readdirectory`, XSS: CVE-2026-50230…50235) | LMS ports never exposed; gateway forwards only allow-listed commands and path patterns |
-| Password guessing | Per-IP (IPv6 per /64) hard lockout, and a per-user limit that refuses the addresses that failed and holds all others to 2 attempts a minute (so guessing from many addresses gains little, and nobody can lock a user out); counted before the password is checked; at most 4 concurrent password checks; exponential lockout; TOTP; generic error messages |
+| Password guessing | Per-IP (IPv6 per /64) hard lockout, which a success clears only of that user's own failures, and a per-user limit that refuses the addresses that failed and holds all others to 2 attempts a minute (so guessing from many addresses gains little, and nobody can lock a user out); counted before the password is checked; at most 4 concurrent password checks; exponential lockout; TOTP (the right password without its code counts against the address too); account changes locked per user and device; generic error messages |
 | Stolen device / token | Per-device revocation; refresh-token rotation with reuse detection; 15-min access tokens |
 | Impersonating another player | HELO MAC must match device's assigned MAC; stream path must match session's MAC |
 | Reading arbitrary files | Track IDs resolved only through the library by the plugin; `file://` URLs rejected in control commands |

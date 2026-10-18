@@ -194,8 +194,9 @@ enum Delivery {
     Ok,
     /// Too much undelivered while detached: the session must end.
     Overflow,
-    /// The attached socket couldn't keep up and was detached.
-    SlowClient(u64),
+    /// The attached socket couldn't keep up, or had already gone, and was detached: the
+    /// caller holds the session for its resume.
+    Detached(u64),
 }
 
 impl Session {
@@ -846,7 +847,7 @@ impl Session {
         let seq = st.last_seq;
         st.log_bytes += frame.len();
         st.log.push_back((seq, frame.clone()));
-        let mut slow = None;
+        let mut detached = None;
         if let Some(a) = &st.attached {
             match a.tx.try_send(Outbound::Frame(frame)) {
                 Ok(()) => st.sent_upto = seq,
@@ -854,10 +855,18 @@ impl Session {
                     // Client can't keep up: close the socket; it may resume and catch up.
                     warn!(mac = %self.device.mac_string(), "client too slow; detaching socket");
                     a.kick(1013, "client too slow");
-                    slow = Some(a.generation);
+                    detached = Some(a.generation);
                     st.attached = None;
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => st.attached = None,
+                // The socket's writer has gone before its handler noticed: held for resume
+                // like a dropped socket. Detached without that, nothing kept LMS hearing from
+                // the player, so LMS dropped it after about 15 s and the client couldn't
+                // resume.
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    info!(mac = %self.device.mac_string(), "player socket gone; holding session for resume");
+                    detached = Some(a.generation);
+                    st.attached = None;
+                }
             }
         }
         // Keep the log bounded, discarding only frames already handed to a socket.
@@ -872,8 +881,8 @@ impl Session {
         }
         if st.log_bytes > limit {
             Delivery::Overflow
-        } else if let Some(g) = slow {
-            Delivery::SlowClient(g)
+        } else if let Some(g) = detached {
+            Delivery::Detached(g)
         } else {
             Delivery::Ok
         }
@@ -1065,7 +1074,7 @@ async fn read_lms(gw: AppState, session: Arc<Session>, mut rd: tokio::net::tcp::
             }
             match session.pass_from_lms(op, &payload, gw.cfg.detached_queue_limit) {
                 None | Some(Delivery::Ok) => {}
-                Some(Delivery::SlowClient(generation)) => session.hold_for_resume(&gw, generation),
+                Some(Delivery::Detached(generation)) => session.hold_for_resume(&gw, generation),
                 Some(Delivery::Overflow) => {
                     warn!(mac = %session.device.mac_string(), "detached queue overflow");
                     session.end(&gw, EndReason::QueueOverflow).await;
@@ -1320,6 +1329,21 @@ mod tests {
             *first.kick.borrow(),
             Some((4000, "replaced by a newer connection"))
         );
+    }
+
+    /// Regression: a socket whose outbound channel had closed (its writer gone before the
+    /// socket handler noticed) was detached without the grace timer or stand-in
+    /// heartbeats, so LMS dropped the player after about 15 s and the client could not
+    /// resume. It now takes the same path as a socket that couldn't keep up.
+    #[tokio::test]
+    async fn a_closed_socket_channel_is_held_for_resume() {
+        let (s, g) = session().await; // (its receiver already dropped)
+        let d = s.deliver(frame(b"strm", &[b'q'; 24]), usize::MAX);
+        assert!(matches!(d, Delivery::Detached(x) if x == g));
+        assert!(s.is_detached());
+        // The frame is kept for the resume.
+        let resumed = s.attach(0).unwrap();
+        assert_eq!(resumed.rx.len(), 1);
     }
 
     fn stat_frame(event: &[u8; 4], jiffies: u32, elapsed_ms: u32) -> Vec<u8> {

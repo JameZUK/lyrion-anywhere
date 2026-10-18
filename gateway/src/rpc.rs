@@ -688,4 +688,19 @@ mod tests {
         assert!(!kept.contains(&0));
         assert!(!kept.contains(&2));
     }
+
+    /// Regression: a revoked or deleted device's learned actions stayed, keyed by its id,
+    /// for whichever device was given that id next. Ending its sessions (as every
+    /// revocation does) now forgets them; other devices keep theirs.
+    #[tokio::test]
+    async fn a_revoked_device_forgets_its_learned_actions() {
+        let gw = crate::Gateway::new(
+            crate::Config::default(),
+            std::sync::Arc::new(crate::accounts::Accounts::in_memory().unwrap()),
+        );
+        gw.remember_menu_actions(7, vec![action(7)]);
+        gw.remember_menu_actions(8, vec![action(8)]);
+        gw.end_sessions_for(&[7]).await;
+        assert_eq!(gw.menu_action_devices(), vec![8]);
+    }
 }
