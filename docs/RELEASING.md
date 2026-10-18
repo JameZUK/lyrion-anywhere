@@ -48,6 +48,7 @@ gh attestation verify LyrionAnywhere-android-<version>.apk --repo JameZUK/lyrion
 ## Plugin releases (`v*`)
 
 1. **Version:** set `<version>` in `plugin/Plugins/LyrionAnywhere/install.xml`. The tag must equal `v` plus that version; the job checks this.
+   - **`cloudflared` pin:** before a release, run `tools/update-cloudflared-pin.sh <version>` with the newest [`cloudflared` release](https://github.com/cloudflare/cloudflared/releases) (it downloads the three Linux assets, sums them and rewrites `gateway/src/cftunnel/pins.rs`), and note the version in the changelog. `tools/test-release.sh` checks the pin is well formed.
 2. **Notes:**
    - write `docs/release-notes/v<version>.md` (the job refuses a tag without it);
    - add the release to `CHANGELOG.md`.

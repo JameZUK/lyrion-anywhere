@@ -2,6 +2,12 @@
 
 Dated entries, newest first.
 
+## Unreleased (0.6.0)
+
+### Gateway
+
+- **Built-in Cloudflare Tunnel.** On request from the plugin's settings page (`/admin/v1/tunnel/…`), the gateway installs the official `cloudflared` 2026.10.1 (pinned, SHA-256 checked) and supervises it: register a tunnel token, let the gateway create the tunnel through Cloudflare's API (the API token is used once and never stored), or try a temporary `trycloudflare.com` tunnel for an hour. While a tunnel runs the gateway accepts its origin and reads `CF-Connecting-IP` from it. New `--cloudflared <path>` and `--no-tunnel`; the gateway now also stops cleanly on SIGTERM. SPEC D27; `tools/update-cloudflared-pin.sh` moves the pin.
+
 ## 2026-10-18: Plugin 0.5.6 and Android 1.15.5 released
 
 The remaining low findings of the October code review, from the five entries below (gateway and core, web, mobile, Android, plugin and CI). Plugin 0.5.6 and Android 1.15.5 (versionCode 34). Notes: `docs/release-notes/v0.5.6.md`, `docs/release-notes/android-1.15.5.md`. The first tag run failed Gradle's new dependency verification on five parent-POM and BOM files a warm cache had left out of the metadata; it was regenerated from a clean cache, and RELEASING.md now says to do it that way.

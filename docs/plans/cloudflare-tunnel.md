@@ -67,7 +67,7 @@ Agreed 2026-10-18 as an addition. Cloudflare's *quick tunnel* needs no sign-up: 
 ## Documentation
 
 - `docs/INSTALL.md`: a new **Option C: built-in Cloudflare Tunnel** beside the reverse-proxy and Docker options, with the two registration routes, the API-token scopes, the terms sentence, and troubleshooting (can't download, can't connect, DNS record exists, hostname not in the zone).
-- `docs/SECURITY.md`, `docs/PROTOCOL.md` (the admin endpoints), `docs/DEPLOY.md` (the Docker sidecar), `README.md` (one line in the set-up list), `SPEC.md` (decision D26, the trust boundary), `docs/FEATURES.md`, `docs/PLATFORMS.md`.
+- `docs/SECURITY.md`, `docs/PROTOCOL.md` (the admin endpoints), `docs/DEPLOY.md` (the Docker sidecar), `README.md` (one line in the set-up list), `SPEC.md` (decision D27, the trust boundary; D26 was already taken), `docs/FEATURES.md`, `docs/PLATFORMS.md`.
 
 ## Tests
 

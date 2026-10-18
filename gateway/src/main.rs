@@ -97,7 +97,7 @@ enum Cmd {
         /// instead of the pinned release the gateway downloads on request.
         #[arg(long, conflicts_with = "no_tunnel")]
         cloudflared: Option<PathBuf>,
-        /// Turn off the built-in Cloudflare Tunnel: its admin routes answer 409 and its state
+        /// Turn off the built-in Cloudflare Tunnel: its admin actions answer 409 and its state
         /// is "unsupported". (Otherwise it is available under <data-dir>/tunnel, but nothing is
         /// downloaded or run until the admin asks.)
         #[arg(long)]

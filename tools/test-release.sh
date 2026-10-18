@@ -53,6 +53,14 @@ if [ "${ANYWHERE_RUN_ARM:-}" = 1 ]; then
 	done
 fi
 
+echo "# cloudflared pin"
+# The built-in Cloudflare Tunnel's pinned release (tools/update-cloudflared-pin.sh).
+PINS="$(cd "$(dirname "$0")/.." && pwd)/gateway/src/cftunnel/pins.rs"
+t "pins.rs names a cloudflared version" 'grep -Eq "^pub const CLOUDFLARED_VERSION: &str = \"[0-9]{4}\.[0-9]{1,2}\.[0-9]+\";" "$PINS"'
+for arch in AMD64 ARM64 ARMHF; do
+	t "pins.rs has a 64-hex SHA-256 for $arch" 'grep -Eq "^pub const SHA256_$arch: &str = \"[0-9a-f]{64}\";" "$PINS"'
+done
+
 echo "# repo.xml"
 SHA1=$(sha1sum "$ZIP" | cut -c1-40)
 t "repo.xml is well-formed" 'python3 -c "import sys,xml.dom.minidom; xml.dom.minidom.parse(sys.argv[1])" "$DIST/repo.xml"'

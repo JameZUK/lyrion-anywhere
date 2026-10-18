@@ -19,7 +19,7 @@ Every page of Lyrion Anywhere's documentation, with what each covers. Start with
 |---|---|
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Components, repository layout, trust boundary, request flows with sequence diagrams, the core and its hosts, the Android app, the plugin, storage, testing |
 | [`PROTOCOL.md`](PROTOCOL.md) | The public API (`/v1`) and player protocol: authentication, the player socket and resume, streams, the command policy, transfer, sync, downloads, offline plays, your own data, analysis, lyrics, events |
-| [`../SPEC.md`](../SPEC.md) | The specification: every design decision (D1–D26), goals, the threat model and the testing strategy |
+| [`../SPEC.md`](../SPEC.md) | The specification: every design decision (D1–D27), goals, the threat model and the testing strategy |
 | [`PERFORMANCE.md`](PERFORMANCE.md) | Android performance budgets and how to measure them |
 | [`security/`](security) | Security reviews and penetration tests |
 
