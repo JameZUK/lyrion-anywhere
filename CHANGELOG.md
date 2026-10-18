@@ -4,7 +4,7 @@ Dated entries, newest first.
 
 ## 2026-10-18: Plugin 0.5.6 and Android 1.15.5 released
 
-The remaining low findings of the October code review, from the five entries below (gateway and core, web, mobile, Android, plugin and CI). Plugin 0.5.6 and Android 1.15.5 (versionCode 34). Notes: `docs/release-notes/v0.5.6.md`, `docs/release-notes/android-1.15.5.md`.
+The remaining low findings of the October code review, from the five entries below (gateway and core, web, mobile, Android, plugin and CI). Plugin 0.5.6 and Android 1.15.5 (versionCode 34). Notes: `docs/release-notes/v0.5.6.md`, `docs/release-notes/android-1.15.5.md`. The first tag run failed Gradle's new dependency verification on five parent-POM and BOM files a warm cache had left out of the metadata; it was regenerated from a clean cache, and RELEASING.md now says to do it that way.
 
 ## 2026-10-18: Plugin, CI and release: the review's remaining lows
 

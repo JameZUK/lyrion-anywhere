@@ -86,7 +86,7 @@ A hand-published release has no matching provenance: CI still attests the files 
 
 Gradle checks every dependency, plugins included, against the SHA-256 recorded in `apps/android/gradle/verification-metadata.xml`, and fails the build on anything unknown or changed. This matters most for the rustls-platform-verifier AAR (the JNI bridge every certificate check goes through), which comes from a GitHub branch that can change.
 
-- After adding or updating a dependency, refresh the file from `apps/android` with `./gradlew --write-verification-metadata sha256 help testDebugUnitTest lint assembleDebug assembleRelease`, then review the diff: only the components you changed should appear.
+- After adding or updating a dependency, refresh the file **from a clean module cache**: stop the daemon (`./gradlew --stop`), move `~/.gradle/caches/modules-2` aside, then from `apps/android` run `./gradlew --write-verification-metadata sha256 help testDebugUnitTest lint assembleDebug assembleRelease`, then review the diff: only the components you changed should appear. A warm cache leaves out metadata files (parent POMs, BOM `.module` files) that a clean resolution fetches, and CI, which always starts clean, then fails verification; the 1.15.5 release run did exactly that.
 - A changed checksum for a version already listed is never accepted by regenerating: find out why the artefact changed first.
 - `DependencyVerificationTest` checks the file is in force and that the verifier AAR is pinned.
 
