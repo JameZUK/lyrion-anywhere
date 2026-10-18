@@ -81,7 +81,7 @@ pub fn parse_tracks(q: &str) -> Option<Vec<u64>> {
 // ---------------------------------------------------------------------------
 
 pub fn get_mine(a: &Accounts, user: i64, keys: &[String]) -> Result<Vec<Option<u32>>, AuthError> {
-    a.with_db(|db| {
+    a.read_db(|db| {
         let mut st =
             db.prepare("SELECT rating FROM user_ratings WHERE user_id = ?1 AND track_key = ?2")?;
         keys.iter()
@@ -145,7 +145,7 @@ pub fn clear(a: &Accounts, user: i64) -> Result<usize, AuthError> {
 }
 
 pub fn count(a: &Accounts, user: i64) -> Result<usize, AuthError> {
-    a.with_db(|db| {
+    a.read_db(|db| {
         Ok(db.query_row(
             "SELECT count(*) FROM user_ratings WHERE user_id = ?1",
             [user],
@@ -155,7 +155,7 @@ pub fn count(a: &Accounts, user: i64) -> Result<usize, AuthError> {
 }
 
 pub fn style(a: &Accounts, user: i64) -> Result<&'static str, AuthError> {
-    a.with_db(|db| {
+    a.read_db(|db| {
         let s: Option<String> = db
             .query_row(
                 "SELECT rating_style FROM user_prefs WHERE user_id = ?1",

@@ -1044,6 +1044,17 @@ pub struct Harness {
     pub mac_a: [u8; 6],
     pub tok_b: String,
     pub mac_b: [u8; 6],
+    /// The accounts database's scratch directory, removed with the harness.
+    pub db_dir: ScratchDb,
+}
+
+/// A scratch directory removed when dropped (the harness's accounts database lives in one).
+pub struct ScratchDb(pub std::path::PathBuf);
+
+impl Drop for ScratchDb {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 pub async fn harness_with(mutate: impl FnOnce(&mut Config)) -> Harness {
@@ -1060,7 +1071,10 @@ pub async fn harness_with(mutate: impl FnOnce(&mut Config)) -> Harness {
         ..Config::default()
     };
     mutate(&mut cfg);
-    let accounts = Arc::new(Accounts::in_memory().unwrap());
+    // On disk, as in production: a file database has its separate read connection (an
+    // in-memory one reads through its one connection).
+    let db_dir = ScratchDb(scratch_dir("anywhere-harness", "accounts"));
+    let accounts = Arc::new(Accounts::open(&db_dir.0.join("accounts.db")).unwrap());
     accounts.create_user("alice", PW, Role::Listener).unwrap();
     accounts.create_user("bob", PW, Role::Listener).unwrap();
     let a = accounts
@@ -1090,6 +1104,7 @@ pub async fn harness_with(mutate: impl FnOnce(&mut Config)) -> Harness {
         mac_a: a.principal.mac,
         tok_b: b.access,
         mac_b: b.principal.mac,
+        db_dir,
     }
 }
 
