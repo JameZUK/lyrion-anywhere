@@ -16,7 +16,7 @@ unless ($bin) {
 }
 
 sub free_port { my $s = IO::Socket::INET->new(Listen => 1, LocalAddr => '127.0.0.1', LocalPort => 0) or die; my $p = $s->sockport; close $s; $p }
-my ($public, $admin) = (free_port(), free_port());
+my ($public, $admin, $tunnel) = (free_port(), free_port(), free_port());
 my $dir = tempdir(CLEANUP => 1);
 my $pid = fork // die;
 if ($pid == 0) {
@@ -24,7 +24,7 @@ if ($pid == 0) {
 	exec $bin, 'serve', '--data-dir', "$dir/data", '--listen', "127.0.0.1:$public",
 		'--admin-listen', "127.0.0.1:$admin", '--lms', '127.0.0.1', '--lms-http-port', 1, '--lms-cli-port', 1,
 		'--no-transcode', '--download-cache-mb', 64, '--client-ip-header', 'CF-Connecting-IP',
-		'--no-analysis';
+		'--no-analysis', '--tunnel-listen', "127.0.0.1:$tunnel";
 	exit 127;
 }
 END { kill 'TERM', $pid if $pid }
@@ -121,6 +121,14 @@ is_deeply($users_after->{users}, [], 'user deleted');
 	my $m = Plugins::LyrionAnywhere::Admin::gateway_message($res);
 	ok(defined $m && length $m, 'with a message the plugin can show: ' . ($m // 'none'));
 	send_op(user_delete => { username => 'bob' });
+}
+
+# The tunnel's status names the tunnel's own listener, which the settings page tells the
+# admin to set as the service in Cloudflare.
+{
+	my ($status, $data) = send_op(tunnel_status => {});
+	is($status, 200, 'tunnel_status accepted by the gateway');
+	is($data->{tunnel_listen}, "127.0.0.1:$tunnel", 'the status names the tunnel listener');
 }
 
 # Without the secret the gateway refuses, whatever the plugin would have sent.

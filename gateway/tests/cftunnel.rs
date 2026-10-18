@@ -343,6 +343,8 @@ async fn serve_metrics(port: u16, m: Arc<Metrics>) {
 
 struct T {
     h: Harness,
+    /// The tunnel's own listener (the public one is `h.addr`).
+    tunnel_addr: SocketAddr,
     data: ScratchDb,
     rec: PathBuf,
     gh: Arc<GitHub>,
@@ -372,11 +374,14 @@ async fn setup_with(tweak: impl FnOnce(&mut Settings)) -> T {
     *cf.token.lock().unwrap() = tunnel_token(9);
     let cf_base = fake_cloudflare(cf.clone()).await;
     let clock = ManualClock::new();
+    // The tunnel's own listener, served below with the tunnel's router.
+    let tl = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let tunnel_addr = tl.local_addr().unwrap();
     // The fake servers share one origin per server; the tests allow both.
     let mut settings = Settings {
         enabled: true,
         dir: Some(data.0.join("tunnel")),
-        listen: "127.0.0.1:9443".parse().unwrap(),
+        listen: Some(tunnel_addr),
         os: "linux".into(),
         arch: "x86_64".into(),
         pinned_sha256: Some(sum),
@@ -402,8 +407,18 @@ async fn setup_with(tweak: impl FnOnce(&mut Settings)) -> T {
             .await
             .unwrap()
     });
+    let tunnel_app = anywhere_gateway::tunnel_router(h.gw.clone());
+    tokio::spawn(async move {
+        axum::serve(
+            tl,
+            tunnel_app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
     h.gw.tunnel().startup().await;
     T {
+        tunnel_addr,
         h,
         data,
         rec,
@@ -540,7 +555,8 @@ impl T {
     }
 }
 
-const KEYS: [&str; 15] = [
+const KEYS: [&str; 16] = [
+    "tunnel_listen",
     "supported",
     "pinned_version",
     "installed_version",
@@ -572,8 +588,13 @@ fn assert_status_shape(v: &Value) {
         "public_url",
         "step",
         "error",
+        "tunnel_listen",
     ] {
         assert!(v[k].is_null() || v[k].is_string(), "{k}: {v}");
+    }
+    if let Some(a) = v["tunnel_listen"].as_str() {
+        let a: SocketAddr = a.parse().expect("an address");
+        assert!(a.ip().is_loopback(), "{v}");
     }
     assert!(v["pinned_version"].is_string());
     assert!(["none", "registered", "quick"].contains(&v["mode"].as_str().unwrap()));
@@ -596,6 +617,16 @@ fn assert_status_shape(v: &Value) {
     }
     if v["state"] == "failed" {
         assert!(v["error"].is_string(), "{v}");
+    } else if v["state"] == "unsupported" && v["tunnel_listen"].is_null() && v["error"].is_string()
+    {
+        // The tunnel's listener could not be opened: the error says so.
+        assert!(
+            v["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("The tunnel's own listener"),
+            "{v}"
+        );
     } else {
         assert!(v["error"].is_null(), "{v}");
     }
@@ -618,6 +649,7 @@ async fn nothing_is_downloaded_or_started_until_asked() {
     assert_eq!(v["state"], "not_installed");
     assert_eq!(v["supported"], true);
     assert_eq!(v["mode"], "none");
+    assert_eq!(v["tunnel_listen"], t.tunnel_addr.to_string());
     assert!(t.gh.requests.lock().unwrap().is_empty());
     assert!(t.files().is_empty());
     assert!(runs(&t.rec).is_empty());
@@ -842,6 +874,38 @@ async fn unsupported_and_turned_off_tunnels_refuse_every_action() {
         assert!(!t.dir().exists() || t.files().is_empty());
         assert!(t.gh.requests.lock().unwrap().is_empty());
     }
+}
+
+#[tokio::test]
+async fn a_tunnel_listener_that_could_not_be_opened_makes_the_tunnel_unsupported() {
+    // The port is taken.
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let busy = held.local_addr().unwrap();
+    let sentence = anywhere_gateway::cftunnel::open_listener(busy).unwrap_err();
+    assert!(
+        sentence.contains(&busy.to_string()) && sentence.contains("could not be opened"),
+        "{sentence}"
+    );
+    let s2 = sentence.clone();
+    let t = setup_with(move |s| {
+        s.listen = None;
+        s.listen_error = Some(s2);
+    })
+    .await;
+    let v = t.status().await;
+    assert_eq!(v["supported"], false);
+    assert_eq!(v["state"], "unsupported");
+    assert_eq!(v["mode"], "none");
+    assert_eq!(v["tunnel_listen"], Value::Null);
+    assert_eq!(v["error"], sentence.as_str());
+    for (path, body) in routes() {
+        let (s, e) = t.post(path, body).await;
+        assert_eq!(s, S::CONFLICT, "{path}");
+        assert_eq!(e["error"], sentence.as_str(), "{path}");
+    }
+    assert!(t.gh.requests.lock().unwrap().is_empty());
+    assert!(runs(&t.rec).is_empty());
+    drop(held);
 }
 
 fn routes() -> Vec<(&'static str, Option<Value>)> {
@@ -1137,10 +1201,11 @@ async fn the_create_exchange_stores_only_the_tunnel_token_and_hostname() {
     assert_eq!(
         reqs[3].3,
         json!({"config": {"ingress": [
-            {"hostname": HOST, "service": "http://127.0.0.1:9443"},
+            {"hostname": HOST, "service": format!("http://{}", t.tunnel_addr)},
             {"service": "http_status:404"},
         ]}})
     );
+    assert_ne!(t.tunnel_addr, t.h.addr, "not the public listener");
     assert_eq!(reqs[4].1, format!("/zones/{ZONE}/dns_records?name={HOST}"));
     assert_eq!(
         reqs[5].3,
@@ -1342,8 +1407,14 @@ async fn the_temporary_tunnel_shows_its_address_and_stops_after_an_hour() {
     assert_eq!(argv[..3], ["tunnel", "--no-autoupdate", "--metrics"]);
     assert_eq!(
         argv[4..],
-        ["--loglevel", "info", "--url", "http://127.0.0.1:9443"]
+        [
+            "--loglevel",
+            "info",
+            "--url",
+            &format!("http://{}", t.tunnel_addr)
+        ]
     );
+    assert_ne!(t.tunnel_addr, t.h.addr, "not the public listener");
     assert!(env.iter().all(|e| !e.starts_with("TUNNEL_TOKEN=")));
     assert!(
         t.h.gw
@@ -1453,9 +1524,9 @@ async fn a_registered_tunnel_starting_stops_the_temporary_one() {
 // The gateway's settings follow the tunnel
 // ---------------------------------------------------------------------------
 
-async fn login(t: &T, headers: &[(&str, &str)]) -> reqwest::Response {
+async fn login(at: SocketAddr, headers: &[(&str, &str)]) -> reqwest::Response {
     let mut req = reqwest::Client::new()
-        .post(t.h.url("/v1/auth/login"))
+        .post(format!("http://{at}/v1/auth/login"))
         .json(&json!({"username": "alice", "password": PW, "device_name": "Phone"}));
     for (k, v) in headers {
         req = req.header(*k, *v);
@@ -1482,55 +1553,150 @@ async fn last_addr(t: &T, device: i64) -> Value {
         .clone()
 }
 
+/// Sign in at `at` and give the address the device was recorded from.
+async fn signed_in_from(t: &T, at: SocketAddr, headers: &[(&str, &str)]) -> Value {
+    let r = login(at, headers).await;
+    assert_eq!(r.status(), S::OK);
+    let id = r.json::<Value>().await.unwrap()["device"]["id"]
+        .as_i64()
+        .unwrap();
+    last_addr(t, id).await
+}
+
 #[tokio::test]
-async fn origin_and_client_address_follow_the_tunnel_and_revert() {
+async fn the_client_address_header_and_origin_are_believed_on_the_tunnel_listener_only() {
     let t = setup().await;
+    let (tunnel, public) = (t.tunnel_addr, t.h.addr);
     let origin = format!("https://{HOST}");
-    // As cloudflared sends them, from loopback.
-    let via_tunnel = [
+    // As cloudflared sends them; on the public listener, as a same-host reverse proxy that
+    // passes a client's own CF-Connecting-IP through would.
+    let with_origin = [
         ("x-anywhere-client", "1"),
         ("origin", origin.as_str()),
         ("x-forwarded-proto", "https"),
         ("x-forwarded-for", "198.51.100.200"),
-        ("cf-connecting-ip", "198.51.100.7"),
+        ("cf-connecting-ip", "203.0.113.9"),
     ];
-    assert_eq!(login(&t, &via_tunnel).await.status(), S::FORBIDDEN);
+    let no_origin = [
+        ("x-anywhere-client", "1"),
+        ("x-forwarded-proto", "https"),
+        ("x-forwarded-for", "198.51.100.200"),
+        ("cf-connecting-ip", "203.0.113.9"),
+    ];
+    let both_listeners = async |running: bool| {
+        assert_eq!(
+            signed_in_from(&t, public, &no_origin).await,
+            "198.51.100.200",
+            "public listener (tunnel running: {running}): X-Forwarded-For, not the header"
+        );
+        assert_eq!(
+            login(public, &with_origin).await.status(),
+            S::FORBIDDEN,
+            "public listener (tunnel running: {running}): the tunnel's origin is refused"
+        );
+        assert_eq!(
+            signed_in_from(&t, tunnel, &no_origin).await,
+            "203.0.113.9",
+            "tunnel listener (tunnel running: {running})"
+        );
+    };
+    // Nothing running: the origin isn't accepted anywhere.
+    both_listeners(false).await;
+    assert_eq!(login(tunnel, &with_origin).await.status(), S::FORBIDDEN);
 
     t.install().await;
     t.register().await;
     t.wait_state("connected").await;
-    let r = login(&t, &via_tunnel).await;
-    assert_eq!(r.status(), S::OK);
-    let id = r.json::<Value>().await.unwrap()["device"]["id"]
-        .as_i64()
-        .unwrap();
-    assert_eq!(last_addr(&t, id).await, "198.51.100.7");
+    both_listeners(true).await;
+    assert_eq!(
+        signed_in_from(&t, tunnel, &with_origin).await,
+        "203.0.113.9"
+    );
+    // A bad header on the tunnel listener falls back to X-Forwarded-For.
+    assert_eq!(
+        signed_in_from(
+            &t,
+            tunnel,
+            &[
+                ("x-anywhere-client", "1"),
+                ("x-forwarded-proto", "https"),
+                ("x-forwarded-for", "198.51.100.200"),
+                ("cf-connecting-ip", "203.0.113.9, 203.0.113.10"),
+            ]
+        )
+        .await,
+        "198.51.100.200"
+    );
+    // TLS is still required on the tunnel listener.
+    assert_eq!(
+        login(
+            tunnel,
+            &[
+                ("x-anywhere-client", "1"),
+                ("x-forwarded-proto", "http"),
+                ("cf-connecting-ip", "203.0.113.9"),
+            ]
+        )
+        .await
+        .status(),
+        S::FORBIDDEN
+    );
 
     t.post("/stop", None).await;
     assert_eq!(
-        login(&t, &via_tunnel).await.status(),
+        login(tunnel, &with_origin).await.status(),
         S::FORBIDDEN,
         "origin reverted"
     );
-    let r = login(
-        &t,
-        &[
-            ("x-anywhere-client", "1"),
-            ("x-forwarded-proto", "https"),
-            ("x-forwarded-for", "198.51.100.200"),
-            ("cf-connecting-ip", "198.51.100.7"),
-        ],
-    )
-    .await;
-    assert_eq!(r.status(), S::OK);
-    let id = r.json::<Value>().await.unwrap()["device"]["id"]
-        .as_i64()
-        .unwrap();
+    both_listeners(false).await;
+}
+
+#[tokio::test]
+async fn lockouts_on_the_public_listener_ignore_a_forged_tunnel_header() {
+    let t = setup().await;
+    t.install().await;
+    t.register().await;
+    t.wait_state("connected").await;
+    let attempt = async |at: SocketAddr, cf_ip: &str, password: &str| {
+        // A user name per listener for the wrong guesses, so the per-user throttle of one
+        // doesn't stand in for the per-address lock of the other.
+        let user = match (password == PW, at == t.tunnel_addr) {
+            (true, _) => "alice",
+            (false, false) => "nobody",
+            (false, true) => "somebody",
+        };
+        reqwest::Client::new()
+            .post(format!("http://{at}/v1/auth/login"))
+            .header("x-anywhere-client", "1")
+            .header("x-forwarded-proto", "https")
+            .header("x-forwarded-for", "198.51.100.200")
+            .header("cf-connecting-ip", cf_ip)
+            .json(&json!({"username": user, "password": password, "device_name": "Phone"}))
+            .send()
+            .await
+            .unwrap()
+            .status()
+    };
+    // Wrong passwords through a same-host proxy, each claiming another CF-Connecting-IP:
+    // all count against the one address X-Forwarded-For gives...
+    for i in 0..5 {
+        attempt(t.h.addr, &format!("203.0.113.{}", i + 1), "wrong password!").await;
+    }
     assert_eq!(
-        last_addr(&t, id).await,
-        "198.51.100.200",
-        "CF-Connecting-IP no longer read"
+        attempt(t.h.addr, "203.0.113.99", PW).await,
+        S::TOO_MANY_REQUESTS,
+        "the forged header dodged the lockout"
     );
+    // ...while on the tunnel listener the header is the client: another one isn't locked
+    // out, and the one guessing is.
+    for _ in 0..5 {
+        attempt(t.tunnel_addr, "203.0.113.9", "wrong password!").await;
+    }
+    assert_eq!(
+        attempt(t.tunnel_addr, "203.0.113.9", PW).await,
+        S::TOO_MANY_REQUESTS
+    );
+    assert_eq!(attempt(t.tunnel_addr, "203.0.113.10", PW).await, S::OK);
 }
 
 // ---------------------------------------------------------------------------
