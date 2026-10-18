@@ -47,4 +47,5 @@ These record the agreed designs and what was built, milestone by milestone. The 
 | [`plans/wave2-design.md`](plans/wave2-design.md) | Wave 2: alarms, ratings, library and queue, Now playing layouts, visualiser, Rooms, car mode, smart filters |
 | [`plans/wave3-design.md`](plans/wave3-design.md) | Wave 3: listening stats and Your year; the rolling cache (Phases A, B and C built) |
 | [`plans/wave3_5-declutter.md`](plans/wave3_5-declutter.md) | Wave 3.5: a declutter of every screen on the web and Android |
+| [`plans/cloudflare-tunnel.md`](plans/cloudflare-tunnel.md) | The built-in Cloudflare Tunnel (plugin 0.6.0): the agreed design, the build contract and what was built |
 | [`phase0-report.md`](phase0-report.md) | The Phase 0 spike that proved the approach |

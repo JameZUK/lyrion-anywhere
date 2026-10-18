@@ -36,6 +36,7 @@ flowchart LR
     DB[("SQLite<br/>accounts.db")]
     CACHE[("download-cache<br/>analysis-cache")]
     FF["ffmpeg (optional)"]
+    CFD["cloudflared (optional,<br/>built-in Cloudflare Tunnel)"]
     subgraph LMS["Lyrion Music Server"]
       PLG["Plugin (Perl)"]
       SP[":3483 Slimproto"]
@@ -50,6 +51,8 @@ flowchart LR
   GW --> DB
   GW --> CACHE
   GW --> FF
+  GW -- "installs and supervises" --> CFD
+  CFD -- "dials out to Cloudflare;<br/>requests back to :9443" --> GW
   GW -- "one TCP connection per player session" --> SP
   GW -- "JSON-RPC, streams, downloads, art" --> HTTP
   GW -- "event subscription" --> CLIP
@@ -58,7 +61,7 @@ flowchart LR
 ```
 
 - **Clients** only ever talk HTTPS and secure WebSockets to the reverse proxy. They use one public, versioned API (`/v1`), documented in [`PROTOCOL.md`](PROTOCOL.md). The web app uses no private endpoint, so the native apps can do everything it does.
-- **The reverse proxy** terminates TLS and forwards to the gateway only. The gateway refuses plain-HTTP requests from anything but loopback, and believes `X-Forwarded-For` only from proxies it was told to trust.
+- **The reverse proxy** terminates TLS and forwards to the gateway only. Instead of one, the gateway can run Cloudflare's `cloudflared` itself (SPEC D27): it dials out to Cloudflare, which serves the public address from its edge and sends the requests back down that connection to the gateway's listener. The gateway refuses plain-HTTP requests from anything but loopback, and believes `X-Forwarded-For` only from proxies it was told to trust.
 - **The gateway** is the only process that talks to LMS's Slimproto (3483), HTTP/JSON-RPC (9000) and CLI (9090) ports. Those ports are never forwarded.
 - **The plugin** runs inside LMS. It starts the gateway, restarts it if it stops, and manages accounts through the gateway's loopback-only admin API. Accounts live in the gateway's database, not in LMS's prefs (SPEC D12).
 
@@ -68,7 +71,7 @@ Why a separate process rather than doing it all in a plugin (SPEC D2): LMS is a 
 
 | Component | Language | Responsibilities |
 |---|---|---|
-| **Gateway** (`gateway/`) | Rust (tokio, axum, rusqlite) | Accounts, sign-in, tokens and two-step; the JSON-RPC allow-list and response scrubbing; the Slimproto tunnel with resume; stream relay, FLAC artwork stripping and live Opus re-encoding; downloads and transcoding; artwork proxy with SSRF checks; events; track analysis; lyrics and artist information; listening history, stats, Home, stations and smart filters; ratings, alarms and checked queue edits; diagnostics; serving the web app; the admin API |
+| **Gateway** (`gateway/`) | Rust (tokio, axum, rusqlite) | Accounts, sign-in, tokens and two-step; the JSON-RPC allow-list and response scrubbing; the Slimproto tunnel with resume; stream relay, FLAC artwork stripping and live Opus re-encoding; downloads and transcoding; artwork proxy with SSRF checks; events; track analysis; lyrics and artist information; listening history, stats, Home, stations and smart filters; ratings, alarms and checked queue edits; diagnostics; serving the web app; the admin API; installing and supervising `cloudflared` for the built-in Cloudflare Tunnel |
 | **Core** (`core/`) | Rust, no I/O | Slimproto parsing and the player state machine; decoding (Symphonia, plus Opus); the lossless FLAC/ALAC-in-fMP4 muxer for media-element playback; the DSP chain; track analysis (R128, waveform); the visualiser's analyser; the LRC lyrics parser |
 | **WASM bindings** (`wasm/`) | Rust | `WasmPlayer`, `WasmSegmenter` and `WasmVisualiser`: the core for the browser |
 | **Web app** (`web/app/`) | SvelteKit, Svelte 5, TypeScript | The installable PWA: UI, the player worker and AudioWorklet, offline downloads in IndexedDB, the service worker |
@@ -82,7 +85,7 @@ Why a separate process rather than doing it all in a plugin (SPEC D2): LMS is a 
 | Path | What |
 |---|---|
 | `core/` | The sans-IO player core: `proto.rs` (Slimproto), `player.rs` (state machine), `decode.rs`, `opus.rs`, `mux.rs` (fMP4 segmenter), `dsp/`, `analysis/`, `visual.rs`, `lyrics.rs`; robustness, bit-perfect and DSP tests in `core/tests/` |
-| `gateway/` | The gateway. `src/` has one module per surface (`auth.rs`, `accounts.rs`, `rpc.rs`, `rpc_policy.rs`, `menu_actions.rs`, `tunnel.rs`, `session.rs`, `relay.rs`, `flac_strip.rs`, `live.rs`, `download.rs`, `transcode.rs`, `art.rs`, `events.rs`, `analysis.rs`, `history.rs`, `stats.rs`, `home.rs`, `stations.rs`, `filters.rs`, `ratings.rs`, `alarms.rs`, `queue_edit.rs`, `lyrics.rs`, `info.rs`, `plays.rs`, `diagnostics.rs`, `status_fix.rs`, `limits.rs`, `admin.rs`, `totp.rs`); integration tests against a fake LMS in `gateway/tests/` |
+| `gateway/` | The gateway. `src/` has one module per surface (`auth.rs`, `accounts.rs`, `rpc.rs`, `rpc_policy.rs`, `menu_actions.rs`, `tunnel.rs`, `session.rs`, `relay.rs`, `flac_strip.rs`, `live.rs`, `download.rs`, `transcode.rs`, `art.rs`, `events.rs`, `analysis.rs`, `history.rs`, `stats.rs`, `home.rs`, `stations.rs`, `filters.rs`, `ratings.rs`, `alarms.rs`, `queue_edit.rs`, `lyrics.rs`, `info.rs`, `plays.rs`, `diagnostics.rs`, `status_fix.rs`, `limits.rs`, `admin.rs`, `totp.rs`, and `cftunnel/` for the built-in Cloudflare Tunnel: the state machine and supervisor, the pinned download, the pins, the Cloudflare API client, token checks and the log scrubber); integration tests against a fake LMS in `gateway/tests/` |
 | `wasm/` | WebAssembly bindings for the core |
 | `web/app/` | The web app. `src/routes/` (pages), `src/lib/` (API client, player, offline, theme, stations, stats, …), `static/player/` (the player worker, AudioWorklet and helpers) |
 | `mobile/` | The native apps' shared Rust layer; `src/player/` is the audio engine, `src/offline/` the download manager and store; integration tests through the real gateway in `mobile/tests/` |
@@ -128,6 +131,7 @@ Everything that crosses the boundary goes through the gateway's public listener.
 | Resource exhaustion | Caps on connections, sessions, frame and body sizes, event sockets, artwork in flight, downloads, transcodes, analyses and per-user request rates; time limits on every upstream call |
 | A LAN web page driving LMS's open JSON-RPC to create remote accounts | Every `anywhere …` admin command needs a per-start CSRF token that only the settings page has; `anywhere` is reserved in the gateway's allow-list |
 | A misconfigured proxy | The gateway binds to loopback by default and refuses non-TLS requests from remote addresses |
+| A tampered or hostile `cloudflared` (built-in tunnel) | Only the pinned release, checked against the SHA-256 compiled into the gateway, fetched over HTTPS from GitHub's hosts only; no self-update; fixed arguments, no shell, a minimal environment; its output scrubbed; the API token never stored ([`SECURITY.md`](SECURITY.md#the-built-in-cloudflare-tunnel)) |
 
 The full threat model is in [`SPEC.md`](../SPEC.md) §9; the security reviews are in [`security/`](security).
 
@@ -483,7 +487,7 @@ flowchart LR
   - restarts it with backoff (5 s doubling to 5 minutes), stops it without blocking LMS (SIGTERM, then SIGKILL after 5 s), and after an LMS crash stops a leftover gateway only when `/proc/<pid>/cmdline` shows it is ours;
   - sends the admin secret only to the gateway it started, on the port it started it with;
   - a development gateway path is honoured only when LMS runs with `ANYWHERE_ALLOW_GATEWAY_PATH=1`.
-- **Settings page** (`Settings.pm`, `HTML/`): gateway options (listen address, public URL, trusted proxies, client address header, transcoding, ffmpeg path, download cache, track analysis), users and roles, player grants, download permissions, two-step resets, *Add a device* QR codes, the sign-in lifetime, admin-only plugins, the device list with diagnostics and renames, and recent activity. Everything is rendered as text, and saving needs the page's own token.
+- **Settings page** (`Settings.pm`, `HTML/`): gateway options (listen address, public URL, trusted proxies, client address header, transcoding, ffmpeg path, download cache, track analysis), users and roles, player grants, download permissions, two-step resets, *Add a device* QR codes, the sign-in lifetime, admin-only plugins, the device list with diagnostics and renames, recent activity, and the Cloudflare Tunnel section (install, register by token or by API token, a temporary tunnel, status and log). Everything is rendered as text, and saving needs the page's own token.
 - **LMS commands** (`Commands.pm`): `anywhere …` commands for every admin operation, each needing a CSRF token made when LMS starts and given only to the settings page (only `anywhere status` needs none, and without it says only whether the gateway runs and the gist of the last error); and `anywhere play_record`, which the gateway calls, signed, to count offline plays. Remote users can never reach these: `anywhere` is reserved in the gateway's allow-list.
 
 The plugin stores no account data itself. Its own state (the gateway's data directory, `lyrion-anywhere` under LMS's prefs folder, and its prefs) lives with LMS's prefs.
@@ -505,6 +509,7 @@ In its data directory (`<LMS prefs>/lyrion-anywhere/` under the plugin, `/data` 
 | `admin.secret` (mode 0600) | The admin API secret | |
 | `download-cache/` | Transcoded downloads | LRU, 2 GiB by default |
 | `analysis-cache/` | Track analyses (about 2 KiB each) | LRU, 64 MiB by default |
+| `tunnel/` (mode 0700) | The built-in Cloudflare Tunnel: `cloudflared` (0700), the tunnel token (`token`, 0600, the only secret), `state.json` (hostname, installed version, start with the gateway) and `pid` while it runs. A Cloudflare API token and anything about the temporary tunnel are never stored | Until *Remove* |
 | In memory only | Access tokens (hashed), learned menu actions (an hour), lyrics (15 min), artist information (24 h, 1 h when empty), stats answers (5 min) | |
 
 [`PRIVACY.md`](PRIVACY.md) lists the same from the user's side.
@@ -531,6 +536,7 @@ The gateway is configured with command-line flags; the plugin sets them from its
 | `--max-connections` | 1024 | Open client connections |
 | `--max-resume-grace` | 600 | The longest resume grace a player may ask for, in seconds |
 | `--static-dir`, `--log-file` | | The web app to serve; a log file instead of standard output |
+| `--cloudflared`, `--no-tunnel` | | A system-installed `cloudflared` for the built-in Cloudflare Tunnel; turn the built-in tunnel off |
 
 The full list, with ranges, is in [`INSTALL.md`](INSTALL.md#option-b-docker).
 

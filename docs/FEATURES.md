@@ -32,7 +32,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 | [Appearance and accessibility](#appearance-and-accessibility) | Material, Classic and High contrast themes; tested contrast; screen readers and keyboards |
 | [Accounts and admin](#accounts-devices-roles-and-admin) | Per-user accounts, roles, player grants, QR pairing, change your own password, Your devices, diagnostics |
 | [Security](#security-features) and [privacy](#privacy-controls) | Enforced by the gateway for every client; the summary is in [`SECURITY.md`](SECURITY.md) |
-| [Installation](#installation-and-the-installable-app) | The plugin, Docker, a tested proxy configuration, the installable web app, Android releases, the demo |
+| [Installation](#installation-and-the-installable-app) | The plugin, Docker, a tested proxy configuration, the built-in Cloudflare Tunnel, the installable web app, Android releases, the demo |
 
 ---
 
@@ -396,6 +396,7 @@ Every item here is enforced by the gateway, so it applies to every client.
 | **Hardened web app** | Strict CSP with no inline script, `frame-ancestors 'none'`, a restrictive Permissions-Policy, no third-party code at runtime, metadata always rendered as text, `Clear-Site-Data` on sign-out |
 | **Hardened Android app** | No cleartext traffic, system certificates only, backups off, a minimal set of exported components each checked, crash reports redacted and never sent automatically |
 | **Hardened ffmpeg** | Fixed arguments, no shell, an empty environment, restricted protocols, size and time caps |
+| **Hardened Cloudflare Tunnel** | `cloudflared` only at the pinned version and SHA-256, never self-updating; fixed arguments, no shell, an environment of only the tunnel token, `HOME` and `PATH`; output scrubbed of tokens and ids; the tunnel token the only secret stored (0600), the API token never stored ([`SECURITY.md`](SECURITY.md#the-built-in-cloudflare-tunnel)) |
 | **LAN-side protection** | The plugin's admin commands need a token only its settings page has; the admin API listens on loopback with a secret |
 | **Release integrity** | The plugin runs a bundled gateway only if it matches its checksum list; Android releases are signed, with checksums |
 
@@ -422,6 +423,7 @@ The full policy is [`PRIVACY.md`](PRIVACY.md).
 | **LMS plugin** | Server | Install from a repository URL in *Settings › Plugins*; it bundles the gateway for Linux x86_64, aarch64 and armhf and the web app, starts and supervises the gateway, and offers updates |
 | **Docker image** | Server | Static, no shell, non-root, distroless; for hosts where the plugin can't run its binary |
 | **Tested proxy configuration** | Server | An nginx example run in CI; Caddy in two lines; notes for Cloudflare and other CDNs |
+| **Built-in Cloudflare Tunnel** | Server | No reverse proxy, certificate or open port: on the plugin's settings page the gateway installs Cloudflare's `cloudflared` (a pinned, checksum-checked release) and runs it. Register a tunnel token from Cloudflare's dashboard, or let the gateway create the tunnel, its route and its DNS record with an API token that is used once and never stored. *Try a temporary tunnel* gives a random `trycloudflare.com` address for an hour, with a QR code, to test with no account. Status, log, *Start*, *Stop*, *Update* and *Remove* on the page; while it runs the gateway accepts its address and reads `CF-Connecting-IP` from it. Linux x86_64, aarch64 and armhf through the plugin; with Docker, a `cloudflared` sidecar ([`DEPLOY.md`](DEPLOY.md#cloudflare-tunnel-with-docker-a-sidecar)) |
 | **Installable web app** | Web | Install from *Settings › Install the app* (Android and desktop Chromium), or *Share › Add to Home Screen* on iPhone and iPad; full screen, its own icon, and it opens offline |
 | **Updates that wait for you** | Web | A new version of the web app downloads in the background and waits. An open page keeps working on the version it loaded (its pages still load after the server has moved on), and the status line at the top says *A new version is ready. Reload when convenient.* with *Reload* and *Later*, because a reload stops this device's playback. Coming back to the app looks for a new version at most once an hour |
 | **Android distribution** | Android | Signed APKs (per-ABI and universal, with checksums) on GitHub releases; Google Play and F-Droid (reproducible build recipe) being prepared |

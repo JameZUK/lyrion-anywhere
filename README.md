@@ -114,10 +114,10 @@ The detailed design, with request flows and sequence diagrams, is in [`docs/ARCH
 
 ## Quick start
 
-You need LMS 9.0 or later, a domain name with port 443 forwarded, and a reverse proxy with a certificate. Step by step: [`docs/INSTALL.md`](docs/INSTALL.md).
+You need LMS 9.0 or later, a domain name with port 443 forwarded, and a reverse proxy with a certificate; or, with a domain on Cloudflare, just the plugin and its built-in Cloudflare Tunnel. Step by step: [`docs/INSTALL.md`](docs/INSTALL.md).
 
 1. **Install the plugin** in LMS: *Settings › Plugins*, add the repository `https://github.com/JameZUK/lyrion-anywhere/releases/latest/download/repo.xml`, tick **Lyrion Anywhere** and restart LMS. (No plugin binary for your platform? Run the gateway with Docker: see [`docs/DEPLOY.md`](docs/DEPLOY.md).)
-2. **Put an HTTPS reverse proxy in front of it** for a name such as `music.example.com` (a tested nginx configuration is in [`deploy/nginx`](deploy/nginx); with Caddy it is two lines), then set the Public URL and create users on the plugin's settings page.
+2. **Put an HTTPS reverse proxy in front of it** for a name such as `music.example.com` (a tested nginx configuration is in [`deploy/nginx`](deploy/nginx); with Caddy it is two lines), then set the Public URL and create users on the plugin's settings page. **Or, with a domain on Cloudflare,** skip the proxy: the plugin's settings page sets up a Cloudflare Tunnel for you, with no open port or certificate ([`INSTALL.md`](docs/INSTALL.md#option-c-built-in-cloudflare-tunnel) Option C).
 3. **Sign in:** open `https://music.example.com` on your phone, or install the [Android app](docs/PLATFORMS.md#getting-the-android-app) and scan the QR code from *Add a device*.
 
 ## Documentation
