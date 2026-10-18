@@ -62,10 +62,22 @@ export function buildReport(i: ReportInput, now = new Date()) {
 	};
 }
 
-/** Sends at most one report per `minGap` ms, except urgent ones (page going away). */
+/** A report's content for "anything new?": without its time and the page's visibility. */
+function contentOf(report: object): string {
+	const { at: _at, page: _page, ...rest } = report as Record<string, unknown>;
+	return JSON.stringify(rest);
+}
+
+/**
+ * Sends at most one report per `minGap` ms, except urgent ones (page going away). An urgent
+ * one with nothing new since the last report that got through is not sent (hiding the tab
+ * over and over used to post a report every time).
+ */
 export class Reporter {
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#lastSent = -Infinity; // the first report goes at once
+	/** The content of the last report that got through ('' before any). */
+	#lastContent = '';
 
 	constructor(
 		private send: (body: string, urgent: boolean) => Promise<void>,
@@ -86,17 +98,25 @@ export class Reporter {
 
 	/** Report now (e.g. the page is being hidden). */
 	urgent() {
+		const pending = !!this.#timer;
 		clearTimeout(this.#timer);
 		this.#timer = undefined;
-		void this.#go(true);
+		void this.#go(true, !pending);
 	}
 
-	async #go(urgent: boolean) {
+	async #go(urgent: boolean, onlyIfNew = false) {
+		const report = this.make();
+		const content = contentOf(report);
+		if (onlyIfNew && content === this.#lastContent) return;
 		this.#lastSent = this.now();
+		// Noted before the send, so two hides in quick succession post once; undone if it fails.
+		const before = this.#lastContent;
+		this.#lastContent = content;
 		try {
-			await this.send(JSON.stringify(this.make()), urgent);
+			await this.send(JSON.stringify(report), urgent);
 		} catch {
-			/* diagnostics are best effort */
+			/* diagnostics are best effort: the next hide tries again */
+			if (this.#lastContent === content) this.#lastContent = before;
 		}
 	}
 }

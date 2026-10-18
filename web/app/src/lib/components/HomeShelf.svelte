@@ -222,7 +222,10 @@
 		overflow-x: auto;
 	}
 	.chip {
-		display: inline-block;
+		display: inline-flex;
+		align-items: center;
+		min-height: 44px;
+		box-sizing: border-box;
 		white-space: nowrap;
 		padding: 0.5rem 0.9rem;
 		border-radius: 999px;

@@ -2,6 +2,20 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: Web: the review's remaining lows
+
+The last low findings of the 15 October review, in the web app.
+
+- **Updates wait for you.** The service worker no longer takes over and purges the old caches the moment a new version installs, which left an open page unable to load its next lazily loaded piece (and a forced reload stopped playback; probably the "stale-looking app" a forum tester saw). A new version now installs and waits; open pages keep the version they loaded, and a previous version's cache stays until no open page runs it. The status line says *A new version is ready. Reload when convenient.* with *Reload* and *Later*. The handlers moved to `lib/pwa/sw-handlers.ts`, tested for the first time against fake caches and clients (`tests/sw-handlers.test.ts`); the page side is `lib/pwa/update.svelte.ts` (`tests/app-update.test.ts`).
+- **Downloads are checked to be audio.** A 200 answer that is a web page or JSON (by its content type, or by its first bytes whatever the type claims) fails the download with *The server sent something that isn't audio.* and stores nothing (`offline-manager.test.ts`, with a robustness test of the checks).
+- **A hung token refresh no longer blocks every tab.** The refresh request gives up after 15 s, a tab holds the cross-tab lock for at most 20 s, and a tab waiting behind another gives up after 45 s without running its refresh; a timeout keeps the sign-in and retries (`api.test.ts`, three hung cases).
+- **Signing out forgets the remembered players** (and this device's resume point), so the next person to sign in on the browser doesn't start on them (`state-lifecycle.test.ts`).
+- **The two-step QR code** is encoded as UTF-8, so a non-Latin-1 character in it can no longer throw; a missing one says to type the key (`settings-page.test.ts`).
+- **Busy guard on New playlist › Create**: a double click makes one playlist.
+- **Touch targets**: the Home shelf chips, menu rows without a thumbnail and the library note's *Show the whole library* are 44 px (`touch-targets.test.mjs`).
+- **Nits**: diagnostics post on a tab hide only when there is something new; the player worker encodes the session id in the stream address (`streamPath`, `reconnect.test.mjs`); the settings pickers' radiogroup takes the arrow keys, Home and End, with one tab stop; a volume change not yet sent is dropped when another player is chosen (`volume-note.test.ts`); the HTML-injection check also bans `srcdoc`, `DOMParser`, `parseFromString` and `setAttribute` of links, sources and handlers; one shared `ago()` for the device lists; the password form's checkbox and Your devices' button have distinct hooks (`data-also-sign-out-others`, `data-sign-out-all-others`).
+- New component tests (`review-components.test.ts`) for PlaylistsView, AppearancePicker, AdvancedSettings and the PickerRow keys. Already fixed on 15 October and left as they were: the two-step busy guards, the failed sign-out message, and the Your devices and settings-page test gaps.
+
 ## 2026-10-18: Plugin 0.5.5 released
 
 Internet radio plays: the gateway has LMS proxy streams for these players (the entry below). Everything else as in 0.5.4; Android 1.15.4 remains current. Notes: `docs/release-notes/v0.5.5.md`.

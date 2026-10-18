@@ -84,6 +84,47 @@ describe('diagnosticsSender', () => {
 	});
 });
 
+// Review (Web nit): every tab hide posted a report, even with nothing new to say.
+test('hiding the tab again with nothing new sends nothing; something new is sent', async () => {
+	const sent: string[] = [];
+	let state = 'connected';
+	let at = 0;
+	let visibility = 'hidden';
+	const r = new Reporter(async (b) => void sent.push(b), () => ({ at: at++, page: { visibility }, device: { state } }));
+	r.urgent();
+	await Promise.resolve();
+	expect(sent).toHaveLength(1);
+	visibility = 'visible';
+	r.urgent(); // only the time and the page's visibility differ
+	visibility = 'hidden';
+	r.urgent();
+	await Promise.resolve();
+	expect(sent).toHaveLength(1);
+	state = 'reconnecting';
+	r.urgent();
+	await Promise.resolve();
+	expect(sent).toHaveLength(2);
+	expect(JSON.parse(sent[1]!).device.state).toBe('reconnecting');
+});
+
+test('a failed send is tried again on the next hide, even with nothing new', async () => {
+	let fail = true;
+	const sent: string[] = [];
+	const r = new Reporter(
+		async (b) => {
+			if (fail) throw new Error('offline');
+			sent.push(b);
+		},
+		() => ({ device: { state: 'connected' } }),
+	);
+	r.urgent();
+	await new Promise((res) => setTimeout(res, 0));
+	fail = false;
+	r.urgent();
+	await new Promise((res) => setTimeout(res, 0));
+	expect(sent).toHaveLength(1);
+});
+
 test('a failing send never throws', async () => {
 	const r = new Reporter(async () => Promise.reject(new Error('offline')), () => ({}));
 	r.urgent();

@@ -10,6 +10,8 @@
 	import { device } from '$lib/player/device.svelte';
 	import { appearance } from '$lib/theme/appearance.svelte';
 	import { install } from '$lib/pwa/install.svelte';
+	import { appUpdate } from '$lib/pwa/update.svelte';
+	import { version } from '$app/environment';
 	import { clearResume, loadResume, planResume, saveResume, trackId } from '$lib/player/resume';
 	import type { Command } from '$lib/api/rpc';
 	import Login from '$lib/components/Login.svelte';
@@ -37,6 +39,9 @@
 	// The chosen theme, before anything is drawn (also on the sign-in page).
 	appearance.start();
 	install.start();
+	// A new version is offered in the status slot, never forced on an open page.
+	appUpdate.start(version);
+	if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && appUpdate.check());
 
 	// A returning browser signs in silently through its refresh cookie.
 	void session.restore();

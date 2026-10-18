@@ -3,7 +3,7 @@ import { RETRY_MS, SIGNED_OUT_KEY, SessionManager, refused, type AuthApi } from 
 import { Api, artUrl } from '$lib/api/rpc';
 import { ApiError, callJson, CLIENT_HEADER } from '$lib/api/http';
 import { EventsClient, eventsBackoff, parseEventMessage } from '$lib/api/events';
-import { clientKind, defaultDeviceName, groupKey, login, PAGE_ID, refresh, REFRESH_LOCK, rememberedDevice, renameDevice, totpSetup, validDeviceName, withRefreshLock, type LockManagerLike } from '$lib/api/auth';
+import { clientKind, defaultDeviceName, groupKey, LOCK_HOLD_MS, LOCK_WAIT_MS, login, PAGE_ID, refresh, REFRESH_LOCK, REFRESH_TIMEOUT_MS, RefreshTimeout, rememberedDevice, renameDevice, totpSetup, validDeviceName, withRefreshLock, type LockManagerLike } from '$lib/api/auth';
 import type { Session } from '$lib/api/auth';
 
 const sess = (token: string): Session => ({
@@ -863,6 +863,55 @@ describe('cross-tab refresh lock', () => {
 		// A broken lock manager is ignored too.
 		expect(await withRefreshLock(async () => 5, { request: undefined } as unknown as LockManagerLike)).toBe(5);
 		expect(await withRefreshLock(async () => 6, undefined)).toBe(6);
+	});
+
+	// Regression (review, Web low): a refresh that never answered held the cross-tab lock for
+	// ever, so every tab, the events socket and the player worker waited behind it.
+	describe('a hung refresh never holds the lock for ever', () => {
+		beforeEach(() => vi.useFakeTimers());
+		afterEach(() => vi.useRealTimers());
+
+		test('a request that never answers is abandoned, and the next refresh gets the lock', async () => {
+			let calls = 0;
+			vi.stubGlobal(
+				'fetch',
+				vi.fn((_u: string, init: RequestInit) => {
+					calls++;
+					if (calls === 2) return Promise.resolve(json(200, { ...sess('t2'), device: { id: 7, name: 'x' } }));
+					return new Promise((_, rej) => init.signal!.addEventListener('abort', () => rej(new DOMException('aborted', 'AbortError'))));
+				}),
+			);
+			const locks = fakeLocks();
+			vi.stubGlobal('navigator', { locks, userAgent: '' });
+			const hung = refresh('timer').catch((e) => e);
+			const next = refresh('401');
+			await vi.advanceTimersByTimeAsync(REFRESH_TIMEOUT_MS + 1);
+			const e = await hung;
+			expect(e).toBeInstanceOf(RefreshTimeout);
+			// Not a refusal: the session keeps its sign-in and tries again.
+			expect(refused(e)).toBe(false);
+			expect((await next).access_token).toBe('t2');
+		});
+
+		test('a holder whose work hangs lets go after the hold limit', async () => {
+			const locks = fakeLocks();
+			const stuck = withRefreshLock(() => new Promise<never>(() => {}), locks).catch((e) => e);
+			const after = withRefreshLock(async () => 'ok', locks);
+			await vi.advanceTimersByTimeAsync(LOCK_HOLD_MS + 1);
+			expect(await stuck).toBeInstanceOf(RefreshTimeout);
+			await expect(after).resolves.toBe('ok');
+		});
+
+		test('waiting behind another tab that never lets go gives up, and then never runs', async () => {
+			const locks = fakeLocks();
+			// Another tab (an older copy of the app, say) holds the lock and never lets go.
+			void locks.request(REFRESH_LOCK, () => new Promise<never>(() => {}));
+			const ran = vi.fn(async () => 'late');
+			const waiting = withRefreshLock(ran, locks).catch((e) => e);
+			await vi.advanceTimersByTimeAsync(LOCK_WAIT_MS + 1);
+			expect(await waiting).toBeInstanceOf(RefreshTimeout);
+			expect(ran).not.toHaveBeenCalled();
+		});
 	});
 });
 

@@ -3,6 +3,9 @@
 import { ApiError } from '$lib/api/http';
 import type { MyDevice } from '$lib/api/auth';
 import { waitText } from './change-password';
+import { ago } from './ago';
+
+export { ago };
 
 /** Most devices read from an answer (the gateway allows 20 a user). */
 export const MAX_DEVICES = 64;
@@ -47,18 +50,6 @@ export function cleanDevices(raw: unknown): MyDevice[] {
 		});
 	}
 	return out;
-}
-
-/** "just now", "5 minutes ago", "3 hours ago", "2 days ago", "4 months ago". */
-export function ago(secs: number): string {
-	if (secs < 120) return 'just now';
-	const m = Math.floor(secs / 60);
-	if (m < 120) return `${m} minutes ago`;
-	const h = Math.floor(m / 60);
-	if (h < 48) return `${h} hours ago`;
-	const days = Math.floor(h / 24);
-	if (days < 60) return `${days} days ago`;
-	return `${Math.floor(days / 30)} months ago`;
 }
 
 /** What kind of device, when it didn't name its platform. */

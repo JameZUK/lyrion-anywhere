@@ -371,6 +371,7 @@
 		display: flex;
 		align-items: center;
 		gap: 0.75rem;
+		min-height: 44px;
 		padding: 0.55rem 0.6rem;
 		border: 0;
 		background: transparent;

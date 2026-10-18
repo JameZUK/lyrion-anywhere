@@ -123,3 +123,12 @@ test('Your devices: each Sign out and the device rows are 44 px targets', () => 
 	assert.ok(px(rule(c, '.btn {'), 'min-height') >= 44);
 	assert.ok(px(rule(c, '.device {'), 'min-height') >= 44);
 });
+
+// Review (Web low): the Home shelf chips (about 35 px), menu rows without a thumbnail (about
+// 37 px) and the library note's "Show the whole library" were under 44 px.
+test('Home shelf chips, menu rows and the library note are 44 px targets', () => {
+	const chip = rule(read('lib/components/HomeShelf.svelte'), '.chip {');
+	assert.ok(px(chip, 'min-height') >= 44, chip);
+	assert.ok(px(rule(read('lib/components/MenuView.svelte'), '.main {'), 'min-height') >= 44);
+	assert.ok(px(rule(read('lib/components/LibraryNote.svelte'), '.link {'), 'min-height') >= 44);
+});

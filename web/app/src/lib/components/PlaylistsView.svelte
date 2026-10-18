@@ -34,8 +34,13 @@
 		filter.trim() ? lists.filter((l) => textOf(l.playlist).toLowerCase().includes(filter.trim().toLowerCase())) : lists,
 	);
 
+	/** A create is running: a second press (a double click) must not make a second playlist. */
+	let saving = $state(false);
 	async function create(e: SubmitEvent) {
 		e.preventDefault();
+		if (saving) return;
+		saving = true;
+		error = '';
 		try {
 			const r = await api.rpc<{ playlist_id?: number }>('', cmd.newPlaylist(newName));
 			newName = '';
@@ -44,6 +49,8 @@
 			if (r.playlist_id) await go(`/playlist/${r.playlist_id}`);
 		} catch (err) {
 			error = (err as Error).message;
+		} finally {
+			saving = false;
 		}
 	}
 </script>
@@ -58,7 +65,7 @@
 	{#if creating && app.isAdmin}
 		<form class="create" onsubmit={create}>
 			<label class="field"><span>Name</span><input bind:value={newName} maxlength="200" required /></label>
-			<button class="btn primary" type="submit">Create</button>
+			<button class="btn primary" type="submit" disabled={saving}>{saving ? 'Creating…' : 'Create'}</button>
 		</form>
 	{/if}
 	{#if error}<p class="error">{error}</p>{/if}

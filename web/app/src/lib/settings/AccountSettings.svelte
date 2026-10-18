@@ -9,6 +9,7 @@
 	import { downloads, offlinePlayer, plays } from '$lib/offline/index.svelte';
 	import { forgetOwner } from '$lib/offline/settings';
 	import { signOutHere } from '$lib/account/sign-out';
+	import { svgDataUrl } from '$lib/account/qr-image';
 	import AddDevice from '$lib/components/AddDevice.svelte';
 	import ChangePassword from '$lib/components/ChangePassword.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -106,8 +107,9 @@
 			}
 		});
 	}
-	// The QR code is an SVG the gateway generates; shown as an image, never inserted as markup.
-	const qr = $derived(setup ? `data:image/svg+xml;base64,${btoa(setup.qr_svg)}` : '');
+	// The QR code is an SVG the gateway generates; shown as an image, never inserted as markup
+	// (encoded as UTF-8, so no character in it can break the page).
+	const qr = $derived(setup ? svgDataUrl(setup.qr_svg) : '');
 
 	/** Rejects (and stays signed in) if downloads asked to go couldn't be removed. */
 	const signOut = (removeDownloads: boolean) => signOutHere({ device, offlinePlayer, downloads, plays, forgetOwner, session }, removeDownloads);
@@ -154,8 +156,12 @@
 					<button class="btn primary" type="submit" disabled={totpBusy}>Turn on</button>
 				</form>
 			{:else if setup}
-				<p>Scan this with your authenticator app, or type the key:</p>
-				<img class="qr" src={qr} alt="QR code for your authenticator app" width="200" height="200" />
+				{#if qr}
+					<p>Scan this with your authenticator app, or type the key:</p>
+					<img class="qr" src={qr} alt="QR code for your authenticator app" width="200" height="200" />
+				{:else}
+					<p data-qr-missing>The QR code didn’t come through. In your authenticator app, choose to enter a setup key, and type the key:</p>
+				{/if}
 				<code class="key">{auth.groupKey(setup.secret)}</code>
 				<form onsubmit={confirmTotp} class="form">
 					<label class="field"><span>Authenticator code</span><input bind:value={code} inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{'{'}6,7{'}'}" maxlength="7" required /></label>

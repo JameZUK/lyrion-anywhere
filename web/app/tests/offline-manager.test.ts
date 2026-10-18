@@ -201,6 +201,44 @@ test('more bytes than promised are thrown away, not stored', async () => {
 	expect(await store.backend.list('chunks', '')).toHaveLength(0);
 });
 
+// A proxy or captive portal answering 200 with a web page must never be stored as the track.
+test('a 200 web page instead of audio fails the download cleanly, nothing stored', async () => {
+	const page = new TextEncoder().encode('<!DOCTYPE html><html><body>Sign in to the Wi-Fi</body></html>');
+	for (const [id, headers] of [
+		[11, { 'content-type': 'text/html; charset=utf-8' }],
+		[12, { 'content-type': 'application/json' }],
+		[13, {}], // no type at all: the bytes give it away
+		[14, { 'content-type': 'audio/flac' }], // even when it claims to be audio
+	] as const) {
+		const { m, server, store, sleeps } = setup([track(id, page.length)]);
+		server.hooks.push((req) => (req.format ? new Response(body(page), { headers: { 'content-length': String(page.length), ...headers } }) : undefined));
+		await m.setUser('alice');
+		m.enqueue([{ id }], 'original');
+		await settle(m);
+		expect(m.item(id)!, String(id)).toMatchObject({ status: 'failed', message: 'The server sent something that isn’t audio.' });
+		expect(await store.getTrack('alice', key(id))).toBeUndefined();
+		expect(await store.getPartial('alice', key(id))).toBeUndefined();
+		expect(await store.backend.list('chunks', '')).toHaveLength(0);
+		expect(sleeps).toEqual([]); // permanent: not retried
+	}
+});
+
+test('audio without a content type, or as a generic binary, still downloads', async () => {
+	for (const [id, headers] of [
+		[21, {}],
+		[22, { 'content-type': 'application/octet-stream' }],
+		[23, { 'content-type': 'application/ogg' }],
+	] as const) {
+		const t = track(id, 4000);
+		const { m, server } = setup([t]);
+		server.hooks.push((req) => (req.format ? new Response(body(t.bytes), { headers: { 'content-length': String(t.bytes.length), ...headers } }) : undefined));
+		await m.setUser('alice');
+		m.enqueue([{ id }], 'original');
+		await settle(m);
+		expect(m.item(id)!.status, String(id)).toBe('done');
+	}
+});
+
 test('429 waits for Retry-After, without using up attempts', async () => {
 	const { m, server, sleeps } = setup([track(1)]);
 	let n = 0;
@@ -453,4 +491,23 @@ test('classify keeps 401 after renewal as a sign-in problem', async () => {
 	await settle(m);
 	expect(m.item(1)!.message).toBe('Signed out. Sign in again to download.');
 	expect(server.reqs).toEqual([]);
+});
+
+test('the not-audio checks: real containers pass, markup and JSON do not, arbitrary bytes never throw', async () => {
+	const { looksLikeMarkup, notAudioType } = await import('$lib/offline/manager.svelte');
+	const enc = (s: string) => new TextEncoder().encode(s);
+	for (const head of ['fLaC\0\0\0\x22', 'ID3\x04\0\0', 'OggS\0\x02', 'RIFF\x24\0\0\0WAVE', '\0\0\0\x20ftypM4A ', 'FORM\0\0\0\0AIFF', 'wvpk', 'DSD ', '\xff\xfb\x90\x64']) {
+		expect(looksLikeMarkup(Uint8Array.from(head, (c) => c.charCodeAt(0))), JSON.stringify(head)).toBe(false);
+	}
+	for (const head of ['<!DOCTYPE html>', '  \n<html lang="en">', '﻿<?xml version="1.0"?>', '<!-- x -->', '{"error":"nope"}', '[{"a":1}]', '<HEAD>']) {
+		expect(looksLikeMarkup(enc(head)), head).toBe(true);
+	}
+	expect(looksLikeMarkup(new Uint8Array(0))).toBe(false);
+	for (let n = 0; n < 500; n++) {
+		const b = new Uint8Array(n % 80);
+		for (let i = 0; i < b.length; i++) b[i] = (Math.random() * 256) | 0;
+		expect(() => looksLikeMarkup(b)).not.toThrow();
+	}
+	for (const t of ['text/html', 'TEXT/HTML; charset=utf-8', 'application/json', 'application/problem+json', 'application/xhtml+xml', 'image/png']) expect(notAudioType(t), t).toBe(true);
+	for (const t of [null, '', 'audio/flac', 'audio/mpeg', 'application/octet-stream', 'application/ogg', 'video/mp4']) expect(notAudioType(t), String(t)).toBe(false);
 });

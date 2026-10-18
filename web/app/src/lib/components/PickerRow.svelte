@@ -33,6 +33,27 @@
 		open = false;
 		if (v !== value) onchange(v);
 	}
+
+	// A radiogroup the keyboard can drive: one stop in the tab order (the chosen choice, else the
+	// first available), the arrow keys move between the available choices (round at the ends),
+	// Home and End go to the first and last, and Enter or Space chooses (which closes the picker,
+	// so the arrows only move the focus).
+	let group = $state<HTMLElement>();
+	const focusable = $derived(options.find((o) => o.value === value && !o.disabled)?.value ?? options.find((o) => !o.disabled)?.value);
+	$effect(() => {
+		group?.querySelector<HTMLElement>('[role=radio][tabindex="0"]')?.focus();
+	});
+	function onkey(e: KeyboardEvent) {
+		if (!group || !['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft', 'Home', 'End'].includes(e.key)) return;
+		const radios = [...group.querySelectorAll<HTMLButtonElement>('[role=radio]:not(:disabled)')];
+		if (!radios.length) return;
+		e.preventDefault();
+		const n = radios.length;
+		const at = radios.indexOf(document.activeElement as HTMLButtonElement);
+		const forward = e.key === 'ArrowDown' || e.key === 'ArrowRight';
+		const next = e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : at < 0 ? (forward ? 0 : n - 1) : (at + (forward ? 1 : n - 1)) % n;
+		radios[next]!.focus();
+	}
 </script>
 
 <button class="picker-row" type="button" aria-haspopup="dialog" aria-describedby={note ? `${uid}-note` : undefined} {disabled} onclick={() => (open = true)} data-setting={id}>
@@ -45,7 +66,7 @@
 </button>
 {#if open}
 	<Sheet title={label} onclose={() => (open = false)}>
-		<div class="choices" role="radiogroup" aria-label={label} data-picker={id}>
+		<div class="choices" role="radiogroup" aria-label={label} data-picker={id} bind:this={group} onkeydown={onkey} tabindex="-1">
 			{#each options as o (o.value)}
 				<button
 					class="choice"
@@ -53,6 +74,7 @@
 					role="radio"
 					aria-checked={o.value === value}
 					disabled={o.disabled}
+					tabindex={o.value === focusable ? 0 : -1}
 					onclick={() => choose(o.value)}
 					data-choice={o.value}
 				>
