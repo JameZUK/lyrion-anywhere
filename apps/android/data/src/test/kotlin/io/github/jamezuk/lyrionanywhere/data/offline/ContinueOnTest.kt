@@ -93,12 +93,14 @@ class RecordingPlayers(var failAt: Int = -1, var listed: List<Player> = emptyLis
     override suspend fun transfer(source: String, target: String, onStage: (TransferStage) -> Unit) = no<TransferOutcome>()
 }
 
-/** The library now: id → key; others unknown. Counts the ids asked about. */
+/** The library now: id → key; others unknown. Counts the ids asked about, and whose library each lookup was in. */
 class FakeResolver(private val library: Map<Long, String>, var error: AppError? = null) : TrackResolver {
     val asked = mutableListOf<Long>()
+    val owners = mutableListOf<Owner>()
     var onResolve: () -> Unit = {}
 
-    override suspend fun resolve(tracks: List<QueuedDownload>): ApiResult<List<Long?>> {
+    override suspend fun resolve(owner: Owner, tracks: List<QueuedDownload>): ApiResult<List<Long?>> {
+        owners += owner
         error?.let { return ApiResult.Err(it) }
         asked += tracks.map { it.trackId }
         val out = tracks.map { t -> t.trackId.takeIf { library[it] == t.key } }
@@ -124,9 +126,11 @@ class ContinueOnUseCaseTest {
     fun loadsTheResolvedQueueInOrderAtThePositionThenStopsTheDownloads() = runTest {
         val p = RecordingPlayers()
         // 102 was renumbered (its id names another file now); 105 is gone.
-        val r = useCase(p, FakeResolver(all(5) - 105 + (102L to key(9))), { snap(5, index = 2, positionMs = 61_500) })
-            .continueOn(KITCHEN)
+        val resolver = FakeResolver(all(5) - 105 + (102L to key(9)))
+        val r = useCase(p, resolver, { snap(5, index = 2, positionMs = 61_500) }).continueOn(KITCHEN)
         assertEquals(HandOffResult.Moved(moved = 3, skipped = 2), r)
+        // Looked up in the queue owner's own library (review M14).
+        assertEquals(listOf(ALICE), resolver.owners)
         assertEquals(
             listOf(
                 "$KITCHEN power true",
@@ -217,6 +221,7 @@ class ContinueOnUseCaseTest {
         val p = RecordingPlayers()
         val r = useCase(p, resolver, { s }).continueOn(KITCHEN)
         assertEquals(HandOffResult.Moved(3, 0), r)
+        assertEquals(listOf(ALICE, ALICE), resolver.owners)
         assertTrue("$KITCHEN load [103, 104, 105] from 1" in p.sent)
         assertEquals("$KITCHEN paused true", p.sent.last())
         assertEquals(listOf(101L, 102L, 103L, 104L, 105L), resolver.asked)
@@ -226,9 +231,33 @@ class ContinueOnUseCaseTest {
     fun anotherAccountsQueueIsNeverContinued() = runTest {
         var n = 0
         val p = RecordingPlayers()
-        val r = useCase(p, FakeResolver(all(2)), { if (n++ == 0) snap(2) else snap(2, owner = BOB) }).continueOn(KITCHEN)
+        val resolver = FakeResolver(all(2))
+        val r = useCase(p, resolver, { if (n++ == 0) snap(2) else snap(2, owner = BOB) }).continueOn(KITCHEN)
         assertEquals(HandOffResult.Changed, r)
         assertTrue(p.sent.isEmpty())
+        // Only ever looked up in the first owner's library, never bob's.
+        assertEquals(listOf(ALICE), resolver.owners)
+    }
+
+    @Test
+    fun bobsQueueIsLookedUpInBobsLibrary() = runTest {
+        val p = RecordingPlayers()
+        val resolver = FakeResolver(all(2))
+        val r = useCase(p, resolver, { snap(2, owner = BOB) }).continueOn(KITCHEN)
+        assertEquals(HandOffResult.Moved(2, 0), r)
+        assertEquals(listOf(BOB), resolver.owners)
+    }
+
+    @Test
+    fun theRealResolverNeedsASignInAndTheOwnersOpenLibrary() = runTest {
+        val q = listOf(QueuedDownload(101, key(1)))
+        val signedOut = object : io.github.jamezuk.lyrionanywhere.data.ConnectionSource {
+            override val connection = MutableStateFlow<io.github.jamezuk.lyrionanywhere.data.Connection?>(null)
+        }
+        var lookedUp = 0
+        val none = RustTrackResolver(signedOut) { lookedUp++; null }
+        assertEquals(ApiResult.Err(AppError.SignedOut), none.resolve(ALICE, q))
+        assertEquals(0, lookedUp)
     }
 
     @Test
@@ -329,6 +358,7 @@ class ContinueOnControllerTest {
         val player = FakeOfflinePlayer()
         val offline = MutableStateFlow(OfflineState(owner = ALICE))
         val players = RecordingPlayers()
+        val resolver = FakeResolver(all(3))
         val c = ContinueOnController(
             scope = scope.backgroundScope,
             auth = auth,
@@ -337,7 +367,7 @@ class ContinueOnControllerTest {
             offlinePlayer = player,
             owner = offline,
             players = players,
-            resolver = FakeResolver(all(3)),
+            resolver = resolver,
             clock = { 0 },
         ).also { it.start() }
     }
@@ -358,6 +388,7 @@ class ContinueOnControllerTest {
         assertEquals(1, r.player.stops)
         assertFalse(r.c.state.value.offered)
         assertTrue(r.players.sent.contains("$KITCHEN load [101, 102, 103] from 0"))
+        assertEquals(listOf(ALICE), r.resolver.owners)
     }
 
     @Test

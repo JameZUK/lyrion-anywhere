@@ -213,7 +213,7 @@ class AppContainer(context: Context, scope: CoroutineScope) {
         offlinePlayer = offlinePlayer,
         owner = offlineImpl.state,
         players = players,
-        resolver = io.github.jamezuk.lyrionanywhere.data.offline.RustTrackResolver(accountImpl),
+        resolver = io.github.jamezuk.lyrionanywhere.data.offline.RustTrackResolver(accountImpl, offlineImpl::storeOf),
         localPlayer = localPlayer,
         clock = { android.os.SystemClock.elapsedRealtime() },
     ).also {

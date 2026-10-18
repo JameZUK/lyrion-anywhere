@@ -104,6 +104,23 @@ class OfflineRepositoryTest {
     }
 
     @Test
+    fun continueOnGetsOnlyTheOwnersOpenLibrary() = runTest {
+        // Review M14: "Continue on" looks a queue up only in its owner's own library.
+        val r = repo()
+        val alice = Owner(SERVER.url, "alice")
+        assertNull(r.storeOf(alice))
+        signIn()
+        assertTrue(r.storeOf(alice) === stores.single())
+        assertNull(r.storeOf(Owner(SERVER.url, "bob")))
+        assertNull(r.storeOf(Owner("https://other.example.com/", "alice")))
+        // Another account signs in: alice's library is closed and never handed out again.
+        signIn("bob")
+        assertNull(r.storeOf(alice))
+        assertTrue(r.storeOf(Owner(SERVER.url, "bob")) === stores.last())
+        assertTrue(stores.first().closed)
+    }
+
+    @Test
     fun aRevokedDeviceRemovesItsDownloads() = runTest {
         val r = repo()
         signIn()

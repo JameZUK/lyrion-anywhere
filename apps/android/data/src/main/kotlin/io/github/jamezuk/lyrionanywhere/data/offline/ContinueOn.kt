@@ -10,6 +10,7 @@ import io.github.jamezuk.lyrionanywhere.data.AuthState
 import io.github.jamezuk.lyrionanywhere.data.ConnectionSource
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerRepository
 import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
+import io.github.jamezuk.lyrionanywhere.data.WRONG_ACCOUNT
 import io.github.jamezuk.lyrionanywhere.data.apiCall
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -27,8 +28,9 @@ import kotlinx.coroutines.launch
  * offers it, and the user picks the player or says "Not now".
  *
  * 1. Each queued download is checked with GET /v1/download/track/{id}/info (the id it was
- *    downloaded with, through the Rust layer's `resolveOfflineTracks`): the id is used only
- *    when the gateway says it still names the download's own file (its stable key). A track
+ *    downloaded with, through the Rust layer's `resolveOfflineTracks`, in the queue owner's
+ *    own library, which must be the signed-in account's): the id is used only when the
+ *    gateway says it still names the download's own file (its stable key). A track
  *    LMS no longer has, or whose id now names another file, is skipped and counted. Any
  *    other failure stops the hand-off before anything is sent to a player.
  * 2. The confirmed ids go to the player in play order through the gateway's RPC policy:
@@ -65,16 +67,28 @@ fun snapshotOf(state: OfflinePlayerState, owner: Owner?): OfflineQueueSnapshot? 
     return OfflineQueueSnapshot(o, tracks, at, s.elapsedMs.toLong(), state.playing)
 }
 
-/** Looks queued downloads up: each one's current LMS id, in order (null: not in the library as that file). */
+/**
+ * Looks [owner]'s queued downloads up: each one's current LMS id, in order (null: not in the
+ * library as that file).
+ */
 fun interface TrackResolver {
-    suspend fun resolve(tracks: List<QueuedDownload>): ApiResult<List<Long?>>
+    suspend fun resolve(owner: Owner, tracks: List<QueuedDownload>): ApiResult<List<Long?>>
 }
 
-/** The real [TrackResolver]: `/info` through the signed-in session. */
-class RustTrackResolver(private val source: ConnectionSource) : TrackResolver {
-    override suspend fun resolve(tracks: List<QueuedDownload>): ApiResult<List<Long?>> {
+/**
+ * The real [TrackResolver]: `/info` through the signed-in session, in [owner]'s library
+ * ([storeOf]: the open one if it is theirs). The Rust layer refuses a library that isn't the
+ * signed-in account's (review M14), and looks up only tracks that library holds.
+ */
+class RustTrackResolver(
+    private val source: ConnectionSource,
+    private val storeOf: (Owner) -> OfflineStore?,
+) : TrackResolver {
+    override suspend fun resolve(owner: Owner, tracks: List<QueuedDownload>): ApiResult<List<Long?>> {
         val c = source.connection.value ?: return ApiResult.Err(AppError.SignedOut)
-        return apiCall { resolveOfflineTracks(c.session, tracks.map { OfflineTrackRef(it.trackId, it.key) }) }
+        val library = (storeOf(owner) as? RustOfflineStore)?.library
+            ?: return ApiResult.Err(AppError.Forbidden(WRONG_ACCOUNT))
+        return apiCall { resolveOfflineTracks(c.session, library, tracks.map { OfflineTrackRef(it.trackId, it.key) }) }
     }
 }
 
@@ -158,7 +172,7 @@ class ContinueOnUseCase(
         while (true) {
             val todo = snap.tracks.filter { it !in known }.distinct()
             if (todo.isNotEmpty()) {
-                when (val r = resolver.resolve(todo)) {
+                when (val r = resolver.resolve(snap.owner, todo)) {
                     is ApiResult.Err -> return HandOffResult.Failed(r.error)
                     is ApiResult.Ok -> {
                         if (r.value.size != todo.size) return HandOffResult.Failed(AppError.Unexpected("lookup answer"))
