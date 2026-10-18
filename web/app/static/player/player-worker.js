@@ -12,7 +12,7 @@ const V = new URL(self.location.href).searchParams.get('v');
 const early = [];
 onmessage = (e) => early.push(e);
 const VQ = V && /^[\w.-]{1,64}$/.test(V) ? `?v=${V}` : '';
-const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, closeAction, describeSeek, loadCore, qualityMessage, routeMessage, sanitiseQuality, signInMessage, socketSilent, streamFailureAction, streamPath } =
+const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, closeAction, describeSeek, downloadStream, loadCore, qualityMessage, routeMessage, sanitiseQuality, signInMessage, socketSilent } =
   await import(`./reconnect.js${VQ}`);
 const { Presentation } = await import(`./presentation.js${VQ}`);
 const { VisualTap } = await import(`./visual.js${VQ}`);
@@ -494,84 +494,28 @@ function openStream(n) {
   fetchStream(id, n);
 }
 
-async function fetchStream(id, n) {
-  const current = () => stream && stream.id === id;
-  let headersSeen = false;
-  let lastAck = 0;
-  let renewed = false;
-  for (let tries = 0; ; tries++) {
-    // Resume from what the core has already received for this stream.
-    const os = player.open_stream();
-    const offset = os && os[0] === n ? os[1] : 0;
-    const controller = new AbortController();
-    stream.controller = controller;
-    let status = 0;
-    try {
-      const resp = await fetch(streamPath(session, n, offset), {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: controller.signal,
-        cache: 'no-store',
-      });
-      if (!current()) return;
-      status = resp.status;
-      if (!resp.ok) throw new Error(`stream HTTP ${resp.status}`);
-      // From here on, a failure is the connection breaking mid-download: retryable.
-      status = 0;
-      if (!headersSeen) {
-        headersSeen = true;
-        seekMark('response');
-        const ct = resp.headers.get('content-type') || 'application/octet-stream';
-        player.on_stream_headers(new TextEncoder().encode(`HTTP/1.0 200 OK\r\nContent-Type: ${ct}\r\n\r\n`), now());
-      } else {
-        log(`stream ${n} resumed at byte ${offset}`);
-      }
-      const reader = resp.body.getReader();
-      for (;;) {
-        // Back-pressure: stop reading while the core's input buffer is full.
-        while (current() && !player.wants_stream_data()) await sleep(50);
-        if (!current()) return;
-        const { done, value } = await reader.read();
-        if (!current()) return;
-        if (done) {
-          streamReceived = true;
-          player.on_stream_end(now());
-          runActions();
-          return;
-        }
-        tries = 0;
-        renewed = false;
-        seekMark('bytes');
-        player.on_stream_data(value, now());
-        const got = player.open_stream();
-        if (got && got[0] === n && got[1] - lastAck >= ACK_EVERY) {
-          lastAck = got[1];
-          sendAck(n, lastAck);
-        }
-      }
-    } catch (err) {
-      if (err.name === 'AbortError' || !current()) return;
-      const action = streamFailureAction(status, renewed);
-      if (action === 'renew') {
-        // Most likely the access token expired (a long pause, or a page in the background
-        // whose renewal timer was held back): get a new one, then carry on.
-        renewed = true;
-        log(`stream ${n}: access token refused; renewing`);
-        await renewToken();
-        if (!current()) return;
-        continue;
-      }
-      if (action === 'fail' || tries >= STREAM_RETRIES) {
-        log(`stream ${n} failed after ${tries} retries at byte ${offset}: ${err.message} (HTTP ${status || 'none'})`);
-        player.on_stream_error(now());
-        runActions();
-        return;
-      }
-      const at = player.open_stream();
-      log(`stream ${n} interrupted at byte ${at && at[0] === n ? at[1] : offset} (${err.message}); retrying`);
-      await sleep(backoffMs(tries));
-      if (!current()) return;
-    }
-  }
+function fetchStream(id, n) {
+  return downloadStream(
+    {
+      player,
+      current: () => stream && stream.id === id,
+      fetch: (path, init) => fetch(path, init),
+      session: () => session,
+      token: () => token,
+      setController: (c) => (stream.controller = c),
+      sleep,
+      now,
+      log,
+      mark: seekMark,
+      ack: sendAck,
+      runActions,
+      renewToken,
+      received: () => (streamReceived = true),
+      maxTries: STREAM_RETRIES,
+      ackEvery: ACK_EVERY,
+    },
+    n,
+  );
 }
 
 /** Ask the page for a new access token; resolves once it arrives (or after 15 s). */

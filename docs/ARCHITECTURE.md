@@ -283,7 +283,7 @@ sequenceDiagram
 ```
 
 - **Replay window:** the upstream connection belongs to the session, not the HTTP request. The gateway reads at most one window (4 MiB) beyond the client's last acknowledgement, so network buffers can't swallow whole tracks and a resume always lands inside the window.
-- **Clean ends mean the end of the track:** a response ends cleanly only when LMS finished the stream and the client has every byte. Every other end is an error, so a player never mistakes a cut for the end of a track.
+- **Clean ends mean the end of the track:** a response ends cleanly only when LMS finished the stream and the client has every byte. Every other end is an error, so a player never mistakes a cut for the end of a track. A proxy can still pass an error on as a clean end, so the web player confirms each clean end with one more `?offset=` request (PROTOCOL "Streams").
 - **Byte counts:** offsets count the stream as the client receives it (stripped, or Opus). The gateway converts STAT byte counts back into LMS's terms.
 - **Live transcode** (SPEC D25): Original, High (Opus 160 kb/s) and Data saver (Opus 96 kb/s). Only FLAC is re-encoded; at most `--live-transcode-jobs` at once, the original beyond that. ffmpeg runs with a fixed argument list, no shell, an empty environment and only the `pipe` protocol, and is killed with its stream.
 

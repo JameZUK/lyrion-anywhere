@@ -31,6 +31,13 @@ const KEEP_BEHIND = 10;
 const END_SLACK = 0.1;
 /** A play head stuck at most this far (seconds) before buffered audio is moved onto it. */
 const MAX_GAP = 0.5;
+/**
+ * The buffer is full (an append was refused): keep only this many seconds behind the play
+ * head, fewer than {@link KEEP_BEHIND}, so the queue can carry on.
+ */
+const FULL_KEEP_BEHIND = 1;
+/** Less than this (seconds) of played audio is not worth a removal to make room. */
+const MIN_ROOM = 0.5;
 /** An aborted play() is tried again at most this often before the user is asked to tap. */
 const MAX_RETRIES = 8;
 
@@ -44,6 +51,15 @@ export class MediaOutput {
 	#closed = false;
 	#note: (m: string) => void;
 	#failed = false;
+	/**
+	 * The browser refused an append for want of space: the segment waits at the head of the
+	 * queue until room is made ({@link #makeRoom}) or the play head moves on.
+	 */
+	#full = false;
+	/** Where the play head was when room was last made for a full buffer (null: not yet). */
+	#roomMadeAt: number | null = null;
+	/** Room was made for the waiting segment by removing played audio. */
+	#trimmedForRoom = false;
 	/** Called when the element has played everything appended and is waiting for more. */
 	onDrained: (() => void) | null = null;
 	/**
@@ -113,6 +129,8 @@ export class MediaOutput {
 			this.#retry('segment');
 			this.#pump();
 		});
+		// A managed buffer may free space itself (it evicts audio under memory pressure).
+		sb.addEventListener('bufferedchange', () => this.#retryFull());
 		sb.addEventListener('error', () => {
 			this.#note('media buffer error');
 			this.#fail('the browser rejected the audio');
@@ -135,6 +153,8 @@ export class MediaOutput {
 		});
 		// The element is ready again after a load or source change: an aborted play() goes again.
 		for (const type of ['loadedmetadata', 'canplay'] as const) a.addEventListener(type, () => this.#retry(type));
+		// A full buffer is tried again as the play head moves on, as played audio can then go.
+		for (const type of ['timeupdate', 'progress'] as const) a.addEventListener(type, () => this.#retryFull());
 		a.addEventListener('waiting', () => {
 			if (this.atEnd) this.onDrained?.();
 			else this.unstick();
@@ -177,12 +197,56 @@ export class MediaOutput {
 			sb.appendBuffer(next as BufferSource);
 		} catch (e) {
 			if ((e as DOMException).name === 'QuotaExceededError') {
-				this.#queue.unshift(next); // retry after the next trim
-				this.#note('media buffer full; waiting');
+				this.#queue.unshift(next); // appended once there is room
+				if (!this.#full) {
+					this.#full = true;
+					this.#note('media buffer full; waiting');
+				}
+				this.#makeRoom(sb);
 			} else {
 				this.#note(`append failed: ${(e as Error).message}`);
 			}
+			return;
 		}
+		if (this.#full) {
+			this.#note(this.#trimmedForRoom ? 'media buffer trimmed; resuming' : 'media buffer has room again; resuming');
+			this.#clearFull();
+		}
+	}
+
+	/**
+	 * The buffer is full: remove the audio already played (all but {@link FULL_KEEP_BEHIND}
+	 * seconds behind the play head; after a seek, that is all the audio from before it) now,
+	 * rather than at the next segment, which won't come while the worker waits for this one.
+	 * The queue resumes on updateend. With nothing worth removing, or room already made at
+	 * this play head (the browser kept the space), it waits for the play head to move on
+	 * ({@link #retryFull}): never removing and appending in a loop.
+	 */
+	#makeRoom(sb: SourceBuffer) {
+		const t = this.audio.currentTime;
+		if (this.#roomMadeAt !== null && t < this.#roomMadeAt + MIN_ROOM) return;
+		const b = sb.buffered;
+		const end = t - FULL_KEEP_BEHIND;
+		if (!b.length || !(end > 0) || b.start(0) > end - MIN_ROOM) return;
+		try {
+			sb.remove(0, end);
+		} catch (e) {
+			this.#note(`could not make room in the media buffer: ${(e as Error).message}`);
+			return;
+		}
+		this.#roomMadeAt = t;
+		this.#trimmedForRoom = true;
+	}
+
+	/** A full buffer: try the waiting segment again (the play head moved, or space was freed). */
+	#retryFull() {
+		if (this.#full) this.#pump();
+	}
+
+	#clearFull() {
+		this.#full = false;
+		this.#roomMadeAt = null;
+		this.#trimmedForRoom = false;
 	}
 
 	/**
@@ -374,6 +438,7 @@ export class MediaOutput {
 	 */
 	async flush(): Promise<number> {
 		this.#queue = [];
+		this.#clearFull();
 		const sb = this.#sb;
 		if (!sb) return this.audio.currentTime;
 		if (sb.updating) {

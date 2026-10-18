@@ -12,6 +12,9 @@ import {
   backoffMs,
   closeAction,
   describeSeek,
+  cleanEndAction,
+  confirmGivesUp,
+  downloadStream,
   streamFailureAction,
   streamPath,
   socketSilent,
@@ -373,6 +376,165 @@ test('the stream address encodes the session id and takes only whole numbers', (
     assert.match(p, /^\/v1\/stream\/s\/\d+(\?offset=\d+)?$/, String([n, off]));
   }
   const src = readFileSync(new URL('../../static/player/player-worker.js', import.meta.url), 'utf8');
-  assert.match(src, /fetch\(streamPath\(session, n, offset\)/);
-  assert.doesNotMatch(src, /\/v1\/stream\/\$\{session\}/);
+  const lib = readFileSync(new URL('../../static/player/reconnect.js', import.meta.url), 'utf8');
+  assert.match(lib, /io\.fetch\(streamPath\(io\.session\(\), n, offset\)/);
+  assert.match(src, /return downloadStream\(/);
+  assert.doesNotMatch(src, /\/v1\/stream\//);
+  assert.doesNotMatch(lib, /\/v1\/stream\/\$\{session\}/);
+});
+
+test('a clean end is confirmed only after a response that brought bytes', () => {
+  assert.equal(cleanEndAction(0), 'end');
+  assert.equal(cleanEndAction(1), 'confirm');
+  assert.equal(cleanEndAction(4 << 20), 'confirm');
+  // A confirmation that fails for good takes the end as the end, as before; network trouble
+  // is retried first.
+  assert.equal(confirmGivesUp('fail', 0, 12), true);
+  assert.equal(confirmGivesUp('retry', 3, 12), false);
+  assert.equal(confirmGivesUp('retry', 12, 12), true);
+  assert.equal(confirmGivesUp('renew', 12, 12), false);
+});
+
+/**
+ * A fake gateway for one stream of `total` bytes, and a fake core that takes everything. Each
+ * request gets the bytes from its `?offset=` on, ending as `plans[i]` says for request i:
+ * { upTo: n, end: 'clean' | 'error' } stops at byte n (cleanly, or with a broken connection),
+ * { status } answers with that status, and no plan sends the rest and ends cleanly.
+ */
+function fakeDownload(total, plans) {
+  const requests = [];
+  const events = [];
+  let have = 0;
+  const player = {
+    open_stream: () => [1, have],
+    wants_stream_data: () => true,
+    on_stream_headers: () => events.push('headers'),
+    on_stream_data: (v) => (have += v.length),
+    on_stream_end: () => events.push(`end@${have}`),
+    on_stream_error: () => events.push(`error@${have}`),
+  };
+  const io = {
+    player,
+    current: () => true,
+    fetch: async (path) => {
+      const m = path.match(/offset=(\d+)/);
+      const offset = m ? Number(m[1]) : 0;
+      const plan = plans[requests.length] ?? {};
+      requests.push(offset);
+      if (plan.status) return { ok: false, status: plan.status, headers: new Map(), body: null };
+      const stop = Math.min(plan.upTo ?? total, total);
+      let pos = offset;
+      return {
+        ok: true,
+        status: 200,
+        headers: new Map([['content-type', 'audio/flac']]),
+        body: {
+          getReader: () => ({
+            read: async () => {
+              if (pos < stop) {
+                const n = Math.min(1000, stop - pos);
+                pos += n;
+                return { done: false, value: new Uint8Array(n) };
+              }
+              if (plan.end === 'error') throw new TypeError('network error');
+              return { done: true, value: undefined };
+            },
+          }),
+        },
+      };
+    },
+    session: () => 's',
+    token: () => 't',
+    setController: () => {},
+    sleep: async () => {},
+    now: () => 0,
+    log: (msg) => events.push(msg),
+    mark: () => {},
+    ack: (n, b) => events.push(`ack ${b}`),
+    runActions: () => {},
+    renewToken: async () => {},
+    received: () => events.push('received'),
+    maxTries: 12,
+    ackEvery: 4000,
+  };
+  return { io, requests, events, have: () => have };
+}
+
+const ends = (events) => events.filter((e) => /^(end|error)@/.test(e));
+
+// Issue #12: the gateway ends a stream whose client stopped acknowledging (its buffer full)
+// with an error, so the player fetches the rest from `?offset=`. It must never take that as
+// the end of the track, which skips to the next one.
+test('a stream broken mid-way is fetched again from the offset reached, not ended', async () => {
+  const d = fakeDownload(10_000, [{ upTo: 6000, end: 'error' }]);
+  await downloadStream(d.io, 1);
+  assert.deepEqual(d.requests, [0, 6000, 10_000]);
+  assert.equal(d.have(), 10_000);
+  assert.deepEqual(ends(d.events), ['end@10000']);
+  assert.ok(d.events.some((e) => /interrupted at byte 6000/.test(e)));
+});
+
+// Issue #12, through a Cloudflare Tunnel: the gateway's error end can reach the browser as a
+// clean end, which looked like the end of the track. Before the fix the track ended at byte
+// 6000 and the rest was never fetched.
+test('a clean end that came early (a proxy hid the error) is confirmed, and the rest fetched', async () => {
+  const d = fakeDownload(10_000, [{ upTo: 6000, end: 'clean' }]);
+  await downloadStream(d.io, 1);
+  assert.deepEqual(d.requests, [0, 6000, 10_000]);
+  assert.equal(d.have(), 10_000);
+  assert.deepEqual(ends(d.events), ['end@10000']);
+  assert.ok(d.events.some((e) => /a clean end at byte 6000 was not the end of the track/.test(e)));
+  assert.equal(d.events.filter((e) => e === 'received').length, 1);
+});
+
+test('the true end costs one empty request, and the end is reported once', async () => {
+  const d = fakeDownload(10_000, []);
+  await downloadStream(d.io, 1);
+  assert.deepEqual(d.requests, [0, 10_000]);
+  assert.deepEqual(ends(d.events), ['end@10000']);
+  assert.ok(!d.events.some((e) => /resumed at byte/.test(e)));
+  // An empty stream: nothing to confirm.
+  const empty = fakeDownload(0, []);
+  await downloadStream(empty.io, 1);
+  assert.deepEqual(empty.requests, [0]);
+  assert.deepEqual(ends(empty.events), ['end@0']);
+});
+
+test('a confirmation refused for good (an older gateway, a stream gone) takes the end as before', async () => {
+  for (const status of [400, 404, 410, 416]) {
+    const d = fakeDownload(10_000, [{}, { status }]);
+    await downloadStream(d.io, 1);
+    assert.deepEqual(d.requests, [0, 10_000], `${status}`);
+    assert.deepEqual(ends(d.events), ['end@10000'], `${status}`);
+  }
+  // Network trouble while confirming is retried, then given up as the end, never a failure.
+  const d = fakeDownload(10_000, [{}, ...Array(20).fill({ status: 503 })]);
+  await downloadStream(d.io, 1);
+  assert.equal(d.requests.length, 1 + 13);
+  assert.deepEqual(ends(d.events), ['end@10000']);
+});
+
+test('repeated early clean ends each need progress: no loop; no progress still fails as before', async () => {
+  const d = fakeDownload(10_000, [
+    { upTo: 2000, end: 'clean' },
+    { upTo: 4000, end: 'clean' },
+    { upTo: 8000, end: 'clean' },
+  ]);
+  await downloadStream(d.io, 1);
+  assert.deepEqual(d.requests, [0, 2000, 4000, 8000, 10_000]);
+  assert.deepEqual(ends(d.events), ['end@10000']);
+  // A stream that keeps breaking without progress fails after the retries.
+  const stuck = fakeDownload(10_000, Array(20).fill({ upTo: 3000, end: 'error' }));
+  await downloadStream(stuck.io, 1);
+  assert.deepEqual(ends(stuck.events), ['error@3000']);
+  assert.equal(stuck.requests.length, 13);
+});
+
+test('bytes are acknowledged as they arrive, across a resume', async () => {
+  const d = fakeDownload(10_000, [{ upTo: 6000, end: 'error' }]);
+  await downloadStream(d.io, 1);
+  assert.deepEqual(
+    d.events.filter((e) => e.startsWith('ack ')),
+    ['ack 4000', 'ack 8000'],
+  );
 });
