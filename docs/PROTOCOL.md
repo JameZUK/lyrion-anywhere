@@ -153,6 +153,8 @@ Endpoints:
 
 LMS's HTTP client cannot send `DELETE` or `PATCH`, so the rename has a `POST` form (above) and each delete has one too: `/admin/v1/users/{name}/delete`, `/admin/v1/users/{name}/players/{mac}/remove` and `/admin/v1/devices/{id}/revoke`.
 
+Any other path on the admin listener is 404, and only once the request has passed the checks above (without the secret it is refused like any other).
+
 ## Player socket
 
 ### Opening

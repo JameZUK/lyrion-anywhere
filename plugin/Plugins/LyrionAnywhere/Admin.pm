@@ -169,6 +169,11 @@ sub call {
 	# a port from a later pref change): the secret stays with the gateway.
 	my $target = Plugins::LyrionAnywhere::Gateway::admin_target()
 		or return $err->('the gateway is not running');
+	# 127.0.0.1 only. With LMS's `webproxy` pref set, Slim::Networking::Async::HTTP sends
+	# plain HTTP through the proxy unless the host matches localhost or 127.0.0.1, so any
+	# other loopback address ([::1], 127.0.0.2) would carry the secret off the host.
+	return $err->('the admin API must be on 127.0.0.1; not sending the admin secret')
+		unless $target =~ /\A127\.0\.0\.1:\d{1,5}\z/;
 	my $url = 'http://' . $target . $path;
 	my $http = Slim::Networking::SimpleAsyncHTTP->new(
 		sub {

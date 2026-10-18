@@ -10,8 +10,11 @@ package Plugins::LyrionAnywhere::Commands;
 # opens could send commands blind. Every admin command therefore needs `csrf:<token>`: a
 # random value made when LMS starts, given only to the settings page (which other web sites
 # cannot read). That includes the read-only ones, since they return remote users' addresses,
-# browsers and the audit log (pentest 2026-10); only `anywhere status` is open. The gateway
-# never forwards `anywhere` commands from the internet (it is reserved in its allow-list).
+# browsers and the audit log (pentest 2026-10). `anywhere status` is the one exception, and
+# only in part: without the token it says whether the gateway runs and the gist of the last
+# error; the binary and data paths, pid, listen address and the gateway's stderr need the
+# token (review 2026-10-15). The gateway never forwards `anywhere` commands from the
+# internet (it is reserved in its allow-list).
 #
 # `anywhere play_record` (Plays.pm) is the one command the gateway itself sends: it is
 # signed with the admin secret instead of carrying the settings page's token.
@@ -90,7 +93,7 @@ sub _refuse {
 
 sub register {
 	# [needsClient, isQuery, hasTags, function]
-	Slim::Control::Request::addDispatch(['anywhere', 'status'],  [0, 1, 0, \&status]);
+	Slim::Control::Request::addDispatch(['anywhere', 'status'],  [0, 1, 1, \&status]);
 	Slim::Control::Request::addDispatch(['anywhere', 'restart'], [0, 0, 1, \&restart]);
 	Slim::Control::Request::addDispatch(['anywhere', 'play_record'], [0, 0, 1, \&Plugins::LyrionAnywhere::Plays::command]);
 	for my $op (Plugins::LyrionAnywhere::Admin::operations()) {
@@ -98,10 +101,29 @@ sub register {
 	}
 }
 
+# What `anywhere status` tells a caller without the token.
+my @PUBLIC_STATUS = qw(enabled running binary_ok uptime);
+
+# The gist of an error for a caller without the token: its first line, up to the first
+# ": " (after which come paths, addresses or the gateway's stderr), without control
+# characters, at most 120 characters.
+sub public_error {
+	my $e = shift // return '';
+	$e = (split /\r?\n/, $e, 2)[0] // '';
+	$e =~ s/: .*//s;
+	$e =~ s/[\x00-\x1f\x7f]//g;
+	return substr $e, 0, 120;
+}
+
 sub status {
 	my $request = shift;
 	my $state = Plugins::LyrionAnywhere::Gateway->state;
-	$request->addResult($_, $state->{$_}) for sort keys %$state;
+	if (token_ok($request->getParam('csrf'))) {
+		$request->addResult($_, $state->{$_}) for sort keys %$state;
+	} else {
+		$request->addResult($_, $state->{$_}) for @PUBLIC_STATUS;
+		$request->addResult('error', public_error($state->{error}));
+	}
 	$request->setStatusDone;
 }
 

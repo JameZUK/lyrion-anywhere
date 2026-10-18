@@ -2,6 +2,19 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: Plugin, CI and release: the review's remaining lows
+
+The last low findings of the 15 October review for the plugin, CI and the supply chain:
+
+- **`anywhere status` without the token says less.** Any LAN CLI or JSON-RPC caller could read the gateway's binary and data paths, pid, listen address and the last lines of its stderr. Without the settings page's token the answer is now only `enabled`, `running`, `binary_ok`, `uptime` and the gist of the last error (its first line up to the first ": ", so "gateway exited", never the paths or stderr after it). The settings page sends its token and still shows everything. Tests: the token-free status in `plugin/t/04-commands.t` (no token, a wrong one, a token as a list; no paths, pid, address or stderr; `public_error` for each kind of error), and the settings page sending its token with `status` in `plugin/t/js/settings.test.mjs`.
+- **The admin secret goes only to 127.0.0.1.** With LMS's `webproxy` pref set, LMS (8.5 to 9.1, `Slim::Networking::Async::HTTP::use_proxy`) sends plain HTTP through the proxy unless the host matches `localhost` or `127.0.0.1`. The plugin always starts the admin API on 127.0.0.1, so the secret never went to the proxy. But `[::1]` or `127.0.0.2` would have been proxied, so the plugin now refuses to send the secret anywhere else. Test: `plugin/t/02-admin.t` (`[::1]`, `127.0.0.2`, `127.0.0.10`, look-alike host names, `localhost` and a LAN address are refused, with nothing sent).
+- **Licences: no GPL or LGPL dependency.** `deny.toml` allowed GPL and LGPL for the whole workspace, so nothing enforced `LICENSE-EXCEPTION`'s condition that the app-store builds hold no third-party GPL code. GPL-2.0-or-later is now allowed only for the project's own six crates. GPL and LGPL are refused for every dependency, with all features and all targets checked, so the Android-only crates count too. Dual-licensed crates such as r-efi pass on their MIT or Apache-2.0 terms. Test: `tools/test-deny-policy.sh`, run in CI's supply-chain job. It refuses GPL-2.0/3.0, LGPL-2.1/3.0 and AGPL dependencies, allows MIT, MPL-2.0 and a permissive-or-LGPL choice, and fails against the old `deny.toml`. The Android app's Gradle dependencies are not licence-checked by a tool (SPEC D17).
+- **`npm audit` in CI.** The builds run `npm ci --no-audit`. The web job now runs `npm audit --audit-level=high`, and a high or critical advisory fails it. Today it reports three lows, all `cookie` < 0.7.0 through `@sveltejs/kit`, whose fix is a major SvelteKit upgrade.
+- **Dependabot** now covers npm (`/web/app`), cargo (`/`) and Gradle (`/apps/android`) as well as actions and images. Updates come weekly, with minor and patch updates grouped per tree.
+- **Signed build provenance for releases.** LMS checks a plugin download only against the SHA1 in `repo.xml`, and the same release writes that file. The release jobs now attest the plugin zips, `repo.xml`, the APKs and the app bundle with `actions/attest-build-provenance` (pinned by commit). `id-token` and `attestations` are granted to those two jobs only. `docs/RELEASING.md` (*Verifying a release*) shows how to check a file with `gh attestation verify`.
+- **Test images pinned by digest:** `tools/test-deploy.sh` (nginx, alpine) and `tools/test-release.sh` (alpine), like the Dockerfiles.
+- **Docs:** PROTOCOL notes the admin listener's 404 fallback (`/healthz`, `/admin/v1/plugins` and the static fallback were already covered). SPEC, ARCHITECTURE and PLATFORMS are updated for all of the above. CHANGELOG gains the missing entry for the Android 1.15.0 test build. A repository-wide scan for addresses, host names, emails and names found only test fixtures.
+
 ## 2026-10-18: Plugin 0.5.5 released
 
 Internet radio plays: the gateway has LMS proxy streams for these players (the entry below). Everything else as in 0.5.4; Android 1.15.4 remains current. Notes: `docs/release-notes/v0.5.5.md`.
@@ -326,6 +339,10 @@ From the full code review of 15 October 2026. Each fix has a regression test tha
 - **M11, reconnect pacing** (`engine.rs`): a greeting reset the backoff, so a server that greeted and closed at once was reconnected every 0.5 s for ever. The backoff now starts again only after a connection has lived 5 s. The network coming back reconnects at once only if no connection was opened in the last 1.5 s, and only an outage that long resets the backoff. Tests: greet-then-close gets a growing delay; 20 network flaps in a second make at most three connections.
 - **M14, offline library bound to its account** (`mobile/src/offline/`, `routine.rs`): `sync_plays`, `sync_ratings` and `Downloader::new` refuse a library opened for another account or server with the new `ApiError::WrongAccount`, before anything is sent. Android shows it as a refusal. Test: another account's library is refused by all three and the gateway sees no request. `resolve_offline_tracks` takes no library; the app already checks the queue's owner before "Continue on".
 - **M16, "already signed out" by status** (`mobile/src/error.rs`, `session.rs`): 404 and 409 are now typed (`ApiError::NotFound`, `ApiError::Conflict`). Signing out a device answers "already gone" for any 404, and never for another status whose text happens to match. Android maps both to the same message as before, and the test fake answers for this device as the real repository does. Tests: 404 with any body, 400 and 403 with the old text, 409, 429 with `Retry-After`, and a gateway without the devices feature.
+
+## 2026-10-15: Android 1.15.0 (versionCode 29)
+
+A test build, not published: *Your devices* and the sync-group rejoin fix (the two entries below). The review fixes followed in 1.15.1 and 1.15.2, neither published either; 1.15.3 was the first of the series to be published (see *Plugin 0.5.0 and Android 1.15.3 released*, above).
 
 ## 2026-10-15: Android: a phone rejoining a sync group no longer pauses the others or moves them back
 

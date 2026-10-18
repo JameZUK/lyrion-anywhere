@@ -4,8 +4,8 @@ Two things are released from this repository, from different tags:
 
 | What | Tag | CI job | Publishes |
 |---|---|---|---|
-| The LMS plugin (gateway, web app, plugin) | `v<version>`, e.g. `v0.2.0` | `release` | A GitHub release with the plugin zips, `repo.xml` and `SHA256SUMS` |
-| The Android app | `android-v<version>`, e.g. `android-v1.0.0` | `android-release` | A GitHub **pre-release** with the signed APKs (universal and one per ABI), the app bundle, `BUILDINFO.txt` and `SHA256SUMS` |
+| The LMS plugin (gateway, web app, plugin) | `v<version>`, e.g. `v0.2.0` | `release` | A GitHub release with the plugin zips, `repo.xml` and `SHA256SUMS`; build provenance for the zips and `repo.xml` |
+| The Android app | `android-v<version>`, e.g. `android-v1.0.0` | `android-release` | A GitHub **pre-release** with the signed APKs (universal and one per ABI), the app bundle, `BUILDINFO.txt` and `SHA256SUMS`; build provenance for the APKs and the bundle |
 
 - The plugin job publishes only on `refs/tags/v*`, which an `android-v*` tag never matches.
 - The Android job runs only on `refs/tags/android-v*`.
@@ -24,6 +24,27 @@ If it fails: edit the Android release back to a pre-release, and mark the newest
 
 Choosing a version number is the owner's decision; nothing here picks one.
 
+## Verifying a release
+
+LMS checks a plugin download only against the SHA1 in `repo.xml`, and `SHA256SUMS` sits in the same release. Both are written by whoever publishes the release, so they prove the download is intact, not who built it. The release jobs therefore also publish signed **build provenance** ([artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations), signed through Sigstore with the workflow's own identity) for:
+- the plugin zips and `repo.xml` (`release`, on `v*` tags);
+- the APKs and the app bundle (`android-release`, on `android-v*` tags).
+
+Anyone can check that a file was built by this repository's CI workflow, from a given commit and tag, with the [GitHub CLI](https://cli.github.com/):
+
+```sh
+gh attestation verify LyrionAnywhere-<version>.zip --repo JameZUK/lyrion-anywhere
+gh attestation verify repo.xml --repo JameZUK/lyrion-anywhere
+gh attestation verify LyrionAnywhere-android-<version>.apk --repo JameZUK/lyrion-anywhere \
+  --signer-workflow JameZUK/lyrion-anywhere/.github/workflows/ci.yml
+```
+
+- It prints the workflow, commit and ref that built the file; check the ref is the release's tag (`refs/tags/v<version>` or `refs/tags/android-v<version>`).
+- `--signer-workflow` also pins the workflow file, so a file attested by any other workflow in the repository fails.
+- A modified file, or one built anywhere else, fails with "no matching attestations".
+- Releases published before CI started attesting them (18 October 2026) have none.
+- Only the files on the GitHub release are attested. Copies installed from Google Play or F-Droid are built or signed by those stores' pipelines and are not.
+
 ## Plugin releases (`v*`)
 
 1. **Version:** set `<version>` in `plugin/Plugins/LyrionAnywhere/install.xml`. The tag must equal `v` plus that version; the job checks this.
@@ -34,11 +55,13 @@ Choosing a version number is the owner's decision; nothing here picks one.
 4. **Public-repo hygiene:** grep the diff since the last release for addresses, hostnames and names.
 5. **Tag and push:** `git tag v<version> && git push origin v<version>`.
 6. **After CI:**
-   - check the release's files against `SHA256SUMS`;
+   - check the release's files against `SHA256SUMS`, and their provenance with `gh attestation verify` (see *Verifying a release* below);
    - install the zip on a test LMS, and update one through the repository URL;
    - check the gateway starts, and a sign-in and a stream work.
 
 A release published by hand first (built locally with `tools/build-release.sh`, which is quicker than waiting for CI) is left alone: the job sees the release already exists and stops without replacing it. The same applies to Android releases.
+
+A hand-published release has no matching provenance: CI still attests the files *it* built, but unless the local build is byte-for-byte identical, `gh attestation verify` fails for the published files. Prefer letting CI publish; if a release must be published by hand, say so in its notes.
 
 ## Android releases (`android-v*`)
 
@@ -133,6 +156,7 @@ Alternatively, use *Settings → Secrets and variables → Actions → New repos
      - `LyrionAnywhere-android-<v>.aab`.
 3. Check the pre-release:
    - `sha256sum -c SHA256SUMS`;
+   - `gh attestation verify` passes for each APK and the bundle (see *Verifying a release* below);
    - `apksigner verify --print-certs` shows the expected certificate;
    - install the per-ABI APK on a phone over the previous version (it must update in place);
    - sign in, play, download, and go offline.

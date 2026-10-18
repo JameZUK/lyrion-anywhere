@@ -10,7 +10,10 @@ set -eu
 cd "$(dirname "$0")/.."
 
 IMAGE=${1:-}
-NGINX_IMAGE=nginx:1.29-alpine
+# Pinned by digest (multi-arch index), like the Dockerfiles. Dependabot does not read shell
+# scripts: update these by hand when the Dockerfiles' base images move.
+NGINX_IMAGE=nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+ALPINE_IMAGE=alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 NAME=music.example.com
 GW_PORT=19443 HTTPS_PORT=18443 HTTP_PORT=18080
 WORK=$(mktemp -d)
@@ -72,7 +75,7 @@ check "exactly one CSP (the gateway's)" "$(echo "$H" | grep -ci '^content-securi
 
 echo "# image"
 check "runs as non-root" "$(docker inspect -f '{{.Config.User}}' "$IMAGE")" nonroot
-check "data directory and files are private" "$(docker run --rm -v "$VOL:/data:ro" alpine:3.22 sh -c 'stat -c %a /data; find /data -type f ! -perm 600 | wc -l' | tr '\n' ' ')" "700 0 "
+check "data directory and files are private" "$(docker run --rm -v "$VOL:/data:ro" "$ALPINE_IMAGE" sh -c 'stat -c %a /data; find /data -type f ! -perm 600 | wc -l' | tr '\n' ' ')" "700 0 "
 check "web player page served" "$($C -o /dev/null -w '%{http_code}' "$BASE/")" 200
 check "WebAssembly served as application/wasm" "$($C -o /dev/null -w '%{content_type}' "$BASE/player/pkg/anywhere_wasm_bg.wasm")" application/wasm
 check "player worker served" "$($C -o /dev/null -w '%{http_code}' "$BASE/player/player-worker.js")" 200

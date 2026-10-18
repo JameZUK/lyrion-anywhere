@@ -244,7 +244,8 @@
     return body.result || {};
   }
 
-  // Sent with every command except status: harmless on read-only ones, required on the rest.
+  // Sent with every command: the admin ones and restart need it, and status gives the full
+  // picture (paths, pid, stderr) only with it.
   let csrf = '';
 
   async function admin(op, args) {
@@ -384,7 +385,8 @@
   let statusInfo = null;
 
   async function showStatus() {
-    const s = await rpc(['anywhere', 'status']);
+    // With the token, or LMS leaves out the paths, pid, listen address and stderr.
+    const s = await rpc(command('status', {}, csrf));
     const rows = [
       ['Gateway', s.running ? `running (pid ${s.pid})` : s.enabled ? 'not running' : 'turned off'],
       ['Up for', formatUptime(s.uptime)],

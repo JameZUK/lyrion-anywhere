@@ -154,6 +154,57 @@ for my $op (sort keys %read_only_args) {
 	ok(!grep({ ($_ // '') eq $token } values %{ $req->{results} }), 'status does not reveal the token');
 }
 
+# `anywhere status` without the token (review 2026-10-15, L): any LAN CLI or JSON-RPC
+# caller may ask, so it says only whether the gateway runs and the gist of the last error.
+# Paths, the pid, the listen address and the gateway's stderr need the settings page's token.
+{
+	require Plugins::LyrionAnywhere::Gateway;
+	no warnings 'redefine';
+	my $full = {
+		enabled => 1, running => 0, pid => 4242, uptime => 0,
+		binary => '/srv/lms/Plugins/LyrionAnywhere/Bin/x86_64-linux/anywhere-gateway',
+		binary_ok => 1, data_dir => '/srv/lms/prefs/lyrion-anywhere', listen => '10.0.0.10:9443',
+		error => "gateway exited: Error: cannot open /srv/lms/prefs/lyrion-anywhere/anywhere.db\nsecond line",
+		settings_notice => 'trusted_proxies was changed outside the settings page and put back',
+	};
+	local *Plugins::LyrionAnywhere::Gateway::state = sub { +{ %$full } };
+	is($Slim::Control::Request::DISPATCH{'anywhere status'}[2], 1, 'status parses key:value arguments (for csrf)');
+	for my $case (['no token', {}], ['a wrong token', { csrf => $wrong }], ['a token as a list', { csrf => [$token] }]) {
+		my ($name, $params) = @$case;
+		my $req = Slim::Control::Request->new(['anywhere', 'status'], $params);
+		Plugins::LyrionAnywhere::Commands::status($req);
+		my $r = $req->{results};
+		is($req->{status}, 'done', "status, $name: answered");
+		is_deeply([sort keys %$r], [sort qw(enabled running binary_ok uptime error)], "status, $name: only the public fields");
+		is($r->{running}, 0, "status, $name: running");
+		is($r->{binary_ok}, 1, "status, $name: binary_ok");
+		is($r->{error}, 'gateway exited', "status, $name: the error without its details");
+		my $all = join "\n", map { $_ // '' } values %$r;
+		unlike($all, qr{/srv|4242|10\.0\.0\.10|anywhere\.db|second line}, "status, $name: no paths, pid, address or stderr");
+	}
+	my $req = Slim::Control::Request->new(['anywhere', 'status'], { csrf => $token });
+	Plugins::LyrionAnywhere::Commands::status($req);
+	is_deeply($req->{results}, $full, 'status with the token: everything the settings page shows');
+
+	# The gist of each kind of error, never a path or a value someone set.
+	my %gist = (
+		'' => '',
+		'gateway binary not found: /srv/x/anywhere-gateway' => 'gateway binary not found',
+		'gateway binary is not executable: /srv/x' => 'gateway binary is not executable',
+		'could not start gateway: Permission denied at /srv/x line 3.' => 'could not start gateway',
+		'listen address must be IP:port' => 'listen address must be IP:port',
+		'bad trusted proxy address: 10.0.0.10' => 'bad trusted proxy address',
+		"gateway exited" => 'gateway exited',
+		"two\nlines" => 'two',
+		("x" x 500) => ("x" x 120),
+	);
+	for my $in (sort keys %gist) {
+		is(Plugins::LyrionAnywhere::Commands::public_error($in), $gist{$in}, "public_error: " . substr($in, 0, 40));
+	}
+	is(Plugins::LyrionAnywhere::Commands::public_error(undef), '', 'public_error: undef');
+	is(Plugins::LyrionAnywhere::Commands::public_error("ok\x00\x1b[31m: x"), 'ok[31m', 'public_error: control characters removed');
+}
+
 # Restart never starts a gateway that is turned off (it is stopped and stays stopped).
 {
 	my $prefs = preferences('plugin.lyrionanywhere');
