@@ -1,7 +1,7 @@
 // The quality badge (docs/plans: Wave 1 §5): format and resolution from LMS's status tags,
 // and the Hi-Res rule (more than 16-bit or more than 48 kHz, lossless only). The same
 // vectors are in mobile/src/model.rs (the Android app).
-import { badgeText, kbpsOf, quality } from '$lib/lms/quality';
+import { badgeText, kbpsOf, quality, streamed } from '$lib/lms/quality';
 
 test('lossless: codec bits/kHz, and Hi-Res above CD resolution', () => {
 	const cases: [Record<string, unknown>, string, boolean][] = [
@@ -61,4 +61,26 @@ test('every label is short plain text', () => {
 			}
 		}
 	}
+});
+
+test('the badge says what is streamed to this device: Opus when the gateway re-encoded the track', () => {
+	const flac = quality({ type: 'flc', samplesize: '24', samplerate: '96000' });
+	const opus = { codec: 'Opus', lossless: false, bits: null };
+	expect(badgeText(streamed(flac, opus, 'high')!)).toBe('Opus 160');
+	expect(badgeText(streamed(flac, opus, 'low')!)).toBe('Opus 96');
+	expect(streamed(flac, opus, 'high')).toMatchObject({ codec: 'Opus', lossless: false, hiRes: false, kbps: 160, rate: 48000 });
+	// The level not known: still Opus, never Hi-Res.
+	expect(badgeText(streamed(flac, opus, null)!)).toBe('Opus');
+	// Not re-encoded: the track's own badge, whatever level was asked for.
+	expect(streamed(flac, { codec: 'FLAC', lossless: true, bits: 24 }, 'high')).toBe(flac);
+	expect(streamed(flac, null, 'high')).toBe(flac);
+	const mp3 = quality({ type: 'mp3', bitrate: '320kbps' });
+	expect(streamed(mp3, { codec: 'MP3', lossless: false, bits: null }, 'high')).toBe(mp3);
+	// An Opus track in the library streamed as Opus is not the gateway's doing.
+	const ops = quality({ type: 'ops', bitrate: 128 });
+	expect(streamed(ops, opus, 'high')).toBe(ops);
+	// No track details from LMS: Opus at a lower level is the gateway's; at Original it is the track.
+	expect(badgeText(streamed(null, opus, 'high')!)).toBe('Opus 160');
+	expect(streamed(null, opus, 'original')).toBeNull();
+	expect(streamed(null, null, 'high')).toBeNull();
 });

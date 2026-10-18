@@ -11,7 +11,9 @@
 	import { isRemote } from '$lib/lms/format';
 	import { gaplessLinks } from '$lib/queue/tracker';
 	import type { PlayerStatus } from '$lib/lms/types';
-	import { badgeText, quality } from '$lib/lms/quality';
+	import { badgeText, quality, streamed } from '$lib/lms/quality';
+	import { device } from '$lib/player/device.svelte';
+	import { streamOf } from '$lib/player/stream-quality';
 	import RatingControl from './RatingControl.svelte';
 	import SignalPathView from './SignalPathView.svelte';
 	import TrackCredits from './TrackCredits.svelte';
@@ -20,7 +22,10 @@
 	let { compact = false }: { compact?: boolean } = $props();
 
 	const track = $derived(app.now?.playlist_loop?.[0]);
-	const badge = $derived(quality(track));
+	// What is streamed to this device when it is the player ("Opus 160" when the gateway
+	// re-encoded it), else the track as it is in the library.
+	const here = $derived(!!app.playerId && app.playerId === device.mac && device.state === 'connected');
+	const badge = $derived(streamed(quality(track), here ? streamOf(device.detail.source) : null, here ? device.quality : null));
 	/** The signal path stays folded away until asked for. */
 	let pathOpen = $state(false);
 	const pathId = `np-info-path-${Math.random().toString(36).slice(2, 8)}`;

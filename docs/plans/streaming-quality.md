@@ -51,7 +51,8 @@ Agreed with the owner on 2026-10-12 (task #33). This covers the gateway, the And
 - **Web:**
   - Settings › *Streaming quality in this browser*: *Automatic*, Original, High or Data saver;
   - *Automatic* uses the Network Information API where the browser has it: mobile connection → High, *Save data* → Data saver, otherwise Original;
-  - browsers without that API (Safari, so iPhone and iPad) use Original unless a level is chosen;
+  - browsers without that API (Firefox, and Safari, so iPhone and iPad) use Original unless a level is chosen, and the setting's note says so there ("Always Original in this browser, which can't tell mobile data from Wi-Fi…");
+  - the quality badge and the signal path name the stream actually heard, from the engine's decoded format rather than the library track's: the badge says "Opus 160", the signal path has a *Stream to this device* row ("Opus 160 kb/s, re-encoded by the gateway for the High setting", or "FLAC 24-bit, as stored (not re-encoded)") and a verdict *Re-encoded to Opus 160 kb/s*, and its rate row adds "(Opus is always 48 kHz)". Added 2026-10-18 after forum users on iPhones read the old panel's "96 kHz FLAC … 48 kHz … FLAC in MP4" as a conversion error;
   - Opus decoding is added to the browser player's WebAssembly core.
 
 ## Tests

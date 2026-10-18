@@ -4,7 +4,8 @@
 //! network (WebSocket + fetch) and feeds bytes in; an AudioWorklet plays the PCM pulled
 //! out and reports back how many frames it has played.
 
-use anywhere_core::player::{Action, OutputCorrection, Player, PlayerConfig};
+use anywhere_core::decode::SourceFormat;
+use anywhere_core::player::{Action, OutputCorrection, OutputState, Player, PlayerConfig};
 use anywhere_core::proto::parse_mac;
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
@@ -19,6 +20,9 @@ pub struct WasmPlayer {
     log: PullLog,
     /// The track of the last frames pulled.
     last_track: Option<u32>,
+    /// The format last seen on the audible (or next) track, kept for the moment between
+    /// one track's segments being retired and the next being decoded.
+    last_source: Option<SourceFormat>,
 }
 
 fn set(obj: &Object, key: &str, value: &JsValue) {
@@ -49,6 +53,7 @@ impl WasmPlayer {
             }),
             log: PullLog::default(),
             last_track: None,
+            last_source: None,
         })
     }
 
@@ -280,8 +285,18 @@ impl WasmPlayer {
         self.inner.start_due().map(|t| t as f64)
     }
 
-    pub fn status_json(&self) -> String {
+    /// The status, with `source`: what the stream being heard actually is (`codec`,
+    /// `lossless`, `bits`, `channels`), or `null` when nothing is known. The page uses it
+    /// to say what is really streaming, which differs from the library track's format when
+    /// the gateway re-encodes to Opus for a lower-data level.
+    pub fn status_json(&mut self) -> String {
         let s = self.inner.status();
+        let source = if matches!(s.output, OutputState::Stopped) {
+            self.last_source = None;
+            None
+        } else {
+            self.current_source()
+        };
         serde_json::json!({
             "output": format!("{:?}", s.output),
             "elapsed_ms": s.elapsed_ms,
@@ -291,6 +306,12 @@ impl WasmPlayer {
             "volume": [s.volume.0, s.volume.1],
             "name": s.name,
             "last_error": s.last_error,
+            "source": source.map(|f| serde_json::json!({
+                "codec": f.codec,
+                "lossless": f.lossless,
+                "bits": f.bits,
+                "channels": f.channels,
+            })),
         })
         .to_string()
     }
@@ -306,6 +327,21 @@ impl WasmPlayer {
             t.keep_track,
         )?;
         Some((t.keep_track, t.keep_frames, drop))
+    }
+
+    /// The format of the track being heard, else of the one about to be, else the last
+    /// known (a new track's format is known only once its decoder has read the headers).
+    fn current_source(&mut self) -> Option<SourceFormat> {
+        let now = self
+            .inner
+            .playing_track()
+            .and_then(|seq| self.inner.track_audio(seq))
+            .or_else(|| self.inner.next_audio())
+            .and_then(|a| a.source);
+        if now.is_some() {
+            self.last_source = now;
+        }
+        self.last_source
     }
 }
 
@@ -630,5 +666,32 @@ mod tests {
             "only track 1 is queued"
         );
         assert_eq!(p.pull_one(&mut buf), 0, "nothing of track 2 is left");
+    }
+
+    /// The status says what the stream really is, for the page's signal path and quality
+    /// badge: nothing before a track, the decoded format while one plays, nothing once
+    /// stopped. (A Hi-Res FLAC in the library may arrive as Opus from the gateway; the page
+    /// must be able to say so.)
+    #[test]
+    fn status_reports_the_streams_real_format() {
+        let mut p = WasmPlayer::new("02:00:00:00:00:01", "Web", "pcm").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&p.status_json()).unwrap();
+        assert!(v["source"].is_null(), "nothing streamed yet");
+        let mut p = two_tracks();
+        let v: serde_json::Value = serde_json::from_str(&p.status_json()).unwrap();
+        assert_eq!(v["source"]["codec"], "PCM");
+        assert_eq!(v["source"]["lossless"], true);
+        assert_eq!(v["source"]["bits"], 16);
+        assert_eq!(v["source"]["channels"], 2);
+        // Still known while track 1 is heard and its segment is being retired.
+        let mut buf = vec![0f32; 50_000 * 2];
+        p.pull(&mut buf);
+        p.played(44_100.0);
+        p.tick(700.0);
+        let v: serde_json::Value = serde_json::from_str(&p.status_json()).unwrap();
+        assert_eq!(v["source"]["codec"], "PCM");
+        p.on_control(&strm(b'q'), 800.0).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&p.status_json()).unwrap();
+        assert!(v["source"].is_null(), "stopped: nothing is streaming");
     }
 }

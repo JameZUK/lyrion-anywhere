@@ -181,7 +181,8 @@ describe('layouts', () => {
 		expect(disclose.getAttribute('aria-expanded')).toBe('false');
 		await fireEvent.click(disclose);
 		expect(disclose.getAttribute('aria-expanded')).toBe('true');
-		expect(pane.querySelector('[data-signal-path]')?.textContent).toContain('Source');
+		expect(pane.querySelector('[data-signal-path]')?.textContent).toContain('Track in the library');
+		expect(pane.querySelector('[data-signal-path]')?.textContent).toContain('Stream to this device');
 		await fireEvent.click(disclose);
 		expect(pane.querySelector('[data-signal-path]')).toBeNull();
 		expect(pane.querySelector('[data-up-next]')?.textContent).toContain('Next song');

@@ -101,7 +101,7 @@ describe('Now playing', () => {
 		expect(badge.getAttribute('aria-label')).toMatch(/signal path/i);
 		await fireEvent.click(badge);
 		const path = await waitFor(() => r.container.querySelector('[data-signal-path]')!);
-		expect(path.textContent).toContain('Source');
+		expect(path.textContent).toContain('Track in the library');
 		expect(path.textContent).toContain('FLAC 24/96 · Hi-Res · lossless');
 		// Another player is controlled: only what is known is claimed.
 		expect(path.textContent).toContain('On Test player');

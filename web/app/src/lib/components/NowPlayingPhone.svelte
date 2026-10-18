@@ -10,9 +10,10 @@
 	import { app } from '$lib/state/app.svelte';
 	import * as cmd from '$lib/lms/commands';
 	import { duration, isRemote, textOf } from '$lib/lms/format';
-	import { badgeText, quality } from '$lib/lms/quality';
+	import { badgeText, quality, streamed } from '$lib/lms/quality';
 	import { formatLeft, sleepLeft } from '$lib/lms/sleep';
 	import { device } from '$lib/player/device.svelte';
+	import { streamOf } from '$lib/player/stream-quality';
 	import { controls } from '$lib/player/controls.svelte';
 	import { now } from '$lib/player/now.svelte';
 	import { offlinePlayer } from '$lib/offline/index.svelte';
@@ -62,7 +63,10 @@
 	const repeat = $derived(Number(app.now?.['playlist repeat'] ?? 0));
 	/** Which controls work now (all of them while the server is in reach). */
 	const g = $derived(controls.gates);
-	const badge = $derived(downloads ? null : quality(track));
+	// The badge says what is streamed to this device when it is the player ("Opus 160" for a
+	// re-encoded stream), else the track as it is in the library.
+	const here = $derived(!!app.playerId && app.playerId === device.mac && device.state === 'connected');
+	const badge = $derived(downloads ? null : streamed(quality(track), here ? streamOf(device.detail.source) : null, here ? device.quality : null));
 	const sleepIn = $derived(downloads ? null : sleepLeft(app.now));
 	const coverOf = (size: number) => cmd.coverPath(track?.coverid ?? track?.artwork_track_id, size);
 	/** Art and title cross-fade between tracks (not under "reduce motion"). */

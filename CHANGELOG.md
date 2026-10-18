@@ -2,6 +2,17 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: The web app says what is actually streaming
+
+Forum users on iPhones set *High*, saw the signal path describe their 96 kHz FLAC as 48 kHz "in MP4", and asked whether it was a display error. Half of it was. The gateway really had re-encoded the FLAC to Opus, which is always 48 kHz, and Safari plays through a media element fed losslessly as FLAC in MP4; but the panel never said "Opus", and its verdict came from the library track, so it could read "Lossless to the browser" while a lossy stream played. Nobody could tell from the app whether Opus was in use at all. This applies to every browser, not just Safari: the information comes from the player engine, not the browser.
+
+- **Engine (`wasm`):** the status JSON now carries `source`: the decoded stream's codec, whether it is lossless, its bit depth and channels, from the core's `TrackAudio` (which the Android app already used). Cleared when stopped.
+- **Signal path (web):** a *Stream to this device* row ("Opus 160 kb/s, re-encoded by the gateway for the High setting", "FLAC 24-bit, as stored (not re-encoded)", or "Not known yet" before the first audio is decoded); the first row renamed *Track in the library*; the media-element output described as "the decoded audio, re-wrapped losslessly as FLAC in MP4"; the rate row adds "(Opus is always 48 kHz)"; a verdict *Re-encoded to Opus 160 kb/s*, never "lossless", with a note pointing at *Settings › Playback*. With a lower level asked for and nothing decoded yet, the verdict is *Not known yet* rather than a guess.
+- **Quality badge (web):** "Opus 160" instead of "FLAC 24/96 · Hi-Res" while this device plays a re-encoded stream (Now playing on phones, and the Info layout). Other players' badges are unchanged: only this device knows its own stream.
+- **Settings › Playback (web):** *Automatic* explains itself per browser. Chrome on Android reports its connection; Firefox and Safari (every iPhone and iPad) have no Network Information API, so there the option reads "Always Original in this browser, which can't tell mobile data from Wi-Fi. Choose High or Data saver yourself when you're on mobile data", and the "Now: Original" line says why. The High and Data saver notes now give the data rate per hour, and say the gateway does the re-encoding.
+- **Tests:** the engine's status before, during and after a track (`wasm`); the signal path's rows, headline and verdict for Opus, FLAC, lossy-as-stored and not-yet-decoded streams, with and without track details from LMS, on both output paths; the badge; the per-browser note; hostile `source` values (markup, long names, bad numbers) rejected before display; every row stays short plain text.
+- **Docs:** FEATURES, PLATFORMS (iPhone and iPad), the streaming-quality plan, SPEC D25.
+
 ## 2026-10-15: Issue templates, and private vulnerability reporting switched on
 
 For the forum announcement, which sends bug reports to GitHub Issues. `.github/ISSUE_TEMPLATE/` has a bug-report form (where it happens, versions, reverse proxy, what happened, steps, logs, and two required ticks: personal details replaced with placeholders, and not a security vulnerability), a feature-request form, and `config.yml` with contact links to private vulnerability reporting and the troubleshooting section. The repository's private vulnerability reporting was off, although `docs/SECURITY.md` already pointed at it; it is now on, so the *Report a vulnerability* button exists.

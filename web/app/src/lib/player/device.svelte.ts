@@ -66,6 +66,8 @@ export interface DeviceStatus {
 	received?: boolean;
 	/** The core's sequence number of the track last handed to the output. */
 	track?: number | null;
+	/** What the engine is decoding (`codec`, `lossless`, `bits`); checked by `streamOf` before use. */
+	source?: unknown;
 }
 
 /** A player file, with the build version so a stale cached copy is never used. */

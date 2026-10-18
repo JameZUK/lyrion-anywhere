@@ -4,7 +4,8 @@
 	import { app } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
 	import { quality } from '$lib/lms/quality';
-	import { VERDICT_LABELS, signalPath } from '$lib/player/signal-path';
+	import { signalPath } from '$lib/player/signal-path';
+	import { streamOf } from '$lib/player/stream-quality';
 
 	const here = $derived(!!app.playerId && app.playerId === device.mac && device.state === 'connected');
 	const view = $derived(
@@ -17,12 +18,14 @@
 			gain: device.gain,
 			engineRate: here && Number(device.detail.sample_rate) > 0 ? Number(device.detail.sample_rate) : null,
 			deviceRate: here ? device.deviceRate() : null,
+			stream: here ? streamOf(device.detail.source) : null,
+			level: here ? device.quality : null,
 		}),
 	);
 </script>
 
 <div class="path" data-signal-path>
-	<p class="verdict" class:good={view.verdict === 'lossless'}>{VERDICT_LABELS[view.verdict]}</p>
+	<p class="verdict" class:good={view.verdict === 'lossless'}>{view.headline}</p>
 	<dl>
 		{#each view.rows as r (r.label)}
 			<div class="row">

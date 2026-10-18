@@ -5,7 +5,7 @@
 	import { app, session } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
 	import * as auth from '$lib/api/auth';
-	import { PREFERENCES, type QualityPreference } from '$lib/player/stream-quality';
+	import { PREFERENCES, autoNote, connection, type QualityPreference } from '$lib/player/stream-quality';
 	import { loadDefault, saveDefault, type DefaultSetting } from '$lib/player/default-player';
 	import { isThisDevice } from '$lib/player/outputs';
 	import { textOf } from '$lib/lms/format';
@@ -13,12 +13,20 @@
 	import PickerRow from '$lib/components/PickerRow.svelte';
 
 	const QUALITY_LABELS: Record<string, string> = { auto: 'Automatic', original: 'Original', high: 'High', low: 'Data saver' };
+	// Whether this browser can report its network (Chrome on Android can; Firefox and Safari
+	// can't, so Automatic can only mean Original there and the note says so).
+	const net = connection();
 	const QUALITY_NOTES: Record<string, string> = {
-		auto: 'High on a mobile connection, Data saver when asked to save data',
+		auto: autoNote(net),
 		original: 'Each track as it is in your library',
-		high: 'Lossless tracks re-encoded to Opus 160 kbps',
-		low: 'Lossless tracks re-encoded to Opus 96 kbps',
+		high: 'Lossless tracks re-encoded by the gateway to Opus 160 kb/s (about 70 MB an hour)',
+		low: 'Lossless tracks re-encoded by the gateway to Opus 96 kb/s (about 45 MB an hour)',
 	};
+	const qualityNow = $derived(
+		device.qualityPreference === 'auto'
+			? `Now: ${QUALITY_LABELS[device.quality]}${net ? '' : " (this browser can't report its network)"}. Applies from the next track.`
+			: 'Applies from the next track. The quality badge on Now playing shows what is streamed.',
+	);
 
 	// Which player the app uses when it opens on this device (SPEC D20), per user.
 	const user = $derived(session.current?.user.username ?? '');
@@ -73,7 +81,7 @@
 		value={device.qualityPreference}
 		options={PREFERENCES.map((p) => ({ value: p, label: QUALITY_LABELS[p] ?? p, note: QUALITY_NOTES[p] }))}
 		onchange={(v) => device.setQualityPreference(v as QualityPreference)}
-		note={device.qualityPreference === 'auto' ? `Now: ${QUALITY_LABELS[device.quality]}. Applies from the next track.` : 'Applies from the next track.'}
+		note={qualityNow}
 		id="stream-quality"
 	/>
 	<PickerRow

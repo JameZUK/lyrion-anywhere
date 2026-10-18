@@ -3,6 +3,7 @@
 //
 // Hi-Res means more than 16-bit or more than 48 kHz, on lossless sources only. The Android
 // app has the same rules in Rust (mobile/src/model.rs, `quality_of`).
+import { LEVEL_KBPS, reencoded, type StreamQuality, type StreamSource } from '$lib/player/stream-quality';
 
 export interface Quality {
 	/** The codec's name ("FLAC", "MP3", …). */
@@ -85,3 +86,15 @@ export function quality(t: { type?: unknown; samplerate?: unknown; samplesize?: 
 
 /** The badge's text: "FLAC 24/96 · Hi-Res". */
 export const badgeText = (q: Quality): string => (q.hiRes ? `${q.label} · Hi-Res` : q.label);
+
+/**
+ * The badge when this device is the player: what is actually streamed. If the gateway
+ * re-encoded the track to Opus for a lower-data level, the badge says "Opus 160" rather than
+ * the library track's "FLAC 24/96 · Hi-Res", which is what led people to think the panel
+ * was wrong. Otherwise the track's own badge (the stream is the track as stored).
+ */
+export function streamed(q: Quality | null, stream: StreamSource | null, level: StreamQuality | null): Quality | null {
+	if (!reencoded(q?.codec ?? null, stream, level)) return q;
+	const kbps = level ? LEVEL_KBPS[level] : null;
+	return { codec: 'Opus', label: kbps ? `Opus ${kbps}` : 'Opus', lossless: false, hiRes: false, rate: 48_000, bits: null, kbps };
+}
