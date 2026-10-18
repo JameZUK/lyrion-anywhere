@@ -26,6 +26,18 @@ use anywhere_core::proto::{
 
 use crate::accounts::Principal;
 use crate::random_id;
+
+/// Whether LMS has been told to proxy internet streams for the player (see
+/// [`Session::ensure_proxied_streaming`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PrefState {
+    NotYet,
+    Pending,
+    Done,
+}
+
+/// Refused direct streams replayed through LMS, at most, in a row.
+const MAX_REPLAYS: u8 = 3;
 use crate::relay::Relay;
 use crate::{AppState, Gateway};
 
@@ -132,6 +144,15 @@ struct State {
     playing: bool,
     /// LMS name queries (`setd` id 0, no data) not yet answered by the client.
     name_queries: u8,
+    /// Whether LMS has been told to proxy internet streams for this player (its
+    /// `mp3StreamingMethod` player pref), see [`Session::ensure_proxied_streaming`].
+    proxied_pref: PrefState,
+    /// The current `strm` pointed the player at another server and was refused; the reader
+    /// takes this to have LMS replay the entry through itself.
+    refused_direct: bool,
+    /// Replays asked for after refused direct streams, capped so a server that will not
+    /// proxy cannot be asked for ever.
+    replays: u8,
     /// When the attached socket last sent anything.
     last_heard: Instant,
     /// The gateway is reporting to LMS for an attached but silent client.
@@ -216,6 +237,9 @@ impl Session {
                 last_seq: 0,
                 sent_upto: 0,
                 seen_helo: false,
+                proxied_pref: PrefState::NotYet,
+                refused_direct: false,
+                replays: 0,
                 ended: false,
                 stream_seq: 0,
                 stream_path: None,
@@ -896,6 +920,87 @@ impl Session {
         }
     }
 
+    /// Have LMS proxy internet streams for this player, once per session, as soon as LMS
+    /// knows the player (its first frame after HELO). LMS otherwise tells a capable player
+    /// to fetch a station from the broadcaster itself ("direct streaming"), and these
+    /// players only ever talk to the gateway, so such a `strm` is refused and the station
+    /// is silent. The player pref (`mp3StreamingMethod`, 1 = proxied, LMS's own setting
+    /// under Player › Audio) covers every HTTP stream, not only MP3, and is kept by LMS.
+    fn ensure_proxied_streaming(self: &Arc<Self>, gw: &crate::AppState) {
+        {
+            let mut st = self.state.lock().unwrap();
+            if !st.seen_helo || st.proxied_pref != PrefState::NotYet {
+                return;
+            }
+            st.proxied_pref = PrefState::Pending;
+        }
+        let (gw, session) = (gw.clone(), Arc::clone(self));
+        tokio::spawn(async move {
+            session.set_proxied_pref(&gw).await;
+        });
+    }
+
+    /// The `playerpref` command itself; the outcome is remembered so a failure is retried
+    /// at the next chance and a success is not repeated.
+    async fn set_proxied_pref(&self, gw: &Gateway) -> bool {
+        let mac = self.device.mac_string();
+        let cmd: Vec<String> = ["playerpref", "mp3StreamingMethod", "1"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let ok = match gw.lms_command(&mac, &cmd).await {
+            Ok(_) => {
+                info!(mac = %mac, "LMS proxies internet streams for this player");
+                true
+            }
+            Err(e) => {
+                warn!(mac = %mac, error = %e, "could not have LMS proxy internet streams for this player");
+                false
+            }
+        };
+        self.state.lock().unwrap().proxied_pref = if ok {
+            PrefState::Done
+        } else {
+            PrefState::NotYet
+        };
+        ok
+    }
+
+    /// Whether the last `strm` pointed elsewhere and was refused; cleared on reading.
+    fn take_refused_direct(&self) -> bool {
+        std::mem::take(&mut self.state.lock().unwrap().refused_direct)
+    }
+
+    /// After a refused direct stream: make sure LMS proxies for this player, then have it
+    /// replay the current entry, which it now serves itself. At most [`MAX_REPLAYS`] times
+    /// in a row, in case the server will not proxy; a stream that is accepted resets that.
+    fn replay_proxied(self: &Arc<Self>, gw: &crate::AppState) {
+        {
+            let mut st = self.state.lock().unwrap();
+            if st.replays >= MAX_REPLAYS {
+                warn!(mac = %self.device.mac_string(), "LMS keeps direct-streaming; not asking again");
+                return;
+            }
+            st.replays += 1;
+            st.proxied_pref = PrefState::Pending;
+        }
+        let (gw, session) = (gw.clone(), Arc::clone(self));
+        tokio::spawn(async move {
+            if !session.set_proxied_pref(&gw).await {
+                return;
+            }
+            let mac = session.device.mac_string();
+            let cmd: Vec<String> = ["playlist", "jump", "+0"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            match gw.lms_command(&mac, &cmd).await {
+                Ok(_) => info!(mac = %mac, "asked LMS to replay the stream through itself"),
+                Err(e) => warn!(mac = %mac, error = %e, "could not ask LMS to replay the stream"),
+            }
+        });
+    }
+
     /// Record the stream a `strm s` asks the player to fetch, if policy allows it. Returns
     /// the payload to pass on instead, when the stream is to be re-encoded to Opus.
     fn note_strm(&self, gw: &Gateway, payload: &[u8]) -> Option<Vec<u8>> {
@@ -906,7 +1011,8 @@ impl Session {
             return None;
         }
         let ip = Ipv4Addr::from(s.server_ip);
-        let path = if ip.is_unspecified() || gw.cfg.lms_ips.contains(&ip) {
+        let direct_elsewhere = !(ip.is_unspecified() || gw.cfg.lms_ips.contains(&ip));
+        let path = if !direct_elsewhere {
             match validate_stream_request(&s.request, &self.device.mac) {
                 Ok(p) => Some(p),
                 Err(e) => {
@@ -915,6 +1021,9 @@ impl Session {
                 }
             }
         } else {
+            // LMS asked the player to fetch an internet station itself (direct streaming).
+            // These players only ever talk to the gateway, so the reader has LMS proxy it
+            // instead (see `replay_proxied`).
             warn!(mac = %self.device.mac_string(), %ip, "refused direct stream to non-LMS address");
             None
         };
@@ -922,6 +1031,10 @@ impl Session {
         st.stream_seq += 1;
         st.stream_path = path;
         st.stream_format = s.format;
+        st.refused_direct = direct_elsewhere;
+        if !direct_elsewhere {
+            st.replays = 0;
+        }
         // The previous stream's upstream is abandoned: cancelled, so its LMS connection
         // and any encoder (and its slot) go now, not when the stream next times out.
         if let Some(old) = st.relay.take() {
@@ -1050,6 +1163,8 @@ async fn read_lms(gw: AppState, session: Arc<Session>, mut rd: tokio::net::tcp::
                     break;
                 }
             };
+            // LMS knows the player once it sends it anything: have it proxy internet streams.
+            session.ensure_proxied_streaming(&gw);
             match &op {
                 // Never let a remote device be redirected to another server.
                 b"serv" => {
@@ -1067,6 +1182,9 @@ async fn read_lms(gw: AppState, session: Arc<Session>, mut rd: tokio::net::tcp::
                     }
                     if let Some(p) = session.note_strm(&gw, &payload) {
                         payload = p;
+                    }
+                    if session.take_refused_direct() {
+                        session.replay_proxied(&gw);
                     }
                 }
                 b"setd" => session.note_setd(&payload),

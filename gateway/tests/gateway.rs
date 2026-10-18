@@ -30,8 +30,16 @@ async fn end_to_end_tunnel_and_stream() {
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.headers()["content-type"], "audio/flac");
     assert_eq!(resp.bytes().await.unwrap().as_ref(), h.lms.audio.as_slice());
+    // The stream, and nothing else of the player's, reached LMS (the gateway's own JSON-RPC
+    // commands, such as having LMS proxy internet streams, are not the player's).
+    let paths: Vec<String> = h
+        .lms
+        .http_paths()
+        .into_iter()
+        .filter(|p| !p.starts_with("/jsonrpc.js"))
+        .collect();
     assert_eq!(
-        h.lms.http_paths(),
+        paths,
         [format!("/stream.mp3?player={}", format_mac(&h.mac_a))]
     );
 
@@ -282,11 +290,15 @@ async fn stream_requests_are_locked_down() {
         }
         let resp = h.get_stream(&sid, 1, Some(&h.tok_a)).await;
         assert_eq!(resp.status(), 404, "{name}");
-        assert!(
-            h.lms.http_paths().is_empty(),
-            "{name}: LMS reached: {:?}",
-            h.lms.http_paths()
-        );
+        // Nothing of the refused stream reaches LMS. (The gateway's own JSON-RPC commands
+        // may: after a direct stream it asks LMS to proxy and replay, see the tests below.)
+        let reached: Vec<String> = h
+            .lms
+            .http_paths()
+            .into_iter()
+            .filter(|p| !p.starts_with("/jsonrpc.js"))
+            .collect();
+        assert!(reached.is_empty(), "{name}: LMS reached: {reached:?}");
     }
 }
 
@@ -1553,4 +1565,129 @@ async fn a_long_detached_spell_of_status_polls_never_fills_the_log() {
         Message::Binary(b) => assert_eq!(&b[2..6], b"vers", "no poll was queued"),
         m => panic!("{m:?}"),
     }
+}
+
+/// LMS's recorded JSON-RPC calls for `player` that equal `cmd`.
+fn calls_for(h: &Harness, player: &str, cmd: &serde_json::Value) -> usize {
+    h.lms
+        .rpc_calls()
+        .iter()
+        .filter(|c| {
+            c[0].as_str()
+                .is_some_and(|p| p.eq_ignore_ascii_case(player))
+                && &c[1] == cmd
+        })
+        .count()
+}
+
+/// Poll until at least `want` such calls have been made (five seconds at most).
+async fn wait_calls(h: &Harness, player: &str, cmd: &serde_json::Value, want: usize) -> usize {
+    let mut n = 0;
+    for _ in 0..100 {
+        n = calls_for(h, player, cmd);
+        if n >= want {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    n
+}
+
+/// Internet radio (2026-10-18): LMS tells a capable player to fetch a station from the
+/// broadcaster itself, which these players never do (they only ever talk to the gateway),
+/// so the gateway has LMS proxy for each player, as soon as LMS knows it, once a session.
+#[tokio::test]
+async fn lms_is_told_to_proxy_once_the_player_is_known() {
+    let mut h = harness().await;
+    let mut ws = h.dial().await;
+    connect(&mut ws, &h.tok_a).await;
+    let mut lms = h.lms.accept().await;
+    let me = format_mac(&h.mac_a);
+    let proxied = serde_json::json!(["playerpref", "mp3StreamingMethod", "1"]);
+    // Nothing before LMS has spoken to the player: it doesn't know it yet.
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
+    wait_for(|| h.lms.frames() == ["HELO"]).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(calls_for(&h, &me, &proxied), 0, "not before LMS has spoken");
+    lms.write_all(&encode_server_frame(*b"vers", b"9.1.1"))
+        .await
+        .unwrap();
+    let _ = next(&mut ws).await;
+    assert_eq!(wait_calls(&h, &me, &proxied, 1).await, 1);
+    // Once per session, not once per frame.
+    lms.write_all(&encode_server_frame(*b"vers", b"9.1.1"))
+        .await
+        .unwrap();
+    let _ = next(&mut ws).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(calls_for(&h, &me, &proxied), 1);
+}
+
+/// A direct stream that still arrives (the pref not yet applied, or ignored): the player
+/// is told nothing of where it pointed, and LMS is asked to proxy and then to replay the
+/// entry, which it then serves itself. At most three times in a row; an accepted stream
+/// resets that.
+#[tokio::test]
+async fn a_refused_direct_stream_is_replayed_through_lms_up_to_three_times() {
+    let mut h = harness().await;
+    let mut ws = h.dial().await;
+    connect(&mut ws, &h.tok_a).await;
+    let mut lms = h.lms.accept().await;
+    let me = format_mac(&h.mac_a);
+    let proxied = serde_json::json!(["playerpref", "mp3StreamingMethod", "1"]);
+    let replay = serde_json::json!(["playlist", "jump", "+0"]);
+    let elsewhere = Ipv4Addr::new(203, 0, 113, 7);
+    let direct = || {
+        strm_format(
+            b's',
+            b'm',
+            elsewhere,
+            "GET /radio.mp3 HTTP/1.0\r\nHost: radio.example.com\r\n\r\n",
+        )
+    };
+    for attempt in 1..=4usize {
+        lms.write_all(&direct()).await.unwrap();
+        match next(&mut ws).await {
+            Message::Binary(b) => {
+                let s = anywhere_core::proto::Strm::parse(&b[6..]).unwrap();
+                assert_eq!(s.server_ip, 0, "attempt {attempt}");
+                assert!(s.request.is_empty(), "attempt {attempt}");
+            }
+            other => panic!("attempt {attempt}: {other:?}"),
+        }
+        let want = attempt.min(3);
+        assert_eq!(
+            wait_calls(&h, &me, &replay, want).await,
+            want,
+            "attempt {attempt}"
+        );
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(calls_for(&h, &me, &replay), 3, "capped");
+    assert!(calls_for(&h, &me, &proxied) >= 1);
+    // The pref is set before each replay is asked for.
+    let order: Vec<String> = h
+        .lms
+        .rpc_calls()
+        .iter()
+        .filter(|c| c[1] == proxied || c[1] == replay)
+        .map(|c| c[1][0].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(order.first().map(String::as_str), Some("playerpref"));
+    assert!(
+        order
+            .windows(2)
+            .all(|w| !(w[0] == "playlist" && w[1] == "playlist")),
+        "{order:?}"
+    );
+    // An accepted stream resets the count: a later direct one is replayed again.
+    lms.write_all(&strm(b's', Ipv4Addr::UNSPECIFIED, &stream_req(h.mac_a)))
+        .await
+        .unwrap();
+    let _ = next(&mut ws).await;
+    lms.write_all(&direct()).await.unwrap();
+    let _ = next(&mut ws).await;
+    assert_eq!(wait_calls(&h, &me, &replay, 4).await, 4);
 }

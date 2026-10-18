@@ -309,6 +309,7 @@ From a phone **off your Wi-Fi** (on mobile data):
 
 ## 10. Updating and uninstalling
 
+- **Internet radio is silent, and `server.log` says "Decoder does not support file format":** LMS told the player to fetch the station straight from the broadcaster (*direct streaming*), which these players never do: they only ever talk to the gateway. From 0.5.5 the gateway sets LMS's *MP3 streaming method* to *proxied* for each Lyrion Anywhere player by itself (and replays the station if a direct stream still arrives). On an older plugin, set it by hand: *Settings › Player › (the player) › Audio › MP3 streaming method: Proxied*. The setting covers every internet stream, not only MP3.
 - **Updating:**
   - *Plugin from a release:* LMS offers the update under *Settings › Plugins*.
   - *Manual install:* replace the `LyrionAnywhere` folder with the new zip's contents, then restart LMS.

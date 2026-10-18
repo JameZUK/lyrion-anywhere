@@ -2,6 +2,14 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: Internet radio plays (LMS proxies streams for these players)
+
+The owner found that Shoutcast and other internet stations would not play. The gateway log showed why: LMS told the player to fetch the station straight from the broadcaster's address (*direct streaming*, which LMS does for capable players), the gateway refused that `strm` as it must (these players only ever talk to the gateway), and the player reported the stream unsupported. The fix is in the gateway, so it covers plugin and Docker installs alike:
+
+- **LMS is told to proxy.** The first time LMS sends a player anything after its HELO, the gateway sets that player's `mp3StreamingMethod` pref to 1 (*MP3 streaming method: proxied* under Player › Audio; despite the name it covers every HTTP stream). LMS keeps the pref, so it is a one-off per player.
+- **A direct stream that still arrives is replayed.** If LMS nevertheless points the player elsewhere, the gateway sets the pref and asks LMS to replay the current entry (`playlist jump +0`), which it now serves itself. At most three times in a row, so a server that will not proxy is not asked for ever; an accepted stream resets the count.
+- Tests: `lms_is_told_to_proxy_once_the_player_is_known` and `a_refused_direct_stream_is_replayed_through_lms_up_to_three_times` in `gateway/tests/gateway.rs`. Docs: INSTALL troubleshooting, SPEC player integration.
+
 ## 2026-10-18: A steadier grouped-rejoin test
 
 `a_grouped_player_rejoins_without_pausing_the_group_or_moving_it_back` watched for the rejoin's seek for a fixed 6 s after the stream resumed; on a loaded CI runner (the v0.5.4 release run) the player's decision came later and the test saw no seek. The grouped-gap helper now watches for up to 20 s but stops 1.5 s after the first seek, so quick runs stay quick and a second seek in that time is still caught.

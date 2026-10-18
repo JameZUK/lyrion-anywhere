@@ -131,6 +131,7 @@ For players that connect through the gateway, the plugin:
 
 - turns off direct streaming, so LMS always proxies radio and service streams and the device never needs to reach the LAN;
 - applies the user's transcoding/bitrate policy as player prefs;
+- has LMS proxy internet streams for every Lyrion Anywhere player (the `mp3StreamingMethod` player pref, LMS's *MP3 streaming method: proxied*, set by the gateway the first time LMS talks to the player): a `strm` pointing the player at a station's own address is refused, since these players only ever talk to the gateway, and until 0.5.5 that left internet radio silent. If such a `strm` still arrives, the gateway sets the pref and has LMS replay the entry through itself, at most three times in a row;
 - leaves LMS volume alone for "this device" players: the browser player applies it itself where it can, and holds it at 100% where it can't (§7.2, "Volume on this device"). _Changed 2026-10-11:_ previously planned as always fixed at 100%.
 
 ### Storage
