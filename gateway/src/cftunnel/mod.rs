@@ -1760,7 +1760,7 @@ impl Tunnel {
                 format!("The gateway could not delete the tunnel's files ({e})."),
             )
         })?;
-        self.note("Removed cloudflared and the tunnel token.");
+        self.note("Removed cloudflared and the stored tunnel credentials.");
         Ok(())
     }
 }
