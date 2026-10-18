@@ -19,7 +19,7 @@ Every client plays in LMS sync groups; how each one keeps in step is in [`FEATUR
 
 ## Getting the Android app
 
-- **Signed APKs** are on the [releases page](https://github.com/JameZUK/lyrion-anywhere/releases), tagged `android-v*` (the latest is 1.15.3). They are marked pre-release on GitHub so that *Latest* stays the LMS plugin, whose repository URL depends on it.
+- **Signed APKs** are on the [releases page](https://github.com/JameZUK/lyrion-anywhere/releases), tagged `android-v*` (the latest is 1.15.4). They are marked pre-release on GitHub so that *Latest* stays the LMS plugin, whose repository URL depends on it.
 - **Which file:** `…-arm64-v8a.apk` suits most phones; the universal `.apk` works on any. Check the files against `SHA256SUMS`.
 - **Stores:** Google Play and F-Droid listings are being prepared ([`RELEASING.md`](RELEASING.md)).
 - **Source:** [`apps/android`](../apps/android).
@@ -28,7 +28,7 @@ Signing in for the first time is covered in [`INSTALL.md`](INSTALL.md#6-first-si
 
 ## Project status and roadmap
 
-- **Built and in use:** the gateway and LMS plugin (0.5.2), the web app, and the Android app (1.15.3, releases tagged `android-v*`). See [`CHANGELOG.md`](../CHANGELOG.md) for what changed and when.
+- **Built and in use:** the gateway and LMS plugin (0.5.3), the web app, and the Android app (1.15.4, releases tagged `android-v*`). See [`CHANGELOG.md`](../CHANGELOG.md) for what changed and when.
 - **Recently finished:**
   - joining a sync group from *Play on…* (*Sync with…*) on the web and Android, sync corrections made in the audio in the browser's media-element mode, and a phone rejoining a group in step after a dropped connection;
   - *Your devices*, to see and sign out your own signed-in devices (plugin 0.5.0 and Android 1.15.3);

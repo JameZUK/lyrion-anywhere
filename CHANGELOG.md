@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: Plugin 0.5.3 and Android 1.15.4 released
+
+Plugin 0.5.3: the gateway's reads no longer wait for its writes (review M7, below), and Settings › About in the web app shows the plugin's version. Android 1.15.4 (versionCode 33): *Continue on* resolves queued downloads against the signed-in account's library only (review M14, below); nothing else changes in the app. Notes: `docs/release-notes/v0.5.3.md`, `docs/release-notes/android-1.15.4.md`.
+
 ## 2026-10-18: Mobile: Continue on resolves against the signed-in account's library (review M14)
 
 The last of the three entry points the 15 October review found taking any downloads library without checking whose it was. `sync_plays`, `sync_ratings` and the downloader were bound to the signed-in account on 15 October; `resolve_offline_tracks`, which "Continue on <player>" uses to turn queued downloads back into LMS track ids, took no library at all. A stale handle across an account switch could then have looked another user's queue up under the new account.

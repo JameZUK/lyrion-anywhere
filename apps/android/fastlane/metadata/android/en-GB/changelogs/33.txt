@@ -1,0 +1,1 @@
+Continue on another player now resolves your queued downloads against your own account's library only, so a stale handle from an earlier sign-in can never look up another user's downloads. No other changes to the app.
