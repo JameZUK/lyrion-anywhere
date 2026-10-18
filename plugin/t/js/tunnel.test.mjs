@@ -134,9 +134,10 @@ test('secret fields are emptied', () => {
 
 const BASE = {
   supported: true, pinned_version: '2026.10.1', installed_version: '2026.10.1', update_available: false, mode: 'none', state: 'installed',
-  hostname: null, public_url: null, connections: 0, uptime: null, quick_ends_in: null, progress: null, step: null, error: null, log: [],
+  hostname: null, public_url: null, connections: 0, uptime: null, quick_ends_in: null, progress: null, step: null, error: null, tunnel_listen: '127.0.0.1:9444', log: [],
 };
 const S = (o) => ({ ...BASE, ...o });
+const HOSTILE_TEXT = '<img src=x onerror=alert(1)>';
 
 test('every state in words', () => {
   const words = {
@@ -147,7 +148,7 @@ test('every state in words', () => {
     creating: [S({ state: 'creating', step: 'dns' }), /^Setting up the tunnel in your Cloudflare account: adding the DNS record/],
     starting: [S({ state: 'starting', mode: 'registered', hostname: 'music.example.com' }), /^Starting: connecting to Cloudflare/],
     connected: [S({ state: 'connected', mode: 'registered', connections: 4 }), /^Connected to Cloudflare \(4 connections\)\.$/],
-    reconnecting: [S({ state: 'reconnecting', mode: 'registered' }), /not connected to Cloudflare: trying again.*7844 or 443/],
+    reconnecting: [S({ state: 'reconnecting', mode: 'registered' }), /not connected to Cloudflare: trying again.*on port 7844 \(UDP or TCP\)\.$/],
     stopped: [S({ state: 'stopped', mode: 'registered', hostname: 'music.example.com' }), /^Stopped\. The tunnel for music\.example\.com stays registered/],
     failed: [S({ state: 'failed', error: 'dns: a DNS record for music.example.com already exists' }), /^Failed: dns: a DNS record for music\.example\.com already exists$/],
   };
@@ -163,6 +164,10 @@ test('every state in words', () => {
   }
   assert.match(t.tunnelStateText(S({ state: 'connected', mode: 'quick', connections: 2 })), /^Temporary tunnel\. Connected/);
   assert.match(t.tunnelStateText(S({ state: 'failed', error: null })), /no reason/);
+  // Unsupported because the gateway could not open the tunnel's own listener: its sentence.
+  const busy = "The tunnel's own listener could not be opened on 127.0.0.1:9444 (Address in use), so the tunnel cannot run.";
+  assert.equal(t.tunnelStateText(S({ supported: false, state: 'unsupported', tunnel_listen: null, error: busy })), `Cloudflare Tunnel is not available on this server. ${busy}`);
+  assert.doesNotMatch(t.tunnelStateText(S({ state: 'reconnecting' })), /443/);
   assert.match(t.tunnelStateText(S({ state: 'something_new' })), /Unknown tunnel state: something_new/);
   assert.match(t.tunnelStateText(null), /no tunnel status/);
 });
@@ -211,10 +216,31 @@ test('pairing codes use the tunnel address while there is one', () => {
   assert.equal(t.pairingPublicUrl(S({ public_url: null }), 'https://music.example.com'), 'https://music.example.com');
   assert.equal(t.pairingPublicUrl(null, 'https://music.example.com'), 'https://music.example.com');
   assert.equal(t.pairingPublicUrl(S({ public_url: 'javascript:alert(1)' }), ''), '');
-  const o = t.tunnelOverrideText(S({ public_url: 'https://music.example.com' }));
-  assert.equal(o.url, 'Overridden by the Cloudflare Tunnel while it runs: the gateway uses https://music.example.com.');
-  assert.match(o.header, /^Overridden by the Cloudflare Tunnel while it runs: .*CF-Connecting-IP/);
-  assert.deepEqual({ ...t.tunnelOverrideText(S({})) }, { url: null, header: null });
+  // The override notes: only while a tunnel runs, not merely registered.
+  for (const state of ['starting', 'connected', 'reconnecting']) {
+    const o = t.tunnelOverrideText(S({ state, mode: 'registered', public_url: 'https://music.example.com' }));
+    assert.equal(o.url, 'Overridden by the Cloudflare Tunnel while it runs: the gateway uses https://music.example.com.', state);
+    assert.equal(o.header, 'Overridden by the Cloudflare Tunnel while it runs: the gateway reads CF-Connecting-IP, but only on requests that arrive through the tunnel’s own listener.', state);
+  }
+  for (const state of ['installed', 'stopped', 'failed', 'creating', 'installing']) {
+    assert.deepEqual({ ...t.tunnelOverrideText(S({ state, mode: 'registered', public_url: 'https://music.example.com' })) }, { url: null, header: null }, state);
+  }
+  assert.deepEqual({ ...t.tunnelOverrideText(S({ state: 'connected' })) }, { url: null, header: null });
+  assert.deepEqual({ ...t.tunnelOverrideText(null) }, { url: null, header: null });
+});
+
+test('the token form names the tunnel listener as the service to set in Cloudflare', () => {
+  assert.equal(t.tunnelServiceText(S({})), 'In Cloudflare, give the tunnel the public hostname you want and set its service to http://127.0.0.1:9444.');
+  assert.equal(t.tunnelServiceText(S({ tunnel_listen: '[::1]:9500' })), 'In Cloudflare, give the tunnel the public hostname you want and set its service to http://[::1]:9500.');
+  // No listener, or anything that isn't a plain loopback address: the fallback, never the value.
+  for (const bad of [null, '', '10.0.0.10:9444', '0.0.0.0:9444', '127.0.0.1:9444/<b>x</b>', 'javascript:alert(1)', 42, HOSTILE_TEXT]) {
+    const text = t.tunnelServiceText(S({ tunnel_listen: bad }));
+    assert.match(text, /^In Cloudflare, give the tunnel the public hostname you want and set its service to the gateway’s tunnel listener \(http:\/\/127\.0\.0\.1:9444 unless/, String(bad));
+    assert.ok(typeof bad !== 'string' || bad === '' || !text.includes(bad), String(bad));
+  }
+  assert.equal(t.tunnelServiceText(null), t.tunnelServiceText(S({ tunnel_listen: null })));
+  assert.equal(t.tunnelListen(S({ tunnel_listen: '127.0.0.1:9444' })), '127.0.0.1:9444');
+  assert.equal(t.tunnelListen(null), null);
 });
 
 // --- the section on the page --------------------------------------------------------------
@@ -357,6 +383,7 @@ test('registering: validated, sent with the token, the token field emptied whate
   const p = fakePage({ ...GATEWAY, tunnel_status: { ok: 1, data: S({}) }, tunnel_register: () => answer });
   await p.ready();
   assert.ok(p.isShown('aw-tunnel-token-form') && p.isShown('aw-tunnel-create-form'), 'the forms, when installed and nothing is registered');
+  assert.equal(p.node('aw-tunnel-service-note').textContent, 'In Cloudflare, give the tunnel the public hostname you want and set its service to http://127.0.0.1:9444.');
   // Bad input: not sent, said why, the field kept so it can be corrected.
   p.node('aw-tunnel-token').value = 'not a token';
   p.node('aw-tunnel-token-host').value = 'music.example.com';

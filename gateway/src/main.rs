@@ -10,7 +10,7 @@ use tracing_subscriber::EnvFilter;
 
 use anywhere_gateway::accounts::{Accounts, Role};
 use anywhere_gateway::limits::{self, ServeLimits};
-use anywhere_gateway::{Config, Gateway, admin, random_id, router, transcode};
+use anywhere_gateway::{Config, Gateway, admin, random_id, router, transcode, tunnel_router};
 
 #[derive(Parser)]
 #[command(version, about = "Lyrion Anywhere gateway")]
@@ -31,6 +31,11 @@ enum Cmd {
         /// Admin API listener (loopback only; never put it behind the proxy).
         #[arg(long, default_value = "127.0.0.1:9445")]
         admin_listen: SocketAddr,
+        /// The built-in Cloudflare Tunnel's own listener (loopback only), which cloudflared
+        /// sends the tunnel's requests to. Only requests on it have their client address read
+        /// from CF-Connecting-IP. Not opened with --no-tunnel.
+        #[arg(long, default_value = "127.0.0.1:9444")]
+        tunnel_listen: SocketAddr,
         /// Directory for the account database and the admin secret.
         #[arg(long)]
         data_dir: PathBuf,
@@ -164,6 +169,7 @@ fn main() {
         Cmd::Serve {
             listen,
             admin_listen,
+            tunnel_listen,
             data_dir,
             lms,
             lms_slimproto_port,
@@ -192,6 +198,9 @@ fn main() {
             if !admin_listen.ip().is_loopback() {
                 fail("--admin-listen must be a loopback address");
             }
+            if !tunnel_listen.ip().is_loopback() {
+                fail("--tunnel-listen must be a loopback address");
+            }
             let accounts = Arc::new(open_accounts(&data_dir));
             let admin_secret = admin_secret(&data_dir);
             let lms_ips: Vec<Ipv4Addr> = (lms.as_str(), lms_slimproto_port)
@@ -202,6 +211,25 @@ fn main() {
                     _ => None,
                 })
                 .collect();
+            // The public listener first, so that a tunnel listener in its way (the same port)
+            // costs only the tunnel, not the gateway.
+            let public = std::net::TcpListener::bind(listen)
+                .and_then(|l| l.set_nonblocking(true).map(|_| l))
+                .unwrap_or_else(|e| fail(format!("bind {listen}: {e}")));
+            // The tunnel's own listener, opened only when the tunnel is on. If it can't be
+            // opened the gateway still runs; the tunnel reports why it can't.
+            let (tunnel_listener, tunnel_listen_error) = if no_tunnel {
+                (None, None)
+            } else {
+                match anywhere_gateway::cftunnel::open_listener(tunnel_listen) {
+                    Ok(l) => (Some(l), None),
+                    Err(e) => {
+                        tracing::warn!("{e}");
+                        (None, Some(e))
+                    }
+                }
+            };
+            let tunnel_bound = tunnel_listener.as_ref().and_then(|l| l.local_addr().ok());
             let cfg = Config {
                 lms_slimproto: format!("{lms}:{lms_slimproto_port}"),
                 lms_http: format!("{lms}:{lms_http_port}"),
@@ -232,24 +260,17 @@ fn main() {
                     enabled: !no_tunnel,
                     dir: Some(data_dir.join("tunnel")),
                     system_binary: cloudflared,
-                    listen,
+                    listen: tunnel_bound,
+                    listen_error: tunnel_listen_error,
                     ..Default::default()
                 },
                 ..Config::default()
             };
-            // A tunnel to a non-loopback listen address connects from that address: it
-            // isn't held to the per-address connection cap (it is this host).
-            let mut serve_trusted = trusted_proxies.clone();
-            let tunnel_source = anywhere_gateway::cftunnel::ingress_target(listen).ip();
-            if !no_tunnel && !tunnel_source.is_loopback() {
-                serve_trusted.push(tunnel_source);
-            }
             let body_timeout = cfg.body_timeout;
             let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| fail(e));
             rt.block_on(async move {
                 let gw = Gateway::new(cfg, accounts.clone());
-                let public = tokio::net::TcpListener::bind(listen)
-                    .await
+                let public = tokio::net::TcpListener::from_std(public)
                     .unwrap_or_else(|e| fail(format!("bind {listen}: {e}")));
                 let adminl = tokio::net::TcpListener::bind(admin_listen)
                     .await
@@ -259,12 +280,36 @@ fn main() {
                         "no users yet: create one with `anywhere-gateway admin --data-dir … create-user NAME --role admin`"
                     );
                 }
-                tracing::info!(%listen, %admin_listen, "gateway listening");
+                let tunnel_listener = tunnel_listener.map(|l| {
+                    tokio::net::TcpListener::from_std(l)
+                        .unwrap_or_else(|e| fail(format!("bind {tunnel_listen}: {e}")))
+                });
+                match tunnel_bound {
+                    Some(t) => {
+                        tracing::info!(%listen, %admin_listen, tunnel_listen = %t, "gateway listening")
+                    }
+                    None => tracing::info!(%listen, %admin_listen, "gateway listening"),
+                }
                 let admin_app = admin::router(gw.clone(), admin_secret).layer(
                     axum::middleware::from_fn_with_state(body_timeout, limits::body_deadline),
                 );
                 let tunnel = gw.tunnel().clone();
                 tunnel.startup().await;
+                // The public listener and the tunnel's own stop together.
+                let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+                let t = tunnel_listener.map(|l| {
+                    tokio::spawn(limits::serve(
+                        l,
+                        tunnel_router(gw.clone()),
+                        ServeLimits {
+                            max_connections: max_connections as usize,
+                            ..ServeLimits::default()
+                        },
+                        async move {
+                            let _ = stop_rx.wait_for(|s| *s).await;
+                        },
+                    ))
+                });
                 let public_app = router(gw);
                 let a = tokio::spawn(limits::serve(
                     adminl,
@@ -280,12 +325,18 @@ fn main() {
                     public_app,
                     ServeLimits {
                         max_connections: max_connections as usize,
-                        trusted_proxies: serve_trusted,
+                        trusted_proxies,
                         ..ServeLimits::default()
                     },
-                    shutdown_signal(),
+                    async move {
+                        shutdown_signal().await;
+                        let _ = stop_tx.send(true);
+                    },
                 )
                 .await;
+                if let Some(t) = t {
+                    let _ = t.await;
+                }
                 a.abort();
                 // Stop cloudflared on the way out (the registered tunnel comes back with the
                 // gateway if it was running).

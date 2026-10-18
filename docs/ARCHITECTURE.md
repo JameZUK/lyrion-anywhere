@@ -32,7 +32,7 @@ flowchart LR
   end
   subgraph LAN["Home network"]
     RP["Reverse proxy<br/>TLS :443"]
-    GW["Gateway (Rust, tokio/axum)<br/>public listener :9443<br/>admin listener :9445 (loopback)"]
+    GW["Gateway (Rust, tokio/axum)<br/>public listener :9443<br/>tunnel listener :9444 (loopback)<br/>admin listener :9445 (loopback)"]
     DB[("SQLite<br/>accounts.db")]
     CACHE[("download-cache<br/>analysis-cache")]
     FF["ffmpeg (optional)"]
@@ -52,7 +52,7 @@ flowchart LR
   GW --> CACHE
   GW --> FF
   GW -- "installs and supervises" --> CFD
-  CFD -- "dials out to Cloudflare;<br/>requests back to :9443" --> GW
+  CFD -- "dials out to Cloudflare;<br/>requests back to :9444" --> GW
   GW -- "one TCP connection per player session" --> SP
   GW -- "JSON-RPC, streams, downloads, art" --> HTTP
   GW -- "event subscription" --> CLIP
@@ -61,7 +61,7 @@ flowchart LR
 ```
 
 - **Clients** only ever talk HTTPS and secure WebSockets to the reverse proxy. They use one public, versioned API (`/v1`), documented in [`PROTOCOL.md`](PROTOCOL.md). The web app uses no private endpoint, so the native apps can do everything it does.
-- **The reverse proxy** terminates TLS and forwards to the gateway only. Instead of one, the gateway can run Cloudflare's `cloudflared` itself (SPEC D27): it dials out to Cloudflare, which serves the public address from its edge and sends the requests back down that connection to the gateway's listener. The gateway refuses plain-HTTP requests from anything but loopback, and believes `X-Forwarded-For` only from proxies it was told to trust.
+- **The reverse proxy** terminates TLS and forwards to the gateway only. Instead of one, the gateway can run Cloudflare's `cloudflared` itself (SPEC D27): it dials out to Cloudflare, which serves the public address from its edge and sends the requests back down that connection to the gateway's tunnel listener, a loopback listener of the tunnel's own (`--tunnel-listen`, default `127.0.0.1:9444`). It serves the same routes as the public listener, but only its requests have the client's address read from `CF-Connecting-IP` and the tunnel's origin accepted, so the public listener behaves as configured whether a tunnel runs or not. The gateway refuses plain-HTTP requests from anything but loopback, and believes `X-Forwarded-For` only from proxies it was told to trust.
 - **The gateway** is the only process that talks to LMS's Slimproto (3483), HTTP/JSON-RPC (9000) and CLI (9090) ports. Those ports are never forwarded.
 - **The plugin** runs inside LMS. It starts the gateway, restarts it if it stops, and manages accounts through the gateway's loopback-only admin API. Accounts live in the gateway's database, not in LMS's prefs (SPEC D12).
 
@@ -536,7 +536,8 @@ The gateway is configured with command-line flags; the plugin sets them from its
 | `--max-connections` | 1024 | Open client connections |
 | `--max-resume-grace` | 600 | The longest resume grace a player may ask for, in seconds |
 | `--static-dir`, `--log-file` | | The web app to serve; a log file instead of standard output |
-| `--cloudflared`, `--no-tunnel` | | A system-installed `cloudflared` for the built-in Cloudflare Tunnel; turn the built-in tunnel off |
+| `--tunnel-listen` | `127.0.0.1:9444` | The built-in Cloudflare Tunnel's own listener (loopback only; the only one where `CF-Connecting-IP` is believed for the tunnel) |
+| `--cloudflared`, `--no-tunnel` | | A system-installed `cloudflared` for the built-in Cloudflare Tunnel; turn the built-in tunnel off (and its listener with it) |
 
 The full list, with ranges, is in [`INSTALL.md`](INSTALL.md#option-b-docker).
 

@@ -129,7 +129,9 @@
 
 	<fieldset class="aw-panel aw-tunnel-form" id="aw-tunnel-token-form" hidden>
 		<legend>I have a tunnel token</legend>
-		<p class="aw-note">In Cloudflare&rsquo;s dashboard, create a tunnel (Networks &rsaquo; Tunnels &rsaquo; Create a tunnel &rsaquo; Cloudflared), give it a public hostname that points to this gateway, then copy the token from the install command it shows and paste it here.</p>
+		<p class="aw-note">In Cloudflare&rsquo;s dashboard, create a tunnel (Networks &rsaquo; Tunnels &rsaquo; Create a tunnel &rsaquo; Cloudflared) and copy the token from the install command it shows.</p>
+		<p class="aw-note" id="aw-tunnel-service-note">In Cloudflare, give the tunnel the public hostname you want and set its service to http://127.0.0.1:9444.</p>
+		<p class="aw-note">Then paste the token and that hostname here.</p>
 		<label for="aw-tunnel-token">Tunnel token</label>
 		<textarea id="aw-tunnel-token" rows="3" autocomplete="off" spellcheck="false" autocapitalize="off"></textarea>
 		<label for="aw-tunnel-token-host">Public hostname</label>

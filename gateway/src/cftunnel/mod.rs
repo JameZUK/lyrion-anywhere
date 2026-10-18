@@ -7,11 +7,14 @@
 //! home. A temporary *quick* tunnel (a random `trycloudflare.com` address, no account) can
 //! be tried for an hour.
 //!
-//! Nothing is downloaded or started until an admin endpoint asks. While a tunnel runs, the
-//! gateway's settings follow it ([`Overrides`]): `https://<hostname>` is an accepted origin
-//! and the client address is read from `CF-Connecting-IP` on requests from the tunnel's
-//! source (loopback, or a non-loopback listen address trusted as a proxy for the duration).
-//! They revert when it stops.
+//! Nothing is downloaded or started until an admin endpoint asks. `cloudflared` reaches the
+//! gateway on a listener of the tunnel's own (`--tunnel-listen`, loopback only, default
+//! [`DEFAULT_LISTEN`]), which serves the same router as the public listener but marks its
+//! requests ([`mark_listener`]). Only requests marked so get the tunnel's treatment: the
+//! client address is read from `CF-Connecting-IP`, and while a tunnel runs its origin
+//! (`https://<hostname>`, [`Overrides`]) is accepted. The public listener behaves exactly as
+//! configured whether a tunnel runs or not, so another reverse proxy on the same host can't
+//! pass a client's own `CF-Connecting-IP` through to the lockouts and the audit log.
 //!
 //! Data, all under `<data>/tunnel/` (0700): `cloudflared` (0700), `token` (0600, the only
 //! secret kept), `state.json` (hostname, installed version, whether the registered tunnel
@@ -26,7 +29,7 @@ pub mod scrub;
 pub mod token;
 
 use std::collections::VecDeque;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -115,8 +118,12 @@ pub struct Settings {
     pub dir: Option<PathBuf>,
     /// A system-installed `cloudflared` (absolute path) used instead of a download.
     pub system_binary: Option<PathBuf>,
-    /// The gateway's public listener: the ingress target.
-    pub listen: SocketAddr,
+    /// The tunnel's own loopback listener, as bound: the ingress target. `None`: not bound
+    /// (then the tunnel is unsupported; [`Settings::listen_error`] says why).
+    pub listen: Option<SocketAddr>,
+    /// Why the tunnel's listener could not be opened (see [`open_listener`]): the status's
+    /// `error` while the tunnel is unsupported because of it.
+    pub listen_error: Option<String>,
     /// `std::env::consts::OS` and `ARCH` (tests may pretend).
     pub os: String,
     pub arch: String,
@@ -152,7 +159,8 @@ impl Default for Settings {
             enabled: false,
             dir: None,
             system_binary: None,
-            listen: SocketAddr::from((Ipv4Addr::LOCALHOST, 9443)),
+            listen: None,
+            listen_error: None,
             os: std::env::consts::OS.into(),
             arch: std::env::consts::ARCH.into(),
             pinned_version: pins::CLOUDFLARED_VERSION.into(),
@@ -180,24 +188,67 @@ pub fn backoff(attempt: u32, base: Duration, max: Duration) -> Duration {
         .min(max)
 }
 
-/// The address `cloudflared` reaches the gateway on: the listen address, with an
-/// unspecified one (`0.0.0.0`, `::`) as loopback.
-pub fn ingress_target(listen: SocketAddr) -> SocketAddr {
-    let ip = match listen.ip() {
-        IpAddr::V4(v) if v.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
-        IpAddr::V6(v) if v.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
-        ip => ip,
-    };
-    SocketAddr::new(ip, listen.port())
+// ---------------------------------------------------------------------------
+// The tunnel's own listener
+// ---------------------------------------------------------------------------
+
+/// Where the tunnel's own listener is opened unless `--tunnel-listen` says otherwise.
+pub const DEFAULT_LISTEN: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9444);
+
+/// Open the tunnel's own listener on `addr` (loopback only), non-blocking for tokio. The
+/// error is the sentence the status reports while the tunnel can't run because of it.
+pub fn open_listener(addr: SocketAddr) -> Result<std::net::TcpListener, String> {
+    if !addr.ip().is_loopback() {
+        return Err(listener_problem(addr, "not a loopback address"));
+    }
+    let l =
+        std::net::TcpListener::bind(addr).map_err(|e| listener_problem(addr, &e.to_string()))?;
+    l.set_nonblocking(true)
+        .map_err(|e| listener_problem(addr, &e.to_string()))?;
+    Ok(l)
+}
+
+fn listener_problem(addr: SocketAddr, why: &str) -> String {
+    format!(
+        "The tunnel's own listener could not be opened on {addr} ({why}), so the tunnel cannot run. Free that port, or start the gateway with another loopback address in --tunnel-listen."
+    )
+}
+
+tokio::task_local! {
+    /// Set while a request that arrived on the tunnel's own listener is handled.
+    static ON_TUNNEL_LISTENER: ();
+}
+
+/// Middleware for the tunnel's own listener ([`crate::tunnel_router`]): the request is
+/// handled as one from the tunnel. Nothing a client sends can set this; the public
+/// listener's router doesn't have the layer.
+pub async fn mark_listener(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    ON_TUNNEL_LISTENER.scope((), next.run(req)).await
+}
+
+/// Is the request being handled one that arrived on the tunnel's own listener? False
+/// anywhere else, in a task spawned off such a request too (so it fails closed).
+pub fn on_tunnel_listener() -> bool {
+    ON_TUNNEL_LISTENER.try_with(|_| ()).is_ok()
+}
+
+/// Run `f` as if handling a request from the tunnel's own listener (unit tests).
+#[cfg(test)]
+pub(crate) fn as_on_tunnel_listener<R>(f: impl FnOnce() -> R) -> R {
+    ON_TUNNEL_LISTENER.sync_scope((), f)
 }
 
 // ---------------------------------------------------------------------------
 // The settings that follow the tunnel
 // ---------------------------------------------------------------------------
 
-/// The gateway's settings while a tunnel runs: an extra accepted origin, and the tunnel's
-/// source trusted for `CF-Connecting-IP`. Empty (the default) when none runs. Shared between
-/// [`crate::Config`] (which the request checks read) and the [`Tunnel`].
+/// The gateway's settings while a tunnel runs: the tunnel's origin, accepted on requests
+/// that arrived on the tunnel's own listener ([`on_tunnel_listener`]). Empty (the default)
+/// when none runs. Shared between [`crate::Config`] (which the request checks read) and the
+/// [`Tunnel`].
 #[derive(Clone, Default)]
 pub struct Overrides(Arc<RwLock<Option<Active>>>);
 
@@ -205,8 +256,6 @@ pub struct Overrides(Arc<RwLock<Option<Active>>>);
 struct Active {
     /// `https://<hostname>`.
     origin: String,
-    /// A non-loopback listen address: where the tunnel's requests come from.
-    proxy: Option<IpAddr>,
 }
 
 impl std::fmt::Debug for Overrides {
@@ -220,11 +269,9 @@ impl Overrides {
         self.0.read().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub(crate) fn set(&self, hostname: &str, listen: SocketAddr) {
-        let ip = crate::canonical(ingress_target(listen).ip());
+    pub(crate) fn set(&self, hostname: &str) {
         let active = Active {
             origin: format!("https://{hostname}"),
-            proxy: (!ip.is_loopback()).then_some(ip),
         };
         *self.0.write().unwrap_or_else(|e| e.into_inner()) = Some(active);
     }
@@ -246,20 +293,6 @@ impl Overrides {
     /// Is this exactly the running tunnel's origin?
     pub fn origin_allowed(&self, origin: &str) -> bool {
         self.read().as_ref().is_some_and(|a| a.origin == origin)
-    }
-
-    /// Is `ip` the running tunnel's non-loopback source (trusted as a proxy meanwhile)?
-    pub fn trusted_proxy(&self, ip: IpAddr) -> bool {
-        let ip = crate::canonical(ip);
-        self.read().as_ref().is_some_and(|a| a.proxy == Some(ip))
-    }
-
-    /// Does a request from `ip` come from the running tunnel (loopback or its source)?
-    pub fn from_tunnel(&self, ip: IpAddr) -> bool {
-        let ip = crate::canonical(ip);
-        self.read()
-            .as_ref()
-            .is_some_and(|a| ip.is_loopback() || a.proxy == Some(ip))
     }
 }
 
@@ -706,9 +739,11 @@ impl Tunnel {
         &self.overrides
     }
 
-    /// Can a tunnel run here at all (turned on, a data folder, a supported platform)?
+    /// Can a tunnel run here at all (turned on, its listener open, a data folder, a
+    /// supported platform)?
     pub fn supported(&self) -> bool {
         self.s.enabled
+            && self.s.listen.is_some()
             && self.s.dir.is_some()
             && self.s.os == "linux"
             && (self.s.system_binary.is_some() || self.asset.is_some())
@@ -742,9 +777,30 @@ impl Tunnel {
         self.dir().join("pid")
     }
 
+    /// What `cloudflared` sends the tunnel's requests to: the tunnel's own listener.
+    pub fn service_url(&self) -> String {
+        match self.s.listen {
+            Some(a) => format!("http://{a}"),
+            // Never used: without its listener the tunnel is unsupported.
+            None => "http_status:503".into(),
+        }
+    }
+
+    /// Why the tunnel can't run, if the reason is that its listener isn't open.
+    fn listener_missing(&self) -> Option<String> {
+        (self.s.enabled && self.s.listen.is_none()).then(|| {
+            self.s.listen_error.clone().unwrap_or_else(|| {
+                "The tunnel's own listener is not open, so the tunnel cannot run.".into()
+            })
+        })
+    }
+
     fn check_supported(&self) -> Result<(), Refusal> {
         if self.supported() {
             return Ok(());
+        }
+        if let Some(why) = self.listener_missing() {
+            return Err(refuse(409, why));
         }
         Err(refuse(
             409,
@@ -848,7 +904,11 @@ impl Tunnel {
                 .saturating_sub(now.saturating_sub(r.since))
                 .as_secs()
         });
-        let error = m.error.clone().filter(|_| state == State::Failed);
+        let error = m
+            .error
+            .clone()
+            .filter(|_| state == State::Failed)
+            .or_else(|| self.listener_missing());
         let update_available = installed
             .as_ref()
             .is_some_and(|v| self.s.system_binary.is_none() && *v != self.s.pinned_version);
@@ -873,6 +933,7 @@ impl Tunnel {
             "progress": progress,
             "step": step,
             "error": error,
+            "tunnel_listen": self.s.listen.filter(|_| self.s.enabled).map(|a| a.to_string()),
             "log": tail,
         })
     }
@@ -994,7 +1055,7 @@ impl Tunnel {
         match mode {
             Mode::Quick => {
                 a.push("--url".into());
-                a.push(format!("http://{}", ingress_target(self.s.listen)));
+                a.push(self.service_url());
             }
             _ => a.push("run".into()),
         }
@@ -1111,7 +1172,7 @@ impl Tunnel {
         };
         if mode == Mode::Registered {
             if let Some(h) = hostname {
-                self.overrides.set(&h, self.s.listen);
+                self.overrides.set(&h);
             }
             if let Err(e) = self.persist() {
                 tracing::warn!(error = %scrub(&e.message), "could not record the tunnel's state");
@@ -1352,7 +1413,7 @@ impl Tunnel {
     fn set_quick_host(&self, id: u64, host: String) {
         let new = self.m().quick_host(id, host.clone());
         if new {
-            self.overrides.set(&host, self.s.listen);
+            self.overrides.set(&host);
             self.note(&format!(
                 "The temporary tunnel's address is https://{host} (test only: it stops after one hour)."
             ));
@@ -1609,7 +1670,7 @@ impl Tunnel {
             api_token: api::ApiToken::new(api_token),
             hostname,
             replace_dns,
-            service: format!("http://{}", ingress_target(self.s.listen)),
+            service: self.service_url(),
         };
         tokio::spawn(async move { t.run_create(req).await });
         Ok(Accepted::Started)
@@ -1953,36 +2014,74 @@ mod tests {
     }
 
     #[test]
-    fn the_ingress_target_is_the_listen_address_with_any_as_loopback() {
-        let t = |s: &str| ingress_target(s.parse().unwrap()).to_string();
-        assert_eq!(t("127.0.0.1:9443"), "127.0.0.1:9443");
-        assert_eq!(t("0.0.0.0:9443"), "127.0.0.1:9443");
-        assert_eq!(t("[::]:9443"), "[::1]:9443");
-        assert_eq!(t("10.0.0.10:9443"), "10.0.0.10:9443");
+    fn the_tunnel_listener_is_loopback_only_and_a_busy_port_is_explained() {
+        for bad in ["10.0.0.10:9444", "0.0.0.0:9444", "[::]:9444"] {
+            let e = open_listener(bad.parse().unwrap()).unwrap_err();
+            assert!(
+                e.contains(bad) && e.contains("not a loopback address"),
+                "{e}"
+            );
+        }
+        let held = open_listener("127.0.0.1:0".parse().unwrap()).unwrap();
+        let addr = held.local_addr().unwrap();
+        let e = open_listener(addr).unwrap_err();
+        assert!(
+            e.starts_with(&format!(
+                "The tunnel's own listener could not be opened on {addr} ("
+            )) && e.contains("so the tunnel cannot run"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn only_requests_marked_by_the_tunnel_listener_count_as_from_it() {
+        assert!(!on_tunnel_listener());
+        assert!(as_on_tunnel_listener(on_tunnel_listener));
+        assert!(!on_tunnel_listener());
+        // A task spawned off such a request isn't marked (it fails closed).
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let _in_rt = rt.enter();
+        let spawned = as_on_tunnel_listener(|| tokio::spawn(async { on_tunnel_listener() }));
+        assert!(!rt.block_on(spawned).unwrap());
     }
 
     #[test]
     fn overrides_apply_only_while_set() {
         let o = Overrides::default();
-        let lan: IpAddr = "10.0.0.10".parse().unwrap();
-        let lo: IpAddr = "127.0.0.1".parse().unwrap();
         assert!(!o.active() && !o.origin_allowed("https://music.example.com"));
-        assert!(!o.from_tunnel(lo));
-        o.set("music.example.com", "127.0.0.1:9443".parse().unwrap());
+        o.set("music.example.com");
+        assert!(o.active());
         assert!(o.origin_allowed("https://music.example.com"));
         assert!(!o.origin_allowed("http://music.example.com"));
         assert!(!o.origin_allowed("https://music.example.com.evil.example"));
-        assert!(o.from_tunnel(lo) && !o.from_tunnel(lan));
-        assert!(
-            !o.trusted_proxy(lan),
-            "a loopback listener trusts no extra address"
-        );
-        o.set("music.example.com", "10.0.0.10:9443".parse().unwrap());
-        assert!(o.trusted_proxy(lan) && o.from_tunnel(lan));
-        assert!(o.trusted_proxy("::ffff:10.0.0.10".parse().unwrap()));
-        assert!(!o.trusted_proxy("10.0.0.11".parse().unwrap()));
         o.clear();
-        assert!(!o.active() && !o.trusted_proxy(lan) && !o.from_tunnel(lo));
+        assert!(!o.active() && !o.origin_allowed("https://music.example.com"));
+    }
+
+    #[test]
+    fn without_its_listener_the_tunnel_is_unsupported_and_says_why() {
+        let sentence = open_listener("10.0.0.10:9444".parse().unwrap()).unwrap_err();
+        let t = Tunnel::new(
+            Settings {
+                enabled: true,
+                dir: Some("/nonexistent/tunnel".into()),
+                system_binary: Some("/usr/bin/cloudflared".into()),
+                os: "linux".into(),
+                listen: None,
+                listen_error: Some(sentence.clone()),
+                ..Settings::default()
+            },
+            Overrides::default(),
+        );
+        assert!(!t.supported());
+        let v = t.status();
+        assert_eq!(v["supported"], false);
+        assert_eq!(v["state"], "unsupported");
+        assert_eq!(v["error"], sentence.as_str());
+        assert_eq!(v["tunnel_listen"], Value::Null);
+        assert_eq!(t.check_supported().unwrap_err().message, sentence);
     }
 
     #[test]
@@ -2065,7 +2164,7 @@ mod tests {
     fn the_argument_lists_are_fixed() {
         let t = Tunnel::new(
             Settings {
-                listen: "0.0.0.0:9443".parse().unwrap(),
+                listen: Some("127.0.0.1:9444".parse().unwrap()),
                 ..Settings::default()
             },
             Overrides::default(),
@@ -2092,7 +2191,7 @@ mod tests {
                 "--loglevel",
                 "info",
                 "--url",
-                "http://127.0.0.1:9443"
+                "http://127.0.0.1:9444"
             ]
         );
     }

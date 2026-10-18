@@ -50,8 +50,10 @@ With the built-in Cloudflare Tunnel (Option C), the connection is made the other
 
 ```
  phone / browser ──HTTPS──▶ Cloudflare ◀──outbound── cloudflared ──HTTP──▶ gateway ──▶ LMS
-  (internet)               (its edge)                (on the LMS machine)  (port 9443)
+  (internet)               (its edge)                (on the LMS machine)  (port 9444)
 ```
+
+The gateway gives the tunnel a listener of its own, on loopback port 9444, and only requests that arrive there are treated as the tunnel's.
 
 ## 2. Install the gateway
 
@@ -139,7 +141,8 @@ The main `serve` options:
 | `--static-dir` | | The web app to serve at `/` (`/web` in the Docker image; the plugin passes its bundled copy). |
 | `--log-file` | | Append logs to this file instead of standard output (the plugin uses `lyrion-anywhere.log` in LMS's log folder). |
 | `--cloudflared` | | For the built-in Cloudflare Tunnel (Option C): run this system-installed `cloudflared` (an absolute path) instead of downloading the pinned one. *Install* and *Update* then do nothing, and *Remove* leaves that program in place. |
-| `--no-tunnel` | | Turn the built-in Cloudflare Tunnel off: its status says it is unavailable and its actions are refused. |
+| `--tunnel-listen` | `127.0.0.1:9444` | The built-in Cloudflare Tunnel's own listener (Option C), which `cloudflared` sends the tunnel's requests to. Loopback only. Only requests on it have their client address read from `CF-Connecting-IP`. Not opened with `--no-tunnel`. If it can't be opened (the port is taken), the gateway still starts and the tunnel says why it is unavailable. |
+| `--no-tunnel` | | Turn the built-in Cloudflare Tunnel off: its status says it is unavailable, its actions are refused, and its listener is not opened. |
 
 The Docker image has no ffmpeg, so downloads from it are original-format only and streams are never re-encoded.
 
@@ -183,7 +186,7 @@ You create the tunnel in Cloudflare's dashboard, and paste its token here.
 
 1. In Cloudflare's dashboard, open *Networking › Tunnels* (in the older Zero Trust dashboard, *Networks › Tunnels*), choose **Create a tunnel** and, if asked, the *Cloudflared* type. Give it a name, e.g. `lyrion-anywhere`.
 2. Cloudflare then shows commands to install a connector. Don't run them: the gateway is the connector. Copy the token from one of them (the long string after `--token`).
-3. Give the tunnel a public hostname (Cloudflare now calls it a *published application route*): the subdomain and domain you chose, e.g. `music` and `example.com`, with the service URL `http://127.0.0.1:9443`. That is the gateway's *Listen address*. If you changed it to a LAN address, e.g. `10.0.0.20:9443`, use `http://10.0.0.20:9443` instead. Cloudflare adds the DNS record for the name itself.
+3. Give the tunnel a public hostname (Cloudflare now calls it a *published application route*): the subdomain and domain you chose, e.g. `music` and `example.com`, with the service URL `http://127.0.0.1:9444`. That is the gateway's tunnel listener, not its *Listen address*, and it is the same whatever *Listen address* you chose; the form on the settings page shows it too. Cloudflare adds the DNS record for the name itself.
 4. On the settings page, under **I have a tunnel token**, paste the token into *Tunnel token*, enter the same name (`music.example.com`) as *Public hostname*, and press **Register and start**.
 
 The hostname you enter here is the one the gateway accepts requests for and puts in pairing QR codes. It must be the one you set in Cloudflare's dashboard; the gateway can't check that for you.
@@ -200,7 +203,7 @@ The gateway does the work in your Cloudflare account through Cloudflare's API.
    You can limit it to the one account and the one zone (domain) you will use. Giving it a short expiry is a good idea too.
 2. On the settings page, under **Create it for me**, paste it into *API token*, enter the *Public hostname* you want (e.g. `music.example.com`), and press **Create and start**.
 
-The gateway then finds the zone that holds the name, creates a tunnel named `lyrion-anywhere-music-example-com`, points it at the gateway's listen address, adds the DNS record (a proxied `CNAME` to the tunnel), and fetches the tunnel's token. The page names each step as it goes. If a step fails, the page says which one and gives Cloudflare's own message, and the gateway deletes the tunnel it had just created so that nothing is left half-made.
+The gateway then finds the zone that holds the name, creates a tunnel named `lyrion-anywhere-music-example-com`, points it at the gateway's tunnel listener (`http://127.0.0.1:9444`), adds the DNS record (a proxied `CNAME` to the tunnel), and fetches the tunnel's token. The page names each step as it goes. If a step fails, the page says which one and gives Cloudflare's own message, and the gateway deletes the tunnel it had just created so that nothing is left half-made.
 
 **The API token is used for that one exchange and is never stored or logged.** The gateway keeps only the resulting tunnel token, as in way 1. Once it is running you can delete the API token in Cloudflare.
 
@@ -214,12 +217,12 @@ The tunnel starts again by itself whenever the gateway starts (with LMS), and `c
 
 #### Public URL and Client address header while a tunnel runs
 
-You don't need to change either setting. While the tunnel runs, the gateway accepts requests for the tunnel's address and reads each visitor's real address from Cloudflare's `CF-Connecting-IP` header on the requests that come through the tunnel. The page shows this under both fields:
+You don't need to change either setting. `cloudflared` sends the tunnel's requests to the gateway's tunnel listener (`127.0.0.1:9444`), not to its *Listen address*. On that listener only, the gateway reads each visitor's real address from Cloudflare's `CF-Connecting-IP` header, and while the tunnel runs it accepts requests from pages at the tunnel's address. While the tunnel runs, the page shows this under both fields:
 
 - *Overridden by the Cloudflare Tunnel while it runs: the gateway uses https://music.example.com.*
-- *Overridden by the Cloudflare Tunnel while it runs: the gateway reads CF-Connecting-IP on requests that come through the tunnel.*
+- *Overridden by the Cloudflare Tunnel while it runs: the gateway reads CF-Connecting-IP, but only on requests that arrive through the tunnel's own listener.*
 
-Your own values are kept, and apply again when the tunnel stops. *Add a device* QR codes use the tunnel's address while a tunnel is registered. If the gateway listens on a LAN address rather than loopback, the gateway trusts that address as the tunnel's source for as long as the tunnel runs.
+Your own values are kept, and the *Listen address* goes on behaving exactly as they say, tunnel or not. So a reverse proxy on the same machine (section 4) is unaffected: a `CF-Connecting-IP` header it passes through is not believed. *Add a device* QR codes use the tunnel's address while a tunnel is registered.
 
 #### Try a temporary tunnel first
 
@@ -247,7 +250,8 @@ The section's status line says what failed, and its log has `cloudflared`'s own 
 | **The downloaded cloudflared did not match the checksum pinned in this release, so it was not installed.** | What arrived was not the official file: a damaged download, or something on your network rewriting it. Nothing was kept. Try again; if it keeps happening, check for a proxy or filter that intercepts HTTPS. |
 | **The downloaded cloudflared does not run on this system, so it was removed.** | The file was the official one, but it would not start here (`cloudflared --version` failed). Please report it with your machine's details. |
 | **Running, but not connected to Cloudflare: trying again.** (or it stays at *Starting: connecting to Cloudflare…*) | `cloudflared` can't reach Cloudflare's network. Allow outbound port 7844, UDP and TCP. If the log mentions an invalid or unknown tunnel, the token is wrong or the tunnel was deleted in Cloudflare: **Remove** and register again. |
-| **Connected, but the address shows a Cloudflare error page or a plain 404** | The tunnel's public hostname in Cloudflare doesn't point at the gateway (way 1). Its service URL must be the gateway's listen address, e.g. `http://127.0.0.1:9443`, and its name the one you registered. |
+| **Connected, but the address shows a Cloudflare error page or a plain 404** | The tunnel's public hostname in Cloudflare doesn't point at the gateway (way 1). Its service URL must be the gateway's tunnel listener, `http://127.0.0.1:9444` (not the *Listen address*), and its name the one you registered. |
+| **Cloudflare Tunnel is not available on this server. The tunnel's own listener could not be opened on 127.0.0.1:9444 (…)** | Another program already uses port 9444 on the LMS machine. Stop it, or move it to another port, then restart LMS. (Started by hand or in Docker, the gateway takes `--tunnel-listen` with another loopback address.) |
 | **a DNS record for music.example.com already exists; tick Replace to overwrite it** | *Create it for me* found a record for that name. Tick **Replace an existing DNS record**, or choose another name. The tunnel it had created was deleted again. |
 | **no zone on this account contains music.example.com (the API token needs Zone › Zone › Read)** | The name isn't under any domain the API token can see. Check the spelling, that the domain is on that Cloudflare account, and that the token has *Zone › Zone › Read* for that zone. |
 | **… the API token is missing a permission; it needs Account › Cloudflare Tunnel › Edit, Zone › DNS › Edit and Zone › Zone › Read.** | The message starts with the step that failed. Edit the API token in Cloudflare to add the missing permission (for the right account and zone), then press **Create and start** again. |

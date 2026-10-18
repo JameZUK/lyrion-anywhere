@@ -210,9 +210,8 @@ pub struct Config {
     pub host_answers: std::collections::HashMap<String, Vec<IpAddr>>,
     /// The built-in Cloudflare Tunnel (off by default; the command line turns it on).
     pub tunnel: cftunnel::Settings,
-    /// The settings that follow a running tunnel (an extra origin, the tunnel's source
-    /// trusted for `CF-Connecting-IP`); empty while none runs. [`origin_allowed`],
-    /// [`client_addr`] and [`require_secure_transport`] consult it.
+    /// The settings that follow a running tunnel (its origin, accepted on requests from the
+    /// tunnel's own listener only); empty while none runs. [`origin_allowed`] consults it.
     pub tunnel_overrides: cftunnel::Overrides,
 }
 
@@ -580,6 +579,14 @@ impl Gateway {
 /// Pause between ending a revoked device's session and asking LMS to forget its player.
 const FORGET_DELAY: Duration = Duration::from_millis(200);
 
+/// The router for the tunnel's own loopback listener (`--tunnel-listen`): the public router,
+/// with its requests marked as the tunnel's ([`cftunnel::mark_listener`]), so that only they
+/// have their client address read from `CF-Connecting-IP` and the tunnel's origin accepted.
+pub fn tunnel_router(state: AppState) -> Router {
+    router(state).layer(middleware::from_fn(cftunnel::mark_listener))
+}
+
+/// The router for the public listener.
 pub fn router(state: AppState) -> Router {
     let mut app = Router::new()
         .route("/healthz", get(|| async { "ok\n" }))
@@ -869,18 +876,19 @@ fn client_ip(cfg: &Config, peer: SocketAddr, headers: &HeaderMap) -> String {
     client_key(client_addr(cfg, peer, headers))
 }
 
-/// Loopback, the configured reverse proxies, and a running tunnel's non-loopback source.
+/// Loopback and the configured reverse proxies.
 fn is_trusted_proxy(cfg: &Config, ip: IpAddr) -> bool {
     let ip = canonical(ip);
-    ip.is_loopback()
-        || cfg.trusted_proxies.iter().any(|p| canonical(*p) == ip)
-        || cfg.tunnel_overrides.trusted_proxy(ip)
+    ip.is_loopback() || cfg.trusted_proxies.iter().any(|p| canonical(*p) == ip)
 }
 
 /// The client's address. A request straight from an untrusted peer is that peer. From a
 /// trusted proxy:
-/// - the configured CDN header (`--client-ip-header`, e.g. `CF-Connecting-IP`), if present
-///   and a single valid address;
+/// - on the tunnel's own listener, `CF-Connecting-IP` (what `cloudflared` sends), if present
+///   and a single valid address; the public listener never reads it unless it is the
+///   configured CDN header;
+/// - otherwise the configured CDN header (`--client-ip-header`, e.g. `CF-Connecting-IP`), if
+///   present and a single valid address;
 /// - otherwise `X-Forwarded-For`, read from the right: each proxy appends the address it
 ///   received the request from, so the rightmost entry that isn't itself a trusted proxy
 ///   is the first address no trusted party vouches beyond. Everything to its left was
@@ -890,12 +898,15 @@ pub(crate) fn client_addr(cfg: &Config, peer: SocketAddr, headers: &HeaderMap) -
     if !is_trusted_proxy(cfg, peer_ip) {
         return peer_ip;
     }
-    // While a tunnel runs, its requests carry the client's address in CF-Connecting-IP.
-    let tunnel_header = cfg
-        .tunnel_overrides
-        .from_tunnel(peer_ip)
+    // The tunnel's requests carry the client's address in CF-Connecting-IP; only requests on
+    // the tunnel's own (loopback) listener are the tunnel's.
+    let tunnel_header = cftunnel::on_tunnel_listener()
         .then(|| axum::http::HeaderName::from_static(cftunnel::CLIENT_IP_HEADER));
-    if let Some(name) = tunnel_header.as_ref().or(cfg.client_ip_header.as_ref()) {
+    let header = match &tunnel_header {
+        Some(h) => Some(h),
+        None => cfg.client_ip_header.as_ref(),
+    };
+    if let Some(name) = header {
         let mut values = headers.get_all(name).iter();
         if let (Some(v), None) = (values.next(), values.next())
             && let Some(ip) = v.to_str().ok().and_then(parse_forwarded)
@@ -992,7 +1003,7 @@ fn origin_allowed(cfg: &Config, headers: &HeaderMap) -> bool {
         return false;
     };
     if cfg.allowed_origins.iter().any(|o| o == origin)
-        || cfg.tunnel_overrides.origin_allowed(origin)
+        || (cftunnel::on_tunnel_listener() && cfg.tunnel_overrides.origin_allowed(origin))
     {
         return true;
     }
@@ -1267,40 +1278,57 @@ mod tests {
     }
 
     #[test]
-    fn a_running_tunnel_adds_its_origin_and_client_header_until_it_stops() {
-        let cfg = Config::default();
+    fn the_tunnel_treatment_is_given_on_the_tunnel_listener_only() {
+        use cftunnel::as_on_tunnel_listener as tunnel;
+        let cfg = Config {
+            trusted_proxies: vec!["10.0.0.10".parse().unwrap()],
+            ..Config::default()
+        };
         let lo: SocketAddr = "127.0.0.1:5000".parse().unwrap();
         let lan: SocketAddr = "10.0.0.10:5000".parse().unwrap();
-        let outsider: SocketAddr = "203.0.113.50:5000".parse().unwrap();
         let h = headers(&[
             ("origin", "https://music.example.com"),
             ("host", "127.0.0.1:9443"),
+            ("x-forwarded-for", "198.51.100.200"),
             ("cf-connecting-ip", "198.51.100.7"),
         ]);
-        let before = || {
+        let public_listener = || {
+            // A same-host proxy that passes the client's own CF-Connecting-IP through, with a
+            // tunnel running or not: the header is ignored and the origin refused.
             assert!(!origin_allowed(&cfg, &h));
-            assert_eq!(client_ip(&cfg, lo, &h), "127.0.0.1");
-            assert!(!is_trusted_proxy(&cfg, lan.ip()));
+            assert_eq!(client_ip(&cfg, lo, &h), "198.51.100.200");
+            assert_eq!(client_ip(&cfg, lan, &h), "198.51.100.200");
+            assert!(!is_trusted_proxy(&cfg, "10.0.0.11".parse().unwrap()));
         };
-        before();
-        // On loopback.
-        cfg.tunnel_overrides
-            .set("music.example.com", "127.0.0.1:9443".parse().unwrap());
-        assert!(origin_allowed(&cfg, &h));
-        assert_eq!(client_ip(&cfg, lo, &h), "198.51.100.7");
-        assert_eq!(client_ip(&cfg, outsider, &h), "203.0.113.50");
-        assert_eq!(client_ip(&cfg, lan, &h), "10.0.0.10");
-        assert!(!is_trusted_proxy(&cfg, lan.ip()));
-        // Another origin is still refused.
+        public_listener();
+        // The tunnel listener reads the header with no tunnel running, but its origin is
+        // accepted only while one runs.
+        assert_eq!(tunnel(|| client_ip(&cfg, lo, &h)), "198.51.100.7");
+        assert!(!tunnel(|| origin_allowed(&cfg, &h)));
+
+        cfg.tunnel_overrides.set("music.example.com");
+        public_listener();
+        assert!(tunnel(|| origin_allowed(&cfg, &h)));
+        assert_eq!(tunnel(|| client_ip(&cfg, lo, &h)), "198.51.100.7");
+        // Another origin is still refused there.
         let evil = headers(&[("origin", "https://evil.example"), ("host", "x")]);
-        assert!(!origin_allowed(&cfg, &evil));
-        // On a LAN listen address: that address is trusted for the duration.
-        cfg.tunnel_overrides
-            .set("music.example.com", "10.0.0.10:9443".parse().unwrap());
-        assert!(is_trusted_proxy(&cfg, lan.ip()));
-        assert_eq!(client_ip(&cfg, lan, &h), "198.51.100.7");
-        assert_eq!(client_ip(&cfg, outsider, &h), "203.0.113.50");
+        assert!(!tunnel(|| origin_allowed(&cfg, &evil)));
+        // A bad or repeated header falls back to the X-Forwarded-For rule.
+        for bad in [
+            vec![("cf-connecting-ip", "nonsense")],
+            vec![
+                ("cf-connecting-ip", "198.51.100.7"),
+                ("cf-connecting-ip", "198.51.100.8"),
+            ],
+            vec![("cf-connecting-ip", "198.51.100.7, 198.51.100.8")],
+        ] {
+            let mut pairs = vec![("x-forwarded-for", "198.51.100.200")];
+            pairs.extend(bad);
+            let h = headers(&pairs);
+            assert_eq!(tunnel(|| client_ip(&cfg, lo, &h)), "198.51.100.200");
+        }
         cfg.tunnel_overrides.clear();
-        before();
+        public_listener();
+        assert!(!tunnel(|| origin_allowed(&cfg, &h)));
     }
 }

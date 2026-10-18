@@ -346,7 +346,10 @@
     let text;
     switch (s.state) {
       case 'unsupported':
-        return 'Cloudflare Tunnel is not available on this server. It needs Linux on x86_64, aarch64 or armhf.';
+        // The gateway's own reason (its tunnel listener could not be opened), else the platform.
+        return textOf(s.error)
+          ? `Cloudflare Tunnel is not available on this server. ${textOf(s.error)}`
+          : 'Cloudflare Tunnel is not available on this server. It needs Linux on x86_64, aarch64 or armhf.';
       case 'not_installed':
         return 'Not installed. Nothing is downloaded or run until you press Install, which fetches Cloudflare\u2019s cloudflared program at the version this release of the plugin pins, and checks it.';
       case 'installing': {
@@ -371,7 +374,7 @@
         break;
       }
       case 'reconnecting':
-        text = 'Running, but not connected to Cloudflare: trying again. This server must be able to reach Cloudflare on port 7844 or 443.';
+        text = 'Running, but not connected to Cloudflare: trying again. This server must be able to reach Cloudflare on port 7844 (UDP or TCP).';
         break;
       case 'stopped':
         return host
@@ -418,14 +421,31 @@
     return (s && tunnelUrl(s.public_url)) || (typeof pageUrl === 'string' ? pageUrl : '');
   }
 
-  /** The notes under Public URL and Client address header while the tunnel sets them (else nulls). */
+  /**
+   * The notes under Public URL and Client address header while a running tunnel sets them
+   * (else nulls): the gateway applies them only while cloudflared runs, not merely registered.
+   */
   function tunnelOverrideText(s) {
-    const url = s && tunnelUrl(s.public_url);
+    const url = s && RUNNING_STATES.includes(s.state) && tunnelUrl(s.public_url);
     if (!url) return { url: null, header: null };
     return {
       url: `Overridden by the Cloudflare Tunnel while it runs: the gateway uses ${url}.`,
-      header: 'Overridden by the Cloudflare Tunnel while it runs: the gateway reads CF-Connecting-IP on requests that come through the tunnel.',
+      header: 'Overridden by the Cloudflare Tunnel while it runs: the gateway reads CF-Connecting-IP, but only on requests that arrive through the tunnel\u2019s own listener.',
     };
+  }
+
+  /** The tunnel's own listener from the status, if it is a plain loopback address and port. */
+  function tunnelListen(s) {
+    const v = s && textOf(s.tunnel_listen);
+    return v && /^(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[::1\]):\d{1,5}$/.test(v) ? v : null;
+  }
+
+  /** What the token form says to set in Cloudflare's dashboard. */
+  function tunnelServiceText(s) {
+    const at = tunnelListen(s);
+    return at
+      ? `In Cloudflare, give the tunnel the public hostname you want and set its service to http://${at}.`
+      : 'In Cloudflare, give the tunnel the public hostname you want and set its service to the gateway\u2019s tunnel listener (http://127.0.0.1:9444 unless the gateway was started with another --tunnel-listen).';
   }
 
   /** What the temporary tunnel's countdown says, e.g. "Stops in 59:05." */
@@ -454,7 +474,7 @@
   }
 
   const api = { command, adminOnlyArg, pageToken, validDays, sessionDaysShown, validDeviceName, clientText, validUsername, validPassword, formatTime, formatUptime, diagnosticsText, downloadsText, formatCountdown, pairingView, auditEventText, isHttpUrl, isEnter, restartText, offlineText, DEFAULT_SESSION_DAYS,
-    validTunnelHostname, validTunnelToken, validApiToken, tunnelRequest, clearFields, formatMB, tunnelStateText, tunnelControls, tunnelUrl, pairingPublicUrl, tunnelOverrideText, quickCountdownText, tunnelLogText, tunnelVersionText };
+    validTunnelHostname, validTunnelToken, validApiToken, tunnelRequest, clearFields, formatMB, tunnelStateText, tunnelControls, tunnelUrl, pairingPublicUrl, tunnelOverrideText, tunnelListen, tunnelServiceText, quickCountdownText, tunnelLogText, tunnelVersionText };
   if (typeof globalThis.__anywhereTest === 'object') {
     Object.assign(globalThis.__anywhereTest, api);
     return;
@@ -1118,6 +1138,7 @@
     shown($('aw-tunnel-remove-note'), c.remove);
     for (const id of ['aw-tunnel-register-btn', 'aw-tunnel-create-btn']) if ($(id)) $(id).disabled = tunnelBusy;
     shown($('aw-tunnel-token-form'), c.forms);
+    if ($('aw-tunnel-service-note')) setText($('aw-tunnel-service-note'), tunnelServiceText(s));
     shown($('aw-tunnel-create-form'), c.forms);
     shown($('aw-tunnel-quick-box'), c.quick || c.quickStop);
 
