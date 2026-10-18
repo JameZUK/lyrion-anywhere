@@ -2,7 +2,9 @@
 
 Dated entries, newest first.
 
-## Unreleased (0.6.1)
+## 2026-10-18: Plugin 0.6.1 released
+
+The web player fix for issue #12 (below), on top of 0.6.0. Notes: `docs/release-notes/v0.6.1.md`. Deployed to the owner's server before the tag; the fix itself was reasoned from the reporter's diagnostics and gateway log, not reproduced locally.
 
 ### Web
 
