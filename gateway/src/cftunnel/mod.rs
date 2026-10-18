@@ -1048,8 +1048,9 @@ impl Tunnel {
             if let Err(e) = &r {
                 t.note(e);
             }
+            let ok = r.is_ok();
             let then = t.m().install_finished(r);
-            if let Err(e) = t.persist() {
+            if ok && let Err(e) = t.persist() {
                 tracing::warn!(error = %scrub(&e.message), "could not record the tunnel's state");
             }
             if let Some(mode) = then {
@@ -1258,7 +1259,6 @@ impl Tunnel {
             self.drop_secret(t);
         }
         self.end_run(id);
-        let _ = id;
     }
 
     /// Sleep before a restart; `false` if told to stop (or the hour ran out) meanwhile.
@@ -1630,11 +1630,11 @@ impl Tunnel {
             }
             let ok = r.is_ok();
             self.m().install_finished(r);
-            let _ = self.persist();
             if !ok {
                 self.drop_secret(req.api_token.expose());
                 return;
             }
+            let _ = self.persist();
             self.m().creating(api::Step::Zone);
         }
         let result = api::create(&self.web, &self.s.api_base, &req, |step| {
@@ -1713,13 +1713,14 @@ impl Tunnel {
     pub async fn quick(self: &Arc<Self>) -> Result<Accepted, Refusal> {
         self.check_supported()?;
         let mut control = self.control.lock().await;
-        match {
+        let running = {
             let m = self.m();
             if m.busy() {
                 return Err(refuse(409, BUSY));
             }
             m.running()
-        } {
+        };
+        match running {
             Some(Mode::Registered) => return Err(refuse(409, REGISTERED_RUNNING)),
             Some(_) => return Ok(Accepted::Started),
             None => {}
