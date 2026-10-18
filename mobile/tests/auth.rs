@@ -83,7 +83,7 @@ async fn two_step_sign_in() {
         .unwrap();
     let setup = h
         .accounts
-        .totp_begin(t.principal.user_id, "carol", PW)
+        .totp_begin(t.principal.user_id, "carol", t.principal.device_id, PW)
         .unwrap();
     h.accounts
         .totp_confirm(t.principal.user_id, "carol", &totp_code(&setup.secret, 0))

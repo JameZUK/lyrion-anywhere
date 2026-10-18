@@ -115,7 +115,10 @@ async fn two_step_users_need_their_code() {
     let s = h.session(MemStore::new());
     let who = s.login("carol".into(), PW.into(), None).await.unwrap();
     let user = h.accounts.user_id_by_name("carol").unwrap().unwrap();
-    let setup = h.accounts.totp_begin(user, "carol", PW).unwrap();
+    let setup = h
+        .accounts
+        .totp_begin(user, "carol", who.device.id, PW)
+        .unwrap();
     h.accounts
         .totp_confirm(user, "carol", &totp_code(&setup.secret, 0))
         .unwrap();
