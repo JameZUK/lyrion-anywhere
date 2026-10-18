@@ -49,7 +49,8 @@ if [ "${ANYWHERE_RUN_ARM:-}" = 1 ]; then
 	ALPINE_IMAGE=alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 	for pair in arm64:aarch64 arm/v7:armhf; do
 		p=${pair%%:*} d=${pair##*:}
-		t "$d gateway runs (emulated)" 'docker run --rm --platform "linux/$p" -v "$X/Bin/$d-linux:/b:ro" "$ALPINE_IMAGE" /b/anywhere-gateway --version >/dev/null 2>&1'
+		# The output is kept and shown on failure: QEMU and Docker errors are otherwise invisible.
+		t "$d gateway runs (emulated)" 'docker run --rm --platform "linux/$p" -v "$X/Bin/$d-linux:/b:ro" "$ALPINE_IMAGE" /b/anywhere-gateway --version >"$X/emulated.out" 2>&1 || { sed "s/^/    /" "$X/emulated.out"; false; }'
 	done
 fi
 
