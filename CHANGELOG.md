@@ -2,6 +2,15 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: Gateway: reads no longer wait for writes (review M7)
+
+The follow-up to M7 from the 15 October review. Writes on request paths already ran on the blocking pool, but every read shared the account database's one connection and its lock, so a write holding it (or stalled on the disk) still queued every request behind it, starting with the player-permission check each RPC makes.
+
+- **A read connection** (`accounts.rs`): the database now has a second connection to the same file, opened read-only and with `PRAGMA query_only` (a stray write through it fails), after the migrations have run so it sees the current schema. Under WAL a reader never waits for the writer and sees every committed write. Pure reads use it: `player_scope`, `device_active`, account settings (two-step state, download permission, session lifetime, admin-only plugins), own and admin device lists, user and grant listings, the audit log, diagnostics, offline-play lookups, and the read halves of history, ratings, Home, stations and filters (`Accounts::read_db`). Anything that writes, or reads to decide a write (sign-in, pairing, renewal, rename, the "insert if missing" settings), stays on the writer (`with_db`). An in-memory database (unit tests, the demo) has the one connection, which reads use too (`has_read_connection` says which).
+- **Admin API off the async workers** (`admin.rs`): every handler's database work, reads and writes, now runs through `Gateway::db` on the blocking pool, as the user-facing paths do.
+- **Tests:** the integration harness now keeps its accounts database on disk (in a scratch folder removed with it), so every gateway integration test runs with the read connection, as in production. New in `tests/db_stall.rs`: `a_stalled_write_does_not_hold_up_requests_that_only_read` (an RPC status call, `/v1/account`, `/v1/devices`, history, ratings style, filters and Home), `a_stalled_write_does_not_hold_up_admin_reads` and `an_admin_write_waiting_for_the_database_does_not_hold_up_other_requests`; all three failed before the change. Unit tests in `accounts.rs`: `the_read_connection_sees_each_write_once_it_commits` (including a revocation seen by the next permission check), `reads_do_not_wait_for_a_write_in_progress`, `a_write_through_the_read_connection_is_refused` (also with `query_only` switched off), `in_memory_databases_read_what_they_wrote` and `the_read_connection_sees_the_migrated_schema`.
+- **Docs:** SPEC (account data).
+
 ## 2026-10-18: The web app shows the plugin's version
 
 Settings › About (and the Settings index) showed the web app's own package.json version, which never changed, so it read "0.1.0" through every release. The build now takes the version from `plugin/Plugins/LyrionAnywhere/install.xml`, the one release the web app ships in (`__PLUGIN_VERSION__`, defined in `vite.config.ts`; a build outside the full checkout falls back to the package version). Test: `tests/version.test.ts` checks the built-in version against install.xml and that About shows it.

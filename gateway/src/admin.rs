@@ -4,6 +4,9 @@
 //! Every request must also come from a loopback address, carry no proxy headers, and present
 //! the admin secret (generated at first start, stored mode 0600 next to the database) as a
 //! bearer token.
+//!
+//! Database work runs on the blocking pool ([`crate::Gateway::db`]), never on an async
+//! worker: a write waiting for the disk must not hold up the player sessions sharing it.
 
 use std::net::SocketAddr;
 
@@ -104,7 +107,7 @@ fn err(e: AuthError) -> Response {
 }
 
 async fn list_users(State(st): State<AdminState>) -> Response {
-    match st.gw.accounts().list_users() {
+    match st.gw.db(|a| a.list_users()).await {
         Ok(u) => Json(json!({ "users": u })).into_response(),
         Err(e) => err(e),
     }
@@ -122,18 +125,19 @@ async fn create_user(State(st): State<AdminState>, Json(u): Json<NewUser>) -> Re
     let Some(role) = Role::parse(&u.role) else {
         return err(AuthError::BadInput("role must be listener or admin"));
     };
-    let accounts = st.gw.accounts().clone();
-    match tokio::task::spawn_blocking(move || accounts.create_user(&u.username, &u.password, role))
+    match st
+        .gw
+        .db(move |a| a.create_user(&u.username, &u.password, role))
         .await
     {
-        Ok(Ok(id)) => (StatusCode::CREATED, Json(json!({ "id": id }))).into_response(),
-        Ok(Err(e)) => err(e),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(id) => (StatusCode::CREATED, Json(json!({ "id": id }))).into_response(),
+        Err(e) => err(e),
     }
 }
 
 async fn delete_user(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
-    match st.gw.accounts().delete_user(&name) {
+    let user = name.clone();
+    match st.gw.db(move |a| a.delete_user(&user)).await {
         Ok(devices) => {
             // Its remembered stats go with it (a later user could get the same id).
             st.gw.stats.forget_name(&name);
@@ -155,15 +159,13 @@ async fn set_password(
     Path(name): Path<String>,
     Json(p): Json<NewPassword>,
 ) -> Response {
-    let accounts = st.gw.accounts().clone();
-    match tokio::task::spawn_blocking(move || accounts.set_password(&name, &p.password)).await {
-        Ok(Ok(devices)) => {
+    match st.gw.db(move |a| a.set_password(&name, &p.password)).await {
+        Ok(devices) => {
             // A password reset signs the user out everywhere.
             st.gw.end_sessions_for(&devices).await;
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(Err(e)) => err(e),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => err(e),
     }
 }
 
@@ -178,7 +180,7 @@ async fn set_disabled(
     Path(name): Path<String>,
     Json(d): Json<Disabled>,
 ) -> Response {
-    match st.gw.accounts().set_disabled(&name, d.disabled) {
+    match st.gw.db(move |a| a.set_disabled(&name, d.disabled)).await {
         Ok(devices) => {
             st.gw.end_sessions_for(&devices).await;
             StatusCode::NO_CONTENT.into_response()
@@ -202,8 +204,9 @@ async fn settings(State(st): State<AdminState>) -> Response {
         .into_iter()
         .map(crate::transcode::Format::as_str)
         .collect();
+    let days = st.gw.db(|a| a.session_days()).await;
     Json(json!({
-        "session_days": st.gw.accounts().session_days(),
+        "session_days": days,
         "session_days_default": crate::accounts::DEFAULT_SESSION_DAYS,
         "session_days_min": crate::accounts::SESSION_DAYS.start(),
         "session_days_max": crate::accounts::SESSION_DAYS.end(),
@@ -213,7 +216,7 @@ async fn settings(State(st): State<AdminState>) -> Response {
 }
 
 async fn set_settings(State(st): State<AdminState>, Json(s): Json<Settings>) -> Response {
-    match st.gw.accounts().set_session_days(s.session_days) {
+    match st.gw.db(move |a| a.set_session_days(s.session_days)).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(e),
     }
@@ -305,7 +308,7 @@ async fn plugins(State(st): State<AdminState>) -> Response {
             add(c, &name, "menu");
         }
     }
-    let admin_only = gw.accounts().admin_only_plugins();
+    let admin_only = gw.db(|a| a.admin_only_plugins()).await;
     for c in &admin_only {
         found
             .entry(c.clone())
@@ -328,14 +331,18 @@ async fn plugins(State(st): State<AdminState>) -> Response {
 }
 
 async fn set_plugins(State(st): State<AdminState>, Json(a): Json<AdminOnly>) -> Response {
-    match st.gw.accounts().set_admin_only_plugins(&a.admin_only) {
+    match st
+        .gw
+        .db(move |acc| acc.set_admin_only_plugins(&a.admin_only))
+        .await
+    {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(e),
     }
 }
 
 async fn pairing_code(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
-    match st.gw.accounts().create_pairing_code(&name) {
+    match st.gw.db(move |a| a.create_pairing_code(&name)).await {
         Ok(code) => Json(json!({
             "code": code,
             "expires_in": crate::accounts::PAIRING_TTL.as_secs(),
@@ -361,8 +368,8 @@ async fn set_downloads(
 ) -> Response {
     match st
         .gw
-        .accounts()
-        .set_downloads(&name, d.enabled, d.formats.as_deref())
+        .db(move |a| a.set_downloads(&name, d.enabled, d.formats.as_deref()))
+        .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(e),
@@ -371,14 +378,14 @@ async fn set_downloads(
 
 /// Remove a user's two-step verification (e.g. they lost their phone).
 async fn reset_totp(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
-    match st.gw.accounts().totp_reset(&name) {
+    match st.gw.db(move |a| a.totp_reset(&name)).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(e),
     }
 }
 
 async fn list_grants(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
-    match st.gw.accounts().players_granted(&name) {
+    match st.gw.db(move |a| a.players_granted(&name)).await {
         Ok(p) => Json(json!({ "players": p })).into_response(),
         Err(e) => err(e),
     }
@@ -396,7 +403,7 @@ async fn grant(
     Path(name): Path<String>,
     Json(g): Json<Grant>,
 ) -> Response {
-    match st.gw.accounts().grant_player(&name, &g.player) {
+    match st.gw.db(move |a| a.grant_player(&name, &g.player)).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(e),
     }
@@ -406,21 +413,21 @@ async fn ungrant(
     State(st): State<AdminState>,
     Path((name, mac)): Path<(String, String)>,
 ) -> Response {
-    match st.gw.accounts().ungrant_player(&name, &mac) {
+    match st.gw.db(move |a| a.ungrant_player(&name, &mac)).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(e),
     }
 }
 
 async fn list_devices(State(st): State<AdminState>) -> Response {
-    match st.gw.accounts().list_devices() {
+    match st.gw.db(|a| a.list_devices()).await {
         Ok(d) => Json(json!({ "devices": d })).into_response(),
         Err(e) => err(e),
     }
 }
 
 async fn device_diagnostics(State(st): State<AdminState>, Path(id): Path<i64>) -> Response {
-    match st.gw.accounts().diagnostics(id) {
+    match st.gw.db(move |a| a.diagnostics(id)).await {
         Ok(Some((at, report))) => {
             let report: serde_json::Value =
                 serde_json::from_str(&report).unwrap_or(serde_json::Value::Null);
@@ -436,7 +443,7 @@ async fn device_diagnostics(State(st): State<AdminState>, Path(id): Path<i64>) -
 }
 
 async fn revoke_device(State(st): State<AdminState>, Path(id): Path<i64>) -> Response {
-    match st.gw.accounts().revoke_device(id) {
+    match st.gw.db(move |a| a.revoke_device(id)).await {
         Ok(true) => {
             st.gw.end_sessions_for(&[id]).await;
             StatusCode::NO_CONTENT.into_response()
@@ -456,7 +463,8 @@ async fn audit(
     Query(q): Query<AuditQuery>,
     _h: HeaderMap,
 ) -> Response {
-    match st.gw.accounts().audit_log(q.limit.unwrap_or(100)) {
+    let limit = q.limit.unwrap_or(100);
+    match st.gw.db(move |a| a.audit_log(limit)).await {
         Ok(a) => Json(json!({ "audit": a })).into_response(),
         Err(e) => err(e),
     }

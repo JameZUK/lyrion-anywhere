@@ -164,7 +164,7 @@ pub fn unix_now() -> u64 {
 
 /// Is history on for this user? (On unless they switched it off.)
 pub fn enabled(a: &Accounts, user: i64) -> Result<bool, AuthError> {
-    a.with_db(|db| {
+    a.read_db(|db| {
         Ok(db
             .query_row(
                 "SELECT history FROM user_prefs WHERE user_id = ?1",
@@ -250,7 +250,7 @@ pub fn list(
 ) -> Result<(Vec<Entry>, Option<Cursor>), AuthError> {
     let limit = limit.clamp(1, MAX_PAGE);
     let (at, id) = before.map_or((i64::MAX, i64::MAX), |c| (c.played_at, c.id));
-    let rows = a.with_db(|db| {
+    let rows = a.read_db(|db| {
         let mut st = db.prepare(
             "SELECT id, track_key, track_id, album_id, artist_id, year, played_at, seconds, source
              FROM history WHERE user_id = ?1 AND (played_at < ?2 OR (played_at = ?2 AND id < ?3))
@@ -288,7 +288,7 @@ fn row_entry(r: &rusqlite::Row) -> rusqlite::Result<Entry> {
 
 /// Every play of the user's since `since` (for scoring), newest first, at most `cap`.
 pub fn since(a: &Accounts, user: i64, since: i64, cap: usize) -> Result<Vec<Entry>, AuthError> {
-    a.with_db(|db| {
+    a.read_db(|db| {
         let mut st = db.prepare(
             "SELECT id, track_key, track_id, album_id, artist_id, year, played_at, seconds, source
              FROM history WHERE user_id = ?1 AND played_at >= ?2
@@ -308,7 +308,7 @@ pub fn between(
     to: i64,
     cap: usize,
 ) -> Result<Vec<Entry>, AuthError> {
-    a.with_db(|db| {
+    a.read_db(|db| {
         let mut st = db.prepare(
             "SELECT id, track_key, track_id, album_id, artist_id, year, played_at, seconds, source
              FROM history WHERE user_id = ?1 AND played_at >= ?2 AND played_at < ?3
@@ -322,7 +322,7 @@ pub fn between(
 /// When the user first played each artist, over everything the history keeps (for "new
 /// this period" in the listening stats).
 pub fn first_plays(a: &Accounts, user: i64) -> Result<HashMap<i64, i64>, AuthError> {
-    a.with_db(|db| {
+    a.read_db(|db| {
         let mut st = db.prepare(
             "SELECT artist_id, MIN(played_at) FROM history
              WHERE user_id = ?1 AND artist_id > 0 GROUP BY artist_id",
@@ -365,7 +365,7 @@ pub fn prune_user(a: &Accounts, user: i64, cap: usize) -> Result<usize, AuthErro
 
 /// How many plays are kept for this user.
 pub fn count(a: &Accounts, user: i64) -> Result<usize, AuthError> {
-    a.with_db(|db| {
+    a.read_db(|db| {
         db.query_row(
             "SELECT count(*) FROM history WHERE user_id = ?1",
             [user],

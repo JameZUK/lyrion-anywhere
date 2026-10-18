@@ -379,7 +379,7 @@ pub fn seed(a: &Accounts, user: i64) -> Result<(), AuthError> {
 /// A user's stations or pinned menus, oldest first. Anything stored that no longer
 /// parses is left out.
 pub fn list(a: &Accounts, user: i64, kind: PinKind) -> Result<Vec<Pin>, AuthError> {
-    let rows: Vec<(i64, String, String, Option<String>)> = a.with_db(|db| {
+    let rows: Vec<(i64, String, String, Option<String>)> = a.read_db(|db| {
         let mut st = db.prepare(
             "SELECT id, name, spec, broken FROM user_pins WHERE user_id = ?1 AND kind = ?2 ORDER BY id",
         )?;
@@ -411,7 +411,7 @@ pub fn get(a: &Accounts, user: i64, kind: PinKind, id: i64) -> Result<Option<Pin
 
 /// Does this user own a pin of this kind with this id?
 pub fn owns(a: &Accounts, user: i64, kind: PinKind, id: i64) -> Result<bool, AuthError> {
-    a.with_db(|db| {
+    a.read_db(|db| {
         db.query_row(
             "SELECT 1 FROM user_pins WHERE user_id = ?1 AND kind = ?2 AND id = ?3",
             params![user, kind.as_str(), id],

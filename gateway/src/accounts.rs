@@ -30,11 +30,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
 use anywhere_core::proto::format_mac;
@@ -696,6 +696,13 @@ const FIRST_LOCKOUT: Duration = Duration::from_secs(15 * 60);
 const MAX_LOCKOUT: Duration = Duration::from_secs(24 * 3600);
 
 pub struct Accounts {
+    /// The read-only connection that request-path reads use (see [`Self::reader`]), on the
+    /// same file as `db`. Under WAL a reader never waits for the writer (nor a write stalled
+    /// on the disk) and sees every committed write. `None` for an in-memory database, which
+    /// a second connection could not share: reads then use `db`. Declared before `db` so it
+    /// closes first, leaving the writer to checkpoint and tidy the WAL away.
+    reader: Option<Mutex<Connection>>,
+    /// The one connection that writes (and reads that must see the same transaction).
     db: Mutex<Connection>,
     access: Mutex<HashMap<[u8; 32], AccessEntry>>,
     limits: Mutex<HashMap<String, Lock>>,
@@ -808,25 +815,69 @@ fn prune_audit_on(db: &Connection, max_rows: i64, oldest: i64) -> rusqlite::Resu
     Ok(old + surplus)
 }
 
+/// The read connection for the database at `path`: opened read-only, and `query_only` as
+/// well, so a write through it is refused whatever SQL asks. The busy timeout is rusqlite's
+/// (5 s, as on the writer): under WAL a reader waits only while the database is recovered.
+fn open_reader(path: &Path) -> Result<Connection, AuthError> {
+    let db = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    db.execute_batch(
+        "PRAGMA foreign_keys = ON;
+         PRAGMA query_only = 1;",
+    )?;
+    Ok(db)
+}
+
 /// Pairing codes: 10 characters from an unambiguous alphabet (~50 bits), easy to type.
 const PAIRING_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 impl Accounts {
+    /// Open (creating and migrating as needed) the database at `path`, with a second,
+    /// read-only connection for reads.
     pub fn open(path: &Path) -> Result<Accounts, AuthError> {
-        Self::with_connection(Connection::open(path)?)
+        let mut a = Self::with_connection(Connection::open(path)?)?;
+        // Opened only now, so it sees the schema `migrate` has brought up to date.
+        a.reader = Some(Mutex::new(open_reader(path)?));
+        Ok(a)
     }
 
+    /// A private in-memory database (tests, the demo). It has the one connection: reads go
+    /// through the writer, so they see what it wrote.
     pub fn in_memory() -> Result<Accounts, AuthError> {
         Self::with_connection(Connection::open_in_memory()?)
     }
 
-    /// Run `f` on the database (for the per-user stores in [`crate::history`],
-    /// [`crate::home`] and [`crate::stations`], which keep their own SQL).
+    /// Whether reads have a connection of their own (a database on disk).
+    pub fn has_read_connection(&self) -> bool {
+        self.reader.is_some()
+    }
+
+    /// The connection for reads: the read-only one, or the writer for an in-memory database.
+    /// Never call it with the writer's lock held (in memory, that is the same lock).
+    fn reader(&self) -> MutexGuard<'_, Connection> {
+        self.reader.as_ref().unwrap_or(&self.db).lock().unwrap()
+    }
+
+    /// Run `f` on the write connection (for the per-user stores in [`crate::history`],
+    /// [`crate::home`], [`crate::ratings`], [`crate::filters`] and [`crate::stations`],
+    /// which keep their own SQL). Anything that writes, or reads to decide a write, uses this.
     pub(crate) fn with_db<T>(
         &self,
         f: impl FnOnce(&Connection) -> rusqlite::Result<T>,
     ) -> Result<T, AuthError> {
         Ok(f(&self.db.lock().unwrap())?)
+    }
+
+    /// Run `f`, which only reads, on the read connection: it doesn't wait for a write in
+    /// progress, and sees every write committed before it started. A write attempted here
+    /// fails (the connection is read-only).
+    pub(crate) fn read_db<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+    ) -> Result<T, AuthError> {
+        Ok(f(&self.reader())?)
     }
 
     /// The database's schema version (for tests).
@@ -876,6 +927,7 @@ impl Accounts {
         )?;
         migrate(&db)?;
         Ok(Accounts {
+            reader: None,
             db: Mutex::new(db),
             access: Mutex::new(HashMap::new()),
             limits: Mutex::new(HashMap::new()),
@@ -995,7 +1047,7 @@ impl Accounts {
     }
 
     pub fn list_users(&self) -> Result<Vec<UserInfo>, AuthError> {
-        let db = self.db.lock().unwrap();
+        let db = self.reader();
         let mut st = db.prepare(
             "SELECT id, username, role, disabled, totp_enabled, downloads, download_formats
              FROM users ORDER BY username",
@@ -1020,9 +1072,7 @@ impl Accounts {
 
     pub fn user_count(&self) -> Result<i64, AuthError> {
         Ok(self
-            .db
-            .lock()
-            .unwrap()
+            .reader()
             .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?)
     }
 
@@ -1419,7 +1469,7 @@ impl Accounts {
 
     /// The sign-in lifetime in days (how long an unused device stays signed in).
     pub fn session_days(&self) -> u32 {
-        session_days_on(&self.db.lock().unwrap())
+        session_days_on(&self.reader())
     }
 
     /// Change the sign-in lifetime. It applies from each device's next sign-in or renewal.
@@ -1439,9 +1489,7 @@ impl Accounts {
     /// Plugin commands (e.g. `audiomuseai`) only admins may use. Listeners neither see nor
     /// run them. A stored value that doesn't parse counts as none.
     pub fn admin_only_plugins(&self) -> HashSet<String> {
-        self.db
-            .lock()
-            .unwrap()
+        self.reader()
             .query_row(
                 "SELECT value FROM settings WHERE key = 'admin_only_plugins'",
                 [],
@@ -1484,9 +1532,7 @@ impl Accounts {
     /// the next request. A disabled or unknown user may download nothing.
     pub fn download_policy(&self, user_id: i64) -> Result<DownloadPolicy, AuthError> {
         let row: Option<(i64, String)> = self
-            .db
-            .lock()
-            .unwrap()
+            .reader()
             .query_row(
                 "SELECT downloads, download_formats FROM users WHERE id = ?1 AND disabled = 0",
                 [user_id],
@@ -1606,7 +1652,7 @@ impl Accounts {
     // -----------------------------------------------------------------------
 
     fn totp_state(&self, user: i64) -> Result<(Option<Vec<u8>>, bool, u64), AuthError> {
-        Ok(self.db.lock().unwrap().query_row(
+        Ok(self.reader().query_row(
             "SELECT totp_secret, totp_enabled, totp_last_step FROM users WHERE id = ?1",
             [user],
             |r| {
@@ -1921,7 +1967,7 @@ impl Accounts {
 
     /// A user's devices that are still signed in, oldest first.
     pub fn own_devices(&self, user: i64) -> Result<Vec<OwnDevice>, AuthError> {
-        let db = self.db.lock().unwrap();
+        let db = self.reader();
         let mut st = db.prepare(
             "SELECT id, name, client_kind, client_platform, created_at, last_seen FROM devices
              WHERE user_id = ?1 AND revoked = 0 ORDER BY id",
@@ -1990,7 +2036,7 @@ impl Accounts {
                 players: HashSet::new(),
             });
         }
-        let db = self.db.lock().unwrap();
+        let db = self.reader();
         let mut players: HashSet<String> = HashSet::new();
         let mut st = db.prepare("SELECT mac FROM devices WHERE user_id = ?1 AND revoked = 0")?;
         for mac in st.query_map([p.user_id], |r| r.get::<_, String>(0))? {
@@ -2032,7 +2078,7 @@ impl Accounts {
     }
 
     pub fn players_granted(&self, username: &str) -> Result<Vec<String>, AuthError> {
-        let db = self.db.lock().unwrap();
+        let db = self.reader();
         let mut st = db.prepare(
             "SELECT p.mac FROM user_players p JOIN users u ON u.id = p.user_id
              WHERE u.username = ?1 ORDER BY p.mac",
@@ -2046,7 +2092,7 @@ impl Accounts {
     // -----------------------------------------------------------------------
 
     pub fn list_devices(&self) -> Result<Vec<DeviceInfo>, AuthError> {
-        let db = self.db.lock().unwrap();
+        let db = self.reader();
         let mut st = db.prepare(
             "SELECT d.id, u.username, d.name, d.mac, d.created_at, d.last_seen, d.last_addr,
                     d.client_kind, d.client_platform, d.user_agent
@@ -2158,9 +2204,7 @@ impl Accounts {
         within: u64,
     ) -> Result<bool, AuthError> {
         let found: Option<i64> = self
-            .db
-            .lock()
-            .unwrap()
+            .reader()
             .query_row(
                 "SELECT 1 FROM plays WHERE user_id = ?1 AND track_id = ?2 AND state = 1
                  AND key != ?3 AND played_at > ?4 - ?5 AND played_at < ?4 + ?5 LIMIT 1",
@@ -2207,7 +2251,7 @@ impl Accounts {
 
     /// How many play keys are kept for this user (recorded or being forwarded).
     pub fn stored_plays(&self, user: i64) -> Result<usize, AuthError> {
-        let n: i64 = self.db.lock().unwrap().query_row(
+        let n: i64 = self.reader().query_row(
             "SELECT count(*) FROM plays WHERE user_id = ?1",
             [user],
             |r| r.get(0),
@@ -2218,9 +2262,7 @@ impl Accounts {
     /// A user's id, by name.
     pub fn user_id_by_name(&self, username: &str) -> Result<Option<i64>, AuthError> {
         Ok(self
-            .db
-            .lock()
-            .unwrap()
+            .reader()
             .query_row(
                 "SELECT id FROM users WHERE username = ?1",
                 [username],
@@ -2242,7 +2284,7 @@ impl Accounts {
 
     /// A device's latest diagnostics: (updated_at, report JSON).
     pub fn diagnostics(&self, device_id: i64) -> Result<Option<(i64, String)>, AuthError> {
-        let db = self.db.lock().unwrap();
+        let db = self.reader();
         let mut st =
             db.prepare("SELECT updated_at, report FROM device_diagnostics WHERE device_id = ?1")?;
         let mut rows = st.query([device_id])?;
@@ -2330,9 +2372,7 @@ impl Accounts {
 
     /// The device exists, isn't revoked, and its user isn't disabled.
     pub fn device_active(&self, device_id: i64) -> bool {
-        self.db
-            .lock()
-            .unwrap()
+        self.reader()
             .query_row(
                 "SELECT 1 FROM devices d JOIN users u ON u.id = d.user_id
                  WHERE d.id = ?1 AND d.revoked = 0 AND u.disabled = 0",
@@ -2563,9 +2603,7 @@ impl Accounts {
 
     fn own_device(&self, user: i64, device: i64) -> Result<Option<i64>, AuthError> {
         Ok(self
-            .db
-            .lock()
-            .unwrap()
+            .reader()
             .query_row(
                 "SELECT id FROM devices WHERE id = ?1 AND user_id = ?2 AND revoked = 0",
                 params![device, user],
@@ -2829,7 +2867,7 @@ impl Accounts {
     }
 
     pub fn audit_log(&self, limit: u32) -> Result<Vec<AuditEntry>, AuthError> {
-        let db = self.db.lock().unwrap();
+        let db = self.reader();
         let mut st = db.prepare(
             "SELECT at, event, username, device_id, detail FROM audit ORDER BY id DESC LIMIT ?1",
         )?;
@@ -6218,5 +6256,193 @@ mod tests {
             .filter(|e| e.event == "device.revoked")
             .count();
         assert_eq!(revocations, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // The read connection (review M7, follow-up)
+    // -----------------------------------------------------------------------
+
+    /// A database file in the temp folder, removed (with its WAL files) when dropped.
+    struct TempDb(std::path::PathBuf);
+
+    impl TempDb {
+        fn new(tag: &str) -> TempDb {
+            TempDb(std::env::temp_dir().join(format!("anywhere-{tag}-{}.db", crate::random_id())))
+        }
+    }
+
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            for ext in ["", "-wal", "-shm"] {
+                let mut p = self.0.clone().into_os_string();
+                p.push(ext);
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+
+    fn on_disk(f: &TempDb) -> Accounts {
+        let a = Accounts::open(&f.0).unwrap();
+        a.create_user("alice", PW, Role::Listener).unwrap();
+        a
+    }
+
+    #[test]
+    fn the_read_connection_sees_each_write_once_it_commits() {
+        let f = TempDb::new("reader");
+        let a = on_disk(&f);
+        assert!(a.has_read_connection());
+        // A user, a device and a grant, each read back at once through the reader.
+        a.create_user("bob", PW, Role::Listener).unwrap();
+        assert!(a.list_users().unwrap().iter().any(|u| u.username == "bob"));
+        assert_eq!(a.user_id_by_name("bob").unwrap(), Some(user_id(&a, "bob")));
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let p = t.principal.clone();
+        assert!(a.device_active(p.device_id));
+        assert!(a.player_scope(&p).unwrap().allows(&p.mac_string()));
+        a.grant_player("alice", "00:04:20:00:00:01").unwrap();
+        assert!(a.player_scope(&p).unwrap().allows("00:04:20:00:00:01"));
+        a.set_session_days(30).unwrap();
+        assert_eq!(a.session_days(), 30);
+        // Security: a revocation is seen by the very next permission check.
+        assert!(a.revoke_device(p.device_id).unwrap());
+        assert!(!a.device_active(p.device_id));
+        assert!(!a.player_scope(&p).unwrap().allows(&p.mac_string()));
+        assert!(a.own_devices(p.user_id).unwrap().is_empty());
+    }
+
+    /// Under WAL the reader neither waits for a write in progress nor sees it before it
+    /// commits.
+    #[test]
+    fn reads_do_not_wait_for_a_write_in_progress() {
+        let f = TempDb::new("reader-wait");
+        let a = on_disk(&f);
+        let count = |a: &Accounts| {
+            a.read_db(|db| db.query_row("SELECT count(*) FROM users", [], |r| r.get::<_, i64>(0)))
+                .unwrap()
+        };
+        let (started_tx, started) = std::sync::mpsc::channel();
+        let (commit, commit_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|s| {
+            let a = &a;
+            let writer = s.spawn(move || {
+                a.with_db(|db| {
+                    db.execute_batch(
+                        "BEGIN IMMEDIATE;
+                         INSERT INTO users (username, password_hash, role, created_at)
+                         VALUES ('carol', 'x', 'listener', 0);",
+                    )?;
+                    started_tx.send(()).unwrap();
+                    // Holds the write lock (and the writer's mutex) until told to commit.
+                    commit_rx.recv().unwrap();
+                    db.execute_batch("COMMIT")
+                })
+                .unwrap()
+            });
+            started.recv().unwrap();
+            let t = Instant::now();
+            assert_eq!(count(a), 1, "an uncommitted write is not visible");
+            assert!(a.user_id_by_name("carol").unwrap().is_none());
+            assert!(
+                t.elapsed() < Duration::from_millis(500),
+                "{:?}",
+                t.elapsed()
+            );
+            commit.send(()).unwrap();
+            writer.join().unwrap();
+        });
+        assert_eq!(count(&a), 2, "and visible once committed");
+    }
+
+    /// Security: the read connection can't be used to write, even by SQL that switches its
+    /// `query_only` guard off (it is opened read-only as well).
+    #[test]
+    fn a_write_through_the_read_connection_is_refused() {
+        let f = TempDb::new("reader-ro");
+        let a = on_disk(&f);
+        let write = "INSERT INTO settings (key, value) VALUES ('stray', '1')";
+        assert!(a.read_db(|db| db.execute(write, [])).is_err());
+        assert!(
+            a.read_db(|db| db.execute("UPDATE users SET role = 'admin'", []))
+                .is_err()
+        );
+        assert!(
+            a.read_db(|db| {
+                db.execute_batch("PRAGMA query_only = 0")?;
+                db.execute(write, [])
+            })
+            .is_err()
+        );
+        assert!(
+            a.read_db(|db| db.execute_batch("DROP TABLE audit"))
+                .is_err()
+        );
+        // Nothing changed, and the writer still works.
+        let stray: Option<String> = a
+            .with_db(|db| {
+                db.query_row("SELECT value FROM settings WHERE key = 'stray'", [], |r| {
+                    r.get(0)
+                })
+                .optional()
+            })
+            .unwrap();
+        assert_eq!(stray, None);
+        assert_eq!(a.list_users().unwrap()[0].role, "listener");
+        assert!(a.with_db(|db| db.execute(write, [])).is_ok());
+        assert_eq!(
+            a.read_db(|db| db.query_row(
+                "SELECT value FROM settings WHERE key = 'stray'",
+                [],
+                |r| r.get::<_, String>(0)
+            ))
+            .unwrap(),
+            "1"
+        );
+    }
+
+    /// An in-memory database has no second connection (a second one would be a different,
+    /// empty database): reads go through the writer and see what it wrote.
+    #[test]
+    fn in_memory_databases_read_what_they_wrote() {
+        let a = store();
+        assert!(!a.has_read_connection());
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let p = t.principal.clone();
+        assert!(a.player_scope(&p).unwrap().allows(&p.mac_string()));
+        assert_eq!(a.own_devices(p.user_id).unwrap().len(), 1);
+        a.set_session_days(7).unwrap();
+        assert_eq!(a.session_days(), 7);
+        assert!(a.revoke_device(p.device_id).unwrap());
+        assert!(!a.player_scope(&p).unwrap().allows(&p.mac_string()));
+        // On this one connection a write is not refused: read_db is a promise, not a guard,
+        // and on disk the guard is the read-only connection.
+        assert!(
+            a.read_db(|db| db.query_row("SELECT count(*) FROM users", [], |r| r.get::<_, i64>(0)))
+                .unwrap()
+                >= 1
+        );
+        // Each in-memory store is its own database.
+        let other = Accounts::in_memory().unwrap();
+        assert!(other.list_users().unwrap().is_empty());
+    }
+
+    /// The reader opens after the migrations, so it sees the current schema of a database
+    /// an older gateway left.
+    #[test]
+    fn the_read_connection_sees_the_migrated_schema() {
+        let f = TempDb::new("reader-schema");
+        {
+            let a = on_disk(&f);
+            a.with_db(|db| db.execute_batch("DROP TABLE user_filters; PRAGMA user_version = 11;"))
+                .unwrap();
+        }
+        let a = Accounts::open(&f.0).unwrap();
+        let alice = user_id(&a, "alice");
+        assert_eq!(crate::filters::list(&a, alice).unwrap().len(), 0);
+        assert_eq!(
+            a.read_db(|db| db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
     }
 }

@@ -254,7 +254,7 @@ pub fn parse_layout(bytes: &[u8]) -> Result<Layout, Invalid> {
 
 /// The user's saved layout, if any (one that no longer reads is treated as none).
 pub fn load(a: &Accounts, user: i64) -> Result<Option<Layout>, AuthError> {
-    let stored: Option<String> = a.with_db(|db| {
+    let stored: Option<String> = a.read_db(|db| {
         db.query_row(
             "SELECT home FROM user_prefs WHERE user_id = ?1",
             [user],

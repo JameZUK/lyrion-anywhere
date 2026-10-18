@@ -345,7 +345,7 @@ fn row_filter((id, name, spec): (i64, String, String)) -> Option<Filter> {
 
 /// A user's filters, oldest first. Anything stored that no longer parses is left out.
 pub fn list(a: &Accounts, user: i64) -> Result<Vec<Filter>, AuthError> {
-    let rows: Vec<(i64, String, String)> = a.with_db(|db| {
+    let rows: Vec<(i64, String, String)> = a.read_db(|db| {
         let mut st =
             db.prepare("SELECT id, name, spec FROM user_filters WHERE user_id = ?1 ORDER BY id")?;
         let rows = st.query_map([user], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
@@ -356,7 +356,7 @@ pub fn list(a: &Accounts, user: i64) -> Result<Vec<Filter>, AuthError> {
 
 /// One of the user's own filters (never another user's).
 pub fn get(a: &Accounts, user: i64, id: i64) -> Result<Option<Filter>, AuthError> {
-    let row: Option<(i64, String, String)> = a.with_db(|db| {
+    let row: Option<(i64, String, String)> = a.read_db(|db| {
         db.query_row(
             "SELECT id, name, spec FROM user_filters WHERE user_id = ?1 AND id = ?2",
             params![user, id],
@@ -369,7 +369,7 @@ pub fn get(a: &Accounts, user: i64, id: i64) -> Result<Option<Filter>, AuthError
 
 /// Does this user own a filter with this id?
 pub fn owns(a: &Accounts, user: i64, id: i64) -> Result<bool, AuthError> {
-    a.with_db(|db| {
+    a.read_db(|db| {
         db.query_row(
             "SELECT 1 FROM user_filters WHERE user_id = ?1 AND id = ?2",
             params![user, id],
