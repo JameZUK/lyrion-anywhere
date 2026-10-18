@@ -16,6 +16,10 @@
 //!   check), and decode whole to the MD5 in its STREAMINFO with every frame intact
 //!   (`anywhere_core::decode::verify_flac`). Any doubt, and the stream carries on from the
 //!   network.
+//! - **Never in the way:** the check runs on the blocking pool beside the stream, which
+//!   carries on from the network meanwhile; the download takes over from wherever the
+//!   stream has got to. Once the stream's first bytes (`?limit=`) are in, it waits at most
+//!   3 s for a check still running before asking for the rest (2026-10-18).
 //! - **Read only:** the offline index and files are read, never written: the download
 //!   manager owns them. Nothing here is exposed to the app but a "from downloads" flag.
 //! - **Scope:** the signed-in user's downloads on this server only (the same hashed folder

@@ -1044,6 +1044,206 @@ mod tests {
         out_thread.join().unwrap();
     }
 
+    /// Frame `i` of a test stream, as bits no silence (0.0) can be taken for; `tag` tells
+    /// two streams apart.
+    fn tagged(tag: u32, from: u32, n: u32) -> Vec<f32> {
+        (from..from + n)
+            .flat_map(|f| {
+                let s = f32::from_bits(tag | (f + 1));
+                [s, s]
+            })
+            .collect()
+    }
+
+    /// (tag, frame) of a sample made by [`tagged`].
+    fn untag(s: f32) -> (u32, u32) {
+        let b = s.to_bits();
+        (b & 0xff00_0000, (b & 0x00ff_ffff) - 1)
+    }
+
+    /// A consumer on its own thread, reading `block` frames at a time until `stop`: every
+    /// audio frame it played, with the device frame it played at.
+    fn run_output(
+        mut c: Consumer,
+        block: usize,
+        stop: Arc<AtomicBool>,
+    ) -> std::thread::JoinHandle<Vec<(u64, f32)>> {
+        std::thread::spawn(move || {
+            let mut out = vec![0f32; block * CHANNELS];
+            let mut heard = Vec::new();
+            let mut dev = 0u64;
+            while !stop.load(Ordering::Acquire) {
+                c.read(&mut out);
+                for (i, f) in out.chunks(CHANNELS).enumerate() {
+                    assert_eq!(f[0].to_bits(), f[1].to_bits(), "frames stay whole");
+                    if f[0].to_bits() != 0 {
+                        heard.push((dev + i as u64, f[0]));
+                    }
+                }
+                dev += block as u64;
+                std::thread::yield_now();
+            }
+            heard
+        })
+    }
+
+    /// A partial discard while the output runs: what was before the cut plays, in order and
+    /// whole (all of it when the output hadn't reached the cut), and nothing dropped plays
+    /// after the new audio has started.
+    #[test]
+    fn a_partial_discard_while_the_output_runs_never_plays_dropped_audio() {
+        const OLD: u32 = 0x0100_0000;
+        const NEW: u32 = 0x0200_0000;
+        let mut x = 11u64;
+        for round in 0..200 {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let r = Ring::new(4096);
+            r.set_hold(false);
+            let mut p = r.producer().unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            p.write(&tagged(OLD, 0, 1000));
+            let out = run_output(r.consumer().unwrap(), 32, stop.clone());
+            for _ in 0..(x >> 33) % 200 {
+                std::thread::yield_now();
+            }
+            let cut = ((x >> 20) % 1000) * 2;
+            p.discard_from(cut);
+            let read_after = r.read_pos();
+            p.write(&tagged(NEW, 0, 200));
+            while !r.is_empty() {
+                std::thread::yield_now();
+            }
+            stop.store(true, Ordering::Release);
+            let heard = out.join().unwrap();
+            let old: Vec<u32> = heard
+                .iter()
+                .map(|(_, s)| untag(*s))
+                .take_while(|(t, _)| *t == OLD)
+                .map(|(_, f)| f)
+                .collect();
+            let new: Vec<(u32, u32)> = heard[old.len()..].iter().map(|(_, s)| untag(*s)).collect();
+            assert!(
+                old.iter().enumerate().all(|(i, f)| *f == i as u32),
+                "round {round}: the audio before the cut plays in order"
+            );
+            assert_eq!(
+                new,
+                (0..200).map(|f| (NEW, f)).collect::<Vec<_>>(),
+                "round {round}: then the new audio, all of it, and nothing dropped"
+            );
+            let played = old.len() as u64 * CHANNELS as u64;
+            if read_after + 32 * CHANNELS as u64 <= cut {
+                assert_eq!(played, cut, "round {round}: up to the cut exactly");
+            } else {
+                assert!(
+                    played <= cut.max(read_after + 32 * CHANNELS as u64),
+                    "round {round}: {played} played past a cut at {cut}"
+                );
+            }
+        }
+    }
+
+    /// A skip while the output runs and the producer writes: exactly the frames asked for
+    /// are dropped (in pieces if they hadn't all arrived), and nothing else is lost or
+    /// repeated.
+    #[test]
+    fn a_skip_while_the_output_runs_drops_exactly_what_was_asked() {
+        let mut x = 5u64;
+        for round in 0..100 {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let r = Ring::new(2048);
+            r.set_hold(false);
+            let mut p = r.producer().unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let out = run_output(r.consumer().unwrap(), 48, stop.clone());
+            let skip = 1 + (x >> 40) % 700;
+            let at = (x >> 20) % 3000;
+            let total = 4000u32;
+            let mut next = 0u32;
+            let mut asked = false;
+            while next < total {
+                if !asked && u64::from(next) >= at {
+                    r.skip(skip);
+                    asked = true;
+                }
+                let chunk = tagged(0x0100_0000, next, 37.min(total - next));
+                let mut off = 0;
+                while off < chunk.len() {
+                    off += p.write(&chunk[off..]);
+                    std::thread::yield_now();
+                }
+                next += 37.min(total - next);
+            }
+            while !r.is_empty() || r.pending_corrections().1 > 0 {
+                std::thread::yield_now();
+            }
+            stop.store(true, Ordering::Release);
+            let heard: Vec<u32> = out
+                .join()
+                .unwrap()
+                .iter()
+                .map(|(_, s)| untag(*s).1)
+                .collect();
+            let mut gaps = 0u64;
+            let mut prev: Option<u32> = None;
+            for f in &heard {
+                match prev {
+                    Some(p) => {
+                        assert!(*f > p, "round {round}: {f} after {p}");
+                        gaps += u64::from(f - p - 1);
+                    }
+                    None => gaps += u64::from(*f),
+                }
+                prev = Some(*f);
+            }
+            gaps += u64::from(total - 1 - prev.unwrap_or(0));
+            assert_eq!(gaps, skip, "round {round}: dropped exactly the skip");
+            assert_eq!(heard.len() as u64, u64::from(total) - skip);
+            assert_eq!(r.pending_corrections(), (0, 0));
+        }
+    }
+
+    /// A timed start armed while the output runs: the audio starts exactly at the frame
+    /// asked for, or, if that frame had already gone by, as far into the audio as the time
+    /// since (so it is still in step), counted as late.
+    #[test]
+    fn a_timed_start_while_the_output_runs_lands_in_step() {
+        let mut x = 3u64;
+        for round in 0..200 {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let r = Ring::new(8192);
+            r.reset_device_clock();
+            let mut p = r.producer().unwrap();
+            p.write(&tagged(0x0100_0000, 0, 3000));
+            let stop = Arc::new(AtomicBool::new(false));
+            let out = run_output(r.consumer().unwrap(), 16, stop.clone());
+            for _ in 0..(x >> 33) % 100 {
+                std::thread::yield_now();
+            }
+            // Sometimes ahead of the output, sometimes already behind it.
+            let start = (r.device_frames() + (x >> 20) % 400).saturating_sub(100);
+            r.start_at(start);
+            while r.is_held() || !r.is_empty() {
+                std::thread::yield_now();
+            }
+            stop.store(true, Ordering::Release);
+            let heard = out.join().unwrap();
+            let (dev, first) = heard[0];
+            let first = untag(first).1;
+            assert_eq!(
+                dev - u64::from(first),
+                start,
+                "round {round}: frame {first} at device frame {dev} for a start at {start}"
+            );
+            assert_eq!(r.late_frames(), u64::from(first), "round {round}");
+            for (i, (d, s)) in heard.iter().enumerate() {
+                assert_eq!(untag(*s).1, first + i as u32, "round {round}: in order");
+                assert_eq!(*d, dev + i as u64, "round {round}: without a gap");
+            }
+            assert!(!r.start_pending());
+        }
+    }
+
     /// Producer and consumer on two threads: every sample arrives once, in order, intact.
     #[test]
     fn concurrent_transfer_is_lossless_and_ordered() {

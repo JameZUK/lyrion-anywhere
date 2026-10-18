@@ -8,6 +8,10 @@
 //! - **Integrity:** the stable key from `/info` names the file; the size from `/info`
 //!   (originals) and `Content-Length`/`Content-Range` must agree, the body may not run past
 //!   them, and a short body is resumed rather than kept.
+//! - **One fetch per file:** two queued ids that `/info` says are the same file (a rescan
+//!   gave the track a new id) never fetch it at once: the second waits for the first (a
+//!   claim on the stable key, held by the library), then finds the file on the device.
+//!   Cancelling one leaves the partial file the other is still writing.
 //! - **Refusals:** 401 renews the access token once and retries; 403 (no download
 //!   permission) fails for good and is reported so the app can say so; 404 is "not
 //!   downloadable"; 429 waits as `Retry-After` says; other failures back off and retry.
@@ -583,6 +587,10 @@ impl Job {
         });
         let format = pick_format(self.want(), &info.formats);
 
+        // One fetch per file: another id for the same file (after a rescan) being fetched
+        // now is waited for, and then found here below.
+        let _claim = self.library.claim(&info.key).await;
+
         // Already here (perhaps under an older id, before a rescan).
         if let Some((have, _)) = self.library.file_for(&info.key) {
             if self.origin == DownloadOrigin::Manual && have.origin != DownloadOrigin::Manual {
@@ -1157,6 +1165,15 @@ impl Actor {
     /// Stop downloads and throw away what they had stored.
     fn cancel(&mut self, id: Option<i64>) {
         let lib = self.library.clone();
+        // Files another id still being fetched shares (the same file after a rescan): its
+        // partial file is that download's too.
+        let shared: HashSet<String> = self
+            .items
+            .iter()
+            .filter(|i| id.is_some_and(|c| c != i.req.track_id))
+            .filter(|i| i.state != DownloadState::Done)
+            .map(|i| i.key.clone())
+            .collect();
         let mut keep = Vec::new();
         for mut it in self.items.drain(..) {
             if id.is_some_and(|i| i != it.req.track_id) {
@@ -1164,7 +1181,10 @@ impl Actor {
                 continue;
             }
             it.stop();
-            if it.state != DownloadState::Done && index::valid_key(&it.key) {
+            if it.state != DownloadState::Done
+                && index::valid_key(&it.key)
+                && !shared.contains(&it.key)
+            {
                 for f in [
                     DownloadFormat::Original,
                     DownloadFormat::Mp3,
