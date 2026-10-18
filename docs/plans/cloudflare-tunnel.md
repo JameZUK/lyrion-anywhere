@@ -48,6 +48,15 @@ Pointing a domain at home, forwarding port 443 and running a reverse proxy with 
 - `anywhere tunnel status` (token-protected) reports: installed version and the version our release pins (so *Update* can be offered), state (`not installed`, `installed`, `starting`, `connected` with the edge-connection count from the readiness endpoint, `reconnecting`, `stopped`, `failed` with the reason), the hostname, uptime, and the last 50 log lines. The page polls it every few seconds while open, as it does the gateway's status.
 - *Start*, *Stop*, *Update*, *Remove* buttons; *Remove* asks for confirmation and says it will delete the token. *Copy log* copies the scrubbed lines.
 
+### Try it first: a temporary test tunnel (no account, no key)
+
+Agreed 2026-10-18 as an addition. Cloudflare's *quick tunnel* needs no sign-up: `cloudflared tunnel --url <the gateway>` alone gives a random `https://<words>.trycloudflare.com` address for as long as the process runs, with no guarantee of uptime and a new address each time. The plugin offers it as **Try a temporary tunnel** beside the real set-up:
+
+- **What it does:** installs `cloudflared` if needed (the same pinned download), starts it with `tunnel --no-autoupdate --url http://<listen address> --metrics 127.0.0.1:<port>`, reads the `trycloudflare.com` address from its output, and shows it on the page as a link and as a QR code (the page's existing QR encoder), so a phone can open it at once. While it runs the gateway's public URL, allowed origin and client-address header follow that address; when it stops they revert.
+- **A test, and it says so:** a notice above the button and on the running status: *Test only. The address is random, Cloudflare gives no guarantee for it, and this plugin stops it after one hour. For everyday use, register a tunnel below.* The gateway stops it itself after **60 minutes** (a countdown on the page), on *Stop*, when the gateway stops, or when a registered tunnel is started. Nothing is stored for it: no token, no address.
+- **Security:** sign-in and everything else apply as on any public address, since it is one. The page makes clear the address is reachable by anyone who has it until it stops.
+- **Tests:** the fake `cloudflared` prints a `trycloudflare.com` line and the status shows it; the hour cap stops it (clock injected); the gateway's public URL reverts on stop; the address never lands in the data folder; a registered tunnel starting stops the test one.
+
 ## Trust boundary and secrets
 
 - The tunnel token is the only secret kept: `<data>/tunnel/token`, 0600, under the 0700 data folder, as the admin secret is. Shown nowhere; the log scrubber masks anything that looks like one.
