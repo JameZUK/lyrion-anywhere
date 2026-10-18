@@ -2247,10 +2247,15 @@ async fn a_real_underrun_after_a_grouped_rejoin_is_still_reported() {
     let seen = grouped_gap(GroupGap::Playing).await;
     assert_eq!(seen.stmo, 0);
     let mut r = seen.rig;
-    // The rest of the stream played after the stall (so audio flowed again); then a new
-    // track starves with the link up.
-    let heard_s = r.pulled.frames() as f64 / 22_050.0;
-    assert!(heard_s > seen.stalled_at_s + 0.5, "{heard_s} s heard");
+    // The rest of the stream plays after the stall (so audio flows again); then a new track
+    // starves with the link up. The output pulls in the background, so under load the half
+    // second may not have been pulled yet when the gap helper returns: wait for it.
+    let pulled = r.pulled.clone();
+    let after = seen.stalled_at_s + 0.5;
+    common::wait_for("audio to flow again after the stall", || {
+        pulled.frames() as f64 / 22_050.0 > after
+    })
+    .await;
     let gate = Arc::new(tokio::sync::Notify::new());
     let track = flac::encode(22_050, 16, &flac::noise(22_050 * 10, 16, 72));
     r.h.lms.streams.lock().unwrap().push_back(StreamPlan {

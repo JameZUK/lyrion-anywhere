@@ -29,7 +29,7 @@ use serde_json::json;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, oneshot};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::rpc_policy::is_player_id;
 use crate::{AppState, origin_allowed};
@@ -89,6 +89,23 @@ fn redact(t: String) -> String {
         String::new()
     } else {
         t.chars().filter(|c| !c.is_control()).take(512).collect()
+    }
+}
+
+/// Whether a line (possibly cut short) starts like an event we forward: a player id and one
+/// of [`PLAYER_EVENTS`], or one of [`SERVER_EVENTS`] alone. Only the first few words matter.
+fn wanted_prefix(line: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(&line[..line.len().min(256)]);
+    let mut words = head.split(' ').map(unescape);
+    let Some(first) = words.next() else {
+        return false;
+    };
+    if is_player_id(&first.to_ascii_lowercase()) {
+        words
+            .next()
+            .is_some_and(|w| PLAYER_EVENTS.contains(&w.as_str()))
+    } else {
+        SERVER_EVENTS.contains(&first.as_str())
     }
 }
 
@@ -297,7 +314,17 @@ impl Hub {
                 return Ok(()); // nobody listening: drop the connection
             }
             if !complete {
-                warn!("dropped oversize LMS CLI line");
+                // LMS's `menustatus` and `displaynotify` lines for a controller can run to
+                // hundreds of KiB and are of no interest here, so a dropped one is routine.
+                // Only an oversize line of a kind we would forward is worth a warning.
+                if wanted_prefix(&line) {
+                    warn!(bytes = line.len(), "dropped oversize LMS CLI line");
+                } else {
+                    debug!(
+                        bytes = line.len(),
+                        "dropped oversize LMS CLI line (not an event we forward)"
+                    );
+                }
                 continue;
             }
             if let Some(ev) = parse_line(&String::from_utf8_lossy(&line)) {
@@ -562,6 +589,34 @@ mod tests {
             }
         }
         assert_eq!(lines, vec!["rescan done\n".to_string()]);
+    }
+
+    /// An oversize line is only worth a warning when it is of a kind we forward: LMS's
+    /// `menustatus` and `displaynotify` lines for a controller are routinely huge and ignored
+    /// (a user's gateway log showed three of them per menu change).
+    #[test]
+    fn only_oversize_lines_we_would_forward_are_worth_a_warning() {
+        let big = "x".repeat(MAX_LINE);
+        assert!(!wanted_prefix(
+            format!("aa:bb:cc:dd:ee:01 menustatus {big}").as_bytes()
+        ));
+        assert!(!wanted_prefix(
+            format!("aa:bb:cc:dd:ee:01 displaynotify {big}").as_bytes()
+        ));
+        assert!(wanted_prefix(
+            format!("aa:bb:cc:dd:ee:01 playlist newsong {big}").as_bytes()
+        ));
+        assert!(wanted_prefix(
+            format!("AA%3ABB%3ACC%3ADD%3AEE%3A01 mixer volume {big}").as_bytes()
+        ));
+        assert!(wanted_prefix(format!("rescan {big}").as_bytes()));
+        assert!(!wanted_prefix(format!("unknowncommand {big}").as_bytes()));
+        assert!(!wanted_prefix(b""));
+        assert!(!wanted_prefix(b"aa:bb:cc:dd:ee:01"));
+        // Cut mid-character: still answers, never panics.
+        let mut cut = "aa:bb:cc:dd:ee:01 playlist ".as_bytes().to_vec();
+        cut.extend_from_slice(&"é".as_bytes()[..1]);
+        assert!(wanted_prefix(&cut));
     }
 
     #[tokio::test]

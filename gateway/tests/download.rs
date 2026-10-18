@@ -19,12 +19,7 @@ fn fake_output() -> String {
 }
 
 fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "anywhere-dl-{tag}-{}",
-        anywhere_gateway::random_id()
-    ));
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    scratch_dir("anywhere-dl", tag)
 }
 
 /// A fake ffmpeg: answers `-encoders` like the real one, records each run's arguments in

@@ -21,12 +21,7 @@ use anywhere_gateway::transcode::Ffmpeg;
 use std::path::{Path, PathBuf};
 
 fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "anywhere-live-{tag}-{}",
-        anywhere_gateway::random_id()
-    ));
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    scratch_dir("anywhere-live", tag)
 }
 
 /// A stand-in encoder: records its arguments and process id, then runs `body` (by default

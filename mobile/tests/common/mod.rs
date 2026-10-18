@@ -707,6 +707,15 @@ pub struct Harness {
     pub lms: FakeLms,
     pub addr: SocketAddr,
     pub accounts: Arc<Accounts>,
+    /// The analysis cache folder made for this harness, removed when it is dropped (every
+    /// test run used to leave one behind in the system's temp folder).
+    scratch: std::path::PathBuf,
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.scratch);
+    }
 }
 
 impl Harness {
@@ -727,7 +736,7 @@ impl Harness {
             lms_cli: lms.cli_addr.to_string(),
             lms_ips: vec![Ipv4Addr::LOCALHOST],
             auth_timeout: Duration::from_millis(500),
-            analysis_cache_dir: Some(cache),
+            analysis_cache_dir: Some(cache.clone()),
             plays_secret: Some(PLAYS_SECRET.into()),
             ..Config::default()
         };
@@ -751,6 +760,7 @@ impl Harness {
             lms,
             addr,
             accounts,
+            scratch: cache,
         }
     }
 

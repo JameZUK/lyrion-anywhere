@@ -2,6 +2,12 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: Quieter event log, tidier tests, a steadier player test
+
+- **Gateway:** an LMS CLI event line over 16 KiB was logged as a warning whenever it was dropped. A user's log showed three per menu change: LMS's `menustatus` and `displaynotify` lines for a controller, which the gateway never forwards. The warning is now kept for oversize lines of a kind the gateway does forward (`playlist`, `mixer`, `power` and the rest); other kinds are dropped at debug level. Test: `only_oversize_lines_we_would_forward_are_worth_a_warning`.
+- **Tests leave the temp folder alone.** The test suites had left 16,500 `anywhere-*` directories (1.4 GB) in the system's temp folder on the development machine. The mobile harness now removes its analysis cache folder when it is dropped, and the gateway's download and live tests make their scratch folders through one helper that also removes its own leftovers from earlier runs. `tools/disk-gc.sh` gains a sixth step for the rest: this project's `anywhere-*` scratch directories, Robolectric's extracted runtimes, abandoned Playwright downloads and Vitest module caches made from this checkout, older than the usual N days; nothing else in the temp folder is touched.
+- **A steadier test:** `a_real_underrun_after_a_grouped_rejoin_is_still_reported` asserted at once that half a second had been pulled after a stall; under CI load it had not always been. It now waits for it (the output pulls in the background). This was the failure on a Dependabot pull-request run on 17 October.
+
 ## 2026-10-18: Web fixes from the first GitHub issues
 
 The forum testers' first reports, filed as GitHub issues #9 to #14.

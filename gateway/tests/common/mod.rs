@@ -1221,3 +1221,28 @@ pub async fn wait_for(cond: impl Fn() -> bool) {
     }
     panic!("condition not met in time");
 }
+
+/// A fresh scratch directory under the system's temp folder, named `<prefix>-<tag>-<random>`.
+/// It also removes this prefix's leftovers from earlier runs (over an hour old), so the test
+/// suites don't pile up directories there: a development machine had collected 16,500.
+pub fn scratch_dir(prefix: &str, tag: &str) -> std::path::PathBuf {
+    let tmp = std::env::temp_dir();
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    if let Ok(entries) = std::fs::read_dir(&tmp) {
+        for e in entries.flatten() {
+            let stale = e
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&format!("{prefix}-"))
+                && e.metadata()
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|t| t < cutoff);
+            if stale {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+    let d = tmp.join(format!("{prefix}-{tag}-{}", anywhere_gateway::random_id()));
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}

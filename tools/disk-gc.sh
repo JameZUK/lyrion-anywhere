@@ -10,7 +10,10 @@
 #     must build into the shared target/ instead;
 #   - Android module build/ output older than N days;
 # and, on the host:
-#   - Docker build cache and dangling images older than N days.
+#   - Docker build cache and dangling images older than N days;
+#   - leftovers in the system temp folder older than N days: this project's test scratch
+#     directories (anywhere-*), Robolectric's extracted runtimes, abandoned Playwright
+#     downloads, and Vitest module caches made from this checkout (nothing else there).
 #
 # It never runs while a cargo, gradle or docker build is in progress, and it takes the
 # shared build lock if one is given in LYRION_BUILD_LOCK. A daily timer on the dev machine
@@ -78,6 +81,22 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
 	run docker builder prune -f --filter "until=$((days * 24))h" >/dev/null 2>&1 || true
 	run docker image prune -f >/dev/null 2>&1 || true
 fi
+
+# 6. The system temp folder. Only names this project makes (its tests' anywhere-* scratch
+#    directories), the Android test runtime's and Playwright's leftovers, and Vitest module
+#    caches whose contents name this checkout; everything else in there belongs to someone
+#    else and is left alone. Permission errors (another user's files) are not fatal.
+tmp=${TMPDIR:-/tmp}
+for d in "$tmp"/anywhere-* "$tmp"/robolectric-* "$tmp"/playwright-download-*; do
+	[ -e "$d" ] || continue
+	[ -n "$(find "$d" -maxdepth 0 -mtime +"$days" 2>/dev/null)" ] && { run rm -rf "$d" || true; }
+done
+for c in "$tmp"/*/client; do
+	d=${c%/client}
+	[ -d "$c" ] || continue
+	[ -n "$(find "$d" -maxdepth 0 -mtime +"$days" 2>/dev/null)" ] || continue
+	grep -rqsF -m1 "$root" "$c" 2>/dev/null && { run rm -rf "$d" || true; }
+done
 
 after=$(df -P "$root" | awk 'NR==2{print $4}')
 echo "disk-gc: $(df -h "$root" | awk 'NR==2{print $4" free of "$2}') after (freed $(( (after - before) / 1024 )) MiB)"
