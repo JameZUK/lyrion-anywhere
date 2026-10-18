@@ -107,7 +107,7 @@ Errors are `{"error": "…"}` with 400 (bad input), 409 (wrong state, e.g. `inst
 | `POST /admin/v1/tunnel/install` | | 202 `{}` (download started; 204 if the pinned version is already installed) |
 | `POST /admin/v1/tunnel/update` | | 202 `{}` (stops a running tunnel, downloads the pinned version, starts it again if it was running) |
 | `POST /admin/v1/tunnel/register` | `{"token": "…", "hostname": "music.example.com"}` | 204; the token and hostname are stored and the tunnel starts (installing first if needed, as `quick` does) |
-| `POST /admin/v1/tunnel/create` | `{"api_token": "…", "hostname": "music.example.com", "replace_dns": false}` | 202 `{}`; the exchange runs in the background (`state: "creating"`, `step` names the step); success stores token and hostname and starts; failure is `failed` with `error` naming the step and Cloudflare's message, and a tunnel this gateway created is deleted again |
+| `POST /admin/v1/tunnel/create` | `{"api_token": "…", "hostname": "music.example.com", "replace_dns": false}` (`replace_dns` optional, false when absent) | 202 `{}`; the exchange runs in the background (`state: "creating"`, `step` names the step); success stores token and hostname and starts; failure is `failed` with `error` naming the step and Cloudflare's message, and a tunnel this gateway created is deleted again |
 | `POST /admin/v1/tunnel/start` | | 204 (the registered tunnel; 409 if none) |
 | `POST /admin/v1/tunnel/stop` | | 204 (registered or temporary; the registered one then stays stopped across restarts) |
 | `POST /admin/v1/tunnel/quick` | | 202 `{}` (installs if needed, then starts the temporary tunnel; 409 while a registered tunnel runs) |
@@ -145,14 +145,14 @@ Status (`GET /admin/v1/tunnel`), every key always present:
 ### Inputs
 
 - `hostname`: lower-cased, 4–253 characters, two or more DNS labels of `[a-z0-9-]` (no leading or trailing `-`, 1–63 each), no trailing dot, no port, no path, not an IP address, not under `trycloudflare.com` or `cfargotunnel.com`.
-- `token`: the tunnel token Cloudflare's dashboard shows: base64 (standard or URL alphabet, padding optional) of a JSON object with `a` and `t` (32 hex characters each) and `s` (base64, 32–128 characters); 64–4096 characters in all. Nothing else is accepted and the decoded fields are not stored separately.
+- `token`: the tunnel token Cloudflare's dashboard shows: base64 (standard or URL alphabet, padding optional) of a JSON object with `a` (the account id, 32 hex characters), `t` (the tunnel id, a dashed UUID of 36 characters) and `s` (base64, 32–128 characters); 64–4096 characters in all. (Corrected 2026-10-18: `t` was first written as 32 hex.) Nothing else is accepted and the decoded fields are not stored separately.
 - `api_token`: 20–128 characters of `[A-Za-z0-9_-]`. Held in memory for the exchange only, never written or logged (the scrubber masks it should it appear in a line).
 - `replace_dns`: boolean; when false an existing DNS record for the hostname is reported (`error: "a DNS record for music.example.com already exists; tick Replace to overwrite it"`) and the created tunnel is deleted again.
 
 ### The *create* exchange (`api.rs`, base URL `https://api.cloudflare.com/client/v4`, overridable for tests)
 
 1. `zone`: `GET /zones?per_page=50` (pages followed, at most 5): the zone whose name is the longest suffix of the hostname (equal to it, or preceded by a dot). None: `failed`, "no zone on this account contains music.example.com (the API token needs Zone › Zone › Read)". The account id comes from the zone's `account.id`.
-2. `create`: `POST /accounts/{account}/cfd_tunnel` `{"name": "lyrion-anywhere-<hostname with dots as dashes, at most 64 characters>", "config_src": "cloudflare", "tunnel_secret": "<32 random bytes, base64>"}`. The tunnel id comes from `result.id`.
+2. `create`: `POST /accounts/{account}/cfd_tunnel` `{"name": "lyrion-anywhere-<hostname with dots as dashes, at most 64 characters>", "config_src": "cloudflare", "tunnel_secret": "<32 random bytes, base64>"}`. The tunnel id (a UUID) comes from `result.id`.
 3. `configure`: `PUT /accounts/{account}/cfd_tunnel/{id}/configurations` `{"config": {"ingress": [{"hostname": "<hostname>", "service": "http://<listen address>"}, {"service": "http_status:404"}]}}`.
 4. `dns`: `GET /zones/{zone}/dns_records?name=<hostname>`; an existing record is reported as above unless `replace_dns`, in which case it is `PATCH`ed (type CNAME, content `<id>.cfargotunnel.com`, proxied true) and otherwise `POST /zones/{zone}/dns_records` with the same fields.
 5. `token`: `GET /accounts/{account}/cfd_tunnel/{id}/token`; `result` is the tunnel token, validated as above and stored.
