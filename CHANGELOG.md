@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: Plugin 0.5.6 and Android 1.15.5 released
+
+The remaining low findings of the October code review, from the five entries below (gateway and core, web, mobile, Android, plugin and CI). Plugin 0.5.6 and Android 1.15.5 (versionCode 34). Notes: `docs/release-notes/v0.5.6.md`, `docs/release-notes/android-1.15.5.md`.
+
 ## 2026-10-18: Plugin, CI and release: the review's remaining lows
 
 The last low findings of the 15 October review for the plugin, CI and the supply chain:
