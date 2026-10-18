@@ -45,12 +45,15 @@ fi
 
 if [ "${ANYWHERE_RUN_ARM:-}" = 1 ]; then
 	# CI registers QEMU emulation, so the ARM builds can be run, not just inspected. The image
-	# is pinned by digest (multi-arch index), like the Dockerfiles.
-	ALPINE_IMAGE=alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
-	for pair in arm64:aarch64 arm/v7:armhf; do
-		p=${pair%%:*} d=${pair##*:}
+	# is pinned by digest like the Dockerfiles, but by each platform's own manifest, not the
+	# multi-arch index (alpine:3.22@sha256:5291449c…): Docker refuses to pull a second platform
+	# of one index digest ("cannot overwrite digest"), which failed the armhf check after the
+	# aarch64 one had pulled (0.5.6).
+	for triple in arm64:aarch64:sha256:2e1a7aa4cbc4e9e5222bb4c24a839aa1a6170ea5492d644777ce7b178824e44f \
+	              arm/v7:armhf:sha256:947bab19f99aef448855af6d1886613d95d311a1b8bf9d32e7b329eb76ab4e44; do
+		p=${triple%%:*} rest=${triple#*:} d=${rest%%:*} digest=${rest#*:}
 		# The output is kept and shown on failure: QEMU and Docker errors are otherwise invisible.
-		t "$d gateway runs (emulated)" 'docker run --rm --platform "linux/$p" -v "$X/Bin/$d-linux:/b:ro" "$ALPINE_IMAGE" /b/anywhere-gateway --version >"$X/emulated.out" 2>&1 || { sed "s/^/    /" "$X/emulated.out"; false; }'
+		t "$d gateway runs (emulated)" 'docker run --rm --platform "linux/$p" -v "$X/Bin/$d-linux:/b:ro" "alpine@$digest" /b/anywhere-gateway --version >"$X/emulated.out" 2>&1 || { sed "s/^/    /" "$X/emulated.out"; false; }'
 	done
 fi
 

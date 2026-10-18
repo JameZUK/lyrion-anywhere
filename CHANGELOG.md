@@ -4,7 +4,7 @@ Dated entries, newest first.
 
 ## 2026-10-18: Plugin 0.5.6 and Android 1.15.5 released
 
-The remaining low findings of the October code review, from the five entries below (gateway and core, web, mobile, Android, plugin and CI). Plugin 0.5.6 and Android 1.15.5 (versionCode 34). Notes: `docs/release-notes/v0.5.6.md`, `docs/release-notes/android-1.15.5.md`. The first tag run failed Gradle's new dependency verification on five parent-POM and BOM files a warm cache had left out of the metadata; it was regenerated from a clean cache, and RELEASING.md now says to do it that way.
+The remaining low findings of the October code review, from the five entries below (gateway and core, web, mobile, Android, plugin and CI). Plugin 0.5.6 and Android 1.15.5 (versionCode 34). Notes: `docs/release-notes/v0.5.6.md`, `docs/release-notes/android-1.15.5.md`. The first tag run failed Gradle's new dependency verification on five parent-POM and BOM files a warm cache had left out of the metadata; it was regenerated from a clean cache, and RELEASING.md now says to do it that way. The second tag run failed the release check's emulated armhf run: Docker refuses to pull a second platform of one multi-arch index digest ("cannot overwrite digest"), so the aarch64 pull of the newly pinned `alpine:3.22@sha256:5291449c…` blocked the armhf one; `tools/test-release.sh` now pins each platform's own manifest digest and prints the emulated run's output on failure. `tools/build-release.sh` no longer wipes all of `dist/` (it deleted the deploy binaries and Android builds kept there), only its own outputs.
 
 ## 2026-10-18: Plugin, CI and release: the review's remaining lows
 
