@@ -1,7 +1,6 @@
 <script lang="ts">
 	// Settings › About (Wave 3.5): the version, keyboard shortcuts, the project, and Advanced.
 	import { version as buildVersion } from '$app/environment';
-	import pkg from '../../../package.json';
 	import { keysHelp } from '$lib/keys/help.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 </script>
@@ -10,7 +9,8 @@
 	<img src="./icons/icon.svg" alt="" width="64" height="64" />
 	<div>
 		<p class="about-name">Lyrion Anywhere</p>
-		<p class="muted small">Version {pkg.version} · build {buildVersion}</p>
+		<!-- The plugin's release version (the release this web app shipped in), and the build. -->
+		<p class="muted small" data-app-version>Version {__PLUGIN_VERSION__} · build {buildVersion}</p>
 	</div>
 </div>
 <p class="muted small">Your Lyrion Music Server, securely, from anywhere. Free software under the GNU GPL (version 2 or later).</p>

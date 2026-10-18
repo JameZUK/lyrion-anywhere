@@ -17,7 +17,6 @@
 	import { textOf } from '$lib/lms/format';
 	import { SECTIONS, type SectionId } from '$lib/settings/sections';
 	import Icon from '$lib/components/Icon.svelte';
-	import pkg from '../../../package.json';
 
 	const user = $derived(session.current?.user.username ?? '');
 	const MODE_LABELS: Record<string, string> = { auto: 'Automatic', light: 'Light', dark: 'Dark' };
@@ -39,7 +38,7 @@
 		downloads: `${downloads.saved.length} ${downloads.saved.length === 1 ? 'track' : 'tracks'}, ${formatBytes(downloads.usedBytes)}${dl.wifiOnly ? ' · Wi-Fi only' : ''}`,
 		history: 'Your listening, and what is kept',
 		install: 'Open it full screen like any other app',
-		about: `Version ${pkg.version} · Advanced`,
+		about: `Version ${__PLUGIN_VERSION__} · Advanced`,
 		advanced: '',
 	});
 	/** The rows: every top-level section; Install only where the browser can. */

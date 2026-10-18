@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: The web app shows the plugin's version
+
+Settings › About (and the Settings index) showed the web app's own package.json version, which never changed, so it read "0.1.0" through every release. The build now takes the version from `plugin/Plugins/LyrionAnywhere/install.xml`, the one release the web app ships in (`__PLUGIN_VERSION__`, defined in `vite.config.ts`; a build outside the full checkout falls back to the package version). Test: `tests/version.test.ts` checks the built-in version against install.xml and that About shows it.
+
 ## 2026-10-18: Plugin 0.5.2 released
 
 The fixes for GitHub issues #14 and #11, the documentation for #13, the gateway's authentication lows from the October review (schema 13: the devices table rebuilt with `AUTOINCREMENT`, every row kept), and the quieter event log. Android 1.15.3 remains current. Notes: `docs/release-notes/v0.5.2.md`.
