@@ -132,6 +132,13 @@ class RustOfflineRepository(
     /** The open library, for the offline player. */
     val store: StateFlow<OfflineStore?> = _store.asStateFlow()
 
+    /** The open library if it is [owner]'s, else null ("Continue on" looks only there; the
+     *  Rust layer checks again that it is the signed-in account's). */
+    fun storeOf(owner: Owner): OfflineStore? {
+        val s = _store.value ?: return null
+        return s.takeIf { _state.value.owner == owner && _store.value === s }
+    }
+
     private val lock = Mutex()
     private var owner: Owner? = null
     private var lastSignedIn: Owner? = null

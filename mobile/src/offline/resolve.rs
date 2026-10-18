@@ -10,10 +10,13 @@
 //! - **Refused:** anything else (signed out, downloads not allowed, the server unreachable,
 //!   too many requests) stops the whole lookup with that error, so nothing half-checked is
 //!   ever sent to a player.
+//! - **Whose:** only the signed-in account's own library is accepted (review M14): another
+//!   account's or server's is refused with [`ApiError::WrongAccount`] before anything is
+//!   asked, and a queued track that library doesn't hold is `None` without asking.
 //! - Every id sent to a player afterwards is one the gateway confirmed for this user; ids and
 //!   keys that aren't well formed are `None` without asking.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -21,6 +24,7 @@ use serde_json::Value;
 use crate::error::ApiError;
 use crate::offline::download::parse_info;
 use crate::offline::index::valid_key;
+use crate::offline::store::OfflineLibrary;
 use crate::session::{Core, Session};
 use crate::transport;
 
@@ -124,18 +128,39 @@ impl InfoApi for HttpInfo {
 
 /// Look downloaded tracks up for "Continue on <player>": each one's current LMS id, in the
 /// order given, or `None` where the library no longer has that file (see the module notes).
+/// `library` must be the signed-in account's own (else [`ApiError::WrongAccount`], or
+/// `Unauthorised` signed out, before anything is asked), and only tracks it holds are
+/// looked up: any other is `None`.
 #[uniffi::export(async_runtime = "tokio")]
 pub async fn resolve_offline_tracks(
     session: Arc<Session>,
+    library: Arc<OfflineLibrary>,
     tracks: Vec<OfflineTrackRef>,
 ) -> Result<Vec<Option<i64>>, ApiError> {
-    if !session.has_sign_in() {
-        return Err(ApiError::Unauthorised);
+    crate::offline::owned_by(&session, &library).await?;
+    if tracks.len() > MAX_RESOLVE {
+        return Err(ApiError::invalid("too many tracks to look up"));
     }
+    let held: HashSet<String> = library.tracks().into_iter().map(|t| t.key).collect();
+    let ours: Vec<OfflineTrackRef> = tracks
+        .iter()
+        .filter(|t| held.contains(&t.key))
+        .cloned()
+        .collect();
     let api = HttpInfo {
         core: session.core().clone(),
     };
-    resolve(&api, &tracks).await
+    let mut found = resolve(&api, &ours).await?.into_iter();
+    Ok(tracks
+        .iter()
+        .map(|t| {
+            if held.contains(&t.key) {
+                found.next().flatten()
+            } else {
+                None
+            }
+        })
+        .collect())
 }
 
 #[cfg(test)]

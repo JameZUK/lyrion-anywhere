@@ -7,6 +7,11 @@
 //! - [`plan_smart`]: which smart downloads to fetch or drop;
 //! - [`resolve_offline_tracks`]: the queued downloads' current LMS ids, for "Continue on".
 //!
+//! Everything that takes a library and the session ([`sync_plays`], [`crate::sync_ratings`], the
+//! [`Downloader`], [`resolve_offline_tracks`]) first checks the library is the signed-in
+//! account's own (review M14), so a handle kept across an account switch can't act on
+//! another user's downloads.
+//!
 //! Playing downloads is [`crate::OfflinePlayer`], through the same engine as streaming.
 
 pub mod download;

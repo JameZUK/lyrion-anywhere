@@ -2,6 +2,14 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: Mobile: Continue on resolves against the signed-in account's library (review M14)
+
+The last of the three entry points the 15 October review found taking any downloads library without checking whose it was. `sync_plays`, `sync_ratings` and the downloader were bound to the signed-in account on 15 October; `resolve_offline_tracks`, which "Continue on <player>" uses to turn queued downloads back into LMS track ids, took no library at all. A stale handle across an account switch could then have looked another user's queue up under the new account.
+
+- **Rust layer** (`mobile/src/offline/resolve.rs`): `resolve_offline_tracks(session, library, tracks)` takes the library and refuses one opened for another account or server with `ApiError::WrongAccount` (`Unauthorised` signed out) before anything is asked. Only tracks that library holds are looked up; any other queued track is unresolved without a request. Test: `continue_on_resolves_only_against_the_signed_in_accounts_library` (`mobile/tests/downloads.rs`): another account's and another server's library are refused and the gateway sees no request; with alice's own library her downloads resolve as before and a track she hasn't downloaded is never asked about. It failed before the check (it resolved all three tracks through bob's library). `offline_tracks_resolve_to_current_ids_through_the_gateway` passes the library.
+- **Android** (`ContinueOn.kt`, `OfflineRepository.kt`, `AppContainer.kt`): `TrackResolver.resolve` takes the queue's owner, and `RustTrackResolver` passes that owner's library, the open one only if it is theirs (`RustOfflineRepository.storeOf`); with none it refuses as another account's downloads. Tests: `continueOnGetsOnlyTheOwnersOpenLibrary` (`OfflineRepositoryTest`), `bobsQueueIsLookedUpInBobsLibrary` and `theRealResolverNeedsASignInAndTheOwnersOpenLibrary` (`ContinueOnUseCaseTest`); the existing use-case and controller tests check each lookup was in the queue owner's library.
+- **Docs:** SPEC §8.4 (Continue on, track ids).
+
 ## 2026-10-18: The web app shows the plugin's version
 
 Settings › About (and the Settings index) showed the web app's own package.json version, which never changed, so it read "0.1.0" through every release. The build now takes the version from `plugin/Plugins/LyrionAnywhere/install.xml`, the one release the web app ships in (`__PLUGIN_VERSION__`, defined in `vite.config.ts`; a build outside the full checkout falls back to the package version). Test: `tests/version.test.ts` checks the built-in version against install.xml and that About shows it.

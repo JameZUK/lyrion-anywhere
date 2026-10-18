@@ -913,6 +913,67 @@ async fn another_accounts_library_is_refused() {
     assert_eq!(out.sent, 1);
 }
 
+/// M14 regression: "Continue on" looks downloads up only in the signed-in account's own
+/// library. A library opened for another account or server (a stale handle held across an
+/// account switch) is refused before anything is asked; with its own library, only tracks
+/// that library holds are looked up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continue_on_resolves_only_against_the_signed_in_accounts_library() {
+    let s = setup(audio(10), vec![], DownloadPolicy::default()).await;
+    s.dl.enqueue(vec![manual(5), manual(6)], FormatChoice::Original);
+    wait_state(&s.seen, 5, DownloadState::Done, 10).await;
+    wait_state(&s.seen, 6, DownloadState::Done, 10).await;
+    s.dl.shutdown();
+    // Signed in as alice.
+    let session = s.fake.session().await;
+    let r = |track_id: i64| OfflineTrackRef {
+        track_id,
+        key: key_of(track_id),
+    };
+    let refs = vec![r(6), r(5), r(9)];
+    let bobs = OfflineLibrary::open(s.root.clone(), s.url.clone(), "bob".into()).unwrap();
+    let elsewhere = OfflineLibrary::open(
+        temp_root(),
+        "https://music.example.com/".into(),
+        "alice".into(),
+    )
+    .unwrap();
+    s.fake.script.lock().unwrap().log.clear();
+    for lib in [bobs, elsewhere] {
+        let got = resolve_offline_tracks(session.clone(), lib, refs.clone()).await;
+        assert_eq!(got, Err(ApiError::WrongAccount));
+    }
+    let log = s.fake.script.lock().unwrap().log.clone();
+    assert!(log.is_empty(), "nothing asked: {log:?}");
+
+    // Alice's own library: resolved as before, but track 9 isn't one of its downloads, so
+    // it is never asked about.
+    let got = resolve_offline_tracks(session.clone(), s.lib.clone(), refs.clone())
+        .await
+        .unwrap();
+    assert_eq!(got, vec![Some(6), Some(5), None]);
+    let mut asked: Vec<String> = s
+        .fake
+        .script
+        .lock()
+        .unwrap()
+        .log
+        .iter()
+        .map(|(p, _, _)| p.clone())
+        .filter(|p| p.ends_with("/info"))
+        .collect();
+    asked.sort();
+    assert_eq!(
+        asked,
+        vec!["/v1/download/track/5/info", "/v1/download/track/6/info"]
+    );
+
+    // Signed out: refused, whoever's library it is.
+    session.logout().await.unwrap();
+    let got = resolve_offline_tracks(session, s.lib.clone(), refs).await;
+    assert_eq!(got, Err(ApiError::Unauthorised));
+}
+
 // --- The real gateway ----------------------------------------------------------------------
 
 async fn real_setup(
@@ -1135,14 +1196,14 @@ async fn offline_tracks_resolve_to_current_ids_through_the_gateway() {
         r(424242, &k1),
         r(1, &k1),
     ];
-    let got = resolve_offline_tracks(session.clone(), refs.clone())
+    let got = resolve_offline_tracks(session.clone(), lib.clone(), refs.clone())
         .await
         .unwrap();
     assert_eq!(got, vec![Some(2), None, None, Some(1)]);
 
     // Downloads turned off for alice: refused as a whole, nothing half-resolved.
     h.accounts.set_downloads("alice", false, None).unwrap();
-    let res = resolve_offline_tracks(session.clone(), refs.clone()).await;
+    let res = resolve_offline_tracks(session.clone(), lib.clone(), refs.clone()).await;
     assert!(
         matches!(res, Err(anywhere_mobile::ApiError::Forbidden { .. })),
         "{res:?}"
@@ -1151,7 +1212,7 @@ async fn offline_tracks_resolve_to_current_ids_through_the_gateway() {
 
     // Signed out: refused before anything is asked.
     session.logout().await.unwrap();
-    let res = resolve_offline_tracks(session, refs).await;
+    let res = resolve_offline_tracks(session, lib, refs).await;
     assert!(
         matches!(res, Err(anywhere_mobile::ApiError::Unauthorised)),
         "{res:?}"
