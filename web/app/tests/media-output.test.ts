@@ -20,12 +20,18 @@ class FakeSourceBuffer extends EventTarget {
 	updating = false;
 	buffered = new FakeBuffered();
 	appended: Uint8Array[] = [];
+	/** Every appendBuffer call, refused or not. */
+	attempts = 0;
+	/** While this says so, appendBuffer refuses for want of space (as a full browser buffer). */
+	full: (() => boolean) | null = null;
 	constructor() {
 		super();
 		FakeSourceBuffer.last = this;
 	}
 	appendBuffer(b: Uint8Array) {
 		if (this.updating) throw new DOMException('busy', 'InvalidStateError');
+		this.attempts++;
+		if (this.full?.()) throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
 		this.updating = true;
 		this.appended.push(b);
 		setTimeout(() => {
@@ -34,11 +40,18 @@ class FakeSourceBuffer extends EventTarget {
 		}, 0);
 	}
 	removed: [number, number][] = [];
+	/** A removal that frees nothing: the buffered ranges stay as they were. */
+	keepOnRemove = false;
 	remove(start: number, end: number) {
 		if (this.updating) throw new DOMException('busy', 'InvalidStateError');
 		this.updating = true;
 		this.removed.push([start, end]);
 		setTimeout(() => {
+			if (this.keepOnRemove) {
+				this.updating = false;
+				this.dispatchEvent(new Event('updateend'));
+				return;
+			}
 			const kept: [number, number][] = [];
 			for (const [a, b] of this.buffered.spans) {
 				if (a < start) kept.push([a, Math.min(b, start)]);
@@ -491,5 +504,117 @@ test('a deferred start opens the source but does not call play() until asked', a
 	await settle();
 	expect(FakeSourceBuffer.last!.appended).toHaveLength(1);
 	expect(out.audio.play).not.toHaveBeenCalled();
+	out.stop();
+});
+
+/** Seconds of audio the fake buffer holds. */
+const held = (sb: FakeSourceBuffer) => sb.buffered.spans.reduce((n, [a, b]) => n + (b - a), 0);
+
+// Issue #12 (iPadOS, Original/FLAC): after a scrub the media buffer filled ("media buffer full;
+// waiting") and nothing ever made room or tried again: no further append arrived while the
+// worker was held back, so the element ran dry, the worker stopped acknowledging, and the
+// gateway ended the stream a minute later. The audio behind the play head is removed at once
+// and the queue carries on by itself.
+test('a full buffer removes the audio behind the play head and resumes without another append', async () => {
+	const note = vi.fn();
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors, note });
+	await out.start();
+	const sb = FakeSourceBuffer.last!;
+	const s = { paused: false, t: 100 };
+	control(out, s);
+	// Old audio from before the scrub sits behind the play head; the buffer takes 12 s at most.
+	sb.buffered = new FakeBuffered([[92, 106]]);
+	sb.full = () => held(sb) > 12;
+	out.append(new Uint8Array([7]));
+	await settle();
+	expect(sb.removed).toHaveLength(1);
+	const [from, to] = sb.removed[0]!;
+	expect(from).toBe(0);
+	expect(to).toBeLessThanOrEqual(s.t); // only what has played
+	expect(to).toBeGreaterThan(92 + 0.5);
+	expect(sb.appended.map((b) => b[0])).toEqual([7]); // no further append() was needed
+	expect(note).toHaveBeenCalledWith('media buffer full; waiting');
+	expect(note).toHaveBeenCalledWith('media buffer trimmed; resuming');
+	expect(s.t).toBe(100); // the play head is left alone
+	out.stop();
+});
+
+test('a full buffer with nothing played to remove tries again as the play head moves, not in a loop', async () => {
+	const note = vi.fn();
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors, note });
+	await out.start();
+	const sb = FakeSourceBuffer.last!;
+	const s = { paused: false, t: 100 };
+	control(out, s);
+	sb.buffered = new FakeBuffered([[99.8, 112]]); // all of it still to play
+	sb.full = () => held(sb) > 10;
+	out.append(new Uint8Array([1]));
+	await settle();
+	expect(sb.removed).toEqual([]);
+	expect(sb.appended).toHaveLength(0);
+	expect(sb.attempts).toBe(1); // waits: no spinning on the refusal
+	expect(note.mock.calls.filter(([m]) => m === 'media buffer full; waiting')).toHaveLength(1);
+	// Played on a little: still nothing worth removing; one try per event, at most.
+	s.t = 100.2;
+	out.audio.dispatchEvent(new Event('timeupdate'));
+	await settle();
+	expect(sb.attempts).toBe(2);
+	expect(sb.removed).toEqual([]);
+	// Played on further: the played audio goes, and the segment is appended.
+	s.t = 104;
+	out.audio.dispatchEvent(new Event('timeupdate'));
+	await settle();
+	expect(sb.removed).toHaveLength(1);
+	expect(sb.removed[0]![1]).toBeLessThanOrEqual(104);
+	expect(sb.appended.map((b) => b[0])).toEqual([1]);
+	expect(note.mock.calls.filter(([m]) => m === 'media buffer full; waiting')).toHaveLength(1);
+	// Recovered: timeupdates no longer append anything.
+	const before = sb.attempts;
+	out.audio.dispatchEvent(new Event('timeupdate'));
+	out.audio.dispatchEvent(new Event('progress'));
+	await settle();
+	expect(sb.attempts).toBe(before);
+	out.stop();
+});
+
+test('a buffer that stays full after a removal does not remove and retry in a loop', async () => {
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors });
+	await out.start();
+	const sb = FakeSourceBuffer.last!;
+	const s = { paused: false, t: 100 };
+	control(out, s);
+	sb.buffered = new FakeBuffered([[91, 110]]);
+	sb.full = () => true; // the browser never makes room
+	sb.keepOnRemove = true; // and reports the removed audio still there
+	out.append(new Uint8Array([1]));
+	await settle();
+	await settle();
+	expect(sb.removed).toHaveLength(1);
+	expect(sb.attempts).toBeLessThanOrEqual(2);
+	// Only as the play head moves on is it tried again.
+	s.t = 101;
+	out.audio.dispatchEvent(new Event('timeupdate'));
+	await settle();
+	expect(sb.removed.length).toBeLessThanOrEqual(2);
+	expect(sb.attempts).toBeLessThanOrEqual(4);
+	out.stop();
+});
+
+test('a flush forgets a full buffer: the next segment is appended as usual', async () => {
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors });
+	await out.start();
+	const sb = FakeSourceBuffer.last!;
+	const s = { paused: true, t: 50 };
+	control(out, s);
+	sb.buffered = new FakeBuffered([[49.9, 60]]);
+	sb.full = () => held(sb) > 5;
+	out.append(new Uint8Array([1]));
+	await settle();
+	expect(sb.appended).toHaveLength(0);
+	await out.flush();
+	expect(out.bufferedEnd).toBe(0);
+	out.append(new Uint8Array([2]));
+	await settle();
+	expect(sb.appended.map((b) => b[0])).toEqual([2]); // the pre-flush segment is gone
 	out.stop();
 });

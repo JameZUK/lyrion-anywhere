@@ -63,6 +63,31 @@ export function streamFailureAction(status, renewed = false) {
   return 'fail'; // 401 again (revoked), 404 gone, 410 outside replay window, 416 bad offset
 }
 
+/**
+ * A stream response ended cleanly after bringing `got` bytes: 'end' of the track, or
+ * 'confirm' it first with one more request from the offset reached.
+ *
+ * The gateway ends a response cleanly only at the true end of the track, and with an error
+ * otherwise (e.g. after a minute without acknowledgements). A proxy on the way can turn that
+ * error into a clean end (issue #12, through a Cloudflare Tunnel), which looked like the end
+ * of the track: the player skipped to the next one. At the true end, the request from the
+ * offset reached is answered at once with nothing; otherwise the rest of the audio follows.
+ * Only a response that brought nothing is taken as the end, so a track costs one extra,
+ * empty request at most, and asking again always needs progress (no loop).
+ */
+export function cleanEndAction(got) {
+  return got > 0 ? 'confirm' : 'end';
+}
+
+/**
+ * The request confirming a clean end failed before bringing anything (`action` from
+ * {@link streamFailureAction}, after `tries` retries): whether to take the earlier clean end
+ * as the track's end after all, as before confirmations, rather than fail the track.
+ */
+export function confirmGivesUp(action, tries, maxTries) {
+  return action === 'fail' || (action === 'retry' && tries >= maxTries);
+}
+
 /** Messages for the server, held while disconnected. Bounded: oldest dropped first. */
 export class Outbox {
   constructor(limit) {
@@ -319,4 +344,120 @@ export function streamPath(session, n, offset) {
   const num = Number.isSafeInteger(n) && n >= 0 ? n : 0;
   const q = Number.isSafeInteger(offset) && offset > 0 ? `?offset=${offset}` : '';
   return `/v1/stream/${encodeURIComponent(String(session))}/${num}${q}`;
+}
+
+/**
+ * Download stream `n` into the core (docs/PROTOCOL.md "Streams"). A download that breaks is
+ * fetched again from the byte offset the core has reached (`?offset=`), never taken as the
+ * end of the track; a 401 renews the token once; a clean end is confirmed first (see
+ * {@link cleanEndAction}). Bytes are acknowledged every `io.ackEvery`, so the gateway keeps
+ * reading from LMS.
+ *
+ * `io` is the worker's side: `player` (the core), `current()` (still the stream wanted),
+ * `fetch(path, init)`, `session()`, `token()`, `setController(c)`, `sleep(ms)`, `now()`,
+ * `log(msg)`, `mark(stage)` (seek timing), `ack(n, bytes)`, `runActions()`, `renewToken()`,
+ * `received()` (the stream has come to its end), `maxTries` and `ackEvery`.
+ */
+export async function downloadStream(io, n) {
+  const { player } = io;
+  let headersSeen = false;
+  let lastAck = 0;
+  let renewed = false;
+  // The last response ended cleanly: this request checks that it was the track's end.
+  let confirming = false;
+  const ended = () => {
+    io.received();
+    player.on_stream_end(io.now());
+    io.runActions();
+  };
+  for (let tries = 0; ; tries++) {
+    // Resume from what the core has already received for this stream.
+    const os = player.open_stream();
+    const offset = os && os[0] === n ? os[1] : 0;
+    const controller = new AbortController();
+    io.setController(controller);
+    let status = 0;
+    let got = 0; // bytes this response brought
+    try {
+      const resp = await io.fetch(streamPath(io.session(), n, offset), {
+        headers: { Authorization: `Bearer ${io.token()}` },
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      if (!io.current()) return;
+      status = resp.status;
+      if (!resp.ok) throw new Error(`stream HTTP ${resp.status}`);
+      // From here on, a failure is the connection breaking mid-download: retryable.
+      status = 0;
+      if (!headersSeen) {
+        headersSeen = true;
+        io.mark('response');
+        const ct = resp.headers.get('content-type') || 'application/octet-stream';
+        player.on_stream_headers(new TextEncoder().encode(`HTTP/1.0 200 OK\r\nContent-Type: ${ct}\r\n\r\n`), io.now());
+      } else if (!confirming) {
+        io.log(`stream ${n} resumed at byte ${offset}`);
+      }
+      const reader = resp.body.getReader();
+      for (;;) {
+        // Back-pressure: stop reading while the core's input buffer is full.
+        while (io.current() && !player.wants_stream_data()) await io.sleep(50);
+        if (!io.current()) return;
+        const { done, value } = await reader.read();
+        if (!io.current()) return;
+        if (done) {
+          if (cleanEndAction(got) === 'confirm') {
+            // Maybe not the end: ask again from here (see cleanEndAction).
+            confirming = true;
+            tries = -1; // the next request is the first of its own
+            break;
+          }
+          ended();
+          return;
+        }
+        if (!value || !value.length) continue;
+        if (confirming) {
+          confirming = false;
+          io.log(`stream ${n}: a clean end at byte ${offset} was not the end of the track; carrying on`);
+        }
+        got += value.length;
+        tries = 0;
+        renewed = false;
+        io.mark('bytes');
+        player.on_stream_data(value, io.now());
+        const have = player.open_stream();
+        if (have && have[0] === n && have[1] - lastAck >= io.ackEvery) {
+          lastAck = have[1];
+          io.ack(n, lastAck);
+        }
+      }
+    } catch (err) {
+      if (err?.name === 'AbortError' || !io.current()) return;
+      const action = streamFailureAction(status, renewed);
+      if (confirming && got === 0 && confirmGivesUp(action, tries, io.maxTries)) {
+        // Can't tell: take the clean end as the track's end, as before (see cleanEndAction).
+        io.log(`stream ${n}: could not confirm its end at byte ${offset} (${err?.message}); taking it as the end`);
+        ended();
+        return;
+      }
+      if (action === 'renew') {
+        // Most likely the access token expired (a long pause, or a page in the background
+        // whose renewal timer was held back): get a new one, then carry on.
+        renewed = true;
+        io.log(`stream ${n}: access token refused; renewing`);
+        await io.renewToken();
+        if (!io.current()) return;
+        continue;
+      }
+      if (action === 'fail' || tries >= io.maxTries) {
+        io.log(`stream ${n} failed after ${tries} retries at byte ${offset}: ${err?.message} (HTTP ${status || 'none'})`);
+        player.on_stream_error(io.now());
+        io.runActions();
+        return;
+      }
+      const at = player.open_stream();
+      io.log(`stream ${n} interrupted at byte ${at && at[0] === n ? at[1] : offset} (${err?.message}); retrying`);
+      await io.sleep(backoffMs(tries));
+      if (!io.current()) return;
+    }
+  }
 }

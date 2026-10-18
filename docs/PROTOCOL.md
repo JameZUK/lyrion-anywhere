@@ -298,6 +298,7 @@ What the Android player does (`mobile/src/player/engine.rs`), as an example:
   - the session ends (for example, the device is revoked), or a newer request for the stream takes over;
   - LMS sends nothing for 60 s, or its stream fails. Later requests for that stream fail too, after replaying what was received;
   - the client has a full window unacknowledged and sends no ack for 60 s (for example, it is paused, or its buffer is full). It fetches again with `?offset=` when it wants more.
+  - **A proxy may hide the error.** Something between the gateway and the client (seen through a Cloudflare Tunnel, issue #12) can pass the broken connection on as a clean end. So the web player confirms a clean end that brought any bytes with one more request from the offset reached. At the true end the gateway answers it at once with an empty `200`; otherwise the rest of the audio follows. A confirmation refused with a final status (an older gateway, a stream gone) counts as the end, as before.
 - **Responses:**
 
   | Status | Meaning |
