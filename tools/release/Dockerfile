@@ -33,6 +33,8 @@ WORKDIR /src/web/app
 COPY web/app/package.json web/app/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web/app/ ./
+# The version the app shows is the plugin's (vite.config.ts reads ../../plugin/.../install.xml).
+COPY plugin/Plugins/LyrionAnywhere/install.xml /src/plugin/Plugins/LyrionAnywhere/install.xml
 COPY --from=build /out/pkg static/player/pkg
 RUN npm run build
 

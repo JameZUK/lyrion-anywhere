@@ -8,18 +8,24 @@ import { defineConfig } from 'vitest/config';
  * The version the app shows is the plugin's (`plugin/Plugins/LyrionAnywhere/install.xml`),
  * the one release carrying the web app, read when the build is configured. The web app's
  * own package.json version never changed and had been shown instead, so Settings › About
- * said 0.1.0 for every release. A standalone build without the plugin tree falls back to
- * the package version.
+ * said 0.1.0 for every release. The file must be there: a build that cannot find it fails
+ * rather than quietly showing the wrong number (the 0.5.3 release zip did exactly that,
+ * because the Docker build stages copied only `web/app`). A deliberately standalone build
+ * can set ANYWHERE_WEB_VERSION instead.
  */
 function pluginVersion(): string {
+	const given = process.env.ANYWHERE_WEB_VERSION;
+	if (given && /^[0-9]+(\.[0-9]+){1,3}$/.test(given)) return given;
+	const path = fileURLToPath(new URL('../../plugin/Plugins/LyrionAnywhere/install.xml', import.meta.url));
+	let xml: string;
 	try {
-		const xml = readFileSync(fileURLToPath(new URL('../../plugin/Plugins/LyrionAnywhere/install.xml', import.meta.url)), 'utf8');
-		const m = xml.match(/<version>\s*([0-9]+(?:\.[0-9]+){1,3})\s*<\/version>/);
-		if (m) return m[1]!;
-	} catch {
-		/* not in the full checkout */
+		xml = readFileSync(path, 'utf8');
+	} catch (e) {
+		throw new Error(`cannot read the plugin version from ${path} (${(e as Error).message}); build from the full checkout, or set ANYWHERE_WEB_VERSION`);
 	}
-	return (JSON.parse(readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf8')) as { version: string }).version;
+	const m = xml.match(/<version>\s*([0-9]+(?:\.[0-9]+){1,3})\s*<\/version>/);
+	if (!m) throw new Error(`no <version> in ${path}`);
+	return m[1]!;
 }
 
 export default defineConfig({

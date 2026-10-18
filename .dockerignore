@@ -7,6 +7,8 @@ dev/local.*
 *.token
 .playwright-mcp
 plugin
+# The web build reads the plugin's version from install.xml (vite.config.ts); nothing else of the plugin is needed.
+!plugin/Plugins/LyrionAnywhere/install.xml
 dist
 web/app/node_modules
 web/app/.svelte-kit

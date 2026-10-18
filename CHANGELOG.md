@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: Plugin 0.5.4 released
+
+The web app's version display, done properly this time: the 0.5.3 zip still read "0.1.0" because the release build's container had only `web/app` and `vite.config.ts` fell back to the package version. Both Dockerfiles' web stages now copy `plugin/Plugins/LyrionAnywhere/install.xml`, the config fails rather than falling back (`ANYWHERE_WEB_VERSION` is the explicit way out for a standalone build), and `tools/test-release.sh` refuses a zip whose web app does not carry "Version <plugin version>". Notes: `docs/release-notes/v0.5.4.md`; the 0.5.3 notes carry a correction.
+
 ## 2026-10-18: Plugin 0.5.3 and Android 1.15.4 released
 
 Plugin 0.5.3: the gateway's reads no longer wait for its writes (review M7, below), and Settings › About in the web app shows the plugin's version. Android 1.15.4 (versionCode 33): *Continue on* resolves queued downloads against the signed-in account's library only (review M14, below); nothing else changes in the app. Notes: `docs/release-notes/v0.5.3.md`, `docs/release-notes/android-1.15.4.md`.
