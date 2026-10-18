@@ -401,3 +401,58 @@ async fn plain_http_origins_are_refused_through_the_proxy() {
         assert_eq!(r.status(), want, "{origin}");
     }
 }
+
+/// An id whose percent-escapes aren't UTF-8 is an unknown resource like any other: 404,
+/// signed in or not, with no hint of how it was parsed (review low: axum's `Path` answered
+/// 400 before the handlers' auth and CSRF checks).
+#[tokio::test]
+async fn ids_that_are_not_utf8_are_unknown_resources() {
+    let h = harness().await;
+    let client = reqwest::Client::new();
+    let cases: &[(&str, &str)] = &[
+        ("DELETE", "/v1/devices/%FF"),
+        ("DELETE", "/v1/devices/%C3%28"),
+        ("GET", "/v1/me/shelves/%FF"),
+        ("GET", "/v1/lyrics/track/%E2%82"),
+        ("GET", "/v1/info/artist/%FF"),
+        ("GET", "/v1/download/track/%FF"),
+        ("GET", "/v1/stream/%FF/1"),
+        ("GET", "/v1/players/%FF/alarms"),
+        ("POST", "/v1/players/%FF%FE/queue/save"),
+        ("PUT", "/v1/me/ratings/%80"),
+        ("POST", "/v1/me/stations/%FF/next"),
+    ];
+    for (method, path) in cases {
+        for token in [None, Some(h.tok_a.as_str())] {
+            let mut req = client
+                .request(method.parse().unwrap(), h.url(path))
+                .header(CLIENT.0, CLIENT.1)
+                .header("x-forwarded-proto", "https");
+            if let Some(t) = token {
+                req = req.bearer_auth(t);
+            }
+            let r = req.send().await.unwrap();
+            assert_eq!(r.status(), S::NOT_FOUND, "{method} {path} {token:?}");
+            let body: Value = r.json().await.unwrap_or(Value::Null);
+            assert_eq!(body, json!({"error": "not found"}), "{method} {path}");
+        }
+    }
+    // Well-formed escapes still reach the handlers (which refuse them their own way).
+    let r = client
+        .get(h.url("/v1/me/shelves/%C3%A9"))
+        .bearer_auth(&h.tok_a)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::NOT_FOUND);
+    assert_eq!(
+        r.json::<Value>().await.unwrap(),
+        json!({"error": "no such shelf"})
+    );
+    let r = client
+        .get(h.url("/v1/me/shelves/%C3%A9"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::UNAUTHORIZED);
+}

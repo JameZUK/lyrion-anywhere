@@ -26,6 +26,22 @@ pub fn invisible(c: char) -> bool {
         | '\u{FFF9}'..='\u{FFFB}')
 }
 
+/// Longest player name kept from the server, in characters.
+pub const PLAYER_NAME_MAX: usize = 64;
+
+/// A player name the server sent (a `setd` rename), made safe to show: control and
+/// invisible characters removed, whitespace trimmed, at most [`PLAYER_NAME_MAX`]
+/// characters. `None` if nothing is left.
+pub fn player_name(raw: &str) -> Option<String> {
+    let clean: String = raw
+        .chars()
+        .filter(|c| !c.is_control() && !invisible(*c))
+        .collect();
+    let name: String = clean.trim().chars().take(PLAYER_NAME_MAX).collect();
+    let name = name.trim_end();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// The name a playlist may be saved under (trimmed), or why not. Any script is fine;
 /// clients send names composed (NFC).
 pub fn playlist_name(raw: &str) -> Result<String, &'static str> {
@@ -114,6 +130,27 @@ mod tests {
             assert!(playlist_name(bad).is_err(), "{bad:?}");
         }
         assert!(playlist_name(&"a".repeat(101)).is_err());
+    }
+
+    #[test]
+    fn player_names_are_cleaned_and_bounded() {
+        assert_eq!(player_name("Kitchen").as_deref(), Some("Kitchen"));
+        assert_eq!(
+            player_name("  Living\u{202E}room\u{0}\n\t ").as_deref(),
+            Some("Livingroom")
+        );
+        assert_eq!(player_name("Sigur Rós").as_deref(), Some("Sigur Rós"));
+        assert_eq!(player_name(""), None);
+        assert_eq!(player_name("\u{1b}[2J\u{200B}\r\n"), Some("[2J".into()));
+        assert_eq!(player_name(" \u{7f}\u{feff} "), None);
+        let long = "é".repeat(32 * 1024);
+        assert_eq!(player_name(&long).unwrap().chars().count(), PLAYER_NAME_MAX);
+        // Cut at a space: no trailing whitespace.
+        let spaced = format!("{} b", "a".repeat(PLAYER_NAME_MAX - 1));
+        assert_eq!(
+            player_name(&spaced).unwrap(),
+            "a".repeat(PLAYER_NAME_MAX - 1)
+        );
     }
 
     /// Arbitrary text never panics the check, and whatever it accepts keeps every rule.

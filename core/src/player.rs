@@ -1033,9 +1033,14 @@ impl Player {
                     name.push(0);
                     self.send(ClientMsg::Setd { id: 0, data: name });
                 } else {
-                    // LMS renamed the player.
+                    // LMS renamed the player: kept bounded and printable, since it is shown
+                    // (`Status::name`) and a server can send anything up to a frame's size.
                     let end = data.iter().position(|b| *b == 0).unwrap_or(data.len());
-                    self.cfg.name = String::from_utf8_lossy(&data[..end]).into_owned();
+                    if let Some(name) =
+                        crate::names::player_name(&String::from_utf8_lossy(&data[..end]))
+                    {
+                        self.cfg.name = name;
+                    }
                 }
             }
             // Never follow a redirect to another server.
@@ -1583,6 +1588,32 @@ mod tests {
         p.on_control_data(&encode_server_frame(*b"setd", &[0]), 1)
             .unwrap();
         assert_eq!(events(&p.take_actions()), vec!["HELO", "SETD"]);
+    }
+
+    /// A server rename is kept bounded and printable (review low: about 32 KiB with
+    /// control characters reached `Status::name`); one with nothing printable is ignored.
+    #[test]
+    fn a_server_rename_is_bounded_and_printable() {
+        let mut p = Player::new(cfg());
+        p.connected(0);
+        let rename = |p: &mut Player, name: &[u8]| {
+            let mut data = vec![0u8];
+            data.extend_from_slice(name);
+            data.push(0);
+            p.on_control_data(&encode_server_frame(*b"setd", &data), 1)
+                .unwrap();
+        };
+        rename(&mut p, b"Kitchen");
+        assert_eq!(p.status().name, "Kitchen");
+        let mut hostile = b"\x1b[2J\x07Den\r\n".to_vec();
+        hostile.extend(std::iter::repeat_n(b'x', 30 * 1024));
+        rename(&mut p, &hostile);
+        let name = p.status().name;
+        assert!(name.starts_with("[2JDen"), "{name:?}");
+        assert_eq!(name.chars().count(), crate::names::PLAYER_NAME_MAX);
+        assert!(!name.chars().any(char::is_control));
+        rename(&mut p, b"\x01\x02 \t");
+        assert_eq!(p.status().name, name, "nothing printable: unchanged");
     }
 
     /// A pull that returns nothing while decoding is still under way is not the end

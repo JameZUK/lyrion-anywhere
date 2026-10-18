@@ -537,6 +537,30 @@ pub fn validate_stream_request(request: &[u8], mac: &[u8; 6]) -> Result<String, 
     Ok(want)
 }
 
+/// Where a player connected straight to a server (not through the gateway) may open the
+/// stream a `strm` names: only on the server it is connected to (`server_ip` 0, or that
+/// server's own IPv4 address), and only this player's own stream
+/// ([`validate_stream_request`]), as the gateway enforces for its players. Anything else
+/// (another host on the network, an internet station asked for directly) is refused, so a
+/// hostile control connection can't make the host open connections wherever it likes.
+pub fn direct_stream_target(
+    server_ip: [u8; 4],
+    port: u16,
+    request: &[u8],
+    mac: &[u8; 6],
+    server: std::net::IpAddr,
+) -> Result<std::net::SocketAddr, String> {
+    let named = std::net::Ipv4Addr::from(server_ip);
+    if !(named.is_unspecified() || std::net::IpAddr::V4(named) == server.to_canonical()) {
+        return Err(format!("stream host {named} is not the server"));
+    }
+    if port == 0 {
+        return Err("stream port 0".into());
+    }
+    validate_stream_request(request, mac)?;
+    Ok(std::net::SocketAddr::new(server, port))
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -733,6 +757,48 @@ mod tests {
                 String::from_utf8_lossy(a)
             );
         }
+    }
+
+    /// A directly connected host opens a stream only on its own server, and only its own
+    /// stream (review low: the CLI connected wherever the control connection said).
+    #[test]
+    fn direct_streams_go_only_to_the_server() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+        let mac = [2, 0, 0, 0, 0, 1];
+        let good = b"GET /stream.mp3?player=02:00:00:00:00:01 HTTP/1.0\r\n\r\n";
+        let server = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 10));
+        let at = |ip: IpAddr| Ok(SocketAddr::new(ip, 9000));
+        assert_eq!(
+            direct_stream_target([0; 4], 9000, good, &mac, server),
+            at(server)
+        );
+        assert_eq!(
+            direct_stream_target([10, 0, 0, 10], 9000, good, &mac, server),
+            at(server)
+        );
+        // An IPv4-mapped server address is the same server.
+        let mapped = IpAddr::V6(Ipv4Addr::new(10, 0, 0, 10).to_ipv6_mapped());
+        assert!(direct_stream_target([10, 0, 0, 10], 9000, good, &mac, mapped).is_ok());
+        let v6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        assert_eq!(direct_stream_target([0; 4], 9000, good, &mac, v6), at(v6));
+        for other in [
+            [10, 0, 0, 11],
+            [127, 0, 0, 1],
+            [192, 0, 2, 7],
+            [255, 255, 255, 255],
+            [169, 254, 169, 254],
+        ] {
+            assert!(
+                direct_stream_target(other, 9000, good, &mac, server).is_err(),
+                "{other:?}"
+            );
+        }
+        assert!(direct_stream_target([127, 0, 0, 1], 9000, good, &mac, v6).is_err());
+        // The server, but not this player's stream, or no port.
+        let other_player = b"GET /stream.mp3?player=aa:bb:cc:dd:ee:ff HTTP/1.0\r\n\r\n";
+        assert!(direct_stream_target([0; 4], 9000, other_player, &mac, server).is_err());
+        assert!(direct_stream_target([0; 4], 9000, b"GET /x HTTP/1.0", &mac, server).is_err());
+        assert!(direct_stream_target([0; 4], 0, good, &mac, server).is_err());
     }
 
     #[test]

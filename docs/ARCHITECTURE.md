@@ -357,7 +357,7 @@ sequenceDiagram
 
 - **Only what the gateway sees itself** (SPEC D23): a session belongs to one device, so to one user; hardware players and other users' devices are never attributed to anyone.
 - **Kept 13 months,** at most 50,000 plays per user. Users view, clear or switch it off; nobody else can read it through the apps or the API.
-- **Home shelves and stations** blend the user's own plays (×3) with LMS's server-wide play counts (×1).
+- **Stations** blend the user's own plays (×3) with LMS's server-wide play counts (×1). **Home's history shelves** are the user's own plays only, so no user sees what others played.
 - **Offline plays** also go to LMS: the gateway forwards each to the plugin's `anywhere play_record`, signed with HMAC-SHA256 under the shared admin secret, and the plugin raises the play count and sets last played as LMS does for its own players.
 
 ### 5.10 Rolling cache and read-ahead (Android)

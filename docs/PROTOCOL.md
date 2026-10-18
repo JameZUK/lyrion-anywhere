@@ -20,7 +20,8 @@ Requirements for both endpoints:
 ### Connection limits (all endpoints)
 
 - A request head must arrive within 15 s, and an idle keep-alive connection is closed after 15 s. The connection is closed without a response.
-- A request body (every endpoint takes at most a few KiB of JSON) must arrive whole within 15 s, or the request gets 408 and the connection is closed. Bodies over 1 MiB get 413 whatever the endpoint.
+- A request body (every endpoint takes at most a few KiB of JSON) must arrive whole within 15 s, or the request gets 408 and the connection is closed. Bodies over 1 MiB get 413 whatever the endpoint, and `/v1/rpc` bodies over 8 KiB as soon as that much has arrived (or is declared).
+- A `/v1/` path (other than artwork's, which is checked as it stands) whose percent-escapes don't decode to UTF-8 names nothing: 404 `{"error":"not found"}`, before any other check, like any other unknown resource (2026-10-18; before, some endpoints answered 400).
 - At most 1024 connections are open at once (`--max-connections`); beyond that, new connections wait to be accepted. A peer that is neither loopback nor a trusted proxy may hold at most 64. Behind a reverse proxy every connection comes from the proxy, so per-client connection limits belong there.
 - WebSockets and streamed responses (audio, downloads, artwork) are not affected by these time limits.
 - The server speaks HTTP/1.1 (with WebSocket upgrades).
@@ -337,7 +338,7 @@ Library browse parameters ("My Music"), and the values each takes:
 A `musicfolder` answer lists each entry's `url` (its path on the server): it is stripped like every `url`, and a name that holds a path is dropped (see the response filter below).
 | Player (permitted players only) | `status`, `play`, `pause`, `stop`, `mode ?`, `time`, `power`, `sleep`, `mixer volume/muting`, `playlist index/jump/move/delete/clear/shuffle/repeat/tracks ?`, `playlistcontrol cmd:load/add/insert/delete` with exactly one id selector, `sync` with another permitted player, `favorites playlist play/add/insert item_id:…`; Don't Stop The Music: `dontstopthemusicsetting` (exactly that), and `playerpref plugin.dontstopthemusic:provider <token>|0|?` (no other `playerpref`; the token is letters, digits and `_`, starting with a letter, at most 64); Random Mix (part of LMS): `randomplay <tracks\|albums\|contributors\|artists\|year\|works> [genre_id:<id>]`, `randomplay disable` and `randomplayisactive` (see below) |
 | Apps and radio | `<app> items …` and `<app> playlist play/add/insert item_id:…`, only for app commands LMS lists in its `apps`/`radios` menus. Core command names can never be learned as apps. An unknown app triggers at most one menu refresh a minute. |
-| Admin role only | `rescan`; changing saved playlists (`playlists new/rename/delete/edit`; saving the queue goes through `POST /v1/players/{player}/queue/save` instead, and raw `playlist save` is refused) |
+| Admin role only | `rescan`; changing saved playlists (`playlists new/rename/delete/edit`, whose `name:`/`newname:` follow the same rules as a queue save's name; saving the queue goes through `POST /v1/players/{player}/queue/save` instead, and raw `playlist save` is refused) |
 
 **Plugin and context menus (learned actions).** LMS menus (apps, radio, track/album/artist info, plugin menus) offer actions: commands with parameters, which plugins define. A command outside the fixed allow-list is allowed only if **LMS offered exactly that action, in a menu the gateway relayed to the same device in the last hour**:
 - requests must match a learned action word for word and parameter for parameter, except text typed into a search box (`__TAGGEDINPUT__`);
@@ -552,7 +553,7 @@ Allowed paths (validated on the raw, still-encoded path):
 |---|---|
 | `music/<id>/cover[_WxH[_m]][.ext]`, `music/<id>/thumb…` | Numeric or hex track id |
 | `music/current/cover…?player=<mac>` | Only for players the caller may control; not cached |
-| `imageproxy/<url-encoded http(s) URL>/image[_WxH[_m]][.ext]` | Only for image URLs LMS itself returned in an image field (`image`, `icon`, `icon-id`, `artwork_url`, `coverart`, `cover`) of an earlier, filtered `/v1/rpc` response, or as an artist's photo in a `/v1/info/artist/{id}` answer, and never for a URL on the home network or the server itself: the host must not be a local host (as defined under response filtering, which covers single-label names and wildcard-DNS names such as `10.0.0.5.nip.io`), and must not resolve, from the gateway within 2 s, to any local address. The lookup can't stop DNS rebinding (LMS resolves the name again when it fetches), and a name that doesn't resolve is judged by the name alone. Anything else would let a user make LMS fetch arbitrary URLs on the home network (SSRF): text such as track titles and player names can be set by users, so it never counts. |
+| `imageproxy/<url-encoded http(s) URL>/image[_WxH[_m]][.ext]` | Only for image URLs LMS itself returned in an image field (`image`, `icon`, `icon-id`, `artwork_url`, `coverart`, `cover`) of an earlier, filtered `/v1/rpc` response, or as an artist's photo in a `/v1/info/artist/{id}` answer, and never for a URL on the home network or the server itself: the host must not be a local host (as defined under response filtering, which covers single-label names and wildcard-DNS names such as `10.0.0.5.nip.io`), and must not resolve, from the gateway within 2 s, to any local address. The lookup can't stop DNS rebinding (LMS resolves the name again when it fetches), and a name that doesn't resolve is judged by the name alone. Nor does it see redirects: LMS's image proxy fetches the URL and follows any redirect itself, so a public host that redirects to a home-network address is followed; only an `image/*` answer of at most 20 MiB is ever relayed, whatever it came from. Anything else would let a user make LMS fetch arbitrary URLs on the home network (SSRF): text such as track titles and player names can be set by users, so it never counts. |
 | `plugins/<Name>/html/…`, `plugins/cache/icons/…`, `html/images/…` | Image files only (`png`, `jpg`, `gif`, `svg`); no `..`, `//` or `%` encodings |
 
 Rules for what is relayed:
@@ -593,7 +594,7 @@ Headers: `Content-Type`, `Content-Length`, `Accept-Ranges: bytes`, `Cache-Contro
 
 **Ranges:** one `Range: bytes=a-b`, `bytes=a-` or `bytes=-n` gets 206 with `Content-Range: bytes a-b/total`. A malformed range, several ranges, or one past the end gets 416 (with `Content-Range: bytes */total` when the size is known). Resume an interrupted download from the bytes you have.
 
-**Transcodes** are made on first request (the response starts once ffmpeg has finished, which can take a while for a long track), then kept in an LRU cache on disk and served from it, `Range` included. A transcode that fails is 502; one that runs too long (10 minutes) is 504.
+**Transcodes** are made on first request (the response starts once ffmpeg has finished, which can take a while for a long track), then kept in an LRU cache on disk and served from it, `Range` included. A transcode that fails is 502; one that runs too long (10 minutes) is 504. The original is fetched from LMS into the cache directory first and counts against the cache's size while it is there (other files are evicted to make room, and a transcode waits while others' originals hold it), so a track larger than the whole cache is 413 `track too large` for `mp3` and `opus`; it is fetched before a transcode slot is taken, so a slow fetch never holds up anyone else's encode (2026-10-18).
 
 ### Refusals
 
@@ -606,6 +607,7 @@ Headers: `Content-Type`, `Content-Length`, `Accept-Ranges: bytes`, `Cache-Contro
 | 404 | `not downloadable` | Not a local library file (a streaming-service or radio track) |
 | 404 | `format not available` | No ffmpeg (or no encoder) for this format, or a file type that isn't transcoded |
 | 400 | `unknown format` | Any query other than `format=original\|mp3\|opus` |
+| 413 | `track too large` | A transcode of a track larger than the transcode cache |
 | 416 | `bad range` | See Ranges |
 | 429 | `too many downloads at once` | The user already has 3 downloads running; `Retry-After: 5` |
 | 502 / 504 | `music server unavailable` / `music server timed out` | LMS failed or didn't answer in time |
@@ -737,8 +739,8 @@ Clients show titles with `titles 0 <n> track_id:<id,id,…> tags:…` through `/
 ### Shelves
 
 `GET /v1/me/shelves/{recent|most|on_this_day}[?limit=1–50]` → `{"shelf": "<name>", "albums": [<album id>, …]}`, best first (20 by default); library ids only (fetch them with `albums 0 <n> album_id:<id,id,…>`, which LMS answers in its own order). Any other shelf name is 404.
-- **recent:** the user's albums by their last play here, blended with LMS's `albums sort:recentlyplayed`;
-- **most:** the user's plays per album over the last 90 days, scaled to the most played, × 3, plus LMS's `albums sort:playcount` ranking (scaled 1 to 0) × 1;
+- **recent:** the user's albums by their last play here (their own history only: LMS's `sort:recentlyplayed` is server-wide and is not blended in, so no user sees what others played; since 2026-10-18);
+- **most:** the user's albums by their plays over the last 90 days, most first, then the most recently played (their own history only, as for `recent`);
 - **on_this_day:** albums the user played within 3 days of this date a year ago (LMS keeps only each track's last play, so this one is the user's own).
 
 LMS before 9.1 has no play-count sorts: the server side is then empty.
@@ -1038,7 +1040,7 @@ Each user's own ratings, blended with LMS's shared rating (docs/plans/wave2-desi
 
 The lyrics of a library track, for Now playing (docs/plans/wave1-design.md §9).
 
-**Who may ask:** any signed-in user: a bearer access token (401 without one). It counts towards the per-user `/v1/me/…` allowance (429 with `Retry-After` beyond it).
+**Who may ask:** any signed-in user: a bearer access token (401 without one). It counts towards the per-user `/v1/me/…` allowance (429 with `Retry-After` beyond it). If the admin has made the Music & Artist Information plugin admin-only, anyone else gets the file's own lyrics only, never the plugin's (404 `no lyrics` when the tags have none; since 2026-10-18).
 
 **Request:** the track id only: a positive integer, at most 12 digits, no leading zero. Anything else is 404, and any query string is 400 `unknown parameter`. No path, URL, artist or title is ever taken from the client.
 
@@ -1071,7 +1073,7 @@ The lyrics of a library track, for Now playing (docs/plans/wave1-design.md §9).
 
 Artist biographies and photos, and album reviews, for the artist and album pages (docs/plans/ux-research.md X5, part 1).
 
-**Who may ask:** any signed-in user: a bearer access token (401 without one). It counts towards the per-user `/v1/me/…` allowance (429 with `Retry-After` beyond it).
+**Who may ask:** any signed-in user: a bearer access token (401 without one). It counts towards the per-user `/v1/me/…` allowance (429 with `Retry-After` beyond it). If the admin has made the Music & Artist Information plugin admin-only, anyone else gets 403 `{"error":"this plugin is for admins only"}`, as `/v1/rpc` answers for it (since 2026-10-18).
 
 **Request:** a library artist or album id only: a positive integer, at most 12 digits, no leading zero. Anything else is 404, and any query string is 400 `unknown parameter`. No name, path or URL is ever taken from the client.
 
@@ -1117,7 +1119,7 @@ The plugin answers from its cache, local files and whatever online services the 
 
 LMS is a single process. When something blocks it, typically its music folder on network storage that has to spin its disks up before a file opens, it answers nothing at all, often for 30–70 s, and its players hear nothing either. The gateway (from `features.lms_busy`):
 - marks LMS busy when any request to it has gone unanswered for 4 s (healthy answers take milliseconds), tells every events subscriber, and logs it;
-- refuses new `/v1/rpc` requests at once with 503 `busy` rather than queue more work inside LMS, and doesn't re-read LMS's app menus to refuse an unknown command;
+- refuses new `/v1/rpc` and `/v1/art/…` requests at once with 503 `busy` rather than queue more work inside LMS (artwork since 2026-10-18; its 401 and 404 refusals come first), and doesn't re-read LMS's app menus to refuse an unknown command;
 - keeps one cheap request (`serverstatus`) waiting on LMS, so the moment LMS answers it says `{"lms":"ok"}`;
 - keeps player sockets alive with keepalives, so players carry on with what they have buffered.
 
@@ -1130,4 +1132,4 @@ Clients should show the state calmly ("the music server is busy"), not as an err
 - Revocation and permission changes are re-checked every 30 s: a revoked device is disconnected, and new grants take effect.
 - A device may hold 4 event sockets and a user 16 across all their devices. A new socket beyond either limit closes the oldest one (of that device first, otherwise of that user) with 1008 `replaced by a newer connection`. Clients must not reconnect after it: the web app treats every 1008 other than `unauthorised` as final (the page keeps polling), so two tabs can't keep evicting each other.
 
-**Upstream:** the gateway keeps one connection to the LMS CLI (`--lms-cli-port`, default 9090) while anyone is subscribed, and reconnects with backoff.
+**Upstream:** the gateway keeps one connection to the LMS CLI (`--lms-cli-port`, default 9090) while anyone is subscribed, and reconnects with backoff. It sends only `listen 1`, never `login`: a CLI user name and password are not supported. An LMS whose CLI wants a login (password protection on) hangs up without answering, and the gateway logs that by name (`LMS closed its CLI connection without answering`) and keeps retrying; events stop meanwhile.

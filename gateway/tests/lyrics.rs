@@ -189,3 +189,58 @@ async fn shares_the_per_user_request_allowance() {
     let (s, _) = get(&h, "/v1/lyrics/track/9", Some(&h.tok_b)).await;
     assert_eq!(s, S::OK);
 }
+
+/// The plugin reserved for admins (`admin_only_plugins`): listeners get the file's own
+/// lyrics only, never the plugin's (asked or cached), and an admin's answer isn't spoilt
+/// by a listener asking first (review low: this path ignored the setting).
+#[tokio::test]
+async fn an_admin_only_plugin_gives_listeners_only_the_tags() {
+    let h = harness().await;
+    h.accounts
+        .create_user("carol", "correct horse battery", Role::Admin)
+        .unwrap();
+    let admin = h
+        .accounts
+        .login(
+            "carol",
+            "correct horse battery",
+            None,
+            "Laptop",
+            None,
+            "test",
+        )
+        .unwrap()
+        .access;
+    h.accounts
+        .set_admin_only_plugins(&["musicartistinfo".to_string()])
+        .unwrap();
+    let plugin_calls = |h: &Harness| {
+        lyrics_calls(h)
+            .iter()
+            .filter(|c| c[1][0] == "musicartistinfo")
+            .count()
+    };
+    // The tags are still the listener's.
+    let (s, v) = get(&h, "/v1/lyrics/track/9", Some(&h.tok_a)).await;
+    assert_eq!(s, S::OK);
+    assert_eq!(v["source"], "tags");
+    // Without tags: no lyrics, and the plugin isn't asked.
+    let (s, v) = get(&h, "/v1/lyrics/track/1", Some(&h.tok_a)).await;
+    assert_eq!(s, S::NOT_FOUND);
+    assert_eq!(v, json!({"error": "no lyrics"}));
+    assert_eq!(plugin_calls(&h), 0);
+    // The admin still gets the plugin's ...
+    let (s, v) = get(&h, "/v1/lyrics/track/1", Some(&admin)).await;
+    assert_eq!(s, S::OK);
+    assert_eq!(v["source"], "plugin");
+    assert_eq!(plugin_calls(&h), 1);
+    // ... which a listener never gets from the cache.
+    let (s, v) = get(&h, "/v1/lyrics/track/1", Some(&h.tok_b)).await;
+    assert_eq!(s, S::NOT_FOUND);
+    assert_eq!(v, json!({"error": "no lyrics"}));
+    assert_eq!(plugin_calls(&h), 1);
+    h.accounts.set_admin_only_plugins(&[]).unwrap();
+    let (s, v) = get(&h, "/v1/lyrics/track/1", Some(&h.tok_b)).await;
+    assert_eq!(s, S::OK);
+    assert_eq!(v["source"], "plugin");
+}

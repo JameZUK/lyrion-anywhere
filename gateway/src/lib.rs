@@ -663,7 +663,8 @@ pub fn router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             note_device_use,
-        ));
+        ))
+        .layer(middleware::from_fn(unknown_if_not_utf8));
     app = match &state.cfg.static_dir {
         Some(dir) => app.fallback_service(tower_http::services::ServeDir::new(dir)),
         None => app.fallback(|| async { StatusCode::NOT_FOUND }),
@@ -751,6 +752,42 @@ async fn security_headers(req: Request, next: Next) -> Response {
         ),
     );
     resp
+}
+
+/// An API path whose percent-escapes decode to something that isn't UTF-8 names nothing
+/// the gateway has: 404, like any other unknown resource, before any handler runs. Without
+/// this, axum's `Path` extractor refused such ids with its own 400, ahead of the handlers'
+/// authentication and CSRF checks (review low). Artwork reads its raw path itself.
+async fn unknown_if_not_utf8(req: Request, next: Next) -> Response {
+    let path = req.uri().path();
+    if path.starts_with("/v1/") && !path.starts_with("/v1/art/") && !decodes_to_utf8(path) {
+        return history::error(StatusCode::NOT_FOUND, "not found");
+    }
+    next.run(req).await
+}
+
+/// Does this path, with its `%XX` escapes decoded, read as UTF-8? (A `%` not followed by
+/// two hex digits stands for itself, as axum takes it.)
+pub fn decodes_to_utf8(path: &str) -> bool {
+    let b = path.as_bytes();
+    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && let (Some(hi), Some(lo)) = (
+                b.get(i + 1).copied().and_then(hex),
+                b.get(i + 2).copied().and_then(hex),
+            )
+        {
+            out.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    std::str::from_utf8(&out).is_ok()
 }
 
 /// API requests with a valid access token: note where the device was seen from (written at
@@ -958,6 +995,40 @@ fn secret_eq(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paths_are_judged_by_their_decoded_bytes() {
+        for ok in [
+            "/v1/devices/12",
+            "/v1/me/shelves/%C3%A9",
+            "/v1/x/%",
+            "/v1/x/%4",
+            "/v1/x/%zz",
+            "/v1/x/%25FF",
+            "/v1/x/日本",
+        ] {
+            assert!(decodes_to_utf8(ok), "{ok}");
+        }
+        for bad in [
+            "/v1/devices/%FF",
+            "/v1/x/%C3%28",
+            "/v1/x/%e2%82",
+            "/v1/x/%80",
+            "/v1/x/%ED%A0%80",
+        ] {
+            assert!(!decodes_to_utf8(bad), "{bad}");
+        }
+        // Arbitrary paths never panic.
+        let mut rng = crate::flac_strip::tests::Rng::new(7);
+        let alphabet = b"%0123456789abcdefABCDEFxyz/";
+        for _ in 0..20_000 {
+            let n = rng.below(24) as usize;
+            let s: String = (0..n)
+                .map(|_| alphabet[rng.below(alphabet.len() as u64) as usize] as char)
+                .collect();
+            let _ = decodes_to_utf8(&s);
+        }
+    }
 
     #[test]
     fn ipv6_clients_are_keyed_by_their_64() {

@@ -371,6 +371,9 @@ struct Index {
     entries: HashMap<String, (u64, u64)>,
     total: u64,
     clock: u64,
+    /// Bytes held for work in progress (originals being transcoded, see
+    /// [`Cache::reserve`]): they count against the cap as well.
+    reserved: u64,
 }
 
 /// Transcodes (or other derived files, see [`Cache::open_with`]) on disk, at most `cap`
@@ -380,6 +383,23 @@ pub struct Cache {
     cap: u64,
     exts: &'static [&'static str],
     index: Mutex<Index>,
+    /// The cap in units of `unit` bytes: work in progress waits here for room.
+    room: tokio::sync::Semaphore,
+    unit: u64,
+}
+
+/// Room held in a [`Cache`] for work in progress; given back when dropped.
+pub struct Reservation<'a> {
+    cache: &'a Cache,
+    bytes: u64,
+    _room: tokio::sync::SemaphorePermit<'a>,
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        let mut ix = self.cache.index.lock().unwrap();
+        ix.reserved = ix.reserved.saturating_sub(self.bytes);
+    }
 }
 
 impl Cache {
@@ -413,11 +433,15 @@ impl Cache {
             }
         }
         found.sort();
+        // Units small enough to be exact for small caps, few enough to count in a u32.
+        let unit = (cap / u32::MAX as u64 + 1).max(1);
         let cache = Cache {
             dir: dir.to_path_buf(),
             cap,
             exts,
             index: Mutex::new(Index::default()),
+            room: tokio::sync::Semaphore::new(cap.div_ceil(unit) as usize),
+            unit,
         };
         {
             let mut ix = cache.index.lock().unwrap();
@@ -443,6 +467,30 @@ impl Cache {
     /// Bytes held.
     pub fn total(&self) -> u64 {
         self.index.lock().unwrap().total
+    }
+
+    /// Bytes held for work in progress.
+    pub fn reserved(&self) -> u64 {
+        self.index.lock().unwrap().reserved
+    }
+
+    /// Hold `bytes` of the cap for work in progress (an original being transcoded), so the
+    /// directory never holds more than the cap: waits while other work holds the room, then
+    /// evicts the least recently used files to make it. `None` if `bytes` is more than the
+    /// whole cap.
+    pub async fn reserve(&self, bytes: u64) -> Option<Reservation<'_>> {
+        if bytes > self.cap {
+            return None;
+        }
+        let units = u32::try_from(bytes.div_ceil(self.unit)).ok()?;
+        let room = self.room.acquire_many(units).await.ok()?;
+        self.index.lock().unwrap().reserved += bytes;
+        self.evict(None);
+        Some(Reservation {
+            cache: self,
+            bytes,
+            _room: room,
+        })
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -515,7 +563,7 @@ impl Cache {
     /// Remove least recently used entries (never `keep`) until the cache fits.
     fn evict(&self, keep: Option<&str>) {
         let mut ix = self.index.lock().unwrap();
-        while ix.total > self.cap {
+        while ix.total + ix.reserved > self.cap {
             let victim = ix
                 .entries
                 .iter()
@@ -606,6 +654,39 @@ mod tests {
     fn put(c: &Cache, n: &str, size: usize) -> bool {
         std::fs::write(c.dir().join(n), vec![0u8; size]).unwrap();
         c.insert(n, size as u64)
+    }
+
+    /// An original being transcoded counts against the cap (review low: it was written
+    /// outside it): room is made by evicting, a second original waits for room, and the
+    /// room comes back when the work is done.
+    #[tokio::test]
+    async fn work_in_progress_counts_against_the_cap() {
+        let dir = tmpdir("reserve");
+        let c = Cache::open(&dir, 100).unwrap();
+        assert!(put(&c, &name(1), 40));
+        assert!(put(&c, &name(2), 40));
+        let r = c.reserve(50).await.unwrap();
+        assert_eq!(c.reserved(), 50);
+        assert!(!c.contains(&name(1)), "the least recently used made room");
+        assert!(c.contains(&name(2)));
+        assert!(c.total() + c.reserved() <= 100);
+        // A finished transcode while the room is held: still within the cap.
+        assert!(put(&c, &name(3), 30));
+        assert!(c.total() + c.reserved() <= 100, "{}", c.total());
+        // More than the whole cap: refused at once.
+        assert!(c.reserve(101).await.is_none());
+        // A second original waits for room.
+        let waiting = tokio::time::timeout(Duration::from_millis(100), c.reserve(60)).await;
+        assert!(waiting.is_err(), "no room while 50 of 100 are held");
+        drop(r);
+        assert_eq!(c.reserved(), 0);
+        let r = tokio::time::timeout(Duration::from_secs(2), c.reserve(60))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(c.total() + c.reserved() <= 100);
+        drop(r);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

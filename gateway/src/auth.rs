@@ -357,6 +357,14 @@ pub async fn refresh(
                 .insert(CLEAR_SITE_DATA, HeaderValue::from_static(CLEAR_CACHE));
             r
         }
+        // Signed out (revoked, expired or never valid): what the browser cached for this
+        // account is cleared too, as on reuse (review low).
+        Err(AuthError::Invalid) => {
+            let mut r = auth_error(AuthError::Invalid);
+            r.headers_mut()
+                .insert(CLEAR_SITE_DATA, HeaderValue::from_static(CLEAR_CACHE));
+            r
+        }
         Err(e) => auth_error(e),
     }
 }
@@ -863,6 +871,57 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert(name, HeaderValue::from_bytes(v).unwrap());
         h
+    }
+
+    /// Cookie and bearer headers of arbitrary bytes (as many as a header may hold) never
+    /// panic, and only ever yield a value that was really there: a bearer token only after
+    /// `Bearer `, a cookie value only for its exact name and without a separator in it.
+    #[test]
+    fn arbitrary_cookie_and_bearer_headers_never_panic() {
+        let mut rng = crate::flac_strip::tests::Rng::new(15);
+        let pieces: &[&[u8]] = &[
+            b"Bearer ",
+            b"bearer ",
+            b"Basic ",
+            REFRESH_COOKIE.as_bytes(),
+            b"=",
+            b";",
+            b" ",
+            b"\t",
+            b"x",
+            b"\xff",
+            b"\xc3\xa9",
+            b"\"",
+            b",",
+        ];
+        for _ in 0..20_000 {
+            let mut v = Vec::new();
+            for _ in 0..rng.below(12) {
+                if rng.below(3) == 0 {
+                    v.push(rng.below(256) as u8);
+                } else {
+                    v.extend_from_slice(pieces[rng.below(pieces.len() as u64) as usize]);
+                }
+            }
+            let Ok(value) = HeaderValue::from_bytes(&v) else {
+                continue;
+            };
+            let mut h = HeaderMap::new();
+            h.insert(header::AUTHORIZATION, value.clone());
+            h.append(header::COOKIE, value.clone());
+            if rng.below(2) == 0 {
+                h.append(header::COOKIE, value);
+            }
+            if let Some(t) = bearer(&h) {
+                assert!(v.starts_with(b"Bearer "), "{v:?}");
+                assert_eq!(t.as_bytes(), &v[7..]);
+            }
+            if let Some(c) = cookie(&h, REFRESH_COOKIE) {
+                assert!(!c.contains(';'), "{v:?}");
+                let text = String::from_utf8_lossy(&v);
+                assert!(text.contains(&format!("{REFRESH_COOKIE}={c}")), "{v:?}");
+            }
+        }
     }
 
     #[test]

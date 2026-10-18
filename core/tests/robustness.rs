@@ -6,7 +6,9 @@
 
 use anywhere_core::decode::{DecodeStatus, InputBuffer, StreamDecoder};
 use anywhere_core::player::{Player, PlayerConfig};
-use anywhere_core::proto::{ClientFrameReader, ServerFrameReader, Strm, encode_server_frame};
+use anywhere_core::proto::{
+    ClientFrameReader, ClientMsg, ServerFrameReader, Strm, encode_server_frame,
+};
 
 /// Small deterministic PRNG (xorshift64*), so failures are reproducible from the seed.
 struct Rng(u64);
@@ -402,6 +404,31 @@ fn stream_decode(file: &[u8], fmt: u8) -> DecodeStatus {
 /// The streaming decoder's message when it caught a panic (native builds only).
 const CAUGHT_PANIC: &str = anywhere_core::decode::STREAM_DECODER_PANICKED;
 
+/// The safety net itself (M13): a panic caught inside the streaming decoder is reported as
+/// a failure with its own message, never as progress or a normal end, and the decoder stays
+/// failed afterwards. (The sink runs inside the guarded call, so a panicking sink stands in
+/// for a panicking demuxer.)
+#[test]
+fn a_caught_panic_is_reported_as_a_failure() {
+    let input = InputBuffer::new();
+    input.push(&wav16(8_000, 4_000));
+    input.set_eof();
+    let mut dec = StreamDecoder::new(input, b'p');
+    let mut status = DecodeStatus::Progress;
+    for _ in 0..10_000 {
+        status = dec.work(64, &mut |_, _| panic!("a hostile stream"));
+        if status != DecodeStatus::Progress {
+            break;
+        }
+    }
+    assert_eq!(status, DecodeStatus::Failed(CAUGHT_PANIC.to_string()));
+    assert_eq!(
+        dec.work(64, &mut |_, _| {}),
+        DecodeStatus::Failed(CAUGHT_PANIC.to_string()),
+        "still failed"
+    );
+}
+
 /// Regression: hostile WAV header fields through the streaming decoder (the player's path,
 /// shared with the web player). Symphonia's WAV reader overflowed on some of these in debug
 /// builds; they must be refused *before* the reader sees them, because WebAssembly builds
@@ -566,4 +593,138 @@ fn flac_verification_survives_random_and_hostile_files() {
     junk_frames.extend([0xff, 0xf8]);
     junk_frames.extend(r.bytes(20_000));
     assert!(!check(junk_frames).is_ok_and(|c| c.md5_ok));
+}
+
+/// `HELO` and `STAT` payloads come from clients (through the gateway): random and
+/// truncated bytes never panic, short ones are refused, and what parses re-encodes to the
+/// same fixed fields.
+#[test]
+fn helo_and_stat_parsers_survive_random_payloads() {
+    use anywhere_core::proto::{Helo, Stat};
+    let mut r = Rng(0x0e10_57a7);
+    for _ in 0..20_000 {
+        let n = r.below(120) as usize;
+        let p = r.bytes(n);
+        match Helo::parse(&p) {
+            Ok(h) => {
+                assert!(n >= 36);
+                let again = ClientMsg::Helo(h.clone()).encode();
+                assert_eq!(&again[8..8 + 36], &p[..36], "fixed fields round-trip");
+            }
+            Err(_) => assert!(n < 36),
+        }
+        match Stat::parse(&p) {
+            Ok(s) => {
+                assert!(n >= Stat::LEN);
+                assert_eq!(s.encode_payload(), p[..Stat::LEN]);
+            }
+            Err(_) => assert!(n < Stat::LEN),
+        }
+    }
+}
+
+/// The `strm` request check the gateway enforces, on random bytes and on mutations of a
+/// good request: never panics, and anything accepted is exactly this player's stream.
+#[test]
+fn stream_request_check_survives_random_and_mutated_requests() {
+    use anywhere_core::proto::{direct_stream_target, validate_stream_request};
+    let mac = [2, 0, 0, 0, 0, 9];
+    let want = "/stream.mp3?player=02:00:00:00:00:09";
+    let good = format!("GET {want} HTTP/1.0\r\n\r\n").into_bytes();
+    let server = std::net::IpAddr::from([10, 0, 0, 10]);
+    let mut r = Rng(0x5747_e4a1);
+    for round in 0..20_000 {
+        let req = if round % 2 == 0 {
+            let n = r.below(200) as usize;
+            r.bytes(n)
+        } else {
+            let mut b = good.clone();
+            for _ in 0..1 + r.below(3) {
+                let i = r.below(b.len() as u64) as usize;
+                match r.below(3) {
+                    0 => b[i] = r.next() as u8,
+                    1 => b.truncate(i),
+                    _ => b.insert(i, b" /%:?&\r\n\xff"[r.below(9) as usize]),
+                }
+                if b.is_empty() {
+                    break;
+                }
+            }
+            b
+        };
+        if let Ok(path) = validate_stream_request(&req, &mac) {
+            assert_eq!(path, want);
+            let line = req.split(|b| *b == b'\r').next().unwrap();
+            let line = std::str::from_utf8(line).unwrap();
+            assert!(line.starts_with(&format!("GET {want} HTTP/1.")), "{line:?}");
+        }
+        let ip = (r.next() as u32).to_be_bytes();
+        let ip = if r.below(2) == 0 { [0; 4] } else { ip };
+        if let Ok(addr) = direct_stream_target(ip, r.next() as u16, &req, &mac, server) {
+            assert_eq!(addr.ip(), server);
+        }
+    }
+}
+
+/// MAC addresses are parsed from configuration and from LMS answers: arbitrary text never
+/// panics, and whatever parses formats back to six well-formed pairs.
+#[test]
+fn mac_parser_survives_arbitrary_text() {
+    use anywhere_core::proto::{format_mac, parse_mac};
+    let alphabet: Vec<char> = "0123456789abcdefABCDEF:-+ xé\u{0}".chars().collect();
+    let mut r = Rng(0x00ac_0ddd);
+    for _ in 0..20_000 {
+        let n = r.below(30) as usize;
+        let s: String = if r.below(4) == 0 {
+            String::from_utf8_lossy(&r.bytes(n)).into_owned()
+        } else {
+            (0..n)
+                .map(|_| alphabet[r.below(alphabet.len() as u64) as usize])
+                .collect()
+        };
+        if let Some(mac) = parse_mac(&s) {
+            let f = format_mac(&mac);
+            assert_eq!(f.len(), 17);
+            assert_eq!(parse_mac(&f), Some(mac));
+        }
+    }
+}
+
+/// `OpusHead` comes from the stream: random headers, and mutations of a valid one, never
+/// panic, and what is accepted is mono or stereo with a consistent mapping.
+#[cfg(feature = "opus")]
+#[test]
+fn opus_head_parser_survives_random_and_mutated_headers() {
+    use anywhere_core::opus::OpusHead;
+    let mut good = b"OpusHead".to_vec();
+    good.extend([1, 2, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0]);
+    assert!(OpusHead::parse(&good).is_ok());
+    let mut r = Rng(0x0905_4ead);
+    for round in 0..20_000 {
+        let b = if round % 3 == 0 {
+            let mut b = b"OpusHead".to_vec();
+            let n = r.below(40) as usize;
+            b.extend(r.bytes(n));
+            b
+        } else if round % 3 == 1 {
+            let mut b = good.clone();
+            for _ in 0..1 + r.below(3) {
+                let i = 8 + r.below((b.len() - 8) as u64) as usize;
+                b[i] = r.next() as u8;
+            }
+            if r.below(4) == 0 {
+                b.truncate(r.below(b.len() as u64) as usize);
+            }
+            b
+        } else {
+            let n = r.below(40) as usize;
+            r.bytes(n)
+        };
+        if let Ok(h) = OpusHead::parse(&b) {
+            assert!(matches!(h.channels, 1 | 2));
+            assert_eq!(h.mapping.len(), h.channels as usize);
+            assert!(h.streams >= 1 && h.coupled <= h.streams);
+            assert!(h.output_gain_db.is_finite());
+        }
+    }
 }

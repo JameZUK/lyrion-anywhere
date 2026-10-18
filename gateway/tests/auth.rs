@@ -373,6 +373,37 @@ async fn a_replay_within_the_grace_window_is_caught_when_the_owner_returns() {
     expect_close(&mut ws, CloseCode::Policy).await;
 }
 
+/// An invalid refresh token (signed out, expired or made up) clears the browser's cached
+/// data as reuse does (review low: only reuse did).
+#[tokio::test]
+async fn an_invalid_refresh_token_clears_cached_data() {
+    let h = harness().await;
+    let refresh = |t: &str| h.post("/v1/auth/refresh", json!({ "refresh_token": t }), &[CLIENT]);
+    let r = refresh("not-a-real-token").await;
+    assert_eq!(r.status(), S::UNAUTHORIZED);
+    assert_eq!(r.headers().get("clear-site-data").unwrap(), "\"cache\"");
+    // One that was real, then signed out.
+    let login = h.post(
+        "/v1/auth/login",
+        json!({ "username": "alice", "password": PW, "device_name": "Phone", "refresh": "body" }),
+        &[CLIENT],
+    );
+    let body = json_of(login.await).await;
+    let access = body["access_token"].as_str().unwrap().to_string();
+    let token = body["refresh_token"].as_str().unwrap().to_string();
+    let out = reqwest::Client::new()
+        .post(h.url("/v1/auth/logout"))
+        .header(CLIENT.0, CLIENT.1)
+        .bearer_auth(&access)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(out.status(), S::NO_CONTENT);
+    let r = refresh(&token).await;
+    assert_eq!(r.status(), S::UNAUTHORIZED);
+    assert_eq!(r.headers().get("clear-site-data").unwrap(), "\"cache\"");
+}
+
 #[tokio::test]
 async fn logout_revokes_the_device_and_clears_the_cookie() {
     let mut h = harness().await;

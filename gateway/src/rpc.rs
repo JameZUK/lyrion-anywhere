@@ -19,7 +19,7 @@ use crate::AppState;
 use crate::accounts::{PlayerScope, Principal, Role};
 use crate::rpc_policy::{self, Caller, Checked, Kind};
 
-const MAX_BODY: usize = 8 * 1024;
+pub(crate) const MAX_BODY: usize = 8 * 1024;
 /// Devices whose learned menu actions are kept; beyond this the least recently used go.
 pub const MAX_ACTION_DEVICES: usize = 1000;
 const LMS_TIMEOUT: Duration = Duration::from_secs(30);
