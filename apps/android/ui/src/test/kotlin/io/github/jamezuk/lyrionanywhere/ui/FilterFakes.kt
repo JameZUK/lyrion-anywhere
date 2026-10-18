@@ -1,5 +1,7 @@
 package io.github.jamezuk.lyrionanywhere.ui
 
+import io.github.jamezuk.lyrionanywhere.data.FilterProblem.Refused
+import io.github.jamezuk.lyrionanywhere.data.toError
 import io.github.jamezuk.lyrionanywhere.core.AlbumSort
 import io.github.jamezuk.lyrionanywhere.core.ArtistRole
 import io.github.jamezuk.lyrionanywhere.core.FilterAlbums
@@ -44,7 +46,7 @@ class FakeFilters(var list: List<SmartFilter> = listOf(LATE_JAZZ, COMPOSERS)) : 
     private fun saved(id: Long, d: FilterDraft) = SmartFilter(id, d.name, d.rules, d.sort, d.limit.toUInt())
 
     override suspend fun create(draft: FilterDraft): ApiResult<SmartFilter> {
-        problem(draft)?.let { return ApiResult.Err(AppError.InvalidInput(it)) }
+        problem(draft)?.let { return ApiResult.Err(it.toError()) }
         failSave?.let { return ApiResult.Err(it) }
         created += draft
         val f = saved(90L + created.size, draft)
@@ -53,7 +55,7 @@ class FakeFilters(var list: List<SmartFilter> = listOf(LATE_JAZZ, COMPOSERS)) : 
     }
 
     override suspend fun update(id: Long, draft: FilterDraft): ApiResult<SmartFilter> {
-        problem(draft)?.let { return ApiResult.Err(AppError.InvalidInput(it)) }
+        problem(draft)?.let { return ApiResult.Err(it.toError()) }
         failSave?.let { return ApiResult.Err(it) }
         updated += id to draft
         val f = saved(id, draft)
@@ -76,11 +78,11 @@ class FakeFilters(var list: List<SmartFilter> = listOf(LATE_JAZZ, COMPOSERS)) : 
         return ApiResult.Ok(FilterAlbums(ids, albumCount.toUInt()))
     }
 
-    override fun problem(draft: FilterDraft): String? = when {
-        draft.name.isBlank() || draft.name.length > 64 -> "a filter needs a name of 1 to 64 characters"
-        draft.rules.isEmpty() || draft.rules.size > 8 -> "a filter has 1 to 8 rules"
-        draft.rules.any { it is FilterRule.Genre && (it.genres.isEmpty() || it.genres.size > 20) } -> "choose 1 to 20 genres"
-        draft.limit !in 1..500 -> "a filter shows 1 to 500 albums"
+    override fun problem(draft: FilterDraft): io.github.jamezuk.lyrionanywhere.data.FilterProblem? = when {
+        draft.name.isBlank() || draft.name.length > 64 -> Refused("a filter needs a name of 1 to 64 characters")
+        draft.rules.isEmpty() || draft.rules.size > 8 -> Refused("a filter has 1 to 8 rules")
+        draft.rules.any { it is FilterRule.Genre && (it.genres.isEmpty() || it.genres.size > 20) } -> Refused("choose 1 to 20 genres")
+        draft.limit !in 1..500 -> io.github.jamezuk.lyrionanywhere.data.FilterProblem.LimitRange
         else -> null
     }
 }

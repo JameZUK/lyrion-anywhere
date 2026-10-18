@@ -1,12 +1,10 @@
 package io.github.jamezuk.lyrionanywhere
 
-import android.app.SearchManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.Typeface
 import android.os.Bundle
-import android.provider.MediaStore
 import android.view.KeyEvent
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -31,7 +29,7 @@ class MainActivity : ComponentActivity() {
         val app = application as LyrionApp
         if (app.safeMode || !app.started) {
             super.onCreate(savedInstanceState)
-            showCrashReport(runCatching { CrashLog.pending(this) }.getOrNull() ?: "The app didn't finish starting.")
+            showCrashReport(runCatching { CrashLog.pending(this) }.getOrNull() ?: getString(R.string.crash_not_started))
             return
         }
         enableEdgeToEdge()
@@ -49,25 +47,19 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        if (savedInstanceState == null) handleOnce(intent)
+        if (savedInstanceState == null) {
+            launches.handleOnce(intent)
+            // One crash (not a loop): its report, once, over the app that carried on.
+            app.takeCrashReport()?.let(::showCrashOnce)
+        }
     }
+
+    private val launches by lazy { LaunchHandler(this, application as LyrionApp) }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         val app = application as LyrionApp
-        if (!app.safeMode && app.started) handleOnce(intent)
-    }
-
-    /**
-     * Act on a voice search or pairing link once: not when the app is reopened from Recents
-     * (Android hands back the intent it was first started with), and not again when the
-     * activity is recreated (the handled intent is replaced with a plain one).
-     */
-    private fun handleOnce(intent: Intent?) {
-        if (intent == null || !LaunchIntents.shouldHandle(intent.action, intent.flags)) return
-        playFromSearch(intent)
-        openPairingLink(intent)
-        setIntent(Intent(Intent.ACTION_MAIN).setPackage(packageName))
+        if (!app.safeMode && app.started) launches.handleOnce(intent)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
@@ -82,23 +74,31 @@ class MainActivity : ComponentActivity() {
         return super.onKeyUp(keyCode, event)
     }
 
-    /**
-     * A tapped `lyrion-anywhere://pair?…` link. Only the link's text is read (no extras), and
-     * it only fills in the pairing screen: PairingLinks checks it strictly, and the user
-     * confirms the server before anything is sent (or, if signed in, first agrees to sign out).
-     */
-    private fun openPairingLink(intent: Intent?) {
-        if (intent?.action != Intent.ACTION_VIEW) return
-        val link = runCatching { intent.dataString }.getOrNull() ?: return
-        if (!link.startsWith("lyrion-anywhere:", ignoreCase = true)) return
-        (application as LyrionApp).container.pairingLinks.offer(link)
-    }
-
-    /** "Play … on Lyrion Anywhere": only the spoken query is read (see [LyrionApp.playFromSearch]). */
-    private fun playFromSearch(intent: Intent?) {
-        if (intent?.action != MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH) return
-        val query = runCatching { intent.getStringExtra(SearchManager.QUERY) }.getOrNull()
-        (application as LyrionApp).playFromSearch(LaunchIntents.searchQuery(query))
+    /** A single crash's report, shown once in a dialog (the app is running normally). */
+    private fun showCrashOnce(report: String) {
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val body = TextView(this).apply {
+            text = report
+            typeface = Typeface.MONOSPACE
+            textSize = 11f
+            setTextIsSelectable(true)
+            setPadding(pad, pad / 2, pad, pad / 2)
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(this@MainActivity).apply {
+                text = getString(R.string.crash_once_body)
+                setPadding(pad, pad / 2, pad, 0)
+            })
+            addView(ScrollView(this@MainActivity).apply { addView(HorizontalScrollView(this@MainActivity).apply { addView(body) }) })
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle(R.string.crash_once_title)
+            .setView(content)
+            .setPositiveButton(R.string.crash_share) { _, _ -> share(report) }
+            .setNeutralButton(R.string.crash_copy) { _, _ -> copy(report) }
+            .setNegativeButton(R.string.crash_once_close, null)
+            .show()
     }
 
     /**
@@ -150,13 +150,13 @@ class MainActivity : ComponentActivity() {
 
     private fun copy(text: String) {
         val clipboard = getSystemService(ClipboardManager::class.java) ?: return
-        clipboard.setPrimaryClip(ClipData.newPlainText("Lyrion Anywhere crash report", text))
+        clipboard.setPrimaryClip(ClipData.newPlainText(getString(R.string.crash_subject), text))
     }
 
     private fun share(text: String) {
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "Lyrion Anywhere crash report")
+            putExtra(Intent.EXTRA_SUBJECT, getString(R.string.crash_subject))
             putExtra(Intent.EXTRA_TEXT, text)
         }
         startActivity(Intent.createChooser(send, null))

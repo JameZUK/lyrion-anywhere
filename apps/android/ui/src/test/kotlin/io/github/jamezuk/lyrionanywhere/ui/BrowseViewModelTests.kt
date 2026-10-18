@@ -238,7 +238,7 @@ class MenuNavigatorTest : MainDispatcherTest() {
         n.start("App", action("app", "items"))
         n.choose(n.top!!.items.single())
         assertEquals(listOf(listOf("app", "playlist", "play")), menus.ran)
-        assertEquals(listOf(MenuEvent.Done(MenuNavigator.LABEL_PLAY), MenuEvent.NowPlaying), events)
+        assertEquals(listOf(MenuEvent.Done(io.github.jamezuk.lyrionanywhere.ui.menus.MenuLabel.Verb(io.github.jamezuk.lyrionanywhere.ui.menus.MenuVerb.PLAY)), MenuEvent.NowPlaying), events)
     }
 
     @Test

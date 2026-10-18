@@ -8,10 +8,14 @@ import androidx.core.content.edit
 import java.io.File
 
 /**
- * Crash reports for test builds. A crash (an uncaught Kotlin/Java exception, or a panic in
- * the Rust layer, which writes its own file) is saved in the app's private storage. On the
- * next start the app opens in a safe mode that shows the report with Copy and Share, instead
- * of starting normally and crashing again.
+ * Crash reports. A crash (an uncaught Kotlin/Java exception, or a panic in the Rust layer,
+ * which writes its own file) is saved in the app's private storage. What the next start does
+ * ([start]):
+ * - after one crash, an ANR or a failure that didn't end the app, it starts normally and
+ *   shows the report once, with Copy and Share;
+ * - after repeated crashes (two within [REPEAT_WINDOW_MS], the sign of a crash at every
+ *   start) it opens in a safe mode that shows only the report, with Restart, instead of
+ *   starting normally and crashing again.
  *
  * Reports hold the device model, Android version, app version and the stack trace. The app
  * never puts tokens or passwords in exception messages, and every report is passed through
@@ -39,13 +43,17 @@ object CrashLog {
         val app = context.applicationContext ?: context
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
-            runCatching { record(app, "Crash on thread ${thread.name}", error) }
+            runCatching { record(app, "Crash on thread ${thread.name}", error, fatal = true) }
             previous?.uncaughtException(thread, error)
         }
     }
 
-    /** Save a report for [error] (also used for failures that didn't end the app). */
-    fun record(context: Context, title: String, error: Throwable) {
+    /**
+     * Save a report for [error] (also used for failures that didn't end the app). A [fatal]
+     * one is also counted towards safe mode where Android can't say when the app crashed
+     * (Android 10).
+     */
+    fun record(context: Context, title: String, error: Throwable, fatal: Boolean = false) {
         val text = buildString {
             appendLine(title)
             appendLine(header(context))
@@ -53,7 +61,73 @@ object CrashLog {
             append(error.stackTraceToString())
         }.take(MAX_CHARS)
         jvmFile(context).writeText(redact(text))
+        if (fatal) {
+            val times = decodeTimes(seen(context).getString(JVM_CRASHES, null)) + System.currentTimeMillis()
+            // The process is about to end: written now, not in the background.
+            seen(context).edit(commit = true) { putString(JVM_CRASHES, times.takeLast(MAX_TIMES).joinToString(",")) }
+        }
     }
+
+    /** How the app starts after the last run (see the class notes). */
+    enum class StartMode {
+        /** Nothing to report. */
+        NORMAL,
+
+        /** Start normally and show the report once. */
+        REPORT_ONCE,
+
+        /** Repeated crashes: start nothing and show only the report, with Restart. */
+        SAFE,
+    }
+
+    /** The start decided at launch, and the report to show (null: none). */
+    data class Start(val mode: StartMode, val report: String?)
+
+    /** Two crashes this close together (the last one not yet seen) are a crash loop. */
+    const val REPEAT_WINDOW_MS = 5 * 60_000L
+
+    private const val MAX_TIMES = 8
+    private const val JVM_CRASHES = "jvm_crashes"
+
+    /** Decide how this launch starts (never throws: a failure here is a normal start). */
+    fun start(context: Context): Start {
+        val report = runCatching { pending(context) }.getOrNull()
+        val times = runCatching { crashTimes(context) }.getOrDefault(emptyList())
+        val seenUpTo = runCatching { seen(context).getLong(SEEN_EXIT, 0L) }.getOrDefault(0L)
+        return Start(startMode(times, seenUpTo, report != null), report)
+    }
+
+    /**
+     * Safe mode only when the latest crash hasn't been seen and another came within
+     * [REPEAT_WINDOW_MS] before it (seen or not: a report shown once, then the same crash
+     * again, is a loop). Otherwise a report is shown once.
+     */
+    internal fun startMode(crashTimes: List<Long>, seenUpTo: Long, hasReport: Boolean): StartMode {
+        val latest = crashTimes.maxOrNull()
+        if (latest != null && latest > seenUpTo && crashTimes.count { it in (latest - REPEAT_WINDOW_MS)..latest } >= 2) {
+            return StartMode.SAFE
+        }
+        return if (hasReport) StartMode.REPORT_ONCE else StartMode.NORMAL
+    }
+
+    /** Exits that are crashes (an ANR, or being stopped for memory or by the user, are not). */
+    internal fun isCrash(reason: Int): Boolean = reason == ApplicationExitInfo.REASON_CRASH ||
+        reason == ApplicationExitInfo.REASON_CRASH_NATIVE ||
+        reason == ApplicationExitInfo.REASON_INITIALIZATION_FAILURE
+
+    /** When the app crashed lately: Android's record (11+), else the app's own (10). */
+    private fun crashTimes(context: Context): List<Long> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val am = context.getSystemService(ActivityManager::class.java) ?: return emptyList()
+            return am.getHistoricalProcessExitReasons(context.packageName, 0, MAX_TIMES)
+                .filter { isCrash(it.reason) }
+                .map { it.timestamp }
+        }
+        return decodeTimes(seen(context).getString(JVM_CRASHES, null))
+    }
+
+    private fun decodeTimes(stored: String?): List<Long> =
+        stored.orEmpty().split(',').mapNotNull { it.trim().toLongOrNull() }.takeLast(MAX_TIMES)
 
     /** The saved report(s), or null when the last run ended normally. */
     fun pending(context: Context): String? {
@@ -113,12 +187,17 @@ object CrashLog {
 
     private val NATIVE_LIBRARY = Regex("""^[\w./+=~-]*\.so\b|^/(apex|system|vendor|data/app)/[\w./+=~-]+$""")
 
+    /** The report was shown (or Restart was pressed): forget it, and remember it was seen. */
     fun clear(context: Context) {
         jvmFile(context).delete()
         nativeFile(context).delete()
         // Android's record of the last exit stays; remember it has been seen.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            runCatching { latestExit(context)?.let { e -> seen(context).edit { putLong(SEEN_EXIT, e.timestamp) } } }
+        runCatching {
+            val latest = maxOf(
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) latestExit(context)?.timestamp ?: 0L else 0L,
+                decodeTimes(seen(context).getString(JVM_CRASHES, null)).maxOrNull() ?: 0L,
+            )
+            if (latest > 0) seen(context).edit(commit = true) { putLong(SEEN_EXIT, latest) }
         }
     }
 
@@ -129,7 +208,7 @@ object CrashLog {
     private fun latestExit(context: Context): ApplicationExitInfo? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         val am = context.getSystemService(ActivityManager::class.java) ?: return null
-        return am.getHistoricalProcessExitReasons(context.packageName, 0, 1).firstOrNull()
+        return am.getHistoricalProcessExitReasons(context.packageName, 0, MAX_TIMES).maxByOrNull { it.timestamp }
     }
 
     /**

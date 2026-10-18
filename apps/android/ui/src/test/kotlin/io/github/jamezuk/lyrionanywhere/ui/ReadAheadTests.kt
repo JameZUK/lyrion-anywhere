@@ -20,7 +20,6 @@ import io.github.jamezuk.lyrionanywhere.data.ReadAheadSettings
 import io.github.jamezuk.lyrionanywhere.ui.player.CushionParts
 import io.github.jamezuk.lyrionanywhere.ui.player.SignalPathPanel
 import io.github.jamezuk.lyrionanywhere.ui.player.cushionParts
-import io.github.jamezuk.lyrionanywhere.ui.player.formatCushion
 import io.github.jamezuk.lyrionanywhere.ui.settings.ReadAheadSetting
 import io.github.jamezuk.lyrionanywhere.ui.theme.LyrionTheme
 import org.junit.Assert.assertEquals
@@ -30,8 +29,20 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
-/** "4 min buffered ahead": how the cushion reads (pure, so every edge is checked). */
+/** "4 min buffered ahead": how the cushion reads (every edge is checked; units from the resources). */
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [35])
 class CushionFormatTest {
+    private val res = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>().resources
+
+    private fun formatCushion(ms: Long) = io.github.jamezuk.lyrionanywhere.ui.player.formatCushion(ms, res)
+
+    @Test
+    fun ratesReadInKilohertz() {
+        assertEquals("44.1 kHz", io.github.jamezuk.lyrionanywhere.ui.player.formatRate(44_100u, res))
+        assertEquals("96 kHz", io.github.jamezuk.lyrionanywhere.ui.player.formatRate(96_000u, res))
+    }
+
     @Test
     fun secondsMinutesAndHours() {
         assertEquals("45 s", formatCushion(45_000))

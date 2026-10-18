@@ -30,6 +30,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.github.jamezuk.lyrionanywhere.data.AppError
+import io.github.jamezuk.lyrionanywhere.data.FilterLimits
 import io.github.jamezuk.lyrionanywhere.ui.R
 
 /** The network layer's reason on its own line, shortened, or nothing. */
@@ -54,8 +55,26 @@ fun errorText(res: Resources, error: AppError): String = when (error) {
     }
     is AppError.ServerBusy -> res.getString(R.string.error_server_busy)
     is AppError.Server -> res.getString(R.string.error_server)
-    is AppError.InvalidInput -> error.detail.replaceFirstChar { it.uppercase() }
+    is AppError.InvalidInput -> reasonText(res, error.reason) ?: error.detail.replaceFirstChar { it.uppercase() }
     is AppError.Unexpected -> res.getString(R.string.error_unexpected)
+}
+
+/**
+ * A known refusal in the app's own words (review, 15 October: the server's text was shown as
+ * if it were the app's); null for [AppError.Reason.OTHER], whose detail is all there is.
+ */
+fun reasonText(res: Resources, reason: AppError.Reason): String? = when (reason) {
+    AppError.Reason.OTHER -> null
+    AppError.Reason.NOT_FOUND -> res.getString(R.string.error_not_found)
+    AppError.Reason.CONFLICT -> res.getString(R.string.error_conflict)
+    AppError.Reason.SIGN_OUT_FIRST -> res.getString(R.string.error_sign_out_first)
+    AppError.Reason.CHOOSE_SERVER_FIRST -> res.getString(R.string.error_choose_server_first)
+    AppError.Reason.NO_SERVER -> res.getString(R.string.error_no_server)
+    AppError.Reason.PLAIN_HTTP -> res.getString(R.string.error_plain_http)
+    AppError.Reason.FILTER_LIMIT -> res.getString(R.string.filter_problem_limit, FilterLimits.LIMIT_MIN, FilterLimits.LIMIT_MAX)
+    AppError.Reason.MENU_TOO_DEEP -> res.getString(R.string.error_menu_too_deep)
+    AppError.Reason.QUEUE_CHANGED -> res.getString(R.string.error_queue_changed)
+    AppError.Reason.WAITING_FOR_WIFI -> res.getString(R.string.error_waiting_for_wifi)
 }
 
 @Composable
@@ -108,7 +127,7 @@ fun EmptyState(text: String, modifier: Modifier = Modifier) {
 
 /** "3:07", or "1:02:03" for long tracks. */
 fun formatDuration(seconds: Double?): String {
-    if (seconds == null || seconds.isNaN() || seconds < 0) return "–:––"
+    if (seconds == null || !seconds.isFinite() || seconds < 0) return "–:––"
     val total = seconds.toLong()
     val h = total / 3600
     val m = (total % 3600) / 60

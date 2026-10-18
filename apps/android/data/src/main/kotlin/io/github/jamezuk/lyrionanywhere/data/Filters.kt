@@ -62,8 +62,30 @@ interface FiltersRepository {
      */
     suspend fun albums(id: Long, from: Int, count: Int): ApiResult<FilterAlbums>
 
-    /** What the gateway would refuse in [draft], fit to show; null when nothing. */
-    fun problem(draft: FilterDraft): String?
+    /** What the gateway would refuse in [draft]; null when nothing. */
+    fun problem(draft: FilterDraft): FilterProblem?
+}
+
+/** A filter problem as an error, for a save refused before anything was sent. */
+fun FilterProblem.toError(): AppError.InvalidInput = when (this) {
+    FilterProblem.LimitRange -> AppError.Reason.FILTER_LIMIT.error()
+    is FilterProblem.Refused -> AppError.InvalidInput(text)
+    FilterProblem.ChooseArtist, FilterProblem.ChooseDecade -> AppError.InvalidInput(toString())
+}
+
+/** Why a filter can't be saved as it is. The screens word each one (the Rust check's text as it is). */
+sealed interface FilterProblem {
+    /** The artist rule has no artist yet. */
+    data object ChooseArtist : FilterProblem
+
+    /** The decade rule has no decade yet. */
+    data object ChooseDecade : FilterProblem
+
+    /** A filter shows 1 to 500 albums. */
+    data object LimitRange : FilterProblem
+
+    /** The Rust check's own reason (shown as it is). */
+    data class Refused(val text: String) : FilterProblem
 }
 
 /**
@@ -80,13 +102,13 @@ class RustFiltersRepository(
         return apiCall { block(c) }
     }
 
-    override fun problem(draft: FilterDraft): String? {
-        if (draft.limit !in FilterLimits.LIMIT_MIN..FilterLimits.LIMIT_MAX) return "a filter shows 1 to 500 albums"
-        return check(draft.name, draft.rules, draft.limit.toUInt())
+    override fun problem(draft: FilterDraft): FilterProblem? {
+        if (draft.limit !in FilterLimits.LIMIT_MIN..FilterLimits.LIMIT_MAX) return FilterProblem.LimitRange
+        return check(draft.name, draft.rules, draft.limit.toUInt())?.let(FilterProblem::Refused)
     }
 
     /** Refused here (nothing sent) when the gateway would refuse it. */
-    private fun refused(draft: FilterDraft): ApiResult.Err? = problem(draft)?.let { ApiResult.Err(AppError.InvalidInput(it)) }
+    private fun refused(draft: FilterDraft): ApiResult.Err? = problem(draft)?.let { ApiResult.Err(it.toError()) }
 
     override suspend fun filters() = withMe { it.me.filters() }
 

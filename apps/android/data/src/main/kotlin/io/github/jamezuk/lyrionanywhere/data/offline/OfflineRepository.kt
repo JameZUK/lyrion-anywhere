@@ -381,7 +381,7 @@ class RustOfflineRepository(
 
     override suspend fun refreshSmart(): ApiResult<Unit> {
         val d = settings.settings.first()
-        if (network.value != NetworkKind.WIFI) return ApiResult.Err(AppError.InvalidInput("smart downloads wait for Wi-Fi"))
+        if (network.value != NetworkKind.WIFI) return ApiResult.Err(AppError.Reason.WAITING_FOR_WIFI.error())
         val s = _store.value ?: return ApiResult.Err(notSignedIn())
         if (lock.withLock { downloader } == null) return ApiResult.Err(notSignedIn())
         val wanted = if (d.downloads.smartOn) {

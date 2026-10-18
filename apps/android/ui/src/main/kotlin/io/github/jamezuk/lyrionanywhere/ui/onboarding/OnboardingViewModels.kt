@@ -174,7 +174,7 @@ class PairViewModel(private val account: AccountRepository) : ViewModel() {
             }
         }
         if (target == null) {
-            _state.update { it.copy(error = AppError.InvalidInput(NO_SERVER)) }
+            _state.update { it.copy(error = AppError.Reason.NO_SERVER.error()) }
             return
         }
         invite = link
@@ -217,8 +217,6 @@ class PairViewModel(private val account: AccountRepository) : ViewModel() {
     }
 
     companion object {
-        const val NO_SERVER = "scan the QR code, or enter your server\u2019s address first"
-
         /** "ABCDEFGHJK" as "ABCDE-FGHJK" (other lengths as they are). */
         fun groupCode(code: String): String =
             if (code.length == 10) "${code.take(5)}-${code.drop(5)}" else code

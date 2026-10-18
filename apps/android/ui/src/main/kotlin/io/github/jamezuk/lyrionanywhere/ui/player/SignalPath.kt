@@ -21,6 +21,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import android.content.res.Resources
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -39,10 +41,11 @@ import io.github.jamezuk.lyrionanywhere.data.OutputTiming
 import io.github.jamezuk.lyrionanywhere.core.OutputClock
 import io.github.jamezuk.lyrionanywhere.ui.R
 
-/** "44.1 kHz", "96 kHz", "176.4 kHz". */
-fun formatRate(hz: UInt): String {
+/** "44.1 kHz", "96 kHz", "176.4 kHz" (the unit from the resources). */
+fun formatRate(hz: UInt, res: Resources): String {
     val k = hz.toLong()
-    return if (k % 1000 == 0L) "${k / 1000} kHz" else "${"%.1f".format(java.util.Locale.ROOT, k / 1000.0)} kHz"
+    val n = if (k % 1000 == 0L) "${k / 1000}" else "%.1f".format(java.util.Locale.ROOT, k / 1000.0)
+    return res.getString(R.string.unit_khz, n)
 }
 
 /** A cushion of listening held ahead, in whole hours, minutes and seconds. */
@@ -59,13 +62,13 @@ fun cushionParts(ms: Long): CushionParts? = when {
     else -> CushionParts(ms / 3_600_000, (ms % 3_600_000) / 60_000, 0)
 }
 
-/** "45 s", "4 min", "1 h 5 min", "2 h"; null below a second. */
-fun formatCushion(ms: Long): String? = cushionParts(ms)?.let { p ->
+/** "45 s", "4 min", "1 h 5 min", "2 h" (the units from the resources); null below a second. */
+fun formatCushion(ms: Long, res: Resources): String? = cushionParts(ms)?.let { p ->
     when {
-        p.hours > 0 && p.minutes > 0 -> "${p.hours} h ${p.minutes} min"
-        p.hours > 0 -> "${p.hours} h"
-        p.minutes > 0 -> "${p.minutes} min"
-        else -> "${p.seconds} s"
+        p.hours > 0 && p.minutes > 0 -> res.getString(R.string.cushion_short_hours_minutes, p.hours, p.minutes)
+        p.hours > 0 -> res.getString(R.string.cushion_short_hours, p.hours)
+        p.minutes > 0 -> res.getString(R.string.cushion_short_minutes, p.minutes)
+        else -> res.getString(R.string.cushion_short_seconds, p.seconds)
     }
 }
 
@@ -81,7 +84,7 @@ private fun cushionSpoken(p: CushionParts): String = buildList {
 @Composable
 fun CushionLine(ms: Long?, modifier: Modifier = Modifier) {
     val p = ms?.let(::cushionParts) ?: return
-    val shown = stringResource(R.string.cushion_ahead, formatCushion(ms).orEmpty())
+    val shown = stringResource(R.string.cushion_ahead, formatCushion(ms, LocalResources.current).orEmpty())
     val spoken = stringResource(R.string.cushion_ahead, cushionSpoken(p))
     Text(
         shown,
@@ -185,7 +188,7 @@ fun SignalPathPanel(
             }
             val source = buildList {
                 add(path.sourceCodec)
-                add(formatRate(path.sourceRate))
+                add(formatRate(path.sourceRate, LocalResources.current))
                 path.sourceBits?.let { add(stringResource(R.string.bits_format, it.toInt())) }
             }.joinToString(" · ")
             LabelledLine(stringResource(R.string.signal_source), source)
@@ -218,7 +221,7 @@ fun SignalPathPanel(
             if (eq != null) EqChip(eq)
             LabelledLine(
                 stringResource(R.string.signal_output),
-                listOf(path.outputDevice, formatRate(path.outputRate), path.outputFormat).joinToString(" · "),
+                listOf(path.outputDevice, formatRate(path.outputRate, LocalResources.current), path.outputFormat).joinToString(" · "),
             )
             OutputClockLine(outputTiming, Modifier.testTag("signal-output-clock"))
             val note = when {

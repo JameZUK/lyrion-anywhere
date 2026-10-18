@@ -87,4 +87,49 @@ class CrashLogTest {
     fun nothingToReportIsNull() {
         assertNull(CrashLog.report(emptyList()))
     }
+
+    // Safe mode (review, 15 October): only repeated crashes stop the app starting; a single
+    // crash or an ANR shows its report once and the app carries on.
+
+    private val minute = 60_000L
+
+    @Test
+    fun nothingPendingStartsNormally() {
+        assertEquals(CrashLog.StartMode.NORMAL, CrashLog.startMode(emptyList(), seenUpTo = 0, hasReport = false))
+    }
+
+    @Test
+    fun aSingleCrashShowsItsReportOnceAndCarriesOn() {
+        assertEquals(CrashLog.StartMode.REPORT_ONCE, CrashLog.startMode(listOf(10 * minute), seenUpTo = 0, hasReport = true))
+    }
+
+    @Test
+    fun twoCrashesInQuickSuccessionAreSafeMode() {
+        val times = listOf(10 * minute, 10 * minute + 20_000)
+        assertEquals(CrashLog.StartMode.SAFE, CrashLog.startMode(times, seenUpTo = 0, hasReport = true))
+        // Even when the first one's report was already shown (a crash at every start).
+        assertEquals(CrashLog.StartMode.SAFE, CrashLog.startMode(times, seenUpTo = 10 * minute, hasReport = true))
+    }
+
+    @Test
+    fun crashesFarApartAreNotALoop() {
+        val times = listOf(10 * minute, 10 * minute + CrashLog.REPEAT_WINDOW_MS + 1)
+        assertEquals(CrashLog.StartMode.REPORT_ONCE, CrashLog.startMode(times, seenUpTo = 10 * minute, hasReport = true))
+    }
+
+    @Test
+    fun crashesAlreadySeenDontComeBack() {
+        val times = listOf(10 * minute, 10 * minute + 20_000)
+        assertEquals(CrashLog.StartMode.NORMAL, CrashLog.startMode(times, seenUpTo = 10 * minute + 20_000, hasReport = false))
+    }
+
+    @Test
+    fun onlyCrashesCountNotAnrsOrOtherExits() {
+        assertTrue(CrashLog.isCrash(android.app.ApplicationExitInfo.REASON_CRASH))
+        assertTrue(CrashLog.isCrash(android.app.ApplicationExitInfo.REASON_CRASH_NATIVE))
+        assertTrue(CrashLog.isCrash(android.app.ApplicationExitInfo.REASON_INITIALIZATION_FAILURE))
+        assertFalse(CrashLog.isCrash(android.app.ApplicationExitInfo.REASON_ANR))
+        assertFalse(CrashLog.isCrash(android.app.ApplicationExitInfo.REASON_USER_REQUESTED))
+        assertFalse(CrashLog.isCrash(android.app.ApplicationExitInfo.REASON_LOW_MEMORY))
+    }
 }

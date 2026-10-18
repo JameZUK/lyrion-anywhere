@@ -1,6 +1,10 @@
 package io.github.jamezuk.lyrionanywhere.ui.player
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
 import android.database.ContentObserver
 import android.media.AudioManager
 import android.os.Handler
@@ -69,17 +73,35 @@ class SystemPhoneVolume(private val context: Context) : PhoneVolume {
         }
     }
 
+    /**
+     * Follows the music stream's volume. Android writes the level to its settings (which the
+     * observer sees) about half a second after a change, and not on every device, so the
+     * system's own volume broadcast is followed too: it comes at once, for the hardware keys
+     * as for any other change. Only its arrival is used, never its contents.
+     */
     override fun observe(onChange: () -> Unit): () -> Unit {
+        val app = context.applicationContext
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) = onChange()
         }
-        val resolver = context.applicationContext.contentResolver
-        try {
-            resolver.registerContentObserver(Settings.System.CONTENT_URI, true, observer)
-        } catch (_: Exception) {
-            return {}
+        val resolver = app.contentResolver
+        val observing = runCatching { resolver.registerContentObserver(Settings.System.CONTENT_URI, true, observer) }.isSuccess
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) = onChange()
         }
-        return { resolver.unregisterContentObserver(observer) }
+        // Not exported: only the system (and this app) can send it here.
+        val receiving = runCatching {
+            ContextCompat.registerReceiver(app, receiver, IntentFilter(VOLUME_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
+        }.isSuccess
+        return {
+            if (observing) runCatching { resolver.unregisterContentObserver(observer) }
+            if (receiving) runCatching { app.unregisterReceiver(receiver) }
+        }
+    }
+
+    companion object {
+        /** AudioManager's (hidden) VOLUME_CHANGED_ACTION, a protected system broadcast. */
+        const val VOLUME_CHANGED = "android.media.VOLUME_CHANGED_ACTION"
     }
 }
 

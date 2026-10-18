@@ -68,6 +68,9 @@ import io.github.jamezuk.lyrionanywhere.ui.settings.OutputEqSection
 import io.github.jamezuk.lyrionanywhere.ui.settings.SoundActions
 import io.github.jamezuk.lyrionanywhere.ui.settings.SoundScreen
 import io.github.jamezuk.lyrionanywhere.ui.settings.SoundUiState
+import io.github.jamezuk.lyrionanywhere.ui.settings.chosenTarget
+import io.github.jamezuk.lyrionanywhere.ui.settings.outputTargetKey
+import io.github.jamezuk.lyrionanywhere.ui.settings.outputTargets
 import io.github.jamezuk.lyrionanywhere.ui.theme.LyrionTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -421,6 +424,59 @@ class OutputEqScreenTests {
             ),
             actions.calls,
         )
+    }
+
+    /**
+     * Review, 15 October: the chosen output was an index into a list that starts with the
+     * current output, so when the output changed the choice moved to another one. It is kept
+     * by the output itself now.
+     */
+    @Test
+    fun theChosenOutputStaysChosenWhenTheCurrentOutputChanges() {
+        val actions = Recorder()
+        var state by mutableStateOf(
+            SoundUiState(sound = SoundSettings(eq = mainEq), output = AudioOutput(OutputClass.BLUETOOTH, "Example Headphones")),
+        )
+        show { OutputEqSection(state, actions) }
+        // Any USB DAC (the current output is listed first).
+        compose.onNodeWithTag("output-eq-target-3").performClick()
+        // The headphones disconnect: the list loses its first entry.
+        state = state.copy(output = null)
+        compose.waitForIdle()
+        compose.onNodeWithTag("output-eq-none").performClick()
+        // Then wired headphones are plugged in (already in the list: it doesn't grow).
+        state = state.copy(output = AudioOutput(OutputClass.WIRED))
+        compose.waitForIdle()
+        compose.onNodeWithTag("output-eq-use-main").performClick()
+        assertEquals(listOf("bind USB '' null", "bind USB '' Example profile"), actions.calls)
+    }
+
+    @Test
+    fun aChosenOutputThatIsGoneFallsBackToTheFirst() {
+        val actions = Recorder()
+        var state by mutableStateOf(SoundUiState(output = AudioOutput(OutputClass.BLUETOOTH, "Example Headphones")))
+        show { OutputEqSection(state, actions) }
+        compose.onNodeWithTag("output-eq-target-0").performClick()
+        // The named headphones aren't offered any more: the first entry is used, not a crash.
+        state = state.copy(output = null)
+        compose.waitForIdle()
+        compose.onNodeWithTag("output-eq-none").performClick()
+        assertEquals(listOf("bind SPEAKER '' null"), actions.calls)
+    }
+
+    @Test
+    fun outputTargetsKeysAreStableAndSavedChoicesMigrate() {
+        val bt = AudioOutput(OutputClass.BLUETOOTH, "Example Headphones")
+        val withBt = outputTargets(bt)
+        val without = outputTargets(null)
+        val usb = AudioOutput(OutputClass.USB)
+        assertEquals(usb, chosenTarget(withBt, outputTargetKey(usb)))
+        assertEquals(usb, chosenTarget(without, outputTargetKey(usb)))
+        // Unknown or nothing saved: the first (the current output when there is one).
+        assertEquals(bt, chosenTarget(withBt, null))
+        assertEquals(AudioOutput(OutputClass.SPEAKER), chosenTarget(without, "nonsense"))
+        // A key never mixes up a named device with "any" of its kind.
+        assertTrue(outputTargetKey(bt) != outputTargetKey(AudioOutput(OutputClass.BLUETOOTH)))
     }
 
     @Test

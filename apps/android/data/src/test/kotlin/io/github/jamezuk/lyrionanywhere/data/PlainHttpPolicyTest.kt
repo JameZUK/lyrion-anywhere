@@ -1,6 +1,7 @@
 package io.github.jamezuk.lyrionanywhere.data
 
 import io.github.jamezuk.lyrionanywhere.core.PairingInvite
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -31,6 +32,7 @@ class PlainHttpPolicyTest {
 
     @Test
     fun theRefusalSaysWhy() {
-        assertTrue(PLAIN_HTTP_REFUSED.detail.startsWith("use https://"))
+        // Worded by the app (its resources), not this text.
+        assertEquals(AppError.Reason.PLAIN_HTTP, PLAIN_HTTP_REFUSED.reason)
     }
 }

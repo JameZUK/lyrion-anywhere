@@ -19,6 +19,7 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.dropWhile
 import kotlinx.coroutines.flow.map
 import io.github.jamezuk.lyrionanywhere.data.EventsRepository
@@ -44,7 +45,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
-class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
+class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost, LaunchHost {
     lateinit var container: AppContainer
         private set
 
@@ -66,11 +67,22 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
     val controls: Controls by lazy { Controls({ container.players }, nowPlaying) }
 
     /**
-     * The last run crashed: start nothing and let [MainActivity] show the report (see
+     * The app crashed repeatedly: start nothing and let [MainActivity] show the report (see
      * [CrashLog]), so a crash at start-up can't repeat itself on every launch.
      */
     var safeMode = false
         private set
+
+    /** One crash's report (not a loop), for [MainActivity] to show once. */
+    private var crashReport: String? = null
+
+    /** The report to show once, if there is one; it is then forgotten. */
+    fun takeCrashReport(): String? {
+        val report = crashReport ?: return null
+        crashReport = null
+        runCatching { CrashLog.clear(this) }
+        return report
+    }
 
     /** Whether the normal start-up ran ([container] is ready). */
     val started: Boolean get() = ::container.isInitialized
@@ -84,10 +96,12 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
     @OptIn(FlowPreview::class)
     override fun onCreate() {
         super.onCreate()
-        if (runCatching { CrashLog.pending(this) }.getOrNull() != null) {
+        val start = CrashLog.start(this)
+        if (start.mode == CrashLog.StartMode.SAFE) {
             safeMode = true
             return
         }
+        if (start.mode == CrashLog.StartMode.REPORT_ONCE) crashReport = start.report
         // Load the Rust library and give its TLS verifier Android's TrustManager, before
         // anything touches the network.
         NativeInit.init(this)
@@ -166,10 +180,18 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost {
      * (or the downloads) plays on this phone, through the same search and checks as the
      * car's. Nothing but the query text is used; with no query, playback carries on.
      */
-    fun playFromSearch(query: String?) {
+    override fun playFromSearch(query: String?) {
         if (!started) return
         val q = query?.let(AutoCatalogue::clean)?.take(AutoCatalogue.MAX_QUERY)
         appScope.launch { AutoCatalogue(autoSource, ResourceLabels(this@LyrionApp)).play(null, q) }
+    }
+
+    /** Whether "Play on this phone" is on (the saved setting, so it is right at a cold start). */
+    override suspend fun playsOnPhone(): Boolean = started && container.settings.settings.first().playOnPhone
+
+    /** Pairing links only fill in the pairing screen (see [LaunchHandler]). */
+    override fun offerPairingLink(link: String) {
+        if (started) container.pairingLinks.offer(link)
     }
 
     private companion object {

@@ -35,6 +35,7 @@ class RustFiltersRepositoryTest {
         answer = "a filter needs a name of 1 to 64 characters"
         val created = repo.create(good.copy(name = ""))
         assertEquals(ApiResult.Err(AppError.InvalidInput("a filter needs a name of 1 to 64 characters")), created)
+        assertEquals(FilterProblem.Refused("a filter needs a name of 1 to 64 characters"), repo.problem(good.copy(name = "")))
         val updated = repo.update(7, good.copy(name = ""))
         assertEquals(ApiResult.Err(AppError.InvalidInput("a filter needs a name of 1 to 64 characters")), updated)
         assertEquals("the Rust check saw exactly what would be sent", Triple("", good.rules, 100u), checked.first())
@@ -51,7 +52,9 @@ class RustFiltersRepositoryTest {
     fun limitsOutsideOneToFiveHundredAreRefusedHere() = runTest {
         for (limit in listOf(0, -1, 501, Int.MIN_VALUE, Int.MAX_VALUE)) {
             val r = repo.create(good.copy(limit = limit))
-            assertTrue("limit $limit", (r as ApiResult.Err).error is AppError.InvalidInput)
+            // Worded by the app (its resources), not hard-coded English (review, 15 October).
+            assertEquals("limit $limit", AppError.Reason.FILTER_LIMIT.error(), (r as ApiResult.Err).error)
+            assertEquals(FilterProblem.LimitRange, repo.problem(good.copy(limit = limit)))
         }
         // Never wrapped into a huge unsigned number for the check.
         assertTrue(checked.isEmpty())
@@ -97,7 +100,7 @@ private class PagedFilters(var page: ApiResult<FilterAlbums>) : FiltersRepositor
         asked += Triple(id, from, count)
         return page
     }
-    override fun problem(draft: FilterDraft): String? = null
+    override fun problem(draft: FilterDraft): FilterProblem? = null
 }
 
 class FilterPlayTest {

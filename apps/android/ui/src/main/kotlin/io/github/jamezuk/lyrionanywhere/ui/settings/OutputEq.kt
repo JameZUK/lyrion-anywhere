@@ -29,7 +29,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -180,6 +179,22 @@ fun EqCompareButton(bypass: Boolean, enabled: Boolean, onBypass: (Boolean) -> Un
     }
 }
 
+/** The outputs a profile can be bound to: the current one first, then any of each kind. */
+fun outputTargets(current: AudioOutput?): List<AudioOutput> = buildList {
+    current?.let(::add)
+    add(AudioOutput(OutputClass.SPEAKER))
+    add(AudioOutput(OutputClass.WIRED))
+    add(AudioOutput(OutputClass.USB))
+    add(AudioOutput(OutputClass.BLUETOOTH))
+}.distinct()
+
+/** A stable key for an output target: its kind and device name ("" for any of its kind). */
+fun outputTargetKey(output: AudioOutput): String = "${output.kind.name}:${output.name}"
+
+/** The target saved as [key], or the first (the current output) when it isn't offered. */
+fun chosenTarget(targets: List<AudioOutput>, key: String?): AudioOutput =
+    targets.firstOrNull { outputTargetKey(it) == key } ?: targets.first()
+
 /**
  * Per-output EQ (Wave 2 §5.3): which profile each output uses, and binding one: the
  * current output, or any built-in speaker, wired headphones, USB DAC or Bluetooth device.
@@ -191,17 +206,12 @@ fun EqCompareButton(bypass: Boolean, enabled: Boolean, onBypass: (Boolean) -> Un
 fun OutputEqSection(state: SoundUiState, actions: SoundActions) {
     val s = state.sound
     val current = state.output
-    val targets = remember(current) {
-        buildList {
-            current?.let(::add)
-            add(AudioOutput(OutputClass.SPEAKER))
-            add(AudioOutput(OutputClass.WIRED))
-            add(AudioOutput(OutputClass.USB))
-            add(AudioOutput(OutputClass.BLUETOOTH))
-        }.distinct()
-    }
-    var chosen by rememberSaveable { mutableIntStateOf(0) }
-    val target = targets.getOrElse(chosen) { targets.first() }
+    val targets = remember(current) { outputTargets(current) }
+    // Kept by the output itself, not its place in the list: the list starts with the current
+    // output, so a place would point at another output once that changes. (The saved key is
+    // new: a place saved by an older version is not read, and the first entry is chosen.)
+    var chosenKey by rememberSaveable(key = "output-eq-target") { mutableStateOf<String?>(null) }
+    val target = chosenTarget(targets, chosenKey)
     var pasting by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -249,12 +259,13 @@ fun OutputEqSection(state: SoundUiState, actions: SoundActions) {
         SectionHeader(stringResource(R.string.output_eq_bind))
         Column(Modifier.selectableGroup()) {
             targets.forEachIndexed { i, t ->
+                val selected = t == target
                 ListItem(
-                    leadingContent = { RadioButton(selected = i == chosen, onClick = null) },
+                    leadingContent = { RadioButton(selected = selected, onClick = null) },
                     headlineContent = { Text(outputName(t.kind, t.name)) },
                     supportingContent = if (t == current) ({ Text(stringResource(R.string.output_eq_current)) }) else null,
                     modifier = Modifier
-                        .selectable(selected = i == chosen, role = Role.RadioButton) { chosen = i }
+                        .selectable(selected = selected, role = Role.RadioButton) { chosenKey = outputTargetKey(t) }
                         .testTag("output-eq-target-$i"),
                 )
             }

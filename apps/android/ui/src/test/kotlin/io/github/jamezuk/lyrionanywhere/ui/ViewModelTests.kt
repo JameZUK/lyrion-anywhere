@@ -216,7 +216,7 @@ class PairViewModelTest : MainDispatcherTest() {
         vm.onCodeChange("ABCDEFGHJK")
         vm.submit()
         assertNull(vm.state.value.confirm)
-        assertEquals(AppError.InvalidInput(PairViewModel.NO_SERVER), vm.state.value.error)
+        assertEquals(AppError.Reason.NO_SERVER.error(), vm.state.value.error)
         // A QR code names its server, so it works from the welcome screen.
         vm.onScanned("lyrion-anywhere://pair?server=https%3A%2F%2Fmusic.example.com&code=ABCDEFGHJK")
         assertEquals("music.example.com", vm.state.value.confirm!!.serverName)

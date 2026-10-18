@@ -199,7 +199,7 @@ class SmartFilterScreenTests {
 
     @Test
     fun aProblemIsShownAndAnnounced() {
-        show { FilterEditor(FilterEditorUi(problem = "A filter has 1 to 8 rules."), FilterEditorActions()) }
+        show { FilterEditor(FilterEditorUi(problem = io.github.jamezuk.lyrionanywhere.data.FilterProblem.Refused("A filter has 1 to 8 rules.")), FilterEditorActions()) }
         compose.onNodeWithTag("filter-error").assertExists()
         compose.onNodeWithText("A filter has 1 to 8 rules.").assertExists()
         compose.onNodeWithText("Add at least one rule.").assertExists()

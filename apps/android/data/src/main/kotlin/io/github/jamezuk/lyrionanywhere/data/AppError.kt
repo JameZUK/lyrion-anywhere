@@ -33,8 +33,52 @@ sealed interface AppError {
     /** The server or the music server failed. */
     data class Server(val status: Int, val detail: String) : AppError
 
-    /** The input was refused (the detail is fit to show). */
-    data class InvalidInput(val detail: String) : AppError
+    /**
+     * The input was refused. With a known [reason] the app says it in its own words (from
+     * its resources); with [Reason.OTHER] the [detail] is all there is (fit to show: bounded,
+     * printable).
+     */
+    data class InvalidInput(val detail: String, val reason: Reason = Reason.OTHER) : AppError
+
+    /** Why input was refused, when it is known: each is worded by the app, not the server. */
+    enum class Reason {
+        /** Only the [InvalidInput.detail] explains it. */
+        OTHER,
+
+        /** The server has no such thing (its 404): removed, or the server needs updating. */
+        NOT_FOUND,
+
+        /** It changed on the server meanwhile (its 409). */
+        CONFLICT,
+
+        /** Sign out before choosing another server. */
+        SIGN_OUT_FIRST,
+
+        /** No server is chosen yet. */
+        CHOOSE_SERVER_FIRST,
+
+        /** The pairing code has no server, and none is chosen. */
+        NO_SERVER,
+
+        /** An `http://` server address (only `https://` is allowed). */
+        PLAIN_HTTP,
+
+        /** A smart filter shows 1 to 500 albums. */
+        FILTER_LIMIT,
+
+        /** A menu too deep to pin to Home. */
+        MENU_TOO_DEEP,
+
+        /** The queue changed before the edit arrived. */
+        QUEUE_CHANGED,
+
+        /** Smart downloads wait for Wi-Fi. */
+        WAITING_FOR_WIFI,
+        ;
+
+        /** This reason as an error (its detail is only for logs and tests). */
+        fun error(): InvalidInput = InvalidInput(name.lowercase().replace('_', ' '), this)
+    }
 
     /** Anything else (a bug, or storage failing). */
     data class Unexpected(val detail: String) : AppError
@@ -70,9 +114,9 @@ fun Throwable.toAppError(): AppError = when (this) {
     is ApiException.ServerBusy -> AppError.ServerBusy(retryAfterSecs.toLong())
     is ApiException.Server -> AppError.Server(status.toInt(), detail)
     is ApiException.InvalidInput -> AppError.InvalidInput(detail)
-    // Typed by status in Rust (404, 409); shown as before.
-    is ApiException.NotFound -> AppError.InvalidInput(detail)
-    is ApiException.Conflict -> AppError.InvalidInput(detail)
+    // Typed by status in Rust (404, 409): said in the app's own words, not the server's text.
+    is ApiException.NotFound -> AppError.InvalidInput(detail, AppError.Reason.NOT_FOUND)
+    is ApiException.Conflict -> AppError.InvalidInput(detail, AppError.Reason.CONFLICT)
     // Another account's downloads were passed: refused, nothing sent.
     is ApiException.WrongAccount -> AppError.Forbidden(WRONG_ACCOUNT)
     else -> AppError.Unexpected(this::class.java.simpleName)

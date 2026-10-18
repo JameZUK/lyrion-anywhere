@@ -274,7 +274,7 @@ class RustAccountRepository(
 
     override suspend fun useServer(url: String): ApiResult<ServerInfo> = lock.withLock {
         if (_state.value is AuthState.SignedInState) {
-            return@withLock ApiResult.Err(AppError.InvalidInput("sign out first"))
+            return@withLock ApiResult.Err(AppError.Reason.SIGN_OUT_FIRST.error())
         }
         val checked = checkServerAddress(url)
         if (checked is ApiResult.Err) return@withLock checked
@@ -303,8 +303,8 @@ class RustAccountRepository(
         password: String,
         twoStepCode: String?,
     ): ApiResult<Unit> = lock.withLock {
-        val sess = session ?: return@withLock ApiResult.Err(AppError.InvalidInput("choose a server first"))
-        val info = server ?: return@withLock ApiResult.Err(AppError.InvalidInput("choose a server first"))
+        val sess = session ?: return@withLock ApiResult.Err(AppError.Reason.CHOOSE_SERVER_FIRST.error())
+        val info = server ?: return@withLock ApiResult.Err(AppError.Reason.CHOOSE_SERVER_FIRST.error())
         apiCall { sess.login(username, password, twoStepCode) }.map { signedIn(info, sess, it) }
     }
 
@@ -322,8 +322,8 @@ class RustAccountRepository(
             if (switched is ApiResult.Err) return switched
         }
         return lock.withLock {
-            val sess = session ?: return@withLock ApiResult.Err(AppError.InvalidInput("choose a server first"))
-            val info = server ?: return@withLock ApiResult.Err(AppError.InvalidInput("choose a server first"))
+            val sess = session ?: return@withLock ApiResult.Err(AppError.Reason.CHOOSE_SERVER_FIRST.error())
+            val info = server ?: return@withLock ApiResult.Err(AppError.Reason.CHOOSE_SERVER_FIRST.error())
             apiCall { sess.pair(invite.code) }.map { signedIn(info, sess, it) }
         }
     }
@@ -383,7 +383,7 @@ class RustAccountRepository(
 }
 
 /** Plain HTTP outside debug builds. */
-val PLAIN_HTTP_REFUSED = AppError.InvalidInput("use https:// \u2014 unencrypted connections are not allowed")
+val PLAIN_HTTP_REFUSED = AppError.Reason.PLAIN_HTTP.error()
 
 /**
  * Whether a pairing invite (already checked by the Rust layer: `https://`, or plain

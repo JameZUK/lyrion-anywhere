@@ -746,7 +746,7 @@ fun NewStationDialog(
                     NewKind.DECADE -> {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             for (d in DECADES) {
-                                FilterChip(selected = decade == d, onClick = { decade = d }, label = { Text("${d}s") })
+                                FilterChip(selected = decade == d, onClick = { decade = d }, label = { Text(stringResource(R.string.decade_label, d)) })
                             }
                         }
                         Row(

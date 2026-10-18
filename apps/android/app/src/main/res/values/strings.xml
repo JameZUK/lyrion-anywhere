@@ -26,8 +26,21 @@
     <string name="tile_playing">Playing</string>
     <string name="tile_paused">Paused</string>
     <string name="crash_title">Lyrion Anywhere stopped</string>
-    <string name="crash_body">The app crashed last time it ran. Please share this report with the developer (it holds the phone model, Android version and where it failed; passwords, tokens and addresses are removed). Then tap Restart to try again.</string>
+    <string name="crash_body">The app crashed more than once in a row, so it has stopped here instead of starting again. Please share this report with the developer (it holds the phone model, Android version and where it failed; passwords, tokens and addresses are removed). Then tap Restart to try again.</string>
     <string name="crash_share">Share</string>
     <string name="crash_copy">Copy</string>
     <string name="crash_restart">Restart</string>
+    <string name="crash_not_started">The app didn’t finish starting.</string>
+    <string name="crash_subject">Lyrion Anywhere crash report</string>
+    <!-- One crash (or a failure that didn't stop the app): shown once, then the app carries on. -->
+    <string name="crash_once_title">Lyrion Anywhere had a problem</string>
+    <string name="crash_once_body">Something went wrong last time the app ran. You can share this report with the developer (passwords, tokens and addresses are removed).</string>
+    <string name="crash_once_close">Close</string>
+
+    <!-- "Play … on Lyrion Anywhere" from the assistant while Play on this phone is off -->
+    <string name="voice_play_here_title">Play on this phone?</string>
+    <string name="voice_play_here_body">You asked to play “%1$s”. Playing it here turns on Play on this phone.</string>
+    <string name="voice_play_here_resume">You asked to carry on playing. Playing here turns on Play on this phone.</string>
+    <string name="voice_play_here_yes">Play here</string>
+    <string name="voice_play_here_no">Not now</string>
 </resources>

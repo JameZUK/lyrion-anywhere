@@ -1220,4 +1220,37 @@
     <string name="stream_quality_mobile_row">Streaming quality on mobile data</string>
     <string name="room_switch_off">Switch %1$s off</string>
     <string name="room_switch_on">Switch %1$s on</string>
+
+    <!-- Refusals the app words itself (AppError.Reason), not the server's text -->
+    <string name="error_not_found">That isn’t on the server. It may have been removed, or the server may need updating.</string>
+    <string name="error_conflict">That changed on the server in the meantime. Try again.</string>
+    <string name="error_sign_out_first">Sign out before choosing another server.</string>
+    <string name="error_choose_server_first">Choose your server first.</string>
+    <string name="error_no_server">Scan the QR code, or enter your server’s address first.</string>
+    <string name="error_plain_http">Use https:// — unencrypted connections aren’t allowed.</string>
+    <string name="error_menu_too_deep">This menu is too deep to pin.</string>
+    <string name="error_queue_changed">The queue changed in the meantime. Try again.</string>
+    <string name="error_waiting_for_wifi">Smart downloads wait for Wi-Fi.</string>
+    <string name="your_devices_not_offered">Your music server doesn’t offer this. It may need updating.</string>
+
+    <!-- Smart filter editor: what stops a save -->
+    <string name="filter_problem_artist">Choose an artist.</string>
+    <string name="filter_problem_decade">Choose a decade.</string>
+    <string name="filter_problem_limit">A filter shows %1$d to %2$d albums.</string>
+
+    <!-- What a menu action is called when its item has no text (in "…: done") -->
+    <string name="menu_verb_play">Play</string>
+    <string name="menu_verb_open">Open</string>
+    <string name="menu_verb_search">Search</string>
+    <string name="menu_verb_play_next">Play next</string>
+    <string name="menu_verb_add">Add to queue</string>
+    <string name="menu_verb_more">More</string>
+
+    <!-- Units -->
+    <string name="unit_khz">%1$s kHz</string>
+    <string name="cushion_short_hours_minutes">%1$d h %2$d min</string>
+    <string name="cushion_short_hours">%1$d h</string>
+    <string name="cushion_short_minutes">%1$d min</string>
+    <string name="cushion_short_seconds">%1$d s</string>
+    <string name="decade_label">%1$ds</string>
 </resources>

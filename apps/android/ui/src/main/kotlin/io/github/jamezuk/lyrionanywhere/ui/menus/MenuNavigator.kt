@@ -31,9 +31,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
+/** What the app calls a menu action whose item has no text of its own (worded by the screen). */
+enum class MenuVerb { PLAY, OPEN, SEARCH, PLAY_NEXT, ADD, MORE }
+
+/** What a menu action is called: its item's own text, or a [MenuVerb] the screen words. */
+sealed interface MenuLabel {
+    data class Named(val text: String) : MenuLabel
+
+    data class Verb(val verb: MenuVerb) : MenuLabel
+}
+
 /** One menu on the navigator's stack. */
 data class MenuFrame(
     val id: Int,
+    /** LMS's title, or the item's text; empty when neither has one (see [titleVerb]). */
     val title: String,
     /** The action (and typed text) that pages this menu, or null for a fixed one. */
     val action: MenuAction?,
@@ -44,6 +55,8 @@ data class MenuFrame(
     val error: AppError? = null,
     /** A fixed menu taken from the player's home menu (plugin entries), which can be read again. */
     val fromHomeMenu: Boolean = false,
+    /** What to call it when [title] is empty (the action that opened it). */
+    val titleVerb: MenuVerb? = null,
 ) {
     val canLoadMore: Boolean get() = action != null && !loading && error == null && items.size < total
 }
@@ -51,7 +64,7 @@ data class MenuFrame(
 /** What happened, for a snackbar or navigation. */
 sealed interface MenuEvent {
     /** An action ran ("Play next: done"). */
-    data class Done(val label: String) : MenuEvent
+    data class Done(val label: MenuLabel) : MenuEvent
 
     /** LMS suggests showing what's playing. */
     data object NowPlaying : MenuEvent
@@ -165,7 +178,7 @@ class MenuNavigator(
                 SaveKind.PIN -> {
                     val go = item.go ?: return@launch
                     if (steps.size >= MAX_STEPS) {
-                        _events.trySend(MenuEvent.CantSave(AppError.InvalidInput("this menu is too deep to pin")))
+                        _events.trySend(MenuEvent.CantSave(AppError.Reason.MENU_TOO_DEEP.error()))
                         return@launch
                     }
                     val pinned = me.pinMenu(name, steps + MenuStep.Opened(go, 0u, PAGE.toUInt()), p)
@@ -185,7 +198,7 @@ class MenuNavigator(
         }
     }
 
-    private fun push(title: String, action: MenuAction?, input: String?, items: List<MenuItem>? = null) {
+    private fun push(title: String, action: MenuAction?, input: String?, items: List<MenuItem>? = null, titleVerb: MenuVerb? = null) {
         val f = MenuFrame(
             nextId++,
             title,
@@ -194,6 +207,7 @@ class MenuNavigator(
             items = items.orEmpty(),
             total = items?.size ?: 0,
             loading = items == null,
+            titleVerb = titleVerb.takeIf { title.isEmpty() },
         )
         _stack.update { it + f }
         if (items == null) load(f.id, 0)
@@ -255,23 +269,26 @@ class MenuNavigator(
         val play = item.play
         val go = item.go
         when {
-            item.kind == MenuItemKind.PLAYABLE && play != null -> run(item, play, LABEL_PLAY, null)
-            go != null -> run(item, go, item.text.ifEmpty { LABEL_OPEN }, null)
+            item.kind == MenuItemKind.PLAYABLE && play != null -> run(item, play, MenuLabel.Verb(MenuVerb.PLAY), null)
+            go != null -> run(item, go, labelFor(item, MenuVerb.OPEN), null)
         }
     }
 
-    fun act(item: MenuItem, action: MenuAction, label: String) = run(item, action, label, null)
+    fun act(item: MenuItem, action: MenuAction, verb: MenuVerb) = run(item, action, MenuLabel.Verb(verb), null)
+
+    private fun labelFor(item: MenuItem, verb: MenuVerb): MenuLabel =
+        if (item.text.isEmpty()) MenuLabel.Verb(verb) else MenuLabel.Named(item.text)
 
     /** Search with [text] in a search item. */
     fun search(item: MenuItem, text: String) {
         val go = item.go ?: return
         val t = text.trim()
-        if (t.isNotEmpty()) run(item, go, item.text.ifEmpty { LABEL_SEARCH }, t)
+        if (t.isNotEmpty()) run(item, go, labelFor(item, MenuVerb.SEARCH), t)
     }
 
-    private fun run(item: MenuItem, action: MenuAction, label: String, input: String?) {
+    private fun run(item: MenuItem, action: MenuAction, label: MenuLabel, input: String?) {
         if (action.opensMenu) {
-            push(item.text.ifEmpty { label }, action, input)
+            push(item.text, action, input, titleVerb = (label as? MenuLabel.Verb)?.verb)
             return
         }
         val p = player()
@@ -283,7 +300,7 @@ class MenuNavigator(
             when (val r = menus.run(p, action, input)) {
                 is ApiResult.Ok -> when (val o = r.value) {
                     // An action that answers with a menu (a list of choices).
-                    is MenuOutcome.Menu -> push(o.page.title ?: item.text.ifEmpty { label }, null, null, o.page.items)
+                    is MenuOutcome.Menu -> push(o.page.title ?: item.text, null, null, o.page.items, (label as? MenuLabel.Verb)?.verb)
                     is MenuOutcome.Done -> {
                         _events.trySend(MenuEvent.Done(label))
                         when (o.nextWindow) {
@@ -300,9 +317,6 @@ class MenuNavigator(
 
     companion object {
         const val PAGE = 100
-        const val LABEL_PLAY = "Play"
-        const val LABEL_OPEN = "Open"
-        const val LABEL_SEARCH = "Search"
 
         /** Menu requests from the first menu to an item the gateway takes, at most. */
         const val MAX_STEPS = 4
@@ -471,10 +485,15 @@ class AppsViewModel(
                 e.go?.let { actions["plugin:${e.id}"] = it }
                 return AppTile("plugin:${e.id}", e.text, e.icon)
             }
+            // One tile per command: LMS may list the same one under radio and apps (the core
+            // removes repeats only within each list), and a repeated key crashes the grid.
+            val radioTiles = r.map(::tile).distinctBy { it.key }
+            val appTiles = a.map(::tile).distinctBy { it.key }.filterNot { t -> radioTiles.any { it.key == t.key } }
+            val shownKeys = (radioTiles + appTiles).map { it.key }.toSet()
             _state.value = AppsUiState(
-                radios = r.map(::tile),
-                apps = a.map(::tile),
-                plugins = plugins.map(::tile),
+                radios = radioTiles,
+                apps = appTiles,
+                plugins = plugins.map(::tile).distinctBy { it.key }.filterNot { it.key in shownKeys },
                 loading = false,
                 error = if (a.isEmpty() && r.isEmpty()) err else null,
                 showAll = _state.value.showAll,

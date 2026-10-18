@@ -16,6 +16,7 @@ import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.data.FilterDraft
 import io.github.jamezuk.lyrionanywhere.data.FilterLimits
 import io.github.jamezuk.lyrionanywhere.data.FilterPlay
+import io.github.jamezuk.lyrionanywhere.data.FilterProblem
 import io.github.jamezuk.lyrionanywhere.data.FiltersRepository
 import io.github.jamezuk.lyrionanywhere.data.LibraryRepository
 import io.github.jamezuk.lyrionanywhere.data.MeRepository
@@ -182,8 +183,8 @@ data class FilterEditorUi(
     val sort: AlbumSort = AlbumSort.TITLE,
     /** As typed (digits only). */
     val limit: String = FilterLimits.DEFAULT_LIMIT.toString(),
-    /** Why it can't be saved (checked before anything is sent), as a sentence. */
-    val problem: String? = null,
+    /** Why it can't be saved (checked before anything is sent); the screen words it. */
+    val problem: FilterProblem? = null,
     /** Why saving failed on the server. */
     val failure: AppError? = null,
     val saving: Boolean = false,
@@ -339,11 +340,15 @@ class FilterEditorViewModel(
     }
 
     /** What would be refused, before anything is sent; null when it can be saved. */
-    fun check(): String? {
+    fun check(): FilterProblem? {
         val s = _state.value
-        if (RuleKind.ARTIST in s.rules && s.artistId == null) return sentence("choose an artist")
-        if (RuleKind.DECADE in s.rules && s.decade == null) return sentence("choose a decade")
-        return filters.problem(draft())?.let(::sentence)
+        if (RuleKind.ARTIST in s.rules && s.artistId == null) return FilterProblem.ChooseArtist
+        if (RuleKind.DECADE in s.rules && s.decade == null) return FilterProblem.ChooseDecade
+        // The Rust check's reason, as a sentence; the app's own are worded by the screen.
+        return when (val p = filters.problem(draft())) {
+            is FilterProblem.Refused -> FilterProblem.Refused(sentence(p.text))
+            else -> p
+        }
     }
 
     fun save() {
