@@ -95,7 +95,7 @@ class SmartFilterAccessibilityAuditTests {
 
     @Test fun editorNoGenres() = audit { FilterEditor(genreOnly.copy(genreChoices = Loadable.Ready(emptyList())), FilterEditorActions()) }
 
-    @Test fun editorWithAProblem() = audit { FilterEditor(FilterEditorUi(problem = "A filter has 1 to 8 rules."), FilterEditorActions()) }
+    @Test fun editorWithAProblem() = audit { FilterEditor(FilterEditorUi(problem = io.github.jamezuk.lyrionanywhere.data.FilterProblem.Refused("A filter has 1 to 8 rules.")), FilterEditorActions()) }
 
     @Test fun editorRefusedBySaving() = audit { FilterEditor(FilterSamples.everyRule.copy(failure = AppError.InvalidInput("too many filters"), saving = false), FilterEditorActions()) }
 

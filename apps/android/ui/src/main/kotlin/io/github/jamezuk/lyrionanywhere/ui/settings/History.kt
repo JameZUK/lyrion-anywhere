@@ -6,7 +6,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.History
@@ -190,6 +190,20 @@ fun HistorySettings(
     }
 }
 
+/**
+ * A unique key for each row. The gateway's history carries no row id, and the same play can
+ * be listed twice (recorded twice, or repeated across a page boundary), so a repeat gets
+ * its occurrence as a tiebreak: keys already given stay the same as more pages arrive.
+ */
+fun historyKeys(rows: List<HistoryRow>): List<String> {
+    val seen = HashMap<String, Int>()
+    return rows.map { r ->
+        val base = "${r.entry.playedAt}-${r.entry.trackKey}-${r.entry.trackId}-${r.entry.seconds}"
+        val n = seen.merge(base, 1, Int::plus)!!
+        if (n == 1) base else "$base#$n"
+    }
+}
+
 /** The history itself, newest first. */
 @Composable
 fun HistoryScreen(state: HistoryUiState, onMore: () -> Unit, onRetry: () -> Unit, modifier: Modifier = Modifier) {
@@ -209,7 +223,8 @@ fun HistoryScreen(state: HistoryUiState, onMore: () -> Unit, onRetry: () -> Unit
             if (state.rows.isEmpty()) {
                 item { EmptyState(stringResource(R.string.history_empty)) }
             }
-            items(state.rows, key = { "${it.entry.playedAt}-${it.entry.trackKey}-${it.entry.seconds}" }) { row ->
+            val keys = historyKeys(state.rows)
+            itemsIndexed(state.rows, key = { i, _ -> keys[i] }) { _, row ->
                 val t = row.track
                 val at = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(row.entry.playedAt * 1000))
                 ListItem(

@@ -34,6 +34,8 @@ import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.data.PlaylistNameProblem
 import io.github.jamezuk.lyrionanywhere.data.PlaylistNames
 import io.github.jamezuk.lyrionanywhere.ui.R
+import androidx.compose.ui.platform.LocalResources
+import io.github.jamezuk.lyrionanywhere.ui.components.reasonText
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -80,7 +82,7 @@ private fun errorText(e: SaveQueueError): String = when (e) {
     SaveQueueError.Empty -> stringResource(R.string.save_queue_empty)
     is SaveQueueError.Failed -> when (val a = e.error) {
         is AppError.Forbidden -> stringResource(R.string.save_queue_failed_detail, a.detail)
-        is AppError.InvalidInput -> stringResource(R.string.save_queue_failed_detail, a.detail)
+        is AppError.InvalidInput -> stringResource(R.string.save_queue_failed_detail, reasonText(LocalResources.current, a.reason) ?: a.detail)
         is AppError.Server -> stringResource(R.string.save_queue_failed_detail, a.detail)
         is AppError.ServerBusy -> io.github.jamezuk.lyrionanywhere.ui.components.errorMessage(a)
         else -> stringResource(R.string.save_queue_failed)

@@ -13,6 +13,7 @@ import io.github.jamezuk.lyrionanywhere.core.HomeShelf
 import io.github.jamezuk.lyrionanywhere.core.ShelfKind
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
+import io.github.jamezuk.lyrionanywhere.data.FilterProblem
 import io.github.jamezuk.lyrionanywhere.ui.home.HomeLayouts
 import io.github.jamezuk.lyrionanywhere.ui.library.FilterAlbumsViewModel
 import io.github.jamezuk.lyrionanywhere.ui.library.FilterEditorViewModel
@@ -169,23 +170,23 @@ class FilterEditorViewModelTest : MainDispatcherTest() {
         val vm = inStore(store) { FilterEditorViewModel(filters, lib) }
         try {
             vm.save()
-            assertEquals("A filter needs a name of 1 to 64 characters.", vm.state.value.problem)
+            assertEquals(FilterProblem.Refused("A filter needs a name of 1 to 64 characters."), vm.state.value.problem)
             assertTrue("nothing sent", filters.created.isEmpty())
             vm.setName("  Sixties jazz  ")
             assertNull("editing clears the problem", vm.state.value.problem)
             vm.save()
-            assertEquals("A filter has 1 to 8 rules.", vm.state.value.problem)
+            assertEquals(FilterProblem.Refused("A filter has 1 to 8 rules."), vm.state.value.problem)
             vm.addRule(RuleKind.GENRE)
             assertEquals(listOf(1L, 2L), (vm.state.value.genreChoices as Loadable.Ready).value.take(2).map { it.id })
             assertTrue("a bad genre id from the server is left out", (vm.state.value.genreChoices as Loadable.Ready).value.none { it.id == 0L })
             vm.save()
-            assertEquals("Choose 1 to 20 genres.", vm.state.value.problem)
+            assertEquals(FilterProblem.Refused("Choose 1 to 20 genres."), vm.state.value.problem)
             vm.toggleGenre(4)
             vm.toggleGenre(7)
             vm.toggleGenre(4)
             vm.addRule(RuleKind.DECADE)
             vm.save()
-            assertEquals("Choose a decade.", vm.state.value.problem)
+            assertEquals(FilterProblem.ChooseDecade, vm.state.value.problem)
             vm.setDecade(1965)
             assertNull("not a decade", vm.state.value.decade)
             vm.setDecade(1960)
@@ -240,7 +241,7 @@ class FilterEditorViewModelTest : MainDispatcherTest() {
             vm.setName("By one composer")
             vm.addRule(RuleKind.ARTIST)
             vm.save()
-            assertEquals("Choose an artist.", vm.state.value.problem)
+            assertEquals(FilterProblem.ChooseArtist, vm.state.value.problem)
             vm.setArtistQuery("e")
             advanceUntilIdle()
             assertTrue("one letter doesn't search", lib.artistSearches.isEmpty())

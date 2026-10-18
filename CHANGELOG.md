@@ -2,6 +2,21 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: Android: the review's remaining lows
+
+The 15 October review's low findings for the Android app (`apps/android/`):
+
+- **Dependencies are pinned.** `gradle/verification-metadata.xml` records the SHA-256 of every dependency and plugin, so Gradle refuses an artefact that changes. Above all the rustls-platform-verifier AAR, the JNI bridge every certificate check goes through, which comes from a GitHub branch. Only IDE sources and javadoc are trusted unchecked. How to refresh it is in `docs/RELEASING.md`. Test: `DependencyVerificationTest`.
+- **Voice search asks first.** "Play … on Lyrion Anywhere" (`MEDIA_PLAY_FROM_SEARCH`, which any app can send) plays at once only while Play on this phone is on; otherwise a one-off "Play on this phone?" asks, and nothing changes unless the user agrees. The intent handling moved from `MainActivity` to `LaunchHandler`. Tests: `LaunchHandlerTest` (a Robolectric activity: the first-time prompt, yes and no, the already-on path, the query bound, Recents, recreation, pairing links).
+- **Safe mode only for a crash loop.** A single crash, an ANR, or a failure that didn't stop the app now shows its report once over an app that starts normally. Only two crashes within five minutes open safe mode (the report alone, with Restart; Android Auto refused). Tests: `CrashLogTest` (the start decision) and `CrashLogStartTest` (Android's exit records through Robolectric).
+- **Per-output EQ keeps its choice.** The output being bound is kept by kind and device name, not by its place in a list that starts with the current output. Tests: `theChosenOutputStaysChosenWhenTheCurrentOutputChanges`, `aChosenOutputThatIsGoneFallsBackToTheFirst` and `outputTargetsKeysAreStableAndSavedChoicesMigrate` in `Wave2Part4ScreenTests`.
+- **Lists whose keys could repeat.** History rows get an occurrence tiebreak (no row id from the gateway), and Apps & Radio shows a command listed under both radio and apps once, keyed by section. Tests: `ReviewLowsScreenTests`, `ReviewLowsAppsTest`.
+- **No seek to NaN.** A length that is infinite, NaN or over a week is treated as unknown, and the seek bar never seeks outside 0…length. Tests: `anAbsurdDurationNeverSeeksToNaN`, `aLongButRealDurationSeeksWithinIt`, `durationsThatArentNumbersAreShownAsUnknown`.
+- **The app's own words.** The gateway's 404 and 409 are said in the app's wording (`AppError.Reason`), not the server's text. Your devices restored onto a server that doesn't offer it says so and asks for nothing. The app's own refusals (sign out first, choose a server, https only, no server for the code, the filter limit, a menu too deep to pin, the queue changed, waiting for Wi-Fi), the filter editor's problems, menu verbs, and the kHz, cushion and decade units moved into `strings.xml`. Tests: `aRestoredPageOnAServerWithoutItAsksForNothing`, `aNotFoundAnswerIsSaidInTheAppsOwnWords`, `MenuLabelTextTest`, `CushionFormatTest`, `AppErrorTest`, `FiltersTest`.
+- **Volume popover.** It also follows the system's volume broadcast (receiver not exported), which comes at once, besides the settings observer, which Android updates about half a second late. Test: `PhoneVolumeObserveTest`.
+- **Download service basics.** Test: `DownloadServiceLifecycleTest` (without a started app it stops at once; its Cancel action is explicit and immutable).
+- Already done, so unchanged: the fake account's refusal for this device (fixed with M16), and the secure store's non-tamper failure paths (`EncryptedCredentialStoreTest`).
+
 ## 2026-10-18: Plugin 0.5.5 released
 
 Internet radio plays: the gateway has LMS proxy streams for these players (the entry below). Everything else as in 0.5.4; Android 1.15.4 remains current. Notes: `docs/release-notes/v0.5.5.md`.

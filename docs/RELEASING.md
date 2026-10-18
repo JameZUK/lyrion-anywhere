@@ -59,6 +59,14 @@ A release published by hand first (built locally with `tools/build-release.sh`, 
 7. **Performance:** if start-up or the main screens changed, regenerate the baseline profile and record a measurement (`docs/PERFORMANCE.md`).
 8. **Public-repo hygiene:** grep the diff for addresses, hostnames and names.
 
+### Dependency verification
+
+Gradle checks every dependency, plugins included, against the SHA-256 recorded in `apps/android/gradle/verification-metadata.xml`, and fails the build on anything unknown or changed. This matters most for the rustls-platform-verifier AAR (the JNI bridge every certificate check goes through), which comes from a GitHub branch that can change.
+
+- After adding or updating a dependency, refresh the file from `apps/android` with `./gradlew --write-verification-metadata sha256 help testDebugUnitTest lint assembleDebug assembleRelease`, then review the diff: only the components you changed should appear.
+- A changed checksum for a version already listed is never accepted by regenerating: find out why the artefact changed first.
+- `DependencyVerificationTest` checks the file is in force and that the verifier AAR is pinned.
+
 ### The manifest diff check
 
 The release APK's merged manifest is what users install, and dependencies can add to it silently. In alpha 5 and 6, WorkManager's start-up initialiser, brought in by a library, crashed the app on launch.

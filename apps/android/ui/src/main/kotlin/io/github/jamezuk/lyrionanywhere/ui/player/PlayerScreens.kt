@@ -1150,8 +1150,9 @@ internal fun SeekBar(
 ) {
     var dragging by remember { mutableStateOf(false) }
     var dragValue by remember { mutableFloatStateOf(0f) }
-    val total = duration ?: 0.0
-    val shown = if (dragging) dragValue.toDouble() else elapsed
+    // A length that isn't a usable number (infinite, NaN, absurd) is an unknown one: no seeking.
+    val total = seekableDuration(duration) ?: 0.0
+    val shown = if (dragging) dragValue.toDouble() else elapsed.takeIf { it.isFinite() } ?: 0.0
     val position = stringResource(R.string.position)
     val waveformLabel = stringResource(R.string.waveform_seek)
     val label = if (waveform != null) "$position. $waveformLabel" else position
@@ -1172,7 +1173,8 @@ internal fun SeekBar(
             },
             onValueChangeFinished = {
                 dragging = false
-                onSeek(dragValue.toDouble())
+                // Never a seek to NaN or past the end, whatever the slider was handed.
+                if (total > 0 && dragValue.isFinite()) onSeek(dragValue.toDouble().coerceIn(0.0, total))
             },
             valueRange = range,
             enabled = enabled && total > 0,
@@ -1199,4 +1201,10 @@ internal fun SeekBar(
         }
     }
 }
+
+/** The longest length the seek bar takes as real: a week (a float still places it to the tenth of a second). */
+const val MAX_SEEKABLE_SECONDS = 7 * 24 * 3600.0
+
+/** A track length fit to seek in: positive, finite and at most [MAX_SEEKABLE_SECONDS]; else null (unknown). */
+fun seekableDuration(seconds: Double?): Double? = seconds?.takeIf { it.isFinite() && it > 0 && it <= MAX_SEEKABLE_SECONDS }
 

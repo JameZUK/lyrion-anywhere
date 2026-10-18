@@ -244,6 +244,30 @@ class YourDevicesScreenTests {
         assertEquals(listOf(SettingsSection.YOUR_DEVICES), page.opened)
     }
 
+    /**
+     * Review, 15 October: a back stack restored onto a server that doesn't offer Your
+     * devices (an older gateway) opened the page anyway, asked for the list, and showed the
+     * gateway's 404 text as the app's own message.
+     */
+    @Test
+    fun aRestoredPageOnAServerWithoutItAsksForNothing() {
+        val page = Page(SettingsUiState(username = "alice", account = account(devices = false)), SettingsSection.YOUR_DEVICES)
+        show(page)
+        compose.waitForIdle()
+        assertEquals(0, page.loads)
+        compose.onNodeWithTag("your-devices-not-offered").assertIsDisplayed()
+        compose.onNodeWithTag("sign-out-others").assertDoesNotExist()
+    }
+
+    @Test
+    fun aNotFoundAnswerIsSaidInTheAppsOwnWords() {
+        val gone = AppError.InvalidInput("not found: /v1/devices", AppError.Reason.NOT_FOUND)
+        val page = Page(SettingsUiState(username = "alice", devicesMessage = DevicesMessage.Failed(gone)), SettingsSection.YOUR_DEVICES)
+        show(page)
+        compose.onNodeWithText("/v1/devices", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("isn’t on the server", substring = true).assertExists()
+    }
+
     @Test
     fun listsDevicesThisOneMarkedAndWithoutSignOut() {
         val page = Page(SettingsUiState(username = "alice", devices = listOf(LAPTOP, THIS, KITCHEN)), SettingsSection.YOUR_DEVICES)

@@ -376,6 +376,8 @@ fun SettingsScreen(
     var changingPassword by rememberSaveable { mutableStateOf(false) }
     // Your devices: the one device (by id) or all the others (-1) waiting for a yes.
     var confirmSignOut by rememberSaveable { mutableStateOf<Long?>(null) }
+    // Known not to be offered by this server (null, not yet known, is not a refusal).
+    val devicesRefused = state.account?.canManageDevices == false
     val playback = defaultPlayer != null || streaming != null || sleepFade != null || state.sound != null
     val nowPlaying = lyrics != null || visualiser != null || ratings != null
     val thisDevice = device != null || state.deviceName.isNotEmpty()
@@ -635,18 +637,30 @@ fun SettingsScreen(
                 }
             }
             SettingsSection.ADVANCED -> if (gaps != null) item { gaps() }
-            SettingsSection.YOUR_DEVICES -> yourDevicesItems(
-                devices = state.devices,
-                busy = state.devicesBusy,
-                message = state.devicesMessage,
-                nowSeconds = nowSeconds,
-                onSignOut = { confirmSignOut = it.id },
-                onSignOutOthers = { confirmSignOut = ALL_OTHERS },
-                onRetry = onLoadDevices,
-            )
+            // A page restored onto a server that doesn't offer it (an older gateway): said
+            // plainly, and nothing is asked of the server.
+            SettingsSection.YOUR_DEVICES -> if (devicesRefused) {
+                item {
+                    Text(
+                        stringResource(R.string.your_devices_not_offered),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(16.dp).testTag("your-devices-not-offered"),
+                    )
+                }
+            } else {
+                yourDevicesItems(
+                    devices = state.devices,
+                    busy = state.devicesBusy,
+                    message = state.devicesMessage,
+                    nowSeconds = nowSeconds,
+                    onSignOut = { confirmSignOut = it.id },
+                    onSignOutOthers = { confirmSignOut = ALL_OTHERS },
+                    onRetry = onLoadDevices,
+                )
+            }
         }
     }
-    if (section == SettingsSection.YOUR_DEVICES) {
+    if (section == SettingsSection.YOUR_DEVICES && !devicesRefused) {
         LaunchedEffect(Unit) { onLoadDevices() }
     }
     confirmSignOut?.let { target ->

@@ -153,10 +153,10 @@ private fun MenuRow(item: MenuItem, index: Int, input: String, onInput: (String)
                     val save = navigator.canSave(item)
                     val entries = buildList<Triple<String, ImageVector, () -> Unit>> {
                         if (playable && next != null) {
-                            add(Triple(stringResource(R.string.menu_play_next, label), Icons.AutoMirrored.Outlined.QueueMusic) { navigator.act(item, next, PLAY_NEXT) })
+                            add(Triple(stringResource(R.string.menu_play_next, label), Icons.AutoMirrored.Outlined.QueueMusic) { navigator.act(item, next, MenuVerb.PLAY_NEXT) })
                         }
                         if (playable && add != null) {
-                            add(Triple(stringResource(R.string.menu_add, label), Icons.AutoMirrored.Outlined.PlaylistAdd) { navigator.act(item, add, ADD) })
+                            add(Triple(stringResource(R.string.menu_add, label), Icons.AutoMirrored.Outlined.PlaylistAdd) { navigator.act(item, add, MenuVerb.ADD) })
                         }
                         when (save) {
                             SaveKind.STATION -> add(Triple(stringResource(R.string.menu_save_station, label), Icons.Outlined.Radio) { navigator.save(item, index, SaveKind.STATION) })
@@ -164,7 +164,7 @@ private fun MenuRow(item: MenuItem, index: Int, input: String, onInput: (String)
                             null -> {}
                         }
                         if (more != null) {
-                            add(Triple(stringResource(R.string.menu_more, label), Icons.Outlined.MoreVert) { navigator.act(item, more, MORE) })
+                            add(Triple(stringResource(R.string.menu_more, label), Icons.Outlined.MoreVert) { navigator.act(item, more, MenuVerb.MORE) })
                         }
                     }
                     when {
@@ -210,9 +210,28 @@ private fun MenuRow(item: MenuItem, index: Int, input: String, onInput: (String)
     }
 }
 
-private const val PLAY_NEXT = "Play next"
-private const val ADD = "Add to queue"
-private const val MORE = "More"
+/** A menu action's name when its item has none. */
+@Composable
+fun menuVerbText(verb: MenuVerb): String = stringResource(verbRes(verb))
+
+/** What a menu action is called, outside composition (a snackbar). */
+fun menuLabelText(res: android.content.res.Resources, label: MenuLabel): String = when (label) {
+    is MenuLabel.Named -> label.text
+    is MenuLabel.Verb -> res.getString(verbRes(label.verb))
+}
+
+private fun verbRes(verb: MenuVerb): Int = when (verb) {
+    MenuVerb.PLAY -> R.string.menu_verb_play
+    MenuVerb.OPEN -> R.string.menu_verb_open
+    MenuVerb.SEARCH -> R.string.menu_verb_search
+    MenuVerb.PLAY_NEXT -> R.string.menu_verb_play_next
+    MenuVerb.ADD -> R.string.menu_verb_add
+    MenuVerb.MORE -> R.string.menu_verb_more
+}
+
+/** A frame's title: LMS's or the item's, else the action that opened it. */
+@Composable
+fun frameTitle(frame: MenuFrame): String = frame.title.ifEmpty { frame.titleVerb?.let { menuVerbText(it) }.orEmpty() }
 
 /** A full-screen LMS menu (an app, a plugin), with its back stack. */
 @Composable
@@ -236,7 +255,7 @@ fun MenuBrowser(navigator: MenuNavigator, modifier: Modifier = Modifier) {
                             }
                         },
                         headlineContent = {
-                            Text(frame.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
+                            Text(frameTitle(frame), style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
                         },
                     )
                 }
@@ -295,7 +314,7 @@ fun ItemSheetContent(
                 },
                 headlineContent = {
                     Text(
-                        if (stack.size > 1) frame?.title.orEmpty() else target.title,
+                        if (stack.size > 1) frame?.let { frameTitle(it) }.orEmpty() else target.title,
                         style = MaterialTheme.typography.titleMedium,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
@@ -401,12 +420,13 @@ fun AppsScreen(
                 R.string.apps_apps to state.apps,
                 R.string.apps_plugins to state.plugins,
             )) {
-                val shown = state.shown(list)
+                // Keyed by section too, and once each, so a tile repeated anywhere can't crash the grid.
+                val shown = state.shown(list).distinctBy { it.key }
                 if (shown.isEmpty()) continue
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     Text(stringResource(title), style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
                 }
-                items(shown, key = { it.key }) { tile -> AppTileCard(tile, onClick = { onOpen(tile) }) }
+                items(shown, key = { "$title/${it.key}" }) { tile -> AppTileCard(tile, onClick = { onOpen(tile) }) }
             }
             if (state.hidden > 0 || state.showAll) {
                 item(span = { GridItemSpan(maxLineSpan) }) {

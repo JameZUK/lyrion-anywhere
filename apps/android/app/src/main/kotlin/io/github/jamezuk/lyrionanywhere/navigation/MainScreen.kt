@@ -195,6 +195,7 @@ import io.github.jamezuk.lyrionanywhere.ui.menus.ItemSheetContent
 import io.github.jamezuk.lyrionanywhere.ui.menus.MenuBrowser
 import io.github.jamezuk.lyrionanywhere.ui.menus.MenuEvent
 import io.github.jamezuk.lyrionanywhere.ui.menus.MenuNavigator
+import io.github.jamezuk.lyrionanywhere.ui.menus.menuLabelText
 import io.github.jamezuk.lyrionanywhere.ui.menus.MenuViewModel
 import io.github.jamezuk.lyrionanywhere.ui.menus.More
 import io.github.jamezuk.lyrionanywhere.ui.menus.MoreRequest
@@ -534,7 +535,7 @@ fun MainScreen(
     }
     fun handleMenuEvent(e: MenuEvent, onClosed: () -> Unit = {}) {
         when (e) {
-            is MenuEvent.Done -> scope.launch { snackbar.showSnackbar(res.getString(R.string.menu_done, e.label)) }
+            is MenuEvent.Done -> scope.launch { snackbar.showSnackbar(res.getString(R.string.menu_done, menuLabelText(res, e.label))) }
             MenuEvent.NowPlaying -> {
                 onClosed()
                 nav.navigate(NowPlayingRoute)

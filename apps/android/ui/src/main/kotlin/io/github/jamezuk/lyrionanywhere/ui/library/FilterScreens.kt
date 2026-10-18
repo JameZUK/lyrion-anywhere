@@ -81,6 +81,7 @@ import io.github.jamezuk.lyrionanywhere.core.ArtistRole
 import io.github.jamezuk.lyrionanywhere.core.FilterRule
 import io.github.jamezuk.lyrionanywhere.core.SmartFilter
 import io.github.jamezuk.lyrionanywhere.data.FilterLimits
+import io.github.jamezuk.lyrionanywhere.data.FilterProblem
 import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.components.ErrorState
 import io.github.jamezuk.lyrionanywhere.ui.components.LoadingState
@@ -467,7 +468,7 @@ fun FilterEditor(ui: FilterEditorUi, actions: FilterEditorActions, modifier: Mod
                 modifier = Modifier.fillMaxWidth().testTag("filter-limit"),
             )
         }
-        val error = ui.problem ?: ui.failure?.let { errorMessage(it) }
+        val error = ui.problem?.let { filterProblemText(it) } ?: ui.failure?.let { errorMessage(it) }
         if (error != null) {
             Text(
                 error,
@@ -675,4 +676,13 @@ fun FilterEditorHost(
     val saved = ui.saved
     LaunchedEffect(saved) { if (saved != null) onSaved(saved) }
     if (saved == null) FilterEditorDialog(ui, FilterEditorActions.of(vm, onClose))
+}
+
+/** A filter problem in words: the app's own from its resources, the Rust check's as it is. */
+@Composable
+fun filterProblemText(p: FilterProblem): String = when (p) {
+    FilterProblem.ChooseArtist -> stringResource(R.string.filter_problem_artist)
+    FilterProblem.ChooseDecade -> stringResource(R.string.filter_problem_decade)
+    FilterProblem.LimitRange -> stringResource(R.string.filter_problem_limit, FilterLimits.LIMIT_MIN, FilterLimits.LIMIT_MAX)
+    is FilterProblem.Refused -> p.text
 }

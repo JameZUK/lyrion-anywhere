@@ -882,7 +882,7 @@ class PlayerViewModel(
                         ApiResult.Ok(Unit)
                     } else {
                         changed = true
-                        ApiResult.Err(AppError.InvalidInput("the queue changed"))
+                        ApiResult.Err(AppError.Reason.QUEUE_CHANGED.error())
                     }
                 }
             } else {
@@ -892,7 +892,7 @@ class PlayerViewModel(
                         players.removeFromQueue(id, index)
                     } else {
                         changed = true
-                        ApiResult.Err(AppError.InvalidInput("the queue changed"))
+                        ApiResult.Err(AppError.Reason.QUEUE_CHANGED.error())
                     }
                 }
             }
@@ -938,7 +938,7 @@ class PlayerViewModel(
                 // Only while it is still the track that was dragged (checked on the gateway).
                 when (val r = players.moveIfStill(id, from, to, movedId)) {
                     is ApiResult.Err -> r
-                    is ApiResult.Ok -> if (r.value) ApiResult.Ok(Unit) else ApiResult.Err(AppError.InvalidInput("the queue changed"))
+                    is ApiResult.Ok -> if (r.value) ApiResult.Ok(Unit) else ApiResult.Err(AppError.Reason.QUEUE_CHANGED.error())
                 }
             } else {
                 players.moveInQueue(id, from, to)
@@ -1036,7 +1036,7 @@ class PlayerViewModel(
     }
 
     private suspend fun deleteUpcoming(id: String, cur: Int, len: Int, onChanged: () -> Unit): ApiResult<Unit> {
-        val changed = ApiResult.Err(AppError.InvalidInput("the queue changed"))
+        val changed = ApiResult.Err(AppError.Reason.QUEUE_CHANGED.error())
         val count = len - cur - 1
         fun same(s: PlayerStatus, length: Int) = s.queueIndex?.toInt() == cur && s.queueLength.toInt() == length
         when (val s = players.status(id)) {

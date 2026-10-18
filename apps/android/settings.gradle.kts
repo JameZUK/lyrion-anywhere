@@ -17,7 +17,9 @@ dependencyResolutionManagement {
         mavenCentral()
         // BEGIN prebuilt-verifier (F-Droid's recipe deletes these lines)
         // The Kotlin half of rustls-platform-verifier (Android's certificate verifier, called
-        // from Rust). Published only here; limited to that one artefact.
+        // from Rust). Published only here; limited to that one artefact. The branch can change,
+        // so the AAR (like every dependency) is pinned by its SHA-256 in
+        // gradle/verification-metadata.xml, and Gradle refuses anything else.
         if (!verifierFromSource) {
             exclusiveContent {
                 forRepository {
