@@ -908,6 +908,20 @@ pub(crate) async fn save_original(
     path: &Path,
     max: u64,
 ) -> Result<(), Refusal> {
+    save_original_within(gw, id, path, max, None)
+        .await
+        .map(drop)
+}
+
+/// [`save_original`], holding room in `cache` for it (see [`transcode::Cache::reserve`])
+/// before anything is written: the room is held until the returned reservation is dropped.
+pub(crate) async fn save_original_within<'c>(
+    gw: &AppState,
+    id: u64,
+    path: &Path,
+    max: u64,
+    cache: Option<&'c transcode::Cache>,
+) -> Result<Option<transcode::Reservation<'c>>, Refusal> {
     let resp = fetch_original(gw, id, None).await?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(Refusal::NotFound);
@@ -922,6 +936,10 @@ pub(crate) async fn save_original(
     if total > max.min(MAX_SOURCE) {
         return Err(Refusal::TooLarge);
     }
+    let room = match cache {
+        Some(c) => Some(c.reserve(total).await.ok_or(Refusal::TooLarge)?),
+        None => None,
+    };
     let mut file = tokio::fs::File::create(path)
         .await
         .map_err(|_| Refusal::TranscodeFailed)?;
@@ -948,7 +966,7 @@ pub(crate) async fn save_original(
         return Err(unusable(id, "shorter than promised"));
     }
     file.flush().await.map_err(|_| Refusal::TranscodeFailed)?;
-    Ok(())
+    Ok(room)
 }
 
 /// The transcode of a track, from the cache or made now. Returns an open file, so it can be
@@ -974,13 +992,15 @@ async fn transcode_file(
     if let Some(f) = tc.cache.lookup(&name).as_deref().and_then(open) {
         return Ok(f);
     }
+    let input = TempFile(tc.cache.temp_path("src"));
+    // The original counts against the cache's cap while it is on disk, and is fetched
+    // before taking a transcode slot, so a slow download never holds up others' encodes.
+    let room = save_original_within(gw, track.id, &input.0, MAX_SOURCE, Some(&tc.cache)).await?;
     let _job = tc
         .jobs
         .acquire()
         .await
         .map_err(|_| Refusal::TranscodeFailed)?;
-    let input = TempFile(tc.cache.temp_path("src"));
-    save_original(gw, track.id, &input.0, MAX_SOURCE).await?;
     let output = TempFile(tc.cache.temp_path(format.ext()));
     let tags = Tags {
         title: track.title.clone(),
@@ -1009,6 +1029,7 @@ async fn transcode_file(
         }
     }
     drop(input);
+    drop(room);
     let size = std::fs::metadata(&output.0)
         .map(|m| m.len())
         .map_err(|_| Refusal::TranscodeFailed)?;

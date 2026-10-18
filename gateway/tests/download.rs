@@ -787,8 +787,12 @@ async fn transcodes_are_made_by_ffmpeg_cached_and_served_with_ranges() {
 #[tokio::test]
 async fn the_transcode_cache_evicts_the_least_recently_used() {
     let size = fake_output().len() as u64;
-    // Room for one transcode, not two.
-    let d = with_ffmpeg(None, |c| c.download_cache_bytes = size + size / 2).await;
+    // Room for an original being transcoded (it counts against the cap while it is on
+    // disk) and less than one transcode besides: each new transcode evicts the last.
+    let d = with_ffmpeg(None, |c| {
+        c.download_cache_bytes = AUDIO_LEN as u64 + size / 2
+    })
+    .await;
     let h = &d.h;
     let get = |id: u64| {
         let path = format!("/v1/download/track/{id}?format=mp3");
@@ -846,6 +850,58 @@ async fn a_failed_transcode_is_not_cached() {
         d.h.get_dl("/v1/download/track/1?format=mp3", Some(&d.h.tok_a), None)
             .await;
     assert_eq!(r.status(), S::BAD_GATEWAY);
+}
+
+/// The transcode slot is taken for the encode only (review low): an original still
+/// arriving from LMS doesn't hold up another user's transcode.
+#[tokio::test]
+async fn a_slow_original_does_not_hold_the_transcode_slot() {
+    let d = with_ffmpeg(None, |c| {
+        c.transcode_jobs = 1;
+        c.download_read_timeout = Duration::from_secs(20);
+    })
+    .await;
+    let url = d.h.url("/v1/download/track/8?format=mp3");
+    let token = d.h.tok_a.clone();
+    // Track 8's original stalls after its first bytes.
+    let stalled = tokio::spawn(async move {
+        let _ = reqwest::Client::new()
+            .get(url)
+            .bearer_auth(token)
+            .send()
+            .await;
+    });
+    wait_for(|| {
+        d.h.lms
+            .downloads()
+            .iter()
+            .any(|(p, _)| p == "/music/8/download")
+    })
+    .await;
+    let r =
+        d.h.get_dl("/v1/download/track/1?format=mp3", Some(&d.h.tok_b), None)
+            .await;
+    assert_eq!(r.status(), S::OK);
+    assert_eq!(r.text().await.unwrap(), fake_output());
+    stalled.abort();
+}
+
+/// The original being transcoded counts against the cache's cap (review low: up to 4 GiB
+/// was written outside it): one bigger than the whole cache is refused, nothing written.
+#[tokio::test]
+async fn an_original_bigger_than_the_cache_is_not_transcoded() {
+    let d = with_ffmpeg(None, |c| c.download_cache_bytes = AUDIO_LEN as u64 - 1).await;
+    let h = &d.h;
+    let r = h
+        .get_dl("/v1/download/track/1?format=mp3", Some(&h.tok_a), None)
+        .await;
+    assert_eq!(r.status(), S::PAYLOAD_TOO_LARGE);
+    assert!(runs(&d.dir).is_empty(), "ffmpeg never ran");
+    let cache = d.dir.join("cache");
+    assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 0);
+    // The original itself is still offered.
+    let r = h.get_dl("/v1/download/track/1", Some(&h.tok_a), None).await;
+    assert_eq!(r.status(), S::OK);
 }
 
 #[tokio::test]

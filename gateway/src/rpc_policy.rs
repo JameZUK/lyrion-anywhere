@@ -744,6 +744,15 @@ fn playlists_edit(a: &[String]) -> Result<(), Denied> {
         _ => return deny("bad playlists command"),
     };
     params(&a[1..], rules)?;
+    // A name follows the rules for saving the queue (`queue_save::check_name`): no path
+    // separators, `..`, leading or trailing dots, device names or invisible characters.
+    for p in &a[1..] {
+        if let Some((k @ ("name" | "newname"), v)) = p.split_once(':')
+            && crate::queue_save::check_name(v).is_err()
+        {
+            return deny(format!("bad value for {k}"));
+        }
+    }
     let has = |k: &str| a[1..].iter().any(|p| p.starts_with(&format!("{k}:")));
     let required: &[&str] = match a[0].as_str() {
         "new" => &["name"],
@@ -2099,6 +2108,46 @@ mod tests {
             "url:file:///x"
         ]));
         admin_denied(json!(["playlists", "edit", "cmd:delete"]));
+    }
+
+    /// Names given to `playlists new|rename` follow the same rules as saving the queue
+    /// (review low: `a/../../b` passed here while the save refused it).
+    #[test]
+    fn playlist_names_follow_the_queue_save_rules() {
+        for bad in [
+            "a/../../b",
+            "../x",
+            "a\\b",
+            "..",
+            ".hidden",
+            "trailing.",
+            "CON",
+            "nul.txt",
+            "a:b",
+            "a*b",
+            "a\u{202e}b",
+            "file:///srv/music/x",
+        ] {
+            admin_denied(json!(["playlists", "new", format!("name:{bad}")]));
+            admin_denied(json!([
+                "playlists",
+                "rename",
+                "playlist_id:3",
+                format!("newname:{bad}")
+            ]));
+        }
+        admin_denied(json!([
+            "playlists",
+            "new",
+            format!("name:{}", "x".repeat(101))
+        ]));
+        admin_ok(json!(["playlists", "new", "name:AC-DC live (1991)"]));
+        admin_ok(json!([
+            "playlists",
+            "rename",
+            "playlist_id:3",
+            "newname:Été"
+        ]));
     }
 
     #[test]

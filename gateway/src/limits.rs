@@ -138,16 +138,17 @@ pub async fn body_deadline(State(limit): State<Duration>, req: Request, next: Ne
     if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
         return next.run(req).await;
     }
+    let max = body_limit(req.uri().path());
     let declared = req
         .headers()
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
-    if declared.is_some_and(|n| n > MAX_BODY as u64) {
+    if declared.is_some_and(|n| n > max as u64) {
         return refuse(StatusCode::PAYLOAD_TOO_LARGE, "request too large\n");
     }
     let (parts, body) = req.into_parts();
-    match tokio::time::timeout(limit, axum::body::to_bytes(body, MAX_BODY)).await {
+    match tokio::time::timeout(limit, axum::body::to_bytes(body, max)).await {
         Err(_) => {
             warn!(path = %parts.uri.path(), "request body too slow");
             refuse(StatusCode::REQUEST_TIMEOUT, "request body too slow\n")
@@ -157,6 +158,16 @@ pub async fn body_deadline(State(limit): State<Duration>, req: Request, next: Ne
             next.run(Request::from_parts(parts, Body::from(bytes)))
                 .await
         }
+    }
+}
+
+/// The largest body read for a request to `path`: [`MAX_BODY`], or less where the handler
+/// takes less, so an oversize body is refused as soon as it passes that (review low:
+/// `/v1/rpc` read up to [`MAX_BODY`] before refusing anything over its 8 KiB).
+pub fn body_limit(path: &str) -> usize {
+    match path {
+        "/v1/rpc" => crate::rpc::MAX_BODY,
+        _ => MAX_BODY,
     }
 }
 

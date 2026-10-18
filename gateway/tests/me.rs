@@ -443,7 +443,8 @@ async fn shelves_return_album_ids_only() {
         .call("GET", "/v1/me/shelves/recent", Some(&h.tok_a), None)
         .await;
     assert_eq!(v["albums"][0], 7, "the user's own play first");
-    // LMS was asked for its play-count and last-played orders.
+    // The shelves are the user's own (review low): LMS's server-wide last-played and
+    // play-count orders would show one user what the others played, so LMS isn't asked.
     let sorts: Vec<String> = h
         .sent("", "albums")
         .iter()
@@ -454,9 +455,20 @@ async fn shelves_return_album_ids_only() {
                 .find_map(|w| w.as_str()?.strip_prefix("sort:").map(String::from))
         })
         .collect();
-    assert!(
-        sorts.contains(&"recentlyplayed".to_string()) && sorts.contains(&"playcount".to_string())
-    );
+    assert!(sorts.is_empty(), "{sorts:?}");
+    // Another user who has played nothing sees nothing (not anyone else's albums).
+    for name in ["recent", "most", "on_this_day"] {
+        let (s, v) = h
+            .call(
+                "GET",
+                &format!("/v1/me/shelves/{name}"),
+                Some(&h.tok_b),
+                None,
+            )
+            .await;
+        assert_eq!(s, S::OK, "{name}");
+        assert_eq!(v["albums"], json!([]), "{name}: {v}");
+    }
     for bad in [
         "/v1/me/shelves/new",
         "/v1/me/shelves/..%2Fhistory",

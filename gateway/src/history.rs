@@ -474,6 +474,8 @@ struct Listen {
     /// The serial of the record step that will give this listen its row (its own, or that
     /// of the listen it continues after a seek).
     record_serial: Option<u64>,
+    /// LMS has said which track this is (or that it couldn't).
+    named: bool,
 }
 
 /// Listens that ended while their record step was still being carried out, kept (a few)
@@ -489,6 +491,10 @@ pub struct Tracker {
     /// The listen before a track change, kept until the new track is known (a seek starts
     /// the same track again).
     prev: Option<(Listen, Instant)>,
+    /// Time heard in starts after `prev` that were never named (their lookup was coalesced
+    /// into a later one, as when scrubbing): credited to `prev` if the next named start
+    /// continues it.
+    unnamed_ms: u64,
     /// The last report: elapsed milliseconds and the player's clock (jiffies).
     last: Option<(u32, u32)>,
     playing: bool,
@@ -523,11 +529,22 @@ impl Tracker {
         if &event == b"STMs" {
             // A new track has started. The listen so far waits until LMS says which track
             // this is (it may be the same one, restarted by a seek).
-            if let Some(old) = self.prev.take() {
-                out.extend(self.end_listen(old.0));
-            }
-            if let Some(l) = self.listen.take() {
-                self.prev = Some((l, now));
+            match self.listen.take() {
+                // A start never named (quick seeks): the listen before it still waits for
+                // a named one, which may continue it.
+                Some(l) if !l.named && self.prev.is_some() => {
+                    self.unnamed_ms = self.unnamed_ms.saturating_add(l.heard_ms);
+                    if let Some((_, ended)) = self.prev.as_mut() {
+                        *ended = now;
+                    }
+                }
+                cur => {
+                    if let Some(old) = self.prev.take() {
+                        out.extend(self.end_listen(old.0));
+                    }
+                    self.unnamed_ms = 0;
+                    self.prev = cur.map(|l| (l, now));
+                }
             }
             self.serial += 1;
             self.listen = Some(Listen {
@@ -538,6 +555,7 @@ impl Tracker {
                 row: None,
                 recording: false,
                 record_serial: None,
+                named: false,
             });
             self.last = Some((elapsed_ms, jiffies));
             self.playing = true;
@@ -583,11 +601,16 @@ impl Tracker {
         let Some(l) = self.listen.as_mut().filter(|l| l.serial == serial) else {
             return out;
         };
+        l.named = true;
+        let unnamed_ms = std::mem::take(&mut self.unnamed_ms);
         let mut ended_prev = None;
         if let Some((p, ended)) = self.prev.take() {
             let same = matches!((&p.track, &track), (Some(a), Some(b)) if a.id == b.id);
             if same && now.saturating_duration_since(ended) <= MERGE_WITHIN {
-                l.heard_ms = l.heard_ms.saturating_add(p.heard_ms);
+                l.heard_ms = l
+                    .heard_ms
+                    .saturating_add(p.heard_ms)
+                    .saturating_add(unnamed_ms);
                 l.row = p.row;
                 l.recording = p.recording;
                 l.record_serial = p.record_serial;
@@ -632,6 +655,7 @@ impl Tracker {
         if let Some(l) = self.listen.take() {
             out.extend(self.end_listen(l));
         }
+        self.unnamed_ms = 0;
         self.playing = false;
         out
     }
@@ -713,45 +737,10 @@ impl crate::Gateway {
 pub const USER_WEIGHT: f64 = 3.0;
 pub const SERVER_WEIGHT: f64 = 1.0;
 
-/// A score in 0..=1 for each id by its place in a ranked list (first is 1).
-fn rank_scores(ranked: &[i64]) -> HashMap<i64, f64> {
-    let n = ranked.len().max(1) as f64;
-    let mut out = HashMap::new();
-    for (i, id) in ranked.iter().enumerate() {
-        out.entry(*id).or_insert(1.0 - i as f64 / n);
-    }
-    out
-}
-
-/// Blend two scored sets (each 0..=1) with the weights, best first; ties keep the user's
-/// order, then the server's.
-fn blend(
-    user: &HashMap<i64, f64>,
-    user_order: &[i64],
-    server: &HashMap<i64, f64>,
-    server_order: &[i64],
-    limit: usize,
-) -> Vec<i64> {
-    let mut ids: Vec<i64> = Vec::new();
-    let mut seen = HashSet::new();
-    for id in user_order.iter().chain(server_order) {
-        if *id > 0 && seen.insert(*id) {
-            ids.push(*id);
-        }
-    }
-    let score = |id: &i64| {
-        USER_WEIGHT * user.get(id).copied().unwrap_or(0.0)
-            + SERVER_WEIGHT * server.get(id).copied().unwrap_or(0.0)
-    };
-    // A stable sort keeps the first-seen order between equal scores.
-    ids.sort_by(|a, b| score(b).total_cmp(&score(a)));
-    ids.truncate(limit);
-    ids
-}
-
-/// "Recently played" albums: the user's, most recent first (from `plays`, newest first),
-/// blended with LMS's albums by last played.
-pub fn recently_played(plays: &[Entry], server_recent: &[i64], limit: usize) -> Vec<i64> {
+/// "Recently played" albums: the user's own, most recent first (from `plays`, newest
+/// first). Not blended with LMS's `sort:recentlyplayed`, which is server-wide and would show
+/// one user what the others played lately.
+pub fn recently_played(plays: &[Entry], limit: usize) -> Vec<i64> {
     let mut order = Vec::new();
     let mut seen = HashSet::new();
     for p in plays {
@@ -761,34 +750,28 @@ pub fn recently_played(plays: &[Entry], server_recent: &[i64], limit: usize) -> 
             order.push(a);
         }
     }
-    blend(
-        &rank_scores(&order),
-        &order,
-        &rank_scores(server_recent),
-        server_recent,
-        limit,
-    )
+    order.truncate(limit);
+    order
 }
 
-/// "Most played" albums over the plays given: user plays (scaled to the most played) × 3
-/// plus LMS's play-count ranking × 1.
-pub fn most_played(plays: &[Entry], server_most: &[i64], limit: usize) -> Vec<i64> {
-    let mut counts: HashMap<i64, f64> = HashMap::new();
+/// "Most played" albums over the plays given: the user's own plays per album, most first,
+/// then the most recent. Not blended with LMS's server-wide play counts, for the same reason.
+pub fn most_played(plays: &[Entry], limit: usize) -> Vec<i64> {
+    let mut counts: HashMap<i64, u64> = HashMap::new();
     let mut order = Vec::new();
     for p in plays {
         if let Some(a) = p.album_id.filter(|a| *a > 0) {
-            let c = counts.entry(a).or_insert(0.0);
-            if *c == 0.0 {
+            let c = counts.entry(a).or_insert(0);
+            if *c == 0 {
                 order.push(a);
             }
-            *c += 1.0;
+            *c += 1;
         }
     }
-    let max = counts.values().copied().fold(0.0, f64::max).max(1.0);
-    let user: HashMap<i64, f64> = counts.iter().map(|(k, v)| (*k, v / max)).collect();
-    // Most plays first among the user's own, then by recency.
-    order.sort_by(|a, b| counts[b].total_cmp(&counts[a]));
-    blend(&user, &order, &rank_scores(server_most), server_most, limit)
+    // A stable sort: most plays first, then by recency.
+    order.sort_by(|a, b| counts[b].cmp(&counts[a]));
+    order.truncate(limit);
+    order
 }
 
 /// "On this day": albums the user played within `window_days` of this date a year ago
@@ -805,7 +788,7 @@ pub fn on_this_day(plays: &[Entry], now: i64, window_days: i64, limit: usize) ->
         .filter(|p| (lo..=hi).contains(&p.played_at))
         .cloned()
         .collect();
-    most_played(&picked, &[], limit)
+    most_played(&picked, limit)
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,14 +1030,9 @@ pub async fn shelf(
         return internal();
     };
     let albums = match which {
-        Shelf::Recent => {
-            let server = gw.server_albums("recentlyplayed", 100).await;
-            recently_played(&plays, &server, limit)
-        }
-        Shelf::Most => {
-            let server = gw.server_albums("playcount", 100).await;
-            most_played(&plays, &server, limit)
-        }
+        // The user's own only (review low): LMS's lists are server-wide.
+        Shelf::Recent => recently_played(&plays, limit),
+        Shelf::Most => most_played(&plays, limit),
         Shelf::OnThisDay => on_this_day(&plays, now, 3, limit),
     };
     ok(json!({ "shelf": name, "albums": albums }))
@@ -1429,6 +1407,99 @@ mod tests {
         );
     }
 
+    /// The row arriving between the seek's start and LMS naming the track reaches the
+    /// continued listen too.
+    #[test]
+    fn a_row_arriving_before_the_seek_is_resolved_reaches_the_continued_listen() {
+        let c = Clock(Instant::now());
+        let mut t = Tracker::default();
+        t.on_stat(*b"STMs", 0, 0, c.at(0), 1000);
+        t.resolved(1, Some(track(5, 1, 100.0)), c.at(1500));
+        play_for(&mut t, &c, 0, 0, 50);
+        t.on_stat(*b"STMs", 70_000, 51_000, c.at(51_000), 1051);
+        assert_eq!(t.recorded(1, Some(77)), None);
+        assert!(
+            t.resolved(2, Some(track(5, 1, 100.0)), c.at(52_000))
+                .is_empty()
+        );
+        play_for(&mut t, &c, 52_000, 70_000, 10);
+        t.on_stat(*b"STMs", 0, 63_000, c.at(63_000), 1063);
+        let steps = t.resolved(3, Some(track(6, 1, 100.0)), c.at(64_000));
+        assert_eq!(
+            steps,
+            vec![Step::Update {
+                row: 77,
+                seconds: 60.0
+            }]
+        );
+    }
+
+    /// Two quick seeks (scrubbing) before LMS names the track: the lookup is coalesced, so
+    /// the middle start is never resolved. The listen still continues, its row still
+    /// arrives, and the play is not recorded a second time (review low: before, the first
+    /// listen ended at the second start and its row kept only the seconds at the seek).
+    #[test]
+    fn quick_seeks_before_the_track_is_named_continue_the_listen() {
+        let c = Clock(Instant::now());
+        let mut t = Tracker::default();
+        t.on_stat(*b"STMs", 0, 0, c.at(0), 1000);
+        t.resolved(1, Some(track(5, 1, 100.0)), c.at(1500));
+        let steps = play_for(&mut t, &c, 0, 0, 50);
+        assert!(matches!(steps[..], [Step::Record { serial: 1, .. }]));
+        // Two seeks in quick succession; the row is still on its way.
+        assert_eq!(
+            t.on_stat(*b"STMs", 60_000, 51_000, c.at(51_000), 1051),
+            vec![Step::Lookup(2)]
+        );
+        play_for(&mut t, &c, 51_000, 60_000, 1);
+        assert_eq!(
+            t.on_stat(*b"STMs", 80_000, 53_000, c.at(53_000), 1053),
+            vec![Step::Lookup(3)]
+        );
+        // The row arrives: the listen is still going, so nothing to store yet.
+        assert_eq!(t.recorded(1, Some(77)), None);
+        assert!(
+            t.resolved(3, Some(track(5, 1, 100.0)), c.at(54_000))
+                .is_empty()
+        );
+        // It goes on, and is not recorded again.
+        let steps = play_for(&mut t, &c, 54_000, 80_000, 19);
+        assert!(steps.is_empty(), "{steps:?}");
+        // The next track ends it: every second heard, the middle one included.
+        t.on_stat(*b"STMs", 0, 74_000, c.at(74_000), 1074);
+        let steps = t.resolved(4, Some(track(6, 1, 100.0)), c.at(75_000));
+        assert_eq!(
+            steps,
+            vec![Step::Update {
+                row: 77,
+                seconds: 70.0
+            }]
+        );
+    }
+
+    /// A start that is never named and is followed by a different track: the listen before
+    /// it ends with its own seconds (the unnamed one's are not credited to it).
+    #[test]
+    fn an_unnamed_start_followed_by_another_track_ends_the_listen() {
+        let c = Clock(Instant::now());
+        let mut t = Tracker::default();
+        t.on_stat(*b"STMs", 0, 0, c.at(0), 1000);
+        t.resolved(1, Some(track(5, 1, 100.0)), c.at(1500));
+        play_for(&mut t, &c, 0, 0, 50);
+        t.recorded(1, Some(77));
+        t.on_stat(*b"STMs", 0, 51_000, c.at(51_000), 1051);
+        play_for(&mut t, &c, 51_000, 0, 2);
+        t.on_stat(*b"STMs", 0, 54_000, c.at(54_000), 1054);
+        let steps = t.resolved(3, Some(track(6, 1, 100.0)), c.at(55_000));
+        assert_eq!(
+            steps,
+            vec![Step::Update {
+                row: 77,
+                seconds: 50.0
+            }]
+        );
+    }
+
     #[test]
     fn a_play_is_recorded_once_it_counts() {
         let c = Clock(Instant::now());
@@ -1774,22 +1845,15 @@ mod tests {
     // -- scoring --------------------------------------------------------------
 
     #[test]
-    fn recently_played_blends_the_users_order_with_lms() {
+    fn recently_played_is_the_users_own_order() {
         let plays = vec![entry(1, 300), entry(2, 200), entry(1, 100), entry(3, 50)];
-        assert_eq!(recently_played(&plays, &[], 10), vec![1, 2, 3]);
-        // LMS's last played adds albums the user hasn't played here, after the user's.
-        assert_eq!(recently_played(&plays, &[9, 8], 10), vec![1, 2, 3, 9, 8]);
-        // LMS's numbers move an album up, but count a third of the user's: with four
-        // albums (user scores 3, 2.25, 1.5, 0.75), LMS's first (3) passes the user's
-        // second, never the user's first.
-        let four = vec![entry(1, 4), entry(2, 3), entry(3, 2), entry(4, 1)];
-        assert_eq!(recently_played(&four, &[3], 4), vec![1, 3, 2, 4]);
-        assert_eq!(recently_played(&four, &[4, 3, 2], 1), vec![1]);
-        assert_eq!(recently_played(&[], &[4, 5], 1), vec![4]);
+        assert_eq!(recently_played(&plays, 10), vec![1, 2, 3]);
+        assert_eq!(recently_played(&plays, 2), vec![1, 2]);
+        assert!(recently_played(&[], 5).is_empty());
     }
 
     #[test]
-    fn most_played_counts_the_users_plays_three_times_lms() {
+    fn most_played_counts_only_the_users_plays() {
         let mut plays = vec![];
         for _ in 0..5 {
             plays.push(entry(1, 10));
@@ -1798,13 +1862,10 @@ mod tests {
             plays.push(entry(2, 10));
         }
         plays.push(entry(3, 10));
-        assert_eq!(most_played(&plays, &[], 10), vec![1, 2, 3]);
-        // LMS's favourite (3) moves up past a close call but not past the user's clear first.
-        // 1: 3×1 + 0 = 3; 2: 3×0.8 + 0 = 2.4; 3: 3×0.2 + 1 = 1.6; 7: 0.5.
-        assert_eq!(most_played(&plays, &[3, 7], 10), vec![1, 2, 3, 7]);
-        // With LMS ranking 2 first: 2: 2.4 + 1 = 3.4 beats 1: 3.
-        assert_eq!(most_played(&plays, &[2], 10), vec![2, 1, 3]);
-        assert_eq!(most_played(&plays, &[2], 1), vec![2]);
+        plays.push(entry(4, 10));
+        plays.push(entry(3, 10));
+        assert_eq!(most_played(&plays, 10), vec![1, 2, 3, 4]);
+        assert_eq!(most_played(&plays, 1), vec![1]);
         // Plays without an album are ignored; ids are never negative.
         let odd = vec![
             Entry {
@@ -1816,7 +1877,7 @@ mod tests {
                 ..entry(1, 1)
             },
         ];
-        assert!(most_played(&odd, &[-1, 0], 10).is_empty());
+        assert!(most_played(&odd, 10).is_empty());
     }
 
     #[test]

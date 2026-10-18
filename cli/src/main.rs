@@ -23,7 +23,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anywhere_core::player::{Action, Player, PlayerConfig, StreamHost};
-use anywhere_core::proto::{format_mac, parse_mac};
+use anywhere_core::proto::{direct_stream_target, format_mac, parse_mac};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 enum Event {
@@ -257,11 +257,26 @@ fn run(args: Args) -> Result<(), String> {
                         Control::Direct {
                             addr: control_addr, ..
                         } => {
-                            let ip = match host {
-                                StreamHost::Server => control_addr.ip(),
-                                StreamHost::Ip(b) => std::net::IpAddr::from(b),
+                            let named = match host {
+                                StreamHost::Server => [0; 4],
+                                StreamHost::Ip(b) => b,
                             };
-                            let addr = SocketAddr::new(ip, port);
+                            // Only the server we are connected to, and only our own stream
+                            // (as the gateway enforces): never wherever the server says.
+                            let addr = match direct_stream_target(
+                                named,
+                                port,
+                                &request,
+                                &mac,
+                                control_addr.ip(),
+                            ) {
+                                Ok(a) => a,
+                                Err(e) => {
+                                    eprintln!("refused stream request: {e}");
+                                    p.on_stream_error(t);
+                                    continue;
+                                }
+                            };
                             if args.verbose {
                                 let line = request.split(|b| *b == b'\r').next().unwrap_or(&[]);
                                 println!("-> stream {addr} {}", String::from_utf8_lossy(line));

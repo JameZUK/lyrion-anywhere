@@ -13,6 +13,9 @@
 //!   `{"source": "tags"|"plugin", "synced": bool, "lines": [{"t": ms, "text": "…"}]}`, or
 //!   404 `{"error": "no lyrics"}`. Lines that look like a server path or a LAN address are
 //!   dropped, as everywhere else ([`rpc_policy::sensitive_text`]).
+//! - **Admin-only:** if the admin reserved the plugin for admins (`admin_only_plugins`),
+//!   anyone else gets the file's own lyrics only (never the plugin's, cached or not), else
+//!   404 `no lyrics`.
 //! - **Limits:** at most [`PLUGIN_LOOKUPS`] plugin lookups at once (the plugin may go online;
 //!   beyond that, 429 with `Retry-After`), each within [`PLUGIN_TIMEOUT`]. Answers (and "no
 //!   lyrics") are remembered for [`CACHE_TTL`], at most [`CACHE_ENTRIES`] tracks.
@@ -111,9 +114,10 @@ pub async fn track(
     Path(id): Path<String>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if let Err(r) = caller(&gw, &headers) {
-        return r;
-    }
+    let p = match caller(&gw, &headers) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
     let Some(id) = download::parse_track_id(&id) else {
         return error(StatusCode::NOT_FOUND, "no such track");
     };
@@ -121,7 +125,13 @@ pub async fn track(
         return error(StatusCode::BAD_REQUEST, "unknown parameter");
     }
     let now = Instant::now();
+    // The plugin reserved for admins (as in `/v1/rpc`): others get the file's own lyrics
+    // only, and never the plugin's from the shared cache.
+    let hidden = crate::info::plugin_hidden(&gw, &p);
     if let Some(hit) = gw.lyrics.get(id, now) {
+        if hidden && hit.as_ref().is_some_and(|v| v["source"] == "plugin") {
+            return respond(None);
+        }
         return respond(hit);
     }
 
@@ -156,7 +166,11 @@ pub async fn track(
         return respond(Some(v));
     }
 
-    // 2. The Music & Artist Information plugin, if it is there.
+    // 2. The Music & Artist Information plugin, if it is there (not remembered when it is
+    // hidden from this user, so admins still get its answer).
+    if hidden {
+        return respond(None);
+    }
     let Ok(_permit) = gw.lyrics.plugin.try_acquire() else {
         let mut r = error(
             StatusCode::TOO_MANY_REQUESTS,
@@ -167,7 +181,7 @@ pub async fn track(
         return r;
     };
     let cmd = [
-        "musicartistinfo".to_string(),
+        crate::info::PLUGIN.to_string(),
         "lyrics".into(),
         format!("track_id:{id}"),
     ];

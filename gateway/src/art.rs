@@ -5,7 +5,9 @@
 //!   control.
 //! - **Image proxy:** `imageproxy/<url>/image…`. LMS fetches `<url>` itself, so it is only
 //!   relayed for URLs LMS handed out in an earlier response. Otherwise a user could make LMS
-//!   fetch anything on the home network (SSRF).
+//!   fetch anything on the home network (SSRF). LMS follows redirects itself when it
+//!   fetches, which the gateway can't see: a public host redirecting to the home network is
+//!   a documented limit (SPEC §5.2, Artwork), bounded by the `image/*` and size rules below.
 //! - **Icons:** `plugins/<Name>/html/…`, `plugins/cache/icons/…`, `html/images/…` image files.
 //!
 //! Only `image/*` responses are relayed, at most [`MAX_IMAGE`] bytes, with a sandboxing CSP
@@ -430,6 +432,10 @@ pub async fn art(
     };
     if !matches!(target(&path), Some(Target::Current { .. })) && query.is_some() {
         return status(StatusCode::NOT_FOUND);
+    }
+    // LMS is blocked: say so at once, as `/v1/rpc` does, rather than pile a fetch up in it.
+    if gw.lms_health().is_busy() {
+        return crate::rpc::busy();
     }
 
     // A slot for this user (and overall), held until the image has been relayed.

@@ -365,3 +365,63 @@ async fn shares_the_per_user_request_allowance() {
     let (s, _) = get(&h, "/v1/info/artist/2", Some(&h.tok_b)).await;
     assert_eq!(s, S::OK);
 }
+
+/// An admin's token (carol), for the admin-only plugin tests.
+fn admin_token(h: &Harness) -> String {
+    h.accounts
+        .create_user("carol", "correct horse battery", Role::Admin)
+        .unwrap();
+    h.accounts
+        .login(
+            "carol",
+            "correct horse battery",
+            None,
+            "Laptop",
+            None,
+            "test",
+        )
+        .unwrap()
+        .access
+}
+
+/// The plugin reserved for admins (`admin_only_plugins`): listeners are refused as in
+/// `/v1/rpc`, even when an admin's answer is cached, and LMS is never asked for them
+/// (review low: this path ignored the setting).
+#[tokio::test]
+async fn an_admin_only_plugin_gives_listeners_nothing() {
+    let h = harness().await;
+    let admin = admin_token(&h);
+    h.accounts
+        .set_admin_only_plugins(&["musicartistinfo".to_string()])
+        .unwrap();
+    // A listener first: refused before LMS.
+    for path in ["/v1/info/artist/1", "/v1/info/album/1"] {
+        let (s, v) = get(&h, path, Some(&h.tok_a)).await;
+        assert_eq!(s, S::FORBIDDEN, "{path}");
+        assert_eq!(
+            v,
+            json!({"error": "this plugin is for admins only"}),
+            "{path}"
+        );
+    }
+    assert!(mai_calls(&h).is_empty());
+    // An admin gets the answer, which is then cached ...
+    let (s, v) = get(&h, "/v1/info/artist/1", Some(&admin)).await;
+    assert_eq!(s, S::OK);
+    assert_eq!(v["photo"], PHOTO);
+    let (s, _) = get(&h, "/v1/info/album/1", Some(&admin)).await;
+    assert_eq!(s, S::OK);
+    let asked = mai_calls(&h).len();
+    // ... but never reaches a listener from the cache.
+    for path in ["/v1/info/artist/1", "/v1/info/album/1"] {
+        let (s, v) = get(&h, path, Some(&h.tok_b)).await;
+        assert_eq!(s, S::FORBIDDEN, "{path}");
+        assert_eq!(v, json!({"error": "this plugin is for admins only"}));
+    }
+    assert_eq!(mai_calls(&h).len(), asked);
+    // Lifting the restriction applies at once.
+    h.accounts.set_admin_only_plugins(&[]).unwrap();
+    let (s, v) = get(&h, "/v1/info/artist/1", Some(&h.tok_a)).await;
+    assert_eq!(s, S::OK);
+    assert_eq!(v["photo"], PHOTO);
+}

@@ -772,6 +772,51 @@ async fn oversize_request_bodies_get_413() {
     assert_eq!(r.status(), S::PAYLOAD_TOO_LARGE);
 }
 
+/// `/v1/rpc` takes at most 8 KiB: a body promising or sending more is refused as soon as
+/// that is clear, not after the gateway has read up to its 1 MiB general limit (review
+/// low). Neither reaches LMS.
+#[tokio::test]
+async fn oversize_rpc_bodies_are_refused_without_reading_them() {
+    let h = harness_with(|c| c.body_timeout = Duration::from_secs(30)).await;
+    let addr = served(&h, ServeLimits::default()).await;
+    let chunk = "x".repeat(9 * 1024);
+    for req in [
+        // Declares 100 000 bytes, sends 9 KiB, then waits.
+        format!(
+            "POST /v1/rpc HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {}\r\n\
+             Content-Type: application/json\r\nContent-Length: 100000\r\n\r\n{chunk}",
+            h.tok_a
+        ),
+        // Chunked: one 9 KiB chunk, then nothing.
+        format!(
+            "POST /v1/rpc HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {}\r\n\
+             Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n\
+             {:x}\r\n{chunk}\r\n",
+            h.tok_a,
+            chunk.len()
+        ),
+    ] {
+        let mut s = TcpStream::connect(addr).await.unwrap();
+        s.write_all(req.as_bytes()).await.unwrap();
+        let got = closed_within(&mut s, Duration::from_secs(3)).await;
+        assert!(
+            String::from_utf8_lossy(&got).starts_with("HTTP/1.1 413"),
+            "{}",
+            String::from_utf8_lossy(&got)
+        );
+    }
+    assert!(h.lms.rpc_calls().is_empty());
+    // Within the limit, as ever.
+    let r = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/rpc"))
+        .bearer_auth(&h.tok_a)
+        .json(&json!({ "cmd": ["albums", 0, 5, "tags:al"] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::OK);
+}
+
 #[tokio::test]
 async fn ordinary_requests_work_through_the_limited_server() {
     let h = harness().await;

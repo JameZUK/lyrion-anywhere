@@ -287,7 +287,12 @@ impl Hub {
         let mut backoff = Duration::from_millis(500);
         loop {
             match self.listen_once(&addr).await {
-                Ok(()) => info!("LMS CLI connection closed"),
+                Ok(Ended::Refused) => warn!(
+                    "LMS closed its CLI connection without answering `listen`: if LMS's \
+                     password protection is on, its CLI wants a login, which the gateway \
+                     doesn't support (see docs/INSTALL.md); live updates are off meanwhile"
+                ),
+                Ok(Ended::Closed | Ended::Idle) => info!("LMS CLI connection closed"),
                 Err(e) => warn!(error = %e, "LMS CLI connection failed"),
             }
             if self.stop_if_idle() {
@@ -298,7 +303,7 @@ impl Hub {
         }
     }
 
-    async fn listen_once(&self, addr: &str) -> std::io::Result<()> {
+    async fn listen_once(&self, addr: &str) -> std::io::Result<Ended> {
         let stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
             .await
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timeout"))??;
@@ -306,12 +311,20 @@ impl Hub {
         wr.write_all(b"listen 1\n").await?;
         let mut lines = BufReader::new(rd);
         let mut line = Vec::new();
+        let mut answered = false;
         loop {
             let Some(complete) = read_line_capped(&mut lines, &mut line, MAX_LINE).await? else {
-                return Ok(());
+                // LMS echoes every command it accepts; closing without even that is how
+                // its CLI refuses a connection that hasn't logged in.
+                return Ok(if answered {
+                    Ended::Closed
+                } else {
+                    Ended::Refused
+                });
             };
+            answered = true;
             if self.tx.receiver_count() == 0 {
-                return Ok(()); // nobody listening: drop the connection
+                return Ok(Ended::Idle); // nobody listening: drop the connection
             }
             if !complete {
                 // LMS's `menustatus` and `displaynotify` lines for a controller can run to
@@ -332,6 +345,18 @@ impl Hub {
             }
         }
     }
+}
+
+/// How a CLI connection ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Ended {
+    /// Nobody was subscribed any more: the gateway dropped it.
+    Idle,
+    /// LMS closed it after answering.
+    Closed,
+    /// LMS closed it without answering at all (as its CLI does, with password protection
+    /// on, to a connection that hasn't sent `login`).
+    Refused,
 }
 
 /// Read one line of at most `max` bytes into `buf`. Returns `None` at end of input,
@@ -634,6 +659,32 @@ mod tests {
         );
         assert_eq!(buf, b"last");
         assert_eq!(read_line_capped(&mut r, &mut buf, 64).await.unwrap(), None);
+    }
+
+    /// A CLI that hangs up without answering (LMS's password protection on: the gateway
+    /// has no CLI login) is told apart from one that closes after answering, so the log
+    /// says why live updates stopped (review low).
+    #[tokio::test]
+    async fn a_cli_that_refuses_the_connection_is_recognised() {
+        use tokio::io::AsyncReadExt;
+        let hub = Arc::new(Hub::default());
+        let _rx = hub.tx.subscribe();
+        for (answer, want) in [
+            (&b""[..], Ended::Refused),
+            (&b"listen 1\n"[..], Ended::Closed),
+        ] {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = l.local_addr().unwrap().to_string();
+            let server = tokio::spawn(async move {
+                let (mut s, _) = l.accept().await.unwrap();
+                let mut cmd = [0u8; 9];
+                s.read_exact(&mut cmd).await.unwrap();
+                assert_eq!(&cmd, b"listen 1\n", "no login or anything else is sent");
+                s.write_all(answer).await.unwrap();
+            });
+            assert_eq!(hub.listen_once(&addr).await.unwrap(), want);
+            server.await.unwrap();
+        }
     }
 
     /// The listener's idle check and a new subscription can't interleave: either the

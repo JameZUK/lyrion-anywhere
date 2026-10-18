@@ -211,6 +211,68 @@ async fn refusals_while_busy_still_check_who_is_asking() {
     h.freeze(false);
 }
 
+/// Artwork honours the busy state as `/v1/rpc` does (review low): refused at once with the
+/// same 503, without reaching LMS, and only for a request that would otherwise be served.
+#[tokio::test]
+async fn artwork_is_refused_at_once_while_lms_is_busy() {
+    let h = busy_harness().await;
+    let art = |token: Option<String>, path: &'static str| {
+        let url = h.url(path);
+        async move {
+            let mut req = reqwest::Client::new().get(url);
+            if let Some(t) = token {
+                req = req.bearer_auth(t);
+            }
+            req.send().await.unwrap()
+        }
+    };
+    let cover = "/v1/art/music/1/cover_300x300.jpg";
+    assert_eq!(art(Some(h.tok_a.clone()), cover).await.status(), S::OK);
+    h.freeze(true);
+    let _stuck = {
+        let (url, tok) = (h.url("/v1/rpc"), h.tok_a.clone());
+        tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(url)
+                .bearer_auth(tok)
+                .json(&json!({ "player": "", "cmd": ["albums", 0, 5] }))
+                .send()
+                .await
+        })
+    };
+    wait_for(|| h.gw.lms_health().is_busy()).await;
+    let fetched = |h: &Harness| {
+        h.lms
+            .http_paths()
+            .iter()
+            .filter(|p| p.starts_with("/music/"))
+            .count()
+    };
+    let before = fetched(&h);
+    let t = Instant::now();
+    let r = art(Some(h.tok_a.clone()), cover).await;
+    assert!(t.elapsed() < Duration::from_secs(1), "refused at once");
+    assert_eq!(r.status(), S::SERVICE_UNAVAILABLE);
+    assert_eq!(r.headers()["retry-after"], "2");
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(
+        body,
+        json!({ "error": "music server is busy", "busy": true })
+    );
+    // Refusals that don't depend on LMS are unchanged.
+    assert_eq!(art(None, cover).await.status(), S::UNAUTHORIZED);
+    assert_eq!(
+        art(Some(h.tok_a.clone()), "/v1/art/etc/passwd")
+            .await
+            .status(),
+        S::NOT_FOUND
+    );
+    assert_eq!(fetched(&h), before, "LMS was never asked");
+    h.freeze(false);
+    wait_for(|| !h.gw.lms_health().is_busy()).await;
+    assert_eq!(art(Some(h.tok_a.clone()), cover).await.status(), S::OK);
+}
+
 #[tokio::test]
 async fn me_advertises_lms_busy_reporting() {
     let h = harness().await;

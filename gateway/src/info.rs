@@ -18,6 +18,9 @@
 //!   it into the image proxy's allow-list and answers with the proxy path
 //!   `/v1/art/imageproxy/<url-encoded URL>/image`, which LMS fetches only after the usual
 //!   checks (`art::art`, including the DNS check). Anything else is no photo.
+//! - **Admin-only:** if the admin reserved the plugin for admins (`admin_only_plugins`),
+//!   anyone else is refused as `/v1/rpc` refuses it (403 `this plugin is for admins only`),
+//!   before the shared cache is consulted.
 //! - **Limits:** at most [`LOOKUPS`] requests with plugin lookups at once (beyond that, 429
 //!   with `Retry-After`), each lookup within [`crate::Config::info_lookup_timeout`].
 //!   Answers are remembered for [`HIT_TTL`] (nothing found: [`MISS_TTL`]), at most
@@ -525,14 +528,33 @@ fn check(
     query: Option<&str>,
     what: &str,
 ) -> Result<u64, Response> {
-    caller(gw, headers)?;
+    let p = caller(gw, headers)?;
     let Some(id) = download::parse_track_id(id) else {
         return Err(error(StatusCode::NOT_FOUND, what));
     };
     if query.is_some() {
         return Err(error(StatusCode::BAD_REQUEST, "unknown parameter"));
     }
+    // Checked before the cache, which is shared: an admin's answer never reaches others.
+    if plugin_hidden(gw, &p) {
+        return Err(admin_only());
+    }
     Ok(id)
+}
+
+/// The command of the Music & Artist Information plugin.
+pub(crate) const PLUGIN: &str = "musicartistinfo";
+
+/// Has the admin reserved the Music & Artist Information plugin for admins (its
+/// `admin_only_plugins` entry), and is `p` someone else? Then it gives them nothing here, as
+/// in `/v1/rpc`.
+pub(crate) fn plugin_hidden(gw: &AppState, p: &crate::accounts::Principal) -> bool {
+    p.role != crate::accounts::Role::Admin && gw.accounts().admin_only_plugins().contains(PLUGIN)
+}
+
+/// The refusal `/v1/rpc` gives for a plugin reserved for admins.
+pub(crate) fn admin_only() -> Response {
+    error(StatusCode::FORBIDDEN, "this plugin is for admins only")
 }
 
 fn busy() -> Response {
@@ -584,7 +606,7 @@ pub async fn artist(
     };
     let ask = |what: &str| {
         [
-            "musicartistinfo".to_string(),
+            PLUGIN.to_string(),
             what.to_string(),
             format!("artist_id:{id}"),
         ]
@@ -628,7 +650,7 @@ pub async fn album(
         return busy();
     };
     let cmd = [
-        "musicartistinfo".to_string(),
+        PLUGIN.to_string(),
         "albumreview".into(),
         format!("album_id:{id}"),
     ];
