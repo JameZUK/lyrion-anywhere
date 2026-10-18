@@ -264,6 +264,25 @@ SKIP: {
 	start_stub_gateway($dir);
 }
 
+# LMS's `webproxy` pref sends every plain-HTTP request through the proxy unless the host
+# matches localhost or 127.0.0.1 (Slim::Networking::Async::HTTP::use_proxy, LMS 8.5 to
+# 9.1). So the secret goes only to 127.0.0.1: another loopback address ([::1], 127.0.0.2)
+# would be proxied and the secret would leave the host (review 2026-10-15, L).
+{
+	no warnings 'redefine';
+	for my $target ('[::1]:9445', '127.0.0.2:9445', '127.0.0.10:9445', '127.0.0.1.example.com:9445', 'localhost:9445', '10.0.0.10:9445', '127.0.0.1:9445/x') {
+		local *Plugins::LyrionAnywhere::Gateway::admin_target = sub { $target };
+		undef $error;
+		my $before = @Slim::Networking::SimpleAsyncHTTP::REQUESTS;
+		Plugins::LyrionAnywhere::Admin::call('users', {}, sub {}, sub { $error = shift });
+		is(scalar @Slim::Networking::SimpleAsyncHTTP::REQUESTS, $before, "admin target $target: the secret is not sent");
+		like($error // '', qr/127\.0\.0\.1/, "admin target $target: refused, saying why");
+	}
+	local *Plugins::LyrionAnywhere::Gateway::admin_target = sub { '127.0.0.1:9445' };
+	Plugins::LyrionAnywhere::Admin::call('users', {}, sub {}, sub { $error = shift });
+	like($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1]{url}, qr{^http://127\.0\.0\.1:9445/}, '127.0.0.1: sent, never proxied by LMS');
+}
+
 # A tampered secret file is not used.
 open $fh, '>', "$dir/lyrion-anywhere/admin.secret" or die; print $fh "not-hex\r\nX-Evil: 1"; close $fh;
 my $before = @Slim::Networking::SimpleAsyncHTTP::REQUESTS;

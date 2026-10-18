@@ -484,7 +484,7 @@ flowchart LR
   - sends the admin secret only to the gateway it started, on the port it started it with;
   - a development gateway path is honoured only when LMS runs with `ANYWHERE_ALLOW_GATEWAY_PATH=1`.
 - **Settings page** (`Settings.pm`, `HTML/`): gateway options (listen address, public URL, trusted proxies, client address header, transcoding, ffmpeg path, download cache, track analysis), users and roles, player grants, download permissions, two-step resets, *Add a device* QR codes, the sign-in lifetime, admin-only plugins, the device list with diagnostics and renames, and recent activity. Everything is rendered as text, and saving needs the page's own token.
-- **LMS commands** (`Commands.pm`): `anywhere …` commands for every admin operation, each needing a CSRF token made when LMS starts and given only to the settings page (only `anywhere status` needs none); and `anywhere play_record`, which the gateway calls, signed, to count offline plays. Remote users can never reach these: `anywhere` is reserved in the gateway's allow-list.
+- **LMS commands** (`Commands.pm`): `anywhere …` commands for every admin operation, each needing a CSRF token made when LMS starts and given only to the settings page (only `anywhere status` needs none, and without it says only whether the gateway runs and the gist of the last error); and `anywhere play_record`, which the gateway calls, signed, to count offline plays. Remote users can never reach these: `anywhere` is reserved in the gateway's allow-list.
 
 The plugin stores no account data itself. Its own state (the gateway's data directory, `lyrion-anywhere` under LMS's prefs folder, and its prefs) lives with LMS's prefs.
 
@@ -548,7 +548,7 @@ Every change ships with tests for security, stability and reliability, security 
 | **Android** | JVM and Robolectric tests for view models, screens and gestures; accessibility audits of every screen and state; manifest checks (what is exported, intent filters, no start-up initialisers); lint with no baseline |
 | **Plugin** | `prove` tests against stubbed `Slim::*` modules (validation, CSRF tokens, supervision, signed play records) and Node tests for the settings page |
 | **Deployment** | `tools/test-deploy.sh` runs the Docker image behind the example nginx configuration (TLS redirect, a single CSP, LMS and admin paths unreachable, cookie flags, lockouts that hold against spoofed `X-Forwarded-For`); `tools/test-release.sh` checks the plugin zip |
-| **Supply chain** | `cargo deny` (licences, advisories, bans, sources); actions pinned to commit SHAs and base images to digests |
+| **Supply chain** | `cargo deny` (licences, advisories, bans, sources; no GPL or LGPL dependency, `tools/test-deny-policy.sh`); `npm audit --audit-level=high`; Dependabot for actions, images, npm, cargo and Gradle; actions pinned to commit SHAs and images to digests; signed build provenance for every release file (`docs/RELEASING.md`) |
 | **Live (opt-in)** | Against a real LMS with a dedicated, muted test player, configured from git-ignored `dev/local.*` files; spikes such as `tools/live/lms_read_ahead.py` |
 
 Security fixes get a regression test that fails before the fix. Nothing is called done while any test fails or is skipped.

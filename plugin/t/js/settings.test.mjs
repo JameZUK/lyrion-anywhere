@@ -203,7 +203,9 @@ test('renders remote-controlled names as text, never as markup', async () => {
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
   assert.deepEqual(sent.find((c) => c[1] === 'device_rename'), ['anywhere', 'device_rename', 'id:1', 'name:Kitchen iPad', 'csrf:' + TOKEN]);
 
-  for (const c of sent.filter((c) => c[0] === 'anywhere' && c[1] !== 'status')) {
+  // status too: without the token LMS leaves out the paths, pid and stderr (review 2026-10-15).
+  assert.ok(sent.some((c) => c[0] === 'anywhere' && c[1] === 'status'), 'status asked for');
+  for (const c of sent.filter((c) => c[0] === 'anywhere')) {
     assert.equal(c[c.length - 1], 'csrf:' + TOKEN, `token sent with ${c[1]}`);
   }
 });

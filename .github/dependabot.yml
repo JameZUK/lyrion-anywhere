@@ -1,5 +1,13 @@
-# Keeps the pinned CI actions and Docker base images current. Actions and images are
-# pinned to full commit SHAs and digests; Dependabot updates the pin and its version comment.
+# Keeps the pinned CI actions, Docker base images and the three package trees current.
+# Actions and images are pinned to full commit SHAs and digests; Dependabot updates the pin
+# and its version comment. Minor and patch updates come grouped, one pull request per tree
+# a week; major updates come one at a time, since they may need code changes. Security
+# updates (when turned on in the repository's settings) come as soon as an advisory is
+# published, whatever the schedule.
+#
+# Not covered: the vendored Opus decoder (third_party/opus-decoder, patched by hand, see its
+# PATCHES.md) and the digests in tools/test-deploy.sh and tools/test-release.sh (shell
+# scripts, which Dependabot does not read; update them with the Dockerfiles' images).
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -13,3 +21,33 @@ updates:
       - /tools/release
     schedule:
       interval: weekly
+
+  # The web app (SvelteKit). The lock file is what `npm ci` and `npm audit` read.
+  - package-ecosystem: npm
+    directory: /web/app
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      web-minor-and-patch:
+        update-types: [minor, patch]
+
+  # The Rust workspace (core, cli, gateway, wasm, mobile): Cargo.lock at the root.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      rust-minor-and-patch:
+        update-types: [minor, patch]
+
+  # The Android app (Gradle version catalog in apps/android/gradle/libs.versions.toml).
+  - package-ecosystem: gradle
+    directory: /apps/android
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      android-minor-and-patch:
+        update-types: [minor, patch]

@@ -3,6 +3,18 @@
 # The project is GPL-2.0-or-later. Apache-2.0 code is compatible with GPLv3, so binaries
 # containing it are distributed under GPLv3 terms. Copyleft-incompatible or proprietary
 # licences (and anything unknown) are refused.
+#
+# GPL and LGPL are allowed for this project's own crates only (the exceptions below), never
+# for a dependency. LICENSE-EXCEPTION lets the phone apps go through app stores, but it
+# covers only this project's code: third-party GPL code could be included only if its own
+# authors granted the same permission. One policy for the whole workspace keeps that true
+# for the mobile crate without a separate check. (A dual-licensed crate such as r-efi, "MIT
+# OR Apache-2.0 OR LGPL-2.1-or-later", passes on its MIT or Apache-2.0 terms.)
+
+[graph]
+# Every optional feature, so a dependency that only one feature (or one crate's) pulls in is
+# still checked. Every target too (cargo-deny's default): the Android-only crates count.
+all-features = true
 
 [licenses]
 allow = [
@@ -17,16 +29,35 @@ allow = [
     "Zlib",
     "Unicode-3.0",
     "CC0-1.0",
-    "MPL-2.0",          # Symphonia; MPL-2.0 permits combination with GPL-2.0
-    "GPL-2.0-or-later",
-    "GPL-3.0-or-later",
-    "LGPL-2.1-or-later",
+    "MPL-2.0",          # Symphonia, UniFFI; MPL-2.0 permits combination with GPL-2.0
 ]
 confidence-threshold = 0.9
 
-# Mozilla's root certificate data, used by rustls-platform-verifier on the phone apps
-# (only as a fallback where the platform store is unavailable). CDLA-Permissive-2.0 is a
-# permissive licence for data, allowed for this crate only.
+# This project's own crates: GPL-2.0-or-later (with LICENSE-EXCEPTION).
+[[licenses.exceptions]]
+crate = "anywhere-core"
+allow = ["GPL-2.0-or-later"]
+
+[[licenses.exceptions]]
+crate = "anywhere-cli"
+allow = ["GPL-2.0-or-later"]
+
+[[licenses.exceptions]]
+crate = "anywhere-gateway"
+allow = ["GPL-2.0-or-later"]
+
+[[licenses.exceptions]]
+crate = "anywhere-wasm"
+allow = ["GPL-2.0-or-later"]
+
+[[licenses.exceptions]]
+crate = "anywhere-mobile"
+allow = ["GPL-2.0-or-later"]
+
+[[licenses.exceptions]]
+crate = "anywhere-uniffi-bindgen"
+allow = ["GPL-2.0-or-later"]
+
 [[licenses.exceptions]]
 crate = "webpki-root-certs"
 allow = ["CDLA-Permissive-2.0"]
