@@ -2,7 +2,9 @@
 
 Dated entries, newest first.
 
-## Unreleased (0.6.0)
+## 2026-10-18: Plugin 0.6.0 released
+
+The built-in Cloudflare Tunnel (below). Notes: `docs/release-notes/v0.6.0.md`. Checked live before the tag: the deployed plugin installed the pinned `cloudflared`, and a temporary tunnel opened from the settings page played on a phone over mobile data.
 
 ### Gateway
 
