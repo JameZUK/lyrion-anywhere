@@ -83,3 +83,86 @@ Agreed 2026-10-18 as an addition. Cloudflare's *quick tunnel* needs no sign-up: 
 2. Gateway: the Cloudflare API client and the *create* exchange (with the fake API). About a day.
 3. Plugin: settings-page section, commands, JS, tests. Half a day.
 4. Docs, release notes, the live check. Half a day.
+
+## Build contract (fixed 2026-10-18, before the build)
+
+The gateway, the plugin and the docs are built against this. Changes go here first.
+
+### Where things live
+
+- Gateway module `gateway/src/cftunnel/` (`tunnel.rs` is the player socket; the name is taken): `mod.rs` (state, supervisor, status, the settings that follow), `download.rs` (pinned fetch and verify), `pins.rs` (the pinned `cloudflared` version and three SHA-256 sums, **compile-time constants**, rewritten by `tools/update-cloudflared-pin.sh <version>`, which downloads the three assets and sums them), `api.rs` (Cloudflare API client and the *create* exchange), `token.rs` (tunnel-token shape), `scrub.rs` (log scrubber). The pins are compiled in rather than shipped as a file beside the plugin so Docker users get them too; `tools/test-release.sh` checks them.
+- Data: `<data>/tunnel/` (0700): `cloudflared` (0700), `token` (0600), `state.json` (hostname, installed version, whether the registered tunnel should run at start-up), `pid` (the child's pid, so a stale `cloudflared` left by a killed gateway can be stopped at the next start, after `/proc/<pid>/exe` is checked to be our binary).
+- Assets: `https://github.com/cloudflare/cloudflared/releases/download/<version>/cloudflared-linux-{amd64,arm64,armhf}` (x86_64, aarch64, armhf). The download follows at most two redirects, each only to a host ending in `.githubusercontent.com` or `github.com`, over HTTPS, at most 64 MiB, 10 min, verified against the pin before the temporary file is renamed into place. `cloudflared --version` is then run (10 s limit) to confirm it executes; its output gives the installed version.
+- `cloudflared` runs with a fixed argument list, no shell, an environment of only `TUNNEL_TOKEN` (registered tunnels), `HOME=<data>/tunnel` and `PATH=/usr/bin:/bin`, stdin closed, stdout and stderr piped into the log ring: registered `tunnel --no-autoupdate --metrics 127.0.0.1:<port> --loglevel info run`; temporary `tunnel --no-autoupdate --metrics 127.0.0.1:<port> --loglevel info --url http://<listen address>`. The metrics port is a free loopback port the gateway picks. Readiness: `GET http://127.0.0.1:<port>/ready` (200 with `readyConnections` ≥ 1 means connected, 503 otherwise), polled every 5 s; the temporary address from `GET /quicktunnel` (`{"hostname": "<words>.trycloudflare.com"}`), falling back to the `https://….trycloudflare.com` line in the output. Restart backoff after an exit: 2, 4, 8 … 60 s, reset after 10 min up. The gateway stops the child on `stop`, on SIGTERM and SIGINT (the gateway now shuts down on SIGTERM as well, which is what the plugin sends), and the temporary tunnel 60 min after it started.
+- TLS: the gateway's `reqwest` gains rustls with the `ring` provider and the bundled web roots, the way `mobile/` does it (`cargo deny` already allows the licences). The release Docker build (musl, zig) must still pass.
+
+### Admin API (loopback, admin secret, as every `/admin/v1/…` route)
+
+Errors are `{"error": "…"}` with 400 (bad input), 409 (wrong state, e.g. `install` while running, `start` with nothing registered), 500 (the gateway could not write its data).
+
+| Route | Body | Answer |
+|---|---|---|
+| `GET /admin/v1/tunnel` | | 200, the status below |
+| `GET /admin/v1/tunnel/log` | | 200 `{"log": [up to 200 scrubbed lines, oldest first]}` |
+| `POST /admin/v1/tunnel/install` | | 202 `{}` (download started; 204 if the pinned version is already installed) |
+| `POST /admin/v1/tunnel/update` | | 202 `{}` (stops a running tunnel, downloads the pinned version, starts it again if it was running) |
+| `POST /admin/v1/tunnel/register` | `{"token": "…", "hostname": "music.example.com"}` | 204; the token and hostname are stored and the tunnel starts (installing first if needed, as `quick` does) |
+| `POST /admin/v1/tunnel/create` | `{"api_token": "…", "hostname": "music.example.com", "replace_dns": false}` | 202 `{}`; the exchange runs in the background (`state: "creating"`, `step` names the step); success stores token and hostname and starts; failure is `failed` with `error` naming the step and Cloudflare's message, and a tunnel this gateway created is deleted again |
+| `POST /admin/v1/tunnel/start` | | 204 (the registered tunnel; 409 if none) |
+| `POST /admin/v1/tunnel/stop` | | 204 (registered or temporary; the registered one then stays stopped across restarts) |
+| `POST /admin/v1/tunnel/quick` | | 202 `{}` (installs if needed, then starts the temporary tunnel; 409 while a registered tunnel runs) |
+| `POST /admin/v1/tunnel/remove` | | 204 (stops, deletes everything under `<data>/tunnel/`) |
+
+Status (`GET /admin/v1/tunnel`), every key always present:
+
+```json
+{
+  "supported": true,
+  "pinned_version": "2026.10.1",
+  "installed_version": "2026.10.1",
+  "update_available": false,
+  "mode": "registered",
+  "state": "connected",
+  "hostname": "music.example.com",
+  "public_url": "https://music.example.com",
+  "connections": 4,
+  "uptime": 3600,
+  "quick_ends_in": null,
+  "progress": null,
+  "step": null,
+  "error": null,
+  "log": ["…up to 50 scrubbed lines, oldest first…"]
+}
+```
+
+- `supported`: false when the host is not Linux x86_64/aarch64/armhf (then `state` is `"unsupported"` and every POST answers 409).
+- `mode`: `"none"`, `"registered"` or `"quick"`.
+- `state`: `"unsupported"`, `"not_installed"`, `"installing"` (with `progress: {"bytes": n, "total": n or null}`), `"installed"` (nothing registered, or registered and stopped: then `hostname` is set), `"creating"` (with `step`: `"zone"`, `"create"`, `"configure"`, `"dns"`, `"token"`), `"starting"`, `"connected"`, `"reconnecting"` (running, no edge connection), `"stopped"` (registered, stopped by the admin), `"failed"` (with `error`; the supervisor keeps retrying a crashed child, `failed` is for the download, the exchange, or a child that could not be started at all).
+- `public_url`: `https://<hostname>` while a registered tunnel is registered, `https://<words>.trycloudflare.com` while the temporary one runs, else null. The settings page uses it for pairing QR codes while it is set.
+- `quick_ends_in`: seconds left of the hour, temporary tunnel only.
+- `uptime`: seconds since the child started, else null.
+
+### Inputs
+
+- `hostname`: lower-cased, 4–253 characters, two or more DNS labels of `[a-z0-9-]` (no leading or trailing `-`, 1–63 each), no trailing dot, no port, no path, not an IP address, not under `trycloudflare.com` or `cfargotunnel.com`.
+- `token`: the tunnel token Cloudflare's dashboard shows: base64 (standard or URL alphabet, padding optional) of a JSON object with `a` and `t` (32 hex characters each) and `s` (base64, 32–128 characters); 64–4096 characters in all. Nothing else is accepted and the decoded fields are not stored separately.
+- `api_token`: 20–128 characters of `[A-Za-z0-9_-]`. Held in memory for the exchange only, never written or logged (the scrubber masks it should it appear in a line).
+- `replace_dns`: boolean; when false an existing DNS record for the hostname is reported (`error: "a DNS record for music.example.com already exists; tick Replace to overwrite it"`) and the created tunnel is deleted again.
+
+### The *create* exchange (`api.rs`, base URL `https://api.cloudflare.com/client/v4`, overridable for tests)
+
+1. `zone`: `GET /zones?per_page=50` (pages followed, at most 5): the zone whose name is the longest suffix of the hostname (equal to it, or preceded by a dot). None: `failed`, "no zone on this account contains music.example.com (the API token needs Zone › Zone › Read)". The account id comes from the zone's `account.id`.
+2. `create`: `POST /accounts/{account}/cfd_tunnel` `{"name": "lyrion-anywhere-<hostname with dots as dashes, at most 64 characters>", "config_src": "cloudflare", "tunnel_secret": "<32 random bytes, base64>"}`. The tunnel id comes from `result.id`.
+3. `configure`: `PUT /accounts/{account}/cfd_tunnel/{id}/configurations` `{"config": {"ingress": [{"hostname": "<hostname>", "service": "http://<listen address>"}, {"service": "http_status:404"}]}}`.
+4. `dns`: `GET /zones/{zone}/dns_records?name=<hostname>`; an existing record is reported as above unless `replace_dns`, in which case it is `PATCH`ed (type CNAME, content `<id>.cfargotunnel.com`, proxied true) and otherwise `POST /zones/{zone}/dns_records` with the same fields.
+5. `token`: `GET /accounts/{account}/cfd_tunnel/{id}/token`; `result` is the tunnel token, validated as above and stored.
+
+Every request carries `Authorization: Bearer <api token>`, 30 s each, bodies at most 1 MiB. A non-success answer reports the step and the first `errors[].message` (a 403 or code 10000/9109 adds "the API token is missing a permission; it needs Account › Cloudflare Tunnel › Edit, Zone › DNS › Edit and Zone › Zone › Read"). Any failure after step 2 deletes the tunnel (`DELETE /accounts/{account}/cfd_tunnel/{id}?cascade=true`, best effort) before reporting.
+
+### The gateway's settings follow the tunnel
+
+While a tunnel runs (registered: from `start`, including the automatic start; temporary: once its address is known) the gateway adds `https://<hostname>` to the accepted origins and reads the client address from `CF-Connecting-IP` on requests from the tunnel's source: loopback is already trusted; a non-loopback listen address is trusted as a proxy for the duration. They revert when it stops. The plugin's own *Public URL* and *Client address header* prefs are untouched; the page says they are overridden while the tunnel runs.
+
+### Plugin commands (`Commands.pm`, `Admin.pm`)
+
+All need the page's token (`csrf:`), `tunnel_status` and `tunnel_log` included: `tunnel_status`, `tunnel_log`, `tunnel_install`, `tunnel_update`, `tunnel_register token:… hostname:…`, `tunnel_create api_token:… hostname:… replace_dns:0|1`, `tunnel_start`, `tunnel_stop`, `tunnel_quick`, `tunnel_remove`. The plugin validates the inputs with the rules above before sending, never logs `token` or `api_token`, and never puts them in a result. The page's *Cloudflare Tunnel* section polls `tunnel_status` every 3 s while the page is open, shows each state in words, the log (last lines, *Copy log*), the buttons for the state (*Install*, *Update* when `update_available`, *Start*, *Stop*, *Remove* with confirmation), the two registration forms (token; API token with the three scopes listed above the field), and *Try a temporary tunnel* with its warning, countdown, link and QR code.
