@@ -226,7 +226,235 @@
     return 'The gateway is not running, so users, devices and sign-in can\u2019t be managed until it starts. See Last error above, or use Restart gateway.';
   }
 
-  const api = { command, adminOnlyArg, pageToken, validDays, sessionDaysShown, validDeviceName, clientText, validUsername, validPassword, formatTime, formatUptime, diagnosticsText, downloadsText, formatCountdown, pairingView, auditEventText, isHttpUrl, isEnter, restartText, offlineText, DEFAULT_SESSION_DAYS };
+  // --- Cloudflare Tunnel (docs/plans/cloudflare-tunnel.md, "Build contract") -------------
+
+  /**
+   * A public hostname for the tunnel, as Admin.pm takes it: trimmed and lower-cased, 4 to
+   * 253 characters, two or more DNS labels of a-z 0-9 - (1 to 63 each, no leading or
+   * trailing -), no trailing dot, port or path, not an IP address, and not under
+   * trycloudflare.com or cfargotunnel.com. Null if it isn't one.
+   */
+  function validTunnelHostname(v) {
+    if (typeof v !== 'string') return null;
+    const h = v.trim().toLowerCase();
+    if (h.length < 4 || h.length > 253) return null;
+    if (!/^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(h)) return null;
+    if (!h.split('.').every((l) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(l))) return null;
+    if (/\.[0-9]+$/.test(h)) return null; // an IPv4 address (no top-level domain is numeric)
+    if (/(?:^|\.)(?:trycloudflare\.com|cfargotunnel\.com)$/.test(h)) return null;
+    return h;
+  }
+
+  /** A field of a decoded tunnel token: a non-empty string or number. */
+  function tokenField(v) {
+    return (typeof v === 'string' || typeof v === 'number') && String(v) !== '';
+  }
+
+  /**
+   * A tunnel token as Admin.pm takes it, with any spaces or line breaks from copying taken
+   * out: 64 to 4096 characters of base64 (standard or URL alphabet, padding optional)
+   * holding a JSON object with "a", "t" and "s". Null if it isn't one. The decode is
+   * skipped where the browser has no atob (the plugin checks it again, and the gateway
+   * checks the fields themselves).
+   */
+  function validTunnelToken(v) {
+    if (typeof v !== 'string') return null;
+    const t = v.replace(/\s+/g, '');
+    if (t.length < 64 || t.length > 4096 || !/^[A-Za-z0-9+/_-]+={0,2}$/.test(t)) return null;
+    const atobFn = globalThis.atob;
+    if (typeof atobFn !== 'function') return t;
+    let std = t.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '');
+    if (std.length % 4 === 1) return null;
+    std += '='.repeat((4 - (std.length % 4)) % 4);
+    let data;
+    try {
+      data = JSON.parse(atobFn(std));
+    } catch (_) {
+      return null;
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    return tokenField(data.a) && tokenField(data.t) && tokenField(data.s) ? t : null;
+  }
+
+  /** A Cloudflare API token as Admin.pm takes it: 20 to 128 characters of A-Z a-z 0-9 _ -, trimmed. */
+  function validApiToken(v) {
+    if (typeof v !== 'string') return null;
+    const t = v.trim();
+    return /^[A-Za-z0-9_-]{20,128}$/.test(t) ? t : null;
+  }
+
+  const TUNNEL_HOSTNAME_HELP = 'Enter the public hostname as a full domain name on your Cloudflare account, such as music.example.com: no https://, port or path.';
+
+  /**
+   * The command a tunnel button sends: { op, args }, or { error } when an input is wrong
+   * (nothing is sent then). `fields` holds the form's values for register and create.
+   */
+  function tunnelRequest(kind, fields) {
+    const f = fields || {};
+    switch (kind) {
+      case 'install': return { op: 'tunnel_install', args: {} };
+      case 'update': return { op: 'tunnel_update', args: {} };
+      case 'start': return { op: 'tunnel_start', args: {} };
+      case 'stop': return { op: 'tunnel_stop', args: {} };
+      case 'quick': return { op: 'tunnel_quick', args: {} };
+      case 'remove': return { op: 'tunnel_remove', args: {} };
+      case 'log': return { op: 'tunnel_log', args: {} };
+      case 'register': {
+        const token = validTunnelToken(f.token);
+        if (token === null) return { error: 'That is not a tunnel token. Paste the whole token Cloudflare shows for the tunnel, and nothing else.' };
+        const hostname = validTunnelHostname(f.hostname);
+        if (hostname === null) return { error: TUNNEL_HOSTNAME_HELP };
+        return { op: 'tunnel_register', args: { token, hostname } };
+      }
+      case 'create': {
+        const apiToken = validApiToken(f.api_token);
+        if (apiToken === null) return { error: 'That is not a Cloudflare API token. It should be 20 to 128 letters, digits, underscores or hyphens.' };
+        const hostname = validTunnelHostname(f.hostname);
+        if (hostname === null) return { error: TUNNEL_HOSTNAME_HELP };
+        return { op: 'tunnel_create', args: { api_token: apiToken, hostname, replace_dns: f.replace_dns ? 1 : 0 } };
+      }
+      default: return { error: 'Unknown tunnel action.' };
+    }
+  }
+
+  /** Empty the given input fields (the secret ones, once they have been sent). */
+  function clearFields(...inputs) {
+    for (const i of inputs) if (i && typeof i === 'object') i.value = '';
+  }
+
+  /** Bytes as megabytes with one decimal, e.g. "12.3". */
+  function formatMB(bytes) {
+    const n = Number(bytes);
+    return (Number.isFinite(n) && n > 0 ? n / 1e6 : 0).toFixed(1);
+  }
+
+  const TUNNEL_STEPS = {
+    zone: 'finding your domain',
+    create: 'creating the tunnel',
+    configure: 'pointing the tunnel at the gateway',
+    dns: 'adding the DNS record',
+    token: 'fetching the tunnel token',
+  };
+
+  const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  const textOf = (v) => (typeof v === 'string' ? v : '');
+
+  /** The tunnel's state in words, from the gateway's status. */
+  function tunnelStateText(s) {
+    if (!s || typeof s !== 'object') return 'The gateway sent no tunnel status.';
+    const host = textOf(s.hostname);
+    let text;
+    switch (s.state) {
+      case 'unsupported':
+        return 'Cloudflare Tunnel is not available on this server. It needs Linux on x86_64, aarch64 or armhf.';
+      case 'not_installed':
+        return 'Not installed. Nothing is downloaded or run until you press Install, which fetches Cloudflare\u2019s cloudflared program at the version this release of the plugin pins, and checks it.';
+      case 'installing': {
+        const p = s.progress && typeof s.progress === 'object' ? s.progress : null;
+        if (!p || !(Number(p.bytes) > 0)) return 'Installing cloudflared: starting the download\u2026';
+        return Number(p.total) > 0
+          ? `Installing cloudflared: ${formatMB(p.bytes)} of ${formatMB(p.total)} MB downloaded\u2026`
+          : `Installing cloudflared: ${formatMB(p.bytes)} MB downloaded\u2026`;
+      }
+      case 'installed':
+        return host
+          ? `Installed and registered for ${host}, but not running. Press Start to connect.`
+          : 'Installed. No tunnel is registered yet: register one below, or try a temporary tunnel.';
+      case 'creating':
+        return `Setting up the tunnel in your Cloudflare account: ${has(TUNNEL_STEPS, s.step) ? TUNNEL_STEPS[s.step] : 'working'}\u2026`;
+      case 'starting':
+        text = 'Starting: connecting to Cloudflare\u2026';
+        break;
+      case 'connected': {
+        const n = Math.max(0, Math.floor(Number(s.connections) || 0));
+        text = `Connected to Cloudflare (${n} connection${n === 1 ? '' : 's'}).`;
+        break;
+      }
+      case 'reconnecting':
+        text = 'Running, but not connected to Cloudflare: trying again. This server must be able to reach Cloudflare on port 7844 or 443.';
+        break;
+      case 'stopped':
+        return host
+          ? `Stopped. The tunnel for ${host} stays registered; press Start to connect again.`
+          : 'Stopped. Press Start to connect again.';
+      case 'failed':
+        return `Failed: ${textOf(s.error) || 'the gateway gave no reason'}`;
+      default:
+        return `Unknown tunnel state: ${String(s.state)}`;
+    }
+    return s.mode === 'quick' ? `Temporary tunnel. ${text}` : text;
+  }
+
+  const RUNNING_STATES = ['starting', 'connected', 'reconnecting'];
+
+  /** Which tunnel buttons and forms to show for a status. */
+  function tunnelControls(s) {
+    const c = { install: false, update: false, start: false, stop: false, remove: false, quick: false, quickStop: false, forms: false };
+    if (!s || typeof s !== 'object' || s.supported === false || s.state === 'unsupported') return c;
+    const quickMode = s.mode === 'quick';
+    const installed = textOf(s.installed_version) !== '';
+    const registered = s.mode === 'registered' || (!quickMode && textOf(s.hostname) !== '');
+    const working = s.state === 'installing' || s.state === 'creating';
+    const running = RUNNING_STATES.includes(s.state);
+    if (working) return c;
+    c.install = !installed;
+    c.update = installed && s.update_available === true;
+    c.start = registered && !running;
+    c.stop = registered && running && !quickMode;
+    c.remove = installed || registered;
+    c.quick = !quickMode && !(registered && running);
+    c.quickStop = quickMode;
+    c.forms = installed && !registered;
+    return c;
+  }
+
+  /** An https:// address with nothing after the host, or null (only these are made links). */
+  function tunnelUrl(v) {
+    return typeof v === 'string' && /^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)+\/?$/i.test(v) ? v.replace(/\/$/, '') : null;
+  }
+
+  /** The address pairing QR codes use: the tunnel's while it has one, else the page's Public URL. */
+  function pairingPublicUrl(s, pageUrl) {
+    return (s && tunnelUrl(s.public_url)) || (typeof pageUrl === 'string' ? pageUrl : '');
+  }
+
+  /** The notes under Public URL and Client address header while the tunnel sets them (else nulls). */
+  function tunnelOverrideText(s) {
+    const url = s && tunnelUrl(s.public_url);
+    if (!url) return { url: null, header: null };
+    return {
+      url: `Overridden by the Cloudflare Tunnel while it runs: the gateway uses ${url}.`,
+      header: 'Overridden by the Cloudflare Tunnel while it runs: the gateway reads CF-Connecting-IP on requests that come through the tunnel.',
+    };
+  }
+
+  /** What the temporary tunnel's countdown says, e.g. "Stops in 59:05." */
+  function quickCountdownText(seconds) {
+    const n = Number(seconds);
+    if (!Number.isFinite(n) || n <= 0) return 'Stopping\u2026';
+    return `Stops in ${formatCountdown(n)}.`;
+  }
+
+  /** Log lines as plain text: strings only, one per line, control characters (but tabs) removed. */
+  function tunnelLogText(lines) {
+    if (!Array.isArray(lines)) return '';
+    return lines
+      .filter((l) => typeof l === 'string')
+      .map((l) => l.replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g, ' '))
+      .join('\n');
+  }
+
+  /** cloudflared's version as shown, e.g. "2026.10.1 (this release pins 2026.10.2)". */
+  function tunnelVersionText(s) {
+    const have = textOf(s && s.installed_version);
+    const pin = textOf(s && s.pinned_version);
+    if (!have) return pin ? `not installed (this release pins ${pin})` : 'not installed';
+    if (!pin || pin === have) return have;
+    return `${have} (this release pins ${pin})`;
+  }
+
+  const api = { command, adminOnlyArg, pageToken, validDays, sessionDaysShown, validDeviceName, clientText, validUsername, validPassword, formatTime, formatUptime, diagnosticsText, downloadsText, formatCountdown, pairingView, auditEventText, isHttpUrl, isEnter, restartText, offlineText, DEFAULT_SESSION_DAYS,
+    validTunnelHostname, validTunnelToken, validApiToken, tunnelRequest, clearFields, formatMB, tunnelStateText, tunnelControls, tunnelUrl, pairingPublicUrl, tunnelOverrideText, quickCountdownText, tunnelLogText, tunnelVersionText };
   if (typeof globalThis.__anywhereTest === 'object') {
     Object.assign(globalThis.__anywhereTest, api);
     return;
@@ -281,6 +509,11 @@
     'aw-plugins-box': 'aw-h-plugins',
     'aw-devices': 'aw-h-devices',
     'aw-audit': 'aw-h-audit',
+    'aw-tunnel': 'aw-h-tunnel',
+    'aw-tunnel-quick-box': 'aw-h-tunnel',
+    'aw-tunnel-token-form': 'aw-h-tunnel',
+    'aw-tunnel-create-form': 'aw-h-tunnel',
+    'aw-tunnel-log-box': 'aw-h-tunnel',
   };
 
   function focusPlace() {
@@ -518,12 +751,12 @@
     if (hadFocus) $('aw-h-users').focus();
   }
 
-  /** The QR code for a pairing link, drawn as one SVG path (black on white, quiet zone). */
-  function qrImage(link) {
+  /** The QR code for a link (a pairing link by default), drawn as one SVG path (black on white, quiet zone). */
+  function qrImage(link, label) {
     const qr = globalThis.AnywhereQR.encodeQr(link);
     const n = qr.size + 8;
     const svg = document.createElementNS(SVG_NS, 'svg');
-    for (const [k, v] of [['viewBox', `0 0 ${n} ${n}`], ['width', '240'], ['height', '240'], ['role', 'img'], ['aria-label', 'QR code for the Lyrion Anywhere Android app'], ['shape-rendering', 'crispEdges']]) {
+    for (const [k, v] of [['viewBox', `0 0 ${n} ${n}`], ['width', '240'], ['height', '240'], ['role', 'img'], ['aria-label', label || 'QR code for the Lyrion Anywhere Android app'], ['shape-rendering', 'crispEdges']]) {
       svg.setAttribute(k, v);
     }
     const bg = document.createElementNS(SVG_NS, 'rect');
@@ -543,7 +776,8 @@
   async function showPairing(username) {
     closePairing();
     const d = await admin('pairing', { username });
-    const view = pairingView(d, $('anywhere-app').getAttribute('data-public-url') || '', globalThis.AnywhereQR);
+    // While the Cloudflare Tunnel has an address, the codes point at it.
+    const view = pairingView(d, pairingPublicUrl(tunnelStatus, $('anywhere-app').getAttribute('data-public-url') || ''), globalThis.AnywhereQR);
     if (!view) throw new Error('The gateway did not return a pairing code.');
     const qrBox = view.link
       ? el('div', { className: 'aw-qr' }, [qrImage(view.link)])
@@ -710,6 +944,7 @@
       return null;
     });
     setLive(status);
+    await pollTunnel();
     if (!live) return;
     try {
       const players = await playerNames();
@@ -796,6 +1031,220 @@
     });
   }
 
+  // --- Cloudflare Tunnel --------------------------------------------------------------------
+
+  let tunnelStatus = null; // the last status from the gateway (null: none yet, or the gateway is down)
+  let tunnelBusy = false; // a tunnel command is in flight: the tunnel's buttons are off
+  let tunnelRemove = null;
+  let tunnelPolling = false;
+  let quickEnds = 0;
+  let quickTimer = null;
+  let quickQrFor = '';
+
+  const TUNNEL_BUTTONS = {
+    install: 'aw-tunnel-install',
+    update: 'aw-tunnel-update',
+    start: 'aw-tunnel-start',
+    stop: 'aw-tunnel-stop',
+    quick: 'aw-tunnel-quick-btn',
+    quickStop: 'aw-tunnel-quick-stop',
+  };
+
+  /** Show or hide an element (by the hidden attribute). */
+  function shown(e, yes) {
+    if (!e) return;
+    if (yes) e.removeAttribute('hidden');
+    else e.setAttribute('hidden', '');
+  }
+
+  /** Set an element's text only when it changes (so a live region isn't announced again). */
+  function setText(e, text) {
+    if (e && e.textContent !== text) e.textContent = text;
+  }
+
+  async function pollTunnel() {
+    if (!$('aw-tunnel') || tunnelPolling) return;
+    if (document.hidden === true) return;
+    if (live === false) {
+      showTunnel(null, 'The gateway is not running, so the tunnel can\u2019t be managed until it starts.');
+      return;
+    }
+    tunnelPolling = true;
+    try {
+      showTunnel(await admin('tunnel_status'));
+    } catch (e) {
+      showTunnel(null, `Couldn\u2019t get the tunnel\u2019s status: ${e.message}`);
+    } finally {
+      tunnelPolling = false;
+    }
+  }
+
+  function tickQuick() {
+    setText($('aw-tunnel-quick-countdown'), quickCountdownText(Math.round((quickEnds - Date.now()) / 1000)));
+  }
+
+  function showTunnel(s, problem) {
+    tunnelStatus = s;
+    setText($('aw-tunnel-state'), problem || tunnelStateText(s));
+
+    // Details: the address, uptime and versions. Not rebuilt while focus is inside.
+    const info = $('aw-tunnel-info');
+    const rows = [];
+    if (s) {
+      const url = tunnelUrl(s.public_url);
+      if (url) rows.push([s.mode === 'quick' ? 'Temporary address' : 'Public address', el('a', { href: url, target: '_blank', rel: 'noopener noreferrer', text: url })]);
+      else if (textOf(s.hostname)) rows.push(['Hostname', textOf(s.hostname)]);
+      if (RUNNING_STATES.includes(s.state)) rows.push(['Up for', formatUptime(Number(s.uptime) || 0)]);
+      if (s.state !== 'unsupported') rows.push(['cloudflared', tunnelVersionText(s)]);
+      if (s.update_available === true) rows.push(['Update', `Version ${textOf(s.pinned_version)} is available: press Update to install it.`]);
+    }
+    if (!info.contains(document.activeElement)) {
+      info.replaceChildren(...rows.flatMap(([k, v]) => [el('dt', { text: k }), el('dd', {}, [v])]));
+    }
+    shown(info, rows.length > 0);
+
+    // Buttons for the state; all off while a command is in flight.
+    const c = tunnelControls(s);
+    for (const [k, id] of Object.entries(TUNNEL_BUTTONS)) {
+      const b = $(id);
+      if (!b) continue;
+      shown(b, c[k]);
+      b.disabled = tunnelBusy;
+    }
+    if (tunnelRemove) {
+      shown(tunnelRemove, c.remove);
+      tunnelRemove.disabled = tunnelBusy;
+    }
+    shown($('aw-tunnel-remove-note'), c.remove);
+    for (const id of ['aw-tunnel-register-btn', 'aw-tunnel-create-btn']) if ($(id)) $(id).disabled = tunnelBusy;
+    shown($('aw-tunnel-token-form'), c.forms);
+    shown($('aw-tunnel-create-form'), c.forms);
+    shown($('aw-tunnel-quick-box'), c.quick || c.quickStop);
+
+    // The temporary tunnel: its address as a link and a QR code, and the time it has left.
+    const quickUrl = s && s.mode === 'quick' ? tunnelUrl(s.public_url) : null;
+    shown($('aw-tunnel-quick-run'), !!quickUrl);
+    if (quickUrl) {
+      const link = $('aw-tunnel-quick-link');
+      if (link.getAttribute('href') !== quickUrl) link.setAttribute('href', quickUrl);
+      setText(link, quickUrl);
+      if (quickQrFor !== quickUrl && globalThis.AnywhereQR) {
+        quickQrFor = quickUrl;
+        $('aw-tunnel-quick-qr').replaceChildren(qrImage(quickUrl, `QR code for ${quickUrl}`));
+      }
+      const secs = Number(s.quick_ends_in);
+      if (s.quick_ends_in !== null && Number.isFinite(secs)) {
+        quickEnds = Date.now() + secs * 1000;
+        tickQuick();
+        if (!quickTimer) quickTimer = setInterval(tickQuick, 1000);
+      } else {
+        setText($('aw-tunnel-quick-countdown'), '');
+      }
+    } else {
+      if (quickTimer) clearInterval(quickTimer);
+      quickTimer = null;
+      if (quickQrFor) $('aw-tunnel-quick-qr').replaceChildren();
+      quickQrFor = '';
+    }
+
+    // The log: the last lines, as text.
+    const log = s ? tunnelLogText(s.log) : '';
+    setText($('aw-tunnel-log'), log);
+    shown($('aw-tunnel-log-box'), log !== '');
+
+    // While the tunnel sets the gateway's public URL and client address header, say so.
+    const o = tunnelOverrideText(s);
+    for (const [id, text] of [['aw-tunnel-override-url', o.url], ['aw-tunnel-override-header', o.header]]) {
+      const n = $(id);
+      if (!n) continue;
+      setText(n, text || '');
+      shown(n, !!text);
+    }
+  }
+
+  /**
+   * Run a tunnel command, then show the new status. Busy guard: one at a time, and the
+   * tunnel's buttons are off until it answers. `after` runs once it has been sent, whatever
+   * the answer (it empties the secret fields).
+   */
+  async function tunnelRun(req, done, after) {
+    if (req.error) return say(req.error, true);
+    if (tunnelBusy) return;
+    const place = focusPlace();
+    tunnelBusy = true;
+    showTunnel(tunnelStatus, tunnelStatus ? null : $('aw-tunnel-state').textContent);
+    try {
+      await admin(req.op, req.args);
+      if (done) say(done);
+    } catch (e) {
+      say(e.message, true);
+    } finally {
+      if (after) after();
+      tunnelBusy = false;
+    }
+    await pollTunnel();
+    restoreFocus(place);
+  }
+
+  async function copyTunnelLog() {
+    let text;
+    try {
+      text = tunnelLogText((await admin(tunnelRequest('log').op)).log);
+    } catch (e) {
+      return say(e.message, true);
+    }
+    const pre = $('aw-tunnel-log');
+    setText(pre, text);
+    shown($('aw-tunnel-log-box'), true);
+    try {
+      await navigator.clipboard.writeText(text);
+      say('Log copied.');
+    } catch (_) {
+      // No clipboard access (e.g. a page served over plain http): select the text instead.
+      const sel = typeof getSelection === 'function' ? getSelection() : null;
+      if (sel) sel.selectAllChildren(pre);
+      say('The log couldn\u2019t be copied automatically, so it is selected: copy it with your keyboard or menu.');
+    }
+  }
+
+  function wireTunnel() {
+    if (!$('aw-tunnel')) return;
+    const on = (id, fn) => {
+      const b = $(id);
+      if (b) b.addEventListener('click', fn);
+    };
+    on('aw-tunnel-install', () => tunnelRun(tunnelRequest('install'), 'Installing cloudflared\u2026'));
+    on('aw-tunnel-update', () => tunnelRun(tunnelRequest('update'), 'Updating cloudflared\u2026'));
+    on('aw-tunnel-start', () => tunnelRun(tunnelRequest('start'), 'Tunnel starting'));
+    on('aw-tunnel-stop', () => tunnelRun(tunnelRequest('stop'), 'Tunnel stopped'));
+    on('aw-tunnel-quick-btn', () => tunnelRun(tunnelRequest('quick'), 'Starting a temporary tunnel\u2026'));
+    on('aw-tunnel-quick-stop', () => tunnelRun(tunnelRequest('stop'), 'Temporary tunnel stopped'));
+    on('aw-tunnel-copy-log', copyTunnelLog);
+    tunnelRemove = confirmButton('Remove', 'Confirm: delete the tunnel token', () => tunnelRun(tunnelRequest('remove'), 'Tunnel removed: cloudflared and the tunnel token are deleted from this server'), 'Cloudflare Tunnel', 'tunnel:remove');
+    tunnelRemove.setAttribute('aria-describedby', 'aw-tunnel-remove-note');
+    tunnelRemove.setAttribute('hidden', '');
+    $('aw-tunnel-actions').append(tunnelRemove);
+
+    const token = $('aw-tunnel-token');
+    const tokenHost = $('aw-tunnel-token-host');
+    onEnter(tokenHost, $('aw-tunnel-register-btn'));
+    on('aw-tunnel-register-btn', () => {
+      const req = tunnelRequest('register', { token: token.value, hostname: tokenHost.value });
+      // The token leaves the page once: the field is emptied whatever the answer.
+      tunnelRun(req, req.args && `Tunnel registered for ${req.args.hostname}: starting`, () => clearFields(token));
+    });
+
+    const apiToken = $('aw-tunnel-api-token');
+    const createHost = $('aw-tunnel-create-host');
+    onEnter(apiToken, $('aw-tunnel-create-btn'));
+    onEnter(createHost, $('aw-tunnel-create-btn'));
+    on('aw-tunnel-create-btn', () => {
+      const req = tunnelRequest('create', { api_token: apiToken.value, hostname: createHost.value, replace_dns: $('aw-tunnel-replace-dns').checked });
+      // The API token is used once: the field is emptied whatever the answer.
+      tunnelRun(req, req.args && `Setting up a tunnel for ${req.args.hostname} in your Cloudflare account\u2026`, () => clearFields(apiToken));
+    });
+  }
+
   function wirePage() {
     const app = $('anywhere-app');
     // Remember which section was used last, so messages appear beside it.
@@ -832,11 +1281,17 @@
     wireCreate();
     wireSettings();
     wirePlugins();
+    wireTunnel();
     refresh();
     // Keep the status current; when the gateway starts or stops, rebuild the sections.
     setInterval(async () => {
       const s = await showStatus().catch(() => null);
       if (s && (offlineText(s) === null) !== live) refresh();
     }, 10000);
+    // The tunnel's status every 3 seconds while the page is open (not while the tab is hidden).
+    setInterval(pollTunnel, 3000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) pollTunnel();
+    });
   });
 })();
