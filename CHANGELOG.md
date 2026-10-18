@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-18: A steadier grouped-rejoin test
+
+`a_grouped_player_rejoins_without_pausing_the_group_or_moving_it_back` watched for the rejoin's seek for a fixed 6 s after the stream resumed; on a loaded CI runner (the v0.5.4 release run) the player's decision came later and the test saw no seek. The grouped-gap helper now watches for up to 20 s but stops 1.5 s after the first seek, so quick runs stay quick and a second seek in that time is still caught.
+
 ## 2026-10-18: Plugin 0.5.4 released
 
 The web app's version display, done properly this time: the 0.5.3 zip still read "0.1.0" because the release build's container had only `web/app` and `vite.config.ts` fell back to the package version. Both Dockerfiles' web stages now copy `plugin/Plugins/LyrionAnywhere/install.xml`, the config fails rather than falling back (`ANYWHERE_WEB_VERSION` is the explicit way out for a standalone build), and `tools/test-release.sh` refuses a zip whose web app does not carry "Version <plugin version>". Notes: `docs/release-notes/v0.5.4.md`; the 0.5.3 notes carry a correction.

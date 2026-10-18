@@ -2081,10 +2081,13 @@ async fn grouped_gap(case: GroupGap) -> GroupGapSeen {
     let mut seeks: Vec<(serde_json::Value, std::time::Instant)> = Vec::new();
     let mut checks = checks_before;
     let mut stopped = false;
+    // Long enough for a loaded CI runner (the decision came after 6 s there once); a case
+    // that expects a seek stops watching 1.5 s after the first one, so quick runs stay quick
+    // and a second seek in that time is still seen.
     let watch = if case == GroupGap::StoppedWhileAsking {
         10
     } else {
-        6
+        20
     };
     let deadline = std::time::Instant::now() + Duration::from_secs(watch);
     while std::time::Instant::now() < deadline {
@@ -2114,6 +2117,13 @@ async fn grouped_gap(case: GroupGap) -> GroupGapSeen {
             {
                 seeks.push((c[1].clone(), std::time::Instant::now()));
             }
+        }
+        if case != GroupGap::StoppedWhileAsking
+            && seeks
+                .first()
+                .is_some_and(|(_, at)| at.elapsed() > Duration::from_millis(1500))
+        {
+            break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
