@@ -12,7 +12,8 @@
 //! CA store (chain, name, validity and usage, everything except online revocation). It is
 //! accepted only if that passes. Every other platform verdict (unknown issuer, wrong name,
 //! expired…) stands. This is the same level of revocation checking as Chrome on Android,
-//! which doesn't check revocation online either.
+//! which doesn't check revocation online either. In effect, revocation is not enforced on
+//! Android (SPEC §9.3 records this as a known limit).
 
 // The fallback is built only on Android; elsewhere it is exercised by the tests alone.
 #![cfg_attr(not(target_os = "android"), allow(dead_code))]

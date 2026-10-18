@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::art::ArtImage;
 use crate::error::ApiError;
@@ -61,6 +61,39 @@ pub struct OfflineLibrary {
     /// before anything is sent from it or downloaded into it.
     scope: String,
     state: Mutex<State>,
+    /// Stable keys being fetched (see [`OfflineLibrary::claim`]).
+    claims: KeyClaims,
+}
+
+/// The libraries open in this process, by folder (see [`OfflineLibrary::open`]).
+fn open_libraries() -> &'static Mutex<HashMap<PathBuf, Weak<OfflineLibrary>>> {
+    static OPEN: OnceLock<Mutex<HashMap<PathBuf, Weak<OfflineLibrary>>>> = OnceLock::new();
+    OPEN.get_or_init(Mutex::default)
+}
+
+/// One lock per stable key being fetched, while anyone holds or waits for it.
+#[derive(Default)]
+pub(crate) struct KeyClaims(Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>);
+
+/// The right to fetch one stable key's file, until dropped.
+pub(crate) struct KeyClaim<'a> {
+    claims: &'a KeyClaims,
+    key: String,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for KeyClaim<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        // Forget the key once nobody else holds or waits for it.
+        let mut map = self.claims.0.lock().unwrap_or_else(|e| e.into_inner());
+        if map
+            .get(&self.key)
+            .is_some_and(|m| Arc::strong_count(m) == 1)
+        {
+            map.remove(&self.key);
+        }
+    }
 }
 
 /// The folder name for a user on a server: a hash, so the folder names neither.
@@ -462,6 +495,55 @@ impl OfflineLibrary {
         }
     }
 
+    /// Open the downloads in `dir` afresh (none of this process's libraries has them open):
+    /// load the index and clean up after any crash.
+    fn open_new(dir: PathBuf, scope: String) -> Result<Arc<Self>, ApiError> {
+        let lib = OfflineLibrary {
+            dir,
+            scope,
+            state: Mutex::new(State {
+                tracks: Vec::new(),
+                plays: Vec::new(),
+                ratings: Vec::new(),
+            }),
+            claims: KeyClaims::default(),
+        };
+        lib.create_dirs()?;
+        let (loaded, trusted, recovered) = lib.load_index();
+        let (tracks, changed) = lib.reconcile(loaded, trusted);
+        if changed || recovered {
+            lib.save_index(&tracks)?;
+        }
+        let plays = read_limited(&lib.plays_path(), 8 * 1024 * 1024)
+            .map(|b| plays::parse(&b))
+            .unwrap_or_default();
+        let ratings = read_limited(&lib.ratings_path(), 4 * 1024 * 1024)
+            .map(|b| crate::routine::parse_queue(&b))
+            .unwrap_or_default();
+        *lib.state.lock().unwrap() = State {
+            tracks,
+            plays,
+            ratings,
+        };
+        Ok(Arc::new(lib))
+    }
+
+    /// Fetch the file with stable key `key` alone: until the claim is dropped, another
+    /// download of the same file (another id for it, after a rescan) waits here, then finds
+    /// it on the device. Two at once would write the same partial file.
+    pub(crate) async fn claim(&self, key: &str) -> KeyClaim<'_> {
+        let slot = {
+            let mut map = self.claims.0.lock().unwrap_or_else(|e| e.into_inner());
+            map.entry(key.to_string()).or_default().clone()
+        };
+        let guard = slot.lock_owned().await;
+        KeyClaim {
+            claims: &self.claims,
+            key: key.to_string(),
+            guard: Some(guard),
+        }
+    }
+
     fn remove_where(&self, pred: impl Fn(&OfflineTrack) -> bool) -> Result<u32, ApiError> {
         let mut st = self.state.lock().unwrap();
         let (gone, kept): (Vec<_>, Vec<_>) = st.tracks.drain(..).partition(|t| pred(t));
@@ -490,36 +572,25 @@ impl OfflineLibrary {
     /// Open (creating if needed) the downloads of `username` on `server_url`, under the
     /// app-private folder `root`. Cleans up after any crash: entries without their file,
     /// and files without an entry, are removed.
+    ///
+    /// The same downloads are opened once per process: while a library for this user and
+    /// server is open (held by the app, a downloader or a player), opening it again returns
+    /// that one. A second, separate copy would clean up on its own, deleting a file the
+    /// first had just moved into place but not yet listed, and the two lists would each
+    /// overwrite the other's.
     #[uniffi::constructor]
     pub fn open(root: String, server_url: String, username: String) -> Result<Arc<Self>, ApiError> {
         let dir = scope_dir(&root, &server_url, &username)?;
-        let lib = OfflineLibrary {
-            dir,
-            scope: scope_name(&server_url, &username),
-            state: Mutex::new(State {
-                tracks: Vec::new(),
-                plays: Vec::new(),
-                ratings: Vec::new(),
-            }),
-        };
-        lib.create_dirs()?;
-        let (loaded, trusted, recovered) = lib.load_index();
-        let (tracks, changed) = lib.reconcile(loaded, trusted);
-        if changed || recovered {
-            lib.save_index(&tracks)?;
+        let mut open = open_libraries().lock().unwrap_or_else(|e| e.into_inner());
+        open.retain(|_, lib| lib.strong_count() > 0);
+        if let Some(lib) = open.get(&dir).and_then(Weak::upgrade) {
+            // Its folders may have been removed meanwhile (`remove_offline_data`).
+            lib.create_dirs()?;
+            return Ok(lib);
         }
-        let plays = read_limited(&lib.plays_path(), 8 * 1024 * 1024)
-            .map(|b| plays::parse(&b))
-            .unwrap_or_default();
-        let ratings = read_limited(&lib.ratings_path(), 4 * 1024 * 1024)
-            .map(|b| crate::routine::parse_queue(&b))
-            .unwrap_or_default();
-        *lib.state.lock().unwrap() = State {
-            tracks,
-            plays,
-            ratings,
-        };
-        Ok(Arc::new(lib))
+        let lib = Self::open_new(dir.clone(), scope_name(&server_url, &username))?;
+        open.insert(dir, Arc::downgrade(&lib));
+        Ok(lib)
     }
 
     /// Rate a downloaded track while offline (0 clears): kept until [`crate::sync_ratings`]
@@ -763,6 +834,35 @@ pub(crate) mod tests {
         assert!(bob.tracks().is_empty());
     }
 
+    /// Regression: a second open of the same downloads (the app opening them again while a
+    /// downloader still held the first) reconciled on its own, deleting a file the first had
+    /// just moved into place but not yet listed, and each kept its own list, so whichever
+    /// saved last dropped the other's downloads from the index.
+    #[test]
+    fn a_second_open_shares_the_first_and_never_deletes_its_files() {
+        let root = temp_root();
+        let lib = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
+        let a = sample(1);
+        // A download moved into place and not yet added (the downloader's rename, then add).
+        let file = lib.final_path(&a.key, &a.ext);
+        fs::write(&file, vec![7u8; a.size as usize]).unwrap();
+        let other = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
+        assert!(file.exists(), "a download in flight is never deleted");
+        lib.add(a.clone()).unwrap();
+        assert_eq!(other.tracks(), vec![a.clone()], "one library, one list");
+        let b = sample(2);
+        put(&other, &b);
+        assert_eq!(lib.tracks().len(), 2);
+        // Another user's downloads are another library.
+        let bob = OfflineLibrary::open(root.clone(), "https://s".into(), "bob".into()).unwrap();
+        assert!(bob.tracks().is_empty());
+        drop((lib, other, bob));
+        let again = OfflineLibrary::open(root, "https://s".into(), "u".into()).unwrap();
+        let mut keys: Vec<String> = again.tracks().into_iter().map(|t| t.key).collect();
+        keys.sort();
+        assert_eq!(keys, vec![a.key, b.key], "both kept across a restart");
+    }
+
     #[test]
     fn crash_leftovers_are_cleaned_up() {
         let root = temp_root();
@@ -774,6 +874,8 @@ pub(crate) mod tests {
         fs::write(lib.final_path(&b.key, &b.ext), b"short").unwrap();
         let stray = lib.tracks_dir().join("stray.flac");
         fs::write(&stray, b"x").unwrap();
+        // Opened again after a restart.
+        drop(lib);
         let again = OfflineLibrary::open(root, "https://s".into(), "u".into()).unwrap();
         assert_eq!(again.tracks(), vec![a]);
         assert!(!stray.exists());
@@ -788,6 +890,7 @@ pub(crate) mod tests {
         put(&lib, &a);
         put(&lib, &b); // the backup now lists a only
         fs::write(lib.index_path(), b"{\"v\":1,\"tracks\":[{\"key\":").unwrap();
+        drop(lib);
         let again = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
         assert_eq!(again.tracks(), vec![a.clone()]);
         assert!(
@@ -805,10 +908,13 @@ pub(crate) mod tests {
         let (a, b) = (sample(1), sample(2));
         put(&lib, &a);
         put(&lib, &b);
-        let good = fs::read(lib.index_path()).unwrap();
+        // Each open below is after a restart (nothing else has the downloads open).
+        let (index, aside) = (lib.index_path(), lib.unreadable_index_path());
+        drop(lib);
+        let good = fs::read(&index).unwrap();
         for bad in [&b"garbage"[..], br#"{"v":99,"tracks":[]}"#] {
-            fs::write(lib.index_path(), bad).unwrap();
-            fs::write(lib.index_path().with_extension("json.bak"), b"garbage").unwrap();
+            fs::write(&index, bad).unwrap();
+            fs::write(index.with_extension("json.bak"), b"garbage").unwrap();
             let again = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
             assert!(again.tracks().is_empty());
             assert!(again.final_path(&a.key, &a.ext).exists());
@@ -817,25 +923,27 @@ pub(crate) mod tests {
             // aside can't be read.
             let c = sample(3);
             put(&again, &c);
+            drop(again);
             let later = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
             assert_eq!(later.tracks(), vec![c.clone()]);
             assert!(later.final_path(&a.key, &a.ext).exists());
             later.remove(vec![c.key.clone()]).unwrap();
-            let _ = fs::remove_file(lib.unreadable_index_path());
-            fs::write(lib.index_path(), &good).unwrap();
+            drop(later);
+            let _ = fs::remove_file(&aside);
+            fs::write(&index, &good).unwrap();
         }
         // A passing read error: the copy kept aside is read back later, nothing lost.
-        fs::write(lib.unreadable_index_path(), &good).unwrap();
-        fs::write(lib.index_path(), br#"{"v":1,"tracks":[]}"#).unwrap();
+        fs::write(&aside, &good).unwrap();
+        fs::write(&index, br#"{"v":1,"tracks":[]}"#).unwrap();
         let back = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
         let mut keys: Vec<String> = back.tracks().into_iter().map(|t| t.key).collect();
         keys.sort();
         assert_eq!(keys, vec![a.key.clone(), b.key.clone()]);
-        assert!(!lib.unreadable_index_path().exists());
+        assert!(!aside.exists());
         // Removing everything clears the kept copy too.
-        fs::write(lib.unreadable_index_path(), b"garbage").unwrap();
+        fs::write(&aside, b"garbage").unwrap();
         back.remove_all().unwrap();
-        assert!(!lib.unreadable_index_path().exists());
+        assert!(!aside.exists());
     }
 
     #[test]

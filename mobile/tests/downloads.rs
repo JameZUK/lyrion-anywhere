@@ -81,7 +81,7 @@ enum Step {
     Missing,
     /// 503.
     Unavailable,
-    /// Hold the answer until notified.
+    /// Hold the answer until notified (then as `Normal`).
     Stall(Arc<tokio::sync::Notify>),
 }
 
@@ -98,6 +98,9 @@ struct Script {
     /// `/v1/plays` answers 404.
     no_plays: bool,
     plays: Vec<Value>,
+    /// Every track's `/info` names this track's stable key (one file under several ids,
+    /// as after a rescan).
+    shared_key: Option<i64>,
 }
 
 struct Fake {
@@ -223,9 +226,10 @@ async fn handle(s: Arc<Mutex<Script>>, tokens: Arc<AtomicUsize>, req: Request) -
     };
     if let Some(id) = rest.strip_suffix("/info") {
         let st = s.lock().unwrap();
+        let id: i64 = id.parse().unwrap();
         return json_resp(
             StatusCode::OK,
-            json!({"id": id.parse::<i64>().unwrap(), "key": key_of(id.parse().unwrap()), "title": "Song", "artist": "Band",
+            json!({"id": id, "key": key_of(st.shared_key.unwrap_or(id)), "title": "Song", "artist": "Band",
                 "album": "Record", "album_id": 7, "tracknum": 2, "duration": 61.0,
                 "original": {"format": "flc", "content_type": "audio/flac", "size": st.info_size, "ext": "flac"},
                 "formats": ["original", "mp3", "opus"]}),
@@ -340,7 +344,10 @@ async fn handle(s: Arc<Mutex<Script>>, tokens: Arc<AtomicUsize>, req: Request) -
         ),
         Step::Stall(n) => {
             n.notified().await;
-            ([("content-type", "audio/flac")], file).into_response()
+            match start {
+                Some(a) if a < total => partial(a),
+                _ => ([("content-type", "audio/flac")], file).into_response(),
+            }
         }
     }
 }
@@ -494,6 +501,96 @@ async fn a_cut_download_resumes_with_range_and_is_stored_whole() {
     }
     let index = std::fs::read_to_string(scope.join("index.json")).unwrap();
     assert!(!index.contains("access-") && !index.contains("127.0.0.1"));
+}
+
+/// Two queued ids that the server says are one file (a rescan gave the track a new id)
+/// fetch it once: the second waits for the first, then finds it on the device. Before,
+/// both wrote the same partial file at once, and the file and its entry could disagree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_ids_for_one_file_fetch_it_once() {
+    let file = audio(200_000);
+    let hold = Arc::new(tokio::sync::Notify::new());
+    let s = setup(
+        file.clone(),
+        vec![Step::Stall(hold.clone())],
+        DownloadPolicy::default(),
+    )
+    .await;
+    s.fake.script.lock().unwrap().shared_key = Some(5);
+    s.dl.enqueue(vec![manual(5), manual(6)], FormatChoice::Original);
+    let script = s.fake.script.clone();
+    wait_for("both ids described", move || {
+        script
+            .lock()
+            .unwrap()
+            .log
+            .iter()
+            .filter(|(p, _, _)| p.ends_with("/info"))
+            .count()
+            >= 2
+    })
+    .await;
+    // Time for a second fetch to start, were it going to.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        s.fake.audio_requests().len(),
+        1,
+        "one fetch while the first is held"
+    );
+    hold.notify_one();
+    wait_state(&s.seen, 5, DownloadState::Done, 20).await;
+    wait_state(&s.seen, 6, DownloadState::Done, 20).await;
+    assert_eq!(
+        s.fake.audio_requests().len(),
+        1,
+        "the file was fetched once"
+    );
+    assert_eq!(s.lib.tracks().len(), 1);
+    assert!(stored(&s) == file, "the file stored whole");
+    // Intact when the library is next opened (a mismatched entry would be dropped then).
+    s.dl.shutdown();
+    let Setup { lib, root, url, .. } = s;
+    drop(lib);
+    let again = OfflineLibrary::open(root, url, "alice".into()).unwrap();
+    assert_eq!(again.tracks().len(), 1);
+    assert_eq!(again.tracks()[0].size, 200_000);
+}
+
+/// Cancelling one of two ids for the same file keeps the partial file the other is still
+/// fetching into: it resumes where the bytes so far end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_one_id_for_a_shared_file_keeps_the_others_bytes() {
+    let file = audio(200_000);
+    let hold = Arc::new(tokio::sync::Notify::new());
+    let s = setup(
+        file.clone(),
+        vec![Step::CutAfter(50_000), Step::Stall(hold.clone())],
+        DownloadPolicy::default(),
+    )
+    .await;
+    s.fake.script.lock().unwrap().shared_key = Some(5);
+    s.dl.enqueue(vec![manual(5), manual(6)], FormatChoice::Original);
+    // The first fetch is cut after 50 000 bytes; the next (from either id) resumes there
+    // and is held.
+    let fake = &s.fake;
+    wait_for("the resumed fetch", || fake.audio_requests().len() >= 2).await;
+    assert_eq!(
+        s.fake.audio_requests()[1].0.as_deref(),
+        Some("bytes=50000-")
+    );
+    s.dl.cancel(Some(5));
+    hold.notify_one();
+    wait_state(&s.seen, 6, DownloadState::Done, 30).await;
+    assert!(
+        stored(&s) == file,
+        "the file stored whole, not restarted into a damaged copy"
+    );
+    let reqs = s.fake.audio_requests();
+    assert_eq!(
+        reqs.iter().filter(|(r, _)| r.is_none()).count(),
+        1,
+        "never started again from the beginning: {reqs:?}"
+    );
 }
 
 fn walk(dir: &std::path::Path) -> Vec<String> {
@@ -1152,6 +1249,8 @@ async fn plays_sync_back_through_the_real_gateway() {
         anywhere_mobile::offline::plays::serialise(&[counted]),
     )
     .unwrap();
+    // As the app does after a restart (an open library is shared, not read again).
+    drop((lib, dl));
     let again = OfflineLibrary::open(root, session.server().url(), "alice".into()).unwrap();
     assert_eq!(again.pending_plays(), 1);
     let out = sync_plays(session, again.clone()).await.unwrap();

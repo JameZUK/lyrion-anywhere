@@ -5,8 +5,11 @@
 //! with `dev/local.env` (gitignored) giving `LMS_HOST`, `LMS_JSON_PORT` and
 //! `TEST_PLAYER_MAC`, and optionally `SYNC_PLAYER_MAC` (default `02:4c:41:00:00:02`),
 //! `LMS_SLIM_PORT` (3483) and `LMS_CLI_PORT` (9090). `ANYWHERE_LIVE_ENV` names another env
-//! file. Without both, the test says so and passes without touching anything, so CI runs it
-//! as a no-op.
+//! file. Both players must be locally administered `02:4c:41:…` test addresses. Without
+//! `ANYWHERE_LIVE=1` the test prints "skipped: no live environment" and passes without
+//! touching anything, so CI runs it as a no-op; `ANYWHERE_LIVE=1` without a usable env file
+//! fails. A dedicated live run also sets `ANYWHERE_REQUIRE_LIVE=1`, which turns a skip into
+//! a failure.
 //!
 //! **Set-up:** an in-process gateway in front of the real LMS, the engine behind the test
 //! [`Proxy`] as the dedicated test player (its device is given `TEST_PLAYER_MAC`), and a
@@ -90,21 +93,54 @@ struct LiveEnv {
     sync_mac: String,
 }
 
-/// The live configuration, or `None` (with a message) when the check isn't asked for.
+/// The live configuration, or `None` (with "skipped" printed) when the check isn't asked
+/// for. A dedicated live run sets `ANYWHERE_REQUIRE_LIVE=1`, which makes a skip a failure,
+/// so a run meant to check against LMS can't pass without doing so.
 fn live_env() -> Option<LiveEnv> {
-    if std::env::var("ANYWHERE_LIVE").as_deref() != Ok("1") {
-        eprintln!(
-            "live_sync: not run (opt-in): set ANYWHERE_LIVE=1 and provide dev/local.env to \
-             check the engine against a real LMS"
-        );
-        return None;
-    }
     let path = std::env::var("ANYWHERE_LIVE_ENV")
         .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../dev/local.env").to_string());
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        eprintln!("live_sync: not run: ANYWHERE_LIVE=1 but there is no env file at {path}");
-        return None;
+    let asked = std::env::var("ANYWHERE_LIVE").as_deref() == Ok("1");
+    let text = if asked {
+        std::fs::read_to_string(&path).ok()
+    } else {
+        None
     };
+    let required = std::env::var("ANYWHERE_REQUIRE_LIVE").as_deref() == Ok("1");
+    match live_config(asked, required, &path, text.as_deref()) {
+        Ok(Some(env)) => Some(env),
+        Ok(None) => {
+            eprintln!(
+                "live_sync: skipped: no live environment (set ANYWHERE_LIVE=1 and provide \
+                 dev/local.env to check the engine against a real LMS)"
+            );
+            None
+        }
+        Err(e) => panic!("live_sync: {e}"),
+    }
+}
+
+/// The decision [`live_env`] makes: `Ok(None)` to skip, `Err` to fail. `asked` is
+/// `ANYWHERE_LIVE=1`, `required` is `ANYWHERE_REQUIRE_LIVE=1`, and `text` is the env file
+/// at `path` (`None` if there is none, or the check wasn't asked for).
+fn live_config(
+    asked: bool,
+    required: bool,
+    path: &str,
+    text: Option<&str>,
+) -> Result<Option<LiveEnv>, String> {
+    if !asked {
+        return if required {
+            Err(
+                "ANYWHERE_REQUIRE_LIVE=1 but the live check wasn't asked for \
+                 (ANYWHERE_LIVE=1): it would have been skipped"
+                    .into(),
+            )
+        } else {
+            Ok(None)
+        };
+    }
+    // Asked for and unable to run is a failure, never a quiet pass.
+    let text = text.ok_or_else(|| format!("ANYWHERE_LIVE=1 but there is no env file at {path}"))?;
     let get = |k: &str| {
         text.lines()
             .map(str::trim)
@@ -113,34 +149,75 @@ fn live_env() -> Option<LiveEnv> {
             .find(|(key, _)| key.trim() == k)
             .map(|(_, v)| v.trim().to_string())
     };
-    let need = |k: &str| get(k).unwrap_or_else(|| panic!("{path} has no {k}"));
-    let port = |k: &str, default: u16| {
-        get(k).map_or(default, |v| v.parse().unwrap_or_else(|_| panic!("bad {k}")))
+    let need = |k: &str| get(k).ok_or_else(|| format!("{path} has no {k}"));
+    let port = |k: &str, default: u16| match get(k) {
+        None => Ok(default),
+        Some(v) => v.parse().map_err(|_| format!("bad {k}")),
     };
     let mac = |v: String, k: &str| {
-        format_mac(&parse_mac(&v).unwrap_or_else(|| panic!("{k} is not a MAC address")))
+        parse_mac(&v)
+            .map(|m| format_mac(&m))
+            .ok_or_else(|| format!("{k} is not a MAC address"))
     };
     let env = LiveEnv {
-        host: need("LMS_HOST"),
-        json_port: port("LMS_JSON_PORT", 9000),
-        slim_port: port("LMS_SLIM_PORT", 3483),
-        cli_port: port("LMS_CLI_PORT", 9090),
-        test_mac: mac(need("TEST_PLAYER_MAC"), "TEST_PLAYER_MAC"),
+        host: need("LMS_HOST")?,
+        json_port: port("LMS_JSON_PORT", 9000)?,
+        slim_port: port("LMS_SLIM_PORT", 3483)?,
+        cli_port: port("LMS_CLI_PORT", 9090)?,
+        test_mac: mac(need("TEST_PLAYER_MAC")?, "TEST_PLAYER_MAC")?,
         sync_mac: mac(
             get("SYNC_PLAYER_MAC").unwrap_or_else(|| "02:4c:41:00:00:02".into()),
             "SYNC_PLAYER_MAC",
-        ),
+        )?,
     };
-    // The second player is forgotten afterwards: never let that be a real one.
-    assert!(
-        env.sync_mac.starts_with("02:4c:41:"),
-        "SYNC_PLAYER_MAC must be a test address (02:4c:41:…): it is removed from LMS afterwards"
+    // Both are test players: the engine's device takes the first's address and its queue is
+    // cleared, and the second is forgotten afterwards. Never let either be a real one.
+    for (k, m) in [
+        ("TEST_PLAYER_MAC", &env.test_mac),
+        ("SYNC_PLAYER_MAC", &env.sync_mac),
+    ] {
+        if !m.starts_with("02:4c:41:") {
+            return Err(format!(
+                "{k} must be a test address (02:4c:41:…): the check takes it over and \
+                 clears or removes it"
+            ));
+        }
+    }
+    if env.sync_mac == env.test_mac {
+        return Err("the two test players must differ".into());
+    }
+    Ok(Some(env))
+}
+
+/// Not live: how the live check decides to run, skip or fail (this runs everywhere).
+#[test]
+fn the_live_check_runs_only_as_asked_and_only_on_test_players() {
+    let good = "LMS_HOST=lms.example.lan\nTEST_PLAYER_MAC=02:4c:41:00:00:01\n";
+    let path = "dev/local.env";
+    // Not asked: skipped, unless a live run requires it.
+    assert!(matches!(live_config(false, false, path, None), Ok(None)));
+    assert!(live_config(false, true, path, None).is_err());
+    // Asked without an env file: a failure, not a pass.
+    assert!(live_config(true, false, path, None).is_err());
+    let env = live_config(true, true, path, Some(good)).unwrap().unwrap();
+    assert_eq!(env.test_mac, "02:4c:41:00:00:01");
+    assert_eq!(env.sync_mac, "02:4c:41:00:00:02");
+    assert_eq!(
+        (env.json_port, env.slim_port, env.cli_port),
+        (9000, 3483, 9090)
     );
-    assert_ne!(
-        env.sync_mac, env.test_mac,
-        "the two test players must differ"
-    );
-    Some(env)
+    for bad in [
+        // A real player's address as either test player.
+        "LMS_HOST=lms.example.lan\nTEST_PLAYER_MAC=00:04:20:12:34:56\n",
+        "LMS_HOST=lms.example.lan\nTEST_PLAYER_MAC=02:4c:41:00:00:01\nSYNC_PLAYER_MAC=00:04:20:12:34:56\n",
+        // The same player twice, a missing key, a bad port, a bad address.
+        "LMS_HOST=lms.example.lan\nTEST_PLAYER_MAC=02:4c:41:00:00:02\n",
+        "TEST_PLAYER_MAC=02:4c:41:00:00:01\n",
+        "LMS_HOST=lms.example.lan\nTEST_PLAYER_MAC=02:4c:41:00:00:01\nLMS_JSON_PORT=x\n",
+        "LMS_HOST=lms.example.lan\nTEST_PLAYER_MAC=nope\n",
+    ] {
+        assert!(live_config(true, false, path, Some(bad)).is_err(), "{bad}");
+    }
 }
 
 // --- LMS JSON-RPC -----------------------------------------------------------------------

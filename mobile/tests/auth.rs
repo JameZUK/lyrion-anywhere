@@ -447,3 +447,93 @@ async fn an_older_gateway_still_signs_in() {
     assert_eq!(seen[0]["client_kind"], "android");
     assert!(seen[1].get("client_kind").is_none());
 }
+
+/// Redirects are never followed, to another host least of all: neither a password nor a
+/// token goes anywhere but the server signed in to. A gateway (or something in front of
+/// it) answering with a redirect to another host is a failure, and the other host hears
+/// nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_redirect_to_another_host_is_never_followed() {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize};
+
+    // The other host counts every connection made to it.
+    let other = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let other_addr = other.local_addr().unwrap();
+    let reached = Arc::new(AtomicUsize::new(0));
+    let r = reached.clone();
+    tokio::spawn(async move {
+        while let Ok((s, _)) = other.accept().await {
+            r.fetch_add(1, Ordering::SeqCst);
+            drop(s);
+        }
+    });
+
+    let redirect_login = Arc::new(AtomicBool::new(true));
+    let status = Arc::new(AtomicU16::new(307));
+    let (rl, st) = (redirect_login.clone(), status.clone());
+    let app =
+        axum::Router::new().fallback(axum::routing::any(move |req: axum::extract::Request| {
+            let (rl, st) = (rl.clone(), st.clone());
+            async move {
+                let path = req.uri().path().to_string();
+                if path == "/v1/auth/login" && !rl.load(Ordering::SeqCst) {
+                    return serde_json::json!({
+                        "access_token": "acc", "refresh_token": "ref", "expires_in": 900,
+                        "user": {"username": "alice", "role": "listener"},
+                        "device": {"id": 1, "name": "Test phone"}})
+                    .to_string()
+                    .into_response();
+                }
+                let code = StatusCode::from_u16(st.load(Ordering::SeqCst)).unwrap();
+                (code, [("location", format!("http://{other_addr}{path}"))]).into_response()
+            }
+        }));
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    let server = Server::new(format!("http://{addr}")).unwrap();
+    let store = MemStore::new();
+    let s = Session::new(server, store.clone(), "Test phone".into()).unwrap();
+
+    // Signing in: the password is not sent on.
+    for code in [301, 302, 303, 307, 308] {
+        status.store(code, Ordering::SeqCst);
+        let e = s
+            .login("alice".into(), PW.into(), None)
+            .await
+            .expect_err("a redirected sign-in fails");
+        assert!(
+            matches!(e, ApiError::Server { status, .. } if status == code),
+            "{code}: {e:?}"
+        );
+        assert!(!s.has_sign_in());
+    }
+    assert_eq!(store.saves(), 0);
+
+    // Signed in: requests carrying the token are not sent on either, and the sign-in is
+    // kept.
+    redirect_login.store(false, Ordering::SeqCst);
+    s.login("alice".into(), PW.into(), None).await.unwrap();
+    for code in [301, 302, 307, 308] {
+        status.store(code, Ordering::SeqCst);
+        let e = s.me().await.expect_err("a redirected request fails");
+        assert!(
+            matches!(e, ApiError::Server { status, .. } if status == code),
+            "{code}: {e:?}"
+        );
+        let e = MusicLibrary::new(s.clone())
+            .albums(0, 10, AlbumSort::Title, None, Default::default())
+            .await
+            .expect_err("a redirected request fails");
+        assert!(!matches!(e, ApiError::Unauthorised), "{code}: {e:?}");
+        assert!(s.has_sign_in());
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        reached.load(Ordering::SeqCst),
+        0,
+        "nothing reached the other host"
+    );
+}

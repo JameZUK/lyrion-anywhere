@@ -2919,13 +2919,22 @@ async fn socket_task(
                         return;
                     }
                 };
-                if !matches!(tokio::time::timeout(SOCKET_SEND_TIMEOUT, ws.send(msg)).await, Ok(Ok(()))) {
+                if !send_within(&mut ws, msg, SOCKET_SEND_TIMEOUT).await {
                     let _ = tx.send(closed(None, ""));
                     return;
                 }
             }
         }
     }
+}
+
+/// Hand `msg` to the socket within `limit`: false if that failed, or if the socket stopped
+/// taking messages (a dead connection whose send buffer has filled).
+async fn send_within<S>(ws: &mut S, msg: Message, limit: Duration) -> bool
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    matches!(tokio::time::timeout(limit, ws.send(msg)).await, Ok(Ok(())))
 }
 
 // --- Stream task -------------------------------------------------------------------------
@@ -3156,25 +3165,108 @@ async fn play_from_cache(
     }
 }
 
+/// The longest a stream that has received its first bytes (`?limit=`) waits for a download
+/// check still running before asking the network for the rest. The check carries on
+/// meanwhile and can still take over.
+const DOWNLOAD_CHECK_WAIT: Duration = Duration::from_secs(3);
+
+/// A download check running beside its stream. It reads and may decode a whole file, so
+/// it never holds the stream up: what arrives meanwhile goes on to the decoder, and the
+/// download takes over from wherever the stream has got to when the check is done.
+struct DownloadCheck {
+    answer: tokio::sync::oneshot::Receiver<Option<Found>>,
+    /// Stream bytes received when it was asked (where its file is positioned).
+    at: u64,
+}
+
+/// What a [`DownloadCheck`] has to say so far.
+enum Checked {
+    Pending,
+    /// The rest of the stream, from where it has got to.
+    Found(Found),
+    /// No download carries this stream on: the network does.
+    No,
+}
+
+impl DownloadCheck {
+    /// Its answer, if it has one, positioned for `got` stream bytes received.
+    fn poll(&mut self, got: u64) -> Checked {
+        use tokio::sync::oneshot::error::TryRecvError;
+        match self.answer.try_recv() {
+            Ok(found) => self.settle(found, got),
+            Err(TryRecvError::Empty) => Checked::Pending,
+            Err(TryRecvError::Closed) => Checked::No,
+        }
+    }
+
+    /// Wait up to `limit` for its answer.
+    async fn wait(&mut self, got: u64, limit: Duration) -> Checked {
+        match tokio::time::timeout(limit, &mut self.answer).await {
+            Ok(Ok(found)) => self.settle(found, got),
+            Ok(Err(_)) => Checked::No,
+            Err(_) => Checked::Pending,
+        }
+    }
+
+    /// Move a found download past what the stream brought since it was asked.
+    fn settle(&self, found: Option<Found>, got: u64) -> Checked {
+        use std::io::{Seek, SeekFrom};
+        let Some(mut found) = found else {
+            return Checked::No;
+        };
+        let extra = got.saturating_sub(self.at);
+        if extra > found.remaining {
+            return Checked::No;
+        }
+        if extra > 0 {
+            let Ok(by) = i64::try_from(extra) else {
+                return Checked::No;
+            };
+            if found.file.seek(SeekFrom::Current(by)).is_err() {
+                return Checked::No;
+            }
+            found.remaining -= extra;
+        }
+        Checked::Found(found)
+    }
+}
+
 /// Follow a FLAC stream's first bytes (`head`, while still wanted) with the next piece,
-/// `data`. Once its header is in, ask the downloads for one that carries it on: a checked
-/// file, positioned where the stream carries on. Asked once; `None`: the network.
-async fn from_download(
+/// `data`. Once its header is in, ask the downloads (in the background) for one that
+/// carries it on: a checked file, positioned where the stream carries on. Asked once;
+/// `None`: not asked (yet), or never will be.
+fn start_download_check(
     head: &mut Option<Vec<u8>>,
     data: &[u8],
     downloads: Option<&Arc<Downloads>>,
-) -> Option<Found> {
+) -> Option<DownloadCheck> {
+    let Some(d) = downloads.cloned() else {
+        *head = None;
+        return None;
+    };
+    start_check_with(head, data, move |info, len, received| {
+        d.take(&info, len, &received)
+    })
+}
+
+/// [`start_download_check`] with the check itself given (`take`, run on the blocking pool).
+fn start_check_with(
+    head: &mut Option<Vec<u8>>,
+    data: &[u8],
+    take: impl FnOnce(downloads::StreamInfo, usize, Vec<u8>) -> Option<Found> + Send + 'static,
+) -> Option<DownloadCheck> {
     let held = head.as_mut()?;
     held.extend_from_slice(data);
     match downloads::flac_head(held) {
         FlacHead::More if held.len() <= downloads::MAX_METADATA + 2 => None,
         FlacHead::Done { info, len } if info.usable() => {
             let received = head.take()?;
-            let d = downloads?.clone();
-            tokio::task::spawn_blocking(move || d.take(&info, len, &received))
-                .await
-                .ok()
-                .flatten()
+            let at = received.len() as u64;
+            let (tx, answer) = tokio::sync::oneshot::channel();
+            tokio::task::spawn_blocking(move || {
+                let _ = tx.send(take(info, len, received));
+            });
+            Some(DownloadCheck { answer, at })
         }
         _ => {
             *head = None;
@@ -3299,6 +3391,8 @@ async fn stream_task(job: StreamJob) {
     // A FLAC stream's first bytes, held until its header shows whether a download can
     // carry it on (only while some original FLAC is downloaded).
     let mut flac_head: Option<Vec<u8>> = None;
+    // The check of a download for this stream, while it runs.
+    let mut check: Option<DownloadCheck> = None;
     if let Some(d) = downloads.clone()
         && tokio::task::spawn_blocking(move || d.may_have_flac())
             .await
@@ -3371,10 +3465,16 @@ async fn stream_task(job: StreamJob) {
                             {
                                 break BodyEnd::Gone;
                             }
-                            if let Some(found) =
-                                from_download(&mut flac_head, &data, downloads.as_ref()).await
-                            {
-                                break BodyEnd::Download(found);
+                            if check.is_none() {
+                                check =
+                                    start_download_check(&mut flac_head, &data, downloads.as_ref());
+                            }
+                            if let Some(c) = &mut check {
+                                match c.poll(got) {
+                                    Checked::Found(found) => break BodyEnd::Download(found),
+                                    Checked::No => check = None,
+                                    Checked::Pending => {}
+                                }
                             }
                             if known
                                 && let (Some(c), Some(f)) = (&cache, &mut fpr)
@@ -3394,8 +3494,19 @@ async fn stream_task(job: StreamJob) {
                 match end {
                     BodyEnd::Gone => return,
                     BodyEnd::Clean if prefix_end == Some(got) => {
-                        // The first bytes, and no hit: the rest from the network.
+                        // The first bytes, and no hit: the rest from the network, unless a
+                        // download check about to answer finds the rest on the phone.
                         prefix_end = None;
+                        if let Some(c) = &mut check {
+                            match c.wait(got, DOWNLOAD_CHECK_WAIT).await {
+                                Checked::Found(found) => {
+                                    play_from_download(found, id, &tx, &want).await;
+                                    return;
+                                }
+                                Checked::No => check = None,
+                                Checked::Pending => {}
+                            }
+                        }
                         continue;
                     }
                     BodyEnd::Clean => {
@@ -3458,6 +3569,146 @@ mod tests {
         // More than was asked for arrived (M10): nothing left, no underflow.
         assert_eq!(prefix_left(Some(100), 101), None);
         assert_eq!(prefix_left(Some(100), u64::MAX), None);
+    }
+
+    /// Regression (review, 15 October): the check of a download standing in for a stream
+    /// (up to a 16 MiB header read and a full FLAC decode) ran in the stream task, which
+    /// stopped reading the stream until it was done. Asking now returns at once; the stream
+    /// carries on, and once the check answers, the download takes over from wherever the
+    /// stream has got to.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_slow_download_check_never_holds_the_stream_up() {
+        use std::io::{Read, Seek, SeekFrom};
+        let pcm = downloads::tests::noise(4000, 3);
+        let file = downloads::tests::flac(44_100, &pcm, &[], None);
+        let path = std::env::temp_dir().join(format!(
+            "anywhere-check-{}-{}",
+            std::process::id(),
+            protocol::random01().to_bits()
+        ));
+        std::fs::write(&path, &file).unwrap();
+        let len = file.len() as u64;
+        let slow = |path: std::path::PathBuf, delay: Duration| {
+            move |_: downloads::StreamInfo, _: usize, received: Vec<u8>| {
+                std::thread::sleep(delay);
+                let mut f = std::fs::File::open(&path).unwrap();
+                f.seek(SeekFrom::Start(received.len() as u64)).unwrap();
+                Some(Found {
+                    file: f,
+                    remaining: len - received.len() as u64,
+                })
+            }
+        };
+
+        // The header and a little audio arrive in the first piece.
+        let mut head = Some(Vec::new());
+        let t = Instant::now();
+        let mut check = start_check_with(
+            &mut head,
+            &file[..100],
+            slow(path.clone(), Duration::from_millis(800)),
+        )
+        .expect("asked once the header is in");
+        assert!(
+            t.elapsed() < Duration::from_millis(200),
+            "asking returns at once"
+        );
+        assert!(head.is_none(), "asked once");
+        assert!(matches!(check.poll(100), Checked::Pending));
+        // More of the stream arrives while the check runs.
+        let got = 700u64;
+        let mut found = match check.wait(got, Duration::from_secs(10)).await {
+            Checked::Found(f) => f,
+            _ => panic!("the check's answer"),
+        };
+        assert_eq!(found.remaining, len - got);
+        let mut rest = Vec::new();
+        found.file.read_to_end(&mut rest).unwrap();
+        assert_eq!(
+            rest,
+            &file[got as usize..],
+            "carried on where the stream got to"
+        );
+
+        // A check still running when the wait is up leaves the stream to the network for
+        // now, and can still answer later.
+        let mut head = Some(Vec::new());
+        let mut check = start_check_with(
+            &mut head,
+            &file[..100],
+            slow(path.clone(), Duration::from_millis(600)),
+        )
+        .unwrap();
+        assert!(matches!(
+            check.wait(100, Duration::from_millis(50)).await,
+            Checked::Pending
+        ));
+        assert!(matches!(
+            check.wait(100, Duration::from_secs(10)).await,
+            Checked::Found(_)
+        ));
+
+        // A stream already past the download's end, or no download: the network.
+        let mut head = Some(Vec::new());
+        let mut check =
+            start_check_with(&mut head, &file[..100], slow(path.clone(), Duration::ZERO)).unwrap();
+        assert!(matches!(
+            check.wait(len + 1, Duration::from_secs(10)).await,
+            Checked::No
+        ));
+        let mut head = Some(Vec::new());
+        let mut check = start_check_with(&mut head, &file[..100], |_, _, _| None).unwrap();
+        assert!(matches!(
+            check.wait(100, Duration::from_secs(10)).await,
+            Checked::No
+        ));
+        // Not FLAC: never asked, and the stream stops being held for it.
+        let mut head = Some(Vec::new());
+        assert!(start_check_with(&mut head, b"ID3\x04 an mp3", |_, _, _| None).is_none());
+        assert!(head.is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A socket that stops taking messages (its connection died with the send buffer full)
+    /// is given up after [`SOCKET_SEND_TIMEOUT`], well before the gateway's grace ends;
+    /// one that takes them is not.
+    #[tokio::test]
+    async fn a_socket_that_stops_taking_messages_is_given_up() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+        /// Never ready, as a socket whose peer has stopped reading.
+        struct Stuck;
+        impl futures_util::Sink<Message> for Stuck {
+            type Error = ();
+            fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+                Poll::Pending
+            }
+            fn start_send(self: Pin<&mut Self>, _: Message) -> Result<(), ()> {
+                Ok(())
+            }
+            fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+                Poll::Pending
+            }
+            fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+                Poll::Pending
+            }
+        }
+        let t = Instant::now();
+        let limit = Duration::from_millis(100);
+        assert!(!send_within(&mut Stuck, Message::Text("STAT".into()), limit).await);
+        assert!(t.elapsed() >= limit && t.elapsed() < Duration::from_secs(5));
+        let mut fine = futures_util::sink::drain::<Message>().sink_map_err(|_| ());
+        assert!(send_within(&mut fine, Message::Text("STAT".into()), limit).await);
+        let mut broken = Box::pin(
+            futures_util::sink::drain::<Message>()
+                .sink_map_err(|_| ())
+                .with(|_: Message| async { Err::<Message, ()>(()) }),
+        );
+        assert!(!send_within(&mut broken, Message::Text("STAT".into()), limit).await);
+        // Given up on before the socket counts as idle, and long before the gateway's 60 s
+        // grace for a dropped player runs out.
+        const { assert!(SOCKET_SEND_TIMEOUT.as_secs() < SOCKET_IDLE.as_secs()) };
+        const { assert!(SOCKET_SEND_TIMEOUT.as_secs() <= 30) };
     }
 
     #[tokio::test]

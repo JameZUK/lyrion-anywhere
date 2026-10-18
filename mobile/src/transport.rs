@@ -3,9 +3,10 @@
 //! TLS is rustls (with the `ring` provider, which cross-compiles cleanly for Android) and
 //! `rustls-platform-verifier`: certificates are checked by the operating system's own
 //! verifier and trust store (Android's TrustManager, Apple's Security framework), so
-//! user-installed CAs and revocation work as the platform intends, and no root list is
-//! bundled. Redirects are never followed (a bearer token must not travel anywhere else),
-//! and responses are read up to a fixed limit, with time limits on every step.
+//! user-installed CAs and revocation work as the platform intends (except revocation on
+//! Android, see `crate::tls`), and no root list is bundled. Redirects are never followed
+//! (a bearer token must not travel anywhere else), and responses are read up to a fixed
+//! limit, with time limits on every step and on the whole body.
 //!
 //! The client is hyper's, used directly rather than through reqwest: the gateway's own
 //! reqwest client has no TLS, and Cargo would unify a TLS feature into it.
@@ -39,6 +40,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HEADERS_TIMEOUT: Duration = Duration::from_secs(30);
 /// Between two pieces of a response body.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// For a whole response body read with [`Response::read_limited`]: a gateway sending a
+/// little at a time, each piece within [`READ_TIMEOUT`], must not hold a read (of up to
+/// [`MAX_JSON`]) open indefinitely. Three minutes carry the largest answer over a slow
+/// mobile connection (about 1 Mbit/s).
+const READ_DEADLINE: Duration = Duration::from_secs(180);
 
 /// An error and its causes, as one short line ("client error (Connect): dns error: …"),
 /// for diagnosing a failed connection. Network-layer errors name hosts, addresses and
@@ -293,8 +299,24 @@ impl Response {
     }
 
     /// Read the body up to `limit` bytes; more than that is an error, never a truncated
-    /// answer.
+    /// answer. The whole read must be done within [`READ_DEADLINE`].
     pub(crate) async fn read_limited(self, limit: usize) -> Result<Vec<u8>, ApiError> {
+        self.read_limited_within(limit, READ_DEADLINE).await
+    }
+
+    /// [`Response::read_limited`], all of it within `deadline`.
+    async fn read_limited_within(
+        self,
+        limit: usize,
+        deadline: Duration,
+    ) -> Result<Vec<u8>, ApiError> {
+        match tokio::time::timeout(deadline, self.read_body(limit)).await {
+            Ok(r) => r,
+            Err(_) => Err(ApiError::network("timed out")),
+        }
+    }
+
+    async fn read_body(self, limit: usize) -> Result<Vec<u8>, ApiError> {
         let status = self.status().as_u16();
         let too_large = || ApiError::Server {
             status,
@@ -440,6 +462,44 @@ mod tests {
             refresh_error_of(408, &h, b""),
             ApiError::Network { .. }
         ));
+    }
+
+    /// Regression (review, 15 October): a gateway that answers at once and then sends its
+    /// body a byte at a time, each piece well within the per-piece limit, held the read
+    /// open indefinitely. The whole read now has a deadline.
+    #[tokio::test]
+    async fn a_trickling_answer_is_cut_off_at_the_overall_deadline() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = s.read(&mut buf).await;
+                    let head = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                                 transfer-encoding: chunked\r\n\r\n";
+                    if s.write_all(head).await.is_err() {
+                        return;
+                    }
+                    while s.write_all(b"1\r\n \r\n").await.is_ok() {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                });
+            }
+        });
+        let http = Http::private().unwrap();
+        let url = Url::parse(&format!("http://{addr}/v1/me")).unwrap();
+        let resp = http.get(url.clone()).send().await.unwrap();
+        let t = std::time::Instant::now();
+        let r = resp
+            .read_limited_within(MAX_JSON, Duration::from_millis(500))
+            .await;
+        assert!(matches!(r, Err(ApiError::Network { .. })), "{r:?}");
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        // The deadline is far longer than a piece may take, and bounded.
+        const { assert!(READ_DEADLINE.as_secs() > READ_TIMEOUT.as_secs()) };
+        const { assert!(READ_DEADLINE.as_secs() <= 300) };
     }
 
     #[test]
