@@ -156,6 +156,18 @@ test('…but one held by a pause made here stays paused', async () => {
 	expect(element().paused).toBe(false);
 });
 
+// Issue #12 diagnostics: a pause the page sends LMS by itself is in the connection log, with
+// why, and so is the element event behind it.
+test('a pause the system made is logged, with the pause the page asked LMS for', async () => {
+	await playing();
+	const el = element();
+	paused.set(el, true);
+	el.dispatchEvent(new Event('pause'));
+	await settle();
+	expect(device.log.some((l) => l.includes('page: asked LMS to pause (the system paused the media element)'))).toBe(true);
+	expect(device.log.some((l) => /media: pause at \d+\.\d s, (nothing buffered|buffered )/.test(l))).toBe(true);
+});
+
 // Regression: LMS's sync corrections used to seek the element (a skip) or pause it (a pause).
 // On iPadOS a seek stalls the element while it refills, losing about what the skip gained, so
 // LMS asked again at every check and the iPad dropped out every two seconds. The worker now

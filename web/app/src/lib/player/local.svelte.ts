@@ -7,6 +7,7 @@
 //
 // The decisions are in ./local-plan (pure); this is the glue around them.
 import type { Command } from '$lib/api/rpc';
+import { describePageCommand } from './diagnostics';
 import * as cmd from '$lib/lms/commands';
 import type { PlayerStatus, Track } from '$lib/lms/types';
 import { playable, type AudioLike } from '$lib/offline/player.svelte';
@@ -34,6 +35,8 @@ export interface LocalDevice {
 	/** The last connection was a fresh session (LMS saw a new player). */
 	fresh(): boolean;
 	local(m: { hold: true } | { release: 'now' | 'flush' | 'paused' }): void;
+	/** A line for this device's connection log. */
+	note?(msg: string): void;
 }
 
 export interface LocalDeps {
@@ -401,7 +404,10 @@ export class LocalPlayback {
 			const q = await this.deps.rpc<{ playlist_loop?: { id?: unknown }[] }>(mac, cmd.queue(outcome.index, 1));
 			const plan = reconcile(outcome, now, q?.playlist_loop?.[0]?.id);
 			if (!plan.follow) {
-				for (const c of plan.commands) await this.deps.rpc(mac, c);
+				for (const c of plan.commands) {
+					this.deps.device.note?.(describePageCommand(c, 'handing back to LMS after playing on without it'));
+					await this.deps.rpc(mac, c);
+				}
 				release = plan.release;
 			}
 		} catch {

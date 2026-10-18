@@ -411,3 +411,22 @@ describe('streaming quality', () => {
 		expect(w.cmds('start')[0]!.quality).toBe('original');
 	});
 });
+
+// Issue #12 diagnostics: the worker's protocol lines come with a kind, and the page logs each
+// kind at most once in a few seconds; state changes (no kind) always go in.
+test('worker lines of one kind are rate-limited; lines without a kind are not', async () => {
+	const w = await started();
+	const n = (s: string) => device.log.filter((l) => l.includes(s)).length;
+	const before = n('player: STMo');
+	for (let i = 0; i < 5; i++) w.say({ log: 'player: STMo (the output ran dry)', kind: 'stat:STMo' });
+	expect(n('player: STMo') - before).toBe(1);
+	const changes = n('player: Playing → Paused');
+	w.say({ log: 'player: Playing → Paused (after strm p)' });
+	w.say({ log: 'player: Playing → Paused (after strm p)' });
+	expect(n('player: Playing → Paused') - changes).toBe(2);
+	// A kind that is not a string is treated as none.
+	const odd = n('odd line');
+	w.say({ log: 'odd line', kind: 7 });
+	w.say({ log: 'odd line', kind: 7 });
+	expect(n('odd line') - odd).toBe(2);
+});

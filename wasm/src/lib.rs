@@ -5,7 +5,9 @@
 //! out and reports back how many frames it has played.
 
 use anywhere_core::decode::SourceFormat;
-use anywhere_core::player::{Action, OutputCorrection, OutputState, Player, PlayerConfig};
+use anywhere_core::player::{
+    Action, DiagEvent, OutputCorrection, OutputState, Player, PlayerConfig,
+};
 use anywhere_core::proto::parse_mac;
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
@@ -27,6 +29,15 @@ pub struct WasmPlayer {
 
 fn set(obj: &Object, key: &str, value: &JsValue) {
     let _ = Reflect::set(obj, &JsValue::from_str(key), value);
+}
+
+/// A protocol byte as one printable character for the log: `?` for anything else.
+pub fn letter(b: u8) -> String {
+    if b.is_ascii_graphic() {
+        char::from(b).to_string()
+    } else {
+        "?".to_string()
+    }
 }
 
 #[wasm_bindgen]
@@ -273,6 +284,43 @@ impl WasmPlayer {
                 OutputCorrection::StartAt { at_ms } => {
                     set(&o, "type", &"start".into());
                     set(&o, "at", &JsValue::from_f64(at_ms as f64));
+                }
+            }
+            out.push(&o);
+        }
+        out
+    }
+
+    /// Keep each `strm` from LMS and STAT sent, for the connection log (see
+    /// `Player::set_diagnostics`).
+    pub fn set_diagnostics(&mut self, on: bool) {
+        self.inner.set_diagnostics(on);
+    }
+
+    /// The diagnostics events since the last call, as plain objects, oldest first:
+    /// `{type:"strm", command, autostart, format, threshold}` (single characters, and KiB)
+    /// or `{type:"stat", event}` (e.g. `"STMl"`). Nothing else from the command is exposed.
+    pub fn take_diagnostics(&mut self) -> Array {
+        let out = Array::new();
+        for e in self.inner.take_diagnostics() {
+            let o = Object::new();
+            match e {
+                DiagEvent::Strm {
+                    command,
+                    autostart,
+                    format,
+                    threshold,
+                } => {
+                    set(&o, "type", &"strm".into());
+                    set(&o, "command", &letter(command).into());
+                    set(&o, "autostart", &letter(autostart).into());
+                    set(&o, "format", &letter(format).into());
+                    set(&o, "threshold", &JsValue::from_f64(f64::from(threshold)));
+                }
+                DiagEvent::Stat(event) => {
+                    set(&o, "type", &"stat".into());
+                    let name: String = event.iter().map(|b| letter(*b)).collect();
+                    set(&o, "event", &name.into());
                 }
             }
             out.push(&o);
@@ -529,6 +577,24 @@ mod tests {
             request: b"GET /stream.wav?player=02:00:00:00:00:01 HTTP/1.0\r\n\r\n".to_vec(),
         };
         encode_server_frame(*b"strm", &s.encode_payload())
+    }
+
+    /// Protocol bytes reach the log as one printable character, never control characters
+    /// or anything wider.
+    #[test]
+    fn letters_are_one_printable_character() {
+        assert_eq!(letter(b's'), "s");
+        assert_eq!(letter(b'1'), "1");
+        assert_eq!(letter(0), "?");
+        assert_eq!(letter(b' '), "?");
+        assert_eq!(letter(b'\n'), "?");
+        assert_eq!(letter(0x7f), "?");
+        assert_eq!(letter(0xff), "?");
+        for b in 0..=255u8 {
+            let l = letter(b);
+            assert_eq!(l.len(), 1);
+            assert!(l.as_bytes()[0].is_ascii_graphic());
+        }
     }
 
     /// 16-bit stereo WAV of one constant sample value, so each track's audio is recognisable.

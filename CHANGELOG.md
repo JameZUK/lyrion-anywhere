@@ -2,6 +2,14 @@
 
 Dated entries, newest first.
 
+## Unreleased (0.6.2)
+
+Diagnostics only, so issue #12 can be pinned down from the reporter's next Connection log; no playback behaviour changes.
+
+### Web
+
+- **The Connection log shows what LMS and the player said, and where the media element stood (#12).** Each `strm` from LMS but the status poll (`lms: strm s autostart=1 format=f threshold=255`, `lms: strm q`; only those letters and the threshold, never the request) and each STAT the core sends but the heartbeat, with a short gloss (`player: STMl (loaded, waiting for LMS to start it)`). These come from a new, bounded diagnostics queue in the core (`Player::set_diagnostics`, `take_diagnostics`; `WasmPlayer` likewise). Also: changes of the core's output state with their cause where known (`player: Playing → Paused (after strm p)`, `local pause`, `sync`), commands the page sends LMS by itself (`page: asked LMS to pause (the system paused the media element)`; also the volume hold, the hand-back after playing on without the server, and the resume after a reload), the media element's play, pause, playing, waiting, stalled, seeking, seeked, ended and error with the play head and the two buffered ranges nearest it (`media: waiting at 61.2 s, buffered 60.9–75.4 s`), an element that stops taking audio with a full lead (`media: element not consuming (lead 8.0 s, buffered 14.3 s)`), a download held back for 10 s by a full core buffer (`stream 5: reading paused, core holds 6.9 MB undecoded`), what the worker did with "drained" (`media: drained, counted as played out`), and how each clean end was settled (`stream 5: clean end at byte B, confirming`, then `end confirmed at byte B` or `not the end; continued from byte B`). Lines of one kind are logged at most once per 5 s, the next one saying how many were left out; state changes always go in. Reports now carry up to 120 lines (at most 16 KiB of them). Tests: `core/src/player.rs` and `wasm/tests/bindings.rs` (the queue: off by default, no status poll, bounded, letters and threshold only), `tests/node/diag.test.mjs` (the strm and STAT lines with junk input, output causes, the persisting-condition watch), `tests/node/reconnect.test.mjs` (the parked-reading and clean-end lines against the fake gateway), `tests/diagnostics.test.ts` (the rate limiter, the page-command lines never carrying free text, the report's size), `tests/media-output.test.ts` (element events with the play head and ranges), `tests/device.test.ts`, `tests/device-media-hold.test.ts` and `tests/local-playback.test.ts`.
+
 ## 2026-10-18: Plugin 0.6.1 released
 
 The web player fix for issue #12 (below), on top of 0.6.0. Notes: `docs/release-notes/v0.6.1.md`. Deployed to the owner's server before the tag; the fix itself was reasoned from the reporter's diagnostics and gateway log, not reproduced locally.

@@ -227,6 +227,26 @@ pub struct QueueTrim {
     pub keep_frames: u64,
 }
 
+/// Something LMS told the player, or the player told LMS, kept for a host's diagnostics log
+/// (see [`Player::set_diagnostics`]). Only the protocol's small fixed fields: never a stream
+/// request, an address or a name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagEvent {
+    /// A `strm` from LMS (every command but `t`, the status poll every few seconds).
+    Strm {
+        command: u8,
+        autostart: u8,
+        format: u8,
+        /// Input buffer threshold in KiB (meaningful for `s`).
+        threshold: u8,
+    },
+    /// A STAT the player sent (every event but `STMt`, the reply to that poll).
+    Stat([u8; 4]),
+}
+
+/// At most this many [`DiagEvent`]s wait for the host; the oldest go first.
+pub const MAX_DIAG_EVENTS: usize = 64;
+
 /// Snapshot for UIs and logs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Status {
@@ -306,6 +326,8 @@ pub struct Player {
     stms_seq: Option<u32>,
     /// The output has been stalled (an underrun) since this host time.
     stall_since: Option<u64>,
+    /// Diagnostics for the host (see [`Player::set_diagnostics`]): `None` when off.
+    diag: Option<VecDeque<DiagEvent>>,
     /// Tests: every `STMs` and `STMd` sent, with the track it was for.
     #[cfg(test)]
     sent_log: Vec<(&'static str, u32)>,
@@ -363,8 +385,31 @@ impl Player {
             stmu_deferred: false,
             stms_seq: None,
             stall_since: None,
+            diag: None,
             #[cfg(test)]
             sent_log: Vec::new(),
+        }
+    }
+
+    /// Keep each `strm` received and STAT sent for the host's diagnostics log (off by
+    /// default). At most [`MAX_DIAG_EVENTS`] are kept until [`Player::take_diagnostics`].
+    pub fn set_diagnostics(&mut self, on: bool) {
+        self.diag = on.then(VecDeque::new);
+    }
+
+    /// The diagnostics events since the last call, oldest first.
+    pub fn take_diagnostics(&mut self) -> Vec<DiagEvent> {
+        self.diag
+            .as_mut()
+            .map_or_else(Vec::new, |d| d.drain(..).collect())
+    }
+
+    fn diag(&mut self, e: DiagEvent) {
+        if let Some(d) = &mut self.diag {
+            if d.len() >= MAX_DIAG_EVENTS {
+                d.pop_front();
+            }
+            d.push_back(e);
         }
     }
 
@@ -1025,7 +1070,17 @@ impl Player {
 
     fn handle(&mut self, msg: ServerMsg) {
         match msg {
-            ServerMsg::Strm(s) => self.handle_strm(s),
+            ServerMsg::Strm(s) => {
+                if s.command != b't' {
+                    self.diag(DiagEvent::Strm {
+                        command: s.command,
+                        autostart: s.autostart,
+                        format: s.format,
+                        threshold: s.threshold,
+                    });
+                }
+                self.handle_strm(s)
+            }
             ServerMsg::Audg(a) => self.gain = a.gains(),
             ServerMsg::Setd { id: 0, data } => {
                 if data.is_empty() {
@@ -1454,6 +1509,9 @@ impl Player {
     }
 
     fn send_stat(&mut self, event: [u8; 4], server_timestamp: u32) {
+        if &event != b"STMt" {
+            self.diag(DiagEvent::Stat(event));
+        }
         let elapsed = self.elapsed_ms();
         // The stream figures describe the newest stream, the one LMS sent last.
         let (input_unread, bytes) = self
@@ -1863,6 +1921,55 @@ mod tests {
         let stat = Stat::parse(&bytes[8..]).unwrap();
         assert_eq!(&stat.event, b"STMt");
         assert_eq!(stat.server_timestamp, 0xdead_beef);
+    }
+
+    #[test]
+    fn diagnostics_are_off_by_default() {
+        let mut p = Player::new(cfg());
+        p.on_control_data(&strm(b'q', b'0', b'p', 0), 1).unwrap();
+        assert!(p.take_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn diagnostics_keep_strm_and_stat_but_not_the_status_poll() {
+        let mut p = Player::new(cfg());
+        p.set_diagnostics(true);
+        p.on_control_data(&strm_with_threshold(b's', b'0', b'p', 0, 255), 0)
+            .unwrap();
+        p.on_control_data(&strm(b't', b'0', b'p', 7), 1).unwrap();
+        p.on_control_data(&strm(b'p', b'0', b'p', 0), 2).unwrap();
+        p.on_control_data(&strm(b'q', b'0', b'p', 0), 3).unwrap();
+        let d = p.take_diagnostics();
+        let s = DiagEvent::Strm {
+            command: b's',
+            autostart: b'0',
+            format: b'p',
+            threshold: 255,
+        };
+        assert_eq!(d[0], s, "{d:?}");
+        assert!(d.contains(&DiagEvent::Stat(*b"STMc")), "{d:?}");
+        assert!(d.contains(&DiagEvent::Stat(*b"STMp")), "{d:?}");
+        assert!(d.contains(&DiagEvent::Stat(*b"STMf")), "{d:?}");
+        assert!(
+            !d.iter()
+                .any(|e| matches!(e, DiagEvent::Strm { command: b't', .. })
+                    || *e == DiagEvent::Stat(*b"STMt")),
+            "the status poll is left out: {d:?}"
+        );
+        assert!(p.take_diagnostics().is_empty(), "taken once");
+    }
+
+    #[test]
+    fn diagnostics_are_bounded_and_can_be_turned_off() {
+        let mut p = Player::new(cfg());
+        p.set_diagnostics(true);
+        for i in 0..200 {
+            p.on_control_data(&strm(b'p', b'0', b'p', 0), i).unwrap();
+        }
+        assert_eq!(p.take_diagnostics().len(), MAX_DIAG_EVENTS);
+        p.set_diagnostics(false);
+        p.on_control_data(&strm(b'u', b'0', b'p', 0), 300).unwrap();
+        assert!(p.take_diagnostics().is_empty());
     }
 
     #[test]

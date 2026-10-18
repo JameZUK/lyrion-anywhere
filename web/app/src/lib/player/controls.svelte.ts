@@ -12,6 +12,7 @@ import type { StoredTrack } from '$lib/offline/types';
 import { device } from './device.svelte';
 import { gates, type Gates, type LocalKind } from './local-plan';
 import { LocalPlayback } from './local.svelte';
+import { describePageCommand } from './diagnostics';
 
 export const local = new LocalPlayback({
 	device: {
@@ -22,6 +23,7 @@ export const local = new LocalPlayback({
 		track: () => (typeof device.detail.track === 'number' ? device.detail.track : null),
 		fresh: () => device.freshSession,
 		local: (m) => device.local(m),
+		note: (m) => device.note(m),
 	},
 	status: () => app.now,
 	apply: (p) => app.applyLocal(p),
@@ -188,6 +190,7 @@ class Controls {
 		if (app.reach === 'online') {
 			// The usual pause when this device is the player being controlled; else straight to
 			// this device's own player, whichever one the screens show.
+			device.note(describePageCommand(cmd.pause(true), 'downloads start playing here'));
 			if (this.thisDevice) void app.send(cmd.pause(true));
 			else void api.rpc(device.mac, cmd.pause(true)).catch(() => {});
 			return;
