@@ -2,9 +2,9 @@
 
 Dated entries, newest first.
 
-## Unreleased (0.6.2)
+## 2026-10-18: Plugin 0.6.2 released
 
-Diagnostics only, so issue #12 can be pinned down from the reporter's next Connection log; no playback behaviour changes.
+Notes: `docs/release-notes/v0.6.2.md`. Diagnostics only, so issue #12 can be pinned down from the reporter's next Connection log; no playback behaviour changes.
 
 ### Web
 
