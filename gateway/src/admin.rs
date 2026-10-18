@@ -64,6 +64,16 @@ pub fn router(gw: AppState, secret: String) -> Router {
         .route("/admin/v1/audit", get(audit))
         .route("/admin/v1/settings", get(settings).post(set_settings))
         .route("/admin/v1/plugins", get(plugins).post(set_plugins))
+        .route("/admin/v1/tunnel", get(tunnel_status))
+        .route("/admin/v1/tunnel/log", get(tunnel_log))
+        .route("/admin/v1/tunnel/install", post(tunnel_install))
+        .route("/admin/v1/tunnel/update", post(tunnel_update))
+        .route("/admin/v1/tunnel/register", post(tunnel_register))
+        .route("/admin/v1/tunnel/create", post(tunnel_create))
+        .route("/admin/v1/tunnel/start", post(tunnel_start))
+        .route("/admin/v1/tunnel/stop", post(tunnel_stop))
+        .route("/admin/v1/tunnel/quick", post(tunnel_quick))
+        .route("/admin/v1/tunnel/remove", post(tunnel_remove))
         .fallback(|| async { StatusCode::NOT_FOUND })
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
@@ -487,4 +497,114 @@ async fn rename_device(
         Err(AuthError::BadInput("no such device")) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => err(e),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The built-in Cloudflare Tunnel (docs/plans/cloudflare-tunnel.md, "Admin API")
+// ---------------------------------------------------------------------------
+
+use crate::cftunnel::{Accepted, Refusal};
+
+fn refused(r: Refusal) -> Response {
+    let status = StatusCode::from_u16(r.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (status, Json(json!({ "error": r.message }))).into_response()
+}
+
+fn accepted(r: Result<Accepted, Refusal>) -> Response {
+    match r {
+        Ok(Accepted::Started) => (StatusCode::ACCEPTED, Json(json!({}))).into_response(),
+        Ok(Accepted::Done) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => refused(e),
+    }
+}
+
+fn done(r: Result<(), Refusal>) -> Response {
+    match r {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => refused(e),
+    }
+}
+
+/// A JSON body that doesn't parse (or has unknown fields) is a 400 with a sentence, like
+/// every other refusal of the tunnel's routes.
+fn bad_body() -> Response {
+    refused(Refusal {
+        status: 400,
+        message: "The request body is not what this request takes.".into(),
+    })
+}
+
+async fn tunnel_status(State(st): State<AdminState>) -> Response {
+    Json(st.gw.tunnel().status()).into_response()
+}
+
+async fn tunnel_log(State(st): State<AdminState>) -> Response {
+    Json(json!({ "log": st.gw.tunnel().log() })).into_response()
+}
+
+async fn tunnel_install(State(st): State<AdminState>) -> Response {
+    accepted(st.gw.tunnel().install().await)
+}
+
+async fn tunnel_update(State(st): State<AdminState>) -> Response {
+    accepted(st.gw.tunnel().update().await)
+}
+
+/// The tunnel token is a secret: no `Debug`, never logged.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Register {
+    token: String,
+    hostname: String,
+}
+
+async fn tunnel_register(
+    State(st): State<AdminState>,
+    body: Result<Json<Register>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(r)) = body else {
+        return bad_body();
+    };
+    done(st.gw.tunnel().register(&r.token, &r.hostname).await)
+}
+
+/// The API token is a secret: no `Debug`, never logged, dropped after the exchange.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateTunnel {
+    api_token: String,
+    hostname: String,
+    #[serde(default)]
+    replace_dns: bool,
+}
+
+async fn tunnel_create(
+    State(st): State<AdminState>,
+    body: Result<Json<CreateTunnel>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(c)) = body else {
+        return bad_body();
+    };
+    accepted(
+        st.gw
+            .tunnel()
+            .create(c.api_token, &c.hostname, c.replace_dns)
+            .await,
+    )
+}
+
+async fn tunnel_start(State(st): State<AdminState>) -> Response {
+    done(st.gw.tunnel().start().await)
+}
+
+async fn tunnel_stop(State(st): State<AdminState>) -> Response {
+    done(st.gw.tunnel().stop().await)
+}
+
+async fn tunnel_quick(State(st): State<AdminState>) -> Response {
+    accepted(st.gw.tunnel().quick().await)
+}
+
+async fn tunnel_remove(State(st): State<AdminState>) -> Response {
+    done(st.gw.tunnel().remove().await)
 }
