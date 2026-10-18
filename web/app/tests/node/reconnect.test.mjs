@@ -15,6 +15,8 @@ import {
   cleanEndAction,
   confirmGivesUp,
   downloadStream,
+  megabytes,
+  READ_PARKED_NOTE_MS,
   streamFailureAction,
   streamPath,
   socketSilent,
@@ -483,7 +485,10 @@ test('a clean end that came early (a proxy hid the error) is confirmed, and the 
   assert.deepEqual(d.requests, [0, 6000, 10_000]);
   assert.equal(d.have(), 10_000);
   assert.deepEqual(ends(d.events), ['end@10000']);
-  assert.ok(d.events.some((e) => /a clean end at byte 6000 was not the end of the track/.test(e)));
+  assert.ok(d.events.includes('stream 1: clean end at byte 6000, confirming'), d.events.join('\n'));
+  assert.ok(d.events.includes('stream 1: not the end; continued from byte 6000'));
+  assert.ok(!d.events.includes('stream 1: end confirmed at byte 6000'));
+  assert.ok(d.events.includes('stream 1: end confirmed at byte 10000'));
   assert.equal(d.events.filter((e) => e === 'received').length, 1);
 });
 
@@ -537,4 +542,56 @@ test('bytes are acknowledged as they arrive, across a resume', async () => {
     d.events.filter((e) => e.startsWith('ack ')),
     ['ack 4000', 'ack 8000'],
   );
+});
+
+// Issue #12 diagnostics: the connection log says how each clean end was settled.
+test('a clean end at the true end is logged as confirmed', async () => {
+  const d = fakeDownload(10_000, []);
+  await downloadStream(d.io, 1);
+  assert.ok(d.events.includes('stream 1: clean end at byte 10000, confirming'), d.events.join('\n'));
+  assert.ok(d.events.includes('stream 1: end confirmed at byte 10000'));
+  // An empty stream ends at once: nothing to confirm, nothing logged about it.
+  const empty = fakeDownload(0, []);
+  await downloadStream(empty.io, 1);
+  assert.ok(!empty.events.some((e) => /confirm/.test(e)));
+});
+
+/** A fake download whose core refuses data for the first `checks` back-pressure checks. */
+function parkedDownload(checks, undecoded) {
+  const d = fakeDownload(4000, []);
+  let t = 0;
+  let parked = checks;
+  d.io.now = () => t;
+  d.io.sleep = async (ms) => void (t += ms);
+  if (undecoded) d.io.undecoded = undecoded;
+  d.io.player.wants_stream_data = () => !(parked-- > 0);
+  return d;
+}
+
+// Issue #12 diagnostics: a download held back by a full core buffer is logged once it has
+// been parked for a while (and when it carries on), never at every 50 ms check.
+test('reading parked by a full core buffer is logged once, with what the core holds', async () => {
+  const d = parkedDownload(300, () => 6_900_000); // checks of 50 ms: 15 s
+  await downloadStream(d.io, 1);
+  const notes = d.events.filter((e) => /reading/.test(e));
+  assert.deepEqual(notes, ['stream 1: reading paused, core holds 6.9 MB undecoded', 'stream 1: reading resumed after 15 s']);
+  assert.equal(d.have(), 4000);
+});
+
+test('a short park is not logged; a failing undecoded() never breaks the download', async () => {
+  const d = parkedDownload(Math.floor(READ_PARKED_NOTE_MS / 50) - 2);
+  await downloadStream(d.io, 1);
+  assert.ok(!d.events.some((e) => /reading/.test(e)));
+  const e = parkedDownload(400, () => {
+    throw new Error('no core');
+  });
+  await downloadStream(e.io, 1);
+  assert.ok(e.events.includes('stream 1: reading paused, core holds 0.0 MB undecoded'));
+  assert.equal(e.have(), 4000);
+});
+
+test('megabytes are shown to one decimal place, and junk is 0', () => {
+  assert.equal(megabytes(6_900_000), '6.9 MB');
+  assert.equal(megabytes(0), '0.0 MB');
+  for (const x of [-1, NaN, Infinity, undefined, null, '5']) assert.equal(megabytes(x), '0.0 MB');
 });

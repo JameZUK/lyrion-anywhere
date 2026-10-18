@@ -1,5 +1,5 @@
 // Media-element output basics, against a fake Media Source.
-import { MediaOutput, Timeline } from '$lib/player/media-output';
+import { MediaOutput, Timeline, describeBuffered, describeMediaEvent } from '$lib/player/media-output';
 
 class FakeBuffered {
 	constructor(public spans: [number, number][] = []) {}
@@ -617,4 +617,63 @@ test('a flush forgets a full buffer: the next segment is appended as usual', asy
 	await settle();
 	expect(sb.appended.map((b) => b[0])).toEqual([2]); // the pre-flush segment is gone
 	out.stop();
+});
+
+// Issue #12 diagnostics: each element event that bears on playing is noted with the play head
+// and the buffered audio nearest it; all but the state changes are rate-limited by kind.
+test('element events are noted with the play head and the buffered ranges around it', async () => {
+	const note = vi.fn();
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors, note });
+	await out.start();
+	const sb = FakeSourceBuffer.last!;
+	sb.buffered = new FakeBuffered([
+		[0, 10.04],
+		[30, 40],
+		[60.94, 75.42],
+		[90, 100],
+	]);
+	out.audio.currentTime = 61.23;
+	note.mockClear();
+	for (const type of ['play', 'pause', 'playing', 'waiting', 'stalled', 'seeking', 'seeked', 'ended', 'error']) out.audio.dispatchEvent(new Event(type));
+	const lines = note.mock.calls.map(([m, kind]) => [m, kind]);
+	const where = 'at 61.2 s, buffered 30.0–40.0, 60.9–75.4 s';
+	for (const type of ['waiting', 'stalled', 'seeking', 'seeked', 'error']) expect(lines).toContainEqual([`media: ${type} ${where}`, `media:${type}`]);
+	// State changes carry no kind: never left out.
+	for (const type of ['play', 'pause', 'playing', 'ended']) expect(lines).toContainEqual([`media: ${type} ${where}`, undefined]);
+	// Nothing after stop.
+	out.stop();
+	note.mockClear();
+	out.audio.dispatchEvent(new Event('waiting'));
+	expect(note).not.toHaveBeenCalled();
+});
+
+test('the buffered ranges: the two nearest the play head, in order, and junk is harmless', () => {
+	const b = (spans: [number, number][]) => new FakeBuffered(spans);
+	expect(describeBuffered(b([]), 5)).toBe('nothing buffered');
+	expect(describeBuffered(null, 5)).toBe('nothing buffered');
+	expect(describeBuffered(b([[0, 12.06]]), 5)).toBe('buffered 0.0–12.1 s');
+	const four = b([
+		[0, 1],
+		[2, 3],
+		[10, 20],
+		[50, 60],
+	]);
+	expect(describeBuffered(four, 15)).toBe('buffered 2.0–3.0, 10.0–20.0 s');
+	expect(describeBuffered(four, 45)).toBe('buffered 10.0–20.0, 50.0–60.0 s');
+	const junk = b([
+		[NaN, 1],
+		[5, Infinity],
+		[3, 2],
+		[7, 8],
+	]);
+	expect(describeBuffered(junk, 0)).toBe('buffered 7.0–8.0 s');
+	const throwing = {
+		length: 2,
+		start: () => {
+			throw new DOMException('gone', 'InvalidStateError');
+		},
+		end: () => 0,
+	};
+	expect(describeBuffered(throwing, 0)).toBe('nothing buffered');
+	expect(describeMediaEvent('waiting', NaN, b([[0, 1]]))).toBe('media: waiting at 0.0 s, buffered 0.0–1.0 s');
 });

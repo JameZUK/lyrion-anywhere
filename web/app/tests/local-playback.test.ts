@@ -64,7 +64,7 @@ const stored = (id: number, over: Partial<StoredTrack> = {}): StoredTrack => ({
 
 function setup(opts: { downloads?: number[]; status?: PlayerStatus; lms?: (c: Command) => unknown } = {}) {
 	const audio = new FakeAudio();
-	const dev = { output: 'Playing', held: false, received: false, track: 1 as number | null, fresh: false, msgs: [] as unknown[] };
+	const dev = { output: 'Playing', held: false, received: false, track: 1 as number | null, fresh: false, msgs: [] as unknown[], notes: [] as string[] };
 	let now: PlayerStatus | null = opts.status ?? { mode: 'play', playlist_cur_index: 1, playlist_tracks: 4, time: 30, playlist_loop: [row(11)] };
 	let elapsed = Number(now.time ?? 0);
 	const sent: { player: string; c: Command }[] = [];
@@ -82,6 +82,7 @@ function setup(opts: { downloads?: number[]; status?: PlayerStatus; lms?: (c: Co
 				if ('hold' in m) dev.held = true;
 				else dev.held = false;
 			},
+			note: (m) => dev.notes.push(m),
 		},
 		status: () => now,
 		apply: (p) => {
@@ -258,6 +259,9 @@ describe('back in reach', () => {
 		await flush();
 		await flush();
 		expect(t.sent.map((s) => s.c).filter((c) => c[0] !== 'status')).toEqual([['playlist', 'index', 1], ['time', 30], ['pause', 1]]);
+		// Issue #12 diagnostics: each command sent by itself is in the connection log.
+		const why = '(handing back to LMS after playing on without it)';
+		expect(t.dev.notes).toEqual([`page: asked LMS to play queue entry 1 ${why}`, `page: asked LMS to seek to 30 s ${why}`, `page: asked LMS to pause ${why}`]);
 	});
 
 	test('someone changed the queue meanwhile: nothing is sent, LMS is followed', async () => {

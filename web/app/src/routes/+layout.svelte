@@ -8,6 +8,7 @@
 	import { documentTitle, pageTitle } from '$lib/title.svelte';
 	import { api, app, session } from '$lib/state/app.svelte';
 	import { device } from '$lib/player/device.svelte';
+	import { describePageCommand } from '$lib/player/diagnostics';
 	import { appearance } from '$lib/theme/appearance.svelte';
 	import { install } from '$lib/pwa/install.svelte';
 	import { appUpdate } from '$lib/pwa/update.svelte';
@@ -192,6 +193,7 @@
 			return; // the user can still press play
 		}
 		for (const c of commands) {
+			device.note(describePageCommand(c, 'resuming after the page reloaded'));
 			try {
 				await api.rpc(mac, c);
 			} catch {

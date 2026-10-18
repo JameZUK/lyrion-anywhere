@@ -19,6 +19,7 @@ const { VisualTap } = await import(`./visual.js${VQ}`);
 const { planTrim } = await import(`./trim.js${VQ}`);
 const { LocalHold, effectiveOutput, parseLocal } = await import(`./local.js${VQ}`);
 const { MediaCorrections } = await import(`./media-sync.js${VQ}`);
+const { Persisting, describeDiag, describeDrained, describeNotConsuming, describeOutputChange, outputCause, outputName, secs } = await import(`./diag.js${VQ}`);
 
 const TICK_MS = 20;
 // PCM queued in the worklet ahead of playback. Small, so pause/stop feel immediate.
@@ -113,6 +114,21 @@ const now = () => performance.now();
 // Absolute time (ms), comparable with the page's: each has its own performance.now().
 const absNow = () => performance.timeOrigin + performance.now();
 const log = (msg) => postMessage({ log: msg });
+// A line the page logs at most once per few seconds for each `kind` (see LogLimiter).
+const logAs = (msg, kind) => postMessage({ log: msg, kind });
+
+// Diagnostics (issue #12): the last `strm` from LMS ({ command, at }), the output state last
+// logged, and whether the media element has stopped taking audio.
+let lastStrm = null;
+let loggedOutput = '';
+// Media mode: when the element last reported frames played (or the output last began playing).
+let lastFramesAt = 0;
+// The element is playing with a full lead, but reports nothing played, for this long (ms).
+const NOT_CONSUMING_MS = 5000;
+const notConsuming = new Persisting(0);
+let notConsumingFrom = 0;
+// The decoded audio the core holds (ms), from its status.
+let coreBufferedMs = 0;
 
 function seekMark(stage) {
   const done = seekTimer.mark(stage, now());
@@ -149,6 +165,8 @@ function attachSink(port) {
 function flushOutput() {
   pulled = played = 0;
   visual.flush();
+  lastFramesAt = now();
+  notConsuming.reset();
   epoch++;
   presentation.dropRuns();
   timedStart = false;
@@ -229,7 +247,10 @@ onmessage = async (e) => {
     // position. A report of 0 frames still says where it is, and when.
     const frames = Number.isInteger(msg.frames) && msg.frames >= 0 ? msg.frames : 0;
     if (player && !mediaWaiting) {
-      if (frames > 0) seekMark('audible');
+      if (frames > 0) {
+        seekMark('audible');
+        lastFramesAt = now();
+      }
       played += frames;
       const at = Number.isFinite(msg.at) ? Math.min(now(), Math.max(0, msg.at - performance.timeOrigin)) : now();
       // Less what a sync pause has already told the core of (see media-sync.js).
@@ -242,13 +263,18 @@ onmessage = async (e) => {
     if (player && segmenter && !mediaWaiting && lastOutput === 'Playing') {
       if (segmenter.pending_frames() > 0) {
         // Something is still held back (a partial frame): send it; the element plays on.
+        const pending = segmenter.pending_frames();
         postSegment(segmenter.flush());
+        logAs(describeDrained('flushed', pending), 'media:drained');
       } else {
         // Everything pulled has been played. The core caps this at what was pulled, so it
         // can't over-count; the worker's own estimate catches up too.
         player.played(Number.MAX_SAFE_INTEGER);
         played = pulled;
+        logAs(describeDrained('played-out'), 'media:drained');
       }
+    } else if (player && segmenter) {
+      logAs(describeDrained('ignored', mediaWaiting ? 'a flush is under way' : `output ${outputName(lastOutput)}`), 'media:drained');
     }
   } else if (msg.cmd === 'media-time') {
     // Media mode, after a flush: continue the timeline where the element now is.
@@ -360,6 +386,10 @@ function onGreeting(g) {
     // So are LMS's sync corrections: a timed start, pauses and skips.
     player.set_output_corrections(true);
     player.set_quick_start(QUICK_START_MS);
+    // Each strm from LMS and STAT sent, for the connection log.
+    player.set_diagnostics(true);
+    lastStrm = null;
+    loggedOutput = '';
     flushWatch.reset();
     lastVolume = null;
     seekTimer.cancel();
@@ -477,6 +507,24 @@ function runActions() {
     }
     else if (a.type === 'close') closeStream();
   }
+  noteDiagnostics();
+}
+
+/** Log each strm from LMS and STAT sent since the last call (see diag.js). */
+function noteDiagnostics() {
+  for (const e of player.take_diagnostics()) {
+    if (e.type === 'strm') lastStrm = { command: e.command, at: now() };
+    const d = describeDiag(e);
+    if (d) logAs(d.line, d.kind);
+  }
+}
+
+/** Log a change of the output state (state changes are never rate-limited). */
+function noteOutput(output, raw) {
+  const name = outputName(output);
+  if (name === loggedOutput) return;
+  if (loggedOutput) log(describeOutputChange(loggedOutput, name, outputCause(loggedOutput, name, raw, lastStrm, now())));
+  loggedOutput = name;
 }
 
 function closeStream() {
@@ -511,6 +559,8 @@ function fetchStream(id, n) {
       runActions,
       renewToken,
       received: () => (streamReceived = true),
+      // What the core holds of the stream, not yet decoded (only asked for the log).
+      undecoded: () => JSON.parse(player.status_json()).input_bytes,
       maxTries: STREAM_RETRIES,
       ackEvery: ACK_EVERY,
     },
@@ -545,7 +595,9 @@ function tick() {
   if (status.output === 'Playing') seekMark('started');
   // Held here: the outputs act as if paused ('Held'); the core plays on, unheard.
   const output = effectiveOutput(status.output, localHold.update(status.output, now()));
+  noteOutput(output, status.output);
   if (outputMode === 'media') {
+    coreBufferedMs = status.buffered_ms;
     mediaTick(output);
   } else {
     holdWorklet(output);
@@ -637,7 +689,10 @@ function mediaTick(output) {
   const paused = output.startsWith('Paused') || output === 'Loaded' || output === 'Held';
   const wasPaused = String(lastOutput).startsWith('Paused') || lastOutput === 'Loaded' || lastOutput === 'Held';
   if (paused && !wasPaused) postMessage({ media: { pause: true } });
-  if (output === 'Playing' && lastOutput !== 'Playing') postMessage({ media: { play: true } });
+  if (output === 'Playing' && lastOutput !== 'Playing') {
+    postMessage({ media: { play: true } });
+    lastFramesAt = now(); // the element is only now asked to play
+  }
   if (mediaWaiting) return;
 
   const rate = player.output_rate();
@@ -682,6 +737,29 @@ function mediaTick(output) {
     const n = segmenter.pending_frames();
     postSegment(segmenter.flush());
     log(`media: sent the last ${n} frames`);
+  }
+  watchConsuming(output, rate);
+}
+
+/**
+ * Media mode: the output is playing and the element holds all the lead it may, but has
+ * reported nothing played for {@link NOT_CONSUMING_MS}: say so once (and once when it ends).
+ * The worker then waits for it, as it should; the log shows the stall was the element's.
+ */
+function watchConsuming(output, rate) {
+  const lead = (pulled - played) / rate;
+  const full = lead >= MEDIA_AHEAD_SECS - 0.5;
+  const t = now();
+  const change = notConsuming.update(output === 'Playing' && full && t - lastFramesAt >= NOT_CONSUMING_MS, t);
+  if (change === 'began') {
+    notConsumingFrom = lastFramesAt;
+    log(describeNotConsuming(lead, (Number(coreBufferedMs) || 0) / 1000));
+  } else if (change === 'ended') {
+    log(
+      lastFramesAt > notConsumingFrom
+        ? `media: element playing again after ${secs((t - notConsumingFrom) / 1000)} s`
+        : `media: no longer waiting for the element (${outputName(output)})`,
+    );
   }
 }
 

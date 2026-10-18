@@ -1,4 +1,4 @@
-import { Reporter, buildReport, diagnosticsSender } from '$lib/player/diagnostics';
+import { LOG_LINES, LogLimiter, Reporter, buildReport, describeCommand, describePageCommand, diagnosticsSender, recentLog } from '$lib/player/diagnostics';
 import { SessionManager } from '$lib/api/session';
 import { ApiError } from '$lib/api/http';
 
@@ -19,9 +19,78 @@ test('reports carry the playback facts and a bounded log', () => {
 	const r = buildReport(input, new Date('2026-10-10T16:00:00Z'));
 	expect(r.playback.planned.mime).toBe('audio/mp4; codecs="fLaC"');
 	expect(r.userAgent).toBe('UA');
-	expect(r.log).toHaveLength(60);
+	expect(r.log).toHaveLength(LOG_LINES);
+	expect(r.log[0]).toBe('line 0'); // the newest first
 	expect(r.at).toBe('2026-10-10T16:00:00.000Z');
 	expect(JSON.stringify(r).length).toBeLessThan(32 * 1024);
+});
+
+// The gateway refuses a report over 32 KiB: a log of long lines is cut by size, not only count.
+test('a log of long lines is cut to fit, newest first', () => {
+	const long = Array.from({ length: 200 }, (_, i) => `${i} ${'é'.repeat(300)}`);
+	const r = buildReport({ ...input, log: long });
+	expect(r.log.length).toBeGreaterThan(10);
+	expect(r.log.length).toBeLessThan(LOG_LINES);
+	expect(r.log[0]).toBe(long[0]);
+	expect(new TextEncoder().encode(JSON.stringify(r)).length).toBeLessThan(32 * 1024);
+	expect(recentLog([])).toEqual([]);
+});
+
+describe('LogLimiter', () => {
+	test('a kind is logged at most once per interval, then says how many were left out', () => {
+		const l = new LogLimiter(5_000);
+		expect(l.pass('media: waiting at 1.0 s', 'media:waiting', 0)).toBe('media: waiting at 1.0 s');
+		expect(l.pass('media: waiting at 2.0 s', 'media:waiting', 1_000)).toBeNull();
+		expect(l.pass('media: waiting at 3.0 s', 'media:waiting', 4_999)).toBeNull();
+		// Another kind is not held back by it.
+		expect(l.pass('media: stalled at 3.0 s', 'media:stalled', 4_999)).toBe('media: stalled at 3.0 s');
+		expect(l.pass('media: waiting at 9.0 s', 'media:waiting', 5_000)).toBe('media: waiting at 9.0 s (and 2 more like it)');
+		expect(l.pass('media: waiting at 20.0 s', 'media:waiting', 20_000)).toBe('media: waiting at 20.0 s');
+	});
+
+	test('lines without a kind always go through', () => {
+		const l = new LogLimiter(5_000);
+		for (let i = 0; i < 5; i++) expect(l.pass('player: Playing → Paused', undefined, i)).toBe('player: Playing → Paused');
+		expect(l.pass('x', '', 0)).toBe('x');
+	});
+
+	test('a clock that goes backwards never silences a kind for good', () => {
+		const l = new LogLimiter(5_000);
+		expect(l.pass('a', 'k', 10_000)).toBe('a');
+		expect(l.pass('b', 'k', 1_000)).toBe('b');
+	});
+
+	test('many kinds are remembered within a bound, and still limited', () => {
+		const l = new LogLimiter(5_000);
+		for (let i = 0; i < 1000; i++) l.pass(`line ${i}`, `kind ${i}`, 0);
+		expect(l.pass('again', 'kind 999', 1)).toBeNull();
+		expect(l.pass('again', 'kind 0', 1)).toBe('again'); // forgotten: logged again, harmlessly
+	});
+});
+
+describe('page commands', () => {
+	test('each command the page sends by itself is described in a few words', () => {
+		expect(describePageCommand(['pause', 1], 'the system paused the media element')).toBe('page: asked LMS to pause (the system paused the media element)');
+		expect(describeCommand(['pause', 0])).toBe('resume');
+		expect(describeCommand(['pause'])).toBe('pause or resume');
+		expect(describeCommand(['play'])).toBe('play');
+		expect(describeCommand(['stop'])).toBe('stop');
+		expect(describeCommand(['time', 61.25])).toBe('seek to 61.3 s');
+		expect(describeCommand(['time', '42'])).toBe('seek to 42 s');
+		expect(describeCommand(['playlist', 'index', 3])).toBe('play queue entry 3');
+		expect(describeCommand(['mixer', 'volume', 100])).toBe('set the volume to 100%');
+		expect(describeCommand(['status'])).toBe("run 'status'");
+	});
+
+	test('free text in a command never reaches the log', () => {
+		for (const c of [['playlist', 'play', '/srv/music/a.flac'], ['time', 'abc'], ['mixer', 'volume', '+5; rm'], ['Search Me'], [42], []]) {
+			const d = describeCommand(c as (string | number)[]);
+			expect(d).not.toMatch(/srv|music|rm|Search|abc|;/);
+		}
+		expect(describeCommand(['playlist', 'play', '/srv/music/a.flac'])).toBe("run 'playlist'");
+		expect(describeCommand(['time', 'abc'])).toBe("run 'time'");
+		expect(describeCommand([42])).toBe('run a command');
+	});
 });
 
 test('reports are batched, with urgent ones sent at once', async () => {

@@ -142,6 +142,41 @@ fn strm_arg(command: u8, arg: u32) -> Vec<u8> {
     encode_server_frame(*b"strm", &s.encode_payload())
 }
 
+/// The connection log's view of the protocol: each `strm` (its letters and threshold only,
+/// never the request) and each STAT, but nothing until the worker asks for them.
+#[wasm_bindgen_test]
+fn diagnostics_reach_the_worker_without_the_request() {
+    let mut p = WasmPlayer::new("02:00:00:00:00:01", "Web", "flc").unwrap();
+    p.on_control(&strm_arg(b'q', 0), 1.0).unwrap();
+    assert_eq!(p.take_diagnostics().length(), 0, "off by default");
+    p.set_diagnostics(true);
+    p.on_control(&strm_s(b'f'), 2.0).unwrap();
+    p.on_control(&strm_arg(b't', 5), 3.0).unwrap();
+    p.on_control(&strm_arg(b'p', 0), 4.0).unwrap();
+    let d = p.take_diagnostics();
+    let first = d.get(0);
+    assert_eq!(get(&first, "type").as_string().unwrap(), "strm");
+    assert_eq!(get(&first, "command").as_string().unwrap(), "s");
+    assert_eq!(get(&first, "autostart").as_string().unwrap(), "1");
+    assert_eq!(get(&first, "format").as_string().unwrap(), "f");
+    assert_eq!(get(&first, "threshold").as_f64().unwrap(), 1.0);
+    let keys = js_sys::Object::keys(&js_sys::Object::from(first));
+    assert_eq!(keys.length(), 5, "no other fields");
+    let all: Vec<String> = (0..d.length())
+        .map(|i| {
+            let e = d.get(i);
+            let t = get(&e, "type").as_string().unwrap();
+            if t == "strm" {
+                format!("strm {}", get(&e, "command").as_string().unwrap())
+            } else {
+                get(&e, "event").as_string().unwrap()
+            }
+        })
+        .collect();
+    assert_eq!(all, vec!["strm s", "STMc", "strm p", "STMp"]);
+    assert_eq!(p.take_diagnostics().length(), 0);
+}
+
 /// Sync corrections reach the worker as plain objects, and a timed start's time is on the
 /// worker's own clock.
 #[wasm_bindgen_test]

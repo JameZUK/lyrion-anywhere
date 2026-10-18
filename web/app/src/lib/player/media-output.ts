@@ -12,8 +12,11 @@ export interface MediaOutputOptions {
 	source: 'managed' | 'classic';
 	/** MIME type the browser accepted (spelling differs between browsers). */
 	mime?: string;
-	/** Called with short status notes for the connection log. */
-	note?: (msg: string) => void;
+	/**
+	 * Called with short status notes for the connection log; a note with a `kind` may be left
+	 * out if one of that kind was logged moments ago (see LogLimiter).
+	 */
+	note?: (msg: string, kind?: string) => void;
 	/** Called once if the element can't play the stream (the caller falls back). */
 	onFail?: (why: string) => void;
 	/**
@@ -41,6 +44,45 @@ const MIN_ROOM = 0.5;
 /** An aborted play() is tried again at most this often before the user is asked to tap. */
 const MAX_RETRIES = 8;
 
+/** The element events noted in the connection log, with the play head and the audio around it. */
+export const NOTED_EVENTS = ['play', 'pause', 'playing', 'waiting', 'stalled', 'seeking', 'seeked', 'ended', 'error'] as const;
+/** Those that change whether it plays: always noted. The others are rate-limited by kind. */
+const STATE_EVENTS: ReadonlySet<string> = new Set(['play', 'pause', 'playing', 'ended']);
+
+interface Ranges {
+	readonly length: number;
+	start(i: number): number;
+	end(i: number): number;
+}
+
+const tenths = (s: number) => (Number.isFinite(s) ? Math.max(0, s) : 0).toFixed(1);
+
+/**
+ * The buffered audio around the play head `t`, for the log: at most the two ranges nearest
+ * it, in order, e.g. `buffered 60.9–75.4 s` (seconds to 0.1), or `nothing buffered`.
+ */
+export function describeBuffered(b: Ranges | null | undefined, t: number): string {
+	const spans: [number, number][] = [];
+	try {
+		const n = Math.min(b?.length ?? 0, 1000);
+		for (let i = 0; i < n; i++) {
+			const s = b!.start(i);
+			const e = b!.end(i);
+			if (Number.isFinite(s) && Number.isFinite(e) && e >= s) spans.push([s, e]);
+		}
+	} catch {
+		/* a buffer gone meanwhile: nothing to say */
+	}
+	const away = ([s, e]: [number, number]) => (t < s ? s - t : t > e ? t - e : 0);
+	const near = spans.sort((x, y) => away(x) - away(y)).slice(0, 2).sort((x, y) => x[0] - y[0]);
+	return near.length ? `buffered ${near.map(([s, e]) => `${tenths(s)}–${tenths(e)}`).join(', ')} s` : 'nothing buffered';
+}
+
+/** `media: waiting at 61.2 s, buffered 60.9–75.4 s`. */
+export function describeMediaEvent(type: string, t: number, b: Ranges | null | undefined): string {
+	return `media: ${type} at ${tenths(t)} s, ${describeBuffered(b, t)}`;
+}
+
 export class MediaOutput {
 	readonly audio: HTMLAudioElement;
 	#ms: MediaSource | null = null;
@@ -49,7 +91,7 @@ export class MediaOutput {
 	/** Segments to append and cuts to make ({@link trimFrom}), in order. */
 	#queue: (Uint8Array | { removeFrom: number })[] = [];
 	#closed = false;
-	#note: (m: string) => void;
+	#note: (m: string, kind?: string) => void;
 	#failed = false;
 	/**
 	 * The browser refused an append for want of space: the segment waits at the head of the
@@ -143,6 +185,19 @@ export class MediaOutput {
 			this.#fail(`media error ${a.error?.code ?? ''}`);
 		});
 		ms.addEventListener('sourceclose', () => this.#note('media source closed'));
+		// Each event the element fires that bears on playing, with where it is (issue #12).
+		for (const type of NOTED_EVENTS) {
+			a.addEventListener(type, () => {
+				if (this.#closed) return;
+				let ranges: Ranges | null = null;
+				try {
+					ranges = this.#sb?.buffered ?? a.buffered;
+				} catch {
+					/* a source buffer removed meanwhile */
+				}
+				this.#note(describeMediaEvent(type, a.currentTime, ranges), STATE_EVENTS.has(type) ? undefined : `media:${type}`);
+			});
+		}
 		a.addEventListener('playing', () => (this.#pausedAt = null));
 		a.addEventListener('pause', () => {
 			this.#pausedAt ??= a.currentTime;

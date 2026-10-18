@@ -5,6 +5,7 @@
 import type { Capabilities } from './capabilities';
 import type { Environment, ModeChoice, ModePreference } from './mode';
 import { ApiError, CLIENT_HEADER, bearer } from '$lib/api/http';
+import type { Command } from '$lib/api/rpc';
 
 /**
  * Sends a report to the gateway through `authed`: a refused (expired) token surfaces as an
@@ -39,7 +40,24 @@ export interface ReportInput {
 	selftest?: unknown;
 }
 
-const LOG_LINES = 60;
+/**
+ * The newest log lines a report carries, and at most this many bytes of them: the gateway
+ * takes a report of up to 32 KiB, and the rest of it is small.
+ */
+export const LOG_LINES = 120;
+export const LOG_BYTES = 16 * 1024;
+
+/** The newest lines (first in `log`) that fit {@link LOG_LINES} and {@link LOG_BYTES}. */
+export function recentLog(log: string[]): string[] {
+	const out: string[] = [];
+	let bytes = 0;
+	for (const line of log.slice(0, LOG_LINES)) {
+		bytes += new TextEncoder().encode(line).length + 3; // quotes and comma in the JSON
+		if (bytes > LOG_BYTES) break;
+		out.push(line);
+	}
+	return out;
+}
 
 export function buildReport(i: ReportInput, now = new Date()) {
 	return {
@@ -58,7 +76,7 @@ export function buildReport(i: ReportInput, now = new Date()) {
 		device: i.device,
 		page: i.page,
 		selftest: i.selftest ?? null,
-		log: i.log.slice(0, LOG_LINES),
+		log: recentLog(i.log),
 	};
 }
 
@@ -119,4 +137,56 @@ export class Reporter {
 			if (this.#lastContent === content) this.#lastContent = before;
 		}
 	}
+}
+
+/** No kind of rate-limited log line is logged more often than this (ms). */
+export const LOG_KIND_EVERY_MS = 5_000;
+/** Kinds remembered at once; the oldest is forgotten first. */
+const LOG_KINDS = 64;
+
+/**
+ * Keeps the connection log readable (issue #12 diagnostics): a line of a `kind` (such as
+ * 'media:waiting' or 'stat:STMo') is logged at most once per {@link LOG_KIND_EVERY_MS}; the
+ * next one logged says how many were left out meanwhile. Lines without a kind (state
+ * changes, and everything logged before kinds existed) always go through.
+ */
+export class LogLimiter {
+	#kinds = new Map<string, { at: number; skipped: number }>();
+
+	constructor(private every = LOG_KIND_EVERY_MS) {}
+
+	/** The line to log for `msg` at `now` (ms), or null to leave it out. */
+	pass(msg: string, kind: string | undefined, now: number): string | null {
+		if (!kind) return msg;
+		const seen = this.#kinds.get(kind);
+		if (seen && now - seen.at < this.every && now >= seen.at) {
+			seen.skipped++;
+			return null;
+		}
+		const skipped = seen?.skipped ?? 0;
+		this.#kinds.delete(kind);
+		this.#kinds.set(kind, { at: now, skipped: 0 });
+		if (this.#kinds.size > LOG_KINDS) this.#kinds.delete(this.#kinds.keys().next().value!);
+		return skipped ? `${msg} (and ${skipped} more like it)` : msg;
+	}
+}
+
+/** What a command the page sends LMS asks for, in a few words (never its free text). */
+export function describeCommand(c: Command): string {
+	const [a, b, d] = c;
+	const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 10) / 10 : typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : null);
+	if (a === 'pause') return b === 1 || b === '1' ? 'pause' : b === 0 || b === '0' ? 'resume' : 'pause or resume';
+	if (a === 'play' || a === 'stop') return a;
+	if (a === 'time' && num(b) !== null) return `seek to ${num(b)} s`;
+	if (a === 'playlist' && b === 'index' && num(d) !== null) return `play queue entry ${num(d)}`;
+	if (a === 'mixer' && b === 'volume' && num(d) !== null) return `set the volume to ${num(d)}%`;
+	return typeof a === 'string' && /^[a-z]{1,20}$/.test(a) ? `run '${a}'` : 'run a command';
+}
+
+/**
+ * A command the page sends LMS on its own (not a tap on a control), for the connection log:
+ * `page: asked LMS to pause (the system paused the media element)`.
+ */
+export function describePageCommand(c: Command, why: string): string {
+	return `page: asked LMS to ${describeCommand(c)} (${why})`;
 }

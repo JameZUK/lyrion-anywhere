@@ -347,6 +347,17 @@ export function streamPath(session, n, offset) {
 }
 
 /**
+ * Reading a stream parked this long (ms) because the core's buffer is full is logged once
+ * (issue #12: it shows the output, not the network, is what holds the stream up).
+ */
+export const READ_PARKED_NOTE_MS = 10_000;
+
+/** Bytes as megabytes to one decimal place. */
+export function megabytes(bytes) {
+  return `${(Number.isFinite(bytes) && bytes > 0 ? bytes / 1e6 : 0).toFixed(1)} MB`;
+}
+
+/**
  * Download stream `n` into the core (docs/PROTOCOL.md "Streams"). A download that breaks is
  * fetched again from the byte offset the core has reached (`?offset=`), never taken as the
  * end of the track; a 401 renews the token once; a clean end is confirmed first (see
@@ -356,7 +367,8 @@ export function streamPath(session, n, offset) {
  * `io` is the worker's side: `player` (the core), `current()` (still the stream wanted),
  * `fetch(path, init)`, `session()`, `token()`, `setController(c)`, `sleep(ms)`, `now()`,
  * `log(msg)`, `mark(stage)` (seek timing), `ack(n, bytes)`, `runActions()`, `renewToken()`,
- * `received()` (the stream has come to its end), `maxTries` and `ackEvery`.
+ * `received()` (the stream has come to its end), `maxTries` and `ackEvery`; optionally
+ * `undecoded()`, the bytes the core holds not yet decoded (for the log only).
  */
 export async function downloadStream(io, n) {
   const { player } = io;
@@ -400,7 +412,23 @@ export async function downloadStream(io, n) {
       const reader = resp.body.getReader();
       for (;;) {
         // Back-pressure: stop reading while the core's input buffer is full.
-        while (io.current() && !player.wants_stream_data()) await io.sleep(50);
+        let parkedAt = -1;
+        let parkNoted = false;
+        while (io.current() && !player.wants_stream_data()) {
+          if (parkedAt < 0) parkedAt = io.now();
+          if (!parkNoted && io.now() - parkedAt >= READ_PARKED_NOTE_MS) {
+            parkNoted = true;
+            let held = 0;
+            try {
+              held = io.undecoded?.() ?? 0;
+            } catch {
+              /* for the log only */
+            }
+            io.log(`stream ${n}: reading paused, core holds ${megabytes(held)} undecoded`);
+          }
+          await io.sleep(50);
+        }
+        if (parkNoted && io.current()) io.log(`stream ${n}: reading resumed after ${Math.round((io.now() - parkedAt) / 1000)} s`);
         if (!io.current()) return;
         const { done, value } = await reader.read();
         if (!io.current()) return;
@@ -409,15 +437,18 @@ export async function downloadStream(io, n) {
             // Maybe not the end: ask again from here (see cleanEndAction).
             confirming = true;
             tries = -1; // the next request is the first of its own
+            const at = player.open_stream();
+            io.log(`stream ${n}: clean end at byte ${at && at[0] === n ? at[1] : offset + got}, confirming`);
             break;
           }
+          if (confirming) io.log(`stream ${n}: end confirmed at byte ${offset}`);
           ended();
           return;
         }
         if (!value || !value.length) continue;
         if (confirming) {
           confirming = false;
-          io.log(`stream ${n}: a clean end at byte ${offset} was not the end of the track; carrying on`);
+          io.log(`stream ${n}: not the end; continued from byte ${offset}`);
         }
         got += value.length;
         tries = 0;

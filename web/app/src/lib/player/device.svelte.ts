@@ -8,7 +8,7 @@ import { canPlayHere, detect } from './capabilities';
 import { MediaOutput, Timeline } from './media-output';
 import { PlayheadSmoother, outputClock } from './output-clock';
 import { MEDIA_TYPE, MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
-import { Reporter, buildReport, diagnosticsSender } from './diagnostics';
+import { LogLimiter, Reporter, buildReport, describePageCommand, diagnosticsSender } from './diagnostics';
 import { fadeGain } from '$lib/lms/sleep';
 import { mayResumeMedia } from './local-plan';
 import { needsGesture, rememberAutoplay } from './autoplay';
@@ -167,9 +167,19 @@ class DevicePlayer {
 	/** AudioContexts are built one at a time, in order. */
 	#audioQueue: Promise<void> = Promise.resolve();
 
-	#note(msg: string) {
-		this.log = this.#history.add(msg);
+	/** Lines of a kind logged moments ago are left out (see LogLimiter). */
+	#limiter = new LogLimiter();
+
+	#note(msg: string, kind?: string) {
+		const line = this.#limiter.pass(msg, kind, performance.now());
+		if (line === null) return;
+		this.log = this.#history.add(line);
 		if (session.current) this.#reporter.schedule();
+	}
+
+	/** A line for this device's connection log, from elsewhere in the app (e.g. a command it sent LMS by itself). */
+	note(msg: string) {
+		this.#note(msg);
 	}
 
 	#diagnostics() {
@@ -379,6 +389,7 @@ class DevicePlayer {
 		const now = performance.now();
 		if (now - this.#heldFullAt < HOLD_FULL_EVERY_MS) return;
 		this.#heldFullAt = now;
+		this.#note(describePageCommand(['mixer', 'volume', 100], 'device buttons only: LMS is held at full'), 'page:volume');
 		api.rpc(this.mac, ['mixer', 'volume', 100]).catch((e: Error) => this.#note(`could not set LMS volume to 100%: ${e.message}`));
 	}
 
@@ -518,7 +529,7 @@ class DevicePlayer {
 				const out = new MediaOutput({
 					source: choice.source,
 					mime: choice.mime ?? undefined,
-					note: (m) => this.#note(m),
+					note: (m, kind) => this.#note(m, kind),
 					onFail: (why) => void this.#mediaFailed(why),
 					deferPlay: defer,
 				});
@@ -539,7 +550,7 @@ class DevicePlayer {
 					// too, so every controller shows it paused and Play resumes it, rather than
 					// LMS carrying on as if it were playing while nothing is heard.
 					if (!this.mac || this.detail.output !== 'Playing') return;
-					this.#note('pausing the player: the system paused playback');
+					this.#note(describePageCommand(['pause', 1], 'the system paused the media element'));
 					api.rpc(this.mac, ['pause', 1]).catch((e: Error) => this.#note(`could not pause the player: ${e.message}`));
 				};
 				out.onDrained = () => {
@@ -924,7 +935,7 @@ class DevicePlayer {
 			for (const cb of this.#visualWatchers) cb(m.visual);
 			return;
 		}
-		if (typeof m.log === 'string') this.#note(m.log);
+		if (typeof m.log === 'string') this.#note(m.log, typeof m.kind === 'string' ? m.kind : undefined);
 		if (Array.isArray(m.volume)) {
 			this.#lmsGains = cleanGains(m.volume);
 			this.gain = Math.max(...this.#lmsGains);
