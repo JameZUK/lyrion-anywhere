@@ -40,3 +40,14 @@
 .aw-qr svg { display: block; width: 240px; height: 240px; max-width: 100%; }
 .aw-code { font-family: monospace; font-size: 2em; font-weight: bold; letter-spacing: 0.08em; margin: 0.3em 0; }
 .aw-expired { text-decoration: line-through; opacity: 0.5; }
+
+/* Cloudflare Tunnel */
+.aw-tunnel-state { font-weight: bold; max-width: 48em; }
+.aw-tunnel-form { max-width: 40em; }
+.aw-tunnel-form label { display: block; margin: 0.5em 0 0.2em; }
+.aw-tunnel-form .aw-check { display: block; margin: 0.6em 0; }
+.aw-tunnel-form .aw-check label { display: inline; margin: 0; }
+.aw-tunnel-form textarea, .aw-tunnel-form input[type="text"], .aw-tunnel-form input[type="password"] { display: block; width: 100%; max-width: 36em; box-sizing: border-box; font-family: monospace; }
+#aw-tunnel-scopes { margin: 0.2em 0 0.5em; padding-left: 1.5em; }
+#aw-tunnel-log { max-height: 20em; }
+#aw-tunnel-quick-link { font-family: monospace; overflow-wrap: anywhere; }

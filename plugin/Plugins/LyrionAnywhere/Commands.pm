@@ -16,6 +16,9 @@ package Plugins::LyrionAnywhere::Commands;
 # token (review 2026-10-15). The gateway never forwards `anywhere` commands from the
 # internet (it is reserved in its allow-list).
 #
+# The `anywhere tunnel_*` commands (the built-in Cloudflare Tunnel) need the token too,
+# `tunnel_status` and `tunnel_log` included: they return the public hostname and log lines.
+#
 # `anywhere play_record` (Plays.pm) is the one command the gateway itself sends: it is
 # signed with the admin secret instead of carrying the settings page's token.
 
@@ -35,8 +38,11 @@ use Plugins::LyrionAnywhere::Plays;
 my $log = logger('plugin.lyrionanywhere');
 
 # Arguments passed on to the admin API. `csrf` is deliberately absent: it is checked here
-# and never sent to the gateway.
-my @ARG_NAMES = qw(username password role disabled player id limit days commands enabled formats name);
+# and never sent to the gateway. `password`, `token` (a Cloudflare tunnel token) and
+# `api_token` (a Cloudflare API token) are secrets: nothing here logs the arguments or puts
+# them in a result, and Admin::redact() masks them out of any error message.
+my @ARG_NAMES = qw(username password role disabled player id limit days commands enabled formats name
+	token api_token hostname replace_dns);
 
 # --- CSRF token -----------------------------------------------------------------------
 
@@ -158,7 +164,7 @@ sub admin {
 	eval { Plugins::LyrionAnywhere::Admin::request_for($op, \%args) };
 	if (my $e = $@) {
 		chomp $e;
-		$request->addResult('error', $e);
+		$request->addResult('error', Plugins::LyrionAnywhere::Admin::redact($e, \%args));
 		$request->setStatusDone;
 		return;
 	}

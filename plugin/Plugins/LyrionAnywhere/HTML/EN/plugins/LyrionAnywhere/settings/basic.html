@@ -27,12 +27,13 @@
 [% END %]
 
 [% WRAPPER setting title="Public URL" desc="The HTTPS address people use, e.g. https://music.example.com." %]
-	<input type="text" class="stdedit" name="pref_public_url" id="pref_public_url" value="[% prefs.pref_public_url | html %]" placeholder="https://music.example.com" aria-describedby="aw-http-warning">
+	<input type="text" class="stdedit" name="pref_public_url" id="pref_public_url" value="[% prefs.pref_public_url | html %]" placeholder="https://music.example.com" aria-describedby="aw-http-warning aw-tunnel-override-url">
 	<p id="aw-http-warning" class="aw-note aw-warning"[% UNLESS prefs.pref_public_url.match('^(?i)http://') %] hidden[% END %]>
 		An http:// address sends passwords and sign-ins across the internet unencrypted. Use https:// unless this is only for testing on a private network.
 		<br><input type="checkbox" name="anywhere_allow_http" id="anywhere_allow_http" value="1">
 		<label for="anywhere_allow_http">Allow http:// anyway</label>
 	</p>
+	<p id="aw-tunnel-override-url" class="aw-note aw-warning" hidden></p>
 [% END %]
 
 [% WRAPPER setting title="Trusted proxies" desc="IP addresses of reverse proxies on other machines (comma-separated). Leave empty if the proxy runs on this machine." %]
@@ -40,7 +41,8 @@
 [% END %]
 
 [% WRAPPER setting title="Client address header" desc="Behind Cloudflare (or another CDN), the header carrying each visitor's real address, e.g. CF-Connecting-IP. It is only believed on requests from your proxy, so use it only if the proxy accepts connections from the CDN alone (such as a Cloudflare Tunnel). Leave empty otherwise." %]
-	<input type="text" class="stdedit" name="pref_client_ip_header" value="[% prefs.pref_client_ip_header | html %]" placeholder="CF-Connecting-IP">
+	<input type="text" class="stdedit" name="pref_client_ip_header" id="pref_client_ip_header" value="[% prefs.pref_client_ip_header | html %]" placeholder="CF-Connecting-IP" aria-describedby="aw-tunnel-override-header">
+	<p id="aw-tunnel-override-header" class="aw-note aw-warning" hidden></p>
 [% END %]
 
 <details class="aw-advanced"[% IF prefs.pref_gateway_path %] open[% END %]>
@@ -97,6 +99,66 @@
 		<label>Days <input id="aw-session-days" type="number" min="1" max="365" step="1" inputmode="numeric" value="90" placeholder="90"></label>
 		<button type="button" id="aw-session-btn">Save</button>
 	</fieldset>
+
+	<h3 id="aw-h-tunnel" tabindex="-1">Cloudflare Tunnel</h3>
+	<div id="aw-tunnel" class="aw-panel aw-tunnel">
+		<p class="aw-note">A Cloudflare Tunnel makes the gateway reachable from the internet with no open port, no certificate and no reverse proxy: this server dials out to Cloudflare, and Cloudflare serves your address. You need a domain on Cloudflare (the free plan is fine). Your music then flows through Cloudflare&rsquo;s network, under <a href="https://www.cloudflare.com/terms/" target="_blank" rel="noopener noreferrer">Cloudflare&rsquo;s terms</a>. Cloudflare Tunnel is Cloudflare&rsquo;s service; this plugin only sets it up for you.</p>
+		<p id="aw-tunnel-state" class="aw-tunnel-state" role="status" aria-live="polite">Loading&hellip;</p>
+		<dl id="aw-tunnel-info" hidden></dl>
+		<div class="aw-actions" id="aw-tunnel-actions">
+			<button type="button" id="aw-tunnel-install" hidden>Install</button>
+			<button type="button" id="aw-tunnel-update" hidden>Update</button>
+			<button type="button" id="aw-tunnel-start" hidden>Start</button>
+			<button type="button" id="aw-tunnel-stop" hidden>Stop</button>
+		</div>
+		<p id="aw-tunnel-remove-note" class="aw-note" hidden>Remove stops the tunnel and deletes cloudflared and the stored tunnel token from this server. The tunnel itself stays in your Cloudflare account until you delete it there.</p>
+	</div>
+
+	<fieldset class="aw-panel" id="aw-tunnel-quick-box" hidden>
+		<legend>Try a temporary tunnel</legend>
+		<p class="aw-note aw-warning">Test only. The address is random, Cloudflare gives no guarantee for it, and this plugin stops it after one hour. For everyday use, register a tunnel below.</p>
+		<p class="aw-note">No Cloudflare account is needed. Anyone who has the address can reach this server&rsquo;s sign-in page until the temporary tunnel stops.</p>
+		<div id="aw-tunnel-quick-run" hidden>
+			<p><a id="aw-tunnel-quick-link" href="#" target="_blank" rel="noopener noreferrer"></a></p>
+			<div id="aw-tunnel-quick-qr" class="aw-qr"></div>
+			<p id="aw-tunnel-quick-countdown" class="aw-note"></p>
+		</div>
+		<button type="button" id="aw-tunnel-quick-btn">Try a temporary tunnel</button>
+		<button type="button" id="aw-tunnel-quick-stop" hidden>Stop the temporary tunnel</button>
+	</fieldset>
+
+	<fieldset class="aw-panel aw-tunnel-form" id="aw-tunnel-token-form" hidden>
+		<legend>I have a tunnel token</legend>
+		<p class="aw-note">In Cloudflare&rsquo;s dashboard, create a tunnel (Networks &rsaquo; Tunnels &rsaquo; Create a tunnel &rsaquo; Cloudflared), give it a public hostname that points to this gateway, then copy the token from the install command it shows and paste it here.</p>
+		<label for="aw-tunnel-token">Tunnel token</label>
+		<textarea id="aw-tunnel-token" rows="3" autocomplete="off" spellcheck="false" autocapitalize="off"></textarea>
+		<label for="aw-tunnel-token-host">Public hostname</label>
+		<input id="aw-tunnel-token-host" type="text" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="music.example.com">
+		<button type="button" id="aw-tunnel-register-btn">Register and start</button>
+	</fieldset>
+
+	<fieldset class="aw-panel aw-tunnel-form" id="aw-tunnel-create-form" hidden>
+		<legend>Create it for me</legend>
+		<p class="aw-note">The gateway creates the tunnel in your Cloudflare account, points it at this gateway and adds the DNS record. Create an API token in Cloudflare (My Profile &rsaquo; API Tokens) with these three permissions:</p>
+		<ul class="aw-note" id="aw-tunnel-scopes">
+			<li>Account &rsaquo; Cloudflare Tunnel &rsaquo; Edit</li>
+			<li>Zone &rsaquo; DNS &rsaquo; Edit</li>
+			<li>Zone &rsaquo; Zone &rsaquo; Read</li>
+		</ul>
+		<p class="aw-note">The API token is used once, for setting up the tunnel, and is never stored.</p>
+		<label for="aw-tunnel-api-token">API token</label>
+		<input id="aw-tunnel-api-token" type="password" autocomplete="off" spellcheck="false" autocapitalize="off">
+		<label for="aw-tunnel-create-host">Public hostname</label>
+		<input id="aw-tunnel-create-host" type="text" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="music.example.com">
+		<span class="aw-check"><input type="checkbox" id="aw-tunnel-replace-dns"> <label for="aw-tunnel-replace-dns">Replace an existing DNS record</label></span>
+		<button type="button" id="aw-tunnel-create-btn">Create and start</button>
+	</fieldset>
+
+	<div class="aw-panel" id="aw-tunnel-log-box" hidden>
+		<h4>Log</h4>
+		<pre id="aw-tunnel-log" class="aw-diag" tabindex="0" aria-label="Cloudflare Tunnel log"></pre>
+		<button type="button" id="aw-tunnel-copy-log">Copy log</button>
+	</div>
 
 	<h3 id="aw-h-plugins" tabindex="-1">Plugins</h3>
 	<fieldset class="aw-panel" id="aw-plugins-box">

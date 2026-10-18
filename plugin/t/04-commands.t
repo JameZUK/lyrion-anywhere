@@ -14,7 +14,8 @@ use AnywhereTest qw(start_stub_gateway);
 Plugins::LyrionAnywhere::Commands::register();
 ok($Slim::Control::Request::DISPATCH{'anywhere status'}, 'status registered');
 ok($Slim::Control::Request::DISPATCH{"anywhere $_"}, "$_ registered")
-	for qw(users user_create user_delete grant ungrant revoke device_rename audit totp_reset pairing diagnostics settings session_days plugins plugins_admin_only user_downloads);
+	for qw(users user_create user_delete grant ungrant revoke device_rename audit totp_reset pairing diagnostics settings session_days plugins plugins_admin_only user_downloads
+		tunnel_status tunnel_log tunnel_install tunnel_update tunnel_register tunnel_create tunnel_start tunnel_stop tunnel_quick tunnel_remove);
 is($Slim::Control::Request::DISPATCH{'anywhere users'}[0], 0, 'no player needed');
 
 my $dir = tempdir(CLEANUP => 1);
@@ -57,6 +58,12 @@ is($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1]{url}, 'http://127.0.0.1:9445
 # --- CSRF: LMS's JSON-RPC is open to any web page on the LAN (cross-origin text/plain
 # POSTs), so every state-changing command needs the settings page's token. -------------
 
+# Made-up Cloudflare secrets of the right shape (base64 JSON with a, t, s; an API token).
+use MIME::Base64 qw(encode_base64);
+my $TUNNEL_TOKEN = encode_base64('{"a":"0123456789abcdef0123456789abcdef","s":"' . encode_base64('y' x 32, '')
+	. '","t":"01234567-89ab-cdef-0123-456789abcdef"}', '');
+my $API_TOKEN = 'Zyx_wvu-9876543210abcdefghijklmnopqrstuv';
+
 like($token, qr/^[0-9a-f]{32}\z/, 'token: 128 random bits as hex');
 is(Plugins::LyrionAnywhere::Commands::csrf_token(), $token, 'one token per LMS process');
 
@@ -74,10 +81,19 @@ my %mutating_args = (
 	session_days  => { days => 365 },
 	plugins_admin_only => { commands => 'audiomuseai' },
 	user_downloads => { username => 'alice', enabled => 1, formats => 'original,mp3,opus' },
+	tunnel_install  => {},
+	tunnel_update   => {},
+	tunnel_register => { token => $TUNNEL_TOKEN, hostname => 'music.example.com' },
+	tunnel_create   => { api_token => $API_TOKEN, hostname => 'music.example.com', replace_dns => 0 },
+	tunnel_start    => {},
+	tunnel_stop     => {},
+	tunnel_quick    => {},
+	tunnel_remove   => {},
 );
 my %read_only_args = (
 	users => {}, grants => { username => 'alice' }, devices => {}, audit => {},
 	diagnostics => { id => 1 }, settings => {}, plugins => {},
+	tunnel_status => {}, tunnel_log => {},
 );
 # Every operation is classified, so a new one can't slip through unprotected.
 is_deeply([sort(keys %mutating_args, keys %read_only_args)], [Plugins::LyrionAnywhere::Admin::operations()],
@@ -275,6 +291,107 @@ for my $op (sort keys %read_only_args) {
 	Plugins::LyrionAnywhere::Commands::admin($req);
 	like($req->{results}{error} // '', qr/formats/, 'a bad format list is refused');
 	is(scalar @Slim::Networking::SimpleAsyncHTTP::REQUESTS, $n, 'and not sent');
+}
+
+# --- Cloudflare Tunnel commands -------------------------------------------------------
+{
+	is($Slim::Control::Request::DISPATCH{"anywhere $_"}[2], 1, "$_ parses key:value arguments")
+		for qw(tunnel_status tunnel_log tunnel_register tunnel_create);
+
+	# The status and the log need the token too (the hostname and log lines are not public).
+	for my $op (qw(tunnel_status tunnel_log)) {
+		my $n = @Slim::Networking::SimpleAsyncHTTP::REQUESTS;
+		my $req = Slim::Control::Request->new(['anywhere', $op], {});
+		Plugins::LyrionAnywhere::Commands::admin($req);
+		like($req->{results}{error} // '', qr/^refused/, "$op without the token: refused");
+		is(scalar @Slim::Networking::SimpleAsyncHTTP::REQUESTS, $n, "$op without the token: nothing asked");
+	}
+
+	# A valid registration reaches the gateway with the right URL and body, and the token
+	# appears in no result and no log line, whatever the answer.
+	@Slim::Utils::Log::MESSAGES = ();
+	my @reqs;
+	my $req = Slim::Control::Request->new(['anywhere', 'tunnel_register'],
+		{ token => $TUNNEL_TOKEN, hostname => 'Music.Example.com', csrf => $token });
+	push @reqs, $req;
+	Plugins::LyrionAnywhere::Commands::admin($req);
+	is($req->{status}, 'processing', 'tunnel_register: sent');
+	my $sent = $Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1];
+	is($sent->{url}, 'http://127.0.0.1:9445/admin/v1/tunnel/register', 'tunnel_register: the URL');
+	is_deeply(JSON::PP::decode_json($sent->{body}), { token => $TUNNEL_TOKEN, hostname => 'music.example.com' }, 'tunnel_register: the body');
+	Slim::Networking::SimpleAsyncHTTP::respond($sent, '');
+	is($req->{results}{ok}, 1, 'tunnel_register: 204 is ok');
+
+	# 202 with {} (or nothing) is a success, as 204 is.
+	for my $body ('{}', '') {
+		$req = Slim::Control::Request->new(['anywhere', 'tunnel_create'],
+			{ api_token => $API_TOKEN, hostname => 'music.example.com', replace_dns => 1, csrf => $token });
+		push @reqs, $req;
+		Plugins::LyrionAnywhere::Commands::admin($req);
+		$sent = $Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1];
+		is($sent->{url}, 'http://127.0.0.1:9445/admin/v1/tunnel/create', 'tunnel_create: the URL');
+		like($sent->{body}, qr/"replace_dns":true/, 'tunnel_create: replace_dns a JSON boolean');
+		Slim::Networking::SimpleAsyncHTTP::respond($sent, $body);
+		is($req->{status}, 'done', "tunnel_create, 202 '$body': done");
+		is($req->{results}{ok}, 1, "tunnel_create, 202 '$body': ok");
+		ok(!defined $req->{results}{error}, "tunnel_create, 202 '$body': no error");
+	}
+	for my $op (qw(tunnel_install tunnel_update tunnel_quick)) {
+		$req = Slim::Control::Request->new(['anywhere', $op], { csrf => $token });
+		Plugins::LyrionAnywhere::Commands::admin($req);
+		Slim::Networking::SimpleAsyncHTTP::respond($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1], '{}');
+		is($req->{results}{ok}, 1, "$op: 202 {} is ok");
+	}
+
+	# A refusal (409) becomes the gateway's sentence.
+	$req = Slim::Control::Request->new(['anywhere', 'tunnel_start'], { csrf => $token });
+	Plugins::LyrionAnywhere::Commands::admin($req);
+	Slim::Networking::SimpleAsyncHTTP::fail($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1], '409 Conflict', '{"error":"no tunnel is registered"}');
+	is($req->{status}, 'done', 'tunnel_start, 409: done');
+	is($req->{results}{error}, 'refused by the gateway: no tunnel is registered', "tunnel_start, 409: the gateway's sentence");
+	ok(!defined $req->{results}{ok}, 'tunnel_start, 409: not ok');
+
+	# A failure echoing the secrets back is masked too.
+	# (Each command knows, and masks, its own secret.)
+	for my $case (['tunnel_register', { token => $TUNNEL_TOKEN, hostname => 'music.example.com' }, $TUNNEL_TOKEN],
+		['tunnel_create', { api_token => $API_TOKEN, hostname => 'music.example.com' }, $API_TOKEN]) {
+		my ($op, $args, $secret) = @$case;
+		$req = Slim::Control::Request->new(['anywhere', $op], { %$args, csrf => $token });
+		push @reqs, $req;
+		Plugins::LyrionAnywhere::Commands::admin($req);
+		Slim::Networking::SimpleAsyncHTTP::fail($Slim::Networking::SimpleAsyncHTTP::REQUESTS[-1], "409 Conflict $secret",
+			qq({"error":"refused $secret"}));
+		like($req->{results}{error}, qr/^refused by the gateway: refused \[hidden\]/, "$op: an error, with its secret masked");
+	}
+
+	# Bad input: refused at once, the value not repeated.
+	for my $case (['tunnel_register', { token => "$TUNNEL_TOKEN\r\nX-Evil: 1", hostname => 'music.example.com' }, "$TUNNEL_TOKEN"],
+		['tunnel_create', { api_token => "$API_TOKEN/../x", hostname => 'music.example.com' }, $API_TOKEN],
+		['tunnel_create', { api_token => $API_TOKEN, hostname => 'music.example.com', replace_dns => 'yes' }, $API_TOKEN],
+		['tunnel_register', { token => $TUNNEL_TOKEN, hostname => 'music.example.com:443' }, $TUNNEL_TOKEN]) {
+		my ($op, $args, $secret) = @$case;
+		my $n = @Slim::Networking::SimpleAsyncHTTP::REQUESTS;
+		$req = Slim::Control::Request->new(['anywhere', $op], { %$args, csrf => $token });
+		push @reqs, $req;
+		Plugins::LyrionAnywhere::Commands::admin($req);
+		is($req->{status}, 'done', "$op, bad input: answered at once");
+		ok(length($req->{results}{error} // ''), "$op, bad input: an error");
+		is(scalar @Slim::Networking::SimpleAsyncHTTP::REQUESTS, $n, "$op, bad input: nothing sent");
+	}
+
+	# Without the token: refused, and the secret not logged either.
+	$req = Slim::Control::Request->new(['anywhere', 'tunnel_create'], { api_token => $API_TOKEN, hostname => 'music.example.com' });
+	push @reqs, $req;
+	Plugins::LyrionAnywhere::Commands::admin($req);
+	like($req->{results}{error}, qr/^refused/, 'tunnel_create without the page token: refused');
+
+	my $results = JSON::PP->new->canonical->allow_nonref->encode([map { $_->{results} } @reqs]);
+	ok(index($results, $TUNNEL_TOKEN) < 0, 'the tunnel token is in no result');
+	ok(index($results, $API_TOKEN) < 0, 'the API token is in no result');
+	ok(@Slim::Utils::Log::MESSAGES, 'something was logged');
+	my $logged = join "\n", map { $_->[1] // '' } @Slim::Utils::Log::MESSAGES;
+	ok(index($logged, $TUNNEL_TOKEN) < 0, 'the tunnel token is not logged');
+	ok(index($logged, $API_TOKEN) < 0, 'the API token is not logged');
 }
 
 done_testing;
