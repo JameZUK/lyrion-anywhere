@@ -17,10 +17,12 @@ case $VERSION in *[!0-9.]*|'') echo "bad version in install.xml: $VERSION" >&2; 
 
 if [ "${SKIP_BUILD:-}" = 1 ]; then
 	[ -d dist/build/Bin ] || { echo "no earlier build in dist/build" >&2; exit 1; }
-	rm -rf dist/LyrionAnywhere dist/*.zip dist/repo.xml
+	rm -rf dist/LyrionAnywhere dist/LyrionAnywhere-*.zip dist/repo.xml
 	mkdir -p dist/LyrionAnywhere
 else
-	rm -rf dist && mkdir -p dist/build dist/LyrionAnywhere
+	# Only this script's own outputs: dist/ also holds deploy binaries and Android builds.
+	rm -rf dist/build dist/LyrionAnywhere dist/LyrionAnywhere-*.zip dist/repo.xml
+	mkdir -p dist/build dist/LyrionAnywhere
 	docker build -f tools/release/Dockerfile --target out --output type=local,dest=dist/build .
 fi
 
