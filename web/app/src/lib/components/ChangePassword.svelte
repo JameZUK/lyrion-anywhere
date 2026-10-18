@@ -77,7 +77,7 @@
 	{/if}
 	<p class="muted small" id="new-password-rule">At least {MIN_PASSWORD} characters.</p>
 	<label class="check">
-		<input type="checkbox" bind:checked={signOutOthers} data-sign-out-others />
+		<input type="checkbox" bind:checked={signOutOthers} data-also-sign-out-others />
 		<span>Also sign out my other devices</span>
 	</label>
 	<button class="btn" type="submit" disabled={busy} data-change-submit>{busy ? 'Changing…' : 'Change password'}</button>

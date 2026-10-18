@@ -1,11 +1,11 @@
 // The one status slot (Wave 3.5, rule 1): lasting states share one line at the top of every
 // page, the most important first. Moving playback > out of reach > busy > reconnecting; then
 // the two offers about this device's own player (the sound held back until a tap, and "it was
-// playing before the page reloaded"). Results ("Saved", "Couldn't…") are snackbars instead,
+// playing before the page reloaded"), and last a new version of the app ready to load. Results ("Saved", "Couldn't…") are snackbars instead,
 // and "Continue on…" is a snackbar with an action. Nothing else stacks.
 import type { Reachability } from './reachability';
 
-export type StatusKind = 'moving' | 'unreachable' | 'busy' | 'reconnecting' | 'held' | 'resume';
+export type StatusKind = 'moving' | 'unreachable' | 'busy' | 'reconnecting' | 'held' | 'resume' | 'update';
 
 export interface StatusInput {
 	/** The player playback is moving to ('' when not moving). */
@@ -19,6 +19,8 @@ export interface StatusInput {
 	heldBack: boolean;
 	/** This device was playing before the page reloaded, and its player is not running now. */
 	resume: boolean;
+	/** A new version of the app is installed and waiting for a reload (the person chooses when). */
+	update?: boolean;
 }
 
 export interface Status {
@@ -29,6 +31,7 @@ export interface Status {
 export const RECONNECTING_TEXT = 'Reconnecting this device…';
 export const HELD_TEXT = 'Playing on this device. Tap anywhere to turn the sound on.';
 export const RESUME_TEXT = 'This device was playing before the page reloaded.';
+export const UPDATE_TEXT = 'A new version is ready. Reload when convenient.';
 
 /** What the slot shows now, or null for nothing. */
 export function statusOf(s: StatusInput): Status | null {
@@ -38,5 +41,6 @@ export function statusOf(s: StatusInput): Status | null {
 	if (s.reconnecting) return { kind: 'reconnecting', text: RECONNECTING_TEXT };
 	if (s.heldBack) return { kind: 'held', text: HELD_TEXT };
 	if (s.resume) return { kind: 'resume', text: RESUME_TEXT };
+	if (s.update) return { kind: 'update', text: UPDATE_TEXT };
 	return null;
 }

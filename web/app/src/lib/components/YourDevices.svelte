@@ -120,7 +120,7 @@
 			{/each}
 		</ul>
 		{#if others.length > 0}
-			<button class="btn" disabled={busy} onclick={() => (confirming = 'others')} data-sign-out-others>Sign out all other devices</button>
+			<button class="btn" disabled={busy} onclick={() => (confirming = 'others')} data-sign-out-all-others>Sign out all other devices</button>
 		{:else}
 			<p class="muted small" data-no-other-devices>No other devices are signed in.</p>
 		{/if}

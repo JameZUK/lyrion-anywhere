@@ -13,6 +13,7 @@ import {
   closeAction,
   describeSeek,
   streamFailureAction,
+  streamPath,
   socketSilent,
   SOCKET_SILENCE_MS,
 } from '../../static/player/reconnect.js';
@@ -358,4 +359,20 @@ test('the worker: every message refreshes last heard; keepalives asked for only 
   assert.match(src, /signInMessage\(token, resume \? \{ session, secret, received \} : null, quality, busyFeature === true\)/);
   // The features are learned (briefly) before the first sign-in.
   assert.match(src, /await learnFeatures\(\d+\);\s*connect\(false\);/);
+});
+
+// Review (Web nit): the session id went into the stream address unencoded.
+test('the stream address encodes the session id and takes only whole numbers', () => {
+  assert.equal(streamPath('abc123', 4, 0), '/v1/stream/abc123/4');
+  assert.equal(streamPath('abc123', 4, 1000), '/v1/stream/abc123/4?offset=1000');
+  // Whatever the session id holds, it stays one path segment: no climbing out, no query.
+  assert.equal(streamPath('../../admin?x=1#y', 1, 0), '/v1/stream/..%2F..%2Fadmin%3Fx%3D1%23y/1');
+  assert.equal(streamPath('a b/c', 2, 5), '/v1/stream/a%20b%2Fc/2?offset=5');
+  for (const [n, off] of [[-1, 0], [1.5, 0], [NaN, 0], ['2', 0], [1, -5], [1, 2.5], [1, NaN]]) {
+    const p = streamPath('s', n, off);
+    assert.match(p, /^\/v1\/stream\/s\/\d+(\?offset=\d+)?$/, String([n, off]));
+  }
+  const src = readFileSync(new URL('../../static/player/player-worker.js', import.meta.url), 'utf8');
+  assert.match(src, /fetch\(streamPath\(session, n, offset\)/);
+  assert.doesNotMatch(src, /\/v1\/stream\/\$\{session\}/);
 });

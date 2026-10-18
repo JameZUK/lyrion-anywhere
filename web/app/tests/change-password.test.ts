@@ -113,6 +113,8 @@ describe('checks and messages', () => {
 	test('devices read as platform and last seen', () => {
 		const now = 1_800_000_000_000;
 		expect(deviceDetail({ id: 1, name: 'Phone', client_platform: 'Pixel 8', last_seen: now / 1000 - 3 * 3600 }, now)).toBe('Pixel 8 · last seen 3 hours ago');
+		// The same words as Your devices (one shared ago()).
+		expect(deviceDetail({ id: 1, name: 'Phone', client_platform: 'Pixel 8', last_seen: now / 1000 - 120 * 86_400 }, now)).toBe('Pixel 8 · last seen 4 months ago');
 		expect(deviceDetail({ id: 2, name: 'Tab', client_kind: 'android' }, now)).toBe('Android app');
 		expect(deviceDetail({ id: 3, name: 'Old' }, now)).toBe('');
 	});
@@ -146,7 +148,7 @@ describe('the form', () => {
 		// Messages are announced.
 		expect(container.querySelector('[data-change-status]')!.getAttribute('aria-live')).toBe('polite');
 		// Signing out the other devices is a choice, off by default.
-		expect(container.querySelector<HTMLInputElement>('[data-sign-out-others]')!.checked).toBe(false);
+		expect(container.querySelector<HTMLInputElement>('[data-also-sign-out-others]')!.checked).toBe(false);
 	});
 
 	test('the two-step code field appears only when two-step is on', () => {
@@ -186,7 +188,7 @@ describe('the form', () => {
 	test('signing out the others says how many went', async () => {
 		const change = vi.fn(async (): Promise<PasswordChanged> => ({ signed_out: 2, other_devices: [] }));
 		const { container } = render(ChangePassword, { username: 'alice', totp: false, change });
-		await fireEvent.click(container.querySelector('[data-sign-out-others]')!);
+		await fireEvent.click(container.querySelector('[data-also-sign-out-others]')!);
 		await fill(container, { current: OLD, next: NEW, confirm: NEW });
 		expect(change).toHaveBeenCalledWith(expect.objectContaining({ signOutOthers: true }));
 		expect(container.querySelector('[data-signed-out]')!.textContent).toBe('2 other devices were signed out.');

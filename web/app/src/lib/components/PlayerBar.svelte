@@ -123,6 +123,16 @@
 		swallow = true;
 	}
 
+	// Another player chosen: a volume change still waiting to be sent was for the last one.
+	$effect(() => {
+		void app.playerId;
+		return () => {
+			clearTimeout(volTimer);
+			volTimer = undefined;
+			volume = null;
+		};
+	});
+
 	function setVolume(v: number) {
 		haptics.volume(vol, v);
 		volume = v;

@@ -75,3 +75,27 @@ for (const [name, View] of [
 		r.unmount();
 	});
 }
+
+// Review (Web nit): a volume change still waiting to be sent went to the newly chosen player.
+test('player bar: switching players drops a volume change not yet sent', async () => {
+	setUp(OTHER, null);
+	const send = vi.spyOn(app, 'send').mockResolvedValue(undefined);
+	try {
+		const r = render(PlayerBar);
+		await tick();
+		const slider = r.container.querySelector<HTMLInputElement>('input[type=range][max="100"]')!;
+		await fireEvent.input(slider, { target: { value: '70' } });
+		app.playerId = '02:00:00:00:00:03';
+		await tick();
+		await new Promise((res) => setTimeout(res, 250));
+		expect(send.mock.calls.filter(([c]) => c[1] === 'volume')).toEqual([]);
+		// On the same player, the change goes as usual.
+		const again = r.container.querySelector<HTMLInputElement>('input[type=range][max="100"]')!;
+		await fireEvent.input(again, { target: { value: '30' } });
+		await new Promise((res) => setTimeout(res, 250));
+		expect(send.mock.calls.filter(([c]) => c[1] === 'volume').map(([c]) => c[2])).toEqual([30]);
+		r.unmount();
+	} finally {
+		send.mockRestore();
+	}
+});

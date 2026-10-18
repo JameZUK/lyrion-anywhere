@@ -143,15 +143,69 @@ function browserLocks(): LockManagerLike | undefined {
 	}
 }
 
+/** The longest a refresh request may take before it is abandoned (and tried again later). */
+export const REFRESH_TIMEOUT_MS = 15_000;
+/** The longest one tab may hold the refresh lock, whatever happens inside. */
+export const LOCK_HOLD_MS = 20_000;
+/** The longest a tab waits for another tab's refresh before giving up for now. */
+export const LOCK_WAIT_MS = 45_000;
+
+/**
+ * A refresh that took too long (the request, or the wait for another tab's). Not a refusal:
+ * the session keeps its sign-in and tries again shortly.
+ */
+export class RefreshTimeout extends Error {
+	constructor(what: string) {
+		super(what);
+		this.name = 'RefreshTimeout';
+	}
+}
+
+export interface LockTimes {
+	holdMs?: number;
+	waitMs?: number;
+}
+
 /**
  * Run `fn` holding the cross-tab refresh lock, so two tabs (or a tab and the installed app)
  * never present the same refresh cookie at once: the second waits, then sends the cookie
  * the first one received. Without Web Locks it simply runs; the gateway tolerates
  * concurrent refreshes within a short grace window.
+ *
+ * Both sides are bounded: a holder lets go after `holdMs` even if `fn` hangs, and a waiter
+ * gives up after `waitMs` (and then never runs `fn`). A hung refresh used to hold the lock for
+ * ever, blocking every tab, the events socket and the player worker.
  */
-export function withRefreshLock<T>(fn: () => Promise<T>, locks: LockManagerLike | undefined = browserLocks()): Promise<T> {
+export function withRefreshLock<T>(fn: () => Promise<T>, locks: LockManagerLike | undefined = browserLocks(), times: LockTimes = {}): Promise<T> {
+	const holdMs = times.holdMs ?? LOCK_HOLD_MS;
+	const waitMs = times.waitMs ?? LOCK_WAIT_MS;
 	if (!locks || typeof locks.request !== 'function') return fn();
-	return locks.request(REFRESH_LOCK, fn);
+	let granted = false;
+	let abandoned = false;
+	return new Promise<T>((resolve, reject) => {
+		const waiting = setTimeout(() => {
+			if (granted) return;
+			abandoned = true;
+			reject(new RefreshTimeout('another tab’s refresh is taking too long'));
+		}, waitMs);
+		locks
+			.request(REFRESH_LOCK, () => {
+				granted = true;
+				clearTimeout(waiting);
+				if (abandoned) return Promise.resolve(undefined as T); // gave up waiting: do nothing
+				return new Promise<T>((res, rej) => {
+					const holding = setTimeout(() => rej(new RefreshTimeout('the refresh is taking too long')), holdMs);
+					fn().then(
+						(v) => (clearTimeout(holding), res(v)),
+						(e) => (clearTimeout(holding), rej(e)),
+					);
+				});
+			})
+			.then(
+				(v) => !abandoned && resolve(v),
+				(e) => !abandoned && reject(e),
+			);
+	});
 }
 
 /** Why a refresh was asked for. Sent to the gateway's log only, to trace a reused token. */
@@ -161,16 +215,31 @@ export type RefreshReason = 'load' | 'timer' | '401' | 'events' | 'player' | 're
 export const PAGE_ID = Math.random().toString(36).slice(2, 10) || 'page';
 
 /** Exchange the refresh cookie for a new access token (and a rotated cookie). */
-export async function refresh(reason: RefreshReason = 'load', locks: LockManagerLike | undefined = browserLocks()): Promise<Session> {
-	return withRefreshLock(async () => {
-		const session = await callJson<Session>('/v1/auth/refresh', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json', 'X-Anywhere-Refresh-Reason': reason, 'X-Anywhere-Page': PAGE_ID },
-			body: JSON.stringify(clientInfo()),
-		});
-		rememberDevice(session.device.id);
-		return session;
-	}, locks);
+export async function refresh(reason: RefreshReason = 'load', locks: LockManagerLike | undefined = browserLocks(), times: LockTimes & { requestMs?: number } = {}): Promise<Session> {
+	return withRefreshLock(
+		async () => {
+			// A request that never answers is abandoned, so the lock is let go for the next tab.
+			const ctl = new AbortController();
+			const timer = setTimeout(() => ctl.abort(), times.requestMs ?? REFRESH_TIMEOUT_MS);
+			try {
+				const session = await callJson<Session>('/v1/auth/refresh', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json', 'X-Anywhere-Refresh-Reason': reason, 'X-Anywhere-Page': PAGE_ID },
+					body: JSON.stringify(clientInfo()),
+					signal: ctl.signal,
+				});
+				rememberDevice(session.device.id);
+				return session;
+			} catch (e) {
+				if (ctl.signal.aborted) throw new RefreshTimeout('the refresh request did not answer');
+				throw e;
+			} finally {
+				clearTimeout(timer);
+			}
+		},
+		locks,
+		times,
+	);
 }
 
 export async function logout(token: string): Promise<void> {

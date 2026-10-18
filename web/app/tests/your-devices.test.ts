@@ -116,6 +116,7 @@ describe('checks and wording', () => {
 		expect(ago(5 * 60)).toBe('5 minutes ago');
 		expect(ago(3 * 86_400)).toBe('3 days ago');
 		expect(ago(120 * 86_400)).toBe('4 months ago');
+		for (const odd of [-500, NaN, 0]) expect(ago(odd)).toBe('just now');
 	});
 
 	test('each refusal reads clearly', () => {
@@ -180,7 +181,7 @@ describe('the list', () => {
 		expect(rows[2]!.textContent).toContain('Installed web app · Not used yet');
 		expect(rows[0]!.querySelector('[data-sign-out-device]')).toBeNull();
 		expect(rows[1]!.querySelector('[data-sign-out-device]')!.getAttribute('aria-label')).toBe('Sign out Phone');
-		expect(r.container.querySelector('[data-sign-out-others]')).not.toBeNull();
+		expect(r.container.querySelector('[data-sign-out-all-others]')).not.toBeNull();
 		expect(r.container.querySelector('[data-devices-status]')!.getAttribute('aria-live')).toBe('polite');
 		r.unmount();
 	});
@@ -205,17 +206,17 @@ describe('the list', () => {
 	test('sign out all other devices asks first and keeps this one', async () => {
 		const { r, signOutOthers } = setup();
 		await settle();
-		await fireEvent.click(r.container.querySelector('[data-sign-out-others]')!);
+		await fireEvent.click(r.container.querySelector('[data-sign-out-all-others]')!);
 		const dialog = await waitFor(() => document.querySelector<HTMLDialogElement>('dialog[open][data-confirm-dialog]')!);
 		expect(dialog.textContent).toContain('2 devices will have to sign in again. This device stays signed in.');
 		await confirm(false);
 		expect(signOutOthers).not.toHaveBeenCalled();
-		await fireEvent.click(r.container.querySelector('[data-sign-out-others]')!);
+		await fireEvent.click(r.container.querySelector('[data-sign-out-all-others]')!);
 		await confirm(true);
 		expect(signOutOthers).toHaveBeenCalledTimes(1);
 		expect(r.container.querySelector('[data-devices-message]')!.textContent).toBe('2 other devices were signed out.');
 		expect([...r.container.querySelectorAll('[data-device]')]).toHaveLength(1);
-		expect(r.container.querySelector('[data-sign-out-others]')).toBeNull();
+		expect(r.container.querySelector('[data-sign-out-all-others]')).toBeNull();
 		expect(r.container.querySelector('[data-no-other-devices]')).not.toBeNull();
 		r.unmount();
 	});
@@ -363,7 +364,7 @@ describe('the list', () => {
 		});
 		const r = render(YourDevices, { load, signOut: async () => {}, signOutOthers: async () => 2, now: () => NOW });
 		await settle();
-		await fireEvent.click(r.container.querySelector('[data-sign-out-others]')!);
+		await fireEvent.click(r.container.querySelector('[data-sign-out-all-others]')!);
 		await confirm(true);
 		expect(r.container.querySelector('[data-devices-message]')!.textContent).toBe('2 other devices were signed out.');
 		expect([...r.container.querySelectorAll<HTMLElement>('[data-device]')].map((li) => li.dataset.device)).toEqual(['1']);
@@ -420,7 +421,7 @@ describe('the list', () => {
 		await settle();
 		expect(r.container.querySelectorAll('[data-device]')).toHaveLength(0);
 		expect(r.container.querySelector('[data-no-other-devices]')).not.toBeNull();
-		expect(r.container.querySelector('[data-sign-out-others]')).toBeNull();
+		expect(r.container.querySelector('[data-sign-out-all-others]')).toBeNull();
 		expect(r.container.querySelector('[data-devices-retry]')).toBeNull();
 		r.unmount();
 	});

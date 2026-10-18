@@ -7,6 +7,7 @@
 	import { controls } from '$lib/player/controls.svelte';
 	import { CONNECTION_ID } from '$lib/state/reachability';
 	import { statusOf } from '$lib/state/status';
+	import { appUpdate } from '$lib/pwa/update.svelte';
 	import Icon from './Icon.svelte';
 
 	const status = $derived(
@@ -17,9 +18,10 @@
 			reconnecting: controls.thisDevice && device.state === 'reconnecting',
 			heldBack: device.needsTap && (device.detail.output === 'Playing' || (app.playerId === device.mac && app.playing)),
 			resume: device.wasActive && (device.state === 'off' || device.state === 'stopped' || device.state === 'error'),
+			update: appUpdate.offered,
 		}),
 	);
-	const ICONS = { moving: 'transfer', unreachable: 'offline', busy: 'clock', reconnecting: 'clock', held: 'play', resume: 'device' } as const;
+	const ICONS = { moving: 'transfer', unreachable: 'offline', busy: 'clock', reconnecting: 'clock', held: 'play', resume: 'device', update: 'new' } as const;
 </script>
 
 {#if status}
@@ -35,6 +37,9 @@
 		{#if status.kind === 'resume'}
 			<button class="btn primary small" onclick={() => device.start()}><Icon name="play" size={16} />Resume playing here</button>
 			<button class="btn small" onclick={() => device.stop()}>Dismiss</button>
+		{:else if status.kind === 'update'}
+			<button class="btn primary small" data-update-reload onclick={() => appUpdate.apply()}>Reload</button>
+			<button class="btn small" data-update-later onclick={() => appUpdate.dismiss()}>Later</button>
 		{/if}
 	</div>
 {/if}

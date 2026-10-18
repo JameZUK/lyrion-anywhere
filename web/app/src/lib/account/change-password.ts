@@ -2,6 +2,7 @@
 // what each refusal says. The gateway's policy is the authority; these only save a trip.
 import { ApiError } from '$lib/api/http';
 import type { OwnDevice } from '$lib/api/auth';
+import { ago } from './ago';
 
 /** The gateway's minimum length (characters). */
 export const MIN_PASSWORD = 10;
@@ -67,13 +68,4 @@ export function deviceDetail(d: OwnDevice, nowMs: number = Date.now()): string {
 	else if (d.client_kind === 'android') parts.push('Android app');
 	if (typeof d.last_seen === 'number' && d.last_seen > 0) parts.push(`last seen ${ago(nowMs / 1000 - d.last_seen)}`);
 	return parts.join(' · ');
-}
-
-function ago(secs: number): string {
-	if (secs < 120) return 'just now';
-	const m = Math.floor(secs / 60);
-	if (m < 120) return `${m} minutes ago`;
-	const h = Math.floor(m / 60);
-	if (h < 48) return `${h} hours ago`;
-	return `${Math.floor(h / 24)} days ago`;
 }

@@ -85,3 +85,22 @@ test('out and in again during the load: only the newer start owns the timers', a
 	emit('signed-out');
 	expect(vi.getTimerCount()).toBe(0);
 });
+
+// Regression (review, Web low): the remembered players outlived a sign-out, so the next person
+// to sign in on this browser started on the previous person's player.
+test('signing out forgets the remembered players and the resume point', async () => {
+	vi.useFakeTimers();
+	const { app } = await import('$lib/state/app.svelte');
+	emit('signed-in');
+	app.select('00:04:20:aa:bb:cc');
+	expect(localStorage.getItem('anywhere.player')).toBe('00:04:20:aa:bb:cc');
+	expect(localStorage.getItem('anywhere.player.remote')).toBe('00:04:20:aa:bb:cc');
+	expect(sessionStorage.getItem('anywhere.player.tab')).toBe('00:04:20:aa:bb:cc');
+	sessionStorage.setItem('anywhere.device.resume', JSON.stringify({ mac: '02:00:00:00:00:01', playing: true, index: 3, time: 10, at: Date.now() }));
+	emit('signed-out');
+	for (const k of ['anywhere.player', 'anywhere.player.remote']) expect(localStorage.getItem(k), k).toBeNull();
+	for (const k of ['anywhere.player.tab', 'anywhere.device.resume']) expect(sessionStorage.getItem(k), k).toBeNull();
+	expect(app.playerId).toBe('');
+	release?.();
+	await vi.advanceTimersByTimeAsync(0);
+});

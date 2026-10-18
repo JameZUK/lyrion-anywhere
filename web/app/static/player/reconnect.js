@@ -309,3 +309,14 @@ export function routeMessage(data, to) {
 export function qualityMessage(quality) {
   return JSON.stringify({ quality: sanitiseQuality(quality) });
 }
+
+/**
+ * The address of stream `n` of `session`, from byte `offset`. The session id is the gateway's,
+ * but it is encoded all the same, so it can only ever be one path segment; the stream number
+ * and offset are whole numbers or left out.
+ */
+export function streamPath(session, n, offset) {
+  const num = Number.isSafeInteger(n) && n >= 0 ? n : 0;
+  const q = Number.isSafeInteger(offset) && offset > 0 ? `?offset=${offset}` : '';
+  return `/v1/stream/${encodeURIComponent(String(session))}/${num}${q}`;
+}

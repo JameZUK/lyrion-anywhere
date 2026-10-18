@@ -12,7 +12,7 @@ const V = new URL(self.location.href).searchParams.get('v');
 const early = [];
 onmessage = (e) => early.push(e);
 const VQ = V && /^[\w.-]{1,64}$/.test(V) ? `?v=${V}` : '';
-const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, closeAction, describeSeek, loadCore, qualityMessage, routeMessage, sanitiseQuality, signInMessage, socketSilent, streamFailureAction } =
+const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, closeAction, describeSeek, loadCore, qualityMessage, routeMessage, sanitiseQuality, signInMessage, socketSilent, streamFailureAction, streamPath } =
   await import(`./reconnect.js${VQ}`);
 const { Presentation } = await import(`./presentation.js${VQ}`);
 const { VisualTap } = await import(`./visual.js${VQ}`);
@@ -507,8 +507,7 @@ async function fetchStream(id, n) {
     stream.controller = controller;
     let status = 0;
     try {
-      const q = offset ? `?offset=${offset}` : '';
-      const resp = await fetch(`/v1/stream/${session}/${n}${q}`, {
+      const resp = await fetch(streamPath(session, n, offset), {
         headers: { Authorization: `Bearer ${token}` },
         signal: controller.signal,
         cache: 'no-store',

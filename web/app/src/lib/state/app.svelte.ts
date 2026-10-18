@@ -7,7 +7,7 @@ import type { Session } from '$lib/api/auth';
 import * as cmd from '$lib/lms/commands';
 import { NO_PLAYER } from '$lib/naming';
 import type { PlayerInfo, PlayersResult, PlayerStatus } from '$lib/lms/types';
-import { loadResume } from '$lib/player/resume';
+import { clearResume, loadResume } from '$lib/player/resume';
 import { canPlayHere } from '$lib/player/capabilities';
 import {
 	NOTES,
@@ -178,7 +178,11 @@ class AppState {
 			this.provisional = session.provisional;
 			if (st === 'signed-in' && was !== 'signed-in') this.#started();
 			if (st === 'signed-out' && was === 'signed-in') this.#stopped();
-			if (st === 'signed-out') forgetLastKnown();
+			if (st === 'signed-out') {
+				// Nothing of this person's lingers for the next one to sign in on this browser.
+				forgetLastKnown();
+				this.#forgetPlayers();
+			}
 			// The server has confirmed the sign-in this page started with: catch up at once.
 			if (st === 'signed-in' && wasProvisional && !session.provisional) {
 				void this.loadPlayers();
@@ -457,6 +461,22 @@ class AppState {
 		if (this.#preferred === id) this.#preferred = '';
 		await this.loadPlayers();
 		return false;
+	}
+
+	/** Signed out: forget which players were used here (and where this device was playing). */
+	#forgetPlayers() {
+		this.playerId = '';
+		this.now = null;
+		this.#preferred = '';
+		this.wantDevice = false;
+		saveTabSelection('');
+		clearResume();
+		try {
+			localStorage.removeItem(PLAYER_KEY);
+			localStorage.removeItem(REMOTE_KEY);
+		} catch {
+			/* storage blocked: nothing was kept */
+		}
 	}
 
 	/** No usable player: stop polling a remembered one that has gone (LMS drops the

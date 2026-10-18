@@ -14,7 +14,7 @@
 	.note {
 		display: flex;
 		flex-wrap: wrap;
-		align-items: baseline;
+		align-items: center;
 		gap: 0.35rem;
 		margin: 0.25rem 0 0.75rem;
 		font-size: 0.9rem;
@@ -22,6 +22,9 @@
 	.link {
 		border: 0;
 		background: none;
+		display: inline-flex;
+		align-items: center;
+		min-height: 44px;
 		padding: 0;
 		margin-left: 0.5rem;
 		color: var(--accent);

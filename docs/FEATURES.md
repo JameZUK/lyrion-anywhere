@@ -423,6 +423,7 @@ The full policy is [`PRIVACY.md`](PRIVACY.md).
 | **Docker image** | Server | Static, no shell, non-root, distroless; for hosts where the plugin can't run its binary |
 | **Tested proxy configuration** | Server | An nginx example run in CI; Caddy in two lines; notes for Cloudflare and other CDNs |
 | **Installable web app** | Web | Install from *Settings › Install the app* (Android and desktop Chromium), or *Share › Add to Home Screen* on iPhone and iPad; full screen, its own icon, and it opens offline |
+| **Updates that wait for you** | Web | A new version of the web app downloads in the background and waits. An open page keeps working on the version it loaded (its pages still load after the server has moved on), and the status line at the top says *A new version is ready. Reload when convenient.* with *Reload* and *Later*, because a reload stops this device's playback. Coming back to the app looks for a new version at most once an hour |
 | **Android distribution** | Android | Signed APKs (per-ABI and universal, with checksums) on GitHub releases; Google Play and F-Droid (reproducible build recipe) being prepared |
 | **Demo** | Both | `tools/demo` runs the real gateway and web app against an invented library, with no LMS needed |
 

@@ -18,13 +18,15 @@ const DEVICES = { devices: [{ id: 1, name: 'Test browser', current: true }, { id
 const posts: { path: string; body: unknown }[] = [];
 /** While set, two-step setup answers only once it resolves. */
 let totpGate: Promise<void> | null = null;
+/** The QR code two-step setup sends. */
+let qrSvg: unknown = '<svg/>';
 beforeAll(() => {
 	vi.stubGlobal('fetch', async (path: string, init?: RequestInit) => {
 		if (init?.method === 'POST') posts.push({ path, body: init.body ? JSON.parse(String(init.body)) : null });
 		const p = String(path);
 		if (p.endsWith('/v1/account/totp/setup')) {
 			if (totpGate) await totpGate;
-			return new Response(JSON.stringify({ secret: 'JBSWY3DPEHPK3PXP', uri: 'otpauth://totp/x', qr_svg: '<svg/>' }), { status: 200, headers: { 'content-type': 'application/json' } });
+			return new Response(JSON.stringify({ secret: 'JBSWY3DPEHPK3PXP', uri: 'otpauth://totp/x', qr_svg: qrSvg }), { status: 200, headers: { 'content-type': 'application/json' } });
 		}
 		const body = p.endsWith('/v1/account') ? account : p.endsWith('/v1/me') ? { features: meFeatures } : p.endsWith('/v1/devices') ? DEVICES : {};
 		return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -37,6 +39,8 @@ afterAll(() => vi.unstubAllGlobals());
 // A test that turns a feature on never leaks it into the next, even if it fails part-way.
 afterEach(() => {
 	meFeatures = { ...ME_FEATURES };
+	qrSvg = '<svg/>';
+	totpGate = null;
 });
 
 async function section(id: string) {
@@ -213,6 +217,37 @@ test('Account › Two-step verification: Turn on asks for one secret however oft
 		r.unmount();
 	} finally {
 		totpGate = null;
+	}
+});
+
+// Regression (review, Web low): btoa() of the SVG threw on any character outside Latin-1.
+test('Account › Two-step verification: a QR code with any characters shows; a missing one says to type the key', async () => {
+	async function turnOn() {
+		const r = await section('account');
+		await waitFor(() => expect(r.container.querySelector('[data-account-row="two-step"]')!.textContent).toContain('Off'));
+		await fireEvent.click(r.container.querySelector('[data-account-row="two-step"]')!);
+		const dialog = (await waitFor(() => document.querySelector<HTMLElement>('dialog[open] [data-two-step]')!)) as HTMLElement;
+		await fireEvent.input(within(dialog).getByLabelText('Password'), { target: { value: 'pw' } });
+		await fireEvent.submit(dialog.querySelector('form')!);
+		await waitFor(() => expect(dialog.querySelector('code.key')).not.toBeNull());
+		return { r, dialog };
+	}
+	qrSvg = '<svg xmlns="http://www.w3.org/2000/svg"><title>Zoë’s music ♫ 音楽</title></svg>';
+	const a = await turnOn();
+	const img = a.dialog.querySelector<HTMLImageElement>('img.qr')!;
+	const b64 = img.getAttribute('src')!.replace('data:image/svg+xml;base64,', '');
+	expect(new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))).toBe(qrSvg);
+	document.querySelector<HTMLDialogElement>('dialog[open]')!.close();
+	a.r.unmount();
+
+	for (const missing of ['', null, 42]) {
+		qrSvg = missing;
+		const b = await turnOn();
+		expect(b.dialog.querySelector('img.qr')).toBeNull();
+		expect(b.dialog.querySelector('[data-qr-missing]')!.textContent).toContain('type the key');
+		expect(b.dialog.querySelector('code.key')!.textContent).toBe('JBSW Y3DP EHPK 3PXP');
+		document.querySelector<HTMLDialogElement>('dialog[open]')!.close();
+		b.r.unmount();
 	}
 });
 

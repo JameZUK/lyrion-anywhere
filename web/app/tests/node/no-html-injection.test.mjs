@@ -13,6 +13,12 @@ const BANNED = [
 	[/\beval\s*\(/, 'eval'],
 	[/new\s+Function\s*\(/, 'new Function'],
 	[/createContextualFragment\s*\(/, 'createContextualFragment'],
+	// Review (Web nit): other ways to parse a string as a document, or to point a link, an image
+	// or an event handler at one. Links and sources are set through Svelte attributes, checked.
+	[/\bsrcdoc\b/i, 'srcdoc'],
+	[/\bDOMParser\b/, 'DOMParser'],
+	[/\.parseFromString\s*\(/, 'parseFromString'],
+	[/\.setAttribute(?:NS)?\s*\((?:[^,()]*,\s*)?\s*['"`](?:href|src|srcset|srcdoc|action|formaction|xlink:href|on[a-z]*)['"`]/i, 'setAttribute of a link, source or handler'],
 ];
 
 function files(dir) {
@@ -33,7 +39,27 @@ test('no HTML-parsing APIs in the app', () => {
 });
 
 test('the check itself catches each pattern', () => {
-	for (const s of ['{@html x}', 'el.innerHTML = s', 'a.insertAdjacentHTML("x", y)', 'eval(x)', 'new Function("x")']) {
+	for (const s of [
+		'{@html x}',
+		'el.innerHTML = s',
+		'a.insertAdjacentHTML("x", y)',
+		'eval(x)',
+		'new Function("x")',
+		'<iframe srcdoc={page}></iframe>',
+		'frame.srcdoc = s',
+		'new DOMParser()',
+		'p.parseFromString(s, "text/html")',
+		"a.setAttribute('href', u)",
+		'img.setAttribute("src", u)',
+		'el.setAttribute(`onclick`, code)',
+		"el.setAttribute('ONLOAD', code)",
+		"use.setAttributeNS(XLINK, 'xlink:href', u)",
+		"form.setAttribute('action', u)",
+	]) {
 		assert.ok(BANNED.some(([re]) => re.test(s)), s);
+	}
+	// Ordinary attributes stay allowed.
+	for (const s of ["el.setAttribute('aria-label', name)", "el.setAttribute('data-id', id)", 'el.setAttribute(name, value)', "dialog.setAttribute('open', '')"]) {
+		assert.ok(!BANNED.some(([re]) => re.test(s)), s);
 	}
 });

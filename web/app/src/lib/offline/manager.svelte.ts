@@ -131,6 +131,33 @@ export class LimitReached extends Error {
 	}
 }
 
+/**
+ * The answer is not audio: a proxy, captive portal or misrouted request answered 200 with a
+ * web page or JSON. Such bytes are never stored as a track.
+ */
+export class NotAudio extends Error {
+	constructor(what: string) {
+		super(`not audio (${what})`);
+		this.name = 'NotAudio';
+	}
+}
+export const NOT_AUDIO_MESSAGE = 'The server sent something that isn’t audio.';
+
+/** Content types that are certainly not a track (audio, generic binary or none are let through). */
+export function notAudioType(v: string | null): boolean {
+	const t = (v ?? '').split(';')[0]!.trim().toLowerCase();
+	return /^(text|image|font|multipart)\//.test(t) || /^application\/(json|[\w.-]+\+json|xml|[\w.-]+\+xml|javascript|ecmascript|x-www-form-urlencoded|pdf)$/.test(t);
+}
+
+/** Whether the first bytes are a web page, XML or JSON rather than any audio container. */
+export function looksLikeMarkup(head: Uint8Array): boolean {
+	let i = 0;
+	if (head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf) i = 3; // a UTF-8 byte-order mark
+	while (i < head.length && i < 64 && (head[i] === 0x20 || head[i] === 0x09 || head[i] === 0x0a || head[i] === 0x0d)) i++;
+	const text = String.fromCharCode(...head.subarray(i, i + 16)).toLowerCase();
+	return /^(<!doctype|<html|<head|<body|<\?xml|<!--|<script|<meta|<title)/.test(text) || /^\{\s*"/.test(text) || /^\[\s*[{"]/.test(text);
+}
+
 export const LIMIT_MESSAGE = 'Storage limit reached. Remove some downloads, or raise the limit in Settings.';
 
 /** "23.4 MB", "1.20 GB" (as settings' formatBytes; kept here so the manager stands alone). */
@@ -209,6 +236,7 @@ export function classify(e: unknown): { permanent: boolean; message: string; wai
 		return { permanent: false, message: `Server error (HTTP ${s}). Retrying…` };
 	}
 	if (e instanceof LimitReached) return { permanent: true, message: LIMIT_MESSAGE };
+	if (e instanceof NotAudio) return { permanent: true, message: NOT_AUDIO_MESSAGE };
 	if (e instanceof DOMException && e.name === 'QuotaExceededError') {
 		return { permanent: true, message: 'Not enough storage space on this device.' };
 	}
@@ -705,6 +733,11 @@ export class DownloadManager {
 			seq = 0;
 			total = known(length) ? length : 0;
 		}
+		if (notAudioType(resp.headers.get('content-type'))) {
+			await resp.body?.cancel().catch(() => {});
+			await store.discardPartial(user, info.key);
+			throw new NotAudio(resp.headers.get('content-type') ?? '');
+		}
 		if (format === 'original' && info.original.size && total && total !== info.original.size) {
 			await resp.body?.cancel().catch(() => {});
 			await store.discardPartial(user, info.key);
@@ -731,8 +764,17 @@ export class DownloadManager {
 			bufLen = 0;
 			await store.putPartial(p);
 		};
+		// The start of the file must not be a web page (whatever the content type claimed).
+		let sniffed = offset > 0;
 		const take = async (bytes: Uint8Array) => {
 			if (signal.aborted) throw abortError();
+			if (!sniffed) {
+				sniffed = true;
+				if (looksLikeMarkup(bytes)) {
+					await store.discardPartial(user, info.key);
+					throw new NotAudio('markup');
+				}
+			}
 			buf.push(bytes);
 			bufLen += bytes.byteLength;
 			item.received += bytes.byteLength;
@@ -764,7 +806,7 @@ export class DownloadManager {
 			} catch (e) {
 				reader.cancel().catch(() => {});
 				// Keep what arrived: the next attempt resumes from there.
-				if (!(e instanceof HttpError) && gen === this.#gen) await flush().catch(() => {});
+				if (!(e instanceof HttpError) && !(e instanceof NotAudio) && gen === this.#gen) await flush().catch(() => {});
 				throw e;
 			} finally {
 				signal.removeEventListener('abort', stop);
