@@ -242,6 +242,9 @@ pub enum DiagEvent {
     },
     /// A STAT the player sent (every event but `STMt`, the reply to that poll).
     Stat([u8; 4]),
+    /// A stream announced as FLAC had no header (LMS serves a seek as bare frames): one was
+    /// made from its first frame, with these parameters.
+    FlacHeader { rate: u32, channels: u32, bits: u32 },
 }
 
 /// At most this many [`DiagEvent`]s wait for the host; the oldest go first.
@@ -1186,9 +1189,12 @@ impl Player {
         }
 
         let input = InputBuffer::new();
+        // A seek's stream shares the track's format: what this stream's frames don't say
+        // about the rate or depth, the one before it does (see decode::flac_header_fix).
+        let fallback = self.track.as_ref().and_then(|t| t.decoder.format_hint());
         let track = Track {
             seq,
-            decoder: StreamDecoder::new(input.clone(), s.format),
+            decoder: StreamDecoder::new(input.clone(), s.format).with_fallback(fallback),
             input,
             autostart: s.autostart,
             threshold: s.threshold as usize * 1024,
@@ -1352,6 +1358,18 @@ impl Player {
             OUTPUT_TARGET_SECS as usize * self.output_rate().unwrap_or(48_000) as usize;
         if self.pcm.len() / 2 >= target_frames {
             return;
+        }
+        // A header made for bare FLAC frames (a seek): noted once, for the Connection log.
+        if let Some((rate, channels, bits)) = self
+            .track
+            .as_mut()
+            .and_then(|t| t.decoder.take_synthesised())
+        {
+            self.diag(DiagEvent::FlacHeader {
+                rate,
+                channels,
+                bits,
+            });
         }
         let Some(t) = &mut self.track else { return };
         if t.decode_done {

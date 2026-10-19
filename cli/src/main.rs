@@ -189,7 +189,12 @@ fn run(args: Args) -> Result<(), String> {
         max_sample_rate: 192_000,
         firmware: env!("CARGO_PKG_VERSION").into(),
     })));
-    player.lock().unwrap().connected(now());
+    {
+        let mut p = player.lock().unwrap();
+        // Verbose runs print the core's diagnostics (as the web app's Connection log does).
+        p.set_diagnostics(args.verbose);
+        p.connected(now());
+    }
 
     let mut audio = Audio::new(player.clone(), args.null);
     let mut stream: Option<StreamHandle> = None;
@@ -228,6 +233,11 @@ fn run(args: Args) -> Result<(), String> {
             }
         }
         p.tick(t);
+        if args.verbose {
+            for d in p.take_diagnostics() {
+                println!("diag {d:?}");
+            }
+        }
 
         for action in p.take_actions() {
             match action {

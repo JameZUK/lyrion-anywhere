@@ -266,7 +266,7 @@ impl Segmenter {
 }
 
 /// FLAC's minimum block size (frames); a shorter final block is padded with silence.
-const MIN_BLOCK: usize = 16;
+pub(crate) const MIN_BLOCK: usize = 16;
 
 // --- FLAC ----------------------------------------------------------------------------------
 
@@ -280,7 +280,7 @@ fn to_i24(x: f32) -> i32 {
     if v.is_nan() { 0 } else { v as i32 }
 }
 
-fn crc8(data: &[u8]) -> u8 {
+pub(crate) fn crc8(data: &[u8]) -> u8 {
     let mut crc = 0u8;
     for &b in data {
         crc ^= b;
@@ -350,7 +350,13 @@ fn rate_code(rate: u32) -> u8 {
 /// One FLAC frame of verbatim stereo, `n` samples long (`interleaved` may be shorter: the
 /// rest is silence). `number` is the first sample number (variable strategy) or the frame
 /// number (fixed strategy).
-fn flac_frame(interleaved: &[f32], rate: u32, number: u64, n: usize, v: Variant) -> Vec<u8> {
+pub(crate) fn flac_frame(
+    interleaved: &[f32],
+    rate: u32,
+    number: u64,
+    n: usize,
+    v: Variant,
+) -> Vec<u8> {
     let real = (interleaved.len() / 2).min(n);
     let width = if v.bits16 { 2 } else { 3 };
     let mut f = Vec::with_capacity(16 + n * 2 * width + 2);
@@ -385,7 +391,7 @@ fn flac_frame(interleaved: &[f32], rate: u32, number: u64, n: usize, v: Variant)
 }
 
 /// STREAMINFO block body (34 bytes).
-fn streaminfo(rate: u32, v: Variant) -> [u8; 34] {
+pub(crate) fn streaminfo(rate: u32, v: Variant) -> [u8; 34] {
     let mut s = [0u8; 34];
     let min = if v.fixed_blocks { BLOCK } else { MIN_BLOCK };
     s[0..2].copy_from_slice(&(min as u16).to_be_bytes());

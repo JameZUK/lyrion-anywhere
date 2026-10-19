@@ -84,6 +84,18 @@ impl InputBuffer {
         f(b.data.make_contiguous())
     }
 
+    /// While probing (nothing read yet): drop the first `skip` buffered bytes and put
+    /// `prefix` in front of the rest, as if the stream had begun with it.
+    fn replace_prefix(&self, skip: usize, prefix: &[u8]) {
+        let mut b = self.0.lock().unwrap();
+        debug_assert!(b.keep_all && b.pos == b.base);
+        let skip = skip.min(b.data.len());
+        b.data.drain(..skip);
+        for &x in prefix.iter().rev() {
+            b.data.push_front(x);
+        }
+    }
+
     fn release(&self) {
         let mut b = self.0.lock().unwrap();
         b.keep_all = false;
@@ -192,6 +204,241 @@ fn parse_plain_number(t: &str) -> Option<f64> {
         return None;
     }
     t.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+// ---- FLAC streams without a header -------------------------------------------------------
+//
+// LMS serves a FLAC seek by byte-seeking into the file (its `flc flc * *` rule is a plain
+// pass-through, and only its Movie, Wav, Ogg and MP3 formats build an initial block), so
+// the stream is bare frames: no `fLaC` marker, no STREAMINFO. Hardware players and
+// squeezelite decode those; Symphonia's reader needs the header, and without it the player
+// refused every seek with `STMn` and LMS moved to the next track (issue #12). A stream
+// announced as FLAC that doesn't start with a header gets one made from its first frame
+// header, which carries the sample rate and bit depth explicitly for every common value
+// (and the previous stream's, which a seek shares, otherwise).
+
+/// What a FLAC frame header carries (FLAC format, "Frame header").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlacFrameParams {
+    /// `None`: "as in STREAMINFO" (rate code 0).
+    pub rate: Option<u32>,
+    pub channels: u32,
+    /// `None`: "as in STREAMINFO" (sample size code 0).
+    pub bits: Option<u32>,
+    pub block_size: u32,
+    /// The frame number (fixed block size) or the first sample's number (variable).
+    pub number: u64,
+    pub variable: bool,
+}
+
+/// Parse the FLAC frame header at the start of `b`: the sync code, the block size and rate
+/// codes, the channel assignment, the sample size, the UTF-8 coded number, the explicit
+/// sizes when the codes say so, and the CRC-8 over all of it. Returns the parameters and
+/// the header's length, or `None` for anything that isn't a frame header.
+pub fn parse_flac_frame_header(b: &[u8]) -> Option<(FlacFrameParams, usize)> {
+    if b.len() < 6 || b[0] != 0xff || b[1] & 0xfc != 0xf8 {
+        return None;
+    }
+    let bs_code = b[2] >> 4;
+    let rate_code = b[2] & 0x0f;
+    let ch_code = b[3] >> 4;
+    let ss_code = (b[3] >> 1) & 0x07;
+    if b[3] & 1 != 0 || bs_code == 0 || rate_code == 15 || ch_code > 10 || ss_code == 3 {
+        return None;
+    }
+    let channels = if ch_code <= 7 {
+        u32::from(ch_code) + 1
+    } else {
+        2
+    };
+    let bits = match ss_code {
+        0 => None,
+        1 => Some(8),
+        2 => Some(12),
+        4 => Some(16),
+        5 => Some(20),
+        6 => Some(24),
+        _ => Some(32),
+    };
+    let extra = match b[4] {
+        0x00..=0x7f => 0,
+        0xc0..=0xdf => 1,
+        0xe0..=0xef => 2,
+        0xf0..=0xf7 => 3,
+        0xf8..=0xfb => 4,
+        0xfc..=0xfd => 5,
+        0xfe => 6,
+        _ => return None,
+    };
+    let mut number = u64::from(b[4] & (0x7f >> extra));
+    let mut pos = 5;
+    for _ in 0..extra {
+        let c = *b.get(pos)?;
+        if c & 0xc0 != 0x80 {
+            return None;
+        }
+        number = (number << 6) | u64::from(c & 0x3f);
+        pos += 1;
+    }
+    let mut take = |n: usize| -> Option<u32> {
+        let v = b.get(pos..pos + n)?;
+        pos += n;
+        Some(v.iter().fold(0u32, |a, &x| (a << 8) | u32::from(x)))
+    };
+    let block_size = match bs_code {
+        1 => 192,
+        2..=5 => 576u32 << (bs_code - 2),
+        6 => take(1)? + 1,
+        7 => take(2)? + 1,
+        _ => 256u32 << (bs_code - 8),
+    };
+    let rate = match rate_code {
+        0 => None,
+        1 => Some(88_200),
+        2 => Some(176_400),
+        3 => Some(192_000),
+        4 => Some(8_000),
+        5 => Some(16_000),
+        6 => Some(22_050),
+        7 => Some(24_000),
+        8 => Some(32_000),
+        9 => Some(44_100),
+        10 => Some(48_000),
+        11 => Some(96_000),
+        12 => Some(take(1)? * 1_000),
+        13 => Some(take(2)?),
+        _ => Some(take(2)? * 10),
+    };
+    if block_size < 16 || rate.is_some_and(|r| r == 0 || r > 655_350) {
+        return None;
+    }
+    let crc = *b.get(pos)?;
+    if crate::mux::crc8(&b[..pos]) != crc {
+        return None;
+    }
+    Some((
+        FlacFrameParams {
+            rate,
+            channels,
+            bits,
+            block_size,
+            number,
+            variable: b[1] & 1 != 0,
+        },
+        pos + 1,
+    ))
+}
+
+/// Every FLAC frame header in `b` from `from` on: (offset, parameters, header length).
+fn flac_frame_headers(
+    b: &[u8],
+    from: usize,
+) -> impl Iterator<Item = (usize, FlacFrameParams, usize)> + '_ {
+    (from..b.len().saturating_sub(5))
+        .filter(move |&i| b[i] == 0xff && b[i + 1] & 0xfc == 0xf8)
+        .filter_map(move |i| parse_flac_frame_header(&b[i..]).map(|(p, l)| (i, p, l)))
+}
+
+/// The first FLAC frame header in `b` that the next frame's header agrees with (its
+/// number is this one's plus one, or plus the block size in a variable-size stream, with
+/// the same rate and depth codes): (offset, parameters). A sync pattern inside audio data
+/// passes the field checks and the CRC-8 now and then; it never has such a successor.
+/// With `single`, a header with no successor in `b` is accepted (the stream's end).
+pub fn find_flac_frame(b: &[u8], single: bool) -> Option<(usize, FlacFrameParams)> {
+    let mut lone = None;
+    for (i, p, len) in flac_frame_headers(b, 0) {
+        let next = p.number
+            + if p.variable {
+                u64::from(p.block_size)
+            } else {
+                1
+            };
+        let agrees = flac_frame_headers(b, i + len).take(64).any(|(_, q, _)| {
+            q.number == next && q.rate == p.rate && q.bits == p.bits && q.variable == p.variable
+        });
+        if agrees {
+            return Some((i, p));
+        }
+        lone.get_or_insert((i, p));
+    }
+    if single { lone } else { None }
+}
+
+/// `fLaC` and a STREAMINFO (the only, so last, block) for a stream whose header was left
+/// out: frame sizes and the total unknown (0), no MD5. `block` is the block size of a
+/// fixed-size stream (the reader takes the frames' numbers for frame numbers only when the
+/// header's minimum and maximum block size agree, and every common encoder writes such a
+/// stream); `None` is a variable-size stream, which may use the whole range.
+pub fn synth_flac_header(rate: u32, channels: u32, bits: u32, block: Option<u32>) -> Vec<u8> {
+    let mut h = b"fLaC".to_vec();
+    h.extend([0x80, 0, 0, 34]);
+    let mut s = [0u8; 34];
+    let (min, max) = match block {
+        Some(b) => (b, b),
+        None => (16, 65_535),
+    };
+    s[0..2].copy_from_slice(&(min.min(65_535) as u16).to_be_bytes());
+    s[2..4].copy_from_slice(&(max.min(65_535) as u16).to_be_bytes());
+    let packed: u64 = ((u64::from(rate) & 0xf_ffff) << 44)
+        | ((u64::from(channels.clamp(1, 8)) - 1) << 41)
+        | ((u64::from(bits.clamp(4, 32)) - 1) << 36);
+    s[10..18].copy_from_slice(&packed.to_be_bytes());
+    h.extend(s);
+    h
+}
+
+/// How far into a header-free stream the first frame, and the one after it, are looked
+/// for (two frames of 24-bit audio at 192 kHz with the largest usual block size fit).
+const FLAC_FRAME_SEARCH: usize = 256 * 1024;
+/// Frames the reader may fail to parse in a row before the track fails.
+const MAX_DEMUX_ERRORS: u32 = 64;
+
+/// What to do with the start of a stream announced as FLAC.
+enum HeaderFix {
+    /// Starts with a header (or an ID3 tag, which the reader skips), or can't be helped.
+    Keep,
+    /// Too few bytes to tell yet.
+    Need,
+    /// Bare frames whose rate or depth neither the frame header nor an earlier stream
+    /// says: nothing to make a header from, and left alone the probe would take the frame
+    /// sync for an ADTS one and play noise.
+    Unknown,
+    /// Bare frames: drop `skip` bytes and put a made header in front (`block` for a
+    /// fixed-size stream, see [`synth_flac_header`]).
+    Synth {
+        skip: usize,
+        rate: u32,
+        channels: u32,
+        bits: u32,
+        block: Option<u32>,
+    },
+}
+
+fn flac_header_fix(b: &[u8], eof: bool, fallback: Option<(u32, u32, u32)>) -> HeaderFix {
+    if b.starts_with(b"fLaC") || b.starts_with(b"ID3") {
+        return HeaderFix::Keep;
+    }
+    if b.len() < 16 && !eof {
+        return HeaderFix::Need;
+    }
+    let window = &b[..b.len().min(FLAC_FRAME_SEARCH)];
+    match find_flac_frame(window, eof || b.len() >= FLAC_FRAME_SEARCH) {
+        Some((skip, p)) => {
+            let (fr, fb) = fallback.map_or((None, None), |(r, _, bt)| (Some(r), Some(bt)));
+            match (p.rate.or(fr), p.bits.or(fb)) {
+                (Some(rate), Some(bits)) => HeaderFix::Synth {
+                    skip,
+                    rate,
+                    channels: p.channels,
+                    bits,
+                    block: (!p.variable).then_some(p.block_size),
+                },
+                _ => HeaderFix::Unknown,
+            }
+        }
+        None if !eof && b.len() < FLAC_FRAME_SEARCH => HeaderFix::Need,
+        None => HeaderFix::Keep,
+    }
 }
 
 /// What a stream turned out to be, once its headers have been probed.
@@ -303,6 +550,17 @@ pub struct StreamDecoder {
     tmp: Vec<f32>,
     stereo: Vec<f32>,
     source: Option<SourceFormat>,
+    /// The stream was announced as FLAC (`strm` format `f`).
+    flac: bool,
+    /// (rate, channels, bits) of an earlier stream, for a made header whose frame doesn't
+    /// say (see [`flac_header_fix`]).
+    fallback: Option<(u32, u32, u32)>,
+    /// A header was made for a bare-frames stream: (rate, channels, bits), until taken.
+    synthesised: Option<(u32, u32, u32)>,
+    /// The sample rate, once probed.
+    rate: Option<u32>,
+    /// Frames the reader failed to parse in a row.
+    demux_errors: u32,
 }
 
 /// The error [`StreamDecoder::work`] reports when it caught a panic in a third-party demuxer
@@ -330,7 +588,32 @@ impl StreamDecoder {
             tmp: Vec::new(),
             stereo: Vec::new(),
             source: None,
+            flac: format == b'f',
+            fallback: None,
+            synthesised: None,
+            rate: None,
+            demux_errors: 0,
         }
+    }
+
+    /// An earlier stream's (rate, channels, bits): what a made FLAC header falls back on
+    /// when the first frame doesn't say (a seek keeps the track's format).
+    pub fn with_fallback(mut self, fallback: Option<(u32, u32, u32)>) -> Self {
+        self.fallback = fallback;
+        self
+    }
+
+    /// This stream's (rate, channels, bits) once probed, as the fallback for the next one.
+    pub fn format_hint(&self) -> Option<(u32, u32, u32)> {
+        let rate = self.rate?;
+        let s = self.source?;
+        Some((rate, s.channels, s.bits?))
+    }
+
+    /// A header was made for this stream (bare FLAC frames): its (rate, channels, bits),
+    /// reported once.
+    pub fn take_synthesised(&mut self) -> Option<(u32, u32, u32)> {
+        self.synthesised.take()
     }
 
     /// The stream's format, once its headers have been probed.
@@ -421,6 +704,16 @@ impl StreamDecoder {
                     self.state = State::Done;
                     continue;
                 }
+                Err(SymError::DecodeError(e)) => {
+                    // A frame the reader can't parse (a seek that landed a hair off a
+                    // boundary, damage): it syncs to the next frame on the next call, as
+                    // players do. Only a run of them fails the track.
+                    self.demux_errors += 1;
+                    if self.demux_errors > MAX_DEMUX_ERRORS {
+                        self.state = State::Failed(format!("demux: {e}"));
+                    }
+                    continue;
+                }
                 Err(SymError::ResetRequired) => {
                     // Chained stream with new parameters: rebuild the decoder.
                     match make_decoder(reader.as_ref()) {
@@ -444,6 +737,7 @@ impl StreamDecoder {
                 continue;
             }
             decoded += 1;
+            self.demux_errors = 0;
 
             match decoder.decode(&packet) {
                 Ok(buf) => {
@@ -472,6 +766,40 @@ impl StreamDecoder {
             self.state = State::Failed(msg.clone());
             return Some(DecodeStatus::Failed(msg));
         }
+        if self.flac && self.synthesised.is_none() {
+            let fallback = self.fallback;
+            match self
+                .input
+                .with_buffered(|b| flac_header_fix(b, eof, fallback))
+            {
+                HeaderFix::Keep => {}
+                HeaderFix::Unknown => {
+                    let msg = "probe: bare FLAC frames that don't say their rate or depth, \
+                               and no earlier stream to take them from"
+                        .to_string();
+                    self.state = State::Failed(msg.clone());
+                    return Some(DecodeStatus::Failed(msg));
+                }
+                HeaderFix::Need => {
+                    let have = self.input.unread();
+                    self.state = State::Probing {
+                        min_bytes: (have * 2).max(min_bytes).min(PROBE_MAX_BYTES),
+                    };
+                    return Some(DecodeStatus::NeedData);
+                }
+                HeaderFix::Synth {
+                    skip,
+                    rate,
+                    channels,
+                    bits,
+                    block,
+                } => {
+                    self.input
+                        .replace_prefix(skip, &synth_flac_header(rate, channels, bits, block));
+                    self.synthesised = Some((rate, channels, bits));
+                }
+            }
+        }
         let mss = MediaSourceStream::new(
             Box::new(ReadOnlySource::new(self.input.clone())),
             MediaSourceStreamOptions::default(),
@@ -489,6 +817,7 @@ impl StreamDecoder {
                         .default_track(TrackType::Audio)
                         .and_then(|t| t.codec_params.clone());
                     if let Some(CodecParameters::Audio(params)) = params {
+                        self.rate = params.sample_rate;
                         self.source = Some(source_format(&params, reader.as_mut()));
                     }
                     self.input.release();
@@ -1202,6 +1531,244 @@ mod tests {
             frames * 2,
             "every mono frame should become one stereo frame"
         );
+    }
+
+    /// LMS serves a FLAC seek as bare frames (issue #12): the stream decoder must make the
+    /// missing header from the first frame and decode exactly the audio from there on.
+    #[cfg(feature = "player")]
+    mod headerless_flac {
+        use super::*;
+        use crate::mux::{BLOCK, MIN_BLOCK, Variant, flac_frame, streaminfo};
+
+        /// A whole FLAC stream of `frames` frames, the byte offset of each frame, and its PCM.
+        fn stream(rate: u32, v: Variant, frames: usize) -> (Vec<u8>, Vec<usize>, Vec<f32>) {
+            let pcm: Vec<f32> = (0..frames * BLOCK * 2)
+                .map(|i| ((i / 2) as f32 * 0.013).sin() * 0.7)
+                .collect();
+            let mut flac = b"fLaC".to_vec();
+            flac.extend([0x80, 0, 0, 34]);
+            flac.extend(streaminfo(rate, v));
+            let mut starts = vec![];
+            let mut first = 0u64;
+            for chunk in pcm.chunks(BLOCK * 2) {
+                let n = (chunk.len() / 2).max(MIN_BLOCK);
+                starts.push(flac.len());
+                flac.extend(flac_frame(chunk, rate, first, n, v));
+                first += if v.fixed_blocks { 1 } else { n as u64 };
+            }
+            (flac, starts, pcm)
+        }
+
+        /// (status, rate, stereo PCM, the header made if any).
+        type Decoded = (DecodeStatus, u32, Vec<f32>, Option<(u32, u32, u32)>);
+
+        fn decode(bytes: &[u8], fallback: Option<(u32, u32, u32)>) -> Decoded {
+            let input = InputBuffer::new();
+            input.push(bytes);
+            input.set_eof();
+            let mut dec = StreamDecoder::new(input, b'f').with_fallback(fallback);
+            let mut out = vec![];
+            let mut rate = 0;
+            let mut status = DecodeStatus::NeedData;
+            let mut made = None;
+            for _ in 0..100_000 {
+                status = dec.work(8, &mut |r, s| {
+                    rate = r;
+                    out.extend_from_slice(s);
+                });
+                made = made.or(dec.take_synthesised());
+                if matches!(status, DecodeStatus::Finished | DecodeStatus::Failed(_)) {
+                    break;
+                }
+            }
+            (status, rate, out, made)
+        }
+
+        fn bits16() -> Variant {
+            Variant::from_code(Variant::default().code() | 0x200)
+        }
+
+        #[test]
+        fn a_stream_cut_at_a_frame_decodes_the_same_audio_from_a_made_header() {
+            let fixed = |v: Variant| Variant::from_code(v.code() | 0x100);
+            for (rate, v) in [
+                (44_100, Variant::default()),
+                (96_000, Variant::default()),
+                (44_100, bits16()),
+                (48_000, bits16()),
+                (44_100, fixed(Variant::default())),
+                (192_000, fixed(bits16())),
+            ] {
+                let (flac, starts, _) = stream(rate, v, 12);
+                let (st, r, full, made) = decode(&flac, None);
+                assert!(matches!(st, DecodeStatus::Finished), "whole stream: {st:?}");
+                assert_eq!((r, made), (rate, None), "a real header is kept");
+                let (st, r, out, made) = decode(&flac[starts[5]..], None);
+                assert!(matches!(st, DecodeStatus::Finished), "rate {rate}: {st:?}");
+                assert_eq!(r, rate);
+                assert_eq!(
+                    made,
+                    Some((rate, 2, if v.bits16 { 16 } else { 24 })),
+                    "the header is made from the frame"
+                );
+                assert_eq!(
+                    out,
+                    full[5 * BLOCK * 2..],
+                    "rate {rate}: the audio from the cut on, bit-exactly"
+                );
+            }
+        }
+
+        /// The reference encoder's stream (LPC-coded frames, a VORBIS_COMMENT block, a short
+        /// last frame), cut where LMS cuts a seek: at a frame, header and all left behind.
+        #[test]
+        fn the_reference_encoders_stream_cut_at_a_frame_decodes_from_there() {
+            const FLAC: &[u8] = include_bytes!("../tests/fixtures/sine-44k-1152.flac");
+            // Frame offsets as `flac --analyze` lists them: 39 frames of 1,152 samples (the
+            // last 324), 44.1 kHz, 16-bit, stereo, one second in all.
+            const FRAME_10: usize = 8729;
+            let (st, r, full, made) = decode(FLAC, None);
+            assert!(matches!(st, DecodeStatus::Finished), "{st:?}");
+            assert_eq!((r, made, full.len()), (44_100, None, 44_100 * 2));
+            let (st, r, out, made) = decode(&FLAC[FRAME_10..], None);
+            assert!(matches!(st, DecodeStatus::Finished), "{st:?}");
+            assert_eq!((r, made), (44_100, Some((44_100, 2, 16))));
+            assert_eq!(out, full[10 * 1152 * 2..], "bit-exact from frame 10 on");
+            let (st, _, out, _) = decode(&FLAC[FRAME_10 + 5..], None);
+            assert!(matches!(st, DecodeStatus::Finished), "{st:?}");
+            assert_eq!(
+                out,
+                full[11 * 1152 * 2..],
+                "a cut inside frame 10 plays from frame 11"
+            );
+        }
+
+        #[test]
+        fn a_cut_inside_a_frame_starts_at_the_next_whole_frame() {
+            let (flac, starts, _) = stream(44_100, Variant::default(), 12);
+            let (_, _, full, _) = decode(&flac, None);
+            let (st, _, out, made) = decode(&flac[starts[5] + 37..], None);
+            assert!(matches!(st, DecodeStatus::Finished), "{st:?}");
+            assert!(made.is_some());
+            assert_eq!(
+                out,
+                full[6 * BLOCK * 2..],
+                "the partial frame is skipped, the next plays"
+            );
+        }
+
+        #[test]
+        fn a_rate_the_frame_does_not_name_comes_from_the_earlier_stream_or_fails_cleanly() {
+            // 37,800 Hz has no rate code: the frame says "as in STREAMINFO".
+            let (flac, starts, _) = stream(37_800, Variant::default(), 6);
+            let (_, _, full, _) = decode(&flac, None);
+            let (st, _, _, made) = decode(&flac[starts[2]..], None);
+            assert!(
+                matches!(&st, DecodeStatus::Failed(e) if e.contains("bare FLAC frames")),
+                "nothing to make a header from: {st:?}"
+            );
+            assert_eq!(made, None);
+            let (st, r, out, made) = decode(&flac[starts[2]..], Some((37_800, 2, 24)));
+            assert!(matches!(st, DecodeStatus::Finished), "{st:?}");
+            assert_eq!((r, made), (37_800, Some((37_800, 2, 24))));
+            assert_eq!(out, full[2 * BLOCK * 2..]);
+        }
+
+        #[test]
+        fn a_damaged_frame_mid_stream_is_skipped_not_fatal() {
+            let (mut flac, starts, _) = stream(44_100, Variant::default(), 12);
+            let (_, _, full, _) = decode(&flac, None);
+            // Trample frame 4's body: its CRC-16 no longer matches, and its subframes are junk.
+            for b in &mut flac[starts[4] + 12..starts[5] - 2] {
+                *b = 0x5a;
+            }
+            let (st, _, out, _) = decode(&flac, None);
+            assert!(matches!(st, DecodeStatus::Finished), "{st:?}");
+            let tail = &full[full.len() - 2 * BLOCK * 2..];
+            assert_eq!(
+                &out[out.len() - tail.len()..],
+                tail,
+                "the frames after the damage still play"
+            );
+            assert!(
+                out.len() >= 9 * BLOCK * 2,
+                "at most a frame or two lost: {}",
+                out.len()
+            );
+        }
+
+        #[test]
+        fn frame_headers_parse_and_junk_never_panics() {
+            let (flac, starts, _) = stream(96_000, Variant::default(), 4);
+            let (p, len) = parse_flac_frame_header(&flac[starts[1]..]).expect("a real header");
+            assert_eq!(
+                (p.rate, p.channels, p.bits, p.block_size),
+                (Some(96_000), 2, Some(24), BLOCK as u32)
+            );
+            assert_eq!(
+                (p.number, p.variable),
+                (BLOCK as u64, true),
+                "frame 1 of a variable-size stream: its first sample"
+            );
+            let fixed = Variant::from_code(Variant::default().code() | 0x100);
+            let (flac_fixed, starts_fixed, _) = stream(96_000, fixed, 4);
+            let (q, _) = parse_flac_frame_header(&flac_fixed[starts_fixed[1]..]).expect("header");
+            assert_eq!(
+                (q.number, q.variable),
+                (1, false),
+                "frame 1 of a fixed-size stream"
+            );
+            assert_eq!(
+                find_flac_frame(&flac_fixed[starts_fixed[1] + 1..], false).map(|(o, _)| o),
+                Some(starts_fixed[2] - starts_fixed[1] - 1)
+            );
+            assert!((6..=16).contains(&len));
+            // From a byte into frame 1: frame 2 is the first header that frame 3 agrees with.
+            assert_eq!(
+                find_flac_frame(&flac[starts[1] + 1..], false).map(|(o, _)| o),
+                Some(starts[2] - starts[1] - 1)
+            );
+            // The last frame alone is only taken as a lone header at the stream's end.
+            assert_eq!(find_flac_frame(&flac[starts[3]..], false), None);
+            assert_eq!(
+                find_flac_frame(&flac[starts[3]..], true).map(|(o, _)| o),
+                Some(0)
+            );
+            assert!(
+                parse_flac_frame_header(&flac[starts[1]..starts[1] + 5]).is_none(),
+                "truncated"
+            );
+            let mut x = 0x2545_f491_4f6c_dd1du64;
+            let mut next = || {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x
+            };
+            for round in 0..200 {
+                let n = 16 + (next() % 4000) as usize;
+                let mut junk: Vec<u8> = (0..n).map(|_| next() as u8).collect();
+                // Sync patterns sprinkled in, with junk after them.
+                for _ in 0..8 {
+                    let at = (next() % (n as u64 - 2)) as usize;
+                    junk[at] = 0xff;
+                    junk[at + 1] = 0xf8 | (next() as u8 & 1);
+                }
+                let _ = find_flac_frame(&junk, true);
+                let _ = find_flac_frame(&junk, false);
+                let (st, _, _, _) = decode(&junk, Some((44_100, 2, 16)));
+                assert!(
+                    matches!(st, DecodeStatus::Failed(_) | DecodeStatus::Finished),
+                    "round {round}: {st:?}"
+                );
+            }
+            let h = synth_flac_header(44_100, 2, 16, None);
+            assert_eq!(&h[..8], b"fLaC\x80\x00\x00\x22");
+            assert_eq!(h.len(), 42);
+            assert_eq!(&h[8..12], [0, 16, 255, 255], "variable: the whole range");
+            let h = synth_flac_header(44_100, 2, 16, Some(1152));
+            assert_eq!(&h[8..12], [4, 128, 4, 128], "fixed: the frames' block size");
+        }
     }
 
     #[test]

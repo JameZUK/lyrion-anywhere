@@ -228,6 +228,51 @@ fn plays_ogg_opus() {
     );
 }
 
+/// A FLAC seek from LMS is bare frames, no header: the audio from the seek plays, and the
+/// worker hears, once, that the core made the header (for the Connection log).
+#[wasm_bindgen_test]
+fn a_flac_seek_stream_without_a_header_plays_and_says_so() {
+    let flac = include_bytes!("../../core/tests/fixtures/sine-44k-1152.flac");
+    const FRAME_10: usize = 8729; // as `flac --analyze` lists it
+    let mut p = WasmPlayer::new("02:00:00:00:00:01", "Web", "flc").unwrap();
+    p.set_diagnostics(true);
+    p.connected(0.0);
+    p.on_control(&strm_s(b'f'), 1.0).unwrap();
+    p.on_stream_headers(
+        b"HTTP/1.0 200 OK\r\nContent-Type: audio/x-flac\r\n\r\n",
+        2.0,
+    );
+    p.on_stream_data(&flac[FRAME_10..], 3.0);
+    p.on_stream_end(4.0);
+    let (mut frames, mut rates) = (0, Vec::new());
+    let mut buf = vec![0f32; 4096];
+    for t in 0..400 {
+        p.tick(5.0 + t as f64 * 10.0);
+        let rate = p.output_rate();
+        let n = p.pull(&mut buf);
+        if n > 0 && !rates.contains(&rate) {
+            rates.push(rate);
+        }
+        frames += n;
+        let _ = p.take_actions();
+    }
+    assert_eq!(rates, vec![44_100], "{}", p.status_json());
+    // One second of 1,152-sample frames; from frame 10 on, 32,580 samples remain.
+    assert!(
+        (31_500..=33_500).contains(&frames),
+        "pulled {frames} frames"
+    );
+    let d = p.take_diagnostics();
+    let made: Vec<JsValue> = (0..d.length())
+        .map(|i| d.get(i))
+        .filter(|e| get(e, "type").as_string().as_deref() == Some("flac_header"))
+        .collect();
+    assert_eq!(made.len(), 1, "said once");
+    assert_eq!(get(&made[0], "rate").as_f64(), Some(44_100.0));
+    assert_eq!(get(&made[0], "channels").as_f64(), Some(2.0));
+    assert_eq!(get(&made[0], "bits").as_f64(), Some(16.0));
+}
+
 /// A partial flush (`strm f`: the next track deleted or moved in LMS's queue) reaches the
 /// worker once, as a plain object saying what to drop from its output.
 #[wasm_bindgen_test]

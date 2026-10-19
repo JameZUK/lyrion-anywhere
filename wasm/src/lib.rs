@@ -298,8 +298,9 @@ impl WasmPlayer {
     }
 
     /// The diagnostics events since the last call, as plain objects, oldest first:
-    /// `{type:"strm", command, autostart, format, threshold}` (single characters, and KiB)
-    /// or `{type:"stat", event}` (e.g. `"STMl"`). Nothing else from the command is exposed.
+    /// `{type:"strm", command, autostart, format, threshold}` (single characters, and KiB),
+    /// `{type:"stat", event}` (e.g. `"STMl"`) or `{type:"flac_header", rate, channels, bits}`
+    /// (a header made for a bare-frames FLAC stream). Nothing else is exposed.
     pub fn take_diagnostics(&mut self) -> Array {
         let out = Array::new();
         for e in self.inner.take_diagnostics() {
@@ -321,6 +322,16 @@ impl WasmPlayer {
                     set(&o, "type", &"stat".into());
                     let name: String = event.iter().map(|b| letter(*b)).collect();
                     set(&o, "event", &name.into());
+                }
+                DiagEvent::FlacHeader {
+                    rate,
+                    channels,
+                    bits,
+                } => {
+                    set(&o, "type", &"flac_header".into());
+                    set(&o, "rate", &JsValue::from_f64(f64::from(rate)));
+                    set(&o, "channels", &JsValue::from_f64(f64::from(channels)));
+                    set(&o, "bits", &JsValue::from_f64(f64::from(bits)));
                 }
             }
             out.push(&o);

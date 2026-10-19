@@ -44,6 +44,11 @@ export function describeDiag(e) {
     const line = describeStat(e.event);
     return line ? { line, kind: `stat:${e.event}` } : null;
   }
+  if (e?.type === 'flac_header') {
+    // LMS serves a FLAC seek as bare frames; the core made the missing header (issue #12).
+    const n = (v) => (Number.isFinite(v) && v > 0 ? Math.round(v) : '?');
+    return { line: `player: the stream had no FLAC header (a seek is sent so); made one from its first frame: ${n(e.rate)} Hz, ${n(e.bits)}-bit, ${n(e.channels)} ch`, kind: undefined };
+  }
   return null;
 }
 

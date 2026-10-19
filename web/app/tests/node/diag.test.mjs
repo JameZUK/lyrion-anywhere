@@ -48,6 +48,11 @@ test('diagnostics events become lines with a kind each, for rate limiting', () =
   assert.deepEqual(describeDiag({ type: 'strm', command: 'q' }), { line: 'lms: strm q', kind: 'strm:q' });
   assert.deepEqual(describeDiag({ type: 'stat', event: 'STMp' }), { line: 'player: STMp (paused, as LMS asked)', kind: 'stat:STMp' });
   assert.equal(describeDiag({ type: 'stat', event: 'bogus' }), null);
+  assert.deepEqual(describeDiag({ type: 'flac_header', rate: 44100, channels: 2, bits: 16 }), {
+    line: 'player: the stream had no FLAC header (a seek is sent so); made one from its first frame: 44100 Hz, 16-bit, 2 ch',
+    kind: undefined,
+  });
+  assert.equal(describeDiag({ type: 'flac_header', rate: NaN, channels: -1, bits: 'x' }).line, 'player: the stream had no FLAC header (a seek is sent so); made one from its first frame: ? Hz, ?-bit, ? ch');
   assert.equal(describeDiag({ type: 'other' }), null);
   assert.equal(describeDiag(undefined), null);
 });
