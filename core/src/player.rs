@@ -2758,6 +2758,42 @@ mod tests {
         assert!(p.segments.iter().all(|s| s.complete));
     }
 
+    /// A FLAC seek from LMS is bare frames with no header (#12). The player makes one, plays
+    /// the audio from the seek, says so once to the host, and never sends `STMn`.
+    #[test]
+    fn a_flac_seek_stream_without_a_header_plays_and_is_reported() {
+        const FLAC: &[u8] = include_bytes!("../tests/fixtures/sine-44k-1152.flac");
+        const FRAME_10: usize = 8729; // as `flac --analyze` lists it; 39 frames of 1,152
+        let mut p = Player::new(cfg());
+        p.set_diagnostics(true);
+        let mut now = 0;
+        p.on_control_data(&strm(b's', b'1', b'f', 0), now).unwrap();
+        p.on_stream_data(&FLAC[FRAME_10..], now);
+        p.on_stream_end(now);
+        let by_rate = play_out(&mut p, &mut now);
+        // One second of audio; from frame 10 on, 32,580 frames remain.
+        assert_eq!(by_rate.len(), 1, "{by_rate:?}");
+        assert_eq!(by_rate[0].0, 44100, "{by_rate:?}");
+        assert!((31_500..=33_500).contains(&by_rate[0].1), "{by_rate:?}");
+        let ev = events(&p.take_actions());
+        assert_eq!(count(&ev, "STMn"), 0, "{ev:?}");
+        assert_eq!(count(&ev, "STMs"), 1, "{ev:?}");
+        assert_eq!(count(&ev, "STMu"), 1, "{ev:?}");
+        let made: Vec<_> = p
+            .take_diagnostics()
+            .into_iter()
+            .filter(|d| matches!(d, DiagEvent::FlacHeader { .. }))
+            .collect();
+        assert_eq!(
+            made,
+            vec![DiagEvent::FlacHeader {
+                rate: 44100,
+                channels: 2,
+                bits: 16
+            }]
+        );
+    }
+
     /// Regression (M12): a refused codec's track set its stream and input as ended but never
     /// ended the decoder's input, so it probed for ever: the player counted as decoding, a
     /// dry output sent `STMo` (an underrun) rather than letting `STMu` (the end) go, and it

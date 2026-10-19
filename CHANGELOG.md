@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-19: Android 1.15.6 released
+
+The FLAC seek fix of plugin 0.6.3 (below) for the Android app, which shares the player core: a seek into a FLAC streamed at Original on a stock LMS no longer ends the track with "Decoder does not support file format". versionCode 35. Notes: `docs/release-notes/android-1.15.6.md`. Also a player-level core test (`a_flac_seek_stream_without_a_header_plays_and_is_reported`) covering the path both the Android engine and the web player take: the header is made once, the audio from the seek plays, `STMs` and `STMu` go, `STMn` never does. Not yet in the Android device report: the "made one from its first frame" note the web Connection log shows; the engine does not drain the core's diagnostics (to follow with task #72).
+
 ## 2026-10-19: Plugin 0.6.3 released
 
 The scrub-then-skip on iPhone and iPad (#12) at its root, two gateway faults and a Safari stall found on the way. Notes: `docs/release-notes/v0.6.3.md`. The skip itself turned out to be a FLAC seek that no stock LMS could serve to this player (below, under Core); the owner's server had hidden it with a `custom-convert.conf` rule that re-encodes seeks through the flac binary, header included. The rest was reproduced on the owner's iPad and validated there before the tag.
