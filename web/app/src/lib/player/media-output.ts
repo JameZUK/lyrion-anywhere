@@ -230,10 +230,25 @@ export class MediaOutput {
 		this.#pump();
 	}
 
+	/**
+	 * Seconds of played audio kept behind the play head: {@link KEEP_BEHIND} unless the
+	 * worker, knowing the stream's data rate, asked for less (hi-res audio and the browser's
+	 * media buffer quota; see static/player/lead.js).
+	 */
+	#keepBehind = KEEP_BEHIND;
+
+	setKeepBehind(seconds: number) {
+		if (Number.isFinite(seconds)) this.#keepBehind = Math.min(KEEP_BEHIND, Math.max(FULL_KEEP_BEHIND, seconds));
+	}
+
+	get keepBehind() {
+		return this.#keepBehind;
+	}
+
 	#pump() {
 		const sb = this.#sb;
 		if (!sb || sb.updating || this.#closed) return;
-		const behind = this.audio.currentTime - KEEP_BEHIND;
+		const behind = this.audio.currentTime - this.#keepBehind;
 		if (behind > 1 && sb.buffered.length && sb.buffered.start(0) < behind - 1) {
 			try {
 				sb.remove(0, behind); // trim played audio; the queue resumes on updateend

@@ -412,6 +412,12 @@ impl WasmSegmenter {
         self.inner.inner().rate()
     }
 
+    /// Bytes per second of the segments at this rate and variant (see
+    /// `Segmenter::bytes_per_second`): the host sizes the element's lead from it.
+    pub fn bytes_per_second(&self) -> u32 {
+        self.inner.inner().bytes_per_second()
+    }
+
     /// `ftyp`+`moov` for the current rate; append before media segments (and after a rate change).
     pub fn init_segment(&self) -> Vec<u8> {
         self.inner.inner().init_segment()

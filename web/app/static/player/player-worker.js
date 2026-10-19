@@ -20,6 +20,7 @@ const { planTrim } = await import(`./trim.js${VQ}`);
 const { LocalHold, effectiveOutput, parseLocal } = await import(`./local.js${VQ}`);
 const { MediaCorrections } = await import(`./media-sync.js${VQ}`);
 const { Persisting, describeDiag, describeDrained, describeNotConsuming, describeOutputChange, outputCause, outputName, secs } = await import(`./diag.js${VQ}`);
+const { keepBehindSecs, mediaAheadSecs } = await import(`./lead.js${VQ}`);
 
 const TICK_MS = 20;
 // PCM queued in the worklet ahead of playback. Small, so pause/stop feel immediate.
@@ -102,6 +103,8 @@ let outputMode = 'worklet';
 // risks the element running dry when iOS throttles a page in the background, which is the
 // reason this mode exists.
 const MEDIA_AHEAD_SECS = 8;
+/** The lead in use (seconds): MEDIA_AHEAD_SECS, or less for a high data rate (lead.js). */
+let mediaAhead = MEDIA_AHEAD_SECS;
 let segmenter = null;
 let mediaVariant = 0; // init-segment variant the browser's self-test accepted
 let mediaWaiting = false; // flushed; waiting for the main thread's new timeline position
@@ -706,7 +709,11 @@ function mediaTick(output) {
       segmenter = new core.WasmSegmenter(rate);
       segmenter.set_variant(mediaVariant);
     }
-    postMessage({ media: { init: segmenter.init_segment(), span: { at: segmenter.emitted_seconds(), rate } } });
+    // The lead and the keep-behind follow the stream's data rate (see lead.js): hi-res
+    // audio must not sit on the browser's media buffer quota.
+    const bytesPerSec = segmenter.bytes_per_second();
+    mediaAhead = mediaAheadSecs(bytesPerSec);
+    postMessage({ media: { init: segmenter.init_segment(), span: { at: segmenter.emitted_seconds(), rate, keepBehind: keepBehindSecs(bytesPerSec) } } });
   }
   // The rest of a sync skip that was more than the core had decoded.
   if (mediaCorrections.pendingSkip > 0) {
@@ -715,7 +722,7 @@ function mediaTick(output) {
     played += dropped;
   }
   let exhausted = false;
-  while (pulled - played < rate * MEDIA_AHEAD_SECS) {
+  while (pulled - played < rate * mediaAhead) {
     const buf = new Float32Array(4096 * 2);
     // One track at a time, so the segmenter knows where each track's audio goes (a partial
     // flush cuts the timeline there: see trimOutput).
@@ -749,7 +756,7 @@ function mediaTick(output) {
  */
 function watchConsuming(output, rate) {
   const lead = (pulled - played) / rate;
-  const full = lead >= MEDIA_AHEAD_SECS - 0.5;
+  const full = lead >= mediaAhead - 0.5;
   const t = now();
   const change = notConsuming.update(output === 'Playing' && full && t - lastFramesAt >= NOT_CONSUMING_MS, t);
   if (change === 'began') {

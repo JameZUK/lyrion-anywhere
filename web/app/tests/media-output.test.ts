@@ -540,6 +540,36 @@ test('a full buffer removes the audio behind the play head and resumes without a
 	out.stop();
 });
 
+// Issue #12 follow-up: hi-res audio must not sit on the browser's media buffer quota (about
+// 5.5 MB for audio on an iPad). The worker, knowing the stream's data rate, asks the output
+// to keep less played audio behind the play head than the 10 s default.
+test('the keep-behind set by the worker trims played audio sooner, within sane bounds', async () => {
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors });
+	await out.start();
+	const sb = FakeSourceBuffer.last!;
+	const s = { paused: false, t: 30 };
+	control(out, s);
+	expect(out.keepBehind).toBe(10);
+	out.setKeepBehind(1.8);
+	expect(out.keepBehind).toBe(1.8);
+	sb.buffered = new FakeBuffered([[0, 40]]);
+	out.append(new Uint8Array([3]));
+	await settle();
+	expect(sb.removed).toHaveLength(1);
+	expect(sb.removed[0]![0]).toBe(0);
+	expect(sb.removed[0]![1]).toBeCloseTo(28.2, 5); // 30 − 1.8, not 30 − 10
+	await settle();
+	expect(sb.appended.map((b) => b[0])).toEqual([3]); // the segment follows the trim
+	// Clamped: never below the full-buffer keep-behind, never above the default; junk ignored.
+	out.setKeepBehind(0.2);
+	expect(out.keepBehind).toBe(1);
+	out.setKeepBehind(50);
+	expect(out.keepBehind).toBe(10);
+	out.setKeepBehind(NaN);
+	expect(out.keepBehind).toBe(10);
+	out.stop();
+});
+
 test('a full buffer with nothing played to remove tries again as the play head moves, not in a loop', async () => {
 	const note = vi.fn();
 	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors, note });

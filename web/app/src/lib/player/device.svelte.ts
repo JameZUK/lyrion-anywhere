@@ -871,7 +871,8 @@ class DevicePlayer {
 	async #onMedia(m: Record<string, unknown>) {
 		const media = this.#media;
 		if (!media) return;
-		const span = m.span as { at?: number; rate?: number } | undefined;
+		const span = m.span as { at?: number; rate?: number; keepBehind?: number } | undefined;
+		if (span && typeof span.keepBehind === 'number') media.setKeepBehind(span.keepBehind);
 		if (span && typeof span.at === 'number' && typeof span.rate === 'number') {
 			this.#timeline.mark(span.at, span.rate);
 			if (this.#seekAfterFlush) {

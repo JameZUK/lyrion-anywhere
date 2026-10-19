@@ -53,7 +53,7 @@ pub enum HighRate {
 }
 
 impl Variant {
-    fn bits(self) -> u32 {
+    pub fn bits(self) -> u32 {
         if self.bits16 { 16 } else { BITS }
     }
 
@@ -255,6 +255,13 @@ impl Segmenter {
     /// Write future init segments in this variant.
     pub fn set_variant(&mut self, v: Variant) {
         self.variant = v;
+    }
+
+    /// Bytes per second of the segments at this rate and variant: verbatim stereo frames
+    /// (hosts size the media element's lead and keep-behind from it; see the web player's
+    /// `lead.js`), not counting the few per cent of frame and box headers.
+    pub fn bytes_per_second(&self) -> u32 {
+        self.rate * 2 * self.variant.bits().div_ceil(8)
     }
 }
 
@@ -653,6 +660,19 @@ fn media_segment(sequence: u32, decode_time: u64, samples: &[(u32, Vec<u8>)]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hosts size the media element's lead from this (the iPad's audio buffer quota is a
+    /// few MB): verbatim stereo at the variant's bit depth.
+    #[test]
+    fn bytes_per_second_follows_rate_and_bit_depth() {
+        let mut s = Segmenter::new(96_000);
+        assert_eq!(s.bytes_per_second(), 96_000 * 2 * 3, "24-bit by default");
+        s.set_variant(Variant::from_code(Variant::default().code() | 0x200));
+        assert_eq!(s.variant.bits(), 16);
+        assert_eq!(s.bytes_per_second(), 96_000 * 2 * 2);
+        s.set_rate(44_100);
+        assert_eq!(s.bytes_per_second(), 176_400);
+    }
 
     fn sine(frames: usize, rate: u32, phase: usize) -> Vec<f32> {
         (0..frames)
