@@ -533,8 +533,9 @@ test('a full buffer removes the audio behind the play head and resumes without a
 	expect(to).toBeLessThanOrEqual(s.t); // only what has played
 	expect(to).toBeGreaterThan(92 + 0.5);
 	expect(sb.appended.map((b) => b[0])).toEqual([7]); // no further append() was needed
-	expect(note).toHaveBeenCalledWith('media buffer full; waiting');
-	expect(note).toHaveBeenCalledWith('media buffer trimmed; resuming');
+	// Both lines say where the play head and the audio were, and carry a kind for the limiter.
+	expect(note).toHaveBeenCalledWith('media buffer full at 100.0 s (segment 1 KB), buffered 92.0–106.0 s; waiting', 'media:full');
+	expect(note).toHaveBeenCalledWith('media buffer trimmed; resuming at 100.0 s, buffered 99.0–106.0 s', 'media:resume');
 	expect(s.t).toBe(100); // the play head is left alone
 	out.stop();
 });
@@ -553,13 +554,17 @@ test('a full buffer with nothing played to remove tries again as the play head m
 	expect(sb.removed).toEqual([]);
 	expect(sb.appended).toHaveLength(0);
 	expect(sb.attempts).toBe(1); // waits: no spinning on the refusal
-	expect(note.mock.calls.filter(([m]) => m === 'media buffer full; waiting')).toHaveLength(1);
+	expect(note.mock.calls.filter(([, k]) => k === 'media:full')).toHaveLength(1);
+	// With nothing behind the play head to remove, the log says so (rate-limited too).
+	expect(note).toHaveBeenCalledWith('media buffer full with nothing to trim behind 100.0 s, buffered 99.8–112.0 s; waiting for the play head', 'media:full-stuck');
 	// Played on a little: still nothing worth removing; one try per event, at most.
 	s.t = 100.2;
 	out.audio.dispatchEvent(new Event('timeupdate'));
 	await settle();
 	expect(sb.attempts).toBe(2);
 	expect(sb.removed).toEqual([]);
+	// Each refusal is noted by kind; the page's limiter keeps the log to one line per 5 s.
+	expect(note.mock.calls.filter(([, k]) => k === 'media:full')).toHaveLength(2);
 	// Played on further: the played audio goes, and the segment is appended.
 	s.t = 104;
 	out.audio.dispatchEvent(new Event('timeupdate'));
@@ -567,7 +572,8 @@ test('a full buffer with nothing played to remove tries again as the play head m
 	expect(sb.removed).toHaveLength(1);
 	expect(sb.removed[0]![1]).toBeLessThanOrEqual(104);
 	expect(sb.appended.map((b) => b[0])).toEqual([1]);
-	expect(note.mock.calls.filter(([m]) => m === 'media buffer full; waiting')).toHaveLength(1);
+	expect(note.mock.calls.filter(([, k]) => k === 'media:full')).toHaveLength(3);
+	expect(note.mock.calls.filter(([, k]) => k === 'media:resume')).toEqual([['media buffer trimmed; resuming at 104.0 s, buffered 103.0–112.0 s', 'media:resume']]);
 	// Recovered: timeupdates no longer append anything.
 	const before = sb.attempts;
 	out.audio.dispatchEvent(new Event('timeupdate'));

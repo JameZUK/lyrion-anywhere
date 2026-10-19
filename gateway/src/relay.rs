@@ -53,8 +53,13 @@ const CHUNK: usize = 64 * 1024;
 /// Longest wait for LMS to answer the stream request or deliver the next chunk.
 pub const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// A response whose client has a full window unacknowledged ends after this long without
-/// an acknowledgement; the client can fetch again with `?offset=`.
-pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// an acknowledgement; the client can fetch again with `?offset=`. A client that is merely
+/// slow is not idle: one that holds its own 8 MiB of input stops acknowledging for over a
+/// minute at CD quality and for several at MP3 rates, and a paused one for as long as the
+/// pause (issue #12: a minute cut the stream under a playing client). This is a backstop
+/// for a client whose download died while its player socket lives; a lost client's session
+/// ends on its own and cancels the relay.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// How often a paused response re-checks its state (a backstop for missed wake-ups).
 const RECHECK: Duration = Duration::from_millis(500);
 
@@ -119,7 +124,12 @@ impl RelayState {
     fn remember(&mut self, chunk: &[u8]) {
         self.received += chunk.len() as u64;
         self.window.extend(chunk);
-        let excess = self.window.len().saturating_sub(self.window_cap);
+        // Keep the window, and always everything since the last acknowledgement: a client
+        // resumes from what it has received, which is never before its last ack, and the
+        // read that filled the window may have brought up to a chunk more than it. (Issue
+        // #12: a resume a few KB short of the window was refused, and the track cut short.)
+        let keep = (self.window_cap as u64).max(self.received - self.acked) as usize;
+        let excess = self.window.len().saturating_sub(keep);
         self.window.drain(..excess);
     }
 
@@ -623,13 +633,46 @@ mod tests {
     #[test]
     fn window_keeps_only_the_most_recent_bytes() {
         let r = Relay::new(10);
+        state(&r).remember(b"0123456789");
+        r.ack(5);
         let mut st = state(&r);
-        st.remember(b"0123456789");
         st.remember(b"abcde");
         assert_eq!(st.received, 15);
         assert_eq!(st.window_start(), 5);
         assert_eq!(&st.replay(5, 100)[..], b"56789abcde");
         assert_eq!(&st.replay(12, 2)[..], b"cd");
+    }
+
+    /// Regression (issue #12): reading stops once a full window is unacknowledged, but the
+    /// read that got there may bring up to a chunk more, and the window then started after
+    /// the last ack. A client resuming from what it had received (never before its last
+    /// ack, but a few KB short of the window) was refused with 410 and took the track for
+    /// ended. The window must always reach back to the last acknowledgement.
+    #[test]
+    fn the_window_always_reaches_back_to_the_last_acknowledgement() {
+        let r = Relay::new(6);
+        state(&r).remember(b"abcd");
+        state(&r).remember(b"efgh"); // a chunk beyond the window, as one read may bring
+        {
+            let st = state(&r);
+            assert!(
+                st.window_start() <= st.acked,
+                "the window starts at {} but the client may resume from {}",
+                st.window_start(),
+                st.acked
+            );
+            assert_eq!(&st.replay(0, 100)[..], b"abcdefgh");
+        }
+        // Once acknowledged, the extra is let go again: bounded by the window plus a chunk.
+        r.ack(5);
+        state(&r).remember(b"ij");
+        let st = state(&r);
+        assert!(st.window_start() <= 5);
+        assert_eq!(&st.replay(5, 100)[..], b"fghij");
+        assert!(
+            st.window.len() <= 6,
+            "trimmed back to the window once acknowledged"
+        );
     }
 
     type Feed = tokio::sync::mpsc::UnboundedSender<Result<Bytes, std::io::Error>>;

@@ -2,6 +2,19 @@
 
 Dated entries, newest first.
 
+## Unreleased (0.6.3): the scrub-then-skip on iPhone and iPad (#12), found on the owner's iPad
+
+Reproduced on 2026-10-19 on the owner's own LMS 9.1.1 with a 24/96 and then a 60-minute CD-quality FLAC, so LMS 9.2 and the reporter's plugins are cleared.
+
+### Gateway
+
+- **A stream resumed a few KB short of the replay window was refused, and the track cut short (#12).** The relay reads until a full replay window is unacknowledged, but the read that fills it can bring up to a chunk more, and the window then started after the client's last acknowledgement. A client whose download broke resumes from what it had received, which is never before its last ack but can be a few KB short of that window: it got 410, gave the stream up, and the player took the cut-off track for a finished one and moved to the next. Seen twice on the owner's iPad, 3,942 and 614 bytes short. The window now always reaches back to the last acknowledgement (bounded by the window plus one chunk), with a regression test that fails on the old code.
+- **A slow or paused client is not an idle one.** A response whose client had a full window unacknowledged was ended after 60 s. A web player holds 8 MiB of input of its own and stops acknowledging while that drains: over a minute at CD quality, several at MP3 rates, and for the whole of a pause. With the resume above refused, every such cut became a skipped track. The backstop is now ten minutes; a lost client's session still ends on its own and cancels the relay. SPEC updated.
+
+### Web
+
+- **Connection log: the media buffer lines carry the facts and are rate-limited.** `media buffer full at 61.2 s (segment 512 KB), buffered 52.0–61.5 s; waiting` and `media buffer trimmed; resuming at …` are logged by kind (one per five seconds, with the count of those left out), and a buffer that is full with nothing behind the play head to trim says so. Before, the two bare lines came several times a second on a 24/96 FLAC and pushed everything else out of the 120-line report, which is how the relay cut above hid for a while.
+
 ## 2026-10-19: Mobile: a timed start armed while paused could be lost
 
 ### Mobile

@@ -253,10 +253,13 @@ export class MediaOutput {
 		} catch (e) {
 			if ((e as DOMException).name === 'QuotaExceededError') {
 				this.#queue.unshift(next); // appended once there is room
-				if (!this.#full) {
-					this.#full = true;
-					this.#note('media buffer full; waiting');
-				}
+				const t = this.audio.currentTime;
+				// Rate-limited by kind: a buffer at its limit can refuse several times a second.
+				this.#note(
+					`media buffer full at ${tenths(t)} s (segment ${Math.ceil(next.byteLength / 1024)} KB), ${describeBuffered(sb.buffered, t)}; waiting`,
+					'media:full'
+				);
+				this.#full = true;
 				this.#makeRoom(sb);
 			} else {
 				this.#note(`append failed: ${(e as Error).message}`);
@@ -264,7 +267,11 @@ export class MediaOutput {
 			return;
 		}
 		if (this.#full) {
-			this.#note(this.#trimmedForRoom ? 'media buffer trimmed; resuming' : 'media buffer has room again; resuming');
+			const t = this.audio.currentTime;
+			this.#note(
+				`${this.#trimmedForRoom ? 'media buffer trimmed' : 'media buffer has room again'}; resuming at ${tenths(t)} s, ${describeBuffered(sb.buffered, t)}`,
+				'media:resume'
+			);
 			this.#clearFull();
 		}
 	}
@@ -279,10 +286,16 @@ export class MediaOutput {
 	 */
 	#makeRoom(sb: SourceBuffer) {
 		const t = this.audio.currentTime;
-		if (this.#roomMadeAt !== null && t < this.#roomMadeAt + MIN_ROOM) return;
+		if (this.#roomMadeAt !== null && t < this.#roomMadeAt + MIN_ROOM) {
+			this.#note(`media buffer still full and the play head has not moved since room was made at ${tenths(this.#roomMadeAt)} s; waiting for it`, 'media:full-stuck');
+			return;
+		}
 		const b = sb.buffered;
 		const end = t - FULL_KEEP_BEHIND;
-		if (!b.length || !(end > 0) || b.start(0) > end - MIN_ROOM) return;
+		if (!b.length || !(end > 0) || b.start(0) > end - MIN_ROOM) {
+			this.#note(`media buffer full with nothing to trim behind ${tenths(t)} s, ${describeBuffered(b, t)}; waiting for the play head`, 'media:full-stuck');
+			return;
+		}
 		try {
 			sb.remove(0, end);
 		} catch (e) {

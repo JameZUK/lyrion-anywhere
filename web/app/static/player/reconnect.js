@@ -68,7 +68,7 @@ export function streamFailureAction(status, renewed = false) {
  * 'confirm' it first with one more request from the offset reached.
  *
  * The gateway ends a response cleanly only at the true end of the track, and with an error
- * otherwise (e.g. after a minute without acknowledgements). A proxy on the way can turn that
+ * otherwise (e.g. after ten minutes without acknowledgements). A proxy on the way can turn that
  * error into a clean end (issue #12, through a Cloudflare Tunnel), which looked like the end
  * of the track: the player skipped to the next one. At the true end, the request from the
  * offset reached is answered at once with nothing; otherwise the rest of the audio follows.

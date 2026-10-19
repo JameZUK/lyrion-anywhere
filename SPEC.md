@@ -164,7 +164,7 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
    - **FLAC artwork:** the relay drops PICTURE and PADDING blocks from the start of FLAC streams (artwork is served by `/v1/art`), so players reach the first frame sooner. Audio bytes are untouched; offsets are in the stripped stream's terms, and LMS's STAT byte counts are converted back. Anything unexpected passes through unchanged. Decided 2026-10-12.
    - **One session per device:** a new session for a device ends its previous one.
    - **Slow clients:** a socket whose outgoing queue fills is closed (1013) and handled like a dropped connection, so the client resumes.
-   - **Stream lifetime:** ending a session stops its stream relay at once. A relay also ends after 60 s without data from LMS, or 60 s without an ack while the client's window is full.
+   - **Stream lifetime:** ending a session stops its stream relay at once. A relay also ends after 60 s without data from LMS, or ten minutes without an ack while the client's window is full (a slow or paused client is not idle; the replay window always reaches back to the last ack, so such a client resumes from `?offset=`).
 
 ### 5.2 Control (`POST /v1/rpc`, `WS /v1/events`)
 
