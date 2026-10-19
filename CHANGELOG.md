@@ -2,9 +2,9 @@
 
 Dated entries, newest first.
 
-## Unreleased (0.6.3): the scrub-then-skip on iPhone and iPad (#12), found on the owner's iPad
+## 2026-10-19: Plugin 0.6.3 released
 
-Reproduced on 2026-10-19 on the owner's own LMS 9.1.1 with a 24/96 and then a 60-minute CD-quality FLAC, so LMS 9.2 and the reporter's plugins are cleared.
+The scrub-then-skip on iPhone and iPad (#12) at its root, and two gateway faults found on the way. Notes: `docs/release-notes/v0.6.3.md`. Reproduced on the owner's own LMS 9.1.1 with a 24/96 and then a 60-minute CD-quality FLAC, so LMS 9.2 and the reporter's plugins are cleared; validated on the same iPad before the tag (three minutes of 24/96 after a seek, a long CD-quality run with a two-minute pause).
 
 ### Gateway
 
