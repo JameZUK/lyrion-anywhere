@@ -2,6 +2,12 @@
 
 Dated entries, newest first.
 
+## 2026-10-19: Mobile: a timed start armed while paused could be lost
+
+### Mobile
+
+- **A sync-group start armed while the phone was paused could leave it silent.** The ring between the engine and the audio output stored a timed start's frame before setting the hold. An output callback that read the new start between the two stores acted on it and released the hold, and the second store then held the ring again with no start pending: silence until the next pause or resume. The hold is now set first, and the output clears the start it acts on with a compare-and-swap, so a start armed or cancelled during the hand-over is kept for the next callback rather than wiped. Found when the ring's own concurrency test hung the v0.6.2 CI run for six hours (its drain wait spun for ever once the hold came back). A new test arms 20,000 starts while held and fails on the old code within a few hundred rounds; the output-thread tests now stop waiting when that thread has died, so a panic there fails the test instead of hanging it.
+
 ## 2026-10-18: Plugin 0.6.2 released
 
 Notes: `docs/release-notes/v0.6.2.md`. Diagnostics only, so issue #12 can be pinned down from the reporter's next Connection log; no playback behaviour changes.

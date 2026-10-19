@@ -187,9 +187,13 @@ impl Ring {
     /// over when it is next read, the audio that should have played since is dropped (up to
     /// about a second) and the rest starts at once, still in step.
     pub fn start_at(&self, frame: u64) {
+        // The hold goes first. The consumer only looks at the start while held, and clears
+        // the hold once it has acted on the start; stored the other way round, a read that
+        // fell between the two stores could act on the start and then be held again with no
+        // start pending (silence for good).
+        self.hold.store(true, Ordering::Release);
         self.start_at
             .store(frame.min(NO_START - 1), Ordering::Release);
-        self.hold.store(true, Ordering::Release);
     }
 
     /// Forget a timed start that has not happened yet (the hold stays as it is).
@@ -450,7 +454,16 @@ impl Consumer {
         let mut lead = 0u64;
         if ring.hold.load(Ordering::Acquire) {
             let start = ring.start_at.load(Ordering::Acquire);
-            if start == NO_START || start >= dev + frames {
+            // No start, or not yet: silence. The start acted on is cleared by compare and
+            // swap, so one armed or cancelled since it was read is kept for the next read
+            // rather than wiped.
+            if start == NO_START
+                || start >= dev + frames
+                || ring
+                    .start_at
+                    .compare_exchange(start, NO_START, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+            {
                 (0..len).for_each(|i| put(i, 0.0));
                 record(ring, dev, r, 0, frames);
                 return 0;
@@ -465,7 +478,6 @@ impl Consumer {
                 ring.late_frames
                     .fetch_add(drop / CHANNELS as u64, Ordering::Relaxed);
             }
-            ring.start_at.store(NO_START, Ordering::Release);
             ring.hold.store(false, Ordering::Release);
         }
         // A pause correction: silence first, consuming nothing.
@@ -1061,6 +1073,14 @@ mod tests {
         (b & 0xff00_0000, (b & 0x00ff_ffff) - 1)
     }
 
+    /// Spin until `done`, or until the output thread has stopped early (a panic there then
+    /// surfaces at `join` instead of leaving the test waiting for ever).
+    fn wait_until<T>(out: &std::thread::JoinHandle<T>, mut done: impl FnMut() -> bool) {
+        while !done() && !out.is_finished() {
+            std::thread::yield_now();
+        }
+    }
+
     /// A consumer on its own thread, reading `block` frames at a time until `stop`: every
     /// audio frame it played, with the device frame it played at.
     fn run_output(
@@ -1110,9 +1130,7 @@ mod tests {
             p.discard_from(cut);
             let read_after = r.read_pos();
             p.write(&tagged(NEW, 0, 200));
-            while !r.is_empty() {
-                std::thread::yield_now();
-            }
+            wait_until(&out, || r.is_empty());
             stop.store(true, Ordering::Release);
             let heard = out.join().unwrap();
             let old: Vec<u32> = heard
@@ -1174,9 +1192,7 @@ mod tests {
                 }
                 next += 37.min(total - next);
             }
-            while !r.is_empty() || r.pending_corrections().1 > 0 {
-                std::thread::yield_now();
-            }
+            wait_until(&out, || r.is_empty() && r.pending_corrections().1 == 0);
             stop.store(true, Ordering::Release);
             let heard: Vec<u32> = out
                 .join()
@@ -1223,9 +1239,7 @@ mod tests {
             // Sometimes ahead of the output, sometimes already behind it.
             let start = (r.device_frames() + (x >> 20) % 400).saturating_sub(100);
             r.start_at(start);
-            while r.is_held() || !r.is_empty() {
-                std::thread::yield_now();
-            }
+            wait_until(&out, || !r.is_held() && r.is_empty());
             stop.store(true, Ordering::Release);
             let heard = out.join().unwrap();
             let (dev, first) = heard[0];
@@ -1242,6 +1256,49 @@ mod tests {
             }
             assert!(!r.start_pending());
         }
+    }
+
+    /// A timed start armed while the ring is already held and the output runs is never
+    /// lost: the hold is released at the frame asked for, whatever the timing of the
+    /// hand-over. (Regression: `start_at` once stored the frame before the hold, so a read
+    /// that fell between the two stores acted on the start, released the hold, and was then
+    /// held again with no start pending: silence for good.)
+    #[test]
+    fn a_start_armed_while_held_is_never_lost() {
+        let r = Ring::new(256);
+        r.reset_device_clock();
+        let stop = Arc::new(AtomicBool::new(false));
+        let out = {
+            let mut c = r.consumer().unwrap();
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut out = [0f32; 2 * CHANNELS];
+                while !stop.load(Ordering::Acquire) {
+                    c.read(&mut out);
+                }
+            })
+        };
+        for round in 0..20_000u32 {
+            r.set_hold(true);
+            let start = r.device_frames() + 1;
+            r.start_at(start);
+            while r.is_held() {
+                // The output has moved well past the start (or has died) and the ring is
+                // still held: the start was lost.
+                if out.is_finished() || r.device_frames() > start + 4096 {
+                    let state = (r.is_held(), r.start_pending(), r.device_frames());
+                    stop.store(true, Ordering::Release);
+                    out.join().unwrap();
+                    panic!(
+                        "round {round}: the start at {start} was lost; \
+                         (held, start pending, device frame) = {state:?}"
+                    );
+                }
+                std::thread::yield_now();
+            }
+        }
+        stop.store(true, Ordering::Release);
+        out.join().unwrap();
     }
 
     /// Producer and consumer on two threads: every sample arrives once, in order, intact.
