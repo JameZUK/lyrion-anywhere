@@ -540,6 +540,46 @@ test('a full buffer removes the audio behind the play head and resumes without a
 	out.stop();
 });
 
+// Issue #12 follow-up: on an iPad the first track of a session stayed at 0.0 s with ten
+// seconds buffered, after play() on a source that was still empty. A play head inside
+// buffered audio that has not moved is kicked (a seek to the same place), at most once per
+// 5 s; gaps are unstick()'s job, and a paused or nearly drained element is left alone.
+test('a play head stuck inside buffered audio is kicked, rate-limited, never when paused', async () => {
+	const note = vi.fn();
+	const out = new MediaOutput({ source: 'classic', makeAudio: fakeAudio, ctors, note });
+	await out.start();
+	const sb = FakeSourceBuffer.last!;
+	const s = { paused: false, t: 0 };
+	let seeks = 0;
+	Object.defineProperty(out.audio, 'paused', { configurable: true, get: () => s.paused });
+	Object.defineProperty(out.audio, 'currentTime', {
+		configurable: true,
+		get: () => s.t,
+		set: (v: number) => {
+			seeks++;
+			s.t = v;
+		},
+	});
+	sb.buffered = new FakeBuffered([[0, 10.3]]);
+	expect(out.kick(1_000)).toBe(true);
+	expect(seeks).toBe(1);
+	expect(s.t).toBe(0); // the same place: nothing is skipped
+	expect(note).toHaveBeenCalledWith('media: kicked the play head at 0.0 s, buffered 0.0–10.3 s', 'media:kick');
+	expect(out.kick(3_000)).toBe(false); // not again so soon
+	expect(out.kick(6_001)).toBe(true);
+	expect(seeks).toBe(2);
+	s.t = 10; // less than half a second ahead: nearly drained, not stuck
+	expect(out.kick(20_000)).toBe(false);
+	s.t = 2;
+	s.paused = true;
+	expect(out.kick(30_000)).toBe(false);
+	s.paused = false;
+	sb.buffered = new FakeBuffered([[2.2, 10]]); // a gap ahead: unstick()'s case, not a kick
+	expect(out.kick(40_000)).toBe(false);
+	expect(seeks).toBe(2);
+	out.stop();
+});
+
 // Issue #12 follow-up: hi-res audio must not sit on the browser's media buffer quota (about
 // 5.5 MB for audio on an iPad). The worker, knowing the stream's data rate, asks the output
 // to keep less played audio behind the play head than the 10 s default.

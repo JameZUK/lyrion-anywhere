@@ -861,7 +861,8 @@ class DevicePlayer {
 				this.#drainedAtEnd = media.bufferedEnd;
 				this.#advancedAt = now;
 				this.#worker.postMessage({ cmd: 'media-drained' });
-			} else if (!media.audio.paused && now - this.#advancedAt > 1000 && media.unstick()) {
+			} else if (!media.audio.paused && now - this.#advancedAt > 1000 && (media.unstick() || media.kick(now))) {
+				// A gap just ahead, or stuck inside buffered audio: moved on, or kicked.
 				this.#advancedAt = now;
 			}
 		}

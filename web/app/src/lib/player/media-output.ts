@@ -43,6 +43,10 @@ const FULL_KEEP_BEHIND = 1;
 const MIN_ROOM = 0.5;
 /** An aborted play() is tried again at most this often before the user is asked to tap. */
 const MAX_RETRIES = 8;
+/** A play head stuck inside buffered audio is kicked at most this often (ms). */
+const KICK_EVERY_MS = 5_000;
+/** At least this much buffered audio ahead of a stuck play head before it is kicked (s). */
+const KICK_MIN_AHEAD = 0.5;
 
 /** The element events noted in the connection log, with the play head and the audio around it. */
 export const NOTED_EVENTS = ['play', 'pause', 'playing', 'waiting', 'stalled', 'seeking', 'seeked', 'ended', 'error'] as const;
@@ -412,6 +416,32 @@ export class MediaOutput {
 			if (b.start(i) > t && b.start(i) - t <= MAX_GAP) {
 				this.seek(b.start(i));
 				this.#note(`media: moved the play head over a ${Math.round((b.start(i) - t) * 1000)} ms gap`);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** When the play head was last kicked (ms, performance.now()); never, at first. */
+	#kickedAt = -Infinity;
+
+	/**
+	 * The play head sits inside buffered audio with more than {@link KICK_MIN_AHEAD} ahead,
+	 * yet has not moved: Safari has been seen to stay waiting after play() on a source that
+	 * was empty, once the audio had arrived (the first track of a session on an iPad). A
+	 * seek to the same place makes it look again. At most once per {@link KICK_EVERY_MS};
+	 * returns whether it kicked.
+	 */
+	kick(now = performance.now()): boolean {
+		const sb = this.#sb;
+		if (!sb || this.#closed || this.audio.paused || now - this.#kickedAt < KICK_EVERY_MS) return false;
+		const t = this.audio.currentTime;
+		const b = sb.buffered;
+		for (let i = 0; i < b.length; i++) {
+			if (b.start(i) <= t && b.end(i) >= t + KICK_MIN_AHEAD) {
+				this.#kickedAt = now;
+				this.seek(t);
+				this.#note(`media: kicked the play head at ${tenths(t)} s, ${describeBuffered(b, t)}`, 'media:kick');
 				return true;
 			}
 		}
