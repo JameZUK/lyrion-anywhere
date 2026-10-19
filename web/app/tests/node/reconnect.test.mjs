@@ -16,7 +16,7 @@ import {
   confirmGivesUp,
   downloadStream,
   megabytes,
-  readOrStall,
+  readOrTick,
   READ_PARKED_NOTE_MS,
   streamFailureAction,
   streamPath,
@@ -573,23 +573,28 @@ function parkedDownload(checks, undecoded) {
 
 // Issue #12 diagnostics: a download held back by a full core buffer is logged once it has
 // been parked for a while (and when it carries on), never at every 50 ms check.
-test('reading parked by a full core buffer is logged once, with what the core holds', async () => {
-  const d = parkedDownload(300, () => 6_900_000); // checks of 50 ms: 15 s
+test('feeding held up by a full core is logged once, with what the core and the worker hold', async () => {
+  const d = parkedDownload(400, () => 6_900_000); // checks of 50 ms: well past the note
   await downloadStream(d.io, 1);
-  const notes = d.events.filter((e) => /reading/.test(e));
-  assert.deepEqual(notes, ['stream 1: reading paused, core holds 6.9 MB undecoded', 'stream 1: reading resumed after 15 s']);
+  const notes = d.events.filter((e) => /feeding/.test(e));
+  assert.equal(notes.length, 2, notes.join('\n'));
+  assert.match(notes[0], /^stream 1: feeding paused, core holds 6\.9 MB undecoded \(\d+\.\d MB more read\)$/);
+  assert.match(notes[1], /^stream 1: feeding resumed after \d+ s$/);
   assert.equal(d.have(), 4000);
+  // The response was read to its end while the core refused: nothing waited on the network.
+  assert.ok(!d.events.some((e) => /reading/.test(e)));
 });
 
-test('a short park is not logged; a failing undecoded() never breaks the download', async () => {
-  const d = parkedDownload(Math.floor(READ_PARKED_NOTE_MS / 50) - 2);
+test('a short hold-up is not logged; a failing undecoded() never breaks the download', async () => {
+  const d = parkedDownload(Math.floor(READ_PARKED_NOTE_MS / 50) - 4);
   await downloadStream(d.io, 1);
-  assert.ok(!d.events.some((e) => /reading/.test(e)));
+  assert.ok(!d.events.some((e) => /feeding/.test(e)), d.events.join('\n'));
+  assert.equal(d.have(), 4000);
   const e = parkedDownload(400, () => {
     throw new Error('no core');
   });
   await downloadStream(e.io, 1);
-  assert.ok(e.events.includes('stream 1: reading paused, core holds 0.0 MB undecoded'));
+  assert.ok(e.events.some((x) => /^stream 1: feeding paused, core holds 0\.0 MB undecoded/.test(x)));
   assert.equal(e.have(), 4000);
 });
 
@@ -600,6 +605,7 @@ test('a short park is not logged; a failing undecoded() never breaks the downloa
 test('a read that delivers nothing for too long is abandoned and the download resumed', async () => {
   const d = fakeDownload(9000, [{ upTo: 4000, end: 'hang' }]);
   d.io.readStallMs = 5;
+  d.io.now = () => Date.now();
   d.io.sleep = (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 20)));
   await downloadStream(d.io, 1);
   assert.deepEqual(d.requests, [0, 4000, 9000], 'resumed from the stall, then confirmed the end');
@@ -608,15 +614,12 @@ test('a read that delivers nothing for too long is abandoned and the download re
   assert.deepEqual(ends(d.events), ['end@9000']);
 });
 
-test('without a stall time the watchdog is off: a slow read is simply waited for', async () => {
-  let delivered = false;
-  const reader = { read: async () => (delivered ? { done: true } : ((delivered = true), { done: false, value: new Uint8Array(1) })) };
+test('a read in flight is returned when it lands, or null at the tick with the read kept', async () => {
+  const landed = Promise.resolve({ done: false, value: new Uint8Array(1) });
   const neverSleep = () => new Promise(() => {});
-  assert.deepEqual(await readOrStall(reader, 0, neverSleep), { done: false, value: new Uint8Array(1) });
-  assert.deepEqual(await readOrStall(reader, undefined, neverSleep), { done: true });
-  // With one, a read that never comes yields null once the time is up.
-  const hung = { read: () => new Promise(() => {}) };
-  assert.equal(await readOrStall(hung, 1, (ms) => new Promise((r) => setTimeout(r, ms))), null);
+  assert.deepEqual(await readOrTick(landed, 50, neverSleep), { done: false, value: new Uint8Array(1) });
+  const hung = new Promise(() => {});
+  assert.equal(await readOrTick(hung, 1, (ms) => new Promise((r) => setTimeout(r, ms))), null);
 });
 
 test('megabytes are shown to one decimal place, and junk is 0', () => {

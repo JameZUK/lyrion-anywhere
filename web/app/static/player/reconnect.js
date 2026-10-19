@@ -352,20 +352,28 @@ export function streamPath(session, n, offset) {
  */
 export const READ_PARKED_NOTE_MS = 10_000;
 /**
- * A read that brings nothing for this long, while the core wants data, is given up and
- * the download resumed from its offset. Safari has been seen to stop delivering a response
+ * A response that brings nothing for this long while the core is hungry (nothing read waits
+ * for it) is given up and the download resumed from its offset. Safari has been seen to stop delivering a response
  * body it already holds (issue #12: a 24/96 FLAC on an iPad stopped after 3.6 MB with
  * 3.5 MB received and unread); the gateway replays from the offset, so nothing is lost.
  */
 export const READ_STALL_MS = 15_000;
 
+/** The core is fed, and a quiet read checked, this often (ms) while a response is open. */
+export const FEED_TICK_MS = 50;
 /**
- * `reader.read()`, or null if it brings nothing within `stallMs` (`sleep(ms)` resolves after
- * ms). The pending read is left to the caller's abort.
+ * Bytes read but not yet fed beyond which reading pauses. The gateway sends at most its
+ * replay window (4 MiB by default) past the last acknowledgement, and only fed bytes are
+ * acknowledged, so this is a backstop, not the usual bound.
  */
-export function readOrStall(reader, stallMs, sleep) {
-  if (!(stallMs > 0)) return reader.read();
-  return Promise.race([reader.read(), sleep(stallMs).then(() => null)]);
+export const PENDING_MAX = 16 * 1024 * 1024;
+
+/**
+ * `inFlight` (a read in progress), or null once `tickMs` has passed with the read still
+ * pending (`sleep(ms)` resolves after ms). The read is left in flight for the next tick.
+ */
+export function readOrTick(inFlight, tickMs, sleep) {
+  return Promise.race([inFlight, sleep(tickMs).then(() => null)]);
 }
 
 /** Bytes as megabytes to one decimal place. */
@@ -426,38 +434,94 @@ export async function downloadStream(io, n) {
         io.log(`stream ${n} resumed at byte ${offset}`);
       }
       const reader = resp.body.getReader();
-      for (;;) {
-        // Back-pressure: stop reading while the core's input buffer is full.
-        let parkedAt = -1;
-        let parkNoted = false;
-        while (io.current() && !player.wants_stream_data()) {
-          if (parkedAt < 0) parkedAt = io.now();
-          if (!parkNoted && io.now() - parkedAt >= READ_PARKED_NOTE_MS) {
-            parkNoted = true;
+      // The response is read as it arrives, into `pending`, whatever the core wants just
+      // now: Safari stops delivering a body whose consumer paused (issue #12: a 24/96 FLAC
+      // on an iPad stopped after every pause, with megabytes received and unread). The
+      // gateway's window beyond the last acknowledgement bounds what waits here, since only
+      // what the core has taken is acknowledged. A read stays in flight across feed ticks.
+      const pending = [];
+      let pendingBytes = 0;
+      let inFlight = null;
+      let readSince = io.now();
+      let feedPausedAt = -1;
+      let feedNoted = false;
+      const stallMs = io.readStallMs ?? READ_STALL_MS;
+      const feed = () => {
+        // Feed what the core takes now; say so once a full core has held it up for a while.
+        let fed = false;
+        while (pending.length && io.current() && player.wants_stream_data()) {
+          const chunk = pending.shift();
+          pendingBytes -= chunk.length;
+          if (confirming) {
+            confirming = false;
+            io.log(`stream ${n}: not the end; continued from byte ${offset}`);
+          }
+          player.on_stream_data(chunk, io.now());
+          fed = true;
+          const have = player.open_stream();
+          if (have && have[0] === n && have[1] - lastAck >= io.ackEvery) {
+            lastAck = have[1];
+            io.ack(n, lastAck);
+            io.logAs?.(`stream ${n}: acknowledged ${megabytes(lastAck)}`, 'stream:ack');
+          } else if (!have || have[0] !== n) {
+            // Only acknowledged bytes let the gateway send more: a stream fed but never
+            // acknowledged stalls after one window (issue #12).
+            io.logAs?.(`stream ${n}: fed but not acknowledged (the core is fetching ${have ? `stream ${have[0]}` : 'nothing'})`, 'stream:noack');
+          }
+        }
+        if (pending.length && io.current()) {
+          if (feedPausedAt < 0) feedPausedAt = io.now();
+          if (!feedNoted && io.now() - feedPausedAt >= READ_PARKED_NOTE_MS) {
+            feedNoted = true;
             let held = 0;
             try {
               held = io.undecoded?.() ?? 0;
             } catch {
               /* for the log only */
             }
-            io.log(`stream ${n}: reading paused, core holds ${megabytes(held)} undecoded`);
+            io.log(`stream ${n}: feeding paused, core holds ${megabytes(held)} undecoded (${megabytes(pendingBytes)} more read)`);
           }
-          await io.sleep(50);
+        } else if (fed) {
+          if (feedNoted) io.log(`stream ${n}: feeding resumed after ${Math.round((io.now() - feedPausedAt) / 1000)} s`);
+          feedPausedAt = -1;
+          feedNoted = false;
         }
-        if (parkNoted && io.current()) io.log(`stream ${n}: reading resumed after ${Math.round((io.now() - parkedAt) / 1000)} s`);
+      };
+      for (;;) {
+        feed();
         if (!io.current()) return;
-        const read = await readOrStall(reader, io.readStallMs ?? READ_STALL_MS, io.sleep);
+        if (pendingBytes >= PENDING_MAX) {
+          // Far more than the gateway's window waits unfed (not expected): read no further.
+          await io.sleep(FEED_TICK_MS);
+          continue;
+        }
+        if (!inFlight) {
+          inFlight = reader.read();
+          readSince = io.now();
+        }
+        const read = await readOrTick(inFlight, FEED_TICK_MS, io.sleep);
         if (!io.current()) return;
         if (read === null) {
-          // Nothing for a while though the core wants data: the response is stuck (see
-          // READ_STALL_MS). Abandon it; the catch below resumes from the offset.
-          const at = player.open_stream();
-          io.log(`stream ${n}: no data for ${Math.round((io.readStallMs ?? READ_STALL_MS) / 1000)} s at byte ${at && at[0] === n ? at[1] : offset + got}; resuming`);
-          controller.abort();
-          throw new Error('read stalled');
+          // A tick with nothing read yet. Stuck only if the core has gone hungry meanwhile:
+          // a quiet response is otherwise the gateway waiting for an acknowledgement, which
+          // comes as the core takes what is pending (see READ_STALL_MS).
+          if (stallMs > 0 && !pending.length && player.wants_stream_data() && io.now() - readSince >= stallMs) {
+            const at = player.open_stream();
+            io.log(`stream ${n}: no data for ${Math.round(stallMs / 1000)} s at byte ${at && at[0] === n ? at[1] : offset + got}; resuming`);
+            controller.abort();
+            throw new Error('read stalled');
+          }
+          continue;
         }
+        inFlight = null;
         const { done, value } = read;
         if (done) {
+          // Everything read is fed before the end counts.
+          while (pending.length) {
+            feed();
+            if (!io.current()) return;
+            if (pending.length) await io.sleep(FEED_TICK_MS);
+          }
           if (cleanEndAction(got) === 'confirm') {
             // Maybe not the end: ask again from here (see cleanEndAction).
             confirming = true;
@@ -471,25 +535,12 @@ export async function downloadStream(io, n) {
           return;
         }
         if (!value || !value.length) continue;
-        if (confirming) {
-          confirming = false;
-          io.log(`stream ${n}: not the end; continued from byte ${offset}`);
-        }
         got += value.length;
         tries = 0;
         renewed = false;
         io.mark('bytes');
-        player.on_stream_data(value, io.now());
-        const have = player.open_stream();
-        if (have && have[0] === n && have[1] - lastAck >= io.ackEvery) {
-          lastAck = have[1];
-          io.ack(n, lastAck);
-          io.logAs?.(`stream ${n}: acknowledged ${megabytes(lastAck)}`, 'stream:ack');
-        } else if (!have || have[0] !== n) {
-          // The gateway sends at most a window beyond the last acknowledgement: a stream
-          // that is read but never acknowledged stalls after that window (issue #12).
-          io.logAs?.(`stream ${n}: read but not acknowledged (the core is fetching ${have ? `stream ${have[0]}` : 'nothing'})`, 'stream:noack');
-        }
+        pending.push(value);
+        pendingBytes += value.length;
       }
     } catch (err) {
       if (err?.name === 'AbortError' || !io.current()) return;
