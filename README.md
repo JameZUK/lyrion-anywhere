@@ -29,6 +29,7 @@
 - **Tunnels and dead spots are ridden out.** The next track is fetched long before the current one ends, repeats play from a replay cache, and an album you've downloaded stands in for its stream.
 - **Lossless and gapless by default.** FLAC plays as FLAC, decoded on the device. On Android the output is bit-perfect by default, to a USB DAC on Android 14 and later where the DAC supports it, and a signal path shows what happens to every sample.
 - **Offline, properly.** Download albums, playlists, artists and tracks for offline listening; plays are counted in LMS when you're back, and pause, resume and skipping keep working on the device while the server is out of reach.
+- **No reverse proxy needed, if you'd rather not.** With a domain on Cloudflare, the plugin installs and runs a Cloudflare Tunnel for you: no open port, no certificate to renew, set up from its settings page.
 - **Nothing exposed but one TLS endpoint.** LMS's ports stay on your home network; the gateway allows only an explicit list of commands, scrubs file paths and LAN addresses from every answer, and has its own per-user accounts, two-step sign-in and a list of your signed-in devices.
 - **Frugal on mobile data when you want it.** With `ffmpeg` on the server, the gateway re-encodes FLAC to Opus on the fly; Android plays Original on Wi-Fi and High (Opus 160 kb/s) on mobile data by default.
 - **Everything else LMS has.** Your whole library, every app, radio service and plugin LMS offers (podcasts, streaming services, AudioMuse-AI and more), alarms, Rooms, and *Move playback* between any players.
@@ -119,6 +120,18 @@ You need LMS 9.0 or later, a domain name with port 443 forwarded, and a reverse 
 1. **Install the plugin** in LMS: *Settings › Plugins*, add the repository `https://github.com/JameZUK/lyrion-anywhere/releases/latest/download/repo.xml`, tick **Lyrion Anywhere** and restart LMS. (No plugin binary for your platform? Run the gateway with Docker: see [`docs/DEPLOY.md`](docs/DEPLOY.md).)
 2. **Put an HTTPS reverse proxy in front of it** for a name such as `music.example.com` (a tested nginx configuration is in [`deploy/nginx`](deploy/nginx); with Caddy it is two lines), then set the Public URL and create users on the plugin's settings page. **Or, with a domain on Cloudflare,** skip the proxy: the plugin's settings page sets up a Cloudflare Tunnel for you, with no open port or certificate ([`INSTALL.md`](docs/INSTALL.md#option-c-built-in-cloudflare-tunnel) Option C).
 3. **Sign in:** open `https://music.example.com` on your phone, or install the [Android app](docs/PLATFORMS.md#getting-the-android-app) and scan the QR code from *Add a device*.
+
+### Built-in Cloudflare Tunnel
+
+If your domain's DNS is on Cloudflare (the free plan is fine), the plugin can replace the reverse proxy, the certificate and the forwarded port with a Cloudflare Tunnel that it installs and runs for you. The gateway runs Cloudflare's `cloudflared` on the LMS machine; it dials out to Cloudflare, which serves `https://music.example.com` from its own network and passes each request back down that connection. Nothing at home listens on the internet. Everything happens in the **Cloudflare Tunnel** section of the plugin's settings page:
+
+1. **Install.** Nothing is downloaded or run until you press it. The gateway then fetches the official `cloudflared` release for your machine at the version this release pins, checks it against the SHA-256 checksum built into the gateway, and refuses anything that doesn't match.
+2. **Register a tunnel**, either way:
+   - *I have a tunnel token:* create the tunnel in Cloudflare's dashboard (*Networking › Tunnels*), give it the public hostname you want with the service URL `http://127.0.0.1:9444` (the gateway's tunnel listener), then paste the tunnel's token and the hostname into the form and press **Register and start**.
+   - *Create it for me:* paste a Cloudflare API token limited to *Cloudflare Tunnel: Edit*, *DNS: Edit* and *Zone: Read*, and the gateway creates the tunnel and the DNS record itself. The token is used once and not kept.
+3. **Try it first**, with no account at all: a temporary tunnel gives a throwaway `trycloudflare.com` address, shown with a QR code, for an hour's test from your phone; nothing about it is stored.
+
+The section shows the tunnel's status and recent log lines, and **Remove** stops it and deletes `cloudflared`. The LMS machine needs outbound access to `github.com` (the download), Cloudflare's network on port 7844 over UDP and TCP (the tunnel), and `api.cloudflare.com` for *Create it for me*; nothing inbound. Linux on x86_64, aarch64 or armhf; with Docker, run `cloudflared` as a sidecar instead ([`DEPLOY.md`](docs/DEPLOY.md#cloudflare-tunnel-with-docker-a-sidecar)). Your music then flows through Cloudflare's network under Cloudflare's terms. Details, including the exact API-token permissions and firewall notes, are in [`INSTALL.md`](docs/INSTALL.md#option-c-built-in-cloudflare-tunnel).
 
 ## Documentation
 
