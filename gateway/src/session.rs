@@ -121,6 +121,8 @@ struct State {
     seen_helo: bool,
     ended: bool,
     stream_seq: u64,
+    /// The stream whose ignored acknowledgement was last logged (one line per stream).
+    ack_ignored_logged: Option<u64>,
     /// `None` when the current `strm` was refused by policy.
     stream_path: Option<String>,
     /// The current `strm s` format code (`f` for FLAC).
@@ -242,6 +244,7 @@ impl Session {
                 replays: 0,
                 ended: false,
                 stream_seq: 0,
+                ack_ignored_logged: None,
                 stream_path: None,
                 stream_format: 0,
                 quality: Default::default(),
@@ -709,8 +712,21 @@ impl Session {
     /// from sockets that are no longer current, are ignored. Never waits on network I/O.
     pub fn ack(&self, generation: u64, n: u64, bytes: u64) {
         let relay = {
-            let st = self.state.lock().unwrap();
+            let mut st = self.state.lock().unwrap();
             if st.stream_seq != n || !Self::is_current(&st, generation) {
+                // Ignored acks leave the relay waiting for ever after one window: say so,
+                // once per stream (issue #12).
+                if st.ack_ignored_logged != Some(n) {
+                    st.ack_ignored_logged = Some(n);
+                    let current_socket = Self::is_current(&st, generation);
+                    info!(
+                        stream = n,
+                        current = st.stream_seq,
+                        current_socket,
+                        bytes,
+                        "stream acknowledgement ignored"
+                    );
+                }
                 return;
             }
             st.relay.clone()

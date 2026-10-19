@@ -351,6 +351,22 @@ export function streamPath(session, n, offset) {
  * (issue #12: it shows the output, not the network, is what holds the stream up).
  */
 export const READ_PARKED_NOTE_MS = 10_000;
+/**
+ * A read that brings nothing for this long, while the core wants data, is given up and
+ * the download resumed from its offset. Safari has been seen to stop delivering a response
+ * body it already holds (issue #12: a 24/96 FLAC on an iPad stopped after 3.6 MB with
+ * 3.5 MB received and unread); the gateway replays from the offset, so nothing is lost.
+ */
+export const READ_STALL_MS = 15_000;
+
+/**
+ * `reader.read()`, or null if it brings nothing within `stallMs` (`sleep(ms)` resolves after
+ * ms). The pending read is left to the caller's abort.
+ */
+export function readOrStall(reader, stallMs, sleep) {
+  if (!(stallMs > 0)) return reader.read();
+  return Promise.race([reader.read(), sleep(stallMs).then(() => null)]);
+}
 
 /** Bytes as megabytes to one decimal place. */
 export function megabytes(bytes) {
@@ -430,8 +446,17 @@ export async function downloadStream(io, n) {
         }
         if (parkNoted && io.current()) io.log(`stream ${n}: reading resumed after ${Math.round((io.now() - parkedAt) / 1000)} s`);
         if (!io.current()) return;
-        const { done, value } = await reader.read();
+        const read = await readOrStall(reader, io.readStallMs ?? READ_STALL_MS, io.sleep);
         if (!io.current()) return;
+        if (read === null) {
+          // Nothing for a while though the core wants data: the response is stuck (see
+          // READ_STALL_MS). Abandon it; the catch below resumes from the offset.
+          const at = player.open_stream();
+          io.log(`stream ${n}: no data for ${Math.round((io.readStallMs ?? READ_STALL_MS) / 1000)} s at byte ${at && at[0] === n ? at[1] : offset + got}; resuming`);
+          controller.abort();
+          throw new Error('read stalled');
+        }
+        const { done, value } = read;
         if (done) {
           if (cleanEndAction(got) === 'confirm') {
             // Maybe not the end: ask again from here (see cleanEndAction).
@@ -459,6 +484,11 @@ export async function downloadStream(io, n) {
         if (have && have[0] === n && have[1] - lastAck >= io.ackEvery) {
           lastAck = have[1];
           io.ack(n, lastAck);
+          io.logAs?.(`stream ${n}: acknowledged ${megabytes(lastAck)}`, 'stream:ack');
+        } else if (!have || have[0] !== n) {
+          // The gateway sends at most a window beyond the last acknowledgement: a stream
+          // that is read but never acknowledged stalls after that window (issue #12).
+          io.logAs?.(`stream ${n}: read but not acknowledged (the core is fetching ${have ? `stream ${have[0]}` : 'nothing'})`, 'stream:noack');
         }
       }
     } catch (err) {

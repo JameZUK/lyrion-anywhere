@@ -554,6 +554,7 @@ function fetchStream(id, n) {
       sleep,
       now,
       log,
+      logAs,
       mark: seekMark,
       ack: sendAck,
       runActions,

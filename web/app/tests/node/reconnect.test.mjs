@@ -16,6 +16,7 @@ import {
   confirmGivesUp,
   downloadStream,
   megabytes,
+  readOrStall,
   READ_PARKED_NOTE_MS,
   streamFailureAction,
   streamPath,
@@ -439,6 +440,7 @@ function fakeDownload(total, plans) {
                 return { done: false, value: new Uint8Array(n) };
               }
               if (plan.end === 'error') throw new TypeError('network error');
+              if (plan.end === 'hang') return new Promise(() => {}); // never delivers again
               return { done: true, value: undefined };
             },
           }),
@@ -458,6 +460,7 @@ function fakeDownload(total, plans) {
     received: () => events.push('received'),
     maxTries: 12,
     ackEvery: 4000,
+    readStallMs: 0, // no read watchdog unless a test asks for one
   };
   return { io, requests, events, have: () => have };
 }
@@ -588,6 +591,32 @@ test('a short park is not logged; a failing undecoded() never breaks the downloa
   await downloadStream(e.io, 1);
   assert.ok(e.events.includes('stream 1: reading paused, core holds 0.0 MB undecoded'));
   assert.equal(e.have(), 4000);
+});
+
+// Issue #12 (iPad, 24/96 FLAC): Safari stopped delivering a response body it already held,
+// with the core wanting data, and nothing in the player noticed: the track starved for good.
+// A read that brings nothing for READ_STALL_MS is given up and the download resumed from
+// the offset reached; the gateway replays from there.
+test('a read that delivers nothing for too long is abandoned and the download resumed', async () => {
+  const d = fakeDownload(9000, [{ upTo: 4000, end: 'hang' }]);
+  d.io.readStallMs = 5;
+  d.io.sleep = (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 20)));
+  await downloadStream(d.io, 1);
+  assert.deepEqual(d.requests, [0, 4000, 9000], 'resumed from the stall, then confirmed the end');
+  assert.ok(d.events.some((e) => e === 'stream 1: no data for 0 s at byte 4000; resuming'), d.events.join('\n'));
+  assert.ok(d.events.some((e) => /^stream 1 interrupted at byte 4000 \(read stalled\); retrying$/.test(e)));
+  assert.deepEqual(ends(d.events), ['end@9000']);
+});
+
+test('without a stall time the watchdog is off: a slow read is simply waited for', async () => {
+  let delivered = false;
+  const reader = { read: async () => (delivered ? { done: true } : ((delivered = true), { done: false, value: new Uint8Array(1) })) };
+  const neverSleep = () => new Promise(() => {});
+  assert.deepEqual(await readOrStall(reader, 0, neverSleep), { done: false, value: new Uint8Array(1) });
+  assert.deepEqual(await readOrStall(reader, undefined, neverSleep), { done: true });
+  // With one, a read that never comes yields null once the time is up.
+  const hung = { read: () => new Promise(() => {}) };
+  assert.equal(await readOrStall(hung, 1, (ms) => new Promise((r) => setTimeout(r, ms))), null);
 });
 
 test('megabytes are shown to one decimal place, and junk is 0', () => {

@@ -62,6 +62,8 @@ pub const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(60);
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// How often a paused response re-checks its state (a backstop for missed wake-ups).
 const RECHECK: Duration = Duration::from_millis(500);
+/// A response waiting this long for an acknowledgement logs it (once per wait).
+const WAIT_LOG_AFTER: Duration = Duration::from_secs(5);
 
 type Upstream = BoxStream<'static, Result<Bytes, std::io::Error>>;
 
@@ -409,6 +411,8 @@ struct Cursor {
     cancel: watch::Receiver<bool>,
     /// When the client last had a full window unacknowledged with no progress.
     stalled_since: Option<Instant>,
+    /// This wait has been logged (after [`WAIT_LOG_AFTER`]).
+    wait_logged: bool,
     last_acked: u64,
     /// The response ends cleanly here (`?limit=`).
     end: Option<u64>,
@@ -451,6 +455,7 @@ fn body(
         my_turn,
         cancel,
         stalled_since: None,
+        wait_logged: false,
         last_acked: 0,
         end,
     };
@@ -478,6 +483,7 @@ fn step(cur: &mut Cursor) -> Step {
         let chunk = st.replay(cur.pos, cur.room());
         cur.pos += chunk.len() as u64;
         cur.stalled_since = None;
+        cur.wait_logged = false;
         return Step::Yield(chunk);
     }
     if st.done {
@@ -492,6 +498,7 @@ fn step(cur: &mut Cursor) -> Step {
         if st.acked != cur.last_acked {
             cur.last_acked = st.acked;
             cur.stalled_since = None;
+            cur.wait_logged = false;
         }
         return Step::Wait;
     }
@@ -511,6 +518,19 @@ async fn next_chunk(cur: &mut Cursor) -> Option<Result<Bytes, std::io::Error>> {
             Step::Wait => {
                 // Wait for the client to acknowledge more before reading further from LMS.
                 let since = *cur.stalled_since.get_or_insert_with(Instant::now);
+                if !cur.wait_logged && since.elapsed() >= WAIT_LOG_AFTER {
+                    // A client that reads but does not acknowledge looks like this for
+                    // ever (issue #12): the numbers say which side stopped.
+                    cur.wait_logged = true;
+                    let (received, acked) = {
+                        let st = cur.relay.state.lock().unwrap();
+                        (st.received, st.acked)
+                    };
+                    info!(
+                        pos = cur.pos,
+                        received, acked, "stream waiting for the client to acknowledge"
+                    );
+                }
                 if since.elapsed() >= cur.relay.idle_timeout {
                     // End with an error, never cleanly: a clean end looks like the end of
                     // the track, and the player would cut it short. An error makes it
@@ -580,6 +600,7 @@ async fn read_upstream(cur: &mut Cursor) -> Option<Option<Result<Bytes, std::io:
             let chunk = chunk.slice(..chunk.len().min(cur.room()));
             cur.pos += chunk.len() as u64;
             cur.stalled_since = None;
+            cur.wait_logged = false;
             Some(Some(Ok(chunk)))
         }
         Ok(Some(Err(e))) => {
