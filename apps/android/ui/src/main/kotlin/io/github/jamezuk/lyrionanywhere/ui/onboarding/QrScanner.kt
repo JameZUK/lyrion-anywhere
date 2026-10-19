@@ -1,10 +1,13 @@
 package io.github.jamezuk.lyrionanywhere.ui.onboarding
 
 import android.content.Context
+import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.aspectRatio
@@ -30,23 +33,54 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
+import com.google.zxing.MultiFormatReader
 import com.google.zxing.NotFoundException
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.ReaderException
 import com.google.zxing.common.HybridBinarizer
-import com.google.zxing.qrcode.QRCodeReader
 import io.github.jamezuk.lyrionanywhere.ui.R
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Reads QR codes from camera frames (the luminance plane only) with ZXing. */
+/**
+ * The analysis frames' size. CameraX's default is 640 x 480: the pairing QR code is 232 px
+ * on a tablet's screen, so from a normal distance it covered under two pixels per module
+ * there and ZXing never read it. At this size (or the nearest the camera offers) it has four
+ * or more, and a 2 MP frame still decodes in well under a frame interval.
+ */
+internal val ANALYSIS_SIZE = Size(1920, 1440)
+
+/** The analysis use case the scanner binds: frames of [ANALYSIS_SIZE], latest only. */
+internal fun qrAnalysis(executor: Executor, analyzer: ImageAnalysis.Analyzer): ImageAnalysis =
+    ImageAnalysis.Builder()
+        .setResolutionSelector(
+            ResolutionSelector.Builder()
+                .setResolutionStrategy(
+                    ResolutionStrategy(ANALYSIS_SIZE, ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER),
+                )
+                .build(),
+        )
+        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+        .build()
+        .also { it.setAnalyzer(executor, analyzer) }
+
+/**
+ * Reads QR codes from camera frames (the luminance plane only) with ZXing. The multi-format
+ * reader, limited to QR: it is the one that honours ALSO_INVERTED (the plain QR reader
+ * ignores the hint).
+ */
 internal class QrAnalyzer(private val onText: (String) -> Unit) : ImageAnalysis.Analyzer {
-    private val reader = QRCodeReader()
-    private val hints = mapOf(
-        DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
-        DecodeHintType.TRY_HARDER to true,
-    )
+    private val reader = MultiFormatReader().apply {
+        setHints(
+            mapOf(
+                DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+                DecodeHintType.TRY_HARDER to true,
+                // A light-on-dark code (a page in dark mode) reads too.
+                DecodeHintType.ALSO_INVERTED to true,
+            ),
+        )
+    }
     val enabled = AtomicBoolean(true)
 
     override fun analyze(image: ImageProxy) {
@@ -65,7 +99,7 @@ internal class QrAnalyzer(private val onText: (String) -> Unit) : ImageAnalysis.
         if (luminance.size < rowStride * (height - 1) + width) return null
         val source = PlanarYUVLuminanceSource(luminance, rowStride, height, 0, 0, width, height, false)
         return try {
-            reader.decode(BinaryBitmap(HybridBinarizer(source)), hints).text
+            reader.decodeWithState(BinaryBitmap(HybridBinarizer(source))).text
         } catch (_: NotFoundException) {
             null
         } catch (_: ReaderException) {
@@ -162,11 +196,7 @@ internal fun <P : Any> QrScanner(
             executor = mainExecutor,
             bind = { p ->
                 val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
-                val analysis = ImageAnalysis.Builder()
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build()
-                    .also { it.setAnalyzer(analysisExecutor, analyzer) }
-                bind(p, lifecycleOwner, preview, analysis)
+                bind(p, lifecycleOwner, preview, qrAnalysis(analysisExecutor, analyzer))
             },
             unbind = unbind,
         )

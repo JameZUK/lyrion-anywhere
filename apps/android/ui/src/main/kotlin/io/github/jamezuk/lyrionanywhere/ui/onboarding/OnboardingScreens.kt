@@ -3,6 +3,7 @@ package io.github.jamezuk.lyrionanywhere.ui.onboarding
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -26,6 +27,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -54,6 +56,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.ui.R
@@ -307,11 +310,17 @@ fun PairScreen(
         )
         Text(stringResource(R.string.pair_body), style = MaterialTheme.typography.bodyLarge)
         if (cameraPermitted) {
-            QrScanner(
-                active = state.scanning && !state.busy,
-                onScanned = onScanned,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            // A square that fits the window in either orientation: on a phone held sideways
+            // the column's full width would be taller than the screen, and the code could not
+            // be framed.
+            val screenHeight = LocalConfiguration.current.screenHeightDp
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                QrScanner(
+                    active = state.scanning && !state.busy,
+                    onScanned = onScanned,
+                    modifier = Modifier.size(scannerSide(maxWidth, screenHeight)).align(Alignment.Center),
+                )
+            }
         } else if (cameraBlocked) {
             // Android won't ask again: say why there is no scanner, and where to turn it on.
             // Typing the code (below) still works.
@@ -355,6 +364,14 @@ fun PairScreen(
         }
     }
 }
+
+/**
+ * The scanner preview's side: the column's width, but never more than about half the
+ * window's height, so the whole square is on screen in landscape too (the camera frames
+ * ZXing reads are the full frames whatever the preview's size).
+ */
+internal fun scannerSide(maxWidth: Dp, screenHeightDp: Int): Dp =
+    minOf(maxWidth, (screenHeightDp * 0.55f).dp)
 
 /**
  * Before anything is sent: which server the code signs in to (and the one it replaces), so

@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-19: Android 1.15.7 released
+
+**Scan QR code reads the pairing code from a normal distance.** Found on the owner's phone right after 1.15.6: the web app's QR code scanned with a third-party app (and its link opened the app and signed it in), but not with the app's own scanner. The scanner decoded CameraX's default 640 x 480 analysis frames, on which the 232 px code on a tablet's screen covered under two pixels per module from arm's length; ZXing needs about four. `QrScanner.kt` now asks for 1920 x 1440 frames (`ResolutionStrategy`, closest higher then lower) and sets ZXing's `ALSO_INVERTED` hint for a light-on-dark page. versionCode 36. Notes: `docs/release-notes/android-1.15.7.md`. Tests (`QrAnalyzerTests`): the pairing link's QR decodes from a luminance frame with padded rows, in sensor orientation (rotated), off-centre, at the requested size, and inverted; a frame shorter than its rows is refused; the analysis use case carries the size and fallback rule. Also: in landscape the preview square (the column's full width, 480 dp) was taller than the window and the code could not be framed; `scannerSide` now caps it at about half the window's height (`ScannerSideTests`).
+
 ## 2026-10-19: Android 1.15.6 released
 
 The FLAC seek fix of plugin 0.6.3 (below) for the Android app, which shares the player core: a seek into a FLAC streamed at Original on a stock LMS no longer ends the track with "Decoder does not support file format". versionCode 35. Notes: `docs/release-notes/android-1.15.6.md`. Also a player-level core test (`a_flac_seek_stream_without_a_header_plays_and_is_reported`) covering the path both the Android engine and the web player take: the header is made once, the audio from the seek plays, `STMs` and `STMu` go, `STMn` never does. Not yet in the Android device report: the "made one from its first frame" note the web Connection log shows; the engine does not drain the core's diagnostics (to follow with task #72).
