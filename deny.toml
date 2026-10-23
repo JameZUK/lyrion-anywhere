@@ -64,6 +64,13 @@ allow = ["CDLA-Permissive-2.0"]
 
 [advisories]
 yanked = "deny"
+ignore = [
+    # basic-toml is unmaintained (2026-09-26). It is a proc-macro-time dependency of askama's
+    # template derive inside uniffi_bindgen, which runs only at build time to write the Kotlin
+    # bindings; it ships in no binary. askama is at its latest release. Drop this when askama
+    # moves to `toml`.
+    { id = "RUSTSEC-2026-0374", reason = "build-time only (askama_derive under uniffi_bindgen); no shipped code" },
+]
 
 [bans]
 multiple-versions = "allow"
