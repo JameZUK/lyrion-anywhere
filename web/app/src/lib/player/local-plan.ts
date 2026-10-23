@@ -2,8 +2,8 @@
 // Pure decisions (no state, no I/O), shared by every control surface: the player bar, Now
 // playing, the queue views and the lock screen. See SPEC.md, "Controls while the server is
 // out of reach".
-import type { Command } from '$lib/api/rpc';
-import type { Reachability } from '$lib/state/reachability';
+import type { Command } from '#lib/api/rpc';
+import type { Reachability } from '#lib/state/reachability';
 import { trackId } from './resume';
 
 /** Where a queue entry's audio is on this device, if anywhere. */

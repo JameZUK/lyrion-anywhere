@@ -4,17 +4,17 @@
 import { readFileSync } from 'node:fs';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import type { PlayerStatus, Track } from '$lib/lms/types';
-import type { StoredTrack } from '$lib/offline/types';
+import type { PlayerStatus, Track } from '#lib/lms/types';
+import type { StoredTrack } from '#lib/offline/types';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
-const { default: PlayerBar } = await import('$lib/components/PlayerBar.svelte');
-const { default: QueueList } = await import('$lib/components/QueueList.svelte');
+const { default: PlayerBar } = await import('#lib/components/PlayerBar.svelte');
+const { default: QueueList } = await import('#lib/components/QueueList.svelte');
 const { default: QueuePage } = await import('../src/routes/queue/+page.svelte');
-const { device } = await import('$lib/player/device.svelte');
-const { controls, local } = await import('$lib/player/controls.svelte');
-const { downloads } = await import('$lib/offline/index.svelte');
+const { device } = await import('#lib/player/device.svelte');
+const { controls, local } = await import('#lib/player/controls.svelte');
+const { downloads } = await import('#lib/offline/index.svelte');
 
 type Handler = ((d: MediaSessionActionDetails) => void) | null;
 const handlers = new Map<string, Handler>();
@@ -22,7 +22,7 @@ Object.defineProperty(navigator, 'mediaSession', {
 	value: { metadata: null, playbackState: 'none', setActionHandler: (a: string, fn: Handler) => handlers.set(a, fn), setPositionState() {} },
 	configurable: true,
 });
-const { default: MediaSession } = await import('$lib/components/MediaSession.svelte');
+const { default: MediaSession } = await import('#lib/components/MediaSession.svelte');
 
 const P = '02:00:00:00:00:01';
 const track = (n: number): Track => ({ id: n, title: `Song ${n}`, artist: 'Invented', duration: 180 });

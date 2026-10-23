@@ -2,20 +2,20 @@
 	// Settings › Account (Wave 3.5): who is signed in, then one row per action (Change password,
 	// Two-step verification, Your devices, Add another device), each opening its own dialog
 	// (those that need the password ask for it once), and Sign out.
-	import { session } from '$lib/state/app.svelte';
-	import { device } from '$lib/player/device.svelte';
-	import * as auth from '$lib/api/auth';
-	import { ApiError } from '$lib/api/http';
-	import { downloads, offlinePlayer, plays } from '$lib/offline/index.svelte';
-	import { forgetOwner } from '$lib/offline/settings';
-	import { signOutHere } from '$lib/account/sign-out';
-	import { svgDataUrl } from '$lib/account/qr-image';
-	import AddDevice from '$lib/components/AddDevice.svelte';
-	import ChangePassword from '$lib/components/ChangePassword.svelte';
-	import Icon from '$lib/components/Icon.svelte';
-	import Sheet from '$lib/components/Sheet.svelte';
-	import SignOut from '$lib/components/SignOut.svelte';
-	import YourDevices from '$lib/components/YourDevices.svelte';
+	import { session } from '#lib/state/app.svelte';
+	import { device } from '#lib/player/device.svelte';
+	import * as auth from '#lib/api/auth';
+	import { ApiError } from '#lib/api/http';
+	import { downloads, offlinePlayer, plays } from '#lib/offline/index.svelte';
+	import { forgetOwner } from '#lib/offline/settings';
+	import { signOutHere } from '#lib/account/sign-out';
+	import { svgDataUrl } from '#lib/account/qr-image';
+	import AddDevice from '#lib/components/AddDevice.svelte';
+	import ChangePassword from '#lib/components/ChangePassword.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import Sheet from '#lib/components/Sheet.svelte';
+	import SignOut from '#lib/components/SignOut.svelte';
+	import YourDevices from '#lib/components/YourDevices.svelte';
 
 	let account = $state<auth.Account | null>(null);
 	let features = $state<auth.Features>({});

@@ -4,7 +4,7 @@
 // Answers can arrive out of order (a slow fetch after a quick change, two quick changes), and
 // a sign-out can land while requests are in flight: every answer is checked against what the
 // store has done since it was asked, and stale ones are dropped.
-import type { RatingStyle, RoutineApi, TrackRating } from '$lib/api/routine';
+import type { RatingStyle, RoutineApi, TrackRating } from '#lib/api/routine';
 
 export const REMEMBERED = 300;
 

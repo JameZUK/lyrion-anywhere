@@ -5,8 +5,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { render } from '@testing-library/svelte';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
-const { default: AboutSettings } = await import('$lib/settings/AboutSettings.svelte');
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+const { default: AboutSettings } = await import('#lib/settings/AboutSettings.svelte');
 
 // Vitest runs from web/app (the config's root); the plugin tree is two levels up.
 const installXml = readFileSync(resolve(process.cwd(), '../../plugin/Plugins/LyrionAnywhere/install.xml'), 'utf8');

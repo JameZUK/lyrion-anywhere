@@ -3,7 +3,7 @@ import { render, waitFor } from '@testing-library/svelte';
 
 const held: string[] = [];
 const released: string[] = [];
-vi.mock('$lib/state/app.svelte', () => ({
+vi.mock('#lib/state/app.svelte', () => ({
 	api: {
 		art: async (p: string) => `blob:${p}`,
 		retainArt: (p: string) => {
@@ -12,7 +12,7 @@ vi.mock('$lib/state/app.svelte', () => ({
 		},
 	},
 }));
-const { default: Art } = await import('$lib/components/Art.svelte');
+const { default: Art } = await import('#lib/components/Art.svelte');
 
 test('art is held while shown and released when it changes or goes', async () => {
 	const r = render(Art, { path: 'music/1/cover', eager: true });

@@ -1,14 +1,14 @@
 // LMS busy handling (docs/PROTOCOL.md): the gateway's busy 503 and events messages, the
 // calm status, polling that never stacks and backs off while busy, and recovery.
 import { readFileSync } from 'node:fs';
-import { ApiError, BUSY_MESSAGE, callJson, isBusy } from '$lib/api/http';
-import { EventsClient, parseEventMessage, type LmsHealth } from '$lib/api/events';
-import { Api } from '$lib/api/rpc';
-import { SessionManager, type AuthApi } from '$lib/api/session';
-import type { Session } from '$lib/api/auth';
-import { BUSY_POLL_MAX_MS, BusyGate, POLL_MS, Single } from '$lib/state/busy';
-import { api, app, session } from '$lib/state/app.svelte';
-import type { PlayerInfo } from '$lib/lms/types';
+import { ApiError, BUSY_MESSAGE, callJson, isBusy } from '#lib/api/http';
+import { EventsClient, parseEventMessage, type LmsHealth } from '#lib/api/events';
+import { Api } from '#lib/api/rpc';
+import { SessionManager, type AuthApi } from '#lib/api/session';
+import type { Session } from '#lib/api/auth';
+import { BUSY_POLL_MAX_MS, BusyGate, POLL_MS, Single } from '#lib/state/busy';
+import { api, app, session } from '#lib/state/app.svelte';
+import type { PlayerInfo } from '#lib/lms/types';
 
 function json(status: number, body: unknown, headers: Record<string, string> = {}) {
 	return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });

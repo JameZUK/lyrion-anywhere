@@ -9,20 +9,20 @@
 	// "Bring players into step with Lounge…" opens the switches that bring others into this
 	// player's group. On phones it carries the volume too.
 	import { untrack } from 'svelte';
-	import { api, app, session } from '$lib/state/app.svelte';
-	import { device } from '$lib/player/device.svelte';
-	import { bringHere, isThisDevice, useThisDevice } from '$lib/player/outputs';
-	import * as cmd from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import { groupFromStatus, groupLabel, groupOf, syncGroupsFrom, syncToggle } from '$lib/lms/sync';
-	import type { PlayerInfo, PlayerStatus, SyncGroupsResult } from '$lib/lms/types';
+	import { api, app, session } from '#lib/state/app.svelte';
+	import { device } from '#lib/player/device.svelte';
+	import { bringHere, isThisDevice, useThisDevice } from '#lib/player/outputs';
+	import * as cmd from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import { groupFromStatus, groupLabel, groupOf, syncGroupsFrom, syncToggle } from '#lib/lms/sync';
+	import type { PlayerInfo, PlayerStatus, SyncGroupsResult } from '#lib/lms/types';
 	import Icon from './Icon.svelte';
 	import VolumeSlider from './VolumeSlider.svelte';
 	import RowMenu, { type RowAction } from './RowMenu.svelte';
-	import { PlayerManager } from '$lib/rooms/manager.svelte';
-	import { go } from '$lib/nav';
+	import { PlayerManager } from '#lib/rooms/manager.svelte';
+	import { go } from '#lib/nav';
 	import Switch from './Switch.svelte';
-	import { controls } from '$lib/player/controls.svelte';
+	import { controls } from '#lib/player/controls.svelte';
 
 	// `volume`: the selected player's volume at the top (phones: Now playing has no volume row).
 	let { onclose, volume = false }: { onclose: () => void; volume?: boolean } = $props();

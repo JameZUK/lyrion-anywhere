@@ -1,21 +1,21 @@
 <script lang="ts">
 	// One smart filter (wave2-design.md §5.6): its albums, a page at a time, run on the gateway;
 	// play or shuffle its first albums, edit or delete it.
-	import BackButton from '$lib/components/BackButton.svelte';
-	import AlbumGrid from '$lib/components/AlbumGrid.svelte';
-	import FilterEditor from '$lib/components/FilterEditor.svelte';
-	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-	import Icon from '$lib/components/Icon.svelte';
-	import RowMenu from '$lib/components/RowMenu.svelte';
+	import BackButton from '#lib/components/BackButton.svelte';
+	import AlbumGrid from '#lib/components/AlbumGrid.svelte';
+	import FilterEditor from '#lib/components/FilterEditor.svelte';
+	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import RowMenu from '#lib/components/RowMenu.svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { untrack } from 'svelte';
-	import { useDetailTitle } from '$lib/title.svelte';
-	import { me } from '$lib/state/me';
-	import { app } from '$lib/state/app.svelte';
-	import { ruleSummary, validId, type FilterSpec, type SmartFilter } from '$lib/api/filters';
-	import { albumsFor, startFilter } from '$lib/filters/run';
-	import type { Album } from '$lib/lms/types';
+	import { useDetailTitle } from '#lib/title.svelte';
+	import { me } from '#lib/state/me';
+	import { app } from '#lib/state/app.svelte';
+	import { ruleSummary, validId, type FilterSpec, type SmartFilter } from '#lib/api/filters';
+	import { albumsFor, startFilter } from '#lib/filters/run';
+	import type { Album } from '#lib/lms/types';
 
 	const PAGE = 50;
 	const filterId = $derived.by(() => {

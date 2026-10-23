@@ -3,10 +3,10 @@
 	// then Save. A playlist of that name is never overwritten silently: the dialog says so
 	// and offers Replace. A modal <dialog>: Escape or Cancel closes it, and focus goes back
 	// to what opened it.
-	import { me } from '$lib/state/me';
-	import { ApiError } from '$lib/api/http';
-	import type { SavedPlaylist } from '$lib/api/me';
-	import { PLAYLIST_NAME_MAX, cleanPlaylistName, playlistNameProblem } from '$lib/queue/save-name';
+	import { me } from '#lib/state/me';
+	import { ApiError } from '#lib/api/http';
+	import type { SavedPlaylist } from '#lib/api/me';
+	import { PLAYLIST_NAME_MAX, cleanPlaylistName, playlistNameProblem } from '#lib/queue/save-name';
 
 	let {
 		player,

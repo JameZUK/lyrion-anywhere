@@ -3,10 +3,10 @@
 // ratings and the sleep timer. Without the API nothing happens (and nothing breaks).
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const rated: [number, number][] = [];
 let rateOk = true;
-vi.mock('$lib/state/ratings', () => ({
+vi.mock('#lib/state/ratings', () => ({
 	ratings: {
 		style: 'stars',
 		get: () => null,
@@ -15,10 +15,10 @@ vi.mock('$lib/state/ratings', () => ({
 	},
 }));
 const fake = await import('./helpers/fake-app.svelte');
-const { haptics, HAPTICS_KEY, PATTERNS, crossed } = await import('$lib/haptics/haptics.svelte');
-const { default: SeekBar } = await import('$lib/components/SeekBar.svelte');
-const { default: RatingControl } = await import('$lib/components/RatingControl.svelte');
-const { default: SleepSheet } = await import('$lib/components/SleepSheet.svelte');
+const { haptics, HAPTICS_KEY, PATTERNS, crossed } = await import('#lib/haptics/haptics.svelte');
+const { default: SeekBar } = await import('#lib/components/SeekBar.svelte');
+const { default: RatingControl } = await import('#lib/components/RatingControl.svelte');
+const { default: SleepSheet } = await import('#lib/components/SleepSheet.svelte');
 
 beforeAll(() => {
 	vi.stubGlobal(
@@ -152,7 +152,7 @@ test('setting a sleep timer ticks', async () => {
 
 test('the Settings switch (Settings › Now playing) turns haptics on and off, and is disabled without the API', async () => {
 	vi.stubGlobal('fetch', async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }));
-	const { default: Settings } = await import('$lib/settings/NowPlayingSettings.svelte');
+	const { default: Settings } = await import('#lib/settings/NowPlayingSettings.svelte');
 	const r = render(Settings);
 	const sw = screen.getByRole('switch', { name: 'Haptics' });
 	expect(sw.getAttribute('aria-checked')).toBe('false');

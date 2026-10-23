@@ -3,7 +3,7 @@ export {};
 // element paused. The page's own recovery (back from the background, the first tap that
 // unmutes, a synced start) must never play it again behind the user's back; only the worker
 // letting the hold go does.
-import { mayResumeMedia } from '$lib/player/local-plan';
+import { mayResumeMedia } from '#lib/player/local-plan';
 
 const session = {
 	current: { access_token: 't1' } as unknown,
@@ -17,7 +17,7 @@ const session = {
 	},
 	async authed() {},
 };
-vi.mock('$lib/state/app.svelte', () => ({ session, api: { rpc: async () => ({}) } }));
+vi.mock('#lib/state/app.svelte', () => ({ session, api: { rpc: async () => ({}) } }));
 
 class FakeWorker {
 	static last: FakeWorker | null = null;
@@ -86,7 +86,7 @@ vi.stubGlobal('MediaSource', FakeMediaSource);
 URL.createObjectURL = () => 'blob:ms';
 URL.revokeObjectURL = () => {};
 
-const { device } = await import('$lib/player/device.svelte');
+const { device } = await import('#lib/player/device.svelte');
 
 const settle = async () => {
 	for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));

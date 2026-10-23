@@ -1,10 +1,10 @@
 // Settings › Listening history: switch it off, view it (with titles), clear it.
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
-import type { HistoryEntry } from '$lib/api/me';
+import type { HistoryEntry } from '#lib/api/me';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const state = { enabled: true, items: [] as HistoryEntry[], next: null as string | null, patches: [] as boolean[], cleared: 0 };
-vi.mock('$lib/state/me', () => ({
+vi.mock('#lib/state/me', () => ({
 	me: {
 		async history(_limit: number, before?: string | null) {
 			return before
@@ -25,7 +25,7 @@ vi.mock('$lib/state/me', () => ({
 	},
 }));
 const fake = await import('./helpers/fake-app.svelte');
-const { default: HistorySettings } = await import('$lib/components/HistorySettings.svelte');
+const { default: HistorySettings } = await import('#lib/components/HistorySettings.svelte');
 
 function entry(track: number, at: number): HistoryEntry {
 	return { track_key: 'a'.repeat(64), track_id: track, album_id: 7, artist_id: 2, year: 1984, played_at: at, seconds: 200, source: track === 2 ? 'offline' : 'live' };

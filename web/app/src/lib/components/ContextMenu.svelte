@@ -2,7 +2,7 @@
 	// "More…" for a track, album or artist: LMS's info menu, including entries plugins add. For
 	// a track, under the heading and its close button: the full 1–5 rating (Now playing shows a
 	// single toggle) and the credits, each name a link to that contributor in that role.
-	import * as cmd from '$lib/lms/commands';
+	import * as cmd from '#lib/lms/commands';
 	import MenuView from './MenuView.svelte';
 	import RatingControl from './RatingControl.svelte';
 	import TrackCredits from './TrackCredits.svelte';

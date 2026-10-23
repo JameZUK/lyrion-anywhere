@@ -4,12 +4,12 @@
 // equivalents.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
-import type { PlayerStatus } from '$lib/lms/types';
+import type { PlayerStatus } from '#lib/lms/types';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
 const { default: NowPlaying } = await import('../src/routes/+page.svelte');
-const { default: PlayerBar } = await import('$lib/components/PlayerBar.svelte');
+const { default: PlayerBar } = await import('#lib/components/PlayerBar.svelte');
 
 const P = '02:00:00:00:00:01';
 const OTHER = '02:00:00:00:00:02';

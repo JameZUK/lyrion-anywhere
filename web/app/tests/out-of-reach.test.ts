@@ -5,12 +5,12 @@
 // they are disabled.
 import { readFileSync } from 'node:fs';
 import { goto } from '$app/navigation';
-import { outsideRoute, routeOutsideHashChanges } from '$lib/nav';
-import { PROFILE_KEY, RETRY_MS, SessionManager, parseProfile, type AuthApi } from '$lib/api/session';
-import { ApiError } from '$lib/api/http';
-import type { Session } from '$lib/api/auth';
-import { LAST_KNOWN_KEY, LAST_KNOWN_MAX, forgetLastKnown, loadLastKnown, saveLastKnown } from '$lib/state/last-known';
-import { CONNECTION_ID, explain, needsServer } from '$lib/state/reachability';
+import { outsideRoute, routeOutsideHashChanges } from '#lib/nav';
+import { PROFILE_KEY, RETRY_MS, SessionManager, parseProfile, type AuthApi } from '#lib/api/session';
+import { ApiError } from '#lib/api/http';
+import type { Session } from '#lib/api/auth';
+import { LAST_KNOWN_KEY, LAST_KNOWN_MAX, forgetLastKnown, loadLastKnown, saveLastKnown } from '#lib/state/last-known';
+import { CONNECTION_ID, explain, needsServer } from '#lib/state/reachability';
 
 const ROUTER = { 'sveltekit:history': 5, 'sveltekit:navigation': 5 };
 

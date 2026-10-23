@@ -1,12 +1,12 @@
 <script lang="ts">
 	// Genres (also a section of Library): find one, open it, or play it.
 	import { untrack } from 'svelte';
-	import { api, app } from '$lib/state/app.svelte';
-	import { library } from '$lib/state/library.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import { Pager, whenNear } from '$lib/lms/pager.svelte';
-	import type { Genre, GenresResult } from '$lib/lms/types';
+	import { api, app } from '#lib/state/app.svelte';
+	import { library } from '#lib/state/library.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import { Pager, whenNear } from '#lib/lms/pager.svelte';
+	import type { Genre, GenresResult } from '#lib/lms/types';
 	import Icon from './Icon.svelte';
 	import LibraryNote from './LibraryNote.svelte';
 

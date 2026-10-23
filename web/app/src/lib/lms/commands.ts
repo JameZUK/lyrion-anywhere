@@ -1,6 +1,6 @@
 // LMS command builders, limited to what the gateway's allow-list accepts
 // (docs/PROTOCOL.md). Ids are checked here so bad input never leaves the browser.
-import type { Command } from '$lib/api/rpc';
+import type { Command } from '#lib/api/rpc';
 
 export const STATUS_TAGS = 'tags:aAlcdeJKjNoqrsTIyx';
 // `e` (album id) and `t` (track number) mark gapless runs from one album in the queue.

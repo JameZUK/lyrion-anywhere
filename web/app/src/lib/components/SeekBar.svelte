@@ -4,11 +4,11 @@
 	// refused, or a stream) it is the plain slider. Either way the control itself is a native
 	// range input, so keyboard, screen readers and touch work as everywhere else; the waveform
 	// is drawn underneath it.
-	import { analyses } from '$lib/state/app.svelte';
-	import type { AnalysisClient, AnalysisState } from '$lib/analysis/client';
-	import { barCount, bars, barsPath, fraction } from '$lib/analysis/waveform';
-	import { duration } from '$lib/lms/format';
-	import { haptics } from '$lib/haptics/haptics.svelte';
+	import { analyses } from '#lib/state/app.svelte';
+	import type { AnalysisClient, AnalysisState } from '#lib/analysis/client';
+	import { barCount, bars, barsPath, fraction } from '#lib/analysis/waveform';
+	import { duration } from '#lib/lms/format';
+	import { haptics } from '#lib/haptics/haptics.svelte';
 
 	interface Props {
 		/** The LMS track id (no waveform without one). */

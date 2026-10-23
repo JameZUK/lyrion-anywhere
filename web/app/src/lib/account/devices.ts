@@ -1,7 +1,7 @@
 // "Your devices" (Settings › Account): the list as the gateway sent it, checked; how each
 // device reads ("Pixel 8 · Last used 3 hours ago"); and what each refusal says.
-import { ApiError } from '$lib/api/http';
-import type { MyDevice } from '$lib/api/auth';
+import { ApiError } from '#lib/api/http';
+import type { MyDevice } from '#lib/api/auth';
 import { waitText } from './change-password';
 import { ago } from './ago';
 

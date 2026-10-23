@@ -2,9 +2,9 @@
 	// Now playing while this device's player gets going (it can take up to 20 s before the app
 	// gives up and uses another player): what is happening, how long it has taken, and after a
 	// few seconds a way not to wait.
-	import { app } from '$lib/state/app.svelte';
-	import { device } from '$lib/player/device.svelte';
-	import type { DeviceState } from '$lib/player/device.svelte';
+	import { app } from '#lib/state/app.svelte';
+	import { device } from '#lib/player/device.svelte';
+	import type { DeviceState } from '#lib/player/device.svelte';
 
 	let {
 		/** How long the app waits before using another player (see the layout). */

@@ -1,5 +1,5 @@
 <script lang="ts" module>
-	import type { Role } from '$lib/lms/commands';
+	import type { Role } from '#lib/lms/commands';
 	export type ArtistView = Role | 'all';
 	/** Kept while the app is open, so coming back from an artist shows the same list. */
 	let lastView: ArtistView = 'ALBUMARTIST';
@@ -9,12 +9,12 @@
 	// Artists by role (album artists first, as in LMS; other roles only where the library has
 	// them), paged as it scrolls, with the A–Z fast scroller from LMS's index.
 	import { tick, untrack } from 'svelte';
-	import { api, app } from '$lib/state/app.svelte';
-	import { library } from '$lib/state/library.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import type { IndexEntry } from '$lib/lms/azindex';
-	import { WindowPager, whenNear } from '$lib/lms/pager.svelte';
-	import type { Artist, ArtistsResult } from '$lib/lms/types';
+	import { api, app } from '#lib/state/app.svelte';
+	import { library } from '#lib/state/library.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import type { IndexEntry } from '#lib/lms/azindex';
+	import { WindowPager, whenNear } from '#lib/lms/pager.svelte';
+	import type { Artist, ArtistsResult } from '#lib/lms/types';
 	import ArtistList from './ArtistList.svelte';
 	import AzScroller from './AzScroller.svelte';
 	import Chips from './Chips.svelte';

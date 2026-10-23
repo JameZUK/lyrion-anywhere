@@ -6,14 +6,14 @@
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
-const { default: OutputButton } = await import('$lib/components/OutputButton.svelte');
-const { default: PlayerSwitcher } = await import('$lib/components/PlayerSwitcher.svelte');
-const { default: StatusSlot } = await import('$lib/components/StatusSlot.svelte');
-const { default: PlayerBar } = await import('$lib/components/PlayerBar.svelte');
+const { default: OutputButton } = await import('#lib/components/OutputButton.svelte');
+const { default: PlayerSwitcher } = await import('#lib/components/PlayerSwitcher.svelte');
+const { default: StatusSlot } = await import('#lib/components/StatusSlot.svelte');
+const { default: PlayerBar } = await import('#lib/components/PlayerBar.svelte');
 const { choose, openMenu } = await import('./helpers/menu');
-const { device } = await import('$lib/player/device.svelte');
+const { device } = await import('#lib/player/device.svelte');
 
 const ME = '02:4c:41:00:00:01';
 const LOUNGE = 'aa:bb:cc:dd:ee:01';

@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Sign out, asking first what to do with this account's downloads. Keeping them is the
 	// default (a personal device); removing them is one tap (a shared one).
-	import { formatBytes } from '$lib/offline/settings';
+	import { formatBytes } from '#lib/offline/settings';
 	import Icon from './Icon.svelte';
 
 	let {

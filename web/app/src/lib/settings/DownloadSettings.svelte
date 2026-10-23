@@ -2,12 +2,12 @@
 	// Settings › Downloads (SPEC D5, §8.2, §8.3; Wave 3.5): the preferences (the usual format on
 	// Wi-Fi and on mobile data, Wi-Fi only, a storage limit). The downloads themselves, and
 	// removing them, are on the Downloads page (Manage downloads ›).
-	import { downloads } from '$lib/offline/index.svelte';
-	import { CAP_CHOICES, connectionKind, formatBytes, loadPrefs, networkType, reportsNetwork, requestPersist, savePrefs, storageInfo, type DownloadPrefs, type StorageInfo } from '$lib/offline/settings';
-	import { FORMATS, FORMAT_LABELS } from '$lib/offline/types';
-	import Icon from '$lib/components/Icon.svelte';
-	import PickerRow from '$lib/components/PickerRow.svelte';
-	import Switch from '$lib/components/Switch.svelte';
+	import { downloads } from '#lib/offline/index.svelte';
+	import { CAP_CHOICES, connectionKind, formatBytes, loadPrefs, networkType, reportsNetwork, requestPersist, savePrefs, storageInfo, type DownloadPrefs, type StorageInfo } from '#lib/offline/settings';
+	import { FORMATS, FORMAT_LABELS } from '#lib/offline/types';
+	import Icon from '#lib/components/Icon.svelte';
+	import PickerRow from '#lib/components/PickerRow.svelte';
+	import Switch from '#lib/components/Switch.svelte';
 
 	let prefs = $state<DownloadPrefs>(loadPrefs());
 	function setPrefs(p: Partial<DownloadPrefs>) {

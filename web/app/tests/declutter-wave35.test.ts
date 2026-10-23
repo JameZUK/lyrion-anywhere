@@ -5,16 +5,16 @@
 // has Queue and ⋯ and no second transport; empty states never claim "empty" when unread.
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import type { DownloadManager } from '$lib/offline/manager.svelte';
+import type { DownloadManager } from '#lib/offline/manager.svelte';
 
 const params: Record<string, string | undefined> = { id: '7' };
 vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/') } }));
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
-vi.mock('$lib/offline/index.svelte', async () => {
-	const { DownloadManager } = await import('$lib/offline/manager.svelte');
-	const { MemoryBackend, OfflineStore } = await import('$lib/offline/store');
-	const { HandoffOffer } = await import('$lib/offline/handoff.svelte');
-	const { PlaySync } = await import('$lib/offline/plays.svelte');
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/offline/index.svelte', async () => {
+	const { DownloadManager } = await import('#lib/offline/manager.svelte');
+	const { MemoryBackend, OfflineStore } = await import('#lib/offline/store');
+	const { HandoffOffer } = await import('#lib/offline/handoff.svelte');
+	const { PlaySync } = await import('#lib/offline/plays.svelte');
 	const offlineStore = new OfflineStore(new MemoryBackend());
 	const hang = (() => new Promise(() => {})) as typeof fetch;
 	const downloads = new DownloadManager({ store: offlineStore, authed: (fn) => fn('t'), fetch: hang, sleep: async () => {}, waitForWifi: () => false, capBytes: () => 0 });
@@ -45,15 +45,15 @@ const fakeMe = {
 		throw Object.assign(new Error('not offered'), { status: 404 });
 	}),
 };
-vi.mock('$lib/state/me', () => ({ me: fakeMe, routine: { alarms: async () => ({ alarms: [] }) } }));
+vi.mock('#lib/state/me', () => ({ me: fakeMe, routine: { alarms: async () => ({ alarms: [] }) } }));
 
 const fake = await import('./helpers/fake-app.svelte');
-const offline = await import('$lib/offline/index.svelte');
+const offline = await import('#lib/offline/index.svelte');
 const downloads = offline.downloads as DownloadManager;
-const handoff = offline.handoff as InstanceType<(typeof import('$lib/offline/handoff.svelte'))['HandoffOffer']>;
-const { device } = await import('$lib/player/device.svelte');
+const handoff = offline.handoff as InstanceType<(typeof import('#lib/offline/handoff.svelte'))['HandoffOffer']>;
+const { device } = await import('#lib/player/device.svelte');
 const { openMenu, choose, menuItems } = await import('./helpers/menu');
-const { snackbars } = await import('$lib/components/snackbars.svelte');
+const { snackbars } = await import('#lib/components/snackbars.svelte');
 
 const P = '02:00:00:00:00:01';
 const KITCHEN = '02:00:00:00:00:02';
@@ -233,7 +233,7 @@ describe('rule 3: a row has at most one trailing control', () => {
 	});
 
 	test('Home’s station cards: no bin, a ⋯ with Delete station, confirmed', async () => {
-		const { default: Cards } = await import('$lib/components/StationCards.svelte');
+		const { default: Cards } = await import('#lib/components/StationCards.svelte');
 		const onremoved = vi.fn();
 		const r = render(Cards, { stations: [{ id: 4, name: 'Fresh', kind: 'fresh', spec: { kind: 'fresh' }, broken: null }], removable: true, onremoved });
 		expect(r.queryByRole('button', { name: /^Delete/ })).toBeNull();
@@ -246,7 +246,7 @@ describe('rule 3: a row has at most one trailing control', () => {
 
 describe('rule 1: one message at a time', () => {
 	test('two snackbars with messages: only the newest shows; when it goes, the older one shows again', async () => {
-		const { default: Snackbar } = await import('$lib/components/Snackbar.svelte');
+		const { default: Snackbar } = await import('#lib/components/Snackbar.svelte');
 		const a = render(Snackbar, { message: 'First', ondismiss: () => {} });
 		const b = render(Snackbar, { message: '', ondismiss: () => {} });
 		await tick();
@@ -265,7 +265,7 @@ describe('rule 1: one message at a time', () => {
 	});
 
 	test('a snackbar’s words are in its live region even while another shows (screen readers hear both)', async () => {
-		const { default: Snackbar } = await import('$lib/components/Snackbar.svelte');
+		const { default: Snackbar } = await import('#lib/components/Snackbar.svelte');
 		const a = render(Snackbar, { message: 'Saved', ondismiss: () => {} });
 		const b = render(Snackbar, { message: 'Removed', ondismiss: () => {} });
 		await tick();
@@ -288,7 +288,7 @@ describe('Continue on… (a snackbar with an action)', () => {
 	});
 
 	test('offers the player last used, with Continue and Other player…; Not now (dismiss) withdraws it', async () => {
-		const { default: ContinueOn } = await import('$lib/components/ContinueOn.svelte');
+		const { default: ContinueOn } = await import('#lib/components/ContinueOn.svelte');
 		const r = render(ContinueOn);
 		await tick();
 		const snack = r.container.querySelector('[data-snackbar][data-shown]')!;
@@ -300,7 +300,7 @@ describe('Continue on… (a snackbar with an action)', () => {
 	});
 
 	test('Other player… lists the players this user may control; choosing one continues there', async () => {
-		const { default: ContinueOn } = await import('$lib/components/ContinueOn.svelte');
+		const { default: ContinueOn } = await import('#lib/components/ContinueOn.svelte');
 		const r = render(ContinueOn);
 		await tick();
 		await fireEvent.click(r.getByRole('button', { name: 'Other player…' }));
@@ -313,7 +313,7 @@ describe('Continue on… (a snackbar with an action)', () => {
 
 	test('nothing offered: nothing shown', async () => {
 		handoff.dismiss();
-		const { default: ContinueOn } = await import('$lib/components/ContinueOn.svelte');
+		const { default: ContinueOn } = await import('#lib/components/ContinueOn.svelte');
 		const r = render(ContinueOn);
 		await tick();
 		expect(r.container.querySelector('[data-snackbar][data-shown]')).toBeNull();
@@ -380,7 +380,7 @@ describe('empty states never lie', () => {
 		expect(r.container.textContent).not.toContain('The queue is empty');
 		expect(r.container.querySelector('[data-queue-unloaded]')!.textContent).toBe('The queue can’t be loaded until your music server is back.');
 		r.unmount();
-		const { default: QueueList } = await import('$lib/components/QueueList.svelte');
+		const { default: QueueList } = await import('#lib/components/QueueList.svelte');
 		const peek = render(QueueList);
 		await tick();
 		expect(peek.container.textContent).not.toContain('The queue is empty');
@@ -398,14 +398,14 @@ describe('empty states never lie', () => {
 
 describe('rule 2: one mark per meaning', () => {
 	test('a downloaded track has the one "available offline" mark; ✕ is never a mark', async () => {
-		const { default: TrackList } = await import('$lib/components/TrackList.svelte');
+		const { default: TrackList } = await import('#lib/components/TrackList.svelte');
 		const r = render(TrackList, {
 			tracks: TRACKS,
 			onplay: () => {},
 			badge: (t: { id?: unknown }) => (t.id === 11 ? { kind: 'done' as const, label: 'Downloaded' } : { kind: 'failed' as const, label: 'Download failed' }),
 		});
 		const done = r.container.querySelector('[data-track-mark="done"] svg path')!.getAttribute('d');
-		const { default: Icon } = await import('$lib/components/Icon.svelte');
+		const { default: Icon } = await import('#lib/components/Icon.svelte');
 		const icon = render(Icon, { name: 'downloaded' });
 		expect(done).toBe(icon.container.querySelector('path')!.getAttribute('d'));
 		const close = render(Icon, { name: 'close' });
@@ -431,7 +431,7 @@ describe('the playing-on strip is gone (only "Moving…" remains)', () => {
 		vi.stubGlobal('Worker', class {});
 		device.state = 'connected';
 		device.mac = '02:4c:41:00:00:01';
-		const { default: PlayerSwitcher } = await import('$lib/components/PlayerSwitcher.svelte');
+		const { default: PlayerSwitcher } = await import('#lib/components/PlayerSwitcher.svelte');
 		const r = render(PlayerSwitcher, { onclose: () => {} });
 		const menu = await openMenu('More options for this device', r.container);
 		expect(menu.textContent).toContain('Move playback to this device');

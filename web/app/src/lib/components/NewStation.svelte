@@ -1,10 +1,10 @@
 <script lang="ts">
 	// Make a station: a genre or decade mix, or one of the built-in kinds.
-	import { api } from '$lib/state/app.svelte';
-	import { me } from '$lib/state/me';
-	import * as cmd from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import type { Station, StationSpec } from '$lib/api/me';
+	import { api } from '#lib/state/app.svelte';
+	import { me } from '#lib/state/me';
+	import * as cmd from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import type { Station, StationSpec } from '#lib/api/me';
 
 	let { oncreated, oncancel }: { oncreated: (s: Station) => void; oncancel?: () => void } = $props();
 

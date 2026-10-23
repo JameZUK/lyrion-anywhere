@@ -2,7 +2,7 @@
 // the gateway's answers to GET /v1/info/artist/{id} and GET /v1/info/album/{id} (cleaned
 // there from the Music & Artist Information plugin), checked again here as untrusted input.
 // Text is only ever shown as text, never as markup.
-import { imagePath } from '$lib/lms/commands';
+import { imagePath } from '#lib/lms/commands';
 
 /** Longest text accepted, in characters (the gateway keeps to the same limit). */
 export const MAX_TEXT = 20_000;

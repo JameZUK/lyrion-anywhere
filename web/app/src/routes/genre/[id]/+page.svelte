@@ -1,20 +1,20 @@
 <script lang="ts">
-	import BackButton from '$lib/components/BackButton.svelte';
-	import { useDetailTitle } from '$lib/title.svelte';
+	import BackButton from '#lib/components/BackButton.svelte';
+	import { useDetailTitle } from '#lib/title.svelte';
 	import { page } from '$app/state';
 	import { untrack } from 'svelte';
-	import { api } from '$lib/state/app.svelte';
-	import { library } from '$lib/state/library.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import { Pager, whenNear } from '$lib/lms/pager.svelte';
-	import type { Artist, ArtistsResult, GenresResult } from '$lib/lms/types';
-	import AlbumBrowser from '$lib/components/AlbumBrowser.svelte';
-	import ArtistList from '$lib/components/ArtistList.svelte';
-	import ContextMenu from '$lib/components/ContextMenu.svelte';
-	import PageActions from '$lib/components/PageActions.svelte';
-	import Chips from '$lib/components/Chips.svelte';
-	import LibraryNote from '$lib/components/LibraryNote.svelte';
+	import { api } from '#lib/state/app.svelte';
+	import { library } from '#lib/state/library.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import { Pager, whenNear } from '#lib/lms/pager.svelte';
+	import type { Artist, ArtistsResult, GenresResult } from '#lib/lms/types';
+	import AlbumBrowser from '#lib/components/AlbumBrowser.svelte';
+	import ArtistList from '#lib/components/ArtistList.svelte';
+	import ContextMenu from '#lib/components/ContextMenu.svelte';
+	import PageActions from '#lib/components/PageActions.svelte';
+	import Chips from '#lib/components/Chips.svelte';
+	import LibraryNote from '#lib/components/LibraryNote.svelte';
 
 	const genreId = $derived.by(() => {
 		try {

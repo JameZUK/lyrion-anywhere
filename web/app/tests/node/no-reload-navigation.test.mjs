@@ -1,6 +1,6 @@
 // In-app navigation must go through SvelteKit's router. With the hash router, assigning
 // `location.hash` (or `location.href`) makes SvelteKit reload the whole page, which stops this
-// device's player mid-song. Use `go()` from `$lib/nav`.
+// device's player mid-song. Use `go()` from `#lib/nav`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -11,12 +11,12 @@ const BANNED = [
 	[/\blocation\.(?:hash|href)\s*=(?!=)/, 'location.hash/href assignment'],
 	[/\blocation\.assign\s*\(/, 'location.assign'],
 ];
-// The service worker has no router.
-const SKIP = ['service-worker.ts'];
+// The service worker (src/service-worker/, SvelteKit 3's layout) has no router.
+const SKIP_DIR = join(ROOT, 'service-worker');
 
 function files(dir) {
 	return readdirSync(dir, { recursive: true, withFileTypes: true })
-		.filter((d) => d.isFile() && /\.(svelte|ts|js)$/.test(d.name) && !SKIP.includes(d.name))
+		.filter((d) => d.isFile() && /\.(svelte|ts|js)$/.test(d.name) && d.parentPath !== SKIP_DIR)
 		.map((d) => join(d.parentPath, d.name));
 }
 

@@ -1,12 +1,12 @@
 <script lang="ts">
-	import BackButton from '$lib/components/BackButton.svelte';
+	import BackButton from '#lib/components/BackButton.svelte';
 	// A plugin's entry in LMS's home menu (e.g. under My Music), opened as a menu.
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
-	import { api, app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { pluginEntries, toCommand, type PluginEntry, type SBMenu } from '$lib/lms/slimbrowse';
-	import MenuView from '$lib/components/MenuView.svelte';
+	import { api, app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { pluginEntries, toCommand, type PluginEntry, type SBMenu } from '#lib/lms/slimbrowse';
+	import MenuView from '#lib/components/MenuView.svelte';
 
 	let entry = $state<PluginEntry | null>(null);
 	let status = $state<'loading' | 'ready' | 'missing' | 'error'>('loading');

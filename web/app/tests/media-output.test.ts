@@ -1,5 +1,5 @@
 // Media-element output basics, against a fake Media Source.
-import { MediaOutput, Timeline, describeBuffered, describeMediaEvent } from '$lib/player/media-output';
+import { MediaOutput, Timeline, describeBuffered, describeMediaEvent } from '#lib/player/media-output';
 
 class FakeBuffered {
 	constructor(public spans: [number, number][] = []) {}

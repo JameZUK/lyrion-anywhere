@@ -1,20 +1,20 @@
 <script lang="ts">
-	import { go } from '$lib/nav';
-	import { app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { coverPath } from '$lib/lms/commands';
-	import { duration, textOf } from '$lib/lms/format';
+	import { go } from '#lib/nav';
+	import { app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { coverPath } from '#lib/lms/commands';
+	import { duration, textOf } from '#lib/lms/format';
 	import Art from './Art.svelte';
 	import Icon from './Icon.svelte';
 	import OutputButton from './OutputButton.svelte';
-	import { playerLabel } from '$lib/lms/sync';
-	import { device } from '$lib/player/device.svelte';
-	import { DEVICE_BUTTONS_NOTE } from '$lib/player/volume';
-	import { LONG_PRESS_MS, MiniGesture, miniKey, type MiniAction } from '$lib/player/gesture';
-	import { formatLeft, sleepLeft } from '$lib/lms/sleep';
-	import { haptics } from '$lib/haptics/haptics.svelte';
-	import { controls } from '$lib/player/controls.svelte';
-	import { now } from '$lib/player/now.svelte';
+	import { playerLabel } from '#lib/lms/sync';
+	import { device } from '#lib/player/device.svelte';
+	import { DEVICE_BUTTONS_NOTE } from '#lib/player/volume';
+	import { LONG_PRESS_MS, MiniGesture, miniKey, type MiniAction } from '#lib/player/gesture';
+	import { formatLeft, sleepLeft } from '#lib/lms/sleep';
+	import { haptics } from '#lib/haptics/haptics.svelte';
+	import { controls } from '#lib/player/controls.svelte';
+	import { now } from '#lib/player/now.svelte';
 
 	let seeking = $state<number | null>(null);
 	let volume = $state<number | null>(null);

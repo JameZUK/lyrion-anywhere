@@ -1,17 +1,17 @@
 <script lang="ts">
 	// One shelf on Home, by type (see lib/home/layout.ts).
 	import { untrack } from 'svelte';
-	import { api, app } from '$lib/state/app.svelte';
-	import { me } from '$lib/state/me';
-	import * as cmd from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import type { Album, AlbumsResult, FavouritesResult, MenuItem, Playlist, PlaylistsResult } from '$lib/lms/types';
-	import type { HomeShelf, PinnedMenu, SmartFilter, Station } from '$lib/api/me';
-	import { startFilter } from '$lib/filters/run';
+	import { api, app } from '#lib/state/app.svelte';
+	import { me } from '#lib/state/me';
+	import * as cmd from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import type { Album, AlbumsResult, FavouritesResult, MenuItem, Playlist, PlaylistsResult } from '#lib/lms/types';
+	import type { HomeShelf, PinnedMenu, SmartFilter, Station } from '#lib/api/me';
+	import { startFilter } from '#lib/filters/run';
 	import Icon from './Icon.svelte';
-	import { controls } from '$lib/player/controls.svelte';
-	import type { SBMenu } from '$lib/lms/slimbrowse';
-	import { SHELF_LABELS } from '$lib/home/layout';
+	import { controls } from '#lib/player/controls.svelte';
+	import type { SBMenu } from '#lib/lms/slimbrowse';
+	import { SHELF_LABELS } from '#lib/home/layout';
 	import AlbumShelf from './AlbumShelf.svelte';
 	import StationCards from './StationCards.svelte';
 	import MenuView from './MenuView.svelte';

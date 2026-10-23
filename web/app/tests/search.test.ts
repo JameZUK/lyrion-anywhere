@@ -1,10 +1,10 @@
 // Library search: answers arriving out of order never replace the latest term's results, and
 // the search is still there after going to a result and back.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
-import type { SearchResult } from '$lib/lms/types';
-import { DEBOUNCE_MS, SearchState } from '$lib/search/store.svelte';
+import type { SearchResult } from '#lib/lms/types';
+import { DEBOUNCE_MS, SearchState } from '#lib/search/store.svelte';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
 
 function later<T>() {

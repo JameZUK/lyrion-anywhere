@@ -1,5 +1,5 @@
 <script lang="ts" module>
-	import { ColourCache } from '$lib/visual/glow';
+	import { ColourCache } from '#lib/visual/glow';
 	/** Each cover's colours, worked out once per album (shared by every Now playing). */
 	const cache = new ColourCache();
 </script>
@@ -9,8 +9,8 @@
 	// turning slowly while music plays. Its size and opacity come from the page's
 	// `--glow-radius` and `--glow-opacity`, which the visualiser sets on each beat. It holds
 	// still, at rest, under "reduce motion", and goes in the high-contrast theme. Decorative.
-	import { api } from '$lib/state/app.svelte';
-	import { dominantColours, haloColours, ROTATION_MS, type Rgb } from '$lib/visual/glow';
+	import { api } from '#lib/state/app.svelte';
+	import { dominantColours, haloColours, ROTATION_MS, type Rgb } from '#lib/visual/glow';
 
 	let { path, playing = false, still = false }: { path: string | null; playing?: boolean; still?: boolean } = $props();
 

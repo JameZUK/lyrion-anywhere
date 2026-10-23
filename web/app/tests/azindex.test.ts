@@ -1,6 +1,6 @@
 // The A–Z index: LMS's indexList as offsets (running totals), robust on any input.
-import { MAX_KEYS, keyAt, keyFromPointer, parseIndexList } from '$lib/lms/azindex';
-import * as c from '$lib/lms/commands';
+import { MAX_KEYS, keyAt, keyFromPointer, parseIndexList } from '#lib/lms/azindex';
+import * as c from '#lib/lms/commands';
 
 test('each letter starts where the counts before it add up to', () => {
 	const idx = parseIndexList([

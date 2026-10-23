@@ -2,11 +2,11 @@
 // this device plays its downloads (the offline player's queue is active), the mini player, Now
 // playing and the Queue show that engine's track, position and queue; otherwise the selected
 // LMS player's. The transport goes the same way through `controls` (./controls.svelte).
-import { app } from '$lib/state/app.svelte';
-import { offlinePlayer } from '$lib/offline/index.svelte';
-import { isRemote } from '$lib/lms/format';
-import type { Track } from '$lib/lms/types';
-import type { StoredTrack } from '$lib/offline/types';
+import { app } from '#lib/state/app.svelte';
+import { offlinePlayer } from '#lib/offline/index.svelte';
+import { isRemote } from '#lib/lms/format';
+import type { Track } from '#lib/lms/types';
+import type { StoredTrack } from '#lib/offline/types';
 
 /** A downloaded track as LMS would describe it (enough for the screens that show tracks). */
 export function trackOf(t: StoredTrack | undefined): Track | undefined {

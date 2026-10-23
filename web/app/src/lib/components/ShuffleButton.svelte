@@ -2,7 +2,7 @@
 	// Album-aware shuffle (Wave 2 §3.5): pressing cycles Off → Tracks → Albums (LMS shuffle 0, 1,
 	// 2), and the button's name says which. A long press, a right-click or the down arrow
 	// offers the three as a menu.
-	import { SHUFFLE_MODES, SHUFFLE_NAMES, nextShuffle, shuffleLabel, shuffleMode, type ShuffleMode } from '$lib/lms/shuffle';
+	import { SHUFFLE_MODES, SHUFFLE_NAMES, nextShuffle, shuffleLabel, shuffleMode, type ShuffleMode } from '#lib/lms/shuffle';
 	import Icon from './Icon.svelte';
 
 	let { value, onchange, disabled = false }: { value: unknown; onchange: (m: ShuffleMode) => void; disabled?: boolean } = $props();

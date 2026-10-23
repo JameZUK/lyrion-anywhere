@@ -1,7 +1,7 @@
 // Queue editing logic: the optimistic list must match what LMS does with `playlist move`, and
 // the gesture maths must be sane for any input.
-import { QueueChanged, SWIPE_MIN_PX, checkAt, dropIndex, insertAt, isSwipe, moveChecked, removeAt, removeChecked, reorder, sameTrack, swipeRemoves, type ServerEdit } from '$lib/lms/queue-edit';
-import type { Track } from '$lib/lms/types';
+import { QueueChanged, SWIPE_MIN_PX, checkAt, dropIndex, insertAt, isSwipe, moveChecked, removeAt, removeChecked, reorder, sameTrack, swipeRemoves, type ServerEdit } from '#lib/lms/queue-edit';
+import type { Track } from '#lib/lms/types';
 
 /** What LMS's playlist move does: take the item out, put it in so it ends up at `to`. */
 function lmsMove<T>(list: T[], from: number, to: number): T[] {

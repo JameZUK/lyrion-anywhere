@@ -1,11 +1,11 @@
 <script lang="ts">
 	// The signal path (source, decoding, volume and output), for the sheet opened from the
 	// quality badge and for Now playing's Info layout.
-	import { app } from '$lib/state/app.svelte';
-	import { device } from '$lib/player/device.svelte';
-	import { quality } from '$lib/lms/quality';
-	import { signalPath } from '$lib/player/signal-path';
-	import { streamOf } from '$lib/player/stream-quality';
+	import { app } from '#lib/state/app.svelte';
+	import { device } from '#lib/player/device.svelte';
+	import { quality } from '#lib/lms/quality';
+	import { signalPath } from '#lib/player/signal-path';
+	import { streamOf } from '#lib/player/stream-quality';
 
 	const here = $derived(!!app.playerId && app.playerId === device.mac && device.state === 'connected');
 	const view = $derived(

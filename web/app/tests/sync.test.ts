@@ -1,7 +1,7 @@
 // Sync groups: only players the user may control (those listed) are named or targeted, and
 // the right player is told to join the right group.
-import { groupFromStatus, groupLabel, groupOf, playerLabel, syncGroupsFrom, syncToggle } from '$lib/lms/sync';
-import type { PlayerInfo } from '$lib/lms/types';
+import { groupFromStatus, groupLabel, groupOf, playerLabel, syncGroupsFrom, syncToggle } from '#lib/lms/sync';
+import type { PlayerInfo } from '#lib/lms/types';
 
 const A = '02:00:00:00:00:0a';
 const B = '02:00:00:00:00:0b';

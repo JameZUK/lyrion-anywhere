@@ -4,15 +4,15 @@
 // without the server (removing a download) stays available.
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import type { DownloadManager } from '$lib/offline/manager.svelte';
-import { CONNECTION_ID, UNREACHABLE_TEXT } from '$lib/state/reachability';
+import type { DownloadManager } from '#lib/offline/manager.svelte';
+import { CONNECTION_ID, UNREACHABLE_TEXT } from '#lib/state/reachability';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
-vi.mock('$lib/offline/index.svelte', async () => {
-	const { DownloadManager } = await import('$lib/offline/manager.svelte');
-	const { OfflinePlayer } = await import('$lib/offline/player.svelte');
-	const { MemoryBackend, OfflineStore } = await import('$lib/offline/store');
-	const { PlaySync } = await import('$lib/offline/plays.svelte');
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/offline/index.svelte', async () => {
+	const { DownloadManager } = await import('#lib/offline/manager.svelte');
+	const { OfflinePlayer } = await import('#lib/offline/player.svelte');
+	const { MemoryBackend, OfflineStore } = await import('#lib/offline/store');
+	const { PlaySync } = await import('#lib/offline/plays.svelte');
 	const offlineStore = new OfflineStore(new MemoryBackend());
 	const hang = (() => new Promise(() => {})) as typeof fetch;
 	const downloads = new DownloadManager({ store: offlineStore, authed: (fn) => fn('t'), fetch: hang, sleep: async () => {}, waitForWifi: () => false, capBytes: () => 0 });
@@ -23,11 +23,11 @@ vi.mock('$lib/offline/index.svelte', async () => {
 vi.mock('$app/state', () => ({ page: { params: { id: '7' }, url: new URL('http://app.example/#/album/7') } }));
 
 const fake = await import('./helpers/fake-app.svelte');
-const offline = await import('$lib/offline/index.svelte');
+const offline = await import('#lib/offline/index.svelte');
 const downloads = offline.downloads as DownloadManager;
-const { device } = await import('$lib/player/device.svelte');
-const { default: TrackList } = await import('$lib/components/TrackList.svelte');
-const { default: PlayerSwitcher } = await import('$lib/components/PlayerSwitcher.svelte');
+const { device } = await import('#lib/player/device.svelte');
+const { default: TrackList } = await import('#lib/components/TrackList.svelte');
+const { default: PlayerSwitcher } = await import('#lib/components/PlayerSwitcher.svelte');
 const { openMenu } = await import('./helpers/menu');
 const { default: AlbumPage } = await import('../src/routes/album/[id]/+page.svelte');
 

@@ -4,10 +4,10 @@
 // menu with the typed text as its `search:` parameter (and nowhere else). The text is sent
 // only through that action, exactly as the menu offered it; the gateway runs it only because
 // LMS offered it to this device (and checks the text as it checks any search text).
-import type { Command } from '$lib/api/rpc';
-import { href } from '$lib/nav';
-import type { AppInfo } from '$lib/lms/types';
-import { itemKind, resolveAction, toCommand, type Resolved, type SBMenu } from '$lib/lms/slimbrowse';
+import type { Command } from '#lib/api/rpc';
+import { href } from '#lib/nav';
+import type { AppInfo } from '#lib/lms/types';
+import { itemKind, resolveAction, toCommand, type Resolved, type SBMenu } from '#lib/lms/slimbrowse';
 
 /** An app whose top menu has a search box. */
 export interface SearchablePlugin {

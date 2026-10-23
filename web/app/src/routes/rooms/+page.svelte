@@ -6,18 +6,18 @@
 	// takes its queue); the card's "Sync with…" menu item does the same from the keyboard. A
 	// grid on wide screens, a list on phones. Statuses are read only while this page is open.
 	import { untrack } from 'svelte';
-	import { api, app } from '$lib/state/app.svelte';
-	import { routine } from '$lib/state/me';
-	import { device } from '$lib/player/device.svelte';
-	import { bringHere, isThisDevice } from '$lib/player/outputs';
-	import { MAX_ROOMS, alarmText, roomsOf } from '$lib/rooms/rooms.svelte';
-	import { PlayerManager, keyOf, nameOf } from '$lib/rooms/manager.svelte';
-	import { alarmChanges } from '$lib/rooms/alarm-changes.svelte';
-	import { go } from '$lib/nav';
-	import type { PlayerInfo } from '$lib/lms/types';
-	import RoomCard from '$lib/components/RoomCard.svelte';
-	import Sheet from '$lib/components/Sheet.svelte';
-	import { haptics } from '$lib/haptics/haptics.svelte';
+	import { api, app } from '#lib/state/app.svelte';
+	import { routine } from '#lib/state/me';
+	import { device } from '#lib/player/device.svelte';
+	import { bringHere, isThisDevice } from '#lib/player/outputs';
+	import { MAX_ROOMS, alarmText, roomsOf } from '#lib/rooms/rooms.svelte';
+	import { PlayerManager, keyOf, nameOf } from '#lib/rooms/manager.svelte';
+	import { alarmChanges } from '#lib/rooms/alarm-changes.svelte';
+	import { go } from '#lib/nav';
+	import type { PlayerInfo } from '#lib/lms/types';
+	import RoomCard from '#lib/components/RoomCard.svelte';
+	import Sheet from '#lib/components/Sheet.svelte';
+	import { haptics } from '#lib/haptics/haptics.svelte';
 
 	const players = new PlayerManager({
 		rpc: (p, c) => api.rpc(p, c),

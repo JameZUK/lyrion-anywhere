@@ -5,11 +5,11 @@
 	// frames (the worker analyses the audio only then) and draws at most 30 times a second;
 	// when the page is hidden it stops both. Glow draws nothing here: it finds the beats in
 	// the bass (lib/visual/glow.ts) and hands the page the halo's pulse each frame.
-	import { device } from '$lib/player/device.svelte';
-	import { parseFrame, silentFrame, type VisualFrame } from '$lib/visual/frame';
-	import { drawBars, drawScope, drawVu, glowLevel, nextStyle, type Palette, type VisualStyle } from '$lib/visual/draw';
-	import { BeatDetector, GLOW_REST, PulseEnvelope, glowStyle, type GlowStyle } from '$lib/visual/glow';
-	import { VuBallistics, VuCalibration, fallBars } from '$lib/visual/vu';
+	import { device } from '#lib/player/device.svelte';
+	import { parseFrame, silentFrame, type VisualFrame } from '#lib/visual/frame';
+	import { drawBars, drawScope, drawVu, glowLevel, nextStyle, type Palette, type VisualStyle } from '#lib/visual/draw';
+	import { BeatDetector, GLOW_REST, PulseEnvelope, glowStyle, type GlowStyle } from '#lib/visual/glow';
+	import { VuBallistics, VuCalibration, fallBars } from '#lib/visual/vu';
 
 	let {
 		style,

@@ -3,18 +3,18 @@
 	// as an album on the Downloads page), fetched one album list at a time, checked against
 	// the storage limit as one batch. In the page header (Wave 3.5): one Download button in the
 	// usual format; "Download all as…" and "Remove downloads" are in the page's ⋯ (`actions()`).
-	import { api } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { isRemote } from '$lib/lms/format';
-	import type { Album, TitlesResult } from '$lib/lms/types';
-	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
-	import type { DownloadItem, DownloadRequest } from '$lib/offline/manager.svelte';
-	import type { Format } from '$lib/offline/types';
+	import { api } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { isRemote } from '#lib/lms/format';
+	import type { Album, TitlesResult } from '#lib/lms/types';
+	import { downloads, offlinePlayer } from '#lib/offline/index.svelte';
+	import type { DownloadItem, DownloadRequest } from '#lib/offline/manager.svelte';
+	import type { Format } from '#lib/offline/types';
 	import Icon from './Icon.svelte';
 	import FormatPicker from './FormatPicker.svelte';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 	import type { RowAction } from './RowMenu.svelte';
-	import { controls } from '$lib/player/controls.svelte';
+	import { controls } from '#lib/player/controls.svelte';
 
 	/** Most albums fetched for one artist download. */
 	const MAX_ALBUMS = 200;

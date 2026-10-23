@@ -2,7 +2,7 @@
 // The gateway has already dropped players the caller may not control; this also ignores any
 // id that is not a listed player, so nothing here can name or target anyone else's player.
 import * as cmd from './commands';
-import type { Command } from '$lib/api/rpc';
+import type { Command } from '#lib/api/rpc';
 import { textOf } from './format';
 import type { PlayerInfo, PlayerStatus, SyncGroupsResult } from './types';
 

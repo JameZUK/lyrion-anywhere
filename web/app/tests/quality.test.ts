@@ -1,7 +1,7 @@
 // The quality badge (docs/plans: Wave 1 §5): format and resolution from LMS's status tags,
 // and the Hi-Res rule (more than 16-bit or more than 48 kHz, lossless only). The same
 // vectors are in mobile/src/model.rs (the Android app).
-import { badgeText, kbpsOf, quality, streamed } from '$lib/lms/quality';
+import { badgeText, kbpsOf, quality, streamed } from '#lib/lms/quality';
 
 test('lossless: codec bits/kHz, and Hi-Res above CD resolution', () => {
 	const cases: [Record<string, unknown>, string, boolean][] = [

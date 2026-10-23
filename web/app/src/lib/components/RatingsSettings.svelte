@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Settings › Ratings: stars or a heart, and clearing every rating (after asking).
-	import type { RatingStyle } from '$lib/api/routine';
-	import { ratings } from '$lib/state/ratings';
+	import type { RatingStyle } from '#lib/api/routine';
+	import { ratings } from '#lib/state/ratings';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 	import PickerRow from './PickerRow.svelte';
 

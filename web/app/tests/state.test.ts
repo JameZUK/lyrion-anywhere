@@ -1,6 +1,6 @@
 export {};
 // App state: a remembered player that no longer exists must not be polled.
-vi.mock('$lib/api/session', () => {
+vi.mock('#lib/api/session', () => {
 	class SessionManager {
 		current = null;
 		token = 't';
@@ -19,7 +19,7 @@ vi.mock('$lib/api/session', () => {
 
 const calls: { player: string; cmd: unknown[] }[] = [];
 let players: { playerid: string; name: string; isplaying?: number }[] = [];
-vi.mock('$lib/api/rpc', () => {
+vi.mock('#lib/api/rpc', () => {
 	class Api {
 		async rpc(player: string, cmd: unknown[]) {
 			calls.push({ player, cmd });
@@ -34,7 +34,7 @@ vi.mock('$lib/api/rpc', () => {
 	return { Api };
 });
 
-const { app } = await import('$lib/state/app.svelte');
+const { app } = await import('#lib/state/app.svelte');
 
 beforeEach(() => {
 	calls.length = 0;

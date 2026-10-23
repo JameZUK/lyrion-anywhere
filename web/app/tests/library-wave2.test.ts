@@ -3,19 +3,19 @@
 // keyboard and screen reader) and browse-list swipes with their alternatives.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { LIBRARY_KEY } from '$lib/library/prefs';
+import { LIBRARY_KEY } from '#lib/library/prefs';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const params: Record<string, string | undefined> = {};
 vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/') } }));
 const fake = await import('./helpers/fake-app.svelte');
-const TrackCredits = (await import('$lib/components/TrackCredits.svelte')).default;
+const TrackCredits = (await import('#lib/components/TrackCredits.svelte')).default;
 const ArtistPage = (await import('../src/routes/artist/[id]/[[role]]/+page.svelte')).default;
 const LibraryPage = (await import('../src/routes/library/+page.svelte')).default;
-const AlbumBrowser = (await import('$lib/components/AlbumBrowser.svelte')).default;
-const AzScroller = (await import('$lib/components/AzScroller.svelte')).default;
-const AlbumList = (await import('$lib/components/AlbumList.svelte')).default;
-const Chips = (await import('$lib/components/Chips.svelte')).default;
+const AlbumBrowser = (await import('#lib/components/AlbumBrowser.svelte')).default;
+const AzScroller = (await import('#lib/components/AzScroller.svelte')).default;
+const AlbumList = (await import('#lib/components/AlbumList.svelte')).default;
+const Chips = (await import('#lib/components/Chips.svelte')).default;
 
 const P = '02:00:00:00:00:01';
 const HOSTILE = '<img src=x onerror=alert(1)>';

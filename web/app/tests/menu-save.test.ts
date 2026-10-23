@@ -2,7 +2,7 @@
 // menu requests that led to the item and the item's own offered actions; never typed text.
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { ApiError } from '$lib/api/http';
+import { ApiError } from '#lib/api/http';
 
 const P = '02:4c:41:00:00:01';
 const created: { name: string; spec: unknown; player?: string }[] = [];
@@ -12,7 +12,7 @@ let refuse = false;
 let menus: Record<string, unknown> = {};
 
 const { choose, menuItems } = await import('./helpers/menu');
-vi.mock('$lib/state/app.svelte', () => ({
+vi.mock('#lib/state/app.svelte', () => ({
 	app: { playerId: P, soon() {}, queueVersion: 0 },
 	api: {
 		async rpc(_player: string, cmd: unknown[]) {
@@ -21,7 +21,7 @@ vi.mock('$lib/state/app.svelte', () => ({
 		art: async () => 'blob:x',
 	},
 }));
-vi.mock('$lib/state/me', () => ({
+vi.mock('#lib/state/me', () => ({
 	me: {
 		async createStation(name: string, spec: unknown, player?: string) {
 			if (refuse) throw new ApiError(422, 'this menu item is no longer offered');
@@ -42,7 +42,7 @@ vi.mock('$lib/state/me', () => ({
 	},
 }));
 
-const MenuView = (await import('$lib/components/MenuView.svelte')).default;
+const MenuView = (await import('#lib/components/MenuView.svelte')).default;
 
 beforeAll(() => {
 	globalThis.IntersectionObserver = class {

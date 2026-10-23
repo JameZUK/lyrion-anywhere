@@ -1,6 +1,6 @@
 // In-app navigation goes through SvelteKit's router (never `location.hash = …`, which reloads).
 import { goto } from '$app/navigation';
-import { go, href } from '$lib/nav';
+import { go, href } from '#lib/nav';
 
 test('routes become hash links', () => {
 	expect(href('/')).toBe('#/');

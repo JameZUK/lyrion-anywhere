@@ -9,7 +9,7 @@
 //
 // With a mix, radio runs it; otherwise it plays the track and lets Don't Stop The Music carry
 // on. With neither there is no radio, and the app says so.
-import type { Command } from '$lib/api/rpc';
+import type { Command } from '#lib/api/rpc';
 import { enqueue, id as checkId, infoMenu } from './commands';
 import { itemKind, needsInput, resolveAction, toCommand, type Resolved, type SBMenu } from './slimbrowse';
 

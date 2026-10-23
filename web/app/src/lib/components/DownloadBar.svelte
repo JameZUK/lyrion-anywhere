@@ -4,14 +4,14 @@
 	// are in the page's ⋯ menu (`actions()`). While it downloads, a line under the header has
 	// the progress with Pause and Cancel, "Waiting for Wi-Fi" with "Download now", or the
 	// storage limit's refusal. Only library tracks are passed in (never radio or streamed ones).
-	import { downloads } from '$lib/offline/index.svelte';
-	import type { DownloadRequest } from '$lib/offline/manager.svelte';
-	import { refsOf, type Format, type Ref } from '$lib/offline/types';
+	import { downloads } from '#lib/offline/index.svelte';
+	import type { DownloadRequest } from '#lib/offline/manager.svelte';
+	import { refsOf, type Format, type Ref } from '#lib/offline/types';
 	import Icon from './Icon.svelte';
 	import FormatPicker from './FormatPicker.svelte';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 	import type { RowAction } from './RowMenu.svelte';
-	import { controls } from '$lib/player/controls.svelte';
+	import { controls } from '#lib/player/controls.svelte';
 
 	let {
 		tracks,

@@ -2,7 +2,7 @@
 	// Cover art, loaded through the API (bearer token, never in the URL) when it scrolls
 	// into view. Falls back to a placeholder with the item's initial. `local`: a cover this
 	// device already holds (a download's, as a blob: URL), shown as it is.
-	import { api } from '$lib/state/app.svelte';
+	import { api } from '#lib/state/app.svelte';
 
 	let {
 		path,

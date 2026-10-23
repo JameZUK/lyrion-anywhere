@@ -17,7 +17,7 @@ const session = {
 	},
 	async authed() {},
 };
-vi.mock('$lib/state/app.svelte', () => ({ session, api: { rpc: async () => ({}) } }));
+vi.mock('#lib/state/app.svelte', () => ({ session, api: { rpc: async () => ({}) } }));
 
 class FakeWorker {
 	static last: FakeWorker | null = null;
@@ -117,7 +117,7 @@ vi.stubGlobal('MediaSource', FakeMediaSource);
 URL.createObjectURL = () => 'blob:ms';
 URL.revokeObjectURL = () => {};
 
-const { device } = await import('$lib/player/device.svelte');
+const { device } = await import('#lib/player/device.svelte');
 
 const settle = async () => {
 	for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));

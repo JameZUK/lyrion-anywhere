@@ -1,5 +1,5 @@
 // Clicking the position bar of a track that isn't playing starts it there.
-import { seekAndPlay } from '$lib/lms/commands';
+import { seekAndPlay } from '#lib/lms/commands';
 
 describe('seekAndPlay', () => {
 	it('only seeks while playing', () => {

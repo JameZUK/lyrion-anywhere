@@ -5,15 +5,15 @@
 // phone layout's own controls are in now-playing-phone.test.ts.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
-import type { PlayerStatus } from '$lib/lms/types';
+import type { PlayerStatus } from '#lib/lms/types';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
 const { choose, menuItems } = await import('./helpers/menu');
 const { goto } = await import('$app/navigation');
-const { device } = await import('$lib/player/device.svelte');
-const { nowPlaying } = await import('$lib/nowplaying/store.svelte');
-const { NOW_PLAYING_KEY } = await import('$lib/nowplaying/prefs');
+const { device } = await import('#lib/player/device.svelte');
+const { nowPlaying } = await import('#lib/nowplaying/store.svelte');
+const { NOW_PLAYING_KEY } = await import('#lib/nowplaying/prefs');
 const { default: NowPlaying } = await import('../src/routes/+page.svelte');
 
 const HERE = '02:00:00:00:00:0a';

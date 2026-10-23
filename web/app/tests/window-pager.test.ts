@@ -1,6 +1,6 @@
 // The windowed pager behind album and artist lists: pages on, jumps to an offset without
 // loading up to it, pages back, keeps the A–Z index, and copes with odd answers.
-import { WindowPager } from '$lib/lms/pager.svelte';
+import { WindowPager } from '#lib/lms/pager.svelte';
 
 type Row = { id: number | null } | null;
 function server(total = 50) {

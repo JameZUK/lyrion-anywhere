@@ -1,9 +1,9 @@
 <script lang="ts">
 	// Smart filters (wave2-design.md §5.6) in Library: the user's filters, each opened, played,
 	// shuffled, edited or deleted; and a new one from the rule builder.
-	import { me } from '$lib/state/me';
-	import { FILTER_LIMITS, ruleSummary, type FilterSpec, type SmartFilter } from '$lib/api/filters';
-	import { startFilter } from '$lib/filters/run';
+	import { me } from '#lib/state/me';
+	import { FILTER_LIMITS, ruleSummary, type FilterSpec, type SmartFilter } from '#lib/api/filters';
+	import { startFilter } from '#lib/filters/run';
 	import FilterEditor from './FilterEditor.svelte';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 	import Icon from './Icon.svelte';

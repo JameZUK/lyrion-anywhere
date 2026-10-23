@@ -1,7 +1,7 @@
 export {};
 // The sleep timer in the app state: what it sends LMS, re-arming an "end of …" timer when the
 // end moves, "sleep all", cancelling, and this device's fade-out.
-vi.mock('$lib/api/session', () => {
+vi.mock('#lib/api/session', () => {
 	class SessionManager {
 		current = null;
 		token = 't';
@@ -24,7 +24,7 @@ const calls: { player: string; cmd: unknown[] }[] = [];
 let status: Record<string, unknown> = {};
 let upcoming: Record<string, unknown>[] = [];
 let refuseSleep = false;
-vi.mock('$lib/api/rpc', () => {
+vi.mock('#lib/api/rpc', () => {
 	class Api {
 		async rpc(player: string, cmd: unknown[]) {
 			calls.push({ player, cmd });
@@ -42,7 +42,7 @@ vi.mock('$lib/api/rpc', () => {
 	return { Api };
 });
 
-const { app } = await import('$lib/state/app.svelte');
+const { app } = await import('#lib/state/app.svelte');
 const sleeps = () => calls.filter((c) => c.cmd[0] === 'sleep').map((c) => [c.player, c.cmd[1]]);
 const fades: [number | null, number][] = [];
 

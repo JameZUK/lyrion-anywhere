@@ -11,15 +11,15 @@ import {
 	sanitiseRating,
 	timeText,
 	type Alarm,
-} from '$lib/api/routine';
+} from '#lib/api/routine';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
-const { ratings } = await import('$lib/state/ratings');
-const { default: RatingControl } = await import('$lib/components/RatingControl.svelte');
+const { ratings } = await import('#lib/state/ratings');
+const { default: RatingControl } = await import('#lib/components/RatingControl.svelte');
 const { default: AlarmsPage } = await import('../src/routes/alarms/+page.svelte');
-const { default: RatingsSettings } = await import('$lib/components/RatingsSettings.svelte');
-const { alarmChanges } = await import('$lib/rooms/alarm-changes.svelte');
+const { default: RatingsSettings } = await import('#lib/components/RatingsSettings.svelte');
+const { alarmChanges } = await import('#lib/rooms/alarm-changes.svelte');
 
 const P = '02:00:00:00:00:01';
 

@@ -1,7 +1,7 @@
 // The service worker's handlers, in a fake caches/clients world. An upgrade must leave an
 // open tab working: the new version waits, the previous version's files stay until no open
 // tab runs it, and the person chooses when to reload.
-import { ASK_TIMEOUT_MS, CACHE_PREFIX, KEEP_UNANSWERED, MSG, onActivate, onFetch, onInstall, onMessage, prune, type SwClient, type SwEnv } from '$lib/pwa/sw-handlers';
+import { ASK_TIMEOUT_MS, CACHE_PREFIX, KEEP_UNANSWERED, MSG, onActivate, onFetch, onInstall, onMessage, prune, type SwClient, type SwEnv } from '#lib/pwa/sw-handlers';
 
 const SCOPE = 'https://music.example.com/lms/';
 
@@ -104,6 +104,19 @@ describe('install', () => {
 		expect(shell).toContain(`${SCOPE}manifest.webmanifest`);
 		// The previous version's files are untouched while it still runs.
 		expect(await w.caches.has(`${CACHE_PREFIX}v1`)).toBe(true);
+	});
+
+	test("SvelteKit 3's build paths (relative to the base, no leading slash) are stored under the worker's scope", async () => {
+		const w = world('v3');
+		// What src/service-worker/index.ts passes: `immutable` from $app/manifest, mapped to its paths.
+		const immutable = [{ path: '_app/immutable/entry/start.v3hash.js' }, { path: '_app/immutable/assets/0.v3hash.css' }];
+		w.env.build = immutable.map((f) => f.path);
+		await onInstall(w.env);
+		const shell = [...w.caches.stores.get(`${CACHE_PREFIX}v3`)!.entries.keys()];
+		expect(shell).toContain(`${SCOPE}_app/immutable/entry/start.v3hash.js`);
+		expect(shell).toContain(`${SCOPE}_app/immutable/assets/0.v3hash.css`);
+		// Never resolved against the origin's root, outside the app's base path.
+		expect(shell.filter((u) => !u.startsWith(SCOPE))).toEqual([]);
 	});
 });
 

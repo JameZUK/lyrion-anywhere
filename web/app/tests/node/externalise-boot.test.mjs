@@ -28,6 +28,29 @@ test('moves an inline start-up script to a file and keeps it in place', () => {
 	assert.equal(readFileSync(join(r.dir, '_app', file), 'utf8'), '{ start(document.currentScript.parentElement) }');
 });
 
+test("SvelteKit 3's start-up script (init, then start; a module service worker) moves out whole", () => {
+	const body = `
+		{
+			__sveltekit_x = { base: new URL('.', location).pathname.slice(0, -1), version: "1" };
+			const element = document.currentScript.parentElement;
+			import("/_app/immutable/entry/start.A.js").then(async (kit) => {
+				kit.init(__sveltekit_x);
+				const app = await import("/_app/immutable/entry/app.B.js");
+				kit.start(app, element);
+			});
+			if ('serviceWorker' in navigator) {
+				addEventListener('load', function () { navigator.serviceWorker.register('/service-worker.js', { type: 'module' }); });
+			}
+		}`;
+	const r = run(`<html><head><link href="/_app/immutable/entry/payload.C.js" rel="modulepreload"></head><body><div style="display: contents"><script>${body}</script></div></body></html>`);
+	assert.ok(r.ok, r.out);
+	assert.match(r.out, /1 inline script\(s\) moved; 1 page\(s\) clean/);
+	assert.doesNotMatch(r.html, /<script(?![^>]*\bsrc=)[^>]*>/);
+	assert.match(r.html, /<div style="display: contents"><script src="\.\/_app\/boot\.[0-9a-f]{16}\.js"><\/script><\/div>/);
+	const [file] = readdirSync(join(r.dir, '_app'));
+	assert.equal(readFileSync(join(r.dir, '_app', file), 'utf8'), body);
+});
+
 test('pages in subdirectories get a correct relative path', () => {
 	const r = run('<script>x()</script>', 'sub/page.html');
 	assert.ok(r.ok, r.out);

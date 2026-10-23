@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Settings › Appearance: theme (with a live preview of each), light/dark, accent colour.
-	import { appearance } from '$lib/theme/appearance.svelte';
-	import { ACCENTS, THEMES, tokens, type Mode } from '$lib/theme/themes';
+	import { appearance } from '#lib/theme/appearance.svelte';
+	import { ACCENTS, THEMES, tokens, type Mode } from '#lib/theme/themes';
 
 	const MODES: { id: Mode; label: string }[] = [
 		{ id: 'auto', label: 'Automatic' },

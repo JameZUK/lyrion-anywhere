@@ -5,15 +5,15 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(async () => {}) }));
 const fake = await import('./helpers/fake-app.svelte');
-const { default: PlaylistsView } = await import('$lib/components/PlaylistsView.svelte');
-const { default: AppearancePicker } = await import('$lib/components/AppearancePicker.svelte');
-const { appearance } = await import('$lib/theme/appearance.svelte');
-const { THEMES } = await import('$lib/theme/themes');
-const { default: AdvancedSettings } = await import('$lib/settings/AdvancedSettings.svelte');
-const { default: PickerRow } = await import('$lib/components/PickerRow.svelte');
+const { default: PlaylistsView } = await import('#lib/components/PlaylistsView.svelte');
+const { default: AppearancePicker } = await import('#lib/components/AppearancePicker.svelte');
+const { appearance } = await import('#lib/theme/appearance.svelte');
+const { THEMES } = await import('#lib/theme/themes');
+const { default: AdvancedSettings } = await import('#lib/settings/AdvancedSettings.svelte');
+const { default: PickerRow } = await import('#lib/components/PickerRow.svelte');
 
 const settle = async () => {
 	for (let i = 0; i < 5; i++) {

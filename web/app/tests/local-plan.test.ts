@@ -1,7 +1,7 @@
 // What works while the server is out of reach (SPEC: controls while the server is out of
 // reach): the gating table, Next/Previous/end-of-track over what this device has, queue
 // marks, and what to tell LMS when it is back.
-import { MARK_LABELS, NEXT_NEEDS_SERVER, afterEnd, gates, nextIndex, previousTarget, queueMark, reconcile, type GateInput, type LocalOutcome } from '$lib/player/local-plan';
+import { MARK_LABELS, NEXT_NEEDS_SERVER, afterEnd, gates, nextIndex, previousTarget, queueMark, reconcile, type GateInput, type LocalOutcome } from '#lib/player/local-plan';
 
 const set = (...xs: number[]) => (i: number) => xs.includes(i);
 const q = (index: number, count = 5, repeat = 0) => ({ index, count, repeat });

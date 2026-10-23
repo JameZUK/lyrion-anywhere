@@ -2,21 +2,21 @@
 	// Settings (Wave 3.5, rule 5): an index of a handful of rows, each with a one-line summary of
 	// its current value, opening a page of its own (routes/settings/[section]). Nothing was
 	// removed: every setting the single long page had is on one of these pages.
-	import { app, session } from '$lib/state/app.svelte';
-	import { device } from '$lib/player/device.svelte';
-	import { appearance } from '$lib/theme/appearance.svelte';
-	import { THEMES } from '$lib/theme/themes';
-	import { install } from '$lib/pwa/install.svelte';
-	import { lyrics } from '$lib/state/lyrics';
-	import { nowPlaying } from '$lib/nowplaying/store.svelte';
-	import { STYLE_LABELS } from '$lib/visual/draw';
-	import { ratings } from '$lib/state/ratings';
-	import { downloads } from '$lib/offline/index.svelte';
-	import { formatBytes, loadPrefs } from '$lib/offline/settings';
-	import { loadDefault } from '$lib/player/default-player';
-	import { textOf } from '$lib/lms/format';
-	import { SECTIONS, type SectionId } from '$lib/settings/sections';
-	import Icon from '$lib/components/Icon.svelte';
+	import { app, session } from '#lib/state/app.svelte';
+	import { device } from '#lib/player/device.svelte';
+	import { appearance } from '#lib/theme/appearance.svelte';
+	import { THEMES } from '#lib/theme/themes';
+	import { install } from '#lib/pwa/install.svelte';
+	import { lyrics } from '#lib/state/lyrics';
+	import { nowPlaying } from '#lib/nowplaying/store.svelte';
+	import { STYLE_LABELS } from '#lib/visual/draw';
+	import { ratings } from '#lib/state/ratings';
+	import { downloads } from '#lib/offline/index.svelte';
+	import { formatBytes, loadPrefs } from '#lib/offline/settings';
+	import { loadDefault } from '#lib/player/default-player';
+	import { textOf } from '#lib/lms/format';
+	import { SECTIONS, type SectionId } from '#lib/settings/sections';
+	import Icon from '#lib/components/Icon.svelte';
 
 	const user = $derived(session.current?.user.username ?? '');
 	const MODE_LABELS: Record<string, string> = { auto: 'Automatic', light: 'Light', dark: 'Dark' };

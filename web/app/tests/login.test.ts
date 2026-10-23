@@ -2,11 +2,11 @@
 // never reached the server says to check the connection.
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { ApiError, BUSY_MESSAGE } from '$lib/api/http';
+import { ApiError, BUSY_MESSAGE } from '#lib/api/http';
 
 const signIn = vi.fn<(u: string, p: string, c?: string) => Promise<void>>();
-vi.mock('$lib/state/app.svelte', () => ({ session: { signIn: (...a: [string, string, string?]) => signIn(...a) } }));
-const { default: Login } = await import('$lib/components/Login.svelte');
+vi.mock('#lib/state/app.svelte', () => ({ session: { signIn: (...a: [string, string, string?]) => signIn(...a) } }));
+const { default: Login } = await import('#lib/components/Login.svelte');
 
 const CONNECTION = 'Could not reach the server. Check your connection.';
 

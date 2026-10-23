@@ -2,15 +2,15 @@
 	// Settings › Playback (Wave 3.5): which player the app starts on, this browser's streaming
 	// quality, the sleep timer's fade, and this device's name as a player. The playback engine
 	// and the volume source are under About › Advanced.
-	import { app, session } from '$lib/state/app.svelte';
-	import { device } from '$lib/player/device.svelte';
-	import * as auth from '$lib/api/auth';
-	import { PREFERENCES, autoNote, connection, type QualityPreference } from '$lib/player/stream-quality';
-	import { loadDefault, saveDefault, type DefaultSetting } from '$lib/player/default-player';
-	import { isThisDevice } from '$lib/player/outputs';
-	import { textOf } from '$lib/lms/format';
-	import { FADE_CHOICES } from '$lib/lms/sleep';
-	import PickerRow from '$lib/components/PickerRow.svelte';
+	import { app, session } from '#lib/state/app.svelte';
+	import { device } from '#lib/player/device.svelte';
+	import * as auth from '#lib/api/auth';
+	import { PREFERENCES, autoNote, connection, type QualityPreference } from '#lib/player/stream-quality';
+	import { loadDefault, saveDefault, type DefaultSetting } from '#lib/player/default-player';
+	import { isThisDevice } from '#lib/player/outputs';
+	import { textOf } from '#lib/lms/format';
+	import { FADE_CHOICES } from '#lib/lms/sleep';
+	import PickerRow from '#lib/components/PickerRow.svelte';
 
 	const QUALITY_LABELS: Record<string, string> = { auto: 'Automatic', original: 'Original', high: 'High', low: 'Data saver' };
 	// Whether this browser can report its network (Chrome on Android can; Firefox and Safari

@@ -2,8 +2,8 @@
 // N and A on a focused row (and the existing menu) as alternatives.
 import { fireEvent, render } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
-import TrackList from '$lib/components/TrackList.svelte';
-import type { Track } from '$lib/lms/types';
+import TrackList from '#lib/components/TrackList.svelte';
+import type { Track } from '#lib/lms/types';
 
 const tracks: Track[] = [
 	{ id: 1, title: 'One', duration: 100 },

@@ -2,9 +2,9 @@
 	// "Add another device": a one-time code that signs another device (the Android app) in
 	// as this user, shown as a QR code holding the pairing link and as text to type. The
 	// gateway asks for the password and makes a few an hour; each lasts 10 minutes, once.
-	import { ApiError } from '$lib/api/http';
-	import type { PairingCode } from '$lib/api/auth';
-	import { encodeQr, groupPairingCode, pairingLink, qrPath } from '$lib/qr/qr.js';
+	import { ApiError } from '#lib/api/http';
+	import type { PairingCode } from '#lib/api/auth';
+	import { encodeQr, groupPairingCode, pairingLink, qrPath } from '#lib/qr/qr.js';
 	import Icon from './Icon.svelte';
 
 	let {

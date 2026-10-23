@@ -4,10 +4,10 @@
 	// play and add work as for any app item). Which apps can be searched is found once per
 	// session (see `pluginSearch`); nothing is hard-coded per app.
 	import { untrack } from 'svelte';
-	import { app } from '$lib/state/app.svelte';
-	import { pluginSearch } from '$lib/state/plugin-search';
-	import { searchOnHref, type SearchablePlugin } from '$lib/search/plugins';
-	import * as cmd from '$lib/lms/commands';
+	import { app } from '#lib/state/app.svelte';
+	import { pluginSearch } from '#lib/state/plugin-search';
+	import { searchOnHref, type SearchablePlugin } from '#lib/search/plugins';
+	import * as cmd from '#lib/lms/commands';
 	import Art from './Art.svelte';
 	import Icon from './Icon.svelte';
 

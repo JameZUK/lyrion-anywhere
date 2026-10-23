@@ -2,7 +2,7 @@
 // app from the events socket, failed requests, the browser's online flag and this device's
 // player socket, with a short threshold so brief blips never flash the UI; and the one
 // connection message.
-import { ApiError } from '$lib/api/http';
+import { ApiError } from '#lib/api/http';
 import {
 	BUSY_TEXT,
 	LOCAL_TEXT,
@@ -12,7 +12,7 @@ import {
 	connectionMessage,
 	isNetworkError,
 	type Signals,
-} from '$lib/state/reachability';
+} from '#lib/state/reachability';
 
 const ok: Signals = { browserOnline: true, events: 'live', requestsFailing: false, deviceDown: false, busy: false };
 
@@ -113,10 +113,10 @@ describe('the app', () => {
 	const PLAYER = '02:00:00:00:00:01';
 	let calls: { player: string; cmd: unknown[] }[];
 	let respond: () => Response | Promise<Response>;
-	let mod: typeof import('$lib/state/app.svelte');
+	let mod: typeof import('#lib/state/app.svelte');
 
 	beforeAll(async () => {
-		mod = await import('$lib/state/app.svelte');
+		mod = await import('#lib/state/app.svelte');
 	});
 
 	beforeEach(() => {

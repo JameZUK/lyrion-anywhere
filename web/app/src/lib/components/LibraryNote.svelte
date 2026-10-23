@@ -1,6 +1,6 @@
 <script lang="ts">
 	// A reminder, on browse pages, that only one virtual library is being shown.
-	import { library } from '$lib/state/library.svelte';
+	import { library } from '#lib/state/library.svelte';
 </script>
 
 {#if library.name}

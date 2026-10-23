@@ -1,6 +1,6 @@
 // Now playing's per-device choices, shared by Now playing and Settings (see prefs.ts).
 import { loadNowPlaying, saveNowPlaying, type Layout } from './prefs';
-import type { VisualStyle } from '$lib/visual/draw';
+import type { VisualStyle } from '#lib/visual/draw';
 
 class NowPlayingState {
 	layout = $state<Layout>('art');

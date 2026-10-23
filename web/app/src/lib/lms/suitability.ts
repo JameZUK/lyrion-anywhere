@@ -1,6 +1,6 @@
 // Probing apps and plugins for suitability (see `suitability` in slimbrowse.ts): a few at a
 // time, remembered for a while in this tab so the Apps page doesn't re-ask on every visit.
-import type { Command } from '$lib/api/rpc';
+import type { Command } from '#lib/api/rpc';
 import { suitability, type SBMenu, type Suitability } from './slimbrowse';
 
 const KEY = 'anywhere.apps.suitability';

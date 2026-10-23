@@ -5,12 +5,12 @@ import { readFileSync } from 'node:fs';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
-vi.mock('$lib/offline/index.svelte', async () => {
-	const { DownloadManager } = await import('$lib/offline/manager.svelte');
-	const { MemoryBackend, OfflineStore } = await import('$lib/offline/store');
-	const { HandoffOffer } = await import('$lib/offline/handoff.svelte');
-	const { PlaySync } = await import('$lib/offline/plays.svelte');
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/offline/index.svelte', async () => {
+	const { DownloadManager } = await import('#lib/offline/manager.svelte');
+	const { MemoryBackend, OfflineStore } = await import('#lib/offline/store');
+	const { HandoffOffer } = await import('#lib/offline/handoff.svelte');
+	const { PlaySync } = await import('#lib/offline/plays.svelte');
 	const offlineStore = new OfflineStore(new MemoryBackend());
 	const hang = (() => new Promise(() => {})) as typeof fetch;
 	const downloads = new DownloadManager({ store: offlineStore, authed: (fn) => fn('t'), fetch: hang, sleep: async () => {}, waitForWifi: () => false, capBytes: () => 0 });
@@ -21,7 +21,7 @@ vi.mock('$lib/offline/index.svelte', async () => {
 });
 
 const fake = await import('./helpers/fake-app.svelte');
-const offline = await import('$lib/offline/index.svelte');
+const offline = await import('#lib/offline/index.svelte');
 const engine = offline.offlinePlayer as unknown as {
 	queue: unknown[];
 	index: number;
@@ -31,12 +31,12 @@ const engine = offline.offlinePlayer as unknown as {
 	cover: string;
 	calls: string[];
 };
-const { controls } = await import('$lib/player/controls.svelte');
-const { now } = await import('$lib/player/now.svelte');
-const { default: PlayerBar } = await import('$lib/components/PlayerBar.svelte');
+const { controls } = await import('#lib/player/controls.svelte');
+const { now } = await import('#lib/player/now.svelte');
+const { default: PlayerBar } = await import('#lib/components/PlayerBar.svelte');
 const { default: NowPlaying } = await import('../src/routes/+page.svelte');
 const { default: QueuePage } = await import('../src/routes/queue/+page.svelte');
-const { default: QueueList } = await import('$lib/components/QueueList.svelte');
+const { default: QueueList } = await import('#lib/components/QueueList.svelte');
 
 const P = '02:00:00:00:00:01';
 const stored = (id: number, title: string) => ({ user: 'alice', key: String(id).padStart(64, '0'), id, title, artist: 'The Downloads', album: 'Kept Here', albumId: 9, tracknum: id, duration: 200, format: 'opus', codec: 'opus', ext: 'opus', size: 1, contentType: 'audio/ogg', downloadedAt: 1, chunks: 1 });

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import DownloadsView from '$lib/components/DownloadsView.svelte';
+	import DownloadsView from '#lib/components/DownloadsView.svelte';
 </script>
 
 <DownloadsView />

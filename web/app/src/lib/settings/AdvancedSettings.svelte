@@ -2,13 +2,13 @@
 	// Settings › About › Advanced (Wave 3.5): this device's player (start, stop, restart), the
 	// playback engine and the volume source (each with the reason for the automatic choice), and
 	// the diagnostics for troubleshooting, folded away. The only place LMS is named by name.
-	import { app } from '$lib/state/app.svelte';
-	import { device } from '$lib/player/device.svelte';
-	import { detect } from '$lib/player/capabilities';
-	import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, savePreference, type ModePreference } from '$lib/player/mode';
-	import { VOLUME_LABELS, canFollow, planVolume, type VolumeSetting } from '$lib/player/volume';
-	import Icon from '$lib/components/Icon.svelte';
-	import PickerRow from '$lib/components/PickerRow.svelte';
+	import { app } from '#lib/state/app.svelte';
+	import { device } from '#lib/player/device.svelte';
+	import { detect } from '#lib/player/capabilities';
+	import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, savePreference, type ModePreference } from '#lib/player/mode';
+	import { VOLUME_LABELS, canFollow, planVolume, type VolumeSetting } from '#lib/player/volume';
+	import Icon from '#lib/components/Icon.svelte';
+	import PickerRow from '#lib/components/PickerRow.svelte';
 
 	// Built in: every browser is checked, and the best playback mode chosen automatically.
 	const caps = detect();

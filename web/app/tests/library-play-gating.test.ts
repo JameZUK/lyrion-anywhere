@@ -5,15 +5,15 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import type { AlarmListing } from '$lib/api/routine';
+import type { AlarmListing } from '#lib/api/routine';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
-vi.mock('$lib/state/me', () => ({ routine: { alarms: async (): Promise<AlarmListing> => ({ enabled: true, alarms: [], sounds: [] }) } }));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/me', () => ({ routine: { alarms: async (): Promise<AlarmListing> => ({ enabled: true, alarms: [], sounds: [] }) } }));
 const fake = await import('./helpers/fake-app.svelte');
-const { default: AlbumList } = await import('$lib/components/AlbumList.svelte');
-const { default: SearchHit } = await import('$lib/components/SearchHit.svelte');
-const { default: TrackList } = await import('$lib/components/TrackList.svelte');
-const { default: RowMenu } = await import('$lib/components/RowMenu.svelte');
+const { default: AlbumList } = await import('#lib/components/AlbumList.svelte');
+const { default: SearchHit } = await import('#lib/components/SearchHit.svelte');
+const { default: TrackList } = await import('#lib/components/TrackList.svelte');
+const { default: RowMenu } = await import('#lib/components/RowMenu.svelte');
 const { default: Rooms } = await import('../src/routes/rooms/+page.svelte');
 
 class NoObserver {

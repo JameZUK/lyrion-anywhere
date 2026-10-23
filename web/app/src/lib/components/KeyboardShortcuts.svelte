@@ -4,14 +4,14 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { tick } from 'svelte';
-	import { app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { device } from '$lib/player/device.svelte';
-	import { controls } from '$lib/player/controls.svelte';
-	import { nowPlaying } from '$lib/nowplaying/store.svelte';
-	import { haptics } from '$lib/haptics/haptics.svelte';
-	import { SEEK_STEP, SHORTCUT_HELP, VOLUME_STEP, shortcutFor, type Shortcut } from '$lib/keys/shortcuts';
-	import { keysHelp } from '$lib/keys/help.svelte';
+	import { app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { device } from '#lib/player/device.svelte';
+	import { controls } from '#lib/player/controls.svelte';
+	import { nowPlaying } from '#lib/nowplaying/store.svelte';
+	import { haptics } from '#lib/haptics/haptics.svelte';
+	import { SEEK_STEP, SHORTCUT_HELP, VOLUME_STEP, shortcutFor, type Shortcut } from '#lib/keys/shortcuts';
+	import { keysHelp } from '#lib/keys/help.svelte';
 	import Sheet from './Sheet.svelte';
 
 	/** Where the app is (read at each key press). */

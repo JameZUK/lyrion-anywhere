@@ -1,6 +1,6 @@
 // Signing out of this device (Settings › Account): what is stopped and forgotten, and that a
 // shared device's downloads are never left behind by a sign-out that went ahead anyway.
-import { signOutHere, type SignOutParts } from '$lib/account/sign-out';
+import { signOutHere, type SignOutParts } from '#lib/account/sign-out';
 
 function parts(over: Partial<{ removeAll: () => Promise<void>; setUser: () => Promise<void> }> = {}) {
 	const order: string[] = [];

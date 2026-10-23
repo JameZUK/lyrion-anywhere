@@ -6,14 +6,14 @@
 	// the rating and Up next are on the screen already, and the signal path opens from the
 	// quality badge, never here. Wave 3.5: whether the track runs straight on into the next
 	// (gapless, the same album) is said here only, not between the queue's rows.
-	import { api, app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { isRemote } from '$lib/lms/format';
-	import { gaplessLinks } from '$lib/queue/tracker';
-	import type { PlayerStatus } from '$lib/lms/types';
-	import { badgeText, quality, streamed } from '$lib/lms/quality';
-	import { device } from '$lib/player/device.svelte';
-	import { streamOf } from '$lib/player/stream-quality';
+	import { api, app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { isRemote } from '#lib/lms/format';
+	import { gaplessLinks } from '#lib/queue/tracker';
+	import type { PlayerStatus } from '#lib/lms/types';
+	import { badgeText, quality, streamed } from '#lib/lms/quality';
+	import { device } from '#lib/player/device.svelte';
+	import { streamOf } from '#lib/player/stream-quality';
 	import RatingControl from './RatingControl.svelte';
 	import SignalPathView from './SignalPathView.svelte';
 	import TrackCredits from './TrackCredits.svelte';

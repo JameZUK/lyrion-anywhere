@@ -1,7 +1,7 @@
 // Apps and plugins judged from their own top menus: nothing hard-coded per app.
-import { suitability, type SBMenu } from '$lib/lms/slimbrowse';
-import { ApiError } from '$lib/api/http';
-import { TTL_MS, probeAll } from '$lib/lms/suitability';
+import { suitability, type SBMenu } from '#lib/lms/slimbrowse';
+import { ApiError } from '#lib/api/http';
+import { TTL_MS, probeAll } from '#lib/lms/suitability';
 
 test('menus with something to open, play or search are usable', () => {
 	expect(suitability({ item_loop: [{ text: 'Search', type: 'search', actions: { go: { cmd: ['x', 'items'], params: { search: '__TAGGEDINPUT__' } } } }] })).toEqual({ state: 'ok' });

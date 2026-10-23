@@ -1,5 +1,5 @@
 // Display and flag helpers for LMS values.
-import { isRemote } from '$lib/lms/format';
+import { isRemote } from '#lib/lms/format';
 
 describe('isRemote', () => {
 	it('treats LMS text "0" as a local track (regression: the waveform never loaded)', () => {

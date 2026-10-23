@@ -1,9 +1,9 @@
 // "Your year in sound": the story's cards, and sharing one as an image made on the device
 // (a fake canvas stands in for the browser's; a fake navigator.share for the share sheet).
-import { emptyStats, type ListeningStats } from '$lib/api/me';
-import { noNames } from '$lib/stats/names';
-import { storyCards, type StoryCard } from '$lib/stats/story';
-import { IMAGE, cardImage, drawCard, imageName, shareCard, wrap } from '$lib/stats/share';
+import { emptyStats, type ListeningStats } from '#lib/api/me';
+import { noNames } from '#lib/stats/names';
+import { storyCards, type StoryCard } from '#lib/stats/story';
+import { IMAGE, cardImage, drawCard, imageName, shareCard, wrap } from '#lib/stats/share';
 import { fakeCanvas } from './helpers/fake-canvas';
 
 const CARD: StoryCard = { key: 'artist', kicker: 'Your top artist', headline: 'An Example Band', detail: '40 plays, 2.5 hours.' };

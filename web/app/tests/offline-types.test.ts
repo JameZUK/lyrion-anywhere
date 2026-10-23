@@ -1,7 +1,7 @@
 // The download contract: URLs are built only from a validated id and a format from a fixed
 // list, and whatever the server says about a track is checked before it is used or stored.
-import { BadInfo, audioType, downloadUrl, infoUrl, parseInfo, pickFormat, trackId } from '$lib/offline/types';
-import { contentRange, retryAfter } from '$lib/offline/manager.svelte';
+import { BadInfo, audioType, downloadUrl, infoUrl, parseInfo, pickFormat, trackId } from '#lib/offline/types';
+import { contentRange, retryAfter } from '#lib/offline/manager.svelte';
 
 const good = () => ({
 	id: 123,

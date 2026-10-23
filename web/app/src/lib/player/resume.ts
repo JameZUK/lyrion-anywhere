@@ -4,8 +4,8 @@
 // the queue position (track index, track id and time). After the reload the device starts
 // again by itself; if LMS hasn't carried on playing by then, the app jumps back to that
 // point, provided the same track is still at that place in the queue.
-import type { Command } from '$lib/api/rpc';
-import * as cmd from '$lib/lms/commands';
+import type { Command } from '#lib/api/rpc';
+import * as cmd from '#lib/lms/commands';
 
 export interface ResumePoint {
 	mac: string;

@@ -2,7 +2,7 @@
 // Lyrics or Info), whether the visualiser is on and its style, and whether the queue panel
 // shows beside it in wide windows. Kept in local storage (never sent anywhere); storage that
 // is blocked or holds something odd gives the defaults.
-import { STYLES, type VisualStyle } from '$lib/visual/draw';
+import { STYLES, type VisualStyle } from '#lib/visual/draw';
 
 export type Layout = 'art' | 'lyrics' | 'info';
 export const LAYOUTS: readonly Layout[] = ['art', 'lyrics', 'info'];

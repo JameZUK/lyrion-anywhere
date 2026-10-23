@@ -1,8 +1,8 @@
 // Home: shelves in the user's order, and edit mode (move, hide, add, save, revert).
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
-import type { HomeLayout, Station } from '$lib/api/me';
+import type { HomeLayout, Station } from '#lib/api/me';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const saves: HomeLayout[] = [];
 const fakeMe = {
 	layout: { version: 1, shelves: [{ type: 'recent' }, { type: 'stations' }, { type: 'new' }], default: true } as HomeLayout,
@@ -25,13 +25,13 @@ const fakeMe = {
 	openMenu: vi.fn(),
 	statsOn: false,
 	stats: vi.fn(async () => {
-		const { emptyStats } = await import('$lib/api/me');
+		const { emptyStats } = await import('#lib/api/me');
 		const s = emptyStats(fakeMe.statsOn, 396);
 		if (fakeMe.statsOn) s.totals = { plays: 412, seconds: 82800, tracks: 301, albums: 64, artists: 41, days: 27 };
 		return s;
 	}),
 };
-vi.mock('$lib/state/me', () => ({ me: { ...fakeMe, stations: async () => fakeMe.stations } }));
+vi.mock('#lib/state/me', () => ({ me: { ...fakeMe, stations: async () => fakeMe.stations } }));
 const fake = await import('./helpers/fake-app.svelte');
 const { default: Home } = await import('../src/routes/home/+page.svelte');
 

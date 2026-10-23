@@ -2,15 +2,15 @@
 	// Favourites (or one folder of them): on their own page, and under Library's Favourites
 	// chip (`level` 2, the top level).
 	let { item, level = 1 }: { item?: string; level?: 1 | 2 } = $props();
-	import BackButton from '$lib/components/BackButton.svelte';
+	import BackButton from '#lib/components/BackButton.svelte';
 	import { untrack } from 'svelte';
-	import { api, app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import { NO_PLAYER } from '$lib/naming';
-	import type { FavouritesResult, MenuItem } from '$lib/lms/types';
-	import Art from '$lib/components/Art.svelte';
-	import RowMenu from '$lib/components/RowMenu.svelte';
+	import { api, app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import { NO_PLAYER } from '#lib/naming';
+	import type { FavouritesResult, MenuItem } from '#lib/lms/types';
+	import Art from '#lib/components/Art.svelte';
+	import RowMenu from '#lib/components/RowMenu.svelte';
 
 	let items = $state<MenuItem[]>([]);
 	let title = $state('Favourites');

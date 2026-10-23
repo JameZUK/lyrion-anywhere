@@ -1,12 +1,12 @@
 // "Your year in sound": the full-screen story (buttons, arrow keys, swipes, Escape, focus),
 // sharing the current card, and the Home card that offers it and this month's listening.
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
-import { emptyStats, type ListeningStats } from '$lib/api/me';
+import { emptyStats, type ListeningStats } from '#lib/api/me';
 import { fakeCanvas } from './helpers/fake-canvas';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const state = { answers: new Map<string, ListeningStats>(), fail: false, asked: [] as string[] };
-vi.mock('$lib/state/me', () => ({
+vi.mock('#lib/state/me', () => ({
 	me: {
 		async stats(period: string) {
 			state.asked.push(period);
@@ -16,8 +16,8 @@ vi.mock('$lib/state/me', () => ({
 	},
 }));
 const fake = await import('./helpers/fake-app.svelte');
-const { default: YearStory } = await import('$lib/components/YearStory.svelte');
-const { default: StatsCard } = await import('$lib/components/StatsCard.svelte');
+const { default: YearStory } = await import('#lib/components/YearStory.svelte');
+const { default: StatsCard } = await import('#lib/components/StatsCard.svelte');
 
 function yearStats(): ListeningStats {
 	const s = emptyStats(true, 396);

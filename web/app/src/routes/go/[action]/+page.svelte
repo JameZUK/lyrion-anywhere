@@ -5,10 +5,10 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { untrack } from 'svelte';
-	import { api, app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { isRemote } from '$lib/lms/format';
-	import { radioFromTrack } from '$lib/lms/discovery';
+	import { api, app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { isRemote } from '#lib/lms/format';
+	import { radioFromTrack } from '#lib/lms/discovery';
 
 	/** How long to wait for the player before giving up. */
 	const WAIT_MS = 20_000;

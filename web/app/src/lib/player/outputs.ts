@@ -1,6 +1,6 @@
 // Where the music plays (SPEC D20): this device by default; another player on request, by
 // controlling it or by moving playback there (Transfer, docs/PROTOCOL.md).
-import { app } from '$lib/state/app.svelte';
+import { app } from '#lib/state/app.svelte';
 import { device } from './device.svelte';
 
 /** This device's player is running, or on its way. */

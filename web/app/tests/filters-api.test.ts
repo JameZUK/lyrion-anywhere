@@ -1,7 +1,7 @@
 // Smart filters (wave2-design.md §5.6 › The contract): the client-side checks that mirror the
 // contract (every field and operator, refused before anything is sent), the request shapes,
 // untrusted answers, and the play/shuffle commands.
-import { MeApi } from '$lib/api/me';
+import { MeApi } from '#lib/api/me';
 import {
 	DECADES,
 	FILTER_LIMITS,
@@ -12,8 +12,8 @@ import {
 	ruleProblem,
 	ruleSummary,
 	type FilterSpec,
-} from '$lib/api/filters';
-import { filterPlayCommands, playFilter } from '$lib/filters/play';
+} from '#lib/api/filters';
+import { filterPlayCommands, playFilter } from '#lib/filters/play';
 
 type Call = { url: string; method: string; body: unknown };
 let calls: Call[] = [];

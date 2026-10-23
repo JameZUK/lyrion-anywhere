@@ -1,6 +1,6 @@
-import { LOG_LINES, LogLimiter, Reporter, buildReport, describeCommand, describePageCommand, diagnosticsSender, recentLog } from '$lib/player/diagnostics';
-import { SessionManager } from '$lib/api/session';
-import { ApiError } from '$lib/api/http';
+import { LOG_LINES, LogLimiter, Reporter, buildReport, describeCommand, describePageCommand, diagnosticsSender, recentLog } from '#lib/player/diagnostics';
+import { SessionManager } from '#lib/api/session';
+import { ApiError } from '#lib/api/http';
 
 afterEach(() => vi.useRealTimers());
 

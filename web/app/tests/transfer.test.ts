@@ -1,8 +1,8 @@
 // Transfer (docs/PROTOCOL.md): move playback from one player to another. The plans are pure;
 // the runner is driven against a scripted LMS.
-import type { Command } from '$lib/api/rpc';
-import { chunkIds, ID_LIST_MAX, loadTracks } from '$lib/lms/commands';
-import { MAX_COPY, grouped, planCopyTransfer, planGroupTransfer, refusalText, transfer, type Step } from '$lib/lms/transfer';
+import type { Command } from '#lib/api/rpc';
+import { chunkIds, ID_LIST_MAX, loadTracks } from '#lib/lms/commands';
+import { MAX_COPY, grouped, planCopyTransfer, planGroupTransfer, refusalText, transfer, type Step } from '#lib/lms/transfer';
 
 const SRC = '02:4c:41:00:00:01';
 const DST = 'aa:bb:cc:dd:ee:02';

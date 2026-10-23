@@ -1,15 +1,15 @@
 // "This device": the browser as an LMS player. The WASM core runs in a worker, which owns
 // the gateway socket and stream downloads. Audio plays through an AudioWorklet, or through an
 // <audio> element (Media Source) where only that keeps playing in the background (iOS).
-import { version } from '$app/environment';
-import { api, session } from '$lib/state/app.svelte';
+import { version } from '$app/env';
+import { api, session } from '#lib/state/app.svelte';
 import { KeepAlive, PersistentLog, describeLifecycle } from './background';
 import { canPlayHere, detect } from './capabilities';
 import { MediaOutput, Timeline } from './media-output';
 import { PlayheadSmoother, outputClock } from './output-clock';
 import { MEDIA_TYPE, MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
 import { LogLimiter, Reporter, buildReport, describePageCommand, diagnosticsSender } from './diagnostics';
-import { fadeGain } from '$lib/lms/sleep';
+import { fadeGain } from '#lib/lms/sleep';
 import { mayResumeMedia } from './local-plan';
 import { needsGesture, rememberAutoplay } from './autoplay';
 import {

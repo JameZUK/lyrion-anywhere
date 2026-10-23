@@ -2,13 +2,13 @@
 	// The music folder, browsed by id (paths never reach the app): its own page, and the top
 	// level as a section of Library (`embedded`).
 	import BackButton from './BackButton.svelte';
-	import { useDetailTitle } from '$lib/title.svelte';
+	import { useDetailTitle } from '#lib/title.svelte';
 	import { untrack } from 'svelte';
-	import { api, app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { folderName, folderRow, rememberName, type FolderRow } from '$lib/lms/folder';
-	import { Pager, whenNear } from '$lib/lms/pager.svelte';
-	import type { MusicFolderResult } from '$lib/lms/types';
+	import { api, app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { folderName, folderRow, rememberName, type FolderRow } from '#lib/lms/folder';
+	import { Pager, whenNear } from '#lib/lms/pager.svelte';
+	import type { MusicFolderResult } from '#lib/lms/types';
 	import Art from './Art.svelte';
 	import ContextMenu from './ContextMenu.svelte';
 	import Icon from './Icon.svelte';

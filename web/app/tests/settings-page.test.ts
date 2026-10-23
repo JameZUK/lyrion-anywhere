@@ -5,11 +5,11 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const params: Record<string, string | undefined> = {};
 vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/settings') } }));
 const fake = await import('./helpers/fake-app.svelte');
-const { SECTIONS, sectionOf } = await import('$lib/settings/sections');
+const { SECTIONS, sectionOf } = await import('#lib/settings/sections');
 
 let account = { username: 'demo', role: 'admin', totp_enabled: false };
 const ME_FEATURES = { change_password: true };

@@ -1,6 +1,6 @@
 // "Up next" (docs/plans: Wave 1 §3): the track after the current one, from `status - 2`.
-import { upNext } from '$lib/lms/upnext';
-import type { PlayerStatus } from '$lib/lms/types';
+import { upNext } from '#lib/lms/upnext';
+import type { PlayerStatus } from '#lib/lms/types';
 
 const cur = { id: 1, title: 'Now', 'playlist index': 3 };
 const next = { id: 2, title: 'Next', 'playlist index': 4 };

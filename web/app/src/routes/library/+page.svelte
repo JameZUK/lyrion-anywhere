@@ -5,23 +5,23 @@
 	// ("Recently added", "Random"); the old pages of their own (/albums, /artists, /new,
 	// /random) open Library at that section. The virtual library choice is in the header's ⋯.
 	// The section, the album order and grid or list are remembered on this device.
-	import Chips from '$lib/components/Chips.svelte';
-	import AlbumBrowser from '$lib/components/AlbumBrowser.svelte';
-	import ArtistBrowser from '$lib/components/ArtistBrowser.svelte';
-	import PlaylistsView from '$lib/components/PlaylistsView.svelte';
-	import FavouritesView from '$lib/components/FavouritesView.svelte';
-	import FiltersView from '$lib/components/FiltersView.svelte';
-	import GenresView from '$lib/components/GenresView.svelte';
-	import YearsView from '$lib/components/YearsView.svelte';
-	import FolderView from '$lib/components/FolderView.svelte';
-	import AppsView from '$lib/components/AppsView.svelte';
-	import DownloadsView from '$lib/components/DownloadsView.svelte';
-	import LibraryNote from '$lib/components/LibraryNote.svelte';
-	import Icon from '$lib/components/Icon.svelte';
-	import RowMenu, { type RowAction } from '$lib/components/RowMenu.svelte';
-	import { library } from '$lib/state/library.svelte';
-	import { CHIPS, CHIP_LABELS, LIBRARY_SORTS, loadLibraryPrefs, saveLibraryPrefs, type AlbumView, type LibraryChip } from '$lib/library/prefs';
-	import type { BrowseSort } from '$lib/components/AlbumBrowser.svelte';
+	import Chips from '#lib/components/Chips.svelte';
+	import AlbumBrowser from '#lib/components/AlbumBrowser.svelte';
+	import ArtistBrowser from '#lib/components/ArtistBrowser.svelte';
+	import PlaylistsView from '#lib/components/PlaylistsView.svelte';
+	import FavouritesView from '#lib/components/FavouritesView.svelte';
+	import FiltersView from '#lib/components/FiltersView.svelte';
+	import GenresView from '#lib/components/GenresView.svelte';
+	import YearsView from '#lib/components/YearsView.svelte';
+	import FolderView from '#lib/components/FolderView.svelte';
+	import AppsView from '#lib/components/AppsView.svelte';
+	import DownloadsView from '#lib/components/DownloadsView.svelte';
+	import LibraryNote from '#lib/components/LibraryNote.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import RowMenu, { type RowAction } from '#lib/components/RowMenu.svelte';
+	import { library } from '#lib/state/library.svelte';
+	import { CHIPS, CHIP_LABELS, LIBRARY_SORTS, loadLibraryPrefs, saveLibraryPrefs, type AlbumView, type LibraryChip } from '#lib/library/prefs';
+	import type { BrowseSort } from '#lib/components/AlbumBrowser.svelte';
 
 	const saved = loadLibraryPrefs();
 	let chip = $state<LibraryChip>(saved.chip);

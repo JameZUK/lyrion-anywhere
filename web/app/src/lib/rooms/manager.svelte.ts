@@ -2,13 +2,13 @@
 // every player this user may control. Statuses come from a RoomsPoller, read only while one of
 // them is open; the actions (play/pause, volume, power, sync, moving playback) are the same in
 // both, and each needs the server (nothing is sent while it is out of reach or busy).
-import type { Command } from '$lib/api/rpc';
-import type { RowAction } from '$lib/components/RowMenu.svelte';
-import * as cmd from '$lib/lms/commands';
-import { textOf } from '$lib/lms/format';
-import { groupLabel, syncToggle } from '$lib/lms/sync';
-import type { PlayerInfo, PlayerStatus } from '$lib/lms/types';
-import { isNetworkError } from '$lib/state/reachability';
+import type { Command } from '#lib/api/rpc';
+import type { RowAction } from '#lib/components/RowMenu.svelte';
+import * as cmd from '#lib/lms/commands';
+import { textOf } from '#lib/lms/format';
+import { groupLabel, syncToggle } from '#lib/lms/sync';
+import type { PlayerInfo, PlayerStatus } from '#lib/lms/types';
+import { isNetworkError } from '#lib/state/reachability';
 import { RoomsPoller, roomGroup, type RoomsDeps } from './rooms.svelte';
 
 /** What the manager needs from the app (the real one, or a test's). */

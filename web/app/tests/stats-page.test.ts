@@ -1,9 +1,9 @@
 // Your listening: the page's states (loading, off, empty, data), names by id, the charts'
 // text alternatives, and the link from Settings › Listening history.
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
-import { emptyStats, parseStats, type ListeningStats } from '$lib/api/me';
+import { emptyStats, parseStats, type ListeningStats } from '#lib/api/me';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const state = {
 	answer: null as null | ListeningStats,
 	fail: '',
@@ -11,7 +11,7 @@ const state = {
 	held: null as null | Map<string, (s: ListeningStats) => void>,
 	asked: [] as { period: string; tz: number }[],
 };
-vi.mock('$lib/state/me', () => ({
+vi.mock('#lib/state/me', () => ({
 	me: {
 		async stats(period: string, tz: number) {
 			state.asked.push({ period, tz });

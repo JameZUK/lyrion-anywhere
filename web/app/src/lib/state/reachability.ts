@@ -5,8 +5,8 @@
 // Pure (times are passed in), so it is tested without timers. The app feeds it what it sees
 // (the events socket, failed requests, the browser's own online flag, this device's player
 // socket) and re-asks at `recheckAt` so a brief blip never flashes the UI.
-import { ApiError } from '$lib/api/http';
-import type { EventsState } from '$lib/api/events';
+import { ApiError } from '#lib/api/http';
+import type { EventsState } from '#lib/api/events';
 
 export type Reachability = 'online' | 'busy' | 'unreachable';
 

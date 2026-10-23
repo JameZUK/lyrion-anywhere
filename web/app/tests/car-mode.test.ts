@@ -3,24 +3,24 @@
 // Stations, an obvious Exit, no visualiser, and the screen kept on only while playing.
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { goto } from '$app/navigation';
-import type { Station } from '$lib/api/me';
-import { ScreenWake, type WakeLockApi, type WakeSentinel } from '$lib/player/wake-lock';
+import type { Station } from '#lib/api/me';
+import { ScreenWake, type WakeLockApi, type WakeSentinel } from '#lib/player/wake-lock';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const stations: Station[] = [
 	{ id: 4, name: 'Fresh finds', kind: 'fresh', spec: { kind: 'fresh' }, broken: null },
 	{ id: 5, name: 'Broken one', kind: 'menu', spec: { kind: 'fresh' }, broken: 'gone' },
 ];
-vi.mock('$lib/state/me', () => ({ me: { stations: async () => structuredClone(stations) } }));
+vi.mock('#lib/state/me', () => ({ me: { stations: async () => structuredClone(stations) } }));
 const started: number[] = [];
-vi.mock('$lib/stations/active.svelte', () => ({
+vi.mock('#lib/stations/active.svelte', () => ({
 	activeStation: {
 		error: '',
 		start: async (s: Station) => (started.push(s.id), true),
 	},
 }));
 const fake = await import('./helpers/fake-app.svelte');
-const { DSTM_PREF } = await import('$lib/lms/discovery');
+const { DSTM_PREF } = await import('#lib/lms/discovery');
 
 const PLAYER = '02:00:00:00:00:01';
 

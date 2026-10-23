@@ -3,7 +3,7 @@
 // (gateway/src/rpc_policy.rs) runs through the real policy. Regenerate the fixture with
 // UPDATE_FIXTURES=1 npx vitest run tests/commands.test.ts
 import { readFileSync, writeFileSync } from 'node:fs';
-import * as c from '$lib/lms/commands';
+import * as c from '#lib/lms/commands';
 
 const FIXTURE = `${__dirname}/fixtures/commands.json`;
 

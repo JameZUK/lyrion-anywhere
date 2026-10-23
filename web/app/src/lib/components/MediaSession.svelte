@@ -2,11 +2,11 @@
 	// Lock-screen / notification metadata and hardware media keys (Media Session API),
 	// controlling the selected player. While downloads play on this device, the offline
 	// player has the lock screen instead.
-	import { app, api } from '$lib/state/app.svelte';
-	import { offlinePlayer } from '$lib/offline/index.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import { controls } from '$lib/player/controls.svelte';
+	import { app, api } from '#lib/state/app.svelte';
+	import { offlinePlayer } from '#lib/offline/index.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import { controls } from '#lib/player/controls.svelte';
 
 	const ms = typeof navigator !== 'undefined' && 'mediaSession' in navigator ? navigator.mediaSession : null;
 	const track = $derived(app.now?.playlist_loop?.[0]);

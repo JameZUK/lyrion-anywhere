@@ -2,20 +2,20 @@
 // many tracks), runs once however often it is tapped, and a failure is shown, not thrown.
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import * as offline from '$lib/offline/index.svelte';
-import type { DownloadManager } from '$lib/offline/manager.svelte';
-import type { OfflineStore } from '$lib/offline/store';
-import type { RowAction } from '$lib/components/RowMenu.svelte';
-import DownloadBar from '$lib/components/DownloadBar.svelte';
-import ArtistDownload from '$lib/components/ArtistDownload.svelte';
-import DownloadsView from '$lib/components/DownloadsView.svelte';
+import * as offline from '#lib/offline/index.svelte';
+import type { DownloadManager } from '#lib/offline/manager.svelte';
+import type { OfflineStore } from '#lib/offline/store';
+import type { RowAction } from '#lib/components/RowMenu.svelte';
+import DownloadBar from '#lib/components/DownloadBar.svelte';
+import ArtistDownload from '#lib/components/ArtistDownload.svelte';
+import DownloadsView from '#lib/components/DownloadsView.svelte';
 import { key, stored } from './helpers/fake-downloads';
 
-vi.mock('$lib/offline/index.svelte', async () => {
-	const { DownloadManager } = await import('$lib/offline/manager.svelte');
-	const { OfflinePlayer } = await import('$lib/offline/player.svelte');
-	const { MemoryBackend, OfflineStore } = await import('$lib/offline/store');
-	const { PlaySync } = await import('$lib/offline/plays.svelte');
+vi.mock('#lib/offline/index.svelte', async () => {
+	const { DownloadManager } = await import('#lib/offline/manager.svelte');
+	const { OfflinePlayer } = await import('#lib/offline/player.svelte');
+	const { MemoryBackend, OfflineStore } = await import('#lib/offline/store');
+	const { PlaySync } = await import('#lib/offline/plays.svelte');
 	const offlineStore = new OfflineStore(new MemoryBackend());
 	const hang = ((_u: unknown, init?: RequestInit) =>
 		new Promise((_r, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))))) as typeof fetch;
@@ -24,7 +24,7 @@ vi.mock('$lib/offline/index.svelte', async () => {
 	const plays = new PlaySync({ store: offlineStore, authed: (fn) => fn('t'), fetch: hang });
 	return { offlineStore, downloads, offlinePlayer, plays };
 });
-vi.mock('$lib/state/app.svelte', () => ({
+vi.mock('#lib/state/app.svelte', () => ({
 	api: { rpc: async () => ({}), art: () => Promise.reject(new Error('offline')) },
 	app: { queueUp: vi.fn(), reach: 'online', canQueue: true },
 	session: { current: null, subscribe: () => () => {} },

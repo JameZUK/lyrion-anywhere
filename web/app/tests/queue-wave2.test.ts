@@ -5,17 +5,17 @@
 // three modes.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
-import type { PlayerStatus, Track } from '$lib/lms/types';
-import { removeAt, reorder } from '$lib/lms/queue-edit';
-import { upNextTracker } from '$lib/queue/upnext.svelte';
+import type { PlayerStatus, Track } from '#lib/lms/types';
+import { removeAt, reorder } from '#lib/lms/queue-edit';
+import { upNextTracker } from '#lib/queue/upnext.svelte';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
 const { default: QueuePage } = await import('../src/routes/queue/+page.svelte');
-const { default: QueuePeek } = await import('$lib/components/QueuePeek.svelte');
-const { default: ShuffleButton } = await import('$lib/components/ShuffleButton.svelte');
+const { default: QueuePeek } = await import('#lib/components/QueuePeek.svelte');
+const { default: ShuffleButton } = await import('#lib/components/ShuffleButton.svelte');
 const { default: NowPlaying } = await import('../src/routes/+page.svelte');
-const { default: NowPlayingInfo } = await import('$lib/components/NowPlayingInfo.svelte');
+const { default: NowPlayingInfo } = await import('#lib/components/NowPlayingInfo.svelte');
 const { choose, menuItems } = await import('./helpers/menu');
 
 const P = '02:00:00:00:00:01';

@@ -2,22 +2,22 @@
 // music folder, virtual libraries): what they ask LMS for, that hostile answers stay inert
 // text, and that the paging and the remembered library choice cope with odd input.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
-import { Pager } from '$lib/lms/pager.svelte';
-import { folderRow } from '$lib/lms/folder';
-import { loadChoice, parseLibraries, saveChoice } from '$lib/state/library.svelte';
+import { Pager } from '#lib/lms/pager.svelte';
+import { folderRow } from '#lib/lms/folder';
+import { loadChoice, parseLibraries, saveChoice } from '#lib/state/library.svelte';
 
 const { choose } = await import('./helpers/menu');
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const params: Record<string, string | undefined> = {};
 vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/') } }));
 const fake = await import('./helpers/fake-app.svelte');
-const { library } = await import('$lib/state/library.svelte');
-const AlbumBrowser = (await import('$lib/components/AlbumBrowser.svelte')).default;
+const { library } = await import('#lib/state/library.svelte');
+const AlbumBrowser = (await import('#lib/components/AlbumBrowser.svelte')).default;
 const NewMusic = (await import('../src/routes/new/+page.svelte')).default;
 const RandomAlbums = (await import('../src/routes/random/+page.svelte')).default;
-const Artists = (await import('$lib/components/ArtistBrowser.svelte')).default;
+const Artists = (await import('#lib/components/ArtistBrowser.svelte')).default;
 const { goto } = await import('$app/navigation');
-const { LIBRARY_KEY, loadLibraryPrefs } = await import('$lib/library/prefs');
+const { LIBRARY_KEY, loadLibraryPrefs } = await import('#lib/library/prefs');
 const Folder = (await import('../src/routes/folder/[[id]]/+page.svelte')).default;
 const Genres = (await import('../src/routes/genres/+page.svelte')).default;
 const Years = (await import('../src/routes/years/+page.svelte')).default;

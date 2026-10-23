@@ -1,5 +1,5 @@
 // The service worker's install, activate, fetch and message handlers, kept apart from
-// `src/service-worker.ts` so tests can drive them with fake caches and clients.
+// `src/service-worker/index.ts` so tests can drive them with fake caches and clients.
 //
 // Upgrades never pull the files out from under an open tab. A new version installs and then
 // waits; the open tabs keep running the version they loaded (its lazily loaded pieces stay in
@@ -37,9 +37,9 @@ export interface SwClients {
 }
 
 export interface SwEnv {
-	/** The build's files (`$service-worker`'s `build`). */
+	/** The build's files (`immutable` from `$app/manifest`, as paths). */
 	build: readonly string[];
-	/** This build's version (`$service-worker`'s `version`). */
+	/** This build's version (`version` from `$app/env`). */
 	version: string;
 	scope(): URL;
 	caches: CacheStorage;

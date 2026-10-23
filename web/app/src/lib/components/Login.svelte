@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { ApiError } from '$lib/api/http';
-	import { loginError } from '$lib/account/login';
-	import { session } from '$lib/state/app.svelte';
+	import { ApiError } from '#lib/api/http';
+	import { loginError } from '#lib/account/login';
+	import { session } from '#lib/state/app.svelte';
 
 	let username = $state('');
 	let password = $state('');

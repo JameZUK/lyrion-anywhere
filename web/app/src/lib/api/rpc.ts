@@ -1,7 +1,7 @@
 // LMS commands through the gateway's allow-list (POST /v1/rpc) and artwork (GET /v1/art).
 import { ApiError, bearer, callJson, isBusy } from './http';
 import type { SessionManager } from './session';
-import { isNetworkError } from '$lib/state/reachability';
+import { isNetworkError } from '#lib/state/reachability';
 
 export type Command = (string | number)[];
 
@@ -155,7 +155,7 @@ export class Api {
 
 	/**
 	 * An artist's biography and photo, or an album's review (GET /v1/info/…), unchecked: see
-	 * $lib/info/info for the checks. Rejects for a bad id without asking.
+	 * #lib/info/info for the checks. Rejects for a bad id without asking.
 	 */
 	info(kind: 'artist' | 'album', id: number): Promise<unknown> {
 		if (!Number.isSafeInteger(id) || id <= 0 || id > 999_999_999_999) return Promise.reject(new ApiError(400, 'bad id'));

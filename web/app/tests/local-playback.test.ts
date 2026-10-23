@@ -1,11 +1,11 @@
 // This browser as the player while the server is out of reach (lib/player/local.svelte):
 // pause/resume on the device's own stream, skipping to downloads and back, carrying on at a
 // track's end, and what LMS is told when it is back (only if its queue still matches).
-import type { Command } from '$lib/api/rpc';
-import type { PlayerStatus, Track } from '$lib/lms/types';
-import type { StoredTrack } from '$lib/offline/types';
-import { LocalPlayback, type LocalAudio, type LocalDeps } from '$lib/player/local.svelte';
-import { NEXT_NEEDS_SERVER } from '$lib/player/local-plan';
+import type { Command } from '#lib/api/rpc';
+import type { PlayerStatus, Track } from '#lib/lms/types';
+import type { StoredTrack } from '#lib/offline/types';
+import { LocalPlayback, type LocalAudio, type LocalDeps } from '#lib/player/local.svelte';
+import { NEXT_NEEDS_SERVER } from '#lib/player/local-plan';
 
 class FakeAudio extends EventTarget {
 	src = '';

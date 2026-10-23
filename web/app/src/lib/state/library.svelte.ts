@@ -1,8 +1,8 @@
 // Which LMS virtual library to browse ("Libraries" in LMS's My Music). Shown only when LMS
 // reports any; the choice is remembered per user on this device. Browser storage may be
 // missing or refuse access (private windows, blocked site data): then nothing is remembered.
-import * as cmd from '$lib/lms/commands';
-import type { LibrariesResult } from '$lib/lms/types';
+import * as cmd from '#lib/lms/commands';
+import type { LibrariesResult } from '#lib/lms/types';
 
 export interface Library {
 	id: string;

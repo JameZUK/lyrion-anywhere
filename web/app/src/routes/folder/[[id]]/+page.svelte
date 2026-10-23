@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import FolderView from '$lib/components/FolderView.svelte';
+	import FolderView from '#lib/components/FolderView.svelte';
 </script>
 
 <section class="page">

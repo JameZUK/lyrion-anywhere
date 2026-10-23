@@ -1,6 +1,6 @@
 // Choosing the playback mode from capabilities, platform and preference.
-import { chooseMode, detectEnvironment, loadPreference, mediaSource, savePreference, MEDIA_TYPE } from '$lib/player/mode';
-import type { Capabilities } from '$lib/player/capabilities';
+import { chooseMode, detectEnvironment, loadPreference, mediaSource, savePreference, MEDIA_TYPE } from '#lib/player/mode';
+import type { Capabilities } from '#lib/player/capabilities';
 
 function caps(o: { mms?: boolean; ms?: boolean; flacManaged?: boolean; flacClassic?: boolean; worklet?: boolean }): Capabilities {
 	return {
@@ -75,7 +75,7 @@ describe('preferences', () => {
 });
 
 describe('timeline', async () => {
-	const { Timeline } = await import('$lib/player/media-output');
+	const { Timeline } = await import('#lib/player/media-output');
 	test('converts played seconds to frames across rate changes', () => {
 		const t = new Timeline();
 		t.reset(0, 44_100);
@@ -103,7 +103,7 @@ describe('timeline', async () => {
 // Regression: iPadOS Safari accepts only "fLaC" (case-sensitive), so asking for "flac" made the
 // iPad fall back to Web Audio, which iOS suspends in the background.
 test('Safari spelling of the FLAC codec is recognised', async () => {
-	const { chooseMode: choose, MEDIA_TYPES } = await import('$lib/player/mode');
+	const { chooseMode: choose, MEDIA_TYPES } = await import('#lib/player/mode');
 	const safari = {
 		managedMediaSource: true,
 		mediaSource: true,

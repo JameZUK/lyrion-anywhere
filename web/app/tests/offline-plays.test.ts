@@ -1,10 +1,10 @@
 // Offline play sync-back (SPEC D6): plays queued per user in storage, sent in batches to
 // POST /v1/plays when online, kept until the server has answered for them, with backoff.
 // Also: the offline player reports what was actually heard.
-import { MemoryBackend, OfflineStore } from '$lib/offline/store';
-import { BATCH, MAX_AGE_S, PlaySync, body, parseResults, playBackoff } from '$lib/offline/plays.svelte';
-import { OfflinePlayer, type AudioLike } from '$lib/offline/player.svelte';
-import { ApiError } from '$lib/api/http';
+import { MemoryBackend, OfflineStore } from '#lib/offline/store';
+import { BATCH, MAX_AGE_S, PlaySync, body, parseResults, playBackoff } from '#lib/offline/plays.svelte';
+import { OfflinePlayer, type AudioLike } from '#lib/offline/player.svelte';
+import { ApiError } from '#lib/api/http';
 import { key, stored } from './helpers/fake-downloads';
 
 const NOW = 1_790_000_000_000;

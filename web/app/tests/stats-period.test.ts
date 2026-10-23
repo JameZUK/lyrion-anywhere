@@ -1,6 +1,6 @@
 // Listening stats: the periods offered, the time zone sent, and the words shown.
-import * as P from '$lib/stats/period';
-import { statsPeriod } from '$lib/api/me';
+import * as P from '#lib/stats/period';
+import { statsPeriod } from '#lib/api/me';
 
 /** A date whose offset is fixed, whatever the machine running the tests uses. */
 function at(iso: string, westMinutes: number): Date {

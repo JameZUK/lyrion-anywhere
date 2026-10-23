@@ -2,12 +2,12 @@
 	// The sleep timer (docs/plans: Wave 1 §1): fixed lengths, a custom length, or the end of
 	// this track, album or queue; for this player, its sync group, or every player. One tap
 	// turns a running timer off.
-	import { app } from '$lib/state/app.svelte';
-	import { END_LABELS, SLEEP_MINUTES, customMinutes, formatLeft, groupOf, sleepLeft, type SleepChoice, type SleepEnd, type SleepScope } from '$lib/lms/sleep';
-	import { MAX_CUSTOM_MINUTES, MIN_CUSTOM_MINUTES } from '$lib/lms/sleep';
-	import { isRemote } from '$lib/lms/format';
+	import { app } from '#lib/state/app.svelte';
+	import { END_LABELS, SLEEP_MINUTES, customMinutes, formatLeft, groupOf, sleepLeft, type SleepChoice, type SleepEnd, type SleepScope } from '#lib/lms/sleep';
+	import { MAX_CUSTOM_MINUTES, MIN_CUSTOM_MINUTES } from '#lib/lms/sleep';
+	import { isRemote } from '#lib/lms/format';
 	import Sheet from './Sheet.svelte';
-	import { haptics } from '$lib/haptics/haptics.svelte';
+	import { haptics } from '#lib/haptics/haptics.svelte';
 
 	let { onclose }: { onclose: () => void } = $props();
 

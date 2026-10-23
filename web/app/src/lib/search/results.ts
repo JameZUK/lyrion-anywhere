@@ -2,7 +2,7 @@
 // albums and tracks (with their counts), and `playlists search:` gives playlists. LMS's answer
 // is only displayed, never trusted: rows without a usable id are dropped, and odd shapes give
 // fewer results rather than an exception.
-import { textOf } from '$lib/lms/format';
+import { textOf } from '#lib/lms/format';
 
 export type HitKind = 'artist' | 'album' | 'track' | 'playlist';
 export type SearchType = 'all' | 'artists' | 'albums' | 'tracks' | 'playlists';

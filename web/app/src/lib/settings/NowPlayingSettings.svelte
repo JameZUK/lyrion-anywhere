@@ -2,13 +2,13 @@
 	// Settings › Now playing (Wave 3.5): the lyric peek, the visualiser and its style, ratings
 	// (stars or a heart, and clearing them) and haptics. Kept in this browser, except ratings,
 	// which are your account's.
-	import { lyrics } from '$lib/state/lyrics';
-	import { nowPlaying } from '$lib/nowplaying/store.svelte';
-	import { STYLES, STYLE_LABELS, type VisualStyle } from '$lib/visual/draw';
-	import { haptics } from '$lib/haptics/haptics.svelte';
-	import PickerRow from '$lib/components/PickerRow.svelte';
-	import RatingsSettings from '$lib/components/RatingsSettings.svelte';
-	import Switch from '$lib/components/Switch.svelte';
+	import { lyrics } from '#lib/state/lyrics';
+	import { nowPlaying } from '#lib/nowplaying/store.svelte';
+	import { STYLES, STYLE_LABELS, type VisualStyle } from '#lib/visual/draw';
+	import { haptics } from '#lib/haptics/haptics.svelte';
+	import PickerRow from '#lib/components/PickerRow.svelte';
+	import RatingsSettings from '#lib/components/RatingsSettings.svelte';
+	import Switch from '#lib/components/Switch.svelte';
 </script>
 
 <p class="muted small">Kept in this browser (ratings are kept for your account).</p>

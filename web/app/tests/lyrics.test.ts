@@ -3,14 +3,14 @@
 // and the setting that hides the peek (wide windows), and the pager's Lyrics page (phones).
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { lineAt, loadPeek, lyricsPath, sanitiseLyrics, savePeek, MAX_LINES, MAX_LINE_CHARS } from '$lib/lyrics/lyrics';
-import { LyricsState, REMEMBERED, RETRY_MS } from '$lib/lyrics/store.svelte';
+import { lineAt, loadPeek, lyricsPath, sanitiseLyrics, savePeek, MAX_LINES, MAX_LINE_CHARS } from '#lib/lyrics/lyrics';
+import { LyricsState, REMEMBERED, RETRY_MS } from '#lib/lyrics/store.svelte';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
-const { lyrics } = await import('$lib/state/lyrics');
+const { lyrics } = await import('#lib/state/lyrics');
 const { default: NowPlaying } = await import('../src/routes/+page.svelte');
-const { nowPlaying } = await import('$lib/nowplaying/store.svelte');
+const { nowPlaying } = await import('#lib/nowplaying/store.svelte');
 
 const SYNCED = {
 	source: 'tags',

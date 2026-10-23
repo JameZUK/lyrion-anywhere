@@ -4,7 +4,7 @@
 // itself, or on the menu's `base` combined with the item's parameters (the field named by
 // `itemsParams`). The gateway applies the same rules and only lets a device run actions LMS
 // offered it, so this module never invents commands: it only replays what a menu offered.
-import type { Command } from '$lib/api/rpc';
+import type { Command } from '#lib/api/rpc';
 
 export interface SBAction {
 	cmd?: unknown;

@@ -1,6 +1,6 @@
 // Library's remembered choice (chip, album order, grid or list): per device, validated, and
 // harmless when storage is blocked or holds something odd.
-import { CHIPS, DEFAULT_LIBRARY, LIBRARY_KEY, LIBRARY_SORTS, loadLibraryPrefs, openSection, saveLibraryPrefs } from '$lib/library/prefs';
+import { CHIPS, DEFAULT_LIBRARY, LIBRARY_KEY, LIBRARY_SORTS, loadLibraryPrefs, openSection, saveLibraryPrefs } from '#lib/library/prefs';
 
 function memory() {
 	const m = new Map<string, string>();

@@ -3,11 +3,11 @@
 // Play on…). Other players, and this device when it follows LMS, keep the slider.
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import PlayerBar from '$lib/components/PlayerBar.svelte';
+import PlayerBar from '#lib/components/PlayerBar.svelte';
 import NowPlaying from '../src/routes/+page.svelte';
-import { app } from '$lib/state/app.svelte';
-import { device } from '$lib/player/device.svelte';
-import { DEVICE_BUTTONS_NOTE, planVolume } from '$lib/player/volume';
+import { app } from '#lib/state/app.svelte';
+import { device } from '#lib/player/device.svelte';
+import { DEVICE_BUTTONS_NOTE, planVolume } from '#lib/player/volume';
 
 // jsdom has no layout observers (used by artwork and the seek bar).
 class NoObserver {

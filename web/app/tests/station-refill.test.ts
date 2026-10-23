@@ -1,7 +1,7 @@
 // Endless stations: when to refill, the commands sent, and when to stop.
-import { BATCH, LOW_WATER, StationRunner, batchCommands, currentTrack, needsRefill, queuedIds, remaining } from '$lib/stations/refill';
-import type { NextBatch, NextRequest } from '$lib/api/me';
-import { ID_LIST_MAX } from '$lib/lms/commands';
+import { BATCH, LOW_WATER, StationRunner, batchCommands, currentTrack, needsRefill, queuedIds, remaining } from '#lib/stations/refill';
+import type { NextBatch, NextRequest } from '#lib/api/me';
+import { ID_LIST_MAX } from '#lib/lms/commands';
 
 const P = '02:4c:41:00:00:01';
 

@@ -1,6 +1,6 @@
 // Resume after a reload: the saved point is validated, and playback goes back only when needed.
-import { MAX_AGE_MS, clearResume, loadResume, planResume, resumeCommands, saveResume, type ResumePoint } from '$lib/player/resume';
-import type { Command } from '$lib/api/rpc';
+import { MAX_AGE_MS, clearResume, loadResume, planResume, resumeCommands, saveResume, type ResumePoint } from '#lib/player/resume';
+import type { Command } from '#lib/api/rpc';
 
 const mem = () => {
 	const m = new Map<string, string>();

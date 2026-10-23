@@ -2,9 +2,9 @@
 	// The downloads queue in the main Queue (Wave 3.5 item 14): what this device plays from its
 	// downloads, in play order, the current track marked. A tap plays from that track. It isn't
 	// edited here: the downloads engine has no moves or removals (Downloads holds the content).
-	import { duration, textOf } from '$lib/lms/format';
-	import { controls } from '$lib/player/controls.svelte';
-	import { now } from '$lib/player/now.svelte';
+	import { duration, textOf } from '#lib/lms/format';
+	import { controls } from '#lib/player/controls.svelte';
+	import { now } from '#lib/player/now.svelte';
 	import Icon from './Icon.svelte';
 
 	let { onplay }: { onplay?: () => void } = $props();

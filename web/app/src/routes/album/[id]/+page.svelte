@@ -1,20 +1,20 @@
 <script lang="ts">
-	import BackButton from '$lib/components/BackButton.svelte';
-	import { useDetailTitle } from '$lib/title.svelte';
+	import BackButton from '#lib/components/BackButton.svelte';
+	import { useDetailTitle } from '#lib/title.svelte';
 	import { page } from '$app/state';
-	import { api, app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { duration, isRemote, textOf } from '$lib/lms/format';
-	import type { Album, AlbumsResult, TitlesResult, Track } from '$lib/lms/types';
-	import Art from '$lib/components/Art.svelte';
-	import TrackList from '$lib/components/TrackList.svelte';
-	import ContextMenu from '$lib/components/ContextMenu.svelte';
-	import InfoText from '$lib/components/InfoText.svelte';
-	import { sanitiseAlbumInfo } from '$lib/info/info';
-	import type { TrackBadge } from '$lib/components/track-badge';
-	import DownloadBar from '$lib/components/DownloadBar.svelte';
-	import PageActions from '$lib/components/PageActions.svelte';
-	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
+	import { api, app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { duration, isRemote, textOf } from '#lib/lms/format';
+	import type { Album, AlbumsResult, TitlesResult, Track } from '#lib/lms/types';
+	import Art from '#lib/components/Art.svelte';
+	import TrackList from '#lib/components/TrackList.svelte';
+	import ContextMenu from '#lib/components/ContextMenu.svelte';
+	import InfoText from '#lib/components/InfoText.svelte';
+	import { sanitiseAlbumInfo } from '#lib/info/info';
+	import type { TrackBadge } from '#lib/components/track-badge';
+	import DownloadBar from '#lib/components/DownloadBar.svelte';
+	import PageActions from '#lib/components/PageActions.svelte';
+	import { downloads, offlinePlayer } from '#lib/offline/index.svelte';
 
 	let ctx = $state<{ kind: cmd.InfoKind; id: number; title: string } | null>(null);
 	let dl = $state<ReturnType<typeof DownloadBar>>();

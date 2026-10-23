@@ -1,17 +1,17 @@
 <script lang="ts">
 	// Home: the user's shelves (docs/plans/wave1-design.md §7), in their own order, the same
 	// on every device. Edit mode reorders (drag, or Move up/down), hides and adds shelves.
-	import { me } from '$lib/state/me';
-	import { api } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import type { HomeLayout, HomeShelf as Shelf, PinnedMenu, ShelfType, SmartFilter, Station } from '$lib/api/me';
-	import * as L from '$lib/home/layout';
-	import HomeShelf from '$lib/components/HomeShelf.svelte';
-	import Icon from '$lib/components/Icon.svelte';
-	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-	import StatsCard from '$lib/components/StatsCard.svelte';
-	import { haptics } from '$lib/haptics/haptics.svelte';
+	import { me } from '#lib/state/me';
+	import { api } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import type { HomeLayout, HomeShelf as Shelf, PinnedMenu, ShelfType, SmartFilter, Station } from '#lib/api/me';
+	import * as L from '#lib/home/layout';
+	import HomeShelf from '#lib/components/HomeShelf.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
+	import StatsCard from '#lib/components/StatsCard.svelte';
+	import { haptics } from '#lib/haptics/haptics.svelte';
 
 	let layout = $state<HomeLayout | null>(null);
 	let stations = $state<Station[]>([]);

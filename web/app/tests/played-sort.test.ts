@@ -2,9 +2,9 @@
 // server-wide `recentlyplayed`, which would show what everyone else played.
 import { render, waitFor } from '@testing-library/svelte';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const shelfCalls: [string, number][] = [];
-vi.mock('$lib/state/me', () => ({
+vi.mock('#lib/state/me', () => ({
 	me: {
 		shelf: async (name: string, limit: number) => {
 			shelfCalls.push([name, limit]);
@@ -13,7 +13,7 @@ vi.mock('$lib/state/me', () => ({
 	},
 }));
 const fake = await import('./helpers/fake-app.svelte');
-const AlbumBrowser = (await import('$lib/components/AlbumBrowser.svelte')).default;
+const AlbumBrowser = (await import('#lib/components/AlbumBrowser.svelte')).default;
 
 beforeAll(() => {
 	globalThis.IntersectionObserver = class {

@@ -1,6 +1,6 @@
 // The mini player's gesture model (docs/plans: Wave 1 §4): swipe left/right for next/previous,
 // up to open, long-press for Play on…, tap to open; and the keyboard equivalents.
-import { LONG_PRESS_MS, MiniGesture, SLOP_PX, SWIPE_MIN_PX, classifySwipe, miniKey } from '$lib/player/gesture';
+import { LONG_PRESS_MS, MiniGesture, SLOP_PX, SWIPE_MIN_PX, classifySwipe, miniKey } from '#lib/player/gesture';
 
 function swipe(g: MiniGesture, dx: number, dy: number, steps = 5) {
 	g.down(100, 100, 0);

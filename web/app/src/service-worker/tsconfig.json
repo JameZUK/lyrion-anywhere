@@ -1,0 +1,19 @@
+{
+  "extends": "$app/tsconfig/service-worker",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "sourceMap": true,
+    "paths": {
+      "#lib": [
+        "../lib"
+      ],
+      "#lib/*": [
+        "../lib/*"
+      ]
+    }
+  },
+  "include": [
+    "."
+  ]
+}

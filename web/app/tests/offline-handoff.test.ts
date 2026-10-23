@@ -16,9 +16,9 @@ import {
 	snapshotOf,
 	type Lookup,
 	type QueueSnapshot,
-} from '$lib/offline/handoff.svelte';
-import type { Command } from '$lib/api/rpc';
-import { ApiError } from '$lib/api/http';
+} from '#lib/offline/handoff.svelte';
+import type { Command } from '#lib/api/rpc';
+import { ApiError } from '#lib/api/http';
 import { key } from './helpers/fake-downloads';
 
 const K = (n: number) => key(0xa000 + n);

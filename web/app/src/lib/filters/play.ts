@@ -1,9 +1,9 @@
 // Playing a smart filter (wave2-design.md §5.6): its first albums, up to 50, loaded through
 // the usual album play path (the first replaces the queue and plays, the rest are added).
 // Shuffle turns on LMS's track shuffle first, so the albums load shuffled.
-import type { Command } from '$lib/api/rpc';
-import { enqueue, shuffle as shuffleCmd } from '$lib/lms/commands';
-import { FILTER_LIMITS, validId } from '$lib/api/filters';
+import type { Command } from '#lib/api/rpc';
+import { enqueue, shuffle as shuffleCmd } from '#lib/lms/commands';
+import { FILTER_LIMITS, validId } from '#lib/api/filters';
 
 /** The commands that play these albums (ids from the server; at most 50 are used). */
 export function filterPlayCommands(albumIds: readonly number[], shuffle: boolean): Command[] {

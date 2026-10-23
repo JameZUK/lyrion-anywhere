@@ -3,7 +3,7 @@
 	// its offset. Drag along the strip (touch, pen or mouse) and a letter bubble shows where
 	// letting go will land. For the keyboard and screen readers it is a toolbar with one tab
 	// stop: the arrow keys, Home and End move between letters, and Enter or Space jumps.
-	import { keyFromPointer, type IndexEntry } from '$lib/lms/azindex';
+	import { keyFromPointer, type IndexEntry } from '#lib/lms/azindex';
 
 	let {
 		index,

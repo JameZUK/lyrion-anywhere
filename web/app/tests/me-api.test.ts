@@ -1,6 +1,6 @@
 // The user's own data on the gateway: request shapes, checks before sending, and errors.
-import { MeApi, pinId } from '$lib/api/me';
-import { ApiError } from '$lib/api/http';
+import { MeApi, pinId } from '#lib/api/me';
+import { ApiError } from '#lib/api/http';
 
 type Call = { url: string; method: string; headers: Record<string, string>; body: unknown };
 let calls: Call[] = [];

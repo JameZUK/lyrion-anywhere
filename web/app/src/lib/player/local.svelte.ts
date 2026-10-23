@@ -6,12 +6,12 @@
 // same track at that place; otherwise LMS is followed. Nothing done here: nothing is told.
 //
 // The decisions are in ./local-plan (pure); this is the glue around them.
-import type { Command } from '$lib/api/rpc';
+import type { Command } from '#lib/api/rpc';
 import { describePageCommand } from './diagnostics';
-import * as cmd from '$lib/lms/commands';
-import type { PlayerStatus, Track } from '$lib/lms/types';
-import { playable, type AudioLike } from '$lib/offline/player.svelte';
-import type { StoredTrack } from '$lib/offline/types';
+import * as cmd from '#lib/lms/commands';
+import type { PlayerStatus, Track } from '#lib/lms/types';
+import { playable, type AudioLike } from '#lib/offline/player.svelte';
+import type { StoredTrack } from '#lib/offline/types';
 import { NEXT_NEEDS_SERVER, afterEnd, nextIndex, previousTarget, queueMark, reconcile, type LmsNow, type LocalKind, type QueueState } from './local-plan';
 
 /** The element downloads play through (an <audio>; a fake in tests). */

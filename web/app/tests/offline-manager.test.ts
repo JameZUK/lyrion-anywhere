@@ -1,9 +1,9 @@
 // The download manager against a fake gateway: queue and concurrency, progress, pause and
 // cancel, Range resume, 429 Retry-After, token renewal on 401, refusals, and per-user data.
-import { DownloadManager, CHUNK_BYTES, MAX_ATTEMPTS, type ManagerDeps } from '$lib/offline/manager.svelte';
-import { MemoryBackend, OfflineStore } from '$lib/offline/store';
-import { SessionManager, type AuthApi } from '$lib/api/session';
-import { ApiError } from '$lib/api/http';
+import { DownloadManager, CHUNK_BYTES, MAX_ATTEMPTS, type ManagerDeps } from '#lib/offline/manager.svelte';
+import { MemoryBackend, OfflineStore } from '#lib/offline/store';
+import { SessionManager, type AuthApi } from '#lib/api/session';
+import { ApiError } from '#lib/api/http';
 import { body, bytes, fakeServer, key, sameBytes, type FakeTrack } from './helpers/fake-downloads';
 
 const track = (id: number, size = 1000, over: Partial<FakeTrack> = {}): FakeTrack => ({ id, key: key(id), bytes: bytes(size, id), title: `Track ${id}`, ...over });
@@ -494,7 +494,7 @@ test('classify keeps 401 after renewal as a sign-in problem', async () => {
 });
 
 test('the not-audio checks: real containers pass, markup and JSON do not, arbitrary bytes never throw', async () => {
-	const { looksLikeMarkup, notAudioType } = await import('$lib/offline/manager.svelte');
+	const { looksLikeMarkup, notAudioType } = await import('#lib/offline/manager.svelte');
 	const enc = (s: string) => new TextEncoder().encode(s);
 	for (const head of ['fLaC\0\0\0\x22', 'ID3\x04\0\0', 'OggS\0\x02', 'RIFF\x24\0\0\0WAVE', '\0\0\0\x20ftypM4A ', 'FORM\0\0\0\0AIFF', 'wvpk', 'DSD ', '\xff\xfb\x90\x64']) {
 		expect(looksLikeMarkup(Uint8Array.from(head, (c) => c.charCodeAt(0))), JSON.stringify(head)).toBe(false);

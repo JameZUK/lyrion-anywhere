@@ -1,9 +1,9 @@
 // Library metadata is attacker-controlled (anyone can tag a file). Rendered with hostile
 // names and ids, components must show them as text and never create markup or bad links.
 import { render } from '@testing-library/svelte';
-import TrackList from '$lib/components/TrackList.svelte';
-import AlbumGrid from '$lib/components/AlbumGrid.svelte';
-import type { Album, Track } from '$lib/lms/types';
+import TrackList from '#lib/components/TrackList.svelte';
+import AlbumGrid from '#lib/components/AlbumGrid.svelte';
+import type { Album, Track } from '#lib/lms/types';
 
 const HOSTILE = [
 	'<img src=x onerror=alert(1)>',

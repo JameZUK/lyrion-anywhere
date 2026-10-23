@@ -2,10 +2,10 @@
 // shows at once, is sent as an allowed command, and is put back if LMS refuses it.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
-import type { Track } from '$lib/lms/types';
-import { removeAt, reorder } from '$lib/lms/queue-edit';
+import type { Track } from '#lib/lms/types';
+import { removeAt, reorder } from '#lib/lms/queue-edit';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
 const { default: QueuePage } = await import('../src/routes/queue/+page.svelte');
 const { choose } = await import('./helpers/menu');
