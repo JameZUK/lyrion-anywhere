@@ -17,7 +17,7 @@ opus = ["anywhere-core/opus"]
 
 [dependencies]
 anywhere-core = { path = "../core", features = ["player", "resample"] }
-uniffi = { version = "0.31", features = ["tokio"] }
+uniffi = { version = "0.32", features = ["tokio"] }
 tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
 hyper = { version = "1", features = ["client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
