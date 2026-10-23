@@ -377,7 +377,7 @@ export interface MyDevice {
 	current: boolean;
 }
 
-/** The raw device list (checked by `cleanDevices` in `$lib/account/devices`). */
+/** The raw device list (checked by `cleanDevices` in `#lib/account/devices`). */
 export async function myDevices(token: string): Promise<unknown> {
 	const r = await callJson<{ devices?: unknown }>('/v1/devices', { headers: bearer(token) });
 	return r?.devices;

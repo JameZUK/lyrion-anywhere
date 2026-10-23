@@ -2,15 +2,15 @@
 	// A generic LMS menu (apps, radio, plugin and context menus), with its own back stack.
 	// Only actions the menus offered are run; the gateway enforces the same.
 	import { untrack, type Snippet } from 'svelte';
-	import { go as navigate } from '$lib/nav';
-	import { api, app } from '$lib/state/app.svelte';
-	import { me } from '$lib/state/me';
-	import { NO_PLAYER } from '$lib/naming';
-	import type { Command } from '$lib/api/rpc';
-	import { ApiError } from '$lib/api/http';
-	import { add as addShelf } from '$lib/home/layout';
-	import { coverPath, imagePath } from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
+	import { go as navigate } from '#lib/nav';
+	import { api, app } from '#lib/state/app.svelte';
+	import { me } from '#lib/state/me';
+	import { NO_PLAYER } from '#lib/naming';
+	import type { Command } from '#lib/api/rpc';
+	import { ApiError } from '#lib/api/http';
+	import { add as addShelf } from '#lib/home/layout';
+	import { coverPath, imagePath } from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
 	import {
 		iconOf,
 		itemKind,
@@ -21,7 +21,7 @@
 		type Resolved,
 		type SBItem,
 		type SBMenu,
-	} from '$lib/lms/slimbrowse';
+	} from '#lib/lms/slimbrowse';
 	import Art from './Art.svelte';
 	import RowMenu, { type RowAction } from './RowMenu.svelte';
 	import Icon from './Icon.svelte';

@@ -4,9 +4,9 @@
 	// actions, destructive ones last). One row on any phone. Everything that sends a command
 	// needs the server, and says why it is disabled while it is out of reach.
 	import type { Snippet } from 'svelte';
-	import { app } from '$lib/state/app.svelte';
-	import type { Selection } from '$lib/lms/commands';
-	import { controls } from '$lib/player/controls.svelte';
+	import { app } from '#lib/state/app.svelte';
+	import type { Selection } from '#lib/lms/commands';
+	import { controls } from '#lib/player/controls.svelte';
 	import Icon from './Icon.svelte';
 	import RowMenu, { type RowAction } from './RowMenu.svelte';
 

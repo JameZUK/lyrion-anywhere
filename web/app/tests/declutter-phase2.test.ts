@@ -5,18 +5,18 @@
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const params: Record<string, string | undefined> = {};
 vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/library') } }));
-vi.mock('$lib/state/me', () => ({
+vi.mock('#lib/state/me', () => ({
 	routine: {},
 	me: { filters: async () => [], shelf: async () => [], stations: async () => [] },
 }));
 const fake = await import('./helpers/fake-app.svelte');
-const { default: Switch } = await import('$lib/components/Switch.svelte');
-const { default: PickerRow } = await import('$lib/components/PickerRow.svelte');
+const { default: Switch } = await import('#lib/components/Switch.svelte');
+const { default: PickerRow } = await import('#lib/components/PickerRow.svelte');
 const { default: LibraryPage } = await import('../src/routes/library/+page.svelte');
-const { LIBRARY_KEY, CHIPS, CHIP_LABELS } = await import('$lib/library/prefs');
+const { LIBRARY_KEY, CHIPS, CHIP_LABELS } = await import('#lib/library/prefs');
 
 const HOSTILE = '<img src=x onerror=alert(1)>';
 class NoObserver {

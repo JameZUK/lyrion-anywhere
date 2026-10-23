@@ -4,10 +4,14 @@
   "version": "0.1.0",
   "license": "GPL-2.0-or-later",
   "type": "module",
+  "imports": {
+    "#lib": "./src/lib",
+    "#lib/*": "./src/lib/*"
+  },
   "scripts": {
     "dev": "vite dev",
     "build": "vite build && node scripts/externalise-boot.mjs build",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings && tsc --noEmit -p src/service-worker",
     "test": "vitest run && node --test tests/node/*.test.mjs"
   },
   "devDependencies": {

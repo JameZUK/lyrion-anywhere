@@ -1,10 +1,10 @@
 <script lang="ts">
 	// Stations as cards: tap to start one on the selected player. Deleting one is in its ⋯
 	// (Wave 3.5: destructive actions live only inside a menu), confirmed in a dialog.
-	import type { Station, StationKind } from '$lib/api/me';
-	import { activeStation } from '$lib/stations/active.svelte';
-	import { me } from '$lib/state/me';
-	import { app } from '$lib/state/app.svelte';
+	import type { Station, StationKind } from '#lib/api/me';
+	import { activeStation } from '#lib/stations/active.svelte';
+	import { me } from '#lib/state/me';
+	import { app } from '#lib/state/app.svelte';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 	import Icon from './Icon.svelte';
 	import RowMenu from './RowMenu.svelte';

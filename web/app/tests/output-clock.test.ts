@@ -1,6 +1,6 @@
 // When this device's audio is heard: the output clock for Web Audio, and the smoothed play
 // head for the media element.
-import { PlayheadSmoother, outputClock, type ClockSource } from '$lib/player/output-clock';
+import { PlayheadSmoother, outputClock, type ClockSource } from '#lib/player/output-clock';
 
 const ORIGIN = 1_700_000_000_000;
 

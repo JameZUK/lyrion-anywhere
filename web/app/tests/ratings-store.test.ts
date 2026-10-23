@@ -1,9 +1,9 @@
 // The ratings store: answers that arrive out of order never overwrite newer state, and one
 // user's ratings are never shown to the next user to sign in on the same tab.
-import type { RatingStyle, RoutineApi, TrackRating } from '$lib/api/routine';
-import { RatingsState } from '$lib/ratings/store.svelte';
-import { resetOnUserChange } from '$lib/state/per-user';
-import type { Session } from '$lib/api/auth';
+import type { RatingStyle, RoutineApi, TrackRating } from '#lib/api/routine';
+import { RatingsState } from '#lib/ratings/store.svelte';
+import { resetOnUserChange } from '#lib/state/per-user';
+import type { Session } from '#lib/api/auth';
 
 /** A promise the test settles by hand. */
 function later<T>() {
@@ -191,9 +191,9 @@ describe('a change of user resets per-user stores', () => {
 		vi.resetModules();
 		const session = fakeSession();
 		const f = fakeApi();
-		vi.doMock('$lib/state/app.svelte', () => ({ session }));
-		vi.doMock('$lib/state/me', () => ({ routine: f.api }));
-		const { ratings } = await import('$lib/state/ratings');
+		vi.doMock('#lib/state/app.svelte', () => ({ session }));
+		vi.doMock('#lib/state/me', () => ({ routine: f.api }));
+		const { ratings } = await import('#lib/state/ratings');
 		session.emit('alice');
 		const rating = ratings.rate(5, 80);
 		f.rates[0]!.p.resolve(r(5, 80));
@@ -201,7 +201,7 @@ describe('a change of user resets per-user stores', () => {
 		expect(ratings.get(5)?.mine).toBe(80);
 		session.emit(null);
 		expect(ratings.get(5)).toBeNull();
-		vi.doUnmock('$lib/state/app.svelte');
-		vi.doUnmock('$lib/state/me');
+		vi.doUnmock('#lib/state/app.svelte');
+		vi.doUnmock('#lib/state/me');
 	});
 });

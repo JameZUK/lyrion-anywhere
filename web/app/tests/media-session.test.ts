@@ -3,7 +3,7 @@
 // the handlers taken away again when the component goes.
 import { render } from '@testing-library/svelte';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
 
 type Handler = ((d: MediaSessionActionDetails) => void) | null;
@@ -21,7 +21,7 @@ const fakeSession = {
 	},
 };
 Object.defineProperty(navigator, 'mediaSession', { value: fakeSession, configurable: true });
-const { default: MediaSession } = await import('$lib/components/MediaSession.svelte');
+const { default: MediaSession } = await import('#lib/components/MediaSession.svelte');
 
 const PLAYER = '02:00:00:00:00:01';
 const ALL = ['play', 'pause', 'stop', 'nexttrack', 'previoustrack', 'seekto', 'seekbackward', 'seekforward'];

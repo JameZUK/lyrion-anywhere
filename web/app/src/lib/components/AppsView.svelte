@@ -1,12 +1,12 @@
 <script lang="ts">
 	// Apps, radio and plugins LMS offers (also a section of Library), found from its own menus.
 	import { untrack } from 'svelte';
-	import { api, app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import type { AppInfo, AppsResult } from '$lib/lms/types';
-	import { pluginEntries, toCommand, type PluginEntry, type SBMenu, type Suitability } from '$lib/lms/slimbrowse';
-	import { probeAll } from '$lib/lms/suitability';
+	import { api, app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import type { AppInfo, AppsResult } from '#lib/lms/types';
+	import { pluginEntries, toCommand, type PluginEntry, type SBMenu, type Suitability } from '#lib/lms/slimbrowse';
+	import { probeAll } from '#lib/lms/suitability';
 	import Art from './Art.svelte';
 
 	/** Inside Library (a section of it): an h2 title, no page of its own. */

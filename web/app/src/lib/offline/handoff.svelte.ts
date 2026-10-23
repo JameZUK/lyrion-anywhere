@@ -15,8 +15,8 @@
 //    a pause if the downloads were paused.
 // 3. Only then is the offline player stopped. If anything fails on the way it is left alone,
 //    playing (or paused) as it was.
-import * as cmd from '$lib/lms/commands';
-import type { Command } from '$lib/api/rpc';
+import * as cmd from '#lib/lms/commands';
+import type { Command } from '#lib/api/rpc';
 import type { StoredTrack } from './types';
 
 /** Most tracks handed over: a longer queue keeps this many from around the current track. */

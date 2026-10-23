@@ -1,7 +1,7 @@
 <script lang="ts">
 	// A biography or review: a heading, then the text as plain text (never markup). Long text
 	// shows its first lines with a "Read more" disclosure button.
-	import { isLong, paragraphs } from '$lib/info/info';
+	import { isLong, paragraphs } from '#lib/info/info';
 
 	let { heading, text }: { heading: string; text: string } = $props();
 

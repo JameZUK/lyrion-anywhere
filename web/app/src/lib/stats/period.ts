@@ -1,6 +1,6 @@
 // Listening stats (docs/plans/wave3-design.md §1): the periods offered, the device's time
 // zone as the gateway wants it, and the words and numbers the page shows.
-import { STATS_LIMITS, statsDate } from '$lib/api/me';
+import { STATS_LIMITS, statsDate } from '#lib/api/me';
 
 export interface PeriodChoice {
 	value: string;

@@ -3,10 +3,10 @@
 	// Now playing's Lyrics layout. Synced lyrics highlight the current line and keep it in
 	// view (unless the listener is scrolling themselves); tapping a line seeks there. Plain
 	// lyrics just scroll.
-	import { app } from '$lib/state/app.svelte';
-	import { lyrics } from '$lib/state/lyrics';
-	import { lineAt } from '$lib/lyrics/lyrics';
-	import { reducedMotion } from '$lib/theme/motion';
+	import { app } from '#lib/state/app.svelte';
+	import { lyrics } from '#lib/state/lyrics';
+	import { lineAt } from '#lib/lyrics/lyrics';
+	import { reducedMotion } from '#lib/theme/motion';
 
 	let { compact = false }: { compact?: boolean } = $props();
 

@@ -3,15 +3,15 @@
 // API call, the "Read more" disclosure, and the artist and album pages (lazy, quiet on failure).
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { Api } from '$lib/api/rpc';
-import { ApiError } from '$lib/api/http';
-import type { SessionManager } from '$lib/api/session';
-import { MAX_TEXT, infoPath, isLong, paragraphs, photoPath, plainText, sanitiseAlbumInfo, sanitiseArtistInfo } from '$lib/info/info';
+import { Api } from '#lib/api/rpc';
+import { ApiError } from '#lib/api/http';
+import type { SessionManager } from '#lib/api/session';
+import { MAX_TEXT, infoPath, isLong, paragraphs, photoPath, plainText, sanitiseAlbumInfo, sanitiseArtistInfo } from '#lib/info/info';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const params: Record<string, string | undefined> = {};
 vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/') } }));
-vi.mock('$lib/offline/index.svelte', () => ({
+vi.mock('#lib/offline/index.svelte', () => ({
 	downloads: {
 		savedById: () => undefined,
 		album: () => null,
@@ -27,7 +27,7 @@ vi.mock('$lib/offline/index.svelte', () => ({
 	offlinePlayer: { forget: () => {} },
 }));
 const fake = await import('./helpers/fake-app.svelte');
-const InfoText = (await import('$lib/components/InfoText.svelte')).default;
+const InfoText = (await import('#lib/components/InfoText.svelte')).default;
 const ArtistPage = (await import('../src/routes/artist/[id]/[[role]]/+page.svelte')).default;
 const AlbumPage = (await import('../src/routes/album/[id]/+page.svelte')).default;
 

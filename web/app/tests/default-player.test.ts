@@ -11,7 +11,7 @@ import {
 	saveDefault,
 	saveTabSelection,
 	type StartInputs,
-} from '$lib/player/default-player';
+} from '#lib/player/default-player';
 
 const ME = '02:4c:41:00:00:01';
 const LOUNGE = 'aa:bb:cc:dd:ee:01';

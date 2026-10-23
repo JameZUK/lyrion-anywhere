@@ -1,7 +1,7 @@
 // "Your year in sound" (wave3-design.md §1): the cards of the story, from a year's stats.
 // Every card is plain text, so the same card can be shown, read out and drawn to an image.
-import type { ListeningStats } from '$lib/api/me';
-import { textOf } from '$lib/lms/format';
+import type { ListeningStats } from '#lib/api/me';
+import { textOf } from '#lib/lms/format';
 import type { StatsNames } from './names';
 import { dayName, durationWords, hourRange, number, peak, plays } from './period';
 

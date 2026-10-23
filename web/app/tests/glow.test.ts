@@ -17,7 +17,7 @@ import {
 	haloColours,
 	saturationLightness,
 	type Rgb,
-} from '$lib/visual/glow';
+} from '#lib/visual/glow';
 
 const FRAME = 1000 / 30;
 

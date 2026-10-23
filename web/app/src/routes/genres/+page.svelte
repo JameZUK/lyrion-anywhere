@@ -1,6 +1,6 @@
 <script lang="ts">
-	import BackButton from '$lib/components/BackButton.svelte';
-	import GenresView from '$lib/components/GenresView.svelte';
+	import BackButton from '#lib/components/BackButton.svelte';
+	import GenresView from '#lib/components/GenresView.svelte';
 </script>
 
 <section class="page">

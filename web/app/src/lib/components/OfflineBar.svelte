@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Transport for the offline player: what is playing from this device's downloads.
-	import { offlinePlayer as p } from '$lib/offline/index.svelte';
-	import { duration } from '$lib/lms/format';
+	import { offlinePlayer as p } from '#lib/offline/index.svelte';
+	import { duration } from '#lib/lms/format';
 	import Icon from './Icon.svelte';
 
 	let { href = '#/downloads' }: { href?: string | null } = $props();

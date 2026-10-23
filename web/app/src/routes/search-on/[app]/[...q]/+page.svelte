@@ -4,11 +4,11 @@
 	// box LMS offers now, with the text as its `search:` value and nothing else.
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
-	import { app } from '$lib/state/app.svelte';
-	import { pluginSearch } from '$lib/state/plugin-search';
-	import { cleanQuery, searchCommand, type SearchablePlugin } from '$lib/search/plugins';
-	import BackButton from '$lib/components/BackButton.svelte';
-	import MenuView from '$lib/components/MenuView.svelte';
+	import { app } from '#lib/state/app.svelte';
+	import { pluginSearch } from '#lib/state/plugin-search';
+	import { cleanQuery, searchCommand, type SearchablePlugin } from '#lib/search/plugins';
+	import BackButton from '#lib/components/BackButton.svelte';
+	import MenuView from '#lib/components/MenuView.svelte';
 
 	let found = $state<SearchablePlugin | null>(null);
 	let status = $state<'loading' | 'ready' | 'missing' | 'error'>('loading');

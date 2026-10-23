@@ -1,4 +1,4 @@
-import { PROBES, SELFTEST_VERSION, chooseVariant, loadCached, mimeFor, saveCached, type SelfTest } from '$lib/player/selftest';
+import { PROBES, SELFTEST_VERSION, chooseVariant, loadCached, mimeFor, saveCached, type SelfTest } from '#lib/player/selftest';
 
 const result = (ok: (rate: number, code: number) => boolean): SelfTest => ({
 	version: SELFTEST_VERSION,

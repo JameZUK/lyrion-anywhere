@@ -2,8 +2,8 @@
 // fixes): Now playing keeps the last state seen rather than "Nothing to control yet", and a
 // device someone was signed in on comes back signed in (provisionally) rather than to the
 // bare "can't reach" page. Against the real app state, with the network faked.
-import { PROFILE_KEY } from '$lib/api/session';
-import { LAST_KNOWN_KEY } from '$lib/state/last-known';
+import { PROFILE_KEY } from '#lib/api/session';
+import { LAST_KNOWN_KEY } from '#lib/state/last-known';
 
 const P = '02:00:00:00:00:01';
 const NOW = { mode: 'play', time: 98, duration: 200, playlist_cur_index: 2, playlist_tracks: 8, playlist_loop: [{ id: 5, title: 'Night Ferry' }] };
@@ -35,7 +35,7 @@ afterAll(() => vi.unstubAllGlobals());
 
 async function freshApp() {
 	vi.resetModules();
-	return await import('$lib/state/app.svelte');
+	return await import('#lib/state/app.svelte');
 }
 const settle = () => new Promise((r) => setTimeout(r, 50));
 

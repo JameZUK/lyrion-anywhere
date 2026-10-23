@@ -1,8 +1,8 @@
 <script lang="ts">
 	// "Download as…" (Wave 3.5): a one-off format for this download, from the page's ⋯ menu.
 	// The usual format comes from Settings › Downloads (one for Wi-Fi, one for mobile data).
-	import { defaultFormat, networkType } from '$lib/offline/settings';
-	import { FORMATS, FORMAT_LABELS, type Format } from '$lib/offline/types';
+	import { defaultFormat, networkType } from '#lib/offline/settings';
+	import { FORMATS, FORMAT_LABELS, type Format } from '#lib/offline/types';
 	import Sheet from './Sheet.svelte';
 
 	let { onchoose, onclose }: { onchoose: (f: Format | 'auto') => void; onclose: () => void } = $props();

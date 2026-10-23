@@ -1,6 +1,6 @@
 // Recent searches: on this device only, at most 20, newest first, no repeats, each removable,
 // kept per user, and robust to whatever storage holds.
-import { MAX_RECENTS, MAX_TERM, addRecent, cleanTerm, loadRecents, parseRecents, removeRecent, saveRecents } from '$lib/search/recents';
+import { MAX_RECENTS, MAX_TERM, addRecent, cleanTerm, loadRecents, parseRecents, removeRecent, saveRecents } from '#lib/search/recents';
 
 function memory() {
 	const m = new Map<string, string>();

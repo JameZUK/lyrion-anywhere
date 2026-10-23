@@ -2,10 +2,10 @@
 	// One search result (Wave 2 §3.3). A track plays from its row; an album or playlist row
 	// opens it and has a play button; every row has a menu with Play next and Add to queue
 	// (also a long press or right-click, a swipe right or left, or N and A on the focused row).
-	import { app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import type { Hit } from '$lib/search/results';
-	import { rowShortcut, swipeRow } from '$lib/gestures/swipe';
+	import { app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import type { Hit } from '#lib/search/results';
+	import { rowShortcut, swipeRow } from '#lib/gestures/swipe';
 	import Art from './Art.svelte';
 	import Icon from './Icon.svelte';
 	import RowMenu from './RowMenu.svelte';

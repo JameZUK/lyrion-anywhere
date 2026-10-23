@@ -4,18 +4,18 @@
 // library results, and the results page. Invented app names only.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import type { SBMenu } from '$lib/lms/slimbrowse';
-import { resolveAction } from '$lib/lms/slimbrowse';
-import { loadRecents } from '$lib/search/recents';
-import { CONCURRENCY, MAX_APPS, SearchDirectory, candidates, cleanQuery, discover, isSearchBox, searchBox, searchCommand, searchOnHref, signature } from '$lib/search/plugins';
+import type { SBMenu } from '#lib/lms/slimbrowse';
+import { resolveAction } from '#lib/lms/slimbrowse';
+import { loadRecents } from '#lib/search/recents';
+import { CONCURRENCY, MAX_APPS, SearchDirectory, candidates, cleanQuery, discover, isSearchBox, searchBox, searchCommand, searchOnHref, signature } from '#lib/search/plugins';
 
 const { choose } = await import('./helpers/menu');
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const params: Record<string, string | undefined> = {};
 vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/') } }));
 const fake = await import('./helpers/fake-app.svelte');
-const { search } = await import('$lib/state/search');
-const { pluginSearch } = await import('$lib/state/plugin-search');
+const { search } = await import('#lib/state/search');
+const { pluginSearch } = await import('#lib/state/plugin-search');
 const SearchPage = (await import('../src/routes/search/+page.svelte')).default;
 const ResultsPage = (await import('../src/routes/search-on/[app]/[...q]/+page.svelte')).default;
 

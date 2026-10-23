@@ -2,7 +2,7 @@
 // back to the button that opened it.
 import { render } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import PlayerSwitcher from '$lib/components/PlayerSwitcher.svelte';
+import PlayerSwitcher from '#lib/components/PlayerSwitcher.svelte';
 
 test('focus moves in on open, Escape closes, and focus returns to the opener', async () => {
 	const opener = document.createElement('button');

@@ -3,7 +3,7 @@
 //
 // Hi-Res means more than 16-bit or more than 48 kHz, on lossless sources only. The Android
 // app has the same rules in Rust (mobile/src/model.rs, `quality_of`).
-import { LEVEL_KBPS, reencoded, type StreamQuality, type StreamSource } from '$lib/player/stream-quality';
+import { LEVEL_KBPS, reencoded, type StreamQuality, type StreamSource } from '#lib/player/stream-quality';
 
 export interface Quality {
 	/** The codec's name ("FLAC", "MP3", …). */

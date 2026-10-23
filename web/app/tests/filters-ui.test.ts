@@ -2,8 +2,8 @@
 // contract's limits), the Library chip with list/create/edit/delete (deleting asks first),
 // the filter page, the `filter` Home shelf, and play/shuffle through the album play path.
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
-import type { FilterSpec, SmartFilter } from '$lib/api/filters';
-import * as L from '$lib/home/layout';
+import type { FilterSpec, SmartFilter } from '#lib/api/filters';
+import * as L from '#lib/home/layout';
 
 /** A row's or page's ⋯ (Wave 3.5): open it, then choose an item. */
 async function choose(trigger: HTMLElement, item: string) {
@@ -11,7 +11,7 @@ async function choose(trigger: HTMLElement, item: string) {
 	const menu = document.getElementById(trigger.getAttribute('aria-controls')!)!;
 	await fireEvent.click(within(menu).getByRole('menuitem', { name: item }));
 }
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const params: Record<string, string> = { id: '3' };
 vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/') } }));
 
@@ -24,7 +24,7 @@ const store = {
 	deleted: [] as number[],
 	asked: [] as [number, number, number][],
 };
-vi.mock('$lib/state/me', () => ({
+vi.mock('#lib/state/me', () => ({
 	routine: {},
 	me: {
 		filters: async () => structuredClone(store.filters),
@@ -56,12 +56,12 @@ vi.mock('$lib/state/me', () => ({
 }));
 
 const fake = await import('./helpers/fake-app.svelte');
-const { default: FilterEditor } = await import('$lib/components/FilterEditor.svelte');
-const { default: FiltersView } = await import('$lib/components/FiltersView.svelte');
-const { default: HomeShelf } = await import('$lib/components/HomeShelf.svelte');
+const { default: FilterEditor } = await import('#lib/components/FilterEditor.svelte');
+const { default: FiltersView } = await import('#lib/components/FiltersView.svelte');
+const { default: HomeShelf } = await import('#lib/components/HomeShelf.svelte');
 const { default: LibraryPage } = await import('../src/routes/library/+page.svelte');
 const { default: FilterPage } = await import('../src/routes/filter/[id]/+page.svelte');
-const { LIBRARY_KEY } = await import('$lib/library/prefs');
+const { LIBRARY_KEY } = await import('#lib/library/prefs');
 
 const PLAYER = '02:00:00:00:00:01';
 const GENRES = Array.from({ length: 25 }, (_, i) => ({ id: i + 1, genre: `Genre ${i + 1}` }));

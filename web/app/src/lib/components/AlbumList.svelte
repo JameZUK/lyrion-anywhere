@@ -2,11 +2,11 @@
 	// Albums as a list (Library's list view): cover, title, artist and year, a play button and
 	// a menu. Swipe a row right to play it next or left to add it to the queue; on a focused
 	// row, N and A do the same, and the menu offers both.
-	import { app } from '$lib/state/app.svelte';
-	import type { Album } from '$lib/lms/types';
-	import { coverPath, link } from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import { rowShortcut, swipeRow } from '$lib/gestures/swipe';
+	import { app } from '#lib/state/app.svelte';
+	import type { Album } from '#lib/lms/types';
+	import { coverPath, link } from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import { rowShortcut, swipeRow } from '#lib/gestures/swipe';
 	import Art from './Art.svelte';
 	import Icon from './Icon.svelte';
 	import RowMenu from './RowMenu.svelte';

@@ -1,10 +1,10 @@
 // Session renewal, the RPC/artwork client and the events stream, against fakes.
-import { RETRY_MS, SIGNED_OUT_KEY, SessionManager, refused, type AuthApi } from '$lib/api/session';
-import { Api, artUrl } from '$lib/api/rpc';
-import { ApiError, callJson, CLIENT_HEADER } from '$lib/api/http';
-import { EventsClient, eventsBackoff, parseEventMessage } from '$lib/api/events';
-import { clientKind, defaultDeviceName, groupKey, LOCK_HOLD_MS, LOCK_WAIT_MS, login, PAGE_ID, refresh, REFRESH_LOCK, REFRESH_TIMEOUT_MS, RefreshTimeout, rememberedDevice, renameDevice, totpSetup, validDeviceName, withRefreshLock, type LockManagerLike } from '$lib/api/auth';
-import type { Session } from '$lib/api/auth';
+import { RETRY_MS, SIGNED_OUT_KEY, SessionManager, refused, type AuthApi } from '#lib/api/session';
+import { Api, artUrl } from '#lib/api/rpc';
+import { ApiError, callJson, CLIENT_HEADER } from '#lib/api/http';
+import { EventsClient, eventsBackoff, parseEventMessage } from '#lib/api/events';
+import { clientKind, defaultDeviceName, groupKey, LOCK_HOLD_MS, LOCK_WAIT_MS, login, PAGE_ID, refresh, REFRESH_LOCK, REFRESH_TIMEOUT_MS, RefreshTimeout, rememberedDevice, renameDevice, totpSetup, validDeviceName, withRefreshLock, type LockManagerLike } from '#lib/api/auth';
+import type { Session } from '#lib/api/auth';
 
 const sess = (token: string): Session => ({
 	access_token: token,
@@ -917,7 +917,7 @@ describe('cross-tab refresh lock', () => {
 
 describe('limiter', () => {
 	test('never runs more than the limit at once, and runs everything', async () => {
-		const { Limiter } = await import('$lib/api/rpc');
+		const { Limiter } = await import('#lib/api/rpc');
 		const l = new Limiter(3);
 		let active = 0;
 		let peak = 0;
@@ -938,7 +938,7 @@ describe('limiter', () => {
 	});
 
 	test('a failing task frees its slot', async () => {
-		const { Limiter } = await import('$lib/api/rpc');
+		const { Limiter } = await import('#lib/api/rpc');
 		const l = new Limiter(1);
 		await expect(l.run(async () => Promise.reject(new Error('x')))).rejects.toThrow('x');
 		await expect(l.run(async () => 'ok')).resolves.toBe('ok');

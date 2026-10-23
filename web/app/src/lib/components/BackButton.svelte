@@ -2,7 +2,7 @@
 	// Back, at the top of detail pages: an installed iPhone web app has no browser Back. It
 	// returns to wherever the user came from, or (opened directly) up to `parent`. Without
 	// script it is a plain link to the parent.
-	import { back, href } from '$lib/nav';
+	import { back, href } from '#lib/nav';
 	import Icon from './Icon.svelte';
 
 	let { parent }: { parent: string } = $props();

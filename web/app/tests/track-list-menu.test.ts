@@ -2,7 +2,7 @@
 // it is open, and gives focus back when it closes.
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import TrackList from '$lib/components/TrackList.svelte';
+import TrackList from '#lib/components/TrackList.svelte';
 
 const tracks = [
 	{ id: 1, title: 'First' },

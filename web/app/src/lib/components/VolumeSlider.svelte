@@ -4,12 +4,12 @@
 	// LMS: for another player, its own; when this browser is the player, this browser's (which
 	// follows LMS's volume). When this device's own buttons set the level (iPhone and iPad), it
 	// says so instead.
-	import { app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { device } from '$lib/player/device.svelte';
-	import { DEVICE_BUTTONS_NOTE } from '$lib/player/volume';
-	import { isThisDevice } from '$lib/player/outputs';
-	import { haptics } from '$lib/haptics/haptics.svelte';
+	import { app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { device } from '#lib/player/device.svelte';
+	import { DEVICE_BUTTONS_NOTE } from '#lib/player/volume';
+	import { isThisDevice } from '#lib/player/outputs';
+	import { haptics } from '#lib/haptics/haptics.svelte';
 	import Icon from './Icon.svelte';
 
 	let { disabled = false }: { disabled?: boolean } = $props();

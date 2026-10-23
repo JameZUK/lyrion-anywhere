@@ -1,7 +1,7 @@
 // The four main tabs (Home, Library, Search, Queue), the same on phones, at the top of the
 // desktop sidebar and in the Android app; which tab each page belongs to.
 import { readFileSync } from 'node:fs';
-import { MAIN_TABS, SIDEBAR, tabFor } from '$lib/nav-tabs';
+import { MAIN_TABS, SIDEBAR, tabFor } from '#lib/nav-tabs';
 
 const layout = readFileSync(`${__dirname}/../src/routes/+layout.svelte`, 'utf8');
 

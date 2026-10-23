@@ -3,9 +3,9 @@
 	// marked, each other one with Sign out (after a confirm), and Sign out all other devices.
 	// Signing out takes effect at once: that device has to sign in again. One message at a
 	// time, announced.
-	import type { MyDevice } from '$lib/api/auth';
-	import { cleanDevices, deviceLine, devicesError } from '$lib/account/devices';
-	import { ApiError } from '$lib/api/http';
+	import type { MyDevice } from '#lib/api/auth';
+	import { cleanDevices, deviceLine, devicesError } from '#lib/account/devices';
+	import { ApiError } from '#lib/api/http';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 
 	let {

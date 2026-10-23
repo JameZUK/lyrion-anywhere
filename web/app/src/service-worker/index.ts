@@ -1,14 +1,14 @@
-/// <reference no-default-lib="true"/>
-/// <reference lib="esnext" />
-/// <reference lib="webworker" />
-// The app shell offline and quick to start; see $lib/pwa/sw-policy for what is never stored and
-// $lib/pwa/sw-handlers for how an upgrade leaves open tabs working.
-import { build, version } from '$service-worker';
-import { onActivate, onFetch, onInstall, onMessage, type SwEnv } from '$lib/pwa/sw-handlers';
+// The app shell offline and quick to start; see #lib/pwa/sw-policy for what is never stored and
+// #lib/pwa/sw-handlers for how an upgrade leaves open tabs working. Type-checked on its own
+// (WebWorker, not DOM) through the tsconfig.json beside it.
+import { version } from '$app/env';
+import { immutable } from '$app/manifest';
+import { self as sw } from '$app/service-worker';
+import { onActivate, onFetch, onInstall, onMessage, type SwEnv } from '#lib/pwa/sw-handlers';
 
-const sw = self as unknown as ServiceWorkerGlobalScope;
 const env: SwEnv = {
-	build,
+	// The files Vite built, as paths relative to the base path (SvelteKit 3's `$app/manifest`).
+	build: immutable.map((f) => f.path),
 	version,
 	scope: () => new URL(sw.registration.scope),
 	caches,

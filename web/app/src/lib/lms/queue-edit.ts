@@ -1,6 +1,6 @@
 // Queue editing logic, kept free of the DOM so it can be tested on its own.
-import type { QueueEditBody } from '$lib/api/me';
-import type { Command } from '$lib/api/rpc';
+import type { QueueEditBody } from '#lib/api/me';
+import type { Command } from '#lib/api/rpc';
 import { enqueue, moveInQueue, queue, removeFromQueue, status } from './commands';
 import type { PlayerStatus, Track } from './types';
 //

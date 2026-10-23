@@ -3,10 +3,10 @@
 // menu (untrusted) and switched on only when off; no radio when the server offers neither.
 import { render, waitFor } from '@testing-library/svelte';
 import { goto } from '$app/navigation';
-import { audiomuseOffers, chooseProvider, dstmFrom, isAudioMuse, providerOk, radioFromTrack, radioPlan, startRadio, DSTM_PREF } from '$lib/lms/discovery';
-import type { SBMenu } from '$lib/lms/slimbrowse';
+import { audiomuseOffers, chooseProvider, dstmFrom, isAudioMuse, providerOk, radioFromTrack, radioPlan, startRadio, DSTM_PREF } from '#lib/lms/discovery';
+import type { SBMenu } from '#lib/lms/slimbrowse';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const params: Record<string, string> = { action: 'resume' };
 vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/go/resume') } }));
 const fake = await import('./helpers/fake-app.svelte');

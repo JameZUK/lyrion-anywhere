@@ -1,8 +1,8 @@
 // The web signal path (docs/plans: Wave 1 §5; docs/plans/streaming-quality.md): what it says
 // for this browser's own player, honestly, including the stream that actually arrives (Opus
 // from the gateway, or the track as stored), and how little it claims for other players.
-import { quality } from '$lib/lms/quality';
-import { signalPath, type SignalInput } from '$lib/player/signal-path';
+import { quality } from '#lib/lms/quality';
+import { signalPath, type SignalInput } from '#lib/player/signal-path';
 
 const flac: SignalInput['stream'] = { codec: 'FLAC', lossless: true, bits: 24 };
 const opus: SignalInput['stream'] = { codec: 'Opus', lossless: false, bits: null };

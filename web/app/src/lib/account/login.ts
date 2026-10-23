@@ -1,7 +1,7 @@
 // What a failed sign-in says. Each gateway refusal reads as what it is; only a request that
 // never reached the server blames the connection (a proxy that drops the Origin header, a busy
 // music server and a server fault each look different from a dead network).
-import { ApiError } from '$lib/api/http';
+import { ApiError } from '#lib/api/http';
 
 export const CONNECTION_MESSAGE = 'Could not reach the server. Check your connection.';
 

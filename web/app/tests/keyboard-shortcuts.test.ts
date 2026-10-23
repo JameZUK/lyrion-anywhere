@@ -3,9 +3,9 @@
 // typing, in a dialog or menu, with a modifier, or on a control that uses the key itself.
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { goto } from '$app/navigation';
-import { shortcutFor, type KeyLike } from '$lib/keys/shortcuts';
+import { shortcutFor, type KeyLike } from '#lib/keys/shortcuts';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const url = { hash: '#/' };
 vi.mock('$app/state', () => ({
 	page: {
@@ -16,9 +16,9 @@ vi.mock('$app/state', () => ({
 	},
 }));
 const fake = await import('./helpers/fake-app.svelte');
-const { nowPlaying } = await import('$lib/nowplaying/store.svelte');
-const { keysHelp } = await import('$lib/keys/help.svelte');
-const { default: KeyboardShortcuts } = await import('$lib/components/KeyboardShortcuts.svelte');
+const { nowPlaying } = await import('#lib/nowplaying/store.svelte');
+const { keysHelp } = await import('#lib/keys/help.svelte');
+const { default: KeyboardShortcuts } = await import('#lib/components/KeyboardShortcuts.svelte');
 
 const PLAYER = '02:00:00:00:00:01';
 

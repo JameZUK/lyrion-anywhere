@@ -1,9 +1,9 @@
 // Queue helpers for Wave 2: swipes both ways, where Play next moves a track, Clear upcoming
 // (from the end, each removal checked), and the shuffle cycle.
-import { CLEAR_UPCOMING_MAX, ClearStopped, clearAfter, playNextTarget, removeAt, swipeAction, SWIPE_MIN_PX } from '$lib/lms/queue-edit';
-import { nextShuffle, shuffleLabel, shuffleMode } from '$lib/lms/shuffle';
-import * as c from '$lib/lms/commands';
-import type { Track } from '$lib/lms/types';
+import { CLEAR_UPCOMING_MAX, ClearStopped, clearAfter, playNextTarget, removeAt, swipeAction, SWIPE_MIN_PX } from '#lib/lms/queue-edit';
+import { nextShuffle, shuffleLabel, shuffleMode } from '#lib/lms/shuffle';
+import * as c from '#lib/lms/commands';
+import type { Track } from '#lib/lms/types';
 
 test('a swipe acts only once it has gone far enough, either way', () => {
 	expect(swipeAction(-SWIPE_MIN_PX, 100)).toBe('left');

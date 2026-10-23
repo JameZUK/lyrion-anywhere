@@ -1,7 +1,7 @@
 // The app's download manager and offline player, on IndexedDB (see ./store for why).
-import { api, session } from '$lib/state/app.svelte';
-import { coverPath } from '$lib/lms/commands';
-import { ApiError } from '$lib/api/http';
+import { api, session } from '#lib/state/app.svelte';
+import { coverPath } from '#lib/lms/commands';
+import { ApiError } from '#lib/api/http';
 import { DownloadManager, fetchInfo } from './manager.svelte';
 import { HandoffOffer, type Lookup } from './handoff.svelte';
 import { BadInfo } from './types';

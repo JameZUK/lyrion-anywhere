@@ -1,7 +1,7 @@
 <script lang="ts">
 	// An album cover kept with the downloads: read from this device's storage, so it shows
 	// with no connection. Its blob: URL is given back when the cover goes.
-	import { offlineStore } from '$lib/offline/index.svelte';
+	import { offlineStore } from '#lib/offline/index.svelte';
 
 	let { user, albumId, label = '' }: { user: string; albumId: number | null; label?: string } = $props();
 

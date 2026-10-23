@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { me } from '$lib/state/me';
+	import { me } from '#lib/state/me';
 	// The selected player's queue. Edits (drag to reorder, swipe or tap to remove, Undo) show
 	// at once and are then sent to LMS one at a time, in order; the next load reconciles. A
 	// failed edit is undone locally and reported. Loads that land mid-gesture or mid-edit are
@@ -13,29 +13,29 @@
 	// queue, each confirmed in a dialog); a row is its drag handle, the track (tap to play) and
 	// ⋯ (Play next, Move up, Move down, Remove from queue). Gapless is shown in track info.
 	import { tick, untrack } from 'svelte';
-	import { api, app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import type { Command } from '$lib/api/rpc';
-	import { duration, textOf } from '$lib/lms/format';
-	import { CLEAR_UPCOMING_MAX, clearAfter, dropIndex, insertAt, isSwipe, moveChecked, playNextTarget, removeAt, removeChecked, reorder, restoreTrack, swipeAction, type RowBox, type ServerEdit } from '$lib/lms/queue-edit';
-	import { rowShortcut } from '$lib/gestures/swipe';
-	import { stateOf } from '$lib/queue/tracker';
-	import { trackerVersion, upNextTracker } from '$lib/queue/upnext.svelte';
-	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-	import RowMenu from '$lib/components/RowMenu.svelte';
-	import type { PlayerStatus, Track } from '$lib/lms/types';
-	import Art from '$lib/components/Art.svelte';
-	import Icon from '$lib/components/Icon.svelte';
-	import Snackbar from '$lib/components/Snackbar.svelte';
-	import SaveQueue from '$lib/components/SaveQueue.svelte';
-	import type { SavedPlaylist } from '$lib/api/me';
-	import { go } from '$lib/nav';
-	import { haptics } from '$lib/haptics/haptics.svelte';
-	import { controls } from '$lib/player/controls.svelte';
-	import { MARK_LABELS } from '$lib/player/local-plan';
-	import { isNetworkError } from '$lib/state/reachability';
-	import { now } from '$lib/player/now.svelte';
-	import DownloadsQueue from '$lib/components/DownloadsQueue.svelte';
+	import { api, app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import type { Command } from '#lib/api/rpc';
+	import { duration, textOf } from '#lib/lms/format';
+	import { CLEAR_UPCOMING_MAX, clearAfter, dropIndex, insertAt, isSwipe, moveChecked, playNextTarget, removeAt, removeChecked, reorder, restoreTrack, swipeAction, type RowBox, type ServerEdit } from '#lib/lms/queue-edit';
+	import { rowShortcut } from '#lib/gestures/swipe';
+	import { stateOf } from '#lib/queue/tracker';
+	import { trackerVersion, upNextTracker } from '#lib/queue/upnext.svelte';
+	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
+	import RowMenu from '#lib/components/RowMenu.svelte';
+	import type { PlayerStatus, Track } from '#lib/lms/types';
+	import Art from '#lib/components/Art.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import Snackbar from '#lib/components/Snackbar.svelte';
+	import SaveQueue from '#lib/components/SaveQueue.svelte';
+	import type { SavedPlaylist } from '#lib/api/me';
+	import { go } from '#lib/nav';
+	import { haptics } from '#lib/haptics/haptics.svelte';
+	import { controls } from '#lib/player/controls.svelte';
+	import { MARK_LABELS } from '#lib/player/local-plan';
+	import { isNetworkError } from '#lib/state/reachability';
+	import { now } from '#lib/player/now.svelte';
+	import DownloadsQueue from '#lib/components/DownloadsQueue.svelte';
 
 	/** How long a swiped row takes to slide out before it is removed. */
 	const SLIDE_MS = 180;

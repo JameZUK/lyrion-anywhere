@@ -2,9 +2,9 @@
 // pages have a Back control (an installed iPhone web app has no browser Back).
 import { fireEvent, render } from '@testing-library/svelte';
 import { goto } from '$app/navigation';
-import { APP_NAME, documentTitle, sectionTitle } from '$lib/title.svelte';
-import { back, canGoBack, noteNavigation } from '$lib/nav';
-import BackButton from '$lib/components/BackButton.svelte';
+import { APP_NAME, documentTitle, sectionTitle } from '#lib/title.svelte';
+import { back, canGoBack, noteNavigation } from '#lib/nav';
+import BackButton from '#lib/components/BackButton.svelte';
 
 describe('titles', () => {
 	test('every section has its own title', () => {

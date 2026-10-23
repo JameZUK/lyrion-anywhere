@@ -1,9 +1,9 @@
 // The offline player: a local queue in album order, transport, lock-screen controls, a clear
 // message for formats this browser can't play, and every blob: URL given back.
-import { OfflinePlayer, playable, unplayableMessage, type AudioLike } from '$lib/offline/player.svelte';
-import { MemoryBackend, OfflineStore } from '$lib/offline/store';
+import { OfflinePlayer, playable, unplayableMessage, type AudioLike } from '#lib/offline/player.svelte';
+import { MemoryBackend, OfflineStore } from '#lib/offline/store';
 import { key, stored } from './helpers/fake-downloads';
-import type { StoredTrack } from '$lib/offline/types';
+import type { StoredTrack } from '#lib/offline/types';
 
 class FakeAudio extends EventTarget implements AudioLike {
 	src = '';

@@ -3,11 +3,11 @@
 // results (row, play button, menu, keys). Invented names only.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { loadRecents, saveRecents } from '$lib/search/recents';
+import { loadRecents, saveRecents } from '#lib/search/recents';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
-const { search } = await import('$lib/state/search');
+const { search } = await import('#lib/state/search');
 const SearchPage = (await import('../src/routes/search/+page.svelte')).default;
 
 const P = '02:00:00:00:00:01';

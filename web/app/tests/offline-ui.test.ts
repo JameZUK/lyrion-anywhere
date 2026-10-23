@@ -3,17 +3,17 @@
 // prompt about downloads.
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import * as offline from '$lib/offline/index.svelte';
-import type { DownloadManager } from '$lib/offline/manager.svelte';
-import type { PlaySync } from '$lib/offline/plays.svelte';
-import type { OfflineStore } from '$lib/offline/store';
+import * as offline from '#lib/offline/index.svelte';
+import type { DownloadManager } from '#lib/offline/manager.svelte';
+import type { PlaySync } from '#lib/offline/plays.svelte';
+import type { OfflineStore } from '#lib/offline/store';
 import { key, stored } from './helpers/fake-downloads';
 import { choose } from './helpers/menu';
 
-vi.mock('$lib/offline/index.svelte', async () => {
-	const { DownloadManager } = await import('$lib/offline/manager.svelte');
-	const { OfflinePlayer } = await import('$lib/offline/player.svelte');
-	const { MemoryBackend, OfflineStore } = await import('$lib/offline/store');
+vi.mock('#lib/offline/index.svelte', async () => {
+	const { DownloadManager } = await import('#lib/offline/manager.svelte');
+	const { OfflinePlayer } = await import('#lib/offline/player.svelte');
+	const { MemoryBackend, OfflineStore } = await import('#lib/offline/store');
 	const offlineStore = new OfflineStore(new MemoryBackend());
 	// The server never answers (until aborted), so downloads stay in progress.
 	const hang = ((_u: unknown, init?: RequestInit) =>
@@ -28,7 +28,7 @@ vi.mock('$lib/offline/index.svelte', async () => {
 		capBytes: () => control.cap,
 	});
 	const offlinePlayer = new OfflinePlayer({ store: offlineStore, mediaSession: null });
-	const { PlaySync } = await import('$lib/offline/plays.svelte');
+	const { PlaySync } = await import('#lib/offline/plays.svelte');
 	const plays = new PlaySync({ store: offlineStore, authed: (fn) => fn('t'), fetch: (...a) => control.fetch(...a) });
 	return { offlineStore, downloads, offlinePlayer, control, plays };
 });
@@ -39,7 +39,7 @@ const TRACKS = [
 	{ id: 12, title: 'Two', tracknum: 2, duration: 100, artist: 'Band' },
 	{ id: 99, title: 'Radio', remote: 1 },
 ];
-vi.mock('$lib/state/app.svelte', () => ({
+vi.mock('#lib/state/app.svelte', () => ({
 	api: {
 		rpc: async (_p: string, c: unknown[]) => (c[0] === 'albums' ? { albums_loop: [ALBUM] } : { titles_loop: TRACKS }),
 		art: () => Promise.reject(new Error('offline')),
@@ -217,7 +217,7 @@ test('Downloads page: playlists are their own group; removing one keeps tracks a
 	]);
 	await store.putGroup({ user: 'alice', id: 'playlist:3', name: '<b>Mix</b>', ids: [2, 1], savedAt: 1 });
 	await downloads.setUser('alice', true);
-	const { default: View } = await import('$lib/components/DownloadsView.svelte');
+	const { default: View } = await import('#lib/components/DownloadsView.svelte');
 	const { container } = render(View);
 	await tick();
 	expect(screen.getByRole('heading', { name: 'Playlists' })).toBeTruthy();
@@ -242,7 +242,7 @@ test('Downloads page: waiting for Wi-Fi, with Download now; the storage limit is
 	localStorage.setItem('anywhere.downloads', JSON.stringify({ capBytes: 2 * 1024 ** 3 }));
 	await downloads.setUser('alice', true);
 	await downloads.request([{ id: 5 }, { id: 6 }]);
-	const { default: View } = await import('$lib/components/DownloadsView.svelte');
+	const { default: View } = await import('#lib/components/DownloadsView.svelte');
 	render(View);
 	await tick();
 	expect(screen.getByTestId('wifi-wait').textContent).toContain('Waiting for Wi-Fi: 2 downloads will start on Wi-Fi.');
@@ -259,7 +259,7 @@ test('Downloads page shows hostile titles as text, with sizes, and removes', asy
 		HOSTILE.map((h, i) => ({ key: key(i + 1), id: i + 1, title: h, artist: h, album: h, albumId: 7, size: 1024 * 1024 })),
 	);
 	await downloads.setUser('alice', true);
-	const { default: View } = await import('$lib/components/DownloadsView.svelte');
+	const { default: View } = await import('#lib/components/DownloadsView.svelte');
 	const { container } = render(View);
 	await tick();
 	expect(container.querySelectorAll('script, img, iframe, object, embed').length).toBe(0);
@@ -278,7 +278,7 @@ test('Downloads page only lists the signed-in user’s downloads', async () => {
 	await saveTracks('alice', [{ key: key(1), title: 'Alice song', album: 'Alice album' }]);
 	await saveTracks('bob', [{ key: key(2), title: 'Bob song', album: 'Bob album' }]);
 	await downloads.setUser('bob', true);
-	const { default: View } = await import('$lib/components/DownloadsView.svelte');
+	const { default: View } = await import('#lib/components/DownloadsView.svelte');
 	const { container } = render(View);
 	await tick();
 	expect(container.textContent).toContain('Bob album');
@@ -293,7 +293,7 @@ test('Downloads page says how many plays are waiting to sync, for this user only
 	await plays.record('bob', { id: 1, key: key(1) }, Date.now() - 300_000, 250);
 	await downloads.setUser('alice', false);
 	await plays.setUser('alice', false);
-	const { default: View } = await import('$lib/components/DownloadsView.svelte');
+	const { default: View } = await import('#lib/components/DownloadsView.svelte');
 	const { container } = render(View);
 	await tick();
 	expect(container.textContent).toContain('2 plays waiting to sync: they’ll be sent when you’re back online.');
@@ -308,7 +308,7 @@ test('Downloads page says how many plays are waiting to sync, for this user only
 test('offline splash offers “Play your downloads” for the account last signed in here', async () => {
 	await saveTracks('alice', [{ key: key(1), title: 'Offline song', album: 'Offline album' }]);
 	localStorage.setItem('anywhere.offlineUser', 'alice');
-	const { default: OfflineMode } = await import('$lib/components/OfflineMode.svelte');
+	const { default: OfflineMode } = await import('#lib/components/OfflineMode.svelte');
 	render(OfflineMode);
 	expect(screen.getByText('Can’t reach your music server. Trying again…')).toBeTruthy();
 	const play = await screen.findByRole('button', { name: 'Play your downloads' });
@@ -320,7 +320,7 @@ test('offline splash offers “Play your downloads” for the account last signe
 
 test('offline splash offers nothing without a remembered account (e.g. after signing out)', async () => {
 	await saveTracks('alice', [{ key: key(1) }]);
-	const { default: OfflineMode } = await import('$lib/components/OfflineMode.svelte');
+	const { default: OfflineMode } = await import('#lib/components/OfflineMode.svelte');
 	render(OfflineMode);
 	await tick();
 	await new Promise((r) => setTimeout(r, 20));
@@ -328,7 +328,7 @@ test('offline splash offers nothing without a remembered account (e.g. after sig
 });
 
 test('sign-out asks about downloads; keeping is the default and removal one tap', async () => {
-	const { default: SignOut } = await import('$lib/components/SignOut.svelte');
+	const { default: SignOut } = await import('#lib/components/SignOut.svelte');
 	const onsignout = vi.fn();
 	const r = render(SignOut, { count: 3, bytes: 3 * 1024 * 1024, onsignout });
 	await fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
@@ -348,7 +348,7 @@ test('sign-out asks about downloads; keeping is the default and removal one tap'
 });
 
 test('sign-out with nothing downloaded does not ask', async () => {
-	const { default: SignOut } = await import('$lib/components/SignOut.svelte');
+	const { default: SignOut } = await import('#lib/components/SignOut.svelte');
 	const onsignout = vi.fn();
 	render(SignOut, { count: 0, onsignout });
 	await fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
@@ -357,7 +357,7 @@ test('sign-out with nothing downloaded does not ask', async () => {
 
 // Regression (review, Web low): a sign-out that failed (IndexedDB refusing) was silent.
 test('a failed sign-out says so, and the buttons work again', async () => {
-	const { default: SignOut } = await import('$lib/components/SignOut.svelte');
+	const { default: SignOut } = await import('#lib/components/SignOut.svelte');
 	const onsignout = vi.fn(async () => {
 		throw new DOMException('broken', 'UnknownError');
 	});

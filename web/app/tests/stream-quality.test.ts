@@ -13,7 +13,7 @@ import {
 	sanitisePreference,
 	savePreference,
 	streamOf,
-} from '$lib/player/stream-quality';
+} from '#lib/player/stream-quality';
 
 function memStore() {
 	const m = new Map<string, string>();

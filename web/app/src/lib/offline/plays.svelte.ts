@@ -9,7 +9,7 @@
 //
 // The server decides what counts (half the track or four minutes); every play is sent, so
 // the rule lives in one place. The queue is capped; beyond it the oldest plays go.
-import { ApiError, CLIENT_HEADER, bearer } from '$lib/api/http';
+import { ApiError, CLIENT_HEADER, bearer } from '#lib/api/http';
 import { HttpError, retryAfter, type Authed } from './manager.svelte';
 import { PLAY_ID, type OfflineStore } from './store';
 import type { QueuedPlay, StoredTrack } from './types';

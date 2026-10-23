@@ -1,7 +1,7 @@
 // What Library shows (Wave 2 §3.2; one model since Wave 3.5): the section, the album order
 // and grid or list. Kept per device in local storage (never sent anywhere); storage that is
 // blocked or holds something odd gives the defaults.
-import type { BrowseSort } from '$lib/components/AlbumBrowser.svelte';
+import type { BrowseSort } from '#lib/components/AlbumBrowser.svelte';
 
 /** Library's sections, in order: one list (Wave 3.5), each shown in place. */
 export type LibraryChip =

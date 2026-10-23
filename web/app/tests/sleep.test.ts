@@ -1,7 +1,7 @@
 // Sleep timer rules (docs/plans: Wave 1 §1): how long until the end of the track, album or
 // queue; when to set it again; which players; the fade-out setting; and the command itself.
 // The same vectors are in mobile/src/sleep.rs (the Android app).
-import * as c from '$lib/lms/commands';
+import * as c from '#lib/lms/commands';
 import {
 	DEFAULT_FADE_S,
 	armedOver,
@@ -18,8 +18,8 @@ import {
 	sleepLeft,
 	sleepTargets,
 	type Armed,
-} from '$lib/lms/sleep';
-import type { PlayerStatus, Track } from '$lib/lms/types';
+} from '#lib/lms/sleep';
+import type { PlayerStatus, Track } from '#lib/lms/types';
 
 const t = (album: number, duration?: number): Track => ({ id: album * 100 + (duration ?? 0), album_id: album, duration });
 const status = (over: Partial<PlayerStatus> = {}): PlayerStatus => ({

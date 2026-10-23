@@ -2,9 +2,9 @@
 	// The card at the end of Home: this month's listening, opening Your listening. From
 	// 1 December to 31 January it also offers "Your year in sound" for the year. Hidden while
 	// listening history is off or there is nothing to show.
-	import { me } from '$lib/state/me';
-	import type { ListeningStats } from '$lib/api/me';
-	import { deviceTz, duration, monthPeriod, number, storyDaysToGo, storyYear, yearPeriod } from '$lib/stats/period';
+	import { me } from '#lib/state/me';
+	import type { ListeningStats } from '#lib/api/me';
+	import { deviceTz, duration, monthPeriod, number, storyDaysToGo, storyYear, yearPeriod } from '#lib/stats/period';
 	import Icon from './Icon.svelte';
 	import YearStory from './YearStory.svelte';
 

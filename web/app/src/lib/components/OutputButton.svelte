@@ -3,8 +3,8 @@
 	// marked while another player than this device is in use. `named`: the player's name beside
 	// the icon (desktop Now playing, where no mini player says it). `volume`: the sheet carries
 	// the volume slider (phones, whose Now playing has no volume row).
-	import { app } from '$lib/state/app.svelte';
-	import { isThisDevice } from '$lib/player/outputs';
+	import { app } from '#lib/state/app.svelte';
+	import { isThisDevice } from '#lib/player/outputs';
 	import Icon from './Icon.svelte';
 	import PlayerSwitcher from './PlayerSwitcher.svelte';
 

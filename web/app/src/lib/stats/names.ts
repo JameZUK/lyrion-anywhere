@@ -1,8 +1,8 @@
 // Albums and tracks in the stats come as ids only: their titles and art are loaded from LMS
 // by id, as for Home shelves. Ids LMS no longer knows (after a rescan, say) stay unnamed.
-import { api } from '$lib/state/app.svelte';
-import * as cmd from '$lib/lms/commands';
-import type { Album, AlbumsResult, TitlesResult, Track } from '$lib/lms/types';
+import { api } from '#lib/state/app.svelte';
+import * as cmd from '#lib/lms/commands';
+import type { Album, AlbumsResult, TitlesResult, Track } from '#lib/lms/types';
 
 export interface StatsNames {
 	albums: Map<number, Album>;

@@ -1,6 +1,6 @@
 // The per-device Up next tracker: Play next insertions, shifts from this device's own edits
 // and from playing on, and dropping the sections on any change it can't account for.
-import { PENDING_MS, UpNextTracker, gaplessLinks, stateOf } from '$lib/queue/tracker';
+import { PENDING_MS, UpNextTracker, gaplessLinks, stateOf } from '#lib/queue/tracker';
 
 const P = 'aa:bb:cc:dd:ee:01';
 const Q = 'aa:bb:cc:dd:ee:02';

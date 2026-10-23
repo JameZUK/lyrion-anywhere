@@ -2,10 +2,10 @@
 // how each device reads, each refusal's message, and the list with its confirms.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import YourDevices from '$lib/components/YourDevices.svelte';
-import { ApiError } from '$lib/api/http';
-import { features, myDevices, signOutDevice, signOutOtherDevices, type MyDevice } from '$lib/api/auth';
-import { MAX_DEVICES, ago, cleanDevices, deviceLine, devicesError } from '$lib/account/devices';
+import YourDevices from '#lib/components/YourDevices.svelte';
+import { ApiError } from '#lib/api/http';
+import { features, myDevices, signOutDevice, signOutOtherDevices, type MyDevice } from '#lib/api/auth';
+import { MAX_DEVICES, ago, cleanDevices, deviceLine, devicesError } from '#lib/account/devices';
 
 const settle = async () => {
 	for (let i = 0; i < 6; i++) await tick();

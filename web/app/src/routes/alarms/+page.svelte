@@ -1,13 +1,13 @@
 <script lang="ts">
-	import BackButton from '$lib/components/BackButton.svelte';
+	import BackButton from '#lib/components/BackButton.svelte';
 	// Alarms for the selected player (Wave 2 §1): LMS's own, so they ring on hardware
 	// players too and with no app open.
-	import { app } from '$lib/state/app.svelte';
-	import { routine } from '$lib/state/me';
-	import { alarmChanges } from '$lib/rooms/alarm-changes.svelte';
-	import Icon from '$lib/components/Icon.svelte';
-	import Switch from '$lib/components/Switch.svelte';
-	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import { app } from '#lib/state/app.svelte';
+	import { routine } from '#lib/state/me';
+	import { alarmChanges } from '#lib/rooms/alarm-changes.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import Switch from '#lib/components/Switch.svelte';
+	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import {
 		DAY_NAMES,
 		daysText,
@@ -17,7 +17,7 @@
 		type Alarm,
 		type AlarmChange,
 		type AlarmListing,
-	} from '$lib/api/routine';
+	} from '#lib/api/routine';
 
 	let listing = $state<AlarmListing | null>(null);
 	let error = $state('');

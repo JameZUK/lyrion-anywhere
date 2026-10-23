@@ -5,20 +5,20 @@
 	// every theme, no visualiser, every target at least 76 px, and the screen kept on while
 	// playing. Opened from Now playing; Exit (or Escape) goes back.
 	import { goto } from '$app/navigation';
-	import { api, app } from '$lib/state/app.svelte';
-	import { me } from '$lib/state/me';
-	import * as cmd from '$lib/lms/commands';
-	import { controls } from '$lib/player/controls.svelte';
-	import { duration, isRemote, textOf } from '$lib/lms/format';
-	import type { FavouritesResult, MenuItem } from '$lib/lms/types';
-	import type { Station } from '$lib/api/me';
-	import { activeStation } from '$lib/stations/active.svelte';
-	import { radioFromTrack } from '$lib/lms/discovery';
-	import { ScreenWake } from '$lib/player/wake-lock';
-	import { haptics } from '$lib/haptics/haptics.svelte';
-	import { inDialog, typing } from '$lib/keys/shortcuts';
-	import Art from '$lib/components/Art.svelte';
-	import Icon from '$lib/components/Icon.svelte';
+	import { api, app } from '#lib/state/app.svelte';
+	import { me } from '#lib/state/me';
+	import * as cmd from '#lib/lms/commands';
+	import { controls } from '#lib/player/controls.svelte';
+	import { duration, isRemote, textOf } from '#lib/lms/format';
+	import type { FavouritesResult, MenuItem } from '#lib/lms/types';
+	import type { Station } from '#lib/api/me';
+	import { activeStation } from '#lib/stations/active.svelte';
+	import { radioFromTrack } from '#lib/lms/discovery';
+	import { ScreenWake } from '#lib/player/wake-lock';
+	import { haptics } from '#lib/haptics/haptics.svelte';
+	import { inDialog, typing } from '#lib/keys/shortcuts';
+	import Art from '#lib/components/Art.svelte';
+	import Icon from '#lib/components/Icon.svelte';
 
 	/** Holding play/pause this long stops. */
 	const LONG_PRESS_MS = 700;

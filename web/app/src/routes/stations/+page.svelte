@@ -1,12 +1,12 @@
 <script lang="ts">
-	import BackButton from '$lib/components/BackButton.svelte';
+	import BackButton from '#lib/components/BackButton.svelte';
 	// Stations: endless mixes from the library, refilled as they play.
-	import { me } from '$lib/state/me';
-	import type { Station } from '$lib/api/me';
-	import { activeStation } from '$lib/stations/active.svelte';
-	import StationCards from '$lib/components/StationCards.svelte';
-	import NewStation from '$lib/components/NewStation.svelte';
-	import Icon from '$lib/components/Icon.svelte';
+	import { me } from '#lib/state/me';
+	import type { Station } from '#lib/api/me';
+	import { activeStation } from '#lib/stations/active.svelte';
+	import StationCards from '#lib/components/StationCards.svelte';
+	import NewStation from '#lib/components/NewStation.svelte';
+	import Icon from '#lib/components/Icon.svelte';
 
 	let stations = $state<Station[] | null>(null);
 	let error = $state('');

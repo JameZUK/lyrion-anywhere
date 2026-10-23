@@ -1,8 +1,8 @@
 // The visualiser's client side (Wave 2 §4.1) and Now playing's remembered choices (§4.2):
 // frames from the worker, VU ballistics, drawing, and the per-device preferences.
-import { BANDS, FLOOR_DB, FRAME_LEN, SCOPE_POINTS, parseFrame, silentFrame } from '$lib/visual/frame';
-import { BAR_FALL_PER_S, PEAK_HOLD_MS, VU_REFERENCE_MAX, VU_REFERENCE_MIN, VU_RESPONSE_MS, VuBallistics, VuCalibration, fallBars, needlePosition } from '$lib/visual/vu';
-import { STYLES, drawBars, drawScope, drawVu, glowLevel, nextStyle, type Ctx, type Palette } from '$lib/visual/draw';
+import { BANDS, FLOOR_DB, FRAME_LEN, SCOPE_POINTS, parseFrame, silentFrame } from '#lib/visual/frame';
+import { BAR_FALL_PER_S, PEAK_HOLD_MS, VU_REFERENCE_MAX, VU_REFERENCE_MIN, VU_RESPONSE_MS, VuBallistics, VuCalibration, fallBars, needlePosition } from '#lib/visual/vu';
+import { STYLES, drawBars, drawScope, drawVu, glowLevel, nextStyle, type Ctx, type Palette } from '#lib/visual/draw';
 import {
 	DEFAULT_NOW_PLAYING,
 	NOW_PLAYING_KEY,
@@ -10,7 +10,7 @@ import {
 	loadNowPlaying,
 	saveNowPlaying,
 	swipeLayout,
-} from '$lib/nowplaying/prefs';
+} from '#lib/nowplaying/prefs';
 
 /** A frame as the worker sends it. */
 function raw(over: Partial<{ bands: number; scope: number; rms: [number, number]; peak: [number, number]; bass: number }> = {}): Float32Array {

@@ -2,10 +2,10 @@
 // sending, each refusal's message, password-manager hints and the devices left signed in.
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import ChangePassword from '$lib/components/ChangePassword.svelte';
-import { ApiError, callJson, retryAfterOf } from '$lib/api/http';
-import { changePassword, features, type PasswordChange, type PasswordChanged } from '$lib/api/auth';
-import { changeError, deviceDetail, formProblem, waitText } from '$lib/account/change-password';
+import ChangePassword from '#lib/components/ChangePassword.svelte';
+import { ApiError, callJson, retryAfterOf } from '#lib/api/http';
+import { changePassword, features, type PasswordChange, type PasswordChanged } from '#lib/api/auth';
+import { changeError, deviceDetail, formProblem, waitText } from '#lib/account/change-password';
 
 const settle = async () => {
 	for (let i = 0; i < 5; i++) await tick();

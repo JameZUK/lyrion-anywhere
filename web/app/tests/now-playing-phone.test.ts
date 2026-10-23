@@ -6,14 +6,14 @@
 // tests/node/now-playing-layout.test.mjs.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
-import type { PlayerStatus } from '$lib/lms/types';
+import type { PlayerStatus } from '#lib/lms/types';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
-const { device } = await import('$lib/player/device.svelte');
-const { nowPlaying } = await import('$lib/nowplaying/store.svelte');
-const { NOW_PLAYING_KEY } = await import('$lib/nowplaying/prefs');
-const { PAGE_LABELS, pageForKey, pagerGesture, stepPage } = await import('$lib/nowplaying/pager');
+const { device } = await import('#lib/player/device.svelte');
+const { nowPlaying } = await import('#lib/nowplaying/store.svelte');
+const { NOW_PLAYING_KEY } = await import('#lib/nowplaying/prefs');
+const { PAGE_LABELS, pageForKey, pagerGesture, stepPage } = await import('#lib/nowplaying/pager');
 const { goto } = await import('$app/navigation');
 const { default: NowPlaying } = await import('../src/routes/+page.svelte');
 
@@ -187,8 +187,8 @@ describe('layout', () => {
 	test('a track rated in LMS shows as rated here, muted, until the user loves it (issue #14)', async () => {
 		// Before: the toggle lit only for the user's own rating, so a track rated 4 or 5 stars in
 		// LMS showed a blank star on phones while the wide layout's five stars showed the rating.
-		const { ratings } = await import('$lib/state/ratings');
-		const { routine } = await import('$lib/state/me');
+		const { ratings } = await import('#lib/state/ratings');
+		const { routine } = await import('#lib/state/me');
 		ratings.reset();
 		const fetched = vi.spyOn(routine, 'ratings').mockResolvedValue([{ track: 11, mine: null, shared: 80, rating: 80 }]);
 		const styled = vi.spyOn(routine, 'style').mockResolvedValue({ style: 'stars', count: 0 });

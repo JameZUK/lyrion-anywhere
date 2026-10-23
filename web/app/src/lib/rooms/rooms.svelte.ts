@@ -2,13 +2,13 @@
 // While the page is open, each player's status is read every 5 s (and at once when one of
 // its events arrives), for at most 20 players; sync groups with each round; the next alarms
 // once on opening and again when alarms change. Nothing is read once it closes.
-import type { Command } from '$lib/api/rpc';
-import type { AlarmListing } from '$lib/api/routine';
-import { nextAlarm } from '$lib/api/routine';
-import type { LmsEvent } from '$lib/api/events';
-import * as cmd from '$lib/lms/commands';
-import { syncGroupsFrom } from '$lib/lms/sync';
-import type { PlayerInfo, PlayerStatus, SyncGroupsResult } from '$lib/lms/types';
+import type { Command } from '#lib/api/rpc';
+import type { AlarmListing } from '#lib/api/routine';
+import { nextAlarm } from '#lib/api/routine';
+import type { LmsEvent } from '#lib/api/events';
+import * as cmd from '#lib/lms/commands';
+import { syncGroupsFrom } from '#lib/lms/sync';
+import type { PlayerInfo, PlayerStatus, SyncGroupsResult } from '#lib/lms/types';
 
 /** Players shown (and polled) at most. */
 export const MAX_ROOMS = 20;

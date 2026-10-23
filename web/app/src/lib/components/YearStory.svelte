@@ -3,12 +3,12 @@
 	// A carousel with Previous and Next buttons, arrow keys and swipes; nothing moves on its
 	// own. Escape or Close ends it and focus goes back to what opened it. Share draws the
 	// current card on this device and hands the image to the share sheet (or saves it).
-	import { me } from '$lib/state/me';
-	import type { ListeningStats } from '$lib/api/me';
-	import { deviceTz, storyDaysToGo, yearPeriod } from '$lib/stats/period';
-	import { loadNames } from '$lib/stats/names';
-	import { storyCards, type StoryCard } from '$lib/stats/story';
-	import { shareCard, type ShareDeps } from '$lib/stats/share';
+	import { me } from '#lib/state/me';
+	import type { ListeningStats } from '#lib/api/me';
+	import { deviceTz, storyDaysToGo, yearPeriod } from '#lib/stats/period';
+	import { loadNames } from '#lib/stats/names';
+	import { storyCards, type StoryCard } from '#lib/stats/story';
+	import { shareCard, type ShareDeps } from '#lib/stats/share';
 	import Icon from './Icon.svelte';
 
 	let { year, onclose, share = {} }: { year: number; onclose: () => void; share?: ShareDeps } = $props();

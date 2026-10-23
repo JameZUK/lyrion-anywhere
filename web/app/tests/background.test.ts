@@ -1,5 +1,5 @@
 // Background playback helpers: the keep-alive element and the reload-proof log.
-import { KeepAlive, PersistentLog, describeLifecycle, type MediaLike } from '$lib/player/background';
+import { KeepAlive, PersistentLog, describeLifecycle, type MediaLike } from '#lib/player/background';
 
 class FakeMedia implements MediaLike {
 	loop = false;

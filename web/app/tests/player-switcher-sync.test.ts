@@ -4,9 +4,9 @@
 // sync command for the right player.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
-const { default: PlayerSwitcher } = await import('$lib/components/PlayerSwitcher.svelte');
+const { default: PlayerSwitcher } = await import('#lib/components/PlayerSwitcher.svelte');
 
 const A = '02:00:00:00:00:0a';
 const B = '02:00:00:00:00:0b';

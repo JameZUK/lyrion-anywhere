@@ -2,7 +2,7 @@ export {};
 // App state across sign-in and sign-out: no timers may outlive the signed-in session.
 type Listener = (s: unknown, status: string) => void;
 const listeners: Listener[] = [];
-vi.mock('$lib/api/session', () => {
+vi.mock('#lib/api/session', () => {
 	class SessionManager {
 		current = null;
 		token = 't';
@@ -21,7 +21,7 @@ vi.mock('$lib/api/session', () => {
 });
 
 let release: (() => void) | null = null;
-vi.mock('$lib/api/rpc', () => {
+vi.mock('#lib/api/rpc', () => {
 	class Api {
 		async rpc(_player: string, cmd: unknown[]) {
 			if (cmd[0] === 'players') {
@@ -36,7 +36,7 @@ vi.mock('$lib/api/rpc', () => {
 });
 
 const events = { started: 0, stopped: 0 };
-vi.mock('$lib/api/events', () => {
+vi.mock('#lib/api/events', () => {
 	class EventsClient {
 		start() {
 			events.started++;
@@ -48,7 +48,7 @@ vi.mock('$lib/api/events', () => {
 	return { EventsClient };
 });
 
-await import('$lib/state/app.svelte');
+await import('#lib/state/app.svelte');
 const emit = (status: string) => listeners.forEach((fn) => fn(status === 'signed-in' ? {} : null, status));
 
 afterEach(() => vi.useRealTimers());
@@ -90,7 +90,7 @@ test('out and in again during the load: only the newer start owns the timers', a
 // to sign in on this browser started on the previous person's player.
 test('signing out forgets the remembered players and the resume point', async () => {
 	vi.useFakeTimers();
-	const { app } = await import('$lib/state/app.svelte');
+	const { app } = await import('#lib/state/app.svelte');
 	emit('signed-in');
 	app.select('00:04:20:aa:bb:cc');
 	expect(localStorage.getItem('anywhere.player')).toBe('00:04:20:aa:bb:cc');

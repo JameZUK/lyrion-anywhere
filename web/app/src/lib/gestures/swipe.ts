@@ -2,7 +2,7 @@
 // drags text, as people expect), vertical movement stays the browser's scroll, and a swipe
 // acts only once it has gone far enough (see swipeAction). A swipe is never the only way to
 // do something: every row also has a menu and keyboard shortcuts.
-import { isSwipe, swipeAction } from '$lib/lms/queue-edit';
+import { isSwipe, swipeAction } from '#lib/lms/queue-edit';
 
 export interface SwipeOptions {
 	onleft?: () => void;

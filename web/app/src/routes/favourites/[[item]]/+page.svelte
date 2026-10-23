@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import FavouritesView from '$lib/components/FavouritesView.svelte';
+	import FavouritesView from '#lib/components/FavouritesView.svelte';
 </script>
 
 <section class="page">

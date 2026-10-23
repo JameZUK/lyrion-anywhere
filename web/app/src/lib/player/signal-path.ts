@@ -3,7 +3,7 @@
 // re-encodes to Opus for a lower-data level), what decodes it, what changes it (volume), how
 // the browser plays it and at what rate. It claims only what the page knows: after the
 // browser's output, the operating system may mix or resample further, and the panel says so.
-import { khz, type Quality } from '$lib/lms/quality';
+import { khz, type Quality } from '#lib/lms/quality';
 import { MODE_LABELS, type ModeChoice } from './mode';
 import { LEVEL_KBPS, LEVEL_LABELS, reencoded, type StreamQuality, type StreamSource } from './stream-quality';
 

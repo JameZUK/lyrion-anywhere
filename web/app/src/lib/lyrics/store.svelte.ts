@@ -1,6 +1,6 @@
 // The playing track's lyrics: fetched once per track and remembered for the last few
 // (no lyrics is remembered too, so a track without any isn't asked about again and again).
-import { ApiError, bearer, callJson } from '$lib/api/http';
+import { ApiError, bearer, callJson } from '#lib/api/http';
 import { loadPeek, lyricsPath, sanitiseLyrics, savePeek, type Lyrics } from './lyrics';
 
 export type Authed = <T>(fn: (token: string) => Promise<T>) => Promise<T>;

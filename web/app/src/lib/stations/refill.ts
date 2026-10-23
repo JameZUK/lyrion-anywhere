@@ -12,9 +12,9 @@
 //   once, leaving out what is already queued (the gateway also avoids the last 200 plays).
 // - The station stops when its player changes, or the user plays something else (the
 //   current track is none of the station's).
-import type { Command } from '$lib/api/rpc';
-import type { NextBatch, NextRequest } from '$lib/api/me';
-import { chunkIds, loadTracks } from '$lib/lms/commands';
+import type { Command } from '#lib/api/rpc';
+import type { NextBatch, NextRequest } from '#lib/api/me';
+import { chunkIds, loadTracks } from '#lib/lms/commands';
 
 /** Refill when fewer than this many tracks are left after the current one. */
 export const LOW_WATER = 5;

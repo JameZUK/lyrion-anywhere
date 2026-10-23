@@ -3,34 +3,34 @@
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { afterNavigate } from '$app/navigation';
-	import { noteNavigation, routeOutsideHashChanges } from '$lib/nav';
-	import { MAIN_TABS, SIDEBAR, tabFor } from '$lib/nav-tabs';
-	import { documentTitle, pageTitle } from '$lib/title.svelte';
-	import { api, app, session } from '$lib/state/app.svelte';
-	import { device } from '$lib/player/device.svelte';
-	import { describePageCommand } from '$lib/player/diagnostics';
-	import { appearance } from '$lib/theme/appearance.svelte';
-	import { install } from '$lib/pwa/install.svelte';
-	import { appUpdate } from '$lib/pwa/update.svelte';
-	import { version } from '$app/environment';
-	import { clearResume, loadResume, planResume, saveResume, trackId } from '$lib/player/resume';
-	import type { Command } from '$lib/api/rpc';
-	import Login from '$lib/components/Login.svelte';
-	import PlayerBar from '$lib/components/PlayerBar.svelte';
-	import MediaSession from '$lib/components/MediaSession.svelte';
-	import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
-	import Icon from '$lib/components/Icon.svelte';
-	import OfflineMode from '$lib/components/OfflineMode.svelte';
-	import { downloads, handoff, offlinePlayer, plays } from '$lib/offline/index.svelte';
-	import { snapshotOf } from '$lib/offline/handoff.svelte';
-	import ContinueOn from '$lib/components/ContinueOn.svelte';
-	import StatusSlot from '$lib/components/StatusSlot.svelte';
-	import Snackbar from '$lib/components/Snackbar.svelte';
-	import { forgetOwner, rememberOwner } from '$lib/offline/settings';
-	import { library } from '$lib/state/library.svelte';
-	import { controls, local } from '$lib/player/controls.svelte';
+	import { noteNavigation, routeOutsideHashChanges } from '#lib/nav';
+	import { MAIN_TABS, SIDEBAR, tabFor } from '#lib/nav-tabs';
+	import { documentTitle, pageTitle } from '#lib/title.svelte';
+	import { api, app, session } from '#lib/state/app.svelte';
+	import { device } from '#lib/player/device.svelte';
+	import { describePageCommand } from '#lib/player/diagnostics';
+	import { appearance } from '#lib/theme/appearance.svelte';
+	import { install } from '#lib/pwa/install.svelte';
+	import { appUpdate } from '#lib/pwa/update.svelte';
+	import { version } from '$app/env';
+	import { clearResume, loadResume, planResume, saveResume, trackId } from '#lib/player/resume';
+	import type { Command } from '#lib/api/rpc';
+	import Login from '#lib/components/Login.svelte';
+	import PlayerBar from '#lib/components/PlayerBar.svelte';
+	import MediaSession from '#lib/components/MediaSession.svelte';
+	import KeyboardShortcuts from '#lib/components/KeyboardShortcuts.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import OfflineMode from '#lib/components/OfflineMode.svelte';
+	import { downloads, handoff, offlinePlayer, plays } from '#lib/offline/index.svelte';
+	import { snapshotOf } from '#lib/offline/handoff.svelte';
+	import ContinueOn from '#lib/components/ContinueOn.svelte';
+	import StatusSlot from '#lib/components/StatusSlot.svelte';
+	import Snackbar from '#lib/components/Snackbar.svelte';
+	import { forgetOwner, rememberOwner } from '#lib/offline/settings';
+	import { library } from '#lib/state/library.svelte';
+	import { controls, local } from '#lib/player/controls.svelte';
 	// Keeps a playing station topped up wherever the user goes.
-	import '$lib/stations/active.svelte';
+	import '#lib/stations/active.svelte';
 
 	let { children } = $props();
 
@@ -214,7 +214,8 @@
 	const path = $derived(page.url.hash.replace(/^#/, '') || '/');
 
 	// Back on detail pages needs to know whether there is an app page behind this one.
-	afterNavigate((n) => noteNavigation({ type: n.type, delta: n.delta }));
+	// Only back/forward carries a step count (SvelteKit 3 types `delta` on popstate alone).
+	afterNavigate((n) => noteNavigation({ type: n.type, delta: n.type === 'popstate' ? n.delta : undefined }));
 	// A route typed into the address bar opens in the app, rather than reloading the page.
 	$effect(() => routeOutsideHashChanges(() => page.url.hash));
 </script>

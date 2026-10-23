@@ -1,12 +1,12 @@
 <script lang="ts">
 	// Settings › Listening history: on or off, view it, clear it (docs/PRIVACY.md).
 	import Switch from './Switch.svelte';
-	import { api } from '$lib/state/app.svelte';
-	import { me } from '$lib/state/me';
-	import * as cmd from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import type { HistoryEntry } from '$lib/api/me';
-	import type { TitlesResult, Track } from '$lib/lms/types';
+	import { api } from '#lib/state/app.svelte';
+	import { me } from '#lib/state/me';
+	import * as cmd from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import type { HistoryEntry } from '#lib/api/me';
+	import type { TitlesResult, Track } from '#lib/lms/types';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 
 	let enabled = $state<boolean | null>(null);

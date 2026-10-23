@@ -2,7 +2,7 @@
 // while the music server is busy or out of reach shows it (with the connection message)
 // rather than "Nothing to control yet". Per user, forgotten at sign-out; nothing secret.
 // Storage is untrusted: anything that doesn't look right is ignored.
-import type { PlayerInfo, PlayerStatus } from '$lib/lms/types';
+import type { PlayerInfo, PlayerStatus } from '#lib/lms/types';
 
 export const LAST_KNOWN_KEY = 'anywhere.lastKnown';
 /** Most bytes kept (a status with its current track is a few hundred). */

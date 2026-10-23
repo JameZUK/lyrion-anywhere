@@ -1,7 +1,7 @@
 // The Home layout (docs/plans/wave1-design.md §7): which shelves, in what order, which are
 // hidden. Saved per user on the gateway; these checks mirror the gateway's (gateway/src/
 // home.rs), so a layout that fails here is never sent.
-import { SHELF_TYPES, type HomeLayout, type HomeShelf, type ShelfType } from '$lib/api/me';
+import { SHELF_TYPES, type HomeLayout, type HomeShelf, type ShelfType } from '#lib/api/me';
 
 export const MAX_SHELVES = 24;
 /** Shelves that name something by id: one of the user's stations, pinned menus or smart filters, or a genre. */

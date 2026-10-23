@@ -1,9 +1,9 @@
 // The library search, kept while the user goes to a result and back (forgotten when the user
 // changes). One `search … extended:1` gives artists, albums and tracks; saved playlists come
 // from `playlists search:` (if that fails, the rest still shows).
-import * as cmd from '$lib/lms/commands';
-import { groupResults, type Groups } from '$lib/search/results';
-import { SearchState } from '$lib/search/store.svelte';
+import * as cmd from '#lib/lms/commands';
+import { groupResults, type Groups } from '#lib/search/results';
+import { SearchState } from '#lib/search/store.svelte';
 import { api, session } from './app.svelte';
 import { resetOnUserChange } from './per-user';
 

@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
+import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 import { svelteTesting } from '@testing-library/svelte/vite';
 import { defineConfig } from 'vitest/config';
 
@@ -29,7 +31,20 @@ function pluginVersion(): string {
 }
 
 export default defineConfig({
-	plugins: [sveltekit(), svelteTesting()],
+	plugins: [
+		// SvelteKit 3 takes its configuration here; it no longer reads svelte.config.js.
+		sveltekit({
+			preprocess: vitePreprocess(),
+			// A single static page served by the gateway; all data comes from the /v1 API.
+			adapter: adapter({ fallback: 'index.html', strict: true }),
+			// Hash routes need no server-side fallback, so the gateway serves plain files only.
+			router: { type: 'hash' },
+			// Relative asset paths: the app works under any base path.
+			paths: { relative: true },
+			output: { bundleStrategy: 'split' },
+		}),
+		svelteTesting(),
+	],
 	define: {
 		__PLUGIN_VERSION__: JSON.stringify(pluginVersion()),
 	},

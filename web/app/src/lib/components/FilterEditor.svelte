@@ -3,11 +3,11 @@
 	// (all must match), the order and how many albums. Everything is checked against the
 	// contract's limits before it is sent; ids come only from the server (genres and artists
 	// as LMS lists them).
-	import { api } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import { ROLE_LABELS } from '$lib/lms/credits';
-	import type { AlbumsResult, ArtistsResult, GenresResult } from '$lib/lms/types';
+	import { api } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import { ROLE_LABELS } from '#lib/lms/credits';
+	import type { AlbumsResult, ArtistsResult, GenresResult } from '#lib/lms/types';
 	import {
 		DECADES,
 		FIELD_LABELS,
@@ -22,7 +22,7 @@
 		type FilterSort,
 		type FilterSpec,
 		type SmartFilter,
-	} from '$lib/api/filters';
+	} from '#lib/api/filters';
 	import Sheet from './Sheet.svelte';
 	import Icon from './Icon.svelte';
 

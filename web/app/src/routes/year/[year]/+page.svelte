@@ -1,12 +1,12 @@
 <script lang="ts">
-	import BackButton from '$lib/components/BackButton.svelte';
-	import { useDetailTitle } from '$lib/title.svelte';
+	import BackButton from '#lib/components/BackButton.svelte';
+	import { useDetailTitle } from '#lib/title.svelte';
 	import { page } from '$app/state';
-	import * as cmd from '$lib/lms/commands';
-	import AlbumBrowser from '$lib/components/AlbumBrowser.svelte';
-	import ContextMenu from '$lib/components/ContextMenu.svelte';
-	import PageActions from '$lib/components/PageActions.svelte';
-	import LibraryNote from '$lib/components/LibraryNote.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import AlbumBrowser from '#lib/components/AlbumBrowser.svelte';
+	import ContextMenu from '#lib/components/ContextMenu.svelte';
+	import PageActions from '#lib/components/PageActions.svelte';
+	import LibraryNote from '#lib/components/LibraryNote.svelte';
 
 	const y = $derived.by(() => {
 		try {

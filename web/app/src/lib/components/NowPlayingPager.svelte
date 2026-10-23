@@ -7,8 +7,8 @@
 	// still moves the pager. A page's content is made the first time it is shown, and the
 	// pages not shown are inert.
 	import type { Snippet } from 'svelte';
-	import { LAYOUTS, type Layout } from '$lib/nowplaying/prefs';
-	import { PAGE_LABELS, pageForKey, pagerGesture, stepPage } from '$lib/nowplaying/pager';
+	import { LAYOUTS, type Layout } from '#lib/nowplaying/prefs';
+	import { PAGE_LABELS, pageForKey, pagerGesture, stepPage } from '#lib/nowplaying/pager';
 
 	let {
 		page,

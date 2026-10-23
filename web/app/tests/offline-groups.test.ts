@@ -1,9 +1,9 @@
 // Downloads as groups (SPEC §8.1): single tracks, playlists and artists' albums, with
 // reference-counted removal; "download on Wi-Fi only" (§8.2) with "Download now"; and the
 // storage limit (§8.3), checked before queuing and as each track starts.
-import { DownloadManager, LIMIT_MESSAGE, LimitReached, classify, type ManagerDeps } from '$lib/offline/manager.svelte';
-import { MemoryBackend, OfflineStore } from '$lib/offline/store';
-import { BYTES_PER_SECOND, FALLBACK_SECONDS, MAX_REFS, cleanRefs, estimateBytes, isRef, refsOf } from '$lib/offline/types';
+import { DownloadManager, LIMIT_MESSAGE, LimitReached, classify, type ManagerDeps } from '#lib/offline/manager.svelte';
+import { MemoryBackend, OfflineStore } from '#lib/offline/store';
+import { BYTES_PER_SECOND, FALLBACK_SECONDS, MAX_REFS, cleanRefs, estimateBytes, isRef, refsOf } from '#lib/offline/types';
 import { body, bytes, fakeServer, key, stored, type FakeTrack } from './helpers/fake-downloads';
 
 const track = (id: number, size = 1000, over: Partial<FakeTrack> = {}): FakeTrack => ({ id, key: key(id), bytes: bytes(size, id), title: `Track ${id}`, ...over });

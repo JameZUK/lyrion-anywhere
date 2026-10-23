@@ -4,11 +4,11 @@
 // this device when it is the player (./local.svelte) and are disabled otherwise. While this
 // device plays its downloads (the offline player's queue is active), they act on that engine
 // instead (Wave 3.5 item 14: two engines, one face; see ./now.svelte).
-import { api, app } from '$lib/state/app.svelte';
-import * as cmd from '$lib/lms/commands';
-import { connectionMessage, explain, needsServer } from '$lib/state/reachability';
-import { downloads, offlinePlayer, offlineStore } from '$lib/offline/index.svelte';
-import type { StoredTrack } from '$lib/offline/types';
+import { api, app } from '#lib/state/app.svelte';
+import * as cmd from '#lib/lms/commands';
+import { connectionMessage, explain, needsServer } from '#lib/state/reachability';
+import { downloads, offlinePlayer, offlineStore } from '#lib/offline/index.svelte';
+import type { StoredTrack } from '#lib/offline/types';
 import { device } from './device.svelte';
 import { gates, type Gates, type LocalKind } from './local-plan';
 import { LocalPlayback } from './local.svelte';

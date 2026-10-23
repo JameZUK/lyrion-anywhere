@@ -3,19 +3,19 @@
 	// Listening history, Install the app, About and (under About) Advanced. Back returns to the
 	// index (or to About, from Advanced). An address that names no section says so.
 	import { page } from '$app/state';
-	import { useDetailTitle } from '$lib/title.svelte';
-	import { install } from '$lib/pwa/install.svelte';
-	import { sectionOf } from '$lib/settings/sections';
-	import BackButton from '$lib/components/BackButton.svelte';
-	import Icon from '$lib/components/Icon.svelte';
-	import AppearancePicker from '$lib/components/AppearancePicker.svelte';
-	import HistorySettings from '$lib/components/HistorySettings.svelte';
-	import AccountSettings from '$lib/settings/AccountSettings.svelte';
-	import PlaybackSettings from '$lib/settings/PlaybackSettings.svelte';
-	import NowPlayingSettings from '$lib/settings/NowPlayingSettings.svelte';
-	import DownloadSettings from '$lib/settings/DownloadSettings.svelte';
-	import AboutSettings from '$lib/settings/AboutSettings.svelte';
-	import AdvancedSettings from '$lib/settings/AdvancedSettings.svelte';
+	import { useDetailTitle } from '#lib/title.svelte';
+	import { install } from '#lib/pwa/install.svelte';
+	import { sectionOf } from '#lib/settings/sections';
+	import BackButton from '#lib/components/BackButton.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import AppearancePicker from '#lib/components/AppearancePicker.svelte';
+	import HistorySettings from '#lib/components/HistorySettings.svelte';
+	import AccountSettings from '#lib/settings/AccountSettings.svelte';
+	import PlaybackSettings from '#lib/settings/PlaybackSettings.svelte';
+	import NowPlayingSettings from '#lib/settings/NowPlayingSettings.svelte';
+	import DownloadSettings from '#lib/settings/DownloadSettings.svelte';
+	import AboutSettings from '#lib/settings/AboutSettings.svelte';
+	import AdvancedSettings from '#lib/settings/AdvancedSettings.svelte';
 
 	const section = $derived(sectionOf(page.params.section));
 	useDetailTitle(() => section?.label ?? '');

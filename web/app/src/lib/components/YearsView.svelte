@@ -1,11 +1,11 @@
 <script lang="ts">
 	// Years (also a section of Library): each opens its albums.
 	import { untrack } from 'svelte';
-	import { api, app } from '$lib/state/app.svelte';
-	import { library } from '$lib/state/library.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { Pager, whenNear } from '$lib/lms/pager.svelte';
-	import type { YearsResult } from '$lib/lms/types';
+	import { api, app } from '#lib/state/app.svelte';
+	import { library } from '#lib/state/library.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { Pager, whenNear } from '#lib/lms/pager.svelte';
+	import type { YearsResult } from '#lib/lms/types';
 	import LibraryNote from './LibraryNote.svelte';
 
 	/** Inside Library (a section of it): an h2 title, no page of its own. */

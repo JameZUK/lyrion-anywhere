@@ -1,7 +1,7 @@
 // Tappable credits: parsing LMS's per-role fields (tags:AS) into names and links, and that odd
 // or hostile answers never throw and never make a link out of something that isn't an id.
-import { CREDIT_ORDER, MAX_PEOPLE, nameInRole, parseCredits, roleFromSlug, roleLink, roleSlug } from '$lib/lms/credits';
-import * as c from '$lib/lms/commands';
+import { CREDIT_ORDER, MAX_PEOPLE, nameInRole, parseCredits, roleFromSlug, roleLink, roleSlug } from '#lib/lms/credits';
+import * as c from '#lib/lms/commands';
 
 test('every role LMS reports is listed, in order, each name with its id', () => {
 	const credits = parseCredits({

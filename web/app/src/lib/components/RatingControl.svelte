@@ -2,8 +2,8 @@
 	// Rate a track (Wave 2 §2): five stars (half steps with the arrow keys) or a heart, as
 	// the user chose in Settings. Shows the blend of the user's own rating and LMS's shared
 	// one; the user's own is in the accent colour, a shared-only rating muted.
-	import { ratings } from '$lib/state/ratings';
-	import { haptics } from '$lib/haptics/haptics.svelte';
+	import { ratings } from '#lib/state/ratings';
+	import { haptics } from '#lib/haptics/haptics.svelte';
 
 	// `compact`: narrower stars (36 × 44 px each, side by side), to share a row with a title.
 	// `toggle`: one button by the title on Now playing (Wave 3.5): a heart, or a star for those

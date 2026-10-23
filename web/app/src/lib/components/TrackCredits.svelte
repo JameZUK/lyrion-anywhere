@@ -1,10 +1,10 @@
 <script lang="ts">
 	// A track's credits (Wave 2 §3.1): every role LMS reports, each name its own link to that
 	// contributor's albums in that role. Names LMS can't tie to an id are plain text.
-	import { api } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { parseCredits, roleLink, type Credit } from '$lib/lms/credits';
-	import type { TitlesResult } from '$lib/lms/types';
+	import { api } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { parseCredits, roleLink, type Credit } from '#lib/lms/credits';
+	import type { TitlesResult } from '#lib/lms/types';
 
 	let { track, onfollow }: { track: number; onfollow?: () => void } = $props();
 

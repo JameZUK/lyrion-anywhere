@@ -1,7 +1,7 @@
 // The library search: what was typed and what was found. It lives outside the page, so going
 // to a result and back finds the search as it was. Answers that arrive out of order (a slow
 // one for an earlier term) are dropped: only the latest term's answer is ever shown.
-import type { SearchResult } from '$lib/lms/types';
+import type { SearchResult } from '#lib/lms/types';
 import type { SearchType } from './results';
 
 /** Shortest term searched for. */

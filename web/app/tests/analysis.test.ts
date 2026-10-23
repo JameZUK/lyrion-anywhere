@@ -2,10 +2,10 @@
 // a robustness run), the drawing maths, the session cache, and the component's fallback.
 import { render } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { BINARY_TYPE, MAX_BUCKETS, MAX_BYTES, decodeAnalysis, type TrackAnalysis } from '$lib/analysis/format';
-import { BAR_PITCH, MAX_BARS, MIN_BARS, barCount, bars, barsPath, fraction, level } from '$lib/analysis/waveform';
-import { AnalysisClient, analysisUrl, retryAfter, type Fetcher } from '$lib/analysis/client';
-import SeekBar from '$lib/components/SeekBar.svelte';
+import { BINARY_TYPE, MAX_BUCKETS, MAX_BYTES, decodeAnalysis, type TrackAnalysis } from '#lib/analysis/format';
+import { BAR_PITCH, MAX_BARS, MIN_BARS, barCount, bars, barsPath, fraction, level } from '#lib/analysis/waveform';
+import { AnalysisClient, analysisUrl, retryAfter, type Fetcher } from '#lib/analysis/client';
+import SeekBar from '#lib/components/SeekBar.svelte';
 
 // ---------------------------------------------------------------------------
 // An encoder (test only), mirroring core::analysis::encode.

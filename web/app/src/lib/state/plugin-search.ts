@@ -1,10 +1,10 @@
 // Which apps can be searched ("Search on …"), found once per session and forgotten when the
 // user changes. The apps lists come through the gateway, which leaves out plugins reserved
 // for admins, so a listener is never offered them.
-import * as cmd from '$lib/lms/commands';
-import type { AppsResult } from '$lib/lms/types';
-import type { SBMenu } from '$lib/lms/slimbrowse';
-import { SearchDirectory } from '$lib/search/plugins';
+import * as cmd from '#lib/lms/commands';
+import type { AppsResult } from '#lib/lms/types';
+import type { SBMenu } from '#lib/lms/slimbrowse';
+import { SearchDirectory } from '#lib/search/plugins';
 import { api, session } from './app.svelte';
 import { resetOnUserChange } from './per-user';
 

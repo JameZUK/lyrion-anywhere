@@ -1,13 +1,13 @@
 <script lang="ts">
 	// Saved playlists: on their own page, and under Library's Playlists chip (`level` 2).
 	let { level = 1 }: { level?: 1 | 2 } = $props();
-	import { go } from '$lib/nav';
+	import { go } from '#lib/nav';
 	import { untrack } from 'svelte';
-	import { api, app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import type { Playlist, PlaylistsResult } from '$lib/lms/types';
-	import Icon from '$lib/components/Icon.svelte';
+	import { api, app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import type { Playlist, PlaylistsResult } from '#lib/lms/types';
+	import Icon from '#lib/components/Icon.svelte';
 
 	let lists = $state<Playlist[]>([]);
 	let total = $state<number | null>(null);

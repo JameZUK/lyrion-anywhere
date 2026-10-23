@@ -10,7 +10,7 @@
 // 2. Copy the list (fallback, when LMS won't group the two): read the source's queue, load
 //    the same tracks on the target by id, jump to the track and time, then stop the source.
 //    Only library tracks can be copied like this (the gateway never reveals URLs).
-import type { Command } from '$lib/api/rpc';
+import type { Command } from '#lib/api/rpc';
 import * as cmd from './commands';
 
 /** The gateway pages at most this many queue entries at once; longer queues can't be copied. */

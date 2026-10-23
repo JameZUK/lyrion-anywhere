@@ -1,5 +1,5 @@
 // Download storage: round trips, and each user's downloads kept apart from everyone else's.
-import { MemoryBackend, OfflineStore } from '$lib/offline/store';
+import { MemoryBackend, OfflineStore } from '#lib/offline/store';
 import { blobBytes, key, stored } from './helpers/fake-downloads';
 
 const store = () => new OfflineStore(new MemoryBackend());

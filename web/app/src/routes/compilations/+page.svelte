@@ -1,8 +1,8 @@
 <script lang="ts">
-	import BackButton from '$lib/components/BackButton.svelte';
-	import type { AlbumSort } from '$lib/lms/commands';
-	import AlbumBrowser from '$lib/components/AlbumBrowser.svelte';
-	import LibraryNote from '$lib/components/LibraryNote.svelte';
+	import BackButton from '#lib/components/BackButton.svelte';
+	import type { AlbumSort } from '#lib/lms/commands';
+	import AlbumBrowser from '#lib/components/AlbumBrowser.svelte';
+	import LibraryNote from '#lib/components/LibraryNote.svelte';
 
 	let sort = $state<AlbumSort>('album');
 </script>

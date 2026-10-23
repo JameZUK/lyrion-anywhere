@@ -1,6 +1,6 @@
 // The Home layout: edits, and the same checks as the gateway (gateway/src/home.rs).
-import * as L from '$lib/home/layout';
-import type { HomeLayout } from '$lib/api/me';
+import * as L from '#lib/home/layout';
+import type { HomeLayout } from '#lib/api/me';
 
 const types = (l: HomeLayout) => l.shelves.map((s) => s.type);
 

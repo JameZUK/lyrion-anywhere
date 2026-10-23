@@ -1,7 +1,7 @@
 // Smart filters (docs/plans/wave2-design.md §5.6 › The contract): saved per user on the
 // gateway, each a set of rules that all must match, producing albums. These checks mirror the
 // contract, so a filter that fails here is never sent; the gateway checks everything again.
-import { ROLES, type AlbumSort, type Role } from '$lib/lms/commands';
+import { ROLES, type AlbumSort, type Role } from '#lib/lms/commands';
 
 export const FILTER_SORTS = ['album', 'artistalbum', 'yearalbum', 'new', 'random'] as const satisfies readonly AlbumSort[];
 export type FilterSort = (typeof FILTER_SORTS)[number];

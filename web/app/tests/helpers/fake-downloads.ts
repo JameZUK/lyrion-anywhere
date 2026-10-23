@@ -1,6 +1,6 @@
 // A fake gateway for the download endpoints (GET /v1/download/track/{id}/info and
 // GET /v1/download/track/{id}?format=), with Range support and hooks to misbehave.
-import type { StoredTrack } from '$lib/offline/types';
+import type { StoredTrack } from '#lib/offline/types';
 
 export interface FakeTrack {
 	id: number;

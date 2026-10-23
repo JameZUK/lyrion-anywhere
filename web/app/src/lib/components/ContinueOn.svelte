@@ -5,12 +5,12 @@
 	// "Not now". Wave 3.5: an offer is a snackbar with an action ("Continue"), and a second
 	// one ("Other player…") for the list of players. The choices are only the players this
 	// user may control (as Play on… lists them); the hand-off itself is in
-	// $lib/offline/handoff.svelte.
-	import { api, app } from '$lib/state/app.svelte';
-	import { device } from '$lib/player/device.svelte';
-	import { deviceRunning } from '$lib/player/outputs';
-	import { handoff, lookupTrack, offlinePlayer } from '$lib/offline/index.svelte';
-	import { continueOn, defaultChoice, handoffChoices, handoffText, snapshotOf } from '$lib/offline/handoff.svelte';
+	// #lib/offline/handoff.svelte.
+	import { api, app } from '#lib/state/app.svelte';
+	import { device } from '#lib/player/device.svelte';
+	import { deviceRunning } from '#lib/player/outputs';
+	import { handoff, lookupTrack, offlinePlayer } from '#lib/offline/index.svelte';
+	import { continueOn, defaultChoice, handoffChoices, handoffText, snapshotOf } from '#lib/offline/handoff.svelte';
 	import Icon from './Icon.svelte';
 	import Sheet from './Sheet.svelte';
 	import Snackbar from './Snackbar.svelte';

@@ -7,23 +7,23 @@
 	// on, which also holds the volume; Lyrics; Queue). ⋮ holds This track (with the full
 	// rating), Sleep timer, Visualiser and Car mode (Wave 3.5; a player's Alarms are its row in
 	// Play on…). Lyrics and track info scroll inside their own page.
-	import { app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { duration, isRemote, textOf } from '$lib/lms/format';
-	import { badgeText, quality, streamed } from '$lib/lms/quality';
-	import { formatLeft, sleepLeft } from '$lib/lms/sleep';
-	import { device } from '$lib/player/device.svelte';
-	import { streamOf } from '$lib/player/stream-quality';
-	import { controls } from '$lib/player/controls.svelte';
-	import { now } from '$lib/player/now.svelte';
-	import { offlinePlayer } from '$lib/offline/index.svelte';
-	import { isThisDevice } from '$lib/player/outputs';
-	import { nowPlaying } from '$lib/nowplaying/store.svelte';
-	import { STYLES, STYLE_LABELS, type VisualStyle } from '$lib/visual/draw';
-	import { GLOW_REST, type GlowStyle } from '$lib/visual/glow';
-	import { lyrics } from '$lib/state/lyrics';
-	import { reducedMotion } from '$lib/theme/motion';
-	import { back } from '$lib/nav';
+	import { app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { duration, isRemote, textOf } from '#lib/lms/format';
+	import { badgeText, quality, streamed } from '#lib/lms/quality';
+	import { formatLeft, sleepLeft } from '#lib/lms/sleep';
+	import { device } from '#lib/player/device.svelte';
+	import { streamOf } from '#lib/player/stream-quality';
+	import { controls } from '#lib/player/controls.svelte';
+	import { now } from '#lib/player/now.svelte';
+	import { offlinePlayer } from '#lib/offline/index.svelte';
+	import { isThisDevice } from '#lib/player/outputs';
+	import { nowPlaying } from '#lib/nowplaying/store.svelte';
+	import { STYLES, STYLE_LABELS, type VisualStyle } from '#lib/visual/draw';
+	import { GLOW_REST, type GlowStyle } from '#lib/visual/glow';
+	import { lyrics } from '#lib/state/lyrics';
+	import { reducedMotion } from '#lib/theme/motion';
+	import { back } from '#lib/nav';
 	import { fade } from 'svelte/transition';
 	import Ambient from './Ambient.svelte';
 	import Art from './Art.svelte';

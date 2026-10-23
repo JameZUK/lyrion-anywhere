@@ -2,20 +2,20 @@
 	// An artist: their albums, and "Appears as" chips for each role they have in the library
 	// (Wave 2 §3.1). With a role (`#/artist/7/composer`), only the albums where they have that
 	// role, with the role in the title ("Name · Composer").
-	import BackButton from '$lib/components/BackButton.svelte';
-	import { useDetailTitle } from '$lib/title.svelte';
+	import BackButton from '#lib/components/BackButton.svelte';
+	import { useDetailTitle } from '#lib/title.svelte';
 	import { page } from '$app/state';
-	import { api, app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import { CREDIT_ORDER, ROLE_LABELS, nameInRole, roleFromSlug, roleLink } from '$lib/lms/credits';
-	import type { Album, AlbumsResult, TitlesResult } from '$lib/lms/types';
-	import AlbumGrid from '$lib/components/AlbumGrid.svelte';
-	import ContextMenu from '$lib/components/ContextMenu.svelte';
-	import InfoText from '$lib/components/InfoText.svelte';
-	import ArtistDownload from '$lib/components/ArtistDownload.svelte';
-	import PageActions from '$lib/components/PageActions.svelte';
-	import { NO_ARTIST_INFO, sanitiseArtistInfo, type ArtistInfo } from '$lib/info/info';
+	import { api, app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import { CREDIT_ORDER, ROLE_LABELS, nameInRole, roleFromSlug, roleLink } from '#lib/lms/credits';
+	import type { Album, AlbumsResult, TitlesResult } from '#lib/lms/types';
+	import AlbumGrid from '#lib/components/AlbumGrid.svelte';
+	import ContextMenu from '#lib/components/ContextMenu.svelte';
+	import InfoText from '#lib/components/InfoText.svelte';
+	import ArtistDownload from '#lib/components/ArtistDownload.svelte';
+	import PageActions from '#lib/components/PageActions.svelte';
+	import { NO_ARTIST_INFO, sanitiseArtistInfo, type ArtistInfo } from '#lib/info/info';
 
 	let showMore = $state(false);
 	let dl = $state<ReturnType<typeof ArtistDownload>>();

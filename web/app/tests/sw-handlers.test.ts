@@ -1,7 +1,7 @@
 // The service worker's handlers, in a fake caches/clients world. An upgrade must leave an
 // open tab working: the new version waits, the previous version's files stay until no open
 // tab runs it, and the person chooses when to reload.
-import { ASK_TIMEOUT_MS, CACHE_PREFIX, KEEP_UNANSWERED, MSG, onActivate, onFetch, onInstall, onMessage, prune, type SwClient, type SwEnv } from '$lib/pwa/sw-handlers';
+import { ASK_TIMEOUT_MS, CACHE_PREFIX, KEEP_UNANSWERED, MSG, onActivate, onFetch, onInstall, onMessage, prune, type SwClient, type SwEnv } from '#lib/pwa/sw-handlers';
 
 const SCOPE = 'https://music.example.com/lms/';
 

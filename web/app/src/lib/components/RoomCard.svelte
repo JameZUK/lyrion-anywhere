@@ -6,10 +6,10 @@
 	// the card plays on that player; a long press or a right-click opens its menu; a pointer
 	// drags it by its cover onto another room to sync (the page runs the drag; Sync with… in
 	// the menu is the keyboard's and screen readers' way).
-	import * as cmd from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import { formatLeft, sleepLeft } from '$lib/lms/sleep';
-	import type { PlayerStatus } from '$lib/lms/types';
+	import * as cmd from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import { formatLeft, sleepLeft } from '#lib/lms/sleep';
+	import type { PlayerStatus } from '#lib/lms/types';
 	import Art from './Art.svelte';
 	import Icon from './Icon.svelte';
 	import RowMenu, { type RowAction } from './RowMenu.svelte';

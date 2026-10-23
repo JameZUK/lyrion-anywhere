@@ -1,7 +1,7 @@
 // Changing one's own password (Settings › Account): the checks made before sending, and
 // what each refusal says. The gateway's policy is the authority; these only save a trip.
-import { ApiError } from '$lib/api/http';
-import type { OwnDevice } from '$lib/api/auth';
+import { ApiError } from '#lib/api/http';
+import type { OwnDevice } from '#lib/api/auth';
 import { ago } from './ago';
 
 /** The gateway's minimum length (characters). */

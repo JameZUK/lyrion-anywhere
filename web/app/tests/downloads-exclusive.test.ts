@@ -3,14 +3,14 @@
 // and the server's music starting on this device stops the downloads. Before this, a download
 // started while the stream played left both audible, with the transport on the downloads and
 // no way to reach the stream.
-import type { StoredTrack } from '$lib/offline/types';
+import type { StoredTrack } from '#lib/offline/types';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
-vi.mock('$lib/offline/index.svelte', async () => {
-	const { DownloadManager } = await import('$lib/offline/manager.svelte');
-	const { MemoryBackend, OfflineStore } = await import('$lib/offline/store');
-	const { HandoffOffer } = await import('$lib/offline/handoff.svelte');
-	const { PlaySync } = await import('$lib/offline/plays.svelte');
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/offline/index.svelte', async () => {
+	const { DownloadManager } = await import('#lib/offline/manager.svelte');
+	const { MemoryBackend, OfflineStore } = await import('#lib/offline/store');
+	const { HandoffOffer } = await import('#lib/offline/handoff.svelte');
+	const { PlaySync } = await import('#lib/offline/plays.svelte');
 	const offlineStore = new OfflineStore(new MemoryBackend());
 	const hang = (() => new Promise(() => {})) as typeof fetch;
 	const downloads = new DownloadManager({ store: offlineStore, authed: (fn) => fn('t'), fetch: hang, sleep: async () => {}, waitForWifi: () => false, capBytes: () => 0 });
@@ -20,10 +20,10 @@ vi.mock('$lib/offline/index.svelte', async () => {
 });
 
 const fake = await import('./helpers/fake-app.svelte');
-const offline = await import('$lib/offline/index.svelte');
+const offline = await import('#lib/offline/index.svelte');
 const engine = offline.offlinePlayer as unknown as { queue: unknown[]; playing: boolean; calls: string[] };
-const { device } = await import('$lib/player/device.svelte');
-const { controls, local } = await import('$lib/player/controls.svelte');
+const { device } = await import('#lib/player/device.svelte');
+const { controls, local } = await import('#lib/player/controls.svelte');
 
 const P = '02:00:00:00:00:01';
 const KITCHEN = '02:00:00:00:00:02';

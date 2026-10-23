@@ -1,8 +1,8 @@
 <script lang="ts">
 	// Settings › About (Wave 3.5): the version, keyboard shortcuts, the project, and Advanced.
-	import { version as buildVersion } from '$app/environment';
-	import { keysHelp } from '$lib/keys/help.svelte';
-	import Icon from '$lib/components/Icon.svelte';
+	import { version as buildVersion } from '$app/env';
+	import { keysHelp } from '#lib/keys/help.svelte';
+	import Icon from '#lib/components/Icon.svelte';
 </script>
 
 <div class="about-row">

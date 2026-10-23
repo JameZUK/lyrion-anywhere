@@ -1,10 +1,10 @@
 <script lang="ts">
-	import type { Track } from '$lib/lms/types';
+	import type { Track } from '#lib/lms/types';
 	import type { TrackBadge } from './track-badge';
-	import { duration, textOf } from '$lib/lms/format';
+	import { duration, textOf } from '#lib/lms/format';
 	import Icon from './Icon.svelte';
-	import { rowShortcut, swipeRow } from '$lib/gestures/swipe';
-	import { controls } from '$lib/player/controls.svelte';
+	import { rowShortcut, swipeRow } from '#lib/gestures/swipe';
+	import { controls } from '#lib/player/controls.svelte';
 
 	let {
 		tracks,

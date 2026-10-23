@@ -7,8 +7,8 @@
 	// hidden; a new cover cross-fades in. (The visualiser's Glow draws its own halo behind the
 	// cover, GlowHalo; this background and its scrim stay as they are, so text keeps its
 	// contrast.)
-	import { api } from '$lib/state/app.svelte';
-	import { ambientStill } from '$lib/theme/motion';
+	import { api } from '#lib/state/app.svelte';
+	import { ambientStill } from '#lib/theme/motion';
 
 	let { path }: { path: string | null } = $props();
 

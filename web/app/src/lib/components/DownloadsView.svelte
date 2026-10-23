@@ -3,12 +3,12 @@
 	// playlists and albums with covers and sizes, storage use (with the limit, if set),
 	// downloads in progress or waiting for Wi-Fi, and playback. Removing a playlist or an
 	// album keeps the tracks another download still needs.
-	import { downloads, offlinePlayer, plays } from '$lib/offline/index.svelte';
-	import { controls } from '$lib/player/controls.svelte';
-	import { formatBytes, loadPrefs, storageInfo, type StorageInfo } from '$lib/offline/settings';
-	import { FORMAT_LABELS, refsOf, type StoredTrack } from '$lib/offline/types';
-	import { duration } from '$lib/lms/format';
-	import { playable } from '$lib/offline/player.svelte';
+	import { downloads, offlinePlayer, plays } from '#lib/offline/index.svelte';
+	import { controls } from '#lib/player/controls.svelte';
+	import { formatBytes, loadPrefs, storageInfo, type StorageInfo } from '#lib/offline/settings';
+	import { FORMAT_LABELS, refsOf, type StoredTrack } from '#lib/offline/types';
+	import { duration } from '#lib/lms/format';
+	import { playable } from '#lib/offline/player.svelte';
 	import OfflineCover from './OfflineCover.svelte';
 	import Icon from './Icon.svelte';
 	import ConfirmDialog from './ConfirmDialog.svelte';

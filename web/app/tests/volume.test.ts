@@ -15,7 +15,7 @@ import {
 	rampSteps,
 	saveVolumeSetting,
 	type VolumeAbility,
-} from '$lib/player/volume';
+} from '#lib/player/volume';
 
 const desktop: VolumeAbility = { mode: 'worklet', mediaVolume: true };
 const android: VolumeAbility = { mode: 'media', mediaVolume: true };

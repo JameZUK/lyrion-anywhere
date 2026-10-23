@@ -1,5 +1,5 @@
 <script lang="ts" module>
-	import type { AlbumSort } from '$lib/lms/commands';
+	import type { AlbumSort } from '#lib/lms/commands';
 	/**
 	 * An album order: one of LMS's, or `played`, the user's own recently played albums (from
 	 * their listening history on the gateway; LMS's `recentlyplayed` is everyone's).
@@ -22,14 +22,14 @@
 	// batch, for random albums), in the chosen virtual library, with a count and empty state.
 	// Optionally a grid/list toggle and, sorted A–Z, a fast scroller built from LMS's index.
 	import { tick, untrack } from 'svelte';
-	import { api, app } from '$lib/state/app.svelte';
-	import { library } from '$lib/state/library.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import type { IndexEntry } from '$lib/lms/azindex';
-	import { WindowPager } from '$lib/lms/pager.svelte';
-	import type { Album, AlbumsResult } from '$lib/lms/types';
-	import type { AlbumView } from '$lib/library/prefs';
-	import { me } from '$lib/state/me';
+	import { api, app } from '#lib/state/app.svelte';
+	import { library } from '#lib/state/library.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import type { IndexEntry } from '#lib/lms/azindex';
+	import { WindowPager } from '#lib/lms/pager.svelte';
+	import type { Album, AlbumsResult } from '#lib/lms/types';
+	import type { AlbumView } from '#lib/library/prefs';
+	import { me } from '#lib/state/me';
 	import AlbumGrid from './AlbumGrid.svelte';
 	import AlbumList from './AlbumList.svelte';
 	import AzScroller from './AzScroller.svelte';

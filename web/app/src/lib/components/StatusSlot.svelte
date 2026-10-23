@@ -2,12 +2,12 @@
 	// The one status line at the top of every page (Wave 3.5, rule 1; see state/status.ts for
 	// what it shows and in which order). It takes its own room, never over the controls. The
 	// connection message keeps its id: controls disabled by the connection point at it.
-	import { app } from '$lib/state/app.svelte';
-	import { device } from '$lib/player/device.svelte';
-	import { controls } from '$lib/player/controls.svelte';
-	import { CONNECTION_ID } from '$lib/state/reachability';
-	import { statusOf } from '$lib/state/status';
-	import { appUpdate } from '$lib/pwa/update.svelte';
+	import { app } from '#lib/state/app.svelte';
+	import { device } from '#lib/player/device.svelte';
+	import { controls } from '#lib/player/controls.svelte';
+	import { CONNECTION_ID } from '#lib/state/reachability';
+	import { statusOf } from '#lib/state/status';
+	import { appUpdate } from '#lib/pwa/update.svelte';
 	import Icon from './Icon.svelte';
 
 	const status = $derived(

@@ -1,7 +1,7 @@
 <script lang="ts">
-	import * as cmd from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import type { Artist } from '$lib/lms/types';
+	import * as cmd from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import type { Artist } from '#lib/lms/types';
 
 	let { artists, offset = 0 }: { artists: Artist[]; /** Where the first artist sits in the whole list. */ offset?: number } = $props();
 </script>

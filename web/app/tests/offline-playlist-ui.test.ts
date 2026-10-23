@@ -1,16 +1,16 @@
 // Downloading a playlist (SPEC §8.1) from its page: library tracks only, kept as a group
 // with the playlist's name and order, and removed without touching tracks an album needs.
 import { fireEvent, render, screen } from '@testing-library/svelte';
-import * as offline from '$lib/offline/index.svelte';
-import type { DownloadManager } from '$lib/offline/manager.svelte';
+import * as offline from '#lib/offline/index.svelte';
+import type { DownloadManager } from '#lib/offline/manager.svelte';
 import { choose } from './helpers/menu';
-import type { OfflineStore } from '$lib/offline/store';
+import type { OfflineStore } from '#lib/offline/store';
 import { key, stored } from './helpers/fake-downloads';
 
-vi.mock('$lib/offline/index.svelte', async () => {
-	const { DownloadManager } = await import('$lib/offline/manager.svelte');
-	const { OfflinePlayer } = await import('$lib/offline/player.svelte');
-	const { MemoryBackend, OfflineStore } = await import('$lib/offline/store');
+vi.mock('#lib/offline/index.svelte', async () => {
+	const { DownloadManager } = await import('#lib/offline/manager.svelte');
+	const { OfflinePlayer } = await import('#lib/offline/player.svelte');
+	const { MemoryBackend, OfflineStore } = await import('#lib/offline/store');
 	const offlineStore = new OfflineStore(new MemoryBackend());
 	// The server never answers (until aborted), so downloads stay in progress.
 	const hang = ((_u: unknown, init?: RequestInit) =>
@@ -27,7 +27,7 @@ const TRACKS = [
 	{ id: 23, title: 'A stream', remote: 1 },
 	{ id: 21, title: 'First again', duration: 100 },
 ];
-vi.mock('$lib/state/app.svelte', () => ({
+vi.mock('#lib/state/app.svelte', () => ({
 	api: {
 		rpc: async (_p: string, c: unknown[]) => (c[1] === 'tracks' ? { playlisttracks_loop: TRACKS } : { playlists_loop: [LIST] }),
 		art: () => Promise.reject(new Error('offline')),

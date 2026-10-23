@@ -9,7 +9,7 @@
 // "Download on Wi-Fi only" holds the queue while the browser says it is on mobile data
 // (unless the user said "Download now"), and the storage limit is checked before a batch is
 // queued (by estimate) and again as each track starts (by its real size).
-import { ApiError, CLIENT_HEADER, bearer } from '$lib/api/http';
+import { ApiError, CLIENT_HEADER, bearer } from '#lib/api/http';
 import type { OfflineStore } from './store';
 import {
 	BadInfo,

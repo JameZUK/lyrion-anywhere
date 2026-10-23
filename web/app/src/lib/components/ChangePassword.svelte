@@ -2,8 +2,8 @@
 	// "Change password" (Settings › Account). Asks for the current password (and a two-step
 	// code when that is on), checks the new one before sending, and afterwards lists the
 	// other devices that stay signed in: each holds its own sign-in, not the password.
-	import type { OwnDevice, PasswordChange, PasswordChanged } from '$lib/api/auth';
-	import { MIN_PASSWORD, changeError, deviceDetail, formProblem } from '$lib/account/change-password';
+	import type { OwnDevice, PasswordChange, PasswordChanged } from '#lib/api/auth';
+	import { MIN_PASSWORD, changeError, deviceDetail, formProblem } from '#lib/account/change-password';
 
 	let {
 		username,

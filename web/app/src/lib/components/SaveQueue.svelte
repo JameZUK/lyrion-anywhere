@@ -3,12 +3,12 @@
 	// shared household data), and only when the gateway offers it. Opens SaveQueueDialog; once
 	// saved, says so with a link to the playlist: through `onsaved` when the page has its own
 	// message bar, else in its own.
-	import { app } from '$lib/state/app.svelte';
-	import { loadFeatures, serverFeatures } from '$lib/state/features.svelte';
-	import type { SavedPlaylist } from '$lib/api/me';
-	import { suggestPlaylistName } from '$lib/queue/save-name';
-	import * as cmd from '$lib/lms/commands';
-	import { go } from '$lib/nav';
+	import { app } from '#lib/state/app.svelte';
+	import { loadFeatures, serverFeatures } from '#lib/state/features.svelte';
+	import type { SavedPlaylist } from '#lib/api/me';
+	import { suggestPlaylistName } from '#lib/queue/save-name';
+	import * as cmd from '#lib/lms/commands';
+	import { go } from '#lib/nav';
 	import Icon from './Icon.svelte';
 	import SaveQueueDialog from './SaveQueueDialog.svelte';
 	import Snackbar from './Snackbar.svelte';

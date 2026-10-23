@@ -4,8 +4,8 @@
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { goto } from '$app/navigation';
-import { ApiError } from '$lib/api/http';
-import { cleanPlaylistName, playlistNameProblem, suggestPlaylistName, PLAYLIST_NAME_MAX } from '$lib/queue/save-name';
+import { ApiError } from '#lib/api/http';
+import { cleanPlaylistName, playlistNameProblem, suggestPlaylistName, PLAYLIST_NAME_MAX } from '#lib/queue/save-name';
 
 const P = '02:4c:41:00:00:01';
 
@@ -15,8 +15,8 @@ const fakeMe = vi.hoisted(() => ({
 	answer: (_name: string, _replace: boolean): unknown => ({}),
 	feats: { save_queue: true } as Record<string, boolean>,
 }));
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
-vi.mock('$lib/state/me', () => ({
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/me', () => ({
 	me: {
 		features: async () => fakeMe.feats,
 		saveQueue: async (player: string, name: string, replace = false) => {
@@ -115,7 +115,7 @@ describe('MeApi.saveQueue', () => {
 		}) as typeof fetch;
 	});
 
-	const api = async () => new (await import('$lib/api/me')).MeApi((fn) => fn('tok'));
+	const api = async () => new (await import('#lib/api/me')).MeApi((fn) => fn('tok'));
 
 	test('saved: the player and the cleaned name are sent', async () => {
 		reply = { status: 200, body: { id: 12, name: 'Road trip' } };
@@ -168,7 +168,7 @@ describe('Save as playlist', () => {
 
 	async function setup(admin = true) {
 		const fake = await import('./helpers/fake-app.svelte');
-		const { serverFeatures } = await import('$lib/state/features.svelte');
+		const { serverFeatures } = await import('#lib/state/features.svelte');
 		serverFeatures.reset();
 		fake.app.isAdmin = admin;
 		fake.app.playerId = P;

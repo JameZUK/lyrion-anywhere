@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { Album } from '$lib/lms/types';
-	import { coverPath, link } from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
+	import type { Album } from '#lib/lms/types';
+	import { coverPath, link } from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
 	import Art from './Art.svelte';
 
 	let {

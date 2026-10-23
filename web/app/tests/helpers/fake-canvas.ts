@@ -1,5 +1,5 @@
 // A stand-in for a browser canvas (jsdom has none): records the text drawn, makes a tiny PNG blob.
-import type { CanvasLike, Ctx2D } from '$lib/stats/share';
+import type { CanvasLike, Ctx2D } from '#lib/stats/share';
 
 export function fakeCanvas() {
 	const texts: string[] = [];

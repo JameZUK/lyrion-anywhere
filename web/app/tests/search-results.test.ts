@@ -1,7 +1,7 @@
 // Grouped search results and the Top result: shapes from LMS's `search … extended:1` and
 // `playlists search:`, with invented names only. Robust on any input.
-import { EMPTY_GROUPS, groupResults, normalise, topResult, totalHits } from '$lib/search/results';
-import * as c from '$lib/lms/commands';
+import { EMPTY_GROUPS, groupResults, normalise, topResult, totalHits } from '#lib/search/results';
+import * as c from '#lib/lms/commands';
 
 const answer = {
 	contributors_count: 14,

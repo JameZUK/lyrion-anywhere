@@ -1,8 +1,8 @@
 // GET /v1/me/stats (wave3-design.md §1): what is sent, and strict parsing of the answer.
 // The gateway is trusted but checked: malformed fields are clamped or left out, ids come only
 // from the server, and names are plain text.
-import { MeApi, STATS_LIMITS, parseStats, statsDate, statsName, statsPeriod, statsTz, type ListeningStats } from '$lib/api/me';
-import { ApiError } from '$lib/api/http';
+import { MeApi, STATS_LIMITS, parseStats, statsDate, statsName, statsPeriod, statsTz, type ListeningStats } from '#lib/api/me';
+import { ApiError } from '#lib/api/http';
 
 let calls: { url: string; method: string; headers: Record<string, string> }[] = [];
 let reply: { status: number; body: unknown } = { status: 200, body: {} };

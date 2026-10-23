@@ -21,7 +21,7 @@ const session = {
 		/* diagnostics: not under test here */
 	},
 };
-vi.mock('$lib/state/app.svelte', () => ({ session }));
+vi.mock('#lib/state/app.svelte', () => ({ session }));
 
 class FakeWorker {
 	static all: FakeWorker[] = [];
@@ -91,7 +91,7 @@ HTMLMediaElement.prototype.play = async () => {};
 HTMLMediaElement.prototype.pause = () => {};
 HTMLMediaElement.prototype.load = () => {};
 
-const { device } = await import('$lib/player/device.svelte');
+const { device } = await import('#lib/player/device.svelte');
 
 const settle = async () => {
 	for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));

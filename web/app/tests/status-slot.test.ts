@@ -3,13 +3,13 @@
 // shows. Results go to the one snackbar (app.notice and app.error included).
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { statusOf, HELD_TEXT, RECONNECTING_TEXT, RESUME_TEXT, type StatusInput } from '$lib/state/status';
-import { BUSY_TEXT, CONNECTION_ID, UNREACHABLE_TEXT } from '$lib/state/reachability';
+import { statusOf, HELD_TEXT, RECONNECTING_TEXT, RESUME_TEXT, type StatusInput } from '#lib/state/status';
+import { BUSY_TEXT, CONNECTION_ID, UNREACHABLE_TEXT } from '#lib/state/reachability';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
-const { device } = await import('$lib/player/device.svelte');
-const { default: StatusSlot } = await import('$lib/components/StatusSlot.svelte');
+const { device } = await import('#lib/player/device.svelte');
+const { default: StatusSlot } = await import('#lib/components/StatusSlot.svelte');
 
 const NONE: StatusInput = { moving: '', reach: 'online', message: '', reconnecting: false, heldBack: false, resume: false };
 

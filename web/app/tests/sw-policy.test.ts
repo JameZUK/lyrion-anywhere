@@ -1,5 +1,5 @@
 // Service worker: only the app's own files are ever stored; the API, audio and artwork never.
-import { cacheable, strategyFor } from '$lib/pwa/sw-policy';
+import { cacheable, strategyFor } from '#lib/pwa/sw-policy';
 
 const scope = new URL('https://music.example.com/');
 const sub = new URL('https://music.example.com/lms/');
@@ -54,7 +54,7 @@ test('only complete, ordinary answers are stored', () => {
 	expect(cacheable(basic(200, { 'cache-control': 'private, no-store' }))).toBe(false);
 });
 
-import { installWay } from '$lib/pwa/install.svelte';
+import { installWay } from '#lib/pwa/install.svelte';
 
 test('install: prompt where offered, Share-menu steps on iPhone and iPad, nothing once installed', () => {
 	const base = { standalone: false, hasPrompt: false, touchPoints: 0 };

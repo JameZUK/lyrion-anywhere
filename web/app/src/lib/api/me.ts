@@ -3,7 +3,7 @@
 // shared with other users.
 import { ApiError, bearer, callJson } from './http';
 import type { Command } from './rpc';
-import { cleanPlaylistName, playlistNameProblem } from '$lib/queue/save-name';
+import { cleanPlaylistName, playlistNameProblem } from '#lib/queue/save-name';
 import { FILTER_LIMITS, cleanSpec, filterFrom, filterProblem, validId, type FilterSpec, type SmartFilter } from './filters';
 
 export type { FilterRule, FilterSort, FilterSpec, SmartFilter } from './filters';

@@ -1,15 +1,15 @@
 <script lang="ts">
 	// Your listening (docs/plans/wave3-design.md §1): totals, most played, new artists, when
 	// you listen, streaks, for a chosen period, from the user's own listening history.
-	import { me } from '$lib/state/me';
-	import BackButton from '$lib/components/BackButton.svelte';
-	import StatsChart from '$lib/components/StatsChart.svelte';
-	import YearStory from '$lib/components/YearStory.svelte';
-	import type { ListeningStats } from '$lib/api/me';
-	import { link } from '$lib/lms/commands';
-	import { textOf } from '$lib/lms/format';
-	import { loadNames, noNames, type StatsNames } from '$lib/stats/names';
-	import * as P from '$lib/stats/period';
+	import { me } from '#lib/state/me';
+	import BackButton from '#lib/components/BackButton.svelte';
+	import StatsChart from '#lib/components/StatsChart.svelte';
+	import YearStory from '#lib/components/YearStory.svelte';
+	import type { ListeningStats } from '#lib/api/me';
+	import { link } from '#lib/lms/commands';
+	import { textOf } from '#lib/lms/format';
+	import { loadNames, noNames, type StatsNames } from '#lib/stats/names';
+	import * as P from '#lib/stats/period';
 
 	const now = new Date();
 	let period = $state(P.monthPeriod(now));

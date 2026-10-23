@@ -3,7 +3,7 @@ export {};
 // fallback when this device can't play, and moving playback.
 type Listener = (s: unknown, status: string) => void;
 const listeners: Listener[] = [];
-vi.mock('$lib/api/session', () => {
+vi.mock('#lib/api/session', () => {
 	class SessionManager {
 		current = null;
 		token = 't';
@@ -26,7 +26,7 @@ const LOUNGE = 'aa:bb:cc:dd:ee:01';
 const STUDY = 'aa:bb:cc:dd:ee:02';
 let players: { playerid: string; name: string; isplaying?: number }[] = [];
 const calls: { player: string; cmd: unknown[] }[] = [];
-vi.mock('$lib/api/rpc', () => {
+vi.mock('#lib/api/rpc', () => {
 	class Api {
 		async rpc(player: string, cmd: unknown[]) {
 			calls.push({ player, cmd });
@@ -38,7 +38,7 @@ vi.mock('$lib/api/rpc', () => {
 	}
 	return { Api };
 });
-vi.mock('$lib/api/events', () => {
+vi.mock('#lib/api/events', () => {
 	class EventsClient {
 		start() {}
 		stop() {}
@@ -46,7 +46,7 @@ vi.mock('$lib/api/events', () => {
 	return { EventsClient };
 });
 
-const { app } = await import('$lib/state/app.svelte');
+const { app } = await import('#lib/state/app.svelte');
 const session = { user: { username: 'alice', role: 'listener' }, device: { id: 1, name: 'Firefox', mac: ME } };
 const signIn = () => listeners.forEach((fn) => fn(session, 'signed-in'));
 const signOut = () => listeners.forEach((fn) => fn(null, 'signed-out'));

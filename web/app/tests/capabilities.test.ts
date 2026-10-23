@@ -1,4 +1,4 @@
-import { detect, MSE_TYPES } from '$lib/player/capabilities';
+import { detect, MSE_TYPES } from '#lib/player/capabilities';
 
 test('reports managed and classic Media Source support per type', () => {
 	const g = {

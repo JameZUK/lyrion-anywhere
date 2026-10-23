@@ -1,15 +1,15 @@
 <script lang="ts">
-	import { me } from '$lib/state/me';
+	import { me } from '#lib/state/me';
 	// "Up next" under the transport controls: one line naming the next track (Wave 3.5). A tap
 	// opens the queue (the same sheet as the Queue button, through `onopen`, or else the queue
 	// page); swipe the line sideways (or press Delete) to take that track out of the queue,
 	// with Undo. Removing tracks otherwise lives in the queue itself.
-	import { api, app } from '$lib/state/app.svelte';
-	import { textOf } from '$lib/lms/format';
-	import { isSwipe, removeChecked, restoreTrack } from '$lib/lms/queue-edit';
-	import { upNext } from '$lib/lms/upnext';
-	import { now } from '$lib/player/now.svelte';
-	import type { Track } from '$lib/lms/types';
+	import { api, app } from '#lib/state/app.svelte';
+	import { textOf } from '#lib/lms/format';
+	import { isSwipe, removeChecked, restoreTrack } from '#lib/lms/queue-edit';
+	import { upNext } from '#lib/lms/upnext';
+	import { now } from '#lib/player/now.svelte';
+	import type { Track } from '#lib/lms/types';
 	import Snackbar from './Snackbar.svelte';
 	import { tick } from 'svelte';
 

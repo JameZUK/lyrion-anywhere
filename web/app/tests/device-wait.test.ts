@@ -2,11 +2,11 @@
 // has taken, and after a few seconds offers a way not to wait.
 import { fireEvent, render } from '@testing-library/svelte';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const device = { state: 'starting', stop: vi.fn(), start: vi.fn(async () => {}) };
-vi.mock('$lib/player/device.svelte', () => ({ device }));
+vi.mock('#lib/player/device.svelte', () => ({ device }));
 const fake = await import('./helpers/fake-app.svelte');
-const { default: DeviceWait } = await import('$lib/components/DeviceWait.svelte');
+const { default: DeviceWait } = await import('#lib/components/DeviceWait.svelte');
 
 beforeEach(() => {
 	vi.useFakeTimers();

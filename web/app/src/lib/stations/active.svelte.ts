@@ -1,12 +1,12 @@
 // The station playing now, if any: started from Home or the Stations page, kept topped up
 // as the selected player's status changes (see refill.ts).
 import { untrack } from 'svelte';
-import { api, app } from '$lib/state/app.svelte';
-import { me } from '$lib/state/me';
-import { NO_PLAYER } from '$lib/naming';
-import * as cmd from '$lib/lms/commands';
-import type { PlayerStatus } from '$lib/lms/types';
-import type { Station } from '$lib/api/me';
+import { api, app } from '#lib/state/app.svelte';
+import { me } from '#lib/state/me';
+import { NO_PLAYER } from '#lib/naming';
+import * as cmd from '#lib/lms/commands';
+import type { PlayerStatus } from '#lib/lms/types';
+import type { Station } from '#lib/api/me';
 import { StationRunner, queuedIds } from './refill';
 
 class ActiveStation {

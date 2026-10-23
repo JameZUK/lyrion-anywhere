@@ -1,21 +1,21 @@
 <script lang="ts">
-	import BackButton from '$lib/components/BackButton.svelte';
-	import { useDetailTitle } from '$lib/title.svelte';
-	import { go } from '$lib/nav';
+	import BackButton from '#lib/components/BackButton.svelte';
+	import { useDetailTitle } from '#lib/title.svelte';
+	import { go } from '#lib/nav';
 	import { page } from '$app/state';
 	import { untrack } from 'svelte';
-	import { api, app } from '$lib/state/app.svelte';
-	import * as cmd from '$lib/lms/commands';
-	import { duration, isRemote, textOf } from '$lib/lms/format';
-	import type { PlaylistTracksResult, Playlist, PlaylistsResult, Track } from '$lib/lms/types';
-	import type { Command } from '$lib/api/rpc';
-	import Icon from '$lib/components/Icon.svelte';
-	import DownloadBar from '$lib/components/DownloadBar.svelte';
-	import PageActions from '$lib/components/PageActions.svelte';
-	import RowMenu, { type RowAction } from '$lib/components/RowMenu.svelte';
-	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-	import { controls } from '$lib/player/controls.svelte';
-	import { downloads, offlinePlayer } from '$lib/offline/index.svelte';
+	import { api, app } from '#lib/state/app.svelte';
+	import * as cmd from '#lib/lms/commands';
+	import { duration, isRemote, textOf } from '#lib/lms/format';
+	import type { PlaylistTracksResult, Playlist, PlaylistsResult, Track } from '#lib/lms/types';
+	import type { Command } from '#lib/api/rpc';
+	import Icon from '#lib/components/Icon.svelte';
+	import DownloadBar from '#lib/components/DownloadBar.svelte';
+	import PageActions from '#lib/components/PageActions.svelte';
+	import RowMenu, { type RowAction } from '#lib/components/RowMenu.svelte';
+	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
+	import { controls } from '#lib/player/controls.svelte';
+	import { downloads, offlinePlayer } from '#lib/offline/index.svelte';
 
 	let info = $state<Playlist | null>(null);
 	let tracks = $state<Track[]>([]);

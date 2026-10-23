@@ -5,9 +5,9 @@
 // which brings other players into this one's group, says so.
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
-const { default: PlayerSwitcher } = await import('$lib/components/PlayerSwitcher.svelte');
+const { default: PlayerSwitcher } = await import('#lib/components/PlayerSwitcher.svelte');
 const { choose, menuItems, openMenu } = await import('./helpers/menu');
 
 const A = '02:00:00:00:00:0a';

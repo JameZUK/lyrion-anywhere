@@ -4,17 +4,17 @@
 	// with type chips that page through one type alone. The term, results and chip live in
 	// `search` (not the page), so going to a result and back finds them as they were.
 	import { untrack } from 'svelte';
-	import { api, session } from '$lib/state/app.svelte';
-	import { search } from '$lib/state/search';
-	import * as cmd from '$lib/lms/commands';
-	import { Pager, whenNear } from '$lib/lms/pager.svelte';
-	import { MIN_TERM } from '$lib/search/store.svelte';
-	import { addRecent, loadRecents, removeRecent, saveRecents } from '$lib/search/recents';
-	import { EMPTY_GROUPS, SEARCH_TYPES, TYPE_LABELS, hits, topResult, totalHits, type Hit, type SearchType } from '$lib/search/results';
-	import Chips from '$lib/components/Chips.svelte';
-	import Icon from '$lib/components/Icon.svelte';
-	import SearchHit from '$lib/components/SearchHit.svelte';
-	import PluginSearch from '$lib/components/PluginSearch.svelte';
+	import { api, session } from '#lib/state/app.svelte';
+	import { search } from '#lib/state/search';
+	import * as cmd from '#lib/lms/commands';
+	import { Pager, whenNear } from '#lib/lms/pager.svelte';
+	import { MIN_TERM } from '#lib/search/store.svelte';
+	import { addRecent, loadRecents, removeRecent, saveRecents } from '#lib/search/recents';
+	import { EMPTY_GROUPS, SEARCH_TYPES, TYPE_LABELS, hits, topResult, totalHits, type Hit, type SearchType } from '#lib/search/results';
+	import Chips from '#lib/components/Chips.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import SearchHit from '#lib/components/SearchHit.svelte';
+	import PluginSearch from '#lib/components/PluginSearch.svelte';
 
 	/** Rows of each type under All before "See all". */
 	const PREVIEW = 5;

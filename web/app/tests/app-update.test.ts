@@ -2,11 +2,11 @@
 // shows a quiet note in the status slot, and reloads only when the person chooses.
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { AppUpdate, CHECK_EVERY_MS, type SwContainer, type SwRegistration, type SwWorker } from '$lib/pwa/update.svelte';
-import { MSG } from '$lib/pwa/sw-handlers';
-import { statusOf, UPDATE_TEXT } from '$lib/state/status';
+import { AppUpdate, CHECK_EVERY_MS, type SwContainer, type SwRegistration, type SwWorker } from '#lib/pwa/update.svelte';
+import { MSG } from '#lib/pwa/sw-handlers';
+import { statusOf, UPDATE_TEXT } from '#lib/state/status';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 
 class Target {
 	listeners = new Map<string, Array<{ fn: (e: never) => void; once?: boolean }>>();
@@ -166,8 +166,8 @@ describe('the status slot offers it last', () => {
 	});
 
 	test('the slot shows Reload and Later', async () => {
-		const { appUpdate } = await import('$lib/pwa/update.svelte');
-		const { default: StatusSlot } = await import('$lib/components/StatusSlot.svelte');
+		const { appUpdate } = await import('#lib/pwa/update.svelte');
+		const { default: StatusSlot } = await import('#lib/components/StatusSlot.svelte');
 		const reg = new Registration();
 		reg.waiting = new Worker();
 		const c = container(reg);

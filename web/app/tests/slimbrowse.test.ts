@@ -1,5 +1,5 @@
 // LMS menus: resolving actions the way the gateway does, and refusing malformed ones.
-import { itemKind, needsInput, opensMenu, pluginEntries, resolveAction, toCommand, type SBMenu } from '$lib/lms/slimbrowse';
+import { itemKind, needsInput, opensMenu, pluginEntries, resolveAction, toCommand, type SBMenu } from '#lib/lms/slimbrowse';
 
 const menu: SBMenu = {
 	base: {

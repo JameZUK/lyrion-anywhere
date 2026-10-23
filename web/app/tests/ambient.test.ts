@@ -2,10 +2,10 @@
 // art filter and the scrim keep WCAG AA for every theme, mode and accent over any cover
 // (black to white, and anything between), and the mini player's faint art tint leaves its
 // text legible too.
-import { ART_FILTERS, MINI_TINT_SURFACE, MAX_SCRIM, MIN_SCRIM, filtered, over, scrimAlpha, worstContrast } from '$lib/theme/ambient';
-import { ACCENTS, DEFAULT_PREFS, THEMES, tokens } from '$lib/theme/themes';
-import { contrast, parseHex, toHex } from '$lib/theme/color';
-import { ambientStill } from '$lib/theme/motion';
+import { ART_FILTERS, MINI_TINT_SURFACE, MAX_SCRIM, MIN_SCRIM, filtered, over, scrimAlpha, worstContrast } from '#lib/theme/ambient';
+import { ACCENTS, DEFAULT_PREFS, THEMES, tokens } from '#lib/theme/themes';
+import { contrast, parseHex, toHex } from '#lib/theme/color';
+import { ambientStill } from '#lib/theme/motion';
 
 /** A cover colour as drawn behind the scrim: through the theme's art filter. */
 const drawn = (hex: string, dark: boolean) => toHex(parseHex(hex)!.map((x) => filtered(x, dark)) as [number, number, number]);

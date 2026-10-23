@@ -4,13 +4,13 @@
 // power in ⋯, and nothing read once it closes. Play on… shares the same player manager.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import type { AlarmListing } from '$lib/api/routine';
-import type { PlayerInfo, PlayerStatus } from '$lib/lms/types';
+import type { AlarmListing } from '#lib/api/routine';
+import type { PlayerInfo, PlayerStatus } from '#lib/lms/types';
 
-vi.mock('$lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
+vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const alarmCalls: string[] = [];
 let alarmAnswer: (p: string) => Promise<AlarmListing> = async () => ({ enabled: true, alarms: [], sounds: [] });
-vi.mock('$lib/state/me', () => ({
+vi.mock('#lib/state/me', () => ({
 	routine: {
 		alarms: (p: string) => {
 			alarmCalls.push(p);
@@ -19,11 +19,11 @@ vi.mock('$lib/state/me', () => ({
 	},
 }));
 const fake = await import('./helpers/fake-app.svelte');
-const { MAX_ROOMS, POLL_MS, EVENT_DELAY_MS, RoomsPoller, alarmText, roomStatus } = await import('$lib/rooms/rooms.svelte');
-const { alarmChanges } = await import('$lib/rooms/alarm-changes.svelte');
+const { MAX_ROOMS, POLL_MS, EVENT_DELAY_MS, RoomsPoller, alarmText, roomStatus } = await import('#lib/rooms/rooms.svelte');
+const { alarmChanges } = await import('#lib/rooms/alarm-changes.svelte');
 const { goto } = await import('$app/navigation');
 const { default: Rooms } = await import('../src/routes/rooms/+page.svelte');
-const { default: PlayerSwitcher } = await import('$lib/components/PlayerSwitcher.svelte');
+const { default: PlayerSwitcher } = await import('#lib/components/PlayerSwitcher.svelte');
 
 const KITCHEN = '02:00:00:00:00:01';
 const LOUNGE = '02:00:00:00:00:02';

@@ -16,7 +16,7 @@ import {
 	requestPersist,
 	savePrefs,
 	storageInfo,
-} from '$lib/offline/settings';
+} from '#lib/offline/settings';
 
 class Mem {
 	m = new Map<string, string>();

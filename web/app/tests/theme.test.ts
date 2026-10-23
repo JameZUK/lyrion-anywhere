@@ -1,6 +1,6 @@
 // Themes: colour maths, palettes that stay legible for every accent, and safe saved choices.
-import { contrast, oklchHex, oklchToSrgb, parseHex, srgbToOklch, toHex } from '$lib/theme/color';
-import { ACCENTS, DEFAULT_PREFS, THEMES, applyTheme, loadPrefs, resolveMode, sanitise, savePrefs, toneL, tokens, type ThemePrefs } from '$lib/theme/themes';
+import { contrast, oklchHex, oklchToSrgb, parseHex, srgbToOklch, toHex } from '#lib/theme/color';
+import { ACCENTS, DEFAULT_PREFS, THEMES, applyTheme, loadPrefs, resolveMode, sanitise, savePrefs, toneL, tokens, type ThemePrefs } from '#lib/theme/themes';
 
 test('sRGB and OKLCH convert both ways', () => {
 	const red = srgbToOklch(parseHex('#ff0000')!);

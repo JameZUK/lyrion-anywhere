@@ -1,14 +1,14 @@
 // App-wide state: the session, the players the user may control, the selected player's
 // status (polled, and refreshed at once on events), and smooth progress between polls.
-import { SessionManager, type SessionStatus } from '$lib/api/session';
-import { Api } from '$lib/api/rpc';
-import { EventsClient, type EventsState, type LmsEvent, type LmsHealth } from '$lib/api/events';
-import type { Session } from '$lib/api/auth';
-import * as cmd from '$lib/lms/commands';
-import { NO_PLAYER } from '$lib/naming';
-import type { PlayerInfo, PlayersResult, PlayerStatus } from '$lib/lms/types';
-import { clearResume, loadResume } from '$lib/player/resume';
-import { canPlayHere } from '$lib/player/capabilities';
+import { SessionManager, type SessionStatus } from '#lib/api/session';
+import { Api } from '#lib/api/rpc';
+import { EventsClient, type EventsState, type LmsEvent, type LmsHealth } from '#lib/api/events';
+import type { Session } from '#lib/api/auth';
+import * as cmd from '#lib/lms/commands';
+import { NO_PLAYER } from '#lib/naming';
+import type { PlayerInfo, PlayersResult, PlayerStatus } from '#lib/lms/types';
+import { clearResume, loadResume } from '#lib/player/resume';
+import { canPlayHere } from '#lib/player/capabilities';
 import {
 	NOTES,
 	cleanId,
@@ -18,11 +18,11 @@ import {
 	loadTabSelection,
 	saveTabSelection,
 	type StartChoice,
-} from '$lib/player/default-player';
-import { refusalText, transfer } from '$lib/lms/transfer';
-import { textOf } from '$lib/lms/format';
-import { AnalysisClient } from '$lib/analysis/client';
-import { ApiError, BUSY_MESSAGE, CLIENT_HEADER, bearer, isBusy } from '$lib/api/http';
+} from '#lib/player/default-player';
+import { refusalText, transfer } from '#lib/lms/transfer';
+import { textOf } from '#lib/lms/format';
+import { AnalysisClient } from '#lib/analysis/client';
+import { ApiError, BUSY_MESSAGE, CLIENT_HEADER, bearer, isBusy } from '#lib/api/http';
 import { BusyGate, POLL_MS, Single } from './busy';
 import { ReachabilityTracker, isNetworkError, type Reachability } from './reachability';
 import {
@@ -37,10 +37,10 @@ import {
 	type Armed,
 	type SleepChoice,
 	type SleepScope,
-} from '$lib/lms/sleep';
-import type { Track } from '$lib/lms/types';
-import { upNextTracker } from '$lib/queue/upnext.svelte';
-import { stateOf } from '$lib/queue/tracker';
+} from '#lib/lms/sleep';
+import type { Track } from '#lib/lms/types';
+import { upNextTracker } from '#lib/queue/upnext.svelte';
+import { stateOf } from '#lib/queue/tracker';
 import { forgetLastKnown, loadLastKnown, saveLastKnown } from './last-known';
 
 const PLAYER_KEY = 'anywhere.player';
