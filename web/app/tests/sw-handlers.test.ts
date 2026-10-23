@@ -105,6 +105,19 @@ describe('install', () => {
 		// The previous version's files are untouched while it still runs.
 		expect(await w.caches.has(`${CACHE_PREFIX}v1`)).toBe(true);
 	});
+
+	test("SvelteKit 3's build paths (relative to the base, no leading slash) are stored under the worker's scope", async () => {
+		const w = world('v3');
+		// What src/service-worker/index.ts passes: `immutable` from $app/manifest, mapped to its paths.
+		const immutable = [{ path: '_app/immutable/entry/start.v3hash.js' }, { path: '_app/immutable/assets/0.v3hash.css' }];
+		w.env.build = immutable.map((f) => f.path);
+		await onInstall(w.env);
+		const shell = [...w.caches.stores.get(`${CACHE_PREFIX}v3`)!.entries.keys()];
+		expect(shell).toContain(`${SCOPE}_app/immutable/entry/start.v3hash.js`);
+		expect(shell).toContain(`${SCOPE}_app/immutable/assets/0.v3hash.css`);
+		// Never resolved against the origin's root, outside the app's base path.
+		expect(shell.filter((u) => !u.startsWith(SCOPE))).toEqual([]);
+	});
 });
 
 describe('activate', () => {
