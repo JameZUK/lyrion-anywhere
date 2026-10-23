@@ -305,7 +305,7 @@ Each milestone ends with: tests green in CI, a security review of new surfaces, 
 ### A0 status (2026-10-11)
 
 Built, in CI (job `android`):
-- **`mobile/` crate** (UniFFI 0.31): `Server`, `Session` (password, two-step, pairing, body refresh token, sign-out), `MusicLibrary`, `Players`, `Art`, `Events`; rustls with the platform verifier; integration tests against the real gateway and a fake LMS.
+- **`mobile/` crate** (UniFFI 0.32): `Server`, `Session` (password, two-step, pairing, body refresh token, sign-out), `MusicLibrary`, `Players`, `Art`, `Events`; rustls with the platform verifier; integration tests against the real gateway and a fake LMS.
 - **Android app** (`apps/android`): modules `:app`, `:ui`, `:data`, `:rust`; screens for server, sign-in, QR pairing, home, albums, album, artists, artist, search, now playing, settings and licences. Remote control only. See `apps/android/README.md`.
 - compileSdk is 37 (current AndroidX requires it); targetSdk stays 36 for now.
 
