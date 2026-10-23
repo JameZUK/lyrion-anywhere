@@ -5,22 +5,22 @@ Two things are released from this repository, from different tags:
 | What | Tag | CI job | Publishes |
 |---|---|---|---|
 | The LMS plugin (gateway, web app, plugin) | `v<version>`, e.g. `v0.2.0` | `release` | A GitHub release with the plugin zips, `repo.xml` and `SHA256SUMS`; build provenance for the zips and `repo.xml` |
-| The Android app | `android-v<version>`, e.g. `android-v1.0.0` | `android-release` | A GitHub **pre-release** with the signed APKs (universal and one per ABI), the app bundle, `BUILDINFO.txt` and `SHA256SUMS`; build provenance for the APKs and the bundle |
+| The Android app | `android-v<version>`, e.g. `android-v1.0.0` | `android-release` | A GitHub release, **never marked Latest**, with the signed APKs (universal and one per ABI), the app bundle, `BUILDINFO.txt` and `SHA256SUMS`; build provenance for the APKs and the bundle |
 
 - The plugin job publishes only on `refs/tags/v*`, which an `android-v*` tag never matches.
 - The Android job runs only on `refs/tags/android-v*`.
 - Both publish only after the other jobs pass for that commit.
 
-### Android releases stay pre-releases
+### Android releases are never Latest
 
-LMS installs find plugin updates at `https://github.com/JameZUK/lyrion-anywhere/releases/latest/download/repo.xml`. GitHub's *latest* is the newest full (non-pre-)release. The plugin's `v*` releases are full releases, published with `--latest`; Android releases are pre-releases and must stay so. **Never promote an `android-v*` release to a full release, and never tick "Set as the latest release" on one.** If one becomes Latest, that URL is a 404 and every LMS install silently stops seeing plugin updates, security fixes included. The Android release is still public and downloadable as a pre-release; the README and release notes link to it directly.
+LMS installs find plugin updates at `https://github.com/JameZUK/lyrion-anywhere/releases/latest/download/repo.xml`. GitHub's *Latest* is one release. The plugin's `v*` releases are published with `--latest` and take it; Android releases are full releases published with `--latest=false`, which leaves *Latest* where it is. **Never tick "Set as the latest release" on an `android-v*` release.** If one becomes Latest, that URL is a 404 and every LMS install silently stops seeing plugin updates, security fixes included. (Until 2026-10-23 Android releases were pre-releases for the same reason; a full release that is never Latest is as safe, and lists the app properly.) One more way it can go wrong: if the plugin release that is Latest is ever deleted, GitHub chooses Latest afresh by date and may pick an Android release.
 
 Guards:
 - `tools/check-latest.sh [--expect-version <v>]` fetches that URL and fails unless it is the plugin's `repo.xml` (and that version). Run it after any change on the releases page.
-- CI runs it after publishing a plugin release (expecting the new version) and after publishing an Android one.
+- CI runs it after publishing a plugin release (expecting the new version) and after publishing an Android one; the Android job also fails if the release it just made is Latest.
 - The *Plugin repository URL* workflow (`.github/workflows/repo-xml.yml`) runs it whenever a release is published, promoted, edited or deleted, weekly, and on demand.
 
-If it fails: edit the Android release back to a pre-release, and mark the newest `v*` release as Latest.
+If it fails: mark the newest `v*` release as Latest (`gh release edit v<version> --latest`), then run `tools/check-latest.sh --expect-version <version>`.
 
 Choosing a version number is the owner's decision; nothing here picks one.
 
@@ -159,11 +159,11 @@ Alternatively, use *Settings → Secrets and variables → Actions → New repos
    - verifies every signature;
    - checks the native libraries carry no build paths;
    - writes `BUILDINFO.txt` (commit, Rust, cargo-ndk, NDK and JDK versions) and `SHA256SUMS`;
-   - creates a **pre-release** with:
+   - creates a release (`--latest=false`, and fails if it came out as Latest) with:
      - `LyrionAnywhere-android-<v>.apk` (universal);
      - `LyrionAnywhere-android-<v>-arm64-v8a.apk`, `-armeabi-v7a.apk` and `-x86_64.apk`;
      - `LyrionAnywhere-android-<v>.aab`.
-3. Check the pre-release:
+3. Check the release:
    - `sha256sum -c SHA256SUMS`;
    - `gh attestation verify` passes for each APK and the bundle (see *Verifying a release* below);
    - `apksigner verify --print-certs` shows the expected certificate;

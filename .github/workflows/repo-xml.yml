@@ -1,10 +1,11 @@
 name: Plugin repository URL
 
 # LMS installs fetch plugin updates from releases/latest/download/repo.xml. GitHub's
-# "latest" is the newest full (non-pre-)release, so promoting an Android pre-release, or
-# marking one Latest, makes that URL a 404 and every install silently stops seeing plugin
-# updates. This fails loudly whenever a release changes, and weekly in case of a hand edit
-# that sends no event. See docs/RELEASING.md.
+# "latest" is one release: the plugin's `v*` releases take it, Android releases are
+# published with --latest=false. Marking an Android release Latest (or a deleted plugin
+# release letting GitHub choose afresh) makes that URL a 404 and every install silently
+# stops seeing plugin updates. This fails loudly whenever a release changes, and weekly in
+# case of a hand edit that sends no event. See docs/RELEASING.md.
 
 on:
   release:

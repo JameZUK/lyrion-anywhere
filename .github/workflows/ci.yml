@@ -255,10 +255,11 @@ jobs:
     # Android releases come from `android-v*` tags only. (The plugin's `release` job above
     # publishes on `refs/tags/v*`, which `refs/tags/android-v*` never matches.) Built from
     # scratch without the shared caches, signed with the release key from the repository's
-    # secrets (docs/RELEASING.md), and published as a pre-release, which it must stay: LMS
-    # installs fetch plugin updates from releases/latest/download/repo.xml, and GitHub's
-    # "latest" is the newest full release, so promoting an Android release would make that a
-    # 404 for every install. The last step checks the URL still serves the plugin.
+    # secrets (docs/RELEASING.md), and published as a full release that is never Latest: LMS
+    # installs fetch plugin updates from releases/latest/download/repo.xml, so the plugin's
+    # `v*` release must keep that spot. `--latest=false` keeps it there, the publish step
+    # checks the new release is not Latest, and the last step checks the URL still serves
+    # the plugin. (Until 2026-10-23 these were pre-releases for the same reason.)
     if: startsWith(github.ref, 'refs/tags/android-v')
     needs: [test, android, supply-chain]
     runs-on: ubuntu-latest
@@ -381,8 +382,14 @@ jobs:
             exit 0
           fi
           gh release create "$GITHUB_REF_NAME" dist-android/* \
-            --verify-tag --prerelease --latest=false --title "Lyrion Anywhere for Android $VERSION" \
+            --verify-tag --latest=false --title "Lyrion Anywhere for Android $VERSION" \
             --notes-file "docs/release-notes/android-$VERSION.md"
+          # A full release, but never Latest: that spot is the plugin's (docs/RELEASING.md).
+          latest=$(gh release view "$GITHUB_REF_NAME" --json isLatest --jq .isLatest)
+          if [ "$latest" != false ]; then
+            echo "::error::$GITHUB_REF_NAME was published as Latest; the plugin's repo.xml URL is broken"
+            exit 1
+          fi
       - name: Check LMS's repository URL still serves the plugin
         env:
           CHECK_LATEST_TRIES: '6'

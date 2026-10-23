@@ -908,7 +908,7 @@ Built: everything for a 1.0 except choosing the version, which is the owner's ca
   - builds from scratch;
   - signs with the repository's secrets;
   - checks signatures and that no build paths are in the native libraries;
-  - publishes a pre-release with the universal and per-ABI APKs, the app bundle, `BUILDINFO.txt` and `SHA256SUMS`.
+  - publishes a release (never marked Latest; a pre-release until 2026-10-23) with the universal and per-ABI APKs, the app bundle, `BUILDINFO.txt` and `SHA256SUMS`.
 
 **Manifest:** no change to providers, initialisers, permissions or exported components. Checked on the release APK against alpha.10 with `aapt2 dump xmltree`: the only differences are two resource ids (the widget's and the tile's labels moved when strings were added). The release APK went from 39.0 MB to 31.8 MB universal; per-ABI APKs are 16.2 MB (arm64-v8a), 13.8 MB (armeabi-v7a) and 16.2 MB (x86_64); the app bundle is 19.2 MB.
 

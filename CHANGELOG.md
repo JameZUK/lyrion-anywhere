@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-23: Android builds are published as full releases
+
+The `android-release` job published every `android-v*` tag as a GitHub pre-release so that *Latest*, which LMS installs read for plugin updates (`releases/latest/download/repo.xml`), would stay the plugin's. The owner wants the Android builds listed as releases, and 1.15.6 and 1.15.7 were promoted by hand with *Latest* re-pinned to the plugin. The job now publishes a full release with `--latest=false` (GitHub leaves *Latest* alone for a release created so), then fails if the release it just made came out as Latest, before the existing check that the plugin repository URL still serves `repo.xml`. `docs/RELEASING.md` keeps the rule that matters, never tick *Latest* on an Android release, and names the one remaining way it can go wrong (a deleted plugin release lets GitHub choose Latest afresh), which the *Plugin repository URL* workflow catches on the `deleted` event. `docs/PLATFORMS.md` and the workflow comments updated to match.
+
 ## 2026-10-23: Dependencies
 
 Ten Dependabot pull requests from 18 October, merged after a local run of the CI jobs on the merged tree. Their own runs were stale: the Android job's dependency-verification gap was fixed on main the same evening (d758dfc), and two timing-sensitive tests failed on runners started fifteen at once.
