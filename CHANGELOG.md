@@ -2,6 +2,19 @@
 
 Dated entries, newest first.
 
+## 2026-10-23: Web app on SvelteKit 3 and adapter-static 4
+
+The web app moves to SvelteKit 3.1.0 and adapter-static 4.0.0 (Dependabot #16 and #17, merged with the migration they need). The built app is the same: one static page with hash routes and relative base, `_app/immutable/` for the hashed files, `player/` for the worker and the WebAssembly core, and one inline start-up script, which `externalise-boot` still moves to a file so the gateway's CSP stays `script-src 'self'`.
+
+- **Configuration** moves from `svelte.config.js` (which SvelteKit 3 refuses to start beside) into `sveltekit({...})` in `vite.config.ts`, unchanged.
+- **`$lib` is now `#lib`** (SvelteKit 3 removed the alias): every import in 307 files, resolved by the `imports` field of `web/app/package.json` for Vite and Vitest and by `paths` in the tsconfig for TypeScript.
+- **The service worker** moves to `src/service-worker/index.ts` with its own tsconfig (WebWorker types, no DOM), and takes its file list from `$app/manifest` and its version from `$app/env` (`$service-worker` is gone). `npm run check` now type-checks it too. SvelteKit 3 registers it as a module worker; the bundle has no imports, so it runs the same.
+- Smaller: `$app/environment` is `$app/env`; the layout passes `afterNavigate`'s step count only for back/forward navigations, the only ones SvelteKit 3 gives one to.
+
+The three low `npm audit` advisories (the `cookie` package under SvelteKit 2) are gone: `npm audit` finds no vulnerabilities. The CI web job stays on node 22 (SvelteKit 3 needs 22.17 or later). TypeScript 7 (#18) stays open: svelte-check 4.7 accepts TypeScript 5 or 6 only, and SvelteKit 3's own `svelte-kit sync` uses the TypeScript JavaScript API, which the TypeScript 7 package no longer has.
+
+Verified: `npm ci` and `npm audit --audit-level=high` (0 vulnerabilities), the wasm-pack tests (14), `tools/build-web.sh` (1 inline script moved, 1 page clean), svelte-check on 747 files and the service worker's own check (no errors, no warnings), 1,514 Vitest and 156 Node tests (two new: SvelteKit 3's start-up script is externalised whole, and its relative build paths are cached under the worker's scope), and the deploy image built on node 24 with `tools/test-deploy.sh`.
+
 ## 2026-10-23: Dependencies
 
 Ten Dependabot pull requests from 18 October, merged after a local run of the CI jobs on the merged tree. Their own runs were stale: the Android job's dependency-verification gap was fixed on main the same evening (d758dfc), and two timing-sensitive tests failed on runners started fifteen at once.
