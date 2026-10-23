@@ -166,7 +166,12 @@ async fn a_resumed_flac_download_continues_the_stripped_stream() {
         .unwrap();
     got.extend_from_slice(&rest.bytes().await.unwrap());
     assert_eq!(got, whole, "resumed stream identical to an unbroken one");
-    assert_eq!(h.lms.http_paths().len(), 1, "LMS asked only once");
+    let paths = h.lms.http_paths();
+    assert_eq!(
+        h.lms.stream_requests().len(),
+        1,
+        "LMS asked for the stream only once: {paths:?}"
+    );
 
     // Offsets are in the stripped stream's terms: just past its end is out of range.
     let beyond = reqwest::Client::new()
