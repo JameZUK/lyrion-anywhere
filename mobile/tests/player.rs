@@ -3227,6 +3227,11 @@ async fn skip_to_a_download_with_the_server_away(changed: bool, by_hand: bool) {
             .any(|p| p[0] == me.as_str() && p[1][0] == "status" && p[1][1] == "-")
     })
     .await;
+    // The first track whole on the phone (its stream ended cleanly: `DSCO` 0) before the
+    // link goes. It usually is within milliseconds of `STMs`, but on a loaded runner the
+    // fetch can lag, and a track cut short with the server away can't play to its end.
+    r.wait_event("DSCO", 1, 20).await;
+    assert_eq!(r.h.lms.slim_payloads(b"DSCO")[0], vec![0], "a clean end");
     let proxy = r.proxy.as_ref().unwrap();
     proxy.set_down(true);
     r.player.set_network_available(false);
