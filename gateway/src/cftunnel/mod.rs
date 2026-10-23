@@ -1022,7 +1022,7 @@ impl Tunnel {
         cmd.arg("--version")
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        let mut child = cmd.spawn().ok()?;
+        let mut child = spawn_retrying_busy(&mut cmd).await.ok()?;
         let mut out = child.stdout.take()?;
         let run = async {
             let mut buf = Vec::new();
@@ -1839,6 +1839,26 @@ fn command_for(bin: &Path, dir: &Path) -> tokio::process::Command {
     cmd
 }
 
+/// Spawn, retrying for up to half a second while the program is "busy" (`ETXTBSY`). A file
+/// this process has just written can still be open for writing in a child forked meanwhile
+/// (an encoder starting for a stream): the child keeps the inherited handle until its own
+/// exec, and running the file fails until then. The window is microseconds, but a loaded
+/// machine hit it, and the download was then taken for one that does not run here.
+async fn spawn_retrying_busy(
+    cmd: &mut tokio::process::Command,
+) -> std::io::Result<tokio::process::Child> {
+    let mut tries = 0;
+    loop {
+        match cmd.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 20 => {
+                tries += 1;
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            r => return r,
+        }
+    }
+}
+
 /// Read at most `max` bytes of a body.
 async fn read_capped(resp: reqwest::Response, max: usize) -> Vec<u8> {
     use futures_util::StreamExt;
@@ -2255,5 +2275,72 @@ mod tests {
         assert!(read_line_capped(&mut r, &mut line, 4096).await);
         assert_eq!(line, b"last");
         assert!(!read_line_capped(&mut r, &mut line, 4096).await);
+    }
+
+    /// Regression (CI, 23 October): the just-downloaded binary was still open for writing
+    /// (in a child forked meanwhile), so its `--version` run failed with `ETXTBSY` and the
+    /// install was reported as "does not run on this system". The spawn now waits for the
+    /// writer to go, up to half a second, and reports the error past that.
+    #[tokio::test]
+    async fn a_binary_held_open_for_writing_is_run_once_the_writer_is_gone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "anywhere-cftunnel-busy-{}-{}",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("cloudflared");
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\necho 'cloudflared version 2026.10.3 (built 2026-10-21-13:17 UTC)'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let version_cmd = || {
+            let mut cmd = command_for(&bin, &dir);
+            cmd.arg("--version")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            cmd
+        };
+
+        // Open for writing (as a child forked mid-write holds it until its exec): busy for
+        // 120 ms, then free.
+        let writer = std::fs::OpenOptions::new().append(true).open(&bin).unwrap();
+        let mut cmd = version_cmd();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            drop(writer);
+        });
+        let started = Instant::now();
+        let child = spawn_retrying_busy(&mut cmd)
+            .await
+            .expect("runs once the writer is gone");
+        assert!(
+            started.elapsed() >= Duration::from_millis(100),
+            "waited {:?}",
+            started.elapsed()
+        );
+        let out = child.wait_with_output().await.unwrap();
+        assert!(out.status.success());
+        assert_eq!(
+            download::parse_version_output(&String::from_utf8_lossy(&out.stdout)).as_deref(),
+            Some("2026.10.3")
+        );
+        release.await.unwrap();
+
+        // Held past the budget: the error is reported, not spun on for ever.
+        let _writer = std::fs::OpenOptions::new().append(true).open(&bin).unwrap();
+        let mut cmd = version_cmd();
+        let started = Instant::now();
+        let err = spawn_retrying_busy(&mut cmd).await.expect_err("still busy");
+        assert_eq!(err.kind(), std::io::ErrorKind::ExecutableFileBusy);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use anywhere_gateway::admin;
+use anywhere_gateway::cftunnel::pins::CLOUDFLARED_VERSION as PIN;
 use anywhere_gateway::cftunnel::{ManualClock, Settings, Tunnel};
 use axum::extract::ConnectInfo;
 use axum::response::IntoResponse;
@@ -46,7 +47,7 @@ fn fake_cloudflared(rec: &Path) -> Vec<u8> {
     format!(
         "#!/bin/sh\n\
          if [ \"$1\" = \"--version\" ]; then\n\
-           echo 'cloudflared version 2026.10.1 (built 2026-10-15-17:08 UTC)'\n\
+           echo 'cloudflared version {PIN} (built 2026-10-15-17:08 UTC)'\n\
            exit 0\n\
          fi\n\
          rec='{rec}'\n\
@@ -127,7 +128,7 @@ async fn fake_github(gh: Arc<GitHub>) -> String {
         async move {
             let path = req.uri().path().to_string();
             gh.requests.lock().unwrap().push(path.clone());
-            if let Some(asset) = path.strip_prefix("/releases/2026.10.1/") {
+            if let Some(asset) = path.strip_prefix(format!("/releases/{PIN}/").as_str()) {
                 // GitHub redirects to its asset host: one hop here.
                 return axum::response::Redirect::temporary(&format!("/assets/{asset}"))
                     .into_response();
@@ -476,18 +477,24 @@ impl T {
         v
     }
 
+    /// Polls every 20 ms until `f` holds, for up to a minute of wall-clock time: a bound on
+    /// time, not on polls, so a loaded runner (where each status call is slow) gets the same
+    /// allowance as an idle one. On an idle machine the suite takes three seconds.
     async fn wait(&self, what: &str, f: impl Fn(&Value) -> bool) -> Value {
-        let mut last = Value::Null;
-        for _ in 0..500 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
             // Serve the metrics of every new child as it appears.
             self.serve_new_metrics().await;
-            last = self.status().await;
+            let last = self.status().await;
             if f(&last) {
                 return last;
             }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what}: not within 60 s; last status {last:#}"
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        panic!("{what}: never happened; last status {last:#}");
     }
 
     async fn wait_state(&self, state: &str) -> Value {
@@ -680,8 +687,8 @@ async fn install_downloads_and_verifies_and_refuses_a_tampered_asset() {
     *t.gh.body.lock().unwrap() = good.clone();
     t.install().await;
     let v = t.status().await;
-    assert_eq!(v["installed_version"], "2026.10.1");
-    assert_eq!(v["pinned_version"], "2026.10.1");
+    assert_eq!(v["installed_version"], PIN);
+    assert_eq!(v["pinned_version"], PIN);
     assert_eq!(v["update_available"], false);
     let bin = t.dir().join("cloudflared");
     assert_eq!(std::fs::read(&bin).unwrap(), good);
@@ -689,12 +696,13 @@ async fn install_downloads_and_verifies_and_refuses_a_tampered_asset() {
     assert_eq!(mode_of(&t.dir()), 0o700);
     assert_eq!(mode_of(&t.dir().join("state.json")), 0o600);
     // One redirect followed, to the asset.
+    let release = format!("/releases/{PIN}/cloudflared-linux-amd64");
     assert_eq!(
         *t.gh.requests.lock().unwrap(),
         [
-            "/releases/2026.10.1/cloudflared-linux-amd64",
+            release.as_str(),
             "/assets/cloudflared-linux-amd64",
-            "/releases/2026.10.1/cloudflared-linux-amd64",
+            release.as_str(),
             "/assets/cloudflared-linux-amd64",
         ]
     );
@@ -731,7 +739,7 @@ async fn an_installed_older_version_offers_an_update() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let s = t2.status();
-    assert_eq!(s["installed_version"], "2026.10.1", "{s}");
+    assert_eq!(s["installed_version"], PIN, "{s}");
     assert_eq!(s["update_available"], false);
 }
 
@@ -1020,11 +1028,9 @@ async fn a_registered_tunnel_comes_back_after_a_restart_unless_stopped() {
     t.h.gw.tunnel().shutdown().await;
     assert!(t.live_runs().is_empty());
     let t2 = t.restarted().await;
-    for _ in 0..300 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while t2.status()["state"] != "connected" && std::time::Instant::now() < deadline {
         t.serve_new_metrics().await;
-        if t2.status()["state"] == "connected" {
-            break;
-        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(t2.status()["state"], "connected", "{}", t2.status());
@@ -1061,6 +1067,20 @@ async fn remove_deletes_the_binary_and_the_token() {
     assert_eq!(s, S::CONFLICT, "nothing registered any more");
 }
 
+fn spawn_retrying_busy(program: &Path, arg: &str) -> std::process::Child {
+    let mut tries = 0;
+    loop {
+        match std::process::Command::new(program).arg(arg).spawn() {
+            Ok(child) => return child,
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("spawn {}: {e}", program.display()),
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_stale_cloudflared_is_stopped_only_if_it_is_ours() {
     let t = setup().await;
@@ -1071,10 +1091,9 @@ async fn a_stale_cloudflared_is_stopped_only_if_it_is_ours() {
         .find(|p| Path::new(p).exists())
         .unwrap();
     std::fs::copy(sleep, t.dir().join("cloudflared")).unwrap();
-    let mut ours = std::process::Command::new(t.dir().join("cloudflared"))
-        .arg("300")
-        .spawn()
-        .unwrap();
+    // Running the copy can fail with ETXTBSY: a child another test forked while `fs::copy`
+    // held the file open for writing keeps that handle until its own exec. Retry briefly.
+    let mut ours = spawn_retrying_busy(&t.dir().join("cloudflared"), "300");
     let mut other = std::process::Command::new(sleep)
         .arg("300")
         .spawn()

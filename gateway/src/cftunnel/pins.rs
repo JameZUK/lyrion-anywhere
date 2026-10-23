@@ -7,16 +7,16 @@
 //! whose sum differs, and `cloudflared` never updates itself (`--no-autoupdate`).
 
 /// The pinned `cloudflared` release (its tag on GitHub, e.g. `2026.10.1`).
-pub const CLOUDFLARED_VERSION: &str = "2026.10.1";
+pub const CLOUDFLARED_VERSION: &str = "2026.10.3";
 
 /// SHA-256 of `cloudflared-linux-amd64` (x86_64).
-pub const SHA256_AMD64: &str = "3bfc539f45d2620c71debb7a86be0efa737ed5ccbad9eb85c787116900e5c586";
+pub const SHA256_AMD64: &str = "053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0";
 
 /// SHA-256 of `cloudflared-linux-arm64` (aarch64).
-pub const SHA256_ARM64: &str = "2c65dfabf616c40efc7545d107d7a57ad5e21377e2964b7e88af19a238074a46";
+pub const SHA256_ARM64: &str = "89297ebfb9e8c99c0dc013a1140601453cf3798d8306c5591651f4a3f5210be8";
 
 /// SHA-256 of `cloudflared-linux-armhf` (32-bit ARM, hard float).
-pub const SHA256_ARMHF: &str = "c047e24af9ed956b55d514e3a0e2d8020e9c6d0629c4731c8ec08bd79a29a050";
+pub const SHA256_ARMHF: &str = "458928ef2729ad71ebf7c88c289f9ecb2ac8bc6810a3bd4d70778592b9b4268b";
 
 #[cfg(test)]
 mod tests {
