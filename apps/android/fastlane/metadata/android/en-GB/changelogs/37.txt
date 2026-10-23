@@ -1,0 +1,1 @@
+Maintenance release: updated libraries, including security patches to the TLS and hashing crates the player's engine uses. No feature changes.

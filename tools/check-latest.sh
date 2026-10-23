@@ -3,10 +3,10 @@
 #
 #   tools/check-latest.sh [--expect-version <version>] [url]
 #
-# LMS finds plugin updates at releases/latest/download/repo.xml. GitHub's "latest" is the
-# newest full (non-pre-)release, so an Android release promoted from pre-release makes that
-# URL a 404 and every install silently stops seeing plugin updates. Android releases must
-# therefore stay pre-releases (docs/RELEASING.md). CI runs this after every release and
+# LMS finds plugin updates at releases/latest/download/repo.xml. GitHub's "latest" is one
+# release, so an Android release marked Latest makes that URL a 404 and every install
+# silently stops seeing plugin updates. Android releases are published with --latest=false
+# and must never be marked Latest (docs/RELEASING.md). CI runs this after every release and
 # weekly; run it by hand after changing anything on the releases page.
 #
 # CHECK_LATEST_TRIES (default 1) and CHECK_LATEST_DELAY (seconds, default 10) retry while
@@ -30,8 +30,8 @@ case $DELAY in ''|*[!0-9]*) DELAY=10 ;; esac
 fail() {
 	echo "check-latest: $URL: $1" >&2
 	echo "check-latest: LMS installs using this repository URL will not see plugin updates." >&2
-	echo "check-latest: if an android-v* release was marked Latest or promoted from pre-release," \
-		"mark it a pre-release again and mark the newest v* plugin release as Latest (docs/RELEASING.md)." >&2
+	echo "check-latest: if an android-v* release was marked Latest, mark the newest v* plugin" \
+		"release as Latest again: gh release edit v<version> --latest (docs/RELEASING.md)." >&2
 	exit 1
 }
 

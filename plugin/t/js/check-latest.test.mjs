@@ -55,12 +55,13 @@ test('the plugin\'s repo.xml passes, and its version is reported', async () => {
   } finally { await s.close(); }
 });
 
-test('a 404 (an Android release promoted to Latest) fails loudly, saying why', async () => {
+test('a 404 (an Android release marked Latest) fails loudly, saying why', async () => {
   const s = await serve({});
   try {
     const r = await run([`${s.base}/repo.xml`]);
     assert.notEqual(r.code, 0);
-    assert.match(r.stderr, /pre-release/i, 'names the likely cause');
+    assert.match(r.stderr, /android-v\* release was marked Latest/, 'names the likely cause');
+    assert.match(r.stderr, /gh release edit v<version> --latest/, 'and the remedy');
   } finally { await s.close(); }
 });
 
