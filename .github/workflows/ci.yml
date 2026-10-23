@@ -357,7 +357,9 @@ jobs:
             rustc --version
             cargo ndk --version
             echo "ndk: $NDK_VERSION"
-            java -version 2>&1 | head -1
+            # The JDK Gradle runs under (JAVA_HOME), not the runner's default `java`: 1.15.7's
+            # file said 17 and 1.15.8's said 25 while both were built with 21.
+            "${JAVA_HOME:-/usr}/bin/java" -version 2>&1 | head -1
           } > dist-android/BUILDINFO.txt
           (cd dist-android && sha256sum LyrionAnywhere-* BUILDINFO.txt > SHA256SUMS && cat SHA256SUMS)
       # Signed provenance for the APKs and the app bundle (docs/RELEASING.md).
@@ -371,7 +373,7 @@ jobs:
         with:
           name: android-release
           path: dist-android/
-      - name: Publish the pre-release
+      - name: Publish the release (a full release, never Latest)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -385,8 +387,10 @@ jobs:
             --verify-tag --latest=false --title "Lyrion Anywhere for Android $VERSION" \
             --notes-file "docs/release-notes/android-$VERSION.md"
           # A full release, but never Latest: that spot is the plugin's (docs/RELEASING.md).
-          latest=$(gh release view "$GITHUB_REF_NAME" --json isLatest --jq .isLatest)
-          if [ "$latest" != false ]; then
+          # `gh release view` has no isLatest field (the 1.15.8 run failed here after
+          # publishing); the API says which release is Latest.
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)
+          if [ "$latest" = "$GITHUB_REF_NAME" ]; then
             echo "::error::$GITHUB_REF_NAME was published as Latest; the plugin's repo.xml URL is broken"
             exit 1
           fi
