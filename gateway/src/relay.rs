@@ -21,6 +21,8 @@
 //! stream cleanly and the client has had all of it. Every other end (a stall, a failure, a
 //! cancel, a newer request taking over) is an error, so the client can't mistake it for the
 //! end of the track: it resumes from `?offset=` instead, or reports the stream as failed.
+//! Before such an error the body hands control back once, so the bytes it has already
+//! yielded are written out: hyper drops a connection's unflushed output when a body fails.
 //!
 //! FLAC streams have their embedded artwork and padding dropped on the way in
 //! ([`crate::flac_strip`]), before anything is counted or remembered: every offset here
@@ -460,7 +462,14 @@ fn body(
         end,
     };
     futures_util::stream::unfold(cur, |mut cur| async move {
-        next_chunk(&mut cur).await.map(|item| (item, cur))
+        let item = next_chunk(&mut cur).await?;
+        if item.is_err() {
+            // hyper drops a connection's unflushed output when its body fails, so a chunk
+            // just yielded (an encoder's last bytes before it failed) would never reach the
+            // client. Hand control back once first: hyper writes out what it holds.
+            tokio::task::yield_now().await;
+        }
+        Some((item, cur))
     })
 }
 
@@ -894,5 +903,60 @@ mod tests {
             .unwrap();
         assert_eq!((n, err), (4, true));
         drop(feed);
+    }
+
+    /// Regression (CI, 18 October): bytes the body yielded just before an error never
+    /// reached the client. hyper drops a connection's unflushed output when its body fails,
+    /// so a chunk and a failure ready together (an encoder that wrote its last bytes and
+    /// exited with an error) lost the chunk. The failure now waits for a flush first.
+    /// A current-thread runtime makes this exact: both are queued before the server runs.
+    #[tokio::test]
+    async fn the_bytes_before_a_failure_reach_the_client() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (_relay, feed, b) = rig(1024, IDLE_TIMEOUT, UPSTREAM_READ_TIMEOUT).await;
+        let b = Arc::new(Mutex::new(Some(b)));
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::get(move || {
+                let b = b.lock().unwrap().take().expect("one request");
+                async move { Body::from_stream(b) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let mut conn = tokio::net::TcpStream::connect(addr).await.unwrap();
+        conn.write_all(b"GET / HTTP/1.1\r\nhost: test\r\n\r\n")
+            .await
+            .unwrap();
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = conn.read(&mut buf).await.unwrap();
+            assert!(n > 0, "the head arrives while the body waits");
+            got.extend_from_slice(&buf[..n]);
+        }
+        // Both at once, before the server's task runs again.
+        feed.send(Ok(Bytes::from_static(b"OggS"))).unwrap();
+        feed.send(Err(std::io::Error::other("the encoder failed")))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let n = conn.read(&mut buf).await.unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&buf[..n]);
+            }
+        })
+        .await
+        .expect("the connection ends");
+        let text = String::from_utf8_lossy(&got).into_owned();
+        let (head, rest) = text.split_once("\r\n\r\n").unwrap();
+        assert!(head.contains("chunked"), "{head}");
+        assert_eq!(
+            rest, "4\r\nOggS\r\n",
+            "the chunk, and no clean end after it"
+        );
     }
 }
