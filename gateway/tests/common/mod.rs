@@ -1015,6 +1015,16 @@ impl FakeLms {
         self.rec.lock().unwrap().http_paths.clone()
     }
 
+    /// The audio streams requested (`/stream.mp3?player=…`), leaving out JSON-RPC: a
+    /// session's one-time `playerpref` (see `Session::ensure_proxied_streaming`) goes only
+    /// when LMS's first frame arrives after the player's HELO, which is a matter of timing.
+    pub fn stream_requests(&self) -> Vec<String> {
+        self.http_paths()
+            .into_iter()
+            .filter(|p| p.starts_with("/stream"))
+            .collect()
+    }
+
     /// `/music/<id>/download` requests received: (path, Range header).
     pub fn downloads(&self) -> Vec<(String, Option<String>)> {
         self.rec.lock().unwrap().downloads.clone()

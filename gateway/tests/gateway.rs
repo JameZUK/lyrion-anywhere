@@ -818,9 +818,10 @@ async fn stream_download_resumes_from_an_offset() {
     got.extend_from_slice(&resumed.bytes().await.unwrap());
     assert_eq!(got, *h.lms.audio, "resumed download must be byte-identical");
     assert_eq!(
-        h.lms.http_paths().len(),
+        h.lms.stream_requests().len(),
         1,
-        "LMS must be asked for the stream only once"
+        "LMS must be asked for the stream only once: {:?}",
+        h.lms.http_paths()
     );
 
     let beyond = reqwest::Client::new()
@@ -882,7 +883,12 @@ async fn a_limited_request_sends_the_first_bytes_and_the_rest_follows() {
     let rest = get(format!("offset={}", got.len())).await;
     got.extend_from_slice(&rest.bytes().await.unwrap());
     assert_eq!(got, *audio, "byte-identical");
-    assert_eq!(h.lms.http_paths().len(), 1, "LMS asked once");
+    assert_eq!(
+        h.lms.stream_requests().len(),
+        1,
+        "LMS asked once: {:?}",
+        h.lms.http_paths()
+    );
     // A limit beyond the end: what there is, ending cleanly.
     let tail = get(format!("offset={}&limit=1000000", audio.len() - 5)).await;
     assert_eq!(
