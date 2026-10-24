@@ -334,6 +334,43 @@ pub fn stream_should_retry(status: u16) -> bool {
     status == 0 || status >= 500
 }
 
+/// Retries of a failing request that confirms a clean stream end before that end is taken
+/// as the track's end after all (see [`confirm_gives_up`]).
+pub const CONFIRM_RETRIES: u32 = 3;
+
+/// What to do when a stream response ends cleanly after bringing `brought` bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanEnd {
+    /// It is the end of the track.
+    End,
+    /// Maybe not: ask again from the offset reached (`?offset=`) before believing it.
+    Confirm,
+}
+
+/// The gateway ends a response cleanly only at the true end of the track, and with an
+/// error otherwise (for instance after a long wait for acknowledgements). A proxy on the
+/// way can pass that error on as a clean end (issue #12, through a Cloudflare Tunnel),
+/// which would look like the end of the track and skip the rest of it. At the true end the
+/// gateway answers a request from the offset reached at once, with an empty body;
+/// otherwise the rest of the audio follows. Only a response that brought nothing is taken
+/// as the end: a track costs one extra, empty request at most, and asking again always
+/// needs progress, so this never loops.
+pub fn clean_end_action(brought: u64) -> CleanEnd {
+    if brought > 0 {
+        CleanEnd::Confirm
+    } else {
+        CleanEnd::End
+    }
+}
+
+/// The request confirming a clean end failed before bringing anything (HTTP `status`, 0
+/// for a network error), after `retries` retries of it: whether to take the earlier clean
+/// end as the track's end, as before confirmations, rather than retry or fail the track.
+/// A refusal (anything [`stream_should_retry`] would not retry) gives up at once.
+pub fn confirm_gives_up(status: u16, retries: u32) -> bool {
+    !stream_should_retry(status) || retries >= CONFIRM_RETRIES
+}
+
 /// Backoff with jitter: about 0.5, 1, 2 and 4 s, then every 5 s, ±20 %. `random` is in
 /// 0..=1 (NaN counts as 0.5).
 pub fn backoff(attempt: u32, random: f64) -> Duration {
@@ -672,6 +709,29 @@ pub fn resumed_commands(acted: bool, paused: bool) -> Option<Vec<Vec<Value>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_clean_end_that_brought_nothing_is_the_end() {
+        assert_eq!(clean_end_action(0), CleanEnd::End);
+        assert_eq!(clean_end_action(1), CleanEnd::Confirm);
+        assert_eq!(clean_end_action(u64::MAX), CleanEnd::Confirm);
+    }
+
+    #[test]
+    fn a_confirmation_gives_up_on_a_refusal_or_after_its_retries() {
+        // Refused (the gateway never answers these mid-stream): the end it was.
+        for status in [400, 401, 403, 404, 410, 416, 499] {
+            assert!(confirm_gives_up(status, 0), "{status}");
+        }
+        // A network error or a 5xx is retried, a few times only.
+        for status in [0, 500, 502, 503, 599, u16::MAX] {
+            for retries in 0..CONFIRM_RETRIES {
+                assert!(!confirm_gives_up(status, retries), "{status} {retries}");
+            }
+            assert!(confirm_gives_up(status, CONFIRM_RETRIES), "{status}");
+            assert!(confirm_gives_up(status, u32::MAX), "{status}");
+        }
+    }
 
     fn point() -> RestartPoint {
         RestartPoint {

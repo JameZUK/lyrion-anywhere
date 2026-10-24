@@ -3359,6 +3359,12 @@ impl Drop for StreamWatch {
 /// network failure or a 5xx, with backoff, for as long as the gateway holds the session
 /// (`budget`, from the first failure in a row); anything else fails the track.
 ///
+/// A response that ends cleanly after bringing bytes is confirmed with one more request
+/// from the offset reached ([`protocol::clean_end_action`]): a proxy can pass the gateway's
+/// deliberate mid-stream end on as a clean one (issue #12). At the true end the gateway
+/// answers it at once with nothing; otherwise the rest follows. A confirmation refused, or
+/// failing after [`protocol::CONFIRM_RETRIES`] retries, takes the clean end as the end.
+///
 /// With the replay cache in use, the stream's first bytes are fingerprinted as they
 /// arrive; on a checked hit the download stops and the rest comes from the cache.
 async fn stream_task(job: StreamJob) {
@@ -3385,6 +3391,10 @@ async fn stream_task(job: StreamJob) {
     let mut tries = 0u32;
     let mut failing_since: Option<Instant> = None;
     let mut renewed = false;
+    // The last response ended cleanly: this request checks that it was the end.
+    let mut confirming = false;
+    // Failed confirmation requests in a row.
+    let mut confirm_retries = 0u32;
     let mut fpr = cache
         .as_ref()
         .map(|c| Fingerprinter::new(c.level, c.format));
@@ -3439,6 +3449,8 @@ async fn stream_task(job: StreamJob) {
                     });
                 }
                 let mut body = resp.into_body();
+                // Where this response started: `got - from` is what it brought.
+                let from = got;
                 let end = loop {
                     // Back-pressure: stop reading while the core's input is full.
                     while !want.load(Ordering::Acquire) {
@@ -3455,6 +3467,8 @@ async fn stream_task(job: StreamJob) {
                             got += data.len() as u64;
                             tries = 0;
                             failing_since = None;
+                            // More audio: the clean end before was not the end.
+                            confirming = false;
                             let known = fpr.as_mut().is_some_and(|f| f.push(&data));
                             if tx
                                 .send(Ev::StreamData {
@@ -3509,6 +3523,15 @@ async fn stream_task(job: StreamJob) {
                         }
                         continue;
                     }
+                    BodyEnd::Clean
+                        if protocol::clean_end_action(got - from)
+                            == protocol::CleanEnd::Confirm =>
+                    {
+                        // Maybe not the end: ask again from here, straight away.
+                        confirming = true;
+                        confirm_retries = 0;
+                        continue;
+                    }
                     BodyEnd::Clean => {
                         let digest = fpr.and_then(Fingerprinter::finish);
                         let _ = tx.send(Ev::StreamEnd { id, digest });
@@ -3536,6 +3559,15 @@ async fn stream_task(job: StreamJob) {
             Ok(resp) => resp.status().as_u16(),
             Err(_) => 0,
         };
+        if confirming {
+            if protocol::confirm_gives_up(status, confirm_retries) {
+                // Can't tell: take the clean end as the track's end, as before.
+                let digest = fpr.and_then(Fingerprinter::finish);
+                let _ = tx.send(Ev::StreamEnd { id, digest });
+                return;
+            }
+            confirm_retries += 1;
+        }
         let since = *failing_since.get_or_insert_with(Instant::now);
         if !protocol::stream_should_retry(status)
             || !protocol::stream_retry_allowed(since.elapsed(), budget)
