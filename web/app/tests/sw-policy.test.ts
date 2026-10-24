@@ -37,6 +37,12 @@ test('the app shell is stored: hashed files kept, the rest refreshed', () => {
 	expect(s('manifest.webmanifest')).toBe('network-first');
 	expect(s('icons/icon-192.png')).toBe('network-first');
 	expect(s('favicon.svg')).toBe('network-first');
+	// The boot guard and the externalised start-up script are part of the shell.
+	expect(s('boot-guard.js')).toBe('network-first');
+	expect(s('_app/boot.0123456789abcdef.js')).toBe('network-first');
+	expect(s('boot-guard.js?x=1')).toBe('bypass');
+	expect(s('player/boot-guard.js')).toBe('bypass');
+	expect(s('other/boot-guard.js')).toBe('bypass');
 	expect(s('_app/immutable/a.js', 'GET', sub)).toBe('cache-first');
 	expect(s('', 'GET', sub)).toBe('network-first');
 });

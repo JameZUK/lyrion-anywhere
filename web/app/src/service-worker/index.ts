@@ -20,7 +20,7 @@ const env: SwEnv = {
 sw.addEventListener('install', (event) => event.waitUntil(onInstall(env)));
 sw.addEventListener('activate', (event) => event.waitUntil(onActivate(env)));
 sw.addEventListener('fetch', (event) => {
-	const answer = onFetch(env, event.request);
+	const answer = onFetch(env, event.request, (p) => event.waitUntil(p));
 	if (answer) event.respondWith(answer); // otherwise the browser handles it as if there were no worker
 });
 sw.addEventListener('message', (event) => {
