@@ -137,6 +137,19 @@ export async function storageInfo(sm: StorageManagerLike | undefined = storageMa
 	return out;
 }
 
+/**
+ * The browser's storage estimate for the download manager's free-space check, or `{}` when
+ * it can't say (`navigator.storage` is withheld from plain-http pages; the check then
+ * leaves it to the storage limit and IndexedDB's own quota errors).
+ */
+export async function storageEstimate(sm: StorageManagerLike | undefined = storageManager()): Promise<{ usage?: number; quota?: number }> {
+	try {
+		return (await sm?.estimate?.()) ?? {};
+	} catch {
+		return {};
+	}
+}
+
 /** Ask the browser not to evict downloads under storage pressure. */
 export async function requestPersist(sm: StorageManagerLike | undefined = storageManager()): Promise<boolean> {
 	try {

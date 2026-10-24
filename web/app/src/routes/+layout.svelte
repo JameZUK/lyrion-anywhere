@@ -25,6 +25,7 @@
 	import { snapshotOf } from '#lib/offline/handoff.svelte';
 	import ContinueOn from '#lib/components/ContinueOn.svelte';
 	import StatusSlot from '#lib/components/StatusSlot.svelte';
+	import InsecureNotice from '#lib/components/InsecureNotice.svelte';
 	import Snackbar from '#lib/components/Snackbar.svelte';
 	import { forgetOwner, rememberOwner } from '#lib/offline/settings';
 	import { library } from '#lib/state/library.svelte';
@@ -237,7 +238,7 @@
 	{#if path === '/car'}
 		<!-- Car mode fills the screen: no navigation, player bar or tabs around it; the one status
 		     line still says when the server is out of reach. -->
-		<main class="car-shell"><StatusSlot />{@render children()}</main>
+		<main class="car-shell"><InsecureNotice /><StatusSlot />{@render children()}</main>
 	{:else}
 		<div class="shell">
 			<nav class="side" aria-label="Main">
@@ -251,6 +252,7 @@
 			<main class="content" class:on-np={path === '/'}>
 				<!-- The one status line (Wave 3.5, rule 1): moving > out of reach > busy > reconnecting,
 				     then this device's offers. At every width, in its own room, never over the controls. -->
+				<InsecureNotice />
 				<StatusSlot />
 				{@render children()}
 			</main>
