@@ -48,6 +48,8 @@ class FakeWorker {
 }
 
 let addModuleGate: Promise<void> | null = null;
+/** False: a context without `audioWorklet`, as on a plain-http page. */
+let worklets = true;
 /** Like a browser without a user gesture yet: contexts start suspended until one. */
 let gesture = { needed: false, given: false };
 class FakeAudioContext {
@@ -55,7 +57,10 @@ class FakeAudioContext {
 	state: 'running' | 'suspended' | 'closed' = gesture.needed ? 'suspended' : 'running';
 	sampleRate: number;
 	destination = {};
-	audioWorklet = { addModule: async () => addModuleGate ?? undefined };
+	// On the prototype, as in a browser (capability detection looks there).
+	get audioWorklet() {
+		return worklets ? { addModule: async () => addModuleGate ?? undefined } : undefined;
+	}
 	constructor(o: { sampleRate: number }) {
 		this.sampleRate = o.sampleRate;
 		FakeAudioContext.all.push(this);
@@ -103,6 +108,7 @@ beforeEach(() => {
 	FakeWorker.all = [];
 	FakeAudioContext.all = [];
 	addModuleGate = null;
+	worklets = true;
 	gesture = { needed: false, given: false };
 	session.current = { access_token: 't1' };
 	session.token = 't1';
@@ -126,6 +132,18 @@ test('starts in Web Audio mode with one context and hands its port to the worker
 	expect(open()[0]!.sampleRate).toBe(44100);
 	expect(w.cmds('start')).toHaveLength(1);
 	expect(w.cmds('rate-ready')).toEqual([{ cmd: 'rate-ready', rate: 44100 }]);
+});
+
+// Insecure contexts (plain http://) withhold audioWorklet; should Web Audio still be tried
+// (detection fooled), the start fails cleanly with the reason, and leaves no context open.
+test('a context without audioWorklet: a clear error, nothing left open, no worker', async () => {
+	worklets = false;
+	await device.start().catch(() => {});
+	await settle();
+	expect(FakeWorker.all).toHaveLength(0);
+	expect(open()).toHaveLength(0);
+	expect(device.state).toBe('error');
+	expect(device.log.some((l) => l.includes('need HTTPS'))).toBe(true);
 });
 
 // Regression: the worker repeated {rate} every 20 ms until the page confirmed, and the page

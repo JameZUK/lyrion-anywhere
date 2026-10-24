@@ -4,6 +4,7 @@
 // without the server (removing a download) stays available.
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { stubWebAudio } from './helpers/web-audio';
 import type { DownloadManager } from '#lib/offline/manager.svelte';
 import { CONNECTION_ID, UNREACHABLE_TEXT } from '#lib/state/reachability';
 
@@ -54,7 +55,7 @@ beforeAll(() => {
 afterAll(() => vi.unstubAllGlobals());
 
 beforeEach(async () => {
-	vi.stubGlobal('AudioWorkletNode', class {});
+	stubWebAudio();
 	vi.stubGlobal('Worker', class {});
 	fake.calls.length = 0;
 	fake.moves.length = 0;

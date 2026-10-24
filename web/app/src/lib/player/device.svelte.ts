@@ -746,6 +746,9 @@ class DevicePlayer {
 			return null;
 		};
 		try {
+			// Withheld on plain http:// (an insecure context); detection should have chosen the
+			// media element, so say clearly what is missing rather than fail on undefined.
+			if (!ctx.audioWorklet) throw new Error('Web Audio worklets are not available on this page (they need HTTPS)');
 			await ctx.audioWorklet.addModule(asset('worklet.js'));
 		} catch (e) {
 			abandon();
