@@ -17,6 +17,7 @@ Every name and address here is an example. Throughout:
    - [Option A: the LMS plugin (recommended)](#option-a-the-lms-plugin-recommended)
    - [Option B: Docker](#option-b-docker)
    - [Option C: built-in Cloudflare Tunnel](#option-c-built-in-cloudflare-tunnel)
+   - [Option D: your own VPN, no HTTPS](#option-d-your-own-vpn-no-https)
 3. [Configure the plugin](#3-configure-the-plugin)
 4. [Set up HTTPS (reverse proxy)](#4-set-up-https-reverse-proxy)
 5. [Create users](#5-create-users)
@@ -37,6 +38,7 @@ You need:
 - **A reverse proxy with an HTTPS certificate** for that name: nginx, Caddy, Traefik or similar. Let's Encrypt certificates are free. If you have nothing yet, [Caddy](https://caddyserver.com) is the quickest (§4.2): it gets and renews certificates by itself.
 - **Port 443 forwarded** from your router to the reverse proxy (and port 80, if your certificate tool uses HTTP validation).
 - **Or, instead of the last three:** a domain on Cloudflare and the plugin's built-in Cloudflare Tunnel ([Option C](#option-c-built-in-cloudflare-tunnel)), which needs no reverse proxy, no certificate and no forwarded port.
+- **Or, instead of the domain, the proxy and the forwarded port:** a VPN your devices already use to reach home ([Option D](#option-d-your-own-vpn-no-https)).
 - **Optional: `ffmpeg`** on the machine running the gateway (e.g. `sudo apt install ffmpeg`; it needs the `libmp3lame` and `libopus` encoders, which distribution packages include). It is used for offline downloads as MP3 or Opus, and for the lower-data streams (*High* and *Data saver*) that phones can ask for on mobile data. Without it, downloads are offered in their original format only and streams are always sent as they are. Lyrion Anywhere doesn't bundle ffmpeg.
 
 What you must **not** do: forward or expose LMS's own ports (3483, 9000, 9090) to the internet. Lyrion Anywhere exists so that you never have to.
@@ -127,6 +129,7 @@ The main `serve` options:
 | `--lms-http-port`, `--lms-cli-port`, `--lms-slimproto-port` | 9000, 9090, 3483 | LMS's ports, if you changed them. |
 | `--allowed-origin` | | Your public URL, e.g. `https://music.example.com`. |
 | `--trusted-proxy` | | The proxy's address, if it isn't on the same machine (repeatable). |
+| `--trusted-network` | | A private network (CIDR, e.g. `10.8.0.0/24`) whose devices may connect over plain HTTP, such as your VPN (repeatable; [Option D](#option-d-your-own-vpn-no-https)). Passwords and sign-ins cross it unencrypted. Bind `--listen` to the VPN interface's address when you use it. A network outside the private ranges stops the gateway from starting. |
 | `--client-ip-header` | | Behind a CDN, the header carrying the visitor's address, e.g. `CF-Connecting-IP` (see §4.3). |
 | `--admin-listen` | `127.0.0.1:9445` | The admin API, for the plugin and the `admin` commands. Never expose it. |
 | `--ffmpeg` | `ffmpeg` on `PATH` | ffmpeg for MP3/Opus downloads (an absolute path). |
@@ -257,6 +260,37 @@ The section's status line says what failed, and its log has `cloudflared`'s own 
 | **… the API token is missing a permission; it needs Account › Cloudflare Tunnel › Edit, Zone › DNS › Edit and Zone › Zone › Read.** | The message starts with the step that failed. Edit the API token in Cloudflare to add the missing permission (for the right account and zone), then press **Create and start** again. |
 | **The stored tunnel token could not be read: register the tunnel again.** | The token file was removed or damaged. **Remove**, **Install**, and register again. |
 
+### Option D: your own VPN, no HTTPS
+
+If your devices already reach home through a VPN (WireGuard, Tailscale, your router's VPN), you can skip the domain, the certificate and the forwarded port, and connect to the gateway over the VPN.
+
+**First, the ways that need no change at all.** Both of these keep HTTPS, so every browser feature keeps working (installing the web app, offline downloads, the background-capable player):
+
+- **Tailscale Serve:** `tailscale serve` gives the LMS machine an `https://` address on your tailnet with a certificate Tailscale manages (turn on HTTPS certificates for your tailnet first). Point it at the gateway (`http://127.0.0.1:9443`) and use that address as the *Public URL*.
+- **Any VPN plus a reverse proxy with an internal certificate:** run the proxy of section 4 on a VPN address, with a certificate your devices trust.
+
+If you'd rather not run HTTPS at all, the gateway can accept unencrypted connections from your VPN instead. **The VPN encrypts the traffic between your devices and home; inside it, passwords, sign-ins and music cross in clear.** Only do this for a network you control, and keep the gateway off every other network. Set it up on the plugin's settings page (section 3):
+
+| Setting | What to enter |
+|---|---|
+| **Listen address** | The LMS machine's address **on the VPN interface**, with the gateway's port, e.g. `10.8.0.1:9443`. Not `127.0.0.1`, which the VPN can't reach, and not `0.0.0.0`, which would offer the unencrypted listener on every network the machine is on. |
+| **Trusted networks** | The VPN's subnet, e.g. `10.8.0.0/24` (several, comma-separated, if you have more than one). Only private ranges are accepted: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10` (Tailscale's), `fc00::/7` and `fe80::/10`, and nothing that includes loopback. |
+| **Public URL** | `http://10.8.0.1:9443`, the same address and port, with *Allow http:// anyway* ticked. With a literal private address like this, *Add a device* shows a QR code and pairing link that point there. |
+
+Then:
+
+1. **Firewall the port to the VPN interface**, so nothing else reaches it even by mistake. With `ufw` and a WireGuard interface called `wg0`, for example: `sudo ufw allow in on wg0 to any port 9443 proto tcp`, and no other rule for 9443.
+2. **Connect a device to the VPN** and open `http://10.8.0.1:9443`, or in the Android app enter that address (or scan the QR code from *Add a device*).
+
+What to expect:
+
+- **The Android app** accepts `http://` only to a literal private address, never to a name (a name could lead somewhere public and carry your password in clear). Before signing in it warns that the connection isn't encrypted and asks you to confirm, and while you are signed in *Settings* shows an **Unencrypted** badge beside the server.
+- **Browsers** show a banner saying the connection is unencrypted. Over plain HTTP they withhold features from any page that isn't on `localhost`: the web app can't be installed, can't keep music for offline use, and plays through the browser's media element (as on the iPad), not its background-capable player. Everything else works. For the full set, use one of the HTTPS ways above.
+- **What crosses the VPN in clear:** passwords when signing in, sign-in tokens and pairing codes, two-step codes, your library, playlists and artwork, and the music itself. LMS's own ports still never need to be reachable.
+- **Off the VPN**, nothing changes: a plain-HTTP request from any address outside the trusted networks (other than the LMS machine itself) is refused with `403 TLS required`, as before.
+
+With Docker, pass the same as flags: `--listen 10.8.0.1:9443 --trusted-network 10.8.0.0/24` ([`DEPLOY.md`](DEPLOY.md#trusted-networks-a-vpn-without-https)).
+
 ## 3. Configure the plugin
 
 Open *Settings › Plugins › Lyrion Anywhere* in LMS. (Docker users: the same settings are the `serve` options above.)
@@ -264,9 +298,10 @@ Open *Settings › Plugins › Lyrion Anywhere* in LMS. (Docker users: the same 
 | Setting | What to enter |
 |---|---|
 | **Gateway: Enabled** | Ticked. |
-| **Listen address** | `127.0.0.1:9443` if the reverse proxy runs on the LMS machine. Otherwise the LMS machine's LAN address, e.g. `10.0.0.20:9443`; then firewall that port so only the proxy can reach it. |
-| **Public URL** | `https://music.example.com`, exactly as people will type it. An `http://` address is saved only if you also tick *Allow http:// anyway* (it sends passwords unencrypted; for testing on a private network only). |
+| **Listen address** | `127.0.0.1:9443` if the reverse proxy runs on the LMS machine. Otherwise the LMS machine's LAN address, e.g. `10.0.0.20:9443`; then firewall that port so only the proxy can reach it. Over your own VPN without HTTPS, its VPN address ([Option D](#option-d-your-own-vpn-no-https)). |
+| **Public URL** | `https://music.example.com`, exactly as people will type it. An `http://` address is saved only if you also tick *Allow http:// anyway* (it sends passwords unencrypted): use one only for a private address reached over your VPN ([Option D](#option-d-your-own-vpn-no-https)), or for testing. |
 | **Trusted proxies** | The proxy's LAN address (e.g. `10.0.0.10`) if it runs on another machine; otherwise leave empty. |
+| **Trusted networks** | Leave empty, unless you connect over your own VPN without HTTPS: then the VPN's subnet, e.g. `10.8.0.0/24` ([Option D](#option-d-your-own-vpn-no-https)). Devices on these networks connect unencrypted. Only private networks are accepted. |
 | **Client address header** | Leave empty, unless you're behind Cloudflare or another CDN: see §4.3. The built-in Cloudflare Tunnel (Option C) needs neither this nor *Public URL* changed: it overrides both while it runs. |
 | **Gateway path** (under *Advanced (for developers)*) | Leave empty. It's for development and ignored unless LMS is started with `ANYWHERE_ALLOW_GATEWAY_PATH=1`. |
 | **Transcoded downloads** | *Offer MP3 and Opus* ticked (the default) to offer MP3 and Opus downloads as well as the original. Needs ffmpeg (§1). Unticking it also turns off the lower-data streams for mobile data, which use the same ffmpeg. |
@@ -359,7 +394,7 @@ Docker users run these from the command line instead, e.g. `docker exec -i lyrio
 
 The Android app can sign in without anyone typing a password on the phone: it scans a QR code holding a one-time pairing code and your server's address. Each code works once, for one user, and expires after 10 minutes.
 
-- **As the admin:** click **Add a device** next to a user on the plugin's settings page. It shows the code in large letters, the QR code and how long the code has left. The QR code needs the **Public URL** setting (section 3) to be your `https://` address; without it you get the code alone and a note saying so (enter the server address in the app, then type the code).
+- **As the admin:** click **Add a device** next to a user on the plugin's settings page. It shows the code in large letters, the QR code and how long the code has left. The QR code needs the **Public URL** setting (section 3) to be your `https://` address, or, over your own VPN ([Option D](#option-d-your-own-vpn-no-https)), `http://` and the gateway's private address; without one of these you get the code alone and a note saying so (enter the server address in the app, then type the code).
 - **As a user:** in the web app, open *Settings › Account › Add another device*, enter your password and choose **Show a code**. Anyone can do this for their own account (a few times an hour); it never signs in as anyone else.
 - **On the phone:** in the Android app, choose **Scan QR code** on the welcome screen (or **Pair with a QR code instead** on the sign-in screen) and point the camera at the code (the app asks for camera access then, not before), or type the code. The app shows which server it will sign in to and asks you to confirm.
 - **Pairing links:** the same link the QR code holds, `lyrion-anywhere://pair?server=…&code=…`, opens the app's pairing screen when tapped on the phone (for example in a message to yourself). It only fills the screen in: the app still asks you to confirm, and if the phone is already signed in it first asks whether to sign out (downloads are kept).
@@ -412,6 +447,9 @@ From a phone **off your Wi-Fi** (on mobile data):
 | Symptom | Likely cause and fix |
 |---|---|
 | The settings page shows **gateway exited: …** | The message after the colon is the gateway's own reason: usually a port already in use, or a bad *Listen address*. Fix it, then click **Restart gateway** (and again to confirm). |
+| **403 TLS required** (in the browser or the app, over your VPN) | The gateway only serves plain HTTP to devices inside a *Trusted network*. Either the device's address isn't inside one (check the VPN's subnet against the setting, and that the device really is on the VPN), or the request carried proxy headers (`X-Forwarded-For`, `X-Forwarded-Proto`): a proxy in between must use HTTPS and be listed under *Trusted proxies*. |
+| **Trusted networks not saved: … is not a private network** (or *includes loopback*, *is not a network*) | Only private networks can be trusted: within `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10`, `fc00::/7` or `fe80::/10`, written like `10.8.0.0/24`. Loopback is always allowed, so leave it out. Nothing is saved until every entry is valid. |
+| **Trusted networks are saved, but the gateway listens on 127.0.0.1:9443** | Devices on the VPN can't reach a loopback address. Set the *Listen address* to the LMS machine's VPN address, e.g. `10.8.0.1:9443`. |
 | **Settings not saved: the form was out of date** | The settings form carries a token that changes when LMS restarts. Reload the page and save again. |
 | **502 Bad Gateway** from the proxy | The gateway isn't running, or the proxy points to the wrong address. Check the *Status* panel and the proxy's `upstream`/`reverse_proxy` address. |
 | **Sign-in fails with "too many attempts"** | The lockout is working (5 failures in 15 minutes). It applies to the address that failed: wait 15 minutes, or sign in from another network (mobile data); repeated lockouts last longer, up to a day. Someone guessing your password from elsewhere can slow sign-ins for your username to a couple a minute, but can't lock you out. Signing in on more than 10 new devices in an hour is also refused for an hour. If it happens to everyone, the proxy isn't passing the real client address (see §4 and §4.3). |
