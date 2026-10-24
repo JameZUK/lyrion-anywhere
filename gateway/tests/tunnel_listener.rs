@@ -70,12 +70,15 @@ fn start(public: SocketAddr, tunnel: Option<&str>, extra: &[&str]) -> Gw {
         .env("RUST_LOG", "warn")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        // Kept, so a gateway that does not come up can say why.
+        .stderr(Stdio::from(
+            std::fs::File::create(data.join(STDERR)).unwrap(),
+        ));
     if let Some(t) = tunnel {
         cmd.arg("--tunnel-listen").arg(t);
     }
     let child = cmd.spawn().unwrap();
-    let gw = Gw {
+    let mut gw = Gw {
         child,
         data,
         public,
@@ -85,10 +88,23 @@ fn start(public: SocketAddr, tunnel: Option<&str>, extra: &[&str]) -> Gw {
     gw
 }
 
+/// The gateway's standard error, in its data directory.
+const STDERR: &str = "gateway.stderr";
+
 impl Gw {
-    fn wait_up(&self) {
-        let deadline = Instant::now() + Duration::from_secs(20);
+    /// Waits for both listeners and the admin secret. A gateway that exits, or is not up
+    /// within a minute (several gateways start at once here, on a loaded CI runner), fails the
+    /// test with the end of its standard error, so the cause is in the log rather than a bare
+    /// "never started" (seen once on the v0.7.2 tag run, 2026-10-24).
+    fn wait_up(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(60);
         while Instant::now() < deadline {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                panic!(
+                    "the gateway exited ({status}) before it was up:\n{}",
+                    self.stderr_tail()
+                );
+            }
             if TcpStream::connect(self.public).is_ok()
                 && TcpStream::connect(self.admin).is_ok()
                 && self.data.join("admin.secret").exists()
@@ -97,7 +113,24 @@ impl Gw {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        panic!("the gateway never started");
+        panic!(
+            "the gateway was not up after 60 s (public {}, admin {}):\n{}",
+            TcpStream::connect(self.public).is_ok(),
+            TcpStream::connect(self.admin).is_ok(),
+            self.stderr_tail()
+        );
+    }
+
+    /// The last lines the gateway wrote to standard error.
+    fn stderr_tail(&self) -> String {
+        let s = std::fs::read_to_string(self.data.join(STDERR)).unwrap_or_default();
+        let lines: Vec<&str> = s.lines().collect();
+        let tail = &lines[lines.len().saturating_sub(20)..];
+        if tail.is_empty() {
+            "(nothing on its standard error)".to_string()
+        } else {
+            tail.join("\n")
+        }
     }
 
     fn tunnel_status(&self) -> Value {
