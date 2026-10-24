@@ -1185,6 +1185,295 @@ impl Proxy {
     }
 }
 
+/// What a [`StreamProxy`] does with one `/v1/stream/` request.
+#[derive(Debug, Clone)]
+pub enum StreamAct {
+    /// Pass it to the gateway and the answer back, as it is (a gateway error mid-body stays
+    /// an error).
+    Pass,
+    /// Pass it on, but end the answer cleanly after this many body bytes, as a proxy that
+    /// turns the gateway's deliberate mid-stream end into a clean one (issue #12).
+    CleanEndAfter(u64),
+    /// Answer with this status and no body, without asking the gateway.
+    Refuse(u16),
+    /// Close the connection at once (a network error).
+    Drop,
+    /// Answer 200 with this body, ending cleanly, without asking the gateway.
+    Reply(Vec<u8>),
+}
+
+/// One `/v1/stream/` request through a [`StreamProxy`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamHit {
+    /// The request target (path and query).
+    pub target: String,
+    /// The status the client got (0: none, the connection was closed).
+    pub status: u16,
+    /// Body bytes the client got.
+    pub bytes: u64,
+    /// The body ended cleanly (its last chunk), not by the connection closing.
+    pub clean: bool,
+}
+
+/// An HTTP-aware proxy in front of the gateway that does to each `/v1/stream/` request what
+/// [`StreamProxy::plan`] says (in order; [`StreamAct::Pass`] once it runs out) and records
+/// it. Every other request passes unchanged; WebSocket upgrades are piped both ways.
+/// Requests are made `Connection: close`, so each connection carries exactly one.
+pub struct StreamProxy {
+    pub addr: SocketAddr,
+    pub plan: Arc<Mutex<std::collections::VecDeque<StreamAct>>>,
+    pub hits: Arc<Mutex<Vec<StreamHit>>>,
+}
+
+/// Read from `r` until a blank line ends an HTTP head: (head, bytes read past it).
+async fn read_head<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> Option<(String, Vec<u8>)> {
+    let mut buf = Vec::new();
+    let mut piece = [0u8; 8192];
+    loop {
+        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            let rest = buf.split_off(i + 4);
+            return Some((String::from_utf8_lossy(&buf).into_owned(), rest));
+        }
+        if buf.len() > 64 * 1024 {
+            return None;
+        }
+        let n = r.read(&mut piece).await.ok()?;
+        if n == 0 {
+            return None;
+        }
+        buf.extend_from_slice(&piece[..n]);
+    }
+}
+
+/// `head` with its `Connection` headers replaced by `Connection: close`.
+fn closing(head: &str) -> String {
+    let mut out = String::new();
+    for line in head.trim_end_matches("\r\n").split("\r\n") {
+        if !line.to_ascii_lowercase().starts_with("connection:") {
+            out.push_str(line);
+            out.push_str("\r\n");
+        }
+    }
+    out.push_str("Connection: close\r\n\r\n");
+    out
+}
+
+/// A buffered reader of what the gateway sends, starting with `pending`.
+struct Upstream {
+    r: tokio::net::tcp::OwnedReadHalf,
+    pending: Vec<u8>,
+}
+
+impl Upstream {
+    async fn fill(&mut self) -> bool {
+        let mut piece = [0u8; 16 * 1024];
+        match self.r.read(&mut piece).await {
+            Ok(n) if n > 0 => {
+                self.pending.extend_from_slice(&piece[..n]);
+                true
+            }
+            _ => false,
+        }
+    }
+    async fn line(&mut self) -> Option<String> {
+        loop {
+            if let Some(i) = self.pending.windows(2).position(|w| w == b"\r\n") {
+                let line = String::from_utf8_lossy(&self.pending[..i]).into_owned();
+                self.pending.drain(..i + 2);
+                return Some(line);
+            }
+            if self.pending.len() > 4096 || !self.fill().await {
+                return None;
+            }
+        }
+    }
+    async fn take(&mut self, n: usize) -> Option<Vec<u8>> {
+        while self.pending.len() < n {
+            if !self.fill().await {
+                return None;
+            }
+        }
+        Some(self.pending.drain(..n).collect())
+    }
+}
+
+impl StreamProxy {
+    pub async fn start(target: SocketAddr) -> StreamProxy {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let plan: Arc<Mutex<std::collections::VecDeque<StreamAct>>> = Arc::default();
+        let hits: Arc<Mutex<Vec<StreamHit>>> = Arc::default();
+        let (p, h) = (plan.clone(), hits.clone());
+        tokio::spawn(async move {
+            while let Ok((client, _)) = listener.accept().await {
+                let (p, h) = (p.clone(), h.clone());
+                tokio::spawn(async move {
+                    Self::serve(client, target, p, h).await;
+                });
+            }
+        });
+        StreamProxy { addr, plan, hits }
+    }
+
+    pub fn server(&self) -> Arc<Server> {
+        Server::new(format!("http://{}", self.addr)).unwrap()
+    }
+
+    /// Queue what to do with the next stream requests.
+    pub fn then(&self, acts: impl IntoIterator<Item = StreamAct>) {
+        self.plan.lock().unwrap().extend(acts);
+    }
+
+    pub fn hits(&self) -> Vec<StreamHit> {
+        self.hits.lock().unwrap().clone()
+    }
+
+    async fn serve(
+        mut client: tokio::net::TcpStream,
+        target: SocketAddr,
+        plan: Arc<Mutex<std::collections::VecDeque<StreamAct>>>,
+        hits: Arc<Mutex<Vec<StreamHit>>>,
+    ) {
+        let Some((head, rest)) = read_head(&mut client).await else {
+            return;
+        };
+        let request_target = head.split(' ').nth(1).unwrap_or("").to_string();
+        let upgrade = head.to_ascii_lowercase().contains("\r\nupgrade:");
+        let Ok(mut upstream) = tokio::net::TcpStream::connect(target).await else {
+            return;
+        };
+        if upgrade || !request_target.starts_with("/v1/stream/") {
+            let head = if upgrade { head } else { closing(&head) };
+            if upstream.write_all(head.as_bytes()).await.is_err()
+                || upstream.write_all(&rest).await.is_err()
+            {
+                return;
+            }
+            let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            return;
+        }
+        let act = plan.lock().unwrap().pop_front().unwrap_or(StreamAct::Pass);
+        let mut hit = StreamHit {
+            target: request_target,
+            status: 0,
+            bytes: 0,
+            clean: false,
+        };
+        let record = |hit: StreamHit| hits.lock().unwrap().push(hit);
+        let limit = match act {
+            StreamAct::Drop => return record(hit),
+            StreamAct::Refuse(status) => {
+                let answer = format!(
+                    "HTTP/1.1 {status} Refused\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                );
+                if client.write_all(answer.as_bytes()).await.is_ok() {
+                    hit.status = status;
+                    hit.clean = true;
+                }
+                return record(hit);
+            }
+            StreamAct::Reply(body) => {
+                let mut answer = b"HTTP/1.1 200 OK\r\ncontent-type: audio/flac\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n".to_vec();
+                if !body.is_empty() {
+                    answer.extend_from_slice(format!("{:x}\r\n", body.len()).as_bytes());
+                    answer.extend_from_slice(&body);
+                    answer.extend_from_slice(b"\r\n");
+                }
+                answer.extend_from_slice(b"0\r\n\r\n");
+                if client.write_all(&answer).await.is_ok() {
+                    hit.status = 200;
+                    hit.bytes = body.len() as u64;
+                    hit.clean = true;
+                }
+                let _ = client.shutdown().await;
+                return record(hit);
+            }
+            StreamAct::Pass => u64::MAX,
+            StreamAct::CleanEndAfter(n) => n,
+        };
+        if upstream.write_all(closing(&head).as_bytes()).await.is_err() {
+            return record(hit);
+        }
+        let (r, _w) = upstream.into_split();
+        let mut up = Upstream {
+            r,
+            pending: Vec::new(),
+        };
+        // The answer's head, passed on as it is.
+        let mut head = String::new();
+        loop {
+            let Some(line) = up.line().await else {
+                return record(hit);
+            };
+            let done = line.is_empty();
+            head.push_str(&line);
+            head.push_str("\r\n");
+            if done {
+                break;
+            }
+        }
+        hit.status = head
+            .split(' ')
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        if client.write_all(head.as_bytes()).await.is_err() {
+            return record(hit);
+        }
+        if !head
+            .to_ascii_lowercase()
+            .contains("transfer-encoding: chunked")
+        {
+            // Not a stream body (an error answer): the rest as it is.
+            let _ = client.write_all(&up.pending).await;
+            let (mut r, mut c) = (up.r, client);
+            let _ = tokio::io::copy(&mut r, &mut c).await;
+            hit.clean = true;
+            return record(hit);
+        }
+        // The chunked body, re-chunked, until the gateway's last chunk or the limit.
+        loop {
+            let Some(size) = up.line().await else {
+                // The gateway's side broke mid-body: so does the client's.
+                return record(hit);
+            };
+            let Ok(size) = u64::from_str_radix(size.split(';').next().unwrap_or("").trim(), 16)
+            else {
+                return record(hit);
+            };
+            if size == 0 {
+                break;
+            }
+            let Some(mut data) = up.take(size as usize).await else {
+                return record(hit);
+            };
+            if up.take(2).await.is_none() {
+                return record(hit);
+            }
+            let room = limit - hit.bytes;
+            let cut = (data.len() as u64) >= room;
+            data.truncate(room.min(data.len() as u64) as usize);
+            if !data.is_empty() {
+                let mut piece = format!("{:x}\r\n", data.len()).into_bytes();
+                piece.extend_from_slice(&data);
+                piece.extend_from_slice(b"\r\n");
+                if client.write_all(&piece).await.is_err() {
+                    return record(hit);
+                }
+                hit.bytes += data.len() as u64;
+            }
+            if cut {
+                break;
+            }
+        }
+        if client.write_all(b"0\r\n\r\n").await.is_ok() {
+            hit.clean = true;
+        }
+        let _ = client.shutdown().await;
+        record(hit);
+    }
+}
+
 /// Decode base32 (RFC 4648, no padding), for TOTP secrets.
 pub fn base32_decode(s: &str) -> Vec<u8> {
     let mut out = Vec::new();

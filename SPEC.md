@@ -166,6 +166,7 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
    - **One session per device:** a new session for a device ends its previous one.
    - **Slow clients:** a socket whose outgoing queue fills is closed (1013) and handled like a dropped connection, so the client resumes.
    - **Stream lifetime:** ending a session stops its stream relay at once. A relay also ends after 60 s without data from LMS, or ten minutes without an ack while the client's window is full (a slow or paused client is not idle; the replay window always reaches back to the last ack, so such a client resumes from `?offset=`).
+   - **Clean ends are confirmed:** the relay ends a response cleanly only at the true end of the track, but a proxy on the way (a Cloudflare Tunnel, issue #12) can pass its deliberate mid-stream end on as a clean one. Both players (the web app since 2026-10-19, Android since 2026-10-24) therefore confirm a clean end that brought any bytes with one more `?offset=` request from the byte reached: at the true end the gateway answers it at once with an empty `200`, otherwise the rest follows. A track costs one extra, empty request; a confirmation that is refused, or keeps failing (Android: after 3 retries), counts as the end, as before.
 
 ### 5.2 Control (`POST /v1/rpc`, `WS /v1/events`)
 

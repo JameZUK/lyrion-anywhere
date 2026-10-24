@@ -109,6 +109,8 @@ struct Rig {
     cache: Option<std::path::PathBuf>,
     /// The downloads folder the player reads, if any.
     downloads: Option<std::path::PathBuf>,
+    /// The HTTP-aware proxy that plays tricks on stream requests, if any.
+    streams: Option<StreamProxy>,
 }
 
 /// How a rig is set up (see [`rig_opts`]).
@@ -141,6 +143,8 @@ struct RigOpts {
     ignore_limit: bool,
     /// A proxy that records what the player sends on each connection.
     record: bool,
+    /// An HTTP-aware proxy in front, for tricks on stream requests ([`StreamProxy`]).
+    stream_proxy: bool,
 }
 
 async fn rig(with_proxy: bool) -> Rig {
@@ -217,9 +221,15 @@ async fn rig_opts(o: RigOpts) -> Rig {
     } else {
         None
     };
-    let server: Arc<Server> = match &proxy {
-        Some(p) => p.server(),
-        None => h.server(),
+    let streams = if o.stream_proxy {
+        Some(StreamProxy::start(h.addr).await)
+    } else {
+        None
+    };
+    let server: Arc<Server> = match (&proxy, &streams) {
+        (Some(p), _) => p.server(),
+        (None, Some(s)) => s.server(),
+        (None, None) => h.server(),
     };
     let session = Session::new(server, MemStore::new(), "Test phone".into()).unwrap();
     session
@@ -337,6 +347,7 @@ async fn rig_opts(o: RigOpts) -> Rig {
         pause_pull,
         cache,
         downloads,
+        streams,
     }
 }
 
@@ -3794,4 +3805,239 @@ async fn signing_out_answers_the_gateways_close_frame() {
     let s = socket.clone();
     wait_for("a close frame", move || s.ws_opcodes().contains(&8)).await;
     assert_ne!(socket.end(), Some(ClientEnd::Reset), "closed, not reset");
+}
+
+// --- Confirming a clean stream end (#12 follow-up) ---------------------------------------
+//
+// The gateway ends a stream response cleanly only at the true end of the track. A proxy on
+// the way (a Cloudflare Tunnel) can pass its deliberate mid-stream end on as a clean one,
+// and the player would take it for the end of the track. A clean end that brought bytes is
+// confirmed with one more `?offset=` request: empty at the true end, the rest otherwise.
+
+/// The `?offset=` of a stream request target (0 without one).
+fn offset_of(target: &str) -> u64 {
+    target
+        .split_once('?')
+        .map(|(_, q)| q)
+        .unwrap_or("")
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("offset="))
+        .map_or(0, |v| v.parse().unwrap())
+}
+
+async fn stream_rig() -> Rig {
+    rig_opts(RigOpts {
+        stream_proxy: true,
+        ..RigOpts::default()
+    })
+    .await
+}
+
+/// Play `track` to its end (STMu) through the stream proxy, after queueing `acts`.
+async fn play_through(r: &mut Rig, track: Vec<u8>, acts: Vec<StreamAct>) {
+    r.streams.as_ref().unwrap().then(acts);
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(track));
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMu", 1, 40).await;
+    r.stop_pulling();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_true_stream_end_costs_one_empty_confirmation() {
+    let mut r = stream_rig().await;
+    let track = flac::encode(44_100, 16, &flac::noise(44_100, 16, 91));
+    let want = flac::decode(&track).1;
+    play_through(&mut r, track, vec![]).await;
+    assert_bits_equal(&r.pulled.all(), &want, "the whole track");
+    let hits = r.streams.as_ref().unwrap().hits();
+    assert_eq!(hits.len(), 2, "{hits:?}");
+    let len = hits[0].bytes;
+    assert!(len > 0 && hits[0].clean && offset_of(&hits[0].target) == 0);
+    assert_eq!(offset_of(&hits[1].target), len, "confirmed from the end");
+    assert_eq!(
+        (hits[1].status, hits[1].bytes, hits[1].clean),
+        (200, 0, true)
+    );
+    assert_eq!(r.count("STMd"), 1);
+    assert_eq!(r.h.lms.stream_requests(), 1);
+    r.player.stop();
+}
+
+/// Regression (#12 on Android): a proxy ending the response cleanly mid-stream made the
+/// player take it for the end of the track and skip the rest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_early_clean_end_is_confirmed_and_the_rest_fetched() {
+    let mut r = stream_rig().await;
+    let track = flac::encode(44_100, 16, &flac::noise(44_100 * 2, 16, 92));
+    let want = flac::decode(&track).1;
+    const CUT: u64 = 128 * 1024;
+    assert!(track.len() as u64 > 2 * CUT);
+    play_through(&mut r, track, vec![StreamAct::CleanEndAfter(CUT)]).await;
+    assert_bits_equal(
+        &r.pulled.all(),
+        &want,
+        "the whole track, past the early end",
+    );
+    let hits = r.streams.as_ref().unwrap().hits();
+    assert_eq!(hits.len(), 3, "{hits:?}");
+    assert_eq!((hits[0].bytes, hits[0].clean), (CUT, true), "cut cleanly");
+    assert_eq!(offset_of(&hits[1].target), CUT, "confirmed from the cut");
+    assert!(hits[1].bytes > CUT && hits[1].clean, "the rest followed");
+    let len = CUT + hits[1].bytes;
+    assert_eq!(
+        offset_of(&hits[2].target),
+        len,
+        "then confirmed at the true end"
+    );
+    assert_eq!((hits[2].status, hits[2].bytes), (200, 0));
+    assert_eq!(r.count("STMd"), 1);
+    assert_eq!(
+        r.h.lms.stream_requests(),
+        1,
+        "the gateway resumed its upstream"
+    );
+    r.player.stop();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_confirmation_ends_the_track_as_before() {
+    let mut r = stream_rig().await;
+    let track = flac::encode(44_100, 16, &flac::noise(44_100, 16, 93));
+    let want = flac::decode(&track).1;
+    let t = std::time::Instant::now();
+    play_through(&mut r, track, vec![StreamAct::Pass, StreamAct::Refuse(404)]).await;
+    assert_bits_equal(&r.pulled.all(), &want, "the whole track");
+    let hits = r.streams.as_ref().unwrap().hits();
+    assert_eq!(hits.len(), 2, "refused: never asked again {hits:?}");
+    assert_eq!(offset_of(&hits[1].target), hits[0].bytes);
+    assert_eq!(hits[1].status, 404);
+    assert!(t.elapsed() < Duration::from_secs(20), "no hanging on to it");
+    assert_eq!(r.count("STMd"), 1);
+    assert_eq!(r.count("STMn"), 0, "not a failed track");
+    r.player.stop();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_confirmation_gives_up_after_a_few_retries() {
+    let mut r = stream_rig().await;
+    let track = flac::encode(44_100, 16, &flac::noise(44_100, 16, 94));
+    let want = flac::decode(&track).1;
+    let mut acts = vec![StreamAct::Pass];
+    for _ in 0..5 {
+        acts.push(StreamAct::Drop);
+        acts.push(StreamAct::Refuse(503));
+    }
+    play_through(&mut r, track, acts).await;
+    assert_bits_equal(&r.pulled.all(), &want, "the whole track");
+    // Nothing more is asked once it gave up.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let hits = r.streams.as_ref().unwrap().hits();
+    // The download, the confirmation and its 3 retries (protocol::CONFIRM_RETRIES).
+    assert_eq!(hits.len(), 1 + 1 + 3, "{hits:?}");
+    let end = hits[0].bytes;
+    assert!(
+        hits[1..]
+            .iter()
+            .all(|h| offset_of(&h.target) == end && h.bytes == 0)
+    );
+    assert!(hits.iter().any(|h| h.status == 503) && hits.iter().any(|h| h.status == 0));
+    assert_eq!(r.count("STMd"), 1);
+    assert_eq!(r.count("STMn"), 0, "not a failed track");
+    r.player.stop();
+}
+
+/// Robustness: a confirmation answered with more bytes than the track has (a hostile or
+/// broken server) is fed and confirmed in turn; the gateway then refuses an offset past
+/// what it has (416), which ends it. Nothing panics, nothing loops, and the player plays
+/// the next track.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_confirmation_bringing_extra_bytes_never_panics_or_loops() {
+    let mut r = stream_rig().await;
+    let track = flac::encode(44_100, 16, &flac::noise(44_100, 16, 95));
+    let junk: Vec<u8> = (0..3000u32).map(|i| (i * 37 % 251) as u8).collect();
+    r.streams
+        .as_ref()
+        .unwrap()
+        .then([StreamAct::Pass, StreamAct::Reply(junk.clone())]);
+    let next = flac::encode(44_100, 16, &flac::noise(22_050, 16, 96));
+    let want_next = flac::decode(&next).1;
+    {
+        let mut s = r.h.lms.streams.lock().unwrap();
+        s.push_back(StreamPlan::whole(track));
+        s.push_back(StreamPlan::whole(next));
+    }
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    let streams = r.streams.as_ref().unwrap();
+    wait_for("the third request", || streams.hits().len() >= 3).await;
+    let hits = streams.hits();
+    let len = hits[0].bytes;
+    assert_eq!(offset_of(&hits[1].target), len);
+    assert_eq!(hits[1].bytes, junk.len() as u64);
+    assert_eq!(offset_of(&hits[2].target), len + junk.len() as u64);
+    assert_eq!(
+        hits[2].status, 416,
+        "the gateway refuses an offset past its end"
+    );
+    // The engine is still alive: the next track plays to its end.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    // The first track ended as one does (its extra bytes undecodable after its end).
+    r.wait_event("STMu", 1, 40).await;
+    assert_eq!(r.count("STMd"), 1);
+    let before = r.pulled.all().len();
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMu", 2, 40).await;
+    r.stop_pulling();
+    let all = r.pulled.all();
+    assert!(all.len() >= before + want_next.len());
+    assert_bits_equal(
+        &all[all.len() - want_next.len()..],
+        &want_next,
+        "the next track",
+    );
+    let streams = r.streams.as_ref().unwrap();
+    assert_eq!(streams.hits().len(), 3 + 2, "{:?}", streams.hits());
+    r.player.stop();
+}
+
+/// Robustness: a response that ends cleanly with nothing at all is the end at once (no
+/// confirmation, which would have nothing to go on), and the player carries on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_clean_end_with_no_bytes_ends_at_once() {
+    let mut r = stream_rig().await;
+    r.streams
+        .as_ref()
+        .unwrap()
+        .then([StreamAct::Reply(Vec::new())]);
+    let next = flac::encode(44_100, 16, &flac::noise(22_050, 16, 97));
+    let want_next = flac::decode(&next).1;
+    r.h.lms
+        .streams
+        .lock()
+        .unwrap()
+        .push_back(StreamPlan::whole(next));
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    let streams = r.streams.as_ref().unwrap();
+    wait_for("the request", || !streams.hits().is_empty()).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let streams = r.streams.as_ref().unwrap();
+    assert_eq!(streams.hits().len(), 1, "never asked again");
+    // Nothing to decode: the core says so, as it always has.
+    assert_eq!(r.count("STMn"), 1, "{:?}", r.h.lms.slim_events());
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMu", 1, 40).await;
+    r.stop_pulling();
+    assert_bits_equal(&r.pulled.all(), &want_next, "the next track");
+    let streams = r.streams.as_ref().unwrap();
+    assert_eq!(streams.hits().len(), 3, "{:?}", streams.hits());
+    r.player.stop();
 }
