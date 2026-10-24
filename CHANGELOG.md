@@ -2,9 +2,9 @@
 
 Dated entries, newest first.
 
-## 2026-10-24: Web: Back, Forward and typed routes broken since SvelteKit 3; CI release-job timeout; a steadier player test
+## 2026-10-24: Plugin 0.7.2: Web: Back, Forward and typed routes broken since SvelteKit 3; CI release-job timeout; a steadier player test
 
-Found while closing two notes from earlier in the day (tasks #81 and #84).
+Found while closing two notes from earlier in the day (tasks #81 and #84), and released the same afternoon as plugin 0.7.2 so that the live web app gets its Back and Forward back; the gateway and the plugin are otherwise as in 0.7.1.
 
 **The web app's history (since 0.6.4, including 0.7.0 and 0.7.1).** The app routes hash changes made outside SvelteKit's router (an edited address bar, a link from elsewhere) itself, so the page is not reloaded: it steps back over the browser's entry and then follows the route like a link (`lib/nav.ts`, 2026-10-14). It told the router's own entries apart by the `sveltekit:history` key in their state. SvelteKit 3 (0.6.4, 2026-10-23) keeps that bookkeeping under `sveltekit:metadata` instead, so the app took **every Back and Forward for an outside change** and stepped back over it: in Chromium, Back from Search after Settings landed on Home two entries back with the Now playing page still showing, Forward did nothing visible, and a typed route was lost (the first symptom, noted as task #84), with a reload on the next Back. The unit tests kept passing because their fixture had the SvelteKit 2 shape.
 
