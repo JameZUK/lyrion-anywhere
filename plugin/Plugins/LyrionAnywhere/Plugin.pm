@@ -46,6 +46,7 @@ sub initPlugin {
 		admin_port      => 9445,
 		public_url      => '',
 		trusted_proxies => '',
+		trusted_networks => '',
 		client_ip_header => '',
 		gateway_path    => '',
 		transcode       => 1,

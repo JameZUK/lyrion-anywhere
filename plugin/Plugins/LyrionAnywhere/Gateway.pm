@@ -182,6 +182,195 @@ sub valid_origin {
 	return $o =~ m{^https?://[a-z0-9.-]+(?::\d{1,5})?\z}i && length($o) <= 255;
 }
 
+# --- trusted networks (docs/plans/trusted-networks.md, SPEC D28) ------------------------
+#
+# The admin may let the gateway accept unencrypted connections from private networks such
+# as a VPN. This is the plugin's copy of the rule in core/src/privnet.rs (`trusted_network`),
+# run against the same vectors (web/app/tests/fixtures/private-networks.json), so a setting
+# the page saves is one the gateway starts with. The arithmetic is done here, in core Perl:
+# an address is a list of 16-bit words (2 for IPv4, 8 for IPv6).
+
+my $OCTET = qr/(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])/;
+
+# A literal IPv4 address (strict dotted quad, ASCII digits, no leading zeros) as 2 words.
+sub _v4_words {
+	my $s = shift;
+	return undef unless $s =~ /\A($OCTET)\.($OCTET)\.($OCTET)\.($OCTET)\z/;
+	return [ $1 * 256 + $2, $3 * 256 + $4 ];
+}
+
+# A literal IPv6 address (RFC 4291 text form: one `::` at most, an IPv4 tail allowed, no
+# zone id) as 8 words.
+sub _v6_words {
+	my $s = shift;
+	return undef unless $s =~ /\A[0-9A-Fa-f:.]{2,45}\z/ && $s =~ /:/;
+	if ($s =~ /\./) {
+		# Only as the last 32 bits, after a colon.
+		return undef unless $s =~ /\A(.*:)([0-9.]+)\z/s;
+		my ($head, $v4) = ($1, _v4_words($2));
+		return undef unless $v4;
+		$s = $head . sprintf('%x:%x', @$v4);
+	}
+	return undef if $s =~ /:::/;
+	my $group = qr/\A[0-9A-Fa-f]{1,4}\z/;
+	my @parts = split /::/, $s, -1;
+	return undef if @parts > 2;
+	if (@parts == 1) {
+		my @g = split /:/, $s, -1;
+		return undef unless @g == 8 && !grep { !/$group/ } @g;
+		return [ map { hex } @g ];
+	}
+	my @head = length $parts[0] ? split(/:/, $parts[0], -1) : ();
+	my @tail = length $parts[1] ? split(/:/, $parts[1], -1) : ();
+	return undef if grep { !/$group/ } @head, @tail;
+	# `::` stands for one zero group at least.
+	return undef if @head + @tail > 7;
+	return [ (map { hex } @head), (0) x (8 - @head - @tail), (map { hex } @tail) ];
+}
+
+# Words with every bit after the first $prefix cleared.
+sub _mask_words {
+	my ($w, $prefix) = @_;
+	my @out;
+	for my $i (0 .. $#$w) {
+		my $keep = $prefix - 16 * $i;
+		push @out, $keep >= 16 ? $w->[$i] : $keep <= 0 ? 0 : $w->[$i] & ((0xffff << (16 - $keep)) & 0xffff);
+	}
+	return \@out;
+}
+
+sub _same_words { my ($a, $b) = @_; @$a == @$b && !grep { $a->[$_] != $b->[$_] } 0 .. $#$a }
+
+# An address written as the gateway (Rust's Display) writes it.
+sub _format_words {
+	my $w = shift;
+	return join '.', map { ($_ >> 8, $_ & 0xff) } @$w if @$w == 2;
+	return '::' if !grep { $_ } @$w;
+	return '::1' if !grep({ $_ } @$w[0 .. 6]) && $w->[7] == 1;
+	if (!grep({ $_ } @$w[0 .. 4]) && $w->[5] == 0xffff) {
+		return '::ffff:' . join '.', map { ($_ >> 8, $_ & 0xff) } @$w[6, 7];
+	}
+	# The longest run of zero groups (the first, if two are as long), if longer than one.
+	my ($best, $best_len, $start) = (-1, 0, -1);
+	for my $i (0 .. 8) {
+		if ($i < 8 && $w->[$i] == 0) { $start = $i if $start < 0; next }
+		if ($start >= 0 && $i - $start > $best_len) { ($best, $best_len) = ($start, $i - $start) }
+		$start = -1;
+	}
+	my @hex = map { sprintf '%x', $_ } @$w;
+	return join ':', @hex if $best_len < 2;
+	return join(':', @hex[0 .. $best - 1]) . '::' . join(':', @hex[$best + $best_len .. 7]);
+}
+
+# A network { w => words, prefix => n } with host bits cleared, or (undef, why): 'empty',
+# 'syntax' or 'prefix', as core::privnet::Cidr::parse decides.
+sub _parse_cidr {
+	my $s = shift;
+	return (undef, 'syntax') if !defined $s || ref $s || length($s) > 256;
+	$s =~ s/\A\s+|\s+\z//g;
+	return (undef, 'empty') if $s eq '';
+	my ($addr, $prefix) = split m{/}, $s, 2;
+	my $w = $addr =~ /:/ ? _v6_words($addr) : _v4_words($addr);
+	return (undef, 'syntax') unless $w;
+	my $bits = 16 * @$w;
+	if (!defined $prefix) { $prefix = $bits }
+	else {
+		return (undef, 'syntax') unless $prefix =~ /\A[0-9]{1,3}\z/;
+		return (undef, 'prefix') if $prefix > $bits;
+		$prefix += 0;
+	}
+	return { w => _mask_words($w, $prefix), prefix => $prefix };
+}
+
+sub _contains {
+	my ($net, $w) = @_;
+	return @{ $net->{w} } == @$w && _same_words(_mask_words($w, $net->{prefix}), $net->{w});
+}
+
+sub _format_cidr { my $n = shift; _format_words($n->{w}) . '/' . $n->{prefix} }
+
+my @PRIVATE_RANGES = map { scalar _parse_cidr($_) }
+	qw(10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10);
+
+sub private_ranges { map { _format_cidr($_) } @PRIVATE_RANGES }
+
+# Is this literal address inside one of the private ranges? Loopback, unspecified,
+# multicast, public and IPv4-mapped IPv6 addresses are not.
+sub is_private_ip {
+	my $ip = shift;
+	return 0 if !defined $ip || ref $ip || length($ip) > 45;
+	my $w = $ip =~ /:/ ? _v6_words($ip) : _v4_words($ip);
+	return 0 unless $w;
+	return (grep { _contains($_, $w) } @PRIVATE_RANGES) ? 1 : 0;
+}
+
+# The quoted form of what the admin typed, for a message (as Rust's {:?} quotes it).
+sub _quote {
+	my $s = shift;
+	$s =~ s/\A\s+|\s+\z//g;
+	$s = substr($s, 0, 64) . '...' if length $s > 64;
+	$s =~ s/(["\\])/\\$1/g;
+	$s =~ s/([^\x20-\x7e])/sprintf('\\u{%x}', ord $1)/ge;
+	return qq{"$s"};
+}
+
+# One entry of the Trusted networks setting: (normalised network, undef) if it is a private
+# network in CIDR form (or a single private address), else (undef, the reason why not).
+sub valid_trusted_network {
+	my $s = shift;
+	my ($net, $err) = _parse_cidr($s);
+	unless ($net) {
+		return (undef, 'enter a network, such as 10.8.0.0/24') if $err eq 'empty';
+		return (undef, _quote($s) . ' has a prefix length longer than the address (at most /32 for IPv4, /128 for IPv6)')
+			if $err eq 'prefix';
+		return (undef, (ref $s ? 'that' : _quote($s // ''))
+			. ' is not a network: write it as an address, a slash and the prefix length, such as 10.8.0.0/24');
+	}
+	my $text = _format_cidr($net);
+	my $w = $net->{w};
+	my $v4 = @$w == 2;
+	my $loopback = $v4 ? ($w->[0] >> 8) == 127 : _same_words($w, [0, 0, 0, 0, 0, 0, 0, 1]);
+	$loopback ||= _contains($net, $v4 ? [0x7f00, 1] : [0, 0, 0, 0, 0, 0, 0, 1]);
+	return (undef, "$text includes loopback, which is always allowed: leave it out") if $loopback;
+	return (undef, "$text is an IPv4 network written as IPv6: write it as 10.8.0.0/24")
+		if !$v4 && !grep({ $_ } @$w[0 .. 4]) && $w->[5] == 0xffff;
+	unless (grep { $net->{prefix} >= $_->{prefix} && _contains($_, $w) } @PRIVATE_RANGES) {
+		return (undef, "$text is not a private network: only networks within 10.0.0.0/8, 172.16.0.0/12, "
+			. '192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, fc00::/7 or fe80::/10 can be trusted');
+	}
+	return ($text, undef);
+}
+
+# The whole setting (comma/space separated; empty is fine): 1 if every entry is valid.
+sub valid_trusted_networks {
+	my $s = shift // '';
+	return 0 if ref $s || $s =~ /[\r\n\x00]/ || length($s) > 4096;
+	return (grep { !defined((valid_trusted_network($_))[0]) } split_list($s)) ? 0 : 1;
+}
+
+# The setting's networks, normalised; entries that are not valid are left out.
+sub trusted_network_list {
+	my $s = shift // '';
+	return () unless valid_trusted_networks($s);
+	return map { (valid_trusted_network($_))[0] } split_list($s);
+}
+
+# A Public URL the pairing link may use over plain http: `http://` and a literal private
+# address, an optional port, nothing else. Returns the origin as a browser writes it, or undef.
+sub private_http_origin {
+	my $u = shift;
+	return undef if !defined $u || ref $u || length($u) > 255;
+	$u =~ s{/+\z}{};
+	return undef unless $u =~ m{\Ahttp://(?:($OCTET(?:\.$OCTET){3})|\[([0-9A-Fa-f:.]+)\])(?::([0-9]{1,5}))?\z}i;
+	my ($v4, $v6, $port) = ($1, $2, $3);
+	my $host = $v4 // $v6;
+	return undef unless is_private_ip($host);
+	return undef if defined $port && ($port < 1 || $port > 65535);
+	my $origin = 'http://' . ($v4 // '[' . _format_words(_v6_words($v6)) . ']');
+	$origin .= ':' . (0 + $port) if defined $port && $port != 80;
+	return $origin;
+}
+
 # The gateway's argument list. Returns (\@argv) or (undef, $error).
 sub command_line {
 	my (%o) = @_;
@@ -195,7 +384,13 @@ sub command_line {
 	}
 	my @proxies = @{ $o{trusted_proxies} || [] };
 	my @origins = @{ $o{allowed_origins} || [] };
+	my @networks;
 	for (@proxies) { return (undef, "bad trusted proxy address: $_") unless valid_ip($_) }
+	for (@{ $o{trusted_networks} || [] }) {
+		my ($net, $why) = valid_trusted_network($_);
+		return (undef, "bad trusted network: $why") unless defined $net;
+		push @networks, $net;
+	}
 	for (@origins) { return (undef, "bad public URL: $_") unless valid_origin($_) }
 	my $ip_header = $o{client_ip_header} // '';
 	return (undef, 'client address header must be a header name such as CF-Connecting-IP')
@@ -220,6 +415,7 @@ sub command_line {
 	push @argv, '--log-file', $o{log_file} if $o{log_file};
 	push @argv, '--static-dir', $o{static_dir} if $o{static_dir};
 	push @argv, map { ('--trusted-proxy', $_) } @proxies;
+	push @argv, map { ('--trusted-network', $_) } @networks;
 	push @argv, map { ('--allowed-origin', $_) } @origins;
 	push @argv, '--client-ip-header', $ip_header if $ip_header ne '';
 	if (!$transcode)         { push @argv, '--no-transcode' }
@@ -273,19 +469,42 @@ sub is_our_gateway {
 	return 0;
 }
 
-# Does process $pid hold the loopback listening socket on $port? 1 yes, 0 no, undef when this
-# system can't tell (no /proc). Read from /proc/net/tcp and /proc/<pid>/fd.
+# How /proc/net/tcp or tcp6 writes a local address: each 32-bit word in the kernel's byte
+# order, so both orders are accepted. Returns (file, [forms]) or () for anything but a
+# literal address.
+sub _proc_address_forms {
+	my $addr = shift;
+	my $w = $addr =~ /:/ ? _v6_words($addr) : _v4_words($addr);
+	return () unless $w;
+	my @bytes = map { ($_ >> 8, $_ & 0xff) } @$w;
+	my ($be, $le) = ('', '');
+	while (my @word = splice @bytes, 0, 4) {
+		$be .= sprintf '%02X%02X%02X%02X', @word;
+		$le .= sprintf '%02X%02X%02X%02X', reverse @word;
+	}
+	return (@$w == 2 ? 'net/tcp' : 'net/tcp6', [ $be, $le ]);
+}
+
+# Does process $pid hold the listening socket on $addr:$port? $addr is a literal address
+# (127.0.0.1 if not given: the admin API) and must match exactly: a listener on another
+# address, or on every address, does not count unless that is the address asked about
+# (0.0.0.0, ::). 1 yes, 0 no, undef when this system can't tell (no /proc). Read from
+# /proc/net/tcp (or tcp6) and /proc/<pid>/fd.
 sub listener_owned_by {
-	my ($port, $pid) = @_;
+	my ($port, $pid, $addr) = @_;
 	return undef unless $pid && valid_port($port);
-	open my $tcp, '<', "$PROC_ROOT/net/tcp" or return undef;
+	my ($file, $forms) = _proc_address_forms($addr // '127.0.0.1');
+	return 0 unless $file;   # not a literal address: nothing can hold it
+	my %want = map { $_ => 1 } @$forms;
+	my $hexlen = $file eq 'net/tcp' ? 8 : 32;
+	open my $tcp, '<', "$PROC_ROOT/$file" or return undef;
 	my %inodes;
 	while (my $line = <$tcp>) {
 		my @f = split ' ', $line;
-		next unless @f >= 10 && $f[1] =~ /^([0-9A-F]{8}):([0-9A-F]{4})\z/;
-		my ($addr, $p) = ($1, hex $2);
-		next unless $p == $port && $f[3] eq '0A';               # LISTEN
-		next unless $addr eq '0100007F' || $addr eq '7F000001';  # 127.0.0.1, either byte order
+		next unless @f >= 10 && $f[1] =~ /^([0-9A-F]{$hexlen}):([0-9A-F]{4})\z/;
+		my ($local, $p) = ($1, hex $2);
+		next unless $p == $port && $f[3] eq '0A';   # LISTEN
+		next unless $want{$local};
 		$inodes{ $f[9] } = 1 if $f[9] =~ /^[1-9]\d*\z/;
 	}
 	close $tcp;
@@ -451,6 +670,7 @@ my %VALIDATE = (
 	listen          => \&valid_hostport,
 	public_url      => sub { my $v = shift // ''; $v eq '' || valid_origin($v) },
 	trusted_proxies => \&valid_proxy_list,
+	trusted_networks => \&valid_trusted_networks,
 	client_ip_header => \&valid_client_ip_header,
 	admin_port     => \&valid_port,
 	gateway_path    => \&valid_gateway_path,
@@ -481,7 +701,7 @@ sub register_validators {
 # syntax check only. So the page, the one authorised writer, also keeps a copy of them in
 # the data directory (0700, file 0600), which `pref` cannot reach. The gateway always runs
 # with the copy's values; a pref that differs is put back, logged and shown in the status.
-my @GUARDED = qw(listen public_url trusted_proxies client_ip_header gateway_path ffmpeg_path download_cache_mb);
+my @GUARDED = qw(listen public_url trusted_proxies trusted_networks client_ip_header gateway_path ffmpeg_path download_cache_mb);
 
 sub guarded_prefs { @GUARDED }
 sub settings_file { catfile(data_dir(), SETTINGS_FILE) }
@@ -625,6 +845,9 @@ sub _options {
 		log_file        => log_file(),
 		static_dir      => web_dir($basedir),
 		trusted_proxies => [ split_list($auth->{trusted_proxies}) ],
+		# A list that is not valid (it never should be: the page and the validator check it)
+		# is left out whole: no network is trusted that the admin did not save.
+		trusted_networks => [ trusted_network_list($auth->{trusted_networks}) ],
 		allowed_origins => [ $public ? $public : () ],
 	);
 }

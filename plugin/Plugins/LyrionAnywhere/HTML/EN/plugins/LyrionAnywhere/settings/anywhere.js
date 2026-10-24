@@ -143,7 +143,7 @@
   /**
    * What the "Add a device" panel shows for a code from the gateway: the code grouped for
    * typing, the pairing link for the QR code (null unless the public URL is a usable https
-   * address), and how many seconds it lasts. Null if the reply holds no valid code.
+   * address, or http:// with a literal private address), and how many seconds it lasts. Null if the reply holds no valid code.
    * `qr` is the shared encoder (qr.js, globalThis.AnywhereQR).
    */
   function pairingView(data, publicUrl, qr) {
@@ -152,7 +152,7 @@
     const secs = Number(data.expires_in);
     return {
       code: qr.groupPairingCode(code),
-      link: qr.pairingLink(publicUrl, code),
+      link: pairingLinkFor(publicUrl, code, qr),
       seconds: Number.isFinite(secs) && secs > 0 && secs <= 3600 ? Math.floor(secs) : 600,
       publicUrlSet: typeof publicUrl === 'string' && publicUrl.trim() !== '',
     };
@@ -204,6 +204,139 @@
   /** Is a public URL a plain http:// one (sign-ins would cross the internet unencrypted)? */
   function isHttpUrl(v) {
     return /^\s*http:\/\//i.test(String(v ?? ''));
+  }
+
+  // --- private addresses (docs/plans/trusted-networks.md; the rule in core/src/privnet.rs) ---
+
+  const OCTET = '(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])';
+  const IPV4 = new RegExp(`^${OCTET}\\.${OCTET}\\.${OCTET}\\.${OCTET}$`);
+
+  /** A literal IPv4 address as two 16-bit words (strict dotted quad), or null. */
+  function ipv4Words(s) {
+    if (typeof s !== 'string' || !IPV4.test(s)) return null;
+    const b = s.split('.').map(Number);
+    return [b[0] * 256 + b[1], b[2] * 256 + b[3]];
+  }
+
+  /** A literal IPv6 address (one `::` at most, an IPv4 tail allowed, no zone id) as eight words, or null. */
+  function ipv6Words(s) {
+    if (typeof s !== 'string' || !/^[0-9A-Fa-f:.]{2,45}$/.test(s) || !s.includes(':')) return null;
+    let text = s;
+    if (text.includes('.')) {
+      const m = text.match(/^(.*:)([0-9.]+)$/);
+      const v4 = m && ipv4Words(m[2]);
+      if (!v4) return null;
+      text = m[1] + v4.map((w) => w.toString(16)).join(':');
+    }
+    if (text.includes(':::')) return null;
+    const group = /^[0-9A-Fa-f]{1,4}$/;
+    const parts = text.split('::');
+    if (parts.length > 2) return null;
+    if (parts.length === 1) {
+      const g = text.split(':');
+      return g.length === 8 && g.every((x) => group.test(x)) ? g.map((x) => parseInt(x, 16)) : null;
+    }
+    const head = parts[0] ? parts[0].split(':') : [];
+    const tail = parts[1] ? parts[1].split(':') : [];
+    // `::` stands for one zero group at least.
+    if (![...head, ...tail].every((x) => group.test(x)) || head.length + tail.length > 7) return null;
+    return [...head.map((x) => parseInt(x, 16)), ...Array(8 - head.length - tail.length).fill(0), ...tail.map((x) => parseInt(x, 16))];
+  }
+
+  // [leading words, prefix length]: 10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10; fc00::/7, fe80::/10.
+  const PRIVATE_V4 = [[[0x0a00], 8], [[0xac10], 12], [[0xc0a8], 16], [[0xa9fe], 16], [[0x6440], 10]];
+  const PRIVATE_V6 = [[[0xfc00], 7], [[0xfe80], 10]];
+
+  function inRange(words, range) {
+    const [net, prefix] = range;
+    for (let i = 0; i < net.length; i++) {
+      const keep = prefix - 16 * i;
+      const mask = keep >= 16 ? 0xffff : keep <= 0 ? 0 : (0xffff << (16 - keep)) & 0xffff;
+      if ((words[i] & mask) !== net[i]) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Is `host` a literal private address (IPv6 with or without brackets)? Names never are:
+   * a name could resolve to a public address. Loopback, public and IPv4-mapped IPv6 aren't.
+   */
+  function isPrivateAddress(host) {
+    if (typeof host !== 'string') return false;
+    const h = /^\[.*\]$/.test(host) ? host.slice(1, -1) : host;
+    const v4 = ipv4Words(h);
+    if (v4) return PRIVATE_V4.some((r) => inRange(v4, r));
+    const v6 = ipv6Words(h);
+    return !!v6 && PRIVATE_V6.some((r) => inRange(v6, r));
+  }
+
+  /** An IPv6 address as a browser writes it in an origin (lower case, longest zero run compressed). */
+  function formatIpv6(w) {
+    let best = -1;
+    let bestLen = 0;
+    for (let i = 0, start = -1; i <= 8; i++) {
+      if (i < 8 && w[i] === 0) {
+        if (start < 0) start = i;
+        continue;
+      }
+      if (start >= 0 && i - start > bestLen) [best, bestLen] = [start, i - start];
+      start = -1;
+    }
+    const hex = w.map((x) => x.toString(16));
+    if (bestLen < 2) return hex.join(':');
+    return `${hex.slice(0, best).join(':')}::${hex.slice(best + bestLen).join(':')}`;
+  }
+
+  /**
+   * The origin of a Public URL that is `http://` and a literal private address, with an
+   * optional port and nothing else (a gateway reached over a VPN), or null.
+   */
+  function privateHttpOrigin(address) {
+    if (typeof address !== 'string' || address.length > 255) return null;
+    const s = address.trim().replace(/\/+$/, '');
+    const m = s.match(/^http:\/\/(?:([0-9.]+)|\[([0-9A-Fa-f:.]+)\])(?::([0-9]{1,5}))?$/i);
+    if (!m) return null;
+    const v4 = m[1] !== undefined;
+    const v6 = v4 ? null : ipv6Words(m[2]);
+    if (v4 ? !ipv4Words(m[1]) : !v6) return null;
+    if (!isPrivateAddress(v4 ? m[1] : m[2])) return null;
+    const port = m[3] === undefined ? 80 : Number(m[3]);
+    if (port < 1 || port > 65535) return null;
+    const host = v4 ? m[1] : `[${formatIpv6(v6)}]`;
+    return `http://${host}${port === 80 ? '' : `:${port}`}`;
+  }
+
+  /**
+   * The pairing link for a code: the shared encoder's (an https:// Public URL), or, for an
+   * http:// Public URL with a literal private address, the same link pointing there.
+   */
+  function pairingLinkFor(publicUrl, code, qr) {
+    const link = qr.pairingLink(publicUrl, code);
+    if (link) return link;
+    const origin = privateHttpOrigin(publicUrl);
+    const c = qr.normalisePairingCode(code);
+    return origin && c ? `${qr.PAIRING_SCHEME}://pair?server=${encodeURIComponent(origin)}&code=${c}` : null;
+  }
+
+  /** Has the Trusted networks field anything in it (so its warning is shown)? */
+  function hasTrustedNetworks(v) {
+    return String(v ?? '').trim() !== '';
+  }
+
+  /**
+   * What to say about the Listen address while Trusted networks are set: null when it is
+   * fine, or no networks are set. An empty field means the default, 127.0.0.1:9443.
+   */
+  function trustedListenText(networks, listen) {
+    if (!hasTrustedNetworks(networks)) return null;
+    const l = String(listen ?? '').trim() || '127.0.0.1:9443';
+    if (/^127\.[0-9.]+:[0-9]+$/.test(l) || /^\[::1\]:[0-9]+$/.test(l)) {
+      return `The gateway listens on ${l}, which devices on your VPN cannot reach. Set the Listen address to the VPN interface\u2019s address, such as 10.8.0.1:9443.`;
+    }
+    if (/^(?:0\.0\.0\.0|\[::\]):[0-9]+$/.test(l)) {
+      return `The gateway listens on every network (${l}). Set the Listen address to the VPN interface\u2019s address, such as 10.8.0.1:9443, so that only the VPN reaches it.`;
+    }
+    return null;
   }
 
   /** The Enter key (not while an input method is composing text). */
@@ -473,7 +606,7 @@
     return `${have} (this release pins ${pin})`;
   }
 
-  const api = { command, adminOnlyArg, pageToken, validDays, sessionDaysShown, validDeviceName, clientText, validUsername, validPassword, formatTime, formatUptime, diagnosticsText, downloadsText, formatCountdown, pairingView, auditEventText, isHttpUrl, isEnter, restartText, offlineText, DEFAULT_SESSION_DAYS,
+  const api = { command, adminOnlyArg, pageToken, validDays, sessionDaysShown, validDeviceName, clientText, validUsername, validPassword, formatTime, formatUptime, diagnosticsText, downloadsText, formatCountdown, pairingView, auditEventText, isHttpUrl, isPrivateAddress, privateHttpOrigin, pairingLinkFor, hasTrustedNetworks, trustedListenText, isEnter, restartText, offlineText, DEFAULT_SESSION_DAYS,
     validTunnelHostname, validTunnelToken, validApiToken, tunnelRequest, clearFields, formatMB, tunnelStateText, tunnelControls, tunnelUrl, pairingPublicUrl, tunnelOverrideText, tunnelListen, tunnelServiceText, quickCountdownText, tunnelLogText, tunnelVersionText };
   if (typeof globalThis.__anywhereTest === 'object') {
     Object.assign(globalThis.__anywhereTest, api);
@@ -804,7 +937,7 @@
       : el('p', {
           className: 'aw-note aw-error',
           text: view.publicUrlSet
-            ? 'No QR code: the Public URL above must be an https:// address with nothing after the host name. Until it is, enter the server address in the app, then type this code.'
+            ? 'No QR code: the Public URL above must be an https:// address with nothing after the host name (or http:// with a private address reached over your VPN, such as http://10.8.0.1:9443). Until it is, enter the server address in the app, then type this code.'
             : 'No QR code: set the Public URL above (the https:// address people use) to show one. Until then, enter the server address in the app, then type this code.',
         });
     const code = el('p', { className: 'aw-code', text: view.code });
@@ -1292,6 +1425,23 @@
         else warning.setAttribute('hidden', '');
       };
       url.addEventListener('input', update);
+      update();
+    }
+    // The same for Trusted networks: the warning while the field has anything in it, and a
+    // note while the Listen address is one the VPN cannot use.
+    const nets = $('pref_trusted_networks');
+    const netsWarning = $('aw-trusted-warning');
+    const listenNote = $('aw-trusted-listen');
+    const listen = $('pref_listen');
+    if (nets && netsWarning && listenNote) {
+      const update = () => {
+        shown(netsWarning, hasTrustedNetworks(nets.value));
+        const text = trustedListenText(nets.value, listen ? listen.value : '');
+        setText(listenNote, text || '');
+        shown(listenNote, !!text);
+      };
+      nets.addEventListener('input', update);
+      if (listen) listen.addEventListener('input', update);
       update();
     }
   }

@@ -5,6 +5,7 @@ use File::Temp qw(tempdir);
 BEGIN { package main; use constant WEBUI => 1; }
 use Plugins::LyrionAnywhere::Settings;
 use Slim::Utils::Prefs;
+sub show { my $s = $_[0] // 'undef'; $s = ref $s if ref $s; $s =~ s/([^\x20-\x7e])/sprintf('\\x{%x}', ord $1)/ge; $s }
 
 my $clean = \&Plugins::LyrionAnywhere::Settings::clean;
 my ($out, $err) = $clean->({
@@ -236,6 +237,235 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 	my $html = do { local $/; <$fh> };
 	like($html, qr/data-public-url="\[% anywhere_public_url \| html %\]"/, 'public URL goes in an escaped data attribute');
 	like($html, qr/id="aw-pair"[^>]*hidden/, 'the pairing panel starts hidden');
+}
+
+# --- trusted networks (docs/plans/trusted-networks.md): the same rule as core::privnet ------
+# The vectors are shared with the gateway's Rust check and the web app's JavaScript check.
+my $vectors = do {
+	require JSON::PP;
+	require File::Basename;
+	my $file = File::Basename::dirname(__FILE__) . '/../../web/app/tests/fixtures/private-networks.json';
+	open my $fh, '<:raw', $file or die "$file: $!";
+	JSON::PP::decode_json(do { local $/; <$fh> });
+};
+{
+	my $net = \&Plugins::LyrionAnywhere::Gateway::valid_trusted_network;
+	is_deeply([ Plugins::LyrionAnywhere::Gateway::private_ranges() ], $vectors->{ranges}, 'the private ranges are the vectors\' ranges');
+	for my $case (@{ $vectors->{networks}{accepted} }) {
+		my ($got, $why) = $net->($case->{input});
+		is($got, $case->{normalised}, "accepted: '$case->{input}'") or diag $why;
+		is(($net->($case->{normalised}))[0], $case->{normalised}, "its normalised form parses to itself: $case->{normalised}");
+	}
+	for my $input (@{ $vectors->{networks}{refused} }) {
+		my ($got, $why) = $net->($input);
+		ok(!defined $got, "refused: '$input'");
+		ok(defined $why && length $why && $why !~ /\.\z/, "with a reason: " . ($why // 'none'));
+	}
+	for my $ip (@{ $vectors->{addresses}{private} }) {
+		ok(Plugins::LyrionAnywhere::Gateway::is_private_ip($ip), "$ip is private");
+		ok(defined(($net->($ip))[0]), "and a trusted network of its own");
+	}
+	for my $ip (@{ $vectors->{addresses}{not_private} }) {
+		ok(!Plugins::LyrionAnywhere::Gateway::is_private_ip($ip), "$ip is not private");
+		ok(!defined(($net->($ip))[0]), "and never a trusted network");
+	}
+	# The reasons, as the gateway gives them.
+	like(($net->('127.0.0.1'))[1], qr/loopback/, 'loopback: said so');
+	like(($net->('::1'))[1], qr/loopback/, 'IPv6 loopback: said so');
+	like(($net->('0.0.0.0/0'))[1], qr/^0\.0\.0\.0\/0 includes loopback/, 'the catch-all includes loopback');
+	like(($net->('8.8.8.0/24'))[1], qr/^8\.8\.8\.0\/24 is not a private network: only networks within 10\.0\.0\.0\/8/, 'public: said so');
+	like(($net->('::ffff:10.0.0.0/104'))[1], qr/written as IPv6/, 'mapped IPv6: said so');
+	like(($net->('10.8.0.0/33'))[1], qr/^"10\.8\.0\.0\/33" has a prefix length longer/, 'prefix: said so');
+	like(($net->('10.8.0/24'))[1], qr/^"10\.8\.0\/24" is not a network/, 'syntax: said so, quoting the input');
+	like(($net->('   '))[1], qr/^enter a network/, 'empty: said so');
+	# IPv6 is written as the gateway writes it (Rust's Display): lower case, the longest run of
+	# zeros compressed (the first of two as long), never a single zero group.
+	my %display = (
+		'fd00:0:0:1:0:0:0:0/64'    => 'fd00:0:0:1::/64',
+		'fd00:0:1:0:0:1:0:0'       => 'fd00:0:1::1:0:0/128',
+		'fd00:1:0:1:1:1:1:1'       => 'fd00:1:0:1:1:1:1:1/128',
+		'fd01::10.0.0.1/128'       => 'fd01::a00:1/128',
+		'FE80:0000:0000:0000::/64' => 'fe80::/64',
+		'fd00::1:2:3:4:5:6'        => 'fd00:0:1:2:3:4:5:6/128',
+		'fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/7' => 'fc00::/7',
+		'10.255.255.255/9'         => '10.128.0.0/9',
+		'172.20.1.2/0'             => undef,
+	);
+	for my $in (sort keys %display) {
+		is(($net->($in))[0], $display{$in}, "normalised: $in");
+	}
+	# Unusual text that must be refused, never read some other way.
+	for my $bad ('010.8.0.0/24', '10.8.0.0/024x', '10.8.0.0/1000', '10.8.0.0/+1', '10.8.0.0/ 24', 'fe80::1%eth0', 'fe80::1%25eth0/64',
+	             '[fd00::]/8', 'fd00::/08x', '1:2:3:4:5:6:7:8:9', '1::2::3', ':fd00::1', 'fd00::1:', 'fd00:12345::/32', 'fd00::g',
+	             '1:2:3:4:5:6:7:8::', '::1.2.3', 'fd00::1.2.3.4.5', 'fd00:1.2.3.4::', "10.8.0.0/24\x00", "10.8.0.0/24\x{a0}x",
+	             "\x{0661}0.8.0.0/24", "\x{967}\x{966}.\x{96e}.\x{966}.\x{966}/\x{968}\x{96a}", "10.8.0.0/\x{663}", ['10.8.0.0/24'], { a => 1 }, undef) {
+		my ($got, $why) = $net->($bad);
+		ok(!defined $got && defined $why, 'refused: ' . show($bad));
+	}
+	# Surrounding whitespace is trimmed, as the gateway trims it; the setting itself refuses
+	# line breaks (see below), so one never reaches the gateway.
+	is(($net->("\t10.8.0.0/24\n"))[0], '10.8.0.0/24', 'surrounding whitespace is trimmed');
+	# Leading zeros in a prefix are read as the gateway reads them (Rust's u8 parse): /08 is /8.
+	is(($net->('fd00::/08'))[0], 'fd00::/8', 'a prefix with a leading zero is read as a number');
+	# Robustness: random and long input never dies, and is refused unless it really is a network.
+	srand(20261024);
+	my @alphabet = ('0' .. '9', 'a' .. 'f', 'A', 'F', ':', '.', '/', ' ', ',', '%', '[', ']', '-', "\n", "\x{663}");
+	my ($died, $wrong) = (0, 0);
+	for (1 .. 5000) {
+		my $s = join '', map { $alphabet[rand @alphabet] } 1 .. 1 + int rand 24;
+		my @r = eval { $net->($s) };
+		$died++, diag(show($s)) if $@;
+		$wrong++, diag(show($s)) if defined $r[0] && !Plugins::LyrionAnywhere::Gateway::valid_trusted_networks($r[0]);
+		eval { Plugins::LyrionAnywhere::Gateway::is_private_ip($s); Plugins::LyrionAnywhere::Gateway::private_http_origin("http://$s"); 1 }
+			or $died++;
+	}
+	is($died, 0, 'random input: the checks never die');
+	is($wrong, 0, 'random input: anything accepted is a valid network');
+	for my $long ('1' x 10_000, '10.8.0.0/' . '1' x 10_000, 'fd00:' x 5000, ('10.8.0.0/24, ' x 1000)) {
+		ok(!defined(($net->($long))[0]), 'a long input is refused');
+		ok(!Plugins::LyrionAnywhere::Gateway::valid_trusted_networks($long), 'also as the whole setting');
+	}
+	# The whole setting: a comma/space separated list, all valid or refused.
+	my $list = \&Plugins::LyrionAnywhere::Gateway::valid_trusted_networks;
+	ok($list->($_), "setting accepted: '$_'") for ('', '10.8.0.0/24', '10.8.0.0/24, fd00::/8', '10.8.0.0/24 192.168.7.0/24', ' 100.64.0.0/10 ,');
+	ok(!$list->($_), 'setting refused: ' . show($_)) for ('10.8.0.0/24, 8.8.8.0/24', 'evil', "10.8.0.0/24\n10.9.0.0/24", "10.8.0.0/24\x00", '127.0.0.1', ['10.8.0.0/24']);
+	is_deeply([ Plugins::LyrionAnywhere::Gateway::trusted_network_list('10.8.0.5/24, FD00::/8') ], ['10.8.0.0/24', 'fd00::/8'], 'the list, normalised');
+	is_deeply([ Plugins::LyrionAnywhere::Gateway::trusted_network_list('10.8.0.0/24, 8.8.8.0/24') ], [], 'a list with a bad entry gives nothing');
+	is_deeply([ Plugins::LyrionAnywhere::Gateway::trusted_network_list(undef) ], [], 'no setting: nothing');
+}
+
+# --- the Trusted networks setting on the page ---------------------------------------------
+{
+	$prefs->set(listen => '10.8.0.1:9443');
+	my ($o, $e, $n) = $clean->({ pref_trusted_networks => ' 10.8.0.5/24,FD12:3456:789A::/48  192.168.7.42 ' });
+	is_deeply($e, [], 'trusted networks: valid');
+	is($o->{pref_trusted_networks}, '10.8.0.0/24, fd12:3456:789a::/48, 192.168.7.42/32', 'stored normalised, comma separated');
+	is_deeply($n, [], 'listening on the VPN address: nothing to point out');
+	($o, $e) = $clean->({ pref_trusted_networks => '' });
+	is_deeply($e, [], 'empty is fine');
+	is($o->{pref_trusted_networks}, '', 'none');
+	for my $case (
+		['10.8.0.0/24, 8.8.8.0/24', qr/8\.8\.8\.0\/24 is not a private network/],
+		['0.0.0.0/0', qr/includes loopback/],
+		['::/0', qr/includes loopback/],
+		['127.0.0.1', qr/loopback/],
+		['10.8.0.0/24 music.example.com', qr/"music\.example\.com" is not a network/],
+		['http://10.8.0.0/24', qr/"http:\/\/10\.8\.0\.0\/24" is not a network/],
+		['::ffff:10.8.0.0/120', qr/written as IPv6/],
+		['10.8.0.0/40', qr/prefix length/],
+		["10.8.0.0/24\n--trusted-network 0.0.0.0/0", qr/line breaks/],
+	) {
+		my ($pat, $why) = @$case[0, 1];
+		($o, $e) = $clean->({ pref_trusted_networks => $pat });
+		ok(!exists $o->{pref_trusted_networks}, 'refused whole: ' . show($pat));
+		like(join(' ', @$e), $why, 'naming the entry and why');
+		like(join(' ', @$e), qr/Trusted networks not saved|line breaks/, 'saying it was not saved');
+	}
+	($o, $e) = $clean->({ pref_trusted_networks => '10.8.0.0/24, 8.8.8.0/24, 1.1.1.1' });
+	like($e->[0], qr/8\.8\.8\.0\/24.*1\.1\.1\.1\/32/, 'every bad entry is named');
+
+	# The listen address must be one the VPN reaches: a notice, not an error.
+	for my $case (['127.0.0.1:9443', qr/listens on 127\.0\.0\.1:9443, which devices on your VPN cannot reach/],
+	              ['[::1]:9443', qr/listens on \[::1\]:9443/],
+	              ['0.0.0.0:9443', qr/listens on every network \(0\.0\.0\.0:9443\)/],
+	              ['[::]:9443', qr/every network/]) {
+		my ($listen, $want) = @$case;
+		($o, $e, $n) = $clean->({ pref_trusted_networks => '10.8.0.0/24', pref_listen => $listen });
+		is_deeply($e, [], "listen $listen with trusted networks: no error");
+		is($o->{pref_trusted_networks}, '10.8.0.0/24', 'the networks are saved');
+		is($o->{pref_listen}, $listen, 'and the listen address');
+		like(join(' ', @$n), $want, "listen $listen: a notice says why it won't work");
+	}
+	($o, $e, $n) = $clean->({ pref_trusted_networks => '', pref_listen => '127.0.0.1:9443' });
+	is_deeply($n, [], 'no trusted networks: no notice about the listen address');
+	# Networks saved earlier, the listen address changed now (and the other way round).
+	$prefs->set(trusted_networks => '10.8.0.0/24');
+	($o, $e, $n) = $clean->({ pref_listen => '127.0.0.1:9443' });
+	like(join(' ', @$n), qr/cannot reach/, 'the saved networks count');
+	$prefs->set(listen => '127.0.0.1:9443');
+	($o, $e, $n) = $clean->({ pref_trusted_networks => '10.8.0.0/24' });
+	like(join(' ', @$n), qr/cannot reach/, 'the saved listen address counts');
+	($o, $e, $n) = $clean->({ pref_trusted_networks => '10.8.0.0/24', pref_listen => '' });
+	like(join(' ', @$n), qr/127\.0\.0\.1:9443/, 'an empty listen address is the loopback default');
+	$prefs->set(trusted_networks => '');
+
+	# Through the handler: a bad list keeps the old value and the message is escaped; a notice
+	# is shown but the values are saved.
+	$prefs->set(trusted_networks => '10.8.0.0/24');
+	$prefs->set(listen => '10.8.0.1:9443');
+	Plugins::LyrionAnywhere::Gateway::settings_saved();
+	my $p = { saveSettings => 1, anywhere_form_token => $form, pref_trusted_networks => '10.9.0.0/24, <script>alert(1)</script>' };
+	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	is($prefs->get('trusted_networks'), '10.8.0.0/24', 'a bad list is not saved: the old value stays');
+	unlike($p->{warning}, qr/<script>/, 'the message is escaped');
+	like($p->{warning}, qr/Trusted networks not saved: &quot;&lt;script&gt;/, 'and names the entry');
+	$p = { saveSettings => 1, anywhere_form_token => $form, pref_trusted_networks => '10.9.0.0/24', pref_listen => '127.0.0.1:9443' };
+	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	is($prefs->get('trusted_networks'), '10.9.0.0/24', 'a good list is saved');
+	is($prefs->get('listen'), '127.0.0.1:9443', 'with the loopback listen address');
+	like($p->{warning}, qr/cannot reach/, 'and the notice shown');
+	is(Plugins::LyrionAnywhere::Gateway::read_authorised()->{trusted_networks}, '10.9.0.0/24', 'the page\'s copy holds it');
+	$prefs->set(trusted_networks => '');
+	$prefs->set(listen => '127.0.0.1:9443');
+	Plugins::LyrionAnywhere::Gateway::settings_saved();
+
+	# The page: the field, and its warning only when the field has something in it.
+	open my $fh, '<', 'Plugins/LyrionAnywhere/HTML/EN/plugins/LyrionAnywhere/settings/basic.html' or die;
+	my $html = do { local $/; <$fh> };
+	like($html, qr/name="pref_trusted_networks" id="pref_trusted_networks" value="\[% prefs\.pref_trusted_networks \| html %\]"/, 'the field, escaped');
+	like($html, qr/<p id="aw-trusted-warning" class="aw-note aw-warning"\[% UNLESS prefs\.pref_trusted_networks %\] hidden\[% END %\]>/, 'the warning is hidden while empty');
+	like($html, qr/aw-trusted-warning.*passwords and sign-ins cross them in clear/s, 'it says what crosses in clear');
+	like($html, qr/aw-trusted-warning.*not 127\.0\.0\.1.*not 0\.0\.0\.0/s, 'and which listen addresses will not do');
+	like($html, qr/<p id="aw-trusted-listen" class="aw-note aw-warning" hidden><\/p>/, 'the live listen note starts hidden');
+	like($html, qr/name="pref_listen" id="pref_listen"/, 'the listen field has an id for the script');
+	ok(index($html, 'title="Trusted proxies"') < index($html, 'title="Trusted networks"')
+		&& index($html, 'title="Trusted networks"') < index($html, 'title="Client address header"'), 'after Trusted proxies');
+	my (undef, @names) = Plugins::LyrionAnywhere::Settings::prefs();
+	ok(grep({ $_ eq 'trusted_networks' } @names), 'a pref of the page');
+}
+
+# --- the Public URL over http:// to a private address (pairing links and QR codes) --------
+{
+	my $origin = \&Plugins::LyrionAnywhere::Gateway::private_http_origin;
+	my %ok = (
+		'http://10.8.0.1:9443'         => 'http://10.8.0.1:9443',
+		'HTTP://10.8.0.1:9443/'        => 'http://10.8.0.1:9443',
+		'http://10.8.0.1'              => 'http://10.8.0.1',
+		'http://10.8.0.1:80'           => 'http://10.8.0.1',
+		'http://100.101.102.103:09443' => 'http://100.101.102.103:9443',
+		'http://[FD00::1]:9443'        => 'http://[fd00::1]:9443',
+		'http://[fe80:0:0:0::1]'       => 'http://[fe80::1]',
+	);
+	is($origin->($_), $ok{$_}, "pairing over http:// allowed: $_") for sort keys %ok;
+	for my $ip (@{ $vectors->{addresses}{private} }) {
+		my $host = $ip =~ /:/ ? "[$ip]" : $ip;
+		ok(defined $origin->("http://$host:9443"), "private address $ip: allowed");
+	}
+	for my $ip (@{ $vectors->{addresses}{not_private} }) {
+		my $host = $ip =~ /:/ ? "[$ip]" : $ip;
+		ok(!defined $origin->("http://$host:9443"), "not a private address, $ip: not allowed");
+	}
+	for my $bad ('https://10.8.0.1:9443', 'http://music.example.com', 'http://lms.example.lan:9443', 'http://10.8.0.1.example.com',
+	             'http://8.8.8.8', 'http://127.0.0.1:9443', 'http://10.8.0.1:9443/lms', 'http://10.8.0.1:9443?x', 'http://10.8.0.1:9443#x',
+	             'http://user@10.8.0.1', 'http://10.8.0.1:0', 'http://10.8.0.1:70000', 'http://010.8.0.1', 'http://10.8.1',
+	             'http://0x0a.8.0.1', 'http://167772161', 'http://[::ffff:10.0.0.1]', 'http://[fe80::1%25eth0]', 'http://fd00::1',
+	             "http://10.8.0.1\n", ' http://10.8.0.1', 'ftp://10.8.0.1', 'http://', '', undef, ['http://10.8.0.1']) {
+		ok(!defined $origin->($bad), 'pairing over http:// not allowed: ' . show($bad));
+	}
+	# Saving an http:// address that pairing can't use says so, once (it still needs the box).
+	$prefs->set(public_url => '');
+	my ($o, $e, $n) = $clean->({ pref_public_url => 'http://music.example.com', anywhere_allow_http => 1 });
+	is($o->{pref_public_url}, 'http://music.example.com', 'an http:// name is saved with the box');
+	like(join(' ', @$n), qr/without a QR code.*private address/, 'with a notice that pairing links need a private address');
+	($o, $e, $n) = $clean->({ pref_public_url => 'http://10.8.0.1:9443', anywhere_allow_http => 1 });
+	is($o->{pref_public_url}, 'http://10.8.0.1:9443', 'an http:// private address is saved with the box');
+	is_deeply($n, [], 'with no notice');
+	($o, $e, $n) = $clean->({ pref_public_url => 'http://10.8.0.1:9443' });
+	ok(!exists $o->{pref_public_url}, 'still not without the box');
+	$prefs->set(public_url => 'http://music.example.com');
+	($o, $e, $n) = $clean->({ pref_public_url => 'http://music.example.com', anywhere_allow_http => 1 });
+	is_deeply($n, [], 'saved again unchanged: not said again');
+	$prefs->set(public_url => '');
 }
 
 done_testing;

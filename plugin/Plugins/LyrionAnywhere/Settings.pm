@@ -24,7 +24,7 @@ sub name { 'PLUGIN_LYRIONANYWHERE' }
 sub page { 'plugins/LyrionAnywhere/settings/basic.html' }
 
 sub prefs {
-	return ($prefs, qw(enabled listen public_url trusted_proxies client_ip_header gateway_path transcode ffmpeg_path download_cache_mb analysis));
+	return ($prefs, qw(enabled listen public_url trusted_proxies trusted_networks client_ip_header gateway_path transcode ffmpeg_path download_cache_mb analysis));
 }
 
 sub escape_html {
@@ -43,11 +43,12 @@ sub _trim {
 	return $s;
 }
 
-# Clean submitted values. Returns (\%clean, \@errors); invalid values keep the old pref.
+# Clean submitted values. Returns (\%clean, \@errors, \@notices); invalid values keep the
+# old pref. Notices point out a setting that is saved but will not work as it stands.
 sub clean {
 	my ($params) = @_;
-	my (%out, @errors);
-	for my $k (qw(listen public_url trusted_proxies client_ip_header gateway_path ffmpeg_path download_cache_mb)) {
+	my (%out, @errors, @notices);
+	for my $k (qw(listen public_url trusted_proxies trusted_networks client_ip_header gateway_path ffmpeg_path download_cache_mb)) {
 		my $name = "pref_$k";
 		next unless exists $params->{$name};
 		my $v = _trim($params->{$name});
@@ -83,6 +84,20 @@ sub clean {
 				next;
 			}
 			$v = join ', ', @ips;
+		}
+		elsif ($k eq 'trusted_networks') {
+			# Every entry must be a private network, or nothing is saved.
+			my (@nets, @bad);
+			for my $entry (Plugins::LyrionAnywhere::Gateway::split_list($v)) {
+				my ($net, $why) = Plugins::LyrionAnywhere::Gateway::valid_trusted_network($entry);
+				if (defined $net) { push @nets, $net }
+				else              { push @bad, $why }
+			}
+			if (@bad) {
+				push @errors, 'Trusted networks not saved: ' . join('; ', @bad) . '.';
+				next;
+			}
+			$v = join ', ', @nets;
 		}
 		elsif ($k eq 'client_ip_header') {
 			unless (Plugins::LyrionAnywhere::Gateway::valid_client_ip_header($v)) {
@@ -120,7 +135,26 @@ sub clean {
 	if (exists $params->{pref_analysis}) {
 		$out{pref_analysis} = $params->{pref_analysis} ? 1 : 0;
 	}
-	return (\%out, \@errors);
+	# What the gateway will run with once this is saved.
+	my $after = sub { my $k = shift; exists $out{"pref_$k"} ? $out{"pref_$k"} : ($prefs->get($k) // '') };
+	my ($networks, $listen, $public) = map { $after->($_) } qw(trusted_networks listen public_url);
+	if ($networks ne '') {
+		if (Plugins::LyrionAnywhere::Gateway::is_loopback($listen)) {
+			push @notices, "Trusted networks are saved, but the gateway listens on $listen, which devices on "
+				. 'your VPN cannot reach. Set the Listen address to the VPN interface\'s address, such as 10.8.0.1:9443.';
+		}
+		elsif ($listen =~ /^(?:0\.0\.0\.0|\[::\]):\d+\z/) {
+			push @notices, "Trusted networks are saved, but the gateway listens on every network ($listen). "
+				. 'Set the Listen address to the VPN interface\'s address, such as 10.8.0.1:9443, so that only the VPN reaches it.';
+		}
+	}
+	# Said once, when such an address is saved.
+	if (exists $out{pref_public_url} && $public ne ($prefs->get('public_url') // '')
+		&& $public =~ m{\Ahttp://}i && !defined Plugins::LyrionAnywhere::Gateway::private_http_origin($public)) {
+		push @notices, 'The Public URL is an http:// address with a host name or a public address, so Add a device '
+			. 'shows codes without a QR code. Pairing links over http:// need a private address, such as http://10.8.0.1:9443.';
+	}
+	return (\%out, \@errors, \@notices);
 }
 
 # The latest modification time of the settings page's own files, as digits only.
@@ -162,8 +196,8 @@ sub handler {
 		return $class->SUPER::handler($client, $params);
 	}
 	if ($params->{saveSettings}) {
-		my %before = map { $_ => $prefs->get($_) } qw(enabled listen public_url trusted_proxies client_ip_header gateway_path transcode ffmpeg_path download_cache_mb analysis);
-		my ($clean, $errors) = clean($params);
+		my %before = map { $_ => $prefs->get($_) } qw(enabled listen public_url trusted_proxies trusted_networks client_ip_header gateway_path transcode ffmpeg_path download_cache_mb analysis);
+		my ($clean, $errors, $notices) = clean($params);
 		# Invalid values are not saved; the others are.
 		for my $k (keys %$params) {
 			delete $params->{$k} if $k =~ /^pref_/ && !exists $clean->{$k};
@@ -173,7 +207,9 @@ sub handler {
 		$params->{pref_transcode} //= 0;
 		$params->{pref_analysis} //= 0;
 		# Messages can echo submitted text: escape before they reach the page.
-		$params->{warning} = join('<br>', map { escape_html($_) } @$errors) if @$errors;
+		# Notices are saved settings that won't work as they stand: shown after any errors.
+		my @lines = (@$errors, @$notices);
+		$params->{warning} = join('<br>', map { escape_html($_) } @lines) if @lines;
 		my $result = $class->SUPER::handler($client, $params);
 		# This page is the one authorised writer: what it saved is what the gateway runs with.
 		Plugins::LyrionAnywhere::Gateway::settings_saved();

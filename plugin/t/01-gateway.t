@@ -235,6 +235,86 @@ SKIP: {
 	is($owned->('9445; x', $$), undef, 'a malformed port is not looked up');
 }
 
+
+# --- trusted networks: one --trusted-network flag per network, normalised -------------------
+{
+	my $flags = sub { my $a = shift; [ map { $a->[$_ + 1] } grep { $a->[$_] eq '--trusted-network' } 0 .. $#$a - 1 ] };
+	my ($a, $e) = Plugins::LyrionAnywhere::Gateway::command_line(%ok, trusted_networks => ['10.8.0.5/24', 'FD12:3456:789A::/48', '100.101.102.103']);
+	ok($a, 'trusted networks: a command line') or diag $e;
+	is_deeply($flags->($a), ['10.8.0.0/24', 'fd12:3456:789a::/48', '100.101.102.103/32'], 'one --trusted-network per network, each its own argument');
+	is(scalar(grep { $_ eq '--trusted-network' } @$a), 3, 'and no more');
+	is_deeply($flags->($argv), [], 'none configured: no flag at all');
+	($a) = Plugins::LyrionAnywhere::Gateway::command_line(%ok, trusted_networks => []);
+	is_deeply($a, $argv, 'an empty list: the command line is exactly as before');
+	for my $bad (['8.8.8.0/24'], ['10.8.0.0/24', '0.0.0.0/0'], ['127.0.0.1'], ['::/0'], ["10.8.0.0/24 --listen 0.0.0.0:1"], ['--listen'], ['']) {
+		my ($x, $err) = Plugins::LyrionAnywhere::Gateway::command_line(%ok, trusted_networks => $bad);
+		ok(!$x, 'refused: trusted networks ' . join(', ', map { show($_) } @$bad));
+		like($err // '', qr/^bad trusted network: /, 'with the reason');
+	}
+}
+
+# --- whether a process holds a listening port, read from a fake /proc ----------------------
+{
+	my $root = File::Temp::tempdir(CLEANUP => 1);
+	local $Plugins::LyrionAnywhere::Gateway::PROC_ROOT = $root;
+	my $owned = \&Plugins::LyrionAnywhere::Gateway::listener_owned_by;
+	mkdir "$root/net";
+	# Lines as Linux writes them: local address in the kernel's (little-endian) byte order.
+	my $tcp = sub {
+		my ($file, @rows) = @_;
+		open my $fh, '>', "$root/net/$file" or die;
+		print $fh "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+		my $i = 0;
+		for my $r (@rows) {
+			my ($addr, $port, $state, $inode) = @$r;
+			printf $fh "  %d: %s:%04X %s:0000 %s 00000000:00000000 00:00000000 00000000  1000        0 %s 1 0000000000000000 100 0 0 10 0\n",
+				$i++, $addr, $port, '0' x length($addr), $state, $inode;
+		}
+		close $fh;
+	};
+	my $pid = 4242;
+	mkdir "$root/$pid";
+	mkdir "$root/$pid/fd";
+	symlink 'socket:[1001]', "$root/$pid/fd/3" or die;   # 127.0.0.1:9445
+	symlink 'socket:[1002]', "$root/$pid/fd/4" or die;   # 10.8.0.1:9443
+	symlink 'socket:[1003]', "$root/$pid/fd/5" or die;   # 0.0.0.0:9500
+	symlink 'socket:[1004]', "$root/$pid/fd/6" or die;   # [fd00::1]:9443
+	symlink '/dev/null', "$root/$pid/fd/0" or die;
+	$tcp->('tcp',
+		['0100007F', 9445, '0A', 1001],
+		['0100080A', 9443, '0A', 1002],
+		['00000000', 9500, '0A', 1003],
+		['0100080A', 9600, '01', 1002],   # established, not listening
+		['0100080A', 9700, '0A', 9999],   # someone else's
+	);
+	# fd00::1, each 32-bit word little-endian.
+	$tcp->('tcp6', ['000000FD000000000000000001000000', 9443, '0A', 1004]);
+
+	is($owned->(9445, $pid), 1, 'the admin port on 127.0.0.1 (the default address)');
+	is($owned->(9445, $pid, '127.0.0.1'), 1, 'the same, asked for by address');
+	is($owned->(9443, $pid), 0, 'a listener on another address is not the loopback one');
+	is($owned->(9443, $pid, '10.8.0.1'), 1, 'the listen address on a VPN interface');
+	is($owned->(9443, $pid, '10.8.0.2'), 0, 'not another address on it');
+	is($owned->(9500, $pid, '0.0.0.0'), 1, 'every IPv4 address (0.0.0.0)');
+	is($owned->(9500, $pid), 0, 'a listener on every address does not count as the loopback one');
+	is($owned->(9500, $pid, '10.8.0.1'), 0, 'nor as a particular address');
+	is($owned->(9600, $pid, '10.8.0.1'), 0, 'a connection that is not listening does not count');
+	is($owned->(9700, $pid, '10.8.0.1'), 0, 'a socket held by another process does not count');
+	is($owned->(9443, $pid, 'fd00::1'), 1, 'an IPv6 listen address');
+	is($owned->(9443, $pid, 'FD00:0:0:0:0:0:0:1'), 1, 'written another way');
+	is($owned->(9443, $pid, 'fd00::2'), 0, 'not another IPv6 address');
+	is($owned->(9443, 4343, '10.8.0.1'), 0, 'no such process');
+	for my $bad ('localhost', '10.8.0.1:9443', '[fd00::1]', 'fe80::1%eth0', '010.8.0.1', '', "10.8.0.1\n") {
+		is($owned->(9443, $pid, $bad), 0, 'not a literal address, never held: ' . show($bad));
+	}
+	is($owned->('9443x', $pid, '10.8.0.1'), undef, 'a malformed port is not looked up');
+	# The kernel's other byte order (big-endian systems) is read too.
+	$tcp->('tcp', ['0A080001', 9443, '0A', 1002], ['7F000001', 9445, '0A', 1001]);
+	is($owned->(9443, $pid, '10.8.0.1'), 1, 'big-endian: the VPN address');
+	is($owned->(9445, $pid), 1, 'big-endian: loopback');
+	unlink "$root/net/tcp6";
+	is($owned->(9443, $pid, 'fd00::1'), undef, 'no tcp6 table: cannot tell');
+}
 # --- pref validators: the same rules as the settings page ------------------------------
 {
 	my $v = \&Plugins::LyrionAnywhere::Gateway::valid_pref;
@@ -259,6 +339,9 @@ SKIP: {
 		                    ['javascript:alert(1)', 'https://music.example.com/path', "https://music.example.com\n"]],
 		trusted_proxies => [['', '10.0.0.10', '10.0.0.10, 10.0.0.11', '::1 10.0.0.1'],
 		                    ['proxy.example', '10.0.0.1, evil', "10.0.0.1\n10.0.0.2", ':::']],
+		trusted_networks => [['', '10.8.0.0/24', '10.8.0.0/24, fd00::/8', '10.8.0.5/24 100.64.0.0/10', 'fe80::/64'],
+		                    ['8.8.8.0/24', '10.8.0.0/24, evil', "10.8.0.0/24\n10.9.0.0/24", '0.0.0.0/0', '::/0', '127.0.0.1',
+		                     '::ffff:10.0.0.0/104', '10.8.0.0/33', 'localhost', ['10.8.0.0/24'], "10.8.0.0/24\x00"]],
 		admin_port      => [['9445', 1, 65535],
 		                    ['1@evil.example.com:80', '', 0, 65536, '9445x', undef]],
 		gateway_path    => [['', $exe->filename],

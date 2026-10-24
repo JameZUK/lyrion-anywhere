@@ -305,6 +305,55 @@ sub pid_in_file { my $f = Plugins::LyrionAnywhere::Gateway::pid_file(); open my 
 	ok(!defined pid_in_file(), 'pid file removed');
 }
 
+
+# --- a gateway on a VPN address (trusted networks): started with its flags, and the admin
+# secret still goes only to a gateway holding 127.0.0.1 ------------------------------------
+{
+	my $root = tempdir(CLEANUP => 1);
+	local $Plugins::LyrionAnywhere::Gateway::PROC_ROOT = $root;
+	@Slim::Utils::Timers::TIMERS = ();
+	$prefs->set(listen => '10.8.0.1:9443');
+	$prefs->set(trusted_networks => '10.8.0.0/24, fd00::/8');
+	Plugins::LyrionAnywhere::Gateway::settings_saved();
+	my $pid = child();
+	$Proc::Background::NEXT_PID = $pid;
+	Plugins::LyrionAnywhere::Gateway->start;
+	my $argv = $Proc::Background::STARTED[-1];
+	my @nets = map { $argv->[$_ + 1] } grep { $argv->[$_] eq '--trusted-network' } 0 .. $#$argv - 1;
+	is_deeply(\@nets, ['10.8.0.0/24', 'fd00::/8'], 'started with one --trusted-network per network');
+	ok(grep({ $argv->[$_] eq '--listen' && $argv->[$_ + 1] eq '10.8.0.1:9443' } 0 .. $#$argv - 1), 'listening on the VPN address');
+	ok(grep({ $argv->[$_] eq '--admin-listen' && $argv->[$_ + 1] eq '127.0.0.1:9445' } 0 .. $#$argv - 1), 'the admin API stays on loopback');
+	is(Plugins::LyrionAnywhere::Gateway->state->{listen}, '10.8.0.1:9443', 'the status names the VPN address');
+
+	# The gateway's sockets, as /proc shows them.
+	mkdir "$root/net";
+	mkdir "$root/$pid";
+	mkdir "$root/$pid/fd";
+	symlink 'socket:[2001]', "$root/$pid/fd/3" or die;
+	symlink 'socket:[2002]', "$root/$pid/fd/4" or die;
+	my $table = sub {
+		open my $fh, '>', "$root/net/tcp" or die;
+		print $fh "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+		my $i = 0;
+		printf $fh "  %d: %s:%04X 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 %d 1 0 100 0 0 10 0\n", $i++, @$_ for @_;
+		close $fh;
+	};
+	$table->(['0100080A', 9443, 2001], ['0100007F', 9445, 2002]);
+	is(Plugins::LyrionAnywhere::Gateway::admin_target(), '127.0.0.1:9445', 'gateway on the VPN address, admin API on loopback: the secret is sent');
+	is(Plugins::LyrionAnywhere::Gateway::listener_owned_by(9443, $pid, '10.8.0.1'), 1, 'and it holds the VPN listener');
+	# Regression guard: the admin check is not widened to other addresses.
+	for my $case (['every address', '00000000'], ['the VPN address', '0100080A']) {
+		my ($name, $hex) = @$case;
+		$table->(['0100080A', 9443, 2001], [$hex, 9445, 2002]);
+		@Slim::Utils::Log::MESSAGES = ();
+		is(Plugins::LyrionAnywhere::Gateway::admin_target(), undef, "admin port held on $name only: the secret is not sent");
+	}
+	Plugins::LyrionAnywhere::Gateway->stop;
+	ok(gone($pid), 'stopped');
+	$prefs->set(listen => '127.0.0.1:9443');
+	$prefs->set(trusted_networks => '');
+	Plugins::LyrionAnywhere::Gateway::settings_saved();
+}
 # --- a gateway left behind by an LMS that crashed is stopped, and only ours ---------------
 {
 	my $root = tempdir(CLEANUP => 1);
