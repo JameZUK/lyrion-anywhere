@@ -7,6 +7,7 @@ use HTTP::Tiny;
 use IO::Socket::INET;
 use JSON::PP qw(encode_json decode_json);
 use Plugins::LyrionAnywhere::Admin;
+use Plugins::LyrionAnywhere::Gateway;
 
 my ($bin) = grep { -x } map { "../target/$_/anywhere-gateway" } qw(debug release);
 unless ($bin) {
@@ -18,13 +19,18 @@ unless ($bin) {
 sub free_port { my $s = IO::Socket::INET->new(Listen => 1, LocalAddr => '127.0.0.1', LocalPort => 0) or die; my $p = $s->sockport; close $s; $p }
 my ($public, $admin, $tunnel) = (free_port(), free_port(), free_port());
 my $dir = tempdir(CLEANUP => 1);
+# Trusted networks as the plugin normalises them, written awkwardly: the gateway must accept
+# each and name the same networks (Rust's Display), so the two checks agree.
+my @trusted_in = ('10.8.0.5/24', 'FD12:3456:789A::1/48', 'fd00:0:1:0:0:1:0:0', 'fd01::10.0.0.1/128', '100.101.102.103', 'fe80:0:0:0::/64');
+my @trusted = map { (Plugins::LyrionAnywhere::Gateway::valid_trusted_network($_))[0] } @trusted_in;
 my $pid = fork // die;
 if ($pid == 0) {
 	open STDOUT, '>', "$dir/gw.log"; open STDERR, '>&', \*STDOUT;
 	exec $bin, 'serve', '--data-dir', "$dir/data", '--listen', "127.0.0.1:$public",
 		'--admin-listen', "127.0.0.1:$admin", '--lms', '127.0.0.1', '--lms-http-port', 1, '--lms-cli-port', 1,
 		'--no-transcode', '--download-cache-mb', 64, '--client-ip-header', 'CF-Connecting-IP',
-		'--no-analysis', '--tunnel-listen', "127.0.0.1:$tunnel";
+		'--no-analysis', '--tunnel-listen', "127.0.0.1:$tunnel",
+		map { ('--trusted-network', $_) } @trusted;
 	exit 127;
 }
 END { kill 'TERM', $pid if $pid }
@@ -129,6 +135,44 @@ is_deeply($users_after->{users}, [], 'user deleted');
 	my ($status, $data) = send_op(tunnel_status => {});
 	is($status, 200, 'tunnel_status accepted by the gateway');
 	is($data->{tunnel_listen}, "127.0.0.1:$tunnel", 'the status names the tunnel listener');
+}
+
+# --- the flags the plugin passes are the gateway's own -------------------------------------
+{
+	# Every flag the plugin can build, with every option set (and with the switches off).
+	my ($argv, $err) = Plugins::LyrionAnywhere::Gateway::command_line(
+		binary => $bin, listen => '10.8.0.1:9443', admin_listen => '127.0.0.1:9445', data_dir => "$dir/data",
+		http_port => 9000, cli_port => 9090, log_file => "$dir/gw.log", static_dir => "$dir/web",
+		trusted_proxies => ['10.0.0.10'], trusted_networks => ['10.8.0.0/24'], allowed_origins => ['https://music.example.com'],
+		client_ip_header => 'CF-Connecting-IP', ffmpeg => '/usr/bin/ffmpeg', download_cache_mb => 64,
+	);
+	ok($argv, 'every option: a command line') or diag $err;
+	my ($no) = Plugins::LyrionAnywhere::Gateway::command_line(
+		binary => $bin, listen => '127.0.0.1:9443', admin_listen => '127.0.0.1:9445', data_dir => "$dir/data",
+		http_port => 9000, cli_port => 9090, transcode => 0, analysis => 0,
+	);
+	my $help = `"$bin" serve --help 2>&1`;
+	my %known = map { $_ => 1 } $help =~ /(--[a-z][a-z0-9-]*)/g;
+	my %flags = map { $_ => 1 } grep { /^--/ } @$argv, @$no;
+	ok($flags{'--trusted-network'}, 'the plugin can pass --trusted-network');
+	ok($known{$_}, "the gateway knows $_") for sort keys %flags;
+	like($help, qr/--trusted-network <[A-Z_]+>/, 'and --trusted-network takes a value');
+}
+
+# The gateway took the trusted networks and names them as the plugin normalised them.
+{
+	(my $log = do { open my $fh, '<', "$dir/gw.log" or die; local $/; <$fh> }) =~ s/\e\[[0-9;]*m//g;
+	my ($named) = $log =~ /trusted networks networks=(.*)$/m;
+	ok(defined $named, 'the gateway warns that it accepts plain HTTP from the trusted networks') or diag $log;
+	is($named, join(', ', @trusted), 'the same networks, written the same way, as the plugin\'s normalisation');
+}
+
+# A network the plugin refuses, the gateway refuses too, with the same reason.
+for my $bad ('8.8.8.0/24', '0.0.0.0/0', '::ffff:10.0.0.0/104', '127.0.0.1', '10.8.0.0/33', '10.8.0/24') {
+	my (undef, $why) = Plugins::LyrionAnywhere::Gateway::valid_trusted_network($bad);
+	my $out = `"$bin" serve --data-dir "$dir/refused" --listen 127.0.0.1:1 --admin-listen 127.0.0.1:1 --lms 127.0.0.1 --trusted-network '$bad' 2>&1`;
+	isnt($? >> 8, 0, "the gateway will not start with --trusted-network $bad");
+	ok(index($out, $why) >= 0, "and says the same as the plugin: $why") or diag $out;
 }
 
 # Without the secret the gateway refuses, whatever the plugin would have sent.

@@ -216,3 +216,27 @@ test('a hostile or failed reply shows no code and no markup', async () => {
     assert.equal(page.created.filter((e) => e.tagName === 'SVG' || e.tagName === 'IMG' || e.tagName === 'SCRIPT').length, 0);
   }
 });
+
+test('an http:// Public URL with a private address (a VPN, trusted networks): a QR code pointing there', async () => {
+  const page = fakePage('http://10.8.0.1:9443', { ok: 1, data: { code: 'ABCDEFGHJK', expires_in: 600 } });
+  await openPanel(page);
+  const svg = page.created.find((e) => e.tagName === 'SVG');
+  assert.ok(svg, 'a QR code is shown');
+  const path = page.created.find((e) => e.tagName === 'PATH');
+  const n = Number(svg.attrs.viewBox.split(' ')[2]);
+  const dark = new Set();
+  for (const m of path.attrs.d.matchAll(/M(\d+) (\d+)h(\d+)/g)) {
+    for (let k = 0; k < Number(m[3]); k++) dark.add(`${Number(m[1]) - 4 + k},${Number(m[2]) - 4}`);
+  }
+  const decoded = decodeQr(n - 8, (x, y) => (dark.has(`${x},${y}`) ? 1 : 0));
+  assert.equal(decoded.text, 'lyrion-anywhere://pair?server=http%3A%2F%2F10.8.0.1%3A9443&code=ABCDEFGHJK');
+});
+
+test('an http:// Public URL with a public address or a name: no QR code, and the message says what would work', async () => {
+  for (const url of ['http://8.8.8.8:9443', 'http://lms.example.lan:9443']) {
+    const page = fakePage(url, { ok: 1, data: { code: 'ABCDEFGHJK', expires_in: 600 } });
+    const panel = await openPanel(page);
+    assert.equal(page.created.filter((e) => e.tagName === 'SVG').length, 0, url);
+    assert.ok(/or http:\/\/ with a private address reached over your VPN/.test(panel.textContent), url);
+  }
+});

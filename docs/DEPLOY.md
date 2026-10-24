@@ -2,11 +2,12 @@
 
 This is the deployment reference. For a step-by-step walkthrough, see [`INSTALL.md`](INSTALL.md).
 
-The gateway is the only part reachable from the internet. Put it behind a TLS reverse proxy, or a Cloudflare Tunnel, and never expose LMS's own ports (3483, 9000, 9090).
+The gateway is the only part reachable from the internet. Put it behind a TLS reverse proxy, or a Cloudflare Tunnel, and never expose LMS's own ports (3483, 9000, 9090). With your own VPN, the gateway can instead serve the VPN's devices over plain HTTP ([trusted networks](#trusted-networks-a-vpn-without-https)).
 
 ```
 phone/browser ──HTTPS──▶ reverse proxy ──HTTP──▶ gateway ──▶ LMS (LAN)
 phone/browser ──HTTPS──▶ Cloudflare ◀── cloudflared (dials out) ──HTTP──▶ gateway ──▶ LMS (LAN)
+phone/browser ──VPN──▶ (VPN interface) ──HTTP──▶ gateway ──▶ LMS (LAN)
 ```
 
 There are two ways to run the gateway.
@@ -23,8 +24,9 @@ Then open *Settings › Plugins › Lyrion Anywhere*:
 - **Listen address:** `127.0.0.1:9443` if the proxy runs on the LMS machine. Otherwise use the LMS machine's LAN address (e.g. `10.0.0.20:9443`), and allow only the proxy to reach that port.
 - **Public URL:** `https://music.example.com`.
 - **Trusted proxies:** the proxy's address when it runs on another machine (e.g. `10.0.0.10`).
+- **Trusted networks:** empty, unless you connect over your own VPN without HTTPS (see [below](#trusted-networks-a-vpn-without-https)).
 
-Add users on the same page. The gateway refuses plain-HTTP requests from anything except loopback, so the LAN port can't be used to bypass TLS. Still, firewall it to the proxy.
+Add users on the same page. The gateway refuses plain-HTTP requests from anything except loopback (and the *Trusted networks*, if you list any), so the LAN port can't be used to bypass TLS. Still, firewall it to the proxy.
 
 LMS's own web and control ports (9000 and 9090) need no password on the local network by default, so anyone on your network can use LMS and open its settings. Remote accounts can only be changed from the Lyrion Anywhere settings page: the plugin's account commands need a token that only that page carries, so other web sites can't change accounts through LMS. Anyone who can open the page can, though. If others use your network, turn on LMS password protection (*Settings › Advanced › Security*).
 
@@ -54,6 +56,25 @@ docker run -d --name lyrion-anywhere --restart unless-stopped --network host \
 - Manage accounts with `docker exec lyrion-anywhere anywhere-gateway admin --data-dir /data …` (`list-users`, `list-devices`, `pair`, `reset-totp`, `set-password`).
 - The image is static, contains no shell and runs as a non-root user. It includes the browser player page at `/`.
 - Host networking keeps the client address real. With a bridge network, the gateway must listen on all interfaces inside the container (`--listen 0.0.0.0:9443`; `127.0.0.1` there is unreachable from the host). Publish the port to `127.0.0.1:9443` only (`-p 127.0.0.1:9443:9443`), and pass the bridge gateway address as `--trusted-proxy`.
+
+### Trusted networks: a VPN without HTTPS
+
+`--trusted-network <CIDR>` (repeatable; the plugin's *Trusted networks* setting) lets devices inside that network connect over plain HTTP, as loopback can. **Passwords, sign-ins and music then cross that network unencrypted, so list only a network you control, such as your VPN, and bind `--listen` to its interface.**
+
+```sh
+docker run -d --name lyrion-anywhere --restart unless-stopped --network host \
+    -v anywhere-data:/data lyrion-anywhere \
+    serve --data-dir /data --static-dir /web \
+          --listen 10.8.0.1:9443 --lms lms.example.lan \
+          --trusted-network 10.8.0.0/24
+```
+
+- **Only private networks:** each must lie within `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10`, `fc00::/7` or `fe80::/10`. A public range, a catch-all (`0.0.0.0/0`, `::/0`), anything including loopback, or an IPv4 network written as IPv6 stops the gateway from starting, with a line saying why. At start-up the gateway logs a warning naming the networks it serves unencrypted.
+- **Listen on the VPN interface** (`10.8.0.1:9443` above), never `0.0.0.0`, and firewall the port to that interface. The gateway can't tell whether a packet from `10.8.0.5` really came through the VPN: that boundary is yours.
+- **Direct requests only:** a request from a trusted network that carries `X-Forwarded-For` or `X-Forwarded-Proto` is still refused, unless it comes from a `--trusted-proxy` saying `https`. A proxy in between is a reverse proxy, with the usual rules.
+- **No `--allowed-origin` needed** for the web app the gateway serves itself at `http://10.8.0.1:9443`: the gateway accepts a page's own address as its origin.
+- **Cookies:** the browser's refresh cookie is set without `Secure` only on a plain-HTTP request from a trusted network (browsers drop a `Secure` cookie sent over plain HTTP); everywhere else it is unchanged.
+- **Clients:** the Android app accepts `http://` only to a literal private address, after a warning, and shows an *Unencrypted* badge. Browsers can't install the web app or keep music offline over plain HTTP. Tailscale Serve, or a proxy with an internal certificate on the VPN, keeps HTTPS and every browser feature; see [`INSTALL.md`](INSTALL.md#option-d-your-own-vpn-no-https).
 
 ### Cloudflare Tunnel with Docker: a sidecar
 
@@ -126,6 +147,6 @@ Caddy works too: `reverse_proxy 127.0.0.1:9443` replaces `X-Forwarded-For` by de
 ## Checklist
 
 - [ ] LMS ports unreachable from the internet (check from outside, e.g. a phone off Wi-Fi).
-- [ ] The gateway's port reachable only from the proxy (or, with a Cloudflare Tunnel, from `cloudflared` only).
+- [ ] The gateway's port reachable only from the proxy (or, with a Cloudflare Tunnel, from `cloudflared` only; with trusted networks, from the VPN interface only).
 - [ ] `https://music.example.com/healthz` returns `ok`; plain HTTP redirects.
 - [ ] Sign in with a test user; turn on two-step for admins.

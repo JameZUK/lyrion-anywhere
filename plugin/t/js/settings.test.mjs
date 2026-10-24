@@ -509,3 +509,134 @@ test('the device panel tells browser users to sign in with a password', async ()
   assert.match(text, /Android app/);
   assert.match(text, /web browser.*username and password/);
 });
+
+// --- trusted networks and http:// to a private address (docs/plans/trusted-networks.md) -----
+
+// The vectors shared with the gateway (core/src/privnet.rs) and the plugin's Perl check.
+const VECTORS = JSON.parse(readFileSync(new URL('../../../web/app/tests/fixtures/private-networks.json', import.meta.url), 'utf8'));
+
+test('private addresses follow the shared vectors', () => {
+  for (const a of VECTORS.addresses.private) {
+    assert.ok(t.isPrivateAddress(a), a);
+    if (a.includes(':')) assert.ok(t.isPrivateAddress(`[${a}]`), `[${a}]`);
+  }
+  for (const a of VECTORS.addresses.not_private) assert.ok(!t.isPrivateAddress(a), a);
+  // Names are never private (they could resolve anywhere), nor is anything that isn't a literal.
+  for (const a of ['localhost', 'lms.example.lan', 'music.example.com', '10.8.0.1.example.com', '010.8.0.1', '10.8.1', '0x0a.8.0.1',
+    '167772161', '10.8.0.256', '10.8.0.1 ', ' 10.8.0.1', '10.8.0.1\n', 'fe80::1%eth0', 'fd00:::1', 'fd00::1::2', '1:2:3:4:5:6:7:8:9',
+    'fd00:12345::1', 'fd00::g', '[fd00::1', 'fd00::1]', '١٠.8.0.1', '', null, undefined, 10, ['10.8.0.1'], { toString: () => '10.8.0.1' }]) {
+    assert.ok(!t.isPrivateAddress(a), String(a));
+  }
+  // The edges of each range.
+  for (const [inside, outside] of [['10.255.255.255', '11.0.0.0'], ['172.31.255.255', '172.32.0.0'], ['192.168.255.255', '192.169.0.0'],
+    ['169.254.255.255', '169.255.0.0'], ['100.127.255.255', '100.128.0.0'], ['100.64.0.0', '100.63.255.255'], ['fdff:ffff::1', 'fbff:ffff::1'],
+    ['febf:ffff::1', 'fec0::']]) {
+    assert.ok(t.isPrivateAddress(inside), inside);
+    assert.ok(!t.isPrivateAddress(outside), outside);
+  }
+  assert.ok(t.isPrivateAddress('fd00::10.0.0.1'), 'an IPv4 tail on a private IPv6 address');
+  assert.ok(!t.isPrivateAddress('::ffff:192.168.0.1'), 'an IPv4-mapped address is not taken as IPv4');
+});
+
+test('an http:// Public URL with a literal private address: its origin, else null', () => {
+  const ok = {
+    'http://10.8.0.1:9443': 'http://10.8.0.1:9443',
+    ' HTTP://10.8.0.1:9443/ ': 'http://10.8.0.1:9443',
+    'http://10.8.0.1': 'http://10.8.0.1',
+    'http://10.8.0.1:80': 'http://10.8.0.1',
+    'http://100.101.102.103:09443': 'http://100.101.102.103:9443',
+    'http://[FD00::1]:9443': 'http://[fd00::1]:9443',
+    'http://[fe80:0:0:0::1]': 'http://[fe80::1]',
+    'http://[fd00:0:1:0:0:1:0:0]:1': 'http://[fd00:0:1::1:0:0]:1',
+  };
+  for (const [u, want] of Object.entries(ok)) assert.equal(t.privateHttpOrigin(u), want, u);
+  for (const a of VECTORS.addresses.private) {
+    assert.ok(t.privateHttpOrigin(`http://${a.includes(':') ? `[${a}]` : a}:9443`), a);
+  }
+  for (const a of VECTORS.addresses.not_private) {
+    assert.equal(t.privateHttpOrigin(`http://${a.includes(':') ? `[${a}]` : a}:9443`), null, a);
+  }
+  for (const bad of ['https://10.8.0.1:9443', 'http://music.example.com', 'http://lms.example.lan:9443', 'http://10.8.0.1.example.com',
+    'http://8.8.8.8', 'http://127.0.0.1:9443', 'http://10.8.0.1:9443/lms', 'http://10.8.0.1:9443?x', 'http://10.8.0.1:9443#x',
+    'http://user@10.8.0.1', 'http://10.8.0.1:0', 'http://10.8.0.1:70000', 'http://010.8.0.1', 'http://10.8.1', 'http://0x0a.8.0.1',
+    'http://167772161', 'http://[::ffff:10.0.0.1]', 'http://[fe80::1%25eth0]', 'http://fd00::1', 'http://10.8.0.1\n:9443',
+    'ftp://10.8.0.1', 'http://', 'javascript:alert(1)//10.8.0.1', '', null, undefined, 42, `http://10.8.0.1:9443${'/'.repeat(300)}`]) {
+    assert.equal(t.privateHttpOrigin(bad), null, String(bad));
+  }
+});
+
+test('pairing links: the encoder’s for https://, and for http:// only to a private address', () => {
+  // An encoder that refuses every http:// address (as qr.js did before trusted networks), so
+  // this does not depend on the generated copy of the web app's encoder.
+  const qr = {
+    PAIRING_SCHEME: 'lyrion-anywhere',
+    normalisePairingCode: (c) => (typeof c === 'string' && /^[A-Z2-9]{10}$/.test(c) ? c : null),
+    pairingLink: (u, c) => (u === 'https://music.example.com' && c === 'ABCDEFGHJK' ? 'from-the-encoder' : null),
+    groupPairingCode: (c) => `${c.slice(0, 5)}-${c.slice(5)}`,
+  };
+  assert.equal(t.pairingLinkFor('https://music.example.com', 'ABCDEFGHJK', qr), 'from-the-encoder', 'https: the encoder decides');
+  assert.equal(t.pairingLinkFor('http://10.8.0.1:9443', 'ABCDEFGHJK', qr), 'lyrion-anywhere://pair?server=http%3A%2F%2F10.8.0.1%3A9443&code=ABCDEFGHJK');
+  assert.equal(t.pairingLinkFor('http://[FD00::1]:9443/', 'ABCDEFGHJK', qr), 'lyrion-anywhere://pair?server=http%3A%2F%2F%5Bfd00%3A%3A1%5D%3A9443&code=ABCDEFGHJK');
+  for (const url of ['http://music.example.com', 'http://8.8.8.8:9443', 'http://10.8.0.1:9443/lms', '', null]) {
+    assert.equal(t.pairingLinkFor(url, 'ABCDEFGHJK', qr), null, String(url));
+  }
+  for (const code of ['', 'abc', 'ABCD&server=https://evil.example', null]) {
+    assert.equal(t.pairingLinkFor('http://10.8.0.1:9443', code, qr), null, String(code));
+  }
+  const view = t.pairingView({ code: 'ABCDEFGHJK', expires_in: 600 }, 'http://10.8.0.1:9443', qr);
+  assert.equal(view.link, 'lyrion-anywhere://pair?server=http%3A%2F%2F10.8.0.1%3A9443&code=ABCDEFGHJK', 'the panel uses it');
+  assert.equal(t.pairingView({ code: 'ABCDEFGHJK', expires_in: 600 }, 'http://music.example.com', qr).link, null, 'never for an http:// name');
+});
+
+test('the Trusted networks warning and the note about the Listen address', () => {
+  for (const v of ['10.8.0.0/24', ' x ', 'evil']) assert.ok(t.hasTrustedNetworks(v), v);
+  for (const v of ['', '   ', null, undefined]) assert.ok(!t.hasTrustedNetworks(v), String(v));
+  assert.equal(t.trustedListenText('', '127.0.0.1:9443'), null, 'no networks: nothing to say');
+  assert.equal(t.trustedListenText('10.8.0.0/24', '10.8.0.1:9443'), null, 'the VPN address: fine');
+  assert.equal(t.trustedListenText('10.8.0.0/24', '[fd00::1]:9443'), null, 'an IPv6 VPN address: fine');
+  assert.match(t.trustedListenText('10.8.0.0/24', '127.0.0.1:9443'), /listens on 127\.0\.0\.1:9443, which devices on your VPN cannot reach/);
+  assert.match(t.trustedListenText('10.8.0.0/24', ''), /127\.0\.0\.1:9443/, 'empty: the default, loopback');
+  assert.match(t.trustedListenText('10.8.0.0/24', '[::1]:9443'), /cannot reach/);
+  assert.match(t.trustedListenText('10.8.0.0/24', '0.0.0.0:9443'), /every network \(0\.0\.0\.0:9443\)/);
+  assert.match(t.trustedListenText('10.8.0.0/24', '[::]:9443'), /every network/);
+  assert.ok(!/[^\x20-\x7e’]/.test(t.trustedListenText('10.8.0.0/24', '127.0.0.1:9443')), 'plain text');
+});
+
+test('the warnings show as the admin types', () => {
+  const dom = fakeDom();
+  const node = (id, value) => {
+    const n = dom.document.createElement('input');
+    n.value = value;
+    dom.byId.set(id, n);
+    return n;
+  };
+  const nets = node('pref_trusted_networks', '');
+  const listen = node('pref_listen', '127.0.0.1:9443');
+  const warning = node('aw-trusted-warning', '');
+  const note = node('aw-trusted-listen', '');
+  const url = node('pref_public_url', '');
+  const httpWarning = node('aw-http-warning', '');
+  warning.setAttribute('hidden', '');
+  note.setAttribute('hidden', '');
+  const fetch = async () => ({ json: async () => ({ result: {} }) });
+  const ctx = { document: dom.document, fetch, URL, setInterval: () => 0, setTimeout: () => 0, clearTimeout: () => {}, clearInterval: () => {}, Map, WeakMap, Set, Promise, JSON, Date, Math, Object, String, Error };
+  ctx.globalThis = ctx;
+  vm.runInNewContext(qrSrc, ctx);
+  vm.runInNewContext(src, ctx);
+  dom.ready();
+  const type = (input, v) => { input.value = v; for (const fn of input.listeners.input || []) fn({ target: input }); };
+  assert.ok(warning.hasAttribute('hidden') && note.hasAttribute('hidden'), 'empty: no warning');
+  type(nets, '10.8.0.0/24');
+  assert.ok(!warning.hasAttribute('hidden'), 'typing a network shows the warning');
+  assert.ok(!note.hasAttribute('hidden'), 'and, with the listen address on loopback, the note');
+  assert.match(note.textContent, /cannot reach/);
+  type(listen, '10.8.0.1:9443');
+  assert.ok(note.hasAttribute('hidden'), 'the VPN address: the note goes');
+  assert.ok(!warning.hasAttribute('hidden'), 'the warning stays');
+  type(listen, '0.0.0.0:9443');
+  assert.match(note.textContent, /every network/);
+  type(nets, '  ');
+  assert.ok(warning.hasAttribute('hidden') && note.hasAttribute('hidden'), 'cleared: both go');
+  type(url, 'http://10.8.0.1:9443');
+  assert.ok(!httpWarning.hasAttribute('hidden'), 'the http:// warning still works');
+});

@@ -27,7 +27,7 @@ my $token = Plugins::LyrionAnywhere::Commands::csrf_token();
 sub fresh {
 	$Slim::Utils::Prefs::DIR = tempdir(CLEANUP => 1);
 	%{ $Slim::Utils::Prefs::STORE{'plugin.lyrionanywhere'} } = ();
-	$prefs->init({ enabled => 0, listen => '127.0.0.1:9443', public_url => '', trusted_proxies => '',
+	$prefs->init({ enabled => 0, listen => '127.0.0.1:9443', public_url => '', trusted_proxies => '', trusted_networks => '',
 		client_ip_header => '', gateway_path => '', ffmpeg_path => '', download_cache_mb => 2048,
 		transcode => 1, analysis => 1, admin_port => 9445 });
 	$G->register_validators;
@@ -181,6 +181,76 @@ sub argv_has {
 	open $fh, '<', copy_file() or die;
 	my $text = do { local $/; <$fh> };
 	like($text, qr/^listen=127\.0\.0\.1:9444$/m, 'and the copy is rewritten');
+}
+
+# --- trusted networks are guarded like the trusted proxies: only the page can widen them ----
+{
+	fresh();
+	ok(scalar(grep { $_ eq 'trusted_networks' } $G->guarded_prefs), 'trusted networks are a guarded setting');
+	save_page(enabled => 1, listen => '10.8.0.1:9443', trusted_networks => '10.8.0.0/24');
+	is($prefs->get('trusted_networks'), '10.8.0.0/24', 'the page saved the network');
+	my %o = Plugins::LyrionAnywhere::Gateway::_options();
+	is_deeply($o{trusted_networks}, ['10.8.0.0/24'], 'and the gateway runs with it');
+
+	# `pref` widens it to a valid but larger private network: stored, then put back.
+	$prefs->set(trusted_networks => '10.0.0.0/8, 192.168.0.0/16');
+	is($prefs->get('trusted_networks'), '10.0.0.0/8, 192.168.0.0/16', 'the pref command stored a wider list (the attack)');
+	%o = Plugins::LyrionAnywhere::Gateway::_options();
+	is_deeply($o{trusted_networks}, ['10.8.0.0/24'], 'the gateway starts with the page\'s network only');
+	my ($argv) = Plugins::LyrionAnywhere::Gateway::command_line(%o, binary => '/srv/gw');
+	ok(argv_has($argv, '--trusted-network', '10.8.0.0/24'), 'command line: the page\'s network');
+	ok(!argv_has($argv, '--trusted-network', '10.0.0.0/8') && !argv_has($argv, '--trusted-network', '192.168.0.0/16'),
+		'command line: never the forged ones');
+	is($prefs->get('trusted_networks'), '10.8.0.0/24', 'the pref is put back');
+	like($G->state->{settings_notice}, qr/trusted_networks/, 'the status names it');
+
+	# `pref` with something that is not a private network is refused outright.
+	for my $bad ('0.0.0.0/0', '8.8.8.0/24', '10.8.0.0/24, ::/0', "10.8.0.0/24\n0.0.0.0/0", 'evil') {
+		$prefs->set(trusted_networks => $bad);
+		is($prefs->get('trusted_networks'), '10.8.0.0/24', "pref trusted_networks: '" . ($bad =~ s/\n/\\n/r) . "' refused, old value kept");
+	}
+
+	# Clearing them on the page turns them off.
+	save_page(enabled => 1, listen => '10.8.0.1:9443', trusted_networks => '');
+	%o = Plugins::LyrionAnywhere::Gateway::_options();
+	is_deeply($o{trusted_networks}, [], 'cleared on the page: none');
+	$prefs->set(trusted_networks => '10.8.0.0/24');
+	%o = Plugins::LyrionAnywhere::Gateway::_options();
+	is_deeply($o{trusted_networks}, [], 'and `pref` cannot put one back');
+	is($prefs->get('trusted_networks'), '', 'the pref is put back to empty');
+}
+
+# --- a copy written before trusted networks existed: the current value stands -----------
+{
+	fresh();
+	save_page(listen => '127.0.0.1:9443');
+	open my $fh, '<', copy_file() or die;
+	my $text = do { local $/; <$fh> };
+	close $fh;
+	$text =~ s/^trusted_networks=.*\n//m;
+	open $fh, '>', copy_file() or die;
+	print $fh $text;
+	close $fh;
+	ok(!exists Plugins::LyrionAnywhere::Gateway::read_authorised()->{trusted_networks}, 'an older copy has no trusted networks');
+	my %o = Plugins::LyrionAnywhere::Gateway::_options();
+	is_deeply($o{trusted_networks}, [], 'after an upgrade: none (the default)');
+	is($G->state->{settings_notice} // '', '', 'and no notice');
+	ok(exists Plugins::LyrionAnywhere::Gateway::read_authorised()->{trusted_networks}, 'the copy now records the setting');
+}
+
+# --- a stored list that is not valid is never passed on, whole --------------------------
+{
+	fresh();
+	save_page(listen => '10.8.0.1:9443', trusted_networks => '10.8.0.0/24');
+	open my $fh, '<', copy_file() or die;
+	my $text = do { local $/; <$fh> };
+	close $fh;
+	$text =~ s/^trusted_networks=.*$/trusted_networks=10.8.0.0\/24,%200.0.0.0\/0/m;
+	open $fh, '>', copy_file() or die;
+	print $fh $text;
+	close $fh;
+	my %o = Plugins::LyrionAnywhere::Gateway::_options();
+	is_deeply($o{trusted_networks}, [], 'a list with a network that is not private is left out whole');
 }
 
 done_testing;

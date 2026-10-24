@@ -22,14 +22,14 @@
 	<label for="pref_enabled">Enabled</label>
 [% END %]
 
-[% WRAPPER setting title="Listen address" desc="Where the gateway listens for your reverse proxy (IP:port). Keep it on 127.0.0.1 unless the proxy runs on another machine." %]
-	<input type="text" class="stdedit" name="pref_listen" value="[% prefs.pref_listen | html %]" placeholder="127.0.0.1:9443">
+[% WRAPPER setting title="Listen address" desc="Where the gateway listens for your reverse proxy (IP:port). Keep it on 127.0.0.1 unless the proxy runs on another machine, or you use Trusted networks below." %]
+	<input type="text" class="stdedit" name="pref_listen" id="pref_listen" value="[% prefs.pref_listen | html %]" placeholder="127.0.0.1:9443">
 [% END %]
 
 [% WRAPPER setting title="Public URL" desc="The HTTPS address people use, e.g. https://music.example.com." %]
 	<input type="text" class="stdedit" name="pref_public_url" id="pref_public_url" value="[% prefs.pref_public_url | html %]" placeholder="https://music.example.com" aria-describedby="aw-http-warning aw-tunnel-override-url">
 	<p id="aw-http-warning" class="aw-note aw-warning"[% UNLESS prefs.pref_public_url.match('^(?i)http://') %] hidden[% END %]>
-		An http:// address sends passwords and sign-ins across the internet unencrypted. Use https:// unless this is only for testing on a private network.
+		An http:// address sends passwords and sign-ins unencrypted. Use https://, unless this is a private address reached only over your VPN (see Trusted networks below), such as http://10.8.0.1:9443: then pairing links and QR codes work too.
 		<br><input type="checkbox" name="anywhere_allow_http" id="anywhere_allow_http" value="1">
 		<label for="anywhere_allow_http">Allow http:// anyway</label>
 	</p>
@@ -38,6 +38,14 @@
 
 [% WRAPPER setting title="Trusted proxies" desc="IP addresses of reverse proxies on other machines (comma-separated). Leave empty if the proxy runs on this machine." %]
 	<input type="text" class="stdedit" name="pref_trusted_proxies" value="[% prefs.pref_trusted_proxies | html %]" placeholder="10.0.0.10">
+[% END %]
+
+[% WRAPPER setting title="Trusted networks" desc="Private networks, such as your VPN, whose devices may connect without HTTPS (comma-separated, in CIDR form, e.g. 10.8.0.0/24). Only private ranges are accepted. Leave empty unless you use a VPN instead of HTTPS." %]
+	<input type="text" class="stdedit" name="pref_trusted_networks" id="pref_trusted_networks" value="[% prefs.pref_trusted_networks | html %]" placeholder="10.8.0.0/24" aria-describedby="aw-trusted-warning aw-trusted-listen">
+	<p id="aw-trusted-warning" class="aw-note aw-warning"[% UNLESS prefs.pref_trusted_networks %] hidden[% END %]>
+		Devices on these networks connect unencrypted: passwords and sign-ins cross them in clear, so list only networks you control, such as your VPN. For this to work, set the Listen address above to the VPN interface's address, such as 10.8.0.1:9443: not 127.0.0.1, which the VPN cannot reach, and not 0.0.0.0, which offers the unencrypted listener to every network.
+	</p>
+	<p id="aw-trusted-listen" class="aw-note aw-warning" hidden></p>
 [% END %]
 
 [% WRAPPER setting title="Client address header" desc="Behind Cloudflare (or another CDN), the header carrying each visitor's real address, e.g. CF-Connecting-IP. It is only believed on requests from your proxy, so use it only if the proxy accepts connections from the CDN alone (such as a Cloudflare Tunnel). Leave empty otherwise." %]
