@@ -40,6 +40,10 @@ import io.github.jamezuk.lyrionanywhere.core.UserRole
 import io.github.jamezuk.lyrionanywhere.data.AccountRepository
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
+import io.github.jamezuk.lyrionanywhere.data.PLAIN_HTTP_REFUSED
+import io.github.jamezuk.lyrionanywhere.data.needsUnencryptedConfirmation
+import io.github.jamezuk.lyrionanywhere.data.plainHttpRefusal
+import io.github.jamezuk.lyrionanywhere.data.refusesPlainHttp
 import io.github.jamezuk.lyrionanywhere.data.AppSettings
 import io.github.jamezuk.lyrionanywhere.data.AuthState
 import io.github.jamezuk.lyrionanywhere.data.EqCheck
@@ -104,6 +108,12 @@ class FakeAccount : AccountRepository {
     var signInResults = ArrayDeque<ApiResult<Unit>>()
     var useServerResult: ApiResult<ServerInfo> = ApiResult.Ok(SERVER)
     val paired = mutableListOf<PairingInvite>()
+
+    /** Each pairing's confirmedUnencrypted. */
+    val pairedConfirmed = mutableListOf<Boolean>()
+
+    /** Each useServer call: the address and confirmedUnencrypted. */
+    val useServerCalls = mutableListOf<Pair<String, Boolean>>()
     var pairResult: ApiResult<Unit> = ApiResult.Ok(Unit)
     var signedOut = 0
 
@@ -112,9 +122,22 @@ class FakeAccount : AccountRepository {
     /** What checking an address gives (by default [useServerResult], whatever the address). */
     var checkServer: (String) -> ApiResult<ServerInfo> = { useServerResult }
 
-    override fun checkServerAddress(url: String) = checkServer(url)
+    /**
+     * The real plain-http rule's question: http:// to a private address asks first (other
+     * refusals are left to [useServerResult] and [checkServer]).
+     */
+    private fun plainHttp(url: String?, confirmed: Boolean): ApiResult.Err? =
+        url?.let { plainHttpRefusal(it, allowPlainLoopback = false, confirmedUnencrypted = confirmed) }
+            ?.takeIf { it.needsUnencryptedConfirmation() }
+            ?.let { ApiResult.Err(it) }
 
-    override suspend fun useServer(url: String) = useServerResult
+    override fun checkServerAddress(url: String, confirmedUnencrypted: Boolean) =
+        plainHttp(url, confirmedUnencrypted) ?: checkServer(url)
+
+    override suspend fun useServer(url: String, confirmedUnencrypted: Boolean): ApiResult<ServerInfo> {
+        useServerCalls += url to confirmedUnencrypted
+        return plainHttp(url, confirmedUnencrypted) ?: useServerResult
+    }
 
     override suspend fun forgetServer() {}
 
@@ -138,13 +161,16 @@ class FakeAccount : AccountRepository {
         if (keys.any { it != "server" && it != "code" } || keys.size != keys.toSet().size) return bad
         val server = params.firstOrNull { it.first == "server" }?.second
             ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
-        if (server != null && !server.matches(Regex("https://[a-z0-9.-]+(:\\d+)?/?"))) return bad
+        if (server != null && !server.matches(Regex("(https://[a-z0-9.-]+|http://[0-9.]+)(:\\d+)?/?"))) return bad
+        if (refusesPlainHttp(PairingInvite(server, "X"), allowPlainLoopback = false)) return ApiResult.Err(PLAIN_HTTP_REFUSED)
         val c = params.firstOrNull { it.first == "code" }?.second?.let(::code) ?: return bad
         return ApiResult.Ok(PairingInvite(server?.trimEnd('/')?.plus("/"), c))
     }
 
-    override suspend fun pair(invite: PairingInvite): ApiResult<Unit> {
+    override suspend fun pair(invite: PairingInvite, confirmedUnencrypted: Boolean): ApiResult<Unit> {
+        plainHttp(invite.server, confirmedUnencrypted)?.let { return it }
         paired += invite
+        pairedConfirmed += confirmedUnencrypted
         return pairResult
     }
 

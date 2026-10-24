@@ -60,8 +60,17 @@ sealed interface AppError {
         /** The pairing code has no server, and none is chosen. */
         NO_SERVER,
 
-        /** An `http://` server address (only `https://` is allowed). */
+        /**
+         * An `http://` server address this build never takes: a name, a public address, or
+         * loopback outside debug builds (`https://`, or `http://` to a private address).
+         */
         PLAIN_HTTP,
+
+        /**
+         * An `http://` server address on a private network (a VPN): allowed once the user has
+         * confirmed the unencrypted connection. The app asks, then tries again.
+         */
+        CONFIRM_UNENCRYPTED,
 
         /** A smart filter shows 1 to 500 albums. */
         FILTER_LIMIT,

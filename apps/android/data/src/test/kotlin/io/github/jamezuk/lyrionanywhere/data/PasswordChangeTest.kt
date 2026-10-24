@@ -88,13 +88,13 @@ class PasswordChangeTest {
         val repo = object : AccountRepository {
             override val state = kotlinx.coroutines.flow.MutableStateFlow<AuthState>(AuthState.NoServer)
             override suspend fun start() {}
-            override fun checkServerAddress(url: String) = throw UnsupportedOperationException()
-            override suspend fun useServer(url: String) = throw UnsupportedOperationException()
+            override fun checkServerAddress(url: String, confirmedUnencrypted: Boolean) = throw UnsupportedOperationException()
+            override suspend fun useServer(url: String, confirmedUnencrypted: Boolean) = throw UnsupportedOperationException()
             override suspend fun forgetServer() {}
             override suspend fun signIn(username: String, password: String, twoStepCode: String?) =
                 throw UnsupportedOperationException()
             override fun readPairingCode(text: String) = throw UnsupportedOperationException()
-            override suspend fun pair(invite: io.github.jamezuk.lyrionanywhere.core.PairingInvite) =
+            override suspend fun pair(invite: io.github.jamezuk.lyrionanywhere.core.PairingInvite, confirmedUnencrypted: Boolean) =
                 throw UnsupportedOperationException()
             override suspend fun retry() {}
             override suspend fun signOut() = true

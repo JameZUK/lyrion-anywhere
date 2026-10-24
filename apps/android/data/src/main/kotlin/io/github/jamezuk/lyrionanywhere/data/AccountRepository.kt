@@ -87,22 +87,32 @@ interface AccountRepository {
     /** Read settings and resume a saved sign-in. */
     suspend fun start()
 
-    /** Check an address without contacting it. */
-    fun checkServerAddress(url: String): ApiResult<ServerInfo>
+    /**
+     * Check an address without contacting it. A plain `http://` address on a private network
+     * is refused with [AppError.Reason.CONFIRM_UNENCRYPTED] unless [confirmedUnencrypted]
+     * (the user has agreed, after the warning).
+     */
+    fun checkServerAddress(url: String, confirmedUnencrypted: Boolean = false): ApiResult<ServerInfo>
 
-    /** Use this server (only while signed out). */
-    suspend fun useServer(url: String): ApiResult<ServerInfo>
+    /** Use this server (only while signed out). [confirmedUnencrypted]: as [checkServerAddress]. */
+    suspend fun useServer(url: String, confirmedUnencrypted: Boolean = false): ApiResult<ServerInfo>
 
     /** Forget the server (only while signed out). */
     suspend fun forgetServer()
 
     suspend fun signIn(username: String, password: String, twoStepCode: String?): ApiResult<Unit>
 
-    /** Read a scanned QR code or a typed pairing code. */
+    /**
+     * Read a scanned QR code or a typed pairing code. An invite naming a plain `http://`
+     * server on a private network is read; pairing with it then needs [pair]'s confirmation.
+     */
     fun readPairingCode(text: String): ApiResult<PairingInvite>
 
-    /** Pair with a code; a QR code that names a server switches to it first. */
-    suspend fun pair(invite: PairingInvite): ApiResult<Unit>
+    /**
+     * Pair with a code; a QR code that names a server switches to it first (with
+     * [confirmedUnencrypted] as [useServer]'s).
+     */
+    suspend fun pair(invite: PairingInvite, confirmedUnencrypted: Boolean = false): ApiResult<Unit>
 
     /** Try the saved sign-in again (after [AuthState.Unreachable]). */
     suspend fun retry()
@@ -157,9 +167,14 @@ class RustAccountRepository(
     private val io: CoroutineDispatcher,
     /**
      * Plain `http://` to a loopback host (a gateway on this device, for development). Debug
-     * builds only: a release build takes `https://` alone, typed, scanned or from a link.
+     * builds only. Plain `http://` to a private address (a VPN) is a separate rule, for every
+     * build: allowed once the user confirms ([plainHttpRefusal]).
      */
     private val allowPlainLoopback: Boolean = false,
+    /** Validates a server address without contacting it (replaced in tests). */
+    private val parseServer: (url: String) -> ServerInfo = { url ->
+        Server(url).use { s -> ServerInfo(s.url(), s.displayName(), s.isSecure()) }
+    },
     /** Creates the Rust session for a server address (replaced in tests). */
     private val openSession: (url: String) -> Pair<ServerInfo, Session> = { url ->
         val s = Server(url)
@@ -183,17 +198,22 @@ class RustAccountRepository(
         }
     }
 
-    private fun info(s: Server) = ServerInfo(s.url(), s.displayName(), s.isSecure())
+    /** The server, if this build may use it now (see [plainHttpRefusal]). */
+    private fun checked(info: ServerInfo, confirmedUnencrypted: Boolean): ApiResult<ServerInfo> {
+        if (info.secure) return ApiResult.Ok(info)
+        val refusal = plainHttpRefusal(info.url, allowPlainLoopback, confirmedUnencrypted)
+            // Not secure, yet read as https: never trust that.
+            ?: PLAIN_HTTP_REFUSED.takeIf { serverTransport(info.url) == ServerTransport.ENCRYPTED }
+        return if (refusal != null) ApiResult.Err(refusal) else ApiResult.Ok(info)
+    }
 
     private fun dropConnection() {
         _connection.value?.close()
         _connection.value = null
     }
 
-    override fun checkServerAddress(url: String): ApiResult<ServerInfo> = try {
-        Server(url).use { s ->
-            if (!s.isSecure() && !allowPlainLoopback) ApiResult.Err(PLAIN_HTTP_REFUSED) else ApiResult.Ok(info(s))
-        }
+    override fun checkServerAddress(url: String, confirmedUnencrypted: Boolean): ApiResult<ServerInfo> = try {
+        checked(parseServer(url), confirmedUnencrypted)
     } catch (e: Exception) {
         ApiResult.Err(e.toAppError())
     }
@@ -272,11 +292,11 @@ class RustAccountRepository(
         server?.let { restoreLocked(it) } ?: Unit
     }
 
-    override suspend fun useServer(url: String): ApiResult<ServerInfo> = lock.withLock {
+    override suspend fun useServer(url: String, confirmedUnencrypted: Boolean): ApiResult<ServerInfo> = lock.withLock {
         if (_state.value is AuthState.SignedInState) {
             return@withLock ApiResult.Err(AppError.Reason.SIGN_OUT_FIRST.error())
         }
-        val checked = checkServerAddress(url)
+        val checked = checkServerAddress(url, confirmedUnencrypted)
         if (checked is ApiResult.Err) return@withLock checked
         // A new server: any sign-in saved for the old one is no use.
         withContext(io) { runCatching { secureStore.clear() } }
@@ -315,10 +335,10 @@ class RustAccountRepository(
         ApiResult.Err(e.toAppError())
     }
 
-    override suspend fun pair(invite: PairingInvite): ApiResult<Unit> {
+    override suspend fun pair(invite: PairingInvite, confirmedUnencrypted: Boolean): ApiResult<Unit> {
         val target = invite.server
         if (target != null && target != server?.url) {
-            val switched = useServer(target)
+            val switched = useServer(target, confirmedUnencrypted)
             if (switched is ApiResult.Err) return switched
         }
         return lock.withLock {
@@ -382,12 +402,10 @@ class RustAccountRepository(
     }
 }
 
-/** Plain HTTP outside debug builds. */
-val PLAIN_HTTP_REFUSED = AppError.Reason.PLAIN_HTTP.error()
-
 /**
- * Whether a pairing invite (already checked by the Rust layer: `https://`, or plain
- * `http://` to loopback) must still be refused because this build allows only `https://`.
+ * Whether a pairing invite (already checked by the Rust layer) must be refused outright: its
+ * server is plain `http://` that this build never takes, whatever the user says. One naming
+ * a private address is not refused here; pairing with it asks first ([AccountRepository.pair]).
  */
 fun refusesPlainHttp(invite: PairingInvite, allowPlainLoopback: Boolean): Boolean =
-    !allowPlainLoopback && invite.server?.startsWith("https://") == false
+    invite.server?.let { plainHttpRefusal(it, allowPlainLoopback, confirmedUnencrypted = true) != null } ?: false

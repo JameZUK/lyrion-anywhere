@@ -8,7 +8,13 @@
     <string name="welcome_body">Listen to your own Lyrion Music Server from anywhere. Enter the address of your Lyrion Anywhere server to begin.</string>
     <string name="server_address">Server address</string>
     <string name="server_address_hint">music.example.com</string>
-    <string name="server_https_note">Connections are always encrypted (https).</string>
+    <string name="server_https_note">Connections are encrypted (https://). A server on your own VPN can also be reached by its private address over http://, such as http://10.8.0.1:9443; the app asks first.</string>
+    <!-- Plain http:// to a private address (a VPN): asked before the server is used. -->
+    <string name="unencrypted_title">Unencrypted connection</string>
+    <string name="unencrypted_body">This server address isn’t encrypted (http://). Anyone on the same network could read your password and what you play. Only continue if this is your own VPN or a network you trust.</string>
+    <string name="unencrypted_connect">Connect anyway</string>
+    <string name="unencrypted_badge">Unencrypted</string>
+    <string name="unencrypted_explained">Connected over http://, without encryption: use it only over your own VPN or a network you trust.</string>
     <string name="sign_in_title">Sign in</string>
     <string name="sign_in_server">to %1$s</string>
     <string name="sign_in_revoked">You have been signed out. Please sign in again.</string>
@@ -1227,7 +1233,8 @@
     <string name="error_sign_out_first">Sign out before choosing another server.</string>
     <string name="error_choose_server_first">Choose your server first.</string>
     <string name="error_no_server">Scan the QR code, or enter your server’s address first.</string>
-    <string name="error_plain_http">Use https:// — unencrypted connections aren’t allowed.</string>
+    <string name="error_plain_http">Use https://, or http:// with a private address such as http://10.8.0.1:9443 for a server on your own VPN.</string>
+    <string name="error_confirm_unencrypted">Confirm the unencrypted connection to continue.</string>
     <string name="error_menu_too_deep">This menu is too deep to pin.</string>
     <string name="error_queue_changed">The queue changed in the meantime. Try again.</string>
     <string name="error_waiting_for_wifi">Smart downloads wait for Wi-Fi.</string>
