@@ -2,6 +2,7 @@
 	import { ApiError } from '#lib/api/http';
 	import { loginError } from '#lib/account/login';
 	import { session } from '#lib/state/app.svelte';
+	import InsecureNotice from './InsecureNotice.svelte';
 
 	let username = $state('');
 	let password = $state('');
@@ -32,6 +33,8 @@
 </script>
 
 <main class="login">
+	<!-- Before the password is typed: say when the connection isn't encrypted. -->
+	<InsecureNotice />
 	<form class="card" onsubmit={submit} autocomplete="on">
 		<div class="brand">
 			<img class="logo" src="./icons/icon.svg" alt="" width="40" height="40" />
@@ -69,14 +72,17 @@
 	.login {
 		min-height: 100vh;
 		min-height: 100dvh;
-		display: grid;
-		place-items: center;
+		/* A column: the notice (if any) at the top, the form centred in the rest. */
+		display: flex;
+		flex-direction: column;
+		align-items: center;
 		padding: 1rem;
 		background:
 			radial-gradient(60rem 40rem at 10% -10%, var(--accent-soft), transparent 60%),
 			var(--bg);
 	}
 	form {
+		margin: auto;
 		width: min(100%, 380px);
 		display: grid;
 		gap: 1rem;

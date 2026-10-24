@@ -20,6 +20,8 @@ export function penalty(size: number, dark: Uint8Array): number;
 export function encodeQr(text: string, options?: { mask?: number }): QrSymbol;
 export function qrPath(qr: QrSymbol, quiet?: number): string;
 export function normalisePairingCode(code: unknown): string | null;
+export function isLoopback(host: unknown): boolean;
+export function isPrivateLiteral(host: unknown): boolean;
 export function pairingServer(address: unknown): string | null;
 export function pairingLink(server: unknown, code: unknown): string | null;
 export function groupPairingCode(code: unknown): string;

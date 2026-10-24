@@ -5,6 +5,7 @@
 // has Queue and ⋯ and no second transport; empty states never claim "empty" when unread.
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { stubWebAudio } from './helpers/web-audio';
 import type { DownloadManager } from '#lib/offline/manager.svelte';
 
 const params: Record<string, string | undefined> = { id: '7' };
@@ -427,7 +428,7 @@ describe('the playing-on strip is gone (only "Moving…" remains)', () => {
 	test('a menu of the player picker reaches what the strip offered', async () => {
 		fake.app.deviceMac = '02:4c:41:00:00:01';
 		fake.app.players = [...fake.app.players, { playerid: '02:4c:41:00:00:01', name: 'This browser' }];
-		vi.stubGlobal('AudioWorkletNode', class {});
+		stubWebAudio();
 		vi.stubGlobal('Worker', class {});
 		device.state = 'connected';
 		device.mac = '02:4c:41:00:00:01';

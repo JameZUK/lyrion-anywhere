@@ -5,6 +5,7 @@
 // is said in the one status line.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { WorkletContext } from './helpers/web-audio';
 
 vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
@@ -23,6 +24,7 @@ class FakeWorklet {}
 let start: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
 	vi.stubGlobal('AudioWorkletNode', FakeWorklet);
+	vi.stubGlobal('AudioContext', WorkletContext);
 	vi.stubGlobal('Worker', class {});
 	fake.calls.length = 0;
 	fake.moves.length = 0;

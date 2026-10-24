@@ -1,4 +1,4 @@
-export {};
+import { stubWebAudio } from './helpers/web-audio';
 // Player-first start (SPEC D20), in the app state: what is controlled after signing in, the
 // fallback when this device can't play, and moving playback.
 type Listener = (s: unknown, status: string) => void;
@@ -53,7 +53,7 @@ const signOut = () => listeners.forEach((fn) => fn(null, 'signed-out'));
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 function canPlay(yes: boolean) {
-	vi.stubGlobal('AudioWorkletNode', yes ? class {} : undefined);
+	stubWebAudio(yes);
 	vi.stubGlobal('Worker', yes ? class {} : undefined);
 }
 

@@ -64,10 +64,16 @@ export interface PlaySyncDeps {
 	maxQueued?: number;
 }
 
-function defaultUuid(): string {
-	if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+type CryptoLike = Partial<Pick<Crypto, 'randomUUID'>> & Pick<Crypto, 'getRandomValues'>;
+
+/**
+ * A random (version 4) UUID. `crypto.randomUUID` is withheld from plain-http pages (insecure
+ * contexts), but `crypto.getRandomValues` is not, so the same UUID is built from that.
+ */
+export function newUuid(c: CryptoLike = globalThis.crypto): string {
+	if (typeof c.randomUUID === 'function') return c.randomUUID();
 	const b = new Uint8Array(16);
-	crypto.getRandomValues(b);
+	c.getRandomValues(b);
 	b[6] = (b[6]! & 0x0f) | 0x40;
 	b[8] = (b[8]! & 0x3f) | 0x80;
 	const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
@@ -94,7 +100,7 @@ export class PlaySync {
 	constructor(private deps: PlaySyncDeps) {
 		this.#fetch = deps.fetch ?? ((...a) => fetch(...a));
 		this.#now = deps.now ?? (() => Date.now());
-		this.#uuid = deps.uuid ?? defaultUuid;
+		this.#uuid = deps.uuid ?? (() => newUuid());
 		this.#set = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
 		this.#clear = deps.clearTimer ?? ((t) => clearTimeout(t as ReturnType<typeof setTimeout>));
 	}

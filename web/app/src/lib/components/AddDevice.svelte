@@ -87,7 +87,7 @@
 					<path d={qr.d} fill="#000" />
 				</svg>
 			{:else}
-				<p class="muted" data-no-qr>No QR code: this page isn't open on an https:// address the app can use. Enter the server address in the app, then type the code.</p>
+				<p class="muted" data-no-qr>No QR code: this page isn't open on an address the app can use (https://, or http:// with a private network address). Enter the server address in the app, then type the code.</p>
 			{/if}
 			<p class="code" data-code>{shown.code}</p>
 			<p class="muted small" data-countdown>Expires in {countdown(left)}. It works once, and signs in as you.</p>

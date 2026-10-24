@@ -8,7 +8,7 @@ import { BadInfo } from './types';
 import { OfflinePlayer } from './player.svelte';
 import { PlaySync } from './plays.svelte';
 import { IdbBackend, OfflineStore } from './store';
-import { defaultFormat, loadPrefs, requestPersist, waitForWifi } from './settings';
+import { defaultFormat, loadPrefs, requestPersist, storageEstimate, waitForWifi } from './settings';
 
 export const offlineStore = new OfflineStore(new IdbBackend());
 
@@ -23,7 +23,7 @@ export const downloads = new DownloadManager({
 	persist: () => requestPersist(),
 	waitForWifi: () => waitForWifi(),
 	capBytes: () => loadPrefs().capBytes,
-	storageEstimate: async () => (await globalThis.navigator?.storage?.estimate?.()) ?? {},
+	storageEstimate: () => storageEstimate(),
 });
 
 /** Plays made offline, queued here and sent back to the server (SPEC D6). */
