@@ -45,6 +45,9 @@ interface PlaybackHost {
 
     /** Covers for Android Auto's lists, served by the app's own provider (none: no art). */
     val autoArt: io.github.jamezuk.lyrionanywhere.playback.auto.AutoArtCache? get() = null
+
+    /** Where the session's caller decisions are noted for Settings › About (none: not noted). */
+    val carConnections: io.github.jamezuk.lyrionanywhere.playback.auto.CarConnectionLog? get() = null
 }
 
 /** What this phone's player plays, for the widget and tile (null until LMS has said). */
