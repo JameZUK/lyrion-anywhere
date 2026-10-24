@@ -293,6 +293,15 @@ describe('pairing links', () => {
 		expect(pairingServer('http://0xa.0.0.1')).toBe('http://10.0.0.1');
 		expect(pairingServer('http://010.0.0.1')).toBeNull();
 		expect(pairingServer('http://[FD00::0001]')).toBe('http://[fd00::1]');
+		// The origin form the plugin's own fallback builds too: default ports dropped, IPv6
+		// compressed in brackets.
+		expect(pairingServer('http://10.0.0.10:80')).toBe('http://10.0.0.10');
+		expect(pairingServer('http://[fd00:0:0:0:0:0:0:1]:9443/')).toBe('http://[fd00::1]:9443');
+		expect(pairingServer('http://[fd00::1]:80')).toBe('http://[fd00::1]');
+		expect(pairingServer('http://10.0.0.10:443')).toBe('http://10.0.0.10:443');
+		expect(pairingServer('https://10.0.0.10:443')).toBe('https://10.0.0.10');
+		expect(pairingServer('http://lms.example.lan')).toBeNull();
+		expect(pairingServer('http://lms.example.lan:9443')).toBeNull();
 		expect(pairingServer('http://[::ffff:10.0.0.1]')).toBeNull();
 		expect(pairingServer('http://10.0.0.1@music.example.com')).toBeNull();
 		expect(pairingServer('http://music.example.com@10.0.0.1')).toBeNull();
