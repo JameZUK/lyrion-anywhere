@@ -11,7 +11,7 @@ The protocol a client (web app, native app or test CLI) uses to act as an LMS pl
 
 Other routes on the public listener:
 - `GET /healthz`: returns `ok` with no authentication, for the proxy's or a container's health check. It says nothing about LMS or any user.
-- Every other path is the static web app when the gateway serves one (`--static-dir`), else 404. The API routes are the `/v1/…` ones in this document; the admin API is on a separate listener (below).
+- Every other path is the static web app when the gateway serves one (`--static-dir`), else 404. The API routes are the `/v1/…` ones in this document; the admin API is on a separate listener (below). Files under `/_app/immutable/` carry their content hash in their name and are cached for a year; every other file (the page, the service worker, the player's worker, worklet and WebAssembly, which keep their names) is `Cache-Control: no-cache` with a strong `ETag` that is a hash of its content, so `If-None-Match` gets 304 only for the very same bytes, and `If-Modified-Since` alone never does: every file in a release zip carries the date 2020-01-01, and the page's size usually survives a release, so a date (or a date-and-size tag) cannot tell two releases' copies apart.
 
 Requirements for both endpoints:
 - They must be reached over TLS through a trusted reverse proxy. Plain HTTP is accepted only from loopback, and from the admin's trusted networks (`--trusted-network`, private networks only, D28): a direct request, with no `X-Forwarded-For` or `X-Forwarded-Proto`, from a peer inside one. A trusted-network peer that sends either header is refused unless it is a trusted proxy saying `https`. Everything else gets 403 `TLS required`. With no trusted networks, only loopback.

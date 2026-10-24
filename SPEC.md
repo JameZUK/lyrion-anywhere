@@ -200,7 +200,7 @@ A single static Rust binary (tokio/axum), sharing the Slimproto parser and strea
 
 ### 5.4 Web app hosting
 
-- The gateway serves the built web app (static files) at `/`.
+- The gateway serves the built web app (static files) at `/`. Content-hashed files (`/_app/immutable/`) are cached for a year; every other file is `no-cache` and revalidated by a strong `ETag` that is a hash of its content, never by its date: the release zip gives every file the same date, and a file whose size survives a release (the page) had kept answering 304 to the previous release's copy (fixed 2026-10-24, 0.7.2).
 - It sets strict security headers on every response (refusals included): CSP with no inline script, `frame-ancestors 'none'`, `Referrer-Policy`, and a `Permissions-Policy` that turns off camera, microphone, geolocation, payment, USB and similar features (fullscreen and autoplay stay available to the app itself). HSTS is set via the proxy.
 - API responses (`/v1/`, except artwork, which has its own policy) carry `Cache-Control: no-store`. Signing out sends `Clear-Site-Data: "cache"`; offline downloads (IndexedDB) are kept.
 

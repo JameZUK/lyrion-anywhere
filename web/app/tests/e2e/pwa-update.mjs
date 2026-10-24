@@ -24,7 +24,7 @@
 //   fault-new  the same fault with this code (NEW_WEB, then NEWER_WEB): the fresh page starts.
 // Exit status 1 if an assertion fails. PORT (default 19781), BROWSER (default chromium).
 import { spawn } from 'node:child_process';
-import { cpSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -53,18 +53,15 @@ const check = (ok, what) => {
 const bootOf = (dir) => readFileSync(join(dir, 'index.html'), 'utf8').match(/_app\/boot\.[0-9a-f]+\.js/)?.[0] ?? null;
 const versionOf = (dir) => JSON.parse(readFileSync(join(dir, '_app', 'version.json'), 'utf8')).version;
 
-let variants = 0;
 /**
- * A copy of a build, changed by `edit(dir)`. Its files get their own modification time, a
- * minute after the previous copy's: the gateway answers If-Modified-Since by the second, so
- * two copies made within one second would otherwise answer 304 for each other's index.html.
+ * A copy of a build, changed by `edit(dir)`. The copies' dates do not matter: since 0.7.2 the
+ * gateway revalidates the page and the other unhashed files by a hash of their content (before,
+ * by date and size, so copies had to be given distinct modification times here).
  */
 function variant(from, name, edit) {
 	const dir = join(work, name);
 	cpSync(from, dir, { recursive: true });
 	edit(dir);
-	const t = Date.now() / 1000 + 60 * ++variants;
-	for (const f of readdirSync(dir, { recursive: true })) utimesSync(join(dir, String(f)), t, t);
 	return dir;
 }
 /** A copy whose index.html references a start-up script that does not exist. */

@@ -59,6 +59,7 @@ mod relay;
 mod rpc;
 pub mod rpc_policy;
 mod session;
+pub mod static_files;
 pub mod stations;
 pub mod stats;
 mod status_fix;
@@ -697,7 +698,13 @@ pub fn router(state: AppState) -> Router {
         ))
         .layer(middleware::from_fn(unknown_if_not_utf8));
     app = match &state.cfg.static_dir {
-        Some(dir) => app.fallback_service(tower_http::services::ServeDir::new(dir)),
+        // The web app's files; the revalidated ones (everything outside the content-hashed
+        // directory) get an ETag made of their content, see `static_files`.
+        Some(dir) => app.fallback_service(
+            tower::ServiceBuilder::new()
+                .layer(middleware::from_fn(static_files::content_etags))
+                .service(tower_http::services::ServeDir::new(dir)),
+        ),
         None => app.fallback(|| async { StatusCode::NOT_FOUND }),
     };
     // Request bodies must arrive within the time limit (innermost: after the TLS check).
