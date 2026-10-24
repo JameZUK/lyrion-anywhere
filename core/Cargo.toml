@@ -20,3 +20,7 @@ player = ["dep:symphonia"]
 resample = ["dep:rubato"]
 # Opus decoding (pure-Rust decoder registered with Symphonia). Native hosts only.
 opus = ["player", "dep:opus-decoder"]
+
+[dev-dependencies]
+# The shared private-network vectors (web/app/tests/fixtures/private-networks.json).
+serde_json = "1"

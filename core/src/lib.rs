@@ -15,5 +15,6 @@ pub mod names;
 pub mod opus;
 #[cfg(feature = "player")]
 pub mod player;
+pub mod privnet;
 pub mod proto;
 pub mod visual;

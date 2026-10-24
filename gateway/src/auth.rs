@@ -92,11 +92,23 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .map(|(_, v)| v)
 }
 
-fn refresh_cookie(value: &str, max_age: u64) -> HeaderValue {
+/// The refresh cookie. `Secure` always, except for a browser on a trusted network talking
+/// plain HTTP ([`cookie_secure`]): browsers refuse a `Secure` cookie set over plain HTTP
+/// from anything but localhost, so the sign-in would silently not stick.
+fn refresh_cookie(value: &str, max_age: u64, secure: bool) -> HeaderValue {
+    let secure = if secure { " Secure;" } else { "" };
     HeaderValue::from_str(&format!(
-        "{REFRESH_COOKIE}={value}; Path=/v1/auth; Max-Age={max_age}; HttpOnly; Secure; SameSite=Strict"
+        "{REFRESH_COOKIE}={value}; Path=/v1/auth; Max-Age={max_age}; HttpOnly;{secure} SameSite=Strict"
     ))
     .expect("cookie is ASCII")
+}
+
+/// Whether this request's refresh cookie is marked `Secure`: always, unless it is a
+/// plain-HTTP request from one of the admin's trusted networks
+/// (docs/plans/trusted-networks.md). Loopback and every request through a proxy keep the
+/// cookie exactly as before.
+fn cookie_secure(gw: &AppState, peer: SocketAddr, headers: &HeaderMap) -> bool {
+    !crate::plain_http_from_trusted_network(&gw.cfg, peer, headers)
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Default)]
@@ -107,7 +119,7 @@ enum RefreshIn {
     Body,
 }
 
-fn token_response(t: Tokens, refresh_in: RefreshIn) -> Response {
+fn token_response(t: Tokens, refresh_in: RefreshIn, cookie_secure: bool) -> Response {
     let mut body = json!({
         "access_token": t.access,
         "expires_in": t.access_expires_in,
@@ -124,7 +136,7 @@ fn token_response(t: Tokens, refresh_in: RefreshIn) -> Response {
         RefreshIn::Cookie => {
             resp_headers.insert(
                 header::SET_COOKIE,
-                refresh_cookie(&t.refresh, t.refresh_expires_in),
+                refresh_cookie(&t.refresh, t.refresh_expires_in, cookie_secure),
             );
         }
     }
@@ -226,7 +238,7 @@ pub async fn login(
             gw.db(move |a| a.record_client(device, addr, &info)).await;
             // Devices signed out to stay within the per-user limit.
             gw.end_sessions_for(&t.evicted).await;
-            token_response(t, refresh_in)
+            token_response(t, refresh_in, cookie_secure(&gw, peer, &headers))
         }
         Ok(Err(e)) => auth_error(e),
         Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
@@ -272,7 +284,7 @@ pub async fn pair(
     match paired {
         Ok(t) => {
             gw.end_sessions_for(&t.evicted).await;
-            token_response(t, RefreshIn::Body)
+            token_response(t, RefreshIn::Body, true)
         }
         Err(e) => auth_error(e),
     }
@@ -348,7 +360,7 @@ pub async fn refresh(
         })
         .await;
     match renewed {
-        Ok(t) => token_response(t, refresh_in),
+        Ok(t) => token_response(t, refresh_in, cookie_secure(&gw, peer, &headers)),
         Err(AuthError::Reused(device)) => {
             // A stolen refresh token: the device is revoked, so end its live session too.
             gw.end_sessions_for(&[device]).await;
@@ -370,7 +382,11 @@ pub async fn refresh(
 }
 
 /// Log out: revoke this device, end its sessions, clear the cookie.
-pub async fn logout(State(gw): State<AppState>, headers: HeaderMap) -> Response {
+pub async fn logout(
+    State(gw): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
     if !csrf_ok(&gw, &headers) {
         return error(StatusCode::FORBIDDEN, "forbidden");
     }
@@ -382,7 +398,11 @@ pub async fn logout(State(gw): State<AppState>, headers: HeaderMap) -> Response 
         Ok(Some(device)) => {
             gw.end_sessions_for(&[device]).await;
             let mut h = HeaderMap::new();
-            h.insert(header::SET_COOKIE, refresh_cookie("", 0));
+            // Cleared with the same attributes it was set with, or the browser keeps it.
+            h.insert(
+                header::SET_COOKIE,
+                refresh_cookie("", 0, cookie_secure(&gw, peer, &headers)),
+            );
             h.insert(CLEAR_SITE_DATA, HeaderValue::from_static(CLEAR_CACHE));
             (StatusCode::NO_CONTENT, h).into_response()
         }
@@ -865,6 +885,35 @@ pub async fn sign_out_others(State(gw): State<AppState>, headers: HeaderMap) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_refresh_cookie_is_secure_unless_told_otherwise() {
+        let secure = super::refresh_cookie("abc", 60, true);
+        assert_eq!(
+            secure.to_str().unwrap(),
+            format!(
+                "{}=abc; Path=/v1/auth; Max-Age=60; HttpOnly; Secure; SameSite=Strict",
+                super::REFRESH_COOKIE
+            )
+        );
+        let plain = super::refresh_cookie("abc", 60, false);
+        assert_eq!(
+            plain.to_str().unwrap(),
+            format!(
+                "{}=abc; Path=/v1/auth; Max-Age=60; HttpOnly; SameSite=Strict",
+                super::REFRESH_COOKIE
+            )
+        );
+        // Clearing keeps the same shape, so the browser matches the cookie it holds.
+        let cleared = super::refresh_cookie("", 0, false);
+        assert!(
+            cleared
+                .to_str()
+                .unwrap()
+                .ends_with("=; Path=/v1/auth; Max-Age=0; HttpOnly; SameSite=Strict"),
+            "{cleared:?}"
+        );
+    }
+
     use super::*;
 
     fn with(name: &'static str, v: &[u8]) -> HeaderMap {

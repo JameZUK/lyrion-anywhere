@@ -97,6 +97,11 @@ pub struct Config {
     pub allowed_origins: Vec<String>,
     /// Reverse proxies allowed to set X-Forwarded-*. Loopback is always trusted.
     pub trusted_proxies: Vec<IpAddr>,
+    /// Private networks whose direct, plain-HTTP requests are admitted as if over TLS
+    /// (`--trusted-network`; docs/plans/trusted-networks.md): for people who reach the
+    /// gateway over their own VPN. Empty by default, and then plain HTTP is accepted from
+    /// loopback only.
+    pub trusted_networks: Vec<anywhere_core::privnet::Cidr>,
     /// A header carrying the client's address set by a CDN in front of the proxy (e.g.
     /// `CF-Connecting-IP`). Honoured only on requests from a trusted proxy; otherwise the
     /// client address comes from `X-Forwarded-For` (see [`client_ip`]).
@@ -224,6 +229,7 @@ impl Default for Config {
             lms_ips: vec![],
             allowed_origins: vec![],
             trusted_proxies: vec![],
+            trusted_networks: vec![],
             client_ip_header: None,
             auth_timeout: Duration::from_secs(5),
             dial_timeout: Duration::from_secs(5),
@@ -843,30 +849,58 @@ async fn note_device_use(
 }
 
 /// Refuse remote requests that didn't arrive over TLS: either via a trusted reverse proxy
-/// reporting `X-Forwarded-Proto: https`, or plain HTTP from loopback with no proxy headers
-/// (local development).
+/// reporting `X-Forwarded-Proto: https`, or plain HTTP with no proxy headers from loopback
+/// (local development) or from one of the admin's trusted networks (their VPN,
+/// `--trusted-network`). See [`secure_transport`].
 async fn require_secure_transport(
     State(gw): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     req: Request,
     next: Next,
 ) -> Response {
-    let ip = canonical(peer.ip());
-    let trusted = is_trusted_proxy(&gw.cfg, ip);
-    let proto = req
-        .headers()
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok());
-    let proxied = req.headers().contains_key("x-forwarded-for") || proto.is_some();
-    let ok = match proto {
-        Some(p) => trusted && p.eq_ignore_ascii_case("https"),
-        None => ip.is_loopback() && !proxied,
-    };
-    if !ok {
-        warn!(peer = %ip, path = %req.uri().path(), "refused insecure request");
+    if !secure_transport(&gw.cfg, peer.ip(), req.headers()) {
+        warn!(peer = %canonical(peer.ip()), path = %req.uri().path(), "refused insecure request");
         return (StatusCode::FORBIDDEN, "TLS required\n").into_response();
     }
     next.run(req).await
+}
+
+/// Whether a request may be served at all: it came over TLS through a trusted proxy (which
+/// says `X-Forwarded-Proto: https`), or as plain HTTP straight from loopback or from a
+/// trusted network, with no proxy header at all. Nothing a client sends can widen this: a
+/// peer that isn't a trusted proxy is refused the moment it sends a proxy header, wherever
+/// it is. With no trusted networks configured (the default) this is the rule it always was.
+fn secure_transport(cfg: &Config, peer: IpAddr, headers: &HeaderMap) -> bool {
+    let ip = canonical(peer);
+    let trusted = is_trusted_proxy(cfg, ip);
+    let proto = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok());
+    let proxied = headers.contains_key("x-forwarded-for") || proto.is_some();
+    match proto {
+        Some(p) => trusted && p.eq_ignore_ascii_case("https"),
+        None => (ip.is_loopback() || on_trusted_network(cfg, ip)) && !proxied,
+    }
+}
+
+/// The peer is inside one of the admin's trusted networks (`--trusted-network`). Loopback
+/// is never one (it has its own rule), and the networks are private by construction
+/// ([`anywhere_core::privnet::trusted_network`]).
+pub(crate) fn on_trusted_network(cfg: &Config, peer: IpAddr) -> bool {
+    let ip = canonical(peer);
+    cfg.trusted_networks.iter().any(|n| n.contains(ip))
+}
+
+/// A plain-HTTP request from a trusted network: the one case in which a cookie must not be
+/// marked `Secure`, since browsers refuse a `Secure` cookie set over plain HTTP from
+/// anything but localhost. Through a proxy (`X-Forwarded-Proto` present) or from loopback
+/// it is false, so those cookies stay as they were.
+pub(crate) fn plain_http_from_trusted_network(
+    cfg: &Config,
+    peer: SocketAddr,
+    headers: &HeaderMap,
+) -> bool {
+    !headers.contains_key("x-forwarded-proto") && on_trusted_network(cfg, peer.ip())
 }
 
 /// The client's address for rate limiting and audit, as a key (see [`client_key`]): IPv6
@@ -1240,6 +1274,140 @@ mod tests {
         ] {
             assert!(valid_client_ip_header(bad).is_none(), "{bad:?}");
         }
+    }
+
+    fn trusted_networks_cfg() -> Config {
+        let net = |s: &str| anywhere_core::privnet::Cidr::parse(s).unwrap();
+        Config {
+            trusted_proxies: vec!["10.0.0.10".parse().unwrap()],
+            trusted_networks: vec![net("10.8.0.0/24"), net("fd12:3456:789a::/48")],
+            ..Config::default()
+        }
+    }
+
+    /// The transport rule as it always was, with no trusted networks: plain HTTP from
+    /// loopback only, TLS through a trusted proxy otherwise.
+    #[test]
+    fn without_trusted_networks_plain_http_is_for_loopback_only() {
+        let cfg = proxy_cfg();
+        let ok = |peer: &str, pairs: &[(&str, &str)]| {
+            secure_transport(&cfg, peer.parse().unwrap(), &headers(pairs))
+        };
+        assert!(ok("127.0.0.1", &[]));
+        assert!(ok("::1", &[]));
+        assert!(ok("::ffff:127.0.0.1", &[]));
+        assert!(
+            !ok("127.0.0.1", &[("x-forwarded-for", "203.0.113.9")]),
+            "loopback with proxy headers must say https"
+        );
+        assert!(ok("127.0.0.1", &[("x-forwarded-proto", "https")]));
+        assert!(!ok("127.0.0.1", &[("x-forwarded-proto", "http")]));
+        assert!(
+            ok("10.0.0.10", &[("x-forwarded-proto", "HTTPS")]),
+            "the trusted proxy"
+        );
+        assert!(
+            !ok("10.0.0.10", &[]),
+            "the proxy without headers is a plain client"
+        );
+        assert!(!ok("10.0.0.10", &[("x-forwarded-proto", "http")]));
+        for lan in [
+            "10.8.0.5",
+            "192.168.1.20",
+            "172.16.0.2",
+            "100.100.1.1",
+            "fd12:3456:789a::5",
+            "fe80::1",
+        ] {
+            assert!(
+                !ok(lan, &[]),
+                "{lan}: plain HTTP from the LAN is refused by default"
+            );
+            assert!(
+                !ok(lan, &[("x-forwarded-proto", "https")]),
+                "{lan}: a client claiming https"
+            );
+        }
+        assert!(!ok("203.0.113.9", &[]));
+    }
+
+    /// With trusted networks: plain HTTP from inside them, and nothing a peer sends widens
+    /// that. The proxy and loopback rules are unchanged.
+    #[test]
+    fn a_trusted_network_admits_plain_http_from_inside_it_only() {
+        let cfg = trusted_networks_cfg();
+        let ok = |peer: &str, pairs: &[(&str, &str)]| {
+            secure_transport(&cfg, peer.parse().unwrap(), &headers(pairs))
+        };
+        assert!(ok("10.8.0.5", &[]));
+        assert!(ok("10.8.0.255", &[]));
+        assert!(
+            ok("::ffff:10.8.0.5", &[]),
+            "an IPv4 peer on a dual-stack socket"
+        );
+        assert!(ok("fd12:3456:789a::5", &[]));
+        assert!(ok("fd12:3456:789a:ffff::1", &[]));
+        // Outside: the next subnet, the rest of the private space, the internet.
+        for out in [
+            "10.8.1.1",
+            "10.9.0.5",
+            "192.168.1.20",
+            "fd12:3456:789b::1",
+            "fe80::1",
+            "203.0.113.9",
+        ] {
+            assert!(!ok(out, &[]), "{out}");
+        }
+        // Inside, but with proxy headers: not a trusted proxy, so refused as ever.
+        assert!(!ok("10.8.0.5", &[("x-forwarded-for", "203.0.113.9")]));
+        assert!(
+            !ok("10.8.0.5", &[("x-forwarded-proto", "https")]),
+            "claiming https changes nothing"
+        );
+        assert!(!ok("10.8.0.5", &[("x-forwarded-proto", "http")]));
+        // The proxy and loopback as before.
+        assert!(ok("10.0.0.10", &[("x-forwarded-proto", "https")]));
+        assert!(!ok("10.0.0.10", &[]));
+        assert!(ok("127.0.0.1", &[]));
+        assert!(!ok("127.0.0.1", &[("x-forwarded-proto", "http")]));
+    }
+
+    #[test]
+    fn the_cookie_is_plain_only_for_plain_http_from_a_trusted_network() {
+        let cfg = trusted_networks_cfg();
+        let plain = |peer: &str, pairs: &[(&str, &str)]| {
+            plain_http_from_trusted_network(
+                &cfg,
+                format!("{peer}:50000").parse().unwrap(),
+                &headers(pairs),
+            )
+        };
+        let plain6 = |peer: &str, pairs: &[(&str, &str)]| {
+            plain_http_from_trusted_network(
+                &cfg,
+                format!("[{peer}]:50000").parse().unwrap(),
+                &headers(pairs),
+            )
+        };
+        assert!(plain("10.8.0.5", &[]));
+        assert!(plain6("::ffff:10.8.0.5", &[]));
+        assert!(plain6("fd12:3456:789a::5", &[]));
+        assert!(
+            !plain("10.8.0.5", &[("x-forwarded-proto", "https")]),
+            "through a proxy the cookie stays Secure"
+        );
+        assert!(
+            !plain("127.0.0.1", &[]),
+            "loopback development keeps the Secure cookie it always had"
+        );
+        assert!(!plain("192.168.1.20", &[]));
+        assert!(!plain("10.0.0.10", &[("x-forwarded-proto", "https")]));
+        let none = proxy_cfg();
+        let peer: SocketAddr = "10.8.0.5:50000".parse().unwrap();
+        assert!(
+            !plain_http_from_trusted_network(&none, peer, &headers(&[])),
+            "nothing configured: never"
+        );
     }
 
     #[test]

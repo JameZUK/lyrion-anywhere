@@ -55,6 +55,13 @@ enum Cmd {
         /// Reverse proxy address allowed to set X-Forwarded-* (repeatable).
         #[arg(long = "trusted-proxy")]
         trusted_proxies: Vec<IpAddr>,
+        /// Private network (CIDR) whose direct, plain-HTTP requests are admitted as if over
+        /// TLS: for people who reach the gateway over their own VPN instead of HTTPS
+        /// (repeatable). Only networks within 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
+        /// 169.254.0.0/16, 100.64.0.0/10, fc00::/7 or fe80::/10 are accepted. Bind --listen to
+        /// the VPN interface's address when using this, never to every interface.
+        #[arg(long = "trusted-network", value_parser = parse_trusted_network)]
+        trusted_networks: Vec<anywhere_core::privnet::Cidr>,
         /// Header a CDN sets to the client's address (e.g. CF-Connecting-IP), honoured only
         /// on requests from a trusted proxy. Only use it if the proxy accepts connections
         /// from the CDN alone.
@@ -177,6 +184,7 @@ fn main() {
             lms_cli_port,
             allowed_origins,
             trusted_proxies,
+            trusted_networks,
             client_ip_header,
             static_dir,
             log_file: _,
@@ -200,6 +208,13 @@ fn main() {
             }
             if !tunnel_listen.ip().is_loopback() {
                 fail("--tunnel-listen must be a loopback address");
+            }
+            if !trusted_networks.is_empty() {
+                let list: Vec<String> = trusted_networks.iter().map(ToString::to_string).collect();
+                tracing::warn!(
+                    networks = %list.join(", "),
+                    "unencrypted (plain HTTP) connections are accepted from these trusted networks"
+                );
             }
             let accounts = Arc::new(open_accounts(&data_dir));
             let admin_secret = admin_secret(&data_dir);
@@ -237,6 +252,7 @@ fn main() {
                 lms_ips,
                 allowed_origins,
                 trusted_proxies: trusted_proxies.clone(),
+                trusted_networks,
                 client_ip_header: client_ip_header
                     .as_deref()
                     .and_then(anywhere_gateway::valid_client_ip_header),
@@ -535,6 +551,11 @@ fn admin_command(dir: &Path, cmd: AdminCmd) {
 
 /// `--client-ip-header`: a plain header name that can't stand in for the headers the gateway
 /// already interprets itself.
+/// `--trusted-network`: a private network in CIDR form, refused with a reason otherwise.
+fn parse_trusted_network(s: &str) -> Result<anywhere_core::privnet::Cidr, String> {
+    anywhere_core::privnet::trusted_network(s)
+}
+
 fn parse_client_ip_header(s: &str) -> Result<String, String> {
     anywhere_gateway::valid_client_ip_header(s)
         .map(|_| s.to_string())
