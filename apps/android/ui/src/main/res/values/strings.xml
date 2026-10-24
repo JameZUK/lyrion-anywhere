@@ -214,6 +214,21 @@
     <string name="sign_out_confirm_body">This phone will need your password or a new pairing code to sign in again.</string>
     <string name="version_line">App %1$s · core %2$s</string>
     <string name="licences">Open-source licences</string>
+    <!-- Settings › About: the last few cars (Android Auto) that asked to connect, this session only. -->
+    <string name="car_connections">Car connections</string>
+    <string name="car_connections_none">None yet</string>
+    <string name="car_connections_explained">The last cars and car apps that asked to connect since the app started. Kept on this phone only, and forgotten when the app closes.</string>
+    <string name="car_caller_android_auto">Android Auto</string>
+    <string name="car_caller_google">Google app</string>
+    <string name="car_caller_car_assistant">Car assistant</string>
+    <string name="car_outcome_allowed">allowed</string>
+    <string name="car_outcome_controls">controls only</string>
+    <string name="car_outcome_refused">refused</string>
+    <string name="car_outcome_refused_certificate">refused (certificate not recognised)</string>
+    <!-- Caller · outcome · time, e.g. "Android Auto · allowed · 12:03". -->
+    <string name="car_connection_line">%1$s · %2$s · %3$s</string>
+    <!-- After a refused known caller: the first bytes of the certificates it offered. -->
+    <string name="car_connection_certificates">Certificates offered: %1$s</string>
     <string name="privacy_policy">Privacy policy</string>
     <string name="privacy_policy_body">What the app and your music server keep, and what they don\'t</string>
     <string name="licences_intro">Lyrion Anywhere is free software under the GNU GPL (version 2 or later). It is built on these open-source components:</string>

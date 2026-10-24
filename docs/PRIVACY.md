@@ -41,7 +41,7 @@ All of this is in the app's private storage. Other apps can't read it, and none 
 
 ## What the app sends, and to whom
 
-The app sends data **only to your gateway**, over HTTPS (plain HTTP is refused, except to the phone itself during development). That covers:
+The app sends data **only to your gateway**, over HTTPS. Plain HTTP is refused, unless you choose a server on a private network (such as your own VPN) by its private address, after a warning, and only where your server's admin allows unencrypted connections from that network; it is also allowed to the phone itself during development. While you use such a server, Settings marks it *Unencrypted*. That covers:
 - signing in;
 - browsing and searching your library;
 - controlling players;
@@ -118,7 +118,7 @@ For the Play Console's *Data safety* form. Google defines "collected" as data **
   - The app sends account and library data only to the user's own server, chosen by the user, and the developer receives nothing.
   - Crash reports are never transmitted by the app; the user may share one by hand.
   - There are no analytics or SDKs.
-- **Is all of the user data collected by your app encrypted in transit?** Yes. HTTPS only; plain HTTP is refused.
+- **Is all of the user data collected by your app encrypted in transit?** Yes, unless you choose an unencrypted server on a private network such as your own VPN; the app warns you and marks it. Otherwise HTTPS only, and plain HTTP to any other address is refused.
 - **Do you provide a way for users to request that their data is deleted?** Yes:
   - signing out deletes the app's data;
   - uninstalling deletes everything;

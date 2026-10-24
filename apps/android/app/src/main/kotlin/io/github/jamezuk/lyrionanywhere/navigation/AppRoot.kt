@@ -177,7 +177,8 @@ private fun PairingLinkPrompts(container: AppContainer, state: AuthState) {
         else -> return
     }
     val target = remember(link) {
-        link.server?.let { (container.account.checkServerAddress(it) as? ApiResult.Ok)?.value?.name }
+        // Only its name, for the question (an http:// server is asked about on the pairing screen).
+        link.server?.let { (container.account.checkServerAddress(it, confirmedUnencrypted = true) as? ApiResult.Ok)?.value?.name }
     }
     var leaving by remember(link) { mutableStateOf(false) }
     SwitchAccountDialog(
@@ -221,6 +222,9 @@ private fun Onboarding(container: AppContainer, signedOut: AuthState.SignedOut?)
                 onSubmit = { vm.submit {} },
                 // A QR code names the server too.
                 onScan = { nav.navigate(PairRoute) { launchSingleTop = true } },
+                // Plain http:// to a private address: the warning, then the user's choice.
+                onConnectUnencrypted = { vm.connectUnencrypted {} },
+                onCancelUnencrypted = vm::cancelUnencrypted,
             )
         }
         composable<SignInRoute> {
@@ -283,6 +287,8 @@ private fun Onboarding(container: AppContainer, signedOut: AuthState.SignedOut?)
                 onBack = { nav.popBackStack() },
                 onConfirm = vm::confirm,
                 onCancel = vm::cancel,
+                onConnectUnencrypted = vm::connectUnencrypted,
+                onCancelUnencrypted = vm::cancelUnencrypted,
                 backLabel = stringResource(
                     if (signedOut == null) R.string.action_back else R.string.action_back_to_sign_in,
                 ),

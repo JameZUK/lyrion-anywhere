@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.components.errorMessage
+import io.github.jamezuk.lyrionanywhere.ui.settings.UnencryptedBadge
 
 /** A centred, scrollable column that keeps forms readable on wide screens. */
 @Composable
@@ -115,7 +116,11 @@ fun ServerScreen(
     onAddressChange: (String) -> Unit,
     onSubmit: () -> Unit,
     onScan: () -> Unit = {},
+    /** The unencrypted-connection warning's buttons ([ServerUiState.confirmUnencrypted]). */
+    onConnectUnencrypted: () -> Unit = {},
+    onCancelUnencrypted: () -> Unit = {},
 ) {
+    if (state.confirmUnencrypted) UnencryptedDialog(onConnect = onConnectUnencrypted, onCancel = onCancelUnencrypted)
     val addressFocus = remember { FocusRequester() }
     // Ready to type on first show, unless an address is already filled in.
     LaunchedEffect(Unit) { if (state.address.isEmpty() && !state.busy) addressFocus.requestFocus() }
@@ -296,8 +301,14 @@ fun PairScreen(
     /** The camera was refused for good: explain, and offer the app's settings instead. */
     cameraBlocked: Boolean = false,
     onOpenSettings: () -> Unit = {},
+    /** The unencrypted-connection warning's buttons ([PairUiState.confirmUnencrypted]). */
+    onConnectUnencrypted: () -> Unit = {},
+    onCancelUnencrypted: () -> Unit = {},
 ) {
     val confirm = state.confirm
+    if (confirm != null && state.confirmUnencrypted) {
+        UnencryptedDialog(onConnect = onConnectUnencrypted, onCancel = onCancelUnencrypted)
+    }
     if (confirm != null) {
         PairConfirmation(confirm, busy = state.busy, onConfirm = onConfirm, onCancel = onCancel)
         return
@@ -401,6 +412,7 @@ private fun PairConfirmation(confirm: PairConfirm, busy: Boolean, onConfirm: () 
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        if (confirm.unencrypted) UnencryptedBadge()
         Button(onClick = onConfirm, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
             BusyLabel(busy, stringResource(R.string.action_sign_in))
         }

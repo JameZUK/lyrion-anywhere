@@ -6,6 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import io.github.jamezuk.lyrionanywhere.playback.auto.CallerPolicy
 import org.w3c.dom.Element
 
 /** Regression tests for the app's security settings (manifest and network policy). */
@@ -309,6 +310,57 @@ class SecurityConfigTest {
             .map { it.getAttributeNS(android, "name") }
             .toSet()
         assertEquals(setOf("android.permission.MODIFY_AUDIO_SETTINGS"), playbackPerms)
+    }
+
+    /**
+     * Android 11+ hides other packages unless they are named: the media session's caller
+     * check needs to see the known car and assistant apps (and their certificates), and
+     * nothing else.
+     */
+    @Test
+    fun onlyTheKnownCarAppsAreVisible() {
+        val manifest = xml("src/main/AndroidManifest.xml")
+        val queries = manifest.children("queries")
+        assertEquals(1, queries.size)
+        val q = queries.single()
+        val packages = q.children("package").map { it.getAttributeNS(android, "name") }
+        assertEquals(
+            setOf(
+                "com.google.android.projection.gearhead",
+                "com.google.android.googlequicksearchbox",
+                "com.google.android.carassistant",
+            ),
+            packages.toSet(),
+        )
+        assertEquals("no duplicates", packages.size, packages.toSet().size)
+        assertEquals(CallerPolicy.KNOWN.map { it.packageName }.toSet(), packages.toSet())
+        // No intents or providers: nothing that widens visibility.
+        assertTrue(q.children("intent").isEmpty())
+        assertTrue(q.children("provider").isEmpty())
+        val elements = (0 until q.childNodes.length).map { q.childNodes.item(it) }.filterIsInstance<Element>()
+        assertTrue(elements.all { it.tagName == "package" })
+        // And no module asks to see every package.
+        for (path in listOf("src/main/AndroidManifest.xml", "../data/src/main/AndroidManifest.xml", "../playback/src/main/AndroidManifest.xml", "../ui/src/main/AndroidManifest.xml")) {
+            val f = File(path)
+            if (!f.exists()) continue
+            assertFalse(path, f.readText().contains("QUERY_ALL_PACKAGES"))
+            if (path != "src/main/AndroidManifest.xml") assertTrue(path, xml(path).children("queries").isEmpty())
+        }
+    }
+
+    /**
+     * Artwork reaches Coil as bytes from the Rust layer (ArtworkFetcher), which applies the
+     * server rules, plain http:// included. Coil has no network fetcher of its own in the app
+     * (no coil-network-* artifact), so it can't fetch a URL past those rules, nor past the
+     * network security configuration.
+     */
+    @Test
+    fun coilCanNotFetchFromTheNetworkItself() {
+        for (name in listOf("coil3.network.NetworkFetcher", "coil3.network.okhttp.OkHttpNetworkFetcher", "coil3.network.ktor3.KtorNetworkFetcher")) {
+            assertTrue(name, runCatching { Class.forName(name) }.exceptionOrNull() is ClassNotFoundException)
+        }
+        // Coil itself is there (this test would mean nothing otherwise).
+        Class.forName("coil3.ImageLoader")
     }
 
     @Test

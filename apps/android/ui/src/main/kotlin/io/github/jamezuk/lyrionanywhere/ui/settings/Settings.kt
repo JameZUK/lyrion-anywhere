@@ -2,6 +2,9 @@ package io.github.jamezuk.lyrionanywhere.ui.settings
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -14,6 +17,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Devices
+import androidx.compose.material.icons.outlined.DirectionsCar
+import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Storage
@@ -36,6 +41,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -44,6 +50,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
@@ -83,6 +90,8 @@ const val PRIVACY_POLICY_URL = "https://github.com/JameZUK/lyrion-anywhere/blob/
 
 data class SettingsUiState(
     val serverName: String = "",
+    /** The server is reached over https (false: plain http:// to a private address, or loopback). */
+    val serverSecure: Boolean = true,
     val username: String = "",
     val account: AccountInfo? = null,
     val signingOut: Boolean = false,
@@ -130,7 +139,12 @@ class SettingsViewModel(
     init {
         (account.state.value as? AuthState.SignedInState)?.let { s ->
             _state.update {
-                it.copy(serverName = s.server.name, username = s.who.user.username, deviceName = s.who.device.name)
+                it.copy(
+                    serverName = s.server.name,
+                    serverSecure = s.server.secure,
+                    username = s.who.user.username,
+                    deviceName = s.who.device.name,
+                )
             }
         }
         viewModelScope.launch {
@@ -370,6 +384,11 @@ fun SettingsScreen(
     onSignOutOtherDevices: () -> Unit = {},
     /** The clock, for "Last used 3 hours ago" (Unix seconds). */
     nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
+    /**
+     * About › Car connections: the last callers the media session decided on, one line each,
+     * newest first (empty: none yet; null: the row isn't shown).
+     */
+    carConnections: List<String>? = null,
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var renaming by rememberSaveable { mutableStateOf(false) }
@@ -449,7 +468,25 @@ fun SettingsScreen(
                     ListItem(
                         leadingContent = { Icon(Icons.Outlined.Dns, contentDescription = null) },
                         headlineContent = { Text(stringResource(R.string.server)) },
-                        supportingContent = { Text(state.serverName) },
+                        supportingContent = {
+                            if (state.serverSecure) {
+                                Text(state.serverName)
+                            } else {
+                                // Plain http:// (docs/plans/trusted-networks.md): said beside the
+                                // server for as long as this sign-in lasts.
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Text(state.serverName)
+                                        UnencryptedBadge()
+                                    }
+                                    Text(
+                                        stringResource(R.string.unencrypted_explained),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.testTag("server-unencrypted-explained"),
+                                    )
+                                }
+                            }
+                        },
                     )
                 }
                 state.account?.let { a ->
@@ -624,6 +661,29 @@ fun SettingsScreen(
                             },
                     )
                 }
+                if (carConnections != null) {
+                    item {
+                        ListItem(
+                            leadingContent = { Icon(Icons.Outlined.DirectionsCar, contentDescription = null) },
+                            headlineContent = { Text(stringResource(R.string.car_connections)) },
+                            supportingContent = {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    if (carConnections.isEmpty()) {
+                                        Text(stringResource(R.string.car_connections_none))
+                                    } else {
+                                        carConnections.forEach { Text(it) }
+                                    }
+                                    Text(
+                                        stringResource(R.string.car_connections_explained),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            },
+                            modifier = Modifier.testTag("car-connections"),
+                        )
+                    }
+                }
                 if (gaps != null) {
                     item {
                         NavRow(
@@ -691,6 +751,26 @@ fun SettingsScreen(
             },
             onDismiss = { confirm = false },
         )
+    }
+}
+
+/** "Unencrypted", beside a server reached over plain http://. */
+@Composable
+fun UnencryptedBadge(modifier: Modifier = Modifier) {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        shape = MaterialTheme.shapes.small,
+        modifier = modifier.testTag("server-unencrypted"),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)) {
+            Icon(Icons.Outlined.LockOpen, contentDescription = null, modifier = Modifier.size(14.dp))
+            Text(
+                stringResource(R.string.unencrypted_badge),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(start = 4.dp),
+            )
+        }
     }
 }
 

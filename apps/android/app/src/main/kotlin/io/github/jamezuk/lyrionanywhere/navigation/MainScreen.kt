@@ -109,6 +109,8 @@ import io.github.jamezuk.lyrionanywhere.data.LyricsCache
 import io.github.jamezuk.lyrionanywhere.data.WaveformCache
 import io.github.jamezuk.lyrionanywhere.playback.PlaybackService
 import io.github.jamezuk.lyrionanywhere.ui.R
+import io.github.jamezuk.lyrionanywhere.playback.auto.CarLabels
+import io.github.jamezuk.lyrionanywhere.playback.auto.describe
 import io.github.jamezuk.lyrionanywhere.ui.components.EmptyState
 import io.github.jamezuk.lyrionanywhere.ui.components.errorText
 import io.github.jamezuk.lyrionanywhere.ui.library.AlbumActions
@@ -664,6 +666,22 @@ fun MainScreen(
             onPauseOrDispose {}
         }
         val refusals by container.backgroundPlayback.refusals.collectAsStateWithLifecycle()
+        // About › Car connections: the media session's last caller decisions (memory only).
+        val carLog = (settingsContext.applicationContext as? LyrionApp)?.carConnections
+        val carEntries by remember(carLog) {
+            carLog?.entries ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList<io.github.jamezuk.lyrionanywhere.playback.auto.CarConnection>())
+        }.collectAsStateWithLifecycle()
+        val carLabels = CarLabels(
+            androidAuto = stringResource(R.string.car_caller_android_auto),
+            google = stringResource(R.string.car_caller_google),
+            carAssistant = stringResource(R.string.car_caller_car_assistant),
+            allowed = stringResource(R.string.car_outcome_allowed),
+            controls = stringResource(R.string.car_outcome_controls),
+            refused = stringResource(R.string.car_outcome_refused),
+            refusedCertificate = stringResource(R.string.car_outcome_refused_certificate),
+            line = stringResource(R.string.car_connection_line),
+            certificates = stringResource(R.string.car_connection_certificates),
+        )
         val playOnPhone = playerState.local.enabled
         val openBatterySettings = { openBatteryOptimisationSettings(settingsContext) }
         val startsOn = when (playerState.defaultPlayer) {
@@ -686,6 +704,7 @@ fun MainScreen(
         )
         SettingsScreen(
             state = ui,
+            carConnections = carLog?.let { carEntries.map { it.describe(carLabels) } },
             appVersion = BuildConfig.VERSION_NAME,
             libraryVersion = remember { libraryVersion() },
             section = section,

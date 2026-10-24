@@ -7,6 +7,7 @@ import io.github.jamezuk.lyrionanywhere.data.AccountRepository
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.data.AuthState
+import io.github.jamezuk.lyrionanywhere.data.needsUnencryptedConfirmation
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -17,6 +18,11 @@ data class ServerUiState(
     val address: String = "",
     val busy: Boolean = false,
     val error: AppError? = null,
+    /**
+     * The address is plain `http://` to a private network (a VPN): the warning is showing,
+     * and nothing is saved until the user chooses Connect anyway.
+     */
+    val confirmUnencrypted: Boolean = false,
 )
 
 /** Welcome: enter the server's address. */
@@ -32,21 +38,42 @@ class ServerViewModel(private val account: AccountRepository) : ViewModel() {
     val state: StateFlow<ServerUiState> = _state.asStateFlow()
 
     fun onAddressChange(value: String) {
+        if (_state.value.confirmUnencrypted) return
         _state.update { it.copy(address = value.take(2048), error = null) }
     }
 
     /** Validate and use the address; `onDone` runs once it is saved. */
-    fun submit(onDone: () -> Unit) {
+    fun submit(onDone: () -> Unit) = use(confirmed = false, onDone)
+
+    /** The warning's Connect anyway: use the address, unencrypted. */
+    fun connectUnencrypted(onDone: () -> Unit) {
+        if (!_state.value.confirmUnencrypted) return
+        _state.update { it.copy(confirmUnencrypted = false) }
+        use(confirmed = true, onDone)
+    }
+
+    /** The warning's Cancel: nothing is used, and the address stays as it was typed. */
+    fun cancelUnencrypted() {
+        _state.update { it.copy(confirmUnencrypted = false) }
+    }
+
+    private fun use(confirmed: Boolean, onDone: () -> Unit) {
         val address = _state.value.address
-        if (_state.value.busy) return
+        if (_state.value.busy || (_state.value.confirmUnencrypted && !confirmed)) return
         _state.update { it.copy(busy = true, error = null) }
         viewModelScope.launch {
-            when (val r = account.useServer(address)) {
+            when (val r = account.useServer(address, confirmedUnencrypted = confirmed)) {
                 is ApiResult.Ok -> {
                     _state.update { it.copy(busy = false, address = r.value.url) }
                     onDone()
                 }
-                is ApiResult.Err -> _state.update { it.copy(busy = false, error = r.error) }
+                is ApiResult.Err -> _state.update {
+                    if (!confirmed && r.error.needsUnencryptedConfirmation()) {
+                        it.copy(busy = false, confirmUnencrypted = true)
+                    } else {
+                        it.copy(busy = false, error = r.error)
+                    }
+                }
             }
         }
     }
@@ -112,6 +139,8 @@ data class PairConfirm(
     val serverUrl: String,
     /** The server this replaces, when the code names a different one. */
     val replaces: String? = null,
+    /** The server is plain `http://` to a private network: the user is warned before pairing. */
+    val unencrypted: Boolean = false,
 )
 
 data class PairUiState(
@@ -122,6 +151,8 @@ data class PairUiState(
     val scanning: Boolean = true,
     /** A code was read (scanned, typed or from a link): the user confirms the server first. */
     val confirm: PairConfirm? = null,
+    /** The unencrypted-connection warning is showing (after Sign in, for an http:// server). */
+    val confirmUnencrypted: Boolean = false,
 )
 
 /**
@@ -163,13 +194,25 @@ class PairViewModel(private val account: AccountRepository) : ViewModel() {
 
     private fun show(link: PairingInvite) {
         val current = (account.state.value as? AuthState.SignedOut)?.server
+        // The server in use was agreed to when it was chosen; a new http:// one asks first.
+        var unencrypted = false
         val target = when (val url = link.server) {
             null -> current
+            current?.url -> current
             else -> when (val checked = account.checkServerAddress(url)) {
                 is ApiResult.Ok -> checked.value
                 is ApiResult.Err -> {
-                    _state.update { it.copy(error = checked.error) }
-                    return
+                    val agreed = if (checked.error.needsUnencryptedConfirmation()) {
+                        account.checkServerAddress(url, confirmedUnencrypted = true) as? ApiResult.Ok
+                    } else {
+                        null
+                    }
+                    if (agreed == null) {
+                        _state.update { it.copy(error = checked.error) }
+                        return
+                    }
+                    unencrypted = true
+                    agreed.value
                 }
             }
         }
@@ -187,6 +230,7 @@ class PairViewModel(private val account: AccountRepository) : ViewModel() {
                     serverName = target.name,
                     serverUrl = target.url,
                     replaces = current?.takeIf { c -> c.url != target.url }?.name,
+                    unencrypted = unencrypted,
                 ),
             )
         }
@@ -196,16 +240,38 @@ class PairViewModel(private val account: AccountRepository) : ViewModel() {
     fun cancel() {
         if (_state.value.busy) return
         invite = null
-        _state.update { it.copy(confirm = null, scanning = true, error = null) }
+        _state.update { it.copy(confirm = null, confirmUnencrypted = false, scanning = true, error = null) }
     }
 
-    /** The user confirmed the server: pair. */
+    /** The user confirmed the server: pair (after the warning, for an http:// server). */
     fun confirm() {
+        val confirm = _state.value.confirm ?: return
+        if (_state.value.busy || invite == null) return
+        if (confirm.unencrypted) {
+            _state.update { it.copy(confirmUnencrypted = true) }
+            return
+        }
+        pair(confirmedUnencrypted = false)
+    }
+
+    /** The warning's Connect anyway. */
+    fun connectUnencrypted() {
+        if (!_state.value.confirmUnencrypted) return
+        _state.update { it.copy(confirmUnencrypted = false) }
+        pair(confirmedUnencrypted = true)
+    }
+
+    /** The warning's Cancel: nothing is sent; the server and code stay on screen. */
+    fun cancelUnencrypted() {
+        _state.update { it.copy(confirmUnencrypted = false) }
+    }
+
+    private fun pair(confirmedUnencrypted: Boolean) {
         val link = invite ?: return
         if (_state.value.busy) return
         _state.update { it.copy(busy = true, error = null) }
         viewModelScope.launch {
-            val r = account.pair(link)
+            val r = account.pair(link, confirmedUnencrypted)
             invite = null
             _state.update {
                 when (r) {
