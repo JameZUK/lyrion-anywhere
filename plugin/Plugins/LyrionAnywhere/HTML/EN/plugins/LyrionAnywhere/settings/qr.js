@@ -371,14 +371,61 @@ function normalisePairingCode(code) {
 	return /^[A-Z0-9]{4,32}$/.test(c) ? c : null;
 }
 
+/** A loopback host as a URL's `hostname` gives it: `localhost`, `127.x.x.x` or `[::1]`. */
 function isLoopback(host) {
 	return host === 'localhost' || host === '[::1]' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 }
 
+/** The four parts of a dotted IPv4 literal (no leading zeros), or null. */
+function ipv4Parts(s) {
+	const m = s.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+	if (!m) return null;
+	const parts = m.slice(1).map((p) => (p.length > 1 && p[0] === '0' ? NaN : Number(p)));
+	return parts.every((n) => n >= 0 && n <= 255) ? parts : null;
+}
+
+/** The eight 16-bit groups of an IPv6 literal (no zone, no embedded IPv4), or null. */
+function ipv6Groups(s) {
+	if (!/^[0-9a-f:]{2,39}$/i.test(s)) return null;
+	const halves = s.split('::');
+	if (halves.length > 2) return null;
+	const side = (h) => (h === '' ? [] : h.split(':'));
+	const head = side(halves[0]);
+	const tail = halves.length === 2 ? side(halves[1]) : [];
+	const groups = head.concat(tail);
+	if (groups.some((g) => !/^[0-9a-f]{1,4}$/i.test(g))) return null;
+	if (halves.length === 2 ? groups.length > 7 : groups.length !== 8) return null;
+	const nums = groups.map((g) => parseInt(g, 16));
+	if (halves.length === 1) return nums;
+	return nums.slice(0, head.length).concat(new Array(8 - groups.length).fill(0), nums.slice(head.length));
+}
+
+/**
+ * A literal address inside one of the private ranges the trusted-networks rule allows
+ * (docs/plans/trusted-networks.md): 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
+ * 169.254.0.0/16, 100.64.0.0/10, fc00::/7, fe80::/10. `host` is a URL's `hostname`: a
+ * dotted IPv4 literal, or an IPv6 literal in brackets. Never a name (it could resolve to a
+ * public address), never loopback (see isLoopback), never an IPv4-mapped IPv6 address.
+ */
+function isPrivateLiteral(host) {
+	if (typeof host !== 'string' || host.length > 41) return false;
+	const v4 = ipv4Parts(host);
+	if (v4) {
+		const a = v4[0];
+		const b = v4[1];
+		return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127);
+	}
+	if (host[0] !== '[' || host[host.length - 1] !== ']') return false;
+	const v6 = ipv6Groups(host.slice(1, -1));
+	if (!v6) return false;
+	return (v6[0] & 0xfe00) === 0xfc00 || (v6[0] & 0xffc0) === 0xfe80;
+}
+
 /**
  * The server part of a pairing link: the origin of an `https://` address with nothing
- * after the host (plain `http://` only for loopback, as the apps accept), or null. The
- * same rules as the apps use, so a link made here is never one they refuse.
+ * after the host, or null. Plain `http://` only for loopback or a literal private address
+ * (a trusted network: see isPrivateLiteral), as the apps accept. The same rules as the
+ * apps use, so a link made here is never one they refuse.
  */
 function pairingServer(address) {
 	if (typeof address !== 'string') return null;
@@ -390,7 +437,7 @@ function pairingServer(address) {
 	} catch {
 		return null;
 	}
-	if (u.protocol !== 'https:' && !(u.protocol === 'http:' && isLoopback(u.hostname))) return null;
+	if (u.protocol !== 'https:' && !(u.protocol === 'http:' && (isLoopback(u.hostname) || isPrivateLiteral(u.hostname)))) return null;
 	if (!u.hostname || u.username || u.password || u.search || u.hash || u.pathname !== '/') return null;
 	// Nothing the URL parser quietly dropped ("https://host/?" or "https://host#").
 	if (/[?#@]/.test(s.slice(s.indexOf('//') + 2))) return null;
@@ -411,5 +458,5 @@ function groupPairingCode(code) {
 	return c.length === 10 ? `${c.slice(0, 5)}-${c.slice(5)}` : c;
 }
 
-globalThis.AnywhereQR = Object.freeze({ MAX_VERSION, capacity, utf8, reedSolomon, formatBits, versionBits, penalty, encodeQr, qrPath, PAIRING_SCHEME, normalisePairingCode, pairingServer, pairingLink, groupPairingCode });
+globalThis.AnywhereQR = Object.freeze({ MAX_VERSION, capacity, utf8, reedSolomon, formatBits, versionBits, penalty, encodeQr, qrPath, PAIRING_SCHEME, normalisePairingCode, isLoopback, isPrivateLiteral, pairingServer, pairingLink, groupPairingCode });
 })();

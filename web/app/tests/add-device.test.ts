@@ -72,6 +72,21 @@ describe('Add another device', () => {
 		expect(container.querySelector('[data-code]')!.textContent).toBe('ABCDE-FGHJK');
 	});
 
+	test('a page on a trusted network (http:// to a private address) gets a QR code; a name over http:// does not', async () => {
+		const create = async (): Promise<PairingCode> => ({ code: 'ABCDEFGHJK', expires_in: 600 });
+		const lan = render(AddDevice, { create, server: 'http://10.0.0.10:9443' });
+		await submit(lan.container);
+		expect(readQr(lan.container)).toBe('lyrion-anywhere://pair?server=http%3A%2F%2F10.0.0.10%3A9443&code=ABCDEFGHJK');
+		lan.unmount();
+		for (const server of ['http://lms.example.lan:9443', 'http://8.8.8.8:9443', 'http://[::ffff:10.0.0.10]:9443']) {
+			const r = render(AddDevice, { create, server });
+			await submit(r.container);
+			expect(r.container.querySelector('svg[data-qr]'), server).toBeNull();
+			expect(r.container.querySelector('[data-no-qr]')!.textContent).toContain('private network address');
+			r.unmount();
+		}
+	});
+
 	test('refusals read clearly, and a hostile reply shows nothing', async () => {
 		for (const [err, want] of [
 			[new ApiError(401, 'invalid credentials'), 'Password not right.'],

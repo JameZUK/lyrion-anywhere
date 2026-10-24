@@ -7,6 +7,8 @@ import {
 	capacity,
 	encodeQr,
 	groupPairingCode,
+	isLoopback,
+	isPrivateLiteral,
 	normalisePairingCode,
 	pairingLink,
 	pairingServer,
@@ -23,6 +25,8 @@ interface Vector {
 	version: number;
 	masks: string[][];
 }
+/** The trusted-networks vectors shared with core::privnet and the plugin. */
+const privnet = JSON.parse(readFileSync(`${__dirname}/fixtures/private-networks.json`, 'utf8')) as { addresses: { private: string[]; not_private: string[] } };
 const { vectors } = JSON.parse(readFileSync(`${__dirname}/fixtures/qr-vectors.json`, 'utf8')) as { vectors: Vector[] };
 
 /** Rows as hex, the fixture's form. */
@@ -176,8 +180,10 @@ describe('pairing links', () => {
 			'',
 			'music.example.com',
 			'http://music.example.com',
-			'http://10.0.0.10',
+			'http://10.0.0.10.example.com',
+			'http://8.8.8.8',
 			'ftp://music.example.com',
+			'ftp://10.0.0.10',
 			'javascript:alert(1)',
 			'https://user@music.example.com',
 			'https://user:pw@music.example.com',
@@ -198,6 +204,99 @@ describe('pairing links', () => {
 			expect(pairingServer(bad), String(bad).slice(0, 40)).toBeNull();
 			expect(pairingLink(bad, 'ABCDEFGHJK')).toBeNull();
 		}
+	});
+
+	test('plain http:// to a literal private address (a trusted network) is accepted, from the shared vectors', () => {
+		const bracket = (a: string) => (a.includes(':') ? `[${a}]` : a);
+		for (const a of privnet.addresses.private) {
+			const host = bracket(a);
+			expect(isPrivateLiteral(host), host).toBe(true);
+			expect(pairingServer(`http://${host}`), host).toBe(`http://${host}`);
+			expect(pairingServer(`http://${host}:9443/`), host).toBe(`http://${host}:9443`);
+			expect(pairingLink(`http://${host}:9443`, 'ABCD'), host).toBe(`lyrion-anywhere://pair?server=${encodeURIComponent(`http://${host}:9443`)}&code=ABCD`);
+		}
+		for (const a of privnet.addresses.not_private) {
+			const host = bracket(a);
+			expect(isPrivateLiteral(host), host).toBe(false);
+			const loopback = host === '127.0.0.1' || host === '[::1]';
+			for (const url of [`http://${host}`, `http://${host}:9443`]) {
+				if (loopback) expect(pairingServer(url), url).toBe(url);
+				else expect(pairingServer(url), url).toBeNull();
+			}
+			// https:// is a different matter: any address the certificate covers.
+		}
+	});
+
+	test('isPrivateLiteral takes literals only: never a name, loopback, a mapped or malformed address', () => {
+		for (const bad of [
+			'',
+			'localhost',
+			'music.example.com',
+			'10.0.0.1.example.com',
+			'example.10.0.0.1',
+			'10.0.0.1.',
+			'10.0.0',
+			'10.0.0.0.1',
+			'010.0.0.1',
+			'10.0.0.256',
+			'10.0.0.-1',
+			' 10.0.0.1',
+			'10.0.0.1 ',
+			'0x0a.0.0.1',
+			'127.0.0.1',
+			'fd00::1', // IPv6 without brackets: not how a URL's hostname reads
+			'[fd00::1',
+			'fd00::1]',
+			'[fd00::1%eth0]',
+			'[fe80::1%25eth0]',
+			'[fd00:::1]',
+			'[fd00::1::2]',
+			'[fd00:1:2:3:4:5:6:7:8]',
+			'[fd00:1:2:3:4:5:6]',
+			'[fd00::12345]',
+			'[fd00::g]',
+			'[::ffff:10.0.0.1]',
+			'[::ffff:a00:1]',
+			'[::]',
+			'[::1]',
+			'[fec0::1]',
+			'[2001:db8::1]',
+			'[' + 'f'.repeat(50) + ']',
+			null,
+			undefined,
+			10,
+			{ toString: () => '10.0.0.1' },
+		]) {
+			expect(isPrivateLiteral(bad), String(bad)).toBe(false);
+		}
+		for (const good of ['10.8.0.1', '100.64.0.1', '[fd12:3456:789a::1]', '[FD12:3456:789A::1]', '[fe80::]', '[fd00:0:0:0:0:0:0:1]', '[fc00::]']) {
+			expect(isPrivateLiteral(good), good).toBe(true);
+		}
+		// Arbitrary input never throws, and nothing outside the ranges gets through.
+		let seed = 7;
+		const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32);
+		const alphabet = '0123456789abcdefABCDEF:.[]%/-xg ';
+		for (let i = 0; i < 20_000; i++) {
+			const s = Array.from({ length: Math.floor(rnd() * 24) }, () => alphabet[Math.floor(rnd() * alphabet.length)]).join('');
+			const ok = isPrivateLiteral(s);
+			if (ok) expect(/^(10|172|192|169|100)\.|^\[f[cdeE]/i.test(s), s).toBe(true);
+			expect(() => pairingServer(`http://${s}`)).not.toThrow();
+		}
+		expect(isLoopback('localhost') && isLoopback('127.0.0.1') && isLoopback('127.1.2.3') && isLoopback('[::1]')).toBe(true);
+		for (const h of ['10.0.0.1', 'localhost.example.com', '::1', '[::2]', '128.0.0.1']) expect(isLoopback(h), h).toBe(false);
+	});
+
+	test('the URL parser normalises before the rule applies (no surprises from odd spellings)', () => {
+		// WHATWG URLs read 10.1 and 0xa.0.0.1 as 10.0.0.1, and 010.0.0.1 (octal) as 8.0.0.1:
+		// the rule sees the normalised address, the same one the browser would connect to.
+		expect(pairingServer('http://10.1:9443')).toBe('http://10.0.0.1:9443');
+		expect(pairingServer('http://0xa.0.0.1')).toBe('http://10.0.0.1');
+		expect(pairingServer('http://010.0.0.1')).toBeNull();
+		expect(pairingServer('http://[FD00::0001]')).toBe('http://[fd00::1]');
+		expect(pairingServer('http://[::ffff:10.0.0.1]')).toBeNull();
+		expect(pairingServer('http://10.0.0.1@music.example.com')).toBeNull();
+		expect(pairingServer('http://music.example.com@10.0.0.1')).toBeNull();
+		expect(pairingServer('http://10.0.0.1/lms')).toBeNull();
 	});
 
 	test('refuses codes the gateway could never have made', () => {
