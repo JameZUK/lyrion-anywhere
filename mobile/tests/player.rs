@@ -3384,7 +3384,9 @@ async fn track_end_then_away(before: Before) {
         Before::LmsStops => {
             tokio::time::sleep(Duration::from_millis(500)).await;
             r.send(strm_frame(b'q', b'0', "")).await;
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            // The player's STMf says it has stopped. Waiting for it (rather than a fixed
+            // half second) keeps the stop ahead of the link cut on a heavily loaded machine.
+            r.wait_event("STMf", 1, 20).await;
         }
     }
     r.proxy.as_ref().unwrap().set_down(true);

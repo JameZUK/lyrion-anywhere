@@ -185,7 +185,10 @@ jobs:
     # A release is published only when every other check passed.
     needs: [test, web, android, plugin, deploy, supply-chain]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The job takes 20 to 28 minutes (17 runs, 19 to 24 October 2026). A runner stall in the
+    # cross-build (seen once, on 24 October: rustc went silent for 49 minutes) then fails here
+    # rather than after an hour; `gh run rerun --failed` re-runs it on the same tag.
+    timeout-minutes: 45
     # Write access only here, and only used by the last steps, on version tags: contents for
     # the release, id-token and attestations for the signed build provenance.
     permissions:
