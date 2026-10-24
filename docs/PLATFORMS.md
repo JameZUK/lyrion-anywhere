@@ -11,7 +11,7 @@ Where Lyrion Anywhere runs, how to get the Android app, and what is built, in pr
 | **Safari (macOS)** | Supported | Web Audio playback |
 | **Android browsers** (Chrome, Firefox) | Supported | Media-element playback, which keeps going with the screen locked, after a self-test of what the browser can play; Web Audio otherwise. Installable |
 | **iPhone and iPad (Safari, iOS/iPadOS 17 or later)** | Supported | Media-element playback through Managed Media Source (17.1 or later), so music carries on with the screen locked. The volume is set with the device's own buttons (a page can't set it). Install with *Share › Add to Home Screen*; offline downloads are reliable only in the installed app. No haptics. *Automatic* streaming quality means Original here (Safari can't tell mobile data from Wi-Fi), so choose *High* or *Data saver* in *Settings › Playback* when on mobile data; the quality badge then shows "Opus 160" |
-| **Android app** | Android 10 (API 29) or later | Bit-perfect USB DAC output on Android 14 or later where the phone and DAC offer it; wallpaper colours and the sharper ambient blur on Android 12 or later; Android Auto |
+| **Android app** | Android 10 (API 29) or later | Bit-perfect USB DAC output on Android 14 or later where the phone and DAC offer it; wallpaper colours and the sharper ambient blur on Android 12 or later; Android Auto (see below for an app not installed from Google Play); plain `http://` to a server on your own VPN by its private address, after a warning |
 | **iOS app** | Planned | Designed in: the shared Rust layer ([`mobile/`](../mobile)) already covers networking, the player engine and downloads |
 | **Gateway** | Linux x86_64, aarch64, armhf (via the plugin); any Docker host | LMS 9.0 or later |
 | **Built-in Cloudflare Tunnel** | Linux x86_64, aarch64, armhf (via the plugin); Docker with a `cloudflared` sidecar | Not on Windows or macOS, where the plugin has no gateway. Needs a domain on Cloudflare (a free plan is enough), or none for the one-hour temporary tunnel. See [`INSTALL.md`](INSTALL.md#option-c-built-in-cloudflare-tunnel) |
@@ -26,6 +26,8 @@ Every client plays in LMS sync groups; how each one keeps in step is in [`FEATUR
 - **Source:** [`apps/android`](../apps/android).
 
 Signing in for the first time is covered in [`INSTALL.md`](INSTALL.md#6-first-sign-in-and-installing-the-app).
+
+**Android Auto and apps not installed from Google Play.** Android Auto hides media apps that weren't installed from Google Play (a signed APK from the releases page, say). To show Lyrion Anywhere in the car, open the Android Auto app on the phone: *Settings*, scroll down to *Version* and tap it ten times to turn on developer mode, then the ⋮ menu › *Developer settings* › turn on *Unknown sources*. Open Lyrion Anywhere once, then restart Android Auto (or reconnect the car). *Settings › About › Car connections* in the app lists the last few times a car app asked to connect, and whether it was allowed.
 
 ## Project status and roadmap
 

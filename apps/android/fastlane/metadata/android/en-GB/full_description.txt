@@ -25,10 +25,10 @@ Lyrion Anywhere is a player and remote control for your own Lyrion Music Server 
 <b>Offline and in the car</b>
 • Download albums and playlists as originals, MP3 or Opus, with smart downloads of new music and favourites.
 • An offline mode that plays your downloads when the server can't be reached, and sends your plays back later.
-• Android Auto.
+• Android Auto. Installed from somewhere other than Google Play? Android Auto hides the app until you turn on Unknown sources: in the Android Auto app, Settings, tap Version ten times, then ⋮ › Developer settings › Unknown sources. Open Lyrion Anywhere once and restart Android Auto.
 
 <b>Secure by design</b>
-• HTTPS only. Your sign-in is sealed by the Android Keystore; your password is never stored.
+• HTTPS, or plain HTTP only to a server on your own VPN by its private address, after a warning. Your sign-in is sealed by the Android Keystore; your password is never stored.
 • Sign in with a password (two-step verification supported) or by scanning a pairing code.
 • No analytics, adverts or third-party services. The app talks only to your server.
 • Free software under the GNU GPL: the code is public and reviewed.

@@ -1,9 +1,14 @@
 package io.github.jamezuk.lyrionanywhere.ui.onboarding
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import io.github.jamezuk.lyrionanywhere.ui.R
 
@@ -47,5 +52,30 @@ fun RefusedLinkDialog(onDismiss: () -> Unit) {
         confirmButton = {
             TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_close)) }
         },
+    )
+}
+
+/**
+ * Before using a plain `http://` server on a private network (docs/plans/trusted-networks.md):
+ * what that means, and a choice. Cancel (or dismissing) uses nothing and sends nothing.
+ */
+@Composable
+fun UnencryptedDialog(onConnect: () -> Unit, onCancel: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        icon = { Icon(Icons.Outlined.LockOpen, contentDescription = null) },
+        title = { Text(stringResource(R.string.unencrypted_title)) },
+        text = { Text(stringResource(R.string.unencrypted_body)) },
+        confirmButton = {
+            TextButton(onClick = onConnect, modifier = Modifier.testTag("unencrypted-connect")) {
+                Text(stringResource(R.string.unencrypted_connect))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel, modifier = Modifier.testTag("unencrypted-cancel")) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+        modifier = Modifier.testTag("unencrypted-dialog"),
     )
 }

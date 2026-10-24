@@ -155,7 +155,8 @@ impl Http {
         tcp.enforce_http(false);
         tcp.set_connect_timeout(Some(CONNECT_TIMEOUT));
         tcp.set_nodelay(true);
-        // Plain HTTP is allowed only for loopback servers; `Server` checks that.
+        // Plain HTTP is allowed only for loopback servers and literal private addresses;
+        // `Server` checks that (`server::parse_server_url`).
         let https = hyper_rustls::HttpsConnectorBuilder::new()
             .with_tls_config(tls_config(&[])?)
             .https_or_http()

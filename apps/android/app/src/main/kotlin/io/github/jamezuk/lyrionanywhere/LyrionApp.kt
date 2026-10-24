@@ -38,6 +38,7 @@ import java.io.File
 import io.github.jamezuk.lyrionanywhere.playback.auto.AutoSource
 import io.github.jamezuk.lyrionanywhere.playback.auto.ResourceLabels
 import io.github.jamezuk.lyrionanywhere.rust.NativeInit
+import io.github.jamezuk.lyrionanywhere.playback.auto.CarConnectionLog
 import io.github.jamezuk.lyrionanywhere.ui.art.ArtworkFetcher
 import io.github.jamezuk.lyrionanywhere.ui.art.ArtworkKeyer
 import kotlinx.coroutines.CoroutineScope
@@ -62,6 +63,9 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost, Lau
 
     /** What plays, for the home-screen widget and the Quick Settings tile. */
     override val nowPlaying: NowPlayingHub by lazy { NowPlayingHub() }
+
+    /** The media session's last caller decisions, for Settings › About (memory only). */
+    override val carConnections: CarConnectionLog by lazy { CarConnectionLog() }
 
     /** The widget's and tile's buttons. */
     val controls: Controls by lazy { Controls({ container.players }, nowPlaying) }

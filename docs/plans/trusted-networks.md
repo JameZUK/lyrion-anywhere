@@ -35,7 +35,7 @@ Until now the only supported way in was HTTPS: a reverse proxy with a certificat
 ### Android
 
 - `parse_server_url` accepts `http://` when the host is a literal address inside a private range (`privnet::is_private`); `http://name` is refused with a message saying why, and public literals too. `Server::is_secure()` is false for such a server, and the Kotlin layer's `PLAIN_HTTP_REFUSED` check becomes a confirmation step instead of a refusal for private literals.
-- Sign-in shows a dialog ("This connection isn't encrypted. Only use it over a VPN or on a network you trust.") with *Connect anyway* and *Cancel*. Settings shows an *Unencrypted* badge beside the server while signed in to one.
+- Choosing such a server (typed, scanned or from a pairing link) shows a dialog, *Unencrypted connection* ("This server address isn't encrypted (http://). Anyone on the same network could read your password and what you play. Only continue if this is your own VPN or a network you trust."), with *Connect anyway* and *Cancel*, before anything is saved or sent. Settings shows an *Unencrypted* badge beside the server while signed in to one.
 - Artwork and every other request go through the Rust layer, which applies the rule; the network security configuration is unchanged.
 
 ### Web

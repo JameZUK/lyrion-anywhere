@@ -27,12 +27,24 @@
         android:maxSdkVersion="30" />
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
 
+    <!-- Package visibility (Android 11+): the media session checks the signing certificate
+         of each car or assistant app that connects (CallerPolicy.KNOWN), which it can only
+         read for packages it can see. Exactly those three packages, and nothing broader
+         (never the permission to see every package). -->
+    <queries>
+        <package android:name="com.google.android.projection.gearhead" />
+        <package android:name="com.google.android.googlequicksearchbox" />
+        <package android:name="com.google.android.carassistant" />
+    </queries>
+
     <!--
       Security:
       - no backups of any kind: the sealed refresh token is useless elsewhere anyway (its
         Keystore key never leaves this device), and settings are trivial to re-enter;
-      - cleartext traffic is refused by the network security configuration (the Rust layer
-        refuses plain HTTP itself, except to loopback in development).
+      - cleartext traffic is refused by the network security configuration for Android's own
+        HTTP stacks; the Rust layer makes the app's connections and refuses plain HTTP itself,
+        except to loopback in development and to a literal private address (a VPN) after the
+        user has been warned and agreed (docs/plans/trusted-networks.md).
     -->
     <application
         android:name=".LyrionApp"

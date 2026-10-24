@@ -74,7 +74,8 @@ class PlaybackService : MediaLibraryService() {
         val key = controller.uid to controller.packageName
         return synchronized(decided) {
             decided.getOrPut(key) {
-                CallerPolicy.decide(callers.read(controller.packageName, controller.uid, controller.isTrusted))
+                val facts = callers.read(controller.packageName, controller.uid, controller.isTrusted)
+                CallerPolicy.decide(facts).also { host.carConnections?.record(facts, it) }
             }
         }
     }

@@ -1,8 +1,12 @@
 //! The server address the user typed (or scanned), validated before anything is sent to it.
 //!
 //! Rules (security first):
-//! - `https://` is required. Plain `http://` is accepted only for a loopback host (local
-//!   development), which is also the only plain-HTTP traffic the gateway itself accepts.
+//! - `https://` is required, with two exceptions for plain `http://`: a loopback host (local
+//!   development), and a *literal* address inside a private range (`anywhere_core::privnet`:
+//!   a server on the user's own VPN, which the gateway accepts unencrypted only when its
+//!   admin lists that network as trusted). Never `http://` to a name: a name could resolve to
+//!   a public address and send the password in clear. The app asks before using such a
+//!   server (docs/plans/trusted-networks.md).
 //! - No user name or password in the URL, no query, no fragment and no path: the gateway
 //!   serves its API at `/v1/` on the root of its host.
 //! - Nothing but a host and an optional port; no whitespace or control characters.
@@ -12,6 +16,7 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
+use anywhere_core::privnet;
 use url::{Host, Url};
 
 use crate::error::ApiError;
@@ -48,7 +53,8 @@ impl Server {
         }
     }
 
-    /// Whether traffic to this server is encrypted (false only for loopback development).
+    /// Whether traffic to this server is encrypted (false for loopback development and for a
+    /// literal private address over `http://`).
     pub fn is_secure(&self) -> bool {
         self.base.scheme() == "https"
     }
@@ -65,12 +71,12 @@ impl Server {
         self.base.join(path).expect("fixed API path joins")
     }
 
-    /// The events socket URL (`wss://…/v1/events`, or `ws://` on loopback).
+    /// The events socket URL (`wss://…/v1/events`, or `ws://` when the server is `http://`).
     pub(crate) fn events_url(&self) -> Url {
         self.socket_url("v1/events")
     }
 
-    /// The player socket URL (`wss://…/v1/player`, or `ws://` on loopback).
+    /// The player socket URL (`wss://…/v1/player`, or `ws://` when the server is `http://`).
     pub(crate) fn player_url(&self) -> Url {
         self.socket_url("v1/player")
     }
@@ -111,6 +117,15 @@ fn is_loopback(host: &Host<&str>) -> bool {
         Host::Domain(d) => d.eq_ignore_ascii_case("localhost"),
         Host::Ipv4(ip) => IpAddr::V4(*ip).is_loopback(),
         Host::Ipv6(ip) => IpAddr::V6(*ip).is_loopback(),
+    }
+}
+
+/// A literal address (never a name) inside one of the private ranges.
+fn is_private_literal(host: &Host<&str>) -> bool {
+    match host {
+        Host::Domain(_) => false,
+        Host::Ipv4(ip) => privnet::is_private(IpAddr::V4(*ip)),
+        Host::Ipv6(ip) => privnet::is_private(IpAddr::V6(*ip)),
     }
 }
 
@@ -161,10 +176,18 @@ pub fn parse_server_url(input: &str) -> Result<Url, ApiError> {
         .ok_or_else(|| ApiError::invalid("the address needs a host name"))?;
     match url.scheme() {
         "https" => {}
-        "http" if is_loopback(&host) => {}
+        "http" if is_loopback(&host) || is_private_literal(&host) => {}
+        "http" if matches!(host, Host::Domain(_)) => {
+            return Err(ApiError::invalid(
+                "use https://, or http:// with a private address such as \
+                 http://10.8.0.1:9443 for a server on your own VPN (not a name: \
+                 it could lead anywhere)",
+            ));
+        }
         "http" => {
             return Err(ApiError::invalid(
-                "use https:// — unencrypted connections are not allowed",
+                "use https:// — that address is not a private address, so an \
+                 unencrypted connection to it is not allowed",
             ));
         }
         _ => return Err(ApiError::invalid("the address must start with https://")),
@@ -298,8 +321,16 @@ mod tests {
         );
         assert_eq!(ok("https://10.0.0.10"), "https://10.0.0.10/");
         assert_eq!(ok("https://[2001:db8::1]:443"), "https://[2001:db8::1]/");
-        // Plain HTTP only on loopback (local development).
+        // Plain HTTP on loopback (local development) and to a literal private address (a
+        // server on the user's own VPN; the app asks first).
         assert_eq!(ok("http://127.0.0.1:9444"), "http://127.0.0.1:9444/");
+        assert_eq!(ok("http://10.8.0.1:9443"), "http://10.8.0.1:9443/");
+        assert_eq!(ok("http://10.0.0.10:9000/"), "http://10.0.0.10:9000/");
+        assert_eq!(ok("HTTP://100.64.0.7"), "http://100.64.0.7/");
+        assert_eq!(
+            ok("http://[fd12:3456:789a::1]:9443"),
+            "http://[fd12:3456:789a::1]:9443/"
+        );
         assert_eq!(ok("http://localhost:9444"), "http://localhost:9444/");
         assert_eq!(ok("http://[::1]:9444"), "http://[::1]:9444/");
     }
@@ -310,8 +341,10 @@ mod tests {
             "",
             "   ",
             "http://music.example.com",
-            "http://10.0.0.10:9000",
+            "http://203.0.113.10:9000",
             "http://127.0.0.1.nip.io",
+            "http://10.0.0.10.nip.io",
+            "http://10.8.0.1.example.com",
             "ftp://music.example.com",
             "file:///srv/music",
             "javascript:alert(1)",
@@ -438,7 +471,8 @@ mod tests {
             "lyrion-anywhere://pair?server=https%3A%2F%2Fmusic.example.com%23x&code=ABCD2345",
             "lyrion-anywhere://pair?server=https%3A%2F%2Fmusic.example.com%5C%40evil.example&code=ABCD2345",
             "lyrion-anywhere://pair?server=https%3A%2F%2Fmusic.example.com%20&code=ABCD2345%00",
-            "lyrion-anywhere://pair?server=http%3A%2F%2F10.0.0.10&code=ABCD2345",
+            "lyrion-anywhere://pair?server=http%3A%2F%2F203.0.113.10&code=ABCD2345",
+            "lyrion-anywhere://pair?server=http%3A%2F%2Fmusic.example.com%3A9443&code=ABCD2345",
             "lyrion-anywhere://pair?server=wss%3A%2F%2Fmusic.example.com&code=ABCD2345",
             // Codes: letters and digits only (ASCII), 4 to 32 of them.
             "lyrion-anywhere://pair?code=%EF%BC%A1%EF%BC%A2%EF%BC%A3%EF%BC%A4",
@@ -477,6 +511,104 @@ mod tests {
         assert_eq!(p.server.as_deref(), Some("http://127.0.0.1:9443/"));
     }
 
+    /// The shared vectors (web/app/tests/fixtures/private-networks.json), as `http://`
+    /// addresses: every private literal is accepted, everything else refused, except
+    /// loopback, which keeps its own rule (accepted, as before).
+    #[test]
+    fn plain_http_follows_the_shared_private_address_vectors() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../web/app/tests/fixtures/private-networks.json"
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let list = |k: &str| -> Vec<String> {
+            json["addresses"][k]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect()
+        };
+        let as_url = |a: &str| {
+            if a.contains(':') {
+                format!("http://[{a}]:9443")
+            } else {
+                format!("http://{a}:9443")
+            }
+        };
+        let private = list("private");
+        assert!(!private.is_empty());
+        for a in &private {
+            let u = parse_server_url(&as_url(a)).unwrap_or_else(|e| panic!("{a}: {e}"));
+            assert_eq!(u.scheme(), "http");
+            let s = Server::new(as_url(a)).unwrap();
+            assert!(!s.is_secure(), "{a}");
+            assert!(s.events_url().as_str().starts_with("ws://"), "{a}");
+            assert!(s.player_url().as_str().starts_with("ws://"), "{a}");
+            // The same address over https is, as ever, fine.
+            assert!(parse_server_url(&as_url(a).replacen("http", "https", 1)).is_ok());
+        }
+        let not_private = list("not_private");
+        assert!(!not_private.is_empty());
+        for a in &not_private {
+            let loopback = a.parse::<IpAddr>().unwrap().is_loopback();
+            let r = parse_server_url(&as_url(a));
+            if loopback {
+                assert!(r.is_ok(), "loopback {a} keeps its own rule");
+            } else {
+                match r {
+                    Err(ApiError::InvalidInput { detail }) => {
+                        assert!(detail.contains("not a private address"), "{a}: {detail}")
+                    }
+                    other => panic!("{a} over http was not refused: {other:?}"),
+                }
+            }
+        }
+    }
+
+    /// Names are never trusted over plain HTTP, whatever they look like or resolve to.
+    #[test]
+    fn plain_http_to_a_name_is_refused_with_a_reason() {
+        for s in [
+            "http://music.example.com",
+            "http://music.example.com:9443/",
+            "http://lms.example.lan",
+            "http://10.8.0.1.nip.io",
+            "http://fd00--1.example.com",
+            "http://localhost.example.com",
+        ] {
+            match parse_server_url(s) {
+                Err(ApiError::InvalidInput { detail }) => {
+                    assert!(detail.contains("private address"), "{s}: {detail}");
+                    assert!(detail.contains("https://"), "{s}: {detail}");
+                }
+                other => panic!("{s} was not refused: {other:?}"),
+            }
+        }
+        // Spelling an address oddly doesn't make it private: the URL parser reads these as
+        // the public address they are, and they are refused as one.
+        for s in ["http://0x08080808", "http://134744072", "http://8.8.2056"] {
+            assert!(parse_server_url(s).is_err(), "{s}");
+        }
+        // Spelling a private one oddly is read as that private address (normalised).
+        assert_eq!(ok("http://0x0a080001:9443"), "http://10.8.0.1:9443/");
+    }
+
+    #[test]
+    fn pairing_links_may_name_a_private_address_over_http() {
+        let p = parse_pairing_invite(
+            "lyrion-anywhere://pair?server=http%3A%2F%2F10.8.0.1%3A9443&code=ABCD2345".into(),
+        )
+        .unwrap();
+        assert_eq!(p.server.as_deref(), Some("http://10.8.0.1:9443/"));
+        let p = parse_pairing_invite(
+            "lyrion-anywhere://pair?server=http%3A%2F%2F%5Bfd00%3A%3A5%5D&code=ABCD2345".into(),
+        )
+        .unwrap();
+        assert_eq!(p.server.as_deref(), Some("http://[fd00::5]/"));
+    }
+
     #[test]
     fn arbitrary_input_never_panics() {
         // A small deterministic fuzz over awkward characters.
@@ -496,6 +628,11 @@ mod tests {
             let _ = parse_pairing_invite(format!("lyrion-anywhere://pair?{s}"));
             if let Ok(u) = parse_server_url(&s) {
                 assert!(u.scheme() == "https" || u.scheme() == "http");
+                if u.scheme() == "http" {
+                    // Plain HTTP only ever to loopback or a literal private address.
+                    let host = u.host().unwrap();
+                    assert!(is_loopback(&host) || is_private_literal(&host), "{s:?}");
+                }
                 assert_eq!(u.path(), "/");
                 assert!(u.query().is_none() && u.fragment().is_none());
                 assert!(u.username().is_empty() && u.password().is_none());
