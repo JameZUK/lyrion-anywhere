@@ -1313,7 +1313,7 @@ mod tests {
         assert!(!ok("10.0.0.10", &[("x-forwarded-proto", "http")]));
         for lan in [
             "10.8.0.5",
-            "192.168.1.20",
+            "192.168.7.20",
             "172.16.0.2",
             "100.100.1.1",
             "fd12:3456:789a::5",
@@ -1351,7 +1351,7 @@ mod tests {
         for out in [
             "10.8.1.1",
             "10.9.0.5",
-            "192.168.1.20",
+            "192.168.7.20",
             "fd12:3456:789b::1",
             "fe80::1",
             "203.0.113.9",
@@ -1400,7 +1400,7 @@ mod tests {
             !plain("127.0.0.1", &[]),
             "loopback development keeps the Secure cookie it always had"
         );
-        assert!(!plain("192.168.1.20", &[]));
+        assert!(!plain("192.168.7.20", &[]));
         assert!(!plain("10.0.0.10", &[("x-forwarded-proto", "https")]));
         let none = proxy_cfg();
         let peer: SocketAddr = "10.8.0.5:50000".parse().unwrap();

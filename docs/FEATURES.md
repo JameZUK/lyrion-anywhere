@@ -60,6 +60,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 - **Your own Home, stations and listening stats,** including a "Your year in sound" story you can share as an image made on the device.
 - **Play on… and Rooms:** every player and what it is playing; move playback, join or leave sync groups (*Sync with…*), switch players on or off and set their alarms. On a wide screen Rooms shows them as cards: drag one cover onto another to sync them.
 - **Downloads:** albums, playlists, artists and tracks for offline listening, with a storage limit and an optional Wi-Fi only setting; they play through the normal player screens.
+- **Over your own VPN without HTTPS** (a trusted network the admin lists): works, with a banner saying the connection is unencrypted. It plays through the media element; installing the app, the offline shell and the Web Audio engine need HTTPS.
 
 ### On Android (native app)
 
@@ -70,6 +71,7 @@ An iOS app is planned on the same shared layer; it isn't listed here until it ex
 - **Bit-perfect audio:** a Rust engine with AAudio output, bit-perfect by default, and bit-perfect to a USB DAC on Android 14 and later where the DAC supports it.
 - **Optional DSP, all off by default:** loudness levelling (ReplayGain or the server's EBU R128 analysis), parametric EQ with AutoEq import and per-output profiles, loudness-compensated volume, crossfeed, dither, and smart crossfades that never cross into a gapless album.
 - **Android Auto, car mode, widgets, a Quick Settings tile and app shortcuts.**
+- **Your own VPN without HTTPS:** a server at a private address over `http://` (a trusted network the admin lists), after an *Unencrypted connection* warning, and marked in Settings.
 - **Offline:** downloads (including smart downloads of recent albums and favourites), an offline mode, plays counted in LMS when you are back online, and *Continue on…* any player where you left off.
 - **Gaps in the signal** (Android app): the next track is fetched long before the current one ends, and a session survives up to ten minutes without a connection. A replay cache plays repeats and skips back from the phone, and an album downloaded as FLAC stands in for Original-quality streams. In a browser, only the current track is held: it plays to its end and the gateway keeps the player's place for up to ten minutes, but the next track needs the server. A multi-track cache for browsers is a possible later improvement (GitHub issue #13).
 - **Out of reach, not out of action:** while the server can't be reached, the phone keeps playing, pausing and skipping between tracks it holds; the queue marks which tracks are on the phone, and what you did is passed back when the server returns.
@@ -330,7 +332,7 @@ All of these are on Android, for this phone's player, and are **off by default**
 |---|---|---|
 | **Car mode** | Both | A driving screen from Now playing: huge art, giant previous, play/pause and next (hold play/pause to stop), *Start radio*, one level of Favourites and Stations, targets of at least 76 px (76 dp on Android), high contrast, and the screen kept on while playing. Android adds voice search |
 | **Car mode opens by itself** | Android | *Off*, *Any car audio* or *This device* (a chosen paired Bluetooth device); Bluetooth permission asked only when an automatic option is first chosen |
-| **Android Auto** | Android | Browse Home, Library and Downloads with album covers, search, and ask by voice; everything plays on the phone (or from downloads with no server). Every caller is checked: Android Auto and the Google assistants only with their genuine certificates |
+| **Android Auto** | Android | Browse Home, Library and Downloads with album covers, search, and ask by voice; everything plays on the phone (or from downloads with no server). Every caller is checked: Android Auto and the Google assistants only with their genuine certificates. *Settings › About › Car connections* lists recent connection attempts and their outcome, on the phone only. A build installed from the releases page rather than Google Play appears in Android Auto once *Unknown sources* is on in Android Auto's developer settings ([`PLATFORMS.md`](PLATFORMS.md)) |
 | **Home-screen widgets** | Android | A small widget (art, title, artist, play/pause, next) and a larger resizable one with a progress line and previous; drawn only when what they show changes, so they never wake the phone |
 | **Quick Settings tile** | Android | Play/pause for this phone's player |
 | **App shortcuts** | Both | Android: *Start radio* and *Sleep 30 min*. Web (installed app): *Resume*, *Radio* and *Search* |
@@ -372,7 +374,7 @@ All of these are on Android, for this phone's player, and are **off by default**
 | **Change your password** | Both, Server | *Settings › Account › Change password* on the web and Android: the current password, the new one twice and a two-step code when that is on. Wrong guesses count towards the sign-in lockouts. Your other devices stay signed in and are listed afterwards; tick *Also sign out my other devices* to end them instead. Admins can still set anyone's password (that signs the user out everywhere) |
 | **Your devices** | Both, Server | *Settings › Account › Your devices* on the web and Android: every device signed in to your account, with *This device* marked, what each is and when it was last used. Sign out any other one (it has to sign in again at once), or *Sign out all other devices*; each asks first. Only ever your own devices, admins included |
 | **Stay signed in** | Server | A device in use stays signed in; one unused for the sign-in lifetime (90 days by default, 1–365) must sign in again |
-| **Add a device by QR code** | Both, Server | Admins: *Add a device* on the plugin's settings page. Users: *Settings › Account › Add another device* in the web app (with the password). The Android app scans the QR code or takes a `lyrion-anywhere://pair` link, and always asks before signing in |
+| **Add a device by QR code** | Both, Server | Admins: *Add a device* on the plugin's settings page. Users: *Settings › Account › Add another device* in the web app (with the password). The Android app scans the QR code or takes a `lyrion-anywhere://pair` link, and always asks before signing in. A code points at an `https://` server, or at `http://` and a literal private address on a trusted network |
 | **Name your device** | Both | Rename this device (*Settings › Playback* on the web, *Settings › This phone* on Android); its LMS player is renamed too |
 | **Player grants** | Server | Admins grant listeners specific home players |
 | **Download permission** | Server | On, with every format, by default; admins turn it off or limit formats per user, effective at once |
@@ -388,7 +390,8 @@ Every item here is enforced by the gateway, so it applies to every client.
 
 | Feature | Details |
 |---|---|
-| **LMS never exposed** | Only the gateway is reachable, behind your TLS proxy; it refuses plain HTTP from remote addresses |
+| **LMS never exposed** | Only the gateway is reachable, behind your TLS proxy; it refuses plain HTTP from remote addresses, unless the admin lists a private network (a VPN) as trusted |
+| **Trusted networks (a VPN without HTTPS)** | Opt-in and admin-only: plain HTTP for devices on private networks the admin lists (within `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10`, `fc00::/7` or `fe80::/10`), checked when the setting is saved and again when the gateway starts, and guarded against LMS's `pref` command. A request from such a network that carries proxy headers is still refused, and the refresh cookie loses `Secure` only on those requests. The apps accept `http://` only to a literal private address, never to a name. Empty by default, which changes nothing |
 | **Default-deny command policy** | An allow-list of LMS commands with every argument typed and bounded; plugin actions only if LMS offered exactly that action to that device; admin-only commands and plugins |
 | **Response scrubbing** | File paths, `file:` URLs, home-network URLs and addresses (in any spelling), server identifiers and other servers' players removed from every answer and event |
 | **Player tunnel enforcement** | Only the frames a software player sends; the device's own player address; no redirects to another server |
@@ -397,7 +400,7 @@ Every item here is enforced by the gateway, so it applies to every client.
 | **Tokens** | 15-minute access tokens in memory; rotating refresh tokens with reuse detection (in an HttpOnly, SameSite=Strict cookie in browsers; sealed by the Android Keystore on Android); instant revocation |
 | **Resource limits** | Caps on connections, sockets per device and user, body and frame sizes, artwork, downloads, transcodes, analyses and per-user request rates |
 | **Hardened web app** | Strict CSP with no inline script, `frame-ancestors 'none'`, a restrictive Permissions-Policy, no third-party code at runtime, metadata always rendered as text, `Clear-Site-Data` on sign-out |
-| **Hardened Android app** | No cleartext traffic, system certificates only, backups off, a minimal set of exported components each checked, crash reports redacted and never sent automatically |
+| **Hardened Android app** | No cleartext traffic (plain HTTP only to a literal private address on a trusted network, after a warning, and marked *Unencrypted* in Settings), system certificates only, backups off, a minimal set of exported components each checked, crash reports redacted and never sent automatically |
 | **Hardened ffmpeg** | Fixed arguments, no shell, an empty environment, restricted protocols, size and time caps |
 | **Hardened Cloudflare Tunnel** | `cloudflared` only at the pinned version and SHA-256, never self-updating; fixed arguments, no shell, an environment of only the tunnel token, `HOME` and `PATH`; output scrubbed of tokens and ids; the tunnel token the only secret stored (0600), the API token never stored ([`SECURITY.md`](SECURITY.md#the-built-in-cloudflare-tunnel)) |
 | **LAN-side protection** | The plugin's admin commands need a token only its settings page has; the admin API listens on loopback with a secret |
