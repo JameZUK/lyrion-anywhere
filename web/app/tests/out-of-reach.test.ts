@@ -5,14 +5,17 @@
 // they are disabled.
 import { readFileSync } from 'node:fs';
 import { goto } from '$app/navigation';
-import { outsideRoute, routeOutsideHashChanges } from '#lib/nav';
+import { MAX_STRAY_ENTRIES, outsideRoute, routeOutsideHashChanges, routerEntry } from '#lib/nav';
 import { PROFILE_KEY, RETRY_MS, SessionManager, parseProfile, type AuthApi } from '#lib/api/session';
 import { ApiError } from '#lib/api/http';
 import type { Session } from '#lib/api/auth';
 import { LAST_KNOWN_KEY, LAST_KNOWN_MAX, forgetLastKnown, loadLastKnown, saveLastKnown } from '#lib/state/last-known';
 import { CONNECTION_ID, explain, needsServer } from '#lib/state/reachability';
 
+/** The history state of an entry SvelteKit 2's router made. */
 const ROUTER = { 'sveltekit:history': 5, 'sveltekit:navigation': 5 };
+/** The same from SvelteKit 3, which keeps its bookkeeping in one object (the app's since 0.6.4). */
+const ROUTER3 = { 'sveltekit:metadata': { historyIndex: 5, navigationIndex: 5, state: '{}', persistState: false, resetIndex: 5 } };
 
 /** Strings of every kind, for robustness checks. */
 function* junk(n = 400): Generator<string> {
@@ -42,6 +45,27 @@ describe('a route typed into the address bar', () => {
 
 	test("the router's own history entries (Back and Forward) are left to it", () => {
 		expect(outsideRoute(ROUTER, '#/rooms', '#/album/7')).toBeNull();
+		// Regression (0.6.4 to 0.7.1): SvelteKit 3's entries were not recognised, so every Back
+		// and Forward was treated as an outside change and stepped back over.
+		expect(outsideRoute(ROUTER3, '#/rooms', '#/album/7')).toBeNull();
+		expect(routerEntry(ROUTER3)).toBe(true);
+	});
+
+	test('every history key of the installed SvelteKit is recognised as the router’s', () => {
+		// A rename in a future SvelteKit would otherwise break Back silently again.
+		const constants = readFileSync('node_modules/@sveltejs/kit/src/runtime/client/constants.js', 'utf8');
+		const keys = [...constants.matchAll(/export const \w+_KEY = '([^']+)'/g)].map((m) => m[1] ?? '');
+		expect(keys.length).toBeGreaterThan(0);
+		for (const k of keys) expect(routerEntry({ [k]: {} }), k).toBe(true);
+		// And the router's client still files its popstate bookkeeping under one of them.
+		const client = readFileSync('node_modules/@sveltejs/kit/src/runtime/client/client.js', 'utf8');
+		expect(client).toMatch(/state\?\.\[HISTORY_METADATA_KEY\]|state\?\.\[HISTORY_INDEX\]/);
+	});
+
+	test('a state the router did not make is an outside change', () => {
+		for (const s of [null, undefined, 1, 'x', {}, [], { foo: 1 }, { sveltekit: 1 }, { 'xsveltekit:history': 1 }, { 'SvelteKit:history': 1 }]) {
+			expect(routerEntry(s), JSON.stringify(s)).toBe(false);
+		}
 	});
 
 	test('the same page (an anchor on it) is left alone', () => {
@@ -67,7 +91,10 @@ describe('a route typed into the address bar', () => {
 		}
 	});
 
-	test('the listener steps back over the stray entry, then routes there without a reload', async () => {
+	test.each([
+		['SvelteKit 2', ROUTER],
+		['SvelteKit 3', ROUTER3],
+	])('the listener steps back over the stray entry, then routes there without a reload (%s)', async (_, router) => {
 		const later = vi.fn();
 		const back = vi.spyOn(history, 'back').mockImplementation(() => {});
 		vi.mocked(goto).mockClear();
@@ -80,16 +107,62 @@ describe('a route typed into the address bar', () => {
 			expect(back).toHaveBeenCalledTimes(1);
 			expect(goto).not.toHaveBeenCalled();
 			// Back on the page shown (the router's entry): now the route asked for.
-			dispatchEvent(new PopStateEvent('popstate', { state: ROUTER }));
+			dispatchEvent(new PopStateEvent('popstate', { state: router }));
 			// Only once the router has seen the event too (it cancels navigations begun before).
 			expect(goto).not.toHaveBeenCalled();
 			await new Promise((r) => setTimeout(r, 0));
 			expect(goto).toHaveBeenCalledWith('#/rooms');
 			expect(later).toHaveBeenCalledTimes(1); // the router still sees its own entry
 			// Back and Forward through the router's entries are untouched.
-			dispatchEvent(new PopStateEvent('popstate', { state: ROUTER }));
+			history.replaceState(router, '', '#/');
+			dispatchEvent(new PopStateEvent('popstate', { state: router }));
 			expect(later).toHaveBeenCalledTimes(2);
 			expect(back).toHaveBeenCalledTimes(1);
+		} finally {
+			stop();
+			removeEventListener('popstate', later);
+			back.mockRestore();
+		}
+	});
+
+	test('routes typed faster than they are routed are stepped back over one by one, within a bound', async () => {
+		const later = vi.fn();
+		const back = vi.spyOn(history, 'back').mockImplementation(() => {});
+		vi.mocked(goto).mockClear();
+		const stop = routeOutsideHashChanges(() => '#/album/7');
+		addEventListener('popstate', later);
+		try {
+			// Two routes typed in a row: the second's popstate arrives first, then the back
+			// step lands on the first stray entry, then on the router's own.
+			history.replaceState(null, '', '#/alarms');
+			dispatchEvent(new PopStateEvent('popstate', { state: null }));
+			history.replaceState(null, '', '#/queue');
+			dispatchEvent(new PopStateEvent('popstate', { state: null }));
+			expect(back).toHaveBeenCalledTimes(2);
+			expect(later).not.toHaveBeenCalled();
+			dispatchEvent(new PopStateEvent('popstate', { state: ROUTER3 }));
+			await new Promise((r) => setTimeout(r, 0));
+			expect(goto).toHaveBeenCalledTimes(1);
+			expect(goto).toHaveBeenCalledWith('#/alarms'); // the last one typed
+			expect(later).toHaveBeenCalledTimes(1);
+
+			// Beyond the bound the router gets the event (and reloads, as before the listener).
+			vi.mocked(goto).mockClear();
+			back.mockClear();
+			later.mockClear();
+			history.replaceState(null, '', '#/rooms');
+			dispatchEvent(new PopStateEvent('popstate', { state: null }));
+			for (let i = 1; i < MAX_STRAY_ENTRIES; i++) dispatchEvent(new PopStateEvent('popstate', { state: null }));
+			expect(back).toHaveBeenCalledTimes(MAX_STRAY_ENTRIES);
+			expect(later).not.toHaveBeenCalled();
+			dispatchEvent(new PopStateEvent('popstate', { state: null }));
+			expect(back).toHaveBeenCalledTimes(MAX_STRAY_ENTRIES);
+			expect(later).toHaveBeenCalledTimes(1);
+			await new Promise((r) => setTimeout(r, 0));
+			expect(goto).not.toHaveBeenCalled();
+			// And it is listening afresh.
+			dispatchEvent(new PopStateEvent('popstate', { state: null }));
+			expect(back).toHaveBeenCalledTimes(MAX_STRAY_ENTRIES + 1);
 		} finally {
 			stop();
 			removeEventListener('popstate', later);

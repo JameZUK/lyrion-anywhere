@@ -2,6 +2,20 @@
 
 Dated entries, newest first.
 
+## 2026-10-24: Web: Back, Forward and typed routes broken since SvelteKit 3; CI release-job timeout; a steadier player test
+
+Found while closing two notes from earlier in the day (tasks #81 and #84).
+
+**The web app's history (since 0.6.4, including 0.7.0 and 0.7.1).** The app routes hash changes made outside SvelteKit's router (an edited address bar, a link from elsewhere) itself, so the page is not reloaded: it steps back over the browser's entry and then follows the route like a link (`lib/nav.ts`, 2026-10-14). It told the router's own entries apart by the `sveltekit:history` key in their state. SvelteKit 3 (0.6.4, 2026-10-23) keeps that bookkeeping under `sveltekit:metadata` instead, so the app took **every Back and Forward for an outside change** and stepped back over it: in Chromium, Back from Search after Settings landed on Home two entries back with the Now playing page still showing, Forward did nothing visible, and a typed route was lost (the first symptom, noted as task #84), with a reload on the next Back. The unit tests kept passing because their fixture had the SvelteKit 2 shape.
+
+- **Fixed:** a router entry is one whose state has any key starting `sveltekit:` (SvelteKit 2's two keys and 3's one), not one key's name. Several stray entries in a row (routes typed faster than they are routed) are stepped over one by one, `MAX_STRAY_ENTRIES` (3) at most, after which the router gets the event and reloads as it always did; before, a second stray entry left the app stuck on it.
+- **Tests:** the SvelteKit 3 shape in every history test (`outsideRoute` returns null for it, the listener leaves it to the router, the step-back-then-route sequence with both shapes); a test that reads the installed SvelteKit's `runtime/client/constants.js` and checks every `*_KEY` it exports is recognised, and that its client still files popstate bookkeeping under one of them, so a future rename fails a test rather than Back; the bounded stepping. New opt-in browser check `web/app/tests/e2e/history.mjs` (starts the demo LMS and a gateway itself on loopback, Playwright): on the 0.7.1 build 12 of its checks fail, on 0.6.3 it passes (bar the two-at-once case, which reloaded), on this build it passes.
+- SPEC §Reloads updated.
+
+**CI.** The `release` job's timeout is 45 minutes (was 60): it takes 20 to 28 minutes (17 runs since 19 October), and the one stall seen (24 October, rustc silent for 49 minutes in the cross-build) now fails an hour sooner and is re-run with `gh run rerun --failed`. The two tunnel-test failures noted in task #81 (`a_missing_permission_or_zone_is_named` on 23 October 16:25, `a_registered_tunnel_comes_back_after_a_restart_unless_stopped` at 19:03) both read *The downloaded cloudflared does not run on this system*: the `ETXTBSY` race that 0.6.4 fixed at 21:18 that evening (`spawn_retrying_busy`, with its regression test). Nothing further to do.
+
+**Mobile test.** `a_player_lms_stopped_stays_stopped_with_the_server_away` sent `strm q` and cut the link half a second later; on a heavily loaded machine the cut could come first. It now waits for the player's `STMf` (the stop acknowledged) before the cut.
+
 ## 2026-10-24: Plugin 0.7.1: the installed web app's white screen after an update, and self-applying updates
 
 Released the same afternoon as 0.7.0, after the owner's iPad home-screen app showed a white screen on every launch following the 0.7.0 update, with Safari itself fine and quitting the app no help.

@@ -66,6 +66,8 @@ Opt-in tests against a real LMS use a dedicated, muted test player and read thei
 
 The web app over plain `http://` to a trusted network (SPEC D28) has an opt-in browser check, never run in CI: start a gateway bound to a private address with `--trusted-network` and `--static-dir web/app/build` in front of a throwaway LMS, then run `web/app/tests/e2e/insecure-context.mjs` with `ADDRESS`, `PORT`, `USERNAME`, `PASSWORD`, `BROWSERS` and `PLAYWRIGHT_DIRS` set (the header of the file says how). It signs in, checks the unencrypted-connection notice, plays a track in the media-element mode for ten seconds and downloads an album, in Chromium and Firefox.
 
+Two more opt-in browser checks start a gateway on loopback themselves and need only a built gateway, a built web app and Playwright: `web/app/tests/e2e/pwa-update.mjs` (how the installed app survives an update, with a previous release's web build as `OLD_WEB`) and `web/app/tests/e2e/history.mjs` (Back, Forward and a route typed into the address bar, against the demo LMS of `tools/demo`, so it also needs python3 with Pillow). Each file's header says which variables to set. Run them after touching the service worker or `lib/nav.ts`: SvelteKit's router does not run under jsdom, so the unit tests cannot see what they check.
+
 ## Contributing
 
 - Read [`CLAUDE.md`](../CLAUDE.md) first.

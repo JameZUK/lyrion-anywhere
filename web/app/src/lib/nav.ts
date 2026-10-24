@@ -20,8 +20,17 @@ export function go(route: string, opts: { replaceState?: boolean; keepFocus?: bo
 // device's player, and while the server is out of reach a reload can't sign in again. Such a
 // change is routed in the app instead.
 
-/** The key SvelteKit puts in the history entries it makes itself. */
-const ROUTER_ENTRY = 'sveltekit:history';
+/**
+ * The keys SvelteKit puts in the history entries it makes itself all start like this:
+ * `sveltekit:history` and `sveltekit:navigation` in SvelteKit 2, `sveltekit:metadata` since
+ * SvelteKit 3 (where the index moved inside it). Checking the prefix, not one name, is what
+ * survived that move: with the name alone, every Back and Forward looked like an outside
+ * change from 0.6.4 to 0.7.1. An entry the browser made for an edited address has a null state.
+ */
+const ROUTER_KEY = /^sveltekit:/;
+
+/** How many entries the router knows nothing about are stepped back over, at most. */
+export const MAX_STRAY_ENTRIES = 3;
 
 /** The route part of a hash (`#/album/7#top` is `/album/7`). */
 const routeOf = (hash: string) => hash.replace(/^#/, '').split('#')[0] || '/';
@@ -38,7 +47,9 @@ export function outsideRoute(state: unknown, now: string, shown: string): string
 	return href(route);
 }
 
-const routerEntry = (state: unknown) => !!state && typeof state === 'object' && ROUTER_ENTRY in state;
+/** Whether a history entry's state is one SvelteKit's router made (see ROUTER_KEY). */
+export const routerEntry = (state: unknown): boolean =>
+	!!state && typeof state === 'object' && Object.keys(state).some((k) => ROUTER_KEY.test(k));
 
 /**
  * Route hash changes made outside the router in the app (see above). `shown` is the hash of
@@ -47,17 +58,31 @@ const routerEntry = (state: unknown) => !!state && typeof state === 'object' && 
  * The browser has already added a history entry the router knows nothing about, so the app
  * steps back over it first (to the entry of the page it shows, which the router ignores), and
  * then goes to the route as if a link had been followed: history stays as the router expects.
+ * Several such entries in a row (routes typed faster than they are routed) are stepped over
+ * one by one, up to MAX_STRAY_ENTRIES; beyond that the router gets the event and reloads.
  */
 export function routeOutsideHashChanges(shown: () => string): () => void {
 	let pending: string | null = null;
+	let stepped = 0;
 	const onpopstate = (e: PopStateEvent) => {
 		if (pending !== null) {
-			// Stepped back to the page shown: now go on to the route asked for.
 			const to = pending;
-			pending = null;
-			// After the router has seen this event too (it would cancel a navigation started
-			// before it ran).
-			if (routerEntry(e.state)) setTimeout(() => void goto(to), 0);
+			if (routerEntry(e.state)) {
+				// Stepped back to the page shown: now go on to the route asked for, after the
+				// router has seen this event too (it would cancel a navigation started before
+				// it ran).
+				pending = null;
+				setTimeout(() => void goto(to), 0);
+				return;
+			}
+			if (stepped < MAX_STRAY_ENTRIES) {
+				// Still on an entry the router didn't make: keep stepping back.
+				stepped++;
+				e.stopImmediatePropagation();
+				history.back();
+				return;
+			}
+			pending = null; // left to the router
 			return;
 		}
 		const to = outsideRoute(e.state, location.hash, shown());
@@ -65,6 +90,7 @@ export function routeOutsideHashChanges(shown: () => string): () => void {
 		// Before SvelteKit's own listener sees it (capturing listeners on the window run first).
 		e.stopImmediatePropagation();
 		pending = to;
+		stepped = 1;
 		history.back();
 	};
 	addEventListener('popstate', onpopstate, { capture: true });
