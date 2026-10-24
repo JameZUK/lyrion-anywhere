@@ -11,7 +11,7 @@
 	import { describePageCommand } from '#lib/player/diagnostics';
 	import { appearance } from '#lib/theme/appearance.svelte';
 	import { install } from '#lib/pwa/install.svelte';
-	import { appUpdate } from '#lib/pwa/update.svelte';
+	import { appUpdate, playingHere } from '#lib/pwa/update.svelte';
 	import { version } from '$app/env';
 	import { clearResume, loadResume, planResume, saveResume, trackId } from '#lib/player/resume';
 	import type { Command } from '#lib/api/rpc';
@@ -41,9 +41,22 @@
 	// The chosen theme, before anything is drawn (also on the sign-in page).
 	appearance.start();
 	install.start();
-	// A new version is offered in the status slot, never forced on an open page.
+	// The app has started: the boot guard (static/boot-guard.js) need not repair the shell.
+	if (typeof document !== 'undefined') document.documentElement.dataset.laBooted = '1';
+	// A new version applies itself, unless this device is playing: then it is offered in the
+	// status slot and applies itself once playback here stops.
 	appUpdate.start(version);
 	if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && appUpdate.check());
+	$effect(() => {
+		const here = playingHere({
+			downloads: offlinePlayer.active,
+			deviceState: device.state,
+			thisDevice: !!device.mac && app.playerId === device.mac,
+			mode: app.now?.mode,
+			output: device.detail.output,
+		});
+		untrack(() => appUpdate.setPlaying(here));
+	});
 
 	// A returning browser signs in silently through its refresh cookie.
 	void session.restore();

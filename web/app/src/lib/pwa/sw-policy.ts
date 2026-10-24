@@ -15,7 +15,7 @@ export function strategyFor(method: string, url: URL, scope: URL): Strategy {
 	if (/^(v1|admin)(\/|$)/.test(path)) return 'bypass'; // the API, and anything like it
 	if (path.startsWith('player/')) return 'bypass'; // the player worker and WebAssembly
 	if (path.startsWith('_app/immutable/')) return 'cache-first'; // hashed: never change
-	if (path === '' || path === 'index.html' || /^(_app\/[^/]+|icons\/[\w.-]+|favicon\.svg|manifest\.webmanifest)$/.test(path)) {
+	if (path === '' || path === 'index.html' || /^(_app\/[^/]+|icons\/[\w.-]+|favicon\.svg|manifest\.webmanifest|boot-guard\.js)$/.test(path)) {
 		return 'network-first';
 	}
 	return 'bypass';
