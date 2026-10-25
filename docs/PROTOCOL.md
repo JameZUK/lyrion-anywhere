@@ -2,6 +2,17 @@
 
 The protocol a client (web app, native app or test CLI) uses to act as an LMS player through the gateway. It is implemented by `gateway/` and, on the client side, by `web/app/static/player/player-worker.js`, `mobile/src/player/` (the native apps) and `cli/src/gateway.rs`.
 
+## Versions
+
+The player protocol has a whole-number version, stated by both sides: the gateway in `GET /v1/me` (`protocol`) and the client in the player socket's sign-in form (`"protocol"`). A step means the two sides must move together: there are no compatibility shims (a standing rule since 2026-10-25: doing it properly overrules backwards compatibility). Everything outside the player socket (sign-in, `/v1/rpc`, `/v1/events`, downloads) is unchanged by a step unless its section says so, so a mismatched pair still controls other players.
+
+| Protocol | Gateway | Clients | What changed |
+|---|---|---|---|
+| 1 | plugin 0.1 to 0.7.2 | web app to 0.7.2, Android to 1.16.0 | The protocol as first released, with the optional sign-in fields (`quality`, `grace`, `keepalive`) announced through `features`. |
+| 2 | plugin 0.7.3 | web app 0.7.3, Android 1.17.0 | `"protocol"` is required in the sign-in form (a client without it is closed with 4426 `update the app`); the gateway sends a `stream` message for every stream it relays (what LMS served, what the gateway sent); `GET /v1/me` carries `protocol`; the devices lists carry each device's `protocol`. |
+
+A client whose `/v1/me` shows a lower `protocol` than it needs should not open the player socket and should tell the user which plugin version the server needs (the apps say "update the plugin to 0.7.3 or later"); a gateway that closes with 4426 is telling the user to update the app.
+
 ## Endpoints
 
 | Endpoint | Purpose |
@@ -36,7 +47,7 @@ Accounts live in the gateway (spec D12). Every `/v1/auth/*` request must carry `
 | `POST /v1/auth/pair` | `{"code","device_name"}`, plus the optional client fields | Same, with `refresh_token` in the body (native apps) |
 | `POST /v1/auth/refresh` | none (cookie), or `{"refresh_token"}`; either may add the optional client fields | A new access token and a **rotated** refresh token |
 | `POST /v1/auth/logout` | bearer access token | 204; revokes this device and ends its sessions. Sends `Clear-Site-Data: "cache"` |
-| `GET /v1/me` | bearer access token | `{user, device, features}` (`features.analysis`: the server offers track analysis; `features.resume_grace`: the player socket's sign-in takes `grace`; `features.change_password`: `POST /v1/account/password` is there; `features.devices`: *Your devices* (`GET /v1/devices` and friends) is there; `features.save_queue`: `POST /v1/players/{player}/queue/save` is offered) |
+| `GET /v1/me` | bearer access token | `{user, device, protocol, features}` (`protocol`: the gateway's player-protocol version, 2 since plugin 0.7.3, see *Versions*; `features.analysis`: the server offers track analysis; `features.resume_grace`: the player socket's sign-in takes `grace`; `features.change_password`: `POST /v1/account/password` is there; `features.devices`: *Your devices* (`GET /v1/devices` and friends) is there; `features.save_queue`: `POST /v1/players/{player}/queue/save` is offered) |
 | `GET /v1/account` | bearer access token | `{username, role, totp_enabled, downloads: {enabled, formats}}` (`formats`: what this user may download that this server can produce; see [Downloads](#downloads)) |
 | `POST /v1/account/totp/setup` | `{"password"}` | `{secret, uri, qr_svg}`: a new secret, active once confirmed. A wrong password is 401 and counts towards a lockout of its own (per user), separate from sign-in |
 | `POST /v1/account/totp/confirm` | `{"code"}` | 204; two-step is now on |
@@ -177,6 +188,7 @@ The client's first message is text, sent within 5 s:
 
 - **New session:** the bare access token, or `{"token":"…"}`.
 - **Resume:** `{"token":"…","resume":{"session":"…","secret":"…","received":N}}`. `N` is the number of binary messages the client received in this session before the drop.
+- **Protocol version (required):** either form carries `"protocol":2` (a positive whole JSON number; see *Versions*). A form without it, with a lower number or with anything else (`"2"`, `2.0`, `-1`, `0`, `true`, `null`, an array, an object) is an old or broken client: the gateway checks the token first, then closes with **4426** `update the app` without opening (or resuming) a session, and audits `player.too_old` with the value given. A higher number is accepted: the newer client decides what to make of an older gateway.
 - **Stream level (optional):** either form may add `"quality":"original"|"high"|"low"`, the level of the streams to come (see *Lower-data streams* below). An unknown level is taken as `original`, never refused. Gateways before this feature ignore the field.
 - **Resume grace (optional):** either form may add `"grace":S`, the seconds the client would like the session held after its socket drops (see *Resume*). `S` must be a whole number from 0 to 3600; anything else (a string, a fraction such as `60.0`, a negative or larger number, `null`, …) is a policy violation (close 1008): a new session isn't opened, and a resumable session (right device and secret) is ended. The gateway grants `min(S, its maximum)`; the maximum is 600 s unless the operator sets `--max-resume-grace` (60–3600 s). Without the field, a new session gets the default of 60 s and a resumed one keeps what it was granted before. Send it only to a gateway whose `GET /v1/me` lists `"resume_grace": true` under `features`; older gateways ignore it and hold sessions for 60 s.
 - **Text keepalives (optional):** either form may add `"keepalive":true`. The gateway then also sends the text message `{"keepalive":true}` every 5 s (see *Keepalives* below). Anything but a JSON `true` means no. Ask only when `GET /v1/me` lists `"lms_busy": true` under `features`; older gateways ignore it.
@@ -209,6 +221,16 @@ The gateway replies with a text greeting:
 **Gateway → client:**
 - One binary message per server → client Slimproto frame, length prefix included, exactly as LMS sent it.
 - `serv` (redirect to another server) is never forwarded.
+- **The stream message** (protocol 2): one text message for every stream the gateway relays for this session, sent as soon as the gateway has LMS's response for it (so during the first bytes, after the client asked for the stream), and sent again for the stream in progress right after a resume greeting:
+
+  ```json
+  {"stream":{"seq":12,"served":{"codec":"flac","rate":96000,"bits":24,"channels":2,"gain_db":-3.2},"sent":{"mode":"opus","kbps":160,"level":"high"}}}
+  ```
+
+  - `seq` is the count of `strm s` frames the gateway has forwarded in this session, from 1, so the client ties the message to the stream it is fetching; frames replayed after a resume are not counted again.
+  - `served` is LMS's stream as it reached the gateway: `codec` from the `strm` format byte (`flac`, `pcm`, `mp3`, `ogg`, `aac`, `alac`, or `unknown`); for FLAC, `rate`, `bits` and `channels` read from the STREAMINFO block at the head of the stream (a headerless stream, such as LMS's bare-frame seek, leaves them `null`); for PCM, from the `strm` fields; `gain_db` is LMS's server ReplayGain for the track, absent when there is none. Anything unknown is `null`.
+  - `sent` is what the gateway did: `{"mode":"passthrough"}`, or `{"mode":"opus","kbps":160,"level":"high"}` / `{"mode":"opus","kbps":96,"level":"low"}` when it re-encoded the stream (see *Lower-data streams*).
+  - It is text, so it is never counted in `received`, like the keepalive. It is at most 512 bytes and carries only the tokens and numbers above. The clients use it for the quality badge and the signal-path diagram (SPEC §7.2, D30).
 - A refused `strm s` (another address, or a request that isn't this player's own LMS stream) is still forwarded so the client stays in step, but with its address zeroed and its HTTP request removed; fetching it is a 404.
 - **Client notes:**
   - On a seek LMS sends `strm q` and the new `strm s` back to back (about 2 ms apart for MP3), so a client sees them together. Drop queued audio on the `strm q` itself, not on a later check of the player state.
@@ -245,6 +267,7 @@ Any of these ends the whole session, not just the socket:
 | 1013 | Server unavailable, or client too slow | resume (with backoff) |
 | 4000 | Another connection for this device took over | stop |
 | 4404 | Resume refused: unknown/expired session, wrong secret, or frames no longer available | start a new session |
+| 4426 | The client is too old for this gateway: its sign-in form had no `protocol`, or a lower one than the gateway requires (see *Versions*) | stop; tell the user to update the app. Never retry with the same form |
 
 ## Resume
 

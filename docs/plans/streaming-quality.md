@@ -44,6 +44,8 @@ Agreed with the owner on 2026-10-12 (task #33). This covers the gateway, the And
 
 ## Clients
 
+_The display parts of this section (the badge and the signal path) are superseded by `signal-path-redesign.md` (2026-10-25): the badge states the weakest link then the stream heard, the sheet is a block diagram, and the facts come from the gateway's `stream` message (protocol 2). The settings and the automatic choice below still stand._
+
 - **Android:**
   - Settings › Playback › *Streaming quality*: separate choices for *On Wi-Fi* and *On mobile data*;
   - whether the network is metered comes from `ConnectivityManager` (`NET_CAPABILITY_NOT_METERED`) and follows changes;
