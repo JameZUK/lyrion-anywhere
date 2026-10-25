@@ -76,11 +76,16 @@ fn system_ffmpeg() -> Option<anywhere_gateway::transcode::Ffmpeg> {
 
 #[test]
 fn messages_and_the_choice_of_level() {
-    // A new session at the original level: the bare token, as always.
-    assert_eq!(sign_in_message("tok", None, StreamQuality::Original), "tok");
+    // A new session at the original level: the token and the protocol (protocol 2).
+    let v: serde_json::Value =
+        serde_json::from_str(&sign_in_message("tok", None, StreamQuality::Original)).unwrap();
+    assert_eq!(v, serde_json::json!({"token": "tok", "protocol": 2}));
     let v: serde_json::Value =
         serde_json::from_str(&sign_in_message("t\"k", None, StreamQuality::Low)).unwrap();
-    assert_eq!(v, serde_json::json!({"token": "t\"k", "quality": "low"}));
+    assert_eq!(
+        v,
+        serde_json::json!({"token": "t\"k", "protocol": 2, "quality": "low"})
+    );
     let v: serde_json::Value = serde_json::from_str(&sign_in_message(
         "t",
         Some(("s", "x", 4)),
@@ -89,7 +94,7 @@ fn messages_and_the_choice_of_level() {
     .unwrap();
     assert_eq!(
         v,
-        serde_json::json!({"token": "t", "resume": {"session": "s", "secret": "x", "received": 4}, "quality": "high"})
+        serde_json::json!({"token": "t", "protocol": 2, "resume": {"session": "s", "secret": "x", "received": 4}, "quality": "high"})
     );
     let v: serde_json::Value = serde_json::from_str(&sign_in_message(
         "t",

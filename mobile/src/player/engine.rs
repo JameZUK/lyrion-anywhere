@@ -255,6 +255,11 @@ enum Ev {
         code: Option<u16>,
         reason: String,
     },
+    /// The gateway's stream message: what LMS served and what the gateway sent for a stream.
+    StreamInfo {
+        conn: u64,
+        message: protocol::StreamMessage,
+    },
     StreamHeaders {
         id: u64,
         content_type: String,
@@ -475,6 +480,8 @@ pub(crate) struct Engine {
     held_spools: Vec<(Spool, i64, LocalTrack)>,
     /// The `strm` format of recent streams (by number).
     stream_formats: VecDeque<(u64, u8)>,
+    /// The gateway's stream messages for recent streams of this session (by number).
+    stream_book: protocol::StreamBook,
     /// What the controls can do now (while the link is down).
     controls: Option<OfflineControls>,
     // Audio: pipeline, ring, output and its negotiated route.
@@ -555,6 +562,7 @@ impl Engine {
             sources: None,
             held_spools: Vec::new(),
             stream_formats: VecDeque::new(),
+            stream_book: protocol::StreamBook::default(),
             controls: None,
             server: core.server().clone(),
             core,
@@ -1027,6 +1035,8 @@ impl Engine {
             self.heard_ms = 0.0;
             self.from_cache.clear();
             self.from_downloads.clear();
+            // Stream numbers start again with the session.
+            self.stream_book.clear();
             self.in_sync_group = false;
             self.stall_wait = None;
             self.cancel_restarts();
@@ -1113,8 +1123,9 @@ impl Engine {
         self.watch_gap();
         let action = protocol::close_action(code, reason);
         let resume = match action {
-            CloseAction::Stop => {
-                // Refused, revoked, signed out or replaced: nothing of it is kept.
+            CloseAction::Stop | CloseAction::UpdateApp => {
+                // Refused, revoked, signed out, replaced or too old for the gateway (4426):
+                // nothing of it is kept, and the same form is never sent again.
                 self.gap = None;
                 self.cancel_restarts();
                 self.close_stream();
@@ -1133,12 +1144,17 @@ impl Engine {
                 }
                 // Nor are its downloads read again (the app deletes them on revocation).
                 self.downloads = None;
-                self.connection = PlayerConnection::Stopped {
-                    reason: if reason.is_empty() {
-                        "refused".into()
-                    } else {
-                        protocol::clean_name(reason)
-                    },
+                self.connection = if action == CloseAction::UpdateApp {
+                    // The app says what to do; the gateway's reason is never shown.
+                    PlayerConnection::UpdateApp
+                } else {
+                    PlayerConnection::Stopped {
+                        reason: if reason.is_empty() {
+                            "refused".into()
+                        } else {
+                            protocol::clean_name(reason)
+                        },
+                    }
                 };
                 self.stopped_by_server();
                 return;
@@ -1239,6 +1255,13 @@ impl Engine {
             }
             Ev::WsClosed { conn, code, reason } if conn == self.ws_gen => {
                 self.on_closed(code, &reason)
+            }
+            Ev::StreamInfo { conn, message } if conn == self.ws_gen => {
+                // It may arrive just after its stream started, or again after a resume:
+                // kept by stream number, it reaches the snapshot once that stream plays.
+                if self.stream_book.insert(message) {
+                    self.publish_signal(true);
+                }
             }
             Ev::Features(f) => {
                 let f = f.unwrap_or_default();
@@ -2712,9 +2735,21 @@ impl Engine {
             Some(t) => self.audio.signal_path(&t.source),
             None => self.player.as_ref().and_then(|p| self.audio.signal_path(p)),
         };
+        // The gateway's stream message for the stream heard: track `seq` is the core's
+        // (`seq` + 1)-th `strm s`, the number the gateway counts too.
+        let heard = match &self.takeover {
+            Some(_) => None,
+            None => self
+                .player
+                .as_ref()
+                .and_then(Player::playing_track)
+                .and_then(|seq| self.stream_book.get(u64::from(seq) + 1)),
+        };
         if let Some(p) = &mut path {
             p.from_cache = self.hearing_from_cache();
             p.from_downloads = self.hearing_from_downloads();
+            p.served = heard.map(|m| (&m.served).into());
+            p.sent = heard.map(|m| (&m.sent).into());
         }
         if !force && path == self.last_signal {
             return;
@@ -2838,6 +2873,7 @@ async fn socket_task(
         return;
     }
     let mut greeted = false;
+    let mut junk_logged = false;
     // Regression: the time limit was set afresh on every pass of the loop, so the player's
     // own STATs (one a second while playing) kept a dead socket looking alive until the
     // gateway's grace had run out, and the player had to start a new session.
@@ -2876,6 +2912,24 @@ async fn socket_task(
                     Message::Binary(b) if greeted => {
                         let _ = tx.send(Ev::WsFrame { conn, bytes: b.to_vec() });
                     }
+                    // Text after the greeting: the stream message (protocol 2), or the text
+                    // keepalive. Anything else is ignored (and said once per connection);
+                    // it is never counted as a frame.
+                    Message::Text(t) => match protocol::parse_stream_message(t.as_str()) {
+                        Some(message) => {
+                            let _ = tx.send(Ev::StreamInfo { conn, message });
+                        }
+                        None if t.as_str() == r#"{"keepalive":true}"# => {}
+                        None => {
+                            if !junk_logged {
+                                junk_logged = true;
+                                log::warn!(
+                                    "player socket: ignored a text message the protocol doesn't have ({} bytes)",
+                                    t.len()
+                                );
+                            }
+                        }
+                    },
                     Message::Close(frame) => {
                         let (code, reason) = frame
                             .map(|f| (Some(u16::from(f.code)), f.reason.to_string()))
@@ -2894,7 +2948,7 @@ async fn socket_task(
                         return;
                     }
                     // Pings are answered by the WebSocket layer; anything else (a binary
-                    // message before the greeting, text after it) is ignored.
+                    // message before the greeting) is ignored.
                     _ => {}
                 }
             }

@@ -140,7 +140,15 @@ pub(crate) fn describe(i: &Inputs) -> SignalPathInfo {
         }
     }
     let bit_perfect = engine_bit_perfect && direct && reasons.is_empty();
+    // For the quality diagram: the DSP flag is the DSP chain's (the resampler is its own).
+    let device = anywhere_core::quality::Device::from_path(&path, bit_perfect, i.dsp_chain);
+    let decoded = anywhere_core::quality::Decoded::from_track(&i.audio);
     SignalPathInfo {
+        dsp_chain: i.dsp_chain,
+        decoded: decoded.as_ref().map(Into::into),
+        device: Some((&device).into()),
+        served: None,
+        sent: None,
         source_codec: path.source.codec.clone(),
         source_lossless: path.source.lossless,
         source_bits: path.source.bits,
@@ -386,6 +394,44 @@ mod tests {
                 .stages
                 .iter()
                 .any(|s| s.name == "Volume (muted)")
+        );
+    }
+
+    /// The snapshot carries what the quality diagram needs: the decoder's format and the
+    /// device, whose DSP flag is the DSP chain's (resampling alone is not "DSP you turned
+    /// on"). The stream message's parts are the engine's to add.
+    #[test]
+    fn the_snapshot_carries_the_diagrams_inputs() {
+        let mut i = inputs(flac(44_100, 16));
+        i.pipeline_stages = vec![Stage::resample(44_100, 48_000, "sinc")];
+        i.out_rate = 48_000;
+        i.dsp_active = true; // the resampler
+        let p = describe(&i);
+        let d = p.device.clone().unwrap();
+        assert!(d.resampled && !d.dsp_active, "{d:?}");
+        assert!(!p.dsp_chain);
+        assert_eq!(
+            p.decoded,
+            Some(crate::quality::QualityDecoded {
+                codec: "FLAC".into(),
+                rate: Some(44_100),
+                bits: Some(16),
+                channels: Some(2),
+                lossless: true,
+            })
+        );
+        assert_eq!((p.served.clone(), p.sent), (None, None));
+        i.dsp_chain = true;
+        let p = describe(&i);
+        assert!(p.dsp_chain && p.device.unwrap().dsp_active);
+        // An end-to-end bit-perfect route says so.
+        let mut i = inputs(flac(96_000, 24));
+        i.route = usb(PcmEncoding::I24Packed);
+        let d = describe(&i).device.unwrap();
+        assert!(d.bit_perfect && d.engine_bit_perfect);
+        assert_eq!(
+            (d.name.as_deref(), d.rate),
+            (Some("Example DAC"), Some(96_000))
         );
     }
 
