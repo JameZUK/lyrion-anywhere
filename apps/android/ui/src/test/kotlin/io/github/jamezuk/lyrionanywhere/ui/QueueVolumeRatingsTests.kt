@@ -212,6 +212,30 @@ class QueueVolumeRatingsTests : MainDispatcherTest() {
         assertTrue("volume 0 $KITCHEN" in players.commands)
     }
 
+    /** Each status read reaches the fixed output level's keeper, with the player it is for. */
+    @Test
+    fun eachStatusReadIsHandedOn() = vmTest {
+        val players = FakePlayers()
+        players.statusResult = ApiResult.Ok(sampleStatus().copy(fixedLevel = true))
+        val seen = mutableListOf<Pair<String, Boolean>>()
+        val settings = FakeSettings()
+        settings.state.update { it.copy(defaultPlayer = DefaultPlayer.LAST_USED, selectedPlayerId = KITCHEN) }
+        val vm = PlayerViewModel(players, FakeEvents(), settings, FakeLocalPlayer(), statusSeen = { id, s -> seen += id to s.fixedLevel }) { 0L }
+        vms += vm
+        vm.start()
+        vm.select(KITCHEN)
+        assertTrue(seen.isNotEmpty())
+        assertTrue(seen.all { it == KITCHEN to true })
+        players.statusResult = ApiResult.Ok(sampleStatus().copy(fixedLevel = false))
+        vm.refresh()
+        assertEquals(KITCHEN to false, seen.last())
+        // A failed read hands nothing on.
+        val before = seen.size
+        players.statusResult = ApiResult.Err(AppError.Offline())
+        vm.refresh()
+        assertEquals(before, seen.size)
+    }
+
     @Test
     fun aRemotePlayerWithAFixedLevelIgnoresTheVolumeKeysAndSlider() = vmTest {
         val players = FakePlayers()

@@ -268,6 +268,8 @@ class PlayerViewModel(
     private val downloaded: Flow<Set<Long>> = flowOf(emptySet()),
     /** The quality badge's and signal path's rules (none: no badge, as in tests that don't need one). */
     private val quality: QualityDescriber? = null,
+    /** Each status read for a player, as read (the fixed output level's keeper; none in most tests). */
+    private val statusSeen: ((String, PlayerStatus) -> Unit)? = null,
     private val clock: () -> Long,
 ) : ViewModel(), VisualSource {
     /** The last removal, for Undo (only for the player it was removed from). */
@@ -682,6 +684,7 @@ class PlayerViewModel(
         when (val r = players.status(id)) {
             is ApiResult.Ok -> {
                 lmsStatus = id to r.value
+                statusSeen?.invoke(id, r.value)
                 _state.update {
                     if (it.selectedId != id || generation != changeGeneration) {
                         it

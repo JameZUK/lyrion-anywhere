@@ -22,6 +22,8 @@ import io.github.jamezuk.lyrionanywhere.core.PlayerConnection
 import io.github.jamezuk.lyrionanywhere.core.Session
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
@@ -89,8 +91,11 @@ private class FakeHandle : LocalPlayerHandle {
     }
 
     /** Stream levels set, in order (kept apart from [calls]), and how many before start. */
-    val qualities = mutableListOf<StreamQuality>()
+    val qualities: MutableList<StreamQuality> = java.util.concurrent.CopyOnWriteArrayList()
     var qualitiesAtStart: Int? = null
+
+    /** Runs inside [setStreamQuality] before the level is taken (the engine being slow). */
+    @Volatile var onQuality: ((StreamQuality) -> Unit)? = null
 
     override fun stop() {
         stopped = true
@@ -128,6 +133,7 @@ private class FakeHandle : LocalPlayerHandle {
     }
 
     override fun setStreamQuality(quality: StreamQuality) {
+        onQuality?.invoke(quality)
         qualities += quality
     }
 
@@ -336,6 +342,157 @@ class LocalPlayerRepositoryTest {
         // Another sign-in asks again.
         sessions.value = Session(NoHandle)
         assertEquals(2, protocolReads)
+    }
+
+    /**
+     * A phone blocked by an old plugin is unblocked once the plugin is updated, without a new
+     * session: Play on this phone switched again asks the server again, at most once a minute.
+     */
+    @Test
+    fun protocolOneThenTwoUnblocksWithoutANewSession() = runTest {
+        protocolAnswer = { 1u }
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        assertEquals(PhoneBlock.UPDATE_PLUGIN, r.state.value.phoneBlocked)
+        assertEquals(1, protocolReads)
+        // The plugin is updated.
+        protocolAnswer = { 2u }
+        // Switched off and on at once: not asked again within the minute.
+        r.setEnabled(false)
+        r.setEnabled(true)
+        assertEquals(1, protocolReads)
+        assertEquals(PhoneBlock.UPDATE_PLUGIN, r.state.value.phoneBlocked)
+        assertTrue(handles.isEmpty())
+        // A minute on: switching it again asks, and the player starts.
+        clockMs += PROTOCOL_RECHECK_MS
+        r.setEnabled(false)
+        assertEquals(2, protocolReads)
+        r.setEnabled(true)
+        assertEquals(2, protocolReads)
+        assertNull(r.state.value.phoneBlocked)
+        assertEquals(2u, r.state.value.serverProtocol)
+        assertEquals(1, handles.size)
+        assertEquals(listOf("start"), handles[0].calls.filter { it == "start" })
+    }
+
+    /** The network coming back while blocked asks again (at most once a minute). */
+    @Test
+    fun theNetworkBackWhileBlockedAsksAgain() = runTest {
+        protocolAnswer = { 1u }
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        assertEquals(1, protocolReads)
+        protocolAnswer = { 2u }
+        network.value = NetworkKind.OFFLINE
+        network.value = NetworkKind.WIFI
+        assertEquals("not within the minute", 1, protocolReads)
+        assertTrue(handles.isEmpty())
+        clockMs += PROTOCOL_RECHECK_MS
+        network.value = NetworkKind.OFFLINE
+        network.value = NetworkKind.WIFI
+        assertEquals(2, protocolReads)
+        assertNull(r.state.value.phoneBlocked)
+        assertEquals(1, handles.size)
+        // Not blocked any more: the network going and coming asks nothing.
+        clockMs += PROTOCOL_RECHECK_MS
+        network.value = NetworkKind.OFFLINE
+        network.value = NetworkKind.WIFI
+        assertEquals(2, protocolReads)
+        assertEquals("the same engine", 1, handles.size)
+    }
+
+    /** A server that can't be asked again leaves a plugin known to be too old blocked. */
+    @Test
+    fun aFailedRecheckKeepsTheBlock() = runTest {
+        protocolAnswer = { 1u }
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        protocolAnswer = { throw ApiException.Network("test: no route") }
+        clockMs += PROTOCOL_RECHECK_MS
+        r.setEnabled(false)
+        r.setEnabled(true)
+        assertEquals(2, protocolReads)
+        assertEquals(PhoneBlock.UPDATE_PLUGIN, r.state.value.phoneBlocked)
+        assertEquals(1u, r.state.value.serverProtocol)
+        assertTrue(handles.isEmpty())
+    }
+
+    /** A sign-out or another sign-in ends the override; switching the player doesn't. */
+    @Test
+    fun theOverrideEndsWithTheSignIn() = runTest {
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        r.setQualityOverride(StreamQuality.LOW)
+        r.setEnabled(false)
+        r.setEnabled(true)
+        assertEquals(StreamQuality.LOW, r.state.value.qualityOverride)
+        assertEquals(listOf(StreamQuality.LOW), handles.last().qualities)
+        // Another server (or user): the setting applies again, to the new engine too.
+        sessions.value = Session(NoHandle)
+        assertNull(r.state.value.qualityOverride)
+        assertEquals(StreamQuality.ORIGINAL, r.state.value.streamQuality)
+        assertEquals(listOf(StreamQuality.ORIGINAL), handles.last().qualities)
+        // Signed out: gone too.
+        r.setQualityOverride(StreamQuality.HIGH)
+        sessions.value = null
+        assertNull(r.state.value.qualityOverride)
+        assertEquals(StreamQuality.ORIGINAL, r.state.value.streamQuality)
+    }
+
+    /**
+     * The sheet's override and a network change at the same moment, on real threads: the
+     * engine is slow to take the override, and the network collector must wait for it, so
+     * the state and the engine end on the same level (the network's: it came last).
+     */
+    @Test
+    fun theOverrideAndANetworkChangeCannotLeaveTheStateAndTheEngineApart() {
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        val io = pool.asCoroutineDispatcher()
+        val job = kotlinx.coroutines.SupervisorJob()
+        val scope = CoroutineScope(job + kotlinx.coroutines.Dispatchers.Unconfined)
+        val made = java.util.Collections.synchronizedList(mutableListOf<FakeHandle>())
+        try {
+            kotlinx.coroutines.runBlocking {
+                val r = RustLocalPlayerRepository(
+                    sessions, settings, scope, io, factory = { FakeHandle().also { made += it } },
+                    nowMs = { clockMs }, network = network, serverProtocol = { 2u },
+                )
+                sessions.value = Session(NoHandle)
+                r.setEnabled(true)
+                kotlinx.coroutines.withTimeout(5_000) { while (made.firstOrNull()?.observer == null) kotlinx.coroutines.delay(5) }
+                val h = made.single()
+                val entered = java.util.concurrent.CountDownLatch(1)
+                val release = java.util.concurrent.CountDownLatch(1)
+                h.onQuality = { q ->
+                    if (q == StreamQuality.LOW) {
+                        entered.countDown()
+                        release.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                    }
+                }
+                val sheet = launch(kotlinx.coroutines.Dispatchers.Default) { r.setQualityOverride(StreamQuality.LOW) }
+                assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                // On mobile data now, while the engine is still taking the override.
+                network.value = NetworkKind.MOBILE
+                // Unguarded, the collector would reach the engine now; give it the chance.
+                kotlinx.coroutines.withTimeoutOrNull(300) { while (StreamQuality.HIGH !in h.qualities) kotlinx.coroutines.delay(5) }
+                release.countDown()
+                sheet.join()
+                kotlinx.coroutines.withTimeoutOrNull(5_000) {
+                    while (h.qualities.last() != StreamQuality.HIGH || r.state.value.streamQuality != StreamQuality.HIGH) kotlinx.coroutines.delay(5)
+                }
+                assertEquals("the engine", StreamQuality.HIGH, h.qualities.last())
+                assertEquals("the state", StreamQuality.HIGH, r.state.value.streamQuality)
+                assertNull("the network type changed after the override", r.state.value.qualityOverride)
+                assertEquals(listOf(StreamQuality.ORIGINAL, StreamQuality.LOW, StreamQuality.HIGH), h.qualities)
+            }
+        } finally {
+            job.cancel()
+            pool.shutdownNow()
+        }
     }
 
     /** Close 4426 (the server needs a newer app): the player has ended and says why. */

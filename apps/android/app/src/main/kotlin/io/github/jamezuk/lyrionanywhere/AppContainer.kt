@@ -221,11 +221,21 @@ class AppContainer(context: Context, scope: CoroutineScope) {
         offlineImpl.beforeSignOut = it::forget
     }
 
+    /**
+     * LMS's "Output level is fixed at 100%" for this phone's player follows the Sound setting
+     * (the player controller hands it the statuses it reads, to notice a controller's change).
+     */
+    val fixedLevel = io.github.jamezuk.lyrionanywhere.data.FixedLevelKeeper(
+        scope,
+        localPlayer.state,
+        players,
+        nowMs = { android.os.SystemClock.elapsedRealtime() },
+    )
+
     init {
         // Only one of the phone's two players makes sound at a time.
         PlaybackArbiter(scope, localPlayer, players, offlinePlayer).start()
-        // LMS's "Output level is fixed at 100%" for this phone's player follows the Sound setting.
-        io.github.jamezuk.lyrionanywhere.data.FixedLevelKeeper(scope, localPlayer.state, players).start()
+        fixedLevel.start()
     }
 
     /** What this phone is called in LMS and the device list, e.g. "Google Pixel 8". */

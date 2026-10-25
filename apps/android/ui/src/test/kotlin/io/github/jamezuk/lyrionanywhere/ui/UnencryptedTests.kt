@@ -309,4 +309,29 @@ class UnencryptedScreenTests {
         compose.onNodeWithTag("server-unencrypted-explained", useUnmergedTree = true).assertDoesNotExist()
         compose.onNodeWithText("Unencrypted").assertDoesNotExist()
     }
+
+    /**
+     * The refusal covers a name and a public IP literal alike, so the text asks for a
+     * private address (not merely "an IP address"), and still says where to set it.
+     */
+    @Test
+    fun thePlainHttpRefusalAsksForAPrivateAddress() {
+        val res = org.robolectric.RuntimeEnvironment.getApplication().resources
+        val text = io.github.jamezuk.lyrionanywhere.ui.components.reasonText(res, AppError.Reason.PLAIN_HTTP)!!
+        assertTrue(text, "private IP address" in text)
+        assertTrue(text, "not a name or a public address" in text)
+        assertTrue(text, "10.x.x.x" in text && "192.168.x.x" in text)
+        assertTrue(text, "Public URL" in text)
+        assertTrue(text, "https://" in text)
+    }
+
+    /** The override's note names what ends it: a restart, a change of network type, a sign-in. */
+    @Test
+    fun theOverrideNoteSaysWhichNetworkChangeEndsIt() {
+        val res = org.robolectric.RuntimeEnvironment.getApplication().resources
+        val text = res.getString(R.string.stream_quality_override_note, "High")
+        assertTrue(text, "network type changes (Wi-Fi or mobile data)" in text)
+        assertTrue(text, "sign in again" in text)
+        assertFalse(text, "the network changes" in text)
+    }
 }
