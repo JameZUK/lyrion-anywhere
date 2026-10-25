@@ -106,6 +106,7 @@ pub use quality::{
     DiagramBadge, DiagramBlock, DiagramBlockKind, DiagramSwitch, DiagramVerdict, QualityDecoded,
     QualityDevice, QualityDiagram, QualityFile, QualityInputs, QualityNetwork, QualityOrigin,
     QualityPlayer, StreamSent, StreamServed, describe_quality, local_quality_diagram,
+    offline_quality_diagram,
 };
 pub use routine::{
     AlarmChange, AlarmInfo, AlarmListing, AlarmSound, QueuedRating, RatingStyle,

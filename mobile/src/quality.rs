@@ -453,6 +453,61 @@ pub fn local_quality_diagram(
     describe_quality(local_inputs(path.as_ref(), file, origin, seekable))
 }
 
+/// The download's label as the Download block and the badge show it: "Opus 160", "MP3 320"
+/// (the gateway's fixed bit rates), or for an original its LMS type with what the decoder
+/// found ("FLAC 24/96"); empty when nothing is known.
+pub fn download_label(
+    format: crate::offline::DownloadFormat,
+    codec: &str,
+    decoded: Option<&QualityDecoded>,
+) -> String {
+    use crate::offline::DownloadFormat as F;
+    match format {
+        F::Opus => "Opus 160".into(),
+        F::Mp3 => "MP3 320".into(),
+        F::Original => {
+            let Some((name, lossless)) = q::codec_name(codec) else {
+                return String::new();
+            };
+            let (bits, rate) = decoded.map_or((None, None), |d| (d.bits, d.rate));
+            q::format_label(&name, lossless, bits.filter(|_| lossless), rate, None)
+        }
+    }
+}
+
+/// The downloads player's diagram: Download → This device, from its signal-path snapshot
+/// and the download's format and LMS type (an original's file format is the download's).
+#[uniffi::export]
+pub fn offline_quality_diagram(
+    path: Option<SignalPathInfo>,
+    format: crate::offline::DownloadFormat,
+    codec: String,
+) -> QualityDiagram {
+    let decoded = path.as_ref().and_then(|p| p.decoded.clone());
+    let label = download_label(format, &codec, decoded.as_ref());
+    let file = (format == crate::offline::DownloadFormat::Original)
+        .then(|| QualityFile {
+            kind: Some(codec.trim().to_ascii_lowercase()).filter(|k| {
+                (1..=12).contains(&k.len()) && k.bytes().all(|b| b.is_ascii_alphanumeric())
+            }),
+            rate: decoded.as_ref().and_then(|d| d.rate),
+            bits: decoded.as_ref().and_then(|d| d.bits),
+            kbps: None,
+            channels: decoded.as_ref().and_then(|d| d.channels),
+        })
+        .filter(|f| f.kind.is_some());
+    describe_quality(QualityInputs {
+        player: QualityPlayer::Offline { format: label },
+        file,
+        served: None,
+        sent: None,
+        decoded,
+        device: path.as_ref().and_then(|p| p.device.clone()),
+        origin: None,
+        seekable: false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -640,6 +695,47 @@ mod tests {
                 StreamQuality::Low
             ]
         );
+    }
+
+    /// The downloads player: an original FLAC is Hi-Res from its own format, an Opus
+    /// download is lowered at the Download block; never a switch.
+    #[test]
+    fn the_offline_diagram() {
+        use crate::offline::DownloadFormat;
+        let mut path = snapshot(&q::QualityInputs::default());
+        path.decoded = Some(QualityDecoded {
+            codec: "FLAC".into(),
+            rate: Some(96_000),
+            bits: Some(24),
+            channels: Some(2),
+            lossless: true,
+        });
+        let d = offline_quality_diagram(Some(path.clone()), DownloadFormat::Original, "flc".into());
+        assert_eq!(d.badge.as_ref().unwrap().text, "Hi-Res \u{b7} FLAC 24/96");
+        assert!(d.switch.is_none());
+        assert_eq!(
+            d.blocks.iter().map(|b| b.kind).collect::<Vec<_>>(),
+            vec![DiagramBlockKind::Download, DiagramBlockKind::Device]
+        );
+        assert_eq!(d.blocks[0].format, "FLAC 24/96");
+        path.decoded = Some(QualityDecoded {
+            codec: "Opus".into(),
+            rate: Some(48_000),
+            bits: None,
+            channels: Some(2),
+            lossless: false,
+        });
+        let d = offline_quality_diagram(Some(path), DownloadFormat::Opus, "opus".into());
+        let b = d.badge.unwrap();
+        assert_eq!(b.stream, "Opus 160");
+        assert!(b.lowered && d.blocks[0].lowers);
+        // Nothing known yet: no badge, the shape still there.
+        let d = offline_quality_diagram(None, DownloadFormat::Mp3, "mp3".into());
+        assert!(d.badge.is_none());
+        assert_eq!(d.blocks[0].format, "MP3 320");
+        // A hostile type is no file format.
+        let d = offline_quality_diagram(None, DownloadFormat::Original, "fl\u{202e}c".into());
+        assert_eq!(d.blocks[0].format, "");
     }
 
     /// Nothing playing yet: the file alone, and a switch (a local player always has one).
