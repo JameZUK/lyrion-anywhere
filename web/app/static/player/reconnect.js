@@ -9,13 +9,16 @@ export const CLOSE = {
   TRY_AGAIN: 1013, // server unavailable, or this client was too slow
   REPLACED: 4000, // another connection for this device took over
   NO_SESSION: 4404, // resume refused: session unknown or expired
+  TOO_OLD: 4426, // this client's protocol is older than the gateway's: a stale cached page
 };
 
 /**
  * What to do after the player socket closes:
  * - 'stop': don't reconnect (credentials rejected, protocol error, or replaced elsewhere);
  * - 'new-session': the old session is gone; connect afresh (new HELO);
- * - 'resume': reconnect and resume the existing session.
+ * - 'resume': reconnect and resume the existing session;
+ * - 'too-old': this page is older than the gateway (4426): stop for good, and say to reload.
+ *   The same sign-in form can never succeed, so it is never retried.
  *
  * 1001 is resumed too: browsers also use it when they close a socket themselves (a page
  * being suspended), and a new session costs a fresh HELO, which makes LMS restart the
@@ -29,6 +32,8 @@ export function closeAction(code) {
       return 'stop';
     case CLOSE.NO_SESSION:
       return 'new-session';
+    case CLOSE.TOO_OLD:
+      return 'too-old';
     default:
       return 'resume';
   }
@@ -273,16 +278,18 @@ export function sanitiseQuality(q) {
   return QUALITIES.includes(q) ? q : 'original';
 }
 
+/** The player protocol this worker speaks (docs/PROTOCOL.md, *Versions*). */
+export const PROTOCOL = 2;
+
 /**
- * The first message on the player socket: the bare token for a new session at the original
- * level (as always), otherwise JSON with the session to resume and the level. Gateways
- * ignore a level they don't know, so it is always safe to send here. `keepalive` asks for
- * text keepalives: only for a gateway listing `lms_busy` (older ones never send them).
+ * The first message on the player socket: JSON with the protocol version (required since
+ * protocol 2: a gateway closes a form without it with 4426), the session to resume, the
+ * level and whether to send text keepalives. `keepalive` asks for them only when told to (a
+ * gateway listing `lms_busy`).
  */
 export function signInMessage(token, resume, quality, keepalive = false) {
   const q = sanitiseQuality(quality);
-  if (!resume && q === 'original' && keepalive !== true) return token;
-  const m = { token };
+  const m = { token, protocol: PROTOCOL };
   if (resume) m.resume = { session: resume.session, secret: resume.secret, received: resume.received };
   if (q !== 'original') m.quality = q;
   if (keepalive === true) m.keepalive = true;
@@ -297,6 +304,8 @@ const GREETING_FIELDS = ['session', 'secret', 'mac', 'name', 'resumed', 'grace']
  * - 'keepalive': exactly `{"keepalive":true}` (sent every 5 s to a client that asked for
  *   it, so a socket left waiting on a busy LMS isn't taken for dead). It only shows the
  *   socket is alive: it is not a greeting and carries no sequence number;
+ * - { stream }: the stream message (protocol 2), checked by `parseStreamMessage`;
+ * - 'bad-stream': a message with a `stream` field that fails those checks;
  * - { greeting }: the gateway's greeting (a session and secret, as strings);
  * - null: anything else (not JSON, oversized, or a mixture of the two), which is ignored.
  */
@@ -313,21 +322,136 @@ export function classifyText(text) {
     if (m.keepalive !== true || GREETING_FIELDS.some((f) => f in m)) return null;
     return 'keepalive';
   }
+  if ('stream' in m) {
+    const stream = text.length <= STREAM_MESSAGE_MAX ? parseStreamMessage(m) : null;
+    return stream ? { stream } : 'bad-stream';
+  }
   if (typeof m.session !== 'string' || typeof m.secret !== 'string') return null;
   return { greeting: m };
 }
 
 /**
  * Route one message from the player socket: binary to `frames` (the only kind counted for
- * resume), a greeting to `greeting`, a keepalive nowhere, and anything else to `ignored`.
- * The caller has already noted that the socket is alive.
+ * resume), a greeting to `greeting`, a stream message to `stream`, a malformed stream
+ * message to `badStream`, a keepalive nowhere, and anything else to `ignored`. The caller
+ * has already noted that the socket is alive.
  */
 export function routeMessage(data, to) {
   if (typeof data !== 'string') return to.frames(data);
   const t = classifyText(data);
   if (t === 'keepalive') return;
-  if (t) to.greeting(t.greeting);
+  if (t === 'bad-stream') (to.badStream ?? to.ignored)();
+  else if (t?.stream) to.stream?.(t.stream);
+  else if (t) to.greeting(t.greeting);
   else to.ignored();
+}
+
+// --- The stream message (protocol 2; docs/PROTOCOL.md, *Messages after the greeting*) ---------
+
+/** The gateway sends at most this much in one stream message. */
+export const STREAM_MESSAGE_MAX = 512;
+/** Codec tokens are short lower-case words (`flac`, `pcm`, `mp3`, `ogg`, `aac`, `alac`, `unknown`). */
+const CODEC_TOKEN = /^[a-z][a-z0-9]{0,11}$/;
+const BAD = Symbol('bad');
+const whole = (v, lo, hi) => Number.isSafeInteger(v) && v >= lo && v <= hi;
+/** An optional whole number in range: null when absent or null, BAD when anything else. */
+const optWhole = (v, lo, hi) => (v === undefined || v === null ? null : whole(v, lo, hi) ? v : BAD);
+const plain = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+
+function parseServed(v) {
+  if (!plain(v)) return null;
+  const codec = v.codec === undefined || v.codec === null ? null : typeof v.codec === 'string' && CODEC_TOKEN.test(v.codec) ? v.codec : BAD;
+  const rate = optWhole(v.rate, 1000, 10_000_000);
+  const bits = optWhole(v.bits, 1, 64);
+  const channels = optWhole(v.channels, 1, 64);
+  if ([codec, rate, bits, channels].includes(BAD)) return null;
+  const out = { codec, rate, bits, channels };
+  if (v.gain_db !== undefined && v.gain_db !== null) {
+    if (typeof v.gain_db !== 'number' || !Number.isFinite(v.gain_db) || Math.abs(v.gain_db) > 100) return null;
+    out.gain_db = v.gain_db;
+  }
+  return out;
+}
+
+function parseSent(v) {
+  if (!plain(v)) return null;
+  if (v.mode === 'passthrough') return { mode: 'passthrough' };
+  if (v.mode === 'opus' && whole(v.kbps, 6, 1000) && (v.level === 'high' || v.level === 'low')) return { mode: 'opus', kbps: v.kbps, level: v.level };
+  return null;
+}
+
+/**
+ * The stream message `{"stream":{"seq","served","sent"}}`, checked strictly: `seq` a positive
+ * whole number, `served.codec` a short lower-case token (or null), every number finite and
+ * in sane bounds, `sent` pass-through or Opus with its bit rate and a known level. Returns
+ * a fresh object holding only those fields, or null for anything else. It crosses to the
+ * page and ends up on screen, so nothing else is passed on.
+ */
+export function parseStreamMessage(m) {
+  if (!plain(m) || Object.keys(m).length !== 1 || !plain(m.stream)) return null;
+  const s = m.stream;
+  if (!whole(s.seq, 1, 2 ** 31)) return null;
+  const served = parseServed(s.served);
+  const sent = parseSent(s.sent);
+  if (!served || !sent) return null;
+  return { seq: s.seq, served, sent };
+}
+
+/** A server → client Slimproto frame that starts a stream: `strm` with command `s`. */
+export function isStreamStart(bytes) {
+  const b = bytes instanceof Uint8Array ? bytes : bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : null;
+  // Two length bytes, the opcode, then the command.
+  return !!b && b.length >= 7 && b[2] === 0x73 && b[3] === 0x74 && b[4] === 0x72 && b[5] === 0x6d && b[6] === 0x73;
+}
+
+/**
+ * What the gateway said about each stream of this session, tied to the streams by `seq`: the
+ * count of `strm s` frames, from 1, which both sides keep the same way. Frames are counted by
+ * their place in the session (the resume counter), so a frame seen twice is never counted
+ * twice. The last few messages are kept (a later one for the same `seq`, as re-sent after a
+ * resume, replaces it).
+ */
+export class StreamInfo {
+  static KEEP = 8;
+  #starts = 0;
+  #lastFrame = 0;
+  #bySeq = new Map();
+
+  /** A new session: nothing is known, and counting starts again. */
+  reset() {
+    this.#starts = 0;
+    this.#lastFrame = 0;
+    this.#bySeq.clear();
+  }
+
+  /** Binary message number `n` of the session (from 1); true when it started a stream. */
+  frame(n, bytes) {
+    if (!Number.isSafeInteger(n) || n <= this.#lastFrame) return false;
+    this.#lastFrame = n;
+    if (!isStreamStart(bytes)) return false;
+    this.#starts++;
+    return true;
+  }
+
+  /** How many `strm s` frames this session has seen. */
+  get starts() {
+    return this.#starts;
+  }
+
+  /** Keep a checked stream message (see parseStreamMessage). */
+  add(info) {
+    this.#bySeq.delete(info.seq);
+    this.#bySeq.set(info.seq, info);
+    while (this.#bySeq.size > StreamInfo.KEEP) {
+      const oldest = Math.min(...this.#bySeq.keys());
+      this.#bySeq.delete(oldest);
+    }
+  }
+
+  /** The message for stream `seq`, or null. */
+  of(seq) {
+    return this.#bySeq.get(seq) ?? null;
+  }
 }
 
 /** A change of level mid-session: only for a gateway listing `stream_quality` (older ones end the session on it). */
